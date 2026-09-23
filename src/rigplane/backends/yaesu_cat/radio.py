@@ -709,18 +709,31 @@ class YaesuCatRadio:
 
     def supports_command(self, command: str, *, receiver: int | None = None) -> bool:
         """Return profile-derived support only for an executable operation."""
-        tuner_dependencies = {
+        dependencies = {
             "get_tuner_status": ("get_tuner",),
             "set_tuner_status": ("get_tuner", "set_tuner"),
+            # RepeaterControlCapable (MOR-2111 tone half): the protocol
+            # names name no CAT command; their support is the profile
+            # commands they are composed from. The toggle setters read
+            # ``CT`` before writing (read-modify-write), so they require
+            # the CT read as well as the write.
+            "get_repeater_tone": ("get_sql_type",),
+            "set_repeater_tone": ("get_sql_type", "set_sql_type"),
+            "get_repeater_tsql": ("get_sql_type",),
+            "set_repeater_tsql": ("get_sql_type", "set_sql_type"),
+            "get_tone_freq": ("get_ctcss_tone",),
+            "set_tone_freq": ("set_ctcss_tone",),
+            "get_tsql_freq": ("get_ctcss_tone",),
+            "set_tsql_freq": ("set_ctcss_tone",),
         }.get(command)
-        if tuner_dependencies is None:
+        if dependencies is None:
             profile_supported = supports_callable(self.profile, command)
         else:
             profile_supported = (
                 command not in self.profile.absent_command_names
                 and all(
                     supports_callable(self.profile, dependency)
-                    for dependency in tuner_dependencies
+                    for dependency in dependencies
                 )
             )
         supported = profile_supported and callable(getattr(self, command, None))
@@ -2461,48 +2474,167 @@ class YaesuCatRadio:
     # -- D9: Tone/TSQL ------------------------------------------------------
 
     async def read_sql_type(self, receiver: int = 0) -> int:
-        """Read squelch type code (CT0) without mutating legacy state.
+        """Read one receiver's squelch type code (CT) without mutating legacy state.
 
         Pure CAT read used by the observation pipeline. Returns the FTX-1
         ``CT`` P2 code (0=CTCSS OFF, 1=ENC ON/DEC OFF "TONE", 2=ENC ON/DEC ON
         "TSQL", 3=DCS, 4=PR FREQ, 5=REV TONE) per the FTX-1 CAT Operation
-        Reference Manual (``FTX-1_CAT_OM_ENG_2508-C``). MAIN only (CT0).
+        Reference Manual (``FTX-1_CAT_OM_ENG_2508-C``). ``receiver`` maps to
+        the command's P1 digit (0=MAIN, 1=SUB).
         """
-        result = await self._query("get_sql_type")
+        receiver = self._validate_receiver(receiver)
+        result = await self._query("get_sql_type", receiver=receiver)
+        if result["receiver"] != receiver:
+            raise CommandError(
+                "sql type receiver mismatch: "
+                f"requested {receiver}, received {result['receiver']}"
+            )
         return int(result["type"])
 
     async def get_sql_type(self, receiver: int = 0) -> int:
-        """Get squelch type code (CT0)."""
+        """Get one receiver's squelch type code (CT)."""
         return await self.read_sql_type(receiver)
 
     async def set_sql_type(self, type_code: int, receiver: int = 0) -> None:
-        """Set squelch type code (CT0)."""
-        await self._write("set_sql_type", type=type_code)
+        """Set one receiver's squelch type code (CT)."""
+        receiver = self._validate_receiver(receiver)
+        await self._write("set_sql_type", receiver=receiver, type=type_code)
 
     async def read_ctcss_tone_index(self, receiver: int = 0) -> int:
-        """Read the MAIN CTCSS tone-chart index (CN command) — pure read.
+        """Read one receiver's CTCSS tone-chart index (CN command) — pure read.
 
-        Sends ``CN00;`` (P1=0 MAIN, P2=0 CTCSS) and parses the ``CN00nnn;``
-        answer, returning the 000-049 tone-chart index per the FTX-1 CAT
-        Operation Reference Manual (``FTX-1_CAT_OM_ENG_2508-C``). Pure CAT read
-        used by the observation pipeline: it does NOT mutate ``radio_state``.
-        MAIN only (CN P1=0); the SUB receiver would need CN10, out of scope.
+        Sends ``CN00;`` for MAIN or ``CN10;`` for SUB (P1=receiver, P2=0
+        CTCSS) and parses the ``CNrr0nnn;`` answer, returning the 000-049
+        tone-chart index per the FTX-1 CAT Operation Reference Manual
+        (``FTX-1_CAT_OM_ENG_2508-C``). Pure CAT read used by the observation
+        pipeline: it does NOT mutate ``radio_state``.
         """
-        result = await self._query("get_ctcss_tone")
+        receiver = self._validate_receiver(receiver)
+        result = await self._query("get_ctcss_tone", receiver=receiver)
+        if result["receiver"] != receiver:
+            raise CommandError(
+                "ctcss tone receiver mismatch: "
+                f"requested {receiver}, received {result['receiver']}"
+            )
         return int(result["code"])
 
-    async def get_ctcss_tone(self, receiver: int = 0) -> int:
-        """Get the MAIN CTCSS tone frequency in centiHz (CN command).
+    async def get_tone_freq(self, receiver: int = 0) -> int:
+        """Get the CTCSS tone frequency in centiHz (CN command).
 
-        Delegates to :meth:`read_ctcss_tone_index` and maps the tone-chart
-        index to centiHz (e.g. index 8 → 88.5 Hz → ``8850``) to match the Icom
-        MOR-451 convention. The FTX-1 has a single CTCSS tone (CN P2=0) shared
-        by both TONE (encode) and TSQL (decode).
+        Reads the tone-chart index and maps it through the active profile's
+        resolved CTCSS domain (e.g. index 8 → 88.5 Hz → ``8850``). The FTX-1
+        has a single CTCSS tone (CN P2=0) shared by both TONE (encode) and
+        TSQL (decode).
         """
         return _ctcss_index_to_centihz(
             await self.read_ctcss_tone_index(receiver),
             domain=self.profile.ctcss_tones_centihz,
         )
+
+    async def set_tone_freq(self, freq_hz: int, receiver: int = 0) -> None:
+        """Set the CTCSS tone frequency in centiHz (CN command).
+
+        ``freq_hz`` is hundredths of Hz (8850 = 88.5 Hz), matching
+        ``RepeaterControlCapable``. The value must be an exact member of the
+        profile's resolved CTCSS domain; anything else is refused with
+        ``ValueError`` BEFORE any frame is sent (MOR-2129), so an invalid
+        value can never be silently re-quantized to the nearest tone.
+        """
+        receiver = self._validate_receiver(receiver)
+        if isinstance(freq_hz, bool) or not isinstance(freq_hz, int):
+            raise TypeError("CTCSS tone frequency must be an integer in centiHz")
+        domain = self.profile.ctcss_tones_centihz
+        if not isinstance(domain, tuple) or not domain:
+            raise ValueError("active profile has no resolved CTCSS tone domain")
+        if freq_hz not in domain:
+            raise ValueError(
+                f"CTCSS tone frequency {freq_hz} is not an exact member of "
+                "the profile CTCSS domain"
+            )
+        index = hz_to_table_index(freq_hz, table=domain)
+        await self._write("set_ctcss_tone", receiver=receiver, code=index)
+
+    async def get_tsql_freq(self, receiver: int = 0) -> int:
+        """Get the TSQL frequency in centiHz — an honest alias of
+        :meth:`get_tone_freq`, because the FTX-1's single ``CN`` register
+        serves both TONE and TSQL.
+        """
+        return await self.get_tone_freq(receiver)
+
+    async def set_tsql_freq(self, freq_hz: int, receiver: int = 0) -> None:
+        """Set the TSQL frequency in centiHz — an honest alias of
+        :meth:`set_tone_freq`, because the FTX-1's single ``CN`` register
+        serves both TONE and TSQL.
+        """
+        await self.set_tone_freq(freq_hz, receiver=receiver)
+
+    async def get_repeater_tone(self, receiver: int = 0) -> bool:
+        """Get repeater tone (CTCSS ENC) on/off state, derived from ``CT``.
+
+        Codes 1 and 2 carry CTCSS encode (MOR-2130); codes 3/4/5 (DCS /
+        PR FREQ / REV TONE) have no two-boolean representation and derive
+        ``False``.
+        """
+        return await self.read_sql_type(receiver) in (1, 2)
+
+    async def set_repeater_tone(self, on: bool, receiver: int = 0) -> None:
+        """Set repeater tone (CTCSS ENC) on/off (CT command, read-modify-write).
+
+        Reads the current ``CT`` code first. When it is 3, 4 or 5 (DCS /
+        PR FREQ / REV TONE) the write is refused loudly and nothing is sent:
+        the two-boolean vocabulary cannot express that state, and overwriting
+        it would destroy the radio's configuration. ``tone=False`` while tone
+        squelch is on ((False, True)) is likewise refused as not
+        representable.
+        """
+        receiver = self._validate_receiver(receiver)
+        current = await self.read_sql_type(receiver)
+        if current not in (0, 1, 2):
+            raise ValueError(
+                f"cannot express a CTCSS toggle over CT code {current} "
+                "(DCS/PR FREQ/REV TONE); refusing to overwrite it"
+            )
+        tone = bool(on)
+        tsql = current == 2
+        if not tone and tsql:
+            raise ValueError(
+                "tone squelch cannot stay on while the repeater tone is off "
+                "(CT has no code for encode-off/decode-on)"
+            )
+        await self.set_sql_type(2 if tsql else (1 if tone else 0), receiver)
+
+    async def get_repeater_tsql(self, receiver: int = 0) -> bool:
+        """Get tone squelch (CTCSS ENC+DEC) on/off state, derived from ``CT``.
+
+        Only code 2 carries decode (MOR-2130); every other code derives
+        ``False``.
+        """
+        return await self.read_sql_type(receiver) == 2
+
+    async def set_repeater_tsql(self, on: bool, receiver: int = 0) -> None:
+        """Set tone squelch (CTCSS ENC+DEC) on/off (CT command, read-modify-write).
+
+        Reads the current ``CT`` code first. When it is 3, 4 or 5 (DCS /
+        PR FREQ / REV TONE) the write is refused loudly and nothing is sent.
+        Turning tone squelch on while CTCSS encode is off ((False, True)) is
+        refused as not representable: ``CT`` expresses decode only together
+        with encode.
+        """
+        receiver = self._validate_receiver(receiver)
+        current = await self.read_sql_type(receiver)
+        if current not in (0, 1, 2):
+            raise ValueError(
+                f"cannot express a CTCSS toggle over CT code {current} "
+                "(DCS/PR FREQ/REV TONE); refusing to overwrite it"
+            )
+        tone = current in (1, 2)
+        tsql = bool(on)
+        if not tone and tsql:
+            raise ValueError(
+                "tone squelch cannot be on while the repeater tone is off "
+                "(CT has no code for encode-off/decode-on)"
+            )
+        await self.set_sql_type(2 if tsql else (1 if tone else 0), receiver)
 
     async def read_repeater_shift(self, receiver: int = 0) -> int:
         """Read one receiver's repeater shift direction — pure read.
@@ -2514,7 +2646,7 @@ class YaesuCatRadio:
         by this command (see :class:`RepeaterShiftCapable`). Pure CAT read
         used by the observation pipeline: it does NOT mutate ``radio_state``.
         """
-        receiver = self._validate_repeater_shift_receiver(receiver)
+        receiver = self._validate_receiver(receiver)
         result = await self._query("get_repeater_shift", receiver=receiver)
         if result["receiver"] != receiver:
             raise CommandError(
@@ -2551,7 +2683,7 @@ class YaesuCatRadio:
         refused only for the current mode — a different failure wearing the
         same reply.
         """
-        receiver = self._validate_repeater_shift_receiver(receiver)
+        receiver = self._validate_receiver(receiver)
         if isinstance(direction, bool) or not isinstance(direction, int):
             raise TypeError("repeater shift direction must be an integer from 0 to 3")
         try:
@@ -2566,12 +2698,16 @@ class YaesuCatRadio:
             shift=int(validated_direction),
         )
 
-    def _validate_repeater_shift_receiver(self, receiver: object) -> int:
+    def _validate_receiver(self, receiver: object) -> int:
+        """Validate a MAIN/SUB selector shared by the receiver-routed CAT
+        commands (``OS``, ``CT``, ``CN``): an int the profile supports,
+        refused before any wire traffic.
+        """
         if isinstance(receiver, bool) or not isinstance(receiver, int):
-            raise TypeError("repeater shift receiver must be an integer")
+            raise TypeError("CAT receiver must be an integer")
         if not self.profile.supports_receiver(receiver):
             raise ValueError(
-                f"repeater shift receiver must be supported by the profile, got {receiver}"
+                f"CAT receiver must be supported by the profile, got {receiver}"
             )
         return receiver
 

@@ -221,7 +221,6 @@ def _make_radio() -> MagicMock:
     # CTCSS tone frequency observation read (MOR-458). ``read_ctcss_tone_index``
     # returns the CAT ``CN`` P3 tone-chart index (0-49); the default index 8 maps
     # to 88.5 Hz -> 8850 centiHz, emitted to BOTH tone_freq and tsql_freq.
-    radio.get_ctcss_tone = AsyncMock(return_value=8850)
     radio.read_ctcss_tone_index = AsyncMock(return_value=8)
     return radio
 
@@ -895,20 +894,27 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
         ("receiver.sub.operator_toggles.manual_notch", False),
         ("receiver.main.operator_controls.manual_notch_freq", 128),
         ("receiver.sub.operator_controls.manual_notch_freq", 120),
-        # Tone / CTCSS squelch-type (MOR-457): MAIN-only per-receiver toggles
-        # grouped with the other receiver DSP toggles, derived from a single
-        # ``read_sql_type(0)`` CAT ``CT`` read. The default code 1 ("TONE")
-        # yields repeater_tone=True, repeater_tsql=False; both are emitted every
-        # cycle. Gated on the ``sql_type`` cap.
+        # Tone / CTCSS squelch-type (MOR-457): per-receiver toggles grouped
+        # with the other receiver DSP toggles, each side derived from its own
+        # ``read_sql_type(receiver)`` CAT ``CT`` read (CT0 then CT1, MOR-2111).
+        # The default code 1 ("TONE") yields repeater_tone=True,
+        # repeater_tsql=False on both sides; both are emitted every cycle.
+        # Gated on the ``sql_type`` cap; the SUB read rides ``dual_rx``.
         ("receiver.main.operator_toggles.repeater_tone", True),
         ("receiver.main.operator_toggles.repeater_tsql", False),
-        # CTCSS tone frequency (MOR-458): MAIN-only, a single ``read_ctcss_tone_index``
-        # CAT ``CN`` read mapped index -> Hz -> centiHz. The FTX-1 has one CTCSS
-        # tone (CN P2=0) used for both TONE and TSQL, so the same centiHz value
-        # (default index 8 = 88.5 Hz = 8850) is emitted to BOTH paths. Gated on
-        # the ``sql_type`` cap.
+        ("receiver.sub.operator_toggles.repeater_tone", True),
+        ("receiver.sub.operator_toggles.repeater_tsql", False),
+        # CTCSS tone frequency (MOR-458): per-receiver, each side's own
+        # ``read_ctcss_tone_index(receiver)`` CAT ``CN`` read (CN00 then CN10,
+        # MOR-2111) mapped index -> Hz -> centiHz. The FTX-1 has one CTCSS
+        # tone (CN P2=0) per receiver used for both TONE and TSQL, so the
+        # same centiHz value (default index 8 = 88.5 Hz = 8850) is emitted to
+        # BOTH paths on each side. Gated on the ``sql_type`` cap; the SUB read
+        # rides ``dual_rx``.
         ("receiver.main.operator_controls.tone_freq", 8850),
         ("receiver.main.operator_controls.tsql_freq", 8850),
+        ("receiver.sub.operator_controls.tone_freq", 8850),
+        ("receiver.sub.operator_controls.tsql_freq", 8850),
         # active-slot (MOR-446): the global "which receiver is active" field,
         # emitted in the slow-control lane, unconditional (no FTX-1 cap gate)
         # like the legacy poller's always-on ``get_vfo_select`` read. The int
@@ -946,13 +952,13 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
     assert radio.read_auto_notch.await_count == 2
     assert radio.read_manual_notch.await_count == 2
     assert radio.read_manual_notch_freq.await_count == 2
-    # Tone/CTCSS: a SINGLE read_sql_type feeds both derived booleans (MOR-457).
-    assert radio.read_sql_type.await_count == 1
+    # Tone/CTCSS: a single CT read per receiver feeds both derived booleans
+    # on that side (MOR-457, SUB MOR-2111).
+    assert radio.read_sql_type.await_count == 2
     radio.get_sql_type.assert_not_awaited()
-    # CTCSS tone freq: a SINGLE read_ctcss_tone_index feeds both tone_freq and
-    # tsql_freq in centiHz (MOR-458).
-    assert radio.read_ctcss_tone_index.await_count == 1
-    radio.get_ctcss_tone.assert_not_awaited()
+    # CTCSS tone freq: a single CN read per receiver feeds both tone_freq and
+    # tsql_freq in centiHz on that side (MOR-458, SUB MOR-2111).
+    assert radio.read_ctcss_tone_index.await_count == 2
     radio.get_af_level.assert_not_awaited()
     radio.get_rf_gain.assert_not_awaited()
     radio.get_squelch.assert_not_awaited()
@@ -1532,16 +1538,21 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         ("receiver.main.operator_toggles.narrow", True),
         ("receiver.sub.operator_toggles.narrow", True),
         # Tone / CTCSS squelch-type (MOR-457): gated on the ``sql_type`` cap
-        # (present here); a single ``read_sql_type`` (code 1 = "TONE") derives
-        # both booleans and does not mutate legacy state.
+        # (present here); each receiver's ``read_sql_type`` (code 1 = "TONE")
+        # derives both booleans and does not mutate legacy state (SUB read
+        # MOR-2111).
         ("receiver.main.operator_toggles.repeater_tone", True),
         ("receiver.main.operator_toggles.repeater_tsql", False),
+        ("receiver.sub.operator_toggles.repeater_tone", True),
+        ("receiver.sub.operator_toggles.repeater_tsql", False),
         # CTCSS tone freq (MOR-458): gated on the ``sql_type`` cap (present
-        # here); a single ``read_ctcss_tone_index`` (index 8 = 88.5 Hz) maps to
-        # 8850 centiHz, emitted to BOTH tone_freq and tsql_freq, and does not
-        # mutate legacy state.
+        # here); each receiver's ``read_ctcss_tone_index`` (index 8 = 88.5 Hz)
+        # maps to 8850 centiHz, emitted to BOTH tone_freq and tsql_freq, and
+        # does not mutate legacy state (SUB read MOR-2111).
         ("receiver.main.operator_controls.tone_freq", 8850),
         ("receiver.main.operator_controls.tsql_freq", 8850),
+        ("receiver.sub.operator_controls.tone_freq", 8850),
+        ("receiver.sub.operator_controls.tsql_freq", 8850),
         # active-slot (MOR-446); unconditional like AGC/narrow, the SUB index
         # coerces to the neutral "SUB" str.
         ("global.slow_state.active", "SUB"),
@@ -1807,7 +1818,9 @@ async def test_read_sql_type_is_a_pure_read() -> None:
     radio.radio_state.main.repeater_tsql = True
     state_before = radio.radio_state
 
-    radio._query = AsyncMock(return_value={"type": "02"})  # type: ignore[method-assign]
+    radio._query = AsyncMock(  # type: ignore[method-assign]
+        return_value={"receiver": 0, "type": "2"}
+    )
     assert await radio.read_sql_type() == 2
     assert radio.radio_state is state_before
     # The pre-seeded, not-representable-via-CT pair is untouched.
@@ -1815,7 +1828,9 @@ async def test_read_sql_type_is_a_pure_read() -> None:
     assert radio.radio_state.main.repeater_tsql is True
 
     # get_sql_type delegates to the same pure read.
-    radio._query = AsyncMock(return_value={"type": "01"})  # type: ignore[method-assign]
+    radio._query = AsyncMock(  # type: ignore[method-assign]
+        return_value={"receiver": 0, "type": "1"}
+    )
     assert await radio.get_sql_type() == 1
 
 
@@ -1857,8 +1872,10 @@ async def test_sql_type_code_maps_to_ctcss_booleans(
 
     assert by_path["receiver.main.operator_toggles.repeater_tone"] is expected_tone
     assert by_path["receiver.main.operator_toggles.repeater_tsql"] is expected_tsql
-    # A single read feeds both derived booleans.
-    assert radio.read_sql_type.await_count == 1
+    assert by_path["receiver.sub.operator_toggles.repeater_tone"] is expected_tone
+    assert by_path["receiver.sub.operator_toggles.repeater_tsql"] is expected_tsql
+    # A single CT read per receiver feeds both derived booleans on that side.
+    assert radio.read_sql_type.await_args_list == [call(0), call(1)]
 
 
 @pytest.mark.asyncio
@@ -1975,6 +1992,113 @@ async def test_repeater_shift_skipped_without_capability() -> None:
     radio.read_repeater_shift.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_sql_type_emits_both_receivers_with_their_own_codes() -> None:
+    """MOR-2111: CT0 and CT1 are read independently; each side derives its
+    own boolean pair from its own answer (a MAIN echo would fail). The SUB
+    read rides the ``dual_rx`` capability: dropping it drops only SUB."""
+    radio = _make_radio()
+    radio.read_sql_type = AsyncMock(side_effect=lambda receiver=0: 2 - receiver)
+    adapter = YaesuObservationAdapter(
+        radio, profile=_profile_state_acquisition(), clock=_clock
+    )
+
+    observations = await adapter.poll_slow_controls()
+    by_path = {str(item.path): item.value for item in observations}
+
+    # MAIN answers code 2 (TSQL): both True. SUB answers code 1 (TONE):
+    # tone True, tsql False — different from MAIN, so an echo cannot pass.
+    assert by_path["receiver.main.operator_toggles.repeater_tone"] is True
+    assert by_path["receiver.main.operator_toggles.repeater_tsql"] is True
+    assert by_path["receiver.sub.operator_toggles.repeater_tone"] is True
+    assert by_path["receiver.sub.operator_toggles.repeater_tsql"] is False
+    assert radio.read_sql_type.await_args_list == [call(0), call(1)]
+
+    # Without dual_rx there is no SUB receiver to read CT1 for: MAIN keeps
+    # its pair, SUB is simply absent, and no CT1 read is made.
+    radio.capabilities = radio.capabilities - {"dual_rx"}
+    radio.read_sql_type.reset_mock()
+    observations = await adapter.poll_slow_controls()
+    by_path = {str(item.path): item.value for item in observations}
+    assert by_path["receiver.main.operator_toggles.repeater_tone"] is True
+    assert "receiver.sub.operator_toggles.repeater_tone" not in by_path
+    assert radio.read_sql_type.await_args_list == [call(0)]
+
+
+@pytest.mark.asyncio
+async def test_sql_type_receiver_failure_names_only_its_own_side() -> None:
+    """CT0 and CT1 are read independently, so one side's defect names one side.
+
+    The SUB read fails after MAIN succeeded: the defect names only the SUB
+    paths, and the MAIN read was still made.
+    """
+    radio = _make_radio()
+    radio._poll_warned_fields = set()
+    radio.read_sql_type = AsyncMock(side_effect=[1, ValueError("SUB failed")])
+    adapter = YaesuObservationAdapter(radio, profile=_profile_state_acquisition())
+
+    with pytest.raises(DeclaredCommandDefect) as caught:
+        await adapter.poll_slow_controls()
+
+    assert [str(path) for path in caught.value.paths] == [
+        "receiver.sub.operator_toggles.repeater_tone",
+        "receiver.sub.operator_toggles.repeater_tsql",
+    ]
+    assert radio.read_sql_type.await_args_list == [call(0), call(1)]
+
+
+@pytest.mark.asyncio
+async def test_ctcss_freq_emits_both_receivers_with_their_own_indices() -> None:
+    """MOR-2111: CN00 and CN10 are read independently; each side maps its own
+    index to centiHz for both freq paths (a MAIN echo would fail). The SUB
+    read rides the ``dual_rx`` capability: dropping it drops only SUB."""
+    radio = _make_radio()
+    radio.read_ctcss_tone_index = AsyncMock(
+        side_effect=lambda receiver=0: 8 if receiver == 0 else 15
+    )
+    adapter = YaesuObservationAdapter(
+        radio, profile=_profile_state_acquisition(), clock=_clock
+    )
+
+    observations = await adapter.poll_slow_controls()
+    by_path = {str(item.path): item.value for item in observations}
+
+    # MAIN index 8 -> 8850; SUB index 15 -> 11090 (110.9 Hz).
+    assert by_path["receiver.main.operator_controls.tone_freq"] == 8850
+    assert by_path["receiver.main.operator_controls.tsql_freq"] == 8850
+    assert by_path["receiver.sub.operator_controls.tone_freq"] == 11090
+    assert by_path["receiver.sub.operator_controls.tsql_freq"] == 11090
+    assert radio.read_ctcss_tone_index.await_args_list == [call(0), call(1)]
+
+    # Without dual_rx there is no SUB receiver to read CN10 for: MAIN keeps
+    # its pair, SUB is simply absent, and no CN10 read is made.
+    radio.capabilities = radio.capabilities - {"dual_rx"}
+    radio.read_ctcss_tone_index.reset_mock()
+    observations = await adapter.poll_slow_controls()
+    by_path = {str(item.path): item.value for item in observations}
+    assert by_path["receiver.main.operator_controls.tone_freq"] == 8850
+    assert "receiver.sub.operator_controls.tone_freq" not in by_path
+    assert radio.read_ctcss_tone_index.await_args_list == [call(0)]
+
+
+@pytest.mark.asyncio
+async def test_ctcss_freq_receiver_failure_names_only_its_own_side() -> None:
+    """CN0 and CN1 are read independently, so one side's defect names one side."""
+    radio = _make_radio()
+    radio._poll_warned_fields = set()
+    radio.read_ctcss_tone_index = AsyncMock(side_effect=[8, ValueError("SUB failed")])
+    adapter = YaesuObservationAdapter(radio, profile=_profile_state_acquisition())
+
+    with pytest.raises(DeclaredCommandDefect) as caught:
+        await adapter.poll_slow_controls()
+
+    assert [str(path) for path in caught.value.paths] == [
+        "receiver.sub.operator_controls.tone_freq",
+        "receiver.sub.operator_controls.tsql_freq",
+    ]
+    assert radio.read_ctcss_tone_index.await_args_list == [call(0), call(1)]
+
+
 @pytest.mark.parametrize(
     ("index", "expected_centihz"),
     [
@@ -2007,8 +2131,10 @@ async def test_ctcss_tone_freq_emits_both_paths_in_centihz(
 
     assert by_path["receiver.main.operator_controls.tone_freq"] == expected_centihz
     assert by_path["receiver.main.operator_controls.tsql_freq"] == expected_centihz
-    # A SINGLE CN read feeds both emissions.
-    assert radio.read_ctcss_tone_index.await_count == 1
+    assert by_path["receiver.sub.operator_controls.tone_freq"] == expected_centihz
+    assert by_path["receiver.sub.operator_controls.tsql_freq"] == expected_centihz
+    # A single CN read per receiver feeds both emissions on that side.
+    assert radio.read_ctcss_tone_index.await_args_list == [call(0), call(1)]
 
 
 @pytest.mark.asyncio
@@ -2058,7 +2184,9 @@ async def test_ctcss_tone_freq_invalid_profile_domain_emits_nothing(
 
     assert "receiver.main.operator_controls.tone_freq" not in paths
     assert "receiver.main.operator_controls.tsql_freq" not in paths
-    assert radio.read_ctcss_tone_index.await_count == 1
+    assert "receiver.sub.operator_controls.tone_freq" not in paths
+    assert "receiver.sub.operator_controls.tsql_freq" not in paths
+    assert radio.read_ctcss_tone_index.await_args_list == [call(0), call(1)]
 
 
 @pytest.mark.asyncio
@@ -2303,8 +2431,12 @@ async def test_happy_path_slow_poll_unchanged_when_all_reads_succeed() -> None:
         ("receiver.sub.operator_controls.manual_notch_freq", 120),
         ("receiver.main.operator_toggles.repeater_tone", True),
         ("receiver.main.operator_toggles.repeater_tsql", False),
+        ("receiver.sub.operator_toggles.repeater_tone", True),
+        ("receiver.sub.operator_toggles.repeater_tsql", False),
         ("receiver.main.operator_controls.tone_freq", 8850),
         ("receiver.main.operator_controls.tsql_freq", 8850),
+        ("receiver.sub.operator_controls.tone_freq", 8850),
+        ("receiver.sub.operator_controls.tsql_freq", 8850),
         ("global.slow_state.active", "SUB"),
         ("global.slow_state.cw_spot", True),
         ("global.meters.vd", 13.8),
