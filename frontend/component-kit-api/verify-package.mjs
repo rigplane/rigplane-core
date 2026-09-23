@@ -437,6 +437,8 @@ try {
       '@sveltejs/vite-plugin-svelte': '6.2.1',
       typescript: '5.9.3',
       vite: '7.3.3',
+      // esrap >= 2.3.10 types import @typescript-eslint/types as an optional peer, so install it explicitly.
+      '@typescript-eslint/types': '8.70.1',
     },
   }, null, 2));
   await writeFile(path.join(consumer, 'tsconfig.json'), JSON.stringify({
