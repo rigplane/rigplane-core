@@ -339,6 +339,12 @@ describe('the scope-display snapshot comes from runtime.defaultScopeStatus / rad
     h.scopeStatus = { ...LIVE_SCOPE_STATUS };
     render();
     expect(text()).toContain('connected');
+    // MOR-2545 PR2 review fix: the bare mount (the mobile/LCD composition
+    // shape) keeps the status text VISIBLE beside the chip — only the
+    // toolbar host hides it.
+    const readout = q('[data-testid="scope-display-surface"] .scope-display-text');
+    expect(readout).not.toBeNull();
+    expect(readout!.textContent).toBe('hardware · connected · HW on');
   });
 
   // MOR-1352 finding, wiring-level proof (carry-forward from the 12A

@@ -122,9 +122,12 @@
      * rendered inside the More panel BELOW the radio-held group. The host
      * (SpectrumToolbar, via SemanticRadioSurfaces) hands it over through the
      * `scopeControls` snippet's second parameter; the markup and handlers
-     * stay the host's — this surface only places the group.
+     * stay the host's — this surface only places the group. The snippet
+     * receives a close callback so entries that open their own surface
+     * (EiBi) can close the More panel, as the old layer dropdown closed
+     * itself.
      */
-    moreScreen?: Snippet;
+    moreScreen?: Snippet<[closeMore?: () => void]>;
   }
   type RendererSelection =
     | { finiteAppearance?: undefined; rendererContext?: undefined }
@@ -461,7 +464,7 @@
                      radio-held group — placed here, owned by the toolbar. -->
                 {#if moreScreen}
                   <div class="scope-more-screen" data-testid="scope-more-screen">
-                    {@render moreScreen()}
+                    {@render moreScreen(() => { moreOpen = false; })}
                   </div>
                 {/if}
               {/snippet}

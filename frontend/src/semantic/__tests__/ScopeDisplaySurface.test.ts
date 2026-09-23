@@ -1,9 +1,11 @@
 /**
  * MOR-1312 — the semantic scope-display surface (vocabulary slice 12B, the
  * LAST slice of the vocabulary program). MOR-2545 PR2 — the surface is ONE
- * compact in-row indicator whose tooltip (`title`) and accessible name
- * (`aria-label` on the `role="status"` section) carry the old status line's
- * text, unread parts OMITTED (never `—`/`?` placeholders).
+ * compact in-row indicator whose visible readout span, tooltip (`title`)
+ * and accessible name (`aria-label` on the `role="status"` section) carry
+ * the old status line's text, unread parts OMITTED (never `—`/`?`
+ * placeholders). Only the toolbar host hides the readout span (compact
+ * form) — pinned in `SpectrumToolbar.component.test.ts`.
  *
  * Presentation-only (v3 ADR invariant 11 / R9): this surface renders no
  * control of any kind. Block 1 pins that with a source scan for
@@ -310,5 +312,49 @@ describe('MOR-2545: the indicator text carries no placeholder in ANY unread mix'
       health: { ...group.health, reading: { status: 'unknown' } },
       hardwareConnected: { ...group.hardwareConnected, reading: { status: 'unknown' } },
     })).toBe('');
+  });
+});
+
+// ── 6. MOR-2545 PR2 review fix: the text readout is VISIBLE by default ─────
+//    (only the toolbar host hides it — see SpectrumToolbar.component.test.ts)
+
+describe('the text readout renders beside the chip by default', () => {
+  it('renders the readout span with the full status text after the SRC chip', () => {
+    withSurface(base(), (s) => {
+      const span = s.root()!.querySelector('.scope-display-text');
+      expect(span).not.toBeNull();
+      // The chip prints the SRC label; the span carries the rest, composing
+      // with the chip into exactly the indicatorText string.
+      expect(span!.textContent).toBe('hardware · connected · HW on');
+      expect(`${s.indicator()!.textContent}${span!.textContent}`)
+        .toBe('SRChardware · connected · HW on');
+      expect(s.text()).toBe('SRC hardware · connected · HW on');
+    });
+  });
+
+  it('omits unread parts from the visible readout too — never a placeholder', () => {
+    withSurface(withField(base(), 'source', { unknown: true, availability: UNOBSERVED }), (s) => {
+      const span = s.root()!.querySelector('.scope-display-text');
+      expect(span!.textContent).toBe('connected · HW on');
+      expect(span!.textContent).not.toMatch(/—|\?|UNKNOWN/);
+    });
+  });
+
+  it('renders no readout span when every part is unread', () => {
+    let view = withField(base(), 'source', { unknown: true, availability: UNOBSERVED });
+    view = withField(view, 'health', { unknown: true, availability: UNOBSERVED });
+    view = withField(view, 'hardwareConnected', { unknown: true, availability: UNOBSERVED });
+    withSurface(view, (s) => {
+      expect(s.root()!.querySelector('.scope-display-text')).toBeNull();
+      expect(s.indicator()).not.toBeNull();
+      expect(s.text()).toBe('Scope status');
+    });
+  });
+
+  it('keeps the readout on the audio_fft source, distinctly from hardware', () => {
+    withSurface(withField(base(), 'source', { value: 'audio_fft' }), (s) => {
+      expect(s.root()!.querySelector('.scope-display-text')!.textContent)
+        .toBe('audio_fft · connected · HW on');
+    });
   });
 });

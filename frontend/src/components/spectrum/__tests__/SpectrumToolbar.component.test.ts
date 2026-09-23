@@ -785,8 +785,10 @@ describe('source and enforcement boundary', () => {
     // MOR-2522 repin: the `.toolbar-select:focus` border frame is gone.
     // MOR-2545 repin: the host wraps the ONE nowrap `.scope-controls-row`;
     // PR2 adds the hosted container query, the STEP overflow copy pair and
-    // the scope-status seat.
-    expect(cssHash).toBe('3a0f0d3364c3a3a6f271ed106268e8245486defc726f38a999e76323b9088de3');
+    // the scope-status seat. PR2 review repin: the status slot stops
+    // shrinking, the host hides the surface's readout text span, and the
+    // STEP band moves to 424px (reviewer-measured on PR #3598).
+    expect(cssHash).toBe('e59545e73d43bd51ec4b4d039b72aebc03e03c3e9929e1548a660c6465dd055c');
   });
 });
 
@@ -869,7 +871,7 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
   // enforcement boundary" block uses), because a raw stub cannot render a
   // real snippet. PR3's e2e spec opens the real panel end-to-end.
   it('builds the screen group from the SAME handlers and state as the unhosted row', () => {
-    expect(TOOLBAR_SOURCE).toMatch(/\{#snippet screenGroup\(\)\}/);
+    expect(TOOLBAR_SOURCE).toMatch(/\{#snippet screenGroup\(closeMore\?: \(\) => void\)\}/);
     // [binding, expected template occurrences]: the unhosted row (or the one
     // shared STEP row) plus the More copy — the BRT steppers also serve the
     // mobile display-gear popover (issue #812), hence their third site.
@@ -896,11 +898,32 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
     expect(TOOLBAR_SOURCE).toMatch(/\{#if !hideAutoStepToggle\}/);
   });
 
-  it('moves STEP into More below the SPAN band via the toolbar container query', () => {
+  // PR #3598 report item 7: opening EiBi from the More panel must close the
+  // panel, as the old layer dropdown closed itself. Source-pinned here (a
+  // raw stub cannot render the real snippet); the composed click-through
+  // lives in RadioLayout.audio-fft.component.test.ts.
+  it('hands the screen group a close callback and the EiBi entry calls it', () => {
+    expect(TOOLBAR_SOURCE).toMatch(/\{#snippet screenGroup\(closeMore\?: \(\) => void\)\}/);
+    expect(TOOLBAR_SOURCE).toMatch(/onclick=\{\(\) => \{ showEiBi = true; closeMore\?\.\(\); \}\}/);
+  });
+
+  // The literal only — the band is a reviewer measurement (PR #3598: with
+  // the status slot unshrinkable, the row overflows at a 440 px toolbar =
+  // 424 px content box); this test claims nothing about SPAN.
+  it('moves STEP into More at the toolbar container query\'s 424px band', () => {
     expect(TOOLBAR_SOURCE).toMatch(/container-name: spectrum-toolbar-row/);
-    expect(TOOLBAR_SOURCE).toMatch(/@container spectrum-toolbar-row \(max-width: 370px\)/);
+    expect(TOOLBAR_SOURCE).toMatch(/@container spectrum-toolbar-row \(max-width: 424px\)/);
     // BANDS, ⋯ and fullscreen never join the overflow set.
     expect(TOOLBAR_SOURCE).not.toMatch(/data-overflow="(?!step)[a-z]+"/);
+  });
+
+  // PR #3598 findings 2/3 + the coordinator decision on the status text:
+  // jsdom cannot compute the cascade, so pin the host rules themselves —
+  // the seat hides the surface's visible readout span (compact form) and
+  // keeps the status slot from shrinking.
+  it('keeps the status seat compact and unshrinkable inside the row', () => {
+    expect(TOOLBAR_SOURCE).toMatch(/\.scope-status-host :global\(\.scope-display-text\) \{ display: none; \}/);
+    expect(TOOLBAR_SOURCE).toMatch(/\.scope-status-host :global\(\.semantic-control-panel\) \{ flex-shrink: 0; \}/);
   });
 
   it('mounts the compact scope status indicator inside the row, before fullscreen', () => {

@@ -136,6 +136,82 @@ afterEach(async () => {
   Reflect.deleteProperty(HTMLElement.prototype, 'releasePointerCapture');
 });
 
+describe('MOR-2545 PR2 — the scope status renders exactly once on both desktop faces', () => {
+  // Composed regression for the review finding: the head handed the status
+  // to the toolbar for EVERY scope source, but SpectrumPanel never mounts
+  // SpectrumToolbar for audio_fft, so the status silently vanished. Each
+  // case must show exactly ONE surface: removing the toolbar seat OR the
+  // audio_fft standalone fallback drops the count to zero; rendering both
+  // (the old duplicate-row shape) raises it to two.
+  it.each([
+    ['desktop-v2', false],
+    ['sdr-test', false],
+    ['desktop-v2', true],
+    ['sdr-test', true],
+  ] as const)('%s / audio_fft=%s renders exactly one scope-display surface', (skinId, audioFft) => {
+    select(audioFft);
+    instance = mount(RadioLayout, { target, props: { skinId } });
+    flushSync();
+    const surfaces = target.querySelectorAll('[data-testid="scope-display-surface"]');
+    expect(surfaces).toHaveLength(1);
+    if (audioFft) {
+      // No toolbar exists for audio_fft: the surface stays standalone in
+      // the center column, docked in its semantic panel.
+      expect(surfaces[0]!.closest('.spectrum-toolbar')).toBeNull();
+      expect(surfaces[0]!.closest('.desktop-controls-center')).not.toBeNull();
+    } else {
+      // The hosted row carries the indicator at its right end.
+      expect(surfaces[0]!.closest('.spectrum-toolbar')).not.toBeNull();
+      expect(surfaces[0]!.closest('[data-testid="toolbar-scope-status"]')).not.toBeNull();
+    }
+  });
+
+  // MOR-2545 PR2 review (coordinator decision): the compact form is ONLY
+  // for the toolbar row. jsdom cannot compute the cascade, so the toolbar
+  // side asserts the span carrying the class the host rule targets (the
+  // rule itself is pinned in SpectrumToolbar.component.test.ts); the
+  // audio_fft standalone mount asserts the visible text itself.
+  it('keeps the readout text visible on the standalone mount and hidden only inside the toolbar host', async () => {
+    select(false);
+    instance = mount(RadioLayout, { target, props: { skinId: 'desktop-v2' } });
+    flushSync();
+    const hosted = target.querySelector('[data-testid="toolbar-scope-status"] .scope-display-text');
+    expect(hosted).not.toBeNull();
+    select(true, 2);
+    await vi.waitFor(() => {
+      const standalone = target.querySelector('.desktop-controls-center .scope-display-text');
+      expect(standalone).not.toBeNull();
+      expect(standalone!.textContent).toContain('audio_fft');
+    });
+    const standalone = target.querySelector('.desktop-controls-center .scope-display-text')!;
+    expect(standalone.textContent).not.toMatch(/—|\?|UNKNOWN/);
+  });
+
+  // PR #3598 report item 7: clicking EiBi in the More panel closes the
+  // panel, as the old layer dropdown closed itself. Composed end-to-end:
+  // real SpectrumToolbar, real ScopeControlsSurface, real More panel.
+  it('closes the More panel when EiBi opens from it', async () => {
+    const layers = [{ name: 'Region 1', layer: 'r1' }, { name: 'Region 2', layer: 'r2' }];
+    const jsonOk = (body: unknown) =>
+      ({ ok: true, json: () => Promise.resolve(body) }) as Response;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/v1/band-plan/layers')) return jsonOk({ layers });
+      if (url.includes('/api/v1/band-plan/config')) return jsonOk({ region: 'US', availableRegions: ['US'] });
+      return jsonOk({});
+    }));
+    select(false);
+    mountPanel();
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-more"]')!.click();
+    await vi.waitFor(() => expect(target.querySelector('.eibi-browser-btn')).not.toBeNull());
+    expect(target.querySelector('[data-testid="scope-more-panel"]')).not.toBeNull();
+    target.querySelector<HTMLButtonElement>('.eibi-browser-btn')!.click();
+    flushSync();
+    expect(target.querySelector('[data-testid="scope-more-panel"]')).toBeNull();
+    expect(target.querySelector('.eibi-modal')).not.toBeNull();
+  });
+});
+
 describe('MOR-2355 central default scope source', () => {
   it('renders parsed audio FFT in the real SDR center with AF bounds and no RF actions', async () => {
     select(true);

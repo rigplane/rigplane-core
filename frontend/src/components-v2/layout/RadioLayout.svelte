@@ -277,6 +277,15 @@
   let scopeControlsInRegionContent = $derived(
     (skinId === 'sdr-test' || skinId === 'desktop-v2') && declared.has('scopeControls') && hasSpectrum() && getScopeSource() === 'hardware',
   );
+
+  /** MOR-2545 PR2 (review fix) — the status indicator is handed to the
+   *  toolbar only when SpectrumPanel will actually mount SpectrumToolbar,
+   *  which it never does for `audio_fft` (the audio label replaces the
+   *  row) — the same fact `SpectrumPanel.svelte` checks. Every other
+   *  scope source keeps the standalone status mount above the panorama. */
+  let toolbarHostsScopeStatus = $derived(
+    hasAnyScope() && getScopeSource() !== 'audio_fft',
+  );
   let semanticDeck = $derived(declared.has('vfo'));
   // R9 — ONE key/unkey authority, and this line is where that count is decided.
   //
@@ -804,20 +813,15 @@
 
       <div class="desktop-controls-center">
         {#if !scopeControlsInRegionContent}{@render instruments.scopeControls()}{/if}
-        <!-- MOR-2545 PR2: the standalone status line row is gone — whenever
-             the toolbar renders (any scope source), the compact scopeDisplay
-             indicator rides in the row itself and its tooltip carries the
-             text; with no scope at all neither surface has a group to
-             render, so the bare standalone mount is kept only for that
-             empty case. The semantic controls above keep their PR1
-             standalone fallback for every non-hosted source (audio_fft):
-             the fact group exists whenever the scope capability does, so
-             dropping it would strand the controls. -->
-        {#if !hasAnyScope()}{@render instruments.scopeDisplay()}{/if}
+        <!-- MOR-2545 PR2: the compact scopeDisplay indicator rides in the
+             toolbar row for every scope source except audio_fft, where
+             SpectrumPanel mounts no toolbar and the surface renders
+             standalone above the panorama. -->
+        {#if !toolbarHostsScopeStatus}{@render instruments.scopeDisplay()}{/if}
         {@render scopeRegion(
           scopeControlsInRegionContent ? instruments.scopeControls : undefined,
           instruments.managedScope,
-          hasAnyScope() ? instruments.scopeDisplay : undefined,
+          toolbarHostsScopeStatus ? instruments.scopeDisplay : undefined,
         )}
       </div>
 
@@ -1157,10 +1161,8 @@
   .desktop-control-face .content-row { display: flex; flex: 1; min-height: 280px; contain: size; }
   .desktop-control-face .content-center { width: 100%; }
   .desktop-control-face :global(.spectrum-toolbar) { height: auto; min-height: 32px; flex-wrap: wrap; }
-  /* MOR-2545 PR2: the hosted toolbar is ONE row — never wraps, never clips;
-     overflow is handled by container queries (PR1's surface bands + the
-     toolbar's own STEP band), not by wrapping. Higher specificity than the
-     wrap rule above on purpose. */
+  /* The hosted toolbar stays one row (higher specificity than the wrap rule
+     above on purpose); its container queries own the overflow. */
   .desktop-control-face :global(.spectrum-toolbar.hosted) { flex-wrap: nowrap; }
   .desktop-control-face :global([data-zone-id='meters']),
   .desktop-control-face .standard-bottom-dock { grid-area: 5 / 1 / 6 / -1; }

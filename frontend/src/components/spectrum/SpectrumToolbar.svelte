@@ -296,11 +296,14 @@
   MOR-2545 PR2 — the hosted screen-only group, rendered inside the More
   panel BELOW the radio-held group (the surface places it). Same handlers
   and state bindings as the unhosted row: this is a mount move, not a fork.
-  The STEP row is the narrow-width overflow copy — visible only while the
-  row's own STEP is hidden by the container query below (STEP hides after
-  SPAN in the declared order; BANDS, ⋯ and fullscreen never hide).
+  The surface hands the group a `closeMore` callback so entries that open
+  their own surface (EiBi) can close the panel, as the old layer dropdown
+  closed itself. The STEP row is the narrow-width overflow copy — visible
+  only while the row's own STEP is hidden by the container query below
+  (STEP hides after SPAN in PR1's hide order; BANDS, ⋯ and fullscreen
+  never hide).
 -->
-{#snippet screenGroup()}
+{#snippet screenGroup(closeMore?: () => void)}
   <div class="toolbar-group step-group toolbar-step-copy" data-testid="scope-more-step">
     <button
       class="toolbar-btn small step-arrow"
@@ -384,7 +387,7 @@
       {/each}
       <button
         class="eibi-browser-btn"
-        onclick={() => { showEiBi = true; }}
+        onclick={() => { showEiBi = true; closeMore?.(); }}
       >📻 EiBi Stations...</button>
     </div>
   {/if}
@@ -724,25 +727,33 @@
   }
 
   /* MOR-2545 PR2 — hosted one-row layout: the toolbar is the query container
-     for its OWN keys' overflow. STEP hides below 370px and its More copy
-     shows (STEP goes after SPAN in PR1's hide order; BANDS, ⋯ and fullscreen
-     never hide). 370 is DERIVED, not measured: always-visible set
-     (CTR/FIX+⋯ ≈120px on PR1's surface floor + BANDS ≈45 + fullscreen 22 +
-     separators/padding/gaps ≈60) ≈247px, plus STEP ≈118px ≈365px, rounded up
-     with a small safety margin. */
+      for its OWN keys' overflow. STEP hides into More below this band (STEP
+      goes after SPAN in PR1's hide order; BANDS, ⋯ and fullscreen never
+      hide). The band is measured by the independent reviewer on PR #3598:
+      with the status slot unshrinkable, the row overflows at a 440 px
+      toolbar = 424 px content box. */
   .spectrum-toolbar.hosted { container-type: inline-size; container-name: spectrum-toolbar-row; }
 
   .toolbar-step-copy { display: none; }
 
-  @container spectrum-toolbar-row (max-width: 370px) {
+  @container spectrum-toolbar-row (max-width: 424px) {
     .step-group[data-overflow='step'] { display: none; }
     .toolbar-step-copy { display: flex; }
   }
 
   /* The compact scope-status indicator seat: the zoned wrapper renders via
-     display:contents so the indicator sits in the row itself. */
+      display:contents so the indicator sits in the row itself. */
   .scope-status-host { display: contents; }
   .scope-status-host :global(.surface-zone) { display: contents; }
+  /* Only the toolbar row uses the compact form: the surface's visible text
+      readout span is hidden here; every other mount keeps it (see
+      `ScopeDisplaySurface.svelte`). */
+  .scope-status-host :global(.scope-display-text) { display: none; }
+  /* PR #3598 finding 2, measured by the independent reviewer: the desktop-v2
+      skin gives `.semantic-control-panel` `min-width: 0`, so the status chip
+      shrank below its content and painted over the fullscreen key. The
+      status slot must not shrink. */
+  .scope-status-host :global(.semantic-control-panel) { flex-shrink: 0; }
 
   /* Band-plan layers block inside the More screen group (the unhosted row
      keeps its fixed-position layer dropdown above). */

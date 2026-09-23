@@ -127,9 +127,7 @@ const DESKTOP_V2_ZONES = [
   // already forwards `hideScopeControls={declared.has('scopeControls')}` to
   // `SpectrumPanel`, retiring the scope toolbar's twelve fact-backed
   // `scopeControls.*` leaves (mode/edge/span/speed/hold/refDb/dual/receiver/
-  // duringTx/centerType/vbwNarrow/rbw) while its eight client-side view
-  // options (AVG, PEAK, BRT, color scheme, fullscreen, band plan, layers,
-  // EiBi — S10 category (b), no wire field) keep rendering unconditionally.
+  // duringTx/centerType/vbwNarrow/rbw).
   // `ScopeControlsSurface` is control-bearing (MOR-1304 canon) and mounts
   // single-composition-only, so the dual-receiver cockpit is untouched by
   // this declaration.

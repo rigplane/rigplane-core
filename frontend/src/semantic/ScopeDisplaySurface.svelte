@@ -7,15 +7,10 @@
   the hardware channel's own connectivity — and emits NO intent (v3 ADR
   invariant 11): this is a pure readout, never an action surface.
 
-  MOR-2545 PR2 SHAPE: the pre-MOR-2545 three-span status line row is GONE —
-  the same facts render as ONE compact in-row indicator (a tone dot plus the
-  "SRC" chip) whose tooltip and accessible name carry the full text
-  ("SRC hardware · connected · HW on"). UNREAD PARTS ARE OMITTED from that
-  text, never shown as `—`/`?` placeholders; when every part is unread the
-  accessible name falls back to "Scope status" and the tooltip is omitted
-  entirely. The tone dot is the second channel beside the text (never the
-  only one), so it survives forced-colors as a shape with a colour-var
-  fallback.
+  MOR-2545 PR2: the facts render as ONE compact in-row indicator — a tone
+  dot, the "SRC" chip and a visible text readout beside it (unread parts
+  omitted, never `—`/`?` placeholders) whose span only the toolbar host
+  hides, with the full text always in `title`/accessible name.
 
   SCOPE (boundary ruling, 11A verify, carried forward by 12A/12B):
   (1) NEVER scope TUNING. MODE/EDGE/HOLD/REF/etc. are `scopeControls`
@@ -71,13 +66,38 @@
     health: ScopeDisplayField<ScopeHealthState>;
     hardwareConnected: ScopeDisplayField<boolean>;
   }): string {
+    return readoutParts(sd, true).join(' · ');
+  }
+  /** The VISIBLE readout beside the chip: the same parts as `indicatorText`
+   *  with the source part reduced to its value — the chip already prints
+   *  the "SRC" label, so dot + chip + this text composes to exactly the
+   *  `indicatorText` string ("● SRC hardware · connected · HW on") without
+   *  printing the label twice. Only the toolbar host hides this span
+   *  (compact form, `SpectrumToolbar.svelte`'s `.scope-status-host`). */
+  export function readoutText(sd: {
+    source: ScopeDisplayField<string>;
+    health: ScopeDisplayField<ScopeHealthState>;
+    hardwareConnected: ScopeDisplayField<boolean>;
+  }): string {
+    return readoutParts(sd, false).join(' · ');
+  }
+  function readoutParts(
+    sd: {
+      source: ScopeDisplayField<string>;
+      health: ScopeDisplayField<ScopeHealthState>;
+      hardwareConnected: ScopeDisplayField<boolean>;
+    },
+    withSourceLabel: boolean,
+  ): string[] {
     const parts: string[] = [];
-    if (sd.source.reading.status === 'known') parts.push(`SRC ${sd.source.reading.value}`);
+    if (sd.source.reading.status === 'known') {
+      parts.push(withSourceLabel ? `SRC ${sd.source.reading.value}` : String(sd.source.reading.value));
+    }
     if (sd.health.reading.status === 'known') parts.push(String(sd.health.reading.value));
     if (sd.hardwareConnected.reading.status === 'known') {
       parts.push(`HW ${sd.hardwareConnected.reading.value ? 'on' : 'off'}`);
     }
-    return parts.join(' · ');
+    return parts;
   }
 </script>
 
@@ -95,6 +115,7 @@
 
 {#if sd}
   {@const text = indicatorText(sd)}
+  {@const readout = readoutText(sd)}
   <section
     class="scope-display-surface" data-testid="scope-display-surface" role="status"
     aria-label={text || 'Scope status'}
@@ -105,15 +126,16 @@
       data-observed={usable(sd.source)}
       data-tone={sd.health.reading.status === 'known' ? healthTone(sd.health.reading.value) : 'neutral'}
     >SRC</span>
+    {#if readout}<span class="scope-display-text">{readout}</span>{/if}
   </section>
 {/if}
 
 <style>
   /* Structure only — a design language owns colour and must never become the
      sole state channel (MOR-977, forced-colors). Nothing here animates.
-     MOR-2545 PR2: one compact in-row indicator; the text lives in the
-     section's `title`/`aria-label`, unread parts omitted (see indicatorText). */
-  .scope-display-surface { display: inline-flex; align-items: center; }
+     MOR-2545 PR2: one compact in-row indicator — dot + "SRC" chip + the
+     visible readout span (`readoutText`); the toolbar host hides the span. */
+  .scope-display-surface { display: inline-flex; align-items: center; gap: 6px; }
   .scope-display-indicator {
     display: inline-flex;
     align-items: center;
@@ -125,11 +147,20 @@
     white-space: nowrap;
     color: var(--dl-vfo-unlit-text, var(--v2-text-secondary, inherit));
   }
-  /* Tone dot — the second channel beside the tooltip text, never the only
-     one; `data-tone` stays machine-readable for tests and forced-colors.
-     Colour comes from the design language's accent vars only — this
-     surface's own stylesheet stays free of literal colours (MOR-977),
-     degrading to currentColor when no skin defines them. */
+  /* The visible readout beside the chip — the full status text for every
+     mount outside the toolbar row. Unread parts are omitted from it, same
+     as from `indicatorText`. */
+  .scope-display-text {
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+    color: var(--dl-vfo-unlit-text, var(--v2-text-secondary, inherit));
+  }
+  /* Tone dot — `data-tone` stays machine-readable for tests. Colour comes
+     from the theme accent vars (defined per theme in
+     `components-v2/theme/themes/*.css`); this surface's own stylesheet
+     stays free of literal colours (MOR-977), degrading to currentColor
+     when no theme defines them. */
   .scope-display-indicator::before {
     content: '';
     width: 6px;
@@ -137,7 +168,7 @@
     border-radius: 50%;
     background: currentColor;
   }
-  .scope-display-indicator[data-tone='green']::before { background: var(--dl-scope-tone-green, var(--v2-accent-green, currentColor)); }
-  .scope-display-indicator[data-tone='yellow']::before { background: var(--dl-scope-tone-yellow, var(--v2-accent-yellow, currentColor)); }
-  .scope-display-indicator[data-tone='red']::before { background: var(--dl-scope-tone-red, var(--v2-accent-red, currentColor)); }
+  .scope-display-indicator[data-tone='green']::before { background: var(--v2-accent-green, currentColor); }
+  .scope-display-indicator[data-tone='yellow']::before { background: var(--v2-accent-yellow, currentColor); }
+  .scope-display-indicator[data-tone='red']::before { background: var(--v2-accent-red, currentColor); }
 </style>
