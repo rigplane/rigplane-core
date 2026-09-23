@@ -2814,15 +2814,13 @@ def test_meter_coalescing_applies_latest_due_sample_and_records_diagnostics(
     # After the window elapses the coalesced latest sample lands (raw 222 -> 31).
     assert radio._state_store.snapshot().field("receiver.0.meters.s_meter").value == 31
     # The MOR-2544 power_on liveness inference (IC-7610: power control, no
-    # power-status query) applies once per routed frame alongside the meter.
+    # power-status query) applies once per routed frame alongside the meter;
+    # its SECOND same-value re-stamp is an empty changeset (still FRESH, no
+    # semantic change) and therefore emits no event.
     assert events == [
         (
             "state_store_changed",
             {"coalesced": False, "paths": ["receiver.0.meters.s_meter"]},
-        ),
-        (
-            "state_store_changed",
-            {"coalesced": False, "paths": ["global.tx_state.power_on"]},
         ),
         (
             "state_store_changed",
