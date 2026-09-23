@@ -2386,12 +2386,12 @@ async def _repeater_toggle_rmvr(
         return gate
     repeater = cast(RepeaterControlCapable, radio)
     if not all(
-        callable(op)
+        callable(getattr(repeater, op, None))
         for op in (
-            repeater.get_repeater_tone,
-            repeater.set_repeater_tone,
-            repeater.get_repeater_tsql,
-            repeater.set_repeater_tsql,
+            "get_repeater_tone",
+            "set_repeater_tone",
+            "get_repeater_tsql",
+            "set_repeater_tsql",
         )
     ):
         return _base_result(
