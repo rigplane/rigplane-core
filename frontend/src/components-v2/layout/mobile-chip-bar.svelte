@@ -70,10 +70,6 @@
     white-space: nowrap;
   }
 
-  .m-chip:focus-visible {
-    outline: 2px solid var(--v2-accent-cyan, #22d3ee);
-    outline-offset: 2px;
-  }
 
   .m-chip-active {
     background: var(--v2-accent-cyan, #22d3ee);

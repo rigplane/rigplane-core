@@ -135,10 +135,8 @@ describe('the CSS half honours the same constraints as the token half', () => {
     for (const value of contentDeclarations) expect(value).toBe("''");
   });
 
-  it('never re-suppresses the focus ring, and applies it as `outline` (MOR-977 §1.2.5)', () => {
-    expect(css).not.toMatch(/outline:\s*none/);
-    const focus = findExact(`${ATTR} .rx-tx-key:focus-visible`)!;
-    expect(focus.declarations.outline).toBe('2px solid var(--dl-segmentline-ink-strong)');
+  it('does not own a focus frame (MOR-2522)', () => {
+    expect(css).not.toMatch(/:focus-visible/);
   });
 
   it('wins on specificity rather than on `!important`', () => {

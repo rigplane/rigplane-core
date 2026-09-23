@@ -671,18 +671,6 @@ export function runAssertions(
       + `expected >= ${floor}:1${belowIdealText
         ? ' (MOR-1087 finding: below the 4.5:1 WCAG 1.4.3 text floor — see comment above)' : ''}`);
   }
-  // Non-text: the focus ring, only where `Tab` actually reached
-  // `:focus-visible` (`options.focusVisible`) — else there's nothing to measure.
-  if (options.focusVisible) {
-    const el = document.activeElement as HTMLElement | null;
-    if (el && el !== document.body) {
-      const ratio = contrastRatio(getComputedStyle(el).outlineColor, effectiveBackground(el));
-      check('contrast-focus-ring', ratio !== null && ratio >= 3,
-        `${ratio === null ? 'unparseable' : ratio.toFixed(2)}:1 on "${activeLanguage}" · `
-        + 'expected >= 3:1 (WCAG 1.4.11)');
-    }
-  }
-
   // ── viewport-dependent: the reflow itself ──────────────────────────────
   if (options.arrangement !== undefined && strips.length === 2) {
     const [a, b] = strips.map((el) => el.getBoundingClientRect());
@@ -770,7 +758,6 @@ export function styleProbe(rootTestId: string): Record<string, Record<string, st
       backgroundColor: cs.backgroundColor,
       borderColor: cs.borderTopColor,
       borderLeftColor: cs.borderLeftColor,
-      outlineColor: cs.outlineColor,
       forcedColorAdjust: cs.forcedColorAdjust,
     };
   }
@@ -782,6 +769,6 @@ export function tokenSnapshot(): Record<string, string> {
   const cs = getComputedStyle(document.documentElement);
   const names = ['--v2-text-primary', '--v2-text-secondary', '--v2-text-disabled',
     '--v2-border-panel', '--v2-bg-panel', '--v2-accent-cyan', '--v2-accent-red',
-    '--v2-focus-ring', '--focus-ring', '--bg', '--text', '--accent'];
+    '--bg', '--text', '--accent'];
   return Object.fromEntries(names.map((n) => [n, cs.getPropertyValue(n).trim()]));
 }

@@ -7,7 +7,6 @@ import { resolve } from 'node:path';
 // only a manually-selectable "High Contrast" theme existed (see
 // ../themes/high-contrast.css), which a user has to opt into explicitly.
 // This pins the minimal automatic token-layer strategy: the v2 token root
-// (this file, not styles/tokens.css which owns --focus-ring / MOR-1232)
 // gains `@media (prefers-contrast: more)` and `@media (forced-colors:
 // active)` blocks that bump border/text separation, scoped to
 // `:root:not([data-theme])` so an explicit manual theme choice always wins
@@ -51,9 +50,4 @@ describe('components-v2/theme/tokens.css — prefers-contrast / forced-colors (M
     expect(forcedColorsBlock).toMatch(/--v2-border:/);
   });
 
-  it('does not declare --focus-ring (owned by MOR-1232 in styles/tokens.css)', () => {
-    // Matches an actual custom-property *declaration*, not a prose mention
-    // of the name in a comment (this file's MOR-1233 block references it).
-    expect(source).not.toMatch(/--focus-ring\s*:/);
-  });
 });

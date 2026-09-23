@@ -127,12 +127,6 @@
   button:hover {
     border-color: var(--v2-accent-cyan, #06b6d4);
   }
-  button:focus-visible,
-  textarea:focus-visible,
-  input:focus-visible {
-    outline: var(--v2-focus-ring);
-    outline-offset: 2px;
-  }
   .ws-io-rejected {
     border: 1px solid var(--v2-accent-red, #ef4444);
     border-radius: 4px;

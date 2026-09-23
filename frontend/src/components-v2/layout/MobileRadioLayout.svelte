@@ -1171,11 +1171,6 @@
     -webkit-tap-highlight-color: transparent;
   }
 
-  .m-ls-unkey:focus-visible {
-    outline: 2px solid #fff;
-    outline-offset: 2px;
-  }
-
   .m-ls-ptt.m-ptt-held {
     background: var(--v2-accent-red, #ef4444);
     color: #fff;
@@ -1260,11 +1255,6 @@
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
     transition: background 0.15s, border-color 0.15s, color 0.15s;
-  }
-
-  .m-receiver-pill:focus-visible {
-    outline: 2px solid var(--v2-accent-cyan, #22d3ee);
-    outline-offset: 2px;
   }
 
   .m-receiver-pill-active {

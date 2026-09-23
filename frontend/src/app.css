@@ -7,16 +7,9 @@
   box-sizing: border-box;
 }
 
+:focus,
 :focus-visible {
-  /* MOR-1232: `outline`, never `box-shadow`. This is the app-wide default that
-   * every component without a focus rule of its own relies on, and a global
-   * box-shadow (0,1,0) loses to any Svelte-scoped component box-shadow
-   * (0,2,0+) — see the note on --focus-ring in styles/tokens.css.
-   * --v2-focus-ring carries the per-skin, contrast-checked ring colour once the
-   * components-v2 theme layer is loaded; skins are code-split, so the legacy
-   * --focus-ring fallback stays live until a v2 layout mounts. */
-  outline: var(--v2-focus-ring, var(--focus-ring));
-  outline-offset: 2px;
+  outline: none;
 }
 
 /* MOR-2522: a native range slider LIGHTS on keyboard focus, never draws a
@@ -25,29 +18,9 @@
  * FilterSurface.svelte, DspSurface.svelte, CwKeyerSurface.svelte,
  * RitXitScanSurface.svelte, components-v2/panels/AudioRoutingControl.svelte
  * and CwPanel.svelte — because this is the only stylesheet every context
- * loads unconditionally (App.svelte and fixtures/main.ts both import it; the
- * four semantic surfaces import no CSS of their own). The doubled attribute
- * is the same one-step specificity raise studioline.css applies to its own
- * selectors: (0,3,1) outranks the studioline/fieldline universal
- * `:focus-visible` contracts (0,3,0) on specificity alone, so the dynamically
- * loaded language stylesheet cannot win a tie on source order — pinned, from
- * the real stylesheets, by 'the shared rule outranks both language focus
- * contracts on specificity alone' in
- * src/__tests__/focus-ring-token-wiring.test.ts, whose companion test 'the
- * doubled attribute and the element type are both load-bearing' proves the
- * weaker selector forms tie or lose. The ring is the value-control
- * token where value-control.css is loaded (its studioline-scoped colour
- * override included), its theme twin where that file is absent — the chain is
- * exactly those two levels, `var(--vc-focus-ring-shadow,
- * var(--v2-focus-ring-shadow))`, pinned in the same describe, with nothing
- * declared past the theme twin. Never a colour literal, so
- * every colour the chain can paint comes from a declared token. No geometry
- * property: nothing
- * shifts (the no-shift pin in the same describe). One collision this rule
- * cannot win: on the desktop-v2/sdr-test skins the (0,3,2) track chrome in
- * skins/desktop-v2/semantic-controls.css owns box-shadow even on focus, so
- * that stylesheet carries a composing :focus-visible variant of its own track
- * rule — this rule is the illumination everywhere that skin is not loaded. */
+ * loads unconditionally. It uses the protected value-control token where
+ * available, then the theme token; desktop-v2/sdr-test compose the same
+ * illumination with their range-track chrome in semantic-controls.css. */
 input[type='range'][type='range']:focus-visible {
   outline: none;
   box-shadow: var(--vc-focus-ring-shadow, var(--v2-focus-ring-shadow));

@@ -197,13 +197,6 @@
   --dl-studioline-muted: #d5dbde;
 }
 
-/* ── One focus contract, never re-suppressed (MOR-977 §1.2.5) ───────────── */
-[data-design-language='studioline'][data-design-language] :focus-visible {
-  /* Outline shorthand, matching the token literal exactly (MOR-1232 D5). */
-  outline: 2px solid var(--dl-studioline-focus);
-  /* No box edge to hug in a borderless grammar — the ring stands off instead. */
-  outline-offset: 3px;
-}
 
 /* ── The channel strip: no boxes, one optical left margin ───────────────── */
 [data-design-language='studioline'][data-design-language] .vfo-surface,

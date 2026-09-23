@@ -727,7 +727,6 @@
   }
 
   .toolbar-select:focus {
-    outline: none;
     border-color: var(--accent);
   }
 

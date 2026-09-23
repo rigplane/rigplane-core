@@ -140,11 +140,6 @@
   color: var(--dl-segmentline-ink-strong);
 }
 
-[data-design-language='segmentline'][data-design-language] .rx-tx-key:focus-visible,
-[data-design-language='segmentline'][data-design-language] .rx-tx-unkey:focus-visible {
-  outline: 2px solid var(--dl-segmentline-ink-strong);
-  outline-offset: 1px;
-}
 
 /* ── Seven-segment readout ───────────────────────────────────────────── */
 

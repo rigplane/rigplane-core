@@ -168,9 +168,8 @@
   .compact .pro-label { font-size: 9px; }
   .disabled { opacity: 0.4; pointer-events: none; }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-  .pro-ctr { position: relative; width: var(--pro-size); height: var(--pro-size); cursor: grab; outline: none; touch-action: none; }
+  .pro-ctr { position: relative; width: var(--pro-size); height: var(--pro-size); cursor: grab; touch-action: none; }
   .pro-ctr:active { cursor: grabbing; }
-  .pro-ctr:focus-visible { outline: 2px solid var(--pro-accent, #00e5ff); outline-offset: 4px; border-radius: 50%; }
   .pro-svg { display: block; }
   .pro-val { position: absolute; bottom: -2px; left: 50%; transform: translateX(-50%); color: #e0f0ff; font-size: 10px; font-weight: 500; white-space: nowrap; }
   .compact .pro-val { font-size: 9px; bottom: 0; }

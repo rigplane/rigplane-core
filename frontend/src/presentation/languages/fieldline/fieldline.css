@@ -148,15 +148,6 @@
   --dl-fieldline-muted: #ffffff;
 }
 
-/* ── One focus contract, never re-suppressed (MOR-977 §1.2.5) ───────────── */
-[data-design-language='fieldline'][data-design-language] :focus-visible {
-  /* Outline shorthand matching the token literal exactly (MOR-1232 D5). 3px
-     and hugging the edge: thick borders give the ring room, so it reads as an
-     inversion of the block rather than as a halo standing off it — the
-     opposite placement to studioline's 3px offset (MOR-977 §3.2). */
-  outline: 3px solid var(--dl-fieldline-focus);
-  outline-offset: 0;
-}
 
 /* ── Stacked blocks: hard edges, 8px rhythm, nothing soft ───────────────── */
 [data-design-language='fieldline'][data-design-language] .vfo-surface,

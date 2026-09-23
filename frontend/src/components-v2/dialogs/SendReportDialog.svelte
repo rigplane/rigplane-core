@@ -571,14 +571,7 @@
 
   .field input:focus,
   .field textarea:focus {
-    outline: none;
     border-color: var(--v2-accent-cyan, #06b6d4);
-  }
-
-  .field input:focus-visible,
-  .field textarea:focus-visible {
-    outline: var(--v2-focus-ring);
-    outline-offset: 1px;
   }
 
   .field-row {
