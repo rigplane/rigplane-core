@@ -258,12 +258,24 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
+/**
+ * MOR-2545: the native surface is one row plus a ⋯ More panel. Controls that
+ * live in More (full mode choice, edge, centerType, rbw, speed, dual,
+ * duringTx, vbwNarrow) are reached by opening More through the ⋯ key first —
+ * exactly as the operator does.
+ */
+function openMore(): void {
+  el('scope-more')!.click();
+  flushSync();
+}
+
 /* ── (a) every control category reaches the shipped command vocabulary ── */
 
 describe('the surface intents reach the shipped scope command vocabulary', () => {
   it('a mode click sends set_scope_mode with the absolute wire ordinal', () => {
     expect(getRadioState()?.scopeControls?.mode).toBe(1);
     render();
+    openMore();
     el('scope-mode-2')!.click();
     flushSync();
     expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_scope_mode', { mode: 2 });
@@ -271,6 +283,7 @@ describe('the surface intents reach the shipped scope command vocabulary', () =>
 
   it('an edge click sends set_scope_edge', () => {
     render();
+    openMore();
     el('scope-edge-3')!.click();
     flushSync();
     expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_scope_edge', { edge: 3 });
@@ -278,6 +291,7 @@ describe('the surface intents reach the shipped scope command vocabulary', () =>
 
   it('a centerType click sends set_scope_center_type with the snake_case param', () => {
     render();
+    openMore();
     el('scope-centerType-1')!.click();
     flushSync();
     expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_scope_center_type', { center_type: 1 });
@@ -285,6 +299,7 @@ describe('the surface intents reach the shipped scope command vocabulary', () =>
 
   it('an rbw click sends set_scope_rbw', () => {
     render();
+    openMore();
     el('scope-rbw-2')!.click();
     flushSync();
     expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_scope_rbw', { rbw: 2 });
@@ -306,6 +321,7 @@ describe('the surface intents reach the shipped scope command vocabulary', () =>
 
   it('the DUAL toggle sends set_scope_dual', () => {
     render();
+    openMore();
     el('scope-dual')!.click();
     flushSync();
     expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_scope_dual', { dual: true });
@@ -313,6 +329,7 @@ describe('the surface intents reach the shipped scope command vocabulary', () =>
 
   it('the "During TX" toggle sends set_scope_during_tx', () => {
     render();
+    openMore();
     el('scope-duringTx')!.click();
     flushSync();
     expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_scope_during_tx', { on: true });
@@ -320,6 +337,7 @@ describe('the surface intents reach the shipped scope command vocabulary', () =>
 
   it('the VBW-narrow toggle sends set_scope_vbw with `narrow`', () => {
     render();
+    openMore();
     el('scope-vbwNarrow')!.click();
     flushSync();
     expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_scope_vbw', { narrow: true });
@@ -335,6 +353,7 @@ describe('the surface intents reach the shipped scope command vocabulary', () =>
 
   it('the SPEED stepper sends set_scope_speed', () => {
     render();
+    openMore();
     el('scope-speed')!.querySelectorAll('button')[1]!.click();
     flushSync();
     expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_scope_speed', { speed: 0 });
@@ -690,6 +709,9 @@ describe('SDR hosted semantic scope controls (MOR-2358)', () => {
     ['scope-ref', 1, 'set_scope_ref', { ref: 0 }],
   ] as const)('hosted %s dispatches exactly the existing command', (id, index, command, params) => {
     hosted();
+    // MOR-2545: More-hosted controls (the full mode choice among them) are
+    // reached by opening the ⋯ panel; row controls are unaffected by it.
+    openMore();
     const element = el(id)!;
     const control = element.tagName === 'BUTTON' ? element : element.querySelectorAll('button')[index]!;
     expect(control.closest('[data-testid="scope-toolbar-host"]')).not.toBeNull();
@@ -701,6 +723,10 @@ describe('SDR hosted semantic scope controls (MOR-2358)', () => {
     const source = liveState({ scopeControls: { ...liveState().scopeControls!, mode: mode ?? 0 } });
     if (mode === null) source.fieldStatus!['scopeControls.mode'] = { ...fresh, observed: false, freshness: 'unknown', availability: 'missing' };
     useState(source); hosted();
+    // MOR-2545: speed/dual/duringTx/centerType/vbwNarrow/rbw/mode/edge live in
+    // More; hold/ref/receiver/span live in the row. Open More once so every
+    // leaf is queryable; the row leaves stay mounted either way.
+    openMore();
     for (const name of ['mode', 'speed', 'hold', 'ref', 'dual', 'receiver', 'duringTx', 'centerType', 'vbwNarrow', 'rbw']) {
       const leaf = el(`scope-${name}`); expect(leaf).not.toBeNull();
       expect(leaf!.closest('[data-testid="scope-toolbar-host"]')).not.toBeNull();
@@ -726,7 +752,12 @@ describe('SDR hosted semantic scope controls (MOR-2358)', () => {
     useCaps(liveCaps(['scope'])); hosted();
     expect(target.querySelectorAll('[data-testid="scope-controls-surface"]')).toHaveLength(1);
     expect(el('scope-controls-surface')!.closest('[data-testid="scope-toolbar-host"]')).not.toBeNull();
-    expect(el('scope-dual')).toBeNull(); expect(el('scope-receiver')).toBeNull();
+    expect(el('scope-receiver')).toBeNull();
+    // MOR-2545: DUAL moved into More — open it so the absence is non-vacuous
+    // (a More-hosted leaf that IS supported proves the panel rendered).
+    openMore();
+    expect(el('scope-rbw')).not.toBeNull();
+    expect(el('scope-dual')).toBeNull();
   });
 
   it('honors regions plan subtraction without a bare fallback', () => {

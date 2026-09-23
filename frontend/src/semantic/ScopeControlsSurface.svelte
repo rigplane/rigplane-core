@@ -1,32 +1,48 @@
 <!--
   Semantic scope-controls surface (MOR-1311, vocabulary slice 11B — the scope
-  toolbar, the LAST B-slice of the vocabulary program).
+  toolbar, the LAST B-slice of the vocabulary program; MOR-2545 PR1 — one row
+  plus a More panel for the radio-held controls).
 
   Presentation only. Renders the MOR-1298/1299/1330 `scopeControls` fact
   group — all twelve toolbar/popover leaves (mode, edge, span, speed, hold,
   refDb, dual, receiver, duringTx, centerType, vbwNarrow, rbw) — and emits
-  control intents as callbacks. It holds no state and consults no controller
-  (v3 ADR invariant 11), the same discipline every other semantic surface in
-  this directory follows.
+  control intents as callbacks. It holds no radio state and consults no
+  controller (v3 ADR invariant 11); the only local state is the More panel's
+  open/closed UI flag.
+
+  MOR-2545 PR1 SHAPE (owner-approved design, ticket comments 2026-09-23):
+  the NATIVE presentation is ONE always-visible row —
+  CTR/FIX (two flat keys of the mode choice; in S-C/S-F neither lights and
+  the More panel's full mode choice shows the current mode), SPAN ‹ value ›,
+  REF ‹ value ›, HOLD (flat toggle key), MAIN/SUB (only when the receiver
+  choice is structural — dual-receiver radios), and a ⋯ key that opens MORE.
+  More carries the rest of the radio-held controls: the full mode choice
+  CTR/FIX/S-C/S-F, the FIX edge 1–4 (only when applicable), centre type
+  Filter/Carrier/Abs, RBW W/M/N and VBW narrow, SPEED ‹ ›, DUAL, during TX.
+  Every toggle is a flat key (`ScopeFlatKey.svelte`) whose LIGHT is its state
+  — never `NAME: true/false` text. Unread stepper values are EMPTY with
+  reserved width — never `—`/`?` placeholders. When an external finite
+  appearance is selected (`finiteAppearance`), the surface delegates to the
+  renderer hosts exactly as before MOR-2545 (the stacked layout below) — the
+  row/More split is the NATIVE appearance; a kit's renderer owns its own
+  layout.
 
   BINDING CARRY-FORWARDS (11A/11A′/11A″ verify reports):
   (1) Renders ONLY from `view.scopeControls`. It never reaches into raw
       state for any leaf — that layering violation is exactly what this
       program removes.
   (2) "receiver/source" is ONE field (`scopeControls.receiver`) — the
-      MAIN/SUB button below, never a second invented source control.
+      MAIN/SUB keys below, never a second invented source control.
   (3) EDGE (`isEdgeApplicable`, modes FIX/S-F) and SPAN (`isSpanApplicable`,
       modes CTR/S-C) are always structurally available; their conditional
       VISIBILITY is a rendering decision layered on top, using the real
       `spectrum-toolbar-logic.ts` predicates (do-not-re-derive doctrine) —
       never a new gate. Both predicates return `false` on an unobserved
-      `mode`, so the rows are HIDDEN rather than rendered with a fabricated
-      CTR/S-C guess.
+      `mode`, so EDGE stays out of More and SPAN out of the row rather than
+      rendering with a fabricated CTR/S-C guess.
   (5) The four popover-only leaves (duringTx/centerType/vbwNarrow/rbw) are
       rendered from facts exactly like the eight toolbar leaves.
-      `ScopeSettingsPopover.svelte` exports nothing, so its `CENTER_TYPE`/
-      `RBW` label tables are reproduced here verbatim as UI convenience, not
-      a fact; `fixedEdge` stays excluded (no fact-layer home, MOR-1354).
+      `fixedEdge` stays excluded (no fact-layer home, MOR-1354).
 
   Two-level availability (MOR-977/1256): `structural: false` renders
   NOTHING; a present-but-unusable control stays visible and disabled rather
@@ -40,21 +56,29 @@
     isSpanApplicable, isEdgeApplicable, clampSpan, clampSpeed, clampRef,
   } from '../components/spectrum/spectrum-toolbar-logic';
 
-  /** On/off leaves, `[field, label]`. */
+  /** On/off leaves, `[field, label, reservedWidth]`. */
   export const TOGGLES = [
-    ['hold', 'HOLD'], ['dual', 'DUAL'], ['duringTx', 'During TX'], ['vbwNarrow', 'VBW narrow'],
+    ['hold', 'HOLD', '52px'], ['dual', 'DUAL', '52px'],
+    ['duringTx', 'During TX', '78px'], ['vbwNarrow', 'VBW narrow', '88px'],
   ] as const;
   export type ScopeToggleField = (typeof TOGGLES)[number][0];
 
   /** Choice-group leaves (excluding `mode`, which uses the imported
-   *  `MODE_BUTTONS` table directly), `[field, ariaLabel, choices]`. */
+   *  `MODE_BUTTONS` table directly), `[field, ariaLabel, shortName, choices]`. */
   export const CHOICES = [
-    ['edge', 'Scope edge', [[1, '1'], [2, '2'], [3, '3'], [4, '4']]],
-    ['centerType', 'Scope center type', [[0, 'Filter'], [1, 'Carrier'], [2, 'Abs.Freq']]],
-    ['rbw', 'Scope RBW', [[0, 'Wide'], [1, 'Mid'], [2, 'Narrow']]],
-    ['receiver', 'Scope receiver', [[0, 'MAIN'], [1, 'SUB']]],
+    ['edge', 'Scope edge', 'EDGE', [[1, '1'], [2, '2'], [3, '3'], [4, '4']]],
+    ['centerType', 'Scope center type', 'CENTRE', [[0, 'Filter'], [1, 'Carrier'], [2, 'Abs']]],
+    ['rbw', 'Scope RBW', 'RBW', [[0, 'W'], [1, 'M'], [2, 'N']]],
+    ['receiver', 'Scope receiver', '', [[0, 'MAIN'], [1, 'SUB']]],
   ] as const;
   export type ScopeChoiceField = 'mode' | (typeof CHOICES)[number][0];
+
+  /** The More panel's choice leaves — `receiver` lives in the row. */
+  const MORE_CHOICES = CHOICES.filter(([field]) => field !== 'receiver');
+  /** The More panel's toggle leaves — `hold` lives in the row. */
+  const MORE_TOGGLES = TOGGLES.filter(([field]) => field !== 'hold');
+  /** The row's two-key mode choice (CTR/FIX); S-C/S-F live in More only. */
+  const QUICK_MODE = MODE_BUTTONS.slice(0, 2);
 
   export const UNKNOWN_TEXT = '—';
   /** Usable ⇔ the radio HAS it, it is readable NOW, and it was observed. */
@@ -64,10 +88,16 @@
     f.reading.status === 'known' ? f.reading.value : fallback;
   export const textOf = (f: ScopeControlsField<unknown>): string =>
     f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
+  /** The observed value, or `undefined` when unread — drives a flat key's
+   *  `lit` (`undefined` → `null` → drawn unlit with its label, no value). */
+  const valueOf = <T>(f: ScopeControlsField<T> | undefined): T | undefined =>
+    f !== undefined && f.reading.status === 'known' ? f.reading.value : undefined;
 </script>
 
 <script lang="ts">
   import { onDestroy } from 'svelte';
+  import ScopeFlatKey from '../components/spectrum/ScopeFlatKey.svelte';
+  import ScopeMorePanel from '../components/spectrum/ScopeMorePanel.svelte';
   import {
     bindActionInstrument, bindChoiceInstrument, bindToggleInstrument,
   } from '../primitives/control-instruments/control-instrument-behavior';
@@ -103,6 +133,10 @@
   );
   let spanApplicable = $derived(isSpanApplicable(modeKnown));
   let edgeApplicable = $derived(isEdgeApplicable(modeKnown));
+
+  /** The ⋯ More panel — UI-local open flag (never radio state). */
+  let moreOpen = $state(false);
+  let moreKeyEl = $state<HTMLElement | null>(null);
 
   function toggleInstrument(field: ScopeToggleField) {
     return bindToggleInstrument(() => ({
@@ -186,122 +220,279 @@
 
 {#if sc}
   <section class="scope-controls-surface" data-testid="scope-controls-surface" aria-label="Scope controls">
-    {#if sc.mode.availability.structural}
-      {@const behavior = choiceInstrument('mode', MODE_BUTTONS.map(([value]) => value))}
-      <div class="scope-row" role={finiteAppearance ? undefined : 'radiogroup'} aria-label="Scope mode" data-testid="scope-mode">
-        {#if finiteAppearance}
+    {#if finiteAppearance}
+      <!-- External finite appearance: the kit's renderers own the layout —
+           the pre-MOR-2545 stacked groups, hosts only, never native keys. -->
+      {#if sc.mode.availability.structural}
+        <div class="scope-row" aria-label="Scope mode" data-testid="scope-mode">
           {#key rendererContext}{#key finiteAppearance.choice}<ControlInstrumentRendererHost
             seat={choiceSeat('mode', 'Scope mode', MODE_BUTTONS)} renderer={finiteAppearance.choice}
           />{/key}{/key}
-        {:else}{#each MODE_BUTTONS as [v, label] (v)}
-            <button type="button" role="radio" class="scope-choice" data-testid={`scope-mode-${v}`}
-              aria-checked={behavior.isSelected(v)} disabled={!behavior.available}
-              onclick={() => behavior.invoke(v)}>{label}</button>
-          {/each}
-        {/if}
-      </div>
-    {/if}
+        </div>
+      {/if}
 
-    {#each CHOICES as [field, label, options] (field)}
-      {#if (field !== 'edge' || edgeApplicable) && sc[field].availability.structural}
-        {@const behavior = choiceInstrument(field, options.map(([value]) => value))}
-        <div class="scope-row" role={finiteAppearance ? undefined : 'radiogroup'} aria-label={label} data-testid={`scope-${field}`}>
-          {#if finiteAppearance}
+      {#each CHOICES as [field, label, , options] (field)}
+        {#if (field !== 'edge' || edgeApplicable) && sc[field].availability.structural}
+          <div class="scope-row" aria-label={label} data-testid={`scope-${field}`}>
             {#key rendererContext}{#key finiteAppearance.choice}<ControlInstrumentRendererHost
               seat={choiceSeat(field, label, options)} renderer={finiteAppearance.choice}
             />{/key}{/key}
-          {:else}{#each options as [v, optLabel] (v)}
-              <button type="button" role="radio" class="scope-choice" data-testid={`scope-${field}-${v}`}
-                aria-checked={behavior.isSelected(v)} disabled={!behavior.available}
-                onclick={() => behavior.invoke(v)}>{optLabel}</button>
-            {/each}
-          {/if}
-        </div>
-      {/if}
-    {/each}
+          </div>
+        {/if}
+      {/each}
 
-    {#if spanApplicable && sc.span.availability.structural}
-      {@const decrement = spanInstrument(-1)}
-      {@const increment = spanInstrument(1)}
-      <div class="scope-stepper" data-testid="scope-span">
-        <span class="scope-name">SPAN</span>
-        {#if finiteAppearance}
+      {#if spanApplicable && sc.span.availability.structural}
+        <div class="scope-stepper" data-testid="scope-span">
+          <span class="scope-name">SPAN</span>
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('span', -1, 'scope span')} renderer={finiteAppearance.action}
           />{/key}{/key}
-        {:else}<button type="button" disabled={!decrement.available} onclick={() => decrement.invoke()}>-</button>{/if}
-        <output data-testid="scope-span-value">
-          {usable(sc.span) ? (SPAN_LABELS[numberOf(sc.span, 3)] ?? '?') : UNKNOWN_TEXT}
-        </output>
-        {#if finiteAppearance}
+          <output data-testid="scope-span-value">
+            {usable(sc.span) ? (SPAN_LABELS[numberOf(sc.span, 3)] ?? UNKNOWN_TEXT) : UNKNOWN_TEXT}
+          </output>
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('span', 1, 'scope span')} renderer={finiteAppearance.action}
           />{/key}{/key}
-        {:else}<button type="button" disabled={!increment.available} onclick={() => increment.invoke()}>+</button>{/if}
-      </div>
-    {/if}
+        </div>
+      {/if}
 
-    {#if sc.speed.availability.structural}
-      {@const decrement = speedInstrument(-1)}
-      {@const increment = speedInstrument(1)}
-      <div class="scope-stepper" data-testid="scope-speed">
-        <span class="scope-name">SPEED</span>
-        {#if finiteAppearance}
+      {#if sc.speed.availability.structural}
+        <div class="scope-stepper" data-testid="scope-speed">
+          <span class="scope-name">SPEED</span>
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('speed', -1, 'scope speed')} renderer={finiteAppearance.action}
           />{/key}{/key}
-        {:else}<button type="button" disabled={!decrement.available} onclick={() => decrement.invoke()}>-</button>{/if}
-        <output data-testid="scope-speed-value">
-          {usable(sc.speed) ? (SPEED_LABELS[numberOf(sc.speed, 1)] ?? '?') : UNKNOWN_TEXT}
-        </output>
-        {#if finiteAppearance}
+          <output data-testid="scope-speed-value">
+            {usable(sc.speed) ? (SPEED_LABELS[numberOf(sc.speed, 1)] ?? UNKNOWN_TEXT) : UNKNOWN_TEXT}
+          </output>
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('speed', 1, 'scope speed')} renderer={finiteAppearance.action}
           />{/key}{/key}
-        {:else}<button type="button" disabled={!increment.available} onclick={() => increment.invoke()}>+</button>{/if}
-      </div>
-    {/if}
+        </div>
+      {/if}
 
-    {#if sc.refDb.availability.structural}
-      {@const decrement = refInstrument(-5)}
-      {@const increment = refInstrument(5)}
-      <div class="scope-stepper" data-testid="scope-ref">
-        <span class="scope-name">REF</span>
-        {#if finiteAppearance}
+      {#if sc.refDb.availability.structural}
+        <div class="scope-stepper" data-testid="scope-ref">
+          <span class="scope-name">REF</span>
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('refDb', -5, 'scope reference')} renderer={finiteAppearance.action}
           />{/key}{/key}
-        {:else}<button type="button" disabled={!decrement.available} onclick={() => decrement.invoke()}>-</button>{/if}
-        <output data-testid="scope-ref-value">{textOf(sc.refDb)}</output>
-        {#if finiteAppearance}
+          <output data-testid="scope-ref-value">{textOf(sc.refDb)}</output>
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('refDb', 5, 'scope reference')} renderer={finiteAppearance.action}
           />{/key}{/key}
-        {:else}<button type="button" disabled={!increment.available} onclick={() => increment.invoke()}>+</button>{/if}
-      </div>
-    {/if}
+        </div>
+      {/if}
 
-    {#each TOGGLES as [field, label] (field)}
-      {#if sc[field].availability.structural}
-        {@const behavior = toggleInstrument(field)}
-        {#if finiteAppearance}
+      {#each TOGGLES as [field, label] (field)}
+        {#if sc[field].availability.structural}
           {#key rendererContext}{#key finiteAppearance.toggle}<ControlInstrumentRendererHost
             seat={toggleSeat(field, label)} renderer={finiteAppearance.toggle}
           />{/key}{/key}
-        {:else}<button type="button" class="scope-toggle" data-testid={`scope-${field}`}
-            aria-pressed={behavior.confirmed} disabled={!behavior.available}
-            onclick={() => behavior.invoke()}>{label}: {textOf(sc[field])}</button>
         {/if}
-      {/if}
-    {/each}
+      {/each}
+    {:else}
+      <!-- Native appearance: ONE always-visible row + the ⋯ More panel. -->
+      <div class="scope-controls-row" data-testid="scope-controls-row">
+        {#if sc.mode.availability.structural}
+          {@const modeQuick = choiceInstrument('mode', QUICK_MODE.map(([v]) => v))}
+          <span class="scope-key-group" role="radiogroup" aria-label="Scope mode" data-testid="scope-mode-row">
+            {#each QUICK_MODE as [v, label] (v)}
+              <ScopeFlatKey kind="choice" {label} testid="scope-mode-row-{v}"
+                lit={modeKnown === undefined ? null : modeKnown === v}
+                disabled={!modeQuick.available} onclick={() => modeQuick.invoke(v)} width="42px" />
+            {/each}
+          </span>
+        {/if}
+
+        {#if spanApplicable && sc.span.availability.structural}
+          {@const spanDown = spanInstrument(-1)}
+          {@const spanUp = spanInstrument(1)}
+          <span class="scope-stepper" data-testid="scope-span">
+            <span class="scope-name">SPAN</span>
+            <button type="button" class="scope-step-key" aria-label="Decrease scope span"
+              disabled={!spanDown.available} onclick={() => spanDown.invoke()}>&#8249;</button>
+            <output class="scope-step-value" data-testid="scope-span-value">{usable(sc.span) ? (SPAN_LABELS[numberOf(sc.span, 3)] ?? '') : ''}</output>
+            <button type="button" class="scope-step-key" aria-label="Increase scope span"
+              disabled={!spanUp.available} onclick={() => spanUp.invoke()}>&#8250;</button>
+          </span>
+        {/if}
+
+        {#if sc.refDb.availability.structural}
+          {@const refDown = refInstrument(-5)}
+          {@const refUp = refInstrument(5)}
+          <span class="scope-stepper" data-testid="scope-ref">
+            <span class="scope-name">REF</span>
+            <button type="button" class="scope-step-key" aria-label="Decrease scope reference"
+              disabled={!refDown.available} onclick={() => refDown.invoke()}>&#8249;</button>
+            <output class="scope-step-value" data-testid="scope-ref-value">{sc.refDb.reading.status === 'known' ? String(sc.refDb.reading.value) : ''}</output>
+            <button type="button" class="scope-step-key" aria-label="Increase scope reference"
+              disabled={!refUp.available} onclick={() => refUp.invoke()}>&#8250;</button>
+          </span>
+        {/if}
+
+        {#if sc.hold.availability.structural}
+          {@const hold = toggleInstrument('hold')}
+          <ScopeFlatKey label="HOLD" testid="scope-hold" width="52px"
+            lit={hold.confirmed ?? null} disabled={!hold.available} onclick={() => hold.invoke()} />
+        {/if}
+
+        {#if sc.receiver.availability.structural}
+          {@const receiverChoice = choiceInstrument('receiver', [0, 1])}
+          {@const receiverValue = valueOf(sc.receiver)}
+          <span class="scope-key-group" role="radiogroup" aria-label="Scope receiver" data-testid="scope-receiver">
+            {#each [[0, 'MAIN'], [1, 'SUB']] as const as [v, label] (v)}
+              <ScopeFlatKey kind="choice" {label} testid="scope-receiver-{v}" width="48px"
+                lit={receiverValue === undefined ? null : receiverValue === v}
+                disabled={!receiverChoice.available} onclick={() => receiverChoice.invoke(v)} />
+            {/each}
+          </span>
+        {/if}
+
+        <span class="scope-more-anchor">
+          <ScopeFlatKey kind="action" label="⋯" ariaLabel="More scope controls"
+            ariaExpanded={moreOpen} lit={moreOpen ? true : null} testid="scope-more" width="30px"
+            bind:element={moreKeyEl} onclick={() => { moreOpen = !moreOpen; }} />
+          {#if moreOpen}
+            <ScopeMorePanel onClose={() => { moreOpen = false; }} returnFocusTo={moreKeyEl}>
+              {#snippet radioHeld()}
+                {#if sc.mode.availability.structural}
+                  {@const modeChoice = choiceInstrument('mode', MODE_BUTTONS.map(([v]) => v))}
+                  <div class="scope-more-row" role="radiogroup" aria-label="Scope mode" data-testid="scope-mode">
+                    <span class="scope-name">MODE</span>
+                    {#each MODE_BUTTONS as [v, label] (v)}
+                      <ScopeFlatKey kind="choice" {label} testid="scope-mode-{v}" width="44px"
+                        lit={modeKnown === undefined ? null : modeKnown === v}
+                        disabled={!modeChoice.available} onclick={() => modeChoice.invoke(v)} />
+                    {/each}
+                  </div>
+                {/if}
+
+                {#each MORE_CHOICES as [field, ariaLabel, shortName, options] (field)}
+                  {#if (field !== 'edge' || edgeApplicable) && sc[field].availability.structural}
+                    {@const choice = choiceInstrument(field, options.map(([v]) => v))}
+                    {@const current = valueOf(sc[field])}
+                    <div class="scope-more-row" role="radiogroup" aria-label={ariaLabel} data-testid={`scope-${field}`}>
+                      <span class="scope-name">{shortName}</span>
+                      {#each options as [v, optLabel] (v)}
+                        <ScopeFlatKey kind="choice" label={optLabel} testid={`scope-${field}-${v}`} width="52px"
+                          lit={current === undefined ? null : current === v}
+                          disabled={!choice.available} onclick={() => choice.invoke(v)} />
+                      {/each}
+                    </div>
+                  {/if}
+                {/each}
+
+                {#if sc.speed.availability.structural}
+                  {@const speedDown = speedInstrument(-1)}
+                  {@const speedUp = speedInstrument(1)}
+                  <div class="scope-more-row scope-stepper" data-testid="scope-speed">
+                    <span class="scope-name">SPEED</span>
+                    <button type="button" class="scope-step-key" aria-label="Decrease scope speed"
+                      disabled={!speedDown.available} onclick={() => speedDown.invoke()}>&#8249;</button>
+                    <output class="scope-step-value" data-testid="scope-speed-value">{usable(sc.speed) ? (SPEED_LABELS[numberOf(sc.speed, 1)] ?? '') : ''}</output>
+                    <button type="button" class="scope-step-key" aria-label="Increase scope speed"
+                      disabled={!speedUp.available} onclick={() => speedUp.invoke()}>&#8250;</button>
+                  </div>
+                {/if}
+
+                {#each MORE_TOGGLES as [field, label, width] (field)}
+                  {#if sc[field].availability.structural}
+                    {@const toggle = toggleInstrument(field)}
+                    <div class="scope-more-row" data-testid={`scope-${field}-row`}>
+                      <ScopeFlatKey {label} testid={`scope-${field}`} {width}
+                        lit={toggle.confirmed ?? null} disabled={!toggle.available} onclick={() => toggle.invoke()} />
+                    </div>
+                  {/if}
+                {/each}
+              {/snippet}
+            </ScopeMorePanel>
+          {/if}
+        </span>
+      </div>
+    {/if}
   </section>
 {/if}
 
 <style>
   /* Structure only — a design language owns colour (MOR-977, forced-colors). */
-  .scope-controls-surface { display: flex; flex-direction: column; gap: 0.25rem; }
-  .scope-row, .scope-stepper { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
-  .scope-name { min-width: 5ch; }
-  .scope-choice[aria-checked='true'], .scope-toggle[aria-pressed='true'] { font-weight: 700; }
-  button:disabled { cursor: not-allowed; }
+  .scope-controls-surface { display: block; min-width: 0; }
+
+  /* The ONE always-visible row: never wraps, never reflows a key's box. */
+  .scope-controls-row {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .scope-key-group { display: inline-flex; flex: none; align-items: center; }
+
+  .scope-stepper {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 1px;
+    white-space: nowrap;
+  }
+
+  .scope-name {
+    flex: none;
+    padding: 0 3px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+    color: var(--dl-vfo-unlit-text, var(--v2-text-muted, #5a6875));
+  }
+
+  .scope-step-key {
+    appearance: none;
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin: 0;
+    flex: none;
+    width: 18px;
+    height: 22px;
+    font-family: inherit;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    color: var(--dl-vfo-unlit-text, var(--v2-text-muted, #5a6875));
+    cursor: pointer;
+  }
+
+  .scope-step-key:disabled { cursor: not-allowed; }
+
+  /* Reserved width in EVERY state: an unread value is EMPTY, never a
+     placeholder, and the stepper's box does not change size. */
+  .scope-step-value {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    min-width: 7ch;
+    height: 22px;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--vfo-lamp-color, var(--dl-vfo-red-text, var(--dl-vfo-red, #e2362c)));
+  }
+
+  /* The ⋯ key's anchor: the More panel positions itself against this. */
+  .scope-more-anchor {
+    position: relative;
+    display: inline-flex;
+    flex: none;
+  }
+
+  .scope-more-row {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    white-space: nowrap;
+  }
+
+  /* External finite appearance (pre-MOR-2545 stacked groups). */
+  .scope-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
 </style>

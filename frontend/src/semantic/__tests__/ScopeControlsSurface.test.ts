@@ -1,6 +1,7 @@
 /**
  * MOR-1311 — the semantic scope-controls surface (vocabulary slice 11B, the
- * scope toolbar — the LAST B-slice of the vocabulary program).
+ * scope toolbar — the LAST B-slice of the vocabulary program), retargeted by
+ * MOR-2545 PR1 to the owner-approved ONE-ROW + More split.
  *
  * Every test names the carry-forward/mutation it pins:
  *   (1) renders exclusively from `view.scopeControls` — no raw-state reach.
@@ -8,17 +9,25 @@
  *   (3) EDGE/SPAN visibility is a RENDERING decision (`isEdgeApplicable`/
  *       `isSpanApplicable`, reused from `spectrum-toolbar-logic.ts`) layered
  *       on facts that are always structurally available; an unread `mode`
- *       hides BOTH rows rather than guessing CTR.
+ *       hides BOTH rather than guessing CTR.
  *   handler guards — pinned independently of `disabled` (MOR-1304 F3
  *       recipe): a direct dispatched click/input on a disabled control must
  *       not reach the callback.
  *   field identity — every choice/toggle control names ITS OWN field in the
  *       callback, not a neighbour's (the copy-paste-loop mutation class).
+ *   MOR-2545 owner rules — one row; no `NAME: true/false` text; no `—`/`?`
+ *       placeholders; unread = drawn unlit in place with its label; MAIN/SUB
+ *       absent without the structural receiver fact; More opens on ⋯, closes
+ *       on Esc and outside click, and returns focus.
+ *
+ * The More panel is opened through the ⋯ key exactly as the operator opens
+ * it — `openMore()` below is the ONLY helper that reaches into More-hosted
+ * controls. Literal text assertions everywhere, never `t(key)`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import ScopeControlsSurface, {
-  CHOICES, TOGGLES, UNKNOWN_TEXT, type ScopeChoiceField, type ScopeToggleField,
+  CHOICES, TOGGLES, type ScopeChoiceField, type ScopeToggleField,
 } from '../ScopeControlsSurface.svelte';
 import FiniteControlRendererFixture, {
   resetRetainedInvocations, retainedInvocations,
@@ -58,14 +67,18 @@ function render(view: RadioViewModel, handlers: Handlers = {}) {
   const component = mount(ScopeControlsSurface, { target, props: { view, ...handlers } });
   flushSync();
   const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
+  const el = (id: string) => q<HTMLElement>(`[data-testid="${id}"]`);
   return {
     dispose: () => unmount(component),
     root: () => q('[data-testid="scope-controls-surface"]'),
-    el: (id: string) => q<HTMLElement>(`[data-testid="${id}"]`),
+    el,
+    /** Opens the More panel through the ⋯ key, like the operator does. */
+    openMore: () => { el('scope-more')!.click(); flushSync(); },
   };
 }
 /** MOR-1304 F3 recipe: bypasses jsdom's disabled-button `.click()` no-op. */
 const bypassClick = (el: HTMLElement) => el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+const pressEscape = () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); flushSync(); };
 
 describe('structural presence: absent group / absent leaves render nothing extra', () => {
   it('renders nothing when scopeControls is absent', () => {
@@ -74,8 +87,10 @@ describe('structural presence: absent group / absent leaves render nothing extra
     r.dispose();
   });
 
-  it('hides a choice leaf whose structural availability is false', () => {
+  it('hides a choice leaf whose structural availability is false — in the row AND in More', () => {
     const r = render(withSc({ mode: unread(OFF) }));
+    expect(r.el('scope-mode-row')).toBeNull();
+    r.openMore();
     expect(r.el('scope-mode')).toBeNull();
     r.dispose();
   });
@@ -88,72 +103,178 @@ describe('structural presence: absent group / absent leaves render nothing extra
 });
 
 describe('carry-forward (3): EDGE/SPAN visibility is a rendering decision on top of facts', () => {
-  it('shows EDGE and hides SPAN when mode is known FIX (1)', () => {
+  it('shows EDGE in More and hides SPAN when mode is known FIX (1)', () => {
     const r = render(withSc({ mode: known(1) }));
-    expect(r.el('scope-edge')).not.toBeNull();
     expect(r.el('scope-span')).toBeNull();
+    r.openMore();
+    expect(r.el('scope-edge')).not.toBeNull();
     r.dispose();
   });
 
-  it('shows SPAN and hides EDGE when mode is known CTR (0)', () => {
+  it('shows SPAN in the row and hides EDGE when mode is known CTR (0)', () => {
     const r = render(withSc({ mode: known(0) }));
     expect(r.el('scope-span')).not.toBeNull();
+    r.openMore();
     expect(r.el('scope-edge')).toBeNull();
     r.dispose();
   });
 
   // Carry-forward (3), the exact wording: an unobserved mode hides BOTH
-  // rows rather than rendering either with a fabricated guess.
+  // rather than rendering either with a fabricated guess.
   it('hides BOTH EDGE and SPAN when mode is unread, never fabricating CTR', () => {
     const r = render(withSc({ mode: unread() }));
-    expect(r.el('scope-edge')).toBeNull();
     expect(r.el('scope-span')).toBeNull();
+    r.openMore();
+    expect(r.el('scope-edge')).toBeNull();
     r.dispose();
   });
 
   // F2 — mode S-F (3) shows EDGE and hides SPAN
-  it('shows EDGE and hides SPAN when mode is known S-F (3)', () => {
+  it('shows EDGE in More and hides SPAN when mode is known S-F (3)', () => {
     const r = render(withSc({ mode: known(3) }));
-    expect(r.el('scope-edge')).not.toBeNull();
     expect(r.el('scope-span')).toBeNull();
+    r.openMore();
+    expect(r.el('scope-edge')).not.toBeNull();
     r.dispose();
   });
 
   // F2 — mode S-C (2) shows SPAN and hides EDGE
-  it('shows SPAN and hides EDGE when mode is known S-C (2)', () => {
+  it('shows SPAN in the row and hides EDGE when mode is known S-C (2)', () => {
     const r = render(withSc({ mode: known(2) }));
     expect(r.el('scope-span')).not.toBeNull();
+    r.openMore();
     expect(r.el('scope-edge')).toBeNull();
+    r.dispose();
+  });
+
+  // MOR-2545: in S-C/S-F NEITHER row mode key lights, and the More panel's
+  // full mode choice is what shows the current mode.
+  it('lights neither row key in S-C; the More mode choice shows the current mode', () => {
+    const r = render(withSc({ mode: known(2) }));
+    expect(r.el('scope-mode-row-0')!.getAttribute('aria-checked')).toBe('false');
+    expect(r.el('scope-mode-row-1')!.getAttribute('aria-checked')).toBe('false');
+    expect(r.el('scope-mode-row-0')!.getAttribute('data-lit')).toBe('false');
+    expect(r.el('scope-mode-row-1')!.getAttribute('data-lit')).toBe('false');
+    r.openMore();
+    expect(r.el('scope-mode-2')!.getAttribute('aria-checked')).toBe('true');
+    expect(r.el('scope-mode-2')!.getAttribute('data-lit')).toBe('true');
     r.dispose();
   });
 });
 
-describe('unread leaves render honestly, never fabricated', () => {
+describe('unread leaves render honestly, never fabricated (MOR-2545 owner rules)', () => {
   // `centerType` has no mode-applicability gate (unlike `mode` itself), so
   // it isolates the choice-leaf honesty story from carry-forward 3 above.
   it('an unread choice leaf shows no aria-checked="true" option and stays disabled', () => {
     const r = render(withSc({ centerType: unread() }));
+    r.openMore();
     expect(r.el('scope-centerType-0')!.getAttribute('aria-checked')).toBe('false');
     expect(r.el('scope-centerType-0')!.hasAttribute('disabled')).toBe(true);
     r.dispose();
   });
 
-  it('an unread toggle OMITS aria-pressed entirely, never "false" (MOR-1358 class)', () => {
+  it('an unread toggle OMITS aria-pressed entirely and is drawn UNLIT with its label, no value', () => {
     const r = render(withSc({ hold: unread() }));
-    expect(r.el('scope-hold')!.hasAttribute('aria-pressed')).toBe(false);
-    expect(r.el('scope-hold')!.textContent).toContain(UNKNOWN_TEXT);
+    const hold = r.el('scope-hold')!;
+    expect(hold.hasAttribute('aria-pressed')).toBe(false);
+    expect(hold.getAttribute('data-lit')).toBe('false');
+    expect(hold.textContent).toBe('HOLD');
     r.dispose();
   });
 
-  it('an unread stepper shows unknown text, never a v2-fabricated default', () => {
+  it('an unread stepper value is EMPTY with its reserved-width box, never a placeholder', () => {
     const r = render(withSc({ refDb: unread() }));
-    expect(r.el('scope-ref-value')!.textContent).toBe(UNKNOWN_TEXT);
+    const value = r.el('scope-ref-value')!;
+    expect(value.textContent).toBe('');
+    expect(value.classList.contains('scope-step-value')).toBe(true);
+    r.dispose();
+  });
+
+  it('never prints a placeholder or a NAME: true/false text anywhere in the surface', () => {
+    const r = render(base());
+    r.openMore();
+    const text = r.root()!.textContent ?? '';
+    expect(text).not.toMatch(/:\s*(true|false)/i);
+    expect(text).not.toContain('—');
+    expect(text).not.toContain('?');
     r.dispose();
   });
 
   it('does not coerce an observed out-of-list choice into a selected option', () => {
     const r = render(withSc({ centerType: known(99) }));
+    r.openMore();
     for (const value of [0, 1, 2]) expect(r.el(`scope-centerType-${value}`)!.getAttribute('aria-checked')).toBe('false');
+    r.dispose();
+  });
+});
+
+describe('the ONE always-visible row (MOR-2545)', () => {
+  it('every always-visible key sits in one row element', () => {
+    const r = render(withSc({ mode: known(0) }));
+    const row = r.el('scope-controls-row')!;
+    expect(row).not.toBeNull();
+    for (const id of ['scope-mode-row', 'scope-span', 'scope-ref', 'scope-hold', 'scope-receiver', 'scope-more']) {
+      const node = r.el(id);
+      expect(node, id).not.toBeNull();
+      expect(node!.closest('[data-testid="scope-controls-row"]'), id).toBe(row);
+    }
+    r.dispose();
+  });
+
+  it('omits MAIN/SUB without the structural receiver fact (single-receiver radios)', () => {
+    const r = render(withSc({ receiver: unread(OFF) }));
+    expect(r.el('scope-receiver')).toBeNull();
+    r.openMore();
+    expect(r.el('scope-receiver')).toBeNull();
+    expect(r.el('scope-more-panel')).not.toBeNull();
+    r.dispose();
+  });
+
+  it('the row mode keys dispatch the mode choice from the row itself', () => {
+    const onChoiceChange = vi.fn();
+    const r = render(base(), { onChoiceChange });
+    r.el('scope-mode-row-0')!.click();
+    flushSync();
+    expect(onChoiceChange).toHaveBeenCalledExactlyOnceWith('mode', 0);
+    r.dispose();
+  });
+});
+
+describe('the More panel (⋯)', () => {
+  it('opens on ⋯, lights the key, and moves focus into the panel', () => {
+    const r = render(base());
+    expect(r.el('scope-more-panel')).toBeNull();
+    r.openMore();
+    expect(r.el('scope-more-panel')).not.toBeNull();
+    expect(r.el('scope-more')!.getAttribute('aria-expanded')).toBe('true');
+    expect(document.activeElement).toBe(r.el('scope-more-panel'));
+    r.dispose();
+  });
+
+  it('closes on a window-level Escape and returns focus to the ⋯ key', () => {
+    const r = render(base());
+    r.openMore();
+    pressEscape();
+    expect(r.el('scope-more-panel')).toBeNull();
+    expect(document.activeElement).toBe(r.el('scope-more'));
+    r.dispose();
+  });
+
+  it('closes on an outside click (backdrop) and returns focus to the ⋯ key', () => {
+    const r = render(base());
+    r.openMore();
+    r.el('scope-more-backdrop')!.click();
+    flushSync();
+    expect(r.el('scope-more-panel')).toBeNull();
+    expect(document.activeElement).toBe(r.el('scope-more'));
+    r.dispose();
+  });
+
+  it('has no Escape handler while closed (MOR-2514 keeps its Esc)', () => {
+    const r = render(base());
+    pressEscape();
+    expect(r.el('scope-more-panel')).toBeNull();
+    expect(document.activeElement).not.toBe(r.el('scope-more'));
     r.dispose();
   });
 });
@@ -162,6 +283,7 @@ describe('handler guards are pinned independently of `disabled` (MOR-1304 F3)', 
   it('refuses a choice click dispatched directly at a disabled option', () => {
     const onChoiceChange = vi.fn();
     const r = render(withSc({ centerType: unread() }), { onChoiceChange });
+    r.openMore();
     bypassClick(r.el('scope-centerType-0')!);
     flushSync();
     expect(onChoiceChange).not.toHaveBeenCalled();
@@ -191,6 +313,7 @@ describe('handler guards are pinned independently of `disabled` (MOR-1304 F3)', 
   it('refuses a choice click on a KNOWN but operationally-stale field', () => {
     const onChoiceChange = vi.fn();
     const r = render(withSc({ centerType: known(1, STALE) }), { onChoiceChange });
+    r.openMore();
     bypassClick(r.el('scope-centerType-1')!);
     flushSync();
     expect(onChoiceChange).not.toHaveBeenCalled();
@@ -218,7 +341,7 @@ describe('handler guards are pinned independently of `disabled` (MOR-1304 F3)', 
 
 /** First option value per `CHOICES` field, precomputed once. */
 const CHOICE_FIRST_VALUE = Object.fromEntries(
-  CHOICES.map(([field, , options]) => [field, options[0][0]]),
+  CHOICES.map(([field, , , options]) => [field, options[0][0]]),
 ) as Record<(typeof CHOICES)[number][0], number>;
 
 describe('field identity: every control names ITS OWN field, never a neighbour\'s', () => {
@@ -227,6 +350,8 @@ describe('field identity: every control names ITS OWN field, never a neighbour\'
   it.each(CHOICES.map(([field]) => field))('choice group "%s" reports its own field', (field) => {
     const onChoiceChange = vi.fn();
     const r = render(base(), { onChoiceChange });
+    // receiver lives in the row; the other choice groups live in More.
+    if (field !== 'receiver') r.openMore();
     r.el(`scope-${field}-${CHOICE_FIRST_VALUE[field]}`)!.click();
     flushSync();
     expect(onChoiceChange).toHaveBeenCalledExactlyOnceWith(field, CHOICE_FIRST_VALUE[field]);
@@ -236,6 +361,8 @@ describe('field identity: every control names ITS OWN field, never a neighbour\'
   it.each(TOGGLES.map(([field]) => field))('toggle "%s" reports its own field', (field) => {
     const onToggleChange = vi.fn();
     const r = render(base(), { onToggleChange });
+    // hold lives in the row; the other toggles live in More.
+    if (field !== 'hold') r.openMore();
     r.el(`scope-${field}`)!.click();
     flushSync();
     expect(onToggleChange).toHaveBeenCalledExactlyOnceWith(field, expect.any(Boolean));
@@ -243,10 +370,11 @@ describe('field identity: every control names ITS OWN field, never a neighbour\'
   });
 
   // `mode` uses the imported MODE_BUTTONS table rather than CHOICES, so it is
-  // exercised separately.
-  it('mode reports "mode" with the clicked button\'s own value', () => {
+  // exercised separately — the FULL choice (incl. S-C/S-F) lives in More.
+  it('mode reports "mode" with the clicked key\'s own value', () => {
     const onChoiceChange = vi.fn();
     const r = render(base(), { onChoiceChange });
+    r.openMore();
     r.el('scope-mode-2')!.click();
     flushSync();
     expect(onChoiceChange).toHaveBeenCalledExactlyOnceWith('mode', 2);
@@ -267,6 +395,7 @@ describe('steppers compute the next value with the shipped clamp functions', () 
   it('SPEED decrements through clampSpeed (inverted delta, per the shipped function)', () => {
     const onSpeedChange = vi.fn();
     const r = render(withSc({ speed: known(1) }), { onSpeedChange });
+    r.openMore();
     r.el('scope-speed')!.querySelectorAll('button')[0]!.click();
     flushSync();
     expect(onSpeedChange).toHaveBeenCalledExactlyOnceWith(2);
@@ -306,6 +435,7 @@ describe('steppers compute the next value with the shipped clamp functions', () 
   it('SPEED at the floor clamped to 0, never goes below domain', () => {
     const onSpeedChange = vi.fn();
     const r = render(withSc({ speed: known(0) }), { onSpeedChange });
+    r.openMore();
     r.el('scope-speed')!.querySelectorAll('button')[1]!.click();
     flushSync();
     expect(onSpeedChange).toHaveBeenCalledExactlyOnceWith(0);
