@@ -121,7 +121,11 @@ describe('desktop semantic control frames', () => {
     const onPreampChange = vi.fn();
     const onLevelChange = vi.fn();
     const r = render('rfFrontEnd', degraded, { onPreampChange, onLevelChange });
-    expect(r.target.querySelector('[data-testid="rf-front-end-preamp-value"]')?.textContent).toBe('?');
+    // MOR-2527: the unread fact stays inside the frame — the slot stays
+    // mounted, marked unobserved, and renders NO value text (never a `?`).
+    const preampRow = r.target.querySelector('[data-testid="rf-front-end-preamp"]') as HTMLElement;
+    expect(preampRow.dataset.observed).toBe('false');
+    expect(r.target.querySelector('[data-testid="rf-front-end-preamp-value"]')?.textContent).toBe('');
     const button = r.target.querySelector('[data-testid="rf-front-end-preamp-1"]') as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     button.click();
@@ -130,7 +134,8 @@ describe('desktop semantic control frames', () => {
     expect(slider.getAttribute('aria-disabled')).toBe('true');
     expect(onPreampChange).not.toHaveBeenCalled();
     expect(onLevelChange).not.toHaveBeenCalled();
-    expect(r.target.querySelector('[data-testid="rf-front-end-rfGain"] output')?.textContent).toBe('?');
+    expect(level.dataset.observed).toBe('false');
+    expect(r.target.querySelector('[data-testid="rf-front-end-rfGain"] output')?.textContent).toBe('');
     await r.dispose();
   });
 

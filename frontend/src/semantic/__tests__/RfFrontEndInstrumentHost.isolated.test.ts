@@ -372,18 +372,25 @@ describe('RfFrontEndInstrumentHost', () => {
     const group = () => target.querySelector<HTMLElement>('[data-testid="rf-front-end-rf-sql"]')!;
     const slider = () => group().querySelector<HTMLElement>('[role="slider"]')!;
     expect(group().dataset.feedbackIntegration).toBe('compatibility-reading');
+    expect(group().dataset.observed).toBe('true');
     expect(group().textContent).toContain('100%');
     expect(slider().closest('.rf-front-end-slider')).not.toBeNull();
     expect(slider().getAttribute('aria-disabled')).toBe('false');
 
     r.setFeedback(null); flushSync();
     expect(group().dataset.feedbackIntegration).toBe('authority-unresolved');
-    expect(group().textContent).toContain('RF ?');
-    expect(group().textContent).toContain('SQL ?');
+    // MOR-2527: the unresolved state stays distinct from both neighbors
+    // without placeholder text — `data-observed` and the disabled slider
+    // carry the distinction, and the value slots render NO text (the
+    // heading labels stay), never a `?`.
+    expect(group().dataset.observed).toBe('false');
+    expect(group().querySelector('[data-testid="rf-front-end-rf-sql-rf-value"]')!.textContent).toBe('');
+    expect(group().querySelector('[data-testid="rf-front-end-rf-sql-sql-value"]')!.textContent).toBe('');
     expect(slider().getAttribute('aria-disabled')).toBe('true');
 
     r.setFeedback(commandFeedback()); flushSync();
     expect(group().dataset.feedbackIntegration).toBe('command-feedback');
+    expect(group().dataset.observed).toBe('true');
     expect(group().textContent).toContain('RF 50%');
     expect(group().textContent).toContain('SQL 20%');
     expect(slider().getAttribute('aria-disabled')).toBe('false');

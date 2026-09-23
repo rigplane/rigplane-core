@@ -721,7 +721,8 @@ describe('common MOD-input selector reaches the existing mode handler (MOR-2366)
     h.state = liveState({ dataOffModInput: null });
     render();
     expect(selectSource(0).disabled).toBe(true);
-    expect(text('mod-source')).toBe('MOD: —');
+    // MOR-2527: an unread source renders the LABEL only — no `MOD: —`.
+    expect(text('mod-source')).toBe('MOD');
     expect(sendCommand).not.toHaveBeenCalled();
   });
 
