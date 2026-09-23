@@ -267,8 +267,15 @@
   // zone, and letting a subtraction bring the legacy twin back would be
   // force-show through the back door — the one thing the plan may never do.
   let declared = $derived(declaredSurfaces(getLayout(skinId)));
+  // MOR-2545 PR2: desktop-v2 joins sdr-test in hosting the semantic scope
+  // row INSIDE SpectrumToolbar (MOR-2358's channel) — the one-row control
+  // block. The gate keeps its four terms: the two toolbar-hosting skins, the
+  // declared `scopeControls` zone, a spectrum, and the hardware scope
+  // source — without a hardware scope the radio-held controls have nothing
+  // honest to say (unlit keys by capability-gated facts), so that case keeps
+  // the PR1 standalone fallback below instead of hosting a dead row.
   let scopeControlsInRegionContent = $derived(
-    skinId === 'sdr-test' && declared.has('scopeControls') && hasSpectrum() && getScopeSource() === 'hardware',
+    (skinId === 'sdr-test' || skinId === 'desktop-v2') && declared.has('scopeControls') && hasSpectrum() && getScopeSource() === 'hardware',
   );
   let semanticDeck = $derived(declared.has('vfo'));
   // R9 — ONE key/unkey authority, and this line is where that count is decided.
@@ -460,13 +467,17 @@
   onresize={positionTxSettings}
 />
 
-{#snippet scopeRegion(scopeControls: Snippet | undefined, managedScope: ManagedScopeRegion | undefined)}
+{#snippet scopeRegion(
+  scopeControls: Snippet | undefined,
+  managedScope: ManagedScopeRegion | undefined,
+  scopeStatus: Snippet | undefined,
+)}
   <section class="content-row">
     <main class="content-center center-column">
       {#if hasAnyScope()}
         <div class="spectrum-slot">
           <div class="spectrum-frame">
-            <SpectrumPanel hideSourceControls={true} hideScopeControls={declared.has('scopeControls')} {scopeControls}
+            <SpectrumPanel hideSourceControls={true} hideScopeControls={declared.has('scopeControls')} {scopeControls} {scopeStatus}
               scopeProjection={managedScope?.projection} scopeDemanded={managedScope?.demanded}
               onScopeDemandChange={managedScope?.setDemand} />
           </div>
@@ -793,8 +804,21 @@
 
       <div class="desktop-controls-center">
         {#if !scopeControlsInRegionContent}{@render instruments.scopeControls()}{/if}
-        {@render instruments.scopeDisplay()}
-        {@render scopeRegion(scopeControlsInRegionContent ? instruments.scopeControls : undefined, instruments.managedScope)}
+        <!-- MOR-2545 PR2: the standalone status line row is gone — whenever
+             the toolbar renders (any scope source), the compact scopeDisplay
+             indicator rides in the row itself and its tooltip carries the
+             text; with no scope at all neither surface has a group to
+             render, so the bare standalone mount is kept only for that
+             empty case. The semantic controls above keep their PR1
+             standalone fallback for every non-hosted source (audio_fft):
+             the fact group exists whenever the scope capability does, so
+             dropping it would strand the controls. -->
+        {#if !hasAnyScope()}{@render instruments.scopeDisplay()}{/if}
+        {@render scopeRegion(
+          scopeControlsInRegionContent ? instruments.scopeControls : undefined,
+          instruments.managedScope,
+          hasAnyScope() ? instruments.scopeDisplay : undefined,
+        )}
       </div>
 
       <div
@@ -1133,6 +1157,11 @@
   .desktop-control-face .content-row { display: flex; flex: 1; min-height: 280px; contain: size; }
   .desktop-control-face .content-center { width: 100%; }
   .desktop-control-face :global(.spectrum-toolbar) { height: auto; min-height: 32px; flex-wrap: wrap; }
+  /* MOR-2545 PR2: the hosted toolbar is ONE row — never wraps, never clips;
+     overflow is handled by container queries (PR1's surface bands + the
+     toolbar's own STEP band), not by wrapping. Higher specificity than the
+     wrap rule above on purpose. */
+  .desktop-control-face :global(.spectrum-toolbar.hosted) { flex-wrap: nowrap; }
   .desktop-control-face :global([data-zone-id='meters']),
   .desktop-control-face .standard-bottom-dock { grid-area: 5 / 1 / 6 / -1; }
   .standard-panel-owner,

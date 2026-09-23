@@ -95,6 +95,7 @@
 
 <script lang="ts">
   import { onDestroy } from 'svelte';
+  import type { Snippet } from 'svelte';
   import ScopeFlatKey from '../components/spectrum/ScopeFlatKey.svelte';
   import ScopeMorePanel from '../components/spectrum/ScopeMorePanel.svelte';
   import {
@@ -115,6 +116,15 @@
     onSpanChange?: (span: number) => void;
     onSpeedChange?: (speed: number) => void;
     onRefChange?: (ref: number) => void;
+    /**
+     * MOR-2545 PR2 — the toolbar's screen-only control group (VIEW, AUTO,
+     * AVG/PEAK, BRT, palette, band-plan layers, the STEP overflow copy),
+     * rendered inside the More panel BELOW the radio-held group. The host
+     * (SpectrumToolbar, via SemanticRadioSurfaces) hands it over through the
+     * `scopeControls` snippet's second parameter; the markup and handlers
+     * stay the host's — this surface only places the group.
+     */
+    moreScreen?: Snippet;
   }
   type RendererSelection =
     | { finiteAppearance?: undefined; rendererContext?: undefined }
@@ -122,7 +132,7 @@
   type Props = ExistingProps & RendererSelection;
   let {
     view, onToggleChange, onChoiceChange, onSpanChange, onSpeedChange, onRefChange,
-    finiteAppearance, rendererContext,
+    moreScreen, finiteAppearance, rendererContext,
   }: Props = $props();
 
   /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine). */
@@ -446,6 +456,14 @@
                     </div>
                   {/if}
                 {/each}
+
+                <!-- MOR-2545 PR2: the host's screen-only group below the
+                     radio-held group — placed here, owned by the toolbar. -->
+                {#if moreScreen}
+                  <div class="scope-more-screen" data-testid="scope-more-screen">
+                    {@render moreScreen()}
+                  </div>
+                {/if}
               {/snippet}
             </ScopeMorePanel>
           {/if}
@@ -548,6 +566,17 @@
     align-items: center;
     gap: 2px;
     white-space: nowrap;
+  }
+
+  /* The host's screen-only group: visually a SECOND group below the
+     radio-held one (divider + its own rows), inside the same panel. */
+  .scope-more-screen {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 4px;
+    padding-top: 8px;
+    border-top: 1px solid var(--v2-border, #2a2a3e);
   }
 
   /* External finite appearance (pre-MOR-2545 stacked groups). */

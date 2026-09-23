@@ -7,6 +7,16 @@
   the hardware channel's own connectivity — and emits NO intent (v3 ADR
   invariant 11): this is a pure readout, never an action surface.
 
+  MOR-2545 PR2 SHAPE: the pre-MOR-2545 three-span status line row is GONE —
+  the same facts render as ONE compact in-row indicator (a tone dot plus the
+  "SRC" chip) whose tooltip and accessible name carry the full text
+  ("SRC hardware · connected · HW on"). UNREAD PARTS ARE OMITTED from that
+  text, never shown as `—`/`?` placeholders; when every part is unread the
+  accessible name falls back to "Scope status" and the tooltip is omitted
+  entirely. The tone dot is the second channel beside the text (never the
+  only one), so it survives forced-colors as a shape with a colour-var
+  fallback.
+
   SCOPE (boundary ruling, 11A verify, carried forward by 12A/12B):
   (1) NEVER scope TUNING. MODE/EDGE/HOLD/REF/etc. are `scopeControls`
       (slice 11A/11A′) and are not duplicated here.
@@ -33,9 +43,6 @@
 <script module lang="ts">
   import type { ScopeDisplayField, ScopeHealthState } from './radio-view-model';
 
-  /** The ONE rendering of "not observed". Never a fabricated default. */
-  export const UNKNOWN_TEXT = '—';
-
   /** Three-tone classification for `health`, mirroring `indicatorTone`
    *  (`components-v2/layout/StatusBar.svelte`) — reproduced, not imported,
    *  because `semantic/` may not import `components-v2/*` (the same ADR
@@ -57,12 +64,21 @@
 
   const usable = (f: ScopeDisplayField<unknown>): boolean =>
     f.availability.structural && f.availability.operational && f.reading.status === 'known';
-  const textOf = (f: ScopeDisplayField<unknown>): string =>
-    f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
-  /** `on`/`off`/unknown for a boolean field — narrows `reading.status` inline
-   *  so the value read is never a stale/impossible union member. */
-  const onOff = (f: ScopeDisplayField<boolean>): string =>
-    f.reading.status === 'known' ? (f.reading.value ? 'on' : 'off') : UNKNOWN_TEXT;
+  /** The indicator's tooltip/accessible-name text: one part per READ fact,
+   *  unread parts omitted — never a `—` placeholder (MOR-2545). */
+  export function indicatorText(sd: {
+    source: ScopeDisplayField<string>;
+    health: ScopeDisplayField<ScopeHealthState>;
+    hardwareConnected: ScopeDisplayField<boolean>;
+  }): string {
+    const parts: string[] = [];
+    if (sd.source.reading.status === 'known') parts.push(`SRC ${sd.source.reading.value}`);
+    if (sd.health.reading.status === 'known') parts.push(String(sd.health.reading.value));
+    if (sd.hardwareConnected.reading.status === 'known') {
+      parts.push(`HW ${sd.hardwareConnected.reading.value ? 'on' : 'off'}`);
+    }
+    return parts.join(' · ');
+  }
 </script>
 
 <script lang="ts">
@@ -78,31 +94,50 @@
 </script>
 
 {#if sd}
+  {@const text = indicatorText(sd)}
   <section
     class="scope-display-surface" data-testid="scope-display-surface" role="status"
-    aria-label="Scope status"
+    aria-label={text || 'Scope status'}
+    title={text || undefined}
   >
     <span
-      class="scope-display-field" data-testid="scope-display-source"
+      class="scope-display-indicator" data-testid="scope-display-indicator"
       data-observed={usable(sd.source)}
-    >SRC {textOf(sd.source)}</span>
-    <span
-      class="scope-display-field" data-testid="scope-display-health"
-      data-observed={usable(sd.health)}
       data-tone={sd.health.reading.status === 'known' ? healthTone(sd.health.reading.value) : 'neutral'}
-    >{textOf(sd.health)}</span>
-    <span
-      class="scope-display-field" data-testid="scope-display-hardware"
-      data-observed={usable(sd.hardwareConnected)}
-    >HW {onOff(sd.hardwareConnected)}</span>
+    >SRC</span>
   </section>
 {/if}
 
 <style>
   /* Structure only — a design language owns colour and must never become the
-     sole state channel (MOR-977, forced-colors). Nothing here animates. */
-  .scope-display-surface { display: flex; align-items: baseline; gap: 0.5rem; }
-  /* Second channel beside `data-observed`, never the only one: the unknown
-     text itself is the primary one and survives forced-colors. */
-  [data-observed='false'] { font-style: italic; }
+     sole state channel (MOR-977, forced-colors). Nothing here animates.
+     MOR-2545 PR2: one compact in-row indicator; the text lives in the
+     section's `title`/`aria-label`, unread parts omitted (see indicatorText). */
+  .scope-display-surface { display: inline-flex; align-items: center; }
+  .scope-display-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 4px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+    color: var(--dl-vfo-unlit-text, var(--v2-text-secondary, inherit));
+  }
+  /* Tone dot — the second channel beside the tooltip text, never the only
+     one; `data-tone` stays machine-readable for tests and forced-colors.
+     Colour comes from the design language's accent vars only — this
+     surface's own stylesheet stays free of literal colours (MOR-977),
+     degrading to currentColor when no skin defines them. */
+  .scope-display-indicator::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .scope-display-indicator[data-tone='green']::before { background: var(--dl-scope-tone-green, var(--v2-accent-green, currentColor)); }
+  .scope-display-indicator[data-tone='yellow']::before { background: var(--dl-scope-tone-yellow, var(--v2-accent-yellow, currentColor)); }
+  .scope-display-indicator[data-tone='red']::before { background: var(--dl-scope-tone-red, var(--v2-accent-red, currentColor)); }
 </style>

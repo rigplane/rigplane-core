@@ -69,14 +69,22 @@
   // tuning-step store. `MobileRadioLayout` passes `true`; `RadioLayout`
   // omits it (defaults `false`, toggle shown) because it owns the driver.
   //
+  // MOR-2545 PR2: `scopeControls` may take a second optional argument — the
+  // toolbar's screen-only More group — and `scopeStatus` is the compact
+  // scope-display indicator snippet the toolbar mounts at the row's right
+  // end (the standalone status line row is gone). Both are pure
+  // pass-throughs to `SpectrumToolbar`, no logic of their own.
+  //
   // `colorRoles` is resolved over the defaults once, and the one resolved
   // record feeds the canvas renderer options, the CSS custom properties the
   // DOM overlay below reads, and the `data-scope-color-roles` JSON on the
   // panel root — one resolution for all three, pinned by `resolves the roles
   // once per mount for both the root attribute and the renderer options`.
   let { hideSourceControls = false, hideScopeControls = false, hideAutoStepToggle = false, scopeControls,
-    scopeProjection, scopeDemanded = true, onScopeDemandChange, colorRoles }: {
-    hideSourceControls?: boolean; hideScopeControls?: boolean; hideAutoStepToggle?: boolean; scopeControls?: Snippet;
+    scopeStatus, scopeProjection, scopeDemanded = true, onScopeDemandChange, colorRoles }: {
+    hideSourceControls?: boolean; hideScopeControls?: boolean; hideAutoStepToggle?: boolean;
+    scopeControls?: Snippet<[allowBare?: boolean, screenGroup?: Snippet]>;
+    scopeStatus?: Snippet;
     scopeProjection?: ScopeDisplayProjection | null;
     scopeDemanded?: boolean; onScopeDemandChange?: (enabled: boolean) => void;
     colorRoles?: Partial<SpectrumColorRoles>;
@@ -993,7 +1001,7 @@
       </button>
     </div>
   {:else}
-  <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} />
+  <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} {scopeStatus} />
   {/if}
   <div
     class="spectrum-split-region"
