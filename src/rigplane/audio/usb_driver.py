@@ -1216,6 +1216,10 @@ class UsbAudioDriver:
             raise TypeError("Audio RX callback must be callable.")
 
         async with self._rx_lock:
+            if self._duplex_stream is not None and not self._duplex_stream.running:
+                # A stored-but-dead duplex stream (its open failed) carries
+                # no RX leg — drop it and open a fresh plain stream below.
+                self._duplex_stream = None
             if self._duplex_stream is not None:
                 # Exclusive same-device: the duplex stream already carries
                 # the RX leg — joining re-points the driver-owned callback.
@@ -1321,6 +1325,34 @@ class UsbAudioDriver:
             selected_rx.name,
         )
 
+    async def _reopen_plain_rx_locked(self, *, reason: str) -> None:
+        """Best-effort return to plain RX; caller holds ``_rx_lock``.
+
+        Shared by the two duplex → plain-RX transitions — ``stop_tx``
+        after a duplex teardown and ``_start_tx_exclusive`` after a
+        failed duplex open: the still-wired ``_rx_callback`` gets a
+        fresh plain stream when possible. An ordinary failure is
+        logged, never raised (the RX demand stays armed for the next
+        ``start_rx`` — the honest-downgrade retry path, MOR-582); a
+        cancellation propagates.
+        """
+        if self._rx_callback is None or self.rx_running:
+            return
+        try:
+            await self._open_rx_stream_locked(
+                sample_rate=None,
+                channels=None,
+                frame_ms=None,
+                allow_sample_rate_fallback=True,
+            )
+        except Exception:
+            logger.warning(
+                "usb-audio: failed to return to plain RX after %s — RX "
+                "demand stays armed for the next start_rx",
+                reason,
+                exc_info=True,
+            )
+
     async def stop_rx(self) -> None:
         """Stop capture loop and close RX stream.
 
@@ -1331,8 +1363,11 @@ class UsbAudioDriver:
         """
         async with self._rx_lock:
             self._rx_callback = None
-            if self._duplex_stream is not None:
+            if self._duplex_stream is not None and self._duplex_stream.running:
                 return
+            # A stored-but-dead duplex stream (its open failed) owns nothing
+            # on the device — drop it and let the plain-RX path below run.
+            self._duplex_stream = None
             stream = self._rx_stream
             self._rx_stream = None
             if stream is not None and stream.running:
@@ -1463,10 +1498,12 @@ class UsbAudioDriver:
         defect), so the TX leg opens as a single full-duplex stream. A
         live plain RX stream yields the device first; RX delivery resumes
         on the SAME driver-owned callback (:attr:`_rx_callback`), so
-        consumers keep their wiring and frames keep flowing. If the duplex
-        open fails, the RX demand stays wired and the next ``start_rx``
-        opens a fresh plain stream (the bus's honest-downgrade retry path,
-        MOR-582). Audio only — no PTT/TX command is involved here.
+        consumers keep their wiring and frames keep flowing. When the
+        duplex open fails, a still-wired RX demand gets its plain stream
+        back on a best-effort basis (:meth:`_reopen_plain_rx_locked` —
+        logged, never raised; a cancel propagates) before the original
+        TX failure reaches the caller. Audio only — no PTT/TX command is
+        involved here.
         """
         async with self._rx_lock, self._tx_lock:
             if self.tx_running:
@@ -1477,12 +1514,20 @@ class UsbAudioDriver:
             self._rx_stream = None
             if rx_stream is not None and rx_stream.running:
                 await rx_stream.stop()
-            await self._open_duplex_stream_locked(
-                sample_rate=sample_rate,
-                channels=channels,
-                frame_ms=frame_ms,
-                allow_sample_rate_fallback=allow_sample_rate_fallback,
-            )
+            try:
+                await self._open_duplex_stream_locked(
+                    sample_rate=sample_rate,
+                    channels=channels,
+                    frame_ms=frame_ms,
+                    allow_sample_rate_fallback=allow_sample_rate_fallback,
+                )
+            except BaseException:
+                # The failed arm already stopped plain RX — hand a
+                # still-wired RX demand its plain stream back (the same
+                # best-effort contract as ``stop_tx``) before the caller
+                # sees TX fail.
+                await self._reopen_plain_rx_locked(reason="the failed duplex open")
+                raise
 
     async def _open_duplex_stream_locked(
         self,
@@ -1564,9 +1609,12 @@ class UsbAudioDriver:
                 stream.start(self._silence_watchdog(self._deliver_rx, fm)),
                 direction="duplex",
             )
-        except (AudioCaptureOpenTimeoutError, asyncio.CancelledError):
-            # Never leave a stuck-open handle wired up as "the" duplex
-            # stream: the next duplex open must create a fresh one.
+        except BaseException:
+            # Never leave a failed open wired up as "the" duplex stream:
+            # a stuck-open timeout/cancel AND an ordinary open error
+            # (PortAudio/AUHAL, e.g. -50) must both drop the handle, or
+            # start_rx/stop_rx treat the dead stream as a live join
+            # target and RX silently strands (MOR-546).
             self._duplex_stream = None
             raise
         self._store_stream_contract(rx_contract)
@@ -1620,27 +1668,8 @@ class UsbAudioDriver:
         # back to a plain RX stream when RX demand is still wired.
         if duplex_stream.running:
             await duplex_stream.stop()
-        if self._rx_callback is None:
-            return
         async with self._rx_lock:
-            if self._rx_callback is None or self.rx_running:
-                return
-            try:
-                await self._open_rx_stream_locked(
-                    sample_rate=None,
-                    channels=None,
-                    frame_ms=None,
-                    allow_sample_rate_fallback=True,
-                )
-            except Exception:
-                # stop_tx must not fail on the RX re-open: the demand stays
-                # wired and the next start_rx opens a fresh stream (the
-                # honest-downgrade retry path, MOR-582).
-                logger.warning(
-                    "usb-audio: failed to return to plain RX after the duplex "
-                    "teardown — RX demand stays armed for the next start_rx",
-                    exc_info=True,
-                )
+            await self._reopen_plain_rx_locked(reason="the duplex teardown")
 
 
 __all__ = [
