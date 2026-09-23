@@ -2050,7 +2050,8 @@ async def test_sql_type_receiver_failure_names_only_its_own_side() -> None:
 @pytest.mark.asyncio
 async def test_ctcss_freq_emits_both_receivers_with_their_own_indices() -> None:
     """MOR-2111: CN00 and CN10 are read independently; each side maps its own
-    index to centiHz for both freq paths (a MAIN echo would fail)."""
+    index to centiHz for both freq paths (a MAIN echo would fail). The SUB
+    read rides the ``dual_rx`` capability: dropping it drops only SUB."""
     radio = _make_radio()
     radio.read_ctcss_tone_index = AsyncMock(
         side_effect=lambda receiver=0: 8 if receiver == 0 else 15
@@ -2068,6 +2069,16 @@ async def test_ctcss_freq_emits_both_receivers_with_their_own_indices() -> None:
     assert by_path["receiver.sub.operator_controls.tone_freq"] == 11090
     assert by_path["receiver.sub.operator_controls.tsql_freq"] == 11090
     assert radio.read_ctcss_tone_index.await_args_list == [call(0), call(1)]
+
+    # Without dual_rx there is no SUB receiver to read CN10 for: MAIN keeps
+    # its pair, SUB is simply absent, and no CN10 read is made.
+    radio.capabilities = radio.capabilities - {"dual_rx"}
+    radio.read_ctcss_tone_index.reset_mock()
+    observations = await adapter.poll_slow_controls()
+    by_path = {str(item.path): item.value for item in observations}
+    assert by_path["receiver.main.operator_controls.tone_freq"] == 8850
+    assert "receiver.sub.operator_controls.tone_freq" not in by_path
+    assert radio.read_ctcss_tone_index.await_args_list == [call(0)]
 
 
 @pytest.mark.asyncio

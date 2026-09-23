@@ -15,7 +15,7 @@ from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.backends.yaesu_cat import radio as yaesu_radio
 from rigplane.backends.yaesu_cat.parser import CatParseError
 from rigplane.backends.yaesu_cat.transport import CatTimeoutError
-from rigplane.commands.command_spec import CatCommandSpec
+from rigplane.commands.command_spec import AbsentCommandSpec, CatCommandSpec
 from rigplane.exceptions import CommandError
 from rigplane.exceptions import ConnectionError as RadioConnectionError
 from rigplane.profiles import TxPolicy
@@ -2446,29 +2446,85 @@ async def test_tone_family_rejects_invalid_receiver_before_io(
     with pytest.raises((TypeError, ValueError), match="receiver"):
         await connected_radio.read_sql_type(receiver)  # type: ignore[arg-type]
     with pytest.raises((TypeError, ValueError), match="receiver"):
+        await connected_radio.set_sql_type(1, receiver=receiver)  # type: ignore[arg-type]
+    with pytest.raises((TypeError, ValueError), match="receiver"):
         await connected_radio.set_repeater_tone(True, receiver=receiver)  # type: ignore[arg-type]
 
     connected_radio._transport.query.assert_not_awaited()
     connected_radio._transport.write.assert_not_awaited()
 
 
+_TONE_FAMILY_COMMANDS = (
+    "get_repeater_tone",
+    "set_repeater_tone",
+    "get_repeater_tsql",
+    "set_repeater_tsql",
+    "get_tone_freq",
+    "set_tone_freq",
+    "get_tsql_freq",
+    "set_tsql_freq",
+)
+
+
+@pytest.mark.parametrize("command", _TONE_FAMILY_COMMANDS)
+def test_supports_command_tone_family_follows_profile(radio, command: str):
+    """On the stock FTX-1 profile every tone-family name reports True: each
+    is composed from CT/CN profile commands, and all of them are declared
+    there. Which name follows which command is pinned below."""
+    assert radio.supports_command(command) is True
+
+
+def _tone_family_radio(config, commands) -> YaesuCatRadio:
+    """A YaesuCatRadio on the real FTX-1 config with *commands* swapped."""
+    return YaesuCatRadio("/dev/null", profile=replace(config, commands=commands))
+
+
 @pytest.mark.parametrize(
-    "command",
+    ("removed", "expected_false"),
     [
-        "get_repeater_tone",
-        "set_repeater_tone",
-        "get_repeater_tsql",
-        "set_repeater_tsql",
-        "get_tone_freq",
-        "set_tone_freq",
-        "get_tsql_freq",
-        "set_tsql_freq",
+        (
+            "get_sql_type",
+            (
+                "get_repeater_tone",
+                "set_repeater_tone",
+                "get_repeater_tsql",
+                "set_repeater_tsql",
+            ),
+        ),
+        ("set_sql_type", ("set_repeater_tone", "set_repeater_tsql")),
+        ("get_ctcss_tone", ("get_tone_freq", "get_tsql_freq")),
+        ("set_ctcss_tone", ("set_tone_freq", "set_tsql_freq")),
     ],
 )
-def test_supports_command_tone_family_follows_profile(radio, command: str):
-    """Each protocol name is exactly as supported as the CT/CN profile
-    commands it is composed from (dependency map, tuner precedent)."""
-    assert radio.supports_command(command) is True
+def test_supports_command_tone_family_dependency_map(
+    config, removed: str, expected_false: tuple[str, ...]
+):
+    """Removing one CT/CN command flips EXACTLY its dependants to False.
+
+    ``supports_command`` routes each tone-family protocol name to the
+    profile commands it is composed from: the repeater toggles follow the
+    ``CT`` pair (the setters read ``CT`` before writing, so removing only
+    ``set_sql_type`` still flips them), and the tone frequencies follow the
+    ``CN`` pair. Every other name must stay True on the same profile, so an
+    emptied or trimmed dependency list cannot pass unnoticed.
+    """
+    commands = {name: spec for name, spec in config.commands.items() if name != removed}
+    radio = _tone_family_radio(config, commands)
+    for command in _TONE_FAMILY_COMMANDS:
+        expected = command not in expected_false
+        assert radio.supports_command(command) is expected, (
+            f"{command} should report {expected} with {removed} removed"
+        )
+
+
+def test_supports_command_tone_family_declared_absent_refuses(config):
+    """A protocol name declared absent reports False even while every CT/CN
+    command it is composed from is present: the dependency map's first gate
+    is the absence declaration itself."""
+    commands = dict(config.commands)
+    commands["get_repeater_tone"] = AbsentCommandSpec("synthetic test absence")
+    radio = _tone_family_radio(config, commands)
+    assert radio.supports_command("get_repeater_tone") is False
 
 
 # -- Repeater shift (OS command, MOR-2111) ----------------------------------

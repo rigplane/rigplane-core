@@ -186,7 +186,9 @@ _CW_SPOT = FieldPath.global_("slow_state", "cw_spot")
 # Both paths are emitted every cycle (including the False derivations) so the
 # store always reflects current state. Per-receiver ``operator_toggles`` like
 # nb/nr/auto_notch, emitted in the slow-control lane; CT0 and CT1 are read
-# independently so one side's failure never hides the other. Raw device code
+# independently, so a failing side's defect names only that side's paths — a
+# MAIN failure means SUB is never read, and a SUB failure aborts the poll,
+# discarding MAIN's emissions from that same poll. Raw device code
 # (cross-vendor calibration is MOR-453).
 _MAIN_REPEATER_TONE = FieldPath.receiver("main", "operator_toggles", "repeater_tone")
 _MAIN_REPEATER_TSQL = FieldPath.receiver("main", "operator_toggles", "repeater_tsql")
@@ -1160,10 +1162,12 @@ class YaesuObservationAdapter:
         # reflects current state. Gated on the ``sql_type`` runtime capability
         # (``CAP_SQL_TYPE``), a dedicated readback capability: ``"ctcss"`` is
         # not a known capability tag (rejected by the rig loader). CT0 and CT1
-        # are read independently so one side's malformed/rejected answer never
-        # hides or relabels the other side, mirroring the ``OS`` routes below;
-        # the SUB read rides the ``dual_rx`` capability. Each emission is
-        # gated independently by per-field policy.
+        # are read independently, so a failing side's defect names only that
+        # side's paths — a MAIN failure means SUB is never read, and a SUB
+        # failure aborts the poll, discarding MAIN's emissions from that same
+        # poll (same read shape as the ``OS`` routes below); the SUB read
+        # rides the ``dual_rx`` capability. Each emission is gated
+        # independently by per-field policy.
         if self._has_runtime_capability("sql_type"):
             ct_routes = ((0, "main", _MAIN_REPEATER_TONE, _MAIN_REPEATER_TSQL),)
             if self._has_runtime_capability("dual_rx"):
