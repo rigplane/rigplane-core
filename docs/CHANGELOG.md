@@ -11,6 +11,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0b6] — 2026-09-23
+
+### Added
+
+- **The FTX-1 gains tone and tone-squelch control in the backend, on
+  MAIN and SUB (MOR-2111).** All eight RepeaterControlCapable methods
+  are implemented on the Yaesu CAT radio over the CT (SQL type) and CN
+  (CTCSS tone frequency) commands, both receiver-routed (MAIN / SUB).
+  Setting a tone frequency validates exact membership in the profile's
+  CTCSS table before any wire traffic; the TSQL frequency getters and
+  setters are aliases of the single CN register; the repeater tone and
+  TSQL toggles derive from CT, read-modify-write, and refuse loudly —
+  writing nothing — when the current code is a DCS/PR FREQ/REV TONE
+  mode. Capability tags stay off in this change; dispatch and tags land
+  separately, so the commands are backend-only in this release.
+
+### Fixed
+
+- **FTX-1 startup no longer hangs with rigctld running in the same
+  process (MOR-2557).** With the embedded rigctld built after the web
+  server (`rigplane station`, `rigplane web --rigctld`), the rigctld
+  bootstrap created a fallback state store and overwrote the web seat's
+  state services on the radio, so the conditional ATT and
+  manual-notch-frequency reads were withheld and the web startup gate
+  waited on those fields forever. The store and model-service lookups
+  now return the services already attached to the radio before creating
+  a fallback.
+
 ## [3.0.0b5] — 2026-09-23
 
 ### Added
@@ -2672,7 +2700,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b5...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b6...HEAD
+[3.0.0b6]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b5...v3.0.0b6
 [3.0.0b5]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b4...v3.0.0b5
 [3.0.0b4]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b3...v3.0.0b4
 [3.0.0b3]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b2...v3.0.0b3
