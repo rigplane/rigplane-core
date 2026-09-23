@@ -930,7 +930,8 @@ def _ftx1_radio(*, tone_tags: bool = False) -> YaesuCatRadio:
     if tone_tags:
         profile = replace(
             profile,
-            capabilities=profile.capabilities | {CAP_REPEATER_TONE, CAP_TSQL},
+            capabilities=frozenset(profile.capabilities)
+            | {CAP_REPEATER_TONE, CAP_TSQL},
         )
     radio = YaesuCatRadio("/dev/null", profile=profile)
     radio._transport._connected = True  # noqa: SLF001
