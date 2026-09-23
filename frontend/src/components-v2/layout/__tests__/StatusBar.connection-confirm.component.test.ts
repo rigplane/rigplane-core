@@ -1,8 +1,9 @@
 /**
  * In-page confirmation for the connection toggle (owner ruling
  * 2026-09-23): the DISCONNECT/CONNECT status-bar button must ask inside
- * the page — the Tauri WebView in RigPlane Pro never shows native
- * `window.confirm` dialogs. Pins, per the ruling:
+ * the page — observed in one RigPlane Pro build: the native confirm did
+ * not appear and DISCONNECT did nothing, so the page no longer relies
+ * on native dialogs. Pins, per the ruling:
  *   - clicking the toggle opens the in-page dialog and does NOT call
  *     `runtime.system.disconnect`/`connect` until confirm;
  *   - confirm dispatches exactly once;
@@ -104,12 +105,14 @@ describe('StatusBar connection toggle (in-page confirm)', () => {
   }
 
   /** The connection toggle, found by its exact rendered action label
-   * ('Disconnect'/'Connect') — the status bar has several control-btns. */
+   * ('Disconnect'/'Connect') — the status bar has several control-btns.
+   * `.find()` yields undefined on a miss, so the guard must be
+   * toBeDefined (not.toBeNull would pass on a missing button). */
   function connectionButton(host: HTMLElement, label: string): HTMLButtonElement {
     const btn = [...host.querySelectorAll<HTMLButtonElement>('button.control-btn')].find(
       (b) => b.querySelector('.btn-label')?.textContent?.trim() === label,
     );
-    expect(btn, `expected the connection toggle labelled ${label}`).not.toBeNull();
+    expect(btn, `expected the connection toggle labelled ${label}`).toBeDefined();
     return btn!;
   }
 

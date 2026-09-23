@@ -3,16 +3,20 @@
    * Generic in-page confirmation dialog.
    *
    * Replaces the native `window.confirm`/`window.alert` calls the status
-   * bar used for connection/power toggles: a Tauri WebView (RigPlane Pro)
-   * never shows native dialogs — `confirm` resolves as "cancel" and the
-   * action silently never runs. Structure and styling tokens follow
+   * bar used for connection/power toggles. Observed in one RigPlane Pro
+   * build: the native confirm did not appear and DISCONNECT did nothing,
+   * while the same build worked in Chromium — so the page no longer
+   * relies on native dialogs. Structure and styling tokens follow
    * `SendReportDialog.svelte`; no new design language.
    *
    * The parent owns the outcome: `onConfirm` runs the action (closing the
    * dialog on success is the parent's job), `onCancel` fires for the
    * Cancel button, Escape, and backdrop clicks. On failure the parent
    * keeps `open` true and passes `error` — the dialog then shows the
-   * error and offers only Close.
+   * error and offers only Close. While `busy` is true the confirm button
+   * is disabled and visibly working (SendReportDialog's pattern); Cancel
+   * stays enabled — cancelling cannot un-dispatch an in-flight action,
+   * the parent just discards its late result.
    */
   import { t } from '$lib/i18n';
 
@@ -24,9 +28,10 @@
     onConfirm: () => void | Promise<void>;
     onCancel: () => void;
     error?: string | null;
+    busy?: boolean;
   };
 
-  let { open, message, confirmLabel, cancelLabel, onConfirm, onCancel, error = null }: Props =
+  let { open, message, confirmLabel, cancelLabel, onConfirm, onCancel, error = null, busy = false }: Props =
     $props();
 
   let modalRoot = $state<HTMLDivElement | null>(null);
@@ -133,9 +138,10 @@
             type="button"
             class="btn btn-primary"
             onclick={() => void onConfirm()}
+            disabled={busy}
             data-testid="confirm-dialog-confirm"
           >
-            {confirmLabel}
+            {busy ? t('common.action.working') : confirmLabel}
           </button>
         </div>
       {/if}
@@ -233,6 +239,11 @@
   .btn:hover:not(:disabled) {
     background: var(--v2-bg-card, #252540);
     border-color: var(--v2-accent-cyan, #06b6d4);
+  }
+
+  .btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
   }
 
   .btn-primary {

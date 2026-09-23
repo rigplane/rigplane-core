@@ -254,12 +254,16 @@
   }
 
   // ── In-page confirmation (owner ruling 2026-09-23) ──
-  // The Tauri WebView (RigPlane Pro) never shows `window.confirm` — it
-  // resolves as "cancel" and the action never runs — so connection and
-  // power toggles confirm inside the page via ConfirmDialog. The parent
-  // owns the outcome: on confirm it runs the action and closes the
-  // dialog on success; on failure the dialog stays open and shows the
-  // error in place of the old `alert`s.
+  // Observed in one RigPlane Pro build: the native confirm did not
+  // appear and DISCONNECT did nothing (the same build works in
+  // Chromium), so the page no longer relies on native dialogs —
+  // connection and power toggles confirm inside the page via
+  // ConfirmDialog. The parent owns the outcome: OK runs the action
+  // exactly once (it is disabled while the action is pending) and
+  // closes the dialog on success; on failure the dialog stays open and
+  // shows the error in place of the old `alert`s. A result is applied
+  // only to the request still pending, so a result from a cancelled
+  // request can never close or annotate a newer confirm.
   type PendingConfirm = {
     message: string;
     action: () => void | Promise<void>;
@@ -268,6 +272,7 @@
   let confirmOpen = $state(false);
   let confirmMessage = $state('');
   let confirmError = $state<string | null>(null);
+  let confirmBusy = $state(false);
   let pendingConfirm: PendingConfirm | null = null;
 
   function requestConfirm(request: PendingConfirm) {
@@ -278,6 +283,9 @@
   }
 
   function handleConfirmCancel() {
+    // Allowed while an action is pending: closing the dialog cannot
+    // un-dispatch it — handleConfirmOk discards the late result because
+    // `pendingConfirm` no longer points at that request.
     confirmOpen = false;
     confirmError = null;
     pendingConfirm = null;
@@ -289,12 +297,20 @@
       confirmOpen = false;
       return;
     }
+    if (confirmBusy) return;
+    confirmBusy = true;
     try {
       await request.action();
-      confirmOpen = false;
-      pendingConfirm = null;
+      if (pendingConfirm === request) {
+        confirmOpen = false;
+        pendingConfirm = null;
+      }
     } catch (err) {
-      confirmError = request.formatError ? request.formatError(err) : String(err);
+      if (pendingConfirm === request) {
+        confirmError = request.formatError ? request.formatError(err) : String(err);
+      }
+    } finally {
+      confirmBusy = false;
     }
   }
 
@@ -315,13 +331,15 @@
     if (radioPowerOn === true) {
       requestConfirm({
         message: t('core.statusbar.power.confirmTurnOff'),
-        action: () => runtime.system.powerOff(),
+        // The state was known when the dialog opened; re-check at OK
+        // time and refuse to dispatch if it has turned unknown since.
+        action: () => (radioPowerOn === null ? undefined : runtime.system.powerOff()),
         formatError: (err) => t('core.statusbar.power.failedTurnOff', { detail: String(err) }),
       });
     } else {
       requestConfirm({
         message: t('core.statusbar.power.confirmTurnOn'),
-        action: () => runtime.system.powerOn(),
+        action: () => (radioPowerOn === null ? undefined : runtime.system.powerOn()),
         formatError: (err) => t('core.statusbar.power.failedTurnOn', { detail: String(err) }),
       });
     }
@@ -527,6 +545,7 @@
   open={confirmOpen}
   message={confirmMessage}
   error={confirmError}
+  busy={confirmBusy}
   confirmLabel={t('common.action.ok')}
   cancelLabel={t('common.action.cancel')}
   onConfirm={handleConfirmOk}

@@ -6,6 +6,7 @@
   "common.action.save": "保存",
   "common.action.cancel": "キャンセル",
   "common.action.ok": "OK",
+  "common.action.working": "処理中…",
   "common.action.retry": "再試行",
   "common.action.close": "閉じる",
   "common.action.copy": "コピー",

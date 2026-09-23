@@ -1,11 +1,13 @@
 /**
  * ConfirmDialog — the in-page replacement for the status bar's native
- * `window.confirm`/`window.alert` calls (owner ruling 2026-09-23: the
- * Pro Tauri WebView never shows native dialogs). Pins the component
- * contract: closed/open rendering and ARIA wiring, confirm/cancel via
- * button, Escape, and backdrop, the error state (error text shown, only
- * Close offered), and the focus contract (Cancel on open, back to the
- * opener on close/unmount).
+ * `window.confirm`/`window.alert` calls (owner ruling 2026-09-23,
+ * after one RigPlane Pro build where the native confirm did not appear
+ * and DISCONNECT did nothing). Pins the component contract: closed/open
+ * rendering and ARIA wiring, confirm/cancel via button, Escape, and
+ * backdrop, the error state (error text shown, only Close offered),
+ * the busy state (confirm disabled and visibly working, Cancel still
+ * enabled), and the focus contract (Cancel on open, back to the opener
+ * on close/unmount).
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mount, unmount, flushSync, tick } from 'svelte';
@@ -18,6 +20,7 @@ type SetupProps = {
   confirmLabel?: string;
   cancelLabel?: string;
   error?: string | null;
+  busy?: boolean;
 };
 
 function setup(props: SetupProps = {}) {
@@ -35,6 +38,7 @@ function setup(props: SetupProps = {}) {
       onConfirm,
       onCancel,
       error: props.error ?? null,
+      busy: props.busy ?? false,
     },
   });
   flushSync();
@@ -131,6 +135,18 @@ describe('ConfirmDialog', () => {
     expect(document.activeElement).toBe(q(target, '[data-testid="confirm-dialog-close"]'));
 
     q(target, '[data-testid="confirm-dialog-close"]')!.click();
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('busy state: confirm is disabled with the working label; Cancel stays enabled', () => {
+    const { target, onConfirm, onCancel } = setup({ busy: true });
+    const ok = q(target, '[data-testid="confirm-dialog-confirm"]') as HTMLButtonElement;
+    expect(ok.disabled).toBe(true);
+    expect(ok.textContent?.trim()).toBe('Working…');
+    const cancel = q(target, '[data-testid="confirm-dialog-cancel"]') as HTMLButtonElement;
+    expect(cancel.disabled).toBe(false);
+    cancel.click();
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(onConfirm).not.toHaveBeenCalled();
   });

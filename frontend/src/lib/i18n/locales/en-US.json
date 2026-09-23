@@ -6,6 +6,7 @@
   "common.action.save": "Save",
   "common.action.cancel": "Cancel",
   "common.action.ok": "OK",
+  "common.action.working": "Working…",
   "common.action.retry": "Retry",
   "common.action.close": "Close",
   "common.action.copy": "Copy",

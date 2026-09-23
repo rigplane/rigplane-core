@@ -78,7 +78,10 @@ vi.mock('../lib/transport/ws-client', () => ({
   onCommandDelivery: () => () => {},
 }));
 vi.mock('$lib/i18n', () => ({
-  t: (key: string) => key,
+  // Interpolate {detail} like the real catalog so failure-text tests
+  // can assert content, not just the key.
+  t: (key: string, params?: Record<string, string>) =>
+    params?.detail !== undefined ? `${key}: ${params.detail}` : key,
   messageFromReasonCode: (code: string) => code,
 }));
 vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
@@ -192,6 +195,33 @@ describe('AppGlobalHost — standalone, with no layout mounted', () => {
     expect(h.powerOn).toHaveBeenCalledTimes(1);
 
     unmount(instance);
+  });
+
+  it('reports a failed power-on inside the page, never via native alert', async () => {
+    h.radioPowerOn = false;
+    h.powerOn.mockRejectedValueOnce(new Error('boom'));
+    const alertSpy = vi.fn();
+    vi.stubGlobal('alert', alertSpy);
+    const instance = mountAt(AppGlobalHost);
+
+    powerEl()?.querySelector<HTMLButtonElement>('.power-on-btn')?.click();
+    await settle();
+    expect(h.powerOn).toHaveBeenCalledTimes(1);
+    expect(alertSpy).not.toHaveBeenCalled();
+
+    // The failure text renders in-page via ConfirmDialog's error state.
+    await vi.waitFor(() =>
+      expect(document.querySelector('[data-testid="confirm-dialog-error"]')?.textContent).toBe(
+        'core.overlay.poweredOff.failedPowerOn: boom',
+      ),
+    );
+    expect(document.querySelector('[data-testid="confirm-dialog-confirm"]')).toBeNull();
+    document.querySelector<HTMLButtonElement>('[data-testid="confirm-dialog-close"]')?.click();
+    await settle();
+    expect(document.querySelector('[data-testid="confirm-dialog-error"]')).toBeNull();
+
+    unmount(instance);
+    vi.unstubAllGlobals();
   });
 
   it('hides the power overlay while power is on or unknown', () => {

@@ -2,7 +2,9 @@
  * MOR-1673 + in-page confirmation (owner ruling 2026-09-23) — StatusBar
  * power-toggle capability gating, truthful unknown-state rendering, and
  * the ConfirmDialog flow that replaced `window.confirm`/`window.alert`
- * (the Tauri WebView in RigPlane Pro never shows native dialogs).
+ * (observed in one RigPlane Pro build: the native confirm did not
+ * appear and DISCONNECT did nothing; the page no longer relies on
+ * native dialogs).
  * Mounts the real StatusBar.svelte with controllable `getRadioPowerOn` /
  * `hasCapability` mocks and pins:
  *   1. a radio without `power_control` renders no power control at all —
@@ -16,7 +18,11 @@
  *      powerOff / powerOn only after explicit confirm — never before,
  *      never via the native dialog;
  *   5. a failing power action reports the error inside the open dialog
- *      (replacing the old `alert`), and Close dismisses it.
+ *      (replacing the old `alert`), and Close dismisses it;
+ *   6. re-entrancy: OK is disabled while the action is pending (a
+ *      second click — even with disabled bypassed — never re-runs it),
+ *      and a result from a cancelled request can never close or
+ *      annotate a newer confirm.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount, flushSync, tick } from 'svelte';
@@ -259,5 +265,77 @@ describe('StatusBar power toggle (MOR-1673, in-page confirm)', () => {
     await tick();
     expect(dialog(host)).toBeNull();
     expect(sys.powerOff).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-entrancy: OK clicked twice while powerOn is pending runs the action exactly once', async () => {
+    power.powerControl = true;
+    power.radioPowerOn = false;
+    let release!: () => void;
+    sys.powerOn.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { release = resolve; }),
+    );
+    const host = render();
+    powerButton(host).click();
+    await tick();
+
+    const ok = dialogButton(host, 'confirm-dialog-confirm');
+    ok.click();
+    await tick();
+    expect(sys.powerOn).toHaveBeenCalledTimes(1);
+    // While the action is pending, OK is disabled and visibly busy
+    // (SendReportDialog's pattern: dimmed + working label).
+    expect(ok.disabled).toBe(true);
+    expect(ok.textContent).toContain('Working');
+
+    // A second click — even with disabled bypassed — must not re-run.
+    ok.removeAttribute('disabled');
+    ok.click();
+    await tick();
+    expect(sys.powerOn).toHaveBeenCalledTimes(1);
+    expect(dialog(host)).not.toBeNull();
+
+    release();
+    await vi.waitFor(() => expect(dialog(host)).toBeNull());
+    expect(sys.powerOn).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancel while pending, then a new confirm: the old result is discarded', async () => {
+    power.powerControl = true;
+    power.radioPowerOn = false;
+    let release!: () => void;
+    sys.powerOn.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { release = resolve; }),
+    );
+    const host = render();
+    powerButton(host).click();
+    await tick();
+    dialogButton(host, 'confirm-dialog-confirm').click();
+    await tick();
+
+    // Cancel while the action is pending: the dialog closes and nothing
+    // new starts (the in-flight powerOn cannot be un-dispatched).
+    dialogButton(host, 'confirm-dialog-cancel').click();
+    await tick();
+    expect(dialog(host)).toBeNull();
+    expect(sys.powerOn).toHaveBeenCalledTimes(1);
+
+    // A fresh confirm opens while the old action is still pending; its
+    // OK is busy-disabled until the old action settles.
+    powerButton(host).click();
+    await tick();
+    expect(dialog(host)).not.toBeNull();
+    const ok = dialogButton(host, 'confirm-dialog-confirm');
+    expect(ok.disabled).toBe(true);
+
+    // The old action's late success must not close the new dialog.
+    release();
+    await vi.waitFor(() => expect(ok.disabled).toBe(false));
+    expect(dialog(host)).not.toBeNull();
+
+    // The new confirm still works on its own terms.
+    ok.click();
+    await vi.waitFor(() => expect(sys.powerOn).toHaveBeenCalledTimes(2));
+    await tick();
+    expect(dialog(host)).toBeNull();
   });
 });

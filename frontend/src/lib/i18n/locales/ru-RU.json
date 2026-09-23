@@ -6,6 +6,7 @@
   "common.action.save": "Сохранить",
   "common.action.cancel": "Отмена",
   "common.action.ok": "ОК",
+  "common.action.working": "Выполняется…",
   "common.action.retry": "Повторить",
   "common.action.close": "Закрыть",
   "common.action.copy": "Копировать",
