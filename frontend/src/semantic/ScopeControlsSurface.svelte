@@ -355,7 +355,7 @@
             ariaExpanded={moreOpen} lit={moreOpen ? true : null} testid="scope-more" width="30px"
             bind:element={moreKeyEl} onclick={() => { moreOpen = !moreOpen; }} />
           {#if moreOpen}
-            <ScopeMorePanel onClose={() => { moreOpen = false; }} returnFocusTo={moreKeyEl}>
+            <ScopeMorePanel onClose={() => { moreOpen = false; }} anchor={moreKeyEl}>
               {#snippet radioHeld()}
                 <!-- Narrow-width overflow copies, shown by the container queries below. -->
                 <div class="scope-more-overflow" data-testid="scope-more-overflow">
@@ -459,7 +459,7 @@
   /* Structure only — a design language owns colour (MOR-977, forced-colors). */
   /* Query container for the row's overflow below; contain-intrinsic-inline-size
      keeps shrink-to-fit hosts (the sdr-test toolbar) from collapsing to 0. */
-  .scope-controls-surface { display: block; min-width: 0; container-type: inline-size; container-name: scope-controls; contain-intrinsic-inline-size: 500px; }
+  .scope-controls-surface { display: block; min-width: 0; container-type: inline-size; container-name: scope-controls; contain-intrinsic-inline-size: 530px; }
 
   /* The ONE always-visible row: never wraps, never reflows a key's box. */
   .scope-controls-row {
@@ -473,13 +473,13 @@
   /* Narrow-width overflow (MOR-2545, coordinator decision): below each band
      the row's DIRECT child (`>` — the More panel sits inside the row's ⋯
      anchor) with that hook hides and its More copy shows. Hide-first:
-     MAIN/SUB, HOLD, REF, SPAN; CTR/FIX and ⋯ always stay. Bands derive from
-     the fixed widths: row ≈ 508; −MAIN/SUB ≈ 410; −HOLD ≈ 356; −REF ≈ 239. */
+     MAIN/SUB, HOLD, REF, SPAN; CTR/FIX and ⋯ always stay. Bands measured in
+     Chromium at the widest case (dual receiver, CTR). */
   .scope-more-overflow { display: contents; }
   .scope-more-overflow > [data-overflow] { display: none; }
-  @container scope-controls (max-width: 499px) { .scope-controls-row > [data-overflow='receiver'] { display: none; } .scope-more-overflow > [data-overflow='receiver'] { display: flex; } }
-  @container scope-controls (max-width: 419px) { .scope-controls-row > [data-overflow='hold'] { display: none; } .scope-more-overflow > [data-overflow='hold'] { display: flex; } }
-  @container scope-controls (max-width: 359px) { .scope-controls-row > [data-overflow='ref'] { display: none; } .scope-more-overflow > [data-overflow='ref'] { display: flex; } }
+  @container scope-controls (max-width: 529px) { .scope-controls-row > [data-overflow='receiver'] { display: none; } .scope-more-overflow > [data-overflow='receiver'] { display: flex; } }
+  @container scope-controls (max-width: 429px) { .scope-controls-row > [data-overflow='hold'] { display: none; } .scope-more-overflow > [data-overflow='hold'] { display: flex; } }
+  @container scope-controls (max-width: 374px) { .scope-controls-row > [data-overflow='ref'] { display: none; } .scope-more-overflow > [data-overflow='ref'] { display: flex; } }
   @container scope-controls (max-width: 299px) { .scope-controls-row > [data-overflow='span'] { display: none; } .scope-more-overflow > [data-overflow='span'] { display: flex; } }
 
   .scope-key-group { display: inline-flex; flex: none; align-items: center; }

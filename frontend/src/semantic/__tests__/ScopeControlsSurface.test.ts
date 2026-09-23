@@ -205,6 +205,7 @@ describe('unread leaves render honestly, never fabricated (MOR-2545 owner rules)
     const r = render(withSc({
       mode: known(0), span: unread(), refDb: unread(), speed: unread(),
       hold: unread(), dual: unread(), duringTx: unread(), vbwNarrow: unread(),
+      edge: unread(), centerType: unread(), rbw: unread(), receiver: unread(),
     }));
     r.openMore();
     const text = r.root()!.textContent ?? '';
@@ -297,17 +298,29 @@ describe('the More panel (⋯)', () => {
     r.dispose();
   });
 
-  it('registers its window keydown listener only while open (MOR-2514 keeps its Esc)', () => {
+  it("places the panel fixed from the ⋯ key's rect, clamped inside the viewport", () => {
+    Object.defineProperty(window, 'innerWidth', { value: 480, configurable: true, writable: true });
+    const r = render(base());
+    // jsdom lays the panel out at 0×0: leftward-from-the-key is rect.right itself.
+    r.el('scope-more')!.getBoundingClientRect = () => ({ right: 700, bottom: 40 }) as DOMRect;
+    r.openMore();
+    expect(r.el('scope-more-panel')!.style.left).toBe('472px'); // 700 clamped to 480 − 8
+    expect(r.el('scope-more-panel')!.style.top).toBe('40px'); // derived from the key's bottom edge
+    r.dispose();
+  });
+
+  it('registers its window keydown/resize/scroll listeners only while open (MOR-2514 keeps its Esc)', () => {
     const add = vi.spyOn(window, 'addEventListener');
     const remove = vi.spyOn(window, 'removeEventListener');
-    const keydown = (spy: typeof add) => spy.mock.calls.filter(([type]) => type === 'keydown').length;
+    const count = (spy: typeof add, type: string) => spy.mock.calls.filter(([t]) => t === type).length;
     const r = render(base());
-    expect(keydown(add)).toBe(0); // closed: no listener at all — Esc belongs to MOR-2514
+    expect(count(add, 'keydown')).toBe(0); // closed: no listener at all — Esc belongs to MOR-2514
     r.openMore();
-    expect(keydown(add)).toBe(1);
+    for (const type of ['keydown', 'resize']) expect(count(add, type), type).toBe(1);
+    expect(add.mock.calls.filter(([t]) => t === 'scroll')[0]![2]).toBe(true); // capture: any scroll closes
     pressEscape();
     expect(r.el('scope-more-panel')).toBeNull();
-    expect(keydown(remove)).toBe(1);
+    for (const type of ['keydown', 'resize', 'scroll']) expect(count(remove, type), type).toBe(1);
     r.dispose();
   });
 });

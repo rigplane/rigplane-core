@@ -2,51 +2,76 @@
   "More" panel for the scope row (MOR-2545 PR1) — an anchored group panel
   that opens under the ⋯ key, over the panorama.
 
-  Close semantics, per the ticket:
-  - Outside click: a fixed transparent backdrop (z-index 999, the existing
-    popover scheme — `ScopeSettingsPopover.svelte`) swallows the click and
-    closes, so a dismiss never retunes the panorama underneath.
-  - Escape: a WINDOW-level keydown handler that exists only while the panel
-    is MOUNTED (registered in onMount, removed in its cleanup) — idempotent,
-    and it never steals Esc from the MOR-2514 frequency-digit release while
-    closed, because closed means no handler at all.
-  - Focus moves INTO the panel on open (the panel root takes it) and back to
-    `returnFocusTo` (the ⋯ key) on close. PR1 mounts only the RADIO-HELD group.
+  Positioning (review round 3, coordinator decision): `position: fixed` from
+  the ⋯ key's rect — computed on open and on window `resize` while open,
+  clamped to the viewport with an 8 px margin: leftward from the key's right
+  edge, shifted right at the left margin; any scroll while open closes it
+  (one capture-phase listener — no polling). Panel and backdrop also promote
+  to the TOP LAYER (popover=manual): the surface's container-type containment
+  and the LCD sidebar's overflow clip would otherwise capture and clip a
+  fixed child; the DOM is unchanged, so the container queries still work.
+
+  Close semantics, per the ticket: outside click lands on a fixed transparent
+  backdrop (z-index 999, the existing popover scheme —
+  `ScopeSettingsPopover.svelte`) that swallows it, so a dismiss never retunes
+  the panorama underneath; Escape is a WINDOW-level keydown handler that
+  exists only while MOUNTED (idempotent — closed means no handler at all, so
+  it never steals Esc from the MOR-2514 frequency-digit release); focus moves
+  INTO the panel on open and back to `anchor` (the ⋯ key) on close. PR1
+  mounts only the RADIO-HELD group.
 -->
 <script lang="ts">
   import { onMount, type Snippet } from 'svelte';
 
   interface Props {
     onClose: () => void;
-    /** Element focus returns to on close — the ⋯ key that opened the panel. */
-    returnFocusTo?: HTMLElement | null;
+    /** The ⋯ key that opened the panel: position derives from its rect; focus returns to it on close. */
+    anchor?: HTMLElement | null;
     /** Radio-held controls group (PR1). */
     radioHeld?: Snippet;
   }
-  let { onClose, returnFocusTo, radioHeld }: Props = $props();
+  let { onClose, anchor, radioHeld }: Props = $props();
 
   let panel: HTMLElement | undefined = $state();
+  let backdrop: HTMLElement | undefined = $state();
+
+  /** Leftward from the key's right edge, shifted right at the left margin, never past the right one. */
+  function place() {
+    if (!panel || !anchor) return;
+    const rect = anchor.getBoundingClientRect();
+    const { offsetWidth: w, offsetHeight: h } = panel;
+    const left = Math.max(8, Math.min(rect.right - w, window.innerWidth - 8 - w));
+    const top = Math.max(8, Math.min(rect.bottom, window.innerHeight - 8 - h));
+    Object.assign(panel.style, { left: `${left}px`, top: `${top}px` });
+  }
 
   onMount(() => {
+    // Top layer where supported; jsdom has no popover API — the panel stays in place there.
+    backdrop?.showPopover?.();
+    panel?.showPopover?.();
+    place();
     panel?.focus();
-    const onKeydown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
+    const onKeydown = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKeydown);
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', onClose, true);
     return () => {
       window.removeEventListener('keydown', onKeydown);
-      returnFocusTo?.focus();
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', onClose, true);
+      anchor?.focus();
     };
   });
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
-<div class="scope-more-backdrop" data-testid="scope-more-backdrop" role="presentation" onclick={onClose}></div>
+<div class="scope-more-backdrop" data-testid="scope-more-backdrop" role="presentation" popover="manual" bind:this={backdrop} onclick={onClose}></div>
 <div
   class="scope-more-panel"
   role="dialog"
   aria-label="More scope controls"
   tabindex="-1"
+  popover="manual"
   bind:this={panel}
   data-testid="scope-more-panel"
 >
@@ -63,14 +88,13 @@
   }
 
   .scope-more-panel {
-    position: absolute;
-    top: 100%;
-    right: 0;
+    position: fixed;
     z-index: 1000;
     display: flex;
     flex-direction: column;
     gap: 6px;
     min-width: 240px;
+    max-width: calc(100vw - 16px);
     padding: 8px;
     background: var(--v2-bg-darkest, #0a0a0f);
     border: 1px solid var(--v2-border, #2a2a3e);
