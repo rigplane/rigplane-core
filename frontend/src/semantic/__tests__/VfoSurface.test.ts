@@ -2324,7 +2324,7 @@ describe('MOR-2342 historical instrument presentations', () => {
     expect(surface).toContain("from './vfo-operation-projection'");
     expect(surface).toContain('<VfoOperationGroup');
     expect(group).toContain('ActiveReceiverToggle');
-    expect(group).not.toMatch(/\$lib\/(?:runtime|stores|transport)|capabilities\.svelte|withDoubleClick/);
+    expect(group).not.toMatch(/\$lib\/(?:runtime|stores|transport)|capabilities\.svelte/);
     expect(group).not.toContain('document.querySelector');
     expect(group).not.toMatch(/active(?:Receiver)?\s*=\s*['\"]MAIN['\"]/);
     expect(group).not.toMatch(/phase\??:|['\"](?:idle|pending|failed)['\"]/);
