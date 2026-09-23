@@ -794,7 +794,9 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     const group = el('rf-sql')!;
     expect(group.dataset.feedbackIntegration).toBe('authority-unresolved');
     expect(levelDriver(group).disabled()).toBe(true);
-    expect(group.textContent).toContain('?');
+    // MOR-2527: unresolved authority renders NO value text — never a `?`.
+    expect(group.querySelector('[data-testid="rf-front-end-rf-sql-rf-value"]')!.textContent).toBe('');
+    expect(group.querySelector('[data-testid="rf-front-end-rf-sql-sql-value"]')!.textContent).toBe('');
   });
 
   it('projects real lifecycle phases and independent terminal outcomes into the mounted pair', () => {
@@ -838,8 +840,8 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     publishAuthority();
     flushSync();
     expect([level('rfGain').disabled(), level('squelch').disabled()]).toEqual([true, true]);
-    expect(el('rfGain')!.textContent).toContain('?');
-    expect(el('squelch')!.textContent).toContain('?');
+    expect(el('rfGain')!.querySelector('output')!.textContent).toBe('');
+    expect(el('squelch')!.querySelector('output')!.textContent).toBe('');
 
     h.session = { state: 'connected', epoch: 9 };
     for (const listener of h.sessionListeners) listener(h.session);
@@ -1088,7 +1090,7 @@ describe('the hosted RF owner survives replaceable presentation layouts', () => 
     flushSync();
     const revoked = level('rfGain');
     expect(revoked.disabled()).toBe(true);
-    expect(el('rfGain')!.textContent).toContain('?');
+    expect(el('rfGain')!.querySelector('output')!.textContent).toBe('');
     revoked.input(0.9, 9);
     expect(h.rfGain).not.toHaveBeenCalled();
     expect([...h.authorityListeners]).toEqual(originalSubscribers);

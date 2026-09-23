@@ -9,7 +9,8 @@
  *      any other unobserved present field — no special-casing — block 2.
  *  (3) every reading renders exactly as the fact group states it — no local
  *      rescale of `nrLevel`/`nbDepth` — block 6.
- *  (4) `unknown` renders as `?`, never a v2 fabricated default — block 2.
+ *  (4) `unknown` renders as EMPTY value text (MOR-2527), never a `?` and
+ *      never a v2 fabricated default — block 2.
  */
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -177,21 +178,43 @@ describe('operational availability decides whether a control is USABLE', () => {
     });
   });
 
-  // Carry-forward (4): an unobserved reading renders '?', never a v2 default
-  // (0 dB, OFF, WIDE) — and never enables the control either.
-  it.each(NUMERIC_FIELDS)('renders "?" and disables "%s" on an unobserved reading', (field) => {
-    const view = withField(base(), field, { unknown: true });
-    withSurface(view, (s) => {
-      expect(isDisabled(s, field)).toBe(true);
-      const text = s.control(field)!.textContent ?? '';
-      expect(text).toContain('?');
-      // MOR-1304/1305 F2: the rendered slider THUMB of an unread level is not
-      // free to claim any position — it must sit at the field's declared
-      // fallback (`numberOf`'s own default), never a mutated stand-in value.
-      const input = s.input(field);
-      if (input) expect(input.value).toBe(String(LEVEL_FALLBACK[field]));
-    });
-  });
+  // Carry-forward (4), MOR-2527: an unobserved level renders NO value text —
+  // never a `?` stand-in, never a v2 default (0 dB, OFF, WIDE) — and never
+  // enables the control either. `fmt` here owns the native level outputs,
+  // `formatValue` in `DspScalarHost.svelte` owns nbLevel/nbWidth.
+  it.each([...DSP_LEVELS.map(([f]) => f), 'nbLevel'] as const)(
+    'renders no value text and disables "%s" on an unobserved reading',
+    (field) => {
+      const view = withField(base(), field, { unknown: true });
+      withSurface(view, (s) => {
+        expect(isDisabled(s, field)).toBe(true);
+        const text = s.control(field)!.textContent ?? '';
+        expect(text).not.toContain('?');
+        expect(text).not.toMatch(/[?—–]|UNKNOWN|N\/A/);
+        // MOR-1304/1305 F2: the rendered slider THUMB of an unread level is not
+        // free to claim any position — it must sit at the field's declared
+        // fallback (`numberOf`'s own default), never a mutated stand-in value.
+        const input = s.input(field);
+        if (input) expect(input.value).toBe(String(LEVEL_FALLBACK[field]));
+      });
+    },
+  );
+
+  // MOR-2527 remainder, retired in this slice: the DSP finite toggles
+  // (NR/NB) are KEYS like the RF front-end's — label only, lit by
+  // `aria-pressed`; an unobserved toggle draws the unlit label with no
+  // `: ?`/`: on`/`: off` text at all.
+  it.each(DSP_TOGGLES.map(([f]) => f))(
+    'renders the unobserved toggle "%s" as the unlit key — no value text',
+    (field) => {
+      const view = withField(base(), field, { unknown: true });
+      withSurface(view, (s) => {
+        expect(isDisabled(s, field)).toBe(true);
+        expect(s.control(field)!.textContent).toBe(field === 'nrActive' ? 'NR' : 'NB');
+        expect(s.control(field)!.textContent).not.toMatch(/[—–?]|UNKNOWN|:\s*(on|off)/i);
+      });
+    },
+  );
 
   // MOR-1304/1305 N1/MD7: the toggle binding must return `undefined` — never `false`
   // — for an unobserved toggle reading, so Svelte OMITS `aria-pressed`
@@ -706,5 +729,12 @@ describe('this surface stays presentation-only', () => {
       expect(text).not.toMatch(/\$lib\/stores/);
       expect(text).not.toMatch(/command-bus/);
     }
+  });
+
+  // MOR-2527: jsdom computes no layout; this checks the width-floor
+  // declarations are written, not that they guarantee no shift. The scalar
+  // host's own floor lives beside it (see DspScalarHost.isolated.test.ts).
+  it('keeps the native level value slot width floor in the surface CSS', () => {
+    expect(source).toMatch(/\.dsp-level > output \{[^}]*min-width: 6ch/);
   });
 });

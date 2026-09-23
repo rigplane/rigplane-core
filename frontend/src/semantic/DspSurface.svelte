@@ -22,15 +22,18 @@
       `agcTimeConstant` field status is not `undeclared` (MOR-2527 — the
       FTX-1 has AGC but no time constant, so the key is NOT DRAWN there).
       A declared-but-unread field keeps the key in place with its label and
-      NO value text — never a `?` stand-in — and the value span reserves its
-      width so the key does not shift when the reading arrives.
+      NO value text — never a `?` stand-in, in the AGC-T key and the native
+      level outputs alike — and the value span reserves its width so the key
+      does not shift when the reading arrives.
   (3) Every reading here is rendered exactly as the fact group states it. No
       range-fallback plumbing, no re-derivation of `controlRangeFromCaps` —
       `nrLevelProjection` carries NR value/domain/usability, `notchFreqDomain`
       carries the manual-notch display domain, and `nbDepth` already arrives
       display-scaled from the adapter.
-  (4) `unknown` renders as `?`, never as a v2 fabricated default (0 dB, OFF,
-      WIDE) — same fail-closed-presentation doctrine as `TxAuxSurface`.
+  (4) `unknown` renders as EMPTY value text, never as a `?` stand-in and
+      never as a v2 fabricated default (0 dB, OFF, WIDE) — the same
+      fail-closed-presentation doctrine as `TxAuxSurface`, taken to the
+      MOR-2527 owner rule (the operator sees no placeholder at all).
 
   Two-level availability (MOR-977/1256): `structural: false` renders NOTHING;
   a present-but-unusable control stays visible and disabled rather than
@@ -70,8 +73,10 @@
     usable(f) ? undefined : 'field-not-observed';
   const numberOf = (f: DspField<number>, fallback: number): number =>
     f.reading.status === 'known' ? f.reading.value : fallback;
+  /** MOR-2527: an unread level renders NO value text — an unlit slot with
+   *  its reserved width, never a `?` stand-in. */
   const fmt = (f: DspField<unknown>, format?: (v: number) => string): string => {
-    if (f.reading.status !== 'known') return '?';
+    if (f.reading.status !== 'known') return '';
     const v = f.reading.value;
     return typeof v === 'boolean' ? (v ? 'on' : 'off') : format ? format(v as number) : String(v);
   };
@@ -109,7 +114,7 @@
   function nrPresentation(dsp: DspViewModel): NrPresentation {
     const unavailable = {
       min: NR_FALLBACK_MIN, max: NR_FALLBACK_MAX, step: NR_FALLBACK_STEP,
-      origin: NR_FALLBACK_MIN, value: NR_FALLBACK_MIN, text: '?', usable: false,
+      origin: NR_FALLBACK_MIN, value: NR_FALLBACK_MIN, text: '', usable: false,
     } as const;
     try {
       const projection = dsp.nrLevelProjection;
@@ -129,7 +134,7 @@
       return {
         ...domain,
         value: projectionUsable ? projection.value : domain.origin,
-        text: projectionUsable ? String(projection.value) : '?',
+        text: projectionUsable ? String(projection.value) : '',
         usable: projectionUsable,
       };
     } catch {
@@ -293,6 +298,10 @@
   .dsp-row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .dsp-level { display: flex; align-items: baseline; gap: 0.5rem; }
   .dsp-name { min-width: 8ch; }
+  /* MOR-2527: the native level value slot keeps its width while the reading
+     is unknown — the key must not shift when the value arrives (6ch covers
+     'NARROW', the widest declared value label). */
+  .dsp-level > output { min-width: 6ch; font-variant-numeric: tabular-nums; }
   .dsp-settings {
     padding: 6px; border: 1px solid var(--v2-border-subtle, rgba(255,255,255,.12));
     border-radius: 3px;

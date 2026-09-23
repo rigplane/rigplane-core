@@ -31,26 +31,25 @@
   dual-RX routing" is a different claim from "the routing prefs were never
   restored", which renders present-and-unobserved. AF level is gated here
   directly (`rx.afLevel.availability.structural`), and its unread reading
-  renders `UNKNOWN_TEXT` with `data-observed="false"`; the other five
-  handles self-gate inside their own host-owned handle.
+  renders no value text — an unlit slot (MOR-2527 owner rule) — with
+  `data-observed="false"`; the other five handles self-gate inside their
+  own host-owned handle.
 -->
 <script module lang="ts">
   import type { RxAudioField } from './radio-view-model';
   import { formatKnownLevel } from './format-level';
-  import { UNKNOWN_TEXT } from './rx-audio-instruments';
 
   export {
-    FOCUS_CHOICES, LINK_LOST_TEXT, MONITOR_MODES, READINESS_LABEL, SPLIT_CHOICES, UNKNOWN_TEXT,
+    FOCUS_CHOICES, LINK_LOST_TEXT, MONITOR_MODES, READINESS_LABEL, SPLIT_CHOICES,
   } from './rx-audio-instruments';
 
   /** Usable ⇔ the radio HAS it, it is readable NOW, and it was actually read. */
   export const usable = (f: RxAudioField<unknown>): boolean =>
     f.availability.structural && f.availability.operational && f.reading.status === 'known';
-  /** Honest text: an unread fact reads as unknown, never as a default. */
-  export const textOf = (f: RxAudioField<unknown>): string =>
-    f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
+  /** MOR-2527: an unread AF level renders no value text — an unlit slot,
+   *  never a `—` placeholder. */
   const afText = (f: RxAudioField<number>): string =>
-    f.reading.status === 'known' ? formatKnownLevel(f.reading.value, 0, 1) : UNKNOWN_TEXT;
+    f.reading.status === 'known' ? formatKnownLevel(f.reading.value, 0, 1) : '';
 </script>
 
 <script lang="ts">
@@ -114,7 +113,11 @@
   .rx-audio-surface { display: flex; flex-direction: column; gap: 0.25rem; }
   .rx-audio-level { display: flex; align-items: baseline; gap: 0.5rem; }
   .rx-audio-name { min-width: 4ch; }
-  /* Second channel beside `data-observed`, never the only one: the unknown
-     text itself is the primary one and survives forced-colors. */
+  /* MOR-2527: the AF readout slot keeps its width ("42%".."100%") while the
+     reading is unread so the row does not shift when the value arrives. */
+  .rx-audio-level > output { min-width: 4ch; }
+  /* Second channel beside `data-observed`, never the only one. MOR-2527: an
+     unobserved slot carries NO value text, so italics mark it without
+     inventing a placeholder; both survive forced-colors. */
   [data-observed='false'] { font-style: italic; }
 </style>

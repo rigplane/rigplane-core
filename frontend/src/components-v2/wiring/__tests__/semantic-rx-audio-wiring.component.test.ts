@@ -182,7 +182,7 @@ import {
   acknowledgeCommand, beginCommand, getCommandLifecycles, resetCommandLifecycle,
 } from '$lib/stores/commands.svelte';
 import { MOD_INPUT_SOURCES, modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
-import { FOCUS_CHOICES, SPLIT_CHOICES, UNKNOWN_TEXT } from '../../../semantic/rx-audio-instruments';
+import { FOCUS_CHOICES, SPLIT_CHOICES } from '../../../semantic/rx-audio-instruments';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 import HostedRadioLayoutFixture from '../../layout/__tests__/fixtures/HostedRadioLayoutFixture.svelte';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
@@ -438,6 +438,26 @@ describe('v2.11.1 monitor and dual-routing behavior in the Standard composition'
     expect(afSlider()?.closest('.vc-hbar')?.classList.contains('hw-illum')).toBe(true);
   });
 
+  // MOR-2527 owner rule, round 4: the DESKTOP face draws the AF row through
+  // `RxAudioInstrumentHost`'s own `afLevelRow` output — not `RxAudioSurface`'s
+  // grouped one — so the unread half is pinned HERE. An unread AF level
+  // renders the literal empty string, never a `—` placeholder.
+  // MUTATION KILLED: putting placeholder text back in `afLevelRow`'s output.
+  it('renders the unread AF level as the literal empty string in the desktop AF row', () => {
+    h.audio = { muted: false, rxEnabled: false, volume: 42 };
+    const state = liveState();
+    state.fieldStatus = {
+      ...state.fieldStatus,
+      'main.afLevel': {
+        storePath: 'main.afLevel', observed: false, freshness: 'unknown', availability: 'missing',
+      },
+    };
+    h.state = state;
+    renderHostedFace('desktop-v2');
+    expect(text('af-value')).toBe('');
+    expect(q('[data-testid="rx-audio-af"]')?.getAttribute('data-observed')).toBe('false');
+  });
+
   it('dispatches dual channel gain through the existing audio-routing handler', () => {
     h.audioRouting = { focus: 'both', split_stereo: false, main_gain_db: -6, sub_gain_db: 2 };
     renderHostedFace('desktop-v2');
@@ -490,7 +510,7 @@ describe('v2.11.1 monitor and dual-routing behavior in the Standard composition'
       expect(output).not.toBeNull();
       expect(output!.textContent).toBe('');
       const rowText = row.textContent ?? '';
-      expect(rowText).not.toContain(UNKNOWN_TEXT);
+      expect(rowText).not.toMatch(/[—–?]|UNKNOWN|N\/A/);
       expect(rowText).not.toMatch(/\d/);
     }
   });
@@ -500,6 +520,12 @@ describe('v2.11.1 monitor and dual-routing behavior in the Standard composition'
   it('keeps the dB readout width floor and tabular-digit declarations in the host CSS', () => {
     expect(RX_AUDIO_HOST_SOURCE).toMatch(/\.rx-audio-gain > output \{[^}]*min-width: 7ch/);
     expect(RX_AUDIO_HOST_SOURCE).toMatch(/\.rx-audio-gain > output \{[^}]*tabular-nums/);
+  });
+
+  // MOR-2527: the focus/split value slot keeps its width floor while the
+  // reading is unknown so the row does not shift when the value arrives.
+  it('keeps the focus/split value slot width floor in the host CSS', () => {
+    expect(RX_AUDIO_HOST_SOURCE).toMatch(/\.rx-audio-row > output \{[^}]*min-width: 4ch/);
   });
 
   it('does not render dual controls for a single-receiver radio', () => {
@@ -640,10 +666,12 @@ describe('routing prefs stay unowned by this layer (MOR-1274 carry-forward 2)', 
   // they had been observed, which is exactly the fabrication slice 3A removed.
   it('reports focus and split as unknown until someone else restores them', () => {
     render();
-    // MOR-2527: the focus value is UNLIT (no text) while unread — never `—`.
+    // MOR-2527: the focus AND split values are UNLIT (no text) while
+    // unread — never a `—` placeholder.
     expect(text('focus-value')).toBe('');
     expect(el('focus')!.textContent).not.toContain('—');
-    expect(text('split-value')).toBe('—');
+    expect(text('split-value')).toBe('');
+    expect(el('split')!.textContent).not.toMatch(/[?—–]|UNKNOWN|N\/A/);
     expect(el('focus')!.dataset.observed).toBe('false');
     expect(el('split')!.dataset.observed).toBe('false');
   });
@@ -679,7 +707,8 @@ describe('common MOD-input selector reaches the existing mode handler (MOR-2366)
     render();
     expect(selectSource(value).disabled).toBe(false);
     expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_data_off_mod_input', { source: value });
-    expect(text('mod-source')).toBe('MOD: LAN');
+    expect(text('mod-source')).toBe('MOD');
+    expect(text('mod-source-value')).toBe('LAN');
     expect(el('mod-input')!.dataset.readiness).toBe('ready');
   });
 
@@ -713,7 +742,9 @@ describe('common MOD-input selector reaches the existing mode handler (MOR-2366)
     h.state = liveState({ dataOffModInput: null });
     render();
     expect(selectSource(0).disabled).toBe(true);
-    expect(text('mod-source')).toBe('MOD: —');
+    // MOR-2527: an unread source renders the LABEL only — no `MOD: —`.
+    expect(text('mod-source')).toBe('MOD');
+    expect(text('mod-source-value')).toBe('');
     expect(sendCommand).not.toHaveBeenCalled();
   });
 
@@ -742,7 +773,8 @@ describe('a MOD-input mismatch keeps exactly one one-click remedy', () => {
     mismatched();
     render();
     expect(el('mod-input')!.dataset.readiness).toBe('mismatch');
-    expect(text('mod-source')).toBe('MOD: MIC');
+    expect(text('mod-source')).toBe('MOD');
+    expect(text('mod-source-value')).toBe('MIC');
   });
 
   // MUTATION KILLED: a remedy button that fires a different command, or none.

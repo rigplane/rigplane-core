@@ -41,13 +41,13 @@ export const FOCUS_CHOICES: readonly AudioFocus[] = ['main', 'sub', 'both'];
  *  1B rule), and it would leave the control permanently dead while routing
  *  is unobserved. `[value, label]`. */
 export const SPLIT_CHOICES = [[true, 'on'], [false, 'off']] as const;
-/** The ONE rendering of "not measured". Never 0, never 'both', never 'off'. */
-export const UNKNOWN_TEXT = '—';
 /** MOR-1384 — audio-link loss without an inferred retry state. */
 export const LINK_LOST_TEXT = 'live audio link lost';
-/** Readiness words. `mismatch` names the consequence, not just the state. */
+/** Readiness words. `mismatch` names the consequence, not just the state.
+ *  MOR-2527: an `unknown` readiness renders NO text — an unlit slot, never
+ *  a `—` placeholder. */
 export const READINESS_LABEL: Record<ModInputReadiness['status'], string> = {
-  'not-applicable': 'n/a', ready: 'LAN', unknown: UNKNOWN_TEXT,
+  'not-applicable': 'n/a', ready: 'LAN', unknown: '',
   mismatch: 'not LAN — web voice TX would modulate from the wrong source',
 };
 
