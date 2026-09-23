@@ -57,6 +57,7 @@
   import ThemePicker from '../controls/ThemePicker.svelte';
   import ManagedTotStatusControl from '../controls/ManagedTotStatusControl.svelte';
   import SendReportDialog from '../dialogs/SendReportDialog.svelte';
+  import ConfirmDialog from '../dialogs/ConfirmDialog.svelte';
   import { runtime } from '$lib/runtime';
   import { t } from '$lib/i18n';
   import {
@@ -252,37 +253,77 @@
     }
   }
 
-  function handleConnectionToggle() {
-    const isConnected = controlState === 'connected';
-    const prompt = isConnected
-      ? t('core.statusbar.connection.confirmDisconnect')
-      : t('core.statusbar.connection.confirmConnect');
-    if (!confirm(prompt)) return;
-    if (isConnected) {
-      runtime.system.disconnect();
-    } else {
-      runtime.system.connect();
+  // ── In-page confirmation (owner ruling 2026-09-23) ──
+  // The Tauri WebView (RigPlane Pro) never shows `window.confirm` — it
+  // resolves as "cancel" and the action never runs — so connection and
+  // power toggles confirm inside the page via ConfirmDialog. The parent
+  // owns the outcome: on confirm it runs the action and closes the
+  // dialog on success; on failure the dialog stays open and shows the
+  // error in place of the old `alert`s.
+  type PendingConfirm = {
+    message: string;
+    action: () => void | Promise<void>;
+    formatError?: (err: unknown) => string;
+  };
+  let confirmOpen = $state(false);
+  let confirmMessage = $state('');
+  let confirmError = $state<string | null>(null);
+  let pendingConfirm: PendingConfirm | null = null;
+
+  function requestConfirm(request: PendingConfirm) {
+    pendingConfirm = request;
+    confirmMessage = request.message;
+    confirmError = null;
+    confirmOpen = true;
+  }
+
+  function handleConfirmCancel() {
+    confirmOpen = false;
+    confirmError = null;
+    pendingConfirm = null;
+  }
+
+  async function handleConfirmOk() {
+    const request = pendingConfirm;
+    if (!request) {
+      confirmOpen = false;
+      return;
+    }
+    try {
+      await request.action();
+      confirmOpen = false;
+      pendingConfirm = null;
+    } catch (err) {
+      confirmError = request.formatError ? request.formatError(err) : String(err);
     }
   }
 
-  async function handlePowerToggle() {
+  function handleConnectionToggle() {
+    const isConnected = controlState === 'connected';
+    requestConfirm({
+      message: isConnected
+        ? t('core.statusbar.connection.confirmDisconnect')
+        : t('core.statusbar.connection.confirmConnect'),
+      action: () => (isConnected ? runtime.system.disconnect() : runtime.system.connect()),
+    });
+  }
+
+  function handlePowerToggle() {
     // Defence in depth: never confirm or dispatch when the power state is
     // unknown.
     if (radioPowerOn === null) return;
     if (radioPowerOn === true) {
-      if (!confirm(t('core.statusbar.power.confirmTurnOff'))) return;
-      try {
-        await runtime.system.powerOff();
-      } catch (err) {
-        alert(t('core.statusbar.power.failedTurnOff', { detail: String(err) }));
-      }
+      requestConfirm({
+        message: t('core.statusbar.power.confirmTurnOff'),
+        action: () => runtime.system.powerOff(),
+        formatError: (err) => t('core.statusbar.power.failedTurnOff', { detail: String(err) }),
+      });
     } else {
-      if (!confirm(t('core.statusbar.power.confirmTurnOn'))) return;
-      try {
-        await runtime.system.powerOn();
-      } catch (err) {
-        alert(t('core.statusbar.power.failedTurnOn', { detail: String(err) }));
-      }
+      requestConfirm({
+        message: t('core.statusbar.power.confirmTurnOn'),
+        action: () => runtime.system.powerOn(),
+        formatError: (err) => t('core.statusbar.power.failedTurnOn', { detail: String(err) }),
+      });
     }
   }
 
@@ -481,6 +522,16 @@
 </div>
 
 <SendReportDialog open={reportOpen} onClose={() => (reportOpen = false)} />
+
+<ConfirmDialog
+  open={confirmOpen}
+  message={confirmMessage}
+  error={confirmError}
+  confirmLabel={t('common.action.ok')}
+  cancelLabel={t('common.action.cancel')}
+  onConfirm={handleConfirmOk}
+  onCancel={handleConfirmCancel}
+/>
 
 <style>
   .control-link-lost {
