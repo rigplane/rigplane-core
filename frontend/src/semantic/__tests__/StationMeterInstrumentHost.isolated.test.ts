@@ -362,7 +362,15 @@ describe('StationMeterInstrumentHost', () => {
 });
 
 
-it('keeps unavailable shared frames and owners while the station omits their seats', () => {
+// MOR-2540 (owner ruling 2026-09-22 22:55 EDT): a TX-only meter keeps its
+// seat unlit on RX; only 'absent' withdraws a seat. The station strip now
+// holds the 'unavailable' power and SWR seats in place — label in place,
+// unlit, no value text, no placeholder — while the shared frames and owners
+// survive untouched. The S meter's own composite half keeps the stricter
+// presence-selection contract (its availability does not toggle with PTT),
+// so an 'unavailable' signal still hides the S caption and the surviving
+// SWR seat makes the composite tile render as the SWR tile.
+it('keeps unavailable shared frames and owners while the station holds their seats unlit', () => {
   const initial = view();
   const { publisher } = render({ view: initial, session: { controlSessionEpoch: 1 } });
   const frames = new Map(stationMeterProbe.frames);
@@ -376,7 +384,15 @@ it('keeps unavailable shared frames and owners while the station omits their sea
     const frame = stationMeterProbe.frames.get(key) as any;
     expect(frame).toBe(frames.get(key));
     expect(key === 'signal' ? frame.field.presence : frame.projection.presence).toBe('unavailable');
-    expect(target.querySelector('[data-testid="meter-' + key + '"]')).toBeNull();
+  }
+  expect(target.querySelector('[data-testid="meter-signal"]')).toBeNull();
+  for (const [key, label] of [['power', 'Po'], ['swr', 'SWR']] as const) {
+    const tile = target.querySelector<HTMLElement>(`[data-testid="meter-${key}"]`);
+    expect(tile).not.toBeNull();
+    expect(tile!.dataset.observed).toBe('false');
+    expect(tile!.querySelector('.meter-native-label')?.textContent).toBe(label);
+    expect(tile!.querySelector('.meter-native-value')?.textContent).toBe('');
+    expect(tile!.textContent).not.toMatch(/IDLE|\?/);
   }
   expect(publisher.handlers.size).toBe(1);
   expect(motion.bars).toHaveLength(6);
