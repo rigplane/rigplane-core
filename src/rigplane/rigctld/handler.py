@@ -2696,9 +2696,7 @@ class RigctldHandler:
             routed_projection = self._project_routed_func(func, receiver=receiver)
             if routed_projection is not None:
                 return routed_projection
-            return await self._routing.get_func(
-                func, vfo=cmd.vfo_arg, receiver=receiver
-            )
+            return await self._routing.get_func(func, vfo=cmd.vfo_arg)
 
         if func not in _FUNC_GET:
             return _err(HamlibError.EINVAL)
@@ -2772,11 +2770,7 @@ class RigctldHandler:
     ) -> HamlibError:
         if self._routing is not None:
             return HamlibError(
-                (
-                    await self._routing.set_func(
-                        func, on, vfo=vfo_arg, receiver=receiver
-                    )
-                ).error
+                (await self._routing.set_func(func, on, vfo=vfo_arg)).error
             )
 
         if func not in _FUNC_SET:

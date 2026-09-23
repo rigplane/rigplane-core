@@ -172,9 +172,7 @@ class RigctldRouting(Protocol):
     (``"VFOA"``/``"VFOB"``/``"currVFO"`` or ``None``) for vendors
     that need per-receiver routing under ``vfo_opt`` (see issue #1345).
     Defaults to ``None`` for backwards compatibility — implementers
-    that do not care about VFO routing may safely ignore it. The
-    optional ``receiver`` keyword on ``get_func``/``set_func`` carries
-    the handler-resolved backend receiver index for the same routing.
+    that do not care about VFO routing may safely ignore it.
     """
 
     async def get_level(
@@ -184,13 +182,29 @@ class RigctldRouting(Protocol):
         self, level: str, value: float, *, vfo: str | None = None
     ) -> RigctldResponse: ...
     async def get_func(
-        self, func: str, *, vfo: str | None = None, receiver: int = 0
+        self, func: str, *, vfo: str | None = None
     ) -> RigctldResponse: ...
     async def set_func(
-        self, func: str, on: bool, *, vfo: str | None = None, receiver: int = 0
+        self, func: str, on: bool, *, vfo: str | None = None
     ) -> RigctldResponse: ...
     def dump_state(self) -> list[str]: ...
     def get_info(self) -> str: ...
+
+
+def _receiver_for_vfo(vfo: str | None) -> int:
+    """Backend receiver index for a TONE/TSQL request, from the VFO label.
+
+    The public :class:`~rigplane.core.radio_protocol.RigctldRoutingStrategy`
+    carries only ``vfo`` for per-receiver routing, so the SUB-targeted
+    labels (``VFOB`` / a Main-Sub scheme's SUB names) map to receiver 1 on
+    the dual-RX FTX-1, while ``VFOA`` / MAIN names / ``currVFO`` / ``None``
+    stay on receiver 0 (MAIN) — the same routing NB/NR/levels already use.
+    """
+
+    if vfo is None:
+        return 0
+    label = vfo.upper()
+    return 1 if label == "VFOB" or "SUB" in label else 0
 
 
 # ---------------------------------------------------------------------------
@@ -530,12 +544,9 @@ class YaesuRouting:
 
     # -- funcs ---------------------------------------------------------------
 
-    async def get_func(
-        self, func: str, *, vfo: str | None = None, receiver: int = 0
-    ) -> RigctldResponse:
-        # ``vfo`` accepted for protocol conformance (issue #1345); the
-        # handler-resolved ``receiver`` carries the routing instead.
-        del vfo
+    async def get_func(self, func: str, *, vfo: str | None = None) -> RigctldResponse:
+        # ``vfo`` accepted for protocol conformance (issue #1345); TONE/TSQL
+        # derive their per-receiver routing from it below.
         radio = self._radio
 
         if func == "VOX":
@@ -555,6 +566,7 @@ class YaesuRouting:
             self._observe(self.state_path_for_func(func), value)
             return RigctldResponse(values=[str(int(value))])
         if func in ("TONE", "TSQL"):
+            receiver = _receiver_for_vfo(vfo)
             getter = (
                 radio.get_repeater_tone if func == "TONE" else radio.get_repeater_tsql
             )
@@ -570,11 +582,10 @@ class YaesuRouting:
         return _err(HamlibError.EINVAL)
 
     async def set_func(
-        self, func: str, on: bool, *, vfo: str | None = None, receiver: int = 0
+        self, func: str, on: bool, *, vfo: str | None = None
     ) -> RigctldResponse:
-        # ``vfo`` accepted for protocol conformance (issue #1345); the
-        # handler-resolved ``receiver`` carries the routing instead.
-        del vfo
+        # ``vfo`` accepted for protocol conformance (issue #1345); TONE/TSQL
+        # derive their per-receiver routing from it below.
         radio = self._radio
 
         if func == "VOX":
@@ -593,6 +604,7 @@ class YaesuRouting:
             await radio.set_nr(on)
             return _ok()
         if func in ("TONE", "TSQL"):
+            receiver = _receiver_for_vfo(vfo)
             setter = (
                 radio.set_repeater_tone if func == "TONE" else radio.set_repeater_tsql
             )
