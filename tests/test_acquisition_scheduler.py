@@ -17,6 +17,7 @@ import pytest
 
 from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
+    AcquisitionRequest,
     AcquisitionScheduler,
     AcquisitionStatus,
     DeclaredCommandDefect,
@@ -1065,41 +1066,63 @@ def test_ic7610_global_meter_query_for_path() -> None:
 
 
 def test_ic7610_real_profile_comp_vd_id_meters_are_enrolled_and_sent() -> None:
-    """MOR-485: comp/vd/id are enrolled via stream_like_meters and now poll.
+    """MOR-485/MOR-2540: comp/vd/id are enrolled via stream_like_meters and poll.
 
-    With the query mapping present they must reach the executor's sent_paths
-    (no `no_civ_query_mapping` failure), proving the scheduler can emit them.
+    vd/id are unconditional supply telemetry: due and sent while PTT is false
+    (RX). comp is a TX-only meter since MOR-2540 (``tx_only = true`` in
+    rigs/ic7610.toml), so the scheduler gates it on PTT exactly like the
+    IC-7300 tx_only cases: not due and never sent while ``tx_active`` is
+    false, fired immediately once ``tx_active`` is true.
     """
     acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
     assert acquisition is not None
-    meter_paths = (
-        FieldPath.global_("meters", "comp"),
-        FieldPath.global_("meters", "vd"),
-        FieldPath.global_("meters", "id"),
-    )
+    comp = FieldPath.global_("meters", "comp")
+    vd = FieldPath.global_("meters", "vd")
+    id_ = FieldPath.global_("meters", "id")
+    meter_paths = (comp, vd, id_)
     for path in meter_paths:
         assert acquisition.capability_for(path).can_poll is True
 
     clock = FreshnessClock(start=500.0)
     scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
-    requests = scheduler.due_requests()
-    due_paths = {path for request in requests for path in request.paths}
-    assert set(meter_paths) <= due_paths
-
-    sent: list[FieldPath] = []
-    failed: list[FieldPath] = []
-
     executor, _queries = recording_executor(get_radio_profile("IC-7610"))
-    for request in requests:
-        execution = asyncio.run(
-            executor.execute(request, already_sent_paths=frozenset())
-        )
-        sent.extend(execution.sent_paths)
-        failed.extend(execution.failed_paths)
 
-    for path in meter_paths:
-        assert path in sent
-        assert path not in failed
+    def run(
+        requests: tuple[AcquisitionRequest, ...],
+    ) -> tuple[list[FieldPath], list[FieldPath]]:
+        sent: list[FieldPath] = []
+        failed: list[FieldPath] = []
+        for request in requests:
+            execution = asyncio.run(
+                executor.execute(request, already_sent_paths=frozenset())
+            )
+            sent.extend(execution.sent_paths)
+            failed.extend(execution.failed_paths)
+        return sent, failed
+
+    # PTT false: vd/id are due and reach sent_paths with no
+    # `no_civ_query_mapping` failure; the tx_only comp is gated out entirely.
+    rx_requests = scheduler.due_requests(now=clock.now(), tx_active=False)
+    rx_due = {path for request in rx_requests for path in request.paths}
+    assert {vd, id_} <= rx_due
+    assert comp not in rx_due
+
+    sent, failed = run(rx_requests)
+    assert vd in sent
+    assert id_ in sent
+    assert vd not in failed
+    assert id_ not in failed
+    assert comp not in sent
+
+    # PTT true: the gated comp cadence group fires (its cadence clock was left
+    # untouched by the RX calls) and the query is sent without failure.
+    tx_requests = scheduler.due_requests(now=clock.now(), tx_active=True)
+    tx_due = {path for request in tx_requests for path in request.paths}
+    assert comp in tx_due
+
+    sent, failed = run(tx_requests)
+    assert comp in sent
+    assert comp not in failed
 
 
 def test_ic7610_real_profile_sub_operator_controls_query_for_path() -> None:
