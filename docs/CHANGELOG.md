@@ -24,20 +24,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   setters are aliases of the single CN register; the repeater tone and
   TSQL toggles derive from CT, read-modify-write, and refuse loudly —
   writing nothing — when the current code is a DCS/PR FREQ/REV TONE
-  mode. Capability tags stay off in this change; dispatch and tags land
-  separately, so the commands are backend-only in this release.
+  mode. Capability tags stay off, and neither the web server nor
+  rigctld dispatches these commands on the FTX-1.
 
 ### Fixed
 
 - **FTX-1 startup no longer hangs with rigctld running in the same
   process (MOR-2557).** With the embedded rigctld built after the web
-  server (`rigplane station`, `rigplane web --rigctld`), the rigctld
-  bootstrap created a fallback state store and overwrote the web seat's
-  state services on the radio, so the conditional ATT and
-  manual-notch-frequency reads were withheld and the web startup gate
-  waited on those fields forever. The store and model-service lookups
-  now return the services already attached to the radio before creating
-  a fallback.
+  server, the rigctld bootstrap created a fallback state store and
+  overwrote the web seat's state services on the radio, so the
+  conditional ATT and manual-notch-frequency reads were withheld and
+  the web startup gate waited on those fields forever. The store and
+  model-service lookups now return the services already attached to
+  the radio before creating a fallback.
 
 ## [3.0.0b5] — 2026-09-23
 
