@@ -661,8 +661,9 @@ def bind_command_intent(
 
 
 def _radio_has_capability(radio: DispatchRadio, capability: str) -> bool:
-    """Read the radio's capability-tag set; a radio that declares none
-    (non-production doubles) is not gated here."""
+    """Read the radio's capability-tag set; a radio that declares no set at
+    all (non-production doubles) answers False for every tag and is refused
+    by the caller like any radio missing the tag."""
     capabilities = getattr(radio, "capabilities", None)
     return isinstance(capabilities, (set, frozenset)) and capability in capabilities
 
