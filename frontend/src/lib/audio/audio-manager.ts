@@ -9,6 +9,7 @@
  */
 
 import { RxPlayer, type RxAudioFocus } from './rx-player';
+import { UI_TELEMETRY_ENABLED, recordUiMetric } from '../diagnostics/ui-telemetry';
 import { TxMic, type TxCodec } from './tx-mic';
 import { setAudioConnected } from '../stores/connection.svelte';
 import { setRxEnabled, setTxEnabled, setTxCodecFallback } from '../stores/audio.svelte';
@@ -321,6 +322,7 @@ class AudioManager {
 
     ws.onmessage = (ev) => {
       if (ev.data instanceof ArrayBuffer) {
+        if (UI_TELEMETRY_ENABLED) recordUiMetric('audioRx', ev.data.byteLength);
         this.rxPlayer.feed(ev.data);
         return;
       }

@@ -1,4 +1,5 @@
 import { toScopeDisplayFrame } from './adapters/scope-adapter';
+import { UI_TELEMETRY_ENABLED, recordUiMetric } from '$lib/diagnostics/ui-telemetry';
 import type { ScopeController, ScopeFrameEvidence } from './scope-controller.svelte';
 import {
   resolveLcdSpectrumFrame,
@@ -90,6 +91,7 @@ export class ScopeFrameHost {
 
   private publish(): void {
     if (this.disposed) return;
+    const started = UI_TELEMETRY_ENABLED ? performance.now() : 0;
     const presentation = this.snapshotPresentation();
     for (const listener of [...this.listeners.values()]) {
       try {
@@ -105,5 +107,6 @@ export class ScopeFrameHost {
         console.warn('Scope frame host subscriber failed', error);
       }
     }
+    if (UI_TELEMETRY_ENABLED) recordUiMetric('scopePublish', 0, performance.now() - started);
   }
 }

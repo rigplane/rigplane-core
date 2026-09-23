@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { UI_TELEMETRY_ENABLED, recordUiMetric } from '$lib/diagnostics/ui-telemetry';
   import { renderAudioSpectrum, AudioSpectrumRendererState, type SpectrumState } from './audio-spectrum-renderer';
   import type { ControlDisplayDomain, PbtRange } from '$lib/radio/filter-controls';
 
@@ -92,7 +93,9 @@
           contour,
           contourFreq,
         };
+        const started = UI_TELEMETRY_ENABLED ? performance.now() : 0;
         renderAudioSpectrum(ctx, cssWidth, cssHeight, state, rendererState);
+        if (UI_TELEMETRY_ENABLED) recordUiMetric('audioSpectrumDraw', 0, performance.now() - started);
       }
     }
 

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { UI_TELEMETRY_ENABLED, recordUiMetric } from '../../lib/diagnostics/ui-telemetry';
   import {
     SpectrumRenderer,
     defaultSpectrumOptions,
@@ -50,7 +51,11 @@
     const pixels = latestPixels ?? data;
     if (canvas && pixels && cssWidth > 0 && cssHeight > 0) {
       const ctx = canvas.getContext('2d');
-      if (ctx) renderer.render(ctx, pixels, cssWidth, cssHeight, options);
+      if (ctx) {
+        const started = UI_TELEMETRY_ENABLED ? performance.now() : 0;
+        renderer.render(ctx, pixels, cssWidth, cssHeight, options);
+        if (UI_TELEMETRY_ENABLED) recordUiMetric('spectrumDraw', 0, performance.now() - started);
+      }
     }
   }
 
