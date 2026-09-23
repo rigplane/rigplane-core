@@ -975,6 +975,7 @@ def test_repeater_tone_descriptor_binds_bool_and_preserves_ack_shape() -> None:
         ("set_tone_freq", {"freq": 8850}, None, "CN00008;"),
         ("set_tone_freq", {"freq": 8850, "receiver": 1}, None, "CN10008;"),
         ("set_tsql_freq", {"freq": 8850}, None, "CN00008;"),
+        ("set_tsql_freq", {"freq": 8850, "receiver": 1}, None, "CN10008;"),
         (
             "set_repeater_tone",
             {"on": True},
@@ -991,6 +992,12 @@ def test_repeater_tone_descriptor_binds_bool_and_preserves_ack_shape() -> None:
             "set_repeater_tsql",
             {"on": True},
             "CT01",
+            "CT02;",
+        ),
+        (
+            "set_repeater_tsql",
+            {"on": True, "receiver": 1},
+            "CT11",
             "CT12;",
         ),
         (
@@ -1004,9 +1011,11 @@ def test_repeater_tone_descriptor_binds_bool_and_preserves_ack_shape() -> None:
         "tone-freq-main",
         "tone-freq-sub",
         "tsql-freq-shares-cn",
+        "tsql-freq-sub",
         "tone-on-from-off",
         "tone-on-sub",
         "tsql-on-from-tone-only",
+        "tsql-on-from-tone-only-sub",
         "tsql-off-from-both",
     ),
 )
@@ -1140,20 +1149,44 @@ def test_ftx1_supports_command_admits_both_receivers_for_tone(command: str) -> N
 
 
 @pytest.mark.parametrize(
-    "removed", ["get_sql_type", "set_sql_type", "get_ctcss_tone", "set_ctcss_tone"]
+    ("removed", "expected_false"),
+    [
+        (
+            "get_sql_type",
+            (
+                "get_repeater_tone",
+                "set_repeater_tone",
+                "get_repeater_tsql",
+                "set_repeater_tsql",
+            ),
+        ),
+        ("set_sql_type", ("set_repeater_tone", "set_repeater_tsql")),
+        ("get_ctcss_tone", ("get_tone_freq", "get_tsql_freq")),
+        ("set_ctcss_tone", ("set_tone_freq", "set_tsql_freq")),
+    ],
 )
-@pytest.mark.parametrize(
-    "command",
-    ["set_repeater_tone", "set_repeater_tsql", "set_tone_freq", "set_tsql_freq"],
-)
-def test_supports_command_receiver_form_refuses_without_the_profile_command(
-    removed: str, command: str
+@pytest.mark.parametrize("receiver", [1, 0])
+def test_supports_command_receiver_form_follows_the_tone_family_dependency_map(
+    removed: str, expected_false: tuple[str, ...], receiver: int
 ) -> None:
+    """The receiver form routes each tone name through the SAME dependency
+    map the plain form pinned in ``test_ftx1_radio`` (PR-A): the repeater
+    toggles follow the ``CT`` pair (their setters read ``CT`` before
+    writing, so removing ``get_sql_type`` flips them too) and the tone
+    frequencies follow the ``CN`` pair. Removing one profile command flips
+    EXACTLY its dependants to False; every other name stays True on the
+    same profile, so an emptied or widened dependency list cannot pass
+    unnoticed."""
     config = load_rig(_RIGS_DIR / "ftx1.toml")
     commands = {name: spec for name, spec in config.commands.items() if name != removed}
     radio = YaesuCatRadio("/dev/null", profile=replace(config, commands=commands))
 
-    assert radio.supports_command(command, receiver=1) is False
+    for command in _TONE_FAMILY_FOR_RECEIVER_FORM:
+        expected = command not in expected_false
+        assert radio.supports_command(command, receiver=receiver) is expected, (
+            f"{command} should report {expected} with {removed} removed "
+            f"for receiver={receiver}"
+        )
 
 
 @pytest.mark.parametrize("command", ["set_tone_freq", "set_repeater_tone"])
