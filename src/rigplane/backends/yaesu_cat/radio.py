@@ -258,8 +258,12 @@ class YaesuCatRadio:
         await self._audio_driver.stop_rx()
         await self._audio_driver.stop_tx()
         # MOR-546: an armed exclusive duplex stream is closed by neither
-        # stop_rx nor stop_tx alone — close it explicitly (no-op otherwise).
-        await self._audio_driver.stop_duplex()
+        # stop_rx nor stop_tx alone — close it explicitly. Read with
+        # getattr (the additive duck-typed pattern audio_duplex_mode
+        # already uses): older test doubles predate the duplex surface.
+        stop_duplex = getattr(self._audio_driver, "stop_duplex", None)
+        if stop_duplex is not None:
+            await stop_duplex()
         await self._transport.close()
 
     async def __aenter__(self) -> "YaesuCatRadio":
