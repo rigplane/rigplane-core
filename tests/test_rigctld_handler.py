@@ -4206,9 +4206,11 @@ def _seed_store_current(store: StateStore, path: str, value: object) -> None:
 
     Mirrors a live store after ``connect``: the generation is begun first,
     then the observation is bound to it (``apply_current``), never applied
-    at generation 0.
+    at generation 0. A second call joins the same window — beginning
+    another generation would retire the earlier seed's observation.
     """
-    store.begin_provider_generation()
+    if store.provider_generation == 0:
+        store.begin_provider_generation()
     store.apply_current(
         Observation(
             path=FieldPath.parse(path),
@@ -4561,9 +4563,6 @@ async def test_yaesu_tone_no_vfo_arg_follows_active_receiver(
     radio, _ct, writes = _real_ftx1_ct_radio()
     store = StateStore()
     _seed_store_current(store, "global.slow_state.active", active)
-    _seed_store_current(
-        store, f"receiver.{active.lower()}.operator_toggles.repeater_tone", False
-    )
     handler = RigctldHandler(radio, RigctldConfig(), state_store=store)
 
     assert (await handler.execute(_vfo_func_cmd("set_func", None, "TONE", "1"))).ok
