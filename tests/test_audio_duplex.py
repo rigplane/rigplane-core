@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import struct
+import threading
 import types
 
 import pytest
@@ -32,7 +33,7 @@ from rigplane.audio.backend import (
     PortAudioBackend,
     RxStreamHealth,
 )
-from rigplane.audio.usb_driver import UsbAudioDriver
+from rigplane.audio.usb_driver import AudioCaptureOpenTimeoutError, UsbAudioDriver
 from rigplane.audio_bridge import AudioBridge
 
 DUPLEX_DEVICE = AudioDeviceInfo(
@@ -683,15 +684,21 @@ def _patch_exclusive(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _exclusive_driver(
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    capture_open_timeout: float | None = None,
 ) -> tuple[UsbAudioDriver, FakeAudioBackend]:
     """Shipping driver on a strict same-device fake, policy = exclusive."""
     _patch_exclusive(monkeypatch)
     backend = FakeAudioBackend(devices=[DUPLEX_DEVICE], strict_device_exclusive=True)
+    extra: dict[str, float] = {}
+    if capture_open_timeout is not None:
+        extra["capture_open_timeout"] = capture_open_timeout
     driver = UsbAudioDriver(
         rx_device="USB Audio CODEC",
         tx_device="USB Audio CODEC",
         backend=backend,
         rx_audio_channel="left",
+        **extra,
     )
     return driver, backend
 
@@ -888,3 +895,127 @@ class TestIcomSerialExclusiveDuplexTx:
         # Teardown closes everything — nothing left running.
         all_streams = backend.rx_streams + backend.tx_streams + backend.duplex_streams
         assert not any(s.running for s in all_streams)
+
+
+# ---------------------------------------------------------------------------
+# MOR-546 B1 — a FAILED exclusive duplex open must not leave RX dead
+# ---------------------------------------------------------------------------
+
+
+def _auhal_minus50() -> None:
+    """The ordinary (non-timeout) error a real ``sd.Stream`` open raises."""
+    raise OSError(-50, "PaMacCore (AUHAL) err='-50' injected open failure")
+
+
+def _assert_rx_alive(
+    driver: UsbAudioDriver,
+    backend: FakeAudioBackend,
+    received: list[bytes],
+) -> None:
+    """Exactly one RX stream is RUNNING and frames reach the callback."""
+    assert driver.rx_running
+    running = [s for s in backend.rx_streams if s.running]
+    assert len(running) == 1, "no running RX stream after the failed TX arm"
+    running[0].inject_frame(b"\xf0\x0f")
+    assert received[-1] == b"\xf0\x0f"
+
+
+class TestExclusiveFailedDuplexOpen:
+    """MOR-546 B1 regression: base recovered RX after a failed exclusive
+    TX arm; the duplex rework left it silently dead (stored dead stream,
+    start_rx/stop_rx joining it, no plain-RX restore)."""
+
+    @pytest.mark.asyncio()
+    async def test_session_order_stop_rx_failed_tx_then_restart(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AudioSession atomic RX_ONLY→RX_TX: stop_rx, start_tx fails,
+        start_rx — the sequence ``AudioBus.restart_rx`` drives."""
+        driver, backend = _exclusive_driver(monkeypatch)
+        received: list[bytes] = []
+        await driver.start_rx(received.append)
+        await driver.stop_rx()
+        backend.block_duplex_open = _auhal_minus50
+        with pytest.raises(OSError):
+            await driver.start_tx()
+        backend.block_duplex_open = None
+        await driver.start_rx(received.append)
+        _assert_rx_alive(driver, backend, received)
+
+    @pytest.mark.asyncio()
+    async def test_poller_order_failed_tx_over_live_rx_restores_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Poller/CLI order: start_tx over a LIVE plain RX stream fails —
+        RX must come back on its own, and stop/start cycles keep healing."""
+        driver, backend = _exclusive_driver(monkeypatch)
+        received: list[bytes] = []
+        await driver.start_rx(received.append)
+        backend.block_duplex_open = _auhal_minus50
+        with pytest.raises(OSError):
+            await driver.start_tx()
+        _assert_rx_alive(driver, backend, received)
+        for _ in range(3):
+            await driver.stop_rx()
+            await driver.start_rx(received.append)
+            _assert_rx_alive(driver, backend, received)
+
+    @pytest.mark.asyncio()
+    async def test_open_timeout_restores_rx(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        driver, backend = _exclusive_driver(monkeypatch, capture_open_timeout=0.05)
+        received: list[bytes] = []
+        await driver.start_rx(received.append)
+        gate = threading.Event()
+        backend.block_duplex_open = gate.wait  # stuck duplex open
+        with pytest.raises(AudioCaptureOpenTimeoutError):
+            await driver.start_tx()
+        _assert_rx_alive(driver, backend, received)
+        gate.set()  # release the abandoned background open
+        await asyncio.sleep(0.05)
+
+    @pytest.mark.asyncio()
+    async def test_cancelled_open_restores_rx(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        driver, backend = _exclusive_driver(monkeypatch, capture_open_timeout=5.0)
+        received: list[bytes] = []
+        await driver.start_rx(received.append)
+        gate = threading.Event()
+        backend.block_duplex_open = gate.wait
+        arm = asyncio.create_task(driver.start_tx())
+        await asyncio.sleep(0.1)  # reach the stuck duplex open
+        arm.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await arm
+        _assert_rx_alive(driver, backend, received)
+        gate.set()
+        await asyncio.sleep(0.05)
+
+    @pytest.mark.asyncio()
+    async def test_yaesu_acquire_tx_failure_keeps_session_rx(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Whole stack: YaesuCatRadio + AudioSession.acquire_tx raising —
+        the bus's restart_rx must land on a RUNNING stream, not a dead one."""
+        from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+
+        _patch_yaesu_offline(monkeypatch)
+        driver, backend = _exclusive_driver(monkeypatch)
+        radio = YaesuCatRadio(device="/dev/cu.fake", audio_driver=driver)
+        session = radio.audio_session
+        sub = await session.subscribe_rx("web-audio")
+        try:
+            backend.block_duplex_open = _auhal_minus50
+            with pytest.raises(OSError):
+                await session.acquire_tx("web-tx")
+            backend.block_duplex_open = None
+            assert radio.audio_bus.rx_active
+            running = [s for s in backend.rx_streams if s.running]
+            assert len(running) == 1
+            running[0].inject_frame(b"\x13\x14")
+            pkt = await sub.get(timeout=1.0)
+            assert pkt is not None and pkt.data == b"\x13\x14"
+        finally:
+            await sub.release()
