@@ -1589,12 +1589,10 @@ describe('exactly one key authority on a partially declaring manifest (R9)', () 
  * MOR-1313 put desktop-v2 on the v3 path and, with it, retired the legacy
  * `VfoOps` bridge from the deck. These tests explicitly admit equalize/swap
  * and prove that pair reaches the semantic deck end-to-end through the real
- * RadioLayout mount. They separately prove both composite Quick actions stay
- * absent without dedicated production reachability.
+ * RadioLayout mount.
  */
 describe('the semantic receiver deck carries the VFO ops again (MOR-1321)', () => {
   const ADMITTED_OPS = ['equalize', 'swap'] as const;
-  const QUICK_OPS = ['quick-split', 'quick-dual-watch'] as const;
 
   // MUTATION KILLED: the ops landing in the surface but never being wired at
   // the desktop mount site — every VfoSurface unit test would still pass.
@@ -1607,9 +1605,6 @@ describe('the semantic receiver deck carries the VFO ops again (MOR-1321)', () =
     const deck = render(skinId).querySelector('.receiver-deck')!;
     for (const op of ADMITTED_OPS) {
       expect(deck.querySelector(`[data-vfo-${op}]`), op).not.toBeNull();
-    }
-    for (const op of QUICK_OPS) {
-      expect(deck.querySelector(`[data-vfo-${op}]`), op).toBeNull();
     }
     if (skinId === 'desktop-v2') {
       expect(deck.querySelector('[data-testid="vfo-split-digest"]')).toBeNull();
@@ -1624,7 +1619,7 @@ describe('the semantic receiver deck carries the VFO ops again (MOR-1321)', () =
   it('a single-VFO topology renders no ops in the deck', () => {
     h.caps = capsFor('1/single');
     const deck = render('desktop-v2').querySelector('.receiver-deck')!;
-    for (const op of [...ADMITTED_OPS, ...QUICK_OPS]) {
+    for (const op of ADMITTED_OPS) {
       expect(deck.querySelector(`[data-vfo-${op}]`), op).toBeNull();
     }
     expect(deck.querySelector('[data-testid="vfo-split-digest"]')).toBeNull();

@@ -10,9 +10,7 @@ export type VfoOperationReceiver = Extract<ReceiverId, 'MAIN' | 'SUB'>;
 export type VfoOperationIntent =
   | Readonly<{ kind: 'select-receiver'; receiver: VfoOperationReceiver }>
   | Readonly<{ kind: 'toggle-split' | 'toggle-dual-watch' }>
-  | Readonly<{
-      kind: 'equalize' | 'swap' | 'quick-split' | 'quick-dual-watch' | 'speak';
-    }>
+  | Readonly<{ kind: 'equalize' | 'swap' }>
   | Readonly<{ kind: 'toggle-tuner' | 'toggle-vox' | 'toggle-dial-lock' }>;
 
 export type VfoOperationAvailability = Readonly<{
@@ -25,8 +23,6 @@ export type VfoOperationCallbacks = Readonly<{
   onToggleSplit: (() => void) | undefined; onToggleDualWatch: (() => void) | undefined;
   onSelectMainReceiver: (() => void) | undefined; onSelectSubReceiver: (() => void) | undefined;
   onEqualizeVfos: (() => void) | undefined; onSwapVfos: (() => void) | undefined;
-  onQuickSplit: (() => void) | undefined; onQuickDualWatch: (() => void) | undefined;
-  onSpeak: (() => void) | undefined;
 }>;
 
 export type VfoOperationReasonText = Readonly<{
@@ -102,8 +98,6 @@ export type VfoOperationProjection = Readonly<{
   split: VfoToggleOperation; dualWatch: VfoToggleOperation;
   activeReceiver: VfoReceiverChoiceOperation;
   equalize: VfoActionOperation; swap: VfoActionOperation;
-  quickSplit: VfoActionOperation; quickDualWatch: VfoActionOperation;
-  speak: VfoActionOperation;
   radioFunctions: VfoRadioFunctionsProjection;
   groupReason: string | undefined;
 }>;
@@ -120,7 +114,6 @@ function fallbackActions(input: VfoOperationProjectionInput): DualActionBlockVie
     main: absent, sub: absent,
     equalize: { structural: input.hasVfoPair, operational: input.callbacks.onEqualizeVfos !== undefined },
     swap: { structural: input.hasVfoPair, operational: input.callbacks.onSwapVfos !== undefined },
-    quickSplit: absent, quickDualWatch: absent, speak: absent,
   };
 }
 
@@ -169,13 +162,6 @@ export function projectVfoOperations(
   const functions = input.radioFunctions;
   const splitUnknown = input.split.status === 'unknown';
   const dualWatchUnknown = input.dualWatch.status === 'unknown';
-  const quickSplitReason = input.relativeIdentityUnknown
-    ? input.reasons.identityUnknown
-    : splitUnknown ? input.reasons.splitUnknown : undefined;
-  const quickDualWatchReason = input.relativeIdentityUnknown
-    ? input.reasons.identityUnknown
-    : dualWatchUnknown ? input.reasons.dualWatchUnknown : undefined;
-
   return {
     split: {
       kind: 'toggle',
@@ -208,17 +194,6 @@ export function projectVfoOperations(
     },
     equalize: admitted('equalize', input.callbacks.onEqualizeVfos),
     swap: admitted('swap', input.callbacks.onSwapVfos),
-    quickSplit: admitted(
-      'quickSplit',
-      input.relativeIdentityUnknown || splitUnknown ? undefined : input.callbacks.onQuickSplit,
-      quickSplitReason,
-    ),
-    quickDualWatch: admitted(
-      'quickDualWatch',
-      input.relativeIdentityUnknown || dualWatchUnknown ? undefined : input.callbacks.onQuickDualWatch,
-      quickDualWatchReason,
-    ),
-    speak: admitted('speak', input.callbacks.onSpeak),
     radioFunctions: {
       tuner: functionOperation(functions?.tuner, functions?.onToggleTuner),
       vox: functionOperation(functions?.vox, functions?.onToggleVox),
@@ -261,18 +236,6 @@ export function invokeVfoOperation(
     case 'swap':
       current = projected.swap.availability;
       callback = input.callbacks.onSwapVfos;
-      break;
-    case 'quick-split':
-      current = projected.quickSplit.availability;
-      callback = input.callbacks.onQuickSplit;
-      break;
-    case 'quick-dual-watch':
-      current = projected.quickDualWatch.availability;
-      callback = input.callbacks.onQuickDualWatch;
-      break;
-    case 'speak':
-      current = projected.speak.availability;
-      callback = input.callbacks.onSpeak;
       break;
     case 'toggle-tuner':
       current = projected.radioFunctions.tuner.availability;

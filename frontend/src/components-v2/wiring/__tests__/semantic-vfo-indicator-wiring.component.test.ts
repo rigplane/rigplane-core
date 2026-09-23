@@ -14,7 +14,7 @@ const h = vi.hoisted(() => ({
   state: null as ServerState | null, caps: null as Capabilities | null, noop: vi.fn(),
   txController: null as ManagedAppTxController | null,
   main: vi.fn(), sub: vi.fn(), equalize: vi.fn(), swap: vi.fn(), split: vi.fn(),
-  dualWatch: vi.fn(), speak: vi.fn(),
+  dualWatch: vi.fn(),
   filterWidthFeedback: vi.fn(), cwPitchFeedback: vi.fn(), keySpeedFeedback: vi.fn(),
   txAuxFeedback: vi.fn(),
   session: { state: 'connected', epoch: 1 } as ControlSessionSnapshot,
@@ -72,10 +72,8 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   bindSemanticSurfaceHandlers: () => new Proxy({}, { get: (_target, family) => family === 'vfo'
     ? new Proxy({}, { get: (_vfo, handler) => ({
       onMainVfoClick: h.main, onSubVfoClick: h.sub, onEqual: h.equalize, onSwap: h.swap,
-      onQuickSplit: h.split, onQuickDw: h.dualWatch,
     } as Record<PropertyKey, unknown>)[handler] ?? h.noop })
     : group }),
-  getSystemHandlers: () => ({ onSpeak: h.speak }),
   getDataModeArmed: () => ({ armed: false, value: null }),
   getModInputArmed: () => ({ armed: false, value: null }),
   getBreakInDelayControlFeedback: () => null,
@@ -158,7 +156,7 @@ function state(overrides: Partial<ServerState> = {}): ServerState {
     ...overrides } as unknown as ServerState;
 }
 function caps(vfoScheme: Capabilities['vfoScheme'], receivers: number, dual = receivers === 2): Capabilities {
-  const common = ['vfo_equalize', 'vfo_swap', 'split', 'speech', 'tuner', 'rit', 'xit'];
+  const common = ['vfo_equalize', 'vfo_swap', 'split', 'tuner', 'rit', 'xit'];
   return { model: 'fixture', scope: false, audio: false, tx: true,
     stateContractVersion: 1, providerGeneration: 1,
     capabilities: dual ? ['dual_rx', 'dual_watch', ...common] : common, receivers, vfoScheme,
@@ -277,7 +275,7 @@ beforeEach(() => {
     repeatPolicy: 'latest-target-wins',
   }));
   for (const mock of [
-    h.noop, h.main, h.sub, h.equalize, h.swap, h.split, h.dualWatch, h.speak,
+    h.noop, h.main, h.sub, h.equalize, h.swap, h.split, h.dualWatch,
   ]) mock.mockReset();
 });
 afterEach(() => {
@@ -659,32 +657,29 @@ describe('production receiver-indicator partitioning', () => {
     expect(target.querySelectorAll('[data-dual-action-block]')).toHaveLength(1);
     const cases = [
       ['main', h.main], ['sub', h.sub], ['equalize', h.equalize],
-      ['swap', h.swap], ['speak', h.speak],
+      ['swap', h.swap],
     ] as const;
     expect([...target.querySelectorAll<HTMLElement>('[data-dual-action]')]
       .map((button) => button.dataset.dualAction)).toEqual(cases.map(([id]) => id));
     for (const [action, selected] of cases) {
-      for (const mock of [h.main, h.sub, h.equalize, h.swap, h.split, h.dualWatch, h.speak]) {
+      for (const mock of [h.main, h.sub, h.equalize, h.swap, h.split, h.dualWatch]) {
         mock.mockClear();
       }
       target.querySelector<HTMLButtonElement>(`[data-dual-action="${action}"]`)!.click();
-      for (const mock of [h.main, h.sub, h.equalize, h.swap, h.split, h.dualWatch, h.speak]) {
+      for (const mock of [h.main, h.sub, h.equalize, h.swap, h.split, h.dualWatch]) {
         expect(mock).toHaveBeenCalledTimes(mock === selected ? 1 : 0);
       }
     }
-    expect(target.querySelector('[data-dual-action="quick-split"]')).toBeNull();
-    expect(target.querySelector('[data-dual-action="quick-dual-watch"]')).toBeNull();
   });
 
   it('keeps unavailable SUB and unsupported actions absent/disabled in production wiring', () => {
     render(caps('main_sub', 2, false));
     expect(target.querySelector<HTMLButtonElement>('[data-dual-action="sub"]')?.disabled).toBe(true);
-    expect(target.querySelector('[data-dual-action="quick-dual-watch"]')).toBeNull();
   });
 
   it.each([
-    ['1/single', caps('single', 1), 1], ['1/ab', caps('ab', 1), 3],
-    ['2/ab_shared', caps('ab_shared', 2), 5], ['2/main_sub', caps('main_sub', 2), 5],
+    ['1/single', caps('single', 1), 0], ['1/ab', caps('ab', 1), 2],
+    ['2/ab_shared', caps('ab_shared', 2), 4], ['2/main_sub', caps('main_sub', 2), 4],
   ] as const)('%s keeps shared facts/actions global and absent from receiver strips', (_id, capabilities, actions) => {
     render(capabilities);
     expect(target.querySelectorAll('[data-testid="vfo-shared-indicators"]')).toHaveLength(1);
@@ -707,10 +702,9 @@ describe('production receiver-indicator partitioning', () => {
   it('removes capability-absent actions and keeps unavailable SUB natively disabled', () => {
     const capabilities = caps('main_sub', 2, false);
     capabilities.capabilities = capabilities.capabilities
-      .filter((capability) => capability !== 'vfo_equalize' && capability !== 'speech');
+      .filter((capability) => capability !== 'vfo_equalize');
     render(capabilities);
     expect(target.querySelector('[data-dual-action="equalize"]')).toBeNull();
-    expect(target.querySelector('[data-dual-action="speak"]')).toBeNull();
     expect(target.querySelector<HTMLButtonElement>('[data-dual-action="sub"]')?.disabled).toBe(true);
   });
 });

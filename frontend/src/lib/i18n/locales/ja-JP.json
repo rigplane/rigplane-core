@@ -197,8 +197,6 @@
 
   "core.vfo.ops.equalize": "VFO を等しくする",
   "core.vfo.ops.swap": "VFO を入れ替え",
-  "core.vfo.ops.quickSplit": "クイック split",
-  "core.vfo.ops.quickDualWatch": "クイック dual watch",
   "core.vfo.splitDigest.rx": "RX {frequency}",
   "core.vfo.splitDigest.tx": "TX {frequency}",
 

@@ -200,9 +200,6 @@ export interface VfoOperationInstrumentFamilyV1 {
   readonly activeReceiver: VfoOperationHandleV1 | null;
   readonly equalize: VfoOperationHandleV1 | null;
   readonly swap: VfoOperationHandleV1 | null;
-  readonly quickSplit: VfoOperationHandleV1 | null;
-  readonly quickDualWatch: VfoOperationHandleV1 | null;
-  readonly speak: VfoOperationHandleV1 | null;
 }
 
 export type TxAuxContinuousFormV1 = 'hbar' | 'knob';

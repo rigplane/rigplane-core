@@ -56,7 +56,7 @@
   } from './vfo-layout-tokens';
   import { toVfoProps, toVfoOpsProps } from '$lib/runtime/props/panel-props';
   import {
-    getVfoHandlers, getKeyboardHandlers, getSystemHandlers,
+    getVfoHandlers, getKeyboardHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
   import MobileRadioLayout from './MobileRadioLayout.svelte';
   import LcdLayout from './LcdLayout.svelte';
@@ -393,7 +393,6 @@
   // Command handlers via the sanctioned adapter layer
   const vfoHandlers = getVfoHandlers();
   const keyboardHandlers = getKeyboardHandlers();
-  const systemHandlers = getSystemHandlers();
 
   // Settings modal state
   let settingsOpen = $state(false);
@@ -662,9 +661,6 @@
     {#if instruments.vfoOperations.activeReceiver}<div class="vfo-operation-instrument-seat" data-field="activeReceiver">{@render instruments.vfoOperations.activeReceiver()}</div>{/if}
     {#if instruments.vfoOperations.equalize}<div class="vfo-operation-instrument-seat" data-field="equalize">{@render instruments.vfoOperations.equalize()}</div>{/if}
     {#if instruments.vfoOperations.swap}<div class="vfo-operation-instrument-seat" data-field="swap">{@render instruments.vfoOperations.swap()}</div>{/if}
-    {#if instruments.vfoOperations.quickSplit}<div class="vfo-operation-instrument-seat" data-field="quickSplit">{@render instruments.vfoOperations.quickSplit()}</div>{/if}
-    {#if instruments.vfoOperations.quickDualWatch}<div class="vfo-operation-instrument-seat" data-field="quickDualWatch">{@render instruments.vfoOperations.quickDualWatch()}</div>{/if}
-    {#if instruments.vfoOperations.speak}<div class="vfo-operation-instrument-seat" data-field="speak">{@render instruments.vfoOperations.speak()}</div>{/if}
   </div>
 {/snippet}
 
@@ -855,16 +851,13 @@
         onSwap={vfoHandlers.onSwap}
         onEqual={vfoHandlers.onEqual}
         onSplitToggle={vfoHandlers.onSplitToggle}
-        onQuickSplit={vfoHandlers.onQuickSplit}
         onDualWatchToggle={vfoHandlers.onDualWatchToggle}
-        onQuickDw={vfoHandlers.onQuickDw}
         onMainVfoClick={vfoHandlers.onMainVfoClick}
         onSubVfoClick={vfoHandlers.onSubVfoClick}
         onMainModeClick={vfoHandlers.onMainModeClick}
         onMainFreqChange={vfoHandlers.onMainFreqChange}
         onSubFreqChange={vfoHandlers.onSubFreqChange}
         onSubModeClick={vfoHandlers.onSubModeClick}
-        onSpeak={systemHandlers.onSpeak}
       />
     {/if}
   </section>

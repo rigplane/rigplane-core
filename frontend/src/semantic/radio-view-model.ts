@@ -1168,10 +1168,6 @@ export interface DualActionBlockViewModel {
   sub: RadioWideActionAvailability;
   equalize: RadioWideActionAvailability;
   swap: RadioWideActionAvailability;
-  /** Composite quick intents, distinct from the ordinary split/DW facts. */
-  quickSplit: RadioWideActionAvailability;
-  quickDualWatch: RadioWideActionAvailability;
-  speak: RadioWideActionAvailability;
 }
 
 /**
@@ -1735,17 +1731,12 @@ function validateReceiverIndicator(value: unknown, path: string): ReceiverIndica
 
 function validateDualActionBlock(value: unknown, path: string): DualActionBlockViewModel {
   const v = record(value, path);
-  exactKeys(v, [
-    'main', 'sub', 'equalize', 'swap', 'quickSplit', 'quickDualWatch', 'speak',
-  ], path);
+  exactKeys(v, ['main', 'sub', 'equalize', 'swap'], path);
   return {
     main: validateAvailability(v.main, `${path}.main`),
     sub: validateAvailability(v.sub, `${path}.sub`),
     equalize: validateAvailability(v.equalize, `${path}.equalize`),
     swap: validateAvailability(v.swap, `${path}.swap`),
-    quickSplit: validateAvailability(v.quickSplit, `${path}.quickSplit`),
-    quickDualWatch: validateAvailability(v.quickDualWatch, `${path}.quickDualWatch`),
-    speak: validateAvailability(v.speak, `${path}.speak`),
   };
 }
 

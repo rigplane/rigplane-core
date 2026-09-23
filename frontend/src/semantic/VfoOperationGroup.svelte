@@ -47,9 +47,6 @@
     projection.activeReceiver.availability,
     projection.equalize.availability,
     projection.swap.availability,
-    projection.quickSplit.availability,
-    projection.quickDualWatch.availability,
-    projection.speak.availability,
   ].some((operation) => operation.structural));
   let receiverAvailability = $derived({
     MAIN: projection.activeReceiver.options[0].availability,
@@ -395,31 +392,6 @@
         {#if id}<span {id} class="sr-only">{projection.swap.availability.reason}</span>{/if}
       {/if}
 
-      {#if projection.quickSplit.availability.structural}
-        {@const id = reasonId('quick-split', projection.quickSplit.availability.reason)}
-        <button type="button" class="vfo-op" class:v2-control-button={appearance !== 'semantic'}
-          data-vfo-quick-split data-dual-action="quick-split" aria-label={t('core.vfo.ops.quickSplit')}
-          aria-describedby={id} title={projection.quickSplit.availability.reason} disabled={!projection.quickSplit.availability.operational}
-          onclick={() => emit({ kind: 'quick-split' })}>{t('core.vfo.ops.quickSplit')}</button>
-        {#if id}<span {id} class="sr-only">{projection.quickSplit.availability.reason}</span>{/if}
-      {/if}
-
-      {#if projection.quickDualWatch.availability.structural}
-        {@const id = reasonId('quick-dual-watch', projection.quickDualWatch.availability.reason)}
-        <button type="button" class="vfo-op" class:v2-control-button={appearance !== 'semantic'}
-          data-vfo-quick-dual-watch data-dual-action="quick-dual-watch" aria-label={t('core.vfo.ops.quickDualWatch')}
-          aria-describedby={id} title={projection.quickDualWatch.availability.reason} disabled={!projection.quickDualWatch.availability.operational}
-          onclick={() => emit({ kind: 'quick-dual-watch' })}>{t('core.vfo.ops.quickDualWatch')}</button>
-        {#if id}<span {id} class="sr-only">{projection.quickDualWatch.availability.reason}</span>{/if}
-      {/if}
-
-      {#if projection.speak.availability.structural}
-        {@const id = reasonId('speak', projection.speak.availability.reason)}
-        <button type="button" class="vfo-op" class:v2-control-button={appearance !== 'semantic'}
-          data-dual-action="speak" aria-describedby={id} title={projection.speak.availability.reason ?? 'Speak current frequency aloud'}
-          disabled={!projection.speak.availability.operational} onclick={() => emit({ kind: 'speak' })}>SPEAK</button>
-        {#if id}<span {id} class="sr-only">{projection.speak.availability.reason}</span>{/if}
-      {/if}
     </div>
   {/if}
   {/if}

@@ -1461,21 +1461,6 @@ export function makeVfoHandlers() {
         || !knownA03cTopLevelField(context, 'dualWatch') || typeof on !== 'boolean') return;
       dispatchRadioIntent({ name: 'set_dual_watch', params: { on } });
     },
-    onQuickDw: () => {
-      const context = currentA03cContext();
-      if (!context || context.caps.receivers < 2
-        || !context.caps.capabilities.includes('dual_rx')
-        || !context.caps.capabilities.includes('dual_watch')
-        || !knownA03cTopLevelField(context, 'dualWatch')) return;
-      dispatchRadioIntent({ name: 'quick_dualwatch', params: {} });
-    },
-    onQuickSplit: () => {
-      const context = currentA03cContext();
-      if (!context || context.caps.vfoScheme === 'single'
-        || !context.caps.capabilities.includes('split')
-        || !knownA03cTopLevelField(context, 'split')) return;
-      dispatchRadioIntent({ name: 'quick_split', params: {} });
-    },
     onTrackingToggle: (on: boolean) => {
       const context = currentA03cContext();
       if (!context || context.caps.receivers < 2
@@ -1531,10 +1516,6 @@ export function makeSystemHandlers() {
       const context = currentA03cContext();
       if (!context || !context.caps.capabilities.includes('power_control')) return;
       dispatchRadioIntent({ name: 'set_powerstat', params: { on: false } });
-    },
-    onSpeak: () => {
-      if (!hasCapability('speech')) return;
-      dispatchRadioIntent({ name: 'speak', params: { mode: 0 } });
     },
   };
 }

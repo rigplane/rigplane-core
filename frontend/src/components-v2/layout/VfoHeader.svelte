@@ -42,16 +42,13 @@
     onSwap?: () => void;
     onEqual?: () => void;
     onSplitToggle?: () => void;
-    onQuickSplit?: () => void;
     onDualWatchToggle?: (on: boolean) => void;
-    onQuickDw?: () => void;
     onMainVfoClick?: () => void;
     onSubVfoClick?: () => void;
     onMainModeClick?: () => void;
     onSubModeClick?: () => void;
     onMainFreqChange?: (freq: number) => void;
     onSubFreqChange?: (freq: number) => void;
-    onSpeak?: () => void;
     onScopeDualToggle?: () => void;
     onScopeReceiverChange?: (receiver: 0 | 1) => void;
   }
@@ -66,14 +63,11 @@
     onSwap = () => {},
     onEqual = () => {},
     onSplitToggle = () => {},
-    onQuickSplit = () => {},
     onDualWatchToggle = (_on: boolean) => {},
-    onQuickDw = () => {},
     onMainModeClick,
     onSubModeClick,
     onMainFreqChange,
     onSubFreqChange,
-    onSpeak,
   }: Props = $props();
 
   let dualReceiver = $derived(hasDualReceiver());
@@ -181,9 +175,7 @@
         {onSwap}
         {onEqual}
         {onSplitToggle}
-        {onQuickSplit}
         onDualWatchToggle={() => onDualWatchToggle(!dualWatchActive)}
-        {onQuickDw}
       />
 
       {#if scopeCapable}
@@ -230,11 +222,6 @@
         </div>
       {/if}
 
-      {#if onSpeak}
-        <button type="button" class="speak-btn" title="Speak current frequency aloud" onclick={onSpeak}>
-          SPEAK
-        </button>
-      {/if}
     </div>
   </div>
 </div>
@@ -406,30 +393,6 @@
 
   .scope-digest {
     font-variant-numeric: tabular-nums;
-  }
-
-  .speak-btn {
-    margin-top: 4px;
-    padding: 3px 6px;
-    border: 1px solid var(--v2-border);
-    border-radius: 3px;
-    background: transparent;
-    color: var(--v2-text-subdued);
-    font-family: 'Roboto Mono', monospace;
-    font-size: 8px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    cursor: pointer;
-    transition: all 0.15s;
-  }
-
-  .speak-btn:hover {
-    color: var(--v2-accent-cyan);
-    border-color: var(--v2-accent-cyan);
-  }
-
-  .speak-btn:active {
-    background: rgba(0, 200, 220, 0.1);
   }
 
   @media (max-width: 1024px) {

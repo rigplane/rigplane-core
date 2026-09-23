@@ -1176,19 +1176,11 @@ function deriveRadioWideIndicators(
   const hasVfoPair = caps.vfoScheme !== 'single';
   const equalizeStructural = hasVfoPair && hasCap(caps, 'vfo_equalize');
   const swapStructural = hasVfoPair && hasCap(caps, 'vfo_swap');
-  // A primitive split/DW capability does not prove that a provider consumes
-  // the composite quick intent. No backend-neutral declaration exists yet,
-  // so production must fail closed even though the existing frontend handler
-  // facade remains available for explicitly admitted synthetic models/tests.
-  const compositeUnavailable = availability(false, false);
   const actions: DualActionBlockViewModel = {
     main: availability(dualReceiver, mainOperational),
     sub: availability(dualReceiver, subOperational),
     equalize: availability(equalizeStructural, state !== null),
     swap: availability(swapStructural, state !== null),
-    quickSplit: compositeUnavailable,
-    quickDualWatch: compositeUnavailable,
-    speak: availability(hasCap(caps, 'speech'), true),
   };
 
   return {

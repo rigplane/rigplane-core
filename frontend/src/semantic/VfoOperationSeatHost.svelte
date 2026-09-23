@@ -16,9 +16,6 @@
     activeReceiver: VfoOperationHandle | null;
     equalize: VfoOperationHandle | null;
     swap: VfoOperationHandle | null;
-    quickSplit: VfoOperationHandle | null;
-    quickDualWatch: VfoOperationHandle | null;
-    speak: VfoOperationHandle | null;
   }>;
 
   interface ExistingProps {
@@ -141,19 +138,8 @@
     scheme === null ? t('core.vfo.ops.swap') : vfoSwapLabel(scheme),
     { kind: 'swap' },
   ));
-  const quickSplitSeat = createActionRendererSeat(() => actionInput(
-    projection()?.quickSplit, t('core.vfo.ops.quickSplit'), { kind: 'quick-split' },
-  ));
-  const quickDualWatchSeat = createActionRendererSeat(() => actionInput(
-    projection()?.quickDualWatch, t('core.vfo.ops.quickDualWatch'), { kind: 'quick-dual-watch' },
-  ));
-  const speakSeat = createActionRendererSeat(() => actionInput(
-    projection()?.speak, 'SPEAK', { kind: 'speak' },
-  ));
-
   const seats = [
     splitSeat, dualWatchSeat, receiverSeat, equalizeSeat, swapSeat,
-    quickSplitSeat, quickDualWatchSeat, speakSeat,
   ] as const;
   onDestroy(() => {
     for (const seat of seats) seat.destroy();
@@ -164,7 +150,7 @@
     if (current === null || finiteAppearance === undefined) {
       return {
         split: null, dualWatch: null, activeReceiver: null, equalize: null,
-        swap: null, quickSplit: null, quickDualWatch: null, speak: null,
+        swap: null,
       };
     }
     return {
@@ -173,9 +159,6 @@
       activeReceiver: current.activeReceiver.availability.structural ? activeReceiver : null,
       equalize: current.equalize.availability.structural ? equalize : null,
       swap: current.swap.availability.structural ? swap : null,
-      quickSplit: current.quickSplit.availability.structural ? quickSplit : null,
-      quickDualWatch: current.quickDualWatch.availability.structural ? quickDualWatch : null,
-      speak: current.speak.availability.structural ? speak : null,
     };
   }
 </script>
@@ -205,20 +188,4 @@
     seat={swapSeat} renderer={finiteAppearance.action}
   />{/key}{/key}{/if}
 {/snippet}
-{#snippet quickSplit()}
-  {#if finiteAppearance}{#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
-    seat={quickSplitSeat} renderer={finiteAppearance.action}
-  />{/key}{/key}{/if}
-{/snippet}
-{#snippet quickDualWatch()}
-  {#if finiteAppearance}{#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
-    seat={quickDualWatchSeat} renderer={finiteAppearance.action}
-  />{/key}{/key}{/if}
-{/snippet}
-{#snippet speak()}
-  {#if finiteAppearance}{#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
-    seat={speakSeat} renderer={finiteAppearance.action}
-  />{/key}{/key}{/if}
-{/snippet}
-
 {@render children(handles())}
