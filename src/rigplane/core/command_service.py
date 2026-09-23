@@ -1432,10 +1432,6 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         return FieldPath.receiver(receiver, "operator_controls", "filter_shape")
     if name == "set_data_mode":
         return FieldPath.receiver(receiver, "freq_mode", "data_mode")
-    if name == "set_tone_freq":
-        return FieldPath.receiver(receiver, "operator_controls", "tone_freq")
-    if name == "set_tsql_freq":
-        return FieldPath.receiver(receiver, "operator_controls", "tsql_freq")
     # RX controls (MOR-2425 PR-1b): agc resolves to a declared acquisition
     # capability on IC-7300. apf/audio_peak_filter/digisel_shift/nb_depth/
     # nb_width have a state-model field but no acquisition capability on

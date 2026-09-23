@@ -63,12 +63,10 @@ from ..capabilities import (
     CAP_NR,
     CAP_POWER_CONTROL,
     CAP_PREAMP,
-    CAP_REPEATER_TONE,
     CAP_RX_ANTENNA,
     CAP_SCOPE,
     CAP_SSB_TX_BW,
     CAP_SYSTEM_SETTINGS,
-    CAP_TSQL,
     CAP_TUNER,
     CAP_VOX,
 )
@@ -187,8 +185,6 @@ __all__ = [
     "ScanStart",
     "ScanStop",
     "SendCiv",
-    "SetToneFreq",
-    "SetTsqlFreq",
     "SetMainSubTracking",
     "SetSsbTxBandwidth",
     "SetManualNotchWidth",
@@ -458,8 +454,6 @@ from .._poller_types import (  # noqa: E402
     SetSsbTxBandwidth,
     SetSystemDate,
     SetSystemTime,
-    SetToneFreq,
-    SetTsqlFreq,
     SetTunerStatus,
     SetTuningStep,
     SetTwinPeak,
@@ -1155,29 +1149,6 @@ class RadioPoller:
         raise NotImplementedError(
             "radio-poller unsupported: unknown profile-less radio"
         )
-
-    def _validated_ctcss_centihz(self, value: Any) -> int:
-        """Return one exact neutral CTCSS value from the active profile domain.
-
-        The profile loader remains the only owner of catalog resolution and
-        detailed CTCSS limits.  This runtime boundary deliberately performs
-        no model selection, unit conversion, or fallback: it only rejects a
-        profile object that does not carry the loader's immutable, ascending
-        integer-domain shape and rejects values outside that exact domain.
-        """
-
-        domain = self._profile.ctcss_tones_centihz
-        if (
-            type(value) is not int
-            or type(domain) is not tuple
-            or not domain
-            or any(type(candidate) is not int for candidate in domain)
-            or any(first >= second for first, second in zip(domain, domain[1:]))
-        ):
-            raise CommandError("invalid CTCSS profile domain or centiHz value")
-        if value not in domain:
-            raise CommandError("centiHz value is outside the CTCSS profile domain")
-        return value
 
     def _vfo_command_profile(self, command: str) -> RadioProfile:
         """Resolve the exact profile allowed to declare a VFO primitive."""
@@ -3288,26 +3259,6 @@ class RadioPoller:
             case SetCompressor(on=on):
                 if CAP_COMPRESSOR in self._caps:
                     await radio.set_compressor(on)
-            case SetToneFreq(freq_hz=freq, receiver=rx):
-                self._ensure_receiver_supported(rx, operation="set_tone_freq")
-                freq = self._validated_ctcss_centihz(freq)
-                if CAP_REPEATER_TONE in self._caps:
-                    await radio.set_tone_freq(freq, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.tone_freq = freq
-            case SetTsqlFreq(freq_hz=freq, receiver=rx):
-                self._ensure_receiver_supported(rx, operation="set_tsql_freq")
-                freq = self._validated_ctcss_centihz(freq)
-                if CAP_TSQL in self._caps:
-                    await radio.set_tsql_freq(freq, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.tsql_freq = freq
             case SetMainSubTracking(on=on):
                 if CAP_MAIN_SUB_TRACKING in self._caps:
                     await radio.set_main_sub_tracking(on)
@@ -3398,24 +3349,6 @@ class RadioPoller:
                     await radio.set_dash_ratio(value)
                 if self._radio_state:
                     self._radio_state.dash_ratio = value
-            case SetRepeaterTone(on=on, receiver=rx):
-                self._ensure_receiver_supported(rx, operation="set_repeater_tone")
-                if CAP_REPEATER_TONE in self._caps:
-                    await radio.set_repeater_tone(on, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.repeater_tone = on
-            case SetRepeaterTsql(on=on, receiver=rx):
-                self._ensure_receiver_supported(rx, operation="set_repeater_tsql")
-                if CAP_TSQL in self._caps:
-                    await radio.set_repeater_tsql(on, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.repeater_tsql = on
             case SetRxAntenna(antenna=antenna, on=on):
                 if CAP_RX_ANTENNA in self._caps:
                     if antenna == 1:

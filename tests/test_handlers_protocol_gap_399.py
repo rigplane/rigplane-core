@@ -20,11 +20,7 @@ from rigplane.web.radio_poller import (
     SetManualNotchWidth,
     SetNbDepth,
     SetNbWidth,
-    SetRepeaterTone,
-    SetRepeaterTsql,
     SetSsbTxBandwidth,
-    SetToneFreq,
-    SetTsqlFreq,
     SetVoxDelay,
     SetVoxGain,
 )
@@ -193,9 +189,9 @@ async def test_set_tone_freq_happy_path() -> None:
     result = await h._enqueue_command("set_tone_freq", {"freq": 8800})
     assert result == {"freq": 8800, "receiver": 0}
     assert len(q.items) == 1
-    assert isinstance(q.items[0], SetToneFreq)
-    assert q.items[0].freq_hz == 8800
-    assert q.items[0].receiver == 0
+    assert isinstance(q.items[0], CommandIntent)
+    assert q.items[0].params["freq_hz"] == 8800
+    assert q.items[0].params["receiver"] == 0
 
 
 @pytest.mark.asyncio
@@ -204,14 +200,14 @@ async def test_set_tone_freq_sub_receiver() -> None:
     h = _handler(radio=_capable_radio(), server=srv)
     result = await h._enqueue_command("set_tone_freq", {"freq": 10000, "receiver": 1})
     assert result == {"freq": 10000, "receiver": 1}
-    assert q.items[0].receiver == 1
+    assert q.items[0].params["receiver"] == 1
 
 
 @pytest.mark.asyncio
 async def test_set_tone_freq_missing_capability() -> None:
     srv, _ = _server()
     h = _handler(radio=_incapable_radio(), server=srv)
-    with pytest.raises(ValueError, match="repeater_tone"):
+    with pytest.raises(CommandUnsupportedError, match="set_tone_freq"):
         await h._enqueue_command("set_tone_freq", {"freq": 8800})
 
 
@@ -226,8 +222,8 @@ async def test_set_tsql_freq_happy_path() -> None:
     h = _handler(radio=_capable_radio(), server=srv)
     result = await h._enqueue_command("set_tsql_freq", {"freq": 9700})
     assert result == {"freq": 9700, "receiver": 0}
-    assert isinstance(q.items[0], SetTsqlFreq)
-    assert q.items[0].freq_hz == 9700
+    assert isinstance(q.items[0], CommandIntent)
+    assert q.items[0].params["freq_hz"] == 9700
 
 
 @pytest.mark.asyncio
@@ -236,14 +232,14 @@ async def test_set_tsql_freq_sub_receiver() -> None:
     h = _handler(radio=_capable_radio(), server=srv)
     result = await h._enqueue_command("set_tsql_freq", {"freq": 9700, "receiver": 1})
     assert result["receiver"] == 1
-    assert q.items[0].receiver == 1
+    assert q.items[0].params["receiver"] == 1
 
 
 @pytest.mark.asyncio
 async def test_set_tsql_freq_missing_capability() -> None:
     srv, _ = _server()
     h = _handler(radio=_incapable_radio(), server=srv)
-    with pytest.raises(ValueError, match="tsql"):
+    with pytest.raises(CommandUnsupportedError, match="set_tsql_freq"):
         await h._enqueue_command("set_tsql_freq", {"freq": 9700})
 
 
@@ -528,9 +524,9 @@ async def test_set_repeater_tone_happy_path() -> None:
     h = _handler(radio=_capable_radio(), server=srv)
     result = await h._enqueue_command("set_repeater_tone", {"on": True})
     assert result == {"on": True, "receiver": 0}
-    assert isinstance(q.items[0], SetRepeaterTone)
-    assert q.items[0].on is True
-    assert q.items[0].receiver == 0
+    assert isinstance(q.items[0], CommandIntent)
+    assert q.items[0].params["on"] is True
+    assert q.items[0].params["receiver"] == 0
 
 
 @pytest.mark.asyncio
@@ -538,15 +534,15 @@ async def test_set_repeater_tone_sub_receiver() -> None:
     srv, q = _server()
     h = _handler(radio=_capable_radio(), server=srv)
     result = await h._enqueue_command("set_repeater_tone", {"on": False, "receiver": 1})
-    assert result["receiver"] == 1
-    assert q.items[0].receiver == 1
+    assert result == {"on": False, "receiver": 1}
+    assert q.items[0].params["receiver"] == 1
 
 
 @pytest.mark.asyncio
 async def test_set_repeater_tone_missing_capability() -> None:
     srv, _ = _server()
     h = _handler(radio=_incapable_radio(), server=srv)
-    with pytest.raises(ValueError, match="repeater_tone"):
+    with pytest.raises(CommandUnsupportedError, match="set_repeater_tone"):
         await h._enqueue_command("set_repeater_tone", {"on": True})
 
 
@@ -561,8 +557,8 @@ async def test_set_repeater_tsql_happy_path() -> None:
     h = _handler(radio=_capable_radio(), server=srv)
     result = await h._enqueue_command("set_repeater_tsql", {"on": True})
     assert result == {"on": True, "receiver": 0}
-    assert isinstance(q.items[0], SetRepeaterTsql)
-    assert q.items[0].on is True
+    assert isinstance(q.items[0], CommandIntent)
+    assert q.items[0].params["on"] is True
 
 
 @pytest.mark.asyncio
@@ -570,15 +566,15 @@ async def test_set_repeater_tsql_sub_receiver() -> None:
     srv, q = _server()
     h = _handler(radio=_capable_radio(), server=srv)
     result = await h._enqueue_command("set_repeater_tsql", {"on": True, "receiver": 1})
-    assert result["receiver"] == 1
-    assert q.items[0].receiver == 1
+    assert result == {"on": True, "receiver": 1}
+    assert q.items[0].params["receiver"] == 1
 
 
 @pytest.mark.asyncio
 async def test_set_repeater_tsql_missing_capability() -> None:
     srv, _ = _server()
     h = _handler(radio=_incapable_radio(), server=srv)
-    with pytest.raises(ValueError, match="tsql"):
+    with pytest.raises(CommandUnsupportedError, match="set_repeater_tsql"):
         await h._enqueue_command("set_repeater_tsql", {"on": True})
 
 

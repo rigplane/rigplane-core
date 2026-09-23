@@ -19,6 +19,7 @@ from functools import partial
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
+from rigplane.core.capabilities import CAP_REPEATER_TONE, CAP_TSQL
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
@@ -113,6 +114,7 @@ class CommandDescriptor:
     timeout: float = 10.0
     queue_policy: Literal["ordered", "coalesced"] = "ordered"
     receiver_aware: bool = False
+    required_capability: str | None = None
     project_expectation: ExpectationProjector | None = None
 
     def resolve_method_name(self, params: Mapping[str, Any]) -> str:
@@ -150,6 +152,41 @@ def _repeater_shift_target(params: Mapping[str, Any]) -> FieldPath:
     return FieldPath.receiver(
         str(params["receiver"]), "operator_controls", "repeater_shift"
     )
+
+
+def _tone_receiver(params: Mapping[str, Any]) -> int:
+    """Validate the MAIN/SUB selector shared by the repeater tone family."""
+    receiver = params.get("receiver", 0)
+    if isinstance(receiver, bool) or not isinstance(receiver, int):
+        raise ValueError("receiver must be 0 or 1")
+    if receiver not in (0, 1):
+        raise ValueError("receiver must be 0 or 1")
+    return receiver
+
+
+def _bind_tone_freq(params: Mapping[str, Any]) -> dict[str, Any]:
+    """Bind a CTCSS frequency write in exact int centiHz (MOR-2129).
+
+    ``8850`` is 88.5 Hz. The Radio method owns the profile-domain
+    membership check and refuses a non-member before any wire frame;
+    this bind owns only the JSON-type contract.
+    """
+    freq = params["freq"]
+    if isinstance(freq, bool) or not isinstance(freq, int):
+        raise ValueError("CTCSS tone frequency must be an integer in centiHz")
+    return {"freq": freq, "freq_hz": freq, "receiver": _tone_receiver(params)}
+
+
+def _tone_freq_target(field: str, params: Mapping[str, Any]) -> FieldPath:
+    return FieldPath.receiver(str(params["receiver"]), "operator_controls", field)
+
+
+def _bind_repeater_toggle(field: str, params: Mapping[str, Any]) -> dict[str, Any]:
+    return {**_bind_boolean(field, params), "receiver": _tone_receiver(params)}
+
+
+def _repeater_toggle_target(field: str, params: Mapping[str, Any]) -> FieldPath:
+    return FieldPath.receiver(str(params["receiver"]), "operator_toggles", field)
 
 
 def _raw_int_level_from_param(value: Any) -> int:
@@ -302,6 +339,56 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
             argument_names=("direction", "receiver"),
             tx_policy=DescriptorTxPolicy.TX_SAFE,
             public_names=("set_repeater_shift",),
+        ),
+        # Repeater tone family (MOR-2111): like ``set_repeater_shift``, the
+        # receiver rides the Radio call itself and every backend refuses an
+        # unsupported receiver before wire traffic. The freq pair keeps the
+        # published ``freq`` key in its result while the Radio kwarg is the
+        # protocol name ``freq_hz``. The capability tags gate web reach:
+        # FTX-1 carries them only after PR-B2 turns the tags on in its
+        # profile, so until then the family is refused here, before any
+        # radio call, with the legacy ``unsupported_command`` error class.
+        "set_repeater_tone": CommandDescriptor(
+            name="set_repeater_tone",
+            method_name="set_repeater_tone",
+            bind=partial(_bind_repeater_toggle, "repeater_tone"),
+            target=partial(_repeater_toggle_target, "repeater_tone"),
+            argument_names=("on", "receiver"),
+            tx_policy=DescriptorTxPolicy.TX_SAFE,
+            public_names=("set_repeater_tone",),
+            required_capability=CAP_REPEATER_TONE,
+        ),
+        "set_repeater_tsql": CommandDescriptor(
+            name="set_repeater_tsql",
+            method_name="set_repeater_tsql",
+            bind=partial(_bind_repeater_toggle, "repeater_tsql"),
+            target=partial(_repeater_toggle_target, "repeater_tsql"),
+            argument_names=("on", "receiver"),
+            tx_policy=DescriptorTxPolicy.TX_SAFE,
+            public_names=("set_repeater_tsql",),
+            required_capability=CAP_TSQL,
+        ),
+        "set_tone_freq": CommandDescriptor(
+            name="set_tone_freq",
+            method_name="set_tone_freq",
+            bind=_bind_tone_freq,
+            target=partial(_tone_freq_target, "tone_freq"),
+            argument_names=("freq_hz", "receiver"),
+            result_names=("freq", "receiver"),
+            tx_policy=DescriptorTxPolicy.TX_SAFE,
+            public_names=("set_tone_freq",),
+            required_capability=CAP_REPEATER_TONE,
+        ),
+        "set_tsql_freq": CommandDescriptor(
+            name="set_tsql_freq",
+            method_name="set_tsql_freq",
+            bind=_bind_tone_freq,
+            target=partial(_tone_freq_target, "tsql_freq"),
+            argument_names=("freq_hz", "receiver"),
+            result_names=("freq", "receiver"),
+            tx_policy=DescriptorTxPolicy.TX_SAFE,
+            public_names=("set_tsql_freq",),
+            required_capability=CAP_TSQL,
         ),
         "set_af_level": CommandDescriptor(
             name="set_af_level",
@@ -573,6 +660,13 @@ def bind_command_intent(
     )
 
 
+def _radio_has_capability(radio: DispatchRadio, capability: str) -> bool:
+    """Read the radio's capability-tag set; a radio that declares none
+    (non-production doubles) is not gated here."""
+    capabilities = getattr(radio, "capabilities", None)
+    return isinstance(capabilities, (set, frozenset)) and capability in capabilities
+
+
 def prepare_command_intent(
     radio: DispatchRadio,
     name: str,
@@ -594,6 +688,13 @@ def prepare_command_intent(
         timeout=descriptor.timeout,
     )
     method_name = descriptor.resolve_method_name(intent.params)
+    if descriptor.required_capability is not None and not _radio_has_capability(
+        radio, descriptor.required_capability
+    ):
+        raise CommandUnsupportedError(
+            f"command {method_name!r} is not supported by active profile "
+            f"(missing capability: {descriptor.required_capability})"
+        )
     supported = (
         radio.supports_command(method_name, receiver=intent.params["receiver"])
         if descriptor.receiver_aware

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, create_autospec
 
@@ -15,12 +16,20 @@ from rigplane.backends.rigctld_client.radio import (
     RigctldClientRadio,
 )
 from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
+from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+from rigplane.capabilities import CAP_REPEATER_TONE, CAP_TSQL
 from rigplane.core.acquisition_scheduler import AcquisitionScheduler
 from rigplane.core.exceptions import CommandError, CommandRejectedError
 from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
-from rigplane.core.command_dispatch import DescriptorTxPolicy
-from rigplane.core.state_pipeline_contracts import CommandIntent
+from rigplane.core.command_dispatch import (
+    CommandUnsupportedError,
+    DescriptorTxPolicy,
+    command_descriptor,
+    prepare_command_intent,
+)
+from rigplane.core.state_pipeline_contracts import CommandIntent, FieldPath
 from rigplane.profiles import resolve_radio_profile
+from rigplane.rig_loader import load_rig
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.server import WebConfig, WebServer
@@ -216,7 +225,6 @@ async def test_structured_error_reaches_every_surface(
 
 @pytest.mark.asyncio
 async def test_descriptor_preflight_rejects_without_queue_or_overlay() -> None:
-    from rigplane.core.command_dispatch import CommandUnsupportedError
 
     radios = (
         _radio(model="IC-7300", supported=False),
@@ -614,6 +622,10 @@ def test_descriptor_is_the_only_migrated_name_source() -> None:
         "set_rx_antenna_ant2",
         "set_civ_output_ant",
         "set_tuner_status",
+        "set_repeater_tone",
+        "set_repeater_tsql",
+        "set_tone_freq",
+        "set_tsql_freq",
     }
     descriptor = command_descriptors()["set_repeater_shift"]
     assert descriptor.tx_policy is DescriptorTxPolicy.TX_SAFE
@@ -850,7 +862,6 @@ async def test_web_rx_antenna_selector_two_reaches_ant2_and_preserves_ack() -> N
 
 def test_antenna_descriptor_preflight_preserves_profile_rejection() -> None:
     from rigplane.core.command_dispatch import (
-        CommandUnsupportedError,
         prepare_command_intent,
     )
 
@@ -888,3 +899,325 @@ def test_att_helper_uses_public_precedence_through_canonical_binding(
     assert intent.params["db"] == expected_db
     assert intent.params["att"] == expected_db
     assert intent.params["receiver"] == params.get("receiver", 0)
+
+
+# ---------------------------------------------------------------------------
+# MOR-2111 tone half: descriptor registration, Yaesu wire frames, refusals.
+# Every intent here is built through ``prepare_command_intent``, so removing
+# a tone descriptor entry fails this whole section (MOR-2160's acceptance:
+# the dispatch path is the arm, and the arm is the descriptor).
+# ---------------------------------------------------------------------------
+
+_RIGS_DIR = Path(__file__).resolve().parents[1] / "rigs"
+
+_TONE_COMMANDS = (
+    "set_tone_freq",
+    "set_tsql_freq",
+    "set_repeater_tone",
+    "set_repeater_tsql",
+)
+
+
+def _ftx1_radio(*, tone_tags: bool = False) -> YaesuCatRadio:
+    """A real YaesuCatRadio on the FTX-1 profile, transport mocked.
+
+    ``tone_tags=True`` adds the ``repeater_tone``/``tsql`` capability tags
+    the stock profile does not carry yet (PR-B2 turns them on in
+    ``rigs/ftx1.toml``), admitting the tone family through the descriptor
+    capability gate exactly as B2 will.
+    """
+    profile = load_rig(_RIGS_DIR / "ftx1.toml")
+    if tone_tags:
+        profile = replace(
+            profile,
+            capabilities=frozenset(profile.capabilities)
+            | {CAP_REPEATER_TONE, CAP_TSQL},
+        )
+    radio = YaesuCatRadio("/dev/null", profile=profile)
+    radio._transport._connected = True  # noqa: SLF001
+    radio._transport.query = AsyncMock()  # type: ignore[method-assign]  # noqa: SLF001
+    radio._transport.write = AsyncMock()  # type: ignore[method-assign]  # noqa: SLF001
+    return radio
+
+
+def _yaesu_poller(radio: YaesuCatRadio) -> YaesuCatPoller:
+    poller = YaesuCatPoller.__new__(YaesuCatPoller)
+    poller._radio = radio  # type: ignore[attr-defined]  # noqa: SLF001
+    poller._managed_tx_authority = None  # type: ignore[attr-defined]  # noqa: SLF001
+    return poller
+
+
+@pytest.mark.parametrize("name", _TONE_COMMANDS)
+def test_tone_descriptor_registers_under_its_public_name(name: str) -> None:
+    descriptor = command_descriptor(name)
+    assert descriptor is not None
+    assert descriptor.name == name
+    assert descriptor.public_names == (name,)
+
+
+def test_tone_freq_descriptor_binds_centihz_and_preserves_ack_shape() -> None:
+    intent = prepare_command_intent(
+        _ftx1_radio(tone_tags=True), "set_tone_freq", {"freq": 8850}, source="http"
+    )
+
+    assert intent.params["freq_hz"] == 8850
+    assert intent.params["receiver"] == 0
+    assert intent.target == FieldPath.receiver("0", "operator_controls", "tone_freq")
+    assert command_descriptor("set_tone_freq").result(intent) == {  # type: ignore[union-attr]
+        "freq": 8850,
+        "receiver": 0,
+    }
+
+
+def test_repeater_tone_descriptor_binds_bool_and_preserves_ack_shape() -> None:
+    intent = prepare_command_intent(
+        _ftx1_radio(tone_tags=True),
+        "set_repeater_tone",
+        {"on": True, "receiver": 1},
+        source="http",
+    )
+
+    assert intent.params["on"] is True
+    assert intent.params["receiver"] == 1
+    assert intent.target == FieldPath.receiver("1", "operator_toggles", "repeater_tone")
+    assert command_descriptor("set_repeater_tone").result(intent) == {  # type: ignore[union-attr]
+        "on": True,
+        "receiver": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    ("name", "params", "query_answer", "expected_write"),
+    [
+        ("set_tone_freq", {"freq": 8850}, None, "CN00008;"),
+        ("set_tone_freq", {"freq": 8850, "receiver": 1}, None, "CN10008;"),
+        ("set_tsql_freq", {"freq": 8850}, None, "CN00008;"),
+        ("set_tsql_freq", {"freq": 8850, "receiver": 1}, None, "CN10008;"),
+        (
+            "set_repeater_tone",
+            {"on": True},
+            "CT00",
+            "CT01;",
+        ),
+        (
+            "set_repeater_tone",
+            {"on": True, "receiver": 1},
+            "CT10",
+            "CT11;",
+        ),
+        (
+            "set_repeater_tsql",
+            {"on": True},
+            "CT01",
+            "CT02;",
+        ),
+        (
+            "set_repeater_tsql",
+            {"on": True, "receiver": 1},
+            "CT11",
+            "CT12;",
+        ),
+        (
+            "set_repeater_tsql",
+            {"on": False},
+            "CT02",
+            "CT01;",
+        ),
+    ],
+    ids=(
+        "tone-freq-main",
+        "tone-freq-sub",
+        "tsql-freq-shares-cn",
+        "tsql-freq-sub",
+        "tone-on-from-off",
+        "tone-on-sub",
+        "tsql-on-from-tone-only",
+        "tsql-on-from-tone-only-sub",
+        "tsql-off-from-both",
+    ),
+)
+@pytest.mark.asyncio
+async def test_tone_intent_drives_the_exact_yaesu_wire_frame(
+    name: str,
+    params: dict[str, Any],
+    query_answer: str | None,
+    expected_write: str,
+) -> None:
+    radio = _ftx1_radio(tone_tags=True)
+    if query_answer is not None:
+        radio._transport.query = AsyncMock(return_value=query_answer)  # type: ignore[method-assign]  # noqa: SLF001
+    intent = prepare_command_intent(radio, name, params, source="http")
+
+    await _yaesu_poller(radio)._execute_command(intent)  # noqa: SLF001
+
+    radio._transport.write.assert_awaited_once_with(expected_write)  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    ("name", "params", "query_answer", "message"),
+    [
+        (
+            "set_repeater_tone",
+            {"on": False},
+            "CT02",
+            "tone squelch cannot stay on",
+        ),
+        ("set_repeater_tsql", {"on": True}, "CT03", "CT code 3"),
+        ("set_repeater_tsql", {"on": True}, "CT04", "CT code 4"),
+        ("set_repeater_tsql", {"on": True}, "CT05", "CT code 5"),
+        ("set_tone_freq", {"freq": 8800}, None, "not an exact member"),
+    ],
+    ids=(
+        "tone-off-while-tsql-on",
+        "tsql-over-dcs",
+        "tsql-over-pr-freq",
+        "tsql-over-rev-tone",
+        "non-member-tone",
+    ),
+)
+@pytest.mark.asyncio
+async def test_tone_refusal_reaches_the_caller_and_sends_no_write(
+    name: str, params: dict[str, Any], query_answer: str | None, message: str
+) -> None:
+    radio = _ftx1_radio(tone_tags=True)
+    if query_answer is not None:
+        radio._transport.query = AsyncMock(return_value=query_answer)  # type: ignore[method-assign]  # noqa: SLF001
+    intent = prepare_command_intent(radio, name, params, source="http")
+
+    with pytest.raises(ValueError, match=message):
+        await _yaesu_poller(radio)._execute_command(intent)  # noqa: SLF001
+
+    radio._transport.write.assert_not_awaited()  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    ("name", "params"),
+    [
+        ("set_tone_freq", {"freq": 8850, "receiver": 2}),
+        ("set_repeater_tone", {"on": True, "receiver": 2}),
+        ("set_tone_freq", {"freq": 8850, "receiver": "1"}),
+        ("set_tone_freq", {"freq": 88.5}),
+        ("set_tone_freq", {"freq": True}),
+        ("set_repeater_tone", {"on": 1}),
+    ],
+    ids=(
+        "freq-bad-receiver",
+        "toggle-bad-receiver",
+        "receiver-not-an-int",
+        "float-tone",
+        "bool-tone",
+        "non-bool-toggle",
+    ),
+)
+def test_tone_invalid_params_are_refused_at_prepare(
+    name: str, params: dict[str, Any]
+) -> None:
+    with pytest.raises(ValueError, match="must be"):
+        prepare_command_intent(_ftx1_radio(), name, params, source="http")
+
+
+@pytest.mark.asyncio
+async def test_icom_drain_executes_tone_intents_against_the_radio_methods() -> None:
+    radio = _radio(model="IC-7300")
+    radio.set_tone_freq = AsyncMock()
+    radio.set_tsql_freq = AsyncMock()
+    radio.set_repeater_tone = AsyncMock()
+    radio.set_repeater_tsql = AsyncMock()
+    poller = _icom_poller(radio)
+
+    await poller._execute(  # noqa: SLF001
+        prepare_command_intent(
+            radio, "set_tone_freq", {"freq": 8850, "receiver": 1}, source="http"
+        )
+    )
+    await poller._execute(  # noqa: SLF001
+        prepare_command_intent(radio, "set_tsql_freq", {"freq": 8850}, source="http")
+    )
+    await poller._execute(  # noqa: SLF001
+        prepare_command_intent(radio, "set_repeater_tone", {"on": True}, source="http")
+    )
+    await poller._execute(  # noqa: SLF001
+        prepare_command_intent(radio, "set_repeater_tsql", {"on": False}, source="http")
+    )
+
+    radio.set_tone_freq.assert_awaited_once_with(freq_hz=8850, receiver=1)
+    radio.set_tsql_freq.assert_awaited_once_with(freq_hz=8850, receiver=0)
+    radio.set_repeater_tone.assert_awaited_once_with(on=True, receiver=0)
+    radio.set_repeater_tsql.assert_awaited_once_with(on=False, receiver=0)
+
+
+_TONE_TARGETS = (
+    ("set_tone_freq", "operator_controls", "tone_freq", "freq"),
+    ("set_tsql_freq", "operator_controls", "tsql_freq", "freq"),
+    ("set_repeater_tone", "operator_toggles", "repeater_tone", "on"),
+    ("set_repeater_tsql", "operator_toggles", "repeater_tsql", "on"),
+)
+
+
+def _tone_params(value_key: str, receiver: int) -> dict[str, Any]:
+    params: dict[str, Any] = {"receiver": receiver}
+    params[value_key] = True if value_key == "on" else 8850
+    return params
+
+
+@pytest.mark.parametrize("receiver", [0, 1])
+@pytest.mark.parametrize(("name", "family", "field", "value_key"), _TONE_TARGETS)
+def test_tone_intent_target_pins_name_family_and_receiver(
+    name: str, family: str, field: str, value_key: str, receiver: int
+) -> None:
+    """Each tone intent's semantic target is pinned by name and receiver:
+    swapping one family member's target for another's field (e.g. the
+    tsql pair onto the tone fields) must fail here, not silently mirror
+    the wrong leaf."""
+    intent = prepare_command_intent(
+        _radio(model="IC-7300"), name, _tone_params(value_key, receiver), source="http"
+    )
+
+    assert intent.target == FieldPath.receiver(str(receiver), family, field)
+
+
+@pytest.mark.parametrize(
+    ("name", "params", "capability"),
+    [
+        ("set_tone_freq", {"freq": 8850}, CAP_REPEATER_TONE),
+        ("set_tsql_freq", {"freq": 8850}, CAP_TSQL),
+        ("set_repeater_tone", {"on": True}, CAP_REPEATER_TONE),
+        ("set_repeater_tsql", {"on": True}, CAP_TSQL),
+    ],
+)
+def test_tone_family_refused_without_the_profile_capability_tag(
+    name: str, params: dict[str, Any], capability: str
+) -> None:
+    """The stock FTX-1 profile carries no ``repeater_tone``/``tsql`` tags
+    (PR-B2 turns them on): the descriptor gate refuses the family before
+    any radio call, with the legacy ``unsupported_command`` error class,
+    and nothing reaches the wire."""
+    radio = _ftx1_radio()
+
+    with pytest.raises(
+        CommandUnsupportedError, match=f"missing capability: {capability}"
+    ):
+        prepare_command_intent(radio, name, params, source="http")
+
+    radio._transport.write.assert_not_awaited()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_set_tsql_freq_schedules_its_own_post_write_readback_on_icom() -> None:
+    """The tsql write's readback names the tsql leaf alone: a descriptor
+    target swapped to the tone field must fail here (same shape as the
+    deleted MOR-2129 parity test on main)."""
+    radio = _radio(model="IC-7300")
+    radio.set_tsql_freq = AsyncMock()
+    poller = _icom_poller(radio)
+
+    await poller._execute(  # noqa: SLF001
+        prepare_command_intent(radio, "set_tsql_freq", {"freq": 8850}, source="http")
+    )
+
+    radio.set_tsql_freq.assert_awaited_once_with(freq_hz=8850, receiver=0)
+    pending = poller._acquisition_scheduler.pending_requests()  # noqa: SLF001
+    assert {path for request in pending for path in request.paths} == {
+        FieldPath.receiver("main", "operator_controls", "tsql_freq")
+    }
+    assert {request.reason for request in pending} == {"post_write_readback"}

@@ -94,8 +94,6 @@ from rigplane.web.radio_poller import (
     SetScopeSpan,
     SetScopeSpeed,
     SetScopeVbw,
-    SetToneFreq,
-    SetTsqlFreq,
     SetTunerStatus,
     SetTwinPeak,
     SetVox,
@@ -214,21 +212,16 @@ _PENDING_LATER_PR: frozenset[str] = frozenset(
         # method, so the arm cannot be reached from that side either.
         # apf/audio_peak_filter, digisel_shift, nb_depth, nb_width have a
         # state-model field but no declared acquisition capability on
-        # IC-7300 or FTX-1. repeater_tone/repeater_tsql are the one case
-        # where NEITHER profile has both halves: IC-7300 declares the
-        # write feature ("repeater_tone"/"tsql") but not the acquisition
-        # capability; FTX-1 declares the acquisition capability but not
-        # the write feature, and ``YaesuCatRadio`` has no
-        # ``set_repeater_tone``/``set_repeater_tsql`` method for
-        # ``RadioPoller._execute`` to call.
+        # IC-7300 or FTX-1. repeater_tone/repeater_tsql have no dispatch
+        # arm here at all: the write is descriptor-backed
+        # (``core/command_dispatch.py``), whose target comes from
+        # ``CommandDescriptor.target`` instead of this table.
         "SetIfShift",
         "SetApf",
         "SetAudioPeakFilter",
         "SetDigiselShift",
         "SetNbDepth",
         "SetNbWidth",
-        "SetRepeaterTone",
-        "SetRepeaterTsql",
         # Global/panel settings: dial_lock is NOT covered, for the same
         # reason as if_shift above -- FTX-1's real dispatcher is
         # ``YaesuCatPoller``, which has no readback path. Icom profiles
@@ -588,14 +581,6 @@ _TABLE_SUCCESSION: tuple[tuple[Any, tuple[str, ...]], ...] = (
     (SetFreq(freq=14_000_000, receiver=0), ("receiver.main.active.freq_mode.freq_hz",)),
     (SetMode(mode="USB", receiver=0), ("receiver.main.active.freq_mode.mode",)),
     (SetDataMode(mode=1, receiver=0), ("receiver.main.active.freq_mode.data_mode",)),
-    (
-        SetToneFreq(freq_hz=8850, receiver=0),
-        ("receiver.main.operator_controls.tone_freq",),
-    ),
-    (
-        SetTsqlFreq(freq_hz=8850, receiver=0),
-        ("receiver.main.operator_controls.tsql_freq",),
-    ),
 )
 
 
