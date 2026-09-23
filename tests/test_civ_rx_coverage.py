@@ -2813,10 +2813,20 @@ def test_meter_coalescing_applies_latest_due_sample_and_records_diagnostics(
 
     # After the window elapses the coalesced latest sample lands (raw 222 -> 31).
     assert radio._state_store.snapshot().field("receiver.0.meters.s_meter").value == 31
+    # The MOR-2544 power_on liveness inference (IC-7610: power control, no
+    # power-status query) applies once per routed frame alongside the meter.
     assert events == [
         (
             "state_store_changed",
             {"coalesced": False, "paths": ["receiver.0.meters.s_meter"]},
+        ),
+        (
+            "state_store_changed",
+            {"coalesced": False, "paths": ["global.tx_state.power_on"]},
+        ),
+        (
+            "state_store_changed",
+            {"coalesced": False, "paths": ["global.tx_state.power_on"]},
         ),
         (
             "state_store_changed",
@@ -3379,11 +3389,17 @@ def test_same_value_stale_refresh_notifies_state_store_changed(
         _make_frame(cmd=0x15, sub=0x02, data=_bcd2(111))
     )
 
+    # The MOR-2544 power_on liveness inference applies alongside the meter
+    # refresh on this IC-7610 frame; the meter event still comes first.
     assert events == [
         (
             "state_store_changed",
             {"coalesced": False, "paths": ["receiver.0.meters.s_meter"]},
-        )
+        ),
+        (
+            "state_store_changed",
+            {"coalesced": False, "paths": ["global.tx_state.power_on"]},
+        ),
     ]
 
 
@@ -3450,25 +3466,38 @@ def test_update_state_cache_applies_command_response_observation_once(
     snapshot = radio._state_store.snapshot()
     delta = radio._state_store.delta_since(StateSnapshot.empty())
 
-    assert snapshot.state_revision == 1
-    assert snapshot.observation_seq == 1
-    assert len(delta.changes) == 1
-    assert delta.changes[0].path == snapshot.fields[0].path
+    # The 0x03 frame yields exactly one freq observation; the MOR-2544
+    # power_on liveness inference (IC-7610: power control, no power-status
+    # query) adds exactly one more — each applied once. (``snapshot.fields``
+    # is path-sorted, so the old single-change order pin no longer applies.)
+    assert snapshot.state_revision == 2
+    assert snapshot.observation_seq == 2
+    assert [str(change.path) for change in delta.changes] == [
+        "receiver.0.active.freq_mode.freq_hz",
+        "global.tx_state.power_on",
+    ]
     assert radio._radio_state.main.freq == 14_074_000
 
 
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
-    "frame",
+    ("frame", "expected_observation_seq"),
     [
-        _make_frame(cmd=0x03, data=b"\x12\x34"),
-        _make_frame(cmd=0x04, data=b""),
-        _make_frame(cmd=0x04, data=bytes([0xFF, 0x01])),
-        _make_frame(cmd=0x26, data=bytes([0x00, 0xFF])),
+        # Short 0x03 freq payload: the decoder skips it quietly (no
+        # exception, zero observations), so the frame still counts as a
+        # decoded answer and only the MOR-2544 power_on liveness inference
+        # lands (seq 1). The payloads below raise during decode, which
+        # aborts the whole frame before any observation — inference
+        # included (seq 0).
+        (_make_frame(cmd=0x03, data=b"\x12\x34"), 1),
+        (_make_frame(cmd=0x04, data=b""), 0),
+        (_make_frame(cmd=0x04, data=bytes([0xFF, 0x01])), 0),
+        (_make_frame(cmd=0x26, data=bytes([0x00, 0xFF])), 0),
     ],
 )
 async def test_route_civ_frame_contains_observation_decode_failures(
     radio: IcomRadio,
     frame: CivFrame,
+    expected_observation_seq: int,
 ) -> None:
     published: list[Any] = []
     radio._civ_request_tracker.resolve = MagicMock()
@@ -3488,7 +3517,7 @@ async def test_route_civ_frame_contains_observation_decode_failures(
     radio._civ_request_tracker.resolve.assert_called_once_with(
         published[0], generation=radio._civ_epoch
     )
-    assert radio._state_store.snapshot().observation_seq == 0
+    assert radio._state_store.snapshot().observation_seq == expected_observation_seq
 
 
 def test_update_state_cache_cmd07_d2_projects_active_receiver_and_legacy_mirror(
@@ -5447,3 +5476,140 @@ def test_update_radio_state_cmd15_dcd_false(radio_with_state: IcomRadio) -> None
         "receiver.0.operator_toggles.dcd"
     )
     assert field.value is False
+
+
+# ---------------------------------------------------------------------------
+# MOR-2544 — power_on inferred from CI-V liveness when the profile declares
+# power control but no power-status query (get_powerstat undeclared).
+# ---------------------------------------------------------------------------
+
+_POWER_ON_PATH = "global.tx_state.power_on"
+
+
+async def _route_frame_at(radio: IcomRadio, frame: CivFrame, at: float) -> None:
+    """Route one CI-V frame through the real rx path at a fixed monotonic time."""
+    with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=at):
+        await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+            frame,
+            generation=radio._civ_epoch,  # noqa: SLF001
+        )
+
+
+@pytest.mark.asyncio
+async def test_power_on_inferred_true_and_kept_fresh_while_civ_answers_arrive(
+    radio: IcomRadio,
+) -> None:
+    """MOR-2544 (a): IC-7610 answers → power_on True, fresh past one 30 s TTL.
+
+    RED at 302b96e1: nothing publishes ``power_on`` without a 0x18 frame, so
+    the first ``snapshot().field`` lookup raises ``KeyError``.
+    """
+    clock = FreshnessClock(start=100.0)
+    radio._state_store._freshness_clock = clock  # noqa: SLF001
+    meter = _make_frame(cmd=0x15, sub=0x02, data=_bcd2(42))
+
+    await _route_frame_at(radio, meter, 100.0)
+    field = radio._state_store.snapshot().field(_POWER_ON_PATH)  # noqa: SLF001
+    assert field.value is True
+    assert field.freshness is FreshnessState.FRESH
+    assert field.max_age == 30.0
+
+    # Answers keep arriving every 15 s; 45 s after the FIRST answer — well
+    # past one 30 s TTL measured from it — a freshness tick still finds the
+    # field FRESH because every answer re-stamped it.
+    for at in (115.0, 130.0):
+        clock.advance(15.0)
+        await _route_frame_at(radio, meter, at)
+    clock.advance(15.0)  # now 145.0; last answer at 130.0
+    radio._state_store.mark_stale_due(now=145.0)  # noqa: SLF001
+    field = radio._state_store.snapshot().field(_POWER_ON_PATH)  # noqa: SLF001
+    assert field.value is True
+    assert field.freshness is FreshnessState.FRESH
+
+    # When answers stop, the same 30 s TTL decays the field normally.
+    clock.advance(31.0)  # now 176.0; last answer still 130.0
+    radio._state_store.mark_stale_due(now=176.0)  # noqa: SLF001
+    assert (
+        radio._state_store.snapshot().field(_POWER_ON_PATH).freshness  # noqa: SLF001
+        is FreshnessState.STALE
+    )
+
+
+@pytest.mark.asyncio
+async def test_power_off_ack_observed_false_then_answers_restore_true(
+    radio: IcomRadio,
+) -> None:
+    """MOR-2544 (b): 0x18 00 ack → False; resumed answers → True again.
+
+    The liveness inference must not clobber the explicit 0x18 truth on the
+    same frame. RED at 302b96e1 on the second half: without the inference no
+    meter frame re-observes ``power_on``, so it stays ``False``.
+    """
+    await _route_frame_at(radio, _make_frame(cmd=0x18, data=b"\x00"), 100.0)
+    field = radio._state_store.snapshot().field(_POWER_ON_PATH)  # noqa: SLF001
+    assert field.value is False
+    assert field.freshness is FreshnessState.FRESH
+
+    await _route_frame_at(radio, _make_frame(cmd=0x15, sub=0x02, data=_bcd2(42)), 105.0)
+    field = radio._state_store.snapshot().field(_POWER_ON_PATH)  # noqa: SLF001
+    assert field.value is True
+    assert field.freshness is FreshnessState.FRESH
+
+
+@pytest.mark.asyncio
+async def test_power_on_unknown_before_first_answer_then_observed(
+    radio: IcomRadio,
+) -> None:
+    """MOR-2544 (c): no answer yet → unknown (no default); first answer → True.
+
+    RED at 302b96e1 on the final assert: without the inference the field is
+    still unobserved after the meter frame.
+    """
+    with pytest.raises(KeyError):
+        radio._state_store.snapshot().field(_POWER_ON_PATH)  # noqa: SLF001
+
+    await _route_frame_at(radio, _make_frame(cmd=0x15, sub=0x02, data=_bcd2(42)), 100.0)
+
+    assert (
+        radio._state_store.snapshot().field(_POWER_ON_PATH).value  # noqa: SLF001
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_ftx1_profile_never_infers_power_on(radio: IcomRadio) -> None:
+    """MOR-2544 (d): FTX-1 declares no ``power_control`` → nothing fabricated.
+
+    RED at 302b96e1: ``infers_power_on_from_liveness`` does not exist yet.
+    """
+    ftx1 = resolve_radio_profile(model="FTX-1")
+    assert ftx1.infers_power_on_from_liveness is False
+    radio._profile = ftx1  # noqa: SLF001
+
+    await _route_frame_at(radio, _make_frame(cmd=0x15, sub=0x02, data=_bcd2(42)), 100.0)
+
+    with pytest.raises(KeyError):
+        radio._state_store.snapshot().field(_POWER_ON_PATH)  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_profile_with_power_status_query_skips_inference(
+    radio: IcomRadio,
+) -> None:
+    """MOR-2544 (e): a declared ``get_powerstat`` query wins; inference off.
+
+    RED at 302b96e1: ``infers_power_on_from_liveness`` does not exist yet.
+    """
+    profile = radio._profile  # noqa: SLF001
+    assert profile.infers_power_on_from_liveness is True
+    with_query = dataclasses.replace(
+        profile,
+        command_names=profile.command_names | {"get_powerstat"},
+    )
+    assert with_query.infers_power_on_from_liveness is False
+    radio._profile = with_query  # noqa: SLF001
+
+    await _route_frame_at(radio, _make_frame(cmd=0x15, sub=0x02, data=_bcd2(42)), 100.0)
+
+    with pytest.raises(KeyError):
+        radio._state_store.snapshot().field(_POWER_ON_PATH)  # noqa: SLF001

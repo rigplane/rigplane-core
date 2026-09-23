@@ -922,6 +922,18 @@ def classify_radio_health(
     }
 
 
+def _radio_infers_power_on_from_liveness(radio: "Radio | None") -> bool:
+    """Whether the radio's profile infers power state from liveness (MOR-2544).
+
+    Reads the profile-data predicate
+    (:attr:`rigplane.profiles.RadioProfile.infers_power_on_from_liveness`);
+    anything without a real profile (``None``, fakes) answers False so no
+    power value is ever fabricated for it.
+    """
+    profile = getattr(radio, "_profile", None) if radio is not None else None
+    return getattr(profile, "infers_power_on_from_liveness", False) is True
+
+
 def _to_camel(s: str) -> str:
     parts = s.split("_")
     return parts[0] + "".join(p.capitalize() for p in parts[1:])
@@ -1378,6 +1390,18 @@ def _build_public_state_payload_from_dict(
 
     public = _camel_case_state(state)
     _null_unobserved_public_leaves(public)
+    if public_health.get(
+        "likelyCause"
+    ) == "radio_powered_off_likely" and _radio_infers_power_on_from_liveness(radio):
+        # MOR-2544: the profile declares power control but no power-status
+        # query, so the liveness inference holds ``power_on=True`` observed
+        # until its 30 s TTL decays. Once the existing health classification
+        # reads ``radio_powered_off_likely`` (its own timeout/recovery
+        # evidence — no second timeout invented here), that stale True is no
+        # longer honest: publish the observed False the classification
+        # implies. Applied after ``_null_unobserved_public_leaves`` so the
+        # override is never nulled back.
+        public["powerOn"] = False
     return public
 
 

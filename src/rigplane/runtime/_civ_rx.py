@@ -1984,6 +1984,25 @@ class CivRuntime:
             self._notify_state_store_changed(changeset)
             return
 
+        if frame.command != 0x18 and self._host._profile.infers_power_on_from_liveness:
+            # MOR-2544: the profile declares power control but no power-status
+            # query, so a decoded frame from the radio is itself the power
+            # evidence — a powered-off radio answers nothing. Re-stamp
+            # ``power_on=True`` on every routed response so the 30 s fallback
+            # TTL never decays it while answers keep arriving. 0x18 frames are
+            # excluded: they carry the explicit truth (including the 0x18 00
+            # power-off acknowledgement) and must not be clobbered. Placed
+            # after the relative-VFO early return because
+            # ``apply_relative_vfo_observations`` stages only its retention
+            # paths and would silently drop this global observation.
+            observations = observations + (
+                self._observation(
+                    FieldPath.global_("tx_state", "power_on"),
+                    True,
+                    frame=frame,
+                ),
+            )
+
         for observation in observations:
             try:
                 self.flush_due_meter_observations(now=observation.timestamp_monotonic)

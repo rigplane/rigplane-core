@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable
 from dataclasses import replace
 from itertools import permutations
@@ -1776,3 +1777,60 @@ def test_observed_values_match_the_prewire_contract_byte_for_byte() -> None:
     # The same store's base projection showed the ``pbtInner`` dataclass
     # default (128); the unobserved leaf now publishes null instead.
     assert payload["main"]["pbtInner"] is None
+
+
+def _powered_off_likely_radio(model: str) -> _FakeRadio:
+    """Fake radio whose health classifies ``radio_powered_off_likely``."""
+    from rigplane.profiles import resolve_radio_profile
+
+    radio = _FakeRadio(connected=True, radio_ready_flag=False)
+    radio._profile = resolve_radio_profile(model=model)
+    radio._last_civ_data_received = time.monotonic() - 20.0
+    radio._civ_ready_idle_timeout = 2.0
+    radio._has_connected_once = True
+    radio.civ_stats = lambda: {"timeouts": 3, "active_waiters": 0}
+    return radio
+
+
+def test_powered_off_likely_publishes_power_on_false_for_liveness_inferred_profile() -> (
+    None
+):
+    """MOR-2544: health ``radio_powered_off_likely`` → observed False.
+
+    The profile declares power control but no power-status query, so the
+    liveness inference holds ``powerOn=True`` until its TTL; the existing
+    health classification (no second timeout) flips it to False. RED at
+    302b96e1: no override exists, so the observed True is published as-is.
+    """
+    store = StateStore()
+    store.apply(
+        _observation(
+            FieldPath.global_("tx_state", "power_on"),
+            True,
+            at=time.monotonic(),
+            max_age=30.0,
+        )
+    )
+    radio = _powered_off_likely_radio("IC-7610")
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=radio, receiver_count=2
+    )
+
+    assert payload["radioHealth"]["likelyCause"] == "radio_powered_off_likely"
+    assert payload["powerOn"] is False
+
+
+def test_powered_off_likely_does_not_fabricate_power_on_for_ftx1() -> None:
+    """MOR-2544: FTX-1 (no ``power_control``) stays unobserved → null, never
+    a fabricated value in either direction. RED at 302b96e1:
+    ``infers_power_on_from_liveness`` does not exist yet."""
+    radio = _powered_off_likely_radio("FTX-1")
+    assert radio._profile.infers_power_on_from_liveness is False
+
+    payload = build_public_state_payload_from_snapshot(
+        StateStore().snapshot(), radio=radio, receiver_count=2
+    )
+
+    assert payload["radioHealth"]["likelyCause"] == "radio_powered_off_likely"
+    assert payload["powerOn"] is None

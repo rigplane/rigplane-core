@@ -553,6 +553,24 @@ class RadioProfile:
         """
         return command_name in self.command_names
 
+    @property
+    def infers_power_on_from_liveness(self) -> bool:
+        """Whether power state is inferred from link liveness evidence.
+
+        MOR-2544 (owner rule: no fabricated values, evidence only): a profile
+        that declares the ``power_control`` capability but no power-status
+        query (``get_powerstat`` — e.g. IC-7610/IC-7300, whose CI-V guides
+        document cmd 0x18 as SET-only) can still report an honest power
+        state: the radio answering reads is powered on, a confirmed
+        power-off is off, and before the first answer the state is unknown.
+        A profile with a declared query keeps using it instead, and a radio
+        without ``power_control`` (FTX-1) gets nothing fabricated. Decided
+        purely from profile data — never from a model name.
+        """
+        return self.supports_capability("power_control") and not self.supports_command(
+            "get_powerstat"
+        )
+
     def resolve_filter_rule(
         self, mode: str | None, *, data_mode: int = 0
     ) -> FilterWidthRule | None:
