@@ -2759,9 +2759,28 @@ describe('SpectrumPanel scope handle hover-intent CSS (MOR-2562)', () => {
     expect(style).toMatch(
       /\.passband-resize-zone\.active::before\s*\{[^}]*width:\s*2px;[^}]*opacity:\s*0\.8;[^}]*transition-delay:\s*0s;/,
     );
+    // Cascade precedence: the value checks above stay green even if .active
+    // is moved above :hover, so pin the order itself — while hovering and
+    // dragging at once, the .active rule must win over :hover.
+    expect(style).toContain('.passband-resize-zone:hover::before');
+    expect(style).toContain('.passband-resize-zone.active::before');
+    expect(style.indexOf('.passband-resize-zone.active::before')).toBeGreaterThan(
+      style.indexOf('.passband-resize-zone:hover::before'),
+    );
+    // Leaving must stay immediate: the rest rule's transition carries no
+    // delay — only the :hover rule above may set a transition-delay.
+    const handleRest = style.match(/\.passband-resize-zone::before\s*\{([^}]*)\}/)?.[1] ?? '';
+    expect(handleRest).toMatch(/transition:\s*opacity 0\.15s ease;/);
+    expect(handleRest).not.toContain('transition-delay');
     // The old always-on handle decorations are gone: no dark outline, no
-    // brightness filter, no partial-height grip.
-    expect(style).not.toMatch(/brightness\(/);
+    // brightness filter, no partial-height grip. The absence checks run on
+    // the passband zone's own rule blocks only — an unrelated brightness
+    // filter elsewhere in the panel's style block is allowed.
+    const handleRules = style.match(/\.passband-resize-zone[^{]*\{[^}]*\}/g) ?? [];
+    expect(handleRules.length).toBeGreaterThan(0);
+    for (const rule of handleRules) {
+      expect(rule).not.toMatch(/brightness\(/);
+    }
     expect(style).not.toMatch(/\.passband-resize-zone[^{]*::before\s*\{[^}]*box-shadow/);
     expect(style).not.toMatch(/\.passband-resize-zone::before\s*\{[^}]*top:\s*18%/);
   });
@@ -2781,6 +2800,18 @@ describe('SpectrumPanel scope handle hover-intent CSS (MOR-2562)', () => {
     expect(style).toMatch(
       /\.spectrum-split-separator\.active::after\s*\{[^}]*height:\s*2px;[^}]*opacity:\s*0\.8;[^}]*transition-delay:\s*0s;/,
     );
+    // Cascade precedence: the .active rule must come after :hover so the
+    // drag line wins while both states apply.
+    expect(style).toContain('.spectrum-split-separator:hover::after');
+    expect(style).toContain('.spectrum-split-separator.active::after');
+    expect(style.indexOf('.spectrum-split-separator.active::after')).toBeGreaterThan(
+      style.indexOf('.spectrum-split-separator:hover::after'),
+    );
+    // Leaving must stay immediate: the rest rule's transition carries no
+    // delay — only the :hover rule above may set a transition-delay.
+    const dividerRest = style.match(/\.spectrum-split-separator::after\s*\{([^}]*)\}/)?.[1] ?? '';
+    expect(dividerRest).toMatch(/transition:\s*opacity 0\.15s ease;/);
+    expect(dividerRest).not.toContain('transition-delay');
     // The old solid 4 px accent bar (shared :hover/.active background) is gone.
     expect(style).not.toMatch(
       /\.spectrum-split-separator:hover,\s*\.spectrum-split-separator\.active\s*\{/,
