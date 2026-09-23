@@ -1,0 +1,218 @@
+/*
+ * Scope capsule key family — MOR-2545 PR3, owner style C "capsule groups"
+ * (ticket comment "PR3 design decision, owner, 2026-09-23 18:55 EDT").
+ *
+ * ONE visual family for every control in the hosted panorama row and in the
+ * More panel, both groups: a capsule is a 1 px border, ~5 px radius, no fill
+ * at rest, at least 24 px tall, one font family and size (the host panel's
+ * Roboto Mono); a segmented capsule has 1 px inner dividers; no bezel
+ * gradient, no box-shadow, no text-shadow (these class names sit in
+ * control-button.css's `:not()` exclusion lists, so the hardware-bezel
+ * family never reaches them).
+ *
+ * Token-only colours (MOR-977), measured at the default theme:
+ *   unlit text / arrows / labels  --v2-text-secondary  (7.27:1 on the
+ *     hosted row ground --v2-bg-panel; >= 4.5:1 in every theme);
+ *   values                       --v2-text-primary    (14.5:1);
+ *   capsule border + dividers    --v2-text-muted      (3.38:1 non-text);
+ *   lit = FILLED with the badge active PAIR --v2-badge-cyan-bg +
+ *     --v2-badge-cyan-text (11.45:1 default, 9.43:1 github-light; NOT
+ *     --v2-accent-cyan-bright over the badge bg — that mix is not a
+ *     theme-tuned pair and measures 2.98:1 on github-light).
+ *
+ * Loaded via `import './scope-capsule.css'` from ScopeFlatKey.svelte and
+ * SpectrumToolbar.svelte. The class names `scope-flat-key`/`scope-step-key`
+ * are historical (PR1's flat keys) and kept: the Standard-face override
+ * sheets exclude exactly those names from the bezel family.
+ */
+
+.scope-flat-key {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--v2-text-muted, var(--text-muted));
+  border-radius: 5px;
+  padding: 0 8px;
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  flex: none;
+  min-width: var(--scope-key-width, auto);
+  height: 24px;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--v2-text-secondary, var(--text));
+  cursor: pointer;
+}
+
+/* Lit = FILLED, never colour-only: the badge active pair (see header). */
+.scope-flat-key[data-lit='true'] {
+  background: var(--v2-badge-cyan-bg, transparent);
+  border-color: var(--v2-badge-cyan-border, var(--v2-text-muted));
+  color: var(--v2-badge-cyan-text, var(--v2-text-primary));
+}
+
+/* Hover brightens the text only — no chrome, no shadow. */
+.scope-flat-key:hover:not(:disabled) {
+  color: var(--v2-text-primary, var(--text));
+}
+
+.scope-flat-key:disabled {
+  cursor: not-allowed;
+}
+
+.scope-capsule {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  border: 1px solid var(--v2-text-muted, var(--text-muted));
+  border-radius: 5px;
+  height: 24px;
+  padding: 0 7px;
+  gap: 3px;
+  box-sizing: border-box;
+  white-space: nowrap;
+  /* Clips a lit segment's fill to the rounded capsule. */
+  overflow: hidden;
+}
+
+/* A segment loses its own border; the capsule carries it, and 1 px inner
+ * dividers separate the segments. */
+.scope-capsule > .scope-flat-key {
+  border: none;
+  border-radius: 0;
+  height: 22px;
+  padding: 0 9px;
+}
+
+.scope-capsule > .scope-flat-key + .scope-flat-key {
+  border-left: 1px solid var(--v2-text-muted, var(--text-muted));
+}
+
+.scope-name {
+  flex: none;
+  font-size: inherit;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--v2-text-secondary, var(--text));
+}
+
+.scope-step-key {
+  appearance: none;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  flex: none;
+  width: 16px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--v2-text-secondary, var(--text));
+  cursor: pointer;
+}
+
+.scope-step-key:hover:not(:disabled) {
+  color: var(--v2-text-primary, var(--text));
+}
+
+.scope-step-key:disabled {
+  cursor: not-allowed;
+}
+
+/* Reserved width in EVERY state: an unread value is EMPTY (never a
+ * placeholder) and the stepper's box never changes size. */
+.scope-step-value {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  min-width: 7ch;
+  height: 22px;
+  font-size: inherit;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--v2-text-primary, var(--text));
+}
+
+/* Specificity beats the desktop skin's generic section select rule
+ * (.desktop-control-face .semantic-control-panel section :is(input, select))
+ * while staying token-only. */
+.desktop-control-face .semantic-control-panel .scope-capsule-select,
+.scope-capsule-select {
+  appearance: none;
+  box-sizing: border-box;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--v2-text-muted, var(--text-muted));
+  border-radius: 5px;
+  background: transparent;
+  color: var(--v2-text-secondary, var(--text));
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: 600;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.scope-capsule-select:hover {
+  color: var(--v2-text-primary, var(--text));
+}
+
+/* The `.scope-controls-surface` element is the row's query container
+ * (`container-name: scope-controls`). Below each band the row's DIRECT
+ * child carrying that hook hides; its More copy (if any) shows. Hide order
+ * (MOR-2545 PR3): AVG/PEAK quick keys first, then receiver → hold → ref →
+ * span → step; CTR|FIX, BANDS, MORE, the status seat and fullscreen never
+ * hide. GLOBAL sheet on purpose: the hooked elements have two authors
+ * (ScopeControlsSurface for span/ref/hold/receiver, SpectrumToolbar's
+ * rowTail for step/quick) — component scoping would match only one.
+ *
+ * THE BANDS ARE DERIVED, NOT MEASURED (capsules are wider than PR1's flat
+ * keys): Roboto Mono advance 6.6px at the 11px panel font; widths —
+ * CTR|FIX 79, MAIN|SUB 85, SPAN 130, REF 123, STEP 131 (48px value
+ * reserve), HOLD 44, BANDS 51, AVG+PEAK pair 86, MORE 58; row gap 4px,
+ * spacer 0. Band = visible items + 4px per gap (full row 787 + 36 = 823):
+ *   823 quick · 733 receiver · 644 hold · 596 ref · 469 span · 335 step.
+ * The coordinator re-measures in a browser and re-pins this comment; until
+ * then they are arithmetic, not evidence. */
+.scope-more-overflow { display: contents; }
+.scope-more-overflow > [data-overflow] { display: none; }
+
+@container scope-controls (max-width: 823px) {
+  .scope-controls-row > [data-overflow='quick'] { display: none; }
+}
+@container scope-controls (max-width: 733px) {
+  .scope-controls-row > [data-overflow='receiver'] { display: none; }
+  .scope-more-overflow > [data-overflow='receiver'] { display: flex; }
+}
+@container scope-controls (max-width: 644px) {
+  .scope-controls-row > [data-overflow='hold'] { display: none; }
+  .scope-more-overflow > [data-overflow='hold'] { display: flex; }
+}
+@container scope-controls (max-width: 596px) {
+  .scope-controls-row > [data-overflow='ref'] { display: none; }
+  .scope-more-overflow > [data-overflow='ref'] { display: flex; }
+}
+@container scope-controls (max-width: 469px) {
+  .scope-controls-row > [data-overflow='span'] { display: none; }
+  .scope-more-overflow > [data-overflow='span'] { display: flex; }
+}
+@container scope-controls (max-width: 335px) {
+  /* No `.scope-more-overflow` copy here: STEP's More copy is the toolbar's
+   * `.toolbar-step-copy` (in the screen group), shown by its own rule in
+   * SpectrumToolbar.svelte at this same band. */
+  .scope-controls-row > [data-overflow='step'] { display: none; }
+}
