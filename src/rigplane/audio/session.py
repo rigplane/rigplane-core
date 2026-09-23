@@ -35,9 +35,10 @@ Arming order is transport-owned via the MOR-575 descriptor
 - ``"tx_first"`` / ``"atomic"`` (same-device exclusive USB): the TX leg
   must be up before RX joins the device — entering RX_TX from RX_ONLY
   stops RX, arms TX, then re-arms RX through the bus (the MOR-559
-  live-validated order). Step 11 (MOR-546) moves the same-device duplex
-  topology behind ``UsbAudioDriver.ensure()`` inside the backend's
-  ``start_tx``; the session's sequencing here is that seam's caller.
+  live-validated order). Step 11 (MOR-546, landed) moves the same-device
+  duplex topology behind the backend's ``start_tx``/``stop_tx``
+  (``YaesuCatRadio`` → ``UsbAudioDriver.start_duplex``/``stop_duplex``);
+  the session's sequencing here is that seam's caller.
 
 Teardown always stops TX BEFORE dropping RX (the MOR-574 lesson): RX is
 never stopped from a TRANSMITTING transport. On genuinely full-duplex
