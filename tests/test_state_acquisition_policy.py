@@ -113,17 +113,46 @@ _ON_DEMAND_FIELD_NAMES = frozenset(
 #: ``_inherited_default_out_of_class`` below, which walks the
 #: ``capabilities`` of every profile that declares ``field_policies`` and
 #: keeps only paths where that comparison fails. Profiles declaring no
-#: ``field_policies`` (IC-705, IC-9700, X6100) are outside this list: the
-#: same walk without that skip finds 28 more such paths there (12, 12, 4),
-#: which no test bounds.
+#: ``field_policies`` (X6100, since MOR-2540 the only one) are outside this
+#: list: the same walk without that skip finds 4 more such paths there,
+#: which no test bounds. IC-705/IC-9700 joined the walked set when MOR-2540
+#: gave their four TX meters ``field_policies`` entries.
 _INHERITED_DEFAULT_OUT_OF_CLASS: dict[str, tuple[FieldPath, ...]] = {
     "X6200": (
         # inherits default 2.0s; live bound is 1.0s
         FieldPath.active("main", "freq_mode", "freq_hz"),
     ),
+    "IC-705": (
+        # vd/id inherit default 2.0s; stream meter bound is 0.4s
+        FieldPath.global_("meters", "id"),
+        FieldPath.global_("meters", "vd"),
+        # inherits default 2.0s; live bound is 1.0s
+        FieldPath.global_("tx_state", "ptt"),
+        FieldPath.active("main", "freq_mode", "freq_hz"),
+        FieldPath.active("main", "freq_mode", "mode"),
+        # inherits default 2.0s; stream meter bound is 0.4s
+        FieldPath.receiver("main", "meters", "s_meter"),
+        # inherits default 2.0s; live bound is 1.0s
+        FieldPath.unselected("main", "freq_mode", "freq_hz"),
+        FieldPath.unselected("main", "freq_mode", "mode"),
+    ),
     "IC-7610": (
         # inherits default 2.0s; live bound is 1.0s
         FieldPath.active("main", "freq_mode", "mode"),
+        FieldPath.active("sub", "freq_mode", "mode"),
+    ),
+    "IC-9700": (
+        # vd/id inherit default 2.0s; stream meter bound is 0.4s
+        FieldPath.global_("meters", "id"),
+        FieldPath.global_("meters", "vd"),
+        # inherits default 2.0s; live bound is 1.0s
+        FieldPath.global_("tx_state", "ptt"),
+        FieldPath.active("main", "freq_mode", "freq_hz"),
+        FieldPath.active("main", "freq_mode", "mode"),
+        # inherits default 2.0s; stream meter bound is 0.4s
+        FieldPath.receiver("main", "meters", "s_meter"),
+        # inherits default 2.0s; live bound is 1.0s
+        FieldPath.active("sub", "freq_mode", "freq_hz"),
         FieldPath.active("sub", "freq_mode", "mode"),
     ),
     "IC-7300": (
@@ -832,7 +861,7 @@ def test_field_policies_obey_their_cadence_class_not_their_rig() -> None:
                 )
 
     assert not failures, f"field_policies entries outside their class: {failures}"
-    assert checked == {"FTX-1", "IC-7300", "IC-7610", "X6200"}
+    assert checked == {"FTX-1", "IC-705", "IC-7300", "IC-7610", "IC-9700", "X6200"}
 
 
 def _inherited_default_out_of_class() -> dict[str, tuple[FieldPath, ...]]:
@@ -1747,10 +1776,22 @@ def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
         ("FTX-1", "receiver.main.operator_controls.att"),
         ("FTX-1", "receiver.main.operator_controls.manual_notch_freq"),
         ("FTX-1", "receiver.sub.operator_controls.manual_notch_freq"),
+        ("IC-705", "global.meters.alc"),
+        ("IC-705", "global.meters.comp"),
+        ("IC-705", "global.meters.power"),
+        ("IC-705", "global.meters.swr"),
         ("IC-7300", "global.meters.alc"),
         ("IC-7300", "global.meters.comp"),
         ("IC-7300", "global.meters.power"),
         ("IC-7300", "global.meters.swr"),
+        ("IC-7610", "global.meters.alc"),
+        ("IC-7610", "global.meters.comp"),
+        ("IC-7610", "global.meters.power"),
+        ("IC-7610", "global.meters.swr"),
+        ("IC-9700", "global.meters.alc"),
+        ("IC-9700", "global.meters.comp"),
+        ("IC-9700", "global.meters.power"),
+        ("IC-9700", "global.meters.swr"),
     }
 
 
@@ -1800,6 +1841,73 @@ def test_ic7300_declares_the_transmit_meters_absent_outside_transmit() -> None:
     # The condition source is itself polled, or nothing would ever resolve it.
     assert acquisition.capability_for(ptt).can_poll
     assert acquisition.policy_for(ptt).available_when == ()
+
+
+#: The four 0x15 TX-only meter paths MOR-2540 gates on the canonical PTT.
+_TX_ONLY_METER_PATHS = (
+    FieldPath.global_("meters", "alc"),
+    FieldPath.global_("meters", "comp"),
+    FieldPath.global_("meters", "power"),
+    FieldPath.global_("meters", "swr"),
+)
+
+#: (model, path) pairs deliberately left ungated. X6100 has no backend at
+#: all (``backends/factory.py`` refuses the model -- only the rigctld client
+#: reaches the radio) and neither X6100 nor X6200 declares a pollable or
+#: observable ``global.tx_state.ptt`` capability, so ``tx_only`` would fail
+#: closed (``acquisition_scheduler.derive_tx_active`` returns False for an
+#: unobserved PTT) and the power meter would never poll again. X6200 also
+#: declares swr/alc ``unknown`` and comp not at all, so power is its only
+#: declared transmit meter.
+_TX_METER_GATE_EXEMPTIONS = {
+    ("X6100", "global.meters.power"),
+    ("X6200", "global.meters.power"),
+}
+
+
+def test_every_declared_transmit_meter_is_gated_on_ptt() -> None:
+    """MOR-2540: every profile that declares a Po/SWR/ALC/COMP meter gates it.
+
+    The gate is the IC-7300/FTX-1 shape the IC-7610 was missing: ``tx_only =
+    true`` so AcquisitionScheduler skips the cadence group while PTT reads
+    false, plus the ``available_when`` ptt clause so StateFreshnessService.tick
+    discards the last TX values on dekey. The exempted pairs above are pinned
+    ungated, with the reason, so a future profile cannot silently join them.
+    """
+
+    ptt = FieldPath.global_("tx_state", "ptt")
+    clause = AvailabilityClause(field=ptt, operator="equals", value=True)
+    gated: set[tuple[str, str]] = set()
+    ungated: set[tuple[str, str]] = set()
+    for model, rig in sorted(discover_rigs(RIGS_DIR).items()):
+        acquisition = rig.to_profile().state_acquisition
+        if acquisition is None:
+            continue
+        for path in _TX_ONLY_METER_PATHS:
+            capability = acquisition.capability_for(path)
+            if not (capability.can_poll or path in acquisition.field_policies):
+                continue
+            policy = acquisition.policy_for(path)
+            if policy.tx_only and policy.available_when == (clause,):
+                gated.add((model, str(path)))
+                # The condition source is itself polled, or nothing would
+                # ever resolve it.
+                assert acquisition.capability_for(ptt).can_poll, (model, path)
+                assert acquisition.policy_for(ptt).available_when == (), (
+                    model,
+                    path,
+                )
+            else:
+                # An exemption is a deliberate non-gate: neither half of the
+                # shape may be present.
+                assert policy.tx_only is False, (model, path)
+                assert policy.available_when == (), (model, path)
+                ungated.add((model, str(path)))
+
+    assert ungated == _TX_METER_GATE_EXEMPTIONS
+    # The MOR-2540 regression subject must be in the gated set.
+    for name in ("power", "swr", "alc", "comp"):
+        assert ("IC-7610", f"global.meters.{name}") in gated
 
 
 def test_ftx1_gates_nothing_on_dual_receive() -> None:

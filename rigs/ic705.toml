@@ -189,6 +189,57 @@ supported_controls = [
     "global.tx_state.ptt",
 ]
 
+# MOR-2540: Po/SWR/ALC/COMP are TX-only 0x15 meters, gated exactly as
+# rigs/ic7610.toml (same Icom LAN/WiFi link family) and rigs/ic7300.toml's
+# MOR-1485 block: `tx_only = true` keeps AcquisitionScheduler from polling
+# them while PTT reads false (before this entry they inherited the 2.0s/8.0s
+# default and were polled during RX), and the `available_when` clause lets
+# StateFreshnessService.tick discard the last TX values on dekey. They keep
+# their stream_like_meters membership and coalescing window, so the stream
+# meter cadence class (tests/test_state_acquisition_policy.py) binds them to
+# <=0.4s: 0.2s/2.0s mirrors the IC-7610 tier and only ever fires while the
+# key is down. vd/id stay unconditional supply telemetry; the S-meter stays
+# the unconditional RX meter.
+[state_acquisition.field_policies."global.meters.power"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 2.0
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
+
+[state_acquisition.field_policies."global.meters.swr"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 2.0
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
+
+[state_acquisition.field_policies."global.meters.alc"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 2.0
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
+
+[state_acquisition.field_policies."global.meters.comp"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 2.0
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
+
 # ── Parameterized Capabilities ───────────────────────────────────
 
 [attenuator]

@@ -3058,8 +3058,9 @@ def test_tone_and_tsql_freq_observations_fall_back_to_the_table(
 ) -> None:
     """The table is what a path with no declared field policy still gets.
 
-    ``rigs/ic705.toml`` has no ``[state_acquisition.field_policies]`` table
-    at all, so these paths reach ``_observation``'s
+    ``rigs/ic705.toml`` has no ``field_policies`` entry for these two paths
+    (its MOR-2540 entries cover only the four TX meters), so they reach
+    ``_observation``'s
     ``_OBSERVATION_MAX_AGE_SECONDS`` fallback rather than a profile TTL —
     and ``state_store.py: StateStore.mark_stale_due`` skips any entry whose
     ``max_age`` is ``None``, so without the fallback the field would report
@@ -3074,8 +3075,11 @@ def test_tone_and_tsql_freq_observations_fall_back_to_the_table(
     profile = resolve_radio_profile(model="IC-705")
     radio._profile = profile  # noqa: SLF001
     assert profile.state_acquisition is not None
-    assert profile.state_acquisition.field_policies == {}
     stored = FieldPath.receiver("0", "operator_controls", name)
+    assert (
+        FieldPath.receiver("main", "operator_controls", name)
+        not in profile.state_acquisition.field_policies
+    )
     declared_ttl = _OBSERVATION_MAX_AGE_SECONDS[("receiver", "operator_controls", name)]
     assert (
         declared_ttl != profile.state_acquisition.default_policy.freshness_ttl_seconds
