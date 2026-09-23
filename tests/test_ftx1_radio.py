@@ -4127,3 +4127,122 @@ async def test_get_meter_unknown_type_raises(connected_radio):
     """get_meter raises ValueError for an unrecognised meter type string."""
     with pytest.raises(ValueError, match="Unknown meter type"):
         await connected_radio.get_meter("no_such_meter")
+
+
+# ---------------------------------------------------------------------------
+# MOR-2111 PR-B2 — tone descriptor admission with the profile tags on
+# ---------------------------------------------------------------------------
+
+from rigplane.backends.yaesu_cat.poller import YaesuCatPoller  # noqa: E402
+from rigplane.core.command_dispatch import prepare_command_intent  # noqa: E402
+
+_TONE_ADMISSION_CASES = [
+    ("set_repeater_tone", {"on": True}),
+    ("set_repeater_tsql", {"on": True}),
+    ("set_tone_freq", {"freq": 8850}),
+    ("set_tsql_freq", {"freq": 8850}),
+]
+
+
+class TestToneDescriptorAdmission:
+    """With the FTX-1 profile tags on, ``prepare_command_intent`` admits all
+    four tone names on both receivers.
+
+    These go red the moment ``repeater_tone``/``tsql`` is removed from
+    ``rigs/ftx1.toml``: the ``required_capability`` gate then refuses the
+    family before any radio call.
+    """
+
+    @pytest.mark.parametrize("receiver", [0, 1])
+    @pytest.mark.parametrize(("name", "params"), _TONE_ADMISSION_CASES)
+    def test_prepare_command_intent_admits_tone_family(
+        self, radio, name, params, receiver
+    ):
+        intent = prepare_command_intent(
+            radio, name, {**params, "receiver": receiver}, source="http"
+        )
+        assert intent.name == name
+        assert intent.params["receiver"] == receiver
+
+
+def _poller_for(radio) -> YaesuCatPoller:
+    """A YaesuCatPoller bound to ``radio`` (mirrors the MOR-2161 drain)."""
+    poller = YaesuCatPoller.__new__(YaesuCatPoller)
+    poller._radio = radio
+    poller._managed_tx_authority = None
+    return poller
+
+
+class TestToneDescriptorFrames:
+    """The Yaesu poller executing a tone intent writes the exact CT/CN frame."""
+
+    @pytest.mark.asyncio
+    async def test_set_repeater_tone_main_writes_ct01(self, connected_radio):
+        connected_radio._transport.query = AsyncMock(return_value="CT00;")
+        connected_radio._transport.write = AsyncMock()
+        intent = prepare_command_intent(
+            connected_radio, "set_repeater_tone", {"on": True}, source="http"
+        )
+        await _poller_for(connected_radio)._execute_command(intent)
+        connected_radio._transport.query.assert_called_once_with("CT0;")
+        connected_radio._transport.write.assert_called_once_with("CT01;")
+
+    @pytest.mark.asyncio
+    async def test_set_repeater_tone_sub_writes_ct11(self, connected_radio):
+        connected_radio._transport.query = AsyncMock(return_value="CT10;")
+        connected_radio._transport.write = AsyncMock()
+        intent = prepare_command_intent(
+            connected_radio,
+            "set_repeater_tone",
+            {"on": True, "receiver": 1},
+            source="http",
+        )
+        await _poller_for(connected_radio)._execute_command(intent)
+        connected_radio._transport.query.assert_called_once_with("CT1;")
+        connected_radio._transport.write.assert_called_once_with("CT11;")
+
+    @pytest.mark.asyncio
+    async def test_set_repeater_tsql_from_tone_writes_ct02(self, connected_radio):
+        connected_radio._transport.query = AsyncMock(return_value="CT01;")
+        connected_radio._transport.write = AsyncMock()
+        intent = prepare_command_intent(
+            connected_radio, "set_repeater_tsql", {"on": True}, source="http"
+        )
+        await _poller_for(connected_radio)._execute_command(intent)
+        connected_radio._transport.query.assert_called_once_with("CT0;")
+        connected_radio._transport.write.assert_called_once_with("CT02;")
+
+    @pytest.mark.asyncio
+    async def test_set_tone_freq_main_writes_cn_index(self, connected_radio):
+        connected_radio._transport.write = AsyncMock()
+        intent = prepare_command_intent(
+            connected_radio, "set_tone_freq", {"freq": 8850}, source="http"
+        )
+        await _poller_for(connected_radio)._execute_command(intent)
+        connected_radio._transport.write.assert_called_once_with("CN00008;")
+
+    @pytest.mark.asyncio
+    async def test_set_tsql_freq_sub_writes_cn_index(self, connected_radio):
+        connected_radio._transport.write = AsyncMock()
+        intent = prepare_command_intent(
+            connected_radio,
+            "set_tsql_freq",
+            {"freq": 8850, "receiver": 1},
+            source="http",
+        )
+        await _poller_for(connected_radio)._execute_command(intent)
+        connected_radio._transport.write.assert_called_once_with("CN10008;")
+
+    @pytest.mark.asyncio
+    async def test_set_repeater_tsql_from_off_is_refused_before_the_wire(
+        self, connected_radio
+    ):
+        """(tone off, tsql on) has no CT code: ValueError, no frame written."""
+        connected_radio._transport.query = AsyncMock(return_value="CT00;")
+        connected_radio._transport.write = AsyncMock()
+        intent = prepare_command_intent(
+            connected_radio, "set_repeater_tsql", {"on": True}, source="http"
+        )
+        with pytest.raises(ValueError, match="tone squelch"):
+            await _poller_for(connected_radio)._execute_command(intent)
+        connected_radio._transport.write.assert_not_called()
