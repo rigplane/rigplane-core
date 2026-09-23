@@ -85,6 +85,13 @@ features = [
     "meters",
     "dial_lock",
     "sql_type",
+    # repeater_tone / tsql (MOR-2111): the two-boolean CTCSS command surface
+    # over the CT SQL-type select. The backend refuses the pair CT cannot
+    # represent (tone off with tsql on) and any toggle write over CT codes
+    # 3-5 (DCS / PR FREQ / REV TONE), so the tags only advertise what the
+    # backend can honor.
+    "repeater_tone",
+    "tsql",
     "repeater_shift",
 ]
 

@@ -168,8 +168,10 @@ CAP_SPEECH = "speech"
 # Squelch-type readback (Yaesu FTX-1 CAT ``CT`` "SQL TYPE"). Distinct from the
 # Icom-style ``repeater_tone``/``tsql`` SET-command capabilities: ``sql_type``
 # gates only the observation-pipeline readback that maps the ``CT`` P2 code onto
-# the neutral CTCSS booleans (MOR-457). The FTX-1 profile does not declare the
-# ``repeater_tone``/``tsql`` tags (see ``TestCapabilitiesNoFalseAdvertising``).
+# the neutral CTCSS booleans (MOR-457). The FTX-1 profile declares all three:
+# ``sql_type`` for the readback route and ``repeater_tone``/``tsql`` for the
+# two-boolean command surface whose backend writes the same ``CT`` register
+# (MOR-2111, pinned by ``TestCapabilitiesNoFalseAdvertising``).
 CAP_SQL_TYPE = "sql_type"
 
 # Repeater shift DIRECTION (simplex/plus/minus/ARS) — MOR-2111. Distinct from

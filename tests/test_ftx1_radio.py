@@ -3374,11 +3374,13 @@ async def test_compressor_level_round_trip(connected_radio):
 class TestCapabilitiesNoFalseAdvertising:
     """Verify that features raising NotImplementedError are NOT in capabilities."""
 
-    def test_repeater_tone_not_in_capabilities(self, radio):
-        assert "repeater_tone" not in radio.capabilities
+    def test_repeater_tone_in_capabilities(self, radio):
+        """MOR-2111: the CT-backed tone surface is implemented; the tag advertises it."""
+        assert "repeater_tone" in radio.capabilities
 
-    def test_tsql_not_in_capabilities(self, radio):
-        assert "tsql" not in radio.capabilities
+    def test_tsql_in_capabilities(self, radio):
+        """MOR-2111: same CT register carries TSQL; the tag advertises it."""
+        assert "tsql" in radio.capabilities
 
     def test_data_mode_not_in_capabilities(self, radio):
         assert "data_mode" not in radio.capabilities
