@@ -125,7 +125,7 @@ export function projectTxMeterPresentation(
   if (!projected.supported) {
     return {
       state: 'unsupported', evidence: { state: 'unsupported' },
-      value: null, text: '?', description: 'Not observed',
+      value: null, text: '', description: 'Not observed',
     };
   }
   const { relevance, observation } = projected;
@@ -139,6 +139,11 @@ export function projectTxMeterPresentation(
   // fill), same as a current one. Anything else (never observed, or a
   // stray non-numeric state) is an empty scale: no value, no placeholder
   // glyph — the accessible description names that too.
+  // MOR-2540 (owner ruling 2026-09-22): the former ' ?' suffix for an
+  // indeterminate RF relevance is gone as well — no placeholder text
+  // anywhere on the operator's screen. A retained indeterminate reading
+  // keeps its digits and nothing else; `stateText` stays empty in every
+  // state so the strip's boxes never change width hunting for a glyph.
   const cue = relevance === 'indeterminate' ? 'RF relevance indeterminate. ' : '';
   const retained = observation.state === 'current' || observation.state === 'stale';
   const evidence: LevelMeterEvidence = retained
@@ -148,7 +153,7 @@ export function projectTxMeterPresentation(
     state: observation.state,
     evidence,
     value: retained ? observation.value : null,
-    text: retained && relevance === 'indeterminate' ? ' ?' : '',
+    text: '',
     description: cue + (retained ? 'Observed' : t('core.meter.state.noReading')),
   };
 }

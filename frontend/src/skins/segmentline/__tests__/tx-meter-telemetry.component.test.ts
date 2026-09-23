@@ -47,8 +47,9 @@ for (const [index, Component] of variants.entries()) describe(names[index], () =
             const indeterminate = !idle && !(rf === 'transmitting' && relevant);
             // MOR-2425 (R29/R32): stale shows its own digits, same as current;
             // idle and never-observed are an empty scale — no text token.
+            // MOR-2540: the ' ?' indeterminate cue is gone as well.
             const expected = idle || observation.state === 'unknown' ? ''
-              : `${Number(observation.value.toFixed(2))}${indeterminate && observation.state === 'current' ? ' ?' : ''}`;
+              : `${Number(observation.value.toFixed(2))}`;
             expect(el!.textContent?.trim()).toBe(`${label} ${expected}`.trim());
             const description = el!.getAttribute('aria-label') ?? '';
             expect(description).toContain(label);
