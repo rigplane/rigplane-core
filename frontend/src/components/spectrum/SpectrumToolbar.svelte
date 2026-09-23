@@ -576,11 +576,11 @@
   .semantic-scope-controls-host :global(.scope-controls-surface) {
     min-width: 0;
     max-width: 100%;
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
   }
 
+  /* MOR-2545: the native surface is ONE nowrap row; the legacy
+     external-appearance groups keep their former treatment. */
+  .semantic-scope-controls-host :global(.scope-controls-row),
   .semantic-scope-controls-host :global(.scope-row),
   .semantic-scope-controls-host :global(.scope-stepper) {
     flex-wrap: nowrap;

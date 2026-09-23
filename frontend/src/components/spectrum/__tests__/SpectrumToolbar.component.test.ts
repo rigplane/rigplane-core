@@ -783,7 +783,8 @@ describe('source and enforcement boundary', () => {
     const cssHash = createHash('sha256').update(source.slice(source.indexOf('<style>'))).digest('hex');
     // MOR-2358 adds host-scoped wrapping for the semantic scope surface.
     // MOR-2522 repin: the `.toolbar-select:focus` border frame is gone.
-    expect(cssHash).toBe('49739bf51901467a4fc0be6407f22c7a91c5bfdb5efe1ed2d8b97306552bf2a8');
+    // MOR-2545 repin: the host wraps the ONE nowrap `.scope-controls-row`.
+    expect(cssHash).toBe('51d6fe1f23e9455e3253a320921e5baca73d7f89e34e08d858374ae807cf33f1');
   });
 });
 

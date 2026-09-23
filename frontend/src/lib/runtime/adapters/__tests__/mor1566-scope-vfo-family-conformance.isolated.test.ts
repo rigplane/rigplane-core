@@ -102,7 +102,7 @@ const scope = IC7300_STATE.scopeControls!;
 /** Reads a `CHOICES` entry's declared numeric domain, in table order. */
 function choiceDomain(field: string): number[] {
   const entry = CHOICES.find(([f]) => f === field);
-  return entry ? entry[2].map(([v]) => v as number) : [];
+  return entry ? entry[3].map(([v]) => v as number) : [];
 }
 
 function withDeclaredVfoPrimitive(tag: 'vfo_swap' | 'vfo_equalize'): Capabilities {
