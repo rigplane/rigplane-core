@@ -1391,9 +1391,10 @@ describe('RF gain additive display observation', () => {
     // default target to slot null.
     // MOR-2509: re-read after the radio-wide group gained `dialLock`.
     // MOR-2537: In "preserves legacy strict model members", the digest moved because the fixture now carries the `agcModes` catalog the server always emits; the readings it guards are asserted unchanged alongside.
+    // MOR-2538: re-read after `radioWideIndicators.actions` dropped the quickSplit/quickDualWatch/speak members (backend-only commands now).
     expect(view.dsp?.agcMode.reading).toEqual({ status: 'known', value: 0 });
     expect(view.receiverIndicators?.[0].agcMode.reading).toEqual({ status: 'known', value: 0 });
-    expect(digest).toBe('ab3833b0f2752e2540040ffa7d0a368e2f30cb35f4c5a001e6230af0f8366cf3');
+    expect(digest).toBe('07367ecd2b10b46eaef261f2bdcc7d6f0f3dda757d72585a1878cf9852641346');
   });
   it.each([false, true])('projects the explicit display and HOLDS RF gain, stale=%s', (stale) => {
     const view = model(displayState(stale), displayCaps, RECEIVING);

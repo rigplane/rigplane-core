@@ -5,9 +5,9 @@
  * RadioLayout's read side (mainVfo/subVfo/vfoOps) moves from the legacy
  * `wiring/state-adapter` twin to the A11/A12-hardened
  * `lib/runtime/props/panel-props`; its live handler families
- * (vfo/keyboard/system) move from the `wiring/command-bus` shim to the
+ * (vfo/keyboard) move from the `wiring/command-bus` shim to the
  * sanctioned `lib/runtime/adapters/panel-adapters` accessors A13a added
- * (`getKeyboardHandlers`, `getSystemHandlers`).
+ * (`getKeyboardHandlers`).
  *
  * Live inspection at this anchor found `rfFrontEnd`/`agc`/`ritXit`/`band`/
  * `dsp`/`cw` (and their matching `make*Handlers` constructions) are
@@ -210,7 +210,6 @@ describe('RadioLayout canonical module surface (MOR-1409 A13b)', () => {
     expect(radioLayoutSource).toContain('$lib/runtime/adapters/panel-adapters');
     expect(radioLayoutSource).toContain('getVfoHandlers');
     expect(radioLayoutSource).toContain('getKeyboardHandlers');
-    expect(radioLayoutSource).toContain('getSystemHandlers');
   });
 
   // Kills: restoring any of the dead RF-front-end/AGC/RIT-XIT/band/DSP/CW
@@ -259,7 +258,7 @@ describe('RadioLayout mounts on the migrated projection/handler surface (MOR-140
     const handler = t.querySelector('.receiver-deck')?.parentElement;
     expect(handler).not.toBeNull();
     // Smoke: mounting must not throw when `getKeyboardHandlers()`/
-    // `getSystemHandlers()`/`getVfoHandlers()` replace the command-bus calls.
+    // `getVfoHandlers()` replace the command-bus calls.
     expect(t.querySelector('.radio-layout')).not.toBeNull();
   });
 });
