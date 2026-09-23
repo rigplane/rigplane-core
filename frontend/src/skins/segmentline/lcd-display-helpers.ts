@@ -44,17 +44,19 @@ export function meterFill(field: DisplayValue<number>): number {
 // one; only "never observed" and "idle" (not measuring in RX) collapse to
 // an empty scale — no `?`/`STALE`/`IDLE` placeholder token. The accessible
 // description below still names those two states, localized.
+// MOR-2540 (owner ruling 2026-09-22): no `?` anywhere else either — the
+// unsupported cases and the former ' ?' indeterminate-relevance cue are
+// gone; an indeterminate reading keeps its digits, nothing more.
 export function telemetryText(field: DisplayTelemetry): string {
   const tx = field.txDisplay;
   if (!tx) {
     if (field.state === 'known') return String(Number(field.value.toFixed(2)));
-    return field.state === 'unsupported' ? '?' : '';
+    return '';
   }
-  if (!tx.supported) return '?';
+  if (!tx.supported) return '';
   if (tx.relevance === 'idle') return '';
   if (tx.observation.state !== 'current' && tx.observation.state !== 'stale') return '';
-  const cue = tx.relevance === 'indeterminate' && tx.observation.state === 'current' ? ' ?' : '';
-  return `${Number(tx.observation.value.toFixed(2))}${cue}`;
+  return `${Number(tx.observation.value.toFixed(2))}`;
 }
 
 export function telemetryDescription(label: string, field: DisplayTelemetry): string {

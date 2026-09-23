@@ -1701,20 +1701,114 @@ describe('station-local presence selection', () => {
         reading: { status: 'unknown' } };
     }
     render(view);
+    // MOR-2540: a conditionally unavailable SWR keeps its seat — the row
+    // stays (dim, value-free) so the strip cannot reflow on RX⇄TX. Only
+    // `absent` (undeclared) still withdraws it.
+    const declaredSwr = swr as 'present' | 'unavailable' | 'absent';
     expect(target.querySelector('[data-testid="meter-signal"]') !== null).toBe(signal === 'present');
     expect(target.querySelector('[data-testid="meter-swr"]') !== null)
-      .toBe(signal !== 'present' && swr === 'present');
+      .toBe(signal !== 'present' && declaredSwr !== 'absent');
     const captions = [...target.querySelectorAll('.meter-native-label')].map(n => n.textContent);
     expect(captions.includes('S')).toBe(signal === 'present');
-    expect(captions.includes('SWR')).toBe(swr === 'present');
-    expect(target.querySelector('[data-lower-relevant]') !== null).toBe(swr === 'present');
+    expect(captions.includes('SWR')).toBe(declaredSwr !== 'absent');
+    expect(target.querySelector('[data-lower-relevant]') !== null).toBe(declaredSwr !== 'absent');
   });
-  it('omits unavailable level seats while preserving declared missing empty seats', () => {
+  // MOR-2540 (owner ruling 2026-09-22): a declared meter whose
+  // `available_when` condition is false — a TX-only meter on RX — keeps
+  // its seat, unlit. The old test here pinned the opposite (omission),
+  // which made the strip reflow the moment TX started.
+  it('keeps unavailable level seats in place, unlit, with no placeholder (MOR-2540)', () => {
     const view = base();
     for (const key of BAR_KEYS) view.meters![key] = { ...view.meters![key],
       presence: 'unavailable', availability: { structural: true, operational: false },
       reading: { status: 'unknown' } };
     render(view);
-    for (const key of BAR_KEYS) expect(target.querySelector('[data-testid="meter-' + key + '"]')).toBeNull();
+    for (const key of BAR_KEYS) {
+      const tile = target.querySelector<HTMLElement>('[data-testid="meter-' + key + '"]');
+      expect(tile).not.toBeNull();
+      expect(tile!.dataset.observed).toBe('false');
+      expect(tile!.querySelectorAll('svg')).toHaveLength(1);
+      expect(tile!.textContent).not.toMatch(/IDLE|\?/);
+    }
+  });
+});
+
+// ── MOR-2540 part B: TX-only meters keep their slots, unlit, on RX ────────
+
+describe('MOR-2540: TX-only meters keep their slots unlit on RX', () => {
+  /** The post-backend-change RX shape of a TX-only meter: declared
+   * (`presence: 'unavailable'`, still structural) but not read — the
+   * backend stops polling Po/SWR/ALC/COMP while not transmitting, so the
+   * field status reads observed=false / availability=unavailable. */
+  function rxOnlyPower(view: RadioViewModel): RadioViewModel {
+    return {
+      ...view,
+      meters: {
+        ...view.meters!,
+        power: {
+          ...view.meters!.power,
+          presence: 'unavailable',
+          availability: { structural: true, operational: false },
+          reading: { status: 'unknown' },
+          relevant: false,
+          display: { state: 'unknown', reason: 'not-observed' },
+        },
+      },
+    };
+  }
+
+  it('renders the label in place, unlit, with no value and no placeholder', () => {
+    withSurface(rxOnlyPower(base('receiving')), (s) => {
+      const tile = s.tile('power')!;
+      expect(tile).not.toBeNull();
+      expect(tile.dataset.observed).toBe('false');
+      expect(tile.querySelector('.meter-native-label')?.textContent).toBe('Po');
+      expect(tile.querySelector('.meter-native-value')?.textContent).toBe('');
+      expect(tile.textContent).not.toMatch(/\?|IDLE/);
+      // The gauge frame stays: same box, empty scale (R32).
+      expect(tile.querySelectorAll('svg')).toHaveLength(1);
+    });
+  });
+
+  it('keeps the same box before and after a value arrives', () => {
+    const props: { view: RadioViewModel } = proxy({ view: rxOnlyPower(base('receiving')) });
+    const component = mount(MetersSurface, { target, props });
+    try {
+      flushSync();
+      const tile = () => target.querySelector<HTMLElement>('[data-meter="power"]')!;
+      // Size-affecting attributes only — the tile's class and the gauge
+      // SVG's geometry — not pixels (jsdom has none to give).
+      const boxOf = () => {
+        const svg = tile().querySelector('svg')!;
+        return {
+          className: tile().className,
+          viewBox: svg.getAttribute('viewBox'),
+          width: svg.getAttribute('width'),
+          height: svg.getAttribute('height'),
+        };
+      };
+      const unlitNode = tile();
+      const unlitBox = boxOf();
+      expect(tile().textContent).not.toContain('?');
+      props.view = withRaw(base('transmitting'), 'power', 100);
+      flushSync();
+      expect(tile()).toBe(unlitNode);
+      expect(boxOf()).toEqual(unlitBox);
+      expect(tile().textContent).toContain('100');
+    } finally { unmount(component); }
+  });
+
+  it('carries no placeholder in screen-reader text, unlit or lit', () => {
+    for (const view of [rxOnlyPower(base('receiving')), withRaw(base('transmitting'), 'power', 100)]) {
+      withSurface(view, () => {
+        const labelled = target.querySelectorAll('[aria-label]');
+        expect(labelled.length).toBeGreaterThan(0);
+        for (const el of labelled) {
+          expect(el.getAttribute('aria-label')).not.toMatch(/\?|—|UNKNOWN|null|unknown/);
+        }
+        expect(target.querySelector('[data-testid="meters-surface"]')!.textContent)
+          .not.toContain('?');
+      });
+    }
   });
 });

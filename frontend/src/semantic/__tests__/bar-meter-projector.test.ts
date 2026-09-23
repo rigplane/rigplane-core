@@ -94,6 +94,7 @@ describe('projectBarMeters', () => {
       availability: { structural: false, operational: false },
     }, 'transmitting')).toMatchObject({
       state: 'unsupported', evidence: { state: 'unsupported' }, value: null,
+      text: '', // MOR-2540: no '?' placeholder, even off the strip
     });
   });
 
@@ -210,19 +211,22 @@ describe('projectBarMeters', () => {
     expect(projectBarMeters(view)[0]).toMatchObject({
       state: 'current',
       motionFraction: 170 / 255,
-      displayText: '170 raw ?',
+      displayText: '170 raw',
+      stateText: '',
       accessibleDescription: 'Po: RF relevance indeterminate. Observed. 170 raw',
       observed: true,
       gauge: true,
     });
 
-    // MOR-2425/R41: the ' ?' indeterminate glyph is symmetric — a retained
-    // stale reading gets the same text as current, not just current.
+    // MOR-2425/R41 + MOR-2540: a retained reading keeps its digits whether
+    // current or stale — and since MOR-2540 the indeterminate-relevance
+    // case carries no ' ?' suffix either; no placeholder text on screen.
     setDisplay(view, 'power', { state: 'stale', value: 170 });
     expect(projectBarMeters(view)[0]).toMatchObject({
       state: 'stale',
       motionFraction: 170 / 255,
-      displayText: '170 raw ?',
+      displayText: '170 raw',
+      stateText: '',
       accessibleDescription: 'Po: RF relevance indeterminate. Observed. 170 raw',
       observed: true,
       gauge: true,
@@ -643,4 +647,35 @@ it('retains unavailable declared projections for other zones', () => {
   for (const projection of projections) expect(projection).toMatchObject({
     presence: 'unavailable', gauge: true, observed: false, motionFraction: null, displayText: '',
   });
+});
+
+// MOR-2540 part B: on RX the backend stops polling TX-only meters
+// (`tx_only` + `available_when` PTT), so their field status reads
+// `observed: false` / `availability: 'unavailable'`. The projection keeps
+// the row (structural presence), draws no value, and — per the owner
+// ruling — never emits a placeholder glyph in value or sr text.
+it('keeps a TX-only meter projected, unlit and placeholder-free on RX (MOR-2540)', () => {
+  const view = base('receiving');
+  for (const key of ['power', 'alc'] as const) {
+    setMeter(view, key, {
+      presence: 'unavailable',
+      availability: { structural: true, operational: false },
+      reading: { status: 'unknown' },
+      relevant: false,
+      display: { state: 'unknown', reason: 'not-observed' },
+    });
+  }
+  const power = projectBarMeters(view).find(({ key }) => key === 'power')!;
+  expect(power).toMatchObject({
+    presence: 'unavailable',
+    state: 'idle',
+    observed: false,
+    gauge: true,
+    motionFraction: null,
+    displayText: '',
+    stateText: '',
+    accessibleDescription: 'Po: Not measuring in receive',
+  });
+  expect(power.displayText).not.toContain('?');
+  expect(power.accessibleDescription).not.toContain('?');
 });

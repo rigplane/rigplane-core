@@ -7,8 +7,15 @@
 
   const present = (f: MeterField): boolean => f.availability.structural
     && f.presence !== 'unavailable' && f.presence !== 'absent';
+  // MOR-2540 (owner ruling 2026-09-22): a declared meter whose
+  // `available_when` condition is currently false (a TX-only meter while
+  // not transmitting) KEEPS its seat, unlit — label in place, no value.
+  // Hiding it made the strip reflow the moment TX started; only a truly
+  // absent (undeclared) meter loses its seat. The S meter's own composite
+  // tile keeps the stricter `present()` above: its availability does not
+  // toggle with PTT, and its pinned presence-selection contract stands.
   const levelPresent = (frame: StationLevelMeterFrame): boolean =>
-    frame.projection.presence !== 'unavailable' && frame.projection.presence !== 'absent';
+    frame.projection.presence !== 'absent';
   /** Level 2 — is it readable now AND actually read. */
   const observed = (f: MeterField): boolean =>
     f.availability.operational && f.reading.status === 'known';
