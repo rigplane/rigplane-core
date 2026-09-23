@@ -4,12 +4,12 @@
  * (`./conformance/harness.ts`, `./conformance/profiles.ts`). This is the
  * FINAL Tier-2 family walk of the MOR-1426 conformance program — its own
  * acceptance criterion is `WAIVED_INTENTS` in `./conformance/waived.ts`
- * going to zero (17 → 0; `CLAIMED_INTENTS_COUNT` 70 → 87).
+ * going to zero (16 → 0).
  *
- * FAMILY (per `waived.ts`'s SWEEPER tag, 17 intents, spanning 5 factories):
+ * FAMILY (per `waived.ts`'s SWEEPER tag, 16 intents, spanning 5 factories):
  * `scan_start`/`scan_stop`/`scan_set_df_span`/`scan_set_resume`
  * (`makeScanHandlers()`, `panel-commands.ts:392-410`); `set_dial_lock`/
- * `set_powerstat`/`speak` (`makeSystemHandlers()`, `:1239-1255`);
+ * `set_powerstat` (`makeSystemHandlers()`, `:1239-1255`);
  * `set_antenna_1`/`set_antenna_2`/`set_rx_antenna_ant1`/
  * `set_rx_antenna_ant2` (`makeAntennaHandlers()`, `:286-316`);
  * `set_digisel`/`set_ip_plus` (`makeRfFrontEndHandlers()`, `:342-351`);
@@ -18,20 +18,20 @@
  * (`makeRitXitHandlers()`, `:357-388`) that `waived.ts`'s own header
  * documents as a genuine hole in MOR-1426's per-family prose (no C6-C13
  * ticket names them in text; they land here because C13 is the closing
- * sweeper). All 17 dispatch through `dispatchRadioIntent`, which validates
+ * sweeper). All 16 dispatch through `dispatchRadioIntent`, which validates
  * every call against `radio-intents.ts`'s `intentSpecs` table (declared
  * param shapes — a mismatched shape THROWS, not just silently diverges) —
  * every frame claimed below is asserted against that exact shape.
  *
- * PARTITION: 10 genuinely REFUSE and 7 genuinely DISPATCH. Six refusals are
+ * PARTITION: 10 genuinely REFUSE and 6 genuinely DISPATCH. Six refusals are
  * honest field-status gates: `dialLock`, `main.digisel`, `main.ipplus`,
  * `ritOn`, `ritTx`, and `ritFreq` are unobserved on this fixture. The four
  * antenna intents refuse on the structural `caps.antennas === 1 < 2` gate;
  * `set_rx_antenna_ant1`/`set_rx_antenna_ant2` also lack the independent
  * `rx_antenna` capability and share `onToggleRxAnt`, so neither can reach its
- * `state.txAntenna` branch. The seven dispatches are all four scan intents
- * (declared `scan`, no observed scan state), `speak` (declared `speech`, no
- * state or VFO primitive), `set_powerstat` (declared `power_control`), and
+ * `state.txAntenna` branch. The six dispatches are all four scan intents
+ * (declared `scan`, no observed scan state), `set_powerstat` (declared
+ * `power_control`), and
  * `memory_clear`. `memory_clear` alone resolves `currentMemorySnapshot()`;
  * it requires a non-null resolved snapshot but does not inspect its
  * `frequencyHz`/`mode` contents. `onStore` is the sibling that checks those
@@ -84,7 +84,7 @@
  * restoring the green state before this file was committed.
  *
  * DYNAMIC MOD-INPUT DISPATCH (per this ticket's explicit instruction, NOT
- * one of the 87-name literal universe — `onModInputChange` builds its
+ * one of the 85-name literal universe — `onModInputChange` builds its
  * intent via `modInputCommand(dataMode)`; see `waived.ts`'s header and
  * `panel-commands-completeness.test.ts`'s "dynamic mod-input call site"
  * block, which already asserts exactly one such call exists and is this
@@ -101,7 +101,7 @@
  * observed because this radio does not expose those DATA groups. This
  * coverage is ADDITIVE — it claims no new name in
  * `claimed.ts` and changes no count, since these 4 names live outside the
- * 87-name universe by design (see header cited above).
+ * 85-name universe by design (see header cited above).
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -154,9 +154,6 @@ const CASES: readonly IntentCase[] = [
   { label: 'set_powerstat', run: () => makeSystemHandlers().onPowerOff(),
     frames: [['set_powerstat', { on: false }]],
     gate: 'currentA03cContext() resolves; power_control capability declared; no field-observation gate beyond that — RED-FIRST target, see file header' },
-  { label: 'speak', run: () => makeSystemHandlers().onSpeak(),
-    frames: [['speak', { mode: 0 }]],
-    gate: 'speech capability declared; no radio-state, model-name, or VFO-primitive gate' },
   { label: 'set_antenna_1', run: () => makeAntennaHandlers().onSelectAnt1(),
     frames: [],
     gate: 'caps.antennas=1 < 2 structural gate (fires before the also-unobserved rxAntenna1 field check)' },
@@ -192,11 +189,8 @@ const CASES: readonly IntentCase[] = [
 describe('IC-7300 fixture — remainder-sweeper family conformance (MOR-1567)', () => {
   beforeEach(() => {
     h.state = fixtureState(profile);
-    // This historical state/capability capture predates the static speech
-    // topology. Declare the capability explicitly for every dispatch row.
     h.caps = {
       ...fixtureCaps(profile),
-      capabilities: [...fixtureCaps(profile).capabilities, 'speech'],
       dataModeCount: 1,
       dataModeInputs: [0, 1, 2, 3, 4].map(value => ({ value, label: String(value) })),
     };
@@ -207,11 +201,11 @@ describe('IC-7300 fixture — remainder-sweeper family conformance (MOR-1567)', 
     resetCommandLifecycle();
   });
 
-  it('covers exactly the 17 SWEEPER-tagged intents', () => {
-    // 17 distinct labels — set_rx_antenna_ant1/ant2 get their own labeled
+  it('covers exactly the 16 SWEEPER-tagged intents', () => {
+    // 16 distinct labels — set_rx_antenna_ant1/ant2 get their own labeled
     // rows (see above) even though they share one onToggleRxAnt() call site.
-    expect(new Set(CASES.map((c) => c.label)).size).toBe(17);
-    expect(CASES).toHaveLength(17);
+    expect(new Set(CASES.map((c) => c.label)).size).toBe(16);
+    expect(CASES).toHaveLength(16);
   });
 
   it('caps/fieldStatus sanity underlying the gates above', () => {
@@ -219,7 +213,6 @@ describe('IC-7300 fixture — remainder-sweeper family conformance (MOR-1567)', 
     expect(IC7300_CAPABILITIES.capabilities).toEqual(expect.arrayContaining([
       'scan', 'power_control', 'dial_lock', 'rit', 'xit',
     ]));
-    expect(h.caps?.capabilities).toContain('speech');
     for (const field of ['dialLock', 'ritOn', 'ritTx', 'ritFreq', 'rxAntenna1', 'rxAntenna2', 'txAntenna']) {
       expect(IC7300_STATE.fieldStatus?.[field as keyof typeof IC7300_STATE.fieldStatus]?.observed).toBe(false);
     }
@@ -273,20 +266,6 @@ describe('IC-7300 fixture — remainder-sweeper family conformance (MOR-1567)', 
         ['scan_set_df_span', { span: 5 }],
         ['scan_set_resume', { mode: 2 }],
       ]);
-    });
-  });
-
-  describe('C13 speak command', () => {
-    it('REFUSES without speech capability, with zero lifecycle/frame even when state is absent', () => {
-      h.caps = { ...fixtureCaps(profile), capabilities: [] };
-      h.state = null;
-      expectRefusal(() => makeSystemHandlers().onSpeak());
-    });
-
-    it('dispatches exactly with declared speech and absent state, independently of VFO primitives', () => {
-      h.caps = { ...fixtureCaps(profile), capabilities: ['speech'] };
-      h.state = null;
-      expectFrames(() => makeSystemHandlers().onSpeak(), [['speak', { mode: 0 }]]);
     });
   });
 

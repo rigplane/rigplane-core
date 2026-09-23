@@ -9,7 +9,7 @@
  * a newly-added intent) fails vitest.
  *
  * EMPTY-MAP ERA (post MOR-1567): the sweeper walked the last of the
- * original 67 intents into `CLAIMED_INTENTS`, so both maps below are now
+ * retained 64 intents into `CLAIMED_INTENTS`, so both maps below are now
  * `{}`. This file is no longer a burn-down in progress — it is the
  * standing gate for anything NEW. If the completeness meta-test fails
  * because an intent or keyboard action has no conformance case yet,
@@ -31,11 +31,12 @@
  * header): `onModInputChange` builds its intent name at runtime via
  * `modInputCommand(dataMode)`, not a `name: '<literal>'`, so it can't
  * appear in a source-literal parse and was excluded from the original
- * 67-intent baseline this ledger measured — its 4-value domain is pinned
+ * 67-intent baseline this ledger measured; this deletion leaves 64 retained
+ * walked-family intents. Its 4-value domain is pinned
  * separately by `$lib/radio/mod-input.test.ts`. MOR-1567's prose calls out
  * "the mod-input command" as in its scope, so add a case for it there — do
- * not fold it into this map, which would perturb the pinned 87/67/20
- * baseline MOR-1426 measured.
+ * not fold it into this map, which would perturb the current 85/64/21
+ * inventory (MOR-1426's baseline was 87/67/20).
  */
 
 /** One-line justification for an unclaimed intent or keyboard action. */
@@ -49,8 +50,8 @@ export interface Waiver {
 /**
  * MOR-1560 (C6)'s 9 DSP intents, MOR-1561 (C7)'s 5 filter/PBT intents,
  * MOR-1564 (C10)'s 8 TX-chain intents, MOR-1565 (C11)'s 12 VOX/CW intents,
- * MOR-1566 (C12)'s 12 scope-remainder/VFO-topology intents, and MOR-1567
- * (C13)'s 17 remainder-sweeper intents (the 14 named in its own prose +
+ * MOR-1566 (C12)'s 10 scope-remainder/VFO-topology intents, and MOR-1567
+ * (C13)'s 16 remainder-sweeper intents (the 13 named in its own prose +
  * the 3 orphaned RIT/XIT intents this file previously documented as a
  * genuine gap in MOR-1426's per-family prose — `set_rit_status`,
  * `set_rit_tx_status`, `set_rit_frequency`) all landed and moved to
@@ -65,7 +66,7 @@ export interface Waiver {
  * intentionally claimed ZERO entries here — its scope was
  * `get*Handlers`/`derive*Props`/`get*Armed` SEAMS, not new intent names.
  *
- * This map is now EMPTY (0 of the original 67 walked-family intents
+ * This map is now EMPTY (0 of the retained 64 walked-family intents
  * remain) — MOR-1567's own acceptance criterion, and the closing state of
  * the whole MOR-1426 Tier-2 conformance program's `WAIVED_INTENTS`
  * ledger. Kept (rather than deleted) as the live burn-down target for any

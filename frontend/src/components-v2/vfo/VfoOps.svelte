@@ -2,7 +2,6 @@
   import '../controls/control-button.css';
   import { hasDualReceiver, getVfoScheme } from '$lib/stores/capabilities.svelte';
   import { vfoSwapLabel, vfoCopyLabel, vfoTxLabel } from './vfo-ops-utils';
-  import { withDoubleClick } from '../wiring/double-click';
   import ActiveReceiverToggle from './ActiveReceiverToggle.svelte';
 
   interface Props {
@@ -18,12 +17,10 @@
     onSwap: () => void;
     /** Equalize MAIN→SUB (copy). Backend sends `0x07 0xB1`. */
     onEqual: () => void;
-    /** Toggle SPLIT on/off. Double-click = Quick Split (equalize + ON). */
+    /** Toggle SPLIT on/off. */
     onSplitToggle: () => void;
-    onQuickSplit: () => void;
-    /** Toggle Dual Watch on/off. Double-click = Quick DW (equalize + ON). */
+    /** Toggle Dual Watch on/off. */
     onDualWatchToggle: () => void;
-    onQuickDw: () => void;
   }
 
   let {
@@ -35,9 +32,7 @@
     onSwap,
     onEqual,
     onSplitToggle,
-    onQuickSplit,
     onDualWatchToggle,
-    onQuickDw,
   }: Props = $props();
 
   let scheme = $derived(getVfoScheme());
@@ -46,11 +41,6 @@
   let txBadgeLabel = $derived(vfoTxLabel(scheme, txVfo));
   let dualRx = $derived(hasDualReceiver());
 
-  // Double-click wiring: short tap = toggle, double tap = Quick action.
-  // The inner handlers are rebuilt on each prop change so that stale
-  // closures don't point at the previous handler identity.
-  let dwClick = $derived(withDoubleClick(onDualWatchToggle, onQuickDw));
-  let splitClick = $derived(withDoubleClick(onSplitToggle, onQuickSplit));
 </script>
 
 <div class:dual={dualRx} class="vfo-ops">
@@ -77,8 +67,8 @@
     data-op="split"
     data-active={splitActive}
     data-color="cyan"
-    onclick={splitClick}
-    title="SPLIT — single click toggles, double click = Quick Split (equalize + ON)"
+    onclick={onSplitToggle}
+    title="Toggle SPLIT"
   >SPLIT</button>
   {#if dualRx}
     <button
@@ -87,8 +77,8 @@
       data-op="dw"
       data-active={dualWatchActive}
       data-color="green"
-      onclick={dwClick}
-      title="DUAL WATCH — single click toggles, double click = Quick DW (equalize + ON)"
+      onclick={onDualWatchToggle}
+      title="Toggle DUAL WATCH"
     >DW</button>
   {/if}
   <button

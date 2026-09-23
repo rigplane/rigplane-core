@@ -130,9 +130,6 @@ function standardFixture(
         sub: dual ? availableAction : absentAction,
         equalize: availableAction,
         swap: availableAction,
-        quickSplit: availableAction,
-        quickDualWatch: availableAction,
-        speak: availableAction,
       },
     },
   });

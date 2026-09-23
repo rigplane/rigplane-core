@@ -50,9 +50,6 @@ const h = vi.hoisted(() => ({
   subReceiver: vi.fn(),
   equalize: vi.fn(),
   swap: vi.fn(),
-  quickSplit: vi.fn(),
-  quickDualWatch: vi.fn(),
-  speak: vi.fn(),
   noop: vi.fn(),
   session: { state: 'connected', epoch: 7 } as ControlSessionSnapshot,
   sessionSubscriber: null as ((next: ControlSessionSnapshot) => void) | null,
@@ -178,10 +175,8 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
       onSubVfoClick: h.subReceiver,
       onEqual: h.equalize,
       onSwap: h.swap,
-      onQuickSplit: h.quickSplit,
-      onQuickDw: h.quickDualWatch,
     }),
-    makeSystemHandlers: () => ({ onSpeak: h.speak, onDialLock: h.dialLock }),
+    makeSystemHandlers: () => ({ onDialLock: h.dialLock }),
     makeVoxHandlers: () => ({
       onVoxToggle: h.voxToggle, onVoxGainChange: h.voxGain,
       onAntiVoxGainChange: h.antiVoxGain, onVoxDelayChange: h.voxDelay,
@@ -536,27 +531,21 @@ describe('hosted Standard VFO operation instruments', () => {
 
     const grid = q('[data-testid="vfo-operation-instrument-grid"]')!;
     expect([...grid.children].map((seat) => seat.getAttribute('data-field'))).toEqual([
-      'split', 'dualWatch', 'activeReceiver', 'equalize', 'swap', 'speak',
+      'split', 'dualWatch', 'activeReceiver', 'equalize', 'swap',
     ]);
     expect(q('[data-vfo-split]')).toBeNull();
     expect(target.querySelectorAll('[data-testid="vfo-split-digest"]')).toHaveLength(0);
-    expect(q('[data-testid="external-Quick split"]')).toBeNull();
-    expect(q('[data-testid="external-Quick dual watch"]')).toBeNull();
 
     q<HTMLButtonElement>('[data-testid="external-Split"]')!.click();
     q<HTMLButtonElement>('[data-testid="external-Dual watch"]')!.click();
     q<HTMLButtonElement>('[data-testid="external-Receiver-SUB"]')!.click();
     q<HTMLButtonElement>('[data-testid="external-M=S"]')!.click();
     q<HTMLButtonElement>('[data-testid="external-M⇄S"]')!.click();
-    q<HTMLButtonElement>('[data-testid="external-SPEAK"]')!.click();
     expect(h.split).toHaveBeenCalledOnce();
     expect(h.dualWatch).toHaveBeenCalledExactlyOnceWith(true);
     expect(h.subReceiver).toHaveBeenCalledOnce();
     expect(h.equalize).toHaveBeenCalledOnce();
     expect(h.swap).toHaveBeenCalledOnce();
-    expect(h.speak).toHaveBeenCalledOnce();
-    expect(h.quickSplit).not.toHaveBeenCalled();
-    expect(h.quickDualWatch).not.toHaveBeenCalled();
   });
 
   it('keeps unknown receiver unselected while admitted external MAIN and SUB establish identity', () => {
@@ -655,7 +644,7 @@ describe('hosted Standard VFO operation instruments', () => {
     h.caps = vfoCaps();
     h.selectedFiniteAppearance = finiteAppearance;
     renderHostedDesktop();
-    const retained = ['Split', 'Dual watch', 'Receiver', 'M=S', 'M⇄S', 'SPEAK']
+    const retained = ['Split', 'Dual watch', 'Receiver', 'M=S', 'M⇄S']
       .map((label) => retainedInvocations.get(label)!);
     unmount(component!);
     component = null;
@@ -665,7 +654,7 @@ describe('hosted Standard VFO operation instruments', () => {
     retained[2]!('SUB');
     for (const invoke of retained.slice(3)) invoke();
     for (const spy of [
-      h.split, h.dualWatch, h.subReceiver, h.equalize, h.swap, h.speak,
+      h.split, h.dualWatch, h.subReceiver, h.equalize, h.swap,
     ]) expect(spy).not.toHaveBeenCalled();
   });
 

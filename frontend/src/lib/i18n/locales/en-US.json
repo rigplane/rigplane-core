@@ -248,8 +248,6 @@
 
   "core.vfo.ops.equalize": "Equalize VFOs",
   "core.vfo.ops.swap": "Swap VFOs",
-  "core.vfo.ops.quickSplit": "Quick split",
-  "core.vfo.ops.quickDualWatch": "Quick dual watch",
   "core.vfo.splitDigest.rx": "RX {frequency}",
   "core.vfo.splitDigest.tx": "TX {frequency}",
   "core.vfo.select.unknownSlotReason": "The radio has not confirmed this VFO's A/B identity yet, so it can't be selected.",

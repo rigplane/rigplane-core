@@ -160,10 +160,9 @@ const GLOSSARY_TOKENS = [
   // NOT sourced from the strategy glossary (§2.A/§2.B do not cover these) —
   // these are rigplane-core-local faceplate terms per the MOR-1450 owner
   // ruling (see docs/i18n/faceplate-locale-invariance.md). Two casings are
-  // listed for each because en-US uses the label casing standalone
-  // ("Split", "Dual watch") and a lowercase mid-sentence casing inside
-  // action-tooltip prose ("Quick split", "Quick dual watch"); this scan is
-  // case-sensitive substring matching, not case-folded.
+  // listed for each because both standalone label casing and lowercase
+  // sentence casing occur in source copy; this scan is case-sensitive
+  // substring matching, not case-folded.
   'Split',
   'split',
   'Dual watch',

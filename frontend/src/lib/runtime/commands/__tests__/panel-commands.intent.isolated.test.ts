@@ -1182,8 +1182,6 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     vfo.onModeChange('CW', 1);
     vfo.onFilterChange(3, 0);
     vfo.onDualWatchToggle(true);
-    vfo.onQuickDw();
-    vfo.onQuickSplit();
     vfo.onTrackingToggle(true);
 
     expect(exactCalls()).toEqual([
@@ -1200,8 +1198,6 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       ['set_mode', { mode: 'CW', receiver: 1 }],
       ['set_filter', { filter: 3, receiver: 0 }],
       ['set_dual_watch', { on: true }],
-      ['quick_dualwatch', {}],
-      ['quick_split', {}],
       ['set_main_sub_tracking', { on: true }],
     ]);
     expectIntentTransport();
@@ -1283,14 +1279,12 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     vfo.onVfoSelect('MAIN', 'B');
     vfo.onSwap();
     vfo.onEqual();
-    vfo.onQuickSplit();
     vfo.onMainFreqChange(14_101_000);
 
     expect(exactCalls()).toEqual([
       ['set_vfo', { vfo: 'B' }],
       ['vfo_swap', {}],
       ['vfo_equalize', {}],
-      ['quick_split', {}],
       ['set_freq', { freq: 14_101_000, receiver: 0 }],
     ]);
     expectIntentTransport();
@@ -2099,7 +2093,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       'set_rf_power', 'set_mic_gain', 'set_tuner_status', 'set_vox', 'set_compressor',
       'set_compressor_level', 'set_monitor', 'set_drive_gain',
       'set_vfo', 'vfo_swap', 'vfo_equalize', 'set_split', 'set_dual_watch',
-      'quick_dualwatch', 'quick_split', 'set_main_sub_tracking',
+      'set_main_sub_tracking',
     ]) {
       expect(a03aNames).not.toContain(`'${name}'`);
     }
@@ -2330,7 +2324,7 @@ describe('MOR-1409 A03e canonical system, scope, and local keyboard ownership', 
   beforeEach(() => {
     h.state = state();
     h.caps = {
-      capabilities: ['scope', 'dual_rx', 'dial_lock', 'power_control', 'speech'],
+      capabilities: ['scope', 'dual_rx', 'dial_lock', 'power_control'],
       scope: true,
       stateContractVersion: 1,
       providerGeneration: 31,
@@ -2360,12 +2354,11 @@ describe('MOR-1409 A03e canonical system, scope, and local keyboard ownership', 
     const scope = makeScopeControlsHandlers();
     system.onDialLock(true);
     system.onPowerOff();
-    system.onSpeak();
     scope.onModeChange(0); scope.onEdgeChange(1); scope.onSpanChange(7); scope.onSpeedChange(2);
     scope.onHoldChange(true); scope.onRefChange(10); scope.onDualChange(true); scope.onReceiverChange(1);
     scope.onDuringTxChange(true); scope.onCenterTypeChange(2); scope.onVbwChange(true); scope.onRbwChange(2);
     expect(exactCalls()).toEqual([
-      ['set_dial_lock', { on: true }], ['set_powerstat', { on: false }], ['speak', { mode: 0 }],
+      ['set_dial_lock', { on: true }], ['set_powerstat', { on: false }],
       ['set_scope_mode', { mode: 0 }], ['set_scope_edge', { edge: 1 }], ['set_scope_span', { span: 7 }],
       ['set_scope_speed', { speed: 2 }], ['set_scope_hold', { on: true }], ['set_scope_ref', { ref: 10 }],
       ['set_scope_dual', { dual: true }], ['switch_scope_receiver', { receiver: 1 }],
@@ -2397,19 +2390,6 @@ describe('MOR-1409 A03e canonical system, scope, and local keyboard ownership', 
     expect(h.sendCommand).not.toHaveBeenCalled();
     expect(getCommandLifecycles()).toHaveLength(0);
 
-    // `speak` is capability-only: missing support must create neither an
-    // outbound frame nor a command lifecycle, independently of radio state.
-    system.onSpeak();
-    expect(h.sendCommand).not.toHaveBeenCalled();
-    expect(getCommandLifecycles()).toHaveLength(0);
-
-    // Declared support remains deliberately blind to radio state: this is a
-    // command, not a state-derived toggle.
-    h.caps = { ...h.caps!, capabilities: ['speech'] };
-    h.state = null;
-    system.onSpeak();
-    expect(exactCalls()).toEqual([['speak', { mode: 0 }]]);
-    expectIntentTransport();
   });
 
   it('rejects every invalid current or proposed scope domain and unavailable exact leaves', () => {

@@ -198,9 +198,6 @@ describe('validateRadioViewModel', () => {
       sub: { structural: true, operational: false },
       equalize: { structural: true, operational: true },
       swap: { structural: true, operational: true },
-      quickSplit: { structural: true, operational: true },
-      quickDualWatch: { structural: true, operational: false },
-      speak: { structural: false, operational: false },
     },
   });
 
@@ -232,7 +229,7 @@ describe('validateRadioViewModel', () => {
         ...radioWideIndicators(),
         actions: {
           ...radioWideIndicators().actions,
-          speak: { structural: 'yes', operational: true },
+          equalize: { structural: 'yes', operational: true },
         },
       },
     })).toThrow(TypeError);

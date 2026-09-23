@@ -109,9 +109,7 @@ const baseProps: ComponentProps<typeof VfoOps> = {
   onSwap: vi.fn(),
   onEqual: vi.fn(),
   onSplitToggle: vi.fn(),
-  onQuickSplit: vi.fn(),
   onDualWatchToggle: vi.fn(),
-  onQuickDw: vi.fn(),
 };
 
 beforeEach(() => {
@@ -257,15 +255,7 @@ describe('TX indicator (dual receiver, read-only)', () => {
   });
 });
 
-describe('single-click callbacks', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
+describe('click callbacks', () => {
   it('calls onSwap when swap button is clicked', () => {
     const onSwap = vi.fn();
     const t = mountComponent({ ...baseProps, onSwap });
@@ -286,73 +276,24 @@ describe('single-click callbacks', () => {
     expect(onEqual).toHaveBeenCalledOnce();
   });
 
-  it('SPLIT single-click fires onSplitToggle after the double-click window closes', () => {
+  it('SPLIT click fires onSplitToggle', () => {
     const onSplitToggle = vi.fn();
-    const onQuickSplit = vi.fn();
-    const t = mountComponent({ ...baseProps, onSplitToggle, onQuickSplit });
+    const t = mountComponent({ ...baseProps, onSplitToggle });
     const btn = Array.from(t.querySelectorAll('.bridge-button')).find(
       (el) => el.textContent?.trim() === 'SPLIT',
     ) as HTMLElement | undefined;
     btn?.click();
-    expect(onSplitToggle).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(300);
     expect(onSplitToggle).toHaveBeenCalledOnce();
-    expect(onQuickSplit).not.toHaveBeenCalled();
   });
 
-  it('DW single-click fires onDualWatchToggle after the double-click window closes', () => {
+  it('DW click fires onDualWatchToggle', () => {
     vi.mocked(hasDualReceiver).mockReturnValue(true);
     const onDualWatchToggle = vi.fn();
-    const onQuickDw = vi.fn();
-    const t = mountComponent({ ...baseProps, onDualWatchToggle, onQuickDw });
+    const t = mountComponent({ ...baseProps, onDualWatchToggle });
     const btn = Array.from(t.querySelectorAll('.bridge-button')).find(
       (el) => el.textContent?.trim() === 'DW',
     ) as HTMLElement | undefined;
     btn?.click();
-    expect(onDualWatchToggle).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(300);
     expect(onDualWatchToggle).toHaveBeenCalledOnce();
-    expect(onQuickDw).not.toHaveBeenCalled();
-  });
-});
-
-describe('double-click callbacks', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it('SPLIT double-click fires onQuickSplit (not onSplitToggle)', () => {
-    const onSplitToggle = vi.fn();
-    const onQuickSplit = vi.fn();
-    const t = mountComponent({ ...baseProps, onSplitToggle, onQuickSplit });
-    const btn = Array.from(t.querySelectorAll('.bridge-button')).find(
-      (el) => el.textContent?.trim() === 'SPLIT',
-    ) as HTMLElement | undefined;
-    btn?.click();
-    vi.advanceTimersByTime(100);
-    btn?.click();
-    expect(onQuickSplit).toHaveBeenCalledOnce();
-    vi.advanceTimersByTime(500);
-    expect(onSplitToggle).not.toHaveBeenCalled();
-  });
-
-  it('DW double-click fires onQuickDw (not onDualWatchToggle)', () => {
-    vi.mocked(hasDualReceiver).mockReturnValue(true);
-    const onDualWatchToggle = vi.fn();
-    const onQuickDw = vi.fn();
-    const t = mountComponent({ ...baseProps, onDualWatchToggle, onQuickDw });
-    const btn = Array.from(t.querySelectorAll('.bridge-button')).find(
-      (el) => el.textContent?.trim() === 'DW',
-    ) as HTMLElement | undefined;
-    btn?.click();
-    vi.advanceTimersByTime(100);
-    btn?.click();
-    expect(onQuickDw).toHaveBeenCalledOnce();
-    vi.advanceTimersByTime(500);
-    expect(onDualWatchToggle).not.toHaveBeenCalled();
   });
 });

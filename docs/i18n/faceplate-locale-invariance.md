@@ -92,15 +92,10 @@ error/status messages, and refusal reasons. A faceplate token may appear
 *inside* a translated sentence — the token itself stays literal while the
 surrounding prose translates, e.g. `core.mobile.tx.notAllowedFreq` reads
 "TX запрещена на этой частоте" in ru-RU: `TX` stays English, "запрещена на
-этой частоте" translates. Same pattern for the quick-action tooltips
-`core.vfo.ops.quickSplit` / `core.vfo.ops.quickDualWatch` ("Быстрый Split" /
-"Быстрый Dual watch" in ru-RU): the action verb translates, the faceplate
-token inside it does not. Note the embedded token matches the exact casing
-en-US uses in that specific string (lowercase `split` mid-sentence in
-"Quick split", vs. capitalized `Split` for the standalone label) — the
-`i18n-check.mjs` substring lint is case-sensitive, so the translation must
-reuse whichever casing the English source chose for that string, not the
-"canonical" label casing. See `core-string-inventory.md`'s note that
+этой частоте" translates. The `i18n-check.mjs` substring lint is
+case-sensitive, so translated prose must reuse whichever casing the English
+source chose for that string, not the "canonical" label casing. See
+`core-string-inventory.md`'s note that
 glossary tokens "may appear inside translatable copy" for the general
 version of this rule; this document narrows it specifically to the
 faceplate domain and adds the value-word corollary above.
@@ -185,7 +180,7 @@ one regression round 1's own revert had introduced:
   `GLOSSARY_TOKENS` so a future regression on this specific pattern fails
   the substring lint (these four entries are core-local additions, not
   sourced from the strategy glossary — see the comment at their
-  definition).
+  definition). (MOR-2538 later removed both keys with the quick actions.)
 - `core.overlay.poweredOff.hint` (ru-RU) still read "кнопку ВКЛ" after the
   power button was relabeled to `ON` — a regression the round-1 revert
   itself created by changing the button's own label without updating a

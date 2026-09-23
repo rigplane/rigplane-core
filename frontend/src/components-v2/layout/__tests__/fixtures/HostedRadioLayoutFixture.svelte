@@ -65,7 +65,7 @@
   } satisfies TxAuxFiniteHandles;
   const vfoOperations = {
     split: null, dualWatch: null, activeReceiver: null, equalize: null,
-    swap: null, quickSplit: null, quickDualWatch: null, speak: null,
+    swap: null,
   } satisfies VfoOperationHandles;
   const rfFrontEndInstruments = {
     kind: 'separate', rfGain: empty, squelch: empty,

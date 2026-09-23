@@ -65,8 +65,6 @@ function view(): RadioViewModel {
       xitOffset: known(250),
       actions: {
         main: availability(), sub: availability(), equalize: availability(), swap: availability(),
-        quickSplit: availability(false, false), quickDualWatch: availability(false, false),
-        speak: availability(),
       },
     },
     txAux: {
@@ -177,7 +175,7 @@ describe('projectPeerSplitDisplay', () => {
   it('contains no callbacks, command availability or fabricated demo domains', () => {
     const display = projectPeerSplitDisplay(view());
     const json = JSON.stringify(display);
-    expect(json).not.toMatch(/actions|quickSplit|quickDualWatch|callback|handler/i);
+    expect(json).not.toMatch(/actions|callback|handler/i);
     expect(json).not.toMatch(/temperature|bandEdge|memoryChannel|fftBins/i);
     const visit = (value: unknown): void => {
       if (typeof value === 'function') throw new Error('display model contains a function');
