@@ -11,6 +11,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0b5] — 2026-09-23
+
+### Added
+
+- **The panorama controls are one row of flat, indicator-style keys,
+  with the rest behind a ⋯ More panel (MOR-2545).** The row holds
+  CTR / FIX, SPAN, REF and HOLD, plus MAIN / SUB on a dual-receiver
+  radio; on a narrow container, MAIN / SUB, HOLD, REF and then SPAN
+  move into More, which closes on an outside click, Esc or any scroll.
+
+### Fixed
+
+- **The desktop Standard face no longer scrolls as a whole page
+  (MOR-2542).** The side columns now contain their positioned content;
+  the columns still scroll their own content.
+- **AGC-T and dual-receiver audio routing appear only where the radio
+  declares them (MOR-2527).** Radios that do not declare the AGC
+  time-constant field no longer draw a permanently disabled `AGC-T ?s`,
+  and the audio-routing controls are IC-7610-only; unread focus and
+  gain text is empty with the width reserved instead of `—`.
+- **Status-bar and power confirmations happen inside the page, not in
+  native browser dialogs (MOR-2543).** The in-page dialog shows
+  failures in place. The power label no longer reads UNKNOWN — an
+  unknown state shows the control's own name, unlit.
+- **The RF gain annunciator lights only while RF gain is reduced
+  (MOR-2546).** At 100 % and while the reading is unknown, the VFO deck
+  lamp and the older indicator row show no text and keep their reserved
+  width; the row's `—` fallback is gone.
+- **The LCD faces show RFG only while RF gain is reduced (MOR-2546).**
+  The same rule as the VFO deck: at a displayed 100 % (raw 254/255
+  included), the RFG chip prints no text, keeps its reserved slot and
+  draws no frame; a radio without RF gain shows no RFG chip.
+- **The IC-7610 and IC-7300 power state now comes from the radio's
+  answers and acknowledged power commands (MOR-2544).** IC-705 and
+  IC-9700 are included, while the X6100, X6200 and TX-500 are excluded,
+  because their power control covers only the RF-power level.
+- **No placeholder text on the RX audio, RF front-end and DSP surfaces
+  (MOR-2527).** Unread values are drawn in place, unlit, with the label
+  only and no value text, and the layout does not shift when the value
+  arrives; the MOD select no longer offers a `—` option.
+
 ## [3.0.0b4] — 2026-09-23
 
 ### Fixed
@@ -2631,7 +2672,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b4...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b5...HEAD
+[3.0.0b5]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b4...v3.0.0b5
 [3.0.0b4]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b3...v3.0.0b4
 [3.0.0b3]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b2...v3.0.0b3
 [3.0.0b2]: https://github.com/rigplane/rigplane-core/compare/v2.11.1...v3.0.0b2
