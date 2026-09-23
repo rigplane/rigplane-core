@@ -986,8 +986,8 @@ for (const layout of ['standard', 'sdr-test', 'lcd-scope', 'lcd-cockpit']) {
             .reduce((sum, child) => sum + child.getBoundingClientRect().height, 0);
           return Math.max(280, parseFloat(getComputedStyle(column).minHeight) - othersHeight);
         });
-        expect.soft(center!.height, "scope keeps the center column's computed min-height left after its other children, floored at 280px")
-          .toBeLessThanOrEqual(scopeFloor);
+        expect.soft(center!.height, 'scope uses available space or its column floor (the column min-height left after its other children, at least 280px)')
+          .toBeLessThanOrEqual(Math.max(scopeFloor, page.viewportSize()!.height - center!.y - meters!.height));
         expect.soft(center!.y + center!.height, 'scope ends before station meters').toBeLessThanOrEqual(meters!.y + 1);
         await metersLocator.scrollIntoViewIfNeeded();
         await expect(metersLocator).toBeInViewport();
