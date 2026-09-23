@@ -479,7 +479,26 @@ CI run must compare successfully against these replacements.
 | FieldLine dark | compared-fail (6,867 px); inspected and accepted | `960cb61d8b5e9b5a00a3f8611043603df7723aa70aa4e387ce52036d02b1a7c7` |
 | FieldLine light | compared-fail (13,366 px); inspected and accepted | `2d972c5647ea99eef22ac4bffa99f3e32683427af2ebbb98aab0111142b296d5` |
 
-## Linux re-pin provenance (current — 2026-09-22 MOR-2509 correction round 2: dim inactive receiver, v8 S-meter, hardware-key bridge)
+## Linux re-pin provenance (current — 2026-09-23 MOR-2545 PR1 scope controls in one row)
+
+| Field | Value |
+| --- | --- |
+| Source code commit | `7fbb04c3d177ef4292a10837fa5e68103909397e` (branch `codex/scope-one-row-radio-held`, PR #3593) |
+| CI run / job | [Tests (quick) #35879412060](https://github.com/rigplane/rigplane-core/actions/runs/35879412060) / job `107243761806` |
+| Command | `npm run test:e2e:i18n` (`playwright test -c ./playwright.i18n.config.ts`) |
+| Source | the `actual` attachments of the four MOR-1400 production-root cases in that run's `mor-1400-production-visual-diagnostics` artifact (`playwright-report/data/*.png`, 1280×800), matched to their scene as the attachment nearest to that scene's superseded baseline, copied byte-for-byte |
+| Reason | MOR-2545 PR1: the scope controls above the spectrum become one row of flat keys (`CTR FIX REF ‹ › HOLD ⋯` in these fixtures) with the remaining controls behind `⋯`, so the scope toolbar and spectrum below it move up. Also changed and inspected: the right column's panels sit a few pixels higher, and the status bar's TOT key (y 10–36) no longer shows the focus ring it had in the superseded baseline. Deltas measured against the superseded baselines with Pillow `ImageChops.difference(...).convert('L') > 8`. |
+
+| Scene | Disposition | Changed px (of 1,024,000) | Changed bbox (x0, y0, x1, y1) | SHA-256 |
+| --- | --- | --- | --- | --- |
+| StudioLine dark | compared-fail; inspected (one scope row, content below it moved) and accepted | 78,911 | (238, 10, 1275, 628) | `09949387810aefdf88900043435feb50b9ececadc0878bad5b10b7219776abb6` |
+| StudioLine light | compared-fail; inspected (one scope row, content below it moved) and accepted | 86,731 | (238, 10, 1275, 628) | `274f04fc0a6f86ee64d4b8033793630117c364788ec88d46ed5a2c3de2081e02` |
+| FieldLine dark | compared-fail; inspected (one scope row, content below it moved) and accepted | 91,009 | (238, 10, 1275, 631) | `29278a30e2f3ff826f5c895a9becfb9f5fa00de26a689faf9ece90d5e5447e15` |
+| FieldLine light | compared-fail; inspected (one scope row, content below it moved) and accepted | 90,431 | (238, 10, 1275, 631) | `36b1363d4b59c6cc6fb6d6d6f51b2bf990522670c073bd5ddff604cbdc04ef03` |
+
+A subsequent exact-head quick run must confirm these four comparisons pass.
+
+## Linux re-pin provenance (superseded — 2026-09-22 MOR-2509 correction round 2: dim inactive receiver, v8 S-meter, hardware-key bridge)
 
 | Field | Value |
 | --- | --- |
