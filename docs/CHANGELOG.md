@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0b2] — 2026-09-22
+
 ### Breaking changes
 
 - **The `commands` CW-pitch and key-speed builders take the raw level
