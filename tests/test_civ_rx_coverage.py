@@ -3076,7 +3076,10 @@ def test_tone_and_tsql_freq_observations_fall_back_to_the_table(
     radio._profile = profile  # noqa: SLF001
     assert profile.state_acquisition is not None
     stored = FieldPath.receiver("0", "operator_controls", name)
-    assert stored not in profile.state_acquisition.field_policies
+    assert (
+        FieldPath.receiver("main", "operator_controls", name)
+        not in profile.state_acquisition.field_policies
+    )
     declared_ttl = _OBSERVATION_MAX_AGE_SECONDS[("receiver", "operator_controls", name)]
     assert (
         declared_ttl != profile.state_acquisition.default_policy.freshness_ttl_seconds
