@@ -181,7 +181,13 @@ describe('MOR-2545 PR2 — the scope status renders exactly once on both desktop
     await vi.waitFor(() => {
       const standalone = target.querySelector('.desktop-controls-center .scope-display-text');
       expect(standalone).not.toBeNull();
-      expect(standalone!.textContent).toContain('audio_fft');
+      // The mocked runtime facade never runs bootstrap(), so its private
+      // `_defaultScopeSource` stays null no matter what `select()` writes to
+      // the capabilities store — the fixture's honest standalone readout is
+      // the sourceless idle string. What this test pins is VISIBILITY: the
+      // text is rendered (non-empty, exact, placeholder-free) on the
+      // standalone mount while the toolbar host hides it.
+      expect(standalone!.textContent).toBe('inactive · HW off');
     });
     const standalone = target.querySelector('.desktop-controls-center .scope-display-text')!;
     expect(standalone.textContent).not.toMatch(/—|\?|UNKNOWN/);

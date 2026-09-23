@@ -337,6 +337,9 @@ describe('the scope-display snapshot comes from runtime.defaultScopeStatus / rad
   it('reflects a live snapshot honestly', () => {
     h.caps = liveCaps(true);
     h.scopeStatus = { ...LIVE_SCOPE_STATUS };
+    // beforeEach (line ~243) resets this to false, so setting it here is
+    // scoped to this test — same shape as the neighbouring MOR-1352 tests.
+    h.hardwareScopeConnected = true;
     render();
     expect(text()).toContain('connected');
     // MOR-2545 PR2 review fix: the bare mount (the mobile/LCD composition
