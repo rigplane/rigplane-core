@@ -148,11 +148,16 @@ async def test_embedded_rigctld_keeps_the_web_seat_and_the_gate_completes() -> N
                     "startup gate did not complete with the embedded rigctld "
                     f"over the FTX-1; unanswered CAT commands: {sorted(set(unanswered))}"
                 )
+            # Captured before stop(): tearing the web seat down advances the
+            # fallback store's provider generation, which invalidates every
+            # observed field as stale proof.
+            observed = {
+                field.path for field in web.command_state_store.snapshot().fields
+            }
         finally:
             await web.stop()
             await rigctld.stop()
 
-    observed = {field.path for field in web.command_state_store.snapshot().fields}
     assert _MAIN_ATT in observed, "conditional MAIN att was never observed"
     assert _MAIN_NOTCH_FREQ in observed, "conditional MAIN notch freq never observed"
     assert _SUB_NOTCH_FREQ in observed, "conditional SUB notch freq never observed"
