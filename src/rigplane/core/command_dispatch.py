@@ -344,10 +344,10 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
         # receiver rides the Radio call itself and every backend refuses an
         # unsupported receiver before wire traffic. The freq pair keeps the
         # published ``freq`` key in its result while the Radio kwarg is the
-        # protocol name ``freq_hz``. The capability tags gate web reach:
-        # FTX-1 carries them only after PR-B2 turns the tags on in its
-        # profile, so until then the family is refused here, before any
-        # radio call, with the legacy ``unsupported_command`` error class.
+        # protocol name ``freq_hz``. The capability tags gate web reach: a
+        # profile that does not declare them gets the family refused here,
+        # before any radio call, with the legacy ``unsupported_command``
+        # error class.
         "set_repeater_tone": CommandDescriptor(
             name="set_repeater_tone",
             method_name="set_repeater_tone",
@@ -661,8 +661,9 @@ def bind_command_intent(
 
 
 def _radio_has_capability(radio: DispatchRadio, capability: str) -> bool:
-    """Read the radio's capability-tag set; a radio that declares none
-    (non-production doubles) is not gated here."""
+    """Read the radio's capability-tag set; a radio that declares no set at
+    all (non-production doubles) answers False for every tag and is refused
+    by the caller like any radio missing the tag."""
     capabilities = getattr(radio, "capabilities", None)
     return isinstance(capabilities, (set, frozenset)) and capability in capabilities
 

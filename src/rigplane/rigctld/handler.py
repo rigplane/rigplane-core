@@ -1143,10 +1143,15 @@ class RigctldHandler:
         )
 
     def _func_path(self, func: str, *, receiver: int) -> FieldPath:
+        # TONE/TSQL live in the store under the radio-concept names the
+        # state pipeline publishes (``repeater_tone`` / ``repeater_tsql``).
+        name = {"TONE": "repeater_tone", "TSQL": "repeater_tsql"}.get(
+            func, func.lower()
+        )
         return FieldPath.receiver(
             self._receiver_id(receiver),
             "operator_toggles",
-            func.lower(),
+            name,
         )
 
     def _project_fields(self, paths: Sequence[FieldPath]) -> _RigctldProjection:
@@ -2691,7 +2696,10 @@ class RigctldHandler:
             routed_projection = self._project_routed_func(func, receiver=receiver)
             if routed_projection is not None:
                 return routed_projection
-            return await self._routing.get_func(func, vfo=cmd.vfo_arg)
+            # Live reads get the RESOLVED receiver's label — "VFOB" once
+            # the handler resolved receiver 1, the raw label otherwise.
+            routed_vfo = "VFOB" if receiver == 1 else cmd.vfo_arg
+            return await self._routing.get_func(func, vfo=routed_vfo)
 
         if func not in _FUNC_GET:
             return _err(HamlibError.EINVAL)
@@ -2764,8 +2772,11 @@ class RigctldHandler:
         vfo_arg: str | None,
     ) -> HamlibError:
         if self._routing is not None:
+            # Write and read agree on the resolved receiver: with SUB
+            # active and no VFO token the write lands on SUB (MOR-2111 R4).
+            routed_vfo = "VFOB" if receiver == 1 else vfo_arg
             return HamlibError(
-                (await self._routing.set_func(func, on, vfo=vfo_arg)).error
+                (await self._routing.set_func(func, on, vfo=routed_vfo)).error
             )
 
         if func not in _FUNC_SET:

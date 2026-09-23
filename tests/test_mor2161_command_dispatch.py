@@ -918,20 +918,20 @@ _TONE_COMMANDS = (
 )
 
 
-def _ftx1_radio(*, tone_tags: bool = False) -> YaesuCatRadio:
+def _ftx1_radio(*, tone_tags: bool = True) -> YaesuCatRadio:
     """A real YaesuCatRadio on the FTX-1 profile, transport mocked.
 
-    ``tone_tags=True`` adds the ``repeater_tone``/``tsql`` capability tags
-    the stock profile does not carry yet (PR-B2 turns them on in
-    ``rigs/ftx1.toml``), admitting the tone family through the descriptor
-    capability gate exactly as B2 will.
+    The stock FTX-1 profile carries the ``repeater_tone``/``tsql``
+    capability tags since MOR-2111 PR-B2. ``tone_tags=False`` strips
+    them, simulating a radio whose profile lacks the tags so the
+    descriptor capability gate's refusal stays pinned.
     """
     profile = load_rig(_RIGS_DIR / "ftx1.toml")
-    if tone_tags:
+    if not tone_tags:
         profile = replace(
             profile,
             capabilities=frozenset(profile.capabilities)
-            | {CAP_REPEATER_TONE, CAP_TSQL},
+            - {CAP_REPEATER_TONE, CAP_TSQL},
         )
     radio = YaesuCatRadio("/dev/null", profile=profile)
     radio._transport._connected = True  # noqa: SLF001
@@ -1188,11 +1188,11 @@ def test_tone_intent_target_pins_name_family_and_receiver(
 def test_tone_family_refused_without_the_profile_capability_tag(
     name: str, params: dict[str, Any], capability: str
 ) -> None:
-    """The stock FTX-1 profile carries no ``repeater_tone``/``tsql`` tags
-    (PR-B2 turns them on): the descriptor gate refuses the family before
+    """A radio whose profile lacks the tag gets the family refused before
     any radio call, with the legacy ``unsupported_command`` error class,
-    and nothing reaches the wire."""
-    radio = _ftx1_radio()
+    and nothing reaches the wire. The stock FTX-1 profile carries the
+    tags since PR-B2, so the fixture strips them."""
+    radio = _ftx1_radio(tone_tags=False)
 
     with pytest.raises(
         CommandUnsupportedError, match=f"missing capability: {capability}"

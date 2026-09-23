@@ -191,6 +191,22 @@ class RigctldRouting(Protocol):
     def get_info(self) -> str: ...
 
 
+def _receiver_for_vfo(vfo: str | None) -> int:
+    """Backend receiver index for a TONE/TSQL request, from the VFO label.
+
+    The public :class:`~rigplane.core.radio_protocol.RigctldRoutingStrategy`
+    carries only ``vfo`` for per-receiver routing, and the rigctld parser
+    forwards only the labels it validates (``VFOA`` / ``VFOB`` /
+    ``currVFO``, :data:`~rigplane.rigctld.protocol.VFO_LABELS`) or ``None``.
+    ``VFOB`` maps to receiver 1 on the dual-RX FTX-1; everything else stays
+    on receiver 0 (MAIN) — the same routing NB/NR/levels already use.
+    """
+
+    if vfo is None:
+        return 0
+    return 1 if vfo.upper() == "VFOB" else 0
+
+
 # ---------------------------------------------------------------------------
 # Yaesu CAT routing
 # ---------------------------------------------------------------------------
@@ -215,8 +231,11 @@ _YAESU_DUMP_STATE: list[str] = [
     "0",
     "0",  # preamp
     "0",  # attenuator
-    "0x00051A0E",  # has_get_func
-    "0x00051A0E",  # has_set_func
+    # has_get_func / has_set_func: RIG_FUNC_NB(0x2) | COMP(0x4) | VOX(0x8)
+    # | TONE(0x10) | TSQL(0x20) | NR(0x200) | APF(0x800) | MON(0x1000)
+    # | LOCK(0x10000) | VSC(0x40000) — bit values per hamlib rig.h.
+    "0x00051A3E",  # has_get_func
+    "0x00051A3E",  # has_set_func
     "0x540DFB3B",  # has_get_level
     "0x000DFB3B",  # has_set_level
     "0",
@@ -242,6 +261,8 @@ class YaesuRouting:
     _FUNC_PATHS: dict[str, FieldPath] = {
         "NB": FieldPath.receiver("main", "operator_toggles", "nb"),
         "NR": FieldPath.receiver("main", "operator_toggles", "nr"),
+        "TONE": FieldPath.receiver("main", "operator_toggles", "repeater_tone"),
+        "TSQL": FieldPath.receiver("main", "operator_toggles", "repeater_tsql"),
     }
 
     def __init__(self, radio: "Radio", max_power_w: float) -> None:
@@ -265,6 +286,12 @@ class YaesuRouting:
     def state_path_for_func(self, func: str, *, receiver: int = 0) -> FieldPath | None:
         """Return the StateStore path that can satisfy a Yaesu rigctl function."""
 
+        if func in ("TONE", "TSQL"):
+            # Per-receiver on the dual-RX FTX-1: the poller publishes MAIN
+            # and SUB tone state separately (observations.py).
+            receiver_id = "sub" if receiver == 1 else "main"
+            name = "repeater_tone" if func == "TONE" else "repeater_tsql"
+            return FieldPath.receiver(receiver_id, "operator_toggles", name)
         del receiver
         return self._FUNC_PATHS.get(func)
 
@@ -518,8 +545,8 @@ class YaesuRouting:
     # -- funcs ---------------------------------------------------------------
 
     async def get_func(self, func: str, *, vfo: str | None = None) -> RigctldResponse:
-        # ``vfo`` accepted for protocol conformance (issue #1345); ignored.
-        del vfo
+        # ``vfo`` accepted for protocol conformance (issue #1345); TONE/TSQL
+        # derive their per-receiver routing from it below.
         radio = self._radio
 
         if func == "VOX":
@@ -538,6 +565,14 @@ class YaesuRouting:
             value = await radio.get_nr_level() > 0
             self._observe(self.state_path_for_func(func), value)
             return RigctldResponse(values=[str(int(value))])
+        if func in ("TONE", "TSQL"):
+            receiver = _receiver_for_vfo(vfo)
+            getter = (
+                radio.get_repeater_tone if func == "TONE" else radio.get_repeater_tsql
+            )
+            value = bool(await getter(receiver=receiver))
+            self._observe(self.state_path_for_func(func, receiver=receiver), value)
+            return RigctldResponse(values=[str(int(value))])
         if func == "LOCK":
             return RigctldResponse(values=[str(int(await radio.get_dial_lock()))])
         if func == "SPLIT":
@@ -549,8 +584,8 @@ class YaesuRouting:
     async def set_func(
         self, func: str, on: bool, *, vfo: str | None = None
     ) -> RigctldResponse:
-        # ``vfo`` accepted for protocol conformance (issue #1345); ignored.
-        del vfo
+        # ``vfo`` accepted for protocol conformance (issue #1345); TONE/TSQL
+        # derive their per-receiver routing from it below.
         radio = self._radio
 
         if func == "VOX":
@@ -567,6 +602,21 @@ class YaesuRouting:
             return _ok()
         if func == "NR":
             await radio.set_nr(on)
+            return _ok()
+        if func in ("TONE", "TSQL"):
+            receiver = _receiver_for_vfo(vfo)
+            setter = (
+                radio.set_repeater_tone if func == "TONE" else radio.set_repeater_tsql
+            )
+            try:
+                await setter(on, receiver=receiver)
+            except ValueError:
+                # The FTX-1 maps TONE/TSQL onto one ``CT`` select and refuses
+                # loudly: the (tone off, tsql on) pair has no CT code, and a
+                # toggle over DCS / PR FREQ / REV TONE would destroy the
+                # radio's configuration. A refused write is the rig rejecting
+                # the command — RPRT -9, not EINVAL.
+                return _err(HamlibError.ERJCTED)
             return _ok()
         if func == "LOCK":
             await radio.set_dial_lock(on)

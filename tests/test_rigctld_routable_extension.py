@@ -13,8 +13,14 @@ registry, plugin mechanism, or string discriminator.
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+
 from rigplane import RigctldRoutable
-from rigplane.rigctld.contract import RigctldResponse
+from rigplane.rigctld.contract import RigctldConfig, RigctldResponse
+from rigplane.rigctld.handler import RigctldHandler
+from rigplane.rigctld.protocol import parse_line
 from rigplane.rigctld.routing import RigctldRouting
 
 
@@ -83,3 +89,17 @@ def test_yaesu_cat_radio_satisfies_rigctld_routable() -> None:
     from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 
     assert issubclass(YaesuCatRadio, RigctldRoutable)
+
+
+@pytest.mark.asyncio
+async def test_handler_drives_stub_routing_with_published_signature() -> None:
+    """The handler calls get_func/set_func with exactly the published
+    signature (``func``/``on`` plus ``vfo=``) — no extra keywords — so an
+    extension routing written against :class:`RigctldRoutingStrategy`
+    answers ``u NB`` / ``U NB 1`` with RPRT 0 instead of a TypeError."""
+    radio = AsyncMock()
+    radio.rigctld_routing = Mock(return_value=_StubRouting())
+    handler = RigctldHandler(radio, RigctldConfig())
+
+    assert (await handler.execute(parse_line(b"u NB"))).ok
+    assert (await handler.execute(parse_line(b"U NB 1"))).ok

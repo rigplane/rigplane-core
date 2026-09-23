@@ -48,6 +48,7 @@ from rigplane.core.radio_protocol import (
     LevelsCapable,
     ManagedTxApi,
     Radio,
+    RepeaterControlCapable,
     RitXitCapable,
     ScopeCapable,
     SystemControlCapable,
@@ -2320,6 +2321,277 @@ async def _check_xit_set(
     )
 
 
+async def _drive_repeater_pair(
+    repeater: RepeaterControlCapable,
+    entry: CapabilityDeclarationEntry,
+    *,
+    tone: bool,
+    tsql: bool,
+    per_check_timeout: float,
+) -> CheckResult | None:
+    """Drive the (tone, tsql) pair to a representable target through the toggles.
+
+    The FTX-1 carries both booleans in one ``CT`` select that has no code for
+    tone-off/tsql-on, so the leg order is ONs before OFFs and tone before
+    tsql: every intermediate request stays inside what ``CT`` can express on
+    any CTCSS radio. *tone* False with *tsql* True is itself the
+    non-representable target and is refused outright. Returns the first
+    guard failure, or ``None`` when every leg landed.
+    """
+    if not tone and tsql:
+        return _base_result(
+            entry,
+            CheckStatus.FAIL,
+            failure_domain=FailureDomain.COMMAND_EXECUTION,
+            error="harness bug: (tone off, tsql on) is not representable",
+        )
+    # Lambdas, not coroutines: a leg must only be started once every earlier
+    # leg landed (an early guard failure abandons the rest un-requested).
+    legs: tuple[Callable[[], Awaitable[None]], ...] = tuple(
+        leg
+        for leg in (
+            (lambda: repeater.set_repeater_tone(True, 0)) if tone else None,
+            (lambda: repeater.set_repeater_tsql(True, 0)) if tsql else None,
+            (lambda: repeater.set_repeater_tsql(False, 0)) if not tsql else None,
+            (lambda: repeater.set_repeater_tone(False, 0)) if not tone else None,
+        )
+        if leg is not None
+    )
+    for leg in legs:
+        _, fail = await _guard(leg(), entry, per_check_timeout=per_check_timeout)
+        if fail is not None:
+            return fail
+    return None
+
+
+async def _repeater_toggle_rmvr(
+    radio: Radio,
+    entry: CapabilityDeclarationEntry,
+    *,
+    allow_writes: bool,
+    per_check_timeout: float,
+    tsql: bool,
+) -> CheckResult:
+    """RMVR a repeater-tone toggle from a normalized (tone, tsql) start.
+
+    Only radios whose tone and TSQL are one coupled ``CT`` select (declared
+    via the ``sql_type`` capability — FTX-1) take this handler; the named
+    entry points below route every other radio to the generic spec path.
+    A blind TOGGLE_BOOL cycle from an arbitrary start can demand a write the
+    ``CT`` select cannot express (it has no code for tone-off/tsql-on), so a
+    start reading as that pair is SKIPped before the first write rather than
+    normalized away from. Any other start is driven to (False, False) —
+    representable on every CTCSS radio — toggled from there (the TSQL cycle
+    turns encode on first), and driven back; the restore is only believed
+    when the pair reads back equal to the start.
+    """
+    gate = _write_gate(radio, entry, allow_writes=allow_writes)
+    if gate is not None:
+        return gate
+    repeater = cast(RepeaterControlCapable, radio)
+    if not all(
+        callable(getattr(repeater, op, None))
+        for op in (
+            "get_repeater_tone",
+            "set_repeater_tone",
+            "get_repeater_tsql",
+            "set_repeater_tsql",
+        )
+    ):
+        return _base_result(
+            entry,
+            CheckStatus.UNSUPPORTED,
+            evidence={"reason": f"radio is missing get/set op for {entry.check_id}"},
+        )
+    start_tone, fail = await _guard(
+        repeater.get_repeater_tone(0), entry, per_check_timeout=per_check_timeout
+    )
+    if fail is not None:
+        return fail
+    start_tsql, fail = await _guard(
+        repeater.get_repeater_tsql(0), entry, per_check_timeout=per_check_timeout
+    )
+    if fail is not None:
+        return fail
+    start_tone = bool(start_tone)
+    start_tsql = bool(start_tsql)
+    if not start_tone and start_tsql:
+        # The coupled CT select has no (tone off, tsql on) code, so the
+        # toggle could not be restored to this start. Decide before the
+        # first write and SKIP — never normalize the radio away from a
+        # state it cannot be driven back to.
+        return _base_result(
+            entry,
+            CheckStatus.SKIP,
+            evidence={
+                "reason": (
+                    "start state (tone off, tsql on) is not representable "
+                    "on the coupled CT select; not attempting the toggle"
+                ),
+                "start_tone": start_tone,
+                "start_tsql": start_tsql,
+            },
+        )
+
+    result: CheckResult | None = None
+    try:
+        normalize_fail = await _drive_repeater_pair(
+            repeater,
+            entry,
+            tone=False,
+            tsql=False,
+            per_check_timeout=per_check_timeout,
+        )
+        if normalize_fail is not None:
+            result = normalize_fail
+        elif tsql:
+
+            async def _write_tsql(value: bool) -> None:
+                if value:
+                    # TSQL couples decode with encode on the FTX-1: turning
+                    # it on from (False, False) must raise the tone first.
+                    await repeater.set_repeater_tone(True, 0)
+                await repeater.set_repeater_tsql(value, 0)
+
+            result = await _read_modify_verify_restore(
+                radio,
+                entry,
+                read=lambda: repeater.get_repeater_tsql(0),
+                write=_write_tsql,
+                make_changed=lambda b: not b,
+                per_check_timeout=per_check_timeout,
+            )
+        else:
+            result = await _read_modify_verify_restore(
+                radio,
+                entry,
+                read=lambda: repeater.get_repeater_tone(0),
+                write=lambda v: repeater.set_repeater_tone(v, 0),
+                make_changed=lambda b: not b,
+                per_check_timeout=per_check_timeout,
+            )
+    finally:
+        # Best-effort restore of the start pair; never raises. The leg order
+        # in ``_drive_repeater_pair`` keeps every intermediate request
+        # representable, and the restore is only believed when the pair
+        # reads back equal to the start — same read-back precedent as
+        # ``_read_modify_verify_restore`` and ``_check_preamp_set``.
+        restored_start = False
+        try:
+            restore_fail = await _drive_repeater_pair(
+                repeater,
+                entry,
+                tone=start_tone,
+                tsql=start_tsql,
+                per_check_timeout=per_check_timeout,
+            )
+            if restore_fail is None:
+                final_tone, read_fail = await _guard(
+                    repeater.get_repeater_tone(0),
+                    entry,
+                    per_check_timeout=per_check_timeout,
+                )
+                final_tsql: object = None
+                if read_fail is None:
+                    final_tsql, read_fail = await _guard(
+                        repeater.get_repeater_tsql(0),
+                        entry,
+                        per_check_timeout=per_check_timeout,
+                    )
+                restored_start = (
+                    read_fail is None
+                    and bool(final_tone) == start_tone
+                    and bool(final_tsql) == start_tsql
+                )
+        except _RESTORE_ERRORS:
+            restored_start = False
+    assert result is not None
+    result = _merge_evidence(
+        result,
+        {
+            "start_tone": start_tone,
+            "start_tsql": start_tsql,
+            "restored_to_start": restored_start,
+        },
+    )
+    if result.status is CheckStatus.PASS and not restored_start:
+        return _base_result(
+            entry,
+            CheckStatus.FAIL,
+            failure_domain=FailureDomain.READBACK,
+            evidence=result.evidence,
+            error="toggle verified but the start state could not be restored",
+        )
+    return result
+
+
+async def _repeater_toggle_check(
+    radio: Radio,
+    entry: CapabilityDeclarationEntry,
+    *,
+    allow_writes: bool,
+    per_check_timeout: float,
+    tsql: bool,
+) -> CheckResult:
+    """Route ``repeater_tone.set`` / ``tsql.set``: the coupled-CT RMVR only
+    runs on radios declaring ``sql_type`` (one coupled CT select, FTX-1);
+    every other radio keeps the pre-MOR-2111 generic spec path."""
+    if "sql_type" not in radio.capabilities:
+        spec = get_spec(entry.check_id)
+        if spec is not None:
+            return await _check_from_spec(
+                radio,
+                entry,
+                spec,
+                allow_writes=allow_writes,
+                per_check_timeout=per_check_timeout,
+            )
+        return _base_result(
+            entry,
+            CheckStatus.SKIP,
+            evidence={"reason": f"no hardware handler for check_id '{entry.check_id}'"},
+        )
+    return await _repeater_toggle_rmvr(
+        radio,
+        entry,
+        allow_writes=allow_writes,
+        per_check_timeout=per_check_timeout,
+        tsql=tsql,
+    )
+
+
+async def _check_repeater_tone_set(
+    radio: Radio,
+    entry: CapabilityDeclarationEntry,
+    *,
+    allow_writes: bool,
+    per_check_timeout: float,
+) -> CheckResult:
+    return await _repeater_toggle_check(
+        radio,
+        entry,
+        allow_writes=allow_writes,
+        per_check_timeout=per_check_timeout,
+        tsql=False,
+    )
+
+
+async def _check_repeater_tsql_set(
+    radio: Radio,
+    entry: CapabilityDeclarationEntry,
+    *,
+    allow_writes: bool,
+    per_check_timeout: float,
+) -> CheckResult:
+    return await _repeater_toggle_check(
+        radio,
+        entry,
+        allow_writes=allow_writes,
+        per_check_timeout=per_check_timeout,
+        tsql=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Generic dispatch: value-rule map + _check_from_spec
 # ---------------------------------------------------------------------------
@@ -2764,4 +3036,6 @@ _SUPPORTED_HANDLERS: dict[
     "agc.set": _check_agc_set,
     "rit.set": _check_rit_set,
     "xit.set": _check_xit_set,
+    "repeater_tone.set": _check_repeater_tone_set,
+    "tsql.set": _check_repeater_tsql_set,
 }
