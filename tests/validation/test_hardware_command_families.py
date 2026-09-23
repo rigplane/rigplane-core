@@ -125,12 +125,31 @@ def _attach_ctcss_profile(radio, domain=_SYNTHETIC_CTCSS_DOMAIN) -> None:
     radio.profile = SimpleNamespace(ctcss_tones_centihz=domain)
 
 
+def _wire_sibling_repeater_ops(radio, *, get_op: str, set_op: str, start: bool) -> None:
+    """Wire the sibling toggle pair the named tone RMVR handlers consult:
+    the handlers read and restore the full (tone, tsql) state, so a
+    fixture wiring only one side is no longer a complete radio."""
+    store: dict = {"value": start}
+
+    async def _get(receiver: int = 0):
+        return store["value"]
+
+    async def _set(on: bool, receiver: int = 0) -> None:
+        store["value"] = on
+
+    setattr(radio, get_op, AsyncMock(side_effect=_get))
+    setattr(radio, set_op, AsyncMock(side_effect=_set))
+
+
 async def test_repeater_tone_set_rmvr_roundtrip():
     radio, store = _stateful_value_radio(
         capability="repeater_tone",
         get_op="get_repeater_tone",
         set_op="set_repeater_tone",
         start=False,
+    )
+    _wire_sibling_repeater_ops(
+        radio, get_op="get_repeater_tsql", set_op="set_repeater_tsql", start=False
     )
     result = await _run(radio, "repeater_tone.set")
     assert result.status is CheckStatus.PASS
@@ -145,6 +164,11 @@ async def test_tsql_set_rmvr_roundtrip():
         get_op="get_repeater_tsql",
         set_op="set_repeater_tsql",
         start=True,
+    )
+    # TSQL on implies encode on: (tone, tsql) = (True, True) is the only
+    # representable start for this fixture.
+    _wire_sibling_repeater_ops(
+        radio, get_op="get_repeater_tone", set_op="set_repeater_tone", start=True
     )
     result = await _run(radio, "tsql.set")
     assert result.status is CheckStatus.PASS

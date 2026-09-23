@@ -121,6 +121,19 @@ def _unconfigured_tone_radio():
     radio.get_repeater_tone = AsyncMock(side_effect=_get_repeater)
     radio.set_repeater_tone = AsyncMock(side_effect=_set_repeater)
 
+    # The named tone RMVR handlers read and restore the full (tone, tsql)
+    # pair, so the sibling toggle ops must round-trip too.
+    tsql_toggle_store: dict = {"value": False}
+
+    async def _get_tsql_toggle(receiver: int = 0) -> bool:
+        return tsql_toggle_store["value"]
+
+    async def _set_tsql_toggle(on: bool, receiver: int = 0) -> None:
+        tsql_toggle_store["value"] = on
+
+    radio.get_repeater_tsql = AsyncMock(side_effect=_get_tsql_toggle)
+    radio.set_repeater_tsql = AsyncMock(side_effect=_set_tsql_toggle)
+
     freq_store = {"value": 14_074_000}
 
     async def _get_freq(receiver: int = 0) -> int:
