@@ -1202,15 +1202,36 @@
     user-select: none;
   }
 
-  .spectrum-split-separator:hover,
-  .spectrum-split-separator.active {
-    background: linear-gradient(
-      to bottom,
-      transparent 2px,
-      var(--accent, var(--panel-border)) 2px,
-      var(--accent, var(--panel-border)) 6px,
-      transparent 6px
-    );
+  /* MOR-2562: hover-intent overlay. A thin translucent accent line appears
+     only after the pointer rests on the divider (~200 ms) and brightens
+     instantly while dragging. The delay lives on the hover state only, so
+     entering waits and leaving is immediate. The faint rest stripe above
+     stays as the structural boundary. */
+  .spectrum-split-separator::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    /* Pinned to the rest stripe (3px-5px) on whole pixels, no transform:
+       top: 50% + translateY(-50%) landed the 1px line on a half pixel and
+       rendered two blurry rows on standard-density screens. */
+    top: 4px;
+    height: 1px;
+    background: var(--accent, var(--panel-border));
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+
+  .spectrum-split-separator:hover::after {
+    opacity: 0.45;
+    transition-delay: 200ms;
+  }
+
+  .spectrum-split-separator.active::after {
+    top: 3px;
+    height: 2px;
+    opacity: 0.8;
+    transition-delay: 0s;
   }
 
   .freq-axis .tick {
@@ -1298,23 +1319,32 @@
     background: transparent;
   }
 
+  /* MOR-2562: nothing drawn at rest — the passband overlay's dashed edges
+     already mark the filter edge. The 14 px hit zone and the ew-resize
+     cursor stay; the line lights only after hover intent (~200 ms) and
+     while dragging. No outline, glow or brightness filter. */
   .passband-resize-zone::before {
     content: '';
     position: absolute;
-    top: 18%;
-    bottom: 18%;
+    top: 0;
+    bottom: 0;
     left: 50%;
-    width: 3px;
+    width: 1px;
     transform: translateX(-50%);
-    border-radius: 2px;
     background: var(--scope-passband-edge, rgba(59, 130, 246, 0.75));
-    box-shadow: 0 0 0 1px rgba(5, 10, 18, 0.72);
+    opacity: 0;
+    transition: opacity 0.15s ease;
   }
 
-  .passband-resize-zone:hover::before,
+  .passband-resize-zone:hover::before {
+    opacity: 0.45;
+    transition-delay: 200ms;
+  }
+
   .passband-resize-zone.active::before {
-    width: 5px;
-    filter: brightness(1.3);
+    width: 2px;
+    opacity: 0.8;
+    transition-delay: 0s;
   }
 
   .scope-disconnected-overlay {
