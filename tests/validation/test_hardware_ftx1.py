@@ -948,3 +948,22 @@ async def test_selector_radio_in_tsql_skips_before_any_write(check_id, capabilit
     assert check.status is CheckStatus.SKIP
     assert store["writes"] == []
     assert store["mode"] == "TSQL"
+
+
+async def test_tsql_set_restore_readback_mismatch_fails():
+    """The restore is only believed when the pair reads back equal to the
+    start. A selector radio whose encode-on write does not stick ends the
+    run (off, off) from a TONE start, so the check FAILs with
+    restored_to_start False instead of PASSing with a claimed restore."""
+    radio, store = _icom_selector_mock(start="TONE")
+    writes = store["writes"]
+
+    async def _set_tone_on_ignored(on: bool, receiver: int = 0) -> None:
+        writes.append(("tone", on))
+        if not on:
+            store["mode"] = "OFF"
+
+    radio.set_repeater_tone = AsyncMock(side_effect=_set_tone_on_ignored)
+    check = await _run(radio, check_id="tsql.set", capability="tsql")
+    assert check.status is CheckStatus.FAIL
+    assert check.evidence["restored_to_start"] is False

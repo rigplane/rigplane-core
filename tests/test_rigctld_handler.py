@@ -4520,6 +4520,38 @@ async def test_yaesu_get_func_tsql_vfob_reads_sub_receiver() -> None:
 
 
 @pytest.mark.asyncio
+async def test_yaesu_get_func_tsql_vfob_uses_sub_state_path() -> None:
+    """u VFOB TSQL projects through receiver.sub (store generation >= 1):
+    with MAIN and SUB seeded different values it answers SUB's value with
+    no live read, and when SUB has nothing projected the live read's
+    sample is recorded on the sub path, never MAIN's."""
+    radio, ct, _writes = _real_ftx1_ct_radio()
+    ct[1] = 2  # SUB in TSQL; MAIN off
+    store = StateStore()
+    _seed_store_current(store, "receiver.main.operator_toggles.repeater_tsql", False)
+    _seed_store_current(store, "receiver.sub.operator_toggles.repeater_tsql", True)
+    handler = RigctldHandler(radio, RigctldConfig(), state_store=store)
+    resp = await handler.execute(_vfo_func_cmd("get_func", "VFOB", "TSQL"))
+    assert resp.ok
+    assert resp.values == ["1"]  # SUB's value, not MAIN's
+    radio._transport.query.assert_not_awaited()  # noqa: SLF001
+
+    radio_live, ct_live, _writes_live = _real_ftx1_ct_radio()
+    ct_live[1] = 2
+    store_live = StateStore()
+    _seed_store_current(
+        store_live, "receiver.main.operator_toggles.repeater_tsql", False
+    )
+    handler_live = RigctldHandler(radio_live, RigctldConfig(), state_store=store_live)
+    resp_live = await handler_live.execute(_vfo_func_cmd("get_func", "VFOB", "TSQL"))
+    assert resp_live.ok
+    assert resp_live.values == ["1"]
+    field = store_live.snapshot().field("receiver.sub.operator_toggles.repeater_tsql")
+    assert field.value is True
+    assert field.source.source == "hamlib_response"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("func", "path"),
     [
@@ -4549,15 +4581,19 @@ async def test_icom_func_read_after_write_uses_pending_value(
     mock_radio: AsyncMock, func: str
 ) -> None:
     """The non-routed (Icom) path keeps write target and read projection on
-    the same operator_toggles.repeater_* path too."""
+    the same operator_toggles.repeater_* path too — the pending value must
+    answer the read without consulting the live radio."""
     store = StateStore()
     name = "repeater_tone" if func == "TONE" else "repeater_tsql"
     _seed_store_current(store, f"receiver.main.operator_toggles.{name}", False)
+    live_getter = getattr(mock_radio, f"get_{name}")
+    live_getter.return_value = False
     handler = RigctldHandler(mock_radio, RigctldConfig(), state_store=store)
     assert (await handler.execute(set_cmd("set_func", func, "1"))).ok
     resp = await handler.execute(get_cmd("get_func", func))
     assert resp.ok
     assert resp.values == ["1"]
+    live_getter.assert_not_awaited()
 
 
 @pytest.mark.asyncio
