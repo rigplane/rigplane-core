@@ -17,11 +17,13 @@
       `runtime.caps` for the view-model adapter call) — never folded into
       `DspViewModel`. The finite host consumes `agcLabels`; the scalar host
       consumes the two scalar display props.
-  (2) `agcTimeConstant` may be `structural: true` with no real control on a
-      radio that borrows the `agc` capability tag optimistically. That is an
-      accepted fact-layer optimism, not something this surface special-cases
-      — a present-but-never-observed field renders exactly like any other
-      unobserved present field, honestly disabled.
+  (2) `agcTimeConstant` is structural only when the radio actually DECLARES
+      the field: `hasCap(caps, 'agc')` AND the receiver's
+      `agcTimeConstant` field status is not `undeclared` (MOR-2527 — the
+      FTX-1 has AGC but no time constant, so the key is NOT DRAWN there).
+      A declared-but-unread field keeps the key in place with its label and
+      NO value text — never a `?` stand-in — and the value span reserves its
+      width so the key does not shift when the reading arrives.
   (3) Every reading here is rendered exactly as the fact group states it. No
       range-fallback plumbing, no re-derivation of `controlRangeFromCaps` —
       `nrLevelProjection` carries NR value/domain/usability, `notchFreqDomain`
@@ -257,13 +259,15 @@
         </div>
       {/if}
       {#if dsp.agcTimeConstant.availability.structural}
+        {@const agcTime = dsp.agcTimeConstant.reading}
         <div class="dsp-agc-time" data-expanded={settingsPanel === 'agc'}>
           <HardwareButton indicator="edge-left" color="gray" title="AGC Time — click for settings"
             disabled={!usable(dsp.agcTimeConstant)}
             ariaLabel="AGC time settings" ariaExpanded={settingsPanel === 'agc'}
             ariaControls="dsp-agc-settings"
             onclick={() => onSettingsPanelChange?.(settingsPanel === 'agc' ? null : 'agc')}
-          >AGC-T {fmt(dsp.agcTimeConstant, formatAgcTime)}s {settingsPanel === 'agc' ? '▴' : '▾'}</HardwareButton>
+          >AGC-T <span class="dsp-agc-time-value">{agcTime.status === 'known'
+            ? `${formatAgcTime(agcTime.value)}s` : ''}</span> {settingsPanel === 'agc' ? '▴' : '▾'}</HardwareButton>
         </div>
         {#if settingsPanel === 'agc'}
           <div class="dsp-settings" id="dsp-agc-settings">
@@ -295,4 +299,8 @@
   }
   .dsp-agc-time { display: flex; width: calc(50% - 3px); }
   .dsp-agc-time :global(button) { flex: 1 1 auto; min-width: 0; }
+  /* MOR-2527: the value slot keeps its width while the reading is unknown —
+     the key must not shift when the value arrives. "6.0s" is the widest
+     declared label (`AGC_TIME_LABELS`). */
+  .dsp-agc-time-value { display: inline-block; min-width: 4ch; text-align: center; }
 </style>

@@ -258,7 +258,7 @@ const liveCaps = (tags: readonly string[]): Capabilities => ({
   providerGeneration: 1,
 } as unknown as Capabilities);
 
-const AUDIO_TAGS = ['audio', 'tx', 'dual_rx', 'af_level', 'mod_input_routing'] as const;
+const AUDIO_TAGS = ['audio', 'tx', 'dual_rx', 'af_level', 'mod_input_routing', 'lan_dual_rx_audio_routing'] as const;
 /** A radio with NO audio chain at all: no live audio, no AF control, no
  *  dual-RX routing, no MOD-input routing ⇒ the adapter emits no group. */
 const SILENT_TAGS = ['tx'] as const;
@@ -503,8 +503,25 @@ describe('v2.11.1 monitor and dual-routing behavior in the Standard composition'
   });
 
   it('does not render dual controls for a single-receiver radio', () => {
-    h.caps = { ...liveCaps(AUDIO_TAGS.filter(tag => tag !== 'dual_rx')), receivers: 1 };
+    h.caps = {
+      ...liveCaps(AUDIO_TAGS.filter(tag => tag !== 'dual_rx' && tag !== 'lan_dual_rx_audio_routing')),
+      receivers: 1,
+    };
     renderHostedFace('desktop-v2');
+    expect(el('focus')).toBeNull();
+    expect(el('split')).toBeNull();
+    expect(el('main-gain')).toBeNull();
+    expect(el('sub-gain')).toBeNull();
+  });
+
+  // MOR-2527: `dual_rx` alone (the FTX-1 shape) is not dual-receiver audio
+  // ROUTING — without `lan_dual_rx_audio_routing` the focus/split/gain rows
+  // are NOT DRAWN at all (owner rule 2026-09-21), while the rest of the
+  // rxAudio surface stays. Fails on origin/main, where `dual_rx` lit them.
+  it('draws no routing rows for dual_rx without the routing capability (FTX-1 shape)', () => {
+    h.caps = liveCaps(AUDIO_TAGS.filter((tag) => tag !== 'lan_dual_rx_audio_routing'));
+    renderHostedFace('desktop-v2');
+    expect(el('surface')).not.toBeNull();
     expect(el('focus')).toBeNull();
     expect(el('split')).toBeNull();
     expect(el('main-gain')).toBeNull();
@@ -623,7 +640,9 @@ describe('routing prefs stay unowned by this layer (MOR-1274 carry-forward 2)', 
   // they had been observed, which is exactly the fabrication slice 3A removed.
   it('reports focus and split as unknown until someone else restores them', () => {
     render();
-    expect(text('focus-value')).toBe('—');
+    // MOR-2527: the focus value is UNLIT (no text) while unread — never `—`.
+    expect(text('focus-value')).toBe('');
+    expect(el('focus')!.textContent).not.toContain('—');
     expect(text('split-value')).toBe('—');
     expect(el('focus')!.dataset.observed).toBe('false');
     expect(el('split')!.dataset.observed).toBe('false');

@@ -334,10 +334,13 @@ describe('every unread fact renders honestly, never as the v2 default', () => {
     r.dispose();
   });
 
-  // Kills: `?? 'both'` — the AudioRoutingControl fabrication.
-  it('renders an unrestored routing focus as unknown, with nothing checked', () => {
+  // Kills: `?? 'both'` — the AudioRoutingControl fabrication — AND the `—`
+  // placeholder (MOR-2527 owner rule): an unrestored focus renders with its
+  // label and NO value text (unlit), the slot reserved so nothing shifts.
+  it('renders an unrestored routing focus unlit — no value text, nothing checked', () => {
     const r = render(withRx({ routingFocus: unread<AudioFocus>(DEGRADED) }));
-    expect(r.text('focus-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('focus-value')).toBe('');
+    expect(r.el('focus')!.textContent).not.toMatch(/[?—–]|UNKNOWN|N\/A/);
     expect(r.el('focus')!.dataset.observed).toBe('false');
     for (const focus of FOCUS_CHOICES) {
       expect(r.el(`focus-${focus}`)!.getAttribute('aria-checked')).toBe('false');

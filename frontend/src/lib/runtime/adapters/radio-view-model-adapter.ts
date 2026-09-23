@@ -957,8 +957,14 @@ function deriveDsp(
       ...(agcProjection.autoSpeed === undefined ? {} : { autoSelectedSpeed: agcProjection.autoSpeed }),
     },
     agcModes: caps.agcModes ?? [],
+    // MOR-2527: `agc` alone is not proof of an AGC-time control — the FTX-1
+    // has AGC but no time constant, and the server says so
+    // (`fieldStatus["<rx>.agcTimeConstant"].availability === "undeclared"`).
+    // Same `fieldUndeclared` gate MOR-2511 put on att/preamp: an undeclared
+    // field is structurally ABSENT, not present-and-unread.
     agcTimeConstant: txAuxField(
-      hasAgcCap, topFieldAvailable(state, `${base}agcTimeConstant`), numOrUndef(rx?.agcTimeConstant),
+      hasAgcCap && !fieldUndeclared(state, `${base}agcTimeConstant`),
+      topFieldAvailable(state, `${base}agcTimeConstant`), numOrUndef(rx?.agcTimeConstant),
     ),
   };
 }
@@ -1781,13 +1787,17 @@ function deriveRxAudio(
   const hasLiveAudio = hasCap(caps, 'audio');
   // `toRxAudioProps`'s own gate: the radio's AF control, or the browser stream.
   const hasAfLevel = hasCap(caps, 'af_level') || hasLiveAudio;
-  const hasDualRx = hasCap(caps, 'dual_rx');
+  // MOR-2527: dual-receiver audio ROUTING is its own capability
+  // (`lan_dual_rx_audio_routing`, IC-7610 only today) — the server refuses
+  // routing without it (`web/handlers/audio.py`). `dual_rx` alone (e.g. the
+  // FTX-1) must not promise routing rows that can never carry a value.
+  const hasAudioRouting = hasCap(caps, 'lan_dual_rx_audio_routing');
   const modInputChoices = Array.isArray(caps?.dataModeInputs) ? caps.dataModeInputs : [];
   const activeDataMode = state?.active === 'SUB' ? state.sub?.dataMode : state?.main?.dataMode;
   const hasModInput = facts.modInputRoutingAvailable && modInputChoices.length > 0
     && Number.isSafeInteger(activeDataMode) && (activeDataMode as number) >= 0
     && (activeDataMode as number) <= (caps?.dataModeCount ?? -1);
-  if (!hasAfLevel && !hasLiveAudio && !hasDualRx && !hasModInput) return undefined;
+  if (!hasAfLevel && !hasLiveAudio && !hasAudioRouting && !hasModInput) return undefined;
   // Byte-identical to `toRxAudioProps`'s monitor-mode derivation; parity across
   // the whole matrix is pinned in `__tests__/rx-audio-adapter.test.ts`.
   const monitorMode: MonitorMode = audio.muted
@@ -1809,8 +1819,8 @@ function deriveRxAudio(
     // `txAuxField` is the shared `{reading, availability}` builder — `RxAudioField`
     // IS `TxAuxField` (see the contract's alias), so there is one builder, not a fork.
     afLevel: txAuxField(hasAfLevel, live || afObserved, afLevel),
-    routingFocus: txAuxField(hasDualRx, routing?.focus !== undefined, routing?.focus),
-    routingSplit: txAuxField(hasDualRx, routing?.splitStereo !== undefined, routing?.splitStereo),
+    routingFocus: txAuxField(hasAudioRouting, routing?.focus !== undefined, routing?.focus),
+    routingSplit: txAuxField(hasAudioRouting, routing?.splitStereo !== undefined, routing?.splitStereo),
     modInputSource: txAuxField(hasModInput, source !== undefined, source),
     modInputChoices,
     modInputReadiness: facts.modInputReadiness,

@@ -35,7 +35,7 @@ class FakeWebSocket {
 const dualCaps = {
   stateContractVersion: 1, providerGeneration: 1,
   model: 'routing-fixture', scope: false, audio: true, tx: false,
-  capabilities: ['audio', 'dual_rx', 'af_level'],
+  capabilities: ['audio', 'dual_rx', 'af_level', 'lan_dual_rx_audio_routing'],
   receivers: 2, vfoScheme: 'main_sub', freqRanges: [], modes: [], filters: [],
   audioConfig: { sampleRate: 48000, channels: 2, codecs: ['pcm16'] },
   webrtc: { available: false, enabled: false }, txBands: [],

@@ -80,7 +80,7 @@ const fresh: FieldStatus = { storePath: 'x', observed: true, freshness: 'fresh',
 
 const caps = {
   model: 'fixture', scope: false, audio: true, tx: true,
-  capabilities: ['audio', 'tx', 'mod_input_routing', 'af_level', 'dual_rx'],
+  capabilities: ['audio', 'tx', 'mod_input_routing', 'af_level', 'dual_rx', 'lan_dual_rx_audio_routing'],
   receivers: 1, vfoScheme: 'single', freqRanges: [], modes: [], filters: [],
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
   webrtc: { available: false, enabled: false },
