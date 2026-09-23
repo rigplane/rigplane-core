@@ -169,6 +169,18 @@ confirmed the intended policy rather than a judgment call).
 Independent review found two more direct violations round 1 missed, plus
 one regression round 1's own revert had introduced:
 
+- `core.vfo.ops.quickSplit` / `core.vfo.ops.quickDualWatch` — the faceplate
+  token was transliterated *inside* translatable tooltip prose ("Быстрый
+  сплит" / "クイックスプリット"). Per the "token inside prose" rule these
+  keep translating, but the `split` / `dual watch` token inside them must
+  stay literal: fixed to "Быстрый split" / "クイック split" and "Быстрый
+  dual watch" / "クイック dual watch" (lowercase, matching the exact casing
+  en-US uses in "Quick split" / "Quick dual watch"). Added
+  `Split`/`split`/`Dual watch`/`dual watch` to `i18n-check.mjs`'s
+  `GLOSSARY_TOKENS` so a future regression on this specific pattern fails
+  the substring lint (these four entries are core-local additions, not
+  sourced from the strategy glossary — see the comment at their
+  definition). (MOR-2538 later removed both keys with the quick actions.)
 - `core.overlay.poweredOff.hint` (ru-RU) still read "кнопку ВКЛ" after the
   power button was relabeled to `ON` — a regression the round-1 revert
   itself created by changing the button's own label without updating a
