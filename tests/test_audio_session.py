@@ -16,6 +16,9 @@ The session is consumed by NOTHING in src yet (steps 9/11/12 wire it).
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 import pytest
 from _order_sensitive_radios import ExclusiveUsbRadio, LanLikeRadio
 
@@ -259,7 +262,8 @@ async def test_lease_push_arms_tx_only_on_full_duplex() -> None:
     The digital-TX (FT8/WSJT-X over the companion) path: a bare lease defers,
     but the first ``push`` converges the lone TX leg into TX_ONLY so the frame
     reaches the radio instead of being rejected (push converges, never
-    rejects). Exclusive/atomic transports keep deferring (no TX_ONLY mode)."""
+    rejects). Since the MOR-2563 arm-now edge, forced intent arms TX_ONLY on
+    exclusive/atomic transports too — only the BARE acquire still defers."""
     radio = LanLikeRadio()
     session = AudioSession(radio)
     lease = await session.acquire_tx("wsjtx")
@@ -271,6 +275,53 @@ async def test_lease_push_arms_tx_only_on_full_duplex() -> None:
     assert session.bus.subscriber_count == 0  # no phantom RX
     await lease.release()
     assert session.state is AudioSessionState.IDLE
+
+
+# ── The arm-now acquire edge (MOR-2563: a PTT key IS active TX intent) ───────
+
+
+@pytest.mark.parametrize(
+    "make_radio,is_live",
+    [
+        (LanLikeRadio, lambda r: r.state == "transmitting"),
+        (_AtomicExclusiveRadio, lambda r: bool(r.tx_running)),
+    ],
+    ids=["rx_first", "atomic"],
+)
+async def test_acquire_tx_arm_now_arms_tx_only_with_zero_rx(
+    make_radio: type, is_live: Callable[[Any], bool]
+) -> None:
+    """``acquire_tx(arm_now=True)`` arms the lone TX leg NOW, on both orders.
+
+    A PTT key is active TX intent: the acquire forces the push/reestablish
+    ``tx_active`` edge, so TX_ONLY arms with ZERO RX demand — exclusive/
+    atomic included. The release disarms back to IDLE, no leaked demand.
+    """
+    radio = make_radio()
+    session = AudioSession(radio)
+    lease = await session.acquire_tx("ptt", arm_now=True)
+    assert session.state is AudioSessionState.TX_ONLY
+    assert is_live(radio)
+    assert session.tx_leg_live() is True  # the observed read the poller gates on
+    assert session.bus.subscriber_count == 0  # no phantom RX
+    await lease.release()
+    assert session.state is AudioSessionState.IDLE
+    assert not is_live(radio)
+    assert session.tx_demand == 0
+
+
+async def test_bare_acquire_tx_still_defers_on_atomic() -> None:
+    """MOR-556 unchanged on atomic: a bare acquire arms nothing; RX arriving
+    next converges straight to RX_TX, no TX flap."""
+    radio = _AtomicExclusiveRadio()
+    session = AudioSession(radio)
+    lease = await session.acquire_tx("bridge")
+    assert session.state is AudioSessionState.IDLE
+    assert radio.calls == []  # nothing armed — the MOR-556 trap avoided
+    await session.subscribe_rx("a")
+    assert session.state is AudioSessionState.RX_TX
+    assert radio.calls == ["start_tx", "start_rx"]  # atomic order, one arm
+    await lease.release()
 
 
 # ── audio_setup_order drives arming (descriptor-read, not hardcoded) ─────────

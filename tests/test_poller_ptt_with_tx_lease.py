@@ -24,6 +24,13 @@ flowing. Case 5 pins that a GENUINE arm failure through the session still
 refuses the key without touching the foreign lease; case 6 pins that a
 repeated PTT ON reuses the held "ptt" lease.
 
+Round 2 adds: the zero-RX-demand pins (the "ptt" acquire takes the
+session's arm-now edge, so the TX leg is observably live BEFORE the key
+write — the ``set_ptt`` spies record leg liveness at the moment of the
+write), a "web lease, no RX" pin, session-path pins for the two refusals
+that run AFTER the "ptt" lease has joined (ownerless, managed rejection),
+and the ``RadioPoller.stop()`` held-lease release pin.
+
 The stack is as real as the existing helpers allow: the real
 ``RadioPoller`` dispatching ``PttOn``/``PttOff`` to a real ``YaesuCatRadio``
 over a real ``UsbAudioDriver``/``AudioBus``/``AudioSession`` on the repo's
@@ -41,6 +48,7 @@ premise (radio observed in RX before keying) is stated via the shared
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -54,6 +62,7 @@ from rigplane.audio.usb_driver import UsbAudioDriver
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.core.capabilities import CAP_AUDIO
 from rigplane.core.exceptions import CommandError
+from rigplane.core.tx_safety import TxOutcome
 from rigplane.profiles import resolve_radio_profile
 from rigplane.web.radio_poller import CommandQueue, PttOff, PttOn, RadioPoller
 
@@ -318,6 +327,12 @@ class _PttLanRadio(LanLikeRadio):
     async def set_ptt(self, on: bool) -> None:
         self.ptt_writes.append(on)
 
+    async def stop_tx(self) -> None:
+        # Recorded so a stray stop at another owner's leg is OBSERVABLE: the
+        # base stub returns early when not transmitting, invisible otherwise.
+        self.calls.append("stop_tx")
+        await super().stop_tx()
+
     async def push_tx(self, audio_data: bytes) -> None:
         await super().push_tx(audio_data)
         self.tx_frames.append(audio_data)
@@ -463,8 +478,9 @@ async def test_lan_session_arm_failure_refuses_key_and_keeps_foreign_lease() -> 
         assert session.tx_demand == 1  # only the foreign "bridge" lease
         assert not lease.released
         # The refusal ran exactly the failed arm attempt — no stop_tx at the
-        # other owner's leg, no retry.
+        # other owner's leg (now recorded, so a stray stop would be seen).
         assert radio.calls[calls_before:] == ["start_tx"]
+        assert "stop_tx" not in radio.calls[calls_before:]
 
         # The foreign lease is fully functional once the transport recovers.
         arm_fails = False
@@ -509,3 +525,206 @@ async def test_repeated_ptt_on_reuses_the_held_ptt_lease(
         assert _UNKEYED in writes
     finally:
         await sub.release()
+
+
+# ── Zero RX demand: the TX leg must be live BEFORE the key write ─────────────
+#
+# A PTT key IS active TX intent: the "ptt" acquire takes the arm-now edge,
+# arming TX even with no RX subscriber (verifier B1). The set_ptt spies
+# record leg liveness AT the key write.
+
+
+async def test_lan_ptt_with_zero_rx_demand_keys_with_tx_leg_live() -> None:
+    """LAN stub, zero RX demand: TX live at the key write; OFF → IDLE."""
+    radio = _PttLanRadio()
+    session = radio.audio_session
+    poller = RadioPoller(radio, CommandQueue())
+    live_at_key: list[bool] = []
+    real_set_ptt = radio.set_ptt
+
+    async def _spy_set_ptt(on: bool) -> None:
+        if on:
+            live_at_key.append(radio.state == "transmitting")
+        await real_set_ptt(on)
+
+    radio.set_ptt = _spy_set_ptt  # type: ignore[method-assign]
+
+    await poller._execute(PttOn(), command_id="z1", session_id="ws-1")
+    assert live_at_key == [True]  # TX leg observably live AT the key write
+    assert radio.ptt_writes == [True]
+    assert session.state is AudioSessionState.TX_ONLY
+    assert session.tx_demand == 1
+
+    await poller._execute(PttOff(), command_id="z2", session_id="ws-1")
+    assert radio.ptt_writes == [True, False]
+    assert radio.state == "idle"  # TX disarmed, no leaked demand
+    assert session.state is AudioSessionState.IDLE
+    assert session.tx_demand == 0
+    assert poller._ptt_tx_lease is None  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    "exclusive",
+    [True, False],
+    ids=["exclusive-same-device", "full-separate-devices"],
+)
+async def test_usb_ptt_with_zero_rx_demand_keys_with_tx_leg_live(
+    monkeypatch: pytest.MonkeyPatch, exclusive: bool
+) -> None:
+    """USB exclusive and full, zero RX demand: the TX leg is live at the key
+    write; PTT OFF disarms to IDLE with no leaked demand."""
+    radio, _backend, poller, writes = _usb_stack(monkeypatch, exclusive=exclusive)
+    session = radio.audio_session
+    assert session.state is AudioSessionState.IDLE
+    live_at_key: list[bool] = []
+    real_set_ptt = radio.set_ptt
+
+    async def _spy_set_ptt(on: bool) -> None:
+        if on:
+            live_at_key.append(bool(radio._audio_driver.tx_running))
+        await real_set_ptt(on)
+
+    radio.set_ptt = _spy_set_ptt  # type: ignore[method-assign]
+
+    await poller._execute(PttOn(), command_id="z1", session_id="ws-1")
+    assert live_at_key == [True]
+    assert _KEYED in writes
+    assert radio._audio_driver.tx_running
+    assert session.state is AudioSessionState.TX_ONLY
+
+    await poller._execute(PttOff(), command_id="z2", session_id="ws-1")
+    assert _UNKEYED in writes
+    assert not radio._audio_driver.tx_running
+    assert session.state is AudioSessionState.IDLE
+    assert session.tx_demand == 0
+    assert poller._ptt_tx_lease is None  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    "exclusive",
+    [True, False],
+    ids=["exclusive-same-device", "full-separate-devices"],
+)
+async def test_usb_web_lease_no_rx_frame_lands_while_keyed(
+    monkeypatch: pytest.MonkeyPatch, exclusive: bool
+) -> None:
+    """A bare ``web`` TX lease with NO RX subscriber defers (MOR-556); the
+    PTT arm-now edge arms the leg, and a frame pushed through the web lease
+    reaches the fake output WHILE KEYED."""
+    radio, backend, poller, writes = _usb_stack(monkeypatch, exclusive=exclusive)
+    session = radio.audio_session
+    web_lease = await session.acquire_tx("web")  # bare: defers, arms nothing
+    try:
+        assert session.state is AudioSessionState.IDLE
+        assert not radio._audio_driver.tx_running
+
+        await poller._execute(PttOn(), command_id="w1", session_id="ws-1")
+        assert _KEYED in writes
+        assert radio._audio_driver.tx_running
+
+        await web_lease.push(_LEASE_FRAME)
+        assert _last_tx_frame(backend) == _LEASE_FRAME
+
+        await poller._execute(PttOff(), command_id="w2", session_id="ws-1")
+        assert _UNKEYED in writes
+    finally:
+        await web_lease.release()
+
+
+# ── The two refusals that run AFTER the "ptt" lease has joined ────────────────
+#
+# Both run with the foreign "bridge" lease's TX leg live: the refusal must
+# release ONLY the "ptt" lease (a ``_stop_tx_audio_leg()`` at these sites
+# turns these red).
+
+
+async def test_ownerless_refusal_releases_only_the_ptt_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ownerless refusal (managed rig, no releasable owner) leaves the
+    foreign lease's live leg untouched."""
+    radio = _PttLanRadio()
+    session = radio.audio_session
+    poller = RadioPoller(radio, CommandQueue())
+    sub = await session.subscribe_rx("web-audio")
+    lease = await session.acquire_tx("bridge")
+    monkeypatch.setattr(
+        "rigplane.web.radio_poller.refuse_key_without_owner",
+        lambda *_args: True,
+    )
+    try:
+        assert session.state is AudioSessionState.RX_TX
+        assert radio.state == "transmitting"
+
+        with pytest.raises(CommandError, match="no owner identity"):
+            await poller._execute(PttOn(), command_id="r1", session_id="ws-1")
+
+        assert radio.ptt_writes == []  # no key write reached the rig
+        assert radio.state == "transmitting"  # the bridge leg untouched
+        assert session.tx_demand == 1  # only the bridge's lease left
+        assert not lease.released
+        assert poller._ptt_tx_lease is None  # noqa: SLF001
+    finally:
+        await lease.release()
+        await sub.release()
+
+
+async def test_managed_rejection_releases_only_the_ptt_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The managed rejection (supervisor answers BUSY) leaves the foreign
+    lease's live leg untouched."""
+    radio = _PttLanRadio()
+    session = radio.audio_session
+    poller = RadioPoller(radio, CommandQueue())
+    sub = await session.subscribe_rx("web-audio")
+    lease = await session.acquire_tx("bridge")
+
+    class _RejectingManagedTx:
+        async def set_ptt(self, on: bool) -> Any:
+            return SimpleNamespace(outcome=TxOutcome.BUSY)
+
+    monkeypatch.setattr(
+        "rigplane.web.radio_poller.bind_managed_tx",
+        lambda *_args: _RejectingManagedTx(),
+    )
+    try:
+        assert radio.state == "transmitting"
+
+        with pytest.raises(CommandError, match="managed TX rejected"):
+            await poller._execute(PttOn(), command_id="r2", session_id="ws-1")
+
+        assert radio.ptt_writes == []  # no key write reached the rig
+        assert radio.state == "transmitting"  # the bridge leg untouched
+        assert session.tx_demand == 1  # only the bridge's lease left
+        assert not lease.released
+        assert poller._ptt_tx_lease is None  # noqa: SLF001
+    finally:
+        await lease.release()
+        await sub.release()
+
+
+# ── stop() must not orphan a held "ptt" lease ────────────────────────────────
+
+
+async def test_poller_stop_releases_a_held_ptt_lease() -> None:
+    """stop() releases a held "ptt" lease: no orphaned TX demand."""
+    radio = _PttLanRadio()
+    session = radio.audio_session
+    poller = RadioPoller(radio, CommandQueue())
+
+    await poller._execute(PttOn(), command_id="s1", session_id="ws-1")
+    lease = poller._ptt_tx_lease  # noqa: SLF001
+    assert lease is not None and session.tx_demand == 1
+    assert radio.state == "transmitting"
+
+    poller.stop()
+    task = poller._ptt_lease_release_task  # noqa: SLF001
+    assert task is not None
+    await task
+
+    assert lease.released
+    assert poller._ptt_tx_lease is None  # noqa: SLF001
+    assert session.tx_demand == 0
+    assert session.state is AudioSessionState.IDLE
+    assert radio.state == "idle"
