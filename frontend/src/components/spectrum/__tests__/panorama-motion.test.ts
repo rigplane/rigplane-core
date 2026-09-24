@@ -10,8 +10,7 @@ import {
 // file-level `afterEach(() => vi.unstubAllGlobals())` below only restores
 // stubs registered with `vi.stubGlobal`. A plain `window.matchMedia = …`
 // survived that hook and leaked `{ matches: true }` into every later
-// `fast` file sharing the worker (observed victim: InstallPrompt.test.ts
-// "isStandalone returns false in normal browser mode").
+// `fast` file sharing the worker.
 function enableReducedMotion(): void {
   vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({
     matches: true,
