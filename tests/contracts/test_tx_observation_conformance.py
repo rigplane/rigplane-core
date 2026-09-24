@@ -358,8 +358,9 @@ async def test_a_set_ptt_write_alone_produces_no_observation(
     if harness.name == "yaesu-ftx1":
         # ``ScriptedCatTransport`` answers every query with the transmit-state
         # frame, so any other declared read in this lane would see a frame of
-        # the wrong shape and raise. Narrow the lane to the field this row is
-        # about; the PTT read still goes over the same scripted wire.
+        # the wrong shape, record a declared-read defect and be skipped.
+        # Narrow the lane to the field this row is about; the PTT read
+        # still goes over the same scripted wire.
         from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
 
         ptt_only = FieldPath.global_("tx_state", "ptt")

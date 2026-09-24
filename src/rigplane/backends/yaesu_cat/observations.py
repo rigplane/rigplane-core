@@ -1623,10 +1623,14 @@ class YaesuObservationAdapter:
         """Record the defect for a declared read that cannot answer.
 
         The recording is what the startup gate reads: it checks the
-        scheduler's record before and during its wait, so a defective
-        declared read still refuses the bind. The read itself is skipped —
-        only that field is dropped and the poll cycle continues, so the
-        field's own refusal cannot stall every later field (MOR-2578).
+        scheduler's record before and during its wait, so a declared read
+        that fails before the gate completes refuses the bind. A refusal
+        that begins only after the gate has completed — MOR-2578's own
+        case, the ``RA0;`` answer that comes only while SUB is selected —
+        is recorded but cannot undo a bind that already happened. The
+        read itself is skipped — only that field is dropped and the poll
+        cycle continues, so the field's own refusal cannot stall every
+        later field (MOR-2578).
         """
         command = ""
         frame = ""

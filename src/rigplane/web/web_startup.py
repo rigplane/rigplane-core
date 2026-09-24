@@ -159,9 +159,10 @@ def _startup_gap_seconds(radio: object) -> float:
 def _abort_on_startup_defect(scheduler: AcquisitionScheduler) -> None:
     """Raise if a backend has recorded a declared-command defect.
 
-    The backend's own raise stays inside its poller task; the scheduler both
-    sides already hold is what carries the defect here. Bind happens strictly
-    after the gate, so raising here means no listener is created.
+    The backend records the defect on the scheduler without raising; that
+    record — which both sides already hold — is what carries the defect
+    here. Bind happens strictly after the gate, so raising here means no
+    listener is created.
     """
 
     defect = scheduler.startup_defect
