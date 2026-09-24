@@ -292,7 +292,15 @@ async def test_bridge_uses_neutral_tx_surface() -> None:
 
     radio.push_tx.assert_awaited_with(_LOUD_FRAME)
     radio.push_audio_tx_pcm.assert_not_called()
-    radio.stop_tx.assert_awaited_once()
+    # MOR-2563: the pushed lease carries recorded TX intent, so the RX
+    # release inside ``bridge.stop()`` converges to TX_ONLY (stop TX → drop
+    # RX → re-arm TX, the MOR-574 order) instead of straight to IDLE, and
+    # the lease release afterwards disarms once more — two stop_tx awaits
+    # in all. The TX leg is unobservable on this mock, so the re-arm is a
+    # real second start_tx too (on a real transport _ensure_tx_live observes
+    # the freshly re-armed leg).
+    assert radio.start_tx.await_count == 2
+    assert radio.stop_tx.await_count == 2
     radio.stop_audio_tx_pcm.assert_not_called()
 
 
