@@ -6581,6 +6581,10 @@ def test_scan_facts_seed_labelled_command_response_not_poll_response() -> None:
 #: still 5 paths (_PRIME_UNOBSERVED_BURST_LIMIT); filter_width left the
 #: never-observed set it is drawn from, so data_mode (0x1A 06) takes its
 #: slot in this one-tick cycle.
+# One full drain cycle, in dispatch order. MOR-2576 (MOR-2574 step 2)
+# regrouped the seven unowned IC-7300 pollable paths by acquisition class,
+# so background groups now dispatch by their class TTLs: the same 53
+# frames, ordered by the class-grouped deadlines.
 _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x1C, 0x00, b""),
     (0x25, None, b"\x00"),
@@ -6588,20 +6592,15 @@ _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x15, 0x02, b""),
     (0x14, 0x02, b""),
     (0x14, 0x03, b""),
-    (0x0F, None, b""),
-    (0x14, 0x01, b""),
-    (0x16, 0x12, b""),
-    (0x16, 0x22, b""),
-    (0x16, 0x40, b""),
-    (0x25, None, b"\x01"),
-    (0x26, None, b"\x01"),
     (0x11, None, b""),
     (0x16, 0x02, b""),
     (0x14, 0x0E, b""),
     (0x14, 0x0A, b""),
     (0x1C, 0x01, b""),
     (0x16, 0x44, b""),
+    (0x0F, None, b""),
     (0x1A, 0x03, b""),
+    (0x14, 0x01, b""),
     (0x16, 0x57, b""),
     (0x14, 0x12, b""),
     (0x14, 0x0D, b""),
@@ -6611,6 +6610,8 @@ _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x16, 0x41, b""),
     (0x16, 0x65, b""),
     (0x16, 0x48, b""),
+    (0x25, None, b"\x01"),
+    (0x26, None, b"\x01"),
     (0x21, 0x00, b""),
     (0x14, 0x17, b""),
     (0x14, 0x0B, b""),
@@ -6621,6 +6622,9 @@ _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x1A, 0x05, b"\x01\x91"),
     (0x1A, 0x06, b""),
     (0x26, None, b"\x00"),
+    (0x16, 0x12, b""),
+    (0x16, 0x22, b""),
+    (0x16, 0x40, b""),
     (0x27, 0x1C, b""),
     (0x27, 0x13, b""),
     (0x27, 0x1B, b""),
