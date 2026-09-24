@@ -41,7 +41,7 @@ function repeaterFixture(mainHz: number, subHz: number, active: 'MAIN' | 'SUB'):
     }
   }
   const caps: Capabilities = { ...structuredClone(mockCapabilities), ...structuredClone(topologyCaps) };
-  caps.capabilities = [...new Set([...(caps.capabilities ?? []), 'repeater_tone', 'tsql', 'repeater_shift'])];
+  caps.capabilities = [...new Set([...(caps.capabilities ?? []), 'repeater_tone', 'tsql', 'repeater_shift', 'repeater_shift_ars'])];
   caps.ctcssTones = [6700, 7190, 8850, 10000];
   caps.freqRanges = [
     ...(caps.freqRanges ?? []),
@@ -137,6 +137,24 @@ for (const active of ['MAIN', 'SUB'] as const) {
   });
 }
 
+test('the shift selector draws SIMP / − / + / ARS in one row, and ARS sends direction 3 for SUB', async ({ page }) => {
+  const { state, caps } = repeaterFixture(14_250_000, 144_700_000, 'MAIN');
+  await boot(page, state, caps, 1280);
+  const keys = page.locator(`${SURFACE} [data-testid^="repeater-shift-"]`);
+  await expect(keys).toHaveText(['SIMP', '−', '+', 'ARS']);
+  const rows = await keys.evaluateAll((nodes) => nodes.map((node) => {
+    const box = node.getBoundingClientRect();
+    return { top: Math.round(box.top), clipped: node.scrollWidth > node.clientWidth };
+  }));
+  expect(new Set(rows.map((row) => row.top)).size).toBe(1);
+  expect(rows.map((row) => row.clipped)).toEqual([false, false, false, false]);
+
+  await page.locator(`${SURFACE} [data-testid="repeater-shift-ars"]`).click();
+  await expect.poll(() => repeaterFrames(page)).toEqual([
+    { name: 'set_repeater_shift', params: { direction: 3, receiver: 1 } },
+  ]);
+});
+
 for (const width of [1280, 1440]) {
   test(`at ${width} px every repeater control sits inside the panel and is hit at its own centre`, async ({ page }) => {
     const { state, caps } = repeaterFixture(14_250_000, 144_700_000, 'MAIN');
@@ -159,7 +177,7 @@ for (const width of [1280, 1440]) {
         };
       });
     }, [PANEL, SURFACE]);
-    expect(results).toHaveLength(9);
+    expect(results).toHaveLength(10);
     for (const result of results) {
       expect(result, JSON.stringify(result)).toMatchObject({ inside: true, hit: true });
     }
