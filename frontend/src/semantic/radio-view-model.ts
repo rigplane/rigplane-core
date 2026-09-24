@@ -715,6 +715,48 @@ export interface BandViewModel {
 }
 
 /**
+ * Repeater controls (MOR-2111 PR1, data + view model): the per-receiver
+ * facts a repeater strip reads. Facts only — no intent dispatch; the strip
+ * (the deck's first operated chips) lands in PR2.
+ *
+ * `inRepeaterBand` is derived from the receiver's OWN observed frequency and
+ * the flagged `freqRanges` — a range-level match, because `findActiveBand`
+ * matches only named sub-bands (`range.bands`) and a bare 2 m / 70 cm range
+ * carries none. Membership comes from profile data, never a hard-coded band.
+ *
+ * `toneMode` is the owner's three-state selector (OFF / TONE / TSQL),
+ * collapsed from the two neutral booleans `repeaterTone` + `repeaterTsql`.
+ * On the FTX-1 both live in one `CT` register, so the pair (tone off,
+ * TSQL on) is unrepresentable and reads `unknown`, never a guessed state.
+ *
+ * `toneFreq` reads the ENC tone frequency from `toneFreq` (centiHz), not
+ * `tsqlFreq`: on the FTX-1 the two are one `CN` register, and the model
+ * names the ENC field because that is the tone a repeater needs.
+ *
+ * `shift` maps the wire `repeaterShift` (0 simplex / 1 plus / 2 minus /
+ * 3 ARS) to simplex / plus / minus. ARS (3) is not offered: it reads
+ * `unknown`, never `simplex`.
+ */
+export type RepeaterToneMode = 'off' | 'tone' | 'tsql';
+export type RepeaterShift = 'simplex' | 'plus' | 'minus';
+/** Shape-identical to `TxAuxField`, declared as an alias like `BandField`. */
+export type RepeaterField<T> = TxAuxField<T>;
+
+export interface RepeaterReceiverViewModel {
+  inRepeaterBand: RepeaterField<boolean>;
+  toneMode: RepeaterField<RepeaterToneMode>;
+  toneFreq: RepeaterField<number>;
+  shift: RepeaterField<RepeaterShift>;
+}
+
+/** Both map keys are always present; a radio without a SUB receiver simply
+ *  never reads the `sub` entry (same convention as `BandViewModel.receiverBands`). */
+export interface RepeaterViewModel {
+  main: RepeaterReceiverViewModel;
+  sub: RepeaterReceiverViewModel;
+}
+
+/**
  * A single RIT/XIT fact (MOR-1262 decomposition slice 8A, MOR-1295).
  * Shape-identical to `TxAuxField`, declared as an alias for the same reason
  * `BandField`/`RfFrontEndField`/`DspField`/`ModeFilterField`/`RxAudioField`
@@ -1249,6 +1291,10 @@ export interface RadioViewModel {
    *  range at all, so there is no band plan and no tuning envelope to state
    *  — see `radio-view-model-adapter.ts`'s `deriveBand`. */
   readonly band?: BandViewModel;
+  /** Absent (MOR-1264 optional group) ⇒ this radio's `freqRanges` declares
+   *  no `repeater` band, so there is no repeater strip to gate — see
+   *  `radio-view-model-adapter.ts`'s `deriveRepeater`. */
+  readonly repeater?: RepeaterViewModel;
   /** Absent (MOR-1264 optional group) ⇒ this radio declares neither `rit`
    *  nor `xit` capability — see `radio-view-model-adapter.ts`'s
    *  `deriveRitXit`. */
@@ -2122,6 +2168,31 @@ function validateBand(value: unknown, path: string): BandViewModel {
   };
 }
 
+const REPEATER_TONE_MODES: readonly RepeaterToneMode[] = ['off', 'tone', 'tsql'];
+const REPEATER_SHIFTS: readonly RepeaterShift[] = ['simplex', 'plus', 'minus'];
+
+function validateRepeaterReceiver(value: unknown, path: string): RepeaterReceiverViewModel {
+  const v = record(value, path);
+  exactKeys(v, ['inRepeaterBand', 'toneMode', 'toneFreq', 'shift'], path);
+  return {
+    inRepeaterBand: validateTxAuxField(v.inRepeaterBand, `${path}.inRepeaterBand`, bool),
+    toneMode: validateTxAuxField(v.toneMode, `${path}.toneMode`, (val, p) => oneOf(val, REPEATER_TONE_MODES, p)),
+    toneFreq: validateTxAuxField(v.toneFreq, `${path}.toneFreq`, num),
+    shift: validateTxAuxField(v.shift, `${path}.shift`, (val, p) => oneOf(val, REPEATER_SHIFTS, p)),
+  };
+}
+
+/** Exactly the four facts the adapter reads, one per receiver. See
+ *  `radio-view-model-adapter.ts::deriveRepeater`. */
+function validateRepeater(value: unknown, path: string): RepeaterViewModel {
+  const v = record(value, path);
+  exactKeys(v, ['main', 'sub'], path);
+  return {
+    main: validateRepeaterReceiver(v.main, `${path}.main`),
+    sub: validateRepeaterReceiver(v.sub, `${path}.sub`),
+  };
+}
+
 /** Exactly the four facts the adapter reads. See
  *  `radio-view-model-adapter.ts::deriveRitXit`. */
 function validateRitXit(value: unknown, path: string): RitXitViewModel {
@@ -2242,7 +2313,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   exactKeys(v, [
     'topologyId', 'vfoScheme', 'activeReceiver', 'vfos', 'split', 'dualWatch',
     'txTarget', 'txPermit', 'scope', 'disabledReasons', 'txAux', 'meters', 'rxAudio', 'modeFilter',
-    'filterPassband', 'dsp', 'rfFrontEnd', 'band', 'ritXit', 'antenna', 'scan', 'cwKeyer',
+    'filterPassband', 'dsp', 'rfFrontEnd', 'band', 'repeater', 'ritXit', 'antenna', 'scan', 'cwKeyer',
     'scopeControls', 'scopeDisplay', 'receiverIndicators', 'radioWideIndicators',
   ], '$');
   if (!Array.isArray(v.vfos)) invalid('$.vfos', 'an array');
@@ -2299,6 +2370,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   const dsp = optionalGroup(v.dsp, '$.dsp', validateDsp);
   const rfFrontEnd = optionalGroup(v.rfFrontEnd, '$.rfFrontEnd', validateRfFrontEnd);
   const band = optionalGroup(v.band, '$.band', validateBand);
+  const repeater = optionalGroup(v.repeater, '$.repeater', validateRepeater);
   const ritXit = optionalGroup(v.ritXit, '$.ritXit', validateRitXit);
   const antenna = optionalGroup(v.antenna, '$.antenna', validateAntenna);
   const scan = optionalGroup(v.scan, '$.scan', validateScan);
@@ -2357,6 +2429,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
     ...(dsp !== undefined ? { dsp } : {}),
     ...(rfFrontEnd !== undefined ? { rfFrontEnd } : {}),
     ...(band !== undefined ? { band } : {}),
+    ...(repeater !== undefined ? { repeater } : {}),
     ...(ritXit !== undefined ? { ritXit } : {}),
     ...(antenna !== undefined ? { antenna } : {}),
     ...(scan !== undefined ? { scan } : {}),

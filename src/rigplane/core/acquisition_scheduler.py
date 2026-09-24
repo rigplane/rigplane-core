@@ -55,6 +55,8 @@ __all__ = [
     "MeterObservationCoalescer",
     "RadioStateModelService",
     "StateFreshnessService",
+    "FRESHNESS_DECAY_LIMIT_RATIO",
+    "adaptive_cadence_limit",
     "availability_clause_holds",
     "civ_acquisition_executor_for_provider",
     "derive_tx_active",
@@ -388,6 +390,36 @@ _MIN_RECONCILIATION_MAX_AGE = 1e-9
 # .PRIME_REDERIVE_INTERVAL_SECONDS) picks up whatever this call didn't
 # reach.
 _PRIME_UNOBSERVED_BURST_LIMIT = 5
+
+#: MOR-2540: adaptive decay must never slow a field's polling past what keeps
+#: it fresh. A field polled at least every ``TTL / FRESHNESS_DECAY_LIMIT_RATIO``
+#: stays FRESH for its whole window; this is the same "TTL >= 2 * cadence"
+#: ratio the IC-7300 profile carries by hand (MOR-1484). The scheduler bounds
+#: every field's decay ceiling by this ratio of its own TTL, so all profiles
+#: get the rule with no per-profile edits.
+FRESHNESS_DECAY_LIMIT_RATIO = 2.0
+
+
+def adaptive_cadence_limit(policy: AcquisitionPolicy) -> float | None:
+    """Return the TTL-bounded ceiling for ``policy``'s adaptive decay cadence.
+
+    The ceiling is the policy's ``adaptive_decay.max_cadence_seconds``, never
+    higher than ``freshness_ttl_seconds / FRESHNESS_DECAY_LIMIT_RATIO``: an
+    idle field whose polling widens no further than half its TTL still
+    re-reads inside its freshness window. A field with no TTL keeps the
+    declared ceiling unchanged (there is no freshness window to honour); a
+    field with a TTL but no declared ceiling gets the TTL-derived ceiling; a
+    field with neither returns ``None`` (unbounded, unchanged).
+    """
+
+    limit = policy.adaptive_decay.max_cadence_seconds
+    ttl = policy.freshness_ttl_seconds
+    if ttl is None:
+        return None if limit is None else float(limit)
+    freshness_limit = float(ttl) / FRESHNESS_DECAY_LIMIT_RATIO
+    if limit is None:
+        return freshness_limit
+    return min(float(limit), freshness_limit)
 
 
 class AcquisitionScheduler:
@@ -1160,9 +1192,15 @@ class AcquisitionScheduler:
                 previous.current_cadence_seconds
                 * request.policy.adaptive_decay.idle_multiplier
             )
-            max_cadence = request.policy.adaptive_decay.max_cadence_seconds
+            max_cadence = adaptive_cadence_limit(request.policy)
             if max_cadence is not None:
                 current_cadence = min(current_cadence, max_cadence)
+            # A field whose declared base cadence already exceeds the
+            # freshness limit is slow by declaration, not by decay. Never
+            # "speed it up" silently: keep the base cadence and let the
+            # all-profile invariant name it for a profile edit.
+            if current_cadence < base_cadence:
+                current_cadence = base_cadence
         self._cadence_by_key[key] = _CadenceState(
             current_cadence_seconds=current_cadence,
             next_due_monotonic=change_set.timestamp_monotonic + current_cadence,
@@ -1186,7 +1224,7 @@ class AcquisitionScheduler:
         first under load. Such an event must NOT count as a failure, must NOT
         drop the request from the pending queue, and must NOT advance cadence
         (which is what later decays ``freq_mode``/``tx_state``/``slow_state`` to
-        the 30 s backoff ceiling). The caller leaves the request in flight so
+        the TTL-bounded backoff ceiling). The caller leaves the request in flight so
         the returning observation can still credit it.
         """
 

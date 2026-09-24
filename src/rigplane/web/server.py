@@ -3597,6 +3597,7 @@ class WebServer:
                 "start": r.start,
                 "end": r.end,
                 "label": r.label,
+                **({"repeater": True} if r.repeater else {}),
                 "bands": [
                     {
                         "name": b.name,
@@ -3626,6 +3627,11 @@ class WebServer:
             "vfoScheme": profile.vfo_scheme,
             "vfoReadback": profile.vfo_readback,
             "freqRanges": freq_ranges,
+            **(
+                {"ctcssTones": list(profile.ctcss_tones_centihz)}
+                if profile.ctcss_tones_centihz
+                else {}
+            ),
             "modes": list(profile.modes),
             "filters": list(profile.filters),
             "filterWidthMin": profile.filter_width_min,
