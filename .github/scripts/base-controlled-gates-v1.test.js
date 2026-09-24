@@ -58,6 +58,11 @@ function runPull(number, head, base) {
 test('trusted route policy rejects incomplete and injected path metadata', () => {
   const docs = routePolicy.classifyPullFiles([{filename: 'docs/guide.md'}, {filename: 'frontend/README.MD'}, {filename: 'mkdocs.yml'}], 3);
   assert.deepEqual(docs, {core: false, frontend: false, ci: false, docs: true});
+  // Machine-readable data files under docs/ are not documentation: they must
+  // route to a substantive quick run, never the docs-only path (MOR-2580).
+  assert.deepEqual(routePolicy.classifyPullFiles([{filename: 'docs/internals/ui-radio-control-contract.toml'}], 1), {core: true, frontend: false, ci: false, docs: false});
+  assert.deepEqual(routePolicy.classifyPullFiles([{filename: 'docs/guide.md'}, {filename: 'docs/validation/templates/x6200.json'}], 2), {core: true, frontend: false, ci: false, docs: false});
+  assert.deepEqual(routePolicy.classifyPullFiles([{filename: '.claude/settings.json'}], 1), {core: false, frontend: false, ci: false, docs: true});
   for (const filename of ['../README.md', 'docs/../src/radio.py']) {
     assert.throws(() => routePolicy.classifyPullFiles([{filename}], 1), undefined, filename);
   }

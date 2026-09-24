@@ -15,6 +15,11 @@ const DOC_EXACT = new Set([
 ]);
 const CORE_EXACT = new Set(['.importlinter', 'pyproject.toml', 'uv.lock']);
 const CI_EXACT = new Set(['tests/test_ci_path_filters.py']);
+// Machine-readable data files under docs/ are parsed by tests (e.g.
+// docs/internals/ui-radio-control-contract.toml), so they are not
+// documentation and must route to a substantive quick run. Mirrors
+// DOCS_DATA_SUFFIXES in classify-quick-paths.py and docs-only-paths.js.
+const DOCS_DATA_SUFFIXES = new Set(['.json', '.toml', '.yaml', '.yml']);
 
 function assertSha(value, label) {
   if (typeof value !== 'string' || !SHA_PATTERN.test(value)) {
@@ -44,6 +49,9 @@ function isDocumentation(path) {
   const parts = pathParts(path);
   const dot = path.lastIndexOf('.');
   const suffix = dot === -1 ? '' : path.slice(dot).toLowerCase();
+  if (parts.length > 1 && parts[0] === 'docs' && DOCS_DATA_SUFFIXES.has(suffix)) {
+    return false;
+  }
   return (
     (parts.length > 1 && (parts[0] === 'docs' || parts[0] === '.claude')) ||
     DOC_SUFFIXES.has(suffix) ||

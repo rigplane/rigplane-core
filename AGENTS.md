@@ -160,12 +160,15 @@ compilation. Pixel-diff `visual` runs only for actual `frontend/**` changes,
 never because `visual.yml` itself changed.
 
 When every changed path is documentation or documentation metadata — including
-`docs/**`, Markdown/RST anywhere in the tree, `.claude/**`, and the doc-citation
-baseline files — only the GitHub-hosted classifier runs. The required `quick`
-job reports a server-side skipped/neutral context and never allocates the Mac
-mini. Do not run citation, link, Markdown, product, visual, or full automation;
-the exact-head independent review is the substantive gate. Documentation mixed
-with code follows the normal checks selected by the code paths.
+`docs/**` except data files, Markdown/RST anywhere in the tree, `.claude/**`, and
+the doc-citation baseline files — only the GitHub-hosted classifier runs. The
+required `quick` job reports a server-side skipped/neutral context and never
+allocates the Mac mini. Do not run citation, link, Markdown, product, visual,
+or full automation; the exact-head independent review is the substantive gate.
+Documentation mixed with code follows the normal checks selected by the code
+paths. Data files under `docs/` (`*.json`, `*.toml`, `*.yaml`, `*.yml`) are not
+documentation here and get the normal checks
+(`.github/scripts/classify-quick-paths.py: DOCS_DATA_SUFFIXES`).
 
 ## Multi-agent Git hygiene
 

@@ -5,6 +5,13 @@ on:
     branches: [main]
     paths-ignore:
       - "docs/**"
+      # Machine-readable data files under docs/ (parsed by tests/code, e.g.
+      # docs/internals/ui-radio-control-contract.toml) are not prose: a change
+      # to one must run quick, so these ordered negations re-include them.
+      - "!docs/**/*.toml"
+      - "!docs/**/*.json"
+      - "!docs/**/*.yaml"
+      - "!docs/**/*.yml"
       - ".claude/**"
       - "**/*.md"
       - "**/*.mD"
@@ -32,6 +39,12 @@ on:
     types: [opened, reopened, synchronize, ready_for_review]
     paths-ignore:
       - "docs/**"
+      # Same re-inclusion as the push trigger above: docs data files
+      # (*.toml/*.json/*.yaml/*.yml) reach the classify job and run quick.
+      - "!docs/**/*.toml"
+      - "!docs/**/*.json"
+      - "!docs/**/*.yaml"
+      - "!docs/**/*.yml"
       - ".claude/**"
       - "**/*.md"
       - "**/*.mD"
