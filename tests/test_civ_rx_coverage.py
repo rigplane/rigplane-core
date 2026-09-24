@@ -1756,23 +1756,27 @@ def test_update_state_cache_exception_suppressed(radio: IcomRadio) -> None:
             1.0,
             "command_response",
         ),
-        # PA-telemetry meters promoted to neutral observations (MOR-460).
+        # PA-telemetry meters promoted to neutral observations (MOR-460);
+        # values calibrated through the IC-7610 tables since MOR-2540.
         (
             _make_frame(cmd=0x15, sub=0x14, data=_bcd2(42)),
             "global.meters.comp",
-            42,
+            # 42·15/130 ≈ 4.85 dB (guide anchors: 0=0 dB, 130=15 dB).
+            (42 / 130) * 15.0,
             "command_response",
         ),
         (
             _make_frame(cmd=0x15, sub=0x15, data=_bcd2(130)),
             "global.meters.vd",
-            130,
+            # 130·10/151 ≈ 8.61 V (guide anchors: 0=0 V, 151=10 V).
+            (130 / 151) * 10.0,
             "command_response",
         ),
         (
             _make_frame(cmd=0x15, sub=0x16, data=_bcd2(55)),
             "global.meters.id",
-            55,
+            # 55·10/77 ≈ 7.14 A (guide anchors: 0=0 A, 77=10 A).
+            (55 / 77) * 10.0,
             "command_response",
         ),
         (
@@ -3670,9 +3674,12 @@ def test_cmd15_smeter_without_calibration_table_marks_uncalibrated() -> None:
         (0x11, "global.meters.power", 143, 50.0, ("confirmed", "calibrated")),
         (0x12, "global.meters.swr", 48, 1.5, ("confirmed", "calibrated")),
         (0x13, "global.meters.alc", 60, 0.5, ("confirmed", "calibrated")),
-        (0x14, "global.meters.comp", 42, 42, ("confirmed", "uncalibrated")),
-        (0x15, "global.meters.vd", 130, 130, ("confirmed", "uncalibrated")),
-        (0x16, "global.meters.id", 55, 55, ("confirmed", "uncalibrated")),
+        # Calibrated through the MOR-2540 tables (IC-7610 CI-V Reference
+        # Guide (2021), command table): 42·15/130 ≈ 4.85 dB,
+        # 130·10/151 ≈ 8.61 V, 55·10/77 ≈ 7.14 A.
+        (0x14, "global.meters.comp", 42, 42 * 15 / 130, ("confirmed", "calibrated")),
+        (0x15, "global.meters.vd", 130, 130 * 10 / 151, ("confirmed", "calibrated")),
+        (0x16, "global.meters.id", 55, 55 * 10 / 77, ("confirmed", "calibrated")),
     ],
 )
 def test_cmd15_tx_pa_meter_observations_emit_engineering_units(
@@ -5600,12 +5607,13 @@ def test_update_radio_state_comp_meter_observation_backed(
     default 0 while the StateStore carries the decoded value.
     """
     rs = radio_with_state._radio_state
-    # 42 BCD: 0x00 0x42
+    # 42 BCD: 0x00 0x42. Calibrated (MOR-2540): 42·15/130 ≈ 4.85 dB
+    # (guide anchors: 0=0 dB, 130=15 dB).
     frame = CivFrame(0xE0, 0x98, 0x15, 0x14, b"\x00\x42")
     radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
     assert rs.comp_meter == 0
     field = radio_with_state._state_store.snapshot().field("global.meters.comp")
-    assert field.value == 42
+    assert field.value == (42 / 130) * 15.0
 
 
 def test_update_radio_state_vd_meter_observation_backed(
@@ -5618,11 +5626,13 @@ def test_update_radio_state_vd_meter_observation_backed(
     0 while the StateStore carries the decoded value.
     """
     rs = radio_with_state._radio_state
+    # BCD 0130 = raw 130. Calibrated (MOR-2540): 130·10/151 ≈ 8.61 V
+    # (guide anchors: 0=0 V, 151=10 V).
     frame = CivFrame(0xE0, 0x98, 0x15, 0x15, b"\x01\x30")
     radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
     assert rs.vd_meter == 0
     field = radio_with_state._state_store.snapshot().field("global.meters.vd")
-    assert field.value == 130
+    assert field.value == (130 / 151) * 10.0
 
 
 def test_update_radio_state_id_meter_observation_backed(
@@ -5635,11 +5645,13 @@ def test_update_radio_state_id_meter_observation_backed(
     0 while the StateStore carries the decoded value.
     """
     rs = radio_with_state._radio_state
+    # BCD 0055 = raw 55. Calibrated (MOR-2540): 55·10/77 ≈ 7.14 A
+    # (guide anchors: 0=0 A, 77=10 A).
     frame = CivFrame(0xE0, 0x98, 0x15, 0x16, b"\x00\x55")
     radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
     assert rs.id_meter == 0
     field = radio_with_state._state_store.snapshot().field("global.meters.id")
-    assert field.value == 55
+    assert field.value == (55 / 77) * 10.0
 
 
 def test_update_radio_state_power_meter(radio_with_state: IcomRadio) -> None:

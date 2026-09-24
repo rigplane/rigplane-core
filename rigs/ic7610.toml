@@ -1812,6 +1812,61 @@ raw = 120
 actual = 100.0
 label = "100"
 
+# COMP / Vd / Id PA meter calibration (MOR-2540). Source: IC-7610 CI-V
+# Reference Guide (2021), command table, 15 14 / 15 15 / 15 16
+# (COMP: 0000=0 dB, 0130=15 dB, 0241=30 dB; Vd: 0000=0 V, 0151=10 V,
+# 0211=16 V; Id: 0000=0 A, 0077=10 A, 0165=20 A, 0241=30 A).
+
+[[meters.comp.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.comp.calibration]]
+raw = 130
+actual = 15.0
+label = "15"
+
+[[meters.comp.calibration]]
+raw = 241
+actual = 30.0
+label = "30"
+
+[[meters.vd.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.vd.calibration]]
+raw = 151
+actual = 10.0
+label = "10"
+
+[[meters.vd.calibration]]
+raw = 211
+actual = 16.0
+label = "16"
+
+[[meters.id.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.id.calibration]]
+raw = 77
+actual = 10.0
+label = "10"
+
+[[meters.id.calibration]]
+raw = 165
+actual = 20.0
+label = "20"
+
+[[meters.id.calibration]]
+raw = 241
+actual = 30.0
+label = "30"
+
 [[rules]]
 kind = "mutex"
 fields = ["attenuator", "preamp"]
