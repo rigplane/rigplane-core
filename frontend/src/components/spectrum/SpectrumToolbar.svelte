@@ -750,9 +750,10 @@
   }
 
   /* The row's STEP cycler: label + reserved-width value in the stepper's
-     middle (click up / context-menu down). `font-size: inherit` beats the
-     arrow key's 13px glyph size — the label/value stay at the family's
-     panel size, as the band derivation assumes. */
+     middle (click up / context-menu down). The capsule sheet sizes only
+     the arrow keys (`:not(.step-cycler)`), so this natural width and the
+     inherited 11 px stand unopposed (round-3 finding 1: the cycler sized
+     16 px collapsed across both arrows and ‹ could not be clicked). */
   .step-cycler {
     width: auto;
     font-size: inherit;

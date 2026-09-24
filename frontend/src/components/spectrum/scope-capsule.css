@@ -15,22 +15,18 @@
  * `scope-step-key` names sit in control-button.css's `:not()` exclusion
  * lists, so the bezel family never reaches them).
  *
- * COLOURS (MOR-977, token-only, no literals; ratios computed with WCAG
- * relative luminance from the theme token values). The strip's ONE ground
- * is the scope section's card colour --v2-bg-card — the hosted toolbar
- * paints it and the surface's own card paint is switched off below, so
- * capsules, SRC and ⛶ share it (round-2 finding 7). On that ground and
- * the More panel's --v2-bg-darkest: border/divider
- * var(--v2-text-secondary) — worst 3.71:1 (solarized-light, More panel;
- * 4.39 on the card; round 1's muted borders hit 1.75–2.92 in 9 of 14
- * themes); lit fill color-mix(in srgb, var(--v2-accent-cyan-teal) 50%,
- * transparent) — 1.56:1 (nord-light) to 3.08, a wash by design (a solid
- * accent fill fails the light themes: 1.64 on nord-light); lit text
- * var(--v2-text-primary) — worst 3.64:1 on the row fill (one-dark), 3.31
- * on the More fill (catppuccin-latte), solarized-light 1.78/1.60 (its
- * brightest token); unlit text/arrows/labels var(--v2-text-secondary);
- * values var(--v2-text-primary); the SRC indicator joins
- * --v2-text-secondary on this row only (round-2 finding 7).
+ * COLOURS (MOR-977, token-only, no literals). The strip's ONE ground is
+ * the scope section's card colour --v2-bg-card — the hosted toolbar paints
+ * it and the surface's own card paint is switched off below, so capsules,
+ * SRC and ⛶ share it (round-2 finding 7). On that ground and the More
+ * panel's --v2-bg-darkest: border/divider var(--v2-text-secondary); the
+ * lit fill is a 50% wash of --v2-accent-cyan-teal — a wash by design
+ * (decision C), never the sole lit cue. The text tokens are the round-3
+ * measured set (independent-verifier per-theme measurement, row and More
+ * panel): lit text var(--v2-text-white) on the lit fill, values
+ * var(--v2-text-bright), unlit labels and arrows var(--v2-text-lighter);
+ * the SRC indicator joins the unlit-label token on this row only
+ * (round-2 finding 7).
  *
  * Loaded via `import './scope-capsule.css'` from ScopeFlatKey.svelte and
  * SpectrumToolbar.svelte. The `scope-flat-key`/`scope-step-key` names are
@@ -54,6 +50,7 @@
   width: auto;
   min-width: var(--scope-key-width, auto);
   height: 24px;
+  min-height: 0;
   font-family: inherit;
   font-size: inherit;
   font-weight: 600;
@@ -61,26 +58,27 @@
   text-transform: uppercase;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
-  color: var(--v2-text-secondary, var(--text));
+  color: var(--v2-text-lighter, var(--text));
   cursor: pointer;
 }
 
 /* Lit = FILLED, never colour-only: a 50% wash of the theme's dark cyan
- * accent over the strip ground, with the primary text token on top. */
+ * accent over the strip ground, with the white text token on top. */
 .spectrum-toolbar.hosted .scope-flat-key[data-lit='true'] {
   background: color-mix(in srgb, var(--v2-accent-cyan-teal, var(--v2-accent-cyan)) 50%, transparent);
-  color: var(--v2-text-primary, var(--text));
+  color: var(--v2-text-white, var(--text));
 }
 
 /* Unlit weight stays the family's 600 — the scoped PR1 grammar's 400 is
  * switched off here (it carried [data-lit='false'] at 0,3,0). */
 .spectrum-toolbar.hosted .scope-flat-key[data-lit='false'] {
   font-weight: 600;
-  color: var(--v2-text-secondary, var(--text));
+  color: var(--v2-text-lighter, var(--text));
 }
 
-/* Hover brightens the text only — no chrome, no shadow. */
-.spectrum-toolbar.hosted .scope-flat-key:hover:not(:disabled) {
+/* Hover brightens the UNLIT text only — no chrome, no shadow; a lit key
+ * keeps its white text on the fill. */
+.spectrum-toolbar.hosted .scope-flat-key:not([data-lit='true']):hover:not(:disabled) {
   color: var(--v2-text-primary, var(--text));
 }
 
@@ -97,6 +95,7 @@
   border: 1px solid var(--v2-text-secondary, var(--text-muted));
   border-radius: 5px;
   height: 24px;
+  min-height: 0;
   padding: 0 7px;
   gap: 3px;
   box-sizing: border-box;
@@ -110,6 +109,7 @@
   border: none;
   border-radius: 0;
   height: 22px;
+  min-height: 0;
   padding: 0 9px;
 }
 
@@ -125,7 +125,7 @@
   letter-spacing: 0.05em;
   text-transform: uppercase;
   white-space: nowrap;
-  color: var(--v2-text-secondary, var(--text));
+  color: var(--v2-text-lighter, var(--text));
 }
 
 .spectrum-toolbar.hosted .scope-step-key {
@@ -135,16 +135,26 @@
   padding: 0;
   margin: 0;
   flex: none;
-  width: 16px;
   height: 22px;
+  min-height: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-family: inherit;
-  font-size: 13px;
   font-variant-numeric: tabular-nums;
-  color: var(--v2-text-secondary, var(--text));
+  color: var(--v2-text-lighter, var(--text));
   cursor: pointer;
+}
+
+/* The 16 px box and 13 px glyph size are for the ARROW keys (‹ › − +)
+ * ONLY. The STEP cycler (`.step-cycler` — the STEP label + value button)
+ * keeps its natural width and the row's 11 px from SpectrumToolbar's own
+ * `.step-cycler` rule: sizing the cycler 16 px/13 px collapsed it across
+ * both arrows, so a click at ‹'s centre hit the cycler and stepped UP
+ * (round-3 finding 1, row and More copy alike). */
+.spectrum-toolbar.hosted .scope-step-key:not(.step-cycler) {
+  width: 16px;
+  font-size: 13px;
 }
 
 .spectrum-toolbar.hosted .scope-step-key:hover:not(:disabled) {
@@ -164,10 +174,11 @@
   flex: none;
   min-width: 7ch;
   height: 22px;
+  min-height: 0;
   font-size: inherit;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  color: var(--v2-text-primary, var(--text));
+  color: var(--v2-text-bright, var(--text));
 }
 
 /* ── The More panel joins the family (round-2 findings 4–5) ──────────── */
@@ -185,11 +196,12 @@
   appearance: none;
   box-sizing: border-box;
   height: 24px;
+  min-height: 0;
   padding: 0 8px;
   border: 1px solid var(--v2-text-secondary, var(--text-muted));
   border-radius: 5px;
   background: transparent;
-  color: var(--v2-text-secondary, var(--text));
+  color: var(--v2-text-lighter, var(--text));
   font-family: inherit;
   font-size: inherit;
   font-weight: 600;
@@ -202,11 +214,14 @@
 }
 
 /* ⛶ leaves the bezel family inside the hosted strip: same height, radius
- * and border as the capsules, no gradient, no inset bar. The selector
- * (0,5,1; hover 0,7,1) outranks control-button.css's bezel rules
+ * and border as the capsules, no gradient, no inset bar. The `min-height`
+ * reset is what keeps it at 24 px — the skin's generic button floor would
+ * otherwise hold it taller (round-3 finding: it measured 28 px). The
+ * selector (0,5,1; hover 0,7,1) outranks control-button.css's bezel rules
  * (0,5,0 / 0,7,0) without !important; the unhosted faces keep the bezel. */
 .desktop-control-face .spectrum-toolbar.hosted > button.toolbar-btn.icon-btn {
   height: 24px;
+  min-height: 0;
   width: auto;
   min-width: 24px;
   padding: 0 7px;
@@ -215,7 +230,7 @@
   border-radius: 5px;
   background: transparent;
   box-shadow: none;
-  color: var(--v2-text-secondary, var(--text));
+  color: var(--v2-text-lighter, var(--text));
 }
 
 .desktop-control-face .spectrum-toolbar.hosted > button.toolbar-btn.icon-btn::before {
@@ -254,15 +269,16 @@
  * only; every other mount keeps ScopeDisplaySurface's own colours. */
 .spectrum-toolbar.hosted .scope-display-indicator,
 .spectrum-toolbar.hosted .scope-display-text {
-  color: var(--v2-text-secondary, var(--text));
+  color: var(--v2-text-lighter, var(--text));
 }
 
 /* ── Narrow-width overflow bands ──────────────────────────────────────── */
 
 /* Below each band the row's DIRECT child carrying that hook hides; its
- * More copy (if any) shows. Hide order (MOR-2545 PR3): AVG/PEAK quick keys
- * first, then receiver → hold → ref → span → step; CTR|FIX, BANDS, MORE,
- * the status seat and fullscreen never hide. The hide selectors are
+ * More copy (if any) shows — CTR|FIX needs no copy: the panel's MODE row
+ * carries CTR/FIX permanently. Hide order (MOR-2545 PR3): AVG/PEAK quick
+ * keys first, then receiver → hold → ref → span → step → CTR|FIX; BANDS,
+ * MORE, the status seat and fullscreen never hide. The hide selectors are
  * (0,4,0) so they beat the component-scoped display rules of BOTH authors
  * (`.scope-stepper.svelte-*`/`.scope-key-group.svelte-*` from
  * ScopeControlsSurface, `.toolbar-group.svelte-*` from SpectrumToolbar's
@@ -276,18 +292,23 @@
  * (11 px Roboto Mono ≈ 6.93 px/char with tracking; capsule chrome 16 px =
  * 2×1 px border + 2×7 px padding; segment 18 px = 2×9 px padding; segment
  * divider 1 px + 3 px gap): SPAN 131, REF 124, HOLD 46, STEP 133, BANDS 53,
- * AVG+PEAK group 88. Each band = the width of the row that REMAINS after
- * that item hides (measured 865 minus the hidden items and one 4 px gap
- * each) + 8 px safety margin (a .5 remainder rounds up):
+ * AVG+PEAK group 88. Each band = the width of the row with that item still
+ * SHOWING (the items before it already hidden) + 8 px safety margin
+ * (a .5 remainder rounds up):
  *   quick     865 + 8                          → 873
  *   receiver  865 − 88 − 4 + 8                 → 781
  *   hold      865 − 88 − 104.5 − 2×4 + 8       → 673
  *   ref       865 − 88 − 104.5 − 46 − 3×4 + 8  → 623
  *   span      … − 124 − 4×4 + 8                → 495
  *   step      … − 131 − 5×4 + 8                → 360
- * Below the step band only the never-hide set remains — CTR|FIX + BANDS +
- * MORE + the spacer ≈ 221 px (229 with the ja label) — which fits every
- * narrower row, so STEP hides last.
+ * Below the step band the chain leaves ≈ 214 px (CTR|FIX + BANDS + MORE +
+ * the spacer); the round-3 measurement agrees — MORE began to spill at a
+ * 319 px toolbar and the strip's fixed peers take ≈ 101 px, so ≈ 218 px
+ * of container, 229 with the ja-JP MORE label. The mode band is that
+ * measured 229 + 8:
+ *   mode      229 + 8                          → 237
+ * Below the mode band only BANDS + MORE + the spacer remain (≈ 116 px),
+ * which fits every narrower row, so CTR|FIX hides last.
  */
 
 @container scope-controls (max-width: 873px) {
@@ -314,4 +335,9 @@
    * `.toolbar-step-copy` (in the screen group), shown by its own rule in
    * SpectrumToolbar.svelte at this same band. */
   .spectrum-toolbar.hosted .scope-controls-row > [data-overflow='step'] { display: none; }
+}
+@container scope-controls (max-width: 237px) {
+  /* No `.scope-more-overflow` copy here either: the panel's permanent MODE
+   * row (CTR/FIX/S-C/S-F) already carries this choice. */
+  .spectrum-toolbar.hosted .scope-controls-row > [data-overflow='mode'] { display: none; }
 }
