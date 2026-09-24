@@ -11,6 +11,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0b7] — 2026-09-23
+
+### Added
+
+- **The FTX-1's repeater tone and tone squelch are on (MOR-2111).**
+  The `repeater_tone` and `tsql` capability tags join the FTX-1
+  features, so `set_repeater_tone`, `set_repeater_tsql`,
+  `set_tone_freq` and `set_tsql_freq` are admitted on the radio, on
+  MAIN and SUB. rigctld `set_func TONE` / `TSQL` reaches the matching
+  toggle on the resolved receiver (an explicit VFOB, or no VFO
+  argument while SUB is active, gives SUB; otherwise MAIN), and
+  `get_func` reads the toggle state with the live radio read as
+  fallback. A backend refusal — tone off with TSQL on, or a toggle
+  over a DCS/PR FREQ/REV TONE mode — answers `RPRT -9`. The four web
+  commands now travel the descriptor path, so a refusal reaches the
+  caller as an error instead of an immediate success echo.
+
+### Changed
+
+- **The panorama controls on the Standard face are one toolbar row,
+  with the screen controls behind More (MOR-2545).** The row holds
+  CTR/FIX · SPAN · REF · HOLD · MAIN/SUB · ⋯, then STEP, BANDS, the
+  scope status and fullscreen; every screen-only control — VIEW,
+  AUTO, AVG, PEAK, brightness, palette and band-plan layers — moves
+  into the More panel with the same handlers. The scope status
+  becomes a compact indicator with a tone dot and a readout of the
+  read parts (e.g. "hardware · inactive · HW off"); unread parts are
+  omitted, never shown as placeholders. The scope area fills the
+  center column's 320 px minimum — 40 px more at 900 px, and the
+  page is not taller.
+
+- **The scope divider and the filter-width handle light only on
+  hover intent, thin and translucent (MOR-2562).** The
+  spectrum/waterfall divider used to flash a solid 4 px accent bar
+  every time the mouse crossed it, and the filter-width handle drew
+  a 3 px outlined bar all the time. Both are now invisible at rest —
+  the passband overlay's dashed edges still mark the filter edge,
+  and the faint divider stripe stays — and show a thin 1 px line at
+  low opacity on hover after a 200 ms delay, so entering waits and
+  leaving is instant; while dragging, 2 px at higher opacity with no
+  delay.
+
+### Fixed
+
+- **FTX-1 RX audio survives TX audio on one USB device (MOR-546).**
+  On macOS, when a radio's RX and TX audio resolve to the same
+  physical USB device, arming TX audio used to open a second stream
+  on that device; macOS answered AUHAL -50 and the running RX
+  capture went silent. Arming TX now opens one duplex stream and the
+  RX callback carries on through it; stopping TX reopens plain RX
+  when an RX callback is still wired. Both USB backends — Yaesu CAT
+  and Icom serial — get the handoff unchanged; separate-device
+  behaviour is unchanged, and arming TX audio sends no CAT or PTT
+  command.
+
 ## [3.0.0b6] — 2026-09-23
 
 ### Added
@@ -2699,7 +2754,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b6...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b7...HEAD
+[3.0.0b7]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b6...v3.0.0b7
 [3.0.0b6]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b5...v3.0.0b6
 [3.0.0b5]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b4...v3.0.0b5
 [3.0.0b4]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b3...v3.0.0b4
