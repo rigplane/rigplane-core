@@ -1,15 +1,10 @@
 /**
  * MOR-2111 PR2 — the repeater strip in the standard deck (real browser).
- *
- * Boots the standard face with MAIN on 14.250 MHz (HF) and SUB on 144.700 MHz
- * (a 2 m repeater frequency), patched with the repeater-band freqRanges,
- * `ctcssTones` and the repeater capability tags. Asserts the strip is drawn
- * under SUB's frequency and not under MAIN's, that it does not overlap the
- * RIT/XIT/SPLIT chips, and — the placement-B no-layout-shift guarantee — that
- * the deck height is byte-identical when SUB moves off 144.700 back to HF.
- *
- * The height re-emit drives the same mock WebSocket the boot installs; it is
- * not a radio or a live backend (no TX, no server).
+ * Boots the standard face with MAIN on 14.250 MHz (HF) and SUB on 144.700 MHz,
+ * patched with the repeater-band freqRanges, `ctcssTones` and repeater
+ * capability tags. Asserts the strip is drawn under SUB only, does not overlap
+ * RIT/XIT/SPLIT, and — the placement-B guarantee — the deck height is
+ * byte-identical when SUB moves back to HF. No radio, no TX, no server.
  */
 import { test, expect, type Page } from '@playwright/test';
 import { fixtureById } from '../../../fixtures/catalog';

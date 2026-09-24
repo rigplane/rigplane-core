@@ -1,34 +1,22 @@
 /**
- * MOR-2111 PR2 — the pure repeater command-layer vocabulary shared by the
- * command handlers (`panel-commands.ts`) and the repeater strip's
- * presentation (`VfoSurface.svelte`). No store, transport, or radio import:
- * every function is a pure mapping whose inputs the caller supplies.
- *
- * The tone-mode selector (OFF / TONE / TSQL) maps onto the Yaesu `CT`
- * squelch-type register, which cannot express the pair (tone off, TSQL on).
- * The transition TABLE itself is the literal command dispatch in
- * `panel-commands.ts::makeRepeaterHandlers` — kept there so the conformance
- * completeness ledger sees each `dispatchRadioIntent({ name: '<literal>' })`
- * frame. This module carries only the pure helpers that table and the strip
- * share: the shift direction codec, the chart stepper, and the display
- * formatter.
- *
- *   CT code: 0 = both off, 1 = ENC on (TONE), 2 = ENC+DEC on (TSQL).
+ * MOR-2111 PR2 — the pure repeater command-layer vocabulary shared by
+ * `panel-commands.ts` and `VfoSurface.svelte`. No store, transport, or radio
+ * import. The OFF/TONE/TSQL selector maps onto the Yaesu `CT` squelch-type
+ * register (0 = off, 1 = TONE, 2 = TSQL), which cannot express tone-off +
+ * TSQL-on; the transition TABLE is the literal dispatch in
+ * `panel-commands.ts::makeRepeaterHandlers` (kept there so the conformance
+ * ledger sees each `name:` literal). This module carries the shared helpers.
  *
  * `RepeaterToneMode`/`RepeaterShift` mirror the semantic view-model's
- * same-named types (MOR-2111 PR1) structurally; they are declared here too
- * because this module is the command-layer vocabulary and must stay
- * importable by `panel-commands.ts` without a `lib/runtime -> semantic`
+ * same-named types structurally; they are declared here too so
+ * `panel-commands.ts` can import them without a `lib/runtime -> semantic`
  * dependency (v3 ADR invariant 1).
  */
 export type RepeaterToneMode = 'off' | 'tone' | 'tsql';
 export type RepeaterShift = 'simplex' | 'minus' | 'plus';
 
-/**
- * The per-receiver in-flight repeater targets the wiring folds into the
- * strip's pending markers. `null` = nothing pending; each member is derived
- * from the existing command-lifecycle accessors (`getPendingRepeater*`).
- */
+/** The per-receiver in-flight repeater targets folded into the strip's
+ *  pending markers; `null` = nothing pending. */
 export interface RepeaterStripPending {
   readonly toneMode: RepeaterToneMode | null;
   readonly shift: RepeaterShift | null;
@@ -40,13 +28,8 @@ export function shiftDirection(shift: RepeaterShift): number {
   return shift === 'simplex' ? 0 : shift === 'plus' ? 1 : 2;
 }
 
-/**
- * Step a CTCSS frequency (centiHz) through the profile's chart. Clamps at
- * both ends — never wraps, so a rapid tap cannot silently jump the chart.
- * A current value outside the chart snaps to the nearest end rather than
- * failing: the radio only ever holds exact members, so this is a guard, not
- * a normal path.
- */
+/** Step a CTCSS frequency (centiHz) through the profile's chart, clamped at
+ *  both ends (never wraps). An off-chart value snaps to the nearest end. */
 export function stepToneFreq(
   currentHz: number,
   tones: readonly number[],
