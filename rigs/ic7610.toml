@@ -220,6 +220,12 @@ polling_only = [
     "receiver.sub.operator_controls.agc_time_constant",
     "global.tx_state.split",
     "global.tx_state.dual_watch",
+    # MOR-2540: the TX target is the radio's own answer to CI-V 1C 03 ("Read
+    # transmit frequency"), polled on the get_tx_target getter declared below.
+    # This main_sub radio deliberately carries no [vfo] readback key, so the
+    # RadioPoller derivation (selected_unselected-only) never writes the field
+    # here -- this poll is the field's single producer.
+    "global.tx_state.tx_target",
     "global.operator_controls.tuner_status",
     # MOR-1491 (field-policy membership wave, profile parity): filter_shape
     # (CI-V 0x16 0x56). docs/validation/cat-audits/ic7610.md documents this
@@ -638,6 +644,18 @@ adaptive_decay = false
 [state_acquisition.field_policies."global.tx_state.ptt"]
 cadence_seconds = 0.3
 freshness_ttl_seconds = 1.0
+adaptive_decay = false
+
+# MOR-2540: TUNE fails closed while tx_target is not FRESH, so this read
+# must track the radio at operator-action cadence yet stay cheap on the CI-V
+# lane. 1.0s costs one bare 1C 03 read per second (+1.0 q/s); the 4.0s TTL
+# (4x cadence, >= the required 2x) still fails closed 4s after the radio
+# stops answering (FTX-1's tx_target rides the looser 2.0s/8.0s profile
+# default). adaptive_decay stays off: a decayed 30s ceiling is what kept
+# freq_hz stale ~93% of the time on this radio.
+[state_acquisition.field_policies."global.tx_state.tx_target"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 4.0
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.tx_state.compressor_on"]
@@ -1071,6 +1089,16 @@ main_select = [0xD0]
 sub_select = [0xD1]
 swap_main_sub = [0xB0]   # MAIN ↔ SUB receiver swap (issue #710)
 equal_main_sub = [0xB1]  # MAIN = SUB receiver equalize (issue #710)
+# MOR-2540: the 1C 03 transmit-frequency reply (get_tx_target below) is
+# transceiver-wide -- it carries no receiver of its own. Basic Manual p.3-2:
+# "you can transmit on only the Main band (except in Split Frequency
+# operation)"; p.4-9: with split on, Main receives and Sub transmits. The
+# decoder therefore labels the target MAIN, or SUB while a FRESH 0F split
+# readback (get_split) is ON. An unknown or stale split fact withdraws the
+# label: the reply publishes an unknown target, which both credits the read
+# request and fails closed -- TUNE blocks from that reply on; until it
+# arrives, the last FRESH target can stay valid up to its own 4.0s TTL.
+tx_receiver_rule = "main_unless_split"
 
 # ── Frequency Ranges ─────────────────────────────────────────────
 
@@ -1349,6 +1377,14 @@ set_agc_time_constant = [0x1A, 0x04]
 ptt_on = [0x1C, 0x00, 0x01]
 ptt_off = [0x1C, 0x00, 0x00]
 get_transceiver_status = [0x1C, 0x00]     # source: IC-7610 CI-V Reference Guide (May.2021) p.9
+# MOR-2540: source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.9,
+# "1C 03 ... Read transmit frequency" (detail p.10: the same five-byte BCD
+# operating-frequency format as commands 00/03/05). Read-only row; transceiver
+# -global, so deliberately NOT in [cmd29] routes. With split ON the radio
+# itself answers the frequency it would transmit on -- this profile never
+# derives the target from the MAIN frequency. The reply's receiver label
+# follows [vfo] tx_receiver_rule above (MAIN unless a FRESH split is ON).
+get_tx_target = [0x1C, 0x03]
 get_rf_power = [0x14, 0x0A]
 set_rf_power = [0x14, 0x0A]
 get_mic_gain = [0x14, 0x0B]

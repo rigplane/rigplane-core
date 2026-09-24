@@ -64,7 +64,7 @@ from rigplane.core.state_acquisition_policy import (
     RadioAcquisitionProfile,
 )
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
-from rigplane.core.tx_target import KnownTxTarget
+from rigplane.core.tx_target import KnownTxTarget, TxReceiver, UnknownTxTarget
 from rigplane.core.tx_observation import (
     OBSERVED_PTT_PATH,
     ObservedPtt,
@@ -5261,11 +5261,41 @@ def test_update_radio_state_tuner_status(radio_with_state: IcomRadio) -> None:
     assert field.value == 2
 
 
+#: Directed IC-7610 1C/03 reply: 7.100 MHz in the five-byte BCD
+#: operating-frequency format (same as commands 00/03/05).
+_TX_FREQ_REPLY = "FE FE E0 98 1C 03 00 00 10 07 00 FD"
+
+
+def _feed_selected_and_split(
+    radio: IcomRadio,
+    *,
+    selected_sub: bool,
+    split_on: bool | None,
+) -> None:
+    """Feed the 07 D2 selected-band read and (unless ``None``) the 0F split
+    readback into the radio's state store, as the poll loop would."""
+
+    runtime = radio._civ_runtime
+    runtime._update_state_cache_from_frame(
+        _make_frame(cmd=0x07, data=b"\xd2\x01" if selected_sub else b"\xd2\x00")
+    )
+    if split_on is not None:
+        runtime._update_state_cache_from_frame(
+            _make_frame(cmd=0x0F, data=b"\x01" if split_on else b"\x00")
+        )
+
+
 def test_update_radio_state_direct_tx_frequency_stamps_profile_declared_max_age(
     radio_with_state: IcomRadio,
 ) -> None:
     # Full directed IC-7610 response: 1C/03 + 7.100 MHz in five-byte BCD.
-    frame = parse_civ_frame(bytes.fromhex("FE FE E0 98 1C 03 00 00 10 07 00 FD"))
+    # max_age is the profile's declared tx_target TTL (MOR-2540:
+    # rigs/ic7610.toml field_policies."global.tx_state.tx_target"), no longer
+    # the profile-default TTL this field inherited before it was declared.
+    # A FRESH split=OFF readback licenses the MAIN label (the reply itself
+    # carries no receiver).
+    _feed_selected_and_split(radio_with_state, selected_sub=False, split_on=False)
+    frame = parse_civ_frame(bytes.fromhex(_TX_FREQ_REPLY))
     radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
 
     snapshot = radio_with_state._state_store.snapshot()
@@ -5273,7 +5303,7 @@ def test_update_radio_state_direct_tx_frequency_stamps_profile_declared_max_age(
     assert field.value == KnownTxTarget(
         receiver="MAIN", slot=None, frequency_hz=7_100_000
     )
-    assert field.max_age == 8.0
+    assert field.max_age == 4.0
     radio_with_state._state_store.mark_stale_due(
         now=field.last_observed_monotonic + field.max_age + 0.001
     )
@@ -5292,10 +5322,11 @@ def test_direct_tx_frequency_max_age_falls_back_without_state_acquisition(
     directed 1C/03 response still gets a finite max_age on tx_target — the
     shared fallback — instead of aging forever (StateStore.mark_stale_due
     only ages entries with max_age set)."""
+    _feed_selected_and_split(radio_with_state, selected_sub=False, split_on=False)
     radio_with_state._profile = dataclasses.replace(
         radio_with_state._profile, state_acquisition=None
     )
-    frame = parse_civ_frame(bytes.fromhex("FE FE E0 98 1C 03 00 00 10 07 00 FD"))
+    frame = parse_civ_frame(bytes.fromhex(_TX_FREQ_REPLY))
     radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
 
     field = radio_with_state._state_store.snapshot().field("global.tx_state.tx_target")
@@ -5303,6 +5334,197 @@ def test_direct_tx_frequency_max_age_falls_back_without_state_acquisition(
         receiver="MAIN", slot=None, frequency_hz=7_100_000
     )
     assert field.max_age == 3.0
+
+
+def test_undecodable_tx_frequency_reply_produces_no_tx_target(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-2540 fail closed: a 1C/03 reply that does not decode never writes
+    tx_target — a short payload misses the five-byte branch guard, and a
+    full-length invalid-BCD payload is rejected by ``bcd_decode`` itself,
+    which ``_apply_state_store_observations`` catches so the frame publishes
+    nothing."""
+
+    # Feed a FRESH split=OFF first so the receiver rule licenses a label:
+    # the decoder's own payload rejection is what must stop the publish
+    # here, not the missing split fact (review R2 B4).
+    _feed_selected_and_split(radio_with_state, selected_sub=False, split_on=False)
+    runtime = radio_with_state._civ_runtime
+    runtime._update_state_cache_from_frame(
+        _make_frame(cmd=0x1C, sub=0x03, data=b"\x00\x00\x10\x07")
+    )
+    runtime._update_state_cache_from_frame(
+        _make_frame(cmd=0x1C, sub=0x03, data=b"\xff\xff\xff\xff\xff")
+    )
+
+    with pytest.raises(KeyError):
+        radio_with_state._state_store.snapshot().field("global.tx_state.tx_target")
+
+
+@pytest.mark.parametrize(
+    ("selected_sub", "split_on", "expected_receiver"),
+    [
+        pytest.param(False, False, "MAIN", id="main-selected-split-off"),
+        pytest.param(False, True, "SUB", id="main-selected-split-on"),
+        pytest.param(True, False, "MAIN", id="sub-selected-split-off"),
+        pytest.param(True, True, "SUB", id="sub-selected-split-on"),
+    ],
+)
+def test_tx_target_receiver_follows_fresh_split_not_selected_band(
+    radio_with_state: IcomRadio,
+    selected_sub: bool,
+    split_on: bool,
+    expected_receiver: TxReceiver,
+) -> None:
+    """MOR-2540 B1: a plain 1C/03 reply carries no receiver, so the label
+    follows the profile's ``main_unless_split`` rule (IC-7610 Basic Manual
+    p.3-2 "transmit on only the Main band (except in Split Frequency
+    operation)", p.4-9: split = Main receives, Sub transmits): MAIN unless a
+    FRESH split readback is ON, then SUB. The selected band never decides
+    it — MAIN selected + split ON must label SUB, and SUB selected + split
+    OFF must label MAIN."""
+
+    _feed_selected_and_split(
+        radio_with_state, selected_sub=selected_sub, split_on=split_on
+    )
+    radio_with_state._civ_runtime._update_state_cache_from_frame(
+        parse_civ_frame(bytes.fromhex(_TX_FREQ_REPLY))
+    )
+
+    field = radio_with_state._state_store.snapshot().field("global.tx_state.tx_target")
+    assert field.value == KnownTxTarget(
+        receiver=expected_receiver, slot=None, frequency_hz=7_100_000
+    )
+
+
+def test_tx_target_fails_closed_immediately_when_split_is_unknown(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-2540 fail closed: with no 0F split fact in the store, the
+    transceiver-wide reply cannot name a receiver, so it publishes an
+    unknown target at once — TUNE reads tx-target-unknown immediately,
+    and the reply still credits its scheduler request (review R2 B3)."""
+
+    _feed_selected_and_split(radio_with_state, selected_sub=False, split_on=None)
+    radio_with_state._civ_runtime._update_state_cache_from_frame(
+        parse_civ_frame(bytes.fromhex(_TX_FREQ_REPLY))
+    )
+
+    field = radio_with_state._state_store.snapshot().field("global.tx_state.tx_target")
+    assert field.value == UnknownTxTarget(reason="not-observed")
+
+
+def test_tx_target_fails_closed_immediately_when_split_is_stale(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-2540 fail closed: a split readback older than its own TTL no
+    longer licenses a receiver label — a stale fact must not keep badging
+    the band it last saw, and the previously known target is withdrawn at
+    once rather than lingering until its own TTL."""
+
+    # A known MAIN-labelled target first (split ON would label SUB; either
+    # way the label below must be gone).
+    _feed_selected_and_split(radio_with_state, selected_sub=True, split_on=True)
+    radio_with_state._civ_runtime._update_state_cache_from_frame(
+        parse_civ_frame(bytes.fromhex(_TX_FREQ_REPLY))
+    )
+    store = radio_with_state._state_store
+    known = store.snapshot().field("global.tx_state.tx_target")
+    assert known.value == KnownTxTarget(
+        receiver="SUB", slot=None, frequency_hz=7_100_000
+    )
+
+    split = store.snapshot().field("global.tx_state.split")
+    assert split.value is True
+    store.mark_stale_due(now=split.last_observed_monotonic + split.max_age + 0.001)
+    assert (
+        store.snapshot().field("global.tx_state.split").freshness
+        is FreshnessState.STALE
+    )
+    radio_with_state._civ_runtime._update_state_cache_from_frame(
+        parse_civ_frame(bytes.fromhex(_TX_FREQ_REPLY))
+    )
+
+    field = store.snapshot().field("global.tx_state.tx_target")
+    assert field.value == UnknownTxTarget(reason="stale")
+
+
+def _ic7610_split_and_tx_target_acquisition() -> RadioAcquisitionProfile:
+    """The IC-7610's own split/tx_target acquisition shape, limited to
+    those two fields (rigs/ic7610.toml: split 1.5 s cadence / 3.0 s TTL,
+    tx_target 1.0 s / 4.0 s, no adaptive decay) — the review R2 B3
+    reproduction's scheduler model."""
+
+    split = FieldPath.global_("tx_state", "split")
+    tx_target = FieldPath.global_("tx_state", "tx_target")
+    return RadioAcquisitionProfile(
+        provider="icom_civ",
+        capabilities=(
+            FieldCapability(path=split, polling=True),
+            FieldCapability(path=tx_target, polling=True),
+        ),
+        field_policies={
+            split: AcquisitionPolicy(cadence_seconds=1.5, freshness_ttl_seconds=3.0),
+            tx_target: AcquisitionPolicy(
+                cadence_seconds=1.0, freshness_ttl_seconds=4.0
+            ),
+        },
+    )
+
+
+def test_unlabelled_1c03_reply_credits_its_request_and_resumes_on_cadence(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-2540 review R2 B3: a 1C 03 reply arriving while split is stale
+    must still close out its pending scheduler request and fail closed at
+    once.
+
+    Before the fix the unlabelled reply produced no observation, so the
+    only credit path (``_record_scheduler_result_for_observation``) never
+    ran: the drain held the request for max_age (4.0 s) plus the healthy
+    grace (6.0 s), the next 1C 03 went out ~11 s later, and a sub-second
+    split gap cost an ~8 s TUNE outage. Now the reply publishes an
+    UnknownTxTarget: the request is credited, the next cadence read is
+    issued on schedule, and the target reads unknown immediately."""
+
+    tx_target = FieldPath.global_("tx_state", "tx_target")
+    scheduler = AcquisitionScheduler(profile=_ic7610_split_and_tx_target_acquisition())
+    radio_with_state._acquisition_scheduler = scheduler  # noqa: SLF001
+
+    # A known target first, then split ages past its own 3.0 s TTL.
+    _feed_selected_and_split(radio_with_state, selected_sub=False, split_on=False)
+    radio_with_state._civ_runtime._update_state_cache_from_frame(
+        parse_civ_frame(bytes.fromhex(_TX_FREQ_REPLY))
+    )
+    store = radio_with_state._state_store
+    split_field = store.snapshot().field("global.tx_state.split")
+    store.mark_stale_due(
+        now=split_field.last_observed_monotonic + split_field.max_age + 0.001
+    )
+
+    # The drain issues and dispatches the tx_target read.
+    scheduler.due_requests(now=0.0)
+    pending = scheduler.pending_requests()
+    assert any(tx_target in request.paths for request in pending)
+    for request in pending:
+        scheduler.record_dispatch(request.id, paths=request.paths, now=time.monotonic())
+
+    # The radio answers 1C 03 while split is STALE.
+    radio_with_state._civ_runtime._update_state_cache_from_frame(
+        parse_civ_frame(bytes.fromhex(_TX_FREQ_REPLY))
+    )
+
+    # The reply closed its request out: nothing is pending for tx_target...
+    assert not any(
+        tx_target in request.paths for request in scheduler.pending_requests()
+    )
+    # ...so the next cadence read is issued on schedule (1.0 s cadence),
+    # not held by the drain until max_age + healthy grace (~11 s).
+    resent = scheduler.due_requests(now=time.monotonic() + 1.5)
+    assert any(tx_target in request.paths for request in resent)
+    # And the target failed closed at once.
+    field = store.snapshot().field(tx_target)
+    assert field.value == UnknownTxTarget(reason="stale")
 
 
 def test_direct_tx_frequency_coexists_with_ic7300_derived_target() -> None:

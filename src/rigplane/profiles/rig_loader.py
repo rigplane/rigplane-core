@@ -132,6 +132,14 @@ VALID_AUDIO_SAMPLE_RATES_HZ = {8000, 12000, 16000, 24000, 48000}
 VALID_BROWSER_RX_TRANSPORTS = {"auto", "pcm", "opus"}
 VALID_RX_AUDIO_CHANNELS = {"mix", "left", "right"}
 VALID_VFO_READBACK = {"absolute", "selected_unselected", "none"}
+# How a transceiver-wide reply (no receiver of its own) names the
+# transmitting receiver. ``main_unless_split``: MAIN, or SUB while a FRESH
+# split readback is ON (IC-7610 Basic Manual p.3-2 "transmit on only the
+# Main band (except in Split Frequency operation)", p.4-9: split = Main
+# receives, Sub transmits); an unknown or stale split fact fails closed.
+# ``none`` (default): the selected band labels the reply — exact for
+# single-receiver radios.
+VALID_TX_RECEIVER_RULES = {"main_unless_split", "none"}
 # MOR-1447 leg 2. Icom hardware wires RF gain and squelch as one physical
 # knob (hard left = RF min/SQL min, center = RF max/SQL min, hard right =
 # SQL max/RF max); "separate" is the default two-independent-controls model
@@ -604,6 +612,10 @@ class RigConfig:
     scan_type_labels: dict[str, str] | None = None
     scan_resume_values: tuple[int, ...] | None = None
     scan_resume_labels: dict[str, str] | None = None
+    # How a transceiver-wide reply names the transmitting receiver
+    # (``VALID_TX_RECEIVER_RULES``); ``"none"`` keeps the selected-band
+    # label.
+    tx_receiver_rule: str = "none"
     # MOR-1447 leg 2: "separate" (default) or "combined" (Icom-style single
     # RF/SQL knob — see ``VALID_RF_SQL_CONTROL_MODELS``).
     rf_sql_control_model: str = "separate"
@@ -789,6 +801,7 @@ class RigConfig:
             equal_main_sub_code=equal_main_sub,
             vfo_scheme=self.vfo_scheme,
             vfo_readback=self.vfo_readback,
+            tx_receiver_rule=self.tx_receiver_rule,
             has_lan=self.has_lan,
             freq_ranges=ranges,
             modes=tuple(self.modes),
@@ -2124,6 +2137,12 @@ def load_rig(path: Path) -> RigConfig:
             f"{filename}: [vfo].readback must be one of "
             f"{sorted(VALID_VFO_READBACK)}, got {vfo_readback!r}"
         )
+    tx_receiver_rule = vfo.get("tx_receiver_rule", "none")
+    if tx_receiver_rule not in VALID_TX_RECEIVER_RULES:
+        raise RigLoadError(
+            f"{filename}: [vfo].tx_receiver_rule must be one of "
+            f"{sorted(VALID_TX_RECEIVER_RULES)}, got {tx_receiver_rule!r}"
+        )
     expected_receiver_count = 1 if scheme in {"single", "ab"} else 2
     receiver_count = radio["receiver_count"]
     if (
@@ -2802,6 +2821,7 @@ def load_rig(path: Path) -> RigConfig:
         max_watts=max_watts,
         vfo_scheme=scheme,
         vfo_readback=vfo_readback,
+        tx_receiver_rule=tx_receiver_rule,
         vfo_main_select=vfo_main,
         vfo_sub_select=vfo_sub,
         vfo_swap_ab=vfo_swap_ab,

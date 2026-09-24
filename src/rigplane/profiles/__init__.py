@@ -332,6 +332,14 @@ class RadioProfile:
     # How provider readbacks identify VFO state. ``selected_unselected``
     # exposes relative radio facts without claiming absolute A/B identity.
     vfo_readback: str = "none"
+    # How the transmitting receiver is named from a reply that is
+    # transceiver-wide (carries no receiver of its own, e.g. the 1C 03
+    # transmit-frequency read). ``main_unless_split``: the TX band is MAIN,
+    # or SUB while a FRESH ``global.tx_state.split`` readback is ON;
+    # an unknown or stale split fact publishes no receiver-labelled
+    # target (fail closed). ``none`` (default) keeps the selected-band
+    # label, which is exact for single-receiver radios.
+    tx_receiver_rule: str = "none"
     has_lan: bool = False
     freq_ranges: tuple[FreqRangeInfo, ...] = ()
     modes: tuple[str, ...] = ()

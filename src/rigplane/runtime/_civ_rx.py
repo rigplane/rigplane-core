@@ -51,7 +51,12 @@ from rigplane.commands import (
 from rigplane.commands.scope import _span_index_for_hz
 from rigplane.core.exceptions import ConnectionError, TimeoutError
 from rigplane.core.tx_safety import ProviderPttObservation, RadioTx
-from rigplane.core.tx_target import KnownTxTarget
+from rigplane.core.tx_target import (
+    KnownTxTarget,
+    TxReceiver,
+    TxTargetUnknownReason,
+    UnknownTxTarget,
+)
 from rigplane.core.tx_observation import OBSERVED_PTT_PATH, normalize_observed_ptt
 from rigplane.core.state_pipeline_contracts import (
     ChangeSet,
@@ -62,6 +67,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
+from rigplane.core.state_store import FreshnessState
 from rigplane.profiles.control_domain import decode_legacy_control
 from rigplane.scope import ScopeFrame
 from rigplane.core.types import CivFrame, Mode, bcd_decode
@@ -2607,14 +2613,29 @@ class CivRuntime:
             # command names.  Publish the decoded value through the existing
             # backend-neutral TX-target contract; this response does not carry
             # a VFO-slot identity, so keep that portion deliberately unknown.
+            # The reply is transceiver-wide, so the receiver label follows the
+            # profile-declared rule rather than the selected band.  When the
+            # rule cannot name a receiver (no FRESH split fact) the reply is
+            # still published -- as an UnknownTxTarget -- so the read closes
+            # out its scheduler request (the observation is the only credit
+            # path) and the target fails closed at once instead of lingering
+            # until its TTL.
+            receiver, unknown_reason = self._tx_receiver_for_transceiver_wide_reply(
+                "SUB" if receiver_name == "SUB" else "MAIN"
+            )
+            tx_value: KnownTxTarget | UnknownTxTarget
+            if receiver is not None:
+                tx_value = KnownTxTarget(
+                    receiver=receiver,
+                    slot=None,
+                    frequency_hz=bcd_decode(frame.data),
+                )
+            else:
+                tx_value = UnknownTxTarget(reason=unknown_reason)
             observations.append(
                 self._observation(
                     FieldPath.global_("tx_state", "tx_target"),
-                    KnownTxTarget(
-                        receiver="SUB" if receiver_name == "SUB" else "MAIN",
-                        slot=None,
-                        frequency_hz=bcd_decode(frame.data),
-                    ),
+                    tx_value,
                     frame=frame,
                 )
             )
@@ -2768,6 +2789,48 @@ class CivRuntime:
                 slot_override = candidate
 
         return receiver_id, receiver_name, slot_override
+
+    def _tx_receiver_for_transceiver_wide_reply(
+        self, selected: TxReceiver
+    ) -> tuple[TxReceiver, None] | tuple[None, TxTargetUnknownReason]:
+        """Name the transmitting receiver for a reply that carries none.
+
+        A transceiver-wide reply (1C 03) has no receiver of its own, so the
+        label comes from profile data, not the selected band. With
+        ``tx_receiver_rule = "main_unless_split"`` the TX band is MAIN, or
+        SUB while the ``0F`` split readback is FRESH and ON. Without a
+        declared rule the selected band labels the reply, which is exact
+        for single-receiver radios.
+
+        Returns ``(receiver, None)`` to label the reply, or
+        ``(None, reason)`` when the split fact cannot license a label —
+        missing/never observed, stale, or not a boolean. The caller then
+        publishes an ``UnknownTxTarget`` carrying that reason: the request
+        that asked for this reply is still credited (fail closed without
+        stalling the read cadence), and any previously known target is
+        withdrawn immediately.
+        """
+
+        if (
+            getattr(self._host._profile, "tx_receiver_rule", "none")
+            != "main_unless_split"
+        ):
+            return selected, None
+        store = getattr(self._host, "_state_store", None)
+        snapshot = store.snapshot() if store is not None else None
+        if snapshot is None:
+            return None, "not-observed"
+        try:
+            split = snapshot.field(FieldPath.global_("tx_state", "split"))
+        except KeyError:
+            return None, "not-observed"
+        if split.freshness is FreshnessState.STALE:
+            return None, "stale"
+        if split.freshness is not FreshnessState.FRESH:
+            return None, "not-observed"
+        if not isinstance(split.value, bool):
+            return None, "contradiction"
+        return ("SUB" if split.value else "MAIN"), None
 
     @staticmethod
     def _decode_level(data: bytes) -> int:
