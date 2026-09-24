@@ -21,7 +21,7 @@ import rxTxSurfaceSource from '../RxTxSurface.svelte?raw';
 import { topologyFixtures, withAudioOnlyScope, type TopologyFixtureId } from '../fixtures/topologies';
 import type { RadioViewModel } from '../radio-view-model';
 import {
-  FAULT_REASON_CODES, blockedLabel, faultReasonLabel, targetUnknownMessage,
+  FAULT_REASON_CODES, blockedLabel, faultReasonLabel, keyBlockedReasons, targetUnknownMessage,
   type KeyBlockedReason, type TxAuthoritySnapshot,
 } from '../rx-tx-surface';
 import { t } from '$lib/i18n';
@@ -441,6 +441,20 @@ describe('unknown TX target', () => {
       expect(t.dataset.reason).toBe('not-observed');
       expect(s.key().disabled).toBe(false);
       expect(s.reasons()).toContain('tx-target-unknown');
+    });
+  });
+
+  it.each(PERMITTED)('%s: a known radio-reported target clears tx-target-unknown from the shared TUNE/PTT predicate', (id) => {
+    // MOR-2540: the IC-7610 (the 2/main_sub topology) now reports its own
+    // transmit frequency (CI-V 1C 03), so txTarget reaches 'known' — and the
+    // one predicate TUNE (`TxAuxSurface.tuneBlocked`) and this surface's key
+    // blocked-list both consume must stop carrying tx-target-unknown.
+    const view = topologyFixtures[id];
+    if (view.txTarget.status !== 'known') throw new Error('fixture precondition');
+    expect(keyBlockedReasons(view, IDLE_RX)).toEqual([]);
+    withSurface(view, IDLE_RX, (s) => {
+      expect(s.reasons()).not.toContain('tx-target-unknown');
+      expect(s.key().disabled).toBe(false);
     });
   });
 

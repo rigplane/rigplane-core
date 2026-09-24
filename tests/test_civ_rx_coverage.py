@@ -5308,6 +5308,27 @@ def test_direct_tx_frequency_max_age_falls_back_without_state_acquisition(
     assert field.max_age == 3.0
 
 
+def test_undecodable_tx_frequency_reply_produces_no_tx_target(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-2540 fail closed: a 1C/03 reply that does not decode never writes
+    tx_target — a short payload misses the five-byte BCD branch guard, and an
+    invalid-BCD payload makes bcd_decode raise, which
+    ``_apply_state_store_observations`` catches so the frame publishes
+    nothing."""
+
+    runtime = radio_with_state._civ_runtime
+    runtime._update_state_cache_from_frame(
+        _make_frame(cmd=0x1C, sub=0x03, data=b"\x00\x00\x10\x07")
+    )
+    runtime._update_state_cache_from_frame(
+        _make_frame(cmd=0x1C, sub=0x03, data=b"\xff\xff\xff\xff\xff")
+    )
+
+    with pytest.raises(KeyError):
+        radio_with_state._state_store.snapshot().field("global.tx_state.tx_target")
+
+
 def test_direct_tx_frequency_coexists_with_ic7300_derived_target() -> None:
     radio = IcomRadio("192.0.2.1", model="IC-7300")
     radio._radio_state = RadioState()
