@@ -1222,4 +1222,32 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
     expect(rows()).toEqual([['rx-audio-af', 'AF LEVEL', '31%', 'AF', '0.31']]);
     expect(el('af-sub')).toBeNull();
   });
+
+  // Owner decision 2026-09-24: MUTE mutes both receivers.
+  const pickMonitor = (mode: 'mute' | 'local') => {
+    vi.mocked(sendCommand).mockClear();
+    el(`monitor-${mode}`)!.click();
+    flushSync();
+  };
+
+  it('MUTE zeroes MAIN and SUB; unmute restores each its own level after a selection change', () => {
+    radioAf();
+    renderHostedFace('desktop-v2');
+    pickMonitor('mute');
+    expect(afCalls()).toEqual([{ level: 0, receiver: 0 }, { level: 0, receiver: 1 }]);
+    select('SUB');
+    pickMonitor('local');
+    expect(afCalls()).toEqual([{ level: 0.31, receiver: 0 }, { level: 0.77, receiver: 1 }]);
+  });
+
+  it('MUTE touches only the selected receiver without af_level_sub, as before', () => {
+    radioAf();
+    h.caps = liveCaps(AUDIO_TAGS.filter((tag) => tag !== 'af_level_sub'));
+    expect(setCapabilities(h.caps as Capabilities)).toBe(true);
+    renderHostedFace('desktop-v2');
+    pickMonitor('mute');
+    expect(afCalls()).toEqual([{ level: 0, receiver: 0 }]);
+    pickMonitor('local');
+    expect(afCalls()).toEqual([{ level: 0.31, receiver: 0 }]);
+  });
 });

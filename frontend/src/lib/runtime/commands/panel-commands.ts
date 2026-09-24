@@ -1160,7 +1160,51 @@ export function makePresetHandlers() {
 
 /* ── RX Audio Handlers ───────────────────────────────────────────── */
 
-let savedAfLevel: number | null = null;
+/** AF levels MUTE saved before zeroing them. MOR-2579: with `af_level_sub`,
+ *  `main` and `sub` each go back to their own receiver; otherwise the one
+ *  `selected` level goes back to whichever receiver is selected at unmute. */
+const savedAfLevels = new Map<'main' | 'sub' | 'selected', number>();
+
+/** The radio AF of the NAMED receiver, whichever is selected; `true` when sent. */
+function setReceiverAf(target: 'main' | 'sub', level: number): boolean {
+  if (!isNormalizedLevel(level) || !hasCapability('af_level')) return false;
+  const receiver = knownActiveReceiver('afLevel', target === 'sub' ? 'SUB' : 'MAIN');
+  if (receiver === null) return false;
+  dispatchRadioIntent({ name: 'set_af_level', params: { level, receiver } });
+  return true;
+}
+
+function muteRadioAf(): void {
+  const state = getRadioState();
+  if (hasCapability('af_level_sub')) {
+    for (const target of ['main', 'sub'] as const) {
+      const currentAf = state?.[target]?.afLevel;
+      if (!isNormalizedLevel(currentAf)) continue;
+      if (setReceiverAf(target, 0) && !savedAfLevels.has(target)) savedAfLevels.set(target, currentAf);
+    }
+    return;
+  }
+  const receiver = knownReceiverField('afLevel');
+  const currentAf = receiver === 1 ? state?.sub?.afLevel : state?.main?.afLevel;
+  if (hasCapability('af_level') && receiver !== null && isNormalizedLevel(currentAf)) {
+    if (!savedAfLevels.has('selected')) savedAfLevels.set('selected', currentAf);
+    dispatchRadioIntent({ name: 'set_af_level', params: { level: 0, receiver } });
+  }
+}
+
+function restoreRadioAf(): void {
+  for (const [key, level] of savedAfLevels) {
+    if (key !== 'selected') {
+      setReceiverAf(key, level);
+      continue;
+    }
+    const receiver = knownReceiverField('afLevel');
+    if (hasCapability('af_level') && receiver !== null) {
+      dispatchRadioIntent({ name: 'set_af_level', params: { level, receiver } });
+    }
+  }
+  savedAfLevels.clear();
+}
 
 export function makeRxAudioHandlers() {
   return {
@@ -1168,13 +1212,7 @@ export function makeRxAudioHandlers() {
       if (mode !== 'live' && mode !== 'mute' && mode !== 'local' && mode !== 'radio') return;
       if (mode === 'live') {
         runtime.setMuted(false);
-        if (savedAfLevel !== null) {
-          const receiver = knownReceiverField('afLevel');
-          if (hasCapability('af_level') && receiver !== null) {
-            dispatchRadioIntent({ name: 'set_af_level', params: { level: savedAfLevel, receiver } });
-          }
-          savedAfLevel = null;
-        }
+        restoreRadioAf();
         runtime.setRxLive(true);
         return;
       }
@@ -1183,22 +1221,10 @@ export function makeRxAudioHandlers() {
 
       if (mode === 'mute') {
         runtime.setMuted(true);
-        const receiver = knownReceiverField('afLevel');
-        const state = getRadioState();
-        const currentAf = receiver === 1 ? state?.sub?.afLevel : state?.main?.afLevel;
-        if (hasCapability('af_level') && receiver !== null && isNormalizedLevel(currentAf)) {
-          if (savedAfLevel === null) savedAfLevel = currentAf;
-          dispatchRadioIntent({ name: 'set_af_level', params: { level: 0, receiver } });
-        }
+        muteRadioAf();
       } else {
         runtime.setMuted(false);
-        if (savedAfLevel !== null) {
-          const receiver = knownReceiverField('afLevel');
-          if (hasCapability('af_level') && receiver !== null) {
-            dispatchRadioIntent({ name: 'set_af_level', params: { level: savedAfLevel, receiver } });
-          }
-          savedAfLevel = null;
-        }
+        restoreRadioAf();
       }
     },
     onAfLevelChange: (level: number) => {
@@ -1214,10 +1240,7 @@ export function makeRxAudioHandlers() {
     },
     /** MOR-2579: the radio AF of the NAMED receiver, whichever is selected. */
     onReceiverAfLevelChange: (target: 'main' | 'sub', level: number) => {
-      if (!isNormalizedLevel(level) || !hasCapability('af_level')) return;
-      const receiver = knownActiveReceiver('afLevel', target === 'sub' ? 'SUB' : 'MAIN');
-      if (receiver === null) return;
-      dispatchRadioIntent({ name: 'set_af_level', params: { level, receiver } });
+      setReceiverAf(target, level);
     },
   };
 }
