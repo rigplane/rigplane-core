@@ -25,12 +25,12 @@
   box-sizing: border-box;
 }
 
-.desktop-control-face .semantic-control-panel section :is(button, input, select):not(.scope-flat-key:not(.spectrum-toolbar.hosted *), .scope-step-key, .repeater-step-key) {
+.desktop-control-face .semantic-control-panel section :is(button, input, select):not(.scope-flat-key:not(.spectrum-toolbar.hosted *), .scope-step-key) {
   font: inherit;
   box-sizing: border-box;
 }
 
-.desktop-control-face .semantic-control-panel section button:not(.scope-flat-key:not(.spectrum-toolbar.hosted *), .scope-step-key, .repeater-step-key) {
+.desktop-control-face .semantic-control-panel section button:not(.scope-flat-key:not(.spectrum-toolbar.hosted *), .scope-step-key) {
   position: relative;
   min-height: 28px;
   min-width: 0;
