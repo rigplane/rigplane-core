@@ -11,6 +11,7 @@ it('reports fixed control categories and delta shape without exposing values, th
   vi.stubEnv('VITE_UI_DIAGNOSTICS', '1');
   vi.resetModules();
   const telemetry = await import('../ui-telemetry');
+  for (const units of [40, 127, 31, 23, 9]) telemetry.recordUiMetric('controlText', units);
   telemetry.recordControlEnvelope({ type: 'state_update', data: { type: 'full', data: {} } }, 40);
   telemetry.recordControlEnvelope({
     type: 'state_update', data: {
@@ -23,7 +24,6 @@ it('reports fixed control categories and delta shape without exposing values, th
   telemetry.recordControlEnvelope({ type: 'response', id: 'private-id' }, 31);
   telemetry.recordControlEnvelope({ type: 'unknown-private-type', data: 'private-value' }, 23);
   telemetry.recordMalformedControl(9);
-  telemetry.recordUiMetric('controlText', 230);
 
   const report = telemetry.uiTelemetrySummary();
   expect(report).toContain('stateFull: 1; 40 UTF-16 units');
@@ -32,7 +32,7 @@ it('reports fixed control categories and delta shape without exposing values, th
   expect(report).toContain('other: 1; 23 UTF-16 units');
   expect(report).toContain('malformed: 1; 9 UTF-16 units');
   expect(report).toContain('categorized total: 5; 230 UTF-16 units');
-  expect(report).toContain('controlText: 1 (');
+  expect(report).toContain('controlText: 5 (');
   expect(report).toContain('230 UTF-16 code units');
   expect(report).toContain('Delta changed top-level keys: 3; unlisted keys: 1');
   expect(report).toContain('Delta fieldStatus entries: 2');

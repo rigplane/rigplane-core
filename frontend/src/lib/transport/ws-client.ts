@@ -833,7 +833,7 @@ function validateState(state: Record<string, unknown>, timing?: StateApplyTiming
   const valid = isValidServerState(state);
   const duration = performance.now() - started;
   timing.validationMs += duration;
-  recordUiMetric('stateValidation', 0, duration);
+  recordUiMetric('stateEnvelopeValidation', 0, duration);
   return valid;
 }
 

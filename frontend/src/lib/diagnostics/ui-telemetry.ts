@@ -6,7 +6,7 @@ type Metric =
   | 'controlText' | 'audioRx' | 'hardwareArrival' | 'audioFftArrival'
   | 'radioCommit' | 'hardwareAccepted' | 'audioFftAccepted'
   | 'scopePublish' | 'spectrumDraw' | 'waterfallFrameWork' | 'audioSpectrumDraw'
-  | 'controlParse' | 'stateApply' | 'stateValidation'
+  | 'controlParse' | 'stateApply' | 'stateEnvelopeValidation'
   | 'stateStoreCommit' | 'stateStoreAccepted';
 
 type ControlCategory = 'stateFull' | 'stateDelta' | 'stateOther' | 'response'
@@ -42,7 +42,7 @@ const metrics: Record<Metric, Counter> = {
   audioSpectrumDraw: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
   controlParse: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
   stateApply: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
-  stateValidation: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
+  stateEnvelopeValidation: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
   stateStoreCommit: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
   stateStoreAccepted: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
 };
@@ -56,7 +56,7 @@ function formatSummary(): string {
     'Rates are averages since reset; binary bytes are incoming ArrayBuffer lengths.'];
   for (const [name, metric] of Object.entries(metrics)) {
     const timed = name === 'controlParse' || name === 'stateApply'
-      || name === 'stateValidation' || name === 'stateStoreCommit';
+      || name === 'stateEnvelopeValidation' || name === 'stateStoreCommit';
     const duration = metric.count && (metric.durationMs || timed)
       ? `; total ${metric.durationMs.toFixed(1)} ms; mean ${(metric.durationMs / metric.count).toFixed(2)} ms; max ${metric.maxMs.toFixed(2)} ms`
       : '';
@@ -73,7 +73,8 @@ function formatSummary(): string {
   lines.push(`Delta changed top-level keys: ${deltaChangedKeyCount}; unlisted keys: ${deltaOtherKeyCount}`);
   lines.push(`Delta fieldStatus entries: ${deltaFieldStatusEntries} (entry count, not serialized size)`);
   lines.push(`Delta key presence: ${stateKeys.map((key) => `${key}=${deltaKeyPresence[key]}`).join(', ')}`);
-  lines.push('stateApply excludes nested contract validation and setRadioState; stateStoreCommit counts control-message setter attempts (including duplicate caller call).');
+  lines.push('stateEnvelopeValidation times isValidServerState in envelope apply; stateApply excludes that and nested setRadioState.');
+  lines.push('stateStoreCommit counts control-message setter attempts (including duplicate caller call), with repeated validation, topology/revision checks, and synchronous subscribers.');
   lines.push('stateStoreAccepted counts control-message setter calls returning true; delayed capability-refresh commits and outer state-update notification are not timed.');
   lines.push('Arrival = delivered binary frame; accepted = frame stored by ScopeController.');
   lines.push('Draw times measure synchronous renderer calls, not GPU presentation.');

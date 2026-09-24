@@ -293,6 +293,77 @@ describe('WsChannel', () => {
     vi.useRealTimers();
   });
 
+  describe('diagnostic control receive accounting', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+      vi.resetModules();
+      document.querySelector('details[aria-label="UI diagnostics"]')?.remove();
+    });
+
+    it('reconciles control categories and units across parsed, malformed, and throwing-handler frames', async () => {
+      vi.stubEnv('VITE_UI_DIAGNOSTICS', '1');
+      vi.resetModules();
+      const telemetry = await import('../../diagnostics/ui-telemetry');
+      const { connect, getChannel, onMessage } = await import('../ws-client');
+      connect('ws://test/control');
+      instances[0].simulateOpen();
+      const named = getChannel('diagnostic-named');
+      named.connect('ws://test/named');
+      instances[1].simulateOpen();
+
+      const full = JSON.stringify({ type: 'state_update', data: fullEnvelope(makeState()) });
+      const delta = JSON.stringify({
+        type: 'state_update',
+        data: deltaEnvelope(makeState({ revision: 2, observationSeq: 2 }), {
+          fieldStatus: { 'private.path': { observed: true }, 'other.path': { observed: false } },
+          main: makeReceiver({ freqHz: 14075000 }),
+        }),
+      });
+      const other = JSON.stringify({ type: 'ack', id: 'opaque-id' });
+      const malformed = '{bad';
+      const throwingHandler = JSON.stringify({ type: 'notification', message: 'opaque-value' });
+      onMessage((message) => {
+        if (message.type === 'notification') throw new Error('test handler failure');
+      });
+      for (const frame of [full, delta, other, malformed, throwingHandler]) {
+        instances[0].simulateMessage(frame);
+      }
+      instances[1].simulateMessage(JSON.stringify({ type: 'ack', id: 'named-only' }));
+
+      const units = full.length + delta.length + other.length + malformed.length + throwingHandler.length;
+      const report = telemetry.uiTelemetrySummary();
+      expect(report).toContain(`controlText: 5 (`);
+      expect(report).toContain(`${units} UTF-16 code units`);
+      expect(report).toContain(`categorized total: 5; ${units} UTF-16 units`);
+      expect(report).toContain(`stateFull: 1; ${full.length} UTF-16 units`);
+      expect(report).toContain(`stateDelta: 1; ${delta.length} UTF-16 units`);
+      expect(report).toContain(`other: 1; ${other.length} UTF-16 units`);
+      expect(report).toContain(`malformed: 1; ${malformed.length} UTF-16 units`);
+      expect(report).toContain(`notification: 1; ${throwingHandler.length} UTF-16 units`);
+      expect(report).toContain('Delta changed top-level keys: 2; unlisted keys: 0');
+      expect(report).toContain('Delta fieldStatus entries: 2');
+      expect(report).not.toMatch(/private\.path|other\.path|opaque-value|named-only/);
+    });
+
+    it('skips diagnostics timing and key traversal when the build flag is off', async () => {
+      vi.stubEnv('VITE_UI_DIAGNOSTICS', '0');
+      vi.resetModules();
+      const telemetry = await import('../../diagnostics/ui-telemetry');
+      const { connect } = await import('../ws-client');
+      connect('ws://test/control');
+      instances[0].simulateOpen();
+
+      const now = vi.spyOn(performance, 'now');
+      const keys = vi.spyOn(Object, 'keys');
+      instances[0].simulateMessage(JSON.stringify({ type: 'ack', id: 'disabled' }));
+      expect(now).not.toHaveBeenCalled();
+      expect(keys).not.toHaveBeenCalled();
+      expect(telemetry.uiTelemetrySummary()).toBe('');
+      expect(document.querySelector('details[aria-label="UI diagnostics"]')).toBeNull();
+    });
+  });
+
   it('connects and updates wsConnected store', async () => {
     const { WsChannel } = await import('../ws-client');
     const ch = new WsChannel();
