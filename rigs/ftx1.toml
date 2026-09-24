@@ -395,11 +395,14 @@ freshness_ttl_seconds = 2.0
 # FM. `RA` has a fixed P1 and no SUB form, so band and mode could not be
 # separated in that session; the 60 MHz edge below is provisional until MAIN
 # is retuned to HF and the read repeated.
+# Stand 2026-09-24: `RA0;` was refused exactly while SUB was the active
+# receiver and answered while MAIN was active.
 [state_acquisition.field_policies."receiver.main.operator_controls.att"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 available_when = [
     { field = "receiver.main.active.freq_mode.freq_hz", max = 60000000 },
+    { field = "global.slow_state.active", equals = "MAIN" },
 ]
 
 [state_acquisition.field_policies."receiver.main.operator_controls.preamp"]

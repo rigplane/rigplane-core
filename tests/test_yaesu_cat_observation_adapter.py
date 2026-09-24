@@ -11,7 +11,10 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
-from rigplane.core.acquisition_scheduler import AcquisitionScheduler
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionScheduler,
+    resolve_available_when,
+)
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
@@ -3211,17 +3214,24 @@ _ATT_PATH = "receiver.main.operator_controls.att"
 _NOTCH_FREQ_PATH = "receiver.main.operator_controls.manual_notch_freq"
 
 
-def _availability_store(*, mode: str, freq_hz: int) -> StateStore:
+def _availability_store(*, mode: str, freq_hz: int, active: str = "MAIN") -> StateStore:
     store = StateStore()
+    # A nonzero provider generation, as after connect: ``apply`` is
+    # generation-bound, so the observations go through ``apply_current``.
+    store.begin_provider_generation()
     # Both receivers carry the same mode/freq so the SUB manual-notch-freq
-    # clause (a twin of MAIN's) resolves on the same snapshot.
+    # clause (a twin of MAIN's) resolves on the same snapshot. The active
+    # receiver is observed too (MOR-2581): the attenuator's second clause
+    # reads ``global.slow_state.active``, and a connected radio's snapshot
+    # always carries it — leaving it unobserved would withhold the read.
     for path, value in (
         (FieldPath.active("main", "freq_mode", "mode"), mode),
         (FieldPath.active("main", "freq_mode", "freq_hz"), freq_hz),
         (FieldPath.active("sub", "freq_mode", "mode"), mode),
         (FieldPath.active("sub", "freq_mode", "freq_hz"), freq_hz),
+        (FieldPath.global_("slow_state", "active"), active),
     ):
-        store.apply(
+        store.apply_current(
             Observation(
                 path=path,
                 value=value,
@@ -3313,6 +3323,59 @@ async def test_slow_poll_reads_the_attenuator_below_the_declared_bound() -> None
     observations = await adapter.poll_slow_controls()
 
     radio.read_attenuator.assert_awaited()
+    assert _ATT_PATH in [str(item.path) for item in observations]
+
+
+@pytest.mark.asyncio
+async def test_slow_poll_does_not_read_the_attenuator_while_sub_is_active() -> None:
+    """MOR-2581: ``RA0;`` is refused (``?;``) exactly while SUB is active.
+
+    Stand 2026-09-24 (read-only 1 s sampler of /api/v1/state): ``main.att``
+    stopped updating exactly in the two windows where
+    ``global.slow_state.active`` was "SUB"; with MAIN active ``RA0;``
+    answered normally. The
+    ``global.slow_state.active == "MAIN"`` clause in ``rigs/ftx1.toml``
+    withholds the read, so the refusal never happens: no startup defect is
+    recorded and the startup gate drops the field from its outstanding set.
+    """
+    store = _availability_store(mode="USB", freq_hz=14_074_000, active="SUB")
+    radio = _make_radio()
+    radio._state_store = store
+    scheduler = AcquisitionScheduler(profile=_profile_state_acquisition())
+    radio._acquisition_scheduler = scheduler
+    adapter = YaesuObservationAdapter(
+        radio, profile=_profile_state_acquisition(), clock=_clock
+    )
+
+    observations = await adapter.poll_slow_controls()
+
+    # ``RA0;`` is never sent: the only ``read_attenuator(0)`` call is gated
+    # off while SUB is the active receiver.
+    radio.read_attenuator.assert_not_awaited()
+    assert _ATT_PATH not in [str(item.path) for item in observations]
+    # A withheld read is not a refused read: no startup defect is recorded...
+    assert scheduler.startup_defect is None
+    # ...and the startup gate does not wait for the field either. Not
+    # vacuous: without the resolved availability the same predicate still
+    # reports the attenuator outstanding.
+    att = FieldPath.parse(_ATT_PATH)
+    assert att in scheduler.unobserved_startup_paths(())
+    outstanding = scheduler.unobserved_startup_paths(
+        (),
+        availability=resolve_available_when(scheduler._profile, store.snapshot()),
+    )
+    assert att not in outstanding
+
+
+@pytest.mark.asyncio
+async def test_slow_poll_reads_the_attenuator_while_main_is_active_on_hf() -> None:
+    """The same ``RA0;`` read goes out as before while MAIN is active on HF."""
+    store = _availability_store(mode="USB", freq_hz=14_074_000, active="MAIN")
+    radio, adapter = _availability_adapter(store)
+
+    observations = await adapter.poll_slow_controls()
+
+    radio.read_attenuator.assert_awaited_once_with(0)
     assert _ATT_PATH in [str(item.path) for item in observations]
 
 
@@ -3467,7 +3530,7 @@ def _dual_watch_store(*, on: bool) -> StateStore:
     """``_availability_store`` plus an observed dual-receive state."""
 
     store = _availability_store(mode="USB", freq_hz=14_074_000)
-    store.apply(
+    store.apply_current(
         Observation(
             path=FieldPath.global_("tx_state", "dual_watch"),
             value=on,
