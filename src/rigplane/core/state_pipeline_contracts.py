@@ -485,9 +485,8 @@ class FieldPath:
 
 # --- Acquisition classes (MOR-2574) ----------------------------------------
 # The membership below moved here from tests/test_state_acquisition_policy.py
-# (owner ruling 2026-09-07) and from the measured prototype
-# tmp/ref/r38b_demand.py; the test now reads these sets instead of keeping a
-# second copy.
+# (owner ruling 2026-09-07) plus the named exceptions of the MOR-2574
+# design; the test now reads these sets instead of keeping a second copy.
 
 #: The tuning pair that moves while the operator tunes. ``ptt`` below is its
 #: own keying class; these two names are the freq/mode live pair.
@@ -542,7 +541,7 @@ PANEL_FIELD_NAMES: Final[frozenset[str]] = (
 )
 #: Menu settings that stay on-demand: reached by
 #: ``AcquisitionScheduler.prime_unobserved`` and refreshed by their own
-#: command response, never by a cadence read.
+#: command response.
 ON_DEMAND_FIELD_NAMES: Final[frozenset[str]] = frozenset(
     {
         "agc_time_constant",
@@ -568,11 +567,10 @@ ON_DEMAND_FIELD_NAMES: Final[frozenset[str]] = frozenset(
 def acquisition_class_for_path(path: FieldPath) -> AcquisitionClass:
     """Default acquisition class for a canonical path (MOR-2574 design).
 
-    Production port of the ``klass()`` prototype measured with the loaded
-    profiles in tmp/ref/r38b_demand.py: the class defaults from
-    ``FieldPath.family`` with the named exceptions in the sets above. The
-    non-selected-receiver demotion (owner decision 3, 2026-09-24) is a later
-    migration step and is deliberately not applied here.
+    The class defaults from ``FieldPath.family`` with the named exceptions
+    in the sets above. The non-selected-receiver demotion (owner decision
+    3, 2026-09-24) is a later migration step and is deliberately not
+    applied here.
     """
 
     if path.family is FieldFamily.METERS:

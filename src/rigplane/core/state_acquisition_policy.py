@@ -131,11 +131,8 @@ class AcquisitionPhase(StrEnum):
 class AcquisitionClassPolicy:
     """Cadence envelope for one acquisition class (MOR-2574).
 
-    ``nominal_cadence_seconds`` is the cadence the scheduler asks for;
     ``ceiling_cadence_seconds`` is the slowest the budget fit may stretch
-    the class to. Classes with ``held_at_ceiling_in_tx`` run at their
-    ceiling while PTT is observed true, so transmit-critical traffic keeps
-    the gap clock.
+    the class to.
     """
 
     nominal_cadence_seconds: float
@@ -242,8 +239,7 @@ def fit_to_budget(
     TX-only classes are excluded unless ``tx`` is set. A class never ends
     beyond its ceiling; when the ceilings alone cannot bring the demand
     under the limit, ``fits`` is false and every stretched class sits at
-    its ceiling. Pure function; a port of the ``fit()`` prototype measured
-    in tmp/ref/r38b_demand.py.
+    its ceiling. Pure function.
     """
 
     if budget_hz <= 0:
