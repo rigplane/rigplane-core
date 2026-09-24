@@ -2005,6 +2005,12 @@ _TX_TARGET_PATH = FieldPath.global_("tx_state", "tx_target")
 #: oversight: the guard below fails for any TX/tuner profile that is neither
 #: sourced nor listed here.
 _TX_TARGET_UNSUPPORTED: dict[str, str] = {
+    "IC-9700": (
+        "taken out of MOR-2540 round 2: its band-selection and split "
+        "semantics are unverified and no IC-9700 is on the bench, so no "
+        "receiver-labelling rule is declared for it; MOR-2567 covers its "
+        "other data problems"
+    ),
     "TX-500": (
         "kenwood_cat profile with no backend (backends/factory.py has no "
         "TX-500 route); no TX-target read is wired for the Lab599 CAT set"
@@ -2043,33 +2049,34 @@ def _declared_tx_target_source(profile: Any) -> str | None:
     return f"{acquisition.provider} native read"
 
 
-def test_ic7610_ic9700_declare_a_polled_1c03_tx_target() -> None:
-    """MOR-2540: both main_sub Icom profiles poll the radio's own transmit-
-    frequency read (CI-V 1C 03) instead of deriving the target from MAIN."""
+def test_ic7610_declares_a_polled_1c03_tx_target() -> None:
+    """MOR-2540: the IC-7610 polls the radio's own transmit-frequency read
+    (CI-V 1C 03) instead of deriving the target from MAIN, and declares the
+    data rule that labels the transceiver-wide reply by split."""
 
     from rigplane.runtime._state_queries import acquisition_query_resolver_for_profile
 
-    for model in ("IC-7610", "IC-9700"):
-        profile = get_radio_profile(model)
-        acquisition = profile.state_acquisition
-        assert acquisition is not None
-        capability = acquisition.capability_for(_TX_TARGET_PATH)
-        assert capability.can_poll is True, model
-        policy = acquisition.policy_for(_TX_TARGET_PATH)
-        assert policy.cadence_seconds == 1.0, model
-        assert policy.freshness_ttl_seconds == 4.0, model
-        assert policy.freshness_ttl_seconds >= 2 * policy.cadence_seconds, model
-        assert policy.adaptive_decay.enabled is False, model
-        assert profile.command_map is not None
-        assert profile.command_map.get("get_tx_target") == (0x1C, 0x03), model
-        query = acquisition_query_resolver_for_profile(profile)(_TX_TARGET_PATH)
-        assert query is not None, model
-        assert (query.command, query.sub, query.data, query.receiver) == (
-            0x1C,
-            0x03,
-            b"",
-            None,
-        ), model
+    profile = get_radio_profile("IC-7610")
+    acquisition = profile.state_acquisition
+    assert acquisition is not None
+    capability = acquisition.capability_for(_TX_TARGET_PATH)
+    assert capability.can_poll is True
+    policy = acquisition.policy_for(_TX_TARGET_PATH)
+    assert policy.cadence_seconds == 1.0
+    assert policy.freshness_ttl_seconds == 4.0
+    assert policy.freshness_ttl_seconds >= 2 * policy.cadence_seconds
+    assert policy.adaptive_decay.enabled is False
+    assert profile.command_map is not None
+    assert profile.command_map.get("get_tx_target") == (0x1C, 0x03)
+    assert profile.tx_receiver_rule == "main_unless_split"
+    query = acquisition_query_resolver_for_profile(profile)(_TX_TARGET_PATH)
+    assert query is not None
+    assert (query.command, query.sub, query.data, query.receiver) == (
+        0x1C,
+        0x03,
+        b"",
+        None,
+    )
 
 
 def test_every_tx_capable_profile_declares_a_tx_target_source() -> None:
@@ -2108,6 +2115,6 @@ def test_every_tx_capable_profile_declares_a_tx_target_source() -> None:
         unsupported_seen[model] = reason
 
     assert unsupported_seen == _TX_TARGET_UNSUPPORTED
-    # The MOR-2540 regression subjects are sourced by the radio's own read.
+    # The MOR-2540 regression subject is sourced by the radio's own read;
+    # IC-9700 stays unsupported (see its entry above).
     assert sourced.get("IC-7610") == "CI-V get_tx_target read"
-    assert sourced.get("IC-9700") == "CI-V get_tx_target read"

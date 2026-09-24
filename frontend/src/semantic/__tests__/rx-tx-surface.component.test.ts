@@ -444,11 +444,12 @@ describe('unknown TX target', () => {
     });
   });
 
-  it.each(PERMITTED)('%s: a known radio-reported target clears tx-target-unknown from the shared TUNE/PTT predicate', (id) => {
+  it.each(PERMITTED)('%s: a known radio-reported target clears tx-target-unknown from the blocked-reason list', (id) => {
     // MOR-2540: the IC-7610 (the 2/main_sub topology) now reports its own
-    // transmit frequency (CI-V 1C 03), so txTarget reaches 'known' — and the
-    // one predicate TUNE (`TxAuxSurface.tuneBlocked`) and this surface's key
-    // blocked-list both consume must stop carrying tx-target-unknown.
+    // transmit frequency (CI-V 1C 03), so txTarget reaches 'known' and
+    // keyBlockedReasons — the list the TUNE gate (`TxAuxFiniteHost
+    // .tuneInput().blocked` plus `requestAtuTune`) and this surface's key
+    // blocked-list consume — stops carrying tx-target-unknown.
     const view = topologyFixtures[id];
     if (view.txTarget.status !== 'known') throw new Error('fixture precondition');
     expect(keyBlockedReasons(view, IDLE_RX)).toEqual([]);
