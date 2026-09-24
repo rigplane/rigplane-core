@@ -1844,23 +1844,26 @@ async def test_read_sql_type_is_a_pure_read() -> None:
         # independent axes defined by ``RepeaterControlCapable``: repeater_tone
         # is TX tone ENCODE, repeater_tsql is RX tone-squelch DECODE. Code 2 has
         # encode ON *and* decode ON, so both booleans are True (MOR-2130).
+        # Codes 3/4/5 are outside the two-boolean vocabulary and publish None
+        # ("observed, not known") — a False pair would invent OFF while the
+        # radio is in DCS (MOR-2572).
         (0, False, False),  # CTCSS OFF
         (1, True, False),  # CTCSS ENC ON / DEC OFF ("TONE")
         (2, True, True),  # CTCSS ENC ON / DEC ON ("TSQL")
-        (3, False, False),  # DCS — no neutral CTCSS-boolean representation
-        (4, False, False),  # PR FREQ — no neutral CTCSS-boolean representation
-        (5, False, False),  # REV TONE — no neutral CTCSS-boolean representation
+        (3, None, None),  # DCS — no neutral CTCSS-boolean representation
+        (4, None, None),  # PR FREQ — no neutral CTCSS-boolean representation
+        (5, None, None),  # REV TONE — no neutral CTCSS-boolean representation
     ],
 )
 @pytest.mark.asyncio
 async def test_sql_type_code_maps_to_ctcss_booleans(
-    code: int, expected_tone: bool, expected_tsql: bool
+    code: int, expected_tone: bool | None, expected_tsql: bool | None
 ) -> None:
-    """MOR-457: each ``CT`` P2 code derives the correct CTCSS boolean pair.
+    """MOR-457/MOR-2572: each ``CT`` P2 code derives the correct tone pair.
 
     Both ``repeater_tone`` and ``repeater_tsql`` are emitted every cycle (incl.
-    the False derivations) so the store always reflects current state. Gated on
-    the ``sql_type`` cap (present here) + can_poll.
+    the False/None derivations) so the store always reflects current state.
+    Gated on the ``sql_type`` cap (present here) + can_poll.
     """
     radio = _make_radio()
     radio.read_sql_type = AsyncMock(return_value=code)
@@ -2029,42 +2032,6 @@ async def test_sql_type_emits_both_receivers_with_their_own_codes() -> None:
     assert by_path["receiver.main.operator_toggles.repeater_tone"] is True
     assert "receiver.sub.operator_toggles.repeater_tone" not in by_path
     assert radio.read_sql_type.await_args_list == [call(0)]
-
-
-@pytest.mark.parametrize(
-    ("sql_type", "tone", "tsql"),
-    [
-        (0, False, False),
-        (1, True, False),
-        (2, True, True),
-        (3, None, None),
-        (4, None, None),
-        (5, None, None),
-    ],
-    ids=["off", "tone", "tsql", "dcs", "pr-freq", "rev-tone"],
-)
-@pytest.mark.asyncio
-async def test_sql_type_code_maps_the_tone_pair(
-    sql_type: int, tone: bool | None, tsql: bool | None
-) -> None:
-    """MOR-2572: CT P2 codes 0/1/2 map onto the two-boolean vocabulary;
-    codes 3/4/5 (DCS / PR FREQ / REV TONE) are outside it and publish None
-    ("observed, not known") on BOTH receivers — not an invented False pair
-    that would light the repeater strip OFF while the radio is in DCS."""
-    radio = _make_radio()
-    radio.read_sql_type = AsyncMock(return_value=sql_type)
-    adapter = YaesuObservationAdapter(
-        radio, profile=_profile_state_acquisition(), clock=_clock
-    )
-
-    observations = await adapter.poll_slow_controls()
-    by_path = {str(item.path): item.value for item in observations}
-
-    assert by_path["receiver.main.operator_toggles.repeater_tone"] is tone
-    assert by_path["receiver.main.operator_toggles.repeater_tsql"] is tsql
-    assert by_path["receiver.sub.operator_toggles.repeater_tone"] is tone
-    assert by_path["receiver.sub.operator_toggles.repeater_tsql"] is tsql
-    assert radio.read_sql_type.await_args_list == [call(0), call(1)]
 
 
 @pytest.mark.asyncio
