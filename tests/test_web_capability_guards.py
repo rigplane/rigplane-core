@@ -466,6 +466,41 @@ class TestCapabilitiesEndpoint:
         assert data["txBands"] is None
 
     @pytest.mark.asyncio
+    async def test_ftx1_capabilities_carry_repeater_ranges_and_ctcss_tones(self):
+        """The repeater-band flag and the resolved CTCSS chart reach the wire."""
+        from rigplane.profiles import resolve_radio_profile
+
+        radio = _make_radio("FTX-1")
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+
+        await srv._serve_capabilities(writer)  # noqa: SLF001
+
+        data = _parse_json_body(writer)
+        ranges = {r["label"]: r for r in data["freqRanges"]}
+        assert ranges["2m"]["repeater"] is True
+        assert ranges["70cm"]["repeater"] is True
+        assert "repeater" not in ranges["HF"]
+        # Reuses the loader's resolved table, in its own order, not a copy.
+        profile = resolve_radio_profile(model="FTX-1")
+        assert data["ctcssTones"] == list(profile.ctcss_tones_centihz)
+        assert data["ctcssTones"][0] == 6700
+        assert data["ctcssTones"][-1] == 25410
+
+    @pytest.mark.asyncio
+    async def test_ic7610_capabilities_omit_repeater_flag_and_ctcss_tones(self):
+        """A radio with no repeater ranges and no [ctcss] carries neither fact."""
+        radio = _make_radio("IC-7610")
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+
+        await srv._serve_capabilities(writer)  # noqa: SLF001
+
+        data = _parse_json_body(writer)
+        assert all("repeater" not in r for r in data["freqRanges"])
+        assert "ctcssTones" not in data
+
+    @pytest.mark.asyncio
     async def test_capabilities_includes_receivers(self):
         radio = _make_radio("IC-7610")
         srv = WebServer(radio)
