@@ -2352,6 +2352,76 @@ def test_idle_field_decay_never_exceeds_half_its_ttl() -> None:
     assert seen == [0.5, 1.0, 1.0, 1.0]
 
 
+def test_decay_clamp_holds_for_a_non_freq_hz_path() -> None:
+    # MOR-2540 (review): the TTL/2 clamp must apply to every field, not just
+    # freq_hz. Drive it on ``freq_mode.mode`` and assert the decayed cadence
+    # stops at TTL / 2 the same way.
+    clock = FreshnessClock(start=260.0)
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    policy = AcquisitionPolicy(
+        cadence_seconds=0.25,
+        freshness_ttl_seconds=2.0,
+        adaptive_decay=AdaptiveDecayPolicy(
+            enabled=True,
+            idle_multiplier=2.0,
+            max_cadence_seconds=30.0,
+        ),
+    )
+    scheduler = AcquisitionScheduler(
+        profile=_profile([mode], default_policy=policy),
+        clock=clock,
+    )
+
+    seen: list[float] = []
+    for _ in range(4):
+        request = scheduler.due_requests()[0]
+        scheduler.record_acquisition_result(request, _changeset(at=clock.now()))
+        cadence = scheduler.diagnostics()["cadenceByPath"][str(mode)][
+            "currentCadenceSeconds"
+        ]
+        seen.append(cadence)
+        clock.advance(cadence)
+
+    assert seen == [0.5, 1.0, 1.0, 1.0]
+
+
+def test_base_cadence_floor_never_speeds_up_a_slow_declared_field() -> None:
+    # MOR-2540 (review): a field whose declared base cadence already exceeds
+    # TTL / 2 is slow by declaration, not by decay. The TTL/2 clamp must never
+    # pull the cadence below the base cadence (that would silently "speed up"
+    # the field). Here base 4.0 s > TTL / 2 (1.0 s), so an idle read keeps
+    # 4.0 s instead of clamping to 1.0 s. Removes the floor and this test goes
+    # red: the cadence would read 1.0 s.
+    clock = FreshnessClock(start=320.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    policy = AcquisitionPolicy(
+        cadence_seconds=4.0,
+        freshness_ttl_seconds=2.0,
+        adaptive_decay=AdaptiveDecayPolicy(
+            enabled=True,
+            idle_multiplier=2.0,
+            max_cadence_seconds=30.0,
+        ),
+    )
+    scheduler = AcquisitionScheduler(
+        profile=_profile([freq], default_policy=policy),
+        clock=clock,
+    )
+
+    seen: list[float] = []
+    for _ in range(3):
+        request = scheduler.due_requests()[0]
+        scheduler.record_acquisition_result(request, _changeset(at=clock.now()))
+        cadence = scheduler.diagnostics()["cadenceByPath"][str(freq)][
+            "currentCadenceSeconds"
+        ]
+        seen.append(cadence)
+        clock.advance(cadence)
+
+    assert seen == [4.0, 4.0, 4.0]
+    assert all(policy.cadence_seconds <= c <= 30.0 for c in seen)
+
+
 def test_healthy_link_timeout_does_not_count_or_decay_cadence() -> None:
     # MOR-874: an acquisition_request_timeout reported while the transport is
     # healthy is a false timeout — the radio answered, the deadline raced. It
