@@ -2389,14 +2389,14 @@ def test_base_cadence_floor_never_speeds_up_a_slow_declared_field() -> None:
     # MOR-2540 (review): a field whose declared base cadence already exceeds
     # TTL / 2 is slow by declaration, not by decay. The TTL/2 clamp must never
     # pull the cadence below the base cadence (that would silently "speed up"
-    # the field). Here base 4.0 s > TTL / 2 (1.0 s), so an idle read keeps
-    # 4.0 s instead of clamping to 1.0 s. Removes the floor and this test goes
-    # red: the cadence would read 1.0 s.
+    # the field). Here base 3.0 s > TTL / 2 (2.5 s), so an idle read keeps
+    # 3.0 s instead of clamping to 2.5 s. Remove the floor and this test goes
+    # red: the cadence would read 2.5 s.
     clock = FreshnessClock(start=320.0)
     freq = FieldPath.active("main", "freq_mode", "freq_hz")
     policy = AcquisitionPolicy(
-        cadence_seconds=4.0,
-        freshness_ttl_seconds=2.0,
+        cadence_seconds=3.0,
+        freshness_ttl_seconds=5.0,
         adaptive_decay=AdaptiveDecayPolicy(
             enabled=True,
             idle_multiplier=2.0,
@@ -2418,8 +2418,8 @@ def test_base_cadence_floor_never_speeds_up_a_slow_declared_field() -> None:
         seen.append(cadence)
         clock.advance(cadence)
 
-    assert seen == [4.0, 4.0, 4.0]
-    assert all(policy.cadence_seconds <= c <= 30.0 for c in seen)
+    assert seen == [3.0, 3.0, 3.0]
+    assert all(3.0 <= c <= 30.0 for c in seen)
 
 
 def test_healthy_link_timeout_does_not_count_or_decay_cadence() -> None:
