@@ -336,7 +336,7 @@
       <div class="scope-controls-row" data-testid="scope-controls-row">
         {#if sc.mode.availability.structural}
           {@const modeQuick = choiceInstrument('mode', QUICK_MODE.map(([v]) => v))}
-          <span class={hosted ? 'scope-capsule' : 'scope-key-group'} role="radiogroup" aria-label="Scope mode" data-testid="scope-mode-row">
+          <span class={hosted ? 'scope-capsule' : 'scope-key-group'} role="radiogroup" aria-label="Scope mode" data-overflow="mode" data-testid="scope-mode-row">
             {#each QUICK_MODE as [v, label] (v)}
               <ScopeFlatKey kind="choice" {label} testid="scope-mode-row-{v}"
                 width={hosted ? undefined : '42px'}
@@ -544,11 +544,12 @@
   /* Narrow-width overflow (MOR-2545, coordinator decision): below each band
      the row's DIRECT child (`>` — the More panel sits inside the row's More
      anchor) with that hook hides and its More copy shows. Hide-first:
-     MAIN/SUB, HOLD, REF, SPAN; CTR/FIX and the More key always stay. Bands
-     measured in Chromium at the widest case (dual receiver, CTR). The REF
-     band is 372: the no-HOLD row fits at 371.3 px, and a 390 px phone's
-     content width is exactly 374 — 372 keeps REF on the row there. Hosted
-     rows use the capsule sheet's own earlier bands instead. */
+     MAIN/SUB, HOLD, REF, SPAN; on these UNHOSTED bands CTR/FIX and the More
+     key always stay. Bands measured in Chromium at the widest case (dual
+     receiver, CTR). The REF band is 372: the no-HOLD row fits at 371.3 px,
+     and a 390 px phone's content width is exactly 374 — 372 keeps REF on
+     the row there. Hosted rows use the capsule sheet's own bands instead —
+     its last band retires CTR|FIX too (More's MODE row carries it). */
   .scope-more-overflow { display: contents; }
   .scope-more-overflow > [data-overflow] { display: none; }
   @container scope-controls (max-width: 529px) { .scope-controls-row > [data-overflow='receiver'] { display: none; } .scope-more-overflow > [data-overflow='receiver'] { display: flex; } }
