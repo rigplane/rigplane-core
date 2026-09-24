@@ -1,5 +1,5 @@
 import type { WsCommand, WsIncoming } from '../types/protocol';
-import { UI_TELEMETRY_ENABLED, recordUiMetric } from '../diagnostics/ui-telemetry';
+import { UI_TELEMETRY_ENABLED, recordControlEnvelope, recordMalformedControl, recordUiMetric } from '../diagnostics/ui-telemetry';
 import { makeCommandId } from '../types/protocol';
 import { isLiveRadioAvailable, setWsConnected, markStateUpdated, setReconnecting, setRadioStatus } from '../stores/connection.svelte';
 import { isValidServerState, matchesCurrentCapabilityTopology, resetRadioState, setRadioState } from '../stores/radio.svelte';
@@ -286,8 +286,15 @@ export class WsChannel {
         if (this.ws !== ws) return;
         this.binaryHandlers.forEach((h) => h(event.data as ArrayBuffer));
       } else {
+        let parsed = false;
+        const parseStart = UI_TELEMETRY_ENABLED ? performance.now() : 0;
         try {
           const raw = JSON.parse(event.data as string) as Record<string, unknown>;
+          parsed = true;
+          if (UI_TELEMETRY_ENABLED && this === _ctrl) {
+            recordUiMetric('controlParse', 0, performance.now() - parseStart);
+            recordControlEnvelope(raw, (event.data as string).length);
+          }
           if (raw['type'] === 'command_lifecycle') {
             this._emitCommandLifecycle(raw, socketEpoch);
             return;
@@ -317,6 +324,10 @@ export class WsChannel {
             }
           }
         } catch {
+          if (UI_TELEMETRY_ENABLED && this === _ctrl && !parsed) {
+            recordUiMetric('controlParse', 0, performance.now() - parseStart);
+            recordMalformedControl((event.data as string).length);
+          }
           // ignore malformed frames
         }
       }
@@ -814,14 +825,33 @@ function resetForProviderGeneration(generation: number): void {
   clearCapabilities();
 }
 
-function commitCurrentState(): boolean {
+type StateApplyTiming = { storeMs: number; validationMs: number };
+
+function validateState(state: Record<string, unknown>, timing?: StateApplyTiming): boolean {
+  if (!timing) return isValidServerState(state);
+  const started = performance.now();
+  const valid = isValidServerState(state);
+  const duration = performance.now() - started;
+  timing.validationMs += duration;
+  recordUiMetric('stateValidation', 0, duration);
+  return valid;
+}
+
+function commitCurrentState(timing?: StateApplyTiming): boolean {
   if (
     !_hasReceivedFullState
     || _fullState === null
     || _acceptedProviderGeneration === null
     || !capabilitiesMatchGeneration(_acceptedProviderGeneration)
   ) return false;
-  return setRadioState(_fullState as any);
+  if (!timing) return setRadioState(_fullState as any);
+  const started = performance.now();
+  const accepted = setRadioState(_fullState as any);
+  const duration = performance.now() - started;
+  timing.storeMs += duration;
+  recordUiMetric('stateStoreCommit', 0, duration);
+  if (accepted) recordUiMetric('stateStoreAccepted');
+  return accepted;
 }
 
 function refreshCapabilities(generation: number): void {
@@ -949,7 +979,7 @@ function isRevisionAcceptable(
   return semanticAdvanced || metadataAdvanced;
 }
 
-function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, unknown> | null {
+function applyDeltaEnvelope(envelope: Record<string, unknown>, timing?: StateApplyTiming): Record<string, unknown> | null {
   const deltaType = envelope.type;
   const generation = epochOf(envelope);
   if (generation === null || (deltaType !== 'full' && deltaType !== 'delta')) return null;
@@ -964,7 +994,7 @@ function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, u
     // MOR-2513: a dropped full envelope leaves BOTH stores empty (capabilities
     // are only refreshed after a full is accepted), so the page silently
     // renders no radio surfaces — this rejection must at least be visible.
-    if (!isValidServerState(nextState)) {
+    if (!validateState(nextState, timing)) {
       console.error('[rigplane] state: rejected a full state envelope that failed contract validation');
       return null;
     }
@@ -992,7 +1022,7 @@ function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, u
     _acceptedProviderGeneration = generation;
     _expectedProviderGeneration = null;
     refreshCapabilities(generation);
-    return commitCurrentState() ? _fullState : null;
+    return commitCurrentState(timing) ? _fullState : null;
   }
 
   if (!isRecord(envelope.changed)) return null;
@@ -1010,7 +1040,7 @@ function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, u
   if (candidate) {
     for (const key of removed) delete candidate[key];
     syncEnvelopeRevisions(candidate, envelope);
-    if (!isValidServerState(candidate)) {
+    if (!validateState(candidate, timing)) {
       console.error('[rigplane] state: rejected a delta state envelope that failed contract validation');
       return null;
     }
@@ -1023,14 +1053,26 @@ function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, u
   const nextState = candidate!;
   if (!isRevisionAcceptable(currentState, nextState, Object.keys(changed))) return null;
   _fullState = nextState;
-  return commitCurrentState() ? _fullState : null;
+  return commitCurrentState(timing) ? _fullState : null;
 }
 
 _ctrl.onMessage((msg) => {
   if (msg.type === 'state_update' && msg.data) {
-    const state = applyDeltaEnvelope(msg.data as Record<string, unknown>);
+    const timing: StateApplyTiming | undefined = UI_TELEMETRY_ENABLED
+      ? { storeMs: 0, validationMs: 0 } : undefined;
+    const started = timing ? performance.now() : 0;
+    const state = applyDeltaEnvelope(msg.data as Record<string, unknown>, timing);
+    if (timing) recordUiMetric('stateApply', 0,
+      Math.max(0, performance.now() - started - timing.storeMs - timing.validationMs));
     if (state) {
-      setRadioState(state as any);
+      if (UI_TELEMETRY_ENABLED) {
+        const commitStart = performance.now();
+        const accepted = setRadioState(state as any);
+        recordUiMetric('stateStoreCommit', 0, performance.now() - commitStart);
+        if (accepted) recordUiMetric('stateStoreAccepted');
+      } else {
+        setRadioState(state as any);
+      }
       markStateUpdated();
     }
   }
