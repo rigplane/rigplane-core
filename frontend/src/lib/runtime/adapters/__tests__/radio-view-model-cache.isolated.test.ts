@@ -72,6 +72,25 @@ describe('production bare radio view projection cache', () => {
     expect(full.rxAudio).toBeDefined();
     expect(muted.rxAudio).not.toEqual(full.rxAudio);
     expect(poweredOff.scopeDisplay).not.toEqual(full.scopeDisplay);
+
+    const audioOnly = toRadioViewModel(meteredState, caps, undefined, audio)!;
+    const mutedAudioOnly = toRadioViewModel(meteredState, caps, undefined, { ...audio, muted: true })!;
+    expect(audioOnly).not.toBe(bare);
+    expect(audioOnly.rxAudio?.monitorMode).toBe('live');
+    expect(mutedAudioOnly.rxAudio?.monitorMode).toBe('mute');
+    expect(audioOnly.meters).toBeUndefined();
+
+    const scopeOnly = toRadioViewModel(meteredState, caps, undefined, undefined, scope)!;
+    const poweredOffScopeOnly = toRadioViewModel(meteredState, caps, undefined, undefined,
+      { ...scope, isPoweredOff: true })!;
+    expect(scopeOnly).not.toBe(bare);
+    expect(scopeOnly.scopeDisplay).toBeDefined();
+    expect(poweredOffScopeOnly.scopeDisplay).not.toEqual(scopeOnly.scopeDisplay);
+    expect(scopeOnly.rxAudio).toBeUndefined();
+
+    const explicitNullAudio = toRadioViewModel(meteredState, caps, undefined, null)!;
+    expect(explicitNullAudio).not.toBe(bare);
+    expect(explicitNullAudio.rxAudio).toBeUndefined();
     expect(toRadioViewModel(meteredState, caps)).toBe(bare);
   });
 
