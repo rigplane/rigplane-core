@@ -754,8 +754,8 @@ export interface RepeaterReceiverViewModel {
 export interface RepeaterViewModel {
   main: RepeaterReceiverViewModel;
   sub: RepeaterReceiverViewModel;
-  /** The shift values this radio offers: none without `repeater_shift`,
-   *  and `ars` only with `repeater_shift_ars` as well. */
+  /** The shift values this radio offers; `ars` only with the
+   *  `repeater_shift_ars` tag. */
   shiftChoices: readonly RepeaterShift[];
 }
 

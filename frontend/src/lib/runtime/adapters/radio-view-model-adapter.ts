@@ -1396,10 +1396,9 @@ function deriveBand(
  * `toneFreq` reads `toneFreq` (centiHz), not `tsqlFreq`: on the FTX-1 the two
  * are one `CN` register, and the ENC tone is what a repeater needs.
  *
- * `shiftChoices`: simplex/plus/minus with the `repeater_shift` tag, and ARS
- * only with the `repeater_shift_ars` tag as well. `shift` maps 0/1/2/3 to
- * simplex/plus/minus/ars; a value outside `shiftChoices` reads `unknown`,
- * never `simplex`.
+ * `shiftChoices` has ARS only with the `repeater_shift_ars` tag. `shift` maps
+ * 0/1/2/3 to simplex/plus/minus/ars; a value outside `shiftChoices` reads
+ * `unknown`, never `simplex`.
  */
 function deriveRepeater(
   state: ServerState | null, caps: Capabilities | null,
