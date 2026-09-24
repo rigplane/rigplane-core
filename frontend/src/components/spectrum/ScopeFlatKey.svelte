@@ -1,10 +1,10 @@
 <!--
-  Scope capsule key (MOR-2545 PR1 flat key, restyled to the owner's style C
-  "capsule groups" in PR3) — the clickable member of the panorama row's ONE
-  visual family (`components/spectrum/scope-capsule.css`): 1 px border, 5 px
-  radius, no fill at rest, lit = FILLED with the badge active pair. The look
-  lives in the shared capsule stylesheet; this component carries only the
-  state semantics (data-lit / aria) and the reserved-width custom property.
+  Scope flat key (MOR-2545 PR1; PR3 made the HOSTED row's look the capsule
+  family of `components/spectrum/scope-capsule.css`). The styles BELOW are
+  the default flat lamp grammar — every mount that is not the hosted
+  toolbar row (the LCD skins, mobile, bare zone mounts) renders exactly
+  this; inside `.spectrum-toolbar.hosted` the capsule sheet's rules
+  (specificity 0,3,0+) take over.
 
   PLACEMENT: the key lives here, in `components/spectrum/`, because
   `semantic/ScopeControlsSurface.svelte` already imports
@@ -24,9 +24,8 @@
     (never "false"); a choice reports `aria-checked="false"`. No placeholder
     text is ever drawn — the label is the content.
   - Nothing blinks or shifts: width comes from `--scope-key-width` (per-key
-    reserved width set by the host, a floor — mono text is deterministic)
-    and only colour/fill change between unlit/lit — the box never changes
-    size.
+    reserved width set by the host) and only colour/weight change between
+    unlit/lit — the box never changes size.
   - No focus frame (MOR-2522): `app.css` already clears `:focus` outlines
     globally; this key adds no ring of its own.
 -->
@@ -51,7 +50,7 @@
     ariaExpanded?: boolean;
     /** Tooltip text (MOR-2545 PR3: the More key carries one). */
     title?: string;
-    /** Reserved width, e.g. '44px' — the key's box is at least this wide in EVERY state. */
+    /** Reserved width, e.g. '44px' — the key's box is this wide in EVERY state. */
     width?: string;
     element?: HTMLElement | null;
     onclick?: (event: MouseEvent) => void;
@@ -78,3 +77,45 @@
   bind:this={element}
   {onclick}
 >{label}</button>
+
+<style>
+  .scope-flat-key {
+    appearance: none;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    margin: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    flex: none;
+    width: var(--scope-key-width, 48px);
+    height: 22px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    color: var(--vfo-lamp-color, var(--dl-vfo-red-text, var(--dl-vfo-red, #e2362c)));
+    cursor: pointer;
+  }
+
+  .scope-flat-key[data-lit='false'] {
+    color: var(--dl-vfo-unlit-text, var(--v2-text-muted, #5a6875));
+    font-weight: 400;
+  }
+
+  .scope-flat-key[data-lit='true'] {
+    text-shadow: var(--dl-vfo-red-glow, none);
+  }
+
+  /* Hover brightens the text only — lamp grammar, never chrome. */
+  .scope-flat-key:hover:not(:disabled) { filter: brightness(1.3); }
+
+  .scope-flat-key:disabled {
+    cursor: not-allowed;
+  }
+</style>

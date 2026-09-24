@@ -298,7 +298,7 @@
   and state bindings as the unhosted row: this is a mount move, not a fork.
   `closeMore` lets entries that open their own surface (EiBi) close the
   panel. The STEP row is the narrow-width overflow copy, shown only while
-  the row's own STEP is hidden by the `scope-controls` container's 335px
+  the row's own STEP is hidden by the `scope-controls` container's 360px
   band. MOR-2545 PR3 — every control here is the ONE capsule family
   (`scope-capsule.css`): lit keys (no "ON/OFF" text), capsule steppers, a
   capsule select; AVG/PEAK render through the SAME `avgPeakKeys` snippet
@@ -728,17 +728,24 @@
 
   /* MOR-2545 PR3 — hosted one-row layout: the semantic row spans the strip
       (flex growth above) and its `scope-controls` query container owns
-      EVERY overflow band (see scope-capsule.css). The strip's ground becomes
-      the theme panel token so the family's text tokens keep contrast in
-      every theme (MOR-977); the unhosted faces keep today's gradient. */
-  .spectrum-toolbar.hosted { background: var(--v2-bg-panel); }
+      EVERY overflow band (see scope-capsule.css). The strip's ONE ground is
+      the scope section's own card token --v2-bg-card (round-2 finding 7:
+      the capsule sheet also switches the surface's own card paint off, so
+      capsules, SRC and ⛶ share it); the unhosted faces keep today's
+      gradient. */
+  .spectrum-toolbar.hosted { background: var(--v2-bg-card); }
+
+  /* The capsule family owns hover and lit text inside the hosted row: the
+     PR1 lamp grammar's glow and brightness filter never reach it. */
+  .semantic-scope-controls-host :global(.scope-flat-key[data-lit='true']) { text-shadow: none; }
+  .semantic-scope-controls-host :global(.scope-flat-key:hover:not(:disabled)) { filter: none; }
 
   /* The More STEP copy shows only while the row's STEP is hidden by the
-     surface container's 335px band (container queries resolve on DOM
-     ancestry, so the fixed-position panel still sees the container). */
+      surface container's 360px band (container queries resolve on DOM
+      ancestry, so the fixed-position panel still sees the container). */
   .toolbar-step-copy { display: none; }
 
-  @container scope-controls (max-width: 335px) {
+  @container scope-controls (max-width: 360px) {
     .toolbar-step-copy { display: flex; }
   }
 

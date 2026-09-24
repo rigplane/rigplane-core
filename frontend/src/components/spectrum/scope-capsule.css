@@ -1,29 +1,48 @@
 /*
- * Scope capsule key family — MOR-2545 PR3, owner style C "capsule groups"
- * (ticket comment "PR3 design decision, owner, 2026-09-23 18:55 EDT").
- * ONE visual family for every control in the hosted panorama row and the
- * More panel: a capsule is a 1 px border, ~5 px radius, no fill at rest,
- * at least 24 px tall, one font family and size (the host panel's Roboto
- * Mono); a segmented capsule has 1 px inner dividers; no bezel gradient,
- * box-shadow or text-shadow (these class names sit in control-button.css's
- * `:not()` exclusion lists, so the bezel family never reaches them).
- * Token-only colours (MOR-977), default-theme ratios: unlit text, arrows
- * and labels --v2-text-secondary (7.27:1 on the hosted row ground
- * --v2-bg-panel; >= 4.5:1 in every theme); values --v2-text-primary
- * (14.5:1); capsule border and dividers --v2-text-muted (3.38:1
- * non-text); lit = FILLED with the badge active PAIR --v2-badge-cyan-bg +
- * --v2-badge-cyan-text (11.45:1 default, 9.43:1 github-light — NOT
- * --v2-accent-cyan-bright over the badge bg: not a theme-tuned pair,
- * 2.98:1 on github-light). Loaded via `import './scope-capsule.css'` from
- * ScopeFlatKey.svelte and SpectrumToolbar.svelte. The names
- * `scope-flat-key`/`scope-step-key` are historical (PR1) and kept: the
- * Standard-face override sheets exclude exactly those names.
+ * Scope capsule key family — MOR-2545 PR3, owner style C "capsule groups".
+ *
+ * HOSTED ONLY: every rule here is scoped under `.spectrum-toolbar.hosted`
+ * (the desktop-v2 Standard face and sdr-test, where the semantic scope row
+ * IS the toolbar's one row). ScopeControlsSurface gates the capsule MARKUP
+ * on the same flag (a rowTail from the host toolbar), so the unhosted
+ * mounts — the LCD skins, mobile, bare zone mounts — keep PR1's flat-key
+ * grammar and render exactly as before this PR (round-2 finding 3).
+ *
+ * One family: 1 px border, 5 px radius, no fill at rest, 24 px tall, the
+ * host panel's Roboto Mono at 11 px everywhere — the More panel included
+ * (round-2 finding 5); segmented capsules carry 1 px inner dividers; no
+ * bezel gradient, box-shadow or text-shadow (the `scope-flat-key`/
+ * `scope-step-key` names sit in control-button.css's `:not()` exclusion
+ * lists, so the bezel family never reaches them).
+ *
+ * COLOURS (MOR-977, token-only, no literals; ratios computed from the theme
+ * token values with WCAG relative luminance). The strip's ONE ground is the
+ * scope section's card colour --v2-bg-card — the hosted toolbar paints it
+ * and the surface's own card paint is switched off below, so capsules, SRC
+ * and ⛶ share it (round-2 finding 7). On that ground and the More panel's
+ * --v2-bg-darkest: border/divider var(--v2-text-secondary) >= 3:1 in every
+ * theme (worst 3.08 solarized-light; a 60% color-mix draft dropped to
+ * 2.23); lit fill color-mix(in srgb, var(--v2-accent-cyan-teal) 50%,
+ * transparent) >= 1.5:1 everywhere (worst 1.56 nord-light — the plain
+ * --v2-accent-cyan tops out at 1.64 SOLID there, so the darker accent is
+ * the nearest token that clears the bar); lit text var(--v2-text-primary)
+ * (>= 3.6:1 on the fill except solarized-light 1.78, that palette's
+ * ceiling); unlit text, arrows and labels var(--v2-text-secondary); values
+ * var(--v2-text-primary); the SRC indicator is recoloured to
+ * --v2-text-secondary on this row only (round-2 finding 7).
+ *
+ * Loaded via `import './scope-capsule.css'` from ScopeFlatKey.svelte and
+ * SpectrumToolbar.svelte. The names `scope-flat-key`/`scope-step-key` are
+ * historical (PR1) and kept: the Standard-face override sheets exclude
+ * exactly those names.
  */
 
-.scope-flat-key {
+/* ── The key ──────────────────────────────────────────────────────────── */
+
+.spectrum-toolbar.hosted .scope-flat-key {
   appearance: none;
   background: transparent;
-  border: 1px solid var(--v2-text-muted, var(--text-muted));
+  border: 1px solid var(--v2-text-secondary, var(--text-muted));
   border-radius: 5px;
   padding: 0 8px;
   margin: 0;
@@ -32,6 +51,7 @@
   justify-content: center;
   box-sizing: border-box;
   flex: none;
+  width: auto;
   min-width: var(--scope-key-width, auto);
   height: 24px;
   font-family: inherit;
@@ -45,52 +65,61 @@
   cursor: pointer;
 }
 
-/* Lit = FILLED, never colour-only: the badge active pair (see header). */
-.scope-flat-key[data-lit='true'] {
-  background: var(--v2-badge-cyan-bg, transparent);
-  border-color: var(--v2-badge-cyan-border, var(--v2-text-muted));
-  color: var(--v2-badge-cyan-text, var(--v2-text-primary));
-}
-
-/* Hover brightens the text only — no chrome, no shadow. */
-.scope-flat-key:hover:not(:disabled) {
+/* Lit = FILLED, never colour-only: a 50% wash of the theme's dark cyan
+ * accent over the strip ground, with the primary text token on top. */
+.spectrum-toolbar.hosted .scope-flat-key[data-lit='true'] {
+  background: color-mix(in srgb, var(--v2-accent-cyan-teal, var(--v2-accent-cyan)) 50%, transparent);
   color: var(--v2-text-primary, var(--text));
 }
 
-.scope-flat-key:disabled {
+/* Unlit weight stays the family's 600 — the scoped PR1 grammar's 400 is
+ * switched off here (it carried [data-lit='false'] at 0,3,0). */
+.spectrum-toolbar.hosted .scope-flat-key[data-lit='false'] {
+  font-weight: 600;
+  color: var(--v2-text-secondary, var(--text));
+}
+
+/* Hover brightens the text only — no chrome, no shadow. */
+.spectrum-toolbar.hosted .scope-flat-key:hover:not(:disabled) {
+  color: var(--v2-text-primary, var(--text));
+}
+
+.spectrum-toolbar.hosted .scope-flat-key:disabled {
   cursor: not-allowed;
 }
 
-.scope-capsule {
+/* ── The capsule wrapper and its segments ─────────────────────────────── */
+
+.spectrum-toolbar.hosted .scope-capsule {
   display: inline-flex;
   align-items: center;
   flex: none;
-  border: 1px solid var(--v2-text-muted, var(--text-muted));
+  border: 1px solid var(--v2-text-secondary, var(--text-muted));
   border-radius: 5px;
   height: 24px;
   padding: 0 7px;
   gap: 3px;
   box-sizing: border-box;
   white-space: nowrap;
-  /* Clips a lit segment's fill to the rounded capsule. */
   overflow: hidden;
 }
 
 /* A segment loses its own border; the capsule carries it, and 1 px inner
  * dividers separate the segments. */
-.scope-capsule > .scope-flat-key {
+.spectrum-toolbar.hosted .scope-capsule > .scope-flat-key {
   border: none;
   border-radius: 0;
   height: 22px;
   padding: 0 9px;
 }
 
-.scope-capsule > .scope-flat-key + .scope-flat-key {
-  border-left: 1px solid var(--v2-text-muted, var(--text-muted));
+.spectrum-toolbar.hosted .scope-capsule > .scope-flat-key + .scope-flat-key {
+  border-left: 1px solid var(--v2-text-secondary, var(--text-muted));
 }
 
-.scope-name {
+.spectrum-toolbar.hosted .scope-name {
   flex: none;
+  padding: 0;
   font-size: inherit;
   font-weight: 600;
   letter-spacing: 0.05em;
@@ -99,7 +128,7 @@
   color: var(--v2-text-secondary, var(--text));
 }
 
-.scope-step-key {
+.spectrum-toolbar.hosted .scope-step-key {
   appearance: none;
   background: transparent;
   border: none;
@@ -118,17 +147,17 @@
   cursor: pointer;
 }
 
-.scope-step-key:hover:not(:disabled) {
+.spectrum-toolbar.hosted .scope-step-key:hover:not(:disabled) {
   color: var(--v2-text-primary, var(--text));
 }
 
-.scope-step-key:disabled {
+.spectrum-toolbar.hosted .scope-step-key:disabled {
   cursor: not-allowed;
 }
 
 /* Reserved width in EVERY state: an unread value is EMPTY (never a
  * placeholder) and the stepper's box never changes size. */
-.scope-step-value {
+.spectrum-toolbar.hosted .scope-step-value {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -141,16 +170,23 @@
   color: var(--v2-text-primary, var(--text));
 }
 
-/* Specificity beats the desktop skin's generic section select rule
- * (.desktop-control-face .semantic-control-panel section :is(input, select))
- * while staying token-only. */
-.desktop-control-face .semantic-control-panel .scope-capsule-select,
-.scope-capsule-select {
+/* ── The More panel joins the family (round-2 findings 4–5) ──────────── */
+
+/* One font size across the row and the More panel: 11 px. */
+.spectrum-toolbar.hosted .scope-more-panel {
+  font-size: 11px;
+}
+
+/* The palette select must beat the desktop skin's generic section select
+ * rule (`.desktop-control-face .semantic-control-panel section
+ * :is(input:not([type='range']), select)`, 0,3,2) on specificity — this
+ * selector is 0,4,0 — not with !important. */
+.spectrum-toolbar.hosted .scope-more-panel .scope-capsule-select {
   appearance: none;
   box-sizing: border-box;
   height: 24px;
   padding: 0 8px;
-  border: 1px solid var(--v2-text-muted, var(--text-muted));
+  border: 1px solid var(--v2-text-secondary, var(--text-muted));
   border-radius: 5px;
   background: transparent;
   color: var(--v2-text-secondary, var(--text));
@@ -161,52 +197,121 @@
   cursor: pointer;
 }
 
-.scope-capsule-select:hover {
+.spectrum-toolbar.hosted .scope-more-panel .scope-capsule-select:hover {
   color: var(--v2-text-primary, var(--text));
 }
 
-/* The `.scope-controls-surface` element is the row's query container
- * (`container-name: scope-controls`). Below each band the row's DIRECT
- * child carrying that hook hides; its More copy (if any) shows. Hide order
- * (MOR-2545 PR3): AVG/PEAK quick keys first, then receiver → hold → ref →
- * span → step; CTR|FIX, BANDS, MORE, the status seat and fullscreen never
- * hide. GLOBAL sheet on purpose: the hooked elements have two authors
- * (ScopeControlsSurface for span/ref/hold/receiver, SpectrumToolbar's
- * rowTail for step/quick) — component scoping would match only one.
- *
- * THE BANDS ARE DERIVED, NOT MEASURED (capsules are wider than PR1's flat
- * keys): Roboto Mono advance 6.6px at the 11px panel font; widths —
- * CTR|FIX 79, MAIN|SUB 85, SPAN 130, REF 123, STEP 131 (48px value
- * reserve), HOLD 44, BANDS 51, AVG+PEAK pair 86, MORE 58; row gap 4px,
- * spacer 0. Band = visible items + 4px per gap (full row 787 + 36 = 823):
- *   823 quick · 733 receiver · 644 hold · 596 ref · 469 span · 335 step.
- * The coordinator re-measures in a browser and re-pins this comment; until
- * then they are arithmetic, not evidence. */
-.scope-more-overflow { display: contents; }
-.scope-more-overflow > [data-overflow] { display: none; }
+/* ⛶ leaves the bezel family inside the hosted strip: same height, radius
+ * and border as the capsules, no gradient, no inset bar. The selector
+ * (0,5,1; hover 0,7,1) outranks control-button.css's bezel rules
+ * (0,5,0 / 0,7,0) without !important; the unhosted faces keep the bezel. */
+.desktop-control-face .spectrum-toolbar.hosted > button.toolbar-btn.icon-btn {
+  height: 24px;
+  width: auto;
+  min-width: 24px;
+  padding: 0 7px;
+  font-size: 11px;
+  border: 1px solid var(--v2-text-secondary, var(--text-muted));
+  border-radius: 5px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--v2-text-secondary, var(--text));
+}
 
-@container scope-controls (max-width: 823px) {
-  .scope-controls-row > [data-overflow='quick'] { display: none; }
+.desktop-control-face .spectrum-toolbar.hosted > button.toolbar-btn.icon-btn::before {
+  content: none;
 }
-@container scope-controls (max-width: 733px) {
-  .scope-controls-row > [data-overflow='receiver'] { display: none; }
-  .scope-more-overflow > [data-overflow='receiver'] { display: flex; }
+
+.desktop-control-face .spectrum-toolbar.hosted > button.toolbar-btn.icon-btn:hover:not(:disabled) {
+  background: transparent;
+  color: var(--v2-text-primary, var(--text));
+  box-shadow: none;
 }
-@container scope-controls (max-width: 644px) {
-  .scope-controls-row > [data-overflow='hold'] { display: none; }
-  .scope-more-overflow > [data-overflow='hold'] { display: flex; }
+
+/* ── The one strip ground (round-2 finding 7) ─────────────────────────── */
+
+/* The hosted rows keep the MEASURED 4 px gap (the 865 px row carried it);
+ * unhosted scoped rules stay at PR1's 2 px (decision A). The More panel is
+ * fixed-positioned but a DOM descendant, so the selector reaches it. */
+.spectrum-toolbar.hosted .scope-controls-row { gap: 4px; }
+.spectrum-toolbar.hosted .scope-more-row { gap: 4px; }
+
+/* The hosted strip paints the scope section's own card colour once; the
+ * skin's per-surface card paint (border + padding + background under just
+ * the row) is switched off here so capsules, SRC and ⛶ share one ground.
+ * 874 px = the FIRST band (873) + 1, so a shrink-to-fit host never hides
+ * the quick keys at its natural width. */
+.spectrum-toolbar.hosted section.scope-controls-surface {
+  background: transparent;
+  border: none;
+  padding: 0;
+  gap: 0;
+  flex-wrap: nowrap;
+  contain-intrinsic-inline-size: 874px;
 }
-@container scope-controls (max-width: 596px) {
-  .scope-controls-row > [data-overflow='ref'] { display: none; }
-  .scope-more-overflow > [data-overflow='ref'] { display: flex; }
+
+/* The SRC indicator drops the design-language literal chain on this row
+ * only; every other mount keeps ScopeDisplaySurface's own colours. */
+.spectrum-toolbar.hosted .scope-display-indicator,
+.spectrum-toolbar.hosted .scope-display-text {
+  color: var(--v2-text-secondary, var(--text));
 }
-@container scope-controls (max-width: 469px) {
-  .scope-controls-row > [data-overflow='span'] { display: none; }
-  .scope-more-overflow > [data-overflow='span'] { display: flex; }
+
+/* ── Narrow-width overflow bands ──────────────────────────────────────── */
+
+/* Below each band the row's DIRECT child carrying that hook hides; its
+ * More copy (if any) shows. Hide order (MOR-2545 PR3): AVG/PEAK quick keys
+ * first, then receiver → hold → ref → span → step; CTR|FIX, BANDS, MORE,
+ * the status seat and fullscreen never hide. The hide selectors are
+ * (0,4,0) so they beat the component-scoped display rules of BOTH authors
+ * (`.scope-stepper.svelte-*`/`.scope-key-group.svelte-*` from
+ * ScopeControlsSurface, `.toolbar-group.svelte-*` from SpectrumToolbar's
+ * rowTail) — the round-2 defect where only the receiver and STEP hid.
+ *
+ * THE BANDS ARE DERIVED FROM THE REVIEWER'S MEASURED WIDTHS (real-browser
+ * measurement of the round-1 head, PR #3606): full row 865 px, CTR|FIX
+ * capsule 97.6, MAIN|SUB capsule 104.5, longest MORE label 65.9
+ * (ja-JP その他 ▾); row gap 4 px, pinned above (9 gaps — the measured row
+ * carried it). The unmeasured items come from the capsule arithmetic
+ * (11 px Roboto Mono ≈ 6.93 px/char with tracking; capsule chrome 16 px =
+ * 2×1 px border + 2×7 px padding; segment 18 px = 2×9 px padding; segment
+ * divider 1 px + 3 px gap): SPAN 131, REF 124, HOLD 46, STEP 133, BANDS 53,
+ * AVG+PEAK group 88. Each band = the width of the row that REMAINS after
+ * that item hides (measured 865 minus the hidden items and one 4 px gap
+ * each) + 8 px safety margin (a .5 remainder rounds up):
+ *   quick     865 + 8                          → 873
+ *   receiver  865 − 88 − 4 + 8                 → 781
+ *   hold      865 − 88 − 104.5 − 2×4 + 8       → 673
+ *   ref       865 − 88 − 104.5 − 46 − 3×4 + 8  → 623
+ *   span      … − 124 − 4×4 + 8                → 495
+ *   step      … − 131 − 5×4 + 8                → 360
+ * Below the step band only the never-hide set remains — CTR|FIX + BANDS +
+ * MORE + the spacer ≈ 221 px (229 with the ja label) — which fits every
+ * narrower row, so STEP hides last.
+ */
+
+@container scope-controls (max-width: 873px) {
+  .spectrum-toolbar.hosted .scope-controls-row > [data-overflow='quick'] { display: none; }
 }
-@container scope-controls (max-width: 335px) {
+@container scope-controls (max-width: 781px) {
+  .spectrum-toolbar.hosted .scope-controls-row > [data-overflow='receiver'] { display: none; }
+  .spectrum-toolbar.hosted div.scope-more-overflow > [data-overflow='receiver'] { display: flex; }
+}
+@container scope-controls (max-width: 673px) {
+  .spectrum-toolbar.hosted .scope-controls-row > [data-overflow='hold'] { display: none; }
+  .spectrum-toolbar.hosted div.scope-more-overflow > [data-overflow='hold'] { display: flex; }
+}
+@container scope-controls (max-width: 623px) {
+  .spectrum-toolbar.hosted .scope-controls-row > [data-overflow='ref'] { display: none; }
+  .spectrum-toolbar.hosted div.scope-more-overflow > [data-overflow='ref'] { display: flex; }
+}
+@container scope-controls (max-width: 495px) {
+  .spectrum-toolbar.hosted .scope-controls-row > [data-overflow='span'] { display: none; }
+  .spectrum-toolbar.hosted div.scope-more-overflow > [data-overflow='span'] { display: flex; }
+}
+@container scope-controls (max-width: 360px) {
   /* No `.scope-more-overflow` copy here: STEP's More copy is the toolbar's
    * `.toolbar-step-copy` (in the screen group), shown by its own rule in
    * SpectrumToolbar.svelte at this same band. */
-  .scope-controls-row > [data-overflow='step'] { display: none; }
+  .spectrum-toolbar.hosted .scope-controls-row > [data-overflow='step'] { display: none; }
 }
