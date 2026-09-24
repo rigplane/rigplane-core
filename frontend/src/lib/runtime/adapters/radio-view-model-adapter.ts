@@ -1887,7 +1887,7 @@ function deriveRxAudio(
   const afLevel = live ? numOrUndef(audio.volume / 100) : (afObserved ? numOrUndef(rx?.afLevel) : undefined);
   // MOR-2579: outside `live` the AF control is the radio's own. The server
   // serves `af_level_sub` only when the radio admits `set_af_level` for
-  // receiver 1 (`web/runtime_helpers.py: runtime_capabilities`), and only
+  // receiver 1 (`web/runtime_helpers.py: projected_af_level_sub_tag`), and only
   // then does each receiver get its own AF field, read by path.
   const perReceiverAf = !live && hasCap(caps, 'af_level') && structuralReceivers.includes('SUB')
     && hasCap(caps, 'af_level_sub');
