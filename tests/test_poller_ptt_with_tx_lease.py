@@ -1,25 +1,28 @@
-"""MOR-2563 falsifier: web PTT while another holder has the TX audio leg live.
+"""MOR-2563: web PTT while another holder has the TX audio leg live.
 
-The poller's ``PttOn`` arm calls ``radio.start_tx()`` directly instead of
-``AudioSession.acquire_tx`` (radio_poller.py). A session TX lease can
-already hold the transport TX leg live — the audio bridge ``rigplane web``
+Pinned behaviour (filed as the falsifier for the bug, now the regression
+suite): the poller's ``PttOn``/``PttOff`` arm through
+``AudioSession.acquire_tx("ptt")`` / lease release (ADR
+``docs/plans/2026-06-09-target-audio-architecture.md`` §3.3 item 3), not
+``radio.start_tx()``/``radio.stop_tx()``. A session TX lease can already
+hold the transport TX leg live — the audio bridge ``rigplane web``
 auto-starts in RX+TX goes through ``AudioSession.acquire_tx``, and so does
-RigPlane Pro's ``audio_start direction: tx``. Reading the code: a second
-``start_tx`` raises the transport's already-started error
+RigPlane Pro's ``audio_start direction: tx``. Before MOR-2563 a second
+``start_tx`` raised the transport's already-started error
 (``UsbAudioDriver._start_tx_exclusive``/``start_tx`` — "TX stream already
 started."; the LAN ``AudioStream.start_tx`` — "Already transmitting"), the
-poller arm treats any exception as a failed arm and refuses the key
-(MOR-1178), and ``_stop_tx_audio_leg`` stops TX regardless of other lease
-holders. No test pins that.
+poller arm treated any exception as a failed arm and refused the key
+(MOR-1178), and ``_stop_tx_audio_leg`` stopped TX regardless of other
+lease holders.
 
-This suite states the correct behaviour and observes whether today's code
-delivers it: with RX subscribed and a foreign ``bridge`` lease holding the
-TX leg, PTT ON must be admitted (no ``CommandError``, the key write
-reaches the rig) while the lease holder's TX leg stays live and its frames
-keep reaching the output (b) and RX keeps reaching the subscriber (c);
-PTT OFF must unkey (d) without stopping TX for the other lease holder and
-(e) leave RX flowing. The failures, if any, are the measurement — the
-assertions stay.
+With RX subscribed and a foreign ``bridge`` lease holding the TX leg, PTT
+ON must be admitted (no ``CommandError``, the key write reaches the rig)
+while the lease holder's TX leg stays live and its frames keep reaching
+the output (b) and RX keeps reaching the subscriber (c); PTT OFF must
+unkey (d) without stopping TX for the other lease holder and (e) leave RX
+flowing. Case 5 pins that a GENUINE arm failure through the session still
+refuses the key without touching the foreign lease; case 6 pins that a
+repeated PTT ON reuses the held "ptt" lease.
 
 The stack is as real as the existing helpers allow: the real
 ``RadioPoller`` dispatching ``PttOn``/``PttOff`` to a real ``YaesuCatRadio``
@@ -50,6 +53,7 @@ from rigplane.audio.session import AudioSession, AudioSessionState
 from rigplane.audio.usb_driver import UsbAudioDriver
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.core.capabilities import CAP_AUDIO
+from rigplane.core.exceptions import CommandError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.web.radio_poller import CommandQueue, PttOff, PttOn, RadioPoller
 
@@ -291,6 +295,10 @@ class _PttLanRadio(LanLikeRadio):
     ``start_tx``/``stop_tx`` keep the stub's transition graph — including
     the LAN stream's ``AudioAlreadyStartedError("Already transmitting")``
     on a second ``start_tx`` (lan_stream.py ``AudioStream.start_tx``).
+
+    ``audio_session`` mirrors the production radios' lazy radio-owned
+    singleton (``runtime/radio.py``, ``backends/yaesu_cat/radio.py``) — the
+    property the poller's session path (MOR-2563) reaches for.
     """
 
     def __init__(self) -> None:
@@ -299,6 +307,13 @@ class _PttLanRadio(LanLikeRadio):
         self.capabilities = {CAP_AUDIO}
         self.ptt_writes: list[bool] = []
         self.tx_frames: list[bytes] = []
+        self._audio_session: AudioSession | None = None
+
+    @property
+    def audio_session(self) -> AudioSession:
+        if self._audio_session is None:
+            self._audio_session = AudioSession(self)
+        return self._audio_session
 
     async def set_ptt(self, on: bool) -> None:
         self.ptt_writes.append(on)
@@ -312,7 +327,7 @@ async def test_lan_ptt_with_a_live_foreign_tx_lease() -> None:
     """Case 3: the same sequence on the LAN-shaped stub, whose ``start_tx``
     raises the LAN stream's "Already transmitting" on a second start."""
     radio = _PttLanRadio()
-    session = AudioSession(radio)
+    session = radio.audio_session
     poller = RadioPoller(radio, CommandQueue())
     sub = await session.subscribe_rx("web-audio")
     lease = await session.acquire_tx("bridge")
@@ -403,5 +418,94 @@ async def test_control_ptt_without_any_other_lease_keys_and_unkeys(
         assert _UNKEYED in writes
         assert not radio._audio_driver.tx_running
         assert await rx_ok()
+    finally:
+        await sub.release()
+
+
+# ── Case 5: genuine arm failure through the session (MOR-1178 preserved) ────
+
+
+async def test_lan_session_arm_failure_refuses_key_and_keeps_foreign_lease() -> None:
+    """A session that cannot make TX live still refuses the key (MOR-1178) —
+    no key write, no leaked "ptt" demand — and the refusal must not touch
+    the other owner's lease or call ``radio.stop_tx()`` (which on this stub
+    would drop the shared stream out from under the foreign lease).
+    """
+    radio = _PttLanRadio()
+    session = radio.audio_session
+    poller = RadioPoller(radio, CommandQueue())
+    sub = await session.subscribe_rx("web-audio")
+    lease = await session.acquire_tx("bridge")
+    arm_fails = True
+
+    async def _start_tx() -> None:
+        radio.calls.append("start_tx")
+        if arm_fails:
+            raise RuntimeError("TX audio device unavailable")
+        await LanLikeRadio.start_tx(radio)
+
+    try:
+        assert session.state is AudioSessionState.RX_TX
+        assert radio.state == "transmitting"
+
+        # The foreign lease's TX leg drops silently (transport hiccup) and the
+        # re-arm now fails: the session cannot make TX live for "ptt".
+        radio.state = "receiving"
+        radio.start_tx = _start_tx  # type: ignore[method-assign]
+        calls_before = len(radio.calls)
+
+        with pytest.raises(CommandError, match="TX audio failed to arm"):
+            await poller._execute(PttOn(), command_id="ptt-on", session_id="ws-1")
+
+        # No key write reached the rig; no "ptt" demand leaked.
+        assert radio.ptt_writes == []
+        assert poller._ptt_tx_lease is None  # noqa: SLF001
+        assert session.tx_demand == 1  # only the foreign "bridge" lease
+        assert not lease.released
+        # The refusal ran exactly the failed arm attempt — no stop_tx at the
+        # other owner's leg, no retry.
+        assert radio.calls[calls_before:] == ["start_tx"]
+
+        # The foreign lease is fully functional once the transport recovers.
+        arm_fails = False
+        await lease.push(_LEASE_FRAME)
+        assert radio.state == "transmitting"
+        assert radio.tx_frames[-1] == _LEASE_FRAME
+    finally:
+        await lease.release()
+        await sub.release()
+
+
+# ── Case 6: repeated PTT ON reuses the held lease ────────────────────────────
+
+
+async def test_repeated_ptt_on_reuses_the_held_ptt_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second PTT ON while the "ptt" lease is held takes no second lease
+    and leaks none: exactly one TX demand from the poller across the whole
+    keyed period, released once by PTT OFF.
+    """
+    radio, backend, poller, writes = _usb_stack(monkeypatch, exclusive=True)
+    session = radio.audio_session
+    sub = await session.subscribe_rx("web-audio")
+    try:
+        await poller._execute(PttOn(), command_id="c1", session_id="ws-1")
+        lease = poller._ptt_tx_lease  # noqa: SLF001
+        assert lease is not None and not lease.released
+        assert session.tx_demand == 1
+        assert radio._audio_driver.tx_running
+
+        await poller._execute(PttOn(), command_id="c2", session_id="ws-1")
+        assert poller._ptt_tx_lease is lease  # noqa: SLF001 — reused
+        assert session.tx_demand == 1
+        assert writes.count(_KEYED) == 2  # both keys still reach the rig
+
+        await poller._execute(PttOff(), command_id="c3", session_id="ws-1")
+        assert poller._ptt_tx_lease is None  # noqa: SLF001
+        assert lease.released
+        assert session.tx_demand == 0
+        assert not radio._audio_driver.tx_running
+        assert _UNKEYED in writes
     finally:
         await sub.release()
