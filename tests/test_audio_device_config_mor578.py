@@ -272,8 +272,17 @@ async def test_config_path_produces_identical_effective_open_args(
     make_device: Callable[[], AudioDeviceInfo],
     expected_rx: dict[str, object],
     expected_tx: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Config-built and per-keyword drivers reach open_rx/open_tx identically."""
+    # These scenarios run RX and TX on ONE fake device; pin the "full"
+    # two-stream policy so the open_tx arg comparison is platform-independent
+    # (on macOS the same-device policy is "exclusive" — one duplex stream,
+    # covered by the MOR-546 tests in tests/test_audio_duplex.py).
+    monkeypatch.setattr(
+        "rigplane.audio.usb_driver.resolve_usb_duplex_mode",
+        lambda _rx, _tx: "full",
+    )
     kwargs_backend = _RecordingBackend([make_device()])
     kwargs_driver = UsbAudioDriver(
         rx_device=config.rx_device,

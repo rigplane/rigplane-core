@@ -181,8 +181,16 @@ async def test_normal_rx_open_timing_unaffected() -> None:
 @pytest.mark.timeout(10)
 async def test_tx_open_timeout_shares_the_same_treatment(
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """TX opens use the same off-loop + bounded-timeout treatment as RX."""
+    # block_tx_open steers the plain OutputStream open; pin the "full"
+    # two-stream policy so a same-device fake does not take the exclusive
+    # duplex arm (MOR-546) on macOS, where block_duplex_open applies instead.
+    monkeypatch.setattr(
+        "rigplane.audio.usb_driver.resolve_usb_duplex_mode",
+        lambda _rx, _tx: "full",
+    )
     caplog.set_level(logging.WARNING, logger=_LOGGER_NAME)
     gate = threading.Event()
     driver, backend = _make_driver()

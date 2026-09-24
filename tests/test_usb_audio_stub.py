@@ -214,7 +214,17 @@ def test_select_usb_audio_devices_missing_directional_capability_raises() -> Non
 
 
 @pytest.mark.asyncio
-async def test_usb_audio_driver_lifecycle_start_stop_and_io() -> None:
+async def test_usb_audio_driver_lifecycle_start_stop_and_io(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The fake devices resolve RX and TX to one duplex-capable device; pin
+    # the "full" two-stream policy so this lifecycle pin is platform-
+    # independent (on macOS the same-device policy is "exclusive" — one
+    # duplex stream, covered by the MOR-546 tests in test_audio_duplex.py).
+    monkeypatch.setattr(
+        "rigplane.audio.usb_driver.resolve_usb_duplex_mode",
+        lambda _rx, _tx: "full",
+    )
     driver, backend = _make_driver()
 
     received_frames: list[bytes] = []

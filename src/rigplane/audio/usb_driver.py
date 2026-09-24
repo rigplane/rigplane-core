@@ -658,6 +658,14 @@ class UsbAudioDriver:
         # opening separate InputStream + OutputStream on one C-Media CODEC fails
         # with macOS CoreAudio AUHAL -50. When set, it drives BOTH directions.
         self._duplex_stream: DuplexStream | None = None
+        # MOR-546: the driver owns the RX callback across the exclusive
+        # same-device handoff (plain RX <-> the one duplex stream). Every
+        # stream is started on the stable ``_deliver_rx`` entry point;
+        # ``_rx_callback`` is the CURRENT consumer callback (None = RX demand
+        # unwired — frames drain and drop). The backends clear their OWN
+        # copies before the session calls start_tx, so the callback must
+        # live here for the handoff to keep frames flowing.
+        self._rx_callback: Callable[[bytes], None] | None = None
         self._usb_audio_contract = UsbAudioContract()
 
         self._rx_lock = asyncio.Lock()
@@ -1171,6 +1179,20 @@ class UsbAudioDriver:
                 tx=contract,
             )
 
+    def _deliver_rx(self, frame: bytes) -> None:
+        """Stable stream-facing RX entry point (MOR-546).
+
+        Registered (watchdog-wrapped) with whichever stream currently
+        carries RX — the plain input stream or the exclusive same-device
+        duplex stream — so the RX ↔ duplex handoff never re-wires the
+        stream side. Reads the CURRENT user callback each frame: while
+        none is wired (TX armed before its RX leg joined, or after
+        ``stop_rx`` during duplex) frames are drained and dropped.
+        """
+        callback = self._rx_callback
+        if callback is not None:
+            callback(frame)
+
     async def start_rx(
         self,
         callback: Callable[[bytes], None] | None = None,
@@ -1180,88 +1202,172 @@ class UsbAudioDriver:
         frame_ms: int | None = None,
         allow_sample_rate_fallback: bool = True,
     ) -> None:
-        """Start capture loop and deliver PCM frames to callback."""
+        """Start capture loop and deliver PCM frames to callback.
+
+        MOR-546: while the exclusive same-device duplex stream carries the
+        TX leg, RX JOINS that stream — only the driver-owned RX callback
+        (:attr:`_rx_callback`) is re-pointed; no second input stream is
+        opened on the device (a second stream on one macOS USB CODEC fails
+        with AUHAL -50).
+        """
         if callback is None:
             raise AudioDriverLifecycleError("Audio RX callback is required.")
         if not callable(callback):
             raise TypeError("Audio RX callback must be callable.")
 
         async with self._rx_lock:
+            if self._duplex_stream is not None and not self._duplex_stream.running:
+                # A stored-but-dead duplex stream (its open failed) carries
+                # no RX leg — drop it and open a fresh plain stream below.
+                self._duplex_stream = None
+            if self._duplex_stream is not None:
+                # Exclusive same-device: the duplex stream already carries
+                # the RX leg — joining re-points the driver-owned callback.
+                if self._rx_callback is not None:
+                    raise AudioAlreadyStartedError("RX stream already started.")
+                self._rx_callback = callback
+                logger.info("usb-audio: RX joined the running duplex stream")
+                return
             if self.rx_running:
                 raise AudioAlreadyStartedError("RX stream already started.")
-
-            selected_rx, _ = self._ensure_selected_devices()
-            sr = self._config.sample_rate if sample_rate is None else sample_rate
-            ch = self._config.channels if channels is None else channels
-            fm = self._config.frame_ms if frame_ms is None else frame_ms
-            if (sr * fm) % 1000 != 0:
-                raise AudioDriverLifecycleError(
-                    "Invalid RX frame format: sample_rate * frame_ms must be divisible by 1000."
-                )
-            contract = self._resolve_stream_contract(
-                direction="rx",
-                device=selected_rx,
-                requested_sample_rate=sr,
-                channels=ch,
-                frame_ms=fm,
-                allow_sample_rate_fallback=allow_sample_rate_fallback,
-            )
-            # Log the effective capture request before opening the
-            # InputStream. ``input_channels`` is included because a codec /
-            # device channel-count mismatch is the failure mode behind
-            # MOR-236: requesting more channels than the mono USB CODEC
-            # exposes makes PortAudio reject the stream with "Invalid number
-            # of channels" (PaErrorCode -9998), which previously surfaced
-            # only as an opaque "audio-bus: failed to start RX" with zero
-            # RX frames reaching the browser.
-            logger.info(
-                "usb-audio: opening RX capture — device=[%d] %s, %d Hz, "
-                "open %d ch / deliver %d ch (requested %d, source=%s), %d ms "
-                "(device input_channels=%d)",
-                selected_rx.index,
-                selected_rx.name,
-                contract.sample_rate_hz,
-                contract.effective_open_channels,
-                contract.channels,
-                ch,
-                contract.channel_source,
-                fm,
-                selected_rx.input_channels,
-            )
-            stream = self._backend.open_rx(
-                AudioDeviceId(selected_rx.index),
-                sample_rate=contract.sample_rate_hz,
-                channels=contract.effective_open_channels,
-                frame_ms=fm,
-                deliver_channels=contract.channels,
-                rx_audio_channel=self._config.rx_audio_channel,
-            )
-            self._rx_stream = stream
+            self._rx_callback = callback
             try:
-                await self._open_stream(
-                    stream,
-                    stream.start(self._silence_watchdog(callback, fm)),
-                    direction="rx",
+                await self._open_rx_stream_locked(
+                    sample_rate=sample_rate,
+                    channels=channels,
+                    frame_ms=frame_ms,
+                    allow_sample_rate_fallback=allow_sample_rate_fallback,
                 )
-            except (AudioCaptureOpenTimeoutError, asyncio.CancelledError):
-                # Never leave a stuck-open handle wired up as "the" RX
-                # stream (MOR-1438): the next start_rx() must create a
-                # fresh one rather than observe this abandoned attempt
-                # flip ``running`` True behind its back. Cancellation
-                # (F1) gets the same treatment as a timeout — both leave
-                # the background open running unattended.
-                self._rx_stream = None
+            except BaseException:
+                self._rx_callback = None
                 raise
-            self._store_stream_contract(contract)
-            logger.info(
-                "usb-audio: RX capture running — device=[%d] %s",
-                selected_rx.index,
-                selected_rx.name,
+
+    async def _open_rx_stream_locked(
+        self,
+        *,
+        sample_rate: int | None,
+        channels: int | None,
+        frame_ms: int | None,
+        allow_sample_rate_fallback: bool,
+    ) -> None:
+        """Open the plain RX input stream; caller holds ``_rx_lock``.
+
+        ``_rx_callback`` must already be wired: the stream starts on the
+        stable :meth:`_deliver_rx` entry point so a later exclusive duplex
+        handoff (MOR-546) keeps delivering to it.
+        """
+        selected_rx, _ = self._ensure_selected_devices()
+        sr = self._config.sample_rate if sample_rate is None else sample_rate
+        ch = self._config.channels if channels is None else channels
+        fm = self._config.frame_ms if frame_ms is None else frame_ms
+        if (sr * fm) % 1000 != 0:
+            raise AudioDriverLifecycleError(
+                "Invalid RX frame format: sample_rate * frame_ms must be divisible by 1000."
+            )
+        contract = self._resolve_stream_contract(
+            direction="rx",
+            device=selected_rx,
+            requested_sample_rate=sr,
+            channels=ch,
+            frame_ms=fm,
+            allow_sample_rate_fallback=allow_sample_rate_fallback,
+        )
+        # Log the effective capture request before opening the
+        # InputStream. ``input_channels`` is included because a codec /
+        # device channel-count mismatch is the failure mode behind
+        # MOR-236: requesting more channels than the mono USB CODEC
+        # exposes makes PortAudio reject the stream with "Invalid number
+        # of channels" (PaErrorCode -9998), which previously surfaced
+        # only as an opaque "audio-bus: failed to start RX" with zero
+        # RX frames reaching the browser.
+        logger.info(
+            "usb-audio: opening RX capture — device=[%d] %s, %d Hz, "
+            "open %d ch / deliver %d ch (requested %d, source=%s), %d ms "
+            "(device input_channels=%d)",
+            selected_rx.index,
+            selected_rx.name,
+            contract.sample_rate_hz,
+            contract.effective_open_channels,
+            contract.channels,
+            ch,
+            contract.channel_source,
+            fm,
+            selected_rx.input_channels,
+        )
+        stream = self._backend.open_rx(
+            AudioDeviceId(selected_rx.index),
+            sample_rate=contract.sample_rate_hz,
+            channels=contract.effective_open_channels,
+            frame_ms=fm,
+            deliver_channels=contract.channels,
+            rx_audio_channel=self._config.rx_audio_channel,
+        )
+        self._rx_stream = stream
+        try:
+            await self._open_stream(
+                stream,
+                stream.start(self._silence_watchdog(self._deliver_rx, fm)),
+                direction="rx",
+            )
+        except (AudioCaptureOpenTimeoutError, asyncio.CancelledError):
+            # Never leave a stuck-open handle wired up as "the" RX
+            # stream (MOR-1438): the next start_rx() must create a
+            # fresh one rather than observe this abandoned attempt
+            # flip ``running`` True behind its back. Cancellation
+            # (F1) gets the same treatment as a timeout — both leave
+            # the background open running unattended.
+            self._rx_stream = None
+            raise
+        self._store_stream_contract(contract)
+        logger.info(
+            "usb-audio: RX capture running — device=[%d] %s",
+            selected_rx.index,
+            selected_rx.name,
+        )
+
+    async def _reopen_plain_rx_locked(self, *, reason: str) -> None:
+        """Best-effort return to plain RX; caller holds ``_rx_lock``.
+
+        Shared by the two duplex → plain-RX transitions — ``stop_tx``
+        after a duplex teardown and ``_start_tx_exclusive`` after a
+        failed duplex open: the still-wired ``_rx_callback`` gets a
+        fresh plain stream when possible. An ordinary failure is
+        logged, never raised (the RX demand stays armed for the next
+        ``start_rx`` — the honest-downgrade retry path, MOR-582); a
+        cancellation propagates.
+        """
+        if self._rx_callback is None or self.rx_running:
+            return
+        try:
+            await self._open_rx_stream_locked(
+                sample_rate=None,
+                channels=None,
+                frame_ms=None,
+                allow_sample_rate_fallback=True,
+            )
+        except Exception:
+            logger.warning(
+                "usb-audio: failed to return to plain RX after %s — RX "
+                "demand stays armed for the next start_rx",
+                reason,
+                exc_info=True,
             )
 
     async def stop_rx(self) -> None:
-        """Stop capture loop and close RX stream."""
+        """Stop capture loop and close RX stream.
+
+        MOR-546: while the exclusive same-device duplex stream runs, the
+        TX leg owns the device — ``stop_rx`` only unwires the driver-owned
+        RX callback (frames drain); :meth:`stop_tx` owns the duplex
+        teardown.
+        """
         async with self._rx_lock:
+            self._rx_callback = None
+            if self._duplex_stream is not None and self._duplex_stream.running:
+                return
+            # A stored-but-dead duplex stream (its open failed) owns nothing
+            # on the device — drop it and let the plain-RX path below run.
+            self._duplex_stream = None
             stream = self._rx_stream
             self._rx_stream = None
             if stream is not None and stream.running:
@@ -1275,7 +1381,22 @@ class UsbAudioDriver:
         frame_ms: int | None = None,
         allow_sample_rate_fallback: bool = True,
     ) -> None:
-        """Start playback loop for outgoing PCM frames."""
+        """Start playback loop for outgoing PCM frames.
+
+        MOR-546: when the duplex policy is ``exclusive`` (macOS, RX and TX
+        resolved to the same physical USB CODEC) the TX arm moves BOTH
+        legs to ONE duplex stream via :meth:`_start_tx_exclusive` instead
+        of opening a second OutputStream on that device. Separate-device
+        (``full``) behaviour below is unchanged.
+        """
+        if self.duplex_mode == "exclusive":
+            await self._start_tx_exclusive(
+                sample_rate=sample_rate,
+                channels=channels,
+                frame_ms=frame_ms,
+                allow_sample_rate_fallback=allow_sample_rate_fallback,
+            )
+            return
         async with self._tx_lock:
             if self.tx_running:
                 raise AudioAlreadyStartedError("TX stream already started.")
@@ -1333,6 +1454,11 @@ class UsbAudioDriver:
         *callback*; TX frames are pushed via :meth:`_push_tx_pcm` (routed through
         the duplex stream's TX queue). The two-stream :meth:`start_rx` /
         :meth:`start_tx` path is unchanged for separate-device use.
+
+        MOR-546: *callback* is kept by the driver (:attr:`_rx_callback`)
+        and reached through the stable :meth:`_deliver_rx` entry point, so
+        the exclusive :meth:`start_tx` arm and this method share the same
+        stream core (:meth:`_open_duplex_stream_locked`).
         """
         if callback is None:
             raise AudioDriverLifecycleError("Audio RX callback is required.")
@@ -1344,82 +1470,160 @@ class UsbAudioDriver:
                 raise AudioDriverLifecycleError(
                     "Duplex stream requires both RX and TX idle."
                 )
-
-            selected_rx, selected_tx = self._ensure_selected_devices()
-            if selected_rx.index != selected_tx.index:
-                raise AudioDriverLifecycleError(
-                    "Duplex stream requires RX and TX on the SAME device "
-                    f"(got RX=[{selected_rx.index}] {selected_rx.name}, "
-                    f"TX=[{selected_tx.index}] {selected_tx.name}); "
-                    "use start_rx/start_tx for separate devices."
-                )
-
-            sr = self._config.sample_rate if sample_rate is None else sample_rate
-            ch = self._config.channels if channels is None else channels
-            fm = self._config.frame_ms if frame_ms is None else frame_ms
-            if (sr * fm) % 1000 != 0:
-                raise AudioDriverLifecycleError(
-                    "Invalid duplex frame format: sample_rate * frame_ms must "
-                    "be divisible by 1000."
-                )
-
-            rx_contract = self._resolve_stream_contract(
-                direction="rx",
-                device=selected_rx,
-                requested_sample_rate=sr,
-                channels=ch,
-                frame_ms=fm,
-                allow_sample_rate_fallback=allow_sample_rate_fallback,
-            )
-            tx_contract = self._resolve_stream_contract(
-                direction="tx",
-                device=selected_tx,
-                requested_sample_rate=rx_contract.sample_rate_hz,
-                channels=ch,
-                frame_ms=fm,
-                allow_sample_rate_fallback=False,
-            )
-            logger.info(
-                "usb-audio: opening DUPLEX — device=[%d] %s, %d Hz, RX open %d ch "
-                "/ deliver %d ch, TX %d ch, %d ms",
-                selected_rx.index,
-                selected_rx.name,
-                rx_contract.sample_rate_hz,
-                rx_contract.effective_open_channels,
-                rx_contract.channels,
-                tx_contract.channels,
-                fm,
-            )
-            stream = self._backend.open_duplex(
-                AudioDeviceId(selected_rx.index),
-                sample_rate=rx_contract.sample_rate_hz,
-                channels=rx_contract.effective_open_channels,
-                frame_ms=fm,
-                deliver_channels=rx_contract.channels,
-                rx_audio_channel=self._config.rx_audio_channel,
-                tx_channels=tx_contract.channels,
-            )
-            self._duplex_stream = stream
+            previous_callback = self._rx_callback
+            self._rx_callback = callback
             try:
-                # MOR-1573: duplex opens get the SAME off-loop + bounded-
-                # timeout treatment as RX/TX (MOR-1438) — a stuck duplex
-                # open is the same blocking OS-level device open as either
-                # single-direction stream, just on the shared CODEC.
-                await self._open_stream(
-                    stream, stream.start(callback), direction="duplex"
+                await self._open_duplex_stream_locked(
+                    sample_rate=sample_rate,
+                    channels=channels,
+                    frame_ms=frame_ms,
+                    allow_sample_rate_fallback=allow_sample_rate_fallback,
                 )
-            except (AudioCaptureOpenTimeoutError, asyncio.CancelledError):
-                # Never leave a stuck-open handle wired up as "the" duplex
-                # stream: the next start_duplex() must create a fresh one.
-                self._duplex_stream = None
+            except BaseException:
+                self._rx_callback = previous_callback
                 raise
-            self._store_stream_contract(rx_contract)
-            self._store_stream_contract(tx_contract)
-            logger.info(
-                "usb-audio: DUPLEX running — device=[%d] %s",
-                selected_rx.index,
-                selected_rx.name,
+
+    async def _start_tx_exclusive(
+        self,
+        *,
+        sample_rate: int | None,
+        channels: int | None,
+        frame_ms: int | None,
+        allow_sample_rate_fallback: bool,
+    ) -> None:
+        """Arm TX on an exclusive same-device CODEC as ONE duplex stream (MOR-546).
+
+        A second OutputStream on the same USB CODEC kills the running
+        capture (macOS CoreAudio AUHAL -50 — the live MOR-546 FTX-1
+        defect), so the TX leg opens as a single full-duplex stream. A
+        live plain RX stream yields the device first; RX delivery resumes
+        on the SAME driver-owned callback (:attr:`_rx_callback`), so
+        consumers keep their wiring and frames keep flowing. When the
+        duplex open fails, a still-wired RX demand gets its plain stream
+        back on a best-effort basis (:meth:`_reopen_plain_rx_locked` —
+        logged, never raised; a cancel propagates) before the original
+        TX failure reaches the caller. Audio only — no PTT/TX command is
+        involved here.
+        """
+        async with self._rx_lock, self._tx_lock:
+            if self.tx_running:
+                raise AudioAlreadyStartedError("TX stream already started.")
+            # A live plain RX stream yields the device; its callback is
+            # kept in ``_rx_callback`` and resumes on the duplex stream.
+            rx_stream = self._rx_stream
+            self._rx_stream = None
+            if rx_stream is not None and rx_stream.running:
+                await rx_stream.stop()
+            try:
+                await self._open_duplex_stream_locked(
+                    sample_rate=sample_rate,
+                    channels=channels,
+                    frame_ms=frame_ms,
+                    allow_sample_rate_fallback=allow_sample_rate_fallback,
+                )
+            except BaseException:
+                # The failed arm already stopped plain RX — hand a
+                # still-wired RX demand its plain stream back (the same
+                # best-effort contract as ``stop_tx``) before the caller
+                # sees TX fail.
+                await self._reopen_plain_rx_locked(reason="the failed duplex open")
+                raise
+
+    async def _open_duplex_stream_locked(
+        self,
+        *,
+        sample_rate: int | None,
+        channels: int | None,
+        frame_ms: int | None,
+        allow_sample_rate_fallback: bool,
+    ) -> None:
+        """Open the single full-duplex stream; caller holds BOTH locks.
+
+        RX frames are delivered through the stable :meth:`_deliver_rx`
+        entry point, so the driver-owned :attr:`_rx_callback` (None = TX
+        armed without RX demand — frames drain) survives every later
+        handoff (MOR-546).
+        """
+        selected_rx, selected_tx = self._ensure_selected_devices()
+        if selected_rx.index != selected_tx.index:
+            raise AudioDriverLifecycleError(
+                "Duplex stream requires RX and TX on the SAME device "
+                f"(got RX=[{selected_rx.index}] {selected_rx.name}, "
+                f"TX=[{selected_tx.index}] {selected_tx.name}); "
+                "use start_rx/start_tx for separate devices."
             )
+
+        sr = self._config.sample_rate if sample_rate is None else sample_rate
+        ch = self._config.channels if channels is None else channels
+        fm = self._config.frame_ms if frame_ms is None else frame_ms
+        if (sr * fm) % 1000 != 0:
+            raise AudioDriverLifecycleError(
+                "Invalid duplex frame format: sample_rate * frame_ms must "
+                "be divisible by 1000."
+            )
+
+        rx_contract = self._resolve_stream_contract(
+            direction="rx",
+            device=selected_rx,
+            requested_sample_rate=sr,
+            channels=ch,
+            frame_ms=fm,
+            allow_sample_rate_fallback=allow_sample_rate_fallback,
+        )
+        tx_contract = self._resolve_stream_contract(
+            direction="tx",
+            device=selected_tx,
+            requested_sample_rate=rx_contract.sample_rate_hz,
+            channels=ch,
+            frame_ms=fm,
+            allow_sample_rate_fallback=False,
+        )
+        logger.info(
+            "usb-audio: opening DUPLEX — device=[%d] %s, %d Hz, RX open %d ch "
+            "/ deliver %d ch, TX %d ch, %d ms",
+            selected_rx.index,
+            selected_rx.name,
+            rx_contract.sample_rate_hz,
+            rx_contract.effective_open_channels,
+            rx_contract.channels,
+            tx_contract.channels,
+            fm,
+        )
+        stream = self._backend.open_duplex(
+            AudioDeviceId(selected_rx.index),
+            sample_rate=rx_contract.sample_rate_hz,
+            channels=rx_contract.effective_open_channels,
+            frame_ms=fm,
+            deliver_channels=rx_contract.channels,
+            rx_audio_channel=self._config.rx_audio_channel,
+            tx_channels=tx_contract.channels,
+        )
+        self._duplex_stream = stream
+        try:
+            # MOR-1573: duplex opens get the SAME off-loop + bounded-
+            # timeout treatment as RX/TX (MOR-1438) — a stuck duplex
+            # open is the same blocking OS-level device open as either
+            # single-direction stream, just on the shared CODEC.
+            await self._open_stream(
+                stream,
+                stream.start(self._silence_watchdog(self._deliver_rx, fm)),
+                direction="duplex",
+            )
+        except BaseException:
+            # Never leave a failed open wired up as "the" duplex stream:
+            # a stuck-open timeout/cancel AND an ordinary open error
+            # (PortAudio/AUHAL, e.g. -50) must both drop the handle, or
+            # start_rx/stop_rx treat the dead stream as a live join
+            # target and RX silently strands (MOR-546).
+            self._duplex_stream = None
+            raise
+        self._store_stream_contract(rx_contract)
+        self._store_stream_contract(tx_contract)
+        logger.info(
+            "usb-audio: DUPLEX running — device=[%d] %s",
+            selected_rx.index,
+            selected_rx.name,
+        )
 
     async def stop_duplex(self) -> None:
         """Stop and close the full-duplex stream."""
@@ -1443,12 +1647,29 @@ class UsbAudioDriver:
         await self._tx_stream.write(bytes(frame))
 
     async def stop_tx(self) -> None:
-        """Stop playback loop and close TX stream."""
+        """Stop playback loop and close TX stream.
+
+        MOR-546: in exclusive same-device mode the TX leg IS the duplex
+        stream — closing it returns the device to plain RX capture when an
+        RX callback is still wired (:meth:`stop_rx` unwires it first).
+        Separate-device (``full``) behaviour is unchanged.
+        """
         async with self._tx_lock:
-            stream = self._tx_stream
-            self._tx_stream = None
-            if stream is not None and stream.running:
-                await stream.stop()
+            duplex_stream = self._duplex_stream
+            self._duplex_stream = None
+            if duplex_stream is None:
+                stream = self._tx_stream
+                self._tx_stream = None
+                if stream is not None and stream.running:
+                    await stream.stop()
+                return
+        # Exclusive handoff, outside ``_tx_lock`` (everywhere else the lock
+        # order is rx → tx): close the duplex stream, then hand the device
+        # back to a plain RX stream when RX demand is still wired.
+        if duplex_stream.running:
+            await duplex_stream.stop()
+        async with self._rx_lock:
+            await self._reopen_plain_rx_locked(reason="the duplex teardown")
 
 
 __all__ = [

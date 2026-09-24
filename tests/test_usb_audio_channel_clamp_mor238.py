@@ -169,8 +169,17 @@ async def test_rx_stereo_request_clamps_to_mono_device() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tx_stereo_request_clamps_to_mono_device() -> None:
+async def test_tx_stereo_request_clamps_to_mono_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A 2-channel TX request opens at 1 ch on a mono-output device."""
+    # _StrictChannelBackend implements only open_rx/open_tx; pin the "full"
+    # two-stream policy so the same-device fake does not take the exclusive
+    # duplex arm (MOR-546) on macOS.
+    monkeypatch.setattr(
+        "rigplane.audio.usb_driver.resolve_usb_duplex_mode",
+        lambda _rx, _tx: "full",
+    )
     backend = _StrictChannelBackend(output_channels=1)
     driver = UsbAudioDriver(serial_port=None, backend=backend)
 
