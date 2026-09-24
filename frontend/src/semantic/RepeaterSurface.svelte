@@ -106,15 +106,16 @@
       </div>
     {/if}
     {#if rx.toneFreq.availability.structural}
+      <!-- `scope-step-key` reuses the scope stepper key look via its class. -->
       <div class="repeater-stepper" data-testid="repeater-tone-freq">
         <span class="repeater-name">CTCSS</span>
-        <button type="button" class="repeater-step-key" aria-label="Decrease CTCSS tone"
+        <button type="button" class="repeater-step-key scope-step-key" aria-label="Decrease CTCSS tone"
           data-testid="repeater-tone-freq-down" disabled={!stepAvailable} onclick={() => step(-1)}>&#8249;</button>
         <output class="repeater-step-value" data-testid="repeater-tone-freq-value"
           data-pending={rxPending?.toneFreq === true}
           aria-describedby={rxPending?.toneFreq ? `${pendingId}-freq` : undefined}
         >{rx.toneFreq.reading.status === 'known' ? formatToneHz(rx.toneFreq.reading.value) : ''}</output>
-        <button type="button" class="repeater-step-key" aria-label="Increase CTCSS tone"
+        <button type="button" class="repeater-step-key scope-step-key" aria-label="Increase CTCSS tone"
           data-testid="repeater-tone-freq-up" disabled={!stepAvailable} onclick={() => step(1)}>&#8250;</button>
         {#if rxPending?.toneFreq}<span id={`${pendingId}-freq`} class="sr-only">{t('core.repeater.pendingAnnouncement')}</span>{/if}
       </div>
