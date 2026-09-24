@@ -36,6 +36,7 @@ import time
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, Callable, cast
 
+from ..audio.session import AudioSession, TxLease
 from ..exceptions import CommandError
 from ..exceptions import ConnectionError as RadioConnectionError
 from ..core.exceptions import TimeoutError as RigplaneTimeoutError
@@ -612,6 +613,10 @@ class RadioPoller:
         # on the unmanaged branch, so automated teardown housekeeping releases
         # only its own keyer. A single remembered identity, not a lease.
         self._last_keyer: tuple[CommandSource, str | None] | None = None
+        # MOR-2563: the "ptt" TX lease on the radio's AudioSession, held from
+        # PTT ON to PTT OFF (ADR §3.3 item 3). None on the legacy direct
+        # start_tx/stop_tx path (radios without a session) and while unkeyed.
+        self._ptt_tx_lease: TxLease | None = None
         self._deferred_tx_lane = DeferredTxCommandLane()
         self._deferred_tx_entry: CommandQueueEntry | None = None
 
@@ -2042,7 +2047,13 @@ class RadioPoller:
         raise CommandError(f"control session {session_id} is gone: PTT ON refused")
 
     async def _stop_tx_audio_leg(self) -> None:
-        """Stop the TX audio stream and re-arm RX; never raises."""
+        """Stop the TX audio stream and re-arm RX; never raises.
+
+        Legacy seat, reached only via ``_release_ptt_tx_audio`` for radios
+        without an ``AudioSession`` (MOR-2563): on session-owned radios the
+        poller holds a "ptt" lease and releasing it — never this direct
+        ``stop_tx`` — is what ends its TX demand.
+        """
         radio = self._radio
         if CAP_AUDIO not in self._caps:
             return
@@ -2073,6 +2084,45 @@ class RadioPoller:
                 logger.info("poller: RX audio stream restarted")
         except Exception as e:
             logger.debug("poller: audio stream transition failed: %s", e)
+
+    def _ptt_audio_session(self) -> AudioSession | None:
+        """The radio's AudioSession when the PTT arm goes through it.
+
+        MOR-2563 (ADR §3.3 item 3): on a radio that owns a session, PTT
+        TX-audio arming is ``acquire_tx("ptt")`` / lease release, never the
+        direct ``start_tx``/``stop_tx`` below. Radios without a session (or
+        without CAP_AUDIO) keep the legacy path. The ``isinstance`` guard —
+        not a bare ``getattr`` — keeps mock/stub radios, whose attribute
+        access fabricates a non-session object, on the legacy path (the same
+        guard ``web/server.py`` uses before attaching session listeners).
+        """
+        if CAP_AUDIO not in self._caps:
+            return None
+        session = getattr(self._radio, "audio_session", None)
+        return session if isinstance(session, AudioSession) else None
+
+    async def _release_ptt_tx_audio(self) -> None:
+        """Undo the PTT TX-audio arm; never raises.
+
+        Session path: release only the "ptt" lease. The session then stops
+        TX iff no other owner holds it and restores RX by its own rules —
+        another owner's live TX leg is never stopped here. When the session
+        path is in use and no lease is held (the arm failed inside
+        ``acquire_tx``, which unwinds its own partial lease), there is
+        nothing of ours to undo and the legacy stop would kill another
+        owner's leg, so do nothing.
+        Legacy path: the pre-session ``_stop_tx_audio_leg``, unchanged.
+        """
+        lease, self._ptt_tx_lease = self._ptt_tx_lease, None
+        if lease is not None:
+            try:
+                await lease.release()
+            except Exception as e:
+                logger.debug("poller: ptt TX lease release failed: %s", e)
+            return
+        if self._ptt_audio_session() is not None:
+            return
+        await self._stop_tx_audio_leg()
 
     async def _execute(
         self,
@@ -2407,28 +2457,41 @@ class RadioPoller:
                 # Start TX audio stream before PTT (LAN audio requires this)
                 if CAP_AUDIO in self._caps:
                     try:
-                        start_tx = getattr(radio, "start_tx", None)
-                        if start_tx is not None:
-                            # Neutral AudioTransport surface (MOR-543): the
-                            # backend resolves the TX format from its
-                            # negotiated contract.
-                            await start_tx()
-                            logger.info(
-                                "poller: TX audio stream started (neutral start_tx)"
-                            )
+                        session = self._ptt_audio_session()
+                        if session is not None:
+                            # MOR-2563 (ADR §3.3 item 3): arm through a
+                            # refcounted "ptt" lease, not radio.start_tx().
+                            # A TX leg already live for another owner (the
+                            # audio bridge, the web audio handler) is NOT an
+                            # arm failure — the lease refcounts it and the
+                            # key proceeds. A repeated PTT ON reuses the held
+                            # lease: no second acquire, no leaked demand.
+                            if self._ptt_tx_lease is None:
+                                self._ptt_tx_lease = await session.acquire_tx("ptt")
+                            logger.info("poller: TX audio armed via session TX lease")
                         else:
-                            # Legacy per-codec fallback for radios without
-                            # the neutral surface.
-                            tx_codec, tx_sr = _audio_tx_codec_and_rate(radio)
-                            if tx_codec == AudioCodec.PCM_1CH_16BIT:
-                                await radio.start_audio_tx_pcm(sample_rate=tx_sr)
+                            start_tx = getattr(radio, "start_tx", None)
+                            if start_tx is not None:
+                                # Neutral AudioTransport surface (MOR-543): the
+                                # backend resolves the TX format from its
+                                # negotiated contract.
+                                await start_tx()
+                                logger.info(
+                                    "poller: TX audio stream started (neutral start_tx)"
+                                )
                             else:
-                                await radio.start_audio_tx_opus()
-                            logger.info(
-                                "poller: TX audio stream started (tx_codec=%s, sr=%d)",
-                                tx_codec,
-                                tx_sr,
-                            )
+                                # Legacy per-codec fallback for radios without
+                                # the neutral surface.
+                                tx_codec, tx_sr = _audio_tx_codec_and_rate(radio)
+                                if tx_codec == AudioCodec.PCM_1CH_16BIT:
+                                    await radio.start_audio_tx_pcm(sample_rate=tx_sr)
+                                else:
+                                    await radio.start_audio_tx_opus()
+                                logger.info(
+                                    "poller: TX audio stream started (tx_codec=%s, sr=%d)",
+                                    tx_codec,
+                                    tx_sr,
+                                )
                     except Exception as e:
                         # MOR-1178: a failed arm refuses the key. Swallowed, it
                         # fell through to the write below and keyed a rig whose
@@ -2442,7 +2505,7 @@ class RadioPoller:
                         logger.warning(
                             "poller: refusing PTT ON: start TX audio failed: %s", e
                         )
-                        await self._stop_tx_audio_leg()
+                        await self._release_ptt_tx_audio()
                         raise CommandError(
                             f"TX audio failed to arm, refusing PTT ON: {e}"
                         ) from e
@@ -2473,7 +2536,7 @@ class RadioPoller:
                                 "no owner identity to hold the lease"
                             )
                     except BaseException:
-                        await self._stop_tx_audio_leg()
+                        await self._release_ptt_tx_audio()
                         raise
                     await radio.set_ptt(True)
                     # MOR-1220: only now, and only here. After the write, so a
@@ -2492,7 +2555,7 @@ class RadioPoller:
                         # ours: disarm it, or modulation keeps flowing towards
                         # a rig nobody keyed. Reported, never swallowed — the
                         # operator must not believe they are on the air.
-                        await self._stop_tx_audio_leg()
+                        await self._release_ptt_tx_audio()
                         raise CommandError(
                             f"managed TX rejected PTT ON: {transition.outcome}"
                         )
@@ -2535,7 +2598,7 @@ class RadioPoller:
                     # unkey write raised, the rig may still be keyed and the
                     # next teardown must be free to send OFF again.
                     self._last_keyer = None
-                    await self._stop_tx_audio_leg()
+                    await self._release_ptt_tx_audio()
             case SetPower(level=level, unit=unit):
                 if unit != "raw_255":
                     raise ValueError(
