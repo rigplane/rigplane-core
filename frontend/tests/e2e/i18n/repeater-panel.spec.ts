@@ -143,12 +143,12 @@ for (const width of [1280, 1440]) {
     await boot(page, state, caps, width);
     const panel = page.locator(PANEL);
     await expect(panel).toBeVisible();
-    const controls = page.locator(`${SURFACE} button, ${SURFACE} output`);
-    expect(await controls.count()).toBe(9);
-    for (const control of await controls.all()) {
-      await control.scrollIntoViewIfNeeded();
-      const result = await control.evaluate((element, panelSelector) => {
-        const host = document.querySelector(panelSelector)!.getBoundingClientRect();
+    // Scroll the PANEL once, never a control: scrolling each control into
+    // view would scroll overflowing content back inside the panel.
+    await panel.scrollIntoViewIfNeeded();
+    const results = await page.evaluate(([panelSelector, surfaceSelector]) => {
+      const host = document.querySelector(panelSelector)!.getBoundingClientRect();
+      return [...document.querySelectorAll(`${surfaceSelector} button, ${surfaceSelector} output`)].map((element) => {
         const box = element.getBoundingClientRect();
         const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
         return {
@@ -157,7 +157,10 @@ for (const width of [1280, 1440]) {
             && box.top >= host.top - 0.5 && box.bottom <= host.bottom + 0.5,
           hit: hit === element || element.contains(hit),
         };
-      }, PANEL);
+      });
+    }, [PANEL, SURFACE]);
+    expect(results).toHaveLength(9);
+    for (const result of results) {
       expect(result, JSON.stringify(result)).toMatchObject({ inside: true, hit: true });
     }
   });
