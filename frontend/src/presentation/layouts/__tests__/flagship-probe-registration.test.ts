@@ -39,9 +39,9 @@ describe('the flagship-probe registration', () => {
     expect([...placed].every((id) => flagshipProbeLayout.zones.some((z) => z.id === id))).toBe(true);
   });
 
-  // Kills: declaring `memory`, the one declarable surface this arrangement
-  // leaves out, or dropping one of the fourteen it places.
-  it('mounts fourteen of the fifteen declarable surfaces, all but memory', () => {
+  // Kills: declaring `memory` or `repeater`, the two declarable surfaces this
+  // arrangement leaves out, or dropping one of the fourteen it places.
+  it('mounts fourteen of the sixteen declarable surfaces, all but memory and repeater', () => {
     const declared = new Set<SemanticSurfaceName>(
       flagshipProbeLayout.zones.flatMap((zone) => [...zone.surfaces]),
     );

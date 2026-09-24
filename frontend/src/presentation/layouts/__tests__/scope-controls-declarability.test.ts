@@ -41,7 +41,7 @@ describe('scopeControls is a declarable semantic surface', () => {
   it('is in the declarable set', () => {
     expect([...SEMANTIC_SURFACE_NAMES]).toEqual([
       'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band',
-      'antenna', 'ritXitScan', 'cwKeyer', 'scopeDisplay', 'scopeControls', 'memory',
+      'antenna', 'ritXitScan', 'cwKeyer', 'scopeDisplay', 'scopeControls', 'memory', 'repeater',
     ]);
   });
 
