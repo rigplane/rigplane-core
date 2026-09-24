@@ -412,7 +412,7 @@
      mode where this toolbar renders the semantic row — extends the FAMILY,
      not a copy: no other `.standard-face` rule in the tree matches anything
      inside this toolbar's subtree (verified by grep over every
-     `.standard-face` selector: the rest key on .band-tab, .rx-tx-*,
+     `.standard-face` selector: the rest key on the band-tab, rx-tx-*,
      .desktop-station-meters, VFO/status-bar parts, none of which render
      here), so the toolbar is display-identical on desktop-v2 and keys-only
      on sdr-test. -->
@@ -421,8 +421,7 @@
   class:hosted={hosted}
   class:standard-face={hosted}
   class:desktop-control-face={hosted}
->
-  {#if hasCapability('scope') && hideScopeControls && scopeControls}
+>  {#if hasCapability('scope') && hideScopeControls && scopeControls}
     <!-- MOR-2545 PR3: the semantic row IS the one row — the toolbar hands it
          the screen group (2nd arg, into More) and the row tail (3rd arg,
          before [MORE ▾]). No separators, no cyan wash; token ground. -->
