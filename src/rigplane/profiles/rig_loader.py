@@ -2258,8 +2258,10 @@ def load_rig(path: Path) -> RigConfig:
     # repeater band. It is data only — no band name or frequency lives in
     # code. Omitted defaults to false; any non-boolean value is a load error.
     for index, rng in enumerate(freq_ranges_data):
-        if isinstance(rng, dict) and "repeater" in rng and not isinstance(
-            rng["repeater"], bool
+        if (
+            isinstance(rng, dict)
+            and "repeater" in rng
+            and not isinstance(rng["repeater"], bool)
         ):
             raise RigLoadError(
                 f"{filename}: freq_ranges.ranges[{index}].repeater must be a boolean"
