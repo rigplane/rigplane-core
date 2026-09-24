@@ -9,13 +9,16 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Literal, cast, get_args
+from typing import Any, Final, Literal, cast, get_args
 
 from rigplane.core.tx_target import tx_target_from_dict, validate_tx_target
 
 __all__ = [
+    "AcquisitionClass",
     "CapabilityMetadata",
     "ChangeSet",
+    "CONTROL_FIELD_NAMES",
+    "LIVE_FIELD_NAMES",
     "LOCAL_MONOTONIC_CLOCK_DOMAIN",
     "CommandIntent",
     "CommandLifecycleEvent",
@@ -30,9 +33,14 @@ __all__ = [
     "FieldSpec",
     "Observation",
     "ObservationSource",
+    "ON_DEMAND_FIELD_NAMES",
+    "PANEL_ADJUSTABLE_FIELD_NAMES",
+    "PANEL_FIELD_NAMES",
     "PendingPolicy",
     "SourceMetadata",
+    "TX_METER_FIELD_NAMES",
     "VfoSlot",
+    "acquisition_class_for_path",
 ]
 
 LOCAL_MONOTONIC_CLOCK_DOMAIN = "local_monotonic"
@@ -111,6 +119,26 @@ class FieldFamily(StrEnum):
     DISPLAY = "display"
     CONNECTION = "connection"
     HEALTH = "health"
+
+
+class AcquisitionClass(StrEnum):
+    """Shared acquisition class for one field path (MOR-2574), ranked.
+
+    Members are declared in rank order, highest first: the order
+    ``tuple(AcquisitionClass)`` yields is the ranking. The budget fit
+    stretches the lowest-ranked classes first. On-demand fields (paths a
+    provider cannot poll) are not a class: they keep their existing
+    prime/command-response shape with no cadence and no expiry.
+    """
+
+    KEYING = "keying"
+    TX_METER = "tx_meter"
+    LIVE = "live"
+    METER = "meter"
+    CONTROL = "control"
+    PANEL = "panel"
+    SETTING = "setting"
+    MENU = "menu"
 
 
 _TOKEN_ALPHABET = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_")
@@ -455,6 +483,116 @@ class FieldPath:
         )
 
 
+# --- Acquisition classes (MOR-2574) ----------------------------------------
+# The membership below moved here from tests/test_state_acquisition_policy.py
+# (owner ruling 2026-09-07) plus the named exceptions of the MOR-2574
+# design; the test now reads these sets instead of keeping a second copy.
+
+#: The tuning pair that moves while the operator tunes. ``ptt`` below is its
+#: own keying class; these two names are the freq/mode live pair.
+_LIVE_TUNING_FIELD_NAMES: Final[tuple[str, str]] = ("freq_hz", "mode")
+#: Facts that move while the operator tunes or keys.
+LIVE_FIELD_NAMES: Final[frozenset[str]] = frozenset(_LIVE_TUNING_FIELD_NAMES) | {
+    "ptt",
+}
+#: TX-window meters. ``id`` polls only during transmit (owner decision
+# 2026-09-24: Id is a tx_meter); ``vd`` is not here — it is a setting.
+TX_METER_FIELD_NAMES: Final[frozenset[str]] = frozenset(
+    {"power", "swr", "alc", "comp", "id"}
+)
+#: Controls the operator touches while listening. ``filter_width`` and
+#: ``split`` are here, which is why they are control rather than panel
+#: despite being operator-adjustable.
+CONTROL_FIELD_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "af_level",
+        "rf_gain",
+        "squelch",
+        "filter_width",
+        "split",
+        "tx_target",
+        "active",
+        "power_level",
+        "dual_watch",
+    }
+)
+#: Everything the operator reaches by turning a knob or opening a menu —
+#: the owner's 2026-09-07 panel set.
+PANEL_ADJUSTABLE_FIELD_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "auto_notch",
+        "filter_width",
+        "if_shift",
+        "manual_notch",
+        "manual_notch_freq",
+        "manual_notch_width",
+        "nb_level",
+        "notch_filter",
+        "nr_level",
+        "pbt_inner",
+        "pbt_outer",
+        "rit_freq",
+        "split",
+    }
+)
+#: The panel class: the 2026-09-07 set minus the names that are control.
+PANEL_FIELD_NAMES: Final[frozenset[str]] = (
+    PANEL_ADJUSTABLE_FIELD_NAMES - CONTROL_FIELD_NAMES
+)
+ON_DEMAND_FIELD_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "agc_time_constant",
+        "break_in",
+        "break_in_delay",
+        "cw_pitch",
+        "data_mode",
+        "filter_num",
+        "filter_shape",
+        "key_speed",
+        "monitor_on",
+        "rit_on",
+        "rit_tx",
+        "tone_freq",
+        "tsql_freq",
+        "twin_peak_filter",
+        "vox_delay",
+        "vox_on",
+    }
+)
+
+
+def acquisition_class_for_path(path: FieldPath) -> AcquisitionClass:
+    """Default acquisition class for a canonical path (MOR-2574 design).
+
+    The class defaults from ``FieldPath.family`` with the named exceptions
+    in the sets above. The non-selected-receiver demotion (owner decision
+    3, 2026-09-24) is a later migration step and is deliberately not
+    applied here.
+    """
+
+    if path.family is FieldFamily.METERS:
+        if path.name in TX_METER_FIELD_NAMES:
+            return AcquisitionClass.TX_METER
+        if path.name == "s_meter":
+            return AcquisitionClass.METER
+        return AcquisitionClass.SETTING
+    if path.family is FieldFamily.DISPLAY:
+        return AcquisitionClass.MENU
+    if path.name == "ptt":
+        return AcquisitionClass.KEYING
+    if path.family is FieldFamily.FREQ_MODE and path.name in _LIVE_TUNING_FIELD_NAMES:
+        return (
+            AcquisitionClass.LIVE
+            if path.slot is VfoSlot.ACTIVE
+            else AcquisitionClass.CONTROL
+        )
+    if path.name in CONTROL_FIELD_NAMES:
+        return AcquisitionClass.CONTROL
+    if path.name in PANEL_FIELD_NAMES:
+        return AcquisitionClass.PANEL
+    return AcquisitionClass.SETTING
+
+
 @dataclass(frozen=True, slots=True)
 class FieldSpec:
     """Registry metadata for one canonical field path."""
@@ -462,6 +600,7 @@ class FieldSpec:
     path: FieldPath
     family: FieldFamily
     value_type: str
+    acquisition_class: AcquisitionClass
     readable: bool = True
     writable: bool = False
     unit: str | None = None
@@ -476,12 +615,18 @@ class FieldSpec:
         _validate_token(self.value_type, label="value_type")
         if self.unit is not None and self.unit not in _FIELD_UNITS:
             raise ValueError(f"unknown field unit: {self.unit!r}")
+        object.__setattr__(
+            self,
+            "acquisition_class",
+            AcquisitionClass(str(self.acquisition_class)),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "path": str(self.path),
             "family": self.family.value,
             "valueType": self.value_type,
+            "acquisitionClass": AcquisitionClass(str(self.acquisition_class)).value,
             "readable": self.readable,
             "writable": self.writable,
             "unit": self.unit,
@@ -528,6 +673,7 @@ class FieldRegistry:
                     path=path,
                     family=path.family,
                     value_type="object",
+                    acquisition_class=acquisition_class_for_path(path),
                 )
                 for path in paths
             )
@@ -946,6 +1092,7 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
             path=path,
             family=path.family,
             value_type=value_type,
+            acquisition_class=acquisition_class_for_path(path),
             writable=writable,
             unit=unit,
         )
@@ -1220,6 +1367,7 @@ def _global_specs() -> tuple[FieldSpec, ...]:
             path=path,
             family=path.family,
             value_type=value_type,
+            acquisition_class=acquisition_class_for_path(path),
             writable=writable,
             unit=unit,
         )

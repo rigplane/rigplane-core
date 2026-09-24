@@ -16,6 +16,7 @@ from rigplane.core.tx_target import (
     tx_target_from_dict,
 )
 from rigplane.core.state_pipeline_contracts import (
+    AcquisitionClass,
     CapabilityMetadata,
     DEFAULT_FIELD_REGISTRY,
     ChangeSet,
@@ -28,6 +29,7 @@ from rigplane.core.state_pipeline_contracts import (
     FieldSpec,
     Observation,
     SourceMetadata,
+    acquisition_class_for_path,
 )
 from rigplane.radio_state import RadioState
 from rigplane.web.radio_poller import RadioPoller
@@ -1208,6 +1210,9 @@ def test_field_spec_rejects_unknown_unit() -> None:
             path=FieldPath.global_("meters", "swr"),
             family=FieldFamily.METERS,
             value_type="int",
+            acquisition_class=acquisition_class_for_path(
+                FieldPath.global_("meters", "swr")
+            ),
             unit="bogus",
         )
 
@@ -1221,6 +1226,9 @@ def test_field_spec_accepts_declared_units(unit: str) -> None:
         path=FieldPath.global_("meters", "swr"),
         family=FieldFamily.METERS,
         value_type="int",
+        acquisition_class=acquisition_class_for_path(
+            FieldPath.global_("meters", "swr")
+        ),
         unit=unit,
     )
     assert spec.unit == unit
@@ -1232,6 +1240,9 @@ def test_field_spec_accepts_unit_none() -> None:
         path=FieldPath.global_("meters", "swr"),
         family=FieldFamily.METERS,
         value_type="int",
+        acquisition_class=acquisition_class_for_path(
+            FieldPath.global_("meters", "swr")
+        ),
         unit=None,
     )
     assert spec.unit is None
@@ -1295,3 +1306,100 @@ def test_s_meter_unit_is_db(receiver_id: str) -> None:
         FieldPath.receiver(receiver_id, "meters", "s_meter")
     )
     assert spec.unit == "db"
+
+
+# --- MOR-2574 step 1: the acquisition-class column --------------------------
+
+
+def test_field_spec_requires_an_acquisition_class() -> None:
+    """The class column is required and serializes with the spec."""
+
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    spec = FieldSpec(
+        path=path,
+        family=path.family,
+        value_type="int",
+        acquisition_class="meter",  # type: ignore[arg-type]
+    )
+    assert spec.acquisition_class is AcquisitionClass.METER
+    assert spec.to_dict()["acquisitionClass"] == "meter"
+
+    with pytest.raises(ValueError, match="not a valid AcquisitionClass"):
+        FieldSpec(
+            path=path,
+            family=path.family,
+            value_type="int",
+            acquisition_class="warp_drive",  # type: ignore[arg-type]
+        )
+
+
+def test_registry_from_paths_derives_the_acquisition_class() -> None:
+    """``FieldRegistry.from_paths`` fills the column via the derivation."""
+
+    registry = FieldRegistry.from_paths(
+        [
+            FieldPath.global_("tx_state", "ptt"),
+            FieldPath.active("main", "freq_mode", "freq_hz"),
+        ]
+    )
+    assert (
+        registry.require(FieldPath.global_("tx_state", "ptt")).acquisition_class
+        is AcquisitionClass.KEYING
+    )
+    assert (
+        registry.require(
+            FieldPath.active("main", "freq_mode", "freq_hz")
+        ).acquisition_class
+        is AcquisitionClass.LIVE
+    )
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        (FieldPath.global_("tx_state", "ptt"), AcquisitionClass.KEYING),
+        (FieldPath.global_("meters", "id"), AcquisitionClass.TX_METER),
+        (FieldPath.global_("meters", "power"), AcquisitionClass.TX_METER),
+        # Owner decision 2026-09-24: vd is a setting, id a tx_meter.
+        (FieldPath.global_("meters", "vd"), AcquisitionClass.SETTING),
+        (FieldPath.active("main", "freq_mode", "freq_hz"), AcquisitionClass.LIVE),
+        (FieldPath.active("sub", "freq_mode", "mode"), AcquisitionClass.LIVE),
+        (FieldPath.receiver("main", "meters", "s_meter"), AcquisitionClass.METER),
+        (
+            FieldPath.unselected("main", "freq_mode", "freq_hz"),
+            AcquisitionClass.CONTROL,
+        ),
+        (
+            FieldPath.active("main", "freq_mode", "filter_width"),
+            AcquisitionClass.CONTROL,
+        ),
+        (FieldPath.global_("tx_state", "split"), AcquisitionClass.CONTROL),
+        (FieldPath.global_("tx_state", "tx_target"), AcquisitionClass.CONTROL),
+        (FieldPath.global_("slow_state", "active"), AcquisitionClass.CONTROL),
+        (
+            FieldPath.receiver("main", "operator_controls", "nr_level"),
+            AcquisitionClass.PANEL,
+        ),
+        (FieldPath.global_("operator_controls", "rit_freq"), AcquisitionClass.PANEL),
+        (FieldPath.global_("operator_controls", "mic_gain"), AcquisitionClass.SETTING),
+        (FieldPath.global_("tx_state", "vox_on"), AcquisitionClass.SETTING),
+        # Families without a named exception default to setting.
+        (
+            FieldPath.parse("connection.connection.connected"),
+            AcquisitionClass.SETTING,
+        ),
+        (
+            FieldPath.scope_control("display", "span"),
+            AcquisitionClass.MENU,
+        ),
+    ],
+)
+def test_acquisition_class_for_path_derivation(
+    path: FieldPath,
+    expected: AcquisitionClass,
+) -> None:
+    """The derivation port: family defaults with the named exceptions."""
+
+    spec = DEFAULT_FIELD_REGISTRY.require(path)
+    assert spec.acquisition_class is expected
+    assert acquisition_class_for_path(path) is expected
