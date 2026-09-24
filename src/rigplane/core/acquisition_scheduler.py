@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -12,22 +13,27 @@ from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
 from rigplane.core.state_acquisition_policy import (
+    ACQUISITION_BUDGET_MARGIN,
     AcquisitionPolicy,
     AvailabilityClause,
     AvailabilityOperator,
+    BudgetFit,
     ExternalCatPauseBehavior,
     FieldAvailability,
     FieldCapability,
     MeterCoalescingPolicy,
     RadioAcquisitionProfile,
     ReconciliationPriority,
+    fit_to_budget,
 )
 from rigplane.core.state_pipeline_contracts import (
+    AcquisitionClass,
     ChangeSet,
     FieldChange,
     FieldPath,
     Observation,
     SourceMetadata,
+    acquisition_class_for_path,
 )
 from rigplane.core.state_store import (
     FieldSnapshot,
@@ -59,6 +65,7 @@ __all__ = [
     "adaptive_cadence_limit",
     "availability_clause_holds",
     "civ_acquisition_executor_for_provider",
+    "civ_transport_budget_hz",
     "derive_tx_active",
     "provider_uses_civ_acquisition",
     "resolve_available_when",
@@ -379,6 +386,11 @@ _PRIORITY_RANK: dict[AcquisitionPriority, int] = {
     AcquisitionPriority.COMMAND: 3,
     AcquisitionPriority.USER: 4,
 }
+#: MOR-2586: 0 for the highest-ranked acquisition class; ``AcquisitionClass``
+#: declares its members in rank order.
+_CLASS_RANK: dict[AcquisitionClass, int] = {
+    klass: rank for rank, klass in enumerate(AcquisitionClass)
+}
 _MIN_RECONCILIATION_MAX_AGE = 1e-9
 # MOR-1490 review R2 (Finding 4): cap the number of never-before-queued paths
 # a single prime_unobserved() call will enqueue. Uncapped, a profile carrying
@@ -422,10 +434,25 @@ def adaptive_cadence_limit(policy: AcquisitionPolicy) -> float | None:
     return min(float(limit), freshness_limit)
 
 
+def civ_transport_budget_hz(radio: object) -> float | None:
+    """Return ``1 / radio._civ_min_interval``, the radio's CI-V query budget.
+
+    ``None`` when the radio carries no positive ``_civ_min_interval``.
+    """
+
+    interval = getattr(radio, "_civ_min_interval", None)
+    if isinstance(interval, bool) or not isinstance(interval, (int, float)):
+        return None
+    if interval <= 0:
+        return None
+    return 1.0 / interval
+
+
 class AcquisitionScheduler:
     """Minimal priority/dedupe queue for backend-neutral acquisition reads."""
 
     __slots__ = (
+        "_budget_fit",
         "_clock",
         "_cadence_by_key",
         "_claims_by_request_id",
@@ -436,6 +463,7 @@ class AcquisitionScheduler:
         "_external_cat_reason",
         "_failed_request_count",
         "_failure_count_by_reason",
+        "_fitted_class_by_key",
         "_next_id",
         "_pending_cadence_by_key",
         "_prime_cursor",
@@ -450,6 +478,7 @@ class AcquisitionScheduler:
         *,
         profile: RadioAcquisitionProfile,
         clock: FreshnessClock | None = None,
+        transport_budget_hz: float | None = None,
     ) -> None:
         self._profile = profile
         self._clock = clock or FreshnessClock()
@@ -486,6 +515,81 @@ class AcquisitionScheduler:
         # calls either update method keeps its pre-existing, unfiltered
         # reconciliation behavior.
         self._tx_active = True
+        # MOR-2586: empty unless a transport budget was given; see
+        # _fit_transport_budget.
+        self._fitted_class_by_key: dict[_AcquisitionRequestKey, AcquisitionClass] = {}
+        self._budget_fit: dict[bool, BudgetFit] = {}
+        if transport_budget_hz is not None:
+            self._fit_transport_budget(transport_budget_hz)
+
+    def _fit_transport_budget(self, budget_hz: float) -> None:
+        """Fit the class-derived poll groups to ``budget_hz`` (MOR-2586).
+
+        A poll group is class-derived when none of its paths has a
+        ``field_policies`` entry. Every other group keeps its declared
+        cadence and is passed to :func:`fit_to_budget` as reserved demand:
+        in transmit all of it, in receive its non-``tx_only`` part. Each
+        polled path counts as one query per cadence. Receive and transmit
+        are fitted separately; a window that does not fit is logged here,
+        once, with its numbers.
+        """
+
+        _validate_positive(budget_hz, label="transport_budget_hz")
+        counts: Counter[AcquisitionClass] = Counter()
+        reserved = {False: 0.0, True: 0.0}
+        for key, paths in self._poll_cadence_groups().items():
+            if any(path in self._profile.field_policies for path in paths):
+                assert key.policy.cadence_seconds is not None
+                rate = len(paths) / key.policy.cadence_seconds
+                reserved[True] += rate
+                if not key.policy.tx_only:
+                    reserved[False] += rate
+                continue
+            klass = acquisition_class_for_path(paths[0])
+            self._fitted_class_by_key[key] = klass
+            counts[klass] += len(paths)
+        over: list[str] = []
+        for tx, window in ((False, "receive"), (True, "transmit")):
+            fit = fit_to_budget(
+                counts,
+                budget_hz,
+                ACQUISITION_BUDGET_MARGIN,
+                tx,
+                reserved_hz=reserved[tx],
+            )
+            self._budget_fit[tx] = fit
+            if not fit.fits:
+                over.append(
+                    f"{window} {fit.demand_hz:.2f} q/s "
+                    f"({reserved[tx]:.2f} q/s at explicit profile cadences)"
+                )
+        if over:
+            logger.warning(
+                "acquisition budget: %s over the %.2f q/s limit "
+                "(%.2f x %.2f q/s transport budget); in those windows "
+                "class-derived poll groups run at their ceiling cadences",
+                "; ".join(over),
+                ACQUISITION_BUDGET_MARGIN * budget_hz,
+                ACQUISITION_BUDGET_MARGIN,
+                budget_hz,
+            )
+
+    def _fitted_cadence_seconds(
+        self,
+        key: _AcquisitionRequestKey,
+        declared: float,
+    ) -> float:
+        """Return the fitted cadence of a class-derived group, else ``declared``.
+
+        The fit read is the one for the last ``tx_active`` the scheduler
+        was given; a class absent from that window's fit keeps ``declared``.
+        """
+
+        klass = self._fitted_class_by_key.get(key)
+        if klass is None:
+            return declared
+        fit = self._budget_fit[self._tx_active]
+        return fit.effective_cadence_seconds.get(klass, declared)
 
     @property
     def provider(self) -> str:
@@ -782,6 +886,9 @@ class AcquisitionScheduler:
 
         MOR-1533: this is the *dispatch* view -- backend executors/pollers
         must call this, not :meth:`pending_requests` (unfiltered lookup).
+
+        MOR-2586: execution order is priority, then the highest-ranked
+        acquisition class among the request's paths, then deadline.
         """
 
         eligible = (
@@ -796,6 +903,10 @@ class AcquisitionScheduler:
                 eligible,
                 key=lambda request: (
                     -_PRIORITY_RANK[request.priority],
+                    min(
+                        _CLASS_RANK[acquisition_class_for_path(path)]
+                        for path in request.paths
+                    ),
                     request.deadline_monotonic,
                     request.requested_at_monotonic,
                     request.id,
@@ -1156,11 +1267,12 @@ class AcquisitionScheduler:
                 self._claims_by_request_id.pop(request.id, None)
                 self._forget_dispatch(request.id)
 
-        base_cadence = request.policy.cadence_seconds
-        if base_cadence is None:
+        declared_cadence = request.policy.cadence_seconds
+        if declared_cadence is None:
             if matched_pending_request and not remaining_paths:
                 self._pending_cadence_by_key.pop(key, None)
             return
+        base_cadence = self._fitted_cadence_seconds(key, declared_cadence)
 
         requested_paths = frozenset(request.paths)
         semantic_changed = any(
@@ -1286,9 +1398,10 @@ class AcquisitionScheduler:
                 continue
             state = self._cadence_state_for(key, policy, now=now)
             group_key = _diagnostic_group_key(key)
+            base_cadence = self._fitted_cadence_seconds(key, policy.cadence_seconds)
             payload = {
                 "paths": [str(path) for path in paths],
-                "baseCadenceSeconds": policy.cadence_seconds,
+                "baseCadenceSeconds": base_cadence,
                 "currentCadenceSeconds": state.current_cadence_seconds,
                 "nextDueMonotonic": state.next_due_monotonic,
             }
@@ -1296,7 +1409,7 @@ class AcquisitionScheduler:
             for path in paths:
                 cadence_by_path[str(path)] = {
                     "group": group_key,
-                    "baseCadenceSeconds": policy.cadence_seconds,
+                    "baseCadenceSeconds": base_cadence,
                     "currentCadenceSeconds": state.current_cadence_seconds,
                     "nextDueMonotonic": state.next_due_monotonic,
                 }
@@ -1536,7 +1649,9 @@ class AcquisitionScheduler:
             return existing
         assert policy.cadence_seconds is not None
         state = _CadenceState(
-            current_cadence_seconds=policy.cadence_seconds,
+            current_cadence_seconds=self._fitted_cadence_seconds(
+                key, policy.cadence_seconds
+            ),
             next_due_monotonic=now,
         )
         self._cadence_by_key[key] = state

@@ -45,6 +45,7 @@ from ..core.acquisition_scheduler import (
     MeterObservationCoalescer,
     RadioStateModelService,
     StateFreshnessService,
+    civ_transport_budget_hz,
 )
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.command_service import (
@@ -1069,7 +1070,10 @@ class WebServer:
         acquisition_profile = getattr(profile, "state_acquisition", None)
         if acquisition_profile is None:
             return
-        scheduler = AcquisitionScheduler(profile=acquisition_profile)
+        scheduler = AcquisitionScheduler(
+            profile=acquisition_profile,
+            transport_budget_hz=civ_transport_budget_hz(radio),
+        )
         service = RadioStateModelService(
             store=self.command_state_store,
             scheduler=scheduler,
