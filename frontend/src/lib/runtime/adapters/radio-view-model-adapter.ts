@@ -36,13 +36,14 @@ import type {
   ScopeDisplayViewModel, ScopeSourceKind, ScopeHealthState,
   ReceiverIndicatorViewModel, TxTargetViewModel,
   RadioWideIndicatorsViewModel, DualActionBlockViewModel,
+  RepeaterViewModel, RepeaterReceiverViewModel, RepeaterShift,
   DisplayObservation,
 } from '../../../semantic/radio-view-model';
 import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
 import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
 import { isFieldAvailable } from '$lib/state/field-status';
 import { modInputStateKey } from '$lib/radio/mod-input';
-import { flattenBands, findActiveBand } from '$lib/radio/band-plan';
+import { flattenBands, findActiveBand, receiverInRepeaterBand } from '$lib/radio/band-plan';
 import { getFrequencyPermit, type FrequencyPermit, type TxPermit } from '$lib/utils/tx-permit';
 import {
   relativeVfoIdentityUnknown,
@@ -1373,6 +1374,78 @@ function deriveBand(
 }
 
 /**
+ * Repeater facts (MOR-2111 PR1): the per-receiver readings a repeater strip
+ * gates on. Facts only — no intent dispatch; the strip lands in PR2.
+ *
+ * Evidence gate (N3): the radio's `freqRanges` must declare at least one
+ * `repeater = true` range (a VHF/UHF repeater band). No flagged range ⇒ no
+ * group — the band identity comes from profile data, never a hard-coded
+ * frequency, and there is nothing to gate without it.
+ *
+ * `inRepeaterBand` is a range-level match of the receiver's OWN frequency
+ * against the flagged ranges (`receiverInRepeaterBand` beside
+ * `findActiveBand` in `$lib/radio/band-plan`): `findActiveBand` matches only
+ * named sub-bands, and a bare 2 m / 70 cm range carries none.
+ *
+ * `toneMode` collapses the two neutral booleans into the owner's three-state
+ * selector. (off, off) → off; (on, off) → tone; (on, on) → tsql (the FTX-1
+ * `CT` code 2 reads both booleans true). (off, on) is unrepresentable in one
+ * register and reads `unknown`, never a guess.
+ *
+ * `toneFreq` reads `toneFreq` (centiHz), not `tsqlFreq`: on the FTX-1 the two
+ * are one `CN` register, and the ENC tone is what a repeater needs.
+ *
+ * `shift` maps 0/1/2 to simplex/plus/minus; ARS (3) is not offered and reads
+ * `unknown`, never `simplex`.
+ */
+function deriveRepeater(
+  state: ServerState | null, caps: Capabilities | null,
+): RepeaterViewModel | undefined {
+  if (!caps) return undefined;
+  const freqRanges = caps.freqRanges ?? [];
+  if (!freqRanges.some((range) => range.repeater === true)) return undefined;
+
+  const hasTone = hasCap(caps, 'repeater_tone') || hasCap(caps, 'tsql');
+  const hasShift = hasCap(caps, 'repeater_shift');
+
+  const receiver = (key: 'main' | 'sub'): RepeaterReceiverViewModel => {
+    const rx = state?.[key];
+    const path = (leaf: string): string => `${key}.${leaf}`;
+
+    const freqObserved = topFieldAvailable(state, `${key}.freqHz`);
+    const freq = numOrUndef(rx?.freqHz);
+    const inBand = freqObserved && freq !== undefined
+      ? receiverInRepeaterBand(freq, freqRanges)
+      : undefined;
+
+    const toneObserved = topFieldAvailable(state, path('repeaterTone'));
+    const tsqlObserved = topFieldAvailable(state, path('repeaterTsql'));
+    const tone = boolOrUndef(rx?.repeaterTone);
+    const tsql = boolOrUndef(rx?.repeaterTsql);
+    const toneMode = tone !== undefined && tsql !== undefined
+      ? (!tone && !tsql ? 'off' : tone && !tsql ? 'tone' : tone && tsql ? 'tsql' : undefined)
+      : undefined;
+
+    const toneFreqObserved = topFieldAvailable(state, path('toneFreq'));
+    const toneFreq = numOrUndef(rx?.toneFreq);
+
+    const shiftObserved = topFieldAvailable(state, path('repeaterShift'));
+    const shiftRaw = numOrUndef(rx?.repeaterShift);
+    const shift: RepeaterShift | undefined = shiftRaw === 0
+      ? 'simplex' : shiftRaw === 1 ? 'plus' : shiftRaw === 2 ? 'minus' : undefined;
+
+    return {
+      inRepeaterBand: txAuxField(true, freqObserved, inBand),
+      toneMode: txAuxField(hasTone, toneObserved && tsqlObserved, toneMode),
+      toneFreq: txAuxField(hasTone, toneFreqObserved, toneFreq),
+      shift: txAuxField(hasShift, shiftObserved, shift),
+    };
+  };
+
+  return { main: receiver('main'), sub: receiver('sub') };
+}
+
+/**
  * RIT/XIT facts (MOR-1262 decomposition slice 8A, MOR-1295): the RIT/XIT
  * enables and their shared frequency offset. A separate group from `txAux`
  * — RIT/XIT is not a TX-adjacent control (it offsets the RX/TX pair without
@@ -2007,6 +2080,7 @@ export function toRadioViewModel(
   const dsp = deriveDsp(state, caps);
   const rfFrontEnd = deriveRfFrontEnd(state, caps);
   const band = deriveBand(state, caps, activeId);
+  const repeater = deriveRepeater(state, caps);
   const ritXit = deriveRitXit(state, caps);
   const antenna = deriveAntenna(state, caps);
   const scan = deriveScan(state);
@@ -2056,6 +2130,7 @@ export function toRadioViewModel(
     ...(dsp !== undefined ? { dsp } : {}),
     ...(rfFrontEnd !== undefined ? { rfFrontEnd } : {}),
     ...(band !== undefined ? { band } : {}),
+    ...(repeater !== undefined ? { repeater } : {}),
     ...(ritXit !== undefined ? { ritXit } : {}),
     ...(antenna !== undefined ? { antenna } : {}),
     ...(scan !== undefined ? { scan } : {}),

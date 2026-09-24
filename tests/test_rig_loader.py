@@ -1907,6 +1907,54 @@ class TestToProfile:
         assert band_160.end == 2_000_000
         assert band_160.default == 1_825_000
 
+    def test_freq_range_repeater_defaults_false(self):
+        profile = load_rig(TEMPLATE_PATH).to_profile()
+        assert all(fr.repeater is False for fr in profile.freq_ranges)
+
+    @pytest.mark.parametrize(
+        ("filename", "expected"),
+        [
+            (
+                "ftx1.toml",
+                [("2m", 144_000_000, 148_000_000), ("70cm", 430_000_000, 450_000_000)],
+            ),
+            (
+                "ic705.toml",
+                [("2m", 144_000_000, 148_000_000), ("70cm", 430_000_000, 450_000_000)],
+            ),
+        ],
+    )
+    def test_shipped_profiles_flag_repeater_ranges(self, filename, expected):
+        profile = load_rig(RIGS_DIR / filename).to_profile()
+        flagged = [
+            (fr.label, fr.start, fr.end) for fr in profile.freq_ranges if fr.repeater
+        ]
+        assert flagged == expected
+
+    def test_freq_range_repeater_rejects_non_boolean(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML.replace(
+                'label = "HF"\nstart_hz = 30000\nend_hz = 60000000',
+                'label = "HF"\nstart_hz = 30000\nend_hz = 60000000\nrepeater = 1',
+            ),
+        )
+        with pytest.raises(
+            RigLoadError, match=r"freq_ranges\.ranges\[0\]\.repeater must be a boolean"
+        ):
+            load_rig(p)
+
+    def test_freq_range_repeater_true_loads(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML.replace(
+                'label = "HF"\nstart_hz = 30000\nend_hz = 60000000',
+                'label = "HF"\nstart_hz = 30000\nend_hz = 60000000\nrepeater = true',
+            ),
+        )
+        profile = load_rig(p).to_profile()
+        assert profile.freq_ranges[0].repeater is True
+
     def test_modes(self):
         profile = load_rig(TEMPLATE_PATH).to_profile()
         assert profile.modes == (

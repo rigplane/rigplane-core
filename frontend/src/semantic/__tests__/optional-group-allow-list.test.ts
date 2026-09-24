@@ -48,7 +48,7 @@ const REQUIRED_KEYS = [
  *  Add your key here when your family's slice lands. */
 const EXPECTED_OPTIONAL_GROUP_KEYS = [
   'txAux', 'meters', 'rxAudio', 'modeFilter', 'filterPassband', 'dsp', 'rfFrontEnd', 'band',
-  'ritXit', 'antenna', 'scan', 'cwKeyer', 'scopeControls', 'scopeDisplay',
+  'repeater', 'ritXit', 'antenna', 'scan', 'cwKeyer', 'scopeControls', 'scopeDisplay',
   'receiverIndicators', 'radioWideIndicators',
 ] as const;
 
