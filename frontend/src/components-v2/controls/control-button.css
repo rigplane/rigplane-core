@@ -1,10 +1,18 @@
 @import './button-tokens.css';
 
 /* MOR-2545 PR3 round 4 (owner style B): the hosted scope row's keys
- * (`button.scope-flat-key`) JOIN this family — the name no longer sits in
- * the :not() exclusion lists below. Only `.scope-step-key` stays excluded:
- * the stepper's arrow/cycler keys are transparent glyphs inside the
- * family-styled stepper shell (scope-capsule.css paints the shell). */
+ * (`button.scope-flat-key`) JOIN this family — HOSTED ONLY. The :not()
+ * exclusion lists below carry the conditional form
+ * `.scope-flat-key:not(.spectrum-toolbar.hosted *)`: inside a hosted
+ * toolbar (the desktop-v2/sdr-test one-row mount and its More panel — DOM
+ * descendants of `.spectrum-toolbar.hosted`, fixed positioning included)
+ * the key is admitted; every other mount — the LCD skins, mobile, and the
+ * desktop standalone audio_fft surfaces, which host no toolbar — keeps the
+ * flat grammar, pixel-identical to origin/main. (Round-5 verifier defect:
+ * dropping the name globally leaked the family onto those standalone
+ * surfaces.) `.scope-step-key` stays excluded outright: the stepper's
+ * arrow/cycler keys are transparent glyphs inside the family-styled
+ * stepper shell (scope-capsule.css paints the shell). */
 .v2-control-button,
 .standard-face :where(:is(
   .semantic-control-panel button,
@@ -17,7 +25,7 @@
   .status-bar .managed-tot-trigger,
   .status-bar .theme-button,
   .spectrum-toolbar .toolbar-btn
-):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-step-key)),
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-flat-key:not(.spectrum-toolbar.hosted *), .scope-step-key)),
 .standard-face :where(.band-tab) {
   display: inline-flex;
   align-items: center;
@@ -73,7 +81,7 @@
   .status-bar .managed-tot-trigger,
   .status-bar .theme-button,
   .spectrum-toolbar .toolbar-btn
-):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-step-key),
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-flat-key:not(.spectrum-toolbar.hosted *), .scope-step-key),
 .desktop-control-face.standard-face .band-tab {
   border-radius: var(--btn-border-radius);
   font-family: 'Roboto Mono', monospace;
@@ -96,7 +104,7 @@
   .status-bar .managed-tot-trigger,
   .status-bar .theme-button,
   .spectrum-toolbar .toolbar-btn
-):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-step-key):hover:not(:disabled),
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-flat-key:not(.spectrum-toolbar.hosted *), .scope-step-key):hover:not(:disabled),
 .desktop-control-face.standard-face .band-tab:hover:not(:disabled) {
   background-color: var(--btn-bg-hover);
   color: var(--v2-text-bright);
@@ -119,7 +127,7 @@
   .status-bar .managed-tot-trigger,
   .status-bar .theme-button,
   .spectrum-toolbar .toolbar-btn
-):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-step-key):is(:disabled, [aria-disabled='true']):not(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']),
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-flat-key:not(.spectrum-toolbar.hosted *), .scope-step-key):is(:disabled, [aria-disabled='true']):not(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']),
 .desktop-control-face.standard-face .band-tab:is(:disabled, [aria-disabled='true']):not(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']) {
   opacity: 0.45;
   cursor: not-allowed;
@@ -139,7 +147,7 @@
   .status-bar .managed-tot-trigger,
   .status-bar .theme-button,
   .spectrum-toolbar .toolbar-btn
-):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-step-key):is(:disabled, [aria-disabled='true']):not(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']):hover,
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-flat-key:not(.spectrum-toolbar.hosted *), .scope-step-key):is(:disabled, [aria-disabled='true']):not(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']):hover,
 .desktop-control-face.standard-face .band-tab:is(:disabled, [aria-disabled='true']):not(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']):hover {
   background: var(--btn-bg-idle);
   color: var(--v2-text-dim);
@@ -170,7 +178,7 @@
   .status-bar .managed-tot-trigger,
   .status-bar .theme-button,
   .spectrum-toolbar .toolbar-btn
-):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-step-key):is(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']),
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-flat-key:not(.spectrum-toolbar.hosted *), .scope-step-key):is(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']),
 .desktop-control-face.standard-face .band-tab:is(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']) {
   background-color: color-mix(in srgb, var(--glow-color) var(--btn-active-bg-tint), var(--v2-bg-darker));
   border-color: color-mix(in srgb, var(--glow-color) var(--glow-border-opacity), transparent);
@@ -235,7 +243,7 @@
   .status-bar .managed-tot-trigger,
   .status-bar .theme-button,
   .spectrum-toolbar .toolbar-btn
-):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-step-key)::before,
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-flat-key:not(.spectrum-toolbar.hosted *), .scope-step-key)::before,
 .desktop-control-face.standard-face .band-tab::before {
   content: '';
   position: absolute;
@@ -316,7 +324,7 @@
   .status-bar .managed-tot-trigger,
   .status-bar .theme-button,
   .spectrum-toolbar .toolbar-btn
-):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-step-key)::before,
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-flat-key:not(.spectrum-toolbar.hosted *), .scope-step-key)::before,
 .desktop-control-face.standard-face .band-tab::before {
   left: 0;
   top: 4px;
@@ -371,7 +379,7 @@
   .status-bar .managed-tot-trigger,
   .status-bar .theme-button,
   .spectrum-toolbar .toolbar-btn
-):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-step-key):is(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true'])::before,
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-flat-key:not(.spectrum-toolbar.hosted *), .scope-step-key):is(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true'])::before,
 .desktop-control-face.standard-face .band-tab:is(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true'])::before {
   opacity: 1;
   transform: scale(1);
@@ -400,7 +408,7 @@
   .status-bar .managed-tot-trigger,
   .status-bar .theme-button,
   .spectrum-toolbar .toolbar-btn
-):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-step-key):is(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']),
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-flat-key:not(.spectrum-toolbar.hosted *), .scope-step-key):is(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']),
 .desktop-control-face.standard-face .band-tab:is(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']) {
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--glow-color) var(--edge-glow-ring-1-opacity), transparent),
@@ -437,7 +445,7 @@
   .status-bar .managed-tot-trigger,
   .status-bar .theme-button,
   .spectrum-toolbar .toolbar-btn
-):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-step-key),
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-flat-key:not(.spectrum-toolbar.hosted *), .scope-step-key),
 .desktop-control-face.standard-face .band-tab {
   background:
     linear-gradient(
@@ -469,7 +477,7 @@
   .status-bar .managed-tot-trigger,
   .status-bar .theme-button,
   .spectrum-toolbar .toolbar-btn
-):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-step-key):hover:not(:disabled),
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-flat-key:not(.spectrum-toolbar.hosted *), .scope-step-key):hover:not(:disabled),
 .desktop-control-face.standard-face .band-tab:hover:not(:disabled) {
   background:
     linear-gradient(
@@ -494,7 +502,7 @@
   .status-bar .managed-tot-trigger,
   .status-bar .theme-button,
   .spectrum-toolbar .toolbar-btn
-):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-step-key):is(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']),
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-flat-key:not(.spectrum-toolbar.hosted *), .scope-step-key):is(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']),
 .desktop-control-face.standard-face .band-tab:is(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']) {
   background:
     linear-gradient(

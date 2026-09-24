@@ -5,17 +5,22 @@
  * (the desktop-v2 Standard face and sdr-test, where the semantic scope row
  * IS the toolbar's one row). ScopeControlsSurface gates the capsule MARKUP
  * on the same flag (a rowTail from the host toolbar), so the unhosted
- * mounts — the LCD skins, mobile, bare zone mounts — keep PR1's flat-key
- * grammar and render exactly as before this PR (round-2 finding 3).
+ * mounts — the LCD skins, mobile, the bare zone mounts AND the desktop
+ * standalone surfaces (audio_fft, where no toolbar hosts the row) — keep
+ * PR1's flat-key grammar and render exactly as before this PR (round-2
+ * finding 3; round 5: the family sheets exclude
+ * `.scope-flat-key:not(.spectrum-toolbar.hosted *)` — hosted-only — so
+ * those mounts stay pixel-identical to origin/main).
  *
  * Round 4: the row's keys ARE the Standard-face command family — the
  * `.v2-control-button[data-surface=hardware]` rules of
  * components-v2/controls/control-button.css, reached through the family's
- * own `:is(.semantic-control-panel button, …)` selectors now that
- * `.scope-flat-key` is gone from their `:not()` exclusion lists (13 lists)
- * and from skins/desktop-v2/semantic-controls.css. SpectrumToolbar's hosted
- * root carries the family's `desktop-control-face standard-face` anchors,
- * so the same selectors reach the row on sdr-test too.
+ * own `:is(.semantic-control-panel button, …)` selectors, whose `:not()`
+ * exclusion lists (13 there, 3 in skins/desktop-v2/semantic-controls.css)
+ * admit `.scope-flat-key` ONLY inside `.spectrum-toolbar.hosted`.
+ * SpectrumToolbar's hosted root carries the family's
+ * `desktop-control-face standard-face` anchors, so the same selectors
+ * reach the row on sdr-test too.
  *
  * THIS SHEET OWNS GEOMETRY ONLY — heights, widths, gaps, the hosted-row
  * container, the hide bands — plus exactly what the family cannot win on
