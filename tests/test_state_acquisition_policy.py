@@ -20,7 +20,7 @@ from rigplane.core.acquisition_scheduler import (
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import (
     ACQUISITION_CLASS_TABLE,
-    OPERATOR_SET_MAX_CADENCE_SECONDS,
+    AcquisitionPhase,
     AcquisitionPolicy,
     AdaptiveDecayPolicy,
     AvailabilityClause,
@@ -70,22 +70,24 @@ _UNPRIMABLE_COMMAND_RESPONSE_EXEMPTIONS: dict[str, frozenset[FieldPath]] = {
 # --- Cadence classes -------------------------------------------------------
 # Longest a class of field may lag the front panel, in seconds. The class
 # MEMBERSHIP lives in the production registry since MOR-2574 step 1 --
-# ``rigplane.core.state_pipeline_contracts`` exports the name sets and the
-# cadence envelopes live in ``ACQUISITION_CLASS_TABLE`` -- so this file
-# reads them and keeps no second copy.
+# ``rigplane.core.state_pipeline_contracts`` exports the name sets -- so
+# this file reads the sets and keeps no second copy of them. The BOUNDS
+# below are literals of the owner's rulings, not reads of the production
+# table: these tests guard that table, so raising a production constant
+# must go red here.
 
-#: Continuously-moving readings the profile declares ``stream_like``. The
-#: meter class ceiling (0.4s) is IC-7300's cadence after the S-meter gave
-#: 2.5 q/s back to fund the panel tier below; every other profile declares
-#: 0.2s or 0.25s.
-_STREAM_METER_MAX_CADENCE_SECONDS = ACQUISITION_CLASS_TABLE[
-    AcquisitionClass.METER
-].ceiling_cadence_seconds
-#: Facts that move while the operator tunes or keys: the live class
-#: ceiling.
-_LIVE_MAX_CADENCE_SECONDS = ACQUISITION_CLASS_TABLE[
-    AcquisitionClass.LIVE
-].ceiling_cadence_seconds
+#: Continuously-moving readings the profile declares ``stream_like``
+#: (owner ruling 2026-09-07; 0.4s is IC-7300's cadence after the S-meter
+#: gave 2.5 q/s back to fund the panel tier below; every other profile
+#: declares 0.2s or 0.25s).
+_STREAM_METER_MAX_CADENCE_SECONDS = 0.4
+#: Facts that move while the operator tunes or keys (owner ruling
+#: 2026-09-07).
+_LIVE_MAX_CADENCE_SECONDS = 1.0
+#: Everything the operator reaches by turning a knob or opening a menu.
+#: The owner's single threshold for a panel change reaching the web
+#: (ruling of 2026-09-07).
+_OPERATOR_SET_MAX_CADENCE_SECONDS = 5.0
 
 #: Classified paths with no own ``field_policies`` entry, so
 #: ``test_field_policies_obey_their_cadence_class_not_their_rig`` cannot see
@@ -788,9 +790,9 @@ def _cadence_class(
     if path.name in LIVE_FIELD_NAMES:
         return ("live", _LIVE_MAX_CADENCE_SECONDS)
     if path.name in PANEL_ADJUSTABLE_FIELD_NAMES:
-        return ("panel-adjustable", OPERATOR_SET_MAX_CADENCE_SECONDS)
+        return ("panel-adjustable", _OPERATOR_SET_MAX_CADENCE_SECONDS)
     if path.name in ON_DEMAND_FIELD_NAMES:
-        return ("on-demand", OPERATOR_SET_MAX_CADENCE_SECONDS)
+        return ("on-demand", _OPERATOR_SET_MAX_CADENCE_SECONDS)
     return None
 
 
@@ -1010,16 +1012,35 @@ def test_registry_specs_carry_the_derived_acquisition_class() -> None:
     assert not mismatches, mismatches
 
 
-def test_acquisition_class_table_ttl_relation_holds_for_every_class() -> None:
-    """The table covers the whole ranked enum and honors the TTL relation."""
+def test_acquisition_class_table_is_the_owner_approved_literal() -> None:
+    """The table is exactly the owner-approved 8-row table of MOR-2574.
 
-    assert tuple(ACQUISITION_CLASS_TABLE) == tuple(AcquisitionClass)
-    for klass, policy in ACQUISITION_CLASS_TABLE.items():
-        assert policy.freshness_ttl_seconds == max(
-            2.0 * policy.ceiling_cadence_seconds,
-            policy.ceiling_cadence_seconds + 0.7,
-        ), klass
-        assert policy.nominal_cadence_seconds <= policy.ceiling_cadence_seconds, klass
+    A literal second copy, on purpose (owner decisions of 2026-09-24 in
+    MOR-2574): the owner-ruling tests must not take their limits from the
+    production constants they guard, or raising a constant would stay
+    green. Rows are (nominal, ceiling, polled_in, held_at_ceiling_in_tx);
+    the literal order is the rank order, high -> low.
+    """
+
+    expected: dict[AcquisitionClass, tuple[float, float, AcquisitionPhase, bool]] = {
+        AcquisitionClass.KEYING: (0.3, 0.5, AcquisitionPhase.BOTH, False),
+        AcquisitionClass.TX_METER: (0.25, 1.0, AcquisitionPhase.TRANSMIT, False),
+        AcquisitionClass.LIVE: (1.0, 1.0, AcquisitionPhase.BOTH, False),
+        AcquisitionClass.METER: (0.3, 0.4, AcquisitionPhase.BOTH, False),
+        AcquisitionClass.CONTROL: (2.0, 5.0, AcquisitionPhase.BOTH, False),
+        AcquisitionClass.PANEL: (5.0, 10.0, AcquisitionPhase.BOTH, False),
+        AcquisitionClass.SETTING: (10.0, 30.0, AcquisitionPhase.BOTH, True),
+        AcquisitionClass.MENU: (30.0, 60.0, AcquisitionPhase.BOTH, True),
+    }
+
+    assert tuple(ACQUISITION_CLASS_TABLE) == tuple(expected)
+    for klass, (nominal, ceiling, polled_in, held) in expected.items():
+        policy = ACQUISITION_CLASS_TABLE[klass]
+        assert policy.nominal_cadence_seconds == nominal, klass
+        assert policy.ceiling_cadence_seconds == ceiling, klass
+        assert policy.polled_in is polled_in, klass
+        assert policy.held_at_ceiling_in_tx is held, klass
+        assert policy.freshness_ttl_seconds == max(2.0 * ceiling, ceiling + 0.7), klass
 
 
 def test_fit_to_budget_stretches_the_lowest_class_first_within_ceilings() -> None:
@@ -1072,8 +1093,43 @@ def test_fit_to_budget_reports_no_fit_when_ceilings_cannot_close_the_gap() -> No
 
 
 def test_fit_to_budget_applies_the_tx_window_rules() -> None:
-    """TX-only classes are absent in receive; held classes start at their ceiling in TX."""
+    """TX-only classes are absent in receive; held classes start at their ceiling in TX.
 
+    The slack case is the one that tells the two apart: ``{SETTING: 3,
+    LIVE: 1}`` sits far under the 10 q/s budget in either window, so
+    nothing stretches, and the setting cadence IS the start cadence —
+    its nominal 10.0s in receive, its held ceiling 30.0s in TX. Dropping
+    the held-at-ceiling-in-TX condition would leave 10.0s in both windows
+    and fail the 30.0s assertion.
+    """
+
+    # Slack, receive: no stretch, settings at their nominal 10.0s.
+    slack_receive = fit_to_budget(
+        {AcquisitionClass.SETTING: 3, AcquisitionClass.LIVE: 1},
+        budget_hz=10.0,
+        margin=1.0,
+        tx=False,
+    )
+    assert slack_receive.fits is True
+    assert slack_receive.effective_cadence_seconds[AcquisitionClass.SETTING] == (
+        pytest.approx(10.0)
+    )
+    # Slack, TX: no stretch, settings held at their 30.0s ceiling.
+    slack_transmit = fit_to_budget(
+        {AcquisitionClass.SETTING: 3, AcquisitionClass.LIVE: 1},
+        budget_hz=10.0,
+        margin=1.0,
+        tx=True,
+    )
+    assert slack_transmit.fits is True
+    assert slack_transmit.effective_cadence_seconds[AcquisitionClass.SETTING] == (
+        pytest.approx(30.0)
+    )
+    assert slack_transmit.effective_cadence_seconds[AcquisitionClass.LIVE] == (
+        pytest.approx(1.0)
+    )
+
+    # Over budget in receive: TX-only classes are absent entirely.
     receive = fit_to_budget(
         {AcquisitionClass.TX_METER: 4, AcquisitionClass.SETTING: 10},
         budget_hz=0.5,
@@ -1089,10 +1145,11 @@ def test_fit_to_budget_applies_the_tx_window_rules() -> None:
     )
     assert receive.demand_hz == pytest.approx(0.375)
 
-    # In TX the setting class starts held at its ceiling and is never
-    # stretched past it: the two live fields alone (2.0 q/s nominal, 2.1
-    # q/s with the held settings) cannot close on the 2.0 q/s limit, and
-    # live has no headroom either -- no fit, settings stay at 30.0.
+    # Over budget in TX: the setting class starts held at its ceiling and
+    # is never stretched past it: the two live fields alone (2.0 q/s
+    # nominal, 2.1 q/s with the held settings) cannot close on the 2.0 q/s
+    # limit, and live has no headroom either -- no fit, settings stay at
+    # 30.0.
     transmit = fit_to_budget(
         {AcquisitionClass.SETTING: 3, AcquisitionClass.LIVE: 2},
         budget_hz=2.0,
@@ -1112,11 +1169,11 @@ def test_fit_to_budget_reproduces_the_design_ic7610_lan_receive_figure() -> None
     """The design's IC-7610 LAN receive figure: setting stretched to ~14.09 s.
 
     Class counts are computed here from the LOADED IC-7610 profile. The
-    design's headline measurement (tmp/ref/r38b_demand.py, the PROPOSAL
-    run) folded the panel knobs into the setting class, before the owner's
-    2026-09-24 decision gave the 2026-09-07 panel set its own 5 s class;
-    this test reproduces that fold (57 setting fields) so the 21.43 q/s
-    limit stretches setting to about 14.09 s and closes exactly on it.
+    MOR-2574 headline measurement folded the panel knobs into the setting
+    class, before the owner's 2026-09-24 decision gave the 2026-09-07
+    panel set its own 5 s class; this test reproduces that fold (57
+    setting fields) so the 21.43 q/s limit stretches setting to about
+    14.09 s and closes exactly on it.
     """
 
     acquisition = get_radio_profile("IC-7610").state_acquisition
@@ -1146,54 +1203,6 @@ def test_fit_to_budget_reproduces_the_design_ic7610_lan_receive_figure() -> None
         pytest.approx(14.09, abs=0.01)
     )
     assert fit.demand_hz == pytest.approx(0.75 * lan_budget_hz)
-
-
-#: MOR-2574's measured baseline at b235c060 (HEAD of this branch adds only
-#: IC-7610 meter calibration, no cadence/TTL edits): per profile, the polled
-#: path count, idle q/s and TX q/s under the ticket's counting rule -- a
-#: path counts when it is pollable and has a cadence; tx_only paths count
-#: only in the TX figure. FTX-1 is out of scope by design: its fixed CAT
-#: loops, not scheduler cadences, set what goes on the wire.
-_PRE_STEP1_DEMAND_BASELINE: dict[str, tuple[int, float, float]] = {
-    "IC-7610": (94, 61.77, 81.77),
-    "IC-7300": (52, 19.53, 23.53),
-    "IC-705": (37, 16.50, 36.50),
-    "IC-9700": (34, 15.00, 35.00),
-    "X6200": (4, 9.50, 9.50),
-    "X6100": (4, 2.00, 2.00),
-}
-
-
-def test_step1_changes_no_profile_effective_cadence_or_ttl() -> None:
-    """MOR-2574 step 1 pin: the classes are metadata only.
-
-    Step 1 adds the class column and the fit without wiring either into
-    the loader or the scheduler, so every loaded profile must still load
-    to the demand baseline measured before the step. A profile whose
-    cadences or TTLs moved fails here; a NEW profile has no baseline yet
-    and must be added to the table above (or moved out of scope with a
-    reason, as FTX-1 is).
-    """
-
-    measured: dict[str, tuple[int, float, float]] = {}
-    for model, rig in sorted(discover_rigs(RIGS_DIR).items()):
-        acquisition = rig.to_profile().state_acquisition
-        if acquisition is None or model == "FTX-1":
-            continue
-        polled = [
-            capability
-            for capability in acquisition.capabilities
-            if capability.can_poll
-            and acquisition.policy_for(capability.path).cadence_seconds is not None
-        ]
-        policies = [acquisition.policy_for(capability.path) for capability in polled]
-        idle_hz = sum(
-            1.0 / policy.cadence_seconds for policy in policies if not policy.tx_only
-        )
-        tx_hz = sum(1.0 / policy.cadence_seconds for policy in policies)
-        measured[model] = (len(polled), round(idle_hz, 2), round(tx_hz, 2))
-
-    assert measured == _PRE_STEP1_DEMAND_BASELINE
 
 
 def test_ic7300_panel_knob_fields_are_polled_at_the_panel_class_cadence() -> None:
