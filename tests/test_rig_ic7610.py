@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from rigplane.commands._codec import filter_index_to_hz
+from rigplane.meter_cal import interpolate_meter
 from rigplane.rig_loader import load_rig
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
@@ -427,7 +428,7 @@ class TestMeterCalibrations:
     def test_all_meter_keys_present(self, rig):
         mc = rig.meter_calibrations
         assert mc is not None
-        assert set(mc.keys()) == {"s_meter", "power", "swr", "alc"}
+        assert set(mc.keys()) == {"s_meter", "power", "swr", "alc", "comp", "vd", "id"}
 
     def test_s_meter_calibration_count(self, rig):
         assert len(rig.meter_calibrations["s_meter"]) == 9
@@ -468,6 +469,58 @@ class TestMeterCalibrations:
         pts = rig.meter_calibrations["alc"]
         assert pts[0]["raw"] == 0 and pts[0]["actual"] == 0.0
         assert pts[-1]["raw"] == 120 and pts[-1]["actual"] == 100.0
+
+
+# ── COMP / Vd / Id PA meter calibration (MOR-2540) ───────────────
+#
+# Points transcribed from the IC-7610 CI-V Reference Guide (2021),
+# command table: 15 14 (COMP), 15 15 (Vd), 15 16 (Id). Red-first pin:
+# before the tables existed, `interpolate_meter` returned (raw, False)
+# for these three meters and the Station Meters strip rendered raw
+# device numbers ("Vd 185 raw").
+
+_PA_METER_ANCHORS = [
+    # (meter_key, raw, expected_actual) — each is a guide anchor point
+    # from rigs/ic7610.toml's [[meters.<key>.calibration]] tables.
+    ("comp", 0, 0.0),
+    ("comp", 130, 15.0),
+    ("comp", 241, 30.0),
+    ("vd", 0, 0.0),
+    ("vd", 151, 10.0),
+    ("vd", 211, 16.0),
+    ("id", 0, 0.0),
+    ("id", 77, 10.0),
+    ("id", 165, 20.0),
+    ("id", 241, 30.0),
+]
+
+
+class TestPaMeterCalibration:
+    """COMP/Vd/Id tables from the CI-V guide's command table (MOR-2540)."""
+
+    @pytest.mark.parametrize("meter_key,count", [("comp", 3), ("vd", 3), ("id", 4)])
+    def test_pa_calibration_count(self, rig, meter_key, count):
+        assert len(rig.meter_calibrations[meter_key]) == count
+
+    @pytest.mark.parametrize("meter_key,raw,expected_actual", _PA_METER_ANCHORS)
+    def test_anchor_round_trip(self, rig, meter_key, raw, expected_actual):
+        """Interpolating at a documented guide anchor returns that
+        anchor's engineering value. The literals here hand-transcribe
+        rigs/ic7610.toml (by design, as a regression pin), while the
+        interpolation runs through the real ``rig.meter_calibrations``
+        parsed from that same file."""
+        actual, calibrated = interpolate_meter(raw, rig.meter_calibrations, meter_key)
+        assert calibrated is True
+        assert actual == pytest.approx(expected_actual)
+
+    def test_vd_raw_185_interpolates_to_13_4_volts(self, rig):
+        """MOR-2540's reported finding: the Vd tile showed raw 185 with no
+        unit. Raw 185 sits between the guide's 151 (10 V) and 211 (16 V):
+        10 + (185 - 151) * 6 / 60 = 13.4 V. Before the table existed this
+        returned (185.0, False) — the "Vd 185 raw" rendering."""
+        actual, calibrated = interpolate_meter(185, rig.meter_calibrations, "vd")
+        assert calibrated is True
+        assert actual == pytest.approx(13.4)
 
 
 class TestControlRanges:
