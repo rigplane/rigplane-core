@@ -144,7 +144,9 @@ def _fake_cat(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     )
     writes: list[str] = []
 
-    async def _record(cmd: str, *args: object, **kwargs: object) -> None:
+    # Class-level monkeypatch: the bound call passes the transport instance
+    # as the first positional argument, so ``self`` comes before the command.
+    async def _record(self: Any, cmd: str, *args: object, **kwargs: object) -> None:
         writes.append(cmd)
 
     monkeypatch.setattr(
