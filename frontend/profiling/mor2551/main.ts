@@ -1,5 +1,6 @@
-import { caps, frames, info, smallEvent, state } from './fixture';
+import { assertSteadyFreshFixture, caps, frames, info, smallEvent, state } from './fixture';
 
+const fixtureCheck = assertSteadyFreshFixture();
 const errors: string[] = [];
 const sent: unknown[] = [];
 const api: string[] = [];
@@ -78,7 +79,7 @@ const radio = await import('../../src/lib/stores/radio.svelte');
 radio.subscribeRadioState(next => {
   if (next) accepted.push({ sequence: next.observationSeq, time: performance.now() });
 });
-const snapshot = () => ({ mode, errors, sent, api, startupWrites, accepted, arrivals, running,
+const snapshot = () => ({ mode, fixtureCheck, errors, sent, api, startupWrites, accepted, arrivals, running,
   fieldCount: Object.keys(state.fieldStatus!).length,
   observedFields: Object.values(state.fieldStatus!).filter(s => s.observed).length,
   deltaUnits: frames[1].length, fullUnits: frames[0].length,

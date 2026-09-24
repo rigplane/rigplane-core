@@ -33,7 +33,7 @@ for (const [path, original] of Object.entries(canonical.statuses) as [string, Fi
 export function frame(sequence: number): string {
   const fieldStatus = Object.fromEntries(Object.entries(state.fieldStatus!).map(([path, status]) =>
     [path, status.observed ? { ...status, lastObservedMonotonic: 1000 + sequence / 11 } : status]));
-  const counters = { revision: 1, stateRevision: 1, freshnessRevision: sequence,
+  const counters = { revision: 1, stateRevision: 1, freshnessRevision: 1,
     observationSeq: sequence, transportSeq: sequence, publicStateSeq: sequence };
   const changed = { fieldStatus, updatedAt: new Date(Date.UTC(2026, 0, 1) + sequence * 1000 / 11).toISOString() };
   const envelope = sequence === 1 || sequence % 110 === 0
@@ -45,3 +45,29 @@ export function frame(sequence: number): string {
 }
 export const frames = Array.from({ length: 400 }, (_, i) => frame(i + 1));
 export const smallEvent = JSON.stringify({ type: 'event', name: 'synthetic_observation', data: { receiver: 'MAIN' } });
+
+export function assertSteadyFreshFixture() {
+  let previous: ServerState | undefined;
+  let fullCount = 0;
+  for (const [index, raw] of frames.entries()) {
+    const envelope = JSON.parse(raw).data;
+    const next = envelope.type === 'full' ? envelope.data : { ...previous, ...envelope.changed };
+    if (envelope.type === 'full') fullCount++;
+    if (envelope.revision !== 1 || envelope.stateRevision !== 1 || envelope.freshnessRevision !== 1
+      || envelope.observationSeq !== index + 1 || envelope.transportSeq !== index + 1
+      || envelope.publicStateSeq !== index + 1 || next.ptt !== false) {
+      throw new Error(`Steady-fresh RX contract failed at frame ${index + 1}`);
+    }
+    if (previous && next.updatedAt <= previous.updatedAt) throw new Error('Updated timestamp did not advance');
+    for (const [path, status] of Object.entries(next.fieldStatus) as [string, FieldStatusPublic][]) {
+      if (!status.observed) continue;
+      if (status.freshness !== 'fresh' || status.availability !== 'available'
+        || (previous && status.lastObservedMonotonic! <= previous.fieldStatus![path].lastObservedMonotonic!)) {
+        throw new Error(`Steady-fresh observation failed at ${path}`);
+      }
+    }
+    previous = next;
+  }
+  return { frames: frames.length, fullCount, deltaCount: frames.length - fullCount,
+    stateRevision: 1, freshnessRevision: 1, ptt: false };
+}
