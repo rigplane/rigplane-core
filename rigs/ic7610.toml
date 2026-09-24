@@ -1094,8 +1094,10 @@ equal_main_sub = [0xB1]  # MAIN = SUB receiver equalize (issue #710)
 # "you can transmit on only the Main band (except in Split Frequency
 # operation)"; p.4-9: with split on, Main receives and Sub transmits. The
 # decoder therefore labels the target MAIN, or SUB while a FRESH 0F split
-# readback (get_split) is ON; an unknown or stale split fact publishes no
-# receiver-labelled target at all -- fail closed, TUNE stays blocked.
+# readback (get_split) is ON. An unknown or stale split fact withdraws the
+# label: the reply publishes an unknown target, which both credits the read
+# request and fails closed -- TUNE blocks from that reply on; until it
+# arrives, the last FRESH target can stay valid up to its own 4.0s TTL.
 tx_receiver_rule = "main_unless_split"
 
 # ── Frequency Ranges ─────────────────────────────────────────────

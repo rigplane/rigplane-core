@@ -3953,7 +3953,7 @@ class RadioPoller:
         CI-V VFO schemes stay ``unsupported`` here rather than guess at
         unvalidated split semantics. MAIN/SUB-only radios whose profile
         declares the radio's own transmit-frequency read (CI-V 1C 03,
-        ``get_tx_target`` — IC-7610/IC-9700, MOR-2540) publish the decoded
+        ``get_tx_target`` — IC-7610, MOR-2540) publish the decoded
         reply through the CI-V observation path instead, so this derivation
         never runs — and must never write — for them.
         """
