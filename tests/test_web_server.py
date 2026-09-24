@@ -19,6 +19,7 @@ import errno
 import hashlib
 import json
 import logging
+import socket
 import struct
 import time
 from types import SimpleNamespace
@@ -2542,22 +2543,60 @@ class TestHalfOpenWsReaper:
             assert ws.is_alive() is False
 
             # Saturate the server-side transport write buffer while the
-            # peer (this test's `reader`) never reads again -- push well
-            # past a lowered high-water mark directly via the transport
-            # so setup itself never blocks on drain().
+            # peer (this test's `reader`) never reads again.
+            #
+            # How much of a write() actually backs up in asyncio's
+            # user-space buffer depends on kernel socket buffer sizes:
+            # over loopback, Linux can absorb several MiB into the
+            # sender's autotuned SO_SNDBUF plus the peer's receive window
+            # before the asyncio buffer ever fills (the CI flake on MOR-
+            # 2582), while macOS loopback buffers are small enough that a
+            # fixed 4 MiB payload always saturated. Make the setup
+            # deterministic instead: shrink BOTH kernel buffers to the
+            # platform minimum, then feed the transport in chunks until
+            # get_write_buffer_size() is stably above the high-water
+            # mark -- sized and checked against the transport's real
+            # state, with a bounded iteration cap. Skip (not fail) if a
+            # platform still refuses to saturate.
             transport = ws._writer.transport  # noqa: SLF001
-            transport.set_write_buffer_limits(high=4096)
-            big_chunk = b"\x00" * (1024 * 1024)  # 1 MiB per write, x4
-            for _ in range(4):
-                transport.write(big_chunk)
+            high_water = 4096
+            transport.set_write_buffer_limits(high=high_water)
+            server_sock = transport.get_extra_info("socket")
+            client_sock = writer.get_extra_info("socket")
+            for sock, opt in (
+                (server_sock, socket.SO_SNDBUF),
+                (client_sock, socket.SO_RCVBUF),  # also disables autotuning
+            ):
+                if sock is not None:
+                    with contextlib.suppress(OSError):
+                        sock.setsockopt(socket.SOL_SOCKET, opt, 4096)
+
+            chunk = b"\x00" * (256 * 1024)  # >> shrunken kernel buffers
+            max_writes = 256  # bounded: at most 64 MiB attempted
+            saturated = False
+            for _ in range(max_writes):
+                transport.write(chunk)
+                # Let the event loop flush whatever the kernel will take
+                # (_write_ready runs during these yields), then measure.
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                if transport.get_write_buffer_size() > high_water:
+                    # Confirm the level is stable, not a race with a flush.
+                    await asyncio.sleep(0.02)
+                    if transport.get_write_buffer_size() > high_water:
+                        saturated = True
+                        break
             # `reader` is intentionally never read from below -- the peer
             # stops consuming, so both the OS socket buffers and the
             # transport's own queue fill and stay full.
-            await asyncio.sleep(0.05)
-            assert transport.get_write_buffer_size() > 4096, (
-                "setup invalid: transport buffer did not saturate above "
-                "the high-water mark"
-            )
+            if not saturated:
+                pytest.skip(
+                    "platform could not saturate the transport write buffer "
+                    f"(size={transport.get_write_buffer_size()} after "
+                    f"{max_writes} x {len(chunk)}-byte writes against "
+                    f"high-water={high_water}; kernel socket buffers too "
+                    "large or event loop not flushing)"
+                )
 
             reaper = asyncio.create_task(
                 server._zombie_reaper(interval=0.05)  # noqa: SLF001
