@@ -1687,6 +1687,11 @@
   let rfSqlFeedback = $derived(getRfSqlControlFeedback(controlSession));
   let afLevelFeedback = $derived(runtime.rxEnabled
     ? undefined : getAfLevelControlFeedback(controlSession));
+  let receiverAfLevelFeedback = $derived(runtime.rxEnabled || !canonicalView?.rxAudio?.receiverAfLevels
+    ? undefined : {
+      main: getAfLevelControlFeedback(controlSession, 'MAIN'),
+      sub: getAfLevelControlFeedback(controlSession, 'SUB'),
+    });
   let rfPowerFeedback = $derived(getRfPowerControlFeedback(controlSession));
   let rfFrontEndInstrumentPresentation = $derived({
     state: runtime.state,
@@ -1955,6 +1960,8 @@
       handler({ ...publication, view: projectRadioView(publication.state, publication.caps, true) }))}
     onAfLevelChange={rxAudioIntents.onAfLevelChange}
     afLevelFeedback={afLevelFeedback}
+    onReceiverAfLevelChange={rxAudioIntents.onReceiverAfLevelChange}
+    {receiverAfLevelFeedback}
     onMonitorModeChange={(mode) => rxAudioIntents.onMonitorModeChange(mode)}
     onFocusChange={(focus) => routingIntents.onFocusChange(focus)}
     onSplitStereoChange={(split) => routingIntents.onSplitStereoChange(split)}

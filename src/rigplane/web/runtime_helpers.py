@@ -34,6 +34,7 @@ __all__ = [
     "snapshot_field_status_inputs",
     "primary_receiver_snapshot_ids",
     "VFO_CAPABILITY_TAGS",
+    "projected_af_level_sub_tag",
     "projected_vfo_capability_tags",
 ]
 
@@ -657,6 +658,23 @@ def runtime_capabilities(radio: "Radio | None") -> set[str]:
     if isinstance(radio, RepeaterShiftCapable):
         result.add("repeater_shift")
     return result
+
+
+def projected_af_level_sub_tag(
+    radio: "Radio | None", caps: Collection[str]
+) -> frozenset[str]:
+    """Return ``{"af_level_sub"}`` when ``caps`` has ``dual_rx`` and ``radio``
+    admits ``set_af_level`` for receiver 1 (MOR-2579).
+
+    Admission is :meth:`~rigplane.core.radio_protocol.Radio.supports_command`
+    with an explicit receiver: the receiver is in the radio's topology and has
+    an executable write route. No observed reading enters the answer.
+    """
+    supports = getattr(radio, "supports_command", None)
+    if "dual_rx" not in caps or not callable(supports):
+        return frozenset()
+    admitted = supports("set_af_level", receiver=1) is True
+    return frozenset({"af_level_sub"}) if admitted else frozenset()
 
 
 def projected_vfo_capability_tags(

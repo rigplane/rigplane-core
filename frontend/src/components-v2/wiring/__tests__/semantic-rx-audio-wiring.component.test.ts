@@ -186,7 +186,9 @@ import { FOCUS_CHOICES, SPLIT_CHOICES } from '../../../semantic/rx-audio-instrum
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 import HostedRadioLayoutFixture from '../../layout/__tests__/fixtures/HostedRadioLayoutFixture.svelte';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
-import { makeAudioRoutingHandlers, makeModeHandlers, makeRxAudioHandlers } from '$lib/runtime/commands/panel-commands';
+import {
+  makeAudioRoutingHandlers, makeKeyboardHandlers, makeModeHandlers, makeRxAudioHandlers,
+} from '$lib/runtime/commands/panel-commands';
 import { desktopV2Layout, sdrTestLayout } from '../../../presentation/layouts/declarations';
 import { readWorkspace } from '../../../presentation/workspace/contract';
 import {
@@ -221,6 +223,10 @@ const LOAD_TIME_CALLS = [
 ].map((spy) => vi.mocked(spy).mock.calls.length);
 
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
+/** A fresh observation carrying the monotonic stamp command feedback requires. */
+const observedAt = (marker: number) => ({
+  ...fresh, freshness: 'fresh' as const, availability: 'available' as const, lastObservedMonotonic: marker,
+});
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
 
 function liveState(over: Partial<ServerState> = {}): ServerState {
@@ -258,7 +264,17 @@ const liveCaps = (tags: readonly string[]): Capabilities => ({
   providerGeneration: 1,
 } as unknown as Capabilities);
 
-const AUDIO_TAGS = ['audio', 'tx', 'dual_rx', 'af_level', 'mod_input_routing', 'lan_dual_rx_audio_routing'] as const;
+const AUDIO_TAGS = [
+  'audio', 'tx', 'dual_rx', 'af_level', 'mod_input_routing', 'lan_dual_rx_audio_routing',
+  'af_level_sub',
+] as const;
+const DUAL_ONLY_TAGS: readonly string[] = ['dual_rx', 'lan_dual_rx_audio_routing', 'af_level_sub'];
+/** A valid single-receiver topology (`vfoScheme: 'single'`): `AUDIO_TAGS`
+ *  without its three second-receiver tags. */
+const singleReceiverCaps = (): Capabilities => ({
+  ...liveCaps(AUDIO_TAGS.filter((tag) => !DUAL_ONLY_TAGS.includes(tag))),
+  receivers: 1, vfoScheme: 'single',
+});
 /** A radio with NO audio chain at all: no live audio, no AF control, no
  *  dual-RX routing, no MOD-input routing ⇒ the adapter emits no group. */
 const SILENT_TAGS = ['tx'] as const;
@@ -443,19 +459,26 @@ describe('v2.11.1 monitor and dual-routing behavior in the Standard composition'
   // grouped one — so the unread half is pinned HERE. An unread AF level
   // renders the literal empty string, never a `—` placeholder.
   // MUTATION KILLED: putting placeholder text back in `afLevelRow`'s output.
-  it('renders the unread AF level as the literal empty string in the desktop AF row', () => {
+  // MOR-2579: a dual-receiver radio draws one row per receiver; same rule.
+  it.each([
+    ['the single-receiver AF row', 'af', 'main', singleReceiverCaps],
+    ['the AF MAIN row', 'af-main', 'main', () => liveCaps(AUDIO_TAGS)],
+    ['the AF SUB row', 'af-sub', 'sub', () => liveCaps(AUDIO_TAGS)],
+  ] as const)('renders an unread AF level as the literal empty string in %s', (_label, row, key, makeCaps) => {
     h.audio = { muted: false, rxEnabled: false, volume: 42 };
+    h.caps = makeCaps();
     const state = liveState();
     state.fieldStatus = {
       ...state.fieldStatus,
-      'main.afLevel': {
-        storePath: 'main.afLevel', observed: false, freshness: 'unknown', availability: 'missing',
+      [`${key}.afLevel`]: {
+        storePath: `${key}.afLevel`, observed: false, freshness: 'unknown', availability: 'missing',
       },
     };
     h.state = state;
     renderHostedFace('desktop-v2');
-    expect(text('af-value')).toBe('');
-    expect(q('[data-testid="rx-audio-af"]')?.getAttribute('data-observed')).toBe('false');
+    expect(el(row)).not.toBeNull();
+    expect(text(`${row}-value`)).toBe('');
+    expect(el(row)?.getAttribute('data-observed')).toBe('false');
   });
 
   it('dispatches dual channel gain through the existing audio-routing handler', () => {
@@ -1013,19 +1036,27 @@ describe('persistent RX-audio composition across a real Standard->SDR plan switc
  * control with no lane.
  */
 describe('the AF control consumes the admitted-target lane (MOR-1687 F2)', () => {
-  const afState = (marker: number, afLevel: number): ServerState => {
+  const afState =(marker: number, afLevel: number, key: 'main' | 'sub' = 'main'): ServerState => {
     const state = liveState();
-    return { ...state, stateContractVersion: 1, main: { ...state.main, afLevel },
+    return { ...state, stateContractVersion: 1, [key]: { ...state[key], afLevel },
       fieldStatus: { ...state.fieldStatus,
-        'main.afLevel': { ...fresh, freshness: 'fresh', availability: 'available', lastObservedMonotonic: marker } } };
+        'main.afLevel': observedAt(1), 'sub.afLevel': observedAt(1), [`${key}.afLevel`]: observedAt(marker) } };
   };
-  const beginAf = (id: string) => beginCommand({ id, name: 'set_af_level', params: { level: 0.5, receiver: 0 }, originalEpoch: 1 });
-  const pushAfState = (marker: number, afLevel: number) => {
-    h.state = afState(marker, afLevel);
+  const beginAf = (id: string, receiver: 0 | 1 = 0) => beginCommand({ id, name: 'set_af_level', params: { level: 0.5, receiver }, originalEpoch: 1 });
+  const pushAfState = (marker: number, afLevel: number, key: 'main' | 'sub' = 'main') => {
+    h.state = afState(marker, afLevel, key);
     for (const listener of h.radioListeners) listener(h.state as ServerState | null);
     publishAuthority();
     flushSync();
   };
+  const knob = (row: string) => q<HTMLElement>(`[data-testid="rx-audio-${row}"] [role="slider"]`);
+  // MOR-2579: a dual-receiver radio draws one knob per receiver, and each
+  // lights only its own receiver's lane; `other` is the knob that must not.
+  const LANES = [
+    ['the single-receiver AF knob', 'af', null, 'main', 0, singleReceiverCaps],
+    ['the AF MAIN knob', 'af-main', 'af-sub', 'main', 0, () => liveCaps(AUDIO_TAGS)],
+    ['the AF SUB knob', 'af-sub', 'af-main', 'sub', 1, () => liveCaps(AUDIO_TAGS)],
+  ] as const;
 
   it('keeps the browser-volume reading and no lane while the stream owns AF', () => {
     beginAf('af-live');
@@ -1036,35 +1067,192 @@ describe('the AF control consumes the admitted-target lane (MOR-1687 F2)', () =>
     expect(afSlider()!.dataset.commandPhase).toBeUndefined();
   });
 
-  it('awaits the admitted target and confirms only on the exact fresh readback', () => {
+  it.each(LANES)('%s awaits the admitted target and confirms only on the exact fresh readback', (
+    _label, row, other, key, receiver, makeCaps,
+  ) => {
     h.rxEnabled = false;
     h.audio = { muted: false, rxEnabled: false, volume: 42 };
-    h.state = afState(1, 0.31);
-    const command = beginAf('af-admitted');
+    h.caps = makeCaps();
+    h.state = afState(1, 0.31, key);
+    const command = beginAf('af-admitted', receiver);
     render();
-    expect(afSlider()!.dataset.commandPhase).toBe('idle');
+    expect(knob(row)!.dataset.commandPhase).toBe('idle');
     acknowledgeCommand(command.id, 1, 1, 128 / 255);
     flushSync();
-    expect(afSlider()!.dataset.commandPhase).toBe('awaiting-confirmation');
-    pushAfState(2, 0.9);
-    expect(afSlider()!.dataset.commandPhase).toBe('awaiting-confirmation');
-    pushAfState(3, 128 / 255);
+    expect(knob(row)!.dataset.commandPhase).toBe('awaiting-confirmation');
+    if (other !== null) expect(knob(other)!.dataset.commandPhase).toBe('idle');
+    pushAfState(2, 0.9, key);
+    expect(knob(row)!.dataset.commandPhase).toBe('awaiting-confirmation');
+    pushAfState(3, 128 / 255, key);
     expect(getCommandLifecycles()[0]?.status).toBe('confirmed');
-    expect(afSlider()!.dataset.commandPhase).toBe('confirmed');
-    expect(Number(afSlider()!.getAttribute('aria-valuenow'))).toBeCloseTo(128 / 255, 10);
+    expect(knob(row)!.dataset.commandPhase).toBe('confirmed');
+    expect(Number(knob(row)!.getAttribute('aria-valuenow'))).toBeCloseTo(128 / 255, 10);
   });
 
-  it('stays idle without an admitted target and keeps showing the readback', () => {
+  it.each(LANES)('%s stays idle without an admitted target and keeps showing the readback', (
+    _label, row, _other, key, receiver, makeCaps,
+  ) => {
     h.rxEnabled = false;
     h.audio = { muted: false, rxEnabled: false, volume: 42 };
-    h.state = afState(1, 0.31);
-    const command = beginAf('af-old-server');
+    h.caps = makeCaps();
+    h.state = afState(1, 0.31, key);
+    const command = beginAf('af-old-server', receiver);
     render();
     acknowledgeCommand(command.id, 1, 1);
     flushSync();
-    pushAfState(2, 0.31);
-    expect(afSlider()!.dataset.commandPhase).toBe('idle');
+    pushAfState(2, 0.31, key);
+    expect(knob(row)!.dataset.commandPhase).toBe('idle');
     expect(getCommandLifecycles()[0]?.status).toBe('acknowledged');
-    expect(Number(afSlider()!.getAttribute('aria-valuenow'))).toBeCloseTo(0.31, 10);
+    expect(Number(knob(row)!.getAttribute('aria-valuenow'))).toBeCloseTo(0.31, 10);
+  });
+});
+
+/**
+ * MOR-2579 — outside `live`, a dual-receiver radio served the `af_level_sub`
+ * tag gets one AF knob per receiver, each bound to its own receiver.
+ */
+describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () => {
+  function radioAf(active: 'MAIN' | 'SUB' = 'MAIN'): void {
+    h.rxEnabled = false;
+    h.audio = { muted: false, rxEnabled: false, volume: 42 };
+    const state = liveState({ active });
+    h.state = {
+      ...state, stateContractVersion: 1, sub: { ...state.sub!, afLevel: 0.77 },
+      fieldStatus: { ...state.fieldStatus, 'main.afLevel': observedAt(1), 'sub.afLevel': observedAt(1) },
+    } as ServerState;
+  }
+  function select(active: 'MAIN' | 'SUB'): void {
+    h.state = { ...(h.state as ServerState), active };
+    for (const listener of h.radioListeners) listener(h.state as ServerState);
+    publishAuthority();
+    flushSync();
+  }
+  const knob = (receiver: 'main' | 'sub') =>
+    q<HTMLElement>(`[data-testid="rx-audio-af-${receiver}"] [role="slider"]`);
+  const rows = () => [...target.querySelectorAll<HTMLElement>('label[data-testid^="rx-audio-af"]')]
+    .map((row) => [
+      row.dataset.testid, row.querySelector('.rx-audio-name')?.textContent,
+      row.querySelector('output')?.textContent,
+      row.querySelector('[role="slider"]')?.getAttribute('aria-label'),
+      row.querySelector('[role="slider"]')?.getAttribute('aria-valuenow'),
+    ]);
+  const afCalls = () => vi.mocked(sendCommand).mock.calls
+    .filter(([name]) => name === 'set_af_level').map(([, params]) => params);
+  const BOTH = [
+    ['rx-audio-af-main', 'AF MAIN', '31%', 'AF MAIN', '0.31'],
+    ['rx-audio-af-sub', 'AF SUB', '77%', 'AF SUB', '0.77'],
+  ];
+
+  it.each(['desktop-v2', 'sdr-test'] as const)(
+    '%s draws AF MAIN then AF SUB, and selecting SUB moves and relabels neither',
+    (face) => {
+      radioAf();
+      renderHostedFace(face);
+      expect(rows()).toEqual(BOTH);
+      select('SUB');
+      expect(rows()).toEqual(BOTH);
+    },
+  );
+
+  it.each([
+    ['MAIN', 'sub', 1, 0.78],
+    ['SUB', 'main', 0, 0.32],
+  ] as const)('with %s selected, a step on the %s knob sets that receiver\'s AF', (active, receiver, index, level) => {
+    radioAf(active);
+    renderHostedFace('desktop-v2');
+    knob(receiver)!.dispatchEvent(new KeyboardEvent(
+      'keydown', { key: 'ArrowRight', bubbles: true, cancelable: true },
+    ));
+    flushSync();
+    expect(afCalls()).toEqual([{ level: expect.closeTo(level, 10), receiver: index }]);
+  });
+
+  it('keeps a drag on the SUB knob alive across a MAIN-to-SUB selection change', () => {
+    radioAf();
+    render();
+    const slider = knob('sub')!;
+    slider.closest<HTMLElement>('.vc-hbar')!.getBoundingClientRect = () => ({
+      left: 0, right: 100, top: 0, bottom: 10, width: 100, height: 10, x: 0, y: 0,
+      toJSON: () => ({}),
+    });
+    Object.assign(slider, {
+      setPointerCapture: vi.fn(), releasePointerCapture: vi.fn(), hasPointerCapture: () => true,
+    });
+    slider.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 9, clientX: 50, bubbles: true }));
+    select('SUB');
+    vi.mocked(sendCommand).mockClear();
+    slider.dispatchEvent(new PointerEvent('pointermove', { pointerId: 9, clientX: 90, bubbles: true }));
+    slider.dispatchEvent(new PointerEvent('pointerup', { pointerId: 9, bubbles: true }));
+    flushSync();
+    expect(afCalls().at(-1)).toEqual({ level: expect.closeTo(0.9, 10), receiver: 1 });
+    expect(afCalls().every((params) => (params as { receiver: number }).receiver === 1)).toBe(true);
+  });
+
+  it.each([['MAIN', 'main'], ['SUB', 'sub']] as const)(
+    '"go to AF" focuses the knob of the selected receiver (%s)',
+    (active, receiver) => {
+      const scrollIntoView = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = vi.fn();
+      try {
+        radioAf(active);
+        renderHostedFace('desktop-v2');
+        makeKeyboardHandlers().dispatch({ action: 'focus_target', params: { target: 'af' } });
+        expect(knob(receiver)).not.toBeNull();
+        expect(document.activeElement).toBe(knob(receiver));
+      } finally {
+        Element.prototype.scrollIntoView = scrollIntoView;
+      }
+    },
+  );
+
+  it('keeps the one browser-volume AF row while monitoring live', () => {
+    radioAf();
+    h.rxEnabled = true;
+    h.audio = { muted: false, rxEnabled: true, volume: 42 };
+    renderHostedFace('desktop-v2');
+    expect(rows()).toEqual([['rx-audio-af', 'AF LEVEL', '42%', 'AF', '0.42']]);
+  });
+
+  // IC-9700 shape: `sub.afLevel` is observed and available, but the radio
+  // admits no SUB AF write, so the server does not serve `af_level_sub`.
+  it('draws the one AF LEVEL row without af_level_sub, even with sub.afLevel observed', () => {
+    radioAf();
+    h.caps = liveCaps(AUDIO_TAGS.filter((tag) => tag !== 'af_level_sub'));
+    renderHostedFace('desktop-v2');
+    expect(rows()).toEqual([['rx-audio-af', 'AF LEVEL', '31%', 'AF', '0.31']]);
+    expect(el('af-sub')).toBeNull();
+  });
+
+  // Owner decision 2026-09-24: MUTE mutes both receivers.
+  const pickMonitor = (mode: 'mute' | 'local') => {
+    vi.mocked(sendCommand).mockClear();
+    el(`monitor-${mode}`)!.click();
+    flushSync();
+  };
+  // The saved MUTE levels are module state in `panel-commands.ts`, and the
+  // Standard->SDR persistence test above leaves MUTE engaged: leave it first.
+  const leaveEarlierMute = () => pickMonitor('local');
+
+  it('MUTE zeroes MAIN and SUB; unmute restores each its own level after a selection change', () => {
+    radioAf();
+    renderHostedFace('desktop-v2');
+    leaveEarlierMute();
+    pickMonitor('mute');
+    expect(afCalls()).toEqual([{ level: 0, receiver: 0 }, { level: 0, receiver: 1 }]);
+    select('SUB');
+    pickMonitor('local');
+    expect(afCalls()).toEqual([{ level: 0.31, receiver: 0 }, { level: 0.77, receiver: 1 }]);
+  });
+
+  it('MUTE touches only the selected receiver without af_level_sub, as before', () => {
+    radioAf();
+    h.caps = liveCaps(AUDIO_TAGS.filter((tag) => tag !== 'af_level_sub'));
+    expect(setCapabilities(h.caps as Capabilities)).toBe(true);
+    renderHostedFace('desktop-v2');
+    leaveEarlierMute();
+    pickMonitor('mute');
+    expect(afCalls()).toEqual([{ level: 0, receiver: 0 }]);
+    pickMonitor('local');
+    expect(afCalls()).toEqual([{ level: 0.31, receiver: 0 }]);
   });
 });

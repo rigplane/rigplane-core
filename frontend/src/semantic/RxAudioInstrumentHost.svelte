@@ -51,12 +51,17 @@
    *  coordinator ruling). */
   const unlitTextOf = (f: RxAudioField<unknown>): string =>
     f.reading.status === 'known' ? String(f.reading.value) : '';
+  const afPercent = (f: RxAudioField<number>): string =>
+    f.reading.status === 'known' ? `${Math.round(f.reading.value * 100)}%` : '';
 
   interface ExistingProps {
     presentation: RxAudioInstrumentPresentation;
     subscribeControlAuthority: SubscribeRxAudioAuthority;
     onAfLevelChange?: (value: number) => void;
     afLevelFeedback?: Readonly<CommandScalarFeedback>;
+    /** MOR-2579: the per-receiver AF knobs (`rxAudio.receiverAfLevels`). */
+    onReceiverAfLevelChange?: (receiver: AfReceiverKey, value: number) => void;
+    receiverAfLevelFeedback?: Readonly<Record<AfReceiverKey, Readonly<CommandScalarFeedback>>>;
     onMonitorModeChange?: (mode: MonitorMode) => void;
     onFocusChange?: (focus: AudioFocus) => void;
     onSplitStereoChange?: (split: boolean) => void;
@@ -75,6 +80,7 @@
   type Props = ExistingProps & RendererSelection;
 
   type Receiver = 'MAIN' | 'SUB' | 'unknown';
+  type AfReceiverKey = 'main' | 'sub';
   type AfTarget = 'browser-volume' | `radio-af:${Receiver}`;
   interface AfAuthority {
     readonly epoch: number;
@@ -87,6 +93,7 @@
 
   let {
     presentation, subscribeControlAuthority, onAfLevelChange, afLevelFeedback,
+    onReceiverAfLevelChange, receiverAfLevelFeedback,
     onMonitorModeChange, onFocusChange, onSplitStereoChange, routingGains = null,
     onChannelGainChange, onModInputChange, onSetModInputLan,
     finiteAppearance, rendererContext, children,
@@ -262,17 +269,21 @@
       && left.muted === right.muted
       && left.target === right.target;
   }
-  const key = (value: AfAuthority | null): string => value === null
-    ? 'rx-af:inactive'
+  const key = (value: AfAuthority | null, owner = 'rx-af'): string => value === null
+    ? `${owner}:inactive`
     : JSON.stringify([
-      'rx-af', value.epoch, value.generation, value.topologyId, value.receiver,
+      owner, value.epoch, value.generation, value.topologyId, value.receiver,
       value.muted, value.target,
     ]);
+  /** Shared by the three AF bindings. */
+  let presentedAfAuthority = $derived(authority(presentation));
+  let publishedAfAuthority = $derived(published === null ? null : authority(published));
+  const AF_DOMAIN = { min: 0, max: 1, step: 0.01, defaultValue: null, fineStepDivisor: 1 } as const;
 
   function input(): Readonly<ContinuousScalarInput> {
     const field = presentation.rxAudio?.afLevel;
-    const currentAuthority = published === null ? null : authority(published);
-    const presentedAuthority = authority(presentation);
+    const currentAuthority = publishedAfAuthority;
+    const presentedAuthority = presentedAfAuthority;
     const reading = field?.reading.status === 'known'
       ? { status: 'known' as const, value: field.reading.value }
       : { status: 'unknown' as const };
@@ -292,7 +303,7 @@
       && Number.isFinite(reading.value)
       && onAfLevelChange !== undefined;
     const base = {
-      domain: { min: 0, max: 1, step: 0.01, defaultValue: null, fineStepDivisor: 1 },
+      domain: AF_DOMAIN,
       enabled,
       request: (value: number) => onAfLevelChange?.(value),
     } as const;
@@ -317,6 +328,49 @@
   });
   const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
   const afLevelBinding = createContinuousScalar(input, policy);
+
+  /** MOR-2579: a per-receiver knob's authority names its OWN receiver, so a
+   *  MAIN/SUB selection change neither retargets nor cancels it. */
+  function receiverAuthority(base: AfAuthority | null, receiver: AfReceiverKey): AfAuthority | null {
+    if (base === null) return null;
+    const fixed = receiver === 'main' ? 'MAIN' : 'SUB';
+    return {
+      ...base, receiver: fixed,
+      target: base.target === 'browser-volume' ? base.target : `radio-af:${fixed}`,
+    };
+  }
+  function receiverAfInput(receiver: AfReceiverKey): Readonly<ContinuousScalarInput> {
+    const field = presentation.rxAudio?.receiverAfLevels?.[receiver];
+    const currentAuthority = receiverAuthority(publishedAfAuthority, receiver);
+    const reading = field?.reading.status === 'known'
+      ? { status: 'known' as const, value: field.reading.value }
+      : { status: 'unknown' as const };
+    const enabled = same(currentAuthority, receiverAuthority(presentedAfAuthority, receiver))
+      && currentAuthority?.target !== 'browser-volume'
+      && currentAuthority?.muted === false
+      && presentation.rxAudio?.monitorMode !== 'live'
+      && field?.availability.structural === true
+      && field.availability.operational
+      && reading.status === 'known'
+      && Number.isFinite(reading.value)
+      && onReceiverAfLevelChange !== undefined;
+    const base = {
+      domain: AF_DOMAIN,
+      enabled,
+      request: (value: number) => onReceiverAfLevelChange?.(receiver, value),
+    } as const;
+    const feedback = receiverAfLevelFeedback?.[receiver];
+    if (feedback !== undefined) return {
+      ...base, evidence: 'command-feedback', feedback, command: 'set_af_level',
+    };
+    return {
+      ...base, evidence: 'reading', reading, ownerKey: key(currentAuthority, 'rx-receiver-af'),
+    };
+  }
+  const receiverAfBindings = {
+    main: createContinuousScalar(() => receiverAfInput('main'), policy),
+    sub: createContinuousScalar(() => receiverAfInput('sub'), policy),
+  } as const;
 
   const CHANNEL_GAIN_DOMAIN = {
     min: -60, max: 12, step: 1, defaultValue: null, fineStepDivisor: 1,
@@ -345,6 +399,11 @@
       if (lastAuthority !== undefined && !same(lastAuthority, nextAuthority)) {
         afLevelBinding.cancel('authority');
       }
+      for (const receiver of ['main', 'sub'] as const) {
+        if (lastAuthority !== undefined && !same(
+          receiverAuthority(lastAuthority, receiver), receiverAuthority(nextAuthority, receiver),
+        )) receiverAfBindings[receiver].cancel('authority');
+      }
       lastAuthority = nextAuthority;
       published = next;
     });
@@ -355,6 +414,8 @@
   onDestroy(() => {
     try { stop?.(); } finally {
       afLevelBinding.destroy();
+      receiverAfBindings.main.destroy();
+      receiverAfBindings.sub.destroy();
       channelGainBindings.main.destroy();
       channelGainBindings.sub.destroy();
       for (const seat of finiteSeats) seat.destroy();
@@ -362,16 +423,18 @@
   });
 </script>
 
-{#snippet afLevelControl(hardware: boolean)}
+{#snippet afLevelControl(hardware: boolean, receiver?: AfReceiverKey)}
   <ValueControl
     {...feedbackIntegratedControl}
-    binding={afLevelBinding} label="AF" renderer="hbar"
+    binding={receiver === undefined ? afLevelBinding : receiverAfBindings[receiver]}
+    label={receiver === undefined ? 'AF' : `AF ${receiver.toUpperCase()}`} renderer="hbar"
     showLabel={false} showValue={false} compact={true}
     variant={hardware ? 'hardware-illuminated' : 'modern'}
     accentColor={hardware ? 'var(--v2-accent-cyan-alt)' : 'var(--v2-accent-cyan)'}
   />
 {/snippet}
 {#snippet afLevel()}{@render afLevelControl(false)}{/snippet}
+{#snippet receiverAfLevel(receiver: AfReceiverKey)}{@render afLevelControl(false, receiver)}{/snippet}
 
 {#snippet routingSplitToggle()}
   {#if rx?.routingSplit.availability.structural}
@@ -392,8 +455,20 @@
   {/if}
 {/snippet}
 
+{#snippet receiverAfRow(receiver: AfReceiverKey, field: RxAudioField<number>)}
+  <label class="rx-audio-level" data-testid={`rx-audio-af-${receiver}`}
+    data-observed={usable(field)}>
+    <span class="rx-audio-name">AF {receiver.toUpperCase()}</span>
+    {@render afLevelControl(true, receiver)}
+    <output data-testid={`rx-audio-af-${receiver}-value`}>{afPercent(field)}</output>
+  </label>
+{/snippet}
+
 {#snippet afLevelRow()}
-  {#if rx?.afLevel.availability.structural}
+  {#if rx?.receiverAfLevels}
+    {@render receiverAfRow('main', rx.receiverAfLevels.main)}
+    {@render receiverAfRow('sub', rx.receiverAfLevels.sub)}
+  {:else if rx?.afLevel.availability.structural}
     <label class="rx-audio-level" data-testid="rx-audio-af"
       data-observed={usable(rx.afLevel)}>
       <span class="rx-audio-name">AF LEVEL</span>
@@ -401,8 +476,7 @@
       <!-- MOR-2527: the unread AF level renders NO value text — an unlit
            slot, never a `—`; the reserved min-width keeps the row from
            shifting when the reading arrives. -->
-      <output data-testid="rx-audio-af-value">{rx.afLevel.reading.status === 'known'
-        ? `${Math.round(rx.afLevel.reading.value * 100)}%` : ''}</output>
+      <output data-testid="rx-audio-af-value">{afPercent(rx.afLevel)}</output>
     </label>
   {/if}
 {/snippet}
@@ -591,7 +665,7 @@
 {/snippet}
 
 {@render children({
-  afLevel, afLevelRow, monitorMode, monitorStatus, routingFocus, routingSplit,
+  afLevel, receiverAfLevel, afLevelRow, monitorMode, monitorStatus, routingFocus, routingSplit,
   routingSplitToggle, mainGain, subGain, modInputSource, setModInputLan,
 })}
 

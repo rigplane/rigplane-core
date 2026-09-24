@@ -767,34 +767,37 @@ function normalizedUsableObservation(
     ? value : null;
 }
 
-/** Qualified AF-level command feedback; receiver from active-receiver truth. */
+/** Qualified AF-level command feedback for `receiver` (MOR-2579), or for the
+ *  active receiver when none is named. */
 export function getAfLevelControlFeedback(
   currentControlSession?: ControlSessionSnapshot,
+  receiver?: 'MAIN' | 'SUB',
 ): Readonly<ControlFeedback<number>> {
   const { state, caps } = runtime;
   const commands = getCommandLifecycles();
   const session = currentControlSession ?? runtime.controlSession;
   const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
+  const scopeOnSub = receiver === undefined ? state?.active === 'SUB' : receiver === 'SUB';
   const feedback = projectControlFeedback(
     AF_LEVEL_COMMAND_DESCRIPTOR, state, commands,
-    { control: 'af-level', receiver: state?.active === 'SUB' ? 1 : 0 }, epoch,
+    { control: 'af-level', receiver: scopeOnSub ? 1 : 0 }, epoch,
     isCommandLifecycleSuperseded,
   );
   try {
     const view = toRadioViewModel(state, caps);
-    const activeReceiver = view === null || view.activeReceiver.status !== 'known'
-      ? null : view.activeReceiver.receiver;
+    const laneReceiver = receiver ?? (view === null || view.activeReceiver.status !== 'known'
+      ? null : view.activeReceiver.receiver);
     const receiverEntries = view?.receiverIndicators?.filter(
-      entry => entry.receiver === activeReceiver,
+      entry => entry.receiver === laneReceiver,
     ) ?? [];
     const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
     const observation = qualifyDisplayObservation({
-      state, caps, receiver: activeReceiver ?? 'MAIN',
-      path: activeReceiver === 'SUB' ? 'sub.afLevel' : 'main.afLevel',
+      state, caps, receiver: laneReceiver ?? 'MAIN',
+      path: laneReceiver === 'SUB' ? 'sub.afLevel' : 'main.afLevel',
       structural: tags.includes('af_level'),
-      value: (activeReceiver === 'SUB' ? state?.sub : state?.main)?.afLevel,
+      value: (laneReceiver === 'SUB' ? state?.sub : state?.main)?.afLevel,
     });
-    if (session.state !== 'connected' || epoch < 0 || activeReceiver === null
+    if (session.state !== 'connected' || epoch < 0 || laneReceiver === null
       || receiverEntries.length !== 1 || !receiverEntries[0].availability.operational
       || normalizedUsableObservation(observation) === null) {
       return unavailableControlFeedback(feedback);
