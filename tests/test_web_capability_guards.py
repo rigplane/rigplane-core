@@ -923,9 +923,10 @@ class TestProfileDeclaredSecondReceiver:
 
 
 class TestSubReceiverAfLevelTag:
-    """``af_level_sub`` is served only when the radio itself admits
-    ``set_af_level`` for receiver 1 (``Radio.supports_command`` with an
-    explicit receiver). Real radios on the bundled profiles, not mocks."""
+    """``/api/v1/info`` and ``/api/v1/capabilities`` serve ``af_level_sub``
+    only when the radio itself admits ``set_af_level`` for receiver 1
+    (``Radio.supports_command`` with an explicit receiver). Real radios on the
+    bundled profiles, not mocks."""
 
     @pytest.mark.parametrize(
         ("rig", "admitted"),
@@ -934,7 +935,10 @@ class TestSubReceiverAfLevelTag:
     def test_tag_follows_the_radio_admission(self, rig: str, admitted: bool) -> None:
         from rigplane.rig_loader import load_rig
         from rigplane.runtime.radio import CoreRadio
-        from rigplane.web.runtime_helpers import runtime_capabilities
+        from rigplane.web.runtime_helpers import (
+            projected_af_level_sub_tag,
+            runtime_capabilities,
+        )
 
         config = load_rig(_RIGS_DIR / f"{rig}.toml")
         radio = (
@@ -943,10 +947,11 @@ class TestSubReceiverAfLevelTag:
             else CoreRadio("127.0.0.1", profile=config.to_profile())
         )
         assert radio.supports_command("set_af_level", receiver=1) is admitted
-        assert ("af_level_sub" in runtime_capabilities(radio)) is admitted
+        tags = projected_af_level_sub_tag(radio, runtime_capabilities(radio))
+        assert tags == (frozenset({"af_level_sub"}) if admitted else frozenset())
 
     @pytest.mark.asyncio
-    async def test_info_capabilities_and_hello_serve_it_only_with_a_sub_af_write(
+    async def test_info_and_capabilities_serve_it_only_with_a_sub_af_write(
         self,
     ) -> None:
         from rigplane.rig_loader import load_rig
@@ -962,11 +967,8 @@ class TestSubReceiverAfLevelTag:
             radio = YaesuCatRadio(
                 "/dev/null", profile=profile, audio_driver=SimpleNamespace()
             )
-            assert await _endpoint_vfo_tags(radio, reserved=tag) == (
-                expected,
-                expected,
-                expected,
-            )
+            info, capabilities, _hello = await _endpoint_vfo_tags(radio, reserved=tag)
+            assert (info, capabilities) == (expected, expected)
 
 
 # ── Profile-declared dual watch (MOR-2425) ─────────────────────
