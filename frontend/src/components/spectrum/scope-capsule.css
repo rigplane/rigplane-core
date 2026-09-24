@@ -266,7 +266,7 @@
 /* The hosted strip paints the scope section's own card colour once; the
  * skin's per-surface card paint (border + padding + background under just
  * the row) is switched off here so the keys, SRC and ⛶ share one ground.
- * 789 px = the FIRST band (788) + 1, so a shrink-to-fit host never hides
+ * 762 px = the FIRST band (761) + 1, so a shrink-to-fit host never hides
  * the quick keys at its natural width. */
 .spectrum-toolbar.hosted section.scope-controls-surface {
   background: transparent;
@@ -274,7 +274,7 @@
   padding: 0;
   gap: 0;
   flex-wrap: nowrap;
-  contain-intrinsic-inline-size: 789px;
+  contain-intrinsic-inline-size: 762px;
 }
 
 /* The SRC indicator drops the design-language literal chain on this row
@@ -296,39 +296,57 @@
  * ScopeControlsSurface, `.toolbar-group.svelte-*` from SpectrumToolbar's
  * rowTail) — the round-2 defect where only the receiver and STEP hid.
  *
- * PHASE-A VALUES: the literals below are the researcher's preview-B
- * estimates (report §3 B, tmp/style-b/face-vocabulary-report.md); the
- * follow-up measurement commit on this branch re-derives them from the
- * round-4 head's real-browser widths, measured item by item plus the 8 px
- * safety margin, and updates the derivation arithmetic recorded here.
+ * THE BANDS ARE DERIVED FROM THE ROUND-4 MEASURED WIDTHS (real-browser
+ * measurement of this branch's head, Playwright Chromium on the Mac mini,
+ * device pixel ratio 1, topology-2-main-sub plus the hardware-scope
+ * fixture): full row 753.3 px, AVG+PEAK quick group 71.8, MAIN|SUB group
+ * 72.8, HOLD 37.6, REF stepper 116.2, SPAN stepper 122.6, STEP stepper
+ * 135.4, CTR|FIX group 66.4, BANDS 44.0, longest MORE label 56.0
+ * (ja-JP その他 ▾; en-US 50.4); row gap 4 px (measured live — the gap
+ * rules above), 9 gaps in the full row (the spacer adds the ninth).
+ * Each band = the width of the row with that item still SHOWING (the
+ * items before it already hidden) + 8 px safety margin (a .5 remainder
+ * rounds up):
+ *   quick     753.3 + 8                            → 761
+ *   receiver  753.3 − 71.8 − 4 + 8                 → 686
+ *   hold      753.3 − 71.8 − 72.8 − 2×4 + 8        → 609
+ *   ref       753.3 − 71.8 − 72.8 − 37.6 − 3×4 + 8 → 567
+ *   span      … − 116.2 − 4×4 + 8                  → 447
+ *   step      … − 122.6 − 5×4 + 8                  → 320
+ * Below the step band the chain leaves ≈ 178.5 px (CTR|FIX + BANDS + MORE
+ * + the spacer's flanking gaps; the ja-JP MORE label, the widest); the
+ * mode band is that measured remainder + 8:
+ *   mode      178.5 + 8                            → 186
+ * Below the mode band only BANDS + MORE + the spacer remain (≈ 100 px),
+ * which fits every narrower row, so CTR|FIX hides last.
  */
 
-@container scope-controls (max-width: 788px) {
+@container scope-controls (max-width: 761px) {
   .spectrum-toolbar.hosted .scope-controls-row > [data-overflow='quick'] { display: none; }
 }
-@container scope-controls (max-width: 701px) {
+@container scope-controls (max-width: 686px) {
   .spectrum-toolbar.hosted .scope-controls-row > [data-overflow='receiver'] { display: none; }
   .spectrum-toolbar.hosted div.scope-more-overflow > [data-overflow='receiver'] { display: flex; }
 }
-@container scope-controls (max-width: 617px) {
+@container scope-controls (max-width: 609px) {
   .spectrum-toolbar.hosted .scope-controls-row > [data-overflow='hold'] { display: none; }
   .spectrum-toolbar.hosted div.scope-more-overflow > [data-overflow='hold'] { display: flex; }
 }
-@container scope-controls (max-width: 572px) {
+@container scope-controls (max-width: 567px) {
   .spectrum-toolbar.hosted .scope-controls-row > [data-overflow='ref'] { display: none; }
   .spectrum-toolbar.hosted div.scope-more-overflow > [data-overflow='ref'] { display: flex; }
 }
-@container scope-controls (max-width: 453px) {
+@container scope-controls (max-width: 447px) {
   .spectrum-toolbar.hosted .scope-controls-row > [data-overflow='span'] { display: none; }
   .spectrum-toolbar.hosted div.scope-more-overflow > [data-overflow='span'] { display: flex; }
 }
-@container scope-controls (max-width: 327px) {
+@container scope-controls (max-width: 320px) {
   /* No `.scope-more-overflow` copy here: STEP's More copy is the toolbar's
    * `.toolbar-step-copy` (in the screen group), shown by its own rule in
    * SpectrumToolbar.svelte at this same band. */
   .spectrum-toolbar.hosted .scope-controls-row > [data-overflow='step'] { display: none; }
 }
-@container scope-controls (max-width: 201px) {
+@container scope-controls (max-width: 186px) {
   /* No `.scope-more-overflow` copy here either: the panel's permanent MODE
    * row (CTR/FIX/S-C/S-F) already carries this choice. */
   .spectrum-toolbar.hosted .scope-controls-row > [data-overflow='mode'] { display: none; }

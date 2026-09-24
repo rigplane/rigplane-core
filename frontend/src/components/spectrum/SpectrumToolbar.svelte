@@ -765,7 +765,7 @@
       is pinned together with the sheet's by the component tests). */
   .toolbar-step-copy { display: none; }
 
-  @container scope-controls (max-width: 327px) {
+  @container scope-controls (max-width: 320px) {
     .toolbar-step-copy { display: flex; }
   }
 

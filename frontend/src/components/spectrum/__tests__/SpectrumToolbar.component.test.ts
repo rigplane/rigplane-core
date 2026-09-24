@@ -796,9 +796,9 @@ describe('source and enforcement boundary', () => {
     // PR3 round-3 repin: the `.step-cycler` comment now names the row
     // sheet's `:not(.step-cycler)` guard (round-3 finding 1).
     // MOR-2545 round-4 repin (owner style B): STEP's More copy follows the
-    // sheet's step band (327px phase-A estimate, re-pinned with the
-    // measurement), and the one-row/ground comments re-anchored.
-    expect(cssHash).toBe('5c1ae3ffa1e7e05cc4c4f448f5fe611c56e30b09fdda8027fd40966cdfb87ec8');
+    // sheet's measured step band (320px, re-derived from the round-4 head),
+    // and the one-row/ground comments re-anchored.
+    expect(cssHash).toBe('2bd8a56451a9499498c5fd16a5b793cc86d209c01d2e582c25ed40c7bf070fcc');
   });
 });
 
@@ -996,7 +996,7 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
     expect(gradients).toHaveLength(1);
     // One band set: the FIRST band exists and the hide order is pinned
     // exactly by the mutation-killer describe below.
-    expect(css).toMatch(/@container scope-controls \(max-width: 788px\)/);
+    expect(css).toMatch(/@container scope-controls \(max-width: 761px\)/);
   });
 
   // PR3 round 2 (finding 8) / round 4: the round-1 pins were substring
@@ -1029,12 +1029,13 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
     });
 
     // MUTATION KILLED: "a band literal drifts or two bands swap" — each
-    // band is asserted against ITS key (basis: the round-4 measured item
-    // widths, re-derived on the branch; see the derivation comment in
-    // scope-capsule.css).
+    // band is asserted against ITS key (basis: the round-4 MEASURED item
+    // widths — full row 753.3, quick group 71.8, MAIN|SUB 72.8, HOLD 37.6,
+    // REF 116.2, SPAN 122.6, STEP 135.4, ja MORE 56.0; +8 px safety — see
+    // the derivation comment in scope-capsule.css).
     it('every overflow band matches its key and the measured derivation', () => {
       const bands: Record<string, number> = {
-        quick: 788, receiver: 701, hold: 617, ref: 572, span: 453, step: 327, mode: 201,
+        quick: 761, receiver: 686, hold: 609, ref: 567, span: 447, step: 320, mode: 186,
       };
       for (const [key, px] of Object.entries(bands)) {
         const block = css.match(new RegExp(

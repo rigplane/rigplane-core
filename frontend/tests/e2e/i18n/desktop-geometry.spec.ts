@@ -1158,9 +1158,8 @@ test.describe('T185 transmit key pair', () => {
 // MOR-2545 PR3 round 4 (owner style B "raised keys"): the row's keys are
 // the Standard-face command family, so every item is NARROWER (10px/400
 // type, family padding) and the bands are re-derived from the round-4
-// measured widths (see the derivation comment in
-// src/components/spectrum/scope-capsule.css; phase-A literals below are the
-// preview-B estimates until that measurement lands). The suite boots the
+// MEASURED widths (full row 753.3 px; see the derivation comment in
+// src/components/spectrum/scope-capsule.css). The suite boots the
 // dual-receiver catalog topology with a hardware-scope stamp, checks the
 // hit target at every visible control's centre (row AND open More panel),
 // and clicks the STEP arrows both ways. Below 641 px of viewport the app
@@ -1170,8 +1169,8 @@ test.describe('T185 transmit key pair', () => {
 test.describe('MOR-2545 PR3: the hosted scope row hides by band and never overlaps', () => {
   /** Band literals mirror scope-capsule.css (quick hides first, mode last). */
   const BANDS: readonly (readonly [string, number])[] = [
-    ['quick', 788], ['receiver', 701], ['hold', 617], ['ref', 572],
-    ['span', 453], ['step', 327], ['mode', 201],
+    ['quick', 761], ['receiver', 686], ['hold', 609], ['ref', 567],
+    ['span', 447], ['step', 320], ['mode', 186],
   ];
   const ROW_CONTROL_SELECTOR: Record<string, string> = {
     quick: '[data-testid="toolbar-quick-keys"]',
@@ -1282,9 +1281,10 @@ test.describe('MOR-2545 PR3: the hosted scope row hides by band and never overla
 
   test('the More STEP copy arrows move the step down and up', async ({ page }) => {
     await bootHosted(page, 'sdr-test', 700, 'en-US');
-    // At this width the container is under the step band (327 px on the
-    // round-4 head): the row's STEP hides and its More copy (the
-    // toolbar's `.toolbar-step-copy`) shows.
+    // At this width the container is under the step band (320 px on the
+    // round-4 head; the sdr-test 700 container measured 196.5): the row's
+    // STEP hides and its More copy (the toolbar's `.toolbar-step-copy`)
+    // shows.
     await expect(page.getByTestId('toolbar-row-step')).toBeHidden();
     await page.getByTestId('scope-more').click();
     const copy = page.getByTestId('scope-more-step');
@@ -1298,7 +1298,7 @@ test.describe('MOR-2545 PR3: the hosted scope row hides by band and never overla
     // outside the row on the round-2 head; 641 is the narrowest desktop
     // viewport (below it the app is the mobile face, no hosted row).
     ...[900, 800, 700, 641].map(width => ({ layout: 'sdr-test' as const, width, locale: 'en-US' as const })),
-    // The widest MORE label (その他 ▾, ja-JP) must not break the row.
+    // The widest MORE label (その他 ▾, 56.0 px measured) must not break the row.
     { layout: 'standard', width: 1280, locale: 'ja-JP' },
   ];
 
