@@ -3,10 +3,8 @@
  * intents added in `claimed.ts`), the pending tone-mode target those intents
  * leave in flight, and the pure `$lib/radio/repeater-transitions` helpers.
  *
- * `makeRepeaterHandlers()` takes the CONFIRMED mode/shift/frequency as
- * explicit arguments — the view model collapses them
- * (`radio-view-model-adapter.ts::deriveRepeater`), not the command layer. The
- * dispatch is therefore pure and needs no fixture field-status gate: every
+ * `makeRepeaterHandlers()` takes the mode/shift/frequency as explicit
+ * arguments, so the dispatch is pure and needs no fixture field-status gate: every
  * case below asserts the exact frames for a selector transition, with the
  * receiver on every command.
  *

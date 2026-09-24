@@ -276,9 +276,8 @@ export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'reset_filter_width',
   // MOR-2111 — the repeater panel family walk. All five are claimed via
   // `expectFrames` in `../mor2111-repeater-conformance.isolated.test.ts`:
-  // the panel's handlers take the confirmed mode/shift/frequency as explicit
-  // arguments (the view model collapses them, not the command layer), so the
-  // dispatch is pure and needs no fixture field-status gate — see that file's
+  // the panel's handlers take the mode/shift/frequency as explicit arguments,
+  // so the dispatch is pure and needs no fixture field-status gate — see that file's
   // header for the selector-transition table it pins.
   'set_repeater_tone',
   'set_repeater_tsql',
