@@ -3950,9 +3950,12 @@ class RadioPoller:
 
         Only radios that can never passively report VFO identity
         (``vfo_readback == "selected_unselected"``) get a derivation; other
-        CI-V VFO schemes (absolute readback, MAIN/SUB-only radios like
-        IC-9700/IC-7610) stay ``unsupported`` rather than guess at unvalidated
-        split semantics.
+        CI-V VFO schemes stay ``unsupported`` here rather than guess at
+        unvalidated split semantics. MAIN/SUB-only radios whose profile
+        declares the radio's own transmit-frequency read (CI-V 1C 03,
+        ``get_tx_target`` — IC-7610/IC-9700, MOR-2540) publish the decoded
+        reply through the CI-V observation path instead, so this derivation
+        never runs — and must never write — for them.
         """
         if self._profile.vfo_readback != "selected_unselected":
             return UnknownTxTarget(reason="unsupported")
@@ -4000,10 +4003,14 @@ class RadioPoller:
 
         Delegates to :func:`tx_target_max_age`, the single source shared
         with ``CivRuntime._observation`` — see that function's docstring for
-        the fail-open rationale and the fallback it applies. Needs no
-        capability declaration for ``tx_target`` itself; see
-        :meth:`_publish_tx_target` for why that declaration must never
-        exist.
+        the fail-open rationale and the fallback it applies. Derivation
+        radios (``vfo_readback == "selected_unselected"``) declare no
+        ``tx_target`` capability — the field is not a radio-readable fact on
+        them, so a declared capability would send the scheduler after a
+        query that does not exist; ``policy_for`` then falls back to the
+        profile default. Radios with a native read (FTX-1; IC-7610/IC-9700
+        1C 03, MOR-2540) DO declare it, and their declared field policy's
+        TTL is what this returns.
         """
         # mypy --strict src/rigplane/web's own follow_imports=skip means the
         # cross-package call resolves to Any; float(...) makes the strict
@@ -4041,13 +4048,10 @@ class RadioPoller:
         the just-read snapshot with no ``await`` in between, so it always
         stamps the store's current provider generation.
         """
-        # IC-705 also has vfo_readback == "selected_unselected" but currently
-        # ships no [state_acquisition] block, so nothing ever actively polls
-        # split for it (AcquisitionScheduler.query_for_path's split mapping
-        # only fires through a scheduler built from that block) — tx_target
-        # is derived here regardless, but will sit at "not-observed" on that
-        # radio until split is ever observed. Tracked as a follow-up; not
-        # fixed here.
+        # MAIN/SUB radios (vfo_readback != "selected_unselected") never
+        # derive here: IC-7610/IC-9700 publish the radio's own 1C 03 answer
+        # through the CI-V observation path instead (MOR-2540), and this
+        # method must not become a second writer for the field.
         if self._profile.vfo_readback != "selected_unselected":
             return
 

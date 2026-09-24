@@ -71,6 +71,12 @@ _GLOBAL_TX_STATE_GETTERS = {
     "vox_on": "get_vox",
     "split": "get_split",
     "dual_watch": "get_dual_watch",
+    # MOR-2540: the radio's own "read transmit frequency" read (CI-V 1C 03).
+    # Only profiles that declare ``get_tx_target`` in [commands] resolve a
+    # query (from_getter returns None otherwise), so derivation radios
+    # (vfo_readback == "selected_unselected", e.g. IC-7300) are unaffected:
+    # they never declare the tx_target capability that would reach this row.
+    "tx_target": "get_tx_target",
 }
 _GLOBAL_CONTROL_GETTERS = {
     "rit_freq": "get_rit_frequency",
