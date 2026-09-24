@@ -3004,6 +3004,39 @@ async def test_defective_read_names_every_declared_path_it_feeds(
 
 
 @pytest.mark.asyncio
+async def test_refused_read_mid_cycle_still_emits_later_slow_fields() -> None:
+    """MOR-2578: a refused declared read skips its own field, not the cycle.
+
+    RED twin on origin/main: the refusal raises and aborts the cycle, so
+    this test fails there.
+    """
+    radio = _make_radio()
+    radio._poll_warned_fields = set()
+    radio.capabilities.add("repeater_shift")
+    radio.read_repeater_shift = AsyncMock(side_effect=lambda receiver=0: receiver)
+    _break_read(radio, "read_attenuator", 0, failure="reject")
+    scheduler = AcquisitionScheduler(profile=_profile_state_acquisition())
+    radio._acquisition_scheduler = scheduler
+    adapter = YaesuObservationAdapter(
+        radio, profile=_profile_state_acquisition(), clock=_clock
+    )
+
+    observations = await adapter.poll_slow_controls()
+    by_path = {str(item.path): item.value for item in observations}
+
+    assert scheduler.startup_defect is not None
+    assert [str(path) for path in scheduler.startup_defect.paths] == [
+        "receiver.main.operator_controls.att"
+    ]
+    assert "receiver.main.operator_controls.att" not in by_path
+    assert by_path["receiver.sub.operator_toggles.repeater_tone"] is True
+    assert by_path["receiver.sub.operator_toggles.repeater_tsql"] is False
+    assert by_path["receiver.sub.operator_controls.tone_freq"] == 8850
+    assert by_path["receiver.sub.operator_controls.tsql_freq"] == 8850
+    assert by_path["receiver.sub.operator_controls.repeater_shift"] == 1
+
+
+@pytest.mark.asyncio
 async def test_tx_target_frequency_read_raises_no_defect() -> None:
     """The TX-target frequency is a sub-read of a field emitted either way.
 
