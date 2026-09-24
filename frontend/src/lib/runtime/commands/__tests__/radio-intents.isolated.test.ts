@@ -527,9 +527,10 @@ describe('typed non-PTT radio intents', () => {
       const invalidRit: RadioIntent = { name: 'set_rit_frequency', params: { value: 300 } };
       expect(invalidRit).toBeDefined();
     }
-    // MOR-2538 removes three retired application intents from the prior 93.
-    expect(intents.RADIO_INTENT_NAMES).toHaveLength(90);
-    expect(new Set(intents.RADIO_INTENT_NAMES).size).toBe(90);
+    // MOR-2538 removes three retired application intents from the prior 93;
+    // MOR-2111 PR2 adds the five repeater family intents (90 + 5).
+    expect(intents.RADIO_INTENT_NAMES).toHaveLength(95);
+    expect(new Set(intents.RADIO_INTENT_NAMES).size).toBe(95);
     expect(intents.RADIO_INTENT_NAMES).toContain('reset_filter_width');
     expect(intents.RADIO_INTENT_NAMES).toContain('set_vfo_freq');
     expect(intents.RADIO_INTENT_NAMES).toContain('set_data3_mod_input');
