@@ -43,13 +43,16 @@ Arming order is transport-owned via the MOR-575 descriptor
   caller.
 
 Teardown always stops TX BEFORE dropping RX (the MOR-574 lesson): RX is
-never stopped from a TRANSMITTING transport. On genuinely full-duplex
-transports (LAN, ``"rx_first"``) TX MAY run without RX: a digital client
-(WSJT-X/FT8 over the companion) holding only a TX lease lazily arms the TX
-leg on its first ``TxLease.push`` and enters the ``TX_ONLY`` state, so its
-modulation actually reaches the radio. Exclusive/atomic USB transports keep
-deferring tx-only demand (their TX leg requires the co-armed duplex stream).
-Leases held across an RX gap are re-armed when RX demand returns.
+never stopped from a TRANSMITTING transport. TX MAY run without RX: a
+digital client (WSJT-X/FT8 over the companion) holding only a TX lease
+lazily arms the TX leg on its first ``TxLease.push`` and enters the
+``TX_ONLY`` state, so its modulation actually reaches the radio. Tx-only
+arming is intent-gated: a lease with recorded TX intent (taken with
+``arm_now=True``, or one that has pushed or survived a reestablish) arms
+and KEEPS ``TX_ONLY`` on every transport, exclusive/atomic USB included,
+while a BARE lease keeps deferring tx-only demand (MOR-556: no TX flap on
+the lease-then-RX order). Leases held across an RX gap are re-armed when RX
+demand returns.
 
 As-built, the session is consumed via the radio-owned singleton
 ``radio.audio_session`` (MOR-579) by the AudioBridge (MOR-577), the web
@@ -107,16 +110,18 @@ class AudioSessionState(Enum):
     IDLE = "idle"
     RX_ONLY = "rx_only"
     RX_TX = "rx_tx"
-    #: TX armed with NO RX demand on the session — only valid on genuinely
-    #: full-duplex transports (LAN UDP; ``audio_setup_order == "rx_first"``).
-    #: A digital client (WSJT-X/FT8 over the companion) can hold a TX lease
-    #: without ever subscribing the session to RX; the radio still keys via
-    #: CAT and the LAN audio stream must be transitioned to TX so pushed
-    #: frames are accepted instead of rejected with ``AudioNotStartedError``
+    #: TX armed with NO RX demand on the session. On genuinely full-duplex
+    #: transports (LAN UDP; ``audio_setup_order == "rx_first"``) a digital
+    #: client (WSJT-X/FT8 over the companion) can hold a TX lease without
+    #: ever subscribing the session to RX; the radio still keys via CAT and
+    #: the LAN audio stream must be transitioned to TX so pushed frames are
+    #: accepted instead of rejected with ``AudioNotStartedError``
     #: ("Cannot push TX in state receiving"). Excluded from the RX liveness
     #: watchdog (no RX frames are expected). Exclusive/atomic USB transports
-    #: never enter this state — TX there still requires the co-armed duplex
-    #: leg, so their tx-only demand stays deferred exactly as before.
+    #: enter this state only via FORCED intent (the arm-now acquire edge, or
+    #: a lease that has pushed / survived a reestablish — the intent is
+    #: recorded on the lease); a bare lease's tx-only demand stays deferred
+    #: exactly as before (MOR-556).
     TX_ONLY = "tx_only"
     #: Watchdog-detected silent RX death (MOR-581). Surface-only as built:
     #: recovery currently rides the transport reconnect (MOR-586
@@ -184,10 +189,20 @@ class RxSubscription:
 class TxLease:
     """Refcounted TX demand handle; ``push`` forwards to the radio."""
 
-    def __init__(self, session: AudioSession, owner: str) -> None:
+    def __init__(
+        self, session: AudioSession, owner: str, *, tx_intent: bool = False
+    ) -> None:
         self._session = session
         self.owner = owner
         self._released = False
+        # Active TX intent, recorded ON the lease (MOR-2563): set at the
+        # arm-now acquire edge, on the first push, and when the lease
+        # survives a reestablish. While held, an intent lease keeps tx-only
+        # demand desired as TX_ONLY on EVERY transport (exclusive/atomic
+        # included) — a PTT OFF or an RX drop no longer idles the TX leg out
+        # from under the keyed rig. A bare lease stays intent-less and keeps
+        # the MOR-556 deferral exactly.
+        self._tx_intent = tx_intent
 
     @property
     def released(self) -> bool:
@@ -197,6 +212,10 @@ class TxLease:
         """Push TX audio (encoded per the radio's ``audio_tx_codec``)."""
         if self._released:
             raise RuntimeError(f"TX lease {self.owner!r} already released")
+        # A held lease that pushes IS active TX intent — record it on the
+        # lease so later demand edges (RX drop, another lease's release)
+        # keep the TX-only arm instead of idling the leg mid-transmission.
+        self._tx_intent = True
         # A held lease IS TX demand: converge the session to its armed state
         # before forwarding. Idempotent — a no-op when the TX leg is already
         # live. Converges, never rejects: the digital-TX (FT8/WSJT-X over the
@@ -344,11 +363,14 @@ class AudioSession:
         ``arm_now=True`` is the explicit arm-now edge (the poller's PTT key,
         MOR-2563: a PTT key IS active TX intent): the forced ``tx_active``
         the push / reestablish edges use, so the TX leg arms immediately —
-        zero RX demand too, exclusive/atomic included. The bare form keeps
-        the deferral above exactly (MOR-556).
+        zero RX demand too, exclusive/atomic included. The intent is
+        recorded ON the lease, so it keeps tx-only demand desired as TX_ONLY
+        on every transport while held (a later RX drop or PTT OFF no longer
+        idles the leg mid-key). The bare form keeps the deferral above
+        exactly (MOR-556).
         """
         async with self._lock:
-            lease = TxLease(self, owner)
+            lease = TxLease(self, owner, tx_intent=arm_now)
             self._tx_leases.append(lease)
             try:
                 await self._apply(tx_active=arm_now)
@@ -404,9 +426,10 @@ class AudioSession:
     def _desired(self, *, tx_active: bool = False) -> AudioSessionState:
         """Desired session state — a PURE function of declared demand.
 
-        Reads ONLY the demand counters, the per-transport order flag, and the
-        OBSERVED TX leg; NEVER ``self._state`` (so it cannot lie after a
-        transport rebuild). A held ``TxLease`` IS TX demand.
+        Reads ONLY the demand counters, the per-transport order flag, the
+        OBSERVED TX leg, and the per-lease TX intent; NEVER ``self._state``
+        (so it cannot lie after a transport rebuild). A held ``TxLease`` IS
+        TX demand.
 
         | rx | tx | full_duplex | desired  |
         |----|----|-------------|----------|
@@ -417,16 +440,18 @@ class AudioSession:
         |  0 | >0 |  False      | TX_ONLY  |  (forced intent* only; else IDLE)
 
         \\*TX-only is full-duplex digital TX (FT8/WSJT-X over the companion):
-        a lease with no RX. Its arm is intent-gated by ``tx_active`` — forced
-        True on the push / reestablish / arm-now-acquire edges (a held lease
-        that has pushed, survived an outage, or keys a PTT IS active intent),
-        or observed (the TX leg is already live). FORCED intent arms TX-only
-        on every transport, exclusive/atomic USB included; OBSERVED liveness
+        a lease with no RX. Its arm is intent-gated — forced True on the
+        push / reestablish / arm-now-acquire edges, and STICKY via the
+        per-lease intent flag: a lease taken with ``arm_now=True``, or one
+        that has pushed or survived a reestablish, keeps tx-only demand
+        desired as TX_ONLY on every transport while it is held (a PTT OFF
+        or an RX drop mid-key no longer idles the leg). OBSERVED liveness
         alone keeps exclusive/atomic deferred at IDLE, and a bare
-        ``acquire_tx`` arms nothing, so RX arriving next converges straight
-        to RX_TX without a TX flap (MOR-556). Still PURE — a function of the
-        demand counters, the order flag, and the OBSERVED TX leg (never
-        ``self._state``) — so it cannot lie after a rebuild.
+        ``acquire_tx`` arms nothing and never gains intent, so RX arriving
+        next converges straight to RX_TX without a TX flap (MOR-556). Still
+        PURE — a function of the demand counters, the order flag, the
+        OBSERVED TX leg, and the per-lease intent (never ``self._state``) —
+        so it cannot lie after a rebuild.
 
         RECOVERING / FAILED are transient transport-owned overlays and are
         never returned here.
@@ -437,8 +462,11 @@ class AudioSession:
             return AudioSessionState.RX_TX
         if rx:
             return AudioSessionState.RX_ONLY
-        active = tx_active or self._tx_leg_live()
-        if tx and active and (tx_active or self._setup_order() == "rx_first"):
+        # Forced intent: this edge's ``tx_active`` OR a held lease with
+        # recorded intent (arm-now acquire, a push, a survived reestablish).
+        forced = tx_active or any(lease._tx_intent for lease in self._tx_leases)
+        active = forced or self._tx_leg_live()
+        if tx and active and (forced or self._setup_order() == "rx_first"):
             return AudioSessionState.TX_ONLY
         return AudioSessionState.IDLE
 
@@ -597,15 +625,27 @@ class AudioSession:
             self._state = AudioSessionState.RX_TX
             return
         if tx_live and not rx_live:
-            # Full-duplex only (TX_ONLY is unreachable elsewhere): the TX leg
-            # is already up and RX demand just arrived. The LAN ``start_rx``
-            # requires the stream's IDLE baseline, so RX cannot join while the
-            # stream is TRANSMITTING — drop TX, arm RX, then re-arm TX (the
-            # same clean rx_first ordering used from IDLE). RX is brief-gap
-            # free for the operator since no RX subscriber existed yet anyway.
-            await self._disarm_tx()
-            await arm_rx()
-            await self._radio.start_tx()
+            # TX_ONLY → RX_TX: the TX leg is already up (full-duplex lazy
+            # arm, or a forced-intent arm — reachable on EVERY order since
+            # the arm-now/push/reestablish edges arm TX_ONLY on exclusive/
+            # atomic too) and RX demand just arrived.
+            if order == "rx_first":
+                # The LAN ``start_rx`` requires the stream's IDLE baseline,
+                # so RX cannot join while the stream is TRANSMITTING — drop
+                # TX, arm RX, then re-arm TX (the same clean rx_first
+                # ordering used from IDLE). RX is brief-gap free for the
+                # operator since no RX subscriber existed yet anyway.
+                await self._disarm_tx()
+                await arm_rx()
+                await self._radio.start_tx()
+            else:
+                # "tx_first" / "atomic": UsbAudioDriver.start_rx JOINS the
+                # running duplex stream (MOR-546, #3604), so RX demand joins
+                # the keyed TX leg in place — no stop/start. The old
+                # disarm/arm/re-arm sequence flapped the duplex stream
+                # mid-key (the TX leg dropped), and on the raw same-device
+                # model the TX re-arm silently killed the capture (MOR-531).
+                await arm_rx()
             self._state = AudioSessionState.RX_TX
             return
         if not tx_live and not rx_live:
@@ -727,6 +767,12 @@ class AudioSession:
         """
         async with self._lock:
             self._recovering_from = None
+            # A lease that survives an outage IS active TX intent: record it
+            # on the lease so the re-armed TX-only demand survives LATER
+            # demand edges (an RX join/drop after recovery) instead of
+            # falling back to the bare-lease deferral.
+            for lease in self._tx_leases:
+                lease._tx_intent = True
             # Converge against the rebuilt (RECEIVING/idle) transport. recover
             # forces a fresh RX re-attach (the bus rx_active flag is stale).
             # TX_ONLY / RX_ONLY / RX_TX / IDLE recovery all fall out of this:
