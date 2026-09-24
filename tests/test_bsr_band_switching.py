@@ -553,3 +553,68 @@ class TestFtx1BandStackingCodes:
                 f"FTX-1 {name} bsr_code {code} is not a valid Yaesu band key; "
                 f"set_band would silently no-op"
             )
+
+
+# ---------------------------------------------------------------------------
+# IC-9700 band coverage (MOR-2567)
+# ---------------------------------------------------------------------------
+
+
+class TestIc9700Bands:
+    """Pin the IC-9700's three VHF/UHF/SHF bands through the loaded profile.
+
+    The IC-9700 is a 2 m / 70 cm / 23 cm transceiver: it has no HF and no
+    6 m. Band edges are the USA version coverage from the IC-9700 Basic
+    Manual, Specifications, "Frequency coverage (unit: MHz)" (USA Version
+    Receiver/Transmitter: 144.000000~148.000000, 430.000000~450.000000,
+    1240.000000~1300.000000). BSR codes are the Frequency band codes of the
+    IC-9700 CI-V Reference Guide's "Band stacking register" (1A 01) table:
+    01=VHF, 02=UHF, 03=1.2GHz. default_hz is each band's manual-given
+    start edge (the manuals state no separate default tuning frequency;
+    the loader requires the key).
+    """
+
+    _EXPECTED: dict[str, tuple[int, int, int, int]] = {
+        # name: (start_hz, end_hz, default_hz, bsr_code)
+        "2m": (144_000_000, 148_000_000, 144_000_000, 0x01),
+        "70cm": (430_000_000, 450_000_000, 430_000_000, 0x02),
+        "23cm": (1_240_000_000, 1_300_000_000, 1_240_000_000, 0x03),
+    }
+
+    def _bands(self) -> dict[str, tuple[int, int, int, int]]:
+        profile = resolve_radio_profile(model="IC-9700")
+        return {
+            bi.name: (bi.start, bi.end, bi.default, bi.bsr_code or -1)
+            for fr in profile.freq_ranges
+            for bi in fr.bands
+        }
+
+    def test_exactly_three_bands(self) -> None:
+        """The IC-9700 has exactly its three bands - no HF, no 6 m."""
+        bands = self._bands()
+        assert set(bands) == set(self._EXPECTED), (
+            f"IC-9700 bands changed: {sorted(bands)} "
+            f"(expected exactly {sorted(self._EXPECTED)})"
+        )
+        labels = [fr.label for fr in resolve_radio_profile(model="IC-9700").freq_ranges]
+        assert "HF" not in labels and "6m" not in labels
+
+    @pytest.mark.parametrize(
+        ("band_name", "start_hz", "end_hz", "default_hz", "bsr_code"),
+        [(name, *values) for name, values in _EXPECTED.items()],
+    )
+    def test_band_edges_from_manual(
+        self,
+        band_name: str,
+        start_hz: int,
+        end_hz: int,
+        default_hz: int,
+        bsr_code: int,
+    ) -> None:
+        """Each band must load with its manual-given USA edges and BSR code."""
+        bands = self._bands()
+        assert bands[band_name] == (start_hz, end_hz, default_hz, bsr_code), (
+            f"IC-9700 {band_name}: expected "
+            f"(start={start_hz}, end={end_hz}, default={default_hz}, "
+            f"bsr={bsr_code}), got {bands[band_name]}"
+        )

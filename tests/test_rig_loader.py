@@ -1922,6 +1922,16 @@ class TestToProfile:
                 "ic705.toml",
                 [("2m", 144_000_000, 148_000_000), ("70cm", 430_000_000, 450_000_000)],
             ),
+            # MOR-2567: USA coverage per IC-9700 Basic Manual, Specifications,
+            # "Frequency coverage (unit: MHz)" - VHF/UHF/SHF only, no HF, no 6 m.
+            (
+                "ic9700.toml",
+                [
+                    ("2m", 144_000_000, 148_000_000),
+                    ("70cm", 430_000_000, 450_000_000),
+                    ("23cm", 1_240_000_000, 1_300_000_000),
+                ],
+            ),
         ],
     )
     def test_shipped_profiles_flag_repeater_ranges(self, filename, expected):
