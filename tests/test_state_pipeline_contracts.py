@@ -1210,6 +1210,9 @@ def test_field_spec_rejects_unknown_unit() -> None:
             path=FieldPath.global_("meters", "swr"),
             family=FieldFamily.METERS,
             value_type="int",
+            acquisition_class=acquisition_class_for_path(
+                FieldPath.global_("meters", "swr")
+            ),
             unit="bogus",
         )
 
@@ -1223,6 +1226,9 @@ def test_field_spec_accepts_declared_units(unit: str) -> None:
         path=FieldPath.global_("meters", "swr"),
         family=FieldFamily.METERS,
         value_type="int",
+        acquisition_class=acquisition_class_for_path(
+            FieldPath.global_("meters", "swr")
+        ),
         unit=unit,
     )
     assert spec.unit == unit
@@ -1234,6 +1240,9 @@ def test_field_spec_accepts_unit_none() -> None:
         path=FieldPath.global_("meters", "swr"),
         family=FieldFamily.METERS,
         value_type="int",
+        acquisition_class=acquisition_class_for_path(
+            FieldPath.global_("meters", "swr")
+        ),
         unit=None,
     )
     assert spec.unit is None
