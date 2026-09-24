@@ -104,7 +104,7 @@ def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
     "budget_hz", [_LAN_BUDGET_HZ, _SERIAL_BUDGET_HZ], ids=["lan", "serial"]
 )
 @pytest.mark.parametrize("model", sorted(_CIV_ACQUISITION))
-def test_fitted_demand_is_within_the_margin_or_every_class_sits_at_its_ceiling(
+def test_fitted_demand_is_within_the_margin_or_the_warning_says_why(
     model: str,
     budget_hz: float,
     tx: bool,
@@ -113,14 +113,16 @@ def test_fitted_demand_is_within_the_margin_or_every_class_sits_at_its_ceiling(
     """Per profile and window: demand is within 0.75 x budget, or the warning says not.
 
     Demand is every polled path at the cadence the scheduler reports for
-    it, ``tx_only`` paths only in transmit. Explicit profile cadences are
-    never changed. A class-derived path sits between its class's start
-    cadence (nominal, or the ceiling for a class held there in transmit)
-    and its ceiling, one cadence per class. When the demand fits, either
-    nothing stretched, or it closes on the limit with every class ranked
-    below the highest stretched one at its ceiling. When it does not fit,
-    every class-derived path is at its ceiling and the startup warning
-    carries this window's demand and the limit.
+    it, ``tx_only`` paths only in transmit. No poll group mixes explicit
+    and class-derived paths, and explicit profile cadences are never
+    changed. A class-derived path sits between its class's start cadence
+    (nominal, or the ceiling for a class held there in transmit) and its
+    ceiling, one cadence per class. When the demand fits, either nothing
+    stretched, or it closes on the limit with every class ranked below the
+    highest stretched one at its ceiling. When it does not fit, every
+    class-derived path is at its start cadence if the explicit demand alone
+    is at or over the limit, else at its ceiling, and the startup warning
+    says which, with this window's numbers.
     """
 
     acquisition = _CIV_ACQUISITION[model]
@@ -131,8 +133,10 @@ def test_fitted_demand_is_within_the_margin_or_every_class_sits_at_its_ceiling(
         )
     scheduler.note_tx_active(tx)
     limit = ACQUISITION_BUDGET_MARGIN * budget_hz
+    for paths in scheduler._poll_cadence_groups().values():  # noqa: SLF001
+        assert len({path in acquisition.field_policies for path in paths}) == 1, paths
 
-    demand = 0.0
+    demand = explicit = 0.0
     class_cadence: dict[AcquisitionClass, float] = {}
     for path, cadence in _base_cadences(scheduler).items():
         policy = acquisition.policy_for(path)
@@ -141,14 +145,17 @@ def test_fitted_demand_is_within_the_margin_or_every_class_sits_at_its_ceiling(
         if not tx and policy.tx_only:
             continue
         demand += 1.0 / cadence
-        if path not in acquisition.field_policies:
+        if path in acquisition.field_policies:
+            explicit += 1.0 / cadence
+        else:
             klass = acquisition_class_for_path(path)
             assert class_cadence.setdefault(klass, cadence) == cadence, (path, klass)
 
     stretched: list[AcquisitionClass] = []
+    class_start: dict[AcquisitionClass, float] = {}
     for klass, cadence in class_cadence.items():
         entry = ACQUISITION_CLASS_TABLE[klass]
-        start = (
+        start = class_start[klass] = (
             entry.ceiling_cadence_seconds
             if tx and entry.held_at_ceiling_in_tx
             else entry.nominal_cadence_seconds
@@ -170,42 +177,104 @@ def test_fitted_demand_is_within_the_margin_or_every_class_sits_at_its_ceiling(
                     ), klass
         assert not any(f"{window} " in message for message in warnings), warnings
     else:
+        unstretched = explicit >= limit
         for klass, cadence in class_cadence.items():
-            assert cadence == pytest.approx(
-                ACQUISITION_CLASS_TABLE[klass].ceiling_cadence_seconds
-            ), klass
+            ceiling = ACQUISITION_CLASS_TABLE[klass].ceiling_cadence_seconds
+            expected = class_start[klass] if unstretched else ceiling
+            assert cadence == pytest.approx(expected), klass
+        outcome = _UNSTRETCHED_OUTCOME if unstretched else _CEILING_OUTCOME
+        part = f"{window} {demand:.2f} q/s ({explicit:.2f} q/s {outcome})"
         assert any(
-            f"{window} {demand:.2f} q/s" in message
-            and f"{limit:.2f} q/s limit" in message
+            part in message and f"{limit:.2f} q/s limit" in message
             for message in warnings
-        ), warnings
+        ), (part, warnings)
 
 
-@pytest.mark.parametrize(
-    "budget_hz", [_LAN_BUDGET_HZ, _SERIAL_BUDGET_HZ], ids=["lan", "serial"]
+_UNSTRETCHED_OUTCOME = (
+    "at explicit profile cadences, alone at or over the limit: "
+    "class-derived poll groups not stretched"
 )
-def test_ic7610_explicit_cadences_alone_exceed_the_budget_and_the_warning_says_so(
-    budget_hz: float,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """IC-7610's hand-declared cadences are over 0.75 x budget before any class."""
+_CEILING_OUTCOME = (
+    "at explicit profile cadences, class-derived poll groups at their ceiling cadences"
+)
 
-    acquisition = _CIV_ACQUISITION["IC-7610"]
+
+def _explicit_receive_hz(acquisition: RadioAcquisitionProfile) -> float:
     explicit = 0.0
     for path in acquisition.pollable_paths():
         policy = acquisition.field_policies.get(path)
         if policy is None or policy.cadence_seconds is None or policy.tx_only:
             continue
         explicit += 1.0 / policy.cadence_seconds
+    return explicit
+
+
+def _receive_cadences(
+    acquisition: RadioAcquisitionProfile, budget_hz: float
+) -> dict[FieldPath, float]:
+    scheduler = AcquisitionScheduler(profile=acquisition, transport_budget_hz=budget_hz)
+    scheduler.note_tx_active(False)
+    return _base_cadences(scheduler)
+
+
+@pytest.mark.parametrize(
+    "budget_hz", [_LAN_BUDGET_HZ, _SERIAL_BUDGET_HZ], ids=["lan", "serial"]
+)
+def test_ic7610_explicit_demand_alone_over_the_limit_leaves_class_paths_unstretched(
+    budget_hz: float,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Coordinator decision: no stretch where no stretch can make it fit.
+
+    IC-7610's hand-declared receive cadences alone are over 0.75 x budget,
+    so its class-derived paths keep their nominal cadences, and the
+    warning says why.
+    """
+
+    acquisition = _CIV_ACQUISITION["IC-7610"]
+    explicit = _explicit_receive_hz(acquisition)
     assert explicit > ACQUISITION_BUDGET_MARGIN * budget_hz
 
     with caplog.at_level(logging.WARNING, logger="rigplane.core.acquisition_scheduler"):
-        AcquisitionScheduler(profile=acquisition, transport_budget_hz=budget_hz)
+        cadences = _receive_cadences(acquisition, budget_hz)
 
+    nominal = {
+        FieldPath.global_("slow_state", "active"): 2.0,
+        FieldPath.global_("operator_controls", "rit_freq"): 5.0,
+        FieldPath.global_("tx_state", "rit_on"): 10.0,
+        FieldPath.global_("tx_state", "rit_tx"): 10.0,
+    }
+    for path, cadence in nominal.items():
+        assert path not in acquisition.field_policies, path
+        assert cadences[path] == pytest.approx(cadence), path
     assert any(
-        f"({explicit:.2f} q/s at explicit profile cadences)" in message
+        f"({explicit:.2f} q/s {_UNSTRETCHED_OUTCOME})" in message
         for message in _warnings(caplog)
     ), _warnings(caplog)
+
+
+def test_ic7300_serial_explicit_demand_under_the_limit_still_stretches() -> None:
+    """Below the limit, explicit demand leaves room: the classes go to ceilings."""
+
+    acquisition = _CIV_ACQUISITION["IC-7300"]
+    assert _explicit_receive_hz(acquisition) < ACQUISITION_BUDGET_MARGIN * (
+        _SERIAL_BUDGET_HZ
+    )
+
+    cadences = _receive_cadences(acquisition, _SERIAL_BUDGET_HZ)
+
+    class_derived = {
+        path: cadence
+        for path, cadence in cadences.items()
+        if path not in acquisition.field_policies
+        and not acquisition.policy_for(path).tx_only
+    }
+    assert class_derived
+    for path, cadence in class_derived.items():
+        klass = acquisition_class_for_path(path)
+        ceiling = ACQUISITION_CLASS_TABLE[klass].ceiling_cadence_seconds
+        assert ceiling > ACQUISITION_CLASS_TABLE[klass].nominal_cadence_seconds
+        assert cadence == pytest.approx(ceiling), path
 
 
 # --- (b) dispatch order -------------------------------------------------------

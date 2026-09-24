@@ -530,8 +530,8 @@ class AcquisitionScheduler:
         cadence and is passed to :func:`fit_to_budget` as reserved demand:
         in transmit all of it, in receive its non-``tx_only`` part. Each
         polled path counts as one query per cadence. Receive and transmit
-        are fitted separately; a window that does not fit is logged here,
-        once, with its numbers.
+        are fitted separately; the windows that do not fit are logged here,
+        in one warning, with their numbers.
         """
 
         _validate_positive(budget_hz, label="transport_budget_hz")
@@ -548,6 +548,7 @@ class AcquisitionScheduler:
             klass = acquisition_class_for_path(paths[0])
             self._fitted_class_by_key[key] = klass
             counts[klass] += len(paths)
+        limit = ACQUISITION_BUDGET_MARGIN * budget_hz
         over: list[str] = []
         for tx, window in ((False, "receive"), (True, "transmit")):
             fit = fit_to_budget(
@@ -559,17 +560,22 @@ class AcquisitionScheduler:
             )
             self._budget_fit[tx] = fit
             if not fit.fits:
+                outcome = (
+                    "alone at or over the limit: class-derived poll groups "
+                    "not stretched"
+                    if reserved[tx] >= limit
+                    else "class-derived poll groups at their ceiling cadences"
+                )
                 over.append(
-                    f"{window} {fit.demand_hz:.2f} q/s "
-                    f"({reserved[tx]:.2f} q/s at explicit profile cadences)"
+                    f"{window} {fit.demand_hz:.2f} q/s ({reserved[tx]:.2f} q/s "
+                    f"at explicit profile cadences, {outcome})"
                 )
         if over:
             logger.warning(
-                "acquisition budget: %s over the %.2f q/s limit "
-                "(%.2f x %.2f q/s transport budget); in those windows "
-                "class-derived poll groups run at their ceiling cadences",
+                "acquisition budget: %s; over the %.2f q/s limit "
+                "(%.2f x %.2f q/s transport budget)",
                 "; ".join(over),
-                ACQUISITION_BUDGET_MARGIN * budget_hz,
+                limit,
                 ACQUISITION_BUDGET_MARGIN,
                 budget_hz,
             )

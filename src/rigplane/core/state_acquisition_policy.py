@@ -262,9 +262,11 @@ def fit_to_budget(
     during TX and ``tx`` is set), the fit stretches the lowest-ranked
     classes first, up to their ceiling, until the total demand is at or
     below ``margin x budget_hz``. TX-only classes are excluded unless
-    ``tx`` is set. A class never ends beyond its ceiling; when the
-    ceilings alone cannot bring the demand under the limit, ``fits`` is
-    false and every stretched class sits at its ceiling. Pure function.
+    ``tx`` is set. A class never ends beyond its ceiling. When
+    ``reserved_hz`` alone is at or above the limit, no class is stretched
+    (coordinator decision, MOR-2586); otherwise, when the ceilings cannot
+    bring the demand under the limit, ``fits`` is false and every
+    stretched class sits at its ceiling. Pure function.
     """
 
     if budget_hz <= 0:
@@ -299,7 +301,7 @@ def fit_to_budget(
 
     # Lowest rank first: the table iterates high -> low.
     for klass in reversed(tuple(ACQUISITION_CLASS_TABLE)):
-        if klass not in live or demand() <= limit:
+        if klass not in live or demand() <= limit or reserved_hz >= limit:
             continue
         # Queries per second this class must still contribute for the
         # total to close on the limit.
