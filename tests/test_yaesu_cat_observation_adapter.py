@@ -3332,8 +3332,8 @@ async def test_slow_poll_does_not_read_the_attenuator_while_sub_is_active() -> N
 
     Stand 2026-09-24 (read-only 1 s sampler of /api/v1/state): ``main.att``
     stopped updating exactly in the two windows where
-    ``global.slow_state.active`` was "SUB", with MAIN on 14.074 MHz DATA-U;
-    with MAIN active ``RA0;`` answered normally. The
+    ``global.slow_state.active`` was "SUB"; with MAIN active ``RA0;``
+    answered normally. The
     ``global.slow_state.active == "MAIN"`` clause in ``rigs/ftx1.toml``
     withholds the read, so the refusal never happens: no startup defect is
     recorded and the startup gate drops the field from its outstanding set.
