@@ -3079,7 +3079,9 @@ def test_state_queries_include_transceiver_status_reads_for_ic7610() -> None:
         acquisition_query(0x21, sub=0x01),
         acquisition_query(0x21, sub=0x02),
     }.issubset(queries)
-    assert acquisition_query(0x1C, sub=0x03) not in queries
+    # MOR-2540: the profile-declared get_tx_target read (radio's own transmit
+    # frequency) is part of the sweep now.
+    assert acquisition_query(0x1C, sub=0x03) in queries
 
 
 @pytest.mark.asyncio
