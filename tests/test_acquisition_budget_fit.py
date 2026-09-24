@@ -19,7 +19,6 @@ from rigplane.core.acquisition_scheduler import (
 from rigplane.core.state_acquisition_policy import (
     ACQUISITION_BUDGET_MARGIN,
     ACQUISITION_CLASS_TABLE,
-    AcquisitionPolicy,
     FieldCapability,
     RadioAcquisitionProfile,
 )
@@ -40,8 +39,9 @@ from test_icom7610_serial_radio import _FakeSerialCivLink
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
 
-#: CI-V send gaps the radios default to; the tests below that build real
-#: radios pin these two figures to the radios' own ``_civ_min_interval``.
+#: Budgets of the CI-V send gaps the radios default to (35 ms LAN, 50 ms
+#: serial); ``test_the_budget_is_the_inverse_of_the_radio_civ_gap`` pins
+#: both to real radios.
 _LAN_BUDGET_HZ = 1.0 / 0.035
 _SERIAL_BUDGET_HZ = 1.0 / 0.050
 
@@ -69,14 +69,10 @@ def _next_due(scheduler: AcquisitionScheduler, path: FieldPath) -> float:
     return due
 
 
-def _polled_profile(
-    *paths: FieldPath,
-    field_policies: dict[FieldPath, AcquisitionPolicy] | None = None,
-) -> RadioAcquisitionProfile:
+def _polled_profile(*paths: FieldPath) -> RadioAcquisitionProfile:
     return RadioAcquisitionProfile(
         provider="test_provider",
         capabilities=tuple(FieldCapability(path=path, polling=True) for path in paths),
-        field_policies=field_policies or {},
     )
 
 
@@ -114,7 +110,7 @@ def test_fitted_demand_is_within_the_margin_or_every_class_sits_at_its_ceiling(
     tx: bool,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Per profile and window: the fit closes on 0.75 x budget, or says it cannot.
+    """Per profile and window: demand is within 0.75 x budget, or the warning says not.
 
     Demand is every polled path at the cadence the scheduler reports for
     it, ``tx_only`` paths only in transmit. Explicit profile cadences are
@@ -274,18 +270,8 @@ _TX_METERS = tuple(
 )
 _SETTINGS = tuple(
     FieldPath.global_("operator_controls", name)
-    for name in (
-        "mic_gain",
-        "vox_gain",
-        "anti_vox_gain",
-        "monitor_gain",
-        "key_speed",
-        "cw_pitch",
-        "break_in_delay",
-        "vox_delay",
-        "compressor_level",
-        "drive_gain",
-    )
+    for name in "mic_gain vox_gain anti_vox_gain monitor_gain key_speed cw_pitch "
+    "break_in_delay vox_delay compressor_level drive_gain".split()
 )
 _WINDOWED_PATHS = (_LIVE, *_CONTROLS, *_TX_METERS, *_SETTINGS)
 
@@ -314,16 +300,13 @@ def test_receive_and_transmit_are_fitted_separately_as_the_class_table_says() ->
     and the settings still differ: 10 s in receive, 30 s in transmit.
     """
 
-    assert {acquisition_class_for_path(path) for path in _SETTINGS} == {
-        AcquisitionClass.SETTING
-    }
-    assert {acquisition_class_for_path(path) for path in _CONTROLS} == {
-        AcquisitionClass.CONTROL
-    }
-    assert {acquisition_class_for_path(path) for path in _TX_METERS} == {
-        AcquisitionClass.TX_METER
-    }
-    assert acquisition_class_for_path(_LIVE) is AcquisitionClass.LIVE
+    for paths, klass in (
+        (_SETTINGS, AcquisitionClass.SETTING),
+        (_CONTROLS, AcquisitionClass.CONTROL),
+        (_TX_METERS, AcquisitionClass.TX_METER),
+        ((_LIVE,), AcquisitionClass.LIVE),
+    ):
+        assert {acquisition_class_for_path(path) for path in paths} == {klass}
 
     receive = _class_cadences(10.0, tx=False)
     assert receive[AcquisitionClass.SETTING] == pytest.approx(10.0)

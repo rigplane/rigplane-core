@@ -581,8 +581,9 @@ class AcquisitionScheduler:
     ) -> float:
         """Return the fitted cadence of a class-derived group, else ``declared``.
 
-        The fit read is the one for the last ``tx_active`` the scheduler
-        was given; a class absent from that window's fit keeps ``declared``.
+        Reads the fit for the cached ``tx_active`` (see
+        :meth:`note_tx_active`); a class absent from that fit keeps
+        ``declared``.
         """
 
         klass = self._fitted_class_by_key.get(key)
