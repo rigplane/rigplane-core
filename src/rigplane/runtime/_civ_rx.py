@@ -93,7 +93,8 @@ _RAW_RECEIVED_FRAME_BYTES_LIMIT = 256
 
 #: Fallback freshness TTLs for CI-V observations, keyed ``(scope, family,
 #: name)`` — rig-blind, and read by ``_observation_max_age`` only for a path
-#: the loaded profile declares no ``field_policies`` entry for.
+#: the loaded profile neither declares a ``field_policies`` entry for nor
+#: polls (MOR-2574 step 2: a pollable path resolves to its class policy).
 _OBSERVATION_MAX_AGE_SECONDS: dict[tuple[str, str, str], float] = {
     ("receiver", "freq_mode", "freq_hz"): 5.0,
     ("receiver", "freq_mode", "mode"): 5.0,
@@ -527,24 +528,29 @@ def _profile_path_for_observation(profile: Any, path: FieldPath) -> FieldPath:
 def _observation_max_age(profile: Any, path: FieldPath) -> float | None:
     """Freshness TTL to stamp on one CI-V observation of ``path``.
 
-    The rig's own ``[state_acquisition.field_policies]`` entry wins where the
+    One source for the TTL: ``RadioAcquisitionProfile.policy_for``. The
+    rig's own ``[state_acquisition.field_policies]`` entry wins where the
     profile declares one — including ``freshness_ttl_seconds = "never"``,
     which loads as ``None`` and leaves ``state_store.py:
-    StateStore.mark_stale_due`` unable to age the field at all. Everything
-    else falls back to :data:`_OBSERVATION_MAX_AGE_SECONDS`.
-
-    Only a *declared* policy counts, not ``policy_for``'s ``default_policy``
-    answer: a profile's default applies to every path in the rig, including
-    the ones no author considered when writing it.
+    StateStore.mark_stale_due`` unable to age the field at all. A path
+    with no entry of its own but a pollable capability resolves to its
+    acquisition class policy (MOR-2574 step 2), so the stamped TTL always
+    covers the cadence the class polls at. Everything else — paths the
+    profile does not poll at all — falls back to
+    :data:`_OBSERVATION_MAX_AGE_SECONDS`: ``policy_for`` would answer the
+    profile default there, which applies to every path in the rig,
+    including the ones no author considered when writing it.
     """
 
     acquisition = getattr(profile, "state_acquisition", None)
     if acquisition is not None:
-        declared = acquisition.field_policies.get(
-            _profile_path_for_observation(acquisition, path)
-        )
-        if declared is not None:
-            ttl: float | None = declared.freshness_ttl_seconds
+        profile_path = _profile_path_for_observation(acquisition, path)
+        if profile_path in acquisition.field_policies or (
+            acquisition.capability_for(profile_path).can_poll
+        ):
+            ttl: float | None = acquisition.policy_for(
+                profile_path
+            ).freshness_ttl_seconds
             return ttl
     return _OBSERVATION_MAX_AGE_SECONDS.get(
         (path.scope.value, path.family.value, path.name)

@@ -2321,12 +2321,15 @@ def _public_value_control_expected(public_path: str, value: object) -> object:
 
 
 def _expected_observation_max_age(radio: IcomRadio, store_path: str) -> float | None:
-    """What ``_observation`` stamps: the profile's declared TTL, else the table.
+    """What ``_observation`` stamps: the resolved policy TTL, else the table.
 
     Written out here rather than delegated to ``_civ_rx``'s own resolver: the
     store spells receivers ``0``/``1`` and ``[state_acquisition.field_policies]``
     spells them ``main``/``sub``, and that translation is the part worth
-    restating independently.
+    restating independently. The rule is ``_observation_max_age``'s
+    (MOR-2576): a declared entry or a pollable capability resolves through
+    ``policy_for``; a path the profile does not poll keeps the rig-blind
+    table.
     """
 
     from rigplane.runtime._civ_rx import _OBSERVATION_MAX_AGE_SECONDS
@@ -2342,9 +2345,10 @@ def _expected_observation_max_age(radio: IcomRadio, store_path: str) -> float | 
     acquisition = radio._profile.state_acquisition  # noqa: SLF001
     if acquisition is not None:
         for candidate in spellings:
-            declared = acquisition.field_policies.get(candidate)
-            if declared is not None:
-                return declared.freshness_ttl_seconds
+            if candidate in acquisition.field_policies or (
+                acquisition.capability_for(candidate).can_poll
+            ):
+                return acquisition.policy_for(candidate).freshness_ttl_seconds
     return _OBSERVATION_MAX_AGE_SECONDS.get(
         (path.scope.value, path.family.value, path.name)
     )
@@ -3128,28 +3132,37 @@ def test_tone_and_tsql_freq_observations_fall_back_to_the_table(
     ]
 
 
-def test_s_meter_falls_back_to_the_table_on_a_profile_with_no_field_policies(
+def test_s_meter_stamps_its_meter_class_ttl_with_no_field_policies(
     radio: IcomRadio,
 ) -> None:
-    """Same fallback, for a streaming meter rather than an on-demand field.
+    """A streaming meter with no own entry resolves through its class.
 
-    ``rigs/ic705.toml``'s ``default_freshness_ttl_seconds`` is 8.0 s. If the
-    lookup answered from the default policy instead of the table, a stopped
-    S-meter would keep reporting FRESH four times longer than the shipped
-    2.0 s window MOR-334 settled on.
+    ``rigs/ic705.toml`` has no ``field_policies`` entry for ``s_meter`` but
+    polls it, so MOR-2576 resolves the stamp through ``policy_for``: the
+    meter class TTL (1.1 s against a 0.3 s class cadence). The default
+    policy is still NOT the answer — ``default_freshness_ttl_seconds`` is
+    8.0 s, which would keep a stopped S-meter reporting FRESH far past the
+    window MOR-334 settled on.
     """
-
-    from rigplane.runtime._civ_rx import _OBSERVATION_MAX_AGE_SECONDS
 
     radio._profile = resolve_radio_profile(model="IC-705")  # noqa: SLF001
     stored = FieldPath.receiver("0", "meters", "s_meter")
-    table_ttl = _OBSERVATION_MAX_AGE_SECONDS[("receiver", "meters", "s_meter")]
+    acquisition = radio._profile.state_acquisition
+    assert acquisition is not None
+    policy = acquisition.policy_for(FieldPath.receiver("main", "meters", "s_meter"))
+    assert policy.cadence_seconds == 0.3
+    assert policy.freshness_ttl_seconds == 1.1
+    assert (
+        policy.freshness_ttl_seconds != acquisition.default_policy.freshness_ttl_seconds
+    )
 
     with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=700.0):
         radio._civ_runtime._apply_state_store_observations(
             _make_frame(cmd=0x15, sub=0x02, data=_bcd2(122))
         )
-    assert radio._state_store.snapshot().field(str(stored)).max_age == table_ttl
+    assert radio._state_store.snapshot().field(str(stored)).max_age == (
+        policy.freshness_ttl_seconds
+    )
 
 
 # Four IC-7300 fields under the owner's ruling R41: a field the operator has

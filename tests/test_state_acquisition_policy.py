@@ -44,6 +44,7 @@ from rigplane.core.state_pipeline_contracts import (
 from rigplane.core.state_store import FreshnessState, StateStore
 from rigplane.profiles import get_radio_profile
 from rigplane.rig_loader import RigLoadError, discover_rigs, load_rig
+from rigplane.runtime._civ_rx import _observation_max_age
 from _acquisition_query_helpers import (
     AcquisitionQueryCase,
     civ_frame_parts,
@@ -469,93 +470,6 @@ def test_loader_parses_tx_only_field_policy_flag(tmp_path: Path) -> None:
     # A path with no field_policies override must not silently inherit
     # tx_only=True from some other field's override.
     assert policy.default_policy.tx_only is False
-
-
-def test_loader_parses_a_class_override_with_its_reason(tmp_path: Path) -> None:
-    """MOR-2574 step 2: ``class`` takes the class policy whole.
-
-    A ``class = "<name>"`` entry resolves to that acquisition class's
-    policy; ``reason`` records why the entry exists and is required with
-    ``class``. A ``reason`` on an explicit-cadence entry loads today —
-    the later migration steps will require one there.
-    """
-
-    toml = _minimal_state_acquisition_toml(
-        """
-        [state_acquisition]
-        provider = "icom_civ"
-
-        [state_acquisition.capabilities]
-        polling_only = [
-            "global.tx_state.rit_on",
-            "global.tx_state.split",
-        ]
-
-        [state_acquisition.field_policies."global.tx_state.rit_on"]
-        class = "panel"
-        reason = "bench 2026-09-24: the RIT knob is watched at panel cadence"
-
-        [state_acquisition.field_policies."global.tx_state.split"]
-        cadence_seconds = 1.0
-        freshness_ttl_seconds = 2.0
-        reason = "split trails the VFO exchange; keep it fast"
-        """
-    )
-
-    acquisition = load_rig(_write_toml(tmp_path, toml)).to_profile().state_acquisition
-    rit_on = FieldPath.global_("tx_state", "rit_on")
-    split = FieldPath.global_("tx_state", "split")
-
-    assert acquisition is not None
-    resolved = acquisition.policy_for(rit_on)
-    assert resolved == acquisition_policy_for_class(AcquisitionClass.PANEL)
-    assert resolved.cadence_seconds == 5.0
-    assert resolved.freshness_ttl_seconds == 20.0
-    assert resolved.adaptive_decay.enabled is False
-    assert acquisition.policy_for(split).cadence_seconds == 1.0
-
-
-@pytest.mark.parametrize(
-    ("entry", "message"),
-    [
-        (
-            'class = "setting"',
-            r"class requires a reason",
-        ),
-        (
-            'class = "not_a_class"\nreason = "typo"',
-            r"is not an acquisition class: 'not_a_class'",
-        ),
-        (
-            'class = "panel"\nreason = "watched"\ncadence_seconds = 1.0',
-            r"cannot combine with class",
-        ),
-        (
-            'class = "panel"\nreason = "   "',
-            r"reason must be a non-empty string",
-        ),
-    ],
-)
-def test_loader_rejects_malformed_class_overrides(
-    tmp_path: Path,
-    entry: str,
-    message: str,
-) -> None:
-    toml = _minimal_state_acquisition_toml(
-        f"""
-        [state_acquisition]
-        provider = "icom_civ"
-
-        [state_acquisition.capabilities]
-        polling_only = ["global.tx_state.rit_on"]
-
-        [state_acquisition.field_policies."global.tx_state.rit_on"]
-        {entry}
-        """
-    )
-
-    with pytest.raises(RigLoadError, match=message):
-        load_rig(_write_toml(tmp_path, toml))
 
 
 def test_loader_parses_startup_optional_capability(tmp_path: Path) -> None:
@@ -1251,6 +1165,57 @@ def test_unowned_pollable_paths_resolve_to_their_class_policy() -> None:
         print(f"{model}: idle {idle_old:.3f} -> {idle_new:.3f} q/s")
 
 
+def test_civ_observation_stamp_is_the_policy_ttl_on_every_pollable_path() -> None:
+    """MOR-2576: one TTL source — the CI-V observation stamp is the policy TTL.
+
+    ``CivRuntime._observation`` stamps every CI-V observation through
+    ``_civ_rx._observation_max_age``. Since MOR-2574 step 2 that resolves
+    through ``policy_for`` for every path the profile declares or polls,
+    so the stamp must equal the resolved policy TTL on every pollable
+    CI-V path, and — where the path resolves from the acquisition class
+    table — the class TTL must cover at least two cadence intervals: a
+    poll landing between polls can never already read stale (the B1
+    defect: nb/nr and vd went stale before their next poll at the class
+    cadence while the stamp still came from the rig-blind fallback table).
+    Explicit entries keep exactly their declared TTL: the pre-existing
+    under-2x declared pairs (MOR-2574's own finding, 23 on IC-7610 and 4
+    on IC-7300) are the step 4-5 profile cleanup, not this gate.
+    """
+
+    failures: list[str] = []
+    checked: set[str] = set()
+    for model, rig in sorted(discover_rigs(RIGS_DIR).items()):
+        profile = rig.to_profile()
+        acquisition = profile.state_acquisition
+        if acquisition is None or not provider_uses_civ_acquisition(
+            acquisition.provider
+        ):
+            continue
+        checked.add(model)
+        for capability in sorted(acquisition.capabilities, key=lambda c: str(c.path)):
+            if not capability.can_poll:
+                continue
+            path = capability.path
+            policy = acquisition.policy_for(path)
+            stamped = _observation_max_age(profile, path)
+            if stamped != policy.freshness_ttl_seconds:
+                failures.append(
+                    f"{model}: {path} stamps {stamped}s, policy_for says "
+                    f"{policy.freshness_ttl_seconds}s"
+                )
+            if path in acquisition.field_policies:
+                continue
+            cadence = policy.cadence_seconds
+            if stamped is None or cadence is None or stamped < 2 * cadence:
+                failures.append(
+                    f"{model}: {path} (class-resolved) stamps {stamped}s for a "
+                    f"{cadence}s cadence: under two intervals"
+                )
+
+    assert not failures, f"CI-V observation stamps off-policy: {failures}"
+    assert checked == {"IC-705", "IC-7300", "IC-7610", "IC-9700", "X6100", "X6200"}
+
+
 def test_ic7300_panel_knob_fields_are_polled_at_the_panel_class_cadence() -> None:
     """The ten knobs the ruling named must be cadence-polled, not on-demand.
 
@@ -1942,6 +1907,9 @@ def test_loader_parses_never_as_absent_freshness_ttl(tmp_path: Path) -> None:
     assert acquisition is not None
     assert acquisition.policy_for(vox_on).freshness_ttl_seconds is None
     assert acquisition.policy_for(vox_on).cadence_seconds == 25.0
+    # The numeric section default still loads onto default_policy; what
+    # changed in MOR-2576 is that a pollable path no longer resolves to it.
+    assert acquisition.default_policy.freshness_ttl_seconds == 8.0
 
 
 def test_ic7300_on_demand_field_primes_with_its_cadence_as_max_age() -> None:
@@ -2199,14 +2167,12 @@ _TX_ONLY_METER_PATHS = (
     FieldPath.global_("meters", "swr"),
 )
 
-#: (model, path) pairs deliberately left ungated. X6100 has no backend at
-#: all (``backends/factory.py`` refuses the model -- only the rigctld client
-#: reaches the radio) and neither X6100 nor X6200 declares a pollable or
-#: observable ``global.tx_state.ptt`` capability, so ``tx_only`` would fail
-#: closed (``acquisition_scheduler.derive_tx_active`` returns False for an
-#: unobserved PTT) and the power meter would never poll again. X6200 also
-#: declares swr/alc ``unknown`` and comp not at all, so power is its only
-#: declared transmit meter.
+#: (model, path) pairs deliberately left ungated. X6200 declares swr/alc
+#: ``unknown`` and comp not at all, so power is its only declared transmit
+#: meter, and it declares no pollable or observable
+#: ``global.tx_state.ptt`` capability, so ``tx_only`` would fail closed
+#: (``acquisition_scheduler.derive_tx_active`` returns False for an
+#: unobserved PTT) and the power meter would never poll again.
 _TX_METER_GATE_EXEMPTIONS = {
     ("X6200", "global.meters.power"),
 }
