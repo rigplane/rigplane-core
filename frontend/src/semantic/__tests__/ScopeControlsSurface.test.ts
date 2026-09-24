@@ -343,13 +343,13 @@ describe('the capsule family (MOR-2545 PR3, owner style C — HOSTED mounts only
     const r = render(withSc({ mode: known(0) }));
     expect(r.el('scope-mode-row')!.classList.contains('scope-capsule')).toBe(false);
     expect(r.el('scope-mode-row')!.classList.contains('scope-key-group')).toBe(true);
-    expect(r.el('scope-mode-row-0')!.getAttribute('style')).toBe('--scope-key-width: 42px');
+    expect(r.el('scope-mode-row-0')!.getAttribute('style')).toBe('--scope-key-width: 42px;');
     expect(r.el('scope-receiver')!.classList.contains('scope-key-group')).toBe(true);
-    expect(r.el('scope-receiver-0')!.getAttribute('style')).toBe('--scope-key-width: 48px');
-    expect(r.el('scope-hold')!.getAttribute('style')).toBe('--scope-key-width: 52px');
+    expect(r.el('scope-receiver-0')!.getAttribute('style')).toBe('--scope-key-width: 48px;');
+    expect(r.el('scope-hold')!.getAttribute('style')).toBe('--scope-key-width: 52px;');
     const more = r.el('scope-more')!;
     expect(more.textContent).toBe('⋯');
-    expect(more.getAttribute('style')).toBe('--scope-key-width: 30px');
+    expect(more.getAttribute('style')).toBe('--scope-key-width: 30px;');
     expect(more.getAttribute('title')).toBeNull();
     r.dispose();
   });
