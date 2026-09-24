@@ -264,10 +264,15 @@ const liveCaps = (tags: readonly string[]): Capabilities => ({
   providerGeneration: 1,
 } as unknown as Capabilities);
 
-const AUDIO_TAGS = ['audio', 'tx', 'dual_rx', 'af_level', 'mod_input_routing', 'lan_dual_rx_audio_routing'] as const;
-/** A valid single-receiver topology (`vfoScheme: 'single'`) with the same audio chain. */
+const AUDIO_TAGS = [
+  'audio', 'tx', 'dual_rx', 'af_level', 'mod_input_routing', 'lan_dual_rx_audio_routing',
+  'af_level_sub',
+] as const;
+const DUAL_ONLY_TAGS: readonly string[] = ['dual_rx', 'lan_dual_rx_audio_routing', 'af_level_sub'];
+/** A valid single-receiver topology (`vfoScheme: 'single'`): `AUDIO_TAGS`
+ *  without its three second-receiver tags. */
 const singleReceiverCaps = (): Capabilities => ({
-  ...liveCaps(AUDIO_TAGS.filter((tag) => tag !== 'dual_rx' && tag !== 'lan_dual_rx_audio_routing')),
+  ...liveCaps(AUDIO_TAGS.filter((tag) => !DUAL_ONLY_TAGS.includes(tag))),
   receivers: 1, vfoScheme: 'single',
 });
 /** A radio with NO audio chain at all: no live audio, no AF control, no
@@ -1103,8 +1108,8 @@ describe('the AF control consumes the admitted-target lane (MOR-1687 F2)', () =>
 });
 
 /**
- * MOR-2579 — outside `live`, a dual-receiver radio that declares SUB AF gets
- * one AF knob per receiver, each bound to its own receiver.
+ * MOR-2579 — outside `live`, a dual-receiver radio served the `af_level_sub`
+ * tag gets one AF knob per receiver, each bound to its own receiver.
  */
 describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () => {
   function radioAf(active: 'MAIN' | 'SUB' = 'MAIN'): void {
@@ -1208,14 +1213,13 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
     expect(rows()).toEqual([['rx-audio-af', 'AF LEVEL', '42%', 'AF', '0.42']]);
   });
 
-  it('draws the one AF LEVEL row when the profile does not declare SUB AF', () => {
+  // IC-9700 shape: `sub.afLevel` is observed and available, but the radio
+  // admits no SUB AF write, so the server does not serve `af_level_sub`.
+  it('draws the one AF LEVEL row without af_level_sub, even with sub.afLevel observed', () => {
     radioAf();
-    const state = h.state as ServerState;
-    h.state = { ...state, fieldStatus: { ...state.fieldStatus, 'sub.afLevel': {
-      storePath: 'sub.afLevel', observed: false, freshness: 'unknown', availability: 'undeclared',
-    } } } as ServerState;
+    h.caps = liveCaps(AUDIO_TAGS.filter((tag) => tag !== 'af_level_sub'));
     renderHostedFace('desktop-v2');
-    expect(rows().map(([id]) => id)).toEqual(['rx-audio-af']);
+    expect(rows()).toEqual([['rx-audio-af', 'AF LEVEL', '31%', 'AF', '0.31']]);
     expect(el('af-sub')).toBeNull();
   });
 });

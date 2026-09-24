@@ -354,20 +354,20 @@ describe('monitor mode agrees with the shipped RxAudioProps derivation', () => {
 });
 
 /**
- * MOR-2579 — outside `live`, a radio whose field status declares SUB AF gets
- * one AF field per receiver, read by path. Selecting MAIN/SUB moves neither.
+ * MOR-2579 — outside `live`, a two-receiver radio served the `af_level_sub`
+ * tag gets one AF field per receiver, read by path. Selecting MAIN/SUB moves
+ * neither.
  */
-describe('rxAudio carries AF per receiver on a radio that declares SUB AF (MOR-2579)', () => {
+describe('rxAudio carries AF per receiver on a radio served af_level_sub (MOR-2579)', () => {
   const local: RxAudioSnapshot = { ...SNAP, rxEnabled: false };
-  const dualCaps = () => caps({
-    receivers: 2, vfoScheme: 'main_sub',
-    capabilities: ['audio', 'tx', 'mod_input_routing', 'af_level', 'dual_rx'],
+  const dualTags = ['audio', 'tx', 'mod_input_routing', 'af_level', 'dual_rx', 'af_level_sub'];
+  const dualCaps = (capabilities = dualTags) => caps({
+    receivers: 2, vfoScheme: 'main_sub', capabilities,
   });
-  const dualState = (over: Partial<ServerState> = {}, subAf: FieldStatus | null = fresh) => {
+  const dualState = (over: Partial<ServerState> = {}, subAf: FieldStatus = fresh) => {
     const fieldStatus: Record<string, FieldStatus> = {
-      ...audioState().fieldStatus, 'sub.freqHz': fresh, 'sub.mode': fresh,
+      ...audioState().fieldStatus, 'sub.freqHz': fresh, 'sub.mode': fresh, 'sub.afLevel': subAf,
     };
-    if (subAf !== null) fieldStatus['sub.afLevel'] = subAf;
     return audioState({
       providerGeneration: 1,
       sub: {
@@ -396,15 +396,17 @@ describe('rxAudio carries AF per receiver on a radio that declares SUB AF (MOR-2
   });
 
   it.each([
-    ['SUB AF undeclared for this radio', () => model(dualState({}, {
-      storePath: 'sub.afLevel', observed: false, freshness: 'unknown', availability: 'undeclared',
-    }), dualCaps(), local)],
-    ['no SUB AF field status at all', () => model(dualState({}, null), dualCaps(), local)],
+    // IC-9700 shape: SUB AF is read and fresh, but the radio admits no SUB AF write.
+    ['no af_level_sub tag while sub.afLevel is observed and available', () => model(
+      dualState(), dualCaps(dualTags.filter((tag) => tag !== 'af_level_sub')), local,
+    )],
     ['live monitoring (AF is the browser volume)', () => model(dualState(), dualCaps(), SNAP)],
-    ['no radio AF control', () => model(dualState(), caps({
-      receivers: 2, vfoScheme: 'main_sub', capabilities: ['audio', 'tx', 'mod_input_routing', 'dual_rx'],
-    }), local)],
-    ['a single-receiver radio', () => model(dualState(), caps(), local)],
+    ['no radio AF control', () => model(
+      dualState(), dualCaps(dualTags.filter((tag) => tag !== 'af_level')), local,
+    )],
+    ['a single-receiver radio', () => model(
+      dualState(), caps({ capabilities: [...caps().capabilities, 'af_level_sub'] }), local,
+    )],
   ])('carries no per-receiver AF with %s', (_label, build) => {
     const rxAudio = build().rxAudio;
     expect(rxAudio).toBeDefined();

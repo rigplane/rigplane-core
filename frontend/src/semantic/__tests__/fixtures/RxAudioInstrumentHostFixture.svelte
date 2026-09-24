@@ -24,6 +24,8 @@
      *  undefined renders neither handle. */
     gainHardware?: boolean;
     onAfLevelChange?: (value: number) => void;
+    /** MOR-2579: supplied ⇒ the two per-receiver AF knobs render as well. */
+    onReceiverAfLevelChange?: (receiver: 'main' | 'sub', value: number) => void;
     onMonitorMode?: (mode: MonitorMode) => void;
     onRoutingFocus?: (focus: AudioFocus) => void;
     onRoutingSplit?: (split: boolean) => void;
@@ -35,7 +37,7 @@
 
   let {
     publication, rxAudio, view, subscribeControlAuthority, layout = 'grouped', gainHardware,
-    onAfLevelChange,
+    onAfLevelChange, onReceiverAfLevelChange,
     onMonitorMode, onRoutingFocus, onRoutingSplit, onSetModInputLan, onModInputChange,
     finiteAppearance, rendererContext = null,
   }: Props = $props();
@@ -50,7 +52,7 @@
 </script>
 
 <RxAudioInstrumentHost
-  {presentation} {subscribeControlAuthority} {onAfLevelChange}
+  {presentation} {subscribeControlAuthority} {onAfLevelChange} {onReceiverAfLevelChange}
   onMonitorModeChange={onMonitorMode} onFocusChange={onRoutingFocus}
   onSplitStereoChange={onRoutingSplit} {onModInputChange} {onSetModInputLan}
   {...selection}
@@ -62,6 +64,10 @@
       {#key layout}
         <section data-layout={layout}>
           <div data-af-slot={layout}>{@render handles.afLevel()}</div>
+          {#if onReceiverAfLevelChange && handles.receiverAfLevel}
+            <div data-receiver-af="main">{@render handles.receiverAfLevel('main')}</div>
+            <div data-receiver-af="sub">{@render handles.receiverAfLevel('sub')}</div>
+          {/if}
           {#if gainHardware !== undefined && handles.mainGain}
             <div data-gain-hardware={gainHardware}>{@render handles.mainGain(gainHardware)}</div>
           {/if}

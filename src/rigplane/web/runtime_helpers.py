@@ -623,6 +623,9 @@ def runtime_capabilities(radio: "Radio | None") -> set[str]:
       :class:`ScopeCapable`).
     - If ``radio.capabilities`` is missing or not a set, derive tags purely from
       the capability Protocols implemented by the instance.
+    - Either way, ``af_level_sub`` is added when the result has ``dual_rx`` and
+      ``radio.supports_command("set_af_level", receiver=1)`` returns ``True``
+      (MOR-2579).
     """
     if radio is None:
         return set()
@@ -645,7 +648,7 @@ def runtime_capabilities(radio: "Radio | None") -> set[str]:
         # are gated separately, by ``projected_vfo_capability_tags``.
         if "repeater_shift" in caps and not isinstance(radio, RepeaterShiftCapable):
             caps.discard("repeater_shift")
-        return caps
+        return caps | _af_level_sub_tag(radio, caps)
 
     result: set[str] = set()
     if isinstance(radio, ScopeCapable):
@@ -656,7 +659,18 @@ def runtime_capabilities(radio: "Radio | None") -> set[str]:
         result.add("dual_rx")
     if isinstance(radio, RepeaterShiftCapable):
         result.add("repeater_shift")
-    return result
+    return result | _af_level_sub_tag(radio, result)
+
+
+def _af_level_sub_tag(radio: "Radio", caps: set[str]) -> set[str]:
+    """``{"af_level_sub"}`` when a dual-receiver ``radio`` admits ``set_af_level``
+    for receiver 1: :meth:`~rigplane.core.radio_protocol.Radio.supports_command`
+    with an explicit receiver, i.e. in its topology with an executable write
+    route. No observed reading enters the answer."""
+    supports = getattr(radio, "supports_command", None)
+    if "dual_rx" not in caps or not callable(supports):
+        return set()
+    return {"af_level_sub"} if supports("set_af_level", receiver=1) is True else set()
 
 
 def projected_vfo_capability_tags(

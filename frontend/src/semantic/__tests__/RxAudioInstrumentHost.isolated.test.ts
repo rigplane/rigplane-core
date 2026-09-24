@@ -54,6 +54,7 @@ type Props = {
   subscribeControlAuthority: SubscribeRxAudioAuthority;
   layout: 'grouped' | 'independent';
   onAfLevelChange?: (value: number) => void;
+  onReceiverAfLevelChange?: (receiver: 'main' | 'sub', value: number) => void;
 };
 
 function capabilities(receivers = 2, generation = 1, scheme?: VfoScheme): Capabilities {
@@ -277,6 +278,83 @@ describe('RxAudioInstrumentHost', () => {
     expect(r.publisher.handlers.size).toBe(0);
     lease.pointer(token, 0.8); lease.endPointer(token);
     expect(r.onAfLevelChange).not.toHaveBeenCalled();
+  });
+});
+
+/* MOR-2579 — each per-receiver AF knob's authority names its own receiver:
+ * a session, provider, topology, mute or live-route change cancels its drag;
+ * a change of the selected receiver, or of whether it is known, does not. */
+describe('RxAudioInstrumentHost per-receiver AF knobs (MOR-2579)', () => {
+  const RECEIVERS = ['main', 'sub'] as const;
+  const level = (value: number) => ({
+    reading: { status: 'known' as const, value },
+    availability: { structural: true, operational: true },
+  });
+  const dual = (
+    main: number, sub: number, monitorMode: RxAudioViewModel['monitorMode'] = 'local',
+  ): RxAudioViewModel => ({
+    ...audio(0.2, true, monitorMode), receiverAfLevels: { main: level(main), sub: level(sub) },
+  });
+
+  function renderKnobs(initial = publication(), initialAudio = dual(0.3, 0.6)) {
+    const publisher = new Publisher(initial);
+    const onReceiverAfLevelChange = vi.fn<(receiver: 'main' | 'sub', value: number) => void>();
+    const props = proxy<Props>({
+      publication: initial, rxAudio: initialAudio,
+      subscribeControlAuthority: publisher.subscribe,
+      layout: 'grouped', onReceiverAfLevelChange,
+    });
+    const component = mount(Fixture, { target, props }); components.push(component); flushSync();
+    const knob = (receiver: 'main' | 'sub') => target.querySelector<RendererNode>(
+      `[data-receiver-af="${receiver}"] [data-external-scalar-renderer]`,
+    )!;
+    const transition = (next: Publication, nextAudio: RxAudioViewModel) => {
+      props.publication = next; props.rxAudio = nextAudio; publisher.emit(next);
+    };
+    return { onReceiverAfLevelChange, knob, transition };
+  }
+
+  const cancelling = [
+    ['session', () => publication({ epoch: 2 })],
+    ['provider', () => publication({ generation: 2 })],
+    ['topology', () => publication({ scheme: 'ab_shared' })],
+    ['mute', () => publication({ muted: true })],
+    ['live route', () => publication({ rxEnabled: true })],
+  ] as const;
+  const keeping = [
+    ['selected receiver', () => publication({ active: 'SUB' })],
+    ['selected-receiver knowledge', () => publication({ activeKnown: false })],
+  ] as const;
+  const eachKnob = <T extends readonly [string, () => Publication]>(changes: readonly T[]) =>
+    RECEIVERS.flatMap((receiver) => changes.map(([name, middle]) => [receiver, name, middle] as const));
+
+  it.each(eachKnob(cancelling))('cancels a %s-knob drag across same-task %s A-B-A', (receiver, _name, middle) => {
+    const r = renderKnobs(); const lease = r.knob(receiver).rendererLease;
+    const token = lease.beginPointer(); expect(token).not.toBeNull();
+    r.transition(middle(), dual(0.7, 0.7));
+    r.transition(publication(), dual(0.35, 0.35));
+    lease.pointer(token!, 0.9); lease.endPointer(token!);
+    expect(r.onReceiverAfLevelChange).not.toHaveBeenCalled();
+    expect(lease.view.canonical).toBe(0.35);
+    expect(lease.key({ key: 'ArrowRight', fine: false })).toBe(true);
+    expect(r.onReceiverAfLevelChange).toHaveBeenCalledExactlyOnceWith(receiver, 0.36);
+  });
+
+  it.each(eachKnob(keeping))('keeps a %s-knob drag across a %s change', (receiver, _name, middle) => {
+    const r = renderKnobs(); const lease = r.knob(receiver).rendererLease;
+    const token = lease.beginPointer(); expect(token).not.toBeNull();
+    r.transition(middle(), dual(0.3, 0.6));
+    lease.pointer(token!, 0.9); lease.endPointer(token!);
+    expect(r.onReceiverAfLevelChange).toHaveBeenLastCalledWith(receiver, 0.9);
+  });
+
+  it.each(RECEIVERS)('keeps the %s knob inert while muted', (receiver) => {
+    const r = renderKnobs(publication({ muted: true }), dual(0, 0.6, 'mute'));
+    const lease = r.knob(receiver).rendererLease;
+    expect(lease.view.editable).toBe(false);
+    lease.key({ key: 'ArrowRight', fine: false });
+    lease.nativeInput(0.5);
+    expect(r.onReceiverAfLevelChange).not.toHaveBeenCalled();
   });
 });
 

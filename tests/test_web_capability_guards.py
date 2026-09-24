@@ -75,7 +75,11 @@ def _make_radio(model: str = "IC-7610", caps: set[str] | None = None):
 
 
 async def _endpoint_vfo_tags(
-    radio, config: WebConfig | None = None
+    radio,
+    config: WebConfig | None = None,
+    reserved: frozenset[str] = frozenset(
+        {"vfo_swap", "vfo_equalize", "vfo_freq_direct"}
+    ),
 ) -> tuple[set[str], set[str], set[str]]:
     from rigplane.web.handlers import ControlHandler
 
@@ -98,7 +102,6 @@ async def _endpoint_vfo_tags(
     info = _parse_json_body(info_writer)
     capabilities = _parse_json_body(capabilities_writer)
     hello = json.loads(ws_payloads.pop())
-    reserved = {"vfo_swap", "vfo_equalize", "vfo_freq_direct"}
     return (
         set(info["capabilities"]["tags"]) & reserved,
         set(capabilities["capabilities"]) & reserved,
@@ -914,6 +917,56 @@ class TestProfileDeclaredSecondReceiver:
                 name, {}, SimpleNamespace(put=queue.append), radio
             )
         assert queue == []
+
+
+# ── SUB-receiver AF level (MOR-2579) ───────────────────────────
+
+
+class TestSubReceiverAfLevelTag:
+    """``af_level_sub`` is served only when the radio itself admits
+    ``set_af_level`` for receiver 1 (``Radio.supports_command`` with an
+    explicit receiver). Real radios on the bundled profiles, not mocks."""
+
+    @pytest.mark.parametrize(
+        ("rig", "admitted"),
+        [("ftx1", True), ("ic7610", True), ("ic9700", False), ("ic7300", False)],
+    )
+    def test_tag_follows_the_radio_admission(self, rig: str, admitted: bool) -> None:
+        from rigplane.rig_loader import load_rig
+        from rigplane.runtime.radio import CoreRadio
+        from rigplane.web.runtime_helpers import runtime_capabilities
+
+        config = load_rig(_RIGS_DIR / f"{rig}.toml")
+        radio = (
+            YaesuCatRadio("/dev/null", profile=config)
+            if rig == "ftx1"
+            else CoreRadio("127.0.0.1", profile=config.to_profile())
+        )
+        assert radio.supports_command("set_af_level", receiver=1) is admitted
+        assert ("af_level_sub" in runtime_capabilities(radio)) is admitted
+
+    @pytest.mark.asyncio
+    async def test_info_capabilities_and_hello_serve_it_only_with_a_sub_af_write(
+        self,
+    ) -> None:
+        from rigplane.rig_loader import load_rig
+
+        config = load_rig(_RIGS_DIR / "ftx1.toml")
+        commands = dict(config.commands)
+        del commands["set_af_level_sub"]
+        tag = frozenset({"af_level_sub"})
+        for profile, expected in (
+            (config, {"af_level_sub"}),
+            (replace(config, commands=commands), set()),
+        ):
+            radio = YaesuCatRadio(
+                "/dev/null", profile=profile, audio_driver=SimpleNamespace()
+            )
+            assert await _endpoint_vfo_tags(radio, reserved=tag) == (
+                expected,
+                expected,
+                expected,
+            )
 
 
 # ── Profile-declared dual watch (MOR-2425) ─────────────────────

@@ -1886,12 +1886,11 @@ function deriveRxAudio(
   const live = monitorMode === 'live';
   const afLevel = live ? numOrUndef(audio.volume / 100) : (afObserved ? numOrUndef(rx?.afLevel) : undefined);
   // MOR-2579: outside `live` the AF control is the radio's own. The server
-  // seeds a `sub.afLevel` field status for a second receiver and marks it
-  // `undeclared` when the profile's declared paths omit it (`web/runtime_helpers.py`:
-  // `_default_snapshot_field_status`, `_absence_availability`), so an entry
-  // that is not `undeclared` admits one AF field per receiver, read by path.
+  // serves `af_level_sub` only when the radio admits `set_af_level` for
+  // receiver 1 (`web/runtime_helpers.py: runtime_capabilities`), and only
+  // then does each receiver get its own AF field, read by path.
   const perReceiverAf = !live && hasCap(caps, 'af_level') && structuralReceivers.includes('SUB')
-    && state?.fieldStatus?.['sub.afLevel'] !== undefined && !fieldUndeclared(state, 'sub.afLevel');
+    && hasCap(caps, 'af_level_sub');
   const receiverAf = (key: 'main' | 'sub') => txAuxField(
     true, state !== null && topFieldAvailable(state, `${key}.afLevel`), numOrUndef(state?.[key]?.afLevel),
   );

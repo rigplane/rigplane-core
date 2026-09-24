@@ -302,8 +302,8 @@ export interface RxAudioViewModel {
   afLevel: RxAudioField<number>;
   /** MOR-2579: each receiver's own radio AF level, 0..1, keyed by receiver,
    *  not by the selection. Present only outside `live` monitoring, on a
-   *  two-receiver radio with an AF control whose field status declares
-   *  `sub.afLevel` (`deriveRxAudio`). */
+   *  two-receiver radio with the `af_level` and `af_level_sub` capability
+   *  tags (`deriveRxAudio`). */
   readonly receiverAfLevels?: Readonly<Record<'main' | 'sub', RxAudioField<number>>>;
   routingFocus: RxAudioField<AudioFocus>;
   routingSplit: RxAudioField<boolean>;
