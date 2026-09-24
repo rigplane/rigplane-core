@@ -15,6 +15,10 @@ beforeEach(() => {
 
 afterEach(() => {
   localStorage.clear();
+  // Same fast-pool leak guard as `index.test.ts`/`locale-contract.test.ts`:
+  // an explicit `setLocale` here (ja-JP, qps-ploc) would otherwise leak into
+  // the next file in the worker.
+  _resetLocale();
 });
 
 describe('locale store', () => {

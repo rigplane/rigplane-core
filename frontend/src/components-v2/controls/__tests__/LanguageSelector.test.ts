@@ -39,6 +39,12 @@ beforeEach(() => {
 afterEach(() => {
   document.body.innerHTML = '';
   localStorage.clear();
+  // The i18n store is a module singleton and this file runs in the `fast`
+  // pool (`isolate: false`). Tests here switch the locale to `ja-JP`; leave
+  // it set and the next file in the worker reads Japanese strings (canonical
+  // victim: `bar-meter-projector.test.ts`). Hand the locale back on the way
+  // out the same way the other i18n tests do.
+  _resetLocale();
 });
 
 describe('LanguageSelector', () => {
