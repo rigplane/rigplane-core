@@ -209,9 +209,11 @@ describe('MOR-2545 PR2 — the scope status renders exactly once on both desktop
     select(false);
     mountPanel();
     target.querySelector<HTMLButtonElement>('[data-testid="scope-more"]')!.click();
-    await vi.waitFor(() => expect(target.querySelector('.eibi-browser-btn')).not.toBeNull());
+    // MOR-2545 PR3: the EiBi entry is a capsule key of the More screen
+    // group (`eibi-key`), not the old chrome `eibi-browser-btn` button.
+    await vi.waitFor(() => expect(target.querySelector('.eibi-key')).not.toBeNull());
     expect(target.querySelector('[data-testid="scope-more-panel"]')).not.toBeNull();
-    target.querySelector<HTMLButtonElement>('.eibi-browser-btn')!.click();
+    target.querySelector<HTMLButtonElement>('.eibi-key')!.click();
     flushSync();
     expect(target.querySelector('[data-testid="scope-more-panel"]')).toBeNull();
     expect(target.querySelector('.eibi-modal')).not.toBeNull();

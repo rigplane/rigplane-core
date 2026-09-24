@@ -17,15 +17,28 @@
  *       callback, not a neighbour's (the copy-paste-loop mutation class).
  *   MOR-2545 owner rules — one row; no `NAME: true/false` text; no `—`/`?`
  *       placeholders; unread = drawn unlit in place with its label; MAIN/SUB
- *       absent without the structural receiver fact; More opens on ⋯, closes
- *       on Esc and outside click, and returns focus.
+ *       absent without the structural receiver fact; More opens on the
+ *       [MORE ▾] key, closes on Esc and outside click, and returns focus.
+ *   MOR-2545 PR3 — the hosted look (HOSTED mounts only, gated on the
+ *   host toolbar's rowTail): CTR|FIX and MAIN|SUB are ONE keyed group
+ *   each; a lit segment carries `data-lit='true'`; the More key's
+ *   label comes from the i18n system (pinned in ru-RU too); the rowTail
+ *   renders between the receiver group and More; the overflow hooks
+ *   cover quick → receiver → hold → ref → span → step → mode (CTR|FIX
+ *   hides last, into More's permanent MODE row); an unhosted mount
+ *   (no rowTail) keeps PR1's flat grammar. PR3 round 4 — the hosted LOOK
+ *   is the Standard-face raised-key family, and the CSS-mechanism pins at
+ *   the end of this file fail if the row falls back to the retired
+ *   capsule chrome.
  *
- * The More panel is opened through the ⋯ key exactly as the operator opens
- * it — `openMore()` below is the ONLY helper that reaches into More-hosted
- * controls. Literal text assertions everywhere, never `t(key)`.
+ * The More panel is opened through the [MORE ▾] key exactly as the operator
+ * opens it — `openMore()` below is the ONLY helper that reaches into
+ * More-hosted controls. Literal text assertions everywhere, never `t(key)`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { flushSync, mount, unmount } from 'svelte';
+import { readFileSync } from 'node:fs';
+import { flushSync, mount, unmount, createRawSnippet } from 'svelte';
+import { getLocale, setLocale } from '$lib/i18n';
 import ScopeControlsSurface, {
   CHOICES, TOGGLES, type ScopeChoiceField, type ScopeToggleField,
 } from '../ScopeControlsSurface.svelte';
@@ -63,8 +76,17 @@ type Handlers = {
   onRefChange?: (ref: number) => void;
 };
 
-function render(view: RadioViewModel, handlers: Handlers = {}) {
-  const component = mount(ScopeControlsSurface, { target, props: { view, ...handlers } });
+function render(view: RadioViewModel, handlers: Handlers = {}, props: { rowTail?: boolean } = {}) {
+  // MOR-2545 PR3: a tail probe standing in for the toolbar's rowTail.
+  // createRawSnippet must return ONE element, hence the wrapper div.
+  const rowTail = props.rowTail
+    ? createRawSnippet(() => ({
+        render: () =>
+          '<div data-testid="row-tail"><span data-overflow="step" data-testid="row-tail-step"></span>'
+          + '<button data-overflow="quick" data-testid="row-tail-quick">AVG</button></div>',
+      }))
+    : undefined;
+  const component = mount(ScopeControlsSurface, { target, props: { view, ...handlers, rowTail } });
   flushSync();
   const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
   const el = (id: string) => q<HTMLElement>(`[data-testid="${id}"]`);
@@ -72,7 +94,7 @@ function render(view: RadioViewModel, handlers: Handlers = {}) {
     dispose: () => unmount(component),
     root: () => q('[data-testid="scope-controls-surface"]'),
     el,
-    /** Opens the More panel through the ⋯ key, like the operator does. */
+    /** Opens the More panel through the [MORE ▾] key, like the operator does. */
     openMore: () => { el('scope-more')!.click(); flushSync(); },
   };
 }
@@ -253,23 +275,179 @@ describe('the ONE always-visible row (MOR-2545)', () => {
   });
 });
 
+describe('the hosted row look (MOR-2545 PR3 round 4, owner style B — HOSTED mounts only)', () => {
+  // PR3 round 2 (finding 3): keyed-group markup is gated on the host's
+  // rowTail. Every assertion below mounts with a rowTail; the flat-grammar
+  // test after this describe pins the unhosted mounts.
+  it('CTR|FIX is ONE keyed group: both keys are its only children', () => {
+    const r = render(withSc({ mode: known(0) }), {}, { rowTail: true });
+    const modeRow = r.el('scope-mode-row')!;
+    expect(modeRow.classList.contains('scope-capsule')).toBe(true);
+    expect(modeRow.getAttribute('role')).toBe('radiogroup');
+    const keys = modeRow.querySelectorAll('button');
+    expect(keys).toHaveLength(2);
+    expect(keys[0]!.textContent).toBe('CTR');
+    expect(keys[1]!.textContent).toBe('FIX');
+    // Round 4: the group is a bare flex box of SEPARATE family keys — no
+    // shared frame, no inner divider (the segment rules are gone from the
+    // sheet; pinned by the CSS pins at the end of this describe). The
+    // structure the family keys on (adjacent segment children of one
+    // group) is pinned here.
+    expect(keys[1]!.previousElementSibling).toBe(keys[0]);
+    r.dispose();
+  });
+
+  it('MAIN|SUB is ONE keyed group with exactly the two receiver keys', () => {
+    const r = render(base(), {}, { rowTail: true });
+    const receiver = r.el('scope-receiver')!;
+    expect(receiver.classList.contains('scope-capsule')).toBe(true);
+    const keys = receiver.querySelectorAll('button');
+    expect(keys).toHaveLength(2);
+    expect(keys[0]!.textContent).toBe('MAIN');
+    expect(keys[1]!.textContent).toBe('SUB');
+    r.dispose();
+  });
+
+  it('a lit segment carries data-lit=true; an unlit one does not', () => {
+    const r = render(withSc({ mode: known(0), receiver: known(1) }));
+    expect(r.el('scope-mode-row-0')!.getAttribute('data-lit')).toBe('true');
+    expect(r.el('scope-mode-row-1')!.getAttribute('data-lit')).toBe('false');
+    expect(r.el('scope-receiver-1')!.getAttribute('data-lit')).toBe('true');
+    expect(r.el('scope-receiver-0')!.getAttribute('data-lit')).toBe('false');
+    r.dispose();
+  });
+
+  it('[MORE ▾] exists with the i18n label, a title, and opens the More panel', () => {
+    const r = render(base(), {}, { rowTail: true });
+    const more = r.el('scope-more')!;
+    expect(more.textContent).toBe('More ▾'); // en catalog: core.spectrum.more
+    expect(more.getAttribute('title')).toBe('More ▾');
+    expect(more.getAttribute('aria-label')).toBe('More scope controls');
+    expect(r.el('scope-more-panel')).toBeNull();
+    r.openMore();
+    expect(r.el('scope-more-panel')).not.toBeNull();
+    expect(more.getAttribute('aria-expanded')).toBe('true');
+    r.dispose();
+  });
+
+  // PR3 round 2 (finding 8): the label must go through t() — a hard-coded
+  // 'More ▾' stays green elsewhere (English-only renders). ru catalog:
+  // core.spectrum.more = "Ещё" (CSS uppercases it visually).
+  it('the hosted MORE label follows the locale: ru-RU renders Ещё, not More', () => {
+    const previous = getLocale();
+    setLocale('ru-RU');
+    try {
+      const r = render(base(), {}, { rowTail: true });
+      expect(r.el('scope-more')!.textContent).toBe('Ещё ▾');
+      r.dispose();
+    } finally {
+      setLocale(previous);
+    }
+  });
+
+  // PR3 round 2 (finding 3): without a host rowTail (LCD skins, mobile,
+  // bare mounts) the surface renders PR1's flat grammar exactly as before.
+  it('an unhosted mount keeps the PR1 flat grammar: key groups, reserved widths, ⋯ key', () => {
+    const r = render(withSc({ mode: known(0) }));
+    expect(r.el('scope-mode-row')!.classList.contains('scope-capsule')).toBe(false);
+    expect(r.el('scope-mode-row')!.classList.contains('scope-key-group')).toBe(true);
+    expect(r.el('scope-mode-row-0')!.getAttribute('style')).toBe('--scope-key-width: 42px;');
+    expect(r.el('scope-receiver')!.classList.contains('scope-key-group')).toBe(true);
+    expect(r.el('scope-receiver-0')!.getAttribute('style')).toBe('--scope-key-width: 48px;');
+    expect(r.el('scope-hold')!.getAttribute('style')).toBe('--scope-key-width: 52px;');
+    const more = r.el('scope-more')!;
+    expect(more.textContent).toBe('⋯');
+    expect(more.getAttribute('style')).toBe('--scope-key-width: 30px;');
+    expect(more.getAttribute('title')).toBeNull();
+    r.dispose();
+  });
+
+  it('the host rowTail renders between the receiver capsule and More', () => {
+    const r = render(withSc({ mode: known(0) }), {}, { rowTail: true });
+    const order = [r.el('scope-receiver')!, r.el('row-tail-step')!, r.el('row-tail-quick')!, r.el('scope-more')!];
+    for (let i = 1; i < order.length; i++) {
+      expect(order[i]!.compareDocumentPosition(order[i - 1]!) & Node.DOCUMENT_POSITION_PRECEDING,
+        `item ${i} follows item ${i - 1}`).toBeTruthy();
+    }
+    r.dispose();
+  });
+
+  it('renders the host rowTail bare when the scope fact group is absent', () => {
+    // topologyFixtures['1/single'] carries no scopeControls — exactly the
+    // absent-group case the bare-tail fallback exists for.
+    const r = render(topologyFixtures['1/single'], {}, { rowTail: true });
+    expect(r.el('scope-hold')).toBeNull();
+    expect(r.el('row-tail-step')).not.toBeNull();
+    expect(r.el('row-tail-quick')).not.toBeNull();
+    r.dispose();
+  });
+
+  // MOR-2545 round 4 (owner style B) + round 5 (verifier defect): the
+  // surface's own CSS-mechanism pins. jsdom cannot compute the cascade, so
+  // these read the sheets directly and FAIL IF THE ROW FALLS BACK TO THE
+  // RETIRED CAPSULE LOOK (the teal lit wash or the segment frame/divider
+  // rules returning, or a colour literal re-entering the row sheet) OR IF
+  // THE FAMILY LEAKS PAST THE HOSTED ROW: the flat-key exclusion is
+  // hosted-conditional, so the unhosted mounts — LCD, mobile, and the
+  // desktop standalone audio_fft surfaces this component renders without a
+  // host toolbar — keep the flat grammar, pixel-identical to origin/main.
+  it('the family reaches only hosted keys; unhosted mounts keep the flat look', () => {
+    const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '');
+    const HOSTED_ONLY = '.scope-flat-key:not(.spectrum-toolbar.hosted *)';
+    const bezel = strip(readFileSync('src/components-v2/controls/control-button.css', 'utf8'));
+    const skin = strip(readFileSync('src/skins/desktop-v2/semantic-controls.css', 'utf8'));
+    expect(bezel.split(HOSTED_ONLY).length - 1).toBe(13);
+    expect(skin.split(HOSTED_ONLY).length - 1).toBe(3);
+    // Fails if the exclusion is dropped globally again (round-4 defect:
+    // the audio_fft standalone surfaces got the raised keys).
+    expect(bezel.split(HOSTED_ONLY).join('')).not.toContain('.scope-flat-key');
+    expect(skin.split(HOSTED_ONLY).join('')).not.toContain('.scope-flat-key');
+    const cssRaw = readFileSync('src/components/spectrum/scope-capsule.css', 'utf8');
+    const css = cssRaw.replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(css).not.toContain('--v2-accent-cyan-teal');
+    expect(css).not.toContain('.scope-capsule > .scope-flat-key');
+    expect(css.match(/#[0-9a-fA-F]{3,8}\b/)).toBeNull();
+    // Geometry only: the sheet must not re-style a key's font weight or
+    // transform (the family owns type as of round 4).
+    const keyRule = css.match(/\.spectrum-toolbar\.hosted \.scope-flat-key \{([\s\S]*?)\n\}/);
+    expect(keyRule, 'the key geometry rule exists').not.toBeNull();
+    expect(keyRule![1]).not.toContain('font-');
+    expect(keyRule![1]).not.toContain('color:');
+  });
+});
+
 describe('narrow widths: lower-priority keys overflow into More (MOR-2545)', () => {
   // jsdom cannot lay out — this pins the STRUCTURE/hooks the container queries key on.
   it('row hooks mark the overflow groups and More renders their copies', () => {
     const r = render(withSc({ mode: known(0) }));
     const row = r.el('scope-controls-row')!;
-    // Display order; hide-first is the reverse; mode row and ⋯ stay unhooked (filtered out).
+    // Display order; hide-first is the reverse. CTR|FIX (mode) is hooked too
+    // (the hosted sheet's last band retires it into More's permanent MODE
+    // row); only the More anchor stays unhooked (filtered out).
     const hooked = [...row.children].map((c) => c.getAttribute('data-overflow')).filter(Boolean);
-    expect(hooked).toEqual(['span', 'ref', 'hold', 'receiver']);
+    expect(hooked).toEqual(['mode', 'span', 'ref', 'hold', 'receiver']);
     r.openMore();
     const overflow = r.el('scope-more-overflow')!;
     for (const hook of ['receiver', 'hold', 'ref', 'span']) expect(overflow.querySelector(`[data-overflow="${hook}"]`), hook).not.toBeNull();
     r.dispose();
   });
+
+  // MOR-2545 PR3: with the host's rowTail present, the hooked order is the
+  // FULL hide order — the quick keys (AVG/PEAK) hide FIRST, CTR|FIX (mode)
+  // hides LAST (round 3). DOM order over the whole row (the More panel is
+  // closed, so no overflow copies exist yet); the real hide rules key on
+  // direct children, but the probe wraps its two hooks in one div.
+  it('the full hide order with the rowTail present: quick → receiver → hold → ref → span → step → mode', () => {
+    const r = render(withSc({ mode: known(0) }), {}, { rowTail: true });
+    const row = r.el('scope-controls-row')!;
+    const hooked = [...row.querySelectorAll('[data-overflow]')].map((c) => c.getAttribute('data-overflow'));
+    expect(hooked).toEqual(['mode', 'span', 'ref', 'hold', 'receiver', 'step', 'quick']);
+    r.dispose();
+  });
 });
 
-describe('the More panel (⋯)', () => {
-  it('opens on ⋯, lights the key, and moves focus into the panel', () => {
+describe('the More panel ([MORE ▾])', () => {
+  it('opens on MORE, lights the key, and moves focus into the panel', () => {
     const r = render(base());
     expect(r.el('scope-more-panel')).toBeNull();
     r.openMore();
@@ -281,7 +459,7 @@ describe('the More panel (⋯)', () => {
     r.dispose();
   });
 
-  it('closes on a window-level Escape and returns focus to the ⋯ key', () => {
+  it('closes on a window-level Escape and returns focus to the More key', () => {
     const r = render(base());
     r.openMore();
     pressEscape();
@@ -290,7 +468,7 @@ describe('the More panel (⋯)', () => {
     r.dispose();
   });
 
-  it('closes on an outside click (backdrop) and returns focus to the ⋯ key', () => {
+  it('closes on an outside click (backdrop) and returns focus to the More key', () => {
     const r = render(base());
     r.openMore();
     r.el('scope-more-backdrop')!.click();

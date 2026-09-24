@@ -1,22 +1,26 @@
 <!--
-  Flat scope key (MOR-2545) — the clickable member of the VFO-deck lamp
-  visual grammar (`components-v2/vfo/VfoPanel.svelte` `.lamp`, markup ~222–229
-  / CSS ~609–639): flat, no button chrome, dim when unlit, lit colour/glow
-  when on, fixed width, tabular digits. The lamp is a display-only span; this
-  is its `<button type="button">` counterpart with native Enter/Space.
+  Scope flat key (MOR-2545 PR1; PR3 round 4 made the HOSTED row's look the
+  Standard-face raised-key family). The styles BELOW are the default flat
+  lamp grammar — every mount that is not the hosted toolbar row (the LCD
+  skins, mobile, the bare zone mounts and the desktop standalone audio_fft
+  surfaces) renders exactly this; inside `.spectrum-toolbar.hosted` the
+  family rules of components-v2/controls/control-button.css take over (the
+  family's exclusion lists admit the key ONLY there, via
+  `.scope-flat-key:not(.spectrum-toolbar.hosted *)`), with scope-capsule.css
+  pinning the row's geometry and resetting the two scoped colours below
+  that outrank the family's :where() base.
 
-  PLACEMENT: the key lives here, in
-  `components/spectrum/`, because `semantic/ScopeControlsSurface.svelte`
-  already imports `components/spectrum/spectrum-toolbar-logic` — a proven
-  allowed path (the eslint `FORBIDDEN_SEMANTIC_IMPORTS` lockdown bans skins/runtime only) — and
+  PLACEMENT: the key lives here, in `components/spectrum/`, because
+  `semantic/ScopeControlsSurface.svelte` already imports
+  `components/spectrum/spectrum-toolbar-logic` — a proven allowed path (the
+  eslint FORBIDDEN_SEMANTIC_IMPORTS lockdown bans skins/runtime only) — and
   because it shares the scope surface with `ScopeMorePanel.svelte`.
-  `primitives/` would also be legal (Svelte-only atom) but is reserved for
-  theme-level building blocks; this key is scope-surface furniture.
 
-  Search-before-write: `primitives/` and `components/spectrum/` have no
-  clickable flat key — only chrome-carrying toolbar buttons
-  (`SpectrumToolbar.svelte`) and the display-only VFO lamp spans — so this
-  component is new.
+  The class name `scope-flat-key` is historical (PR1's flat lamp look); it
+  is kept because tests pin the family-sheet exclusion split by name: the
+  exclusion lists carry the name in their hosted-only conditional form (the
+  family reaches the key only inside `.spectrum-toolbar.hosted`), while
+  `.scope-step-key` stays excluded outright.
 
   Owner rules honoured here:
   - `lit: null` = declared-but-unread: the key is drawn UNLIT, in place, with
@@ -28,12 +32,10 @@
     unlit/lit — the box never changes size.
   - No focus frame (MOR-2522): `app.css` already clears `:focus` outlines
     globally; this key adds no ring of its own.
-
-  Colours reuse the lamp variables — `--vfo-lamp-color` when a host sets it,
-  then the design-language `--dl-*` chain with the same fallbacks VfoPanel
-  uses — never a new palette.
 -->
 <script lang="ts">
+  import './scope-capsule.css';
+
   interface Props {
     /** The key's engraved label — always drawn, read or unread. */
     label: string;
@@ -42,7 +44,7 @@
     /**
      * 'toggle' → `aria-pressed` when read, omitted when unread.
      * 'choice' → `role="radio"` + `aria-checked` ("false" when unread).
-     * 'action' → plain button (e.g. the ⋯ More key), never pressed/checked.
+     * 'action' → plain button (e.g. the More key), never pressed/checked.
      */
     kind?: 'toggle' | 'choice' | 'action';
     /** Unusable (unreadable or operationally stale) — drawn, never hidden. */
@@ -50,6 +52,8 @@
     testid?: string;
     ariaLabel?: string;
     ariaExpanded?: boolean;
+    /** Tooltip text (MOR-2545 PR3: the More key carries one). */
+    title?: string;
     /** Reserved width, e.g. '44px' — the key's box is this wide in EVERY state. */
     width?: string;
     element?: HTMLElement | null;
@@ -57,7 +61,7 @@
   }
   let {
     label, lit, kind = 'toggle', disabled = false, testid, ariaLabel, ariaExpanded,
-    width, element = $bindable(null), onclick,
+    title, width, element = $bindable(null), onclick,
   }: Props = $props();
 </script>
 
@@ -71,6 +75,7 @@
   aria-pressed={kind === 'toggle' && lit !== null ? lit : undefined}
   aria-label={ariaLabel}
   aria-expanded={ariaExpanded}
+  {title}
   {disabled}
   style={width === undefined ? undefined : `--scope-key-width: ${width}`}
   bind:this={element}
