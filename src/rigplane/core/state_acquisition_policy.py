@@ -15,6 +15,7 @@ from rigplane.core.state_pipeline_contracts import (
     AcquisitionClass,
     FieldFamily,
     FieldPath,
+    acquisition_class_for_path,
 )
 
 __all__ = [
@@ -33,6 +34,7 @@ __all__ = [
     "OPERATOR_SET_MAX_CADENCE_SECONDS",
     "RadioAcquisitionProfile",
     "ReconciliationPriority",
+    "acquisition_policy_for_class",
     "fit_to_budget",
 ]
 
@@ -209,6 +211,21 @@ ACQUISITION_CLASS_TABLE: Final[dict[AcquisitionClass, AcquisitionClassPolicy]] =
 #: Float slack when deciding a fitted demand meets the margin-limited
 #: budget, so a fit that closes exactly on the limit is not read as over.
 _FIT_EPSILON: Final[float] = 1e-9
+
+
+def acquisition_policy_for_class(klass: AcquisitionClass) -> AcquisitionPolicy:
+    """Scheduler-facing policy one acquisition class resolves to (MOR-2574).
+
+    The class's nominal cadence and its freshness TTL, TX-only when the
+    table polls the class during transmit only, and adaptive decay off.
+    """
+
+    entry = ACQUISITION_CLASS_TABLE[klass]
+    return AcquisitionPolicy(
+        cadence_seconds=entry.nominal_cadence_seconds,
+        freshness_ttl_seconds=entry.freshness_ttl_seconds,
+        tx_only=entry.polled_in is AcquisitionPhase.TRANSMIT,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -728,6 +745,14 @@ class RadioAcquisitionProfile:
     capabilities: tuple[FieldCapability, ...] = ()
     default_policy: AcquisitionPolicy = field(default_factory=AcquisitionPolicy)
     field_policies: Mapping[FieldPath, AcquisitionPolicy] = field(default_factory=dict)
+    #: Path-indexed view of :attr:`capabilities` for O(1) resolution;
+    #: derived in ``__post_init__``, never passed, compared, or serialized.
+    _capabilities_by_path: dict[FieldPath, FieldCapability] = field(
+        init=False,
+        compare=False,
+        repr=False,
+        default_factory=dict,
+    )
 
     def __post_init__(self) -> None:
         _validate_token(self.provider, label="provider")
@@ -745,11 +770,12 @@ class RadioAcquisitionProfile:
                 raise ValueError(f"{path}: meter_coalescing requires meter fields")
         object.__setattr__(self, "capabilities", tuple(by_path.values()))
         object.__setattr__(self, "field_policies", policies)
+        object.__setattr__(self, "_capabilities_by_path", by_path)
 
     def capability_for(self, path: FieldPath) -> FieldCapability:
-        for capability in self.capabilities:
-            if capability.path == path:
-                return capability
+        capability = self._capabilities_by_path.get(path)
+        if capability is not None:
+            return capability
         return FieldCapability(
             path=path,
             availability=FieldAvailability.UNKNOWN,
@@ -757,7 +783,24 @@ class RadioAcquisitionProfile:
         )
 
     def policy_for(self, path: FieldPath) -> AcquisitionPolicy:
-        return self.field_policies.get(path, self.default_policy)
+        """Effective acquisition policy for one path (MOR-2574 step 2).
+
+        An explicit :attr:`field_policies` entry wins, unchanged. A path
+        with no entry of its own but a pollable capability resolves to its
+        acquisition class's policy — the same class
+        :func:`~rigplane.core.state_pipeline_contracts.acquisition_class_for_path`
+        stamps on the registry's ``FieldSpec.acquisition_class`` — via
+        :func:`acquisition_policy_for_class`. Everything else (paths with
+        no capability, or none that can poll) keeps :attr:`default_policy`.
+        """
+
+        declared = self.field_policies.get(path)
+        if declared is not None:
+            return declared
+        capability = self._capabilities_by_path.get(path)
+        if capability is not None and capability.can_poll:
+            return acquisition_policy_for_class(acquisition_class_for_path(path))
+        return self.default_policy
 
     def pollable_paths(self) -> tuple[FieldPath, ...]:
         return tuple(

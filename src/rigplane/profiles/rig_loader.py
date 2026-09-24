@@ -28,8 +28,9 @@ from rigplane.core.state_acquisition_policy import (
     MeterCoalescingPolicy,
     RadioAcquisitionProfile,
     ReconciliationPriority,
+    acquisition_policy_for_class,
 )
-from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.state_pipeline_contracts import AcquisitionClass, FieldPath
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.profiles.control_domain import (
     _on_control_lattice,
@@ -1541,8 +1542,17 @@ _ACQUISITION_POLICY_KEYS = frozenset(
         "meter_coalescing_window_seconds",
         "tx_only",
         "available_when",
+        # MOR-2574: a field_policies entry may take a whole acquisition
+        # class's policy; ``reason`` records why and is required with
+        # ``class``. Both are consumed by ``_parse_field_policy_entry``.
+        "class",
+        "reason",
     }
 )
+
+#: A ``class`` override entry may carry nothing but its required
+#: ``reason``: the class policy is taken whole (MOR-2574).
+_FIELD_POLICY_CLASS_KEYS = frozenset({"class", "reason"})
 
 #: Operator keys an ``available_when`` clause may carry; a clause must use
 #: exactly one of them alongside its ``field``.
@@ -1762,6 +1772,54 @@ def _parse_acquisition_policy(
         ) from exc
 
 
+def _parse_field_policy_entry(
+    filename: str,
+    path_text: str,
+    raw: dict[str, Any],
+    *,
+    defaults: AcquisitionPolicy,
+) -> AcquisitionPolicy:
+    """Parse one ``[state_acquisition.field_policies."<path>"]`` entry.
+
+    Two spellings (MOR-2574): either per-key policy numbers, or
+    ``class = "<name>"`` taking that acquisition class's policy whole —
+    with a required ``reason`` recording why the entry exists. A ``class``
+    without a ``reason``, a ``class`` mixed with per-key numbers, or an
+    unknown class name is a load error naming the entry.
+    """
+
+    prefix = f"[state_acquisition.field_policies.{path_text}]"
+    reason = raw.get("reason")
+    if reason is not None and (not isinstance(reason, str) or not reason.strip()):
+        raise RigLoadError(f"{filename}: {prefix}.reason must be a non-empty string")
+    if "class" not in raw:
+        return _parse_acquisition_policy(
+            filename, raw, prefix=prefix, defaults=defaults
+        )
+    if reason is None:
+        raise RigLoadError(
+            f"{filename}: {prefix}.class requires a reason recording why the "
+            "entry exists"
+        )
+    extra = sorted(set(raw) - _FIELD_POLICY_CLASS_KEYS)
+    if extra:
+        raise RigLoadError(
+            f"{filename}: {prefix} takes the class policy whole; keys "
+            f"{', '.join(extra)} cannot combine with class"
+        )
+    name = raw["class"]
+    if not isinstance(name, str):
+        raise RigLoadError(f"{filename}: {prefix}.class must be a string")
+    try:
+        klass = AcquisitionClass(name)
+    except ValueError as exc:
+        raise RigLoadError(
+            f"{filename}: {prefix}.class is not an acquisition class: {name!r} "
+            f"(one of: {', '.join(member.value for member in AcquisitionClass)})"
+        ) from exc
+    return acquisition_policy_for_class(klass)
+
+
 def _parse_state_acquisition(
     filename: str,
     raw: Any,
@@ -1942,10 +2000,10 @@ def _parse_state_acquisition(
             raise RigLoadError(
                 f"{filename}: [state_acquisition.field_policies] invalid path {path_text!r}: {exc}"
             ) from exc
-        field_policies[path] = _parse_acquisition_policy(
+        field_policies[path] = _parse_field_policy_entry(
             filename,
+            path_text,
             policy_raw,
-            prefix=f"[state_acquisition.field_policies.{path_text}]",
             defaults=default_policy,
         )
 

@@ -171,9 +171,21 @@ Optional per-field policy overrides. Supported keys are `cadence_seconds`,
 `freshness_ttl_seconds`, `reconciliation_priority`, `external_cat_pause`,
 `adaptive_decay`, `adaptive_decay_idle_multiplier`,
 `adaptive_decay_max_cadence_seconds`, `meter_coalescing_window_seconds`,
-`tx_only`, and `available_when` (the set the loader accepts is
-`_ACQUISITION_POLICY_KEYS` in `rig_loader.py`; anything else is rejected).
-Field-specific `meter_coalescing_window_seconds` is valid only for meter paths.
+`tx_only`, `available_when`, `class`, and `reason` (the set the loader
+accepts is `_ACQUISITION_POLICY_KEYS` in `rig_loader.py`; anything else is
+rejected). Field-specific `meter_coalescing_window_seconds` is valid only
+for meter paths.
+
+A pollable field path with **no** `field_policies` entry of its own does
+not inherit the section defaults: it resolves to its shared acquisition
+class (MOR-2574) — the class's nominal cadence, its freshness TTL,
+`tx_only` when the class polls only during transmit, and adaptive decay
+off. Paths that cannot be polled keep inheriting the section defaults.
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `class` | string | Take the named acquisition class's policy whole: `"keying"`, `"tx_meter"`, `"live"`, `"meter"`, `"control"`, `"panel"`, `"setting"`, or `"menu"`. Carries no other keys but `reason`. |
+| `reason` | string | Why this entry exists. Required when `class` is set — a `class` without a `reason` is a load error. Not yet required on explicit-cadence entries. |
 
 `available_when` declares the conditions under which the field exists on the
 radio at all — a mode, band or state in which the rig has no such function.
