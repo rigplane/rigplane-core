@@ -24,8 +24,10 @@ npx svelte-check --tsconfig profiling/mor2551/tsconfig.json
 The fixture derives canonical status paths from the backend's two-receiver
 projection and combines its default payload with the existing browser catalog
 and visual-test IC-7610 fixtures. Missing/null fields remain unobserved. Frame
-sizes and status counts are reported rather than padded. Freshness and delivery
-counters advance, RF values remain fixed, PTT stays false. The bounded serialized
+sizes and status counts are reported rather than padded. Semantic and freshness revisions remain constant in the steady-fresh scenario;
+observation/delivery counters and timestamps advance. RF values remain fixed and
+PTT stays false. assertSteadyFreshFixture checks all 400 serialized frames before
+production imports. The bounded serialized
 stream delivers 11 states/s (one full per 110 states) and 14 inert events/s via
 separate timer tasks; browser throttling/jitter is visible in recorded arrivals.
 
@@ -38,7 +40,9 @@ fails. This differs from an installed companion that implements the endpoint.
 The empty local-extension manifest and band-plan fixtures are also synthetic.
 
 Each arm uses a fresh context, five seconds of warmup, and twenty seconds of
-capture, in mounted/store/store/mounted order. Chromium CDP samples at 1 ms;
+capture, in mounted/store/store/mounted order. The stream pauses after warmup,
+resumes after Profiler.start, and stops before Profiler.stop. All reported profile
+window frames therefore occur within the active profile, excluding save overhead. Chromium CDP samples at 1 ms;
 WebKit runs the same cadence and acceptance checks without CDP profiling.
 `hotspots.json` resolves function locations through build source maps; anonymous
 and unmapped functions retain explicit labels. Sampled time is a statistical

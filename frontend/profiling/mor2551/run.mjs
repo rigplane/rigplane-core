@@ -59,6 +59,7 @@ try {
     await writeFile(path.join(output, `${name}-preflight.json`), JSON.stringify({ ...before, pageErrors: errors, forbidden, serverBlocked: blocked }, null, 2));
     assert.equal(before.accepted.length, 3, 'full plus two deltas must commit once each');
     assert.equal(before.ptt, false);
+    assert.deepEqual(before.fixtureCheck, { frames: 400, fullCount: 4, deltaCount: 396, stateRevision: 1, freshnessRevision: 1, ptt: false });
     assert.deepEqual(before.errors, []); assert.deepEqual(errors, []); assert.deepEqual(forbidden, []); assert.deepEqual(blocked, []);
     assert.equal(before.sent.filter(m => m.type !== 'subscribe' && m.type !== 'ping').length, 0);
     await writeFile(path.join(output, `${name}-preflight.json`), JSON.stringify(before, null, 2));
@@ -66,34 +67,39 @@ try {
     if (!smoke) {
       await page.evaluate(() => window.replay.start());
       await page.waitForTimeout(5000);
-      const captureStart = await page.evaluate(() => performance.now());
+      const warmup = await page.evaluate(() => { window.replay.stop(); return window.replay.snapshot(); });
       let cdp;
       if (browserType === chromium) {
         cdp = await context.newCDPSession(page);
         await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 1000 });
         await cdp.send('Profiler.start');
       }
+      const captureStart = await page.evaluate(() => { const time = performance.now(); window.replay.start(); return time; });
       await page.waitForTimeout(20000);
+      const { captureEnd, after } = await page.evaluate(() => {
+        window.replay.stop(); return { captureEnd: performance.now(), after: window.replay.snapshot() };
+      });
       if (cdp) {
         const { profile } = await cdp.send('Profiler.stop');
         await writeFile(path.join(output, `${name}.cpuprofile`), JSON.stringify(profile));
       }
-      await page.evaluate(() => window.replay.stop());
-      const after = await page.evaluate(() => window.replay.snapshot());
       assert.deepEqual(after.errors, []); assert.deepEqual(errors, []); assert.deepEqual(forbidden, []); assert.deepEqual(blocked, []);
       assert.equal(after.accepted.length, after.arrivals.filter(a => a.kind === 'state').length + 1);
       assert.equal(after.ptt, false);
-      const captured = after.arrivals.filter(a => a.time >= captureStart);
+      const captured = after.arrivals.slice(warmup.arrivals.length);
+      assert(captured.every(a => a.time >= captureStart && a.time <= captureEnd));
+      assert.equal(after.accepted.length - warmup.accepted.length, captured.filter(a => a.kind === 'state').length);
       const summary = { name, browser: browser.version(), accepted: after.accepted.length,
-        captureStateFrames: captured.filter(a => a.kind === 'state').length,
-        captureEvents: captured.filter(a => a.kind === 'event').length,
+        profileWindowStateFrames: captured.filter(a => a.kind === 'state').length,
+        profileWindowEvents: captured.filter(a => a.kind === 'event').length,
         fieldCount: after.fieldCount, observedFields: after.observedFields, startupWrites: after.startupWrites,
         deltaUnits: after.deltaUnits, fullUnits: after.fullUnits,
         outgoingCommands: after.sent.filter(m => m.type !== 'subscribe' && m.type !== 'ping').length,
-        externalRequests: forbidden.length, serverApiRequests: blocked.length, captureStart, after };
+        externalRequests: forbidden.length, serverApiRequests: blocked.length, captureStart, captureEnd,
+        profileWindowCountMethod: 'stream paused before Profiler.start; resumed after start; stopped before Profiler.stop', after };
       summaries.push(summary);
       await writeFile(path.join(output, `${name}-result.json`), JSON.stringify(summary, null, 2));
-      console.log(JSON.stringify({ completed: name, accepted: summary.accepted, stateFrames: summary.captureStateFrames, events: summary.captureEvents, commands: summary.outgoingCommands }));
+      console.log(JSON.stringify({ completed: name, accepted: summary.accepted, stateFrames: summary.profileWindowStateFrames, events: summary.profileWindowEvents, commands: summary.outgoingCommands }));
     }
     await context.close();
   }
