@@ -793,7 +793,9 @@ describe('source and enforcement boundary', () => {
     // surface container owns every band); round 2: the strip's ONE ground
     // is --v2-bg-card, the lamp-grammar glow/filter never reach the hosted
     // row, and STEP's More copy shows at the measured-derived 360px band.
-    expect(cssHash).toBe('89b6d56e032492b41f0ac3901b25b4e36e624166a667c0c5248e469be8c06000');
+    // PR3 round-3 repin: the `.step-cycler` comment now names the capsule
+    // sheet's `:not(.step-cycler)` guard (round-3 finding 1).
+    expect(cssHash).toBe('773bde2d07df3565e191a85e55857f0f278a75852afcf09b7c02ca4fab2e1c88');
   });
 });
 
