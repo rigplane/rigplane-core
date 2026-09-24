@@ -86,14 +86,17 @@ describe('makeRepeaterHandlers shift and tone-frequency frames (MOR-2111)', () =
   beforeEach(() => h.sendCommand.mockClear());
   afterEach(() => resetCommandLifecycle());
 
-  it('shift maps simplex/minus/plus to OS direction 0/2/1', () => {
-    expectFrames(() => handlers.onShiftChange('simplex', 0), [['set_repeater_shift', { direction: 0, receiver: 0 }]]);
-    expectFrames(() => handlers.onShiftChange('minus', 1), [['set_repeater_shift', { direction: 2, receiver: 1 }]]);
-    expectFrames(() => handlers.onShiftChange('plus', 0), [['set_repeater_shift', { direction: 1, receiver: 0 }]]);
+  it.each([
+    ['simplex', 0, 0], ['plus', 1, 1], ['minus', 0, 2],
+  ] as const)('shift %s maps to OS direction %i', (shift, receiver, direction) => {
+    expectFrames(() => handlers.onShiftChange(shift, receiver), [['set_repeater_shift', { direction, receiver }]]);
   });
 
-  it('tone frequency writes set_tone_freq unless TSQL, then set_tsql_freq', () => {
+  it('tone frequency writes set_tone_freq in TONE/OFF', () => {
     expectFrames(() => handlers.onToneFreqChange(8850, false, 0), [['set_tone_freq', { freq: 8850, receiver: 0 }]]);
+  });
+
+  it('tone frequency writes set_tsql_freq in TSQL', () => {
     expectFrames(() => handlers.onToneFreqChange(8850, true, 1), [['set_tsql_freq', { freq: 8850, receiver: 1 }]]);
   });
 });
