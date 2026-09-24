@@ -117,8 +117,7 @@ radio reference takes it as a duck-typed `AudioTransport`-shaped object
   that runtime composes; the inverse direction is forbidden.
 - Calling radio `start_rx`/`stop_rx`/`start_tx`/`stop_tx` from a
   consumer. Declare demand on `radio.audio_session` instead; the
-  session owns the ordering and the recovery. (The poller PTT path is
-  the one legacy exception until MOR-554 lands.)
+  session owns the ordering and the recovery.
 - Lossy codecs on the bridge/digital path (tenet T1a) or anywhere on
   the spine. Egress encoding belongs to the web edge only.
 - Single-slot callbacks on shared paths. Use the named tap stages

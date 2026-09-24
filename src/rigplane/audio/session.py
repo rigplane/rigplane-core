@@ -329,7 +329,7 @@ class AudioSession:
                 raise
             return sub
 
-    async def acquire_tx(self, owner: str = "") -> TxLease:
+    async def acquire_tx(self, owner: str = "", *, arm_now: bool = False) -> TxLease:
         """Add TX demand; arms TX in the transport-declared order.
 
         A held lease IS TX demand. On a full-duplex ("rx_first") transport
@@ -337,15 +337,21 @@ class AudioSession:
         (intent-gated; see ``_desired()``); it arms on the push / reestablish
         edges when TX intent is active. With RX demand present the lease
         converges to RX_TX in the transport-declared order. Exclusive/atomic
-        USB transports keep deferring tx-only demand (their TX leg requires the
-        co-armed duplex stream) — ``_desired()`` maps that demand shape to IDLE.
+        USB transports keep deferring bare tx-only demand — ``_desired()``
+        maps that demand shape to IDLE.
         A TX start failure unwinds the lease and re-raises.
+
+        ``arm_now=True`` is the explicit arm-now edge (the poller's PTT key,
+        MOR-2563: a PTT key IS active TX intent): the forced ``tx_active``
+        the push / reestablish edges use, so the TX leg arms immediately —
+        zero RX demand too, exclusive/atomic included. The bare form keeps
+        the deferral above exactly (MOR-556).
         """
         async with self._lock:
             lease = TxLease(self, owner)
             self._tx_leases.append(lease)
             try:
-                await self._apply()
+                await self._apply(tx_active=arm_now)
             except BaseException:
                 self._tx_leases.remove(lease)
                 lease._released = True
@@ -408,18 +414,19 @@ class AudioSession:
         | >0 |  0 |  any        | RX_ONLY  |
         | >0 | >0 |  any        | RX_TX    |
         |  0 | >0 |  True       | TX_ONLY  |  (when TX intent is active*)
-        |  0 | >0 |  False      | IDLE     |  (exclusive/atomic USB defers)
+        |  0 | >0 |  False      | TX_ONLY  |  (forced intent* only; else IDLE)
 
         \\*TX-only is full-duplex digital TX (FT8/WSJT-X over the companion):
-        a lease with no RX. Its arm is intent-gated by ``tx_active`` — the
-        observed TX leg liveness, OR forced True on the push / reestablish
-        edges (a held lease that has pushed / survived an outage IS active
-        intent). This preserves the bridge/poller "TX-lease-first, then RX"
-        order (MOR-556): a bare ``acquire_tx`` with no RX yet does not arm a
-        lone TX leg (``tx_active`` False), so RX arriving next converges
-        straight to RX_TX without a TX flap. It is still PURE — a function of
-        the demand counters, the per-transport order flag, and the OBSERVED
-        TX leg (never ``self._state``) — so it cannot lie after a rebuild.
+        a lease with no RX. Its arm is intent-gated by ``tx_active`` — forced
+        True on the push / reestablish / arm-now-acquire edges (a held lease
+        that has pushed, survived an outage, or keys a PTT IS active intent),
+        or observed (the TX leg is already live). FORCED intent arms TX-only
+        on every transport, exclusive/atomic USB included; OBSERVED liveness
+        alone keeps exclusive/atomic deferred at IDLE, and a bare
+        ``acquire_tx`` arms nothing, so RX arriving next converges straight
+        to RX_TX without a TX flap (MOR-556). Still PURE — a function of the
+        demand counters, the order flag, and the OBSERVED TX leg (never
+        ``self._state``) — so it cannot lie after a rebuild.
 
         RECOVERING / FAILED are transient transport-owned overlays and are
         never returned here.
@@ -431,9 +438,17 @@ class AudioSession:
         if rx:
             return AudioSessionState.RX_ONLY
         active = tx_active or self._tx_leg_live()
-        if tx and active and self._setup_order() == "rx_first":
+        if tx and active and (tx_active or self._setup_order() == "rx_first"):
             return AudioSessionState.TX_ONLY
         return AudioSessionState.IDLE
+
+    def tx_leg_live(self) -> bool:
+        """The public read of ``_tx_leg_live`` (observed transport TX leg).
+
+        For callers that must verify the leg before acting on it — the
+        poller checks it between the arm and ``set_ptt(True)`` (MOR-2563).
+        """
+        return self._tx_leg_live()
 
     def _tx_leg_live(self) -> bool:
         """Observed transport TX state — NEVER ``self._state``.
@@ -476,9 +491,11 @@ class AudioSession:
             return "rx_first"
         return cast(_SetupOrder, order)
 
-    async def _apply(self, *, closing_rx: RxSubscription | None = None) -> None:
+    async def _apply(
+        self, *, closing_rx: RxSubscription | None = None, tx_active: bool = False
+    ) -> None:
         try:
-            await self._converge(closing_rx=closing_rx)
+            await self._converge(closing_rx=closing_rx, tx_active=tx_active)
         finally:
             if self._state is not AudioSessionState.RECOVERING:
                 self._recovering_from = None
@@ -501,11 +518,11 @@ class AudioSession:
         transition. Preserves the MOR-556/559/574 ordering by delegating
         RX_TX entry to ``_enter_rx_tx`` and stopping TX before RX on teardown.
 
-        ``tx_active=True`` (push / reestablish edges): a held lease that has
-        pushed or survived an outage IS active TX intent, so the lone TX leg
-        is (re-)armed into TX_ONLY. Demand edges leave it False, deferring a
-        bare-lease tx-only arm so the bridge's lease-then-RX order does not
-        flap TX (MOR-556).
+        ``tx_active=True`` (push / reestablish / arm-now-acquire edges): a
+        held lease that has pushed, survived an outage, or keys a PTT IS
+        active TX intent, so the lone TX leg is (re-)armed into TX_ONLY —
+        exclusive/atomic included. Demand edges leave it False, deferring a
+        bare-lease tx-only arm (MOR-556: no TX flap on lease-then-RX).
 
         ``recover=True`` (the reestablish edge): the transport was rebuilt
         underneath the bus, so its ``rx_active`` flag is stale — force a fresh

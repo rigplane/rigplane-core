@@ -617,6 +617,9 @@ class RadioPoller:
         # PTT ON to PTT OFF (ADR §3.3 item 3). None on the legacy direct
         # start_tx/stop_tx path (radios without a session) and while unkeyed.
         self._ptt_tx_lease: TxLease | None = None
+        # Strong ref to the stop()-scheduled "ptt" lease release: asyncio
+        # tracks tasks weakly; the stop()-release test also awaits it.
+        self._ptt_lease_release_task: asyncio.Task[None] | None = None
         self._deferred_tx_lane = DeferredTxCommandLane()
         self._deferred_tx_entry: CommandQueueEntry | None = None
 
@@ -1018,6 +1021,11 @@ class RadioPoller:
         enqueued until the client tasks are cancelled, well after this call. The
         caller keeps the poller and awaits :meth:`drain_tx_safety_commands` once
         those tasks have been gathered (MOR-1181, ``stop_web_server``).
+
+        A held "ptt" TX lease is TX demand on the radio-owned session, so it
+        is released here too (MOR-2563): a poller stop must not orphan that
+        demand when no ``PttOff`` is ever drained. The release is async and
+        this method deliberately is not, so it is scheduled on the live loop.
         """
         # MOR-1220: an unfired backstop must not outlive its poller. What it
         # enqueued BEFORE this survives — a ``PttOff`` the final drain still
@@ -1025,6 +1033,22 @@ class RadioPoller:
         # On this path the teardown ``PttOff`` is the whole cover for an
         # unmanaged rig: ``CoreRadio.disconnect`` de-keys the managed path only.
         self._cancel_max_key_down()
+        if self._ptt_tx_lease is not None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is None:
+                logger.warning(
+                    "radio-poller: stopped with a held PTT TX lease and no "
+                    "running loop — its TX demand is left on the audio session"
+                )
+            else:
+                # Releases ONLY the "ptt" lease; never raises.
+                self._ptt_lease_release_task = loop.create_task(
+                    self._release_ptt_tx_audio(),
+                    name="radio-poller-ptt-lease-release",
+                )
         if self._connection_generation_bound:
             self._queue.unbind_connection_generation(
                 self._connection_generation_capture
@@ -2466,9 +2490,25 @@ class RadioPoller:
                             # arm failure — the lease refcounts it and the
                             # key proceeds. A repeated PTT ON reuses the held
                             # lease: no second acquire, no leaked demand.
+                            # arm_now: a PTT key IS active TX intent — the
+                            # forced edge the push/reestablish paths use, so
+                            # the leg arms with ZERO RX demand too (a bare
+                            # acquire would defer, MOR-556, and the key would
+                            # go out with the modulation path dead).
                             if self._ptt_tx_lease is None:
-                                self._ptt_tx_lease = await session.acquire_tx("ptt")
+                                self._ptt_tx_lease = await session.acquire_tx(
+                                    "ptt", arm_now=True
+                                )
                             logger.info("poller: TX audio armed via session TX lease")
+                            # The leg must be OBSERVABLY live before the key
+                            # write, via the session's own observed-TX read;
+                            # not live is the MOR-1178 arm failure, refused
+                            # identically by the handler below.
+                            if not session.tx_leg_live():
+                                raise RuntimeError(
+                                    "TX audio leg not observably live after "
+                                    "the session arm"
+                                )
                         else:
                             start_tx = getattr(radio, "start_tx", None)
                             if start_tx is not None:
