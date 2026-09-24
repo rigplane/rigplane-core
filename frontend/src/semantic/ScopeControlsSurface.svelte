@@ -11,9 +11,9 @@
   open/closed UI flag.
 
   MOR-2545 PR1 SHAPE (owner-approved design, ticket comments 2026-09-23),
-  restyled in PR3 to the owner's style C "capsule groups" ("PR3 design
-  decision, owner, 2026-09-23 18:55 EDT") — HOSTED MOUNTS ONLY (round-2
-  finding 3): the capsule markup and the capsule stylesheet
+  restyled in PR3 round 4 to the owner's style B "raised keys" ("variant B,
+  owner, 2026-09-24 07:43 EDT") — HOSTED MOUNTS ONLY (round-2 finding 3):
+  the capsule markup and the row stylesheet
   (`components/spectrum/scope-capsule.css`, scoped under
   `.spectrum-toolbar.hosted`) apply only when the host toolbar hands over a
   `rowTail` — the desktop-v2 Standard face and sdr-test. Every other
@@ -21,14 +21,15 @@
   flat-key grammar — same keys, reserved widths and ⋯ More glyph as before
   the restyle (the only markup difference: a display:contents segment
   wrapper in the More panel, which lays out identically). HOSTED: the
-  NATIVE presentation is ONE always-visible row of CAPSULES — [CTR|FIX]
-  segmented (S-C/S-F stay in More; neither segment lights there and the
-  full mode choice shows the mode), [SPAN ‹value›], [REF ‹value›], [HOLD],
-  [MAIN|SUB] segmented (only with the structural receiver fact), the host's
+  NATIVE presentation is ONE always-visible row of Standard-face raised
+  keys — [CTR|FIX] (S-C/S-F stay in More; neither segment lights there and
+  the full mode choice shows the mode), [SPAN ‹value›], [REF ‹value›],
+  [HOLD], [MAIN|SUB] (only with the structural receiver fact), the host's
   `rowTail` (STEP · BANDS · spacer · the wide-only AVG/PEAK quick keys,
   moved inside this row in PR3 for the spec's left-to-right order), and
   the [MORE ▾] key. Every control in the row AND in the More panel is the
-  ONE capsule family; lit = filled, never colour-only.
+  ONE family (control-button.css); lit = the cyan edge-left bar, never
+  colour-only.
   More carries the rest: the full mode choice CTR/FIX/S-C/S-F, the FIX edge
   1–4 (only when applicable), centre type Filter/Carrier/Abs, RBW W/M/N and
   VBW narrow, SPEED ‹ ›, DUAL, during TX. Unread stepper values are EMPTY
@@ -525,11 +526,12 @@
 <style>
   /* Structure only — colour lives in the design language / theme tokens
      (MOR-977, forced-colors). These are the PR1/PR2 rules every mount
-     shares; the HOSTED capsule look is layered on top from
+     shares; the HOSTED raised-key family is layered on top from
+     control-button.css plus the geometry sheet
      `components/spectrum/scope-capsule.css` (0,3,0+ beats these 0,2,0). */
   /* Query container for the row's overflow below; contain-intrinsic-inline-size
      keeps shrink-to-fit hosts from collapsing to 0. 530 = the PR1 flat-key
-     full row; the hosted capsule row overrides it from the capsule sheet. */
+     full row; the hosted row overrides it from the row sheet. */
   .scope-controls-surface { display: block; min-width: 0; container-type: inline-size; container-name: scope-controls; contain-intrinsic-inline-size: 530px; }
 
   /* The ONE always-visible row: never wraps, never reflows a key's box. */

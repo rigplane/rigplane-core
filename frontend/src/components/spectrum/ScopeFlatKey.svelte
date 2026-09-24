@@ -1,10 +1,13 @@
 <!--
-  Scope flat key (MOR-2545 PR1; PR3 made the HOSTED row's look the capsule
-  family of `components/spectrum/scope-capsule.css`). The styles BELOW are
-  the default flat lamp grammar — every mount that is not the hosted
-  toolbar row (the LCD skins, mobile, bare zone mounts) renders exactly
-  this; inside `.spectrum-toolbar.hosted` the capsule sheet's rules
-  (specificity 0,3,0+) take over.
+  Scope flat key (MOR-2545 PR1; PR3 round 4 made the HOSTED row's look the
+  Standard-face raised-key family). The styles BELOW are the default flat
+  lamp grammar — every mount that is not the hosted toolbar row (the LCD
+  skins, mobile, bare zone mounts) renders exactly this; inside
+  `.spectrum-toolbar.hosted` the family rules of
+  components-v2/controls/control-button.css take over (the key is no longer
+  excluded from their lists), with scope-capsule.css pinning the row's
+  geometry and resetting the two scoped colours below that outrank the
+  family's :where() base.
 
   PLACEMENT: the key lives here, in `components/spectrum/`, because
   `semantic/ScopeControlsSurface.svelte` already imports
@@ -13,10 +16,9 @@
   because it shares the scope surface with `ScopeMorePanel.svelte`.
 
   The class name `scope-flat-key` is historical (PR1's flat lamp look); it
-  is kept because the Standard-face override sheets
-  (`components-v2/controls/control-button.css`,
-  `skins/desktop-v2/semantic-controls.css`) exclude exactly this name from
-  the hardware-bezel button family.
+  is kept because tests pin the family-sheet exclusion split by name: the
+  name is OUT of control-button.css's exclusion lists (the family reaches
+  it), while `.scope-step-key` stays excluded.
 
   Owner rules honoured here:
   - `lit: null` = declared-but-unread: the key is drawn UNLIT, in place, with

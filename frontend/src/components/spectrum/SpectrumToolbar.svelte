@@ -298,11 +298,12 @@
   and state bindings as the unhosted row: this is a mount move, not a fork.
   `closeMore` lets entries that open their own surface (EiBi) close the
   panel. The STEP row is the narrow-width overflow copy, shown only while
-  the row's own STEP is hidden by the `scope-controls` container's 360px
-  band. MOR-2545 PR3 — every control here is the ONE capsule family
-  (`scope-capsule.css`): lit keys (no "ON/OFF" text), capsule steppers, a
-  capsule select; AVG/PEAK render through the SAME `avgPeakKeys` snippet
-  the row's quick keys use.
+  the row's own STEP is hidden by the `scope-controls` container's step
+  band (scope-capsule.css). MOR-2545 round 4 — every control here is the
+  Standard-face raised-key family (control-button.css): lit keys carry the
+  cyan edge-left bar, the stepper and select take the family `--hw-*`
+  surface from scope-capsule.css; AVG/PEAK render through the SAME
+  `avgPeakKeys` snippet the row's quick keys use.
 -->
 {#snippet avgPeakKeys()}
   <!-- MOR-2545 PR3: ONE definition, TWO mounts (row quick keys + More); same
@@ -402,7 +403,25 @@
   {/if}
 {/snippet}
 
-<div class="spectrum-toolbar" class:hosted={hosted}>
+<!-- MOR-2545 round 4 (owner style B): the hosted root carries the family's
+     own anchor classes. desktop-v2 already has them on the layout root;
+     sdr-test does NOT (its root class is `.sdr-test`), and without an
+     anchor the Standard-face command family's selectors
+     (`.desktop-control-face.standard-face :is(…)` in control-button.css)
+     never reach the row there. Scoping the anchors to `hosted` — the only
+     mode where this toolbar renders the semantic row — extends the FAMILY,
+     not a copy: no other `.standard-face` rule in the tree matches anything
+     inside this toolbar's subtree (verified by grep over every
+     `.standard-face` selector: the rest key on .band-tab, .rx-tx-*,
+     .desktop-station-meters, VFO/status-bar parts, none of which render
+     here), so the toolbar is display-identical on desktop-v2 and keys-only
+     on sdr-test. -->
+<div
+  class="spectrum-toolbar"
+  class:hosted={hosted}
+  class:standard-face={hosted}
+  class:desktop-control-face={hosted}
+>
   {#if hasCapability('scope') && hideScopeControls && scopeControls}
     <!-- MOR-2545 PR3: the semantic row IS the one row — the toolbar hands it
          the screen group (2nd arg, into More) and the row tail (3rd arg,
@@ -730,22 +749,24 @@
       (flex growth above) and its `scope-controls` query container owns
       EVERY overflow band (see scope-capsule.css). The strip's ONE ground is
       the scope section's own card token --v2-bg-card (round-2 finding 7:
-      the capsule sheet also switches the surface's own card paint off, so
-      capsules, SRC and ⛶ share it); the unhosted faces keep today's
+      the row sheet also switches the surface's own card paint off, so the
+      keys, SRC and ⛶ share it); the unhosted faces keep today's
       gradient. */
   .spectrum-toolbar.hosted { background: var(--v2-bg-card); }
 
-  /* The capsule family owns hover and lit text inside the hosted row: the
-     PR1 lamp grammar's glow and brightness filter never reach it. */
+  /* The raised-key family owns hover and lit text inside the hosted row: the
+      PR1 lamp grammar's glow and brightness filter never reach it. */
   .semantic-scope-controls-host :global(.scope-flat-key[data-lit='true']) { text-shadow: none; }
   .semantic-scope-controls-host :global(.scope-flat-key:hover:not(:disabled)) { filter: none; }
 
   /* The More STEP copy shows only while the row's STEP is hidden by the
-      surface container's 360px band (container queries resolve on DOM
-      ancestry, so the fixed-position panel still sees the container). */
+      surface container's step band — the SAME literal scope-capsule.css
+      hides the row's STEP with (container queries resolve on DOM ancestry,
+      so the fixed-position panel still sees the container; the band value
+      is pinned together with the sheet's by the component tests). */
   .toolbar-step-copy { display: none; }
 
-  @container scope-controls (max-width: 360px) {
+  @container scope-controls (max-width: 327px) {
     .toolbar-step-copy { display: flex; }
   }
 
