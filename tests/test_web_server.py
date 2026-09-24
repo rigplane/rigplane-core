@@ -2550,13 +2550,21 @@ class TestHalfOpenWsReaper:
             # over loopback, Linux can absorb several MiB into the
             # sender's autotuned SO_SNDBUF plus the peer's receive window
             # before the asyncio buffer ever fills (the CI flake on MOR-
-            # 2582), while macOS loopback buffers are small enough that a
-            # fixed 4 MiB payload always saturated. Make the setup
-            # deterministic instead: shrink BOTH kernel buffers to the
-            # platform minimum, then feed the transport in chunks until
-            # get_write_buffer_size() is stably above the high-water
-            # mark -- sized and checked against the transport's real
-            # state, with a bounded iteration cap. Skip (not fail) if a
+            # 2582), and macOS loopback autotuning can likewise absorb a
+            # payload that only momentarily poked above the mark. Make the
+            # setup deterministic instead:
+            #  1. shrink BOTH kernel buffers to the platform minimum
+            #     (setting SO_RCVBUF also disables Linux receive
+            #     autotuning), bounding what the kernel can absorb;
+            #  2. feed the transport in chunks until get_write_buffer_
+            #     size() stays above the high-water mark for a settle
+            #     window of repeated flush opportunities, topping up
+            #     whenever it dips. The kernel can only drain the asyncio
+            #     buffer into its own finite buffers, so persistence
+            #     across the window -- with the event loop flushing the
+            #     whole time -- proves the kernel side is full and the
+            #     level cannot drop before the reaper's close() runs.
+            # Bounded by a write/iteration cap; skip (not fail) if a
             # platform still refuses to saturate.
             transport = ws._writer.transport  # noqa: SLF001
             high_water = 4096
@@ -2573,19 +2581,26 @@ class TestHalfOpenWsReaper:
 
             chunk = b"\x00" * (256 * 1024)  # >> shrunken kernel buffers
             max_writes = 256  # bounded: at most 64 MiB attempted
+            settle_needed = 10  # consecutive 50ms checks above the mark
+            max_iterations = max_writes + 10 * settle_needed
+            writes = 0
+            settle_ok = 0
             saturated = False
-            for _ in range(max_writes):
-                transport.write(chunk)
-                # Let the event loop flush whatever the kernel will take
-                # (_write_ready runs during these yields), then measure.
-                await asyncio.sleep(0)
-                await asyncio.sleep(0)
-                if transport.get_write_buffer_size() > high_water:
-                    # Confirm the level is stable, not a race with a flush.
-                    await asyncio.sleep(0.02)
-                    if transport.get_write_buffer_size() > high_water:
+            for _ in range(max_iterations):
+                if transport.get_write_buffer_size() <= high_water:
+                    if writes >= max_writes:
+                        break
+                    transport.write(chunk)
+                    writes += 1
+                    settle_ok = 0  # kernel still absorbing; restart window
+                else:
+                    settle_ok += 1
+                    if settle_ok >= settle_needed:
                         saturated = True
                         break
+                # Yield so the loop's _write_ready() flushes whatever the
+                # kernel will take before the next measurement.
+                await asyncio.sleep(0.05)
             # `reader` is intentionally never read from below -- the peer
             # stops consuming, so both the OS socket buffers and the
             # transport's own queue fill and stay full.
@@ -2593,7 +2608,7 @@ class TestHalfOpenWsReaper:
                 pytest.skip(
                     "platform could not saturate the transport write buffer "
                     f"(size={transport.get_write_buffer_size()} after "
-                    f"{max_writes} x {len(chunk)}-byte writes against "
+                    f"{writes} x {len(chunk)}-byte writes against "
                     f"high-water={high_water}; kernel socket buffers too "
                     "large or event loop not flushing)"
                 )
