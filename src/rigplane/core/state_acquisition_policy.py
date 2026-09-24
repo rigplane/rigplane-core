@@ -244,6 +244,9 @@ class BudgetFit:
     demand_hz: float
     #: Whether that demand fits within ``margin x budget_hz``.
     fits: bool
+    #: Whether ``reserved_hz`` alone was at or above ``budget_hz`` (to within
+    #: ``_FIT_EPSILON``), in which case no class was stretched.
+    saturated: bool
 
 
 def fit_to_budget(
@@ -263,10 +266,10 @@ def fit_to_budget(
     classes first, up to their ceiling, until the total demand is at or
     below ``margin x budget_hz``. TX-only classes are excluded unless
     ``tx`` is set. A class never ends beyond its ceiling. When
-    ``reserved_hz`` alone is at or above the limit, no class is stretched
-    (coordinator decision, MOR-2586); otherwise, when the ceilings cannot
-    bring the demand under the limit, ``fits`` is false and every
-    stretched class sits at its ceiling. Pure function.
+    ``reserved_hz`` alone is at or above ``budget_hz`` itself, no class is
+    stretched (coordinator decision, MOR-2586); otherwise, when the
+    ceilings cannot bring the demand under the limit, ``fits`` is false
+    and every stretched class sits at its ceiling. Pure function.
     """
 
     if budget_hz <= 0:
@@ -276,6 +279,7 @@ def fit_to_budget(
     if reserved_hz < 0:
         raise ValueError("reserved_hz must not be negative")
     limit = margin * budget_hz
+    saturated = reserved_hz >= budget_hz - _FIT_EPSILON
 
     def tx_only(klass: AcquisitionClass) -> bool:
         return ACQUISITION_CLASS_TABLE[klass].polled_in is AcquisitionPhase.TRANSMIT
@@ -301,7 +305,7 @@ def fit_to_budget(
 
     # Lowest rank first: the table iterates high -> low.
     for klass in reversed(tuple(ACQUISITION_CLASS_TABLE)):
-        if klass not in live or demand() <= limit or reserved_hz >= limit:
+        if klass not in live or demand() <= limit or saturated:
             continue
         # Queries per second this class must still contribute for the
         # total to close on the limit.
@@ -313,6 +317,7 @@ def fit_to_budget(
         effective_cadence_seconds=cadence,
         demand_hz=settled,
         fits=settled <= limit + _FIT_EPSILON,
+        saturated=saturated,
     )
 
 

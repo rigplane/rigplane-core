@@ -548,7 +548,6 @@ class AcquisitionScheduler:
             klass = acquisition_class_for_path(paths[0])
             self._fitted_class_by_key[key] = klass
             counts[klass] += len(paths)
-        limit = ACQUISITION_BUDGET_MARGIN * budget_hz
         over: list[str] = []
         for tx, window in ((False, "receive"), (True, "transmit")):
             fit = fit_to_budget(
@@ -561,9 +560,9 @@ class AcquisitionScheduler:
             self._budget_fit[tx] = fit
             if not fit.fits:
                 outcome = (
-                    "alone at or over the limit: class-derived poll groups "
-                    "not stretched"
-                    if reserved[tx] >= limit
+                    "alone at or over the transport budget: class-derived "
+                    "poll groups not stretched"
+                    if fit.saturated
                     else "class-derived poll groups at their ceiling cadences"
                 )
                 over.append(
@@ -575,7 +574,7 @@ class AcquisitionScheduler:
                 "acquisition budget: %s; over the %.2f q/s limit "
                 "(%.2f x %.2f q/s transport budget)",
                 "; ".join(over),
-                limit,
+                ACQUISITION_BUDGET_MARGIN * budget_hz,
                 ACQUISITION_BUDGET_MARGIN,
                 budget_hz,
             )

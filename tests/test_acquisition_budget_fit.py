@@ -121,8 +121,8 @@ def test_fitted_demand_is_within_the_margin_or_the_warning_says_why(
     stretched, or it closes on the limit with every class ranked below the
     highest stretched one at its ceiling. When it does not fit, every
     class-derived path is at its start cadence if the explicit demand alone
-    is at or over the limit, else at its ceiling, and the startup warning
-    says which, with this window's numbers.
+    is at or over the transport budget, else at its ceiling, and the
+    startup warning says which, with this window's numbers.
     """
 
     acquisition = _CIV_ACQUISITION[model]
@@ -177,7 +177,7 @@ def test_fitted_demand_is_within_the_margin_or_the_warning_says_why(
                     ), klass
         assert not any(f"{window} " in message for message in warnings), warnings
     else:
-        unstretched = explicit >= limit
+        unstretched = explicit >= budget_hz - _EPSILON
         for klass, cadence in class_cadence.items():
             ceiling = ACQUISITION_CLASS_TABLE[klass].ceiling_cadence_seconds
             expected = class_start[klass] if unstretched else ceiling
@@ -191,7 +191,7 @@ def test_fitted_demand_is_within_the_margin_or_the_warning_says_why(
 
 
 _UNSTRETCHED_OUTCOME = (
-    "at explicit profile cadences, alone at or over the limit: "
+    "at explicit profile cadences, alone at or over the transport budget: "
     "class-derived poll groups not stretched"
 )
 _CEILING_OUTCOME = (
@@ -199,44 +199,70 @@ _CEILING_OUTCOME = (
 )
 
 
-def _explicit_receive_hz(acquisition: RadioAcquisitionProfile) -> float:
+def _explicit_hz(acquisition: RadioAcquisitionProfile, *, tx: bool) -> float:
     explicit = 0.0
     for path in acquisition.pollable_paths():
         policy = acquisition.field_policies.get(path)
-        if policy is None or policy.cadence_seconds is None or policy.tx_only:
+        if policy is None or policy.cadence_seconds is None:
             continue
-        explicit += 1.0 / policy.cadence_seconds
+        if tx or not policy.tx_only:
+            explicit += 1.0 / policy.cadence_seconds
     return explicit
 
 
-def _receive_cadences(
-    acquisition: RadioAcquisitionProfile, budget_hz: float
+def _window_cadences(
+    acquisition: RadioAcquisitionProfile, budget_hz: float, *, tx: bool
 ) -> dict[FieldPath, float]:
+    """Cadence of every path polled in the window, ``tx_only`` paths in TX only."""
+
     scheduler = AcquisitionScheduler(profile=acquisition, transport_budget_hz=budget_hz)
-    scheduler.note_tx_active(False)
-    return _base_cadences(scheduler)
+    scheduler.note_tx_active(tx)
+    return {
+        path: cadence
+        for path, cadence in _base_cadences(scheduler).items()
+        if tx or not acquisition.policy_for(path).tx_only
+    }
+
+
+def _class_derived_starts(
+    acquisition: RadioAcquisitionProfile, cadences: dict[FieldPath, float], *, tx: bool
+) -> dict[FieldPath, tuple[float, float, float]]:
+    """``path -> (cadence, start cadence, ceiling)`` for class-derived paths."""
+
+    result = {}
+    for path, cadence in cadences.items():
+        if path in acquisition.field_policies:
+            continue
+        entry = ACQUISITION_CLASS_TABLE[acquisition_class_for_path(path)]
+        start = (
+            entry.ceiling_cadence_seconds
+            if tx and entry.held_at_ceiling_in_tx
+            else entry.nominal_cadence_seconds
+        )
+        result[path] = (cadence, start, entry.ceiling_cadence_seconds)
+    return result
 
 
 @pytest.mark.parametrize(
     "budget_hz", [_LAN_BUDGET_HZ, _SERIAL_BUDGET_HZ], ids=["lan", "serial"]
 )
-def test_ic7610_explicit_demand_alone_over_the_limit_leaves_class_paths_unstretched(
+def test_ic7610_explicit_demand_alone_over_the_budget_leaves_class_paths_unstretched(
     budget_hz: float,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Coordinator decision: no stretch where no stretch can make it fit.
+    """Coordinator decision: explicit fields alone saturate the channel.
 
-    IC-7610's hand-declared receive cadences alone are over 0.75 x budget,
-    so its class-derived paths keep their nominal cadences, and the
-    warning says why.
+    IC-7610's hand-declared receive cadences alone are over the transport
+    budget itself, so its class-derived paths keep their nominal
+    cadences, and the warning says why.
     """
 
     acquisition = _CIV_ACQUISITION["IC-7610"]
-    explicit = _explicit_receive_hz(acquisition)
-    assert explicit > ACQUISITION_BUDGET_MARGIN * budget_hz
+    explicit = _explicit_hz(acquisition, tx=False)
+    assert explicit > budget_hz
 
     with caplog.at_level(logging.WARNING, logger="rigplane.core.acquisition_scheduler"):
-        cadences = _receive_cadences(acquisition, budget_hz)
+        cadences = _window_cadences(acquisition, budget_hz, tx=False)
 
     nominal = {
         FieldPath.global_("slow_state", "active"): 2.0,
@@ -253,28 +279,57 @@ def test_ic7610_explicit_demand_alone_over_the_limit_leaves_class_paths_unstretc
     ), _warnings(caplog)
 
 
-def test_ic7300_serial_explicit_demand_under_the_limit_still_stretches() -> None:
-    """Below the limit, explicit demand leaves room: the classes go to ceilings."""
+@pytest.mark.parametrize("tx", [False, True], ids=["receive", "transmit"])
+def test_ic7300_serial_explicit_demand_under_the_budget_stretches_below_it(
+    tx: bool,
+) -> None:
+    """IC-7300 over USB: explicit demand under 20 q/s, so the classes stretch.
+
+    It cannot reach the 15 q/s limit in either window, so every
+    class-derived path goes to its ceiling, which brings the window's
+    demand under the 20 q/s transport budget.
+    """
 
     acquisition = _CIV_ACQUISITION["IC-7300"]
-    assert _explicit_receive_hz(acquisition) < ACQUISITION_BUDGET_MARGIN * (
-        _SERIAL_BUDGET_HZ
+    assert _explicit_hz(acquisition, tx=tx) < _SERIAL_BUDGET_HZ
+
+    cadences = _window_cadences(acquisition, _SERIAL_BUDGET_HZ, tx=tx)
+
+    class_derived = _class_derived_starts(acquisition, cadences, tx=tx)
+    assert any(start < ceiling for _, start, ceiling in class_derived.values())
+    for path, (cadence, _start, ceiling) in class_derived.items():
+        assert cadence == pytest.approx(ceiling), path
+    demand = sum(1.0 / cadence for cadence in cadences.values())
+    assert ACQUISITION_BUDGET_MARGIN * _SERIAL_BUDGET_HZ < demand < _SERIAL_BUDGET_HZ
+
+
+@pytest.mark.parametrize(
+    ("budget_hz", "stretched"),
+    [(_SERIAL_BUDGET_HZ, False), (_LAN_BUDGET_HZ, True)],
+    ids=["serial-at-the-budget", "lan-under-the-budget"],
+)
+def test_ic705_transmit_explicit_demand_equal_to_the_budget_is_not_stretched(
+    budget_hz: float,
+    stretched: bool,
+) -> None:
+    """The boundary: explicit transmit demand equal to the budget saturates it.
+
+    IC-705's four hand-declared TX meters at 0.2 s are 20 q/s: equal to
+    the USB budget, so nothing stretches there; under the LAN budget, so
+    the classes go to their ceilings there.
+    """
+
+    acquisition = _CIV_ACQUISITION["IC-705"]
+    assert _explicit_hz(acquisition, tx=True) == pytest.approx(
+        _SERIAL_BUDGET_HZ, rel=1e-12
     )
 
-    cadences = _receive_cadences(acquisition, _SERIAL_BUDGET_HZ)
+    cadences = _window_cadences(acquisition, budget_hz, tx=True)
 
-    class_derived = {
-        path: cadence
-        for path, cadence in cadences.items()
-        if path not in acquisition.field_policies
-        and not acquisition.policy_for(path).tx_only
-    }
-    assert class_derived
-    for path, cadence in class_derived.items():
-        klass = acquisition_class_for_path(path)
-        ceiling = ACQUISITION_CLASS_TABLE[klass].ceiling_cadence_seconds
-        assert ceiling > ACQUISITION_CLASS_TABLE[klass].nominal_cadence_seconds
-        assert cadence == pytest.approx(ceiling), path
+    class_derived = _class_derived_starts(acquisition, cadences, tx=True)
+    assert any(start < ceiling for _, start, ceiling in class_derived.values())
+    for path, (cadence, start, ceiling) in class_derived.items():
+        assert cadence == pytest.approx(ceiling if stretched else start), path
 
 
 # --- (b) dispatch order -------------------------------------------------------
