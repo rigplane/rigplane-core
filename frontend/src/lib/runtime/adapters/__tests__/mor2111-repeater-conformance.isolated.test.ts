@@ -24,7 +24,7 @@
  * `set_tsql_freq` is dispatched only in TSQL (one `CN` register on the FTX-1);
  * `set_tone_freq` otherwise.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { expectFrames, expectRefusal, h } from './conformance/harness';
 import { makeRepeaterHandlers } from '../../commands/panel-commands';
 import { resetCommandLifecycle } from '$lib/stores/commands.svelte';
@@ -37,6 +37,7 @@ import {
 const handlers = makeRepeaterHandlers();
 
 describe('makeRepeaterHandlers tone-mode transition frames (MOR-2111)', () => {
+  beforeEach(() => h.sendCommand.mockClear());
   afterEach(() => resetCommandLifecycle());
 
   const transitions: ReadonlyArray<{
@@ -82,6 +83,7 @@ describe('makeRepeaterHandlers tone-mode transition frames (MOR-2111)', () => {
 });
 
 describe('makeRepeaterHandlers shift and tone-frequency frames (MOR-2111)', () => {
+  beforeEach(() => h.sendCommand.mockClear());
   afterEach(() => resetCommandLifecycle());
 
   it('shift maps simplex/minus/plus to OS direction 0/2/1', () => {

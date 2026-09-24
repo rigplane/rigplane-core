@@ -109,6 +109,13 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   getPendingFrequencyHz: () => null,
   getPendingFilterSelection: () => null, getPendingNbOn: () => null,
   getPendingNrOn: () => null, getPendingPreampLevel: () => null,
+  // MOR-2111 PR2 — `SemanticRadioSurfaces.svelte` imports the repeater
+  // handler singleton and its pending accessors unconditionally; this file
+  // never leaves the VFO lane, so honest inert stubs only satisfy the import.
+  getRepeaterHandlers: () => ({ onToneModeChange: () => {}, onShiftChange: () => {}, onToneFreqChange: () => {} }),
+  getPendingRepeaterTone: () => null,
+  getPendingRepeaterShift: () => null,
+  getPendingToneFreq: () => null,
   // MOR-2425 (Memory lane, phase B2) — `SemanticRadioSurfaces.svelte` now
   // imports these unconditionally. This file does not exercise memory at
   // all, so the stubs only need to satisfy the import.
