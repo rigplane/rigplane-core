@@ -25,8 +25,8 @@
  * below for that program: every MOR-1317-era `SEMANTIC_SURFACE_NAMES` member
  * was zone-owned on `desktop-v2`, with the partition pin holding on zero
  * excused entries. MOR-2425 (Memory lane, phase B1) reopened the ledger with
- * one entry for `memory`; phase B2 (this join) declares its `desktop-v2`
- * zone, so `RECORDED_REASONS` below is empty again.
+ * one entry for `memory`, which its phase B2 join closed by declaring a
+ * `desktop-v2` zone. MOR-2111 reopens it with one entry for `repeater`.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -45,11 +45,14 @@ const OWNED = declaredSurfaces(desktopV2Layout);
  * `filter`, `rfFrontEnd` (S7), `band`, `antenna`, `ritXitScan` (S8),
  * `rxAudio`, `dsp`, `cwKeyer` (S9), `scopeControls` (S6b-2) and `memory`
  * (MOR-2425, Memory lane phase B2) all graduated to real zones on
- * `desktopV2Layout` — `OWNED` covers every one of them, so THE LEDGER IS
- * EMPTY AGAIN: every `SEMANTIC_SURFACE_NAMES` member is zone-owned on
- * `desktop-v2`, and the partition pin below holds on zero excused entries.
+ * `desktopV2Layout` — `OWNED` covers every one of them. `repeater` is the one
+ * live entry below.
  */
-const RECORDED_REASONS: Partial<Record<SemanticSurfaceName, string>> = {};
+const RECORDED_REASONS: Partial<Record<SemanticSurfaceName, string>> = {
+  repeater:
+    'MOR-2111 admits `repeater` to the vocabulary without declaring a ' +
+    'desktop-v2 zone; the Standard zone and its mount land in #3613.',
+};
 
 describe('MOR-1317 — every semantic surface has a desktop-v2 decision', () => {
   /**

@@ -17,10 +17,7 @@
  * `allowBare`, so the surface mounts bare on every undeclaring face it serves.
  * The
  * inventory below is a LITERAL of who declares it, mirroring
- * `scope-display-declarability.test.ts`'s post-S6a shape. This is the LAST
- * surface in the whole MOR-1262 vocabulary to graduate:
- * `zone-ownership-coverage.test.ts`'s `RECORDED_REASONS` ledger is empty
- * after this slice.
+ * `scope-display-declarability.test.ts`'s post-S6a shape.
  *
  * Same three pins as `tx-aux-declarability.test.ts` / `meters-declarability.test.ts`
  * / `scope-display-declarability.test.ts`:
@@ -41,7 +38,7 @@ describe('scopeControls is a declarable semantic surface', () => {
   it('is in the declarable set', () => {
     expect([...SEMANTIC_SURFACE_NAMES]).toEqual([
       'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band',
-      'antenna', 'ritXitScan', 'cwKeyer', 'scopeDisplay', 'scopeControls', 'memory',
+      'antenna', 'ritXitScan', 'cwKeyer', 'scopeDisplay', 'scopeControls', 'memory', 'repeater',
     ]);
   });
 

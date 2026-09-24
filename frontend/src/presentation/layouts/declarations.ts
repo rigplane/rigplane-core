@@ -154,7 +154,6 @@ export {
  * The other five are declared so the arrangement has a `data-zone-id` to
  * place them by: `__tests__/flagship-probe-registration.test.ts` requires
  * every id the skin's style block places to be a zone declared here.
- * `memory` is the one declarable surface this layout leaves out.
  *
  * `compatibleTopologies` names the two dual-receiver pairs only.
  */
