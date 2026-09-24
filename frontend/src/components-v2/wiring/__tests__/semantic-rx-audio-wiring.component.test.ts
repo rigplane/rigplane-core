@@ -1229,10 +1229,14 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
     el(`monitor-${mode}`)!.click();
     flushSync();
   };
+  // The saved MUTE levels are module state in `panel-commands.ts`, and the
+  // Standard->SDR persistence test above leaves MUTE engaged: leave it first.
+  const leaveEarlierMute = () => pickMonitor('local');
 
   it('MUTE zeroes MAIN and SUB; unmute restores each its own level after a selection change', () => {
     radioAf();
     renderHostedFace('desktop-v2');
+    leaveEarlierMute();
     pickMonitor('mute');
     expect(afCalls()).toEqual([{ level: 0, receiver: 0 }, { level: 0, receiver: 1 }]);
     select('SUB');
@@ -1245,6 +1249,7 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
     h.caps = liveCaps(AUDIO_TAGS.filter((tag) => tag !== 'af_level_sub'));
     expect(setCapabilities(h.caps as Capabilities)).toBe(true);
     renderHostedFace('desktop-v2');
+    leaveEarlierMute();
     pickMonitor('mute');
     expect(afCalls()).toEqual([{ level: 0, receiver: 0 }]);
     pickMonitor('local');
