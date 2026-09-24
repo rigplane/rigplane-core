@@ -4005,12 +4005,10 @@ class RadioPoller:
         with ``CivRuntime._observation`` — see that function's docstring for
         the fail-open rationale and the fallback it applies. Derivation
         radios (``vfo_readback == "selected_unselected"``) declare no
-        ``tx_target`` capability — the field is not a radio-readable fact on
-        them, so a declared capability would send the scheduler after a
-        query that does not exist; ``policy_for`` then falls back to the
-        profile default. Radios with a native read (FTX-1; IC-7610/IC-9700
-        1C 03, MOR-2540) DO declare it, and their declared field policy's
-        TTL is what this returns.
+        ``tx_target`` capability, so ``policy_for`` falls back to the
+        profile default. Radios with a native read (FTX-1; IC-7610's 1C 03,
+        MOR-2540) DO declare the capability; where a field policy is
+        declared too (IC-7610), that policy's TTL is what this returns.
         """
         # mypy --strict src/rigplane/web's own follow_imports=skip means the
         # cross-package call resolves to Any; float(...) makes the strict
@@ -4048,10 +4046,10 @@ class RadioPoller:
         the just-read snapshot with no ``await`` in between, so it always
         stamps the store's current provider generation.
         """
-        # MAIN/SUB radios (vfo_readback != "selected_unselected") never
-        # derive here: IC-7610/IC-9700 publish the radio's own 1C 03 answer
-        # through the CI-V observation path instead (MOR-2540), and this
-        # method must not become a second writer for the field.
+        # Radios without the selected_unselected readback never derive
+        # here: IC-7610 publishes the radio's own 1C 03 answer through the
+        # CI-V observation path instead (MOR-2540), and this method must
+        # not become a second writer for the field.
         if self._profile.vfo_readback != "selected_unselected":
             return
 

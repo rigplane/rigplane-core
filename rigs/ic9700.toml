@@ -140,11 +140,6 @@ polling_only = [
     "global.operator_controls.compressor_level",
     "global.tx_state.ptt",
     "global.tx_state.split",
-    # MOR-2540: same shape as rigs/ic7610.toml -- this main_sub radio carries
-    # no [vfo] readback key, so the RadioPoller derivation never writes
-    # tx_target here; the radio's own 1C 03 answer (get_tx_target below) is
-    # the field's single producer.
-    "global.tx_state.tx_target",
     "scope_controls.global.display.receiver",
     "scope_controls.global.display.dual",
     "scope_controls.global.display.mode",
@@ -232,16 +227,6 @@ tx_only = true
 available_when = [
     { field = "global.tx_state.ptt", equals = true },
 ]
-
-# MOR-2540: same cadence/TTL reasoning as rigs/ic7610.toml's tx_target policy
-# (TUNE and the web TX authority fail closed on a non-FRESH target; 1.0s is
-# one bare 1C 03 read per second, the 4.0s TTL absorbs lane stretch and still
-# fails closed 4s after the radio stops answering). IC-9700's CI-V reference
-# confirms the 1C 03 read exists on this radio -- see get_tx_target below.
-[state_acquisition.field_policies."global.tx_state.tx_target"]
-cadence_seconds = 1.0
-freshness_ttl_seconds = 4.0
-adaptive_decay = false
 
 # ── Parameterized Capabilities ───────────────────────────────────
 
@@ -751,12 +736,6 @@ set_agc_time_constant = [0x1A, 0x04]
 ptt_on = [0x1C, 0x00, 0x01]
 ptt_off = [0x1C, 0x00, 0x00]
 get_transceiver_status = [0x1C, 0x00]      # source: IC-9700 CI-V Reference Guide (Icom, 2019) p.10, S/R transceiver status
-# MOR-2540: source: IC-9700 CI-V Reference Guide (Icom, 2019) p.11, "1C 03*1
-# ... Read the transmit frequency" (*1 = read-only; detail p.13: the same
-# five-byte BCD operating-frequency format as commands 00/03/05). With split
-# ON the radio itself answers the frequency it would transmit on -- this
-# profile never derives the target from the MAIN frequency.
-get_tx_target = [0x1C, 0x03]
 get_rf_power = [0x14, 0x0A]
 set_rf_power = [0x14, 0x0A]
 get_mic_gain = [0x14, 0x0B]

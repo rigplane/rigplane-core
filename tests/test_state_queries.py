@@ -729,9 +729,9 @@ class TestBuildStateQueries:
         assert not excluded_sub_controls.intersection(pollable)
         assert not excluded_sub_freq_mode.intersection(pollable)
         queries = build_state_queries(profile)
-        # MOR-2540: +1 for the declared 1C 03 transmit-frequency read
-        # (global.tx_state.tx_target).
-        assert len(pollable) == len(queries) == 35
+        # IC-9700 stays out of MOR-2540 (unverified band-selection/split
+        # semantics, no bench radio): no 1C 03 read is declared for it.
+        assert len(pollable) == len(queries) == 34
         assert all(query.receiver is None for query in queries)
         assert not any(
             query.command in {0x25, 0x26} and query.data == b"\x01" for query in queries
