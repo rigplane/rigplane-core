@@ -25,6 +25,7 @@ import { resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import {
   formatToneHz,
   shiftDirection,
+  shiftFromDirection,
   stepToneFreq,
 } from '$lib/radio/repeater-transitions';
 
@@ -120,10 +121,13 @@ describe('getPendingRepeaterTone collapses an in-flight transition to its target
 });
 
 describe('repeater-transitions pure helpers (MOR-2111)', () => {
-  it('shiftDirection maps the three offered shifts, never ARS', () => {
+  it('shiftDirection and shiftFromDirection map the four OS directions both ways', () => {
     expect(shiftDirection('simplex')).toBe(0);
     expect(shiftDirection('plus')).toBe(1);
     expect(shiftDirection('minus')).toBe(2);
+    expect(shiftDirection('ars')).toBe(3);
+    expect([0, 1, 2, 3].map(shiftFromDirection)).toEqual(['simplex', 'plus', 'minus', 'ars']);
+    expect([-1, 4, 1.5].map(shiftFromDirection)).toEqual([null, null, null]);
   });
 
   it('stepToneFreq clamps at both ends and never wraps', () => {

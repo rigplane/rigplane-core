@@ -44,6 +44,7 @@ import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './dis
 import { isFieldAvailable } from '$lib/state/field-status';
 import { modInputStateKey } from '$lib/radio/mod-input';
 import { flattenBands, findActiveBand, receiverInRepeaterBand } from '$lib/radio/band-plan';
+import { shiftFromDirection } from '$lib/radio/repeater-transitions';
 import { getFrequencyPermit, type FrequencyPermit, type TxPermit } from '$lib/utils/tx-permit';
 import {
   relativeVfoIdentityUnknown,
@@ -1395,8 +1396,10 @@ function deriveBand(
  * `toneFreq` reads `toneFreq` (centiHz), not `tsqlFreq`: on the FTX-1 the two
  * are one `CN` register, and the ENC tone is what a repeater needs.
  *
- * `shift` maps 0/1/2 to simplex/plus/minus; ARS (3) is not offered and reads
- * `unknown`, never `simplex`.
+ * `shiftChoices`: simplex/plus/minus with the `repeater_shift` tag, and ARS
+ * only with the `repeater_shift_ars` tag as well. `shift` maps 0/1/2/3 to
+ * simplex/plus/minus/ars; a value outside `shiftChoices` reads `unknown`,
+ * never `simplex`.
  */
 function deriveRepeater(
   state: ServerState | null, caps: Capabilities | null,
@@ -1407,6 +1410,9 @@ function deriveRepeater(
 
   const hasTone = hasCap(caps, 'repeater_tone') || hasCap(caps, 'tsql');
   const hasShift = hasCap(caps, 'repeater_shift');
+  const shiftChoices: readonly RepeaterShift[] = !hasShift ? []
+    : hasCap(caps, 'repeater_shift_ars') ? ['simplex', 'plus', 'minus', 'ars']
+    : ['simplex', 'plus', 'minus'];
 
   const receiver = (key: 'main' | 'sub'): RepeaterReceiverViewModel => {
     const rx = state?.[key];
@@ -1431,8 +1437,8 @@ function deriveRepeater(
 
     const shiftObserved = topFieldAvailable(state, path('repeaterShift'));
     const shiftRaw = numOrUndef(rx?.repeaterShift);
-    const shift: RepeaterShift | undefined = shiftRaw === 0
-      ? 'simplex' : shiftRaw === 1 ? 'plus' : shiftRaw === 2 ? 'minus' : undefined;
+    const shiftChoice = shiftRaw === undefined ? null : shiftFromDirection(shiftRaw);
+    const shift = shiftChoice !== null && shiftChoices.includes(shiftChoice) ? shiftChoice : undefined;
 
     return {
       inRepeaterBand: txAuxField(true, freqObserved, inBand),
@@ -1442,7 +1448,7 @@ function deriveRepeater(
     };
   };
 
-  return { main: receiver('main'), sub: receiver('sub') };
+  return { main: receiver('main'), sub: receiver('sub'), shiftChoices };
 }
 
 /**

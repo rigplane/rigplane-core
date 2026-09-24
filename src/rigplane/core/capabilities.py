@@ -52,6 +52,7 @@ __all__ = [
     "CAP_CSQL",
     "CAP_SQL_TYPE",
     "CAP_REPEATER_SHIFT",
+    "CAP_REPEATER_SHIFT_ARS",
     "CAP_VOICE_TX",
     "CAP_SPEECH",
     "CAP_DATA_MODE",
@@ -179,6 +180,9 @@ CAP_SQL_TYPE = "sql_type"
 # ``RepeaterControlCapable``. Shift magnitude has no capability tag yet — it
 # is a separate, not-yet-built surface.
 CAP_REPEATER_SHIFT = "repeater_shift"
+# Automatic Repeater Shift (``RepeaterShiftDirection.ARS``) as a fourth shift
+# direction.
+CAP_REPEATER_SHIFT_ARS = "repeater_shift_ars"
 
 # Data
 CAP_DATA_MODE = "data_mode"
@@ -277,6 +281,7 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset(
         CAP_SQL_TYPE,
         # Repeater shift (direction only)
         CAP_REPEATER_SHIFT,
+        CAP_REPEATER_SHIFT_ARS,
         CAP_VOICE_TX,
         CAP_SPEECH,
         # Data

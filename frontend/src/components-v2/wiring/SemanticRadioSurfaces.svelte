@@ -104,7 +104,9 @@
     type FiniteRendererContext,
   } from '../../primitives/control-instruments/control-instrument-renderer.svelte';
   import type { ReceiverId, RadioViewModel, VfoSlot } from '../../semantic/radio-view-model';
-  import { stepToneFreq, type RepeaterPending } from '$lib/radio/repeater-transitions';
+  import {
+    shiftFromDirection, stepToneFreq, type RepeaterPending, type RepeaterShift,
+  } from '$lib/radio/repeater-transitions';
   import RfFrontEndSurface, {
     type RfFrontEndLevelField,
   } from '../../semantic/RfFrontEndSurface.svelte';
@@ -1859,7 +1861,7 @@
     repeaterHandlers.onToneModeChange(reading.value, next, repeaterWireReceiver(receiver));
   }
 
-  function selectShift(receiver: ReceiverId, shift: 'simplex' | 'minus' | 'plus'): void {
+  function selectShift(receiver: ReceiverId, shift: RepeaterShift): void {
     repeaterHandlers.onShiftChange(shift, repeaterWireReceiver(receiver));
   }
 
@@ -1877,7 +1879,7 @@
     const shift = getPendingRepeaterShift(wire);
     return {
       toneMode: getPendingRepeaterTone(wire),
-      shift: shift === null ? null : shift === 0 ? 'simplex' : shift === 1 ? 'plus' : 'minus',
+      shift: shift === null ? null : shiftFromDirection(shift),
       toneFreq: getPendingToneFreq(wire) !== null,
     };
   }

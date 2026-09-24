@@ -734,11 +734,11 @@ export interface BandViewModel {
  * names the ENC field because that is the tone a repeater needs.
  *
  * `shift` maps the wire `repeaterShift` (0 simplex / 1 plus / 2 minus /
- * 3 ARS) to simplex / plus / minus. ARS (3) is not offered: it reads
- * `unknown`, never `simplex`.
+ * 3 ARS) to simplex / plus / minus / ars. A value outside the radio's
+ * `shiftChoices` reads `unknown`, never `simplex`.
  */
 export type RepeaterToneMode = 'off' | 'tone' | 'tsql';
-export type RepeaterShift = 'simplex' | 'plus' | 'minus';
+export type RepeaterShift = 'simplex' | 'plus' | 'minus' | 'ars';
 /** Shape-identical to `TxAuxField`, declared as an alias like `BandField`. */
 export type RepeaterField<T> = TxAuxField<T>;
 
@@ -754,6 +754,9 @@ export interface RepeaterReceiverViewModel {
 export interface RepeaterViewModel {
   main: RepeaterReceiverViewModel;
   sub: RepeaterReceiverViewModel;
+  /** The shift values this radio offers: none without `repeater_shift`,
+   *  and `ars` only with `repeater_shift_ars` as well. */
+  shiftChoices: readonly RepeaterShift[];
 }
 
 /**
@@ -2169,7 +2172,7 @@ function validateBand(value: unknown, path: string): BandViewModel {
 }
 
 const REPEATER_TONE_MODES: readonly RepeaterToneMode[] = ['off', 'tone', 'tsql'];
-const REPEATER_SHIFTS: readonly RepeaterShift[] = ['simplex', 'plus', 'minus'];
+const REPEATER_SHIFTS: readonly RepeaterShift[] = ['simplex', 'plus', 'minus', 'ars'];
 
 function validateRepeaterReceiver(value: unknown, path: string): RepeaterReceiverViewModel {
   const v = record(value, path);
@@ -2182,14 +2185,16 @@ function validateRepeaterReceiver(value: unknown, path: string): RepeaterReceive
   };
 }
 
-/** Exactly the four facts the adapter reads, one per receiver. See
- *  `radio-view-model-adapter.ts::deriveRepeater`. */
+/** Exactly the four facts the adapter reads, one per receiver, and the
+ *  radio's shift choices. See `radio-view-model-adapter.ts::deriveRepeater`. */
 function validateRepeater(value: unknown, path: string): RepeaterViewModel {
   const v = record(value, path);
-  exactKeys(v, ['main', 'sub'], path);
+  exactKeys(v, ['main', 'sub', 'shiftChoices'], path);
+  if (!Array.isArray(v.shiftChoices)) invalid(`${path}.shiftChoices`, 'an array');
   return {
     main: validateRepeaterReceiver(v.main, `${path}.main`),
     sub: validateRepeaterReceiver(v.sub, `${path}.sub`),
+    shiftChoices: v.shiftChoices.map((shift, i) => oneOf(shift, REPEATER_SHIFTS, `${path}.shiftChoices[${i}]`)),
   };
 }
 

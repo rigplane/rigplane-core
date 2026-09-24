@@ -1,6 +1,7 @@
 <!--
-  Semantic repeater surface (MOR-2111): OFF/TONE/TSQL, shift SIMP/−/+ and the
-  CTCSS tone stepper for ONE receiver. Presentation only: facts come from
+  Semantic repeater surface (MOR-2111): OFF/TONE/TSQL, shift SIMP/−/+ (and
+  ARS where `view.repeater.shiftChoices` has it) and the CTCSS tone stepper
+  for ONE receiver. Presentation only: facts come from
   `view.repeater`, pending targets from `pending`, and every action leaves
   through a callback naming the receiver.
 -->
@@ -47,11 +48,12 @@
   let { view, pending = {}, onToneModeChange, onShiftChange, onToneFreqStep }: Props = $props();
 
   const TONE_MODES = [['off', 'OFF'], ['tone', 'TONE'], ['tsql', 'TSQL']] as const;
-  const SHIFTS = [['simplex', 'SIMP'], ['minus', '−'], ['plus', '+']] as const;
+  const SHIFTS = [['simplex', 'SIMP'], ['minus', '−'], ['plus', '+'], ['ars', 'ARS']] as const;
 
   let receiver = $derived(repeaterReceiver(view));
   let rx = $derived(receiver === null ? undefined : view?.repeater?.[receiver === 'MAIN' ? 'main' : 'sub']);
   let rxPending = $derived(receiver === null ? undefined : pending[receiver]);
+  let shifts = $derived(SHIFTS.filter(([shift]) => view?.repeater?.shiftChoices.includes(shift) === true));
   let stepAvailable = $derived(rx?.toneFreq.reading.status === 'known'
     && rx.toneMode.reading.status === 'known');
   const pendingId = $props.id();
@@ -61,7 +63,7 @@
     invoke: (mode) => { if (receiver !== null) onToneModeChange?.(receiver, mode); },
   }));
   const shiftBehavior = bindChoiceInstrument<RepeaterShift>(() => ({
-    field: rx?.shift, choices: SHIFTS.map(([shift]) => shift),
+    field: rx?.shift, choices: shifts.map(([shift]) => shift),
     invoke: (shift) => { if (receiver !== null) onShiftChange?.(receiver, shift); },
   }));
 
@@ -91,7 +93,7 @@
     {/if}
     {#if rx.shift.availability.structural}
       <div class="repeater-keys" role="radiogroup" aria-label="Repeater shift" data-testid="repeater-shift">
-        {#each SHIFTS as [shift, label] (shift)}
+        {#each shifts as [shift, label] (shift)}
           {@const isPending = rxPending?.shift === shift}
           <div class="repeater-key">
             <ControlButton surface="hardware" indicatorStyle="edge-left" indicatorColor="cyan"
@@ -106,7 +108,6 @@
       </div>
     {/if}
     {#if rx.toneFreq.availability.structural}
-      <!-- `scope-step-key` reuses the scope stepper key look via its class. -->
       <div class="repeater-stepper" data-testid="repeater-tone-freq">
         <span class="repeater-name">CTCSS</span>
         <button type="button" class="repeater-step-key scope-step-key" aria-label="Decrease CTCSS tone"
@@ -138,7 +139,8 @@
   }
   .repeater-keys {
     display: grid;
-    grid-template-columns: repeat(3, minmax(28px, 1fr));
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(28px, 1fr);
     gap: var(--dl-studioline-gap-micro, var(--dl-fieldline-gap, 6px));
     width: 100%;
   }
