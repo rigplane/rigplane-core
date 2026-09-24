@@ -61,7 +61,9 @@
   import type {
     BooleanFact, DisplayObservation, DspField, TxAuxField,
     RadioViewModel, ReceiverIndicatorViewModel, VfoViewModel,
+    RepeaterShift, RepeaterToneMode,
   } from './radio-view-model';
+  import { formatToneHz, type RepeaterStripPending } from '$lib/radio/repeater-transitions';
 
   interface Props {
     viewModel: RadioViewModel;
@@ -202,6 +204,18 @@
     onToggleTuner?: () => void;
     onToggleVox?: () => void;
     onToggleDialLock?: () => void;
+    /**
+     * MOR-2111 PR2 — the repeater strip's operated chips. The surface stays
+     * command-bus-blind: it emits these callbacks and folds `repeaterPending`
+     * (computed by the caller from the in-flight command lifecycle) into the
+     * strip's pending markers. `repeaterPending` is keyed by `ReceiverId`,
+     * so the single composition (both receivers in one view model) and the
+     * dual strip composition (one receiver per mount) both resolve it.
+     */
+    onToneModeChange?: (receiver: ReceiverId, next: RepeaterToneMode) => void;
+    onShiftChange?: (receiver: ReceiverId, shift: RepeaterShift) => void;
+    onToneFreqStep?: (receiver: ReceiverId, direction: 1 | -1) => void;
+    repeaterPending?: Partial<Record<ReceiverId, RepeaterStripPending>>;
     operationInput?: VfoOperationProjectionInput;
     operationControls?: Snippet;
   }
@@ -234,6 +248,10 @@
     onToggleTuner,
     onToggleVox,
     onToggleDialLock,
+    onToneModeChange,
+    onShiftChange,
+    onToneFreqStep,
+    repeaterPending,
     operationInput,
     operationControls,
   }: Props = $props();
@@ -685,6 +703,35 @@
         state: viewModel.split.status === 'known' ? (viewModel.split.value ? 'on' : 'off') : 'unknown',
       };
     }
+
+    // MOR-2111 PR2 — the per-receiver repeater strip, drawn only while THIS
+    // receiver's own frequency is in a repeater band (known and true). The
+    // group's evidence gate (`repeater` absent ⇒ no flagged range) already
+    // keeps every HF-only radio without the strip; here the gate is the
+    // per-receiver band reading itself, so MAIN on HF and SUB on 144/430
+    // draw the strip on SUB alone. Unread facts keep each chip in place,
+    // unlit, with its label — never a placeholder.
+    const repeater = viewModel.repeater?.[receiver === 'SUB' ? 'sub' : 'main'];
+    if (repeater?.inRepeaterBand.availability.structural
+      && repeater.inRepeaterBand.reading.status === 'known'
+      && repeater.inRepeaterBand.reading.value) {
+      const toneMode = repeater.toneMode.reading.status === 'known'
+        ? repeater.toneMode.reading.value : null;
+      const shift = repeater.shift.reading.status === 'known'
+        ? repeater.shift.reading.value : null;
+      const toneFreqRaw = repeater.toneFreq.reading.status === 'known'
+        && Number.isFinite(repeater.toneFreq.reading.value)
+        ? repeater.toneFreq.reading.value : null;
+      const pending = repeaterPending?.[receiver];
+      sections.repeater = {
+        toneMode,
+        pendingToneMode: pending?.toneMode ?? null,
+        shift,
+        pendingShift: pending?.shift ?? null,
+        toneFreqText: toneFreqRaw === null ? null : formatToneHz(toneFreqRaw),
+        toneFreqPending: pending?.toneFreq ?? false,
+      };
+    }
     return sections;
   }
 
@@ -1039,6 +1086,9 @@
           }}
           onSelectHeader={fixed?.slot.kind === 'slotted' && isSelectable(fixed) && !disabled
             ? () => selectVfo(fixed) : undefined}
+          onToneModeChange={onToneModeChange ? (next) => onToneModeChange(receiver, next) : undefined}
+          onShiftChange={onShiftChange ? (shift) => onShiftChange(receiver, shift) : undefined}
+          onToneFreqStep={onToneFreqStep ? (direction) => onToneFreqStep(receiver, direction) : undefined}
           headerReason={fixed?.slot.kind === 'unknown'
             ? selectReasonText(fixed)
             : fixed?.slot.kind === 'relative' ? identityOnlyReasonText() : undefined}

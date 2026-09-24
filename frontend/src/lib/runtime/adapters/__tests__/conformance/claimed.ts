@@ -274,10 +274,21 @@ export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   // IC-7300 fixture never declares the derived `filter_width_radio_default`
   // capability, so `onFilterWidthReset` (the only dispatch site) refuses.
   'reset_filter_width',
+  // MOR-2111 PR2 — the repeater strip family walk. All five are claimed via
+  // `expectFrames` in `../mor2111-repeater-conformance.isolated.test.ts`:
+  // the strip's handlers take the confirmed mode/shift/frequency as explicit
+  // arguments (the view model collapses them, not the command layer), so the
+  // dispatch is pure and needs no fixture field-status gate — see that file's
+  // header for the selector-transition table it pins.
+  'set_repeater_tone',
+  'set_repeater_tsql',
+  'set_repeater_shift',
+  'set_tone_freq',
+  'set_tsql_freq',
 ]);
 
 /** Pinned so a removal (or an undocumented addition) shows up in review. */
-export const CLAIMED_INTENTS_COUNT = 85;
+export const CLAIMED_INTENTS_COUNT = 90;
 
 /**
  * `dispatchKeyboardRadioAction` case labels claimed by a conformance case.

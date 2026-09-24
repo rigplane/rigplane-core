@@ -61,6 +61,8 @@
     getTxAuxControlFeedback, type TxAuxControlFeedbackField,
     getPendingFrequencyHz,
     getPendingFilterSelection, getPendingNbOn, getPendingNrOn, getPendingPreampLevel,
+    getPendingRepeaterShift, getPendingRepeaterTone, getPendingToneFreq,
+    getRepeaterHandlers,
     getSystemHandlers, getDataModeArmed, getModInputArmed,
     deriveMemoryPanelProps, getMemoryHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
@@ -102,6 +104,7 @@
     type FiniteRendererContext,
   } from '../../primitives/control-instruments/control-instrument-renderer.svelte';
   import type { ReceiverId, RadioViewModel, VfoSlot } from '../../semantic/radio-view-model';
+  import { stepToneFreq, type RepeaterStripPending } from '$lib/radio/repeater-transitions';
   import RfFrontEndSurface, {
     type RfFrontEndLevelField,
   } from '../../semantic/RfFrontEndSurface.svelte';
@@ -1835,6 +1838,77 @@
     if (lock?.status === 'known') systemIntents.onDialLock(!lock.value);
   }
 
+  /**
+   * MOR-2111 PR2 — the repeater strip's command seam. The confirmed facts are
+   * read off the view model here; the dispatch (and the transition table) is
+   * the handler singleton (`getRepeaterHandlers`), so the radio-authority
+   * boundary is not crossed. The pending markers are folded from the shared
+   * command-lifecycle accessors (`getPendingRepeater*`), the same mechanism
+   * every other operated control uses — no second pending path.
+   */
+  const repeaterHandlers = getRepeaterHandlers();
+  let ctcssTones = $derived(runtime.caps?.ctcssTones ?? []);
+
+  function repeaterWireReceiver(receiver: ReceiverId): 0 | 1 {
+    return receiver === 'SUB' ? 1 : 0;
+  }
+
+  function selectToneMode(receiver: ReceiverId, next: 'off' | 'tone' | 'tsql'): void {
+    const group = view?.repeater?.[receiver === 'SUB' ? 'sub' : 'main'];
+    const reading = group?.toneMode.reading;
+    if (reading?.status !== 'known' || reading.value === next) return;
+    repeaterHandlers.onToneModeChange(reading.value, next, repeaterWireReceiver(receiver));
+  }
+
+  function selectShift(receiver: ReceiverId, shift: 'simplex' | 'minus' | 'plus'): void {
+    repeaterHandlers.onShiftChange(shift, repeaterWireReceiver(receiver));
+  }
+
+  function stepToneFreqFor(receiver: ReceiverId, direction: 1 | -1): void {
+    const group = view?.repeater?.[receiver === 'SUB' ? 'sub' : 'main'];
+    const freq = group?.toneFreq.reading;
+    if (freq?.status !== 'known') return;
+    const next = stepToneFreq(freq.value, ctcssTones, direction);
+    if (next === freq.value) return;
+    const mode = group?.toneMode.reading;
+    const tsql = mode?.status === 'known' && mode.value === 'tsql';
+    repeaterHandlers.onToneFreqChange(next, tsql, repeaterWireReceiver(receiver));
+  }
+
+  function repeaterPendingFor(wire: 0 | 1, tone: 'off' | 'tone' | 'tsql' | null,
+    shiftDir: number | null, freq: number | null): RepeaterStripPending {
+    return {
+      toneMode: tone,
+      shift: shiftDir === null ? null : shiftDir === 0 ? 'simplex' : shiftDir === 1 ? 'plus' : 'minus',
+      toneFreq: freq !== null,
+    };
+  }
+  // Memoized like `pendingFrequencyHzCache` (MOR-1441 review B5): every
+  // command-lifecycle mutation would otherwise mint a fresh object and
+  // re-render every VfoSurface on an unrelated command (e.g. a tuning burst).
+  let repeaterPendingCache: { main: RepeaterStripPending; sub: RepeaterStripPending;
+    value: Partial<Record<ReceiverId, RepeaterStripPending>> } | null = null;
+  let repeaterPending = $derived.by(() => {
+    const mainTone = getPendingRepeaterTone(0);
+    const mainShift = getPendingRepeaterShift(0);
+    const mainFreq = getPendingToneFreq(0);
+    const subTone = getPendingRepeaterTone(1);
+    const subShift = getPendingRepeaterShift(1);
+    const subFreq = getPendingToneFreq(1);
+    const cache = repeaterPendingCache;
+    const main = repeaterPendingFor(0, mainTone, mainShift, mainFreq);
+    const sub = repeaterPendingFor(1, subTone, subShift, subFreq);
+    if (cache !== null && cache.main.toneMode === main.toneMode
+      && cache.main.shift === main.shift && cache.main.toneFreq === main.toneFreq
+      && cache.sub.toneMode === sub.toneMode && cache.sub.shift === sub.shift
+      && cache.sub.toneFreq === sub.toneFreq) {
+      return cache.value;
+    }
+    const value: Partial<Record<ReceiverId, RepeaterStripPending>> = { MAIN: main, SUB: sub };
+    repeaterPendingCache = { main, sub, value };
+    return value;
+  });
+
   const vfoOperationCallbacks = Object.freeze({
     onToggleSplit: vfo.onSplitToggle,
     onToggleDualWatch: toggleDualWatch,
@@ -1883,6 +1957,10 @@
         operationInput={vfoOperationInput ?? undefined}
         groupLabel={t('core.vfo.radioWideGroupLabel')}
         {hasDualReceiver}
+        onToneModeChange={selectToneMode}
+        onShiftChange={selectShift}
+        onToneFreqStep={stepToneFreqFor}
+        {repeaterPending}
       />
     {/if}
   {/snippet}
@@ -2061,6 +2139,10 @@
               {receiverInstruments}
               continuitySession={meterContinuitySession}
               {pendingFrequencyHz}
+              onToneModeChange={selectToneMode}
+              onShiftChange={selectShift}
+              onToneFreqStep={stepToneFreqFor}
+              {repeaterPending}
             />
           </div>
         {/each}
@@ -2113,6 +2195,10 @@
         {receiverInstruments}
         continuitySession={meterContinuitySession}
         {pendingFrequencyHz}
+        onToneModeChange={selectToneMode}
+        onShiftChange={selectShift}
+        onToneFreqStep={stepToneFreqFor}
+        {repeaterPending}
       />
     {/if}
   {/snippet}
