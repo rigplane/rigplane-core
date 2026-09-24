@@ -9,21 +9,31 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, Final
 
-from rigplane.core.state_pipeline_contracts import FieldFamily, FieldPath
+from rigplane.core.state_pipeline_contracts import (
+    AcquisitionClass,
+    FieldFamily,
+    FieldPath,
+)
 
 __all__ = [
+    "ACQUISITION_CLASS_TABLE",
+    "AcquisitionClassPolicy",
+    "AcquisitionPhase",
     "AcquisitionPolicy",
     "AdaptiveDecayPolicy",
     "AvailabilityClause",
     "AvailabilityOperator",
+    "BudgetFit",
     "ExternalCatPauseBehavior",
     "FieldAvailability",
     "FieldCapability",
     "MeterCoalescingPolicy",
+    "OPERATOR_SET_MAX_CADENCE_SECONDS",
     "RadioAcquisitionProfile",
     "ReconciliationPriority",
+    "fit_to_budget",
 ]
 
 
@@ -107,6 +117,176 @@ def _optional_positive_float(value: Any, *, label: str) -> float | None:
     if number <= 0:
         raise ValueError(f"{label} must be positive")
     return number
+
+
+class AcquisitionPhase(StrEnum):
+    """Where in the radio's cycle an acquisition class is cadence-polled."""
+
+    RECEIVE = "receive"
+    TRANSMIT = "transmit"
+    BOTH = "both"
+
+
+@dataclass(frozen=True, slots=True)
+class AcquisitionClassPolicy:
+    """Cadence envelope for one acquisition class (MOR-2574).
+
+    ``nominal_cadence_seconds`` is the cadence the scheduler asks for;
+    ``ceiling_cadence_seconds`` is the slowest the budget fit may stretch
+    the class to. Classes with ``held_at_ceiling_in_tx`` run at their
+    ceiling while PTT is observed true, so transmit-critical traffic keeps
+    the gap clock.
+    """
+
+    nominal_cadence_seconds: float
+    ceiling_cadence_seconds: float
+    polled_in: AcquisitionPhase = AcquisitionPhase.BOTH
+    held_at_ceiling_in_tx: bool = False
+
+    def __post_init__(self) -> None:
+        nominal = _strict_float(
+            self.nominal_cadence_seconds,
+            label="nominal_cadence_seconds",
+        )
+        ceiling = _strict_float(
+            self.ceiling_cadence_seconds,
+            label="ceiling_cadence_seconds",
+        )
+        if nominal <= 0 or ceiling <= 0:
+            raise ValueError("cadences must be positive")
+        if nominal > ceiling:
+            raise ValueError("nominal_cadence_seconds must be <= ceiling")
+        polled_in = AcquisitionPhase(str(self.polled_in))
+        object.__setattr__(self, "nominal_cadence_seconds", nominal)
+        object.__setattr__(self, "ceiling_cadence_seconds", ceiling)
+        object.__setattr__(self, "polled_in", polled_in)
+        object.__setattr__(
+            self,
+            "held_at_ceiling_in_tx",
+            _strict_bool(self.held_at_ceiling_in_tx, label="held_at_ceiling_in_tx"),
+        )
+
+    @property
+    def freshness_ttl_seconds(self) -> float:
+        """TTL for the class: ``max(2 x ceiling, ceiling + 0.7)`` seconds."""
+
+        return max(
+            2.0 * self.ceiling_cadence_seconds,
+            self.ceiling_cadence_seconds + 0.7,
+        )
+
+
+#: The owner's single threshold for a panel change reaching the web
+#: (2026-09-07); the panel class polls at this nominal cadence.
+OPERATOR_SET_MAX_CADENCE_SECONDS: Final[float] = 5.0
+
+#: One row per :class:`AcquisitionClass`, in rank order high -> low — the
+#: iteration order of this table is the stretching order reversed. Values
+#: are the owner-approved table of 2026-09-24.
+ACQUISITION_CLASS_TABLE: Final[dict[AcquisitionClass, AcquisitionClassPolicy]] = {
+    AcquisitionClass.KEYING: AcquisitionClassPolicy(0.3, 0.5),
+    AcquisitionClass.TX_METER: AcquisitionClassPolicy(
+        0.25,
+        1.0,
+        polled_in=AcquisitionPhase.TRANSMIT,
+    ),
+    AcquisitionClass.LIVE: AcquisitionClassPolicy(1.0, 1.0),
+    AcquisitionClass.METER: AcquisitionClassPolicy(0.3, 0.4),
+    AcquisitionClass.CONTROL: AcquisitionClassPolicy(2.0, 5.0),
+    AcquisitionClass.PANEL: AcquisitionClassPolicy(
+        OPERATOR_SET_MAX_CADENCE_SECONDS,
+        10.0,
+    ),
+    AcquisitionClass.SETTING: AcquisitionClassPolicy(
+        10.0,
+        30.0,
+        held_at_ceiling_in_tx=True,
+    ),
+    AcquisitionClass.MENU: AcquisitionClassPolicy(
+        30.0,
+        60.0,
+        held_at_ceiling_in_tx=True,
+    ),
+}
+
+#: Float slack when deciding a fitted demand meets the margin-limited
+#: budget, so a fit that closes exactly on the limit is not read as over.
+_FIT_EPSILON: Final[float] = 1e-9
+
+
+@dataclass(frozen=True, slots=True)
+class BudgetFit:
+    """Result of :func:`fit_to_budget`."""
+
+    #: Effective cadence per class present in the demand, in seconds.
+    effective_cadence_seconds: dict[AcquisitionClass, float]
+    #: Total demand the fit settled on, in queries per second.
+    demand_hz: float
+    #: Whether that demand fits within ``margin x budget_hz``.
+    fits: bool
+
+
+def fit_to_budget(
+    counts_per_class: Mapping[AcquisitionClass, int],
+    budget_hz: float,
+    margin: float,
+    tx: bool,
+) -> BudgetFit:
+    """Fit per-class poll demand to a transport budget (MOR-2574).
+
+    ``counts_per_class`` maps each acquisition class to the number of
+    polled fields in it. Starting from every class's nominal cadence (its
+    ceiling when the class is held at the ceiling during TX and ``tx`` is
+    set), the fit stretches the lowest-ranked classes first, up to their
+    ceiling, until the total demand is at or below ``margin x budget_hz``.
+    TX-only classes are excluded unless ``tx`` is set. A class never ends
+    beyond its ceiling; when the ceilings alone cannot bring the demand
+    under the limit, ``fits`` is false and every stretched class sits at
+    its ceiling. Pure function; a port of the ``fit()`` prototype measured
+    in tmp/ref/r38b_demand.py.
+    """
+
+    if budget_hz <= 0:
+        raise ValueError("budget_hz must be positive")
+    if margin <= 0:
+        raise ValueError("margin must be positive")
+    limit = margin * budget_hz
+
+    def tx_only(klass: AcquisitionClass) -> bool:
+        return ACQUISITION_CLASS_TABLE[klass].polled_in is AcquisitionPhase.TRANSMIT
+
+    live = {
+        klass: count
+        for klass, count in counts_per_class.items()
+        if tx or not tx_only(klass)
+    }
+    cadence = {
+        klass: (
+            ACQUISITION_CLASS_TABLE[klass].ceiling_cadence_seconds
+            if tx and ACQUISITION_CLASS_TABLE[klass].held_at_ceiling_in_tx
+            else ACQUISITION_CLASS_TABLE[klass].nominal_cadence_seconds
+        )
+        for klass in live
+    }
+
+    def demand() -> float:
+        return sum(count / cadence[klass] for klass, count in live.items())
+
+    # Lowest rank first: the table iterates high -> low.
+    for klass in reversed(tuple(ACQUISITION_CLASS_TABLE)):
+        if klass not in live or demand() <= limit:
+            continue
+        # Queries per second this class must still contribute for the
+        # total to close on the limit.
+        need = live[klass] / cadence[klass] - (demand() - limit)
+        ceiling = ACQUISITION_CLASS_TABLE[klass].ceiling_cadence_seconds
+        cadence[klass] = ceiling if need <= 0 else min(ceiling, live[klass] / need)
+    settled = demand()
+    return BudgetFit(
+        effective_cadence_seconds=cadence,
+        demand_hz=settled,
+        fits=settled <= limit + _FIT_EPSILON,
+    )
 
 
 @dataclass(frozen=True, slots=True)
