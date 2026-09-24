@@ -5464,9 +5464,7 @@ def _ic7610_split_and_tx_target_acquisition() -> RadioAcquisitionProfile:
             FieldCapability(path=tx_target, polling=True),
         ),
         field_policies={
-            split: AcquisitionPolicy(
-                cadence_seconds=1.5, freshness_ttl_seconds=3.0
-            ),
+            split: AcquisitionPolicy(cadence_seconds=1.5, freshness_ttl_seconds=3.0),
             tx_target: AcquisitionPolicy(
                 cadence_seconds=1.0, freshness_ttl_seconds=4.0
             ),
@@ -5490,9 +5488,7 @@ def test_unlabelled_1c03_reply_credits_its_request_and_resumes_on_cadence(
     issued on schedule, and the target reads unknown immediately."""
 
     tx_target = FieldPath.global_("tx_state", "tx_target")
-    scheduler = AcquisitionScheduler(
-        profile=_ic7610_split_and_tx_target_acquisition()
-    )
+    scheduler = AcquisitionScheduler(profile=_ic7610_split_and_tx_target_acquisition())
     radio_with_state._acquisition_scheduler = scheduler  # noqa: SLF001
 
     # A known target first, then split ages past its own 3.0 s TTL.
@@ -5511,9 +5507,7 @@ def test_unlabelled_1c03_reply_credits_its_request_and_resumes_on_cadence(
     pending = scheduler.pending_requests()
     assert any(tx_target in request.paths for request in pending)
     for request in pending:
-        scheduler.record_dispatch(
-            request.id, paths=request.paths, now=time.monotonic()
-        )
+        scheduler.record_dispatch(request.id, paths=request.paths, now=time.monotonic())
 
     # The radio answers 1C 03 while split is STALE.
     radio_with_state._civ_runtime._update_state_cache_from_frame(
