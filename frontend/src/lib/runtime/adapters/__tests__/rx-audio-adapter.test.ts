@@ -352,3 +352,62 @@ describe('monitor mode agrees with the shipped RxAudioProps derivation', () => {
     expect(rxAudio.afLevel.availability.structural).toBe(expected.hasAfLevel);
   });
 });
+
+/**
+ * MOR-2579 — outside `live`, a radio whose field status declares SUB AF gets
+ * one AF field per receiver, read by path. Selecting MAIN/SUB moves neither.
+ */
+describe('rxAudio carries AF per receiver on a radio that declares SUB AF (MOR-2579)', () => {
+  const local: RxAudioSnapshot = { ...SNAP, rxEnabled: false };
+  const dualCaps = () => caps({
+    receivers: 2, vfoScheme: 'main_sub',
+    capabilities: ['audio', 'tx', 'mod_input_routing', 'af_level', 'dual_rx'],
+  });
+  const dualState = (over: Partial<ServerState> = {}, subAf: FieldStatus | null = fresh) => {
+    const fieldStatus: Record<string, FieldStatus> = {
+      ...audioState().fieldStatus, 'sub.freqHz': fresh, 'sub.mode': fresh,
+    };
+    if (subAf !== null) fieldStatus['sub.afLevel'] = subAf;
+    return audioState({
+      providerGeneration: 1,
+      sub: {
+        freqHz: 7100000, mode: 'LSB', filter: 1, dataMode: 0, afLevel: 0.77, sMeter: 60,
+      } as unknown as ServerState['sub'],
+      fieldStatus,
+      ...over,
+    });
+  };
+  const known = (value: number) => ({
+    reading: { status: 'known', value }, availability: { structural: true, operational: true },
+  });
+
+  it.each(['MAIN', 'SUB'] as const)('reports MAIN 0.31 and SUB 0.77 whichever receiver is selected (%s)', (active) => {
+    const rxAudio = model(dualState({ active }), dualCaps(), local).rxAudio!;
+    expect(rxAudio.receiverAfLevels).toEqual({ main: known(0.31), sub: known(0.77) });
+  });
+
+  it('keeps an unread SUB AF present but unlit — never a stand-in value', () => {
+    const unread: FieldStatus = { ...missing, freshness: 'unknown' };
+    const rxAudio = model(dualState({}, unread), dualCaps(), local).rxAudio!;
+    expect(rxAudio.receiverAfLevels?.sub).toEqual({
+      reading: { status: 'unknown' }, availability: { structural: true, operational: false },
+    });
+    expect(rxAudio.receiverAfLevels?.main).toEqual(known(0.31));
+  });
+
+  it.each([
+    ['SUB AF undeclared for this radio', () => model(dualState({}, {
+      storePath: 'sub.afLevel', observed: false, freshness: 'unknown', availability: 'undeclared',
+    }), dualCaps(), local)],
+    ['no SUB AF field status at all', () => model(dualState({}, null), dualCaps(), local)],
+    ['live monitoring (AF is the browser volume)', () => model(dualState(), dualCaps(), SNAP)],
+    ['no radio AF control', () => model(dualState(), caps({
+      receivers: 2, vfoScheme: 'main_sub', capabilities: ['audio', 'tx', 'mod_input_routing', 'dual_rx'],
+    }), local)],
+    ['a single-receiver radio', () => model(dualState(), caps(), local)],
+  ])('carries no per-receiver AF with %s', (_label, build) => {
+    const rxAudio = build().rxAudio;
+    expect(rxAudio).toBeDefined();
+    expect(Object.keys(rxAudio!)).not.toContain('receiverAfLevels');
+  });
+});

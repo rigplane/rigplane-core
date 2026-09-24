@@ -300,6 +300,11 @@ export interface RxAudioViewModel {
   /** 0..1. In `live` mode the browser volume; otherwise the radio's AF level —
    *  and `unknown` when that field was never observed, never 0.5. */
   afLevel: RxAudioField<number>;
+  /** MOR-2579: each receiver's own radio AF level, 0..1, keyed by receiver,
+   *  not by the selection. Present only outside `live` monitoring, on a
+   *  two-receiver radio with an AF control whose field status declares
+   *  `sub.afLevel` (`deriveRxAudio`). */
+  readonly receiverAfLevels?: Readonly<Record<'main' | 'sub', RxAudioField<number>>>;
   routingFocus: RxAudioField<AudioFocus>;
   routingSplit: RxAudioField<boolean>;
   /** The active DATA group's MOD-input source enum (`$lib/radio/mod-input`). */
@@ -1832,20 +1837,29 @@ function validateModInputReadiness(value: unknown, path: string): ModInputReadin
   invalid(`${path}.status`, "'not-applicable' | 'ready' | 'mismatch' | 'unknown'");
 }
 
-/** N4 again: exactly the seven facts the adapter reads, no speculative keys.
+/** N4 again: no speculative keys.
  *  The per-field validator is `validateTxAuxField` — `RxAudioField` IS
  *  `TxAuxField`, so sharing it is the alias's whole point, not a shortcut.
  *  See `radio-view-model-adapter.ts::deriveRxAudio`. */
 function validateRxAudio(value: unknown, path: string): RxAudioViewModel {
   const v = record(value, path);
   exactKeys(v, [
-    'monitorMode', 'liveAudio', 'afLevel', 'routingFocus', 'routingSplit',
+    'monitorMode', 'liveAudio', 'afLevel', 'receiverAfLevels', 'routingFocus', 'routingSplit',
     'modInputSource', 'modInputChoices', 'modInputReadiness',
   ], path);
+  const afLevels = v.receiverAfLevels === undefined
+    ? undefined : record(v.receiverAfLevels, `${path}.receiverAfLevels`);
+  if (afLevels !== undefined) exactKeys(afLevels, ['main', 'sub'], `${path}.receiverAfLevels`);
   return {
     monitorMode: oneOf(v.monitorMode, MONITOR_MODES, `${path}.monitorMode`),
     liveAudio: validateAvailability(v.liveAudio, `${path}.liveAudio`),
     afLevel: validateTxAuxField(v.afLevel, `${path}.afLevel`, num),
+    ...(afLevels === undefined ? {} : {
+      receiverAfLevels: {
+        main: validateTxAuxField(afLevels.main, `${path}.receiverAfLevels.main`, num),
+        sub: validateTxAuxField(afLevels.sub, `${path}.receiverAfLevels.sub`, num),
+      },
+    }),
     routingFocus: validateTxAuxField(
       v.routingFocus, `${path}.routingFocus`, (val, p) => oneOf(val, AUDIO_FOCUSES, p),
     ),

@@ -1855,6 +1855,7 @@ function projectModInputSource(state: ServerState | null): ModInputSource {
 function deriveRxAudio(
   state: ServerState | null, caps: Capabilities | null, facts: TxCapabilityFacts,
   modInputSource: ModInputSource, audio: RxAudioSnapshot | null | undefined,
+  structuralReceivers: readonly ReceiverId[],
 ): RxAudioViewModel | undefined {
   if (!audio) return undefined;
   const hasLiveAudio = hasCap(caps, 'audio');
@@ -1884,6 +1885,16 @@ function deriveRxAudio(
   // `unknown` when unobserved, where the shipped panel substitutes 0.5.
   const live = monitorMode === 'live';
   const afLevel = live ? numOrUndef(audio.volume / 100) : (afObserved ? numOrUndef(rx?.afLevel) : undefined);
+  // MOR-2579: outside `live` the AF control is the radio's own. The server
+  // seeds a `sub.afLevel` field status for a second receiver and marks it
+  // `undeclared` when the profile's declared paths omit it (`web/runtime_helpers.py`:
+  // `_default_snapshot_field_status`, `_absence_availability`), so an entry
+  // that is not `undeclared` admits one AF field per receiver, read by path.
+  const perReceiverAf = !live && hasCap(caps, 'af_level') && structuralReceivers.includes('SUB')
+    && state?.fieldStatus?.['sub.afLevel'] !== undefined && !fieldUndeclared(state, 'sub.afLevel');
+  const receiverAf = (key: 'main' | 'sub') => txAuxField(
+    true, state !== null && topFieldAvailable(state, `${key}.afLevel`), numOrUndef(state?.[key]?.afLevel),
+  );
   const routing = audio.routing ?? null;
   const source = modInputSource.status === 'known' ? modInputSource.source : undefined;
   return {
@@ -1892,6 +1903,7 @@ function deriveRxAudio(
     // `txAuxField` is the shared `{reading, availability}` builder — `RxAudioField`
     // IS `TxAuxField` (see the contract's alias), so there is one builder, not a fork.
     afLevel: txAuxField(hasAfLevel, live || afObserved, afLevel),
+    ...(perReceiverAf ? { receiverAfLevels: { main: receiverAf('main'), sub: receiverAf('sub') } } : {}),
     routingFocus: txAuxField(hasAudioRouting, routing?.focus !== undefined, routing?.focus),
     routingSplit: txAuxField(hasAudioRouting, routing?.splitStereo !== undefined, routing?.splitStereo),
     modInputSource: txAuxField(hasModInput, source !== undefined, source),
@@ -2074,7 +2086,9 @@ export function toRadioViewModel(
   const meters = deriveMeters(
     state, caps, tx, activeId, topology.structuralReceivers, topology.operationalReceivers,
   );
-  const rxAudio = deriveRxAudio(state, caps, facts, modInputSource, rxAudioSnapshot);
+  const rxAudio = deriveRxAudio(
+    state, caps, facts, modInputSource, rxAudioSnapshot, topology.structuralReceivers,
+  );
   const modeFilter = deriveModeFilter(state, caps, activeId);
   const filterPassband = deriveFilterPassband(state, caps, activeId);
   const dsp = deriveDsp(state, caps);

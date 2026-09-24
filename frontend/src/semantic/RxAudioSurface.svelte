@@ -69,6 +69,17 @@
   let rx = $derived(view.rxAudio);
 </script>
 
+<!-- MOR-2579: one AF row per receiver, labelled by receiver, never by the selection. -->
+{#snippet receiverAfRow(receiver: 'main' | 'sub', field: RxAudioField<number>)}
+  <label
+    class="rx-audio-level" data-testid={`rx-audio-af-${receiver}`} data-observed={usable(field)}
+  >
+    <span class="rx-audio-name">AF {receiver.toUpperCase()}</span>
+    {@render handles.receiverAfLevel?.(receiver)}
+    <output data-testid={`rx-audio-af-${receiver}-value`}>{afText(field)}</output>
+  </label>
+{/snippet}
+
 {#if rx}
   <section class="rx-audio-surface" data-testid="rx-audio-surface" aria-label="Receive audio">
     <!-- Monitor-mode radiogroup and the paired link-lost annotation
@@ -83,7 +94,10 @@
       {@render finiteLayout(handles)}
     {:else}
       {@render handles.monitorMode()}
-      {#if rx.afLevel.availability.structural}
+      {#if rx.receiverAfLevels && handles.receiverAfLevel}
+        {@render receiverAfRow('main', rx.receiverAfLevels.main)}
+        {@render receiverAfRow('sub', rx.receiverAfLevels.sub)}
+      {:else if rx.afLevel.availability.structural}
       <label
         class="rx-audio-level" data-testid="rx-audio-af" data-observed={usable(rx.afLevel)}
       >

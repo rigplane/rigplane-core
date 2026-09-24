@@ -77,6 +77,8 @@ export type RxAudioFiniteChoiceValue = MonitorMode | AudioFocus | RxAudioSplitLa
  *  (MOR-2425 RX-B/RX-C). */
 export interface RxAudioInstrumentHandles {
   readonly afLevel: Snippet;
+  /** MOR-2579: the radio AF control of the named receiver (`rxAudio.receiverAfLevels`). */
+  readonly receiverAfLevel?: Snippet<[receiver: 'main' | 'sub']>;
   readonly afLevelRow?: Snippet;
   readonly monitorMode: Snippet;
   readonly monitorStatus?: Snippet;
