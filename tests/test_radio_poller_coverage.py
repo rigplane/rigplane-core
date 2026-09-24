@@ -480,6 +480,10 @@ def _acquisition_profile(
         provider=provider,
         capabilities=tuple(FieldCapability(path=path, polling=True) for path in paths),
         default_policy=acquisition_policy,
+        # Declared per path: an unowned pollable path resolves to its
+        # acquisition class policy since MOR-2574 step 2, and these tests
+        # drive the numbers passed here.
+        field_policies={path: acquisition_policy for path in paths},
     )
 
 

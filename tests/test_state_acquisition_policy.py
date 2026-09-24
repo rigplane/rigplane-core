@@ -198,7 +198,10 @@ def test_radio_acquisition_profile_serializes_capabilities_and_policy() -> None:
     assert restored == profile
     assert restored.capability_for(freq).can_poll is True
     assert restored.capability_for(s_meter).stream_like is True
-    assert restored.policy_for(freq).freshness_ttl_seconds == 6.0
+    # freq_hz is pollable with no own entry, so policy_for resolves it to
+    # its live class policy (MOR-2574 step 2); the round trip must agree
+    # with the original profile's resolution.
+    assert restored.policy_for(freq) == profile.policy_for(freq)
 
 
 def test_invalid_capability_and_policy_combinations_are_rejected() -> None:
@@ -1935,13 +1938,10 @@ def test_loader_parses_never_as_absent_freshness_ttl(tmp_path: Path) -> None:
 
     acquisition = load_rig(_write_toml(tmp_path, toml)).to_profile().state_acquisition
     vox_on = FieldPath.global_("tx_state", "vox_on")
-    power = FieldPath.global_("meters", "power")
 
     assert acquisition is not None
     assert acquisition.policy_for(vox_on).freshness_ttl_seconds is None
     assert acquisition.policy_for(vox_on).cadence_seconds == 25.0
-    # A path with no override still inherits the numeric profile default.
-    assert acquisition.policy_for(power).freshness_ttl_seconds == 8.0
 
 
 def test_ic7300_on_demand_field_primes_with_its_cadence_as_max_age() -> None:
@@ -2208,7 +2208,6 @@ _TX_ONLY_METER_PATHS = (
 #: declares swr/alc ``unknown`` and comp not at all, so power is its only
 #: declared transmit meter.
 _TX_METER_GATE_EXEMPTIONS = {
-    ("X6100", "global.meters.power"),
     ("X6200", "global.meters.power"),
 }
 
@@ -2234,6 +2233,14 @@ def test_every_declared_transmit_meter_is_gated_on_ptt() -> None:
         for path in _TX_ONLY_METER_PATHS:
             capability = acquisition.capability_for(path)
             if not (capability.can_poll or path in acquisition.field_policies):
+                continue
+            if capability.can_poll and path not in acquisition.field_policies:
+                # No declaration to gate: the acquisition class owns the
+                # path (MOR-2574 step 2), and the tx_meter class carries
+                # the tx_only half without the available_when clause.
+                policy = acquisition.policy_for(path)
+                assert policy.tx_only is True, (model, path)
+                assert policy.available_when == (), (model, path)
                 continue
             policy = acquisition.policy_for(path)
             if policy.tx_only and policy.available_when == (clause,):
