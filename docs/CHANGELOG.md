@@ -21,26 +21,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `set_tone_freq` and `set_tsql_freq` are admitted on the radio, on
   MAIN and SUB. rigctld `set_func TONE` / `TSQL` reaches the matching
   toggle on the resolved receiver (an explicit VFOB, or no VFO
-  argument while SUB is active, gives SUB; otherwise MAIN), and
-  `get_func` reads the toggle state with the live radio read as
-  fallback. A backend refusal — tone off with TSQL on, or a toggle
-  over a DCS/PR FREQ/REV TONE mode — answers `RPRT -9`. The four web
-  commands now travel the descriptor path, so a refusal reaches the
-  caller as an error instead of an immediate success echo.
+  argument or `currVFO` while SUB is active, gives SUB; otherwise
+  MAIN), and `get_func` reads the toggle state with the live radio
+  read as fallback. A backend refusal — tone off with TSQL on, or a
+  toggle over a DCS/PR FREQ/REV TONE mode — answers `RPRT -9`. The
+  Yaesu rigctld `dump_state` function mask now advertises TONE and
+  TSQL. The four web commands now travel the descriptor path, so a
+  refusal reaches the caller as an error instead of an immediate
+  success echo, and on a radio without these capability tags a
+  single-command HTTP call for them answers 409 `unsupported_command`
+  instead of 400 `invalid_request`.
 
 ### Changed
 
 - **The panorama controls on the Standard face are one toolbar row,
   with the screen controls behind More (MOR-2545).** The row holds
   CTR/FIX · SPAN · REF · HOLD · MAIN/SUB · ⋯, then STEP, BANDS, the
-  scope status and fullscreen; every screen-only control — VIEW,
-  AUTO, AVG, PEAK, brightness, palette and band-plan layers — moves
-  into the More panel with the same handlers. The scope status
-  becomes a compact indicator with a tone dot and a readout of the
-  read parts (e.g. "hardware · inactive · HW off"); unread parts are
+  scope status and fullscreen; the other screen controls — VIEW,
+  AUTO, AVG, PEAK, brightness, palette and band-plan layers — move
+  into the More panel with the same handlers. In the toolbar the
+  scope status becomes a compact indicator — a tone dot and the SRC
+  chip — whose tooltip and accessible name carry the read parts
+  (e.g. "SRC hardware · inactive · HW off"); unread parts are
   omitted, never shown as placeholders. The scope area fills the
-  center column's 320 px minimum — 40 px more at 900 px, and the
-  page is not taller.
+  center column's 320 px minimum instead of stopping at its own
+  280 px floor — up to 40 px more on short windows — and the page is
+  not taller.
 
 - **The scope divider and the filter-width handle light only on
   hover intent, thin and translucent (MOR-2562).** The
