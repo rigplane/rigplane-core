@@ -476,92 +476,63 @@ swap_main_sub = [0xB0]
 equal_main_sub = [0xB1]
 
 # ── Frequency Ranges ─────────────────────────────────────────────
+# USA version (the bench and the operator are in the US): IC-9700
+# Basic Manual, Specifications, "Frequency coverage (unit: MHz)",
+# USA Version Receiver/Transmitter: 144.000000 ~ 148.000000,
+# 430.000000 ~ 450.000000, 1240.000000 ~ 1300.000000. Other versions
+# (EUR/ITR/TPE/KOR) differ.
+# The IC-9700 is a VHF/UHF/SHF transceiver: no HF, no 6 m. The HF/6m
+# entries this block replaced were copied from an HF profile (MOR-2567).
+# bsr_code: IC-9700 CI-V Reference Guide, "Band stacking register"
+# (command 1A 01), Frequency band codes: 01=VHF 144.000000~148.000000,
+# 02=UHF 430.000000~450.000000, 03=1.2GHz 1240.000000~1300.000000.
+# default_hz: the manuals state no per-band default tuning frequency,
+# and _schema.md makes the key required, so each band carries its
+# manual-given start edge as the BSR-recall fallback frequency.
+# repeater = true: the IC-9700's FM/DV repeater operation (Basic
+# Manual, "DUPLEX/SPLIT/REPEATER MODE", 2500 repeater memories, 99
+# memory channels x 3 bands) spans all three of its bands.
 
 [[freq_ranges.ranges]]
-label = "HF"
-start_hz = 30_000
-end_hz = 60_000_000
+label = "2m"
+start_hz = 144_000_000
+end_hz = 148_000_000
+repeater = true
 
 [[freq_ranges.ranges.bands]]
-name = "160m"
-start_hz = 1_800_000
-end_hz = 2_000_000
-default_hz = 1_825_000
+name = "2m"
+start_hz = 144_000_000
+end_hz = 148_000_000
+default_hz = 144_000_000
 bsr_code = 0x01
 
+[[freq_ranges.ranges]]
+label = "70cm"
+start_hz = 430_000_000
+end_hz = 450_000_000
+repeater = true
+
 [[freq_ranges.ranges.bands]]
-name = "80m"
-start_hz = 3_500_000
-end_hz = 4_000_000
-default_hz = 3_700_000
+name = "70cm"
+start_hz = 430_000_000
+end_hz = 450_000_000
+default_hz = 430_000_000
 bsr_code = 0x02
 
-[[freq_ranges.ranges.bands]]
-name = "60m"
-start_hz = 5_330_000
-end_hz = 5_410_000
-default_hz = 5_357_000
-
-[[freq_ranges.ranges.bands]]
-name = "40m"
-start_hz = 7_000_000
-end_hz = 7_300_000
-default_hz = 7_100_000
-bsr_code = 0x03
-
-[[freq_ranges.ranges.bands]]
-name = "30m"
-start_hz = 10_100_000
-end_hz = 10_150_000
-default_hz = 10_130_000
-bsr_code = 0x04
-
-[[freq_ranges.ranges.bands]]
-name = "20m"
-start_hz = 14_000_000
-end_hz = 14_350_000
-default_hz = 14_200_000
-bsr_code = 0x05
-
-[[freq_ranges.ranges.bands]]
-name = "17m"
-start_hz = 18_068_000
-end_hz = 18_168_000
-default_hz = 18_120_000
-bsr_code = 0x06
-
-[[freq_ranges.ranges.bands]]
-name = "15m"
-start_hz = 21_000_000
-end_hz = 21_450_000
-default_hz = 21_200_000
-bsr_code = 0x07
-
-[[freq_ranges.ranges.bands]]
-name = "12m"
-start_hz = 24_890_000
-end_hz = 24_990_000
-default_hz = 24_940_000
-bsr_code = 0x08
-
-[[freq_ranges.ranges.bands]]
-name = "10m"
-start_hz = 28_000_000
-end_hz = 29_700_000
-default_hz = 28_500_000
-bsr_code = 0x09
-
 [[freq_ranges.ranges]]
-label = "6m"
-start_hz = 50_000_000
-end_hz = 54_000_000
+# CI-V guide names this band family "1.2GHz"; "23cm" follows the same
+# metric shorthand the other profiles use for 1240-1300 MHz-class bands.
+label = "23cm"
+start_hz = 1_240_000_000
+end_hz = 1_300_000_000
+repeater = true
 
 [[freq_ranges.ranges.bands]]
-name = "6m"
-start_hz = 50_000_000
-end_hz = 54_000_000
-default_hz = 50_125_000
-bsr_code = 0x0A
+name = "23cm"
+start_hz = 1_240_000_000
+end_hz = 1_300_000_000
+default_hz = 1_240_000_000
+bsr_code = 0x03
 
 # ── Command 29 Routes ───────────────────────────────────────────
 # The IC-9700 uses the MAIN/SUB receiver-select scheme (0x07 0xD0/0xD1)
