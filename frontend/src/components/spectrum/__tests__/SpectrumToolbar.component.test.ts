@@ -793,9 +793,12 @@ describe('source and enforcement boundary', () => {
     // surface container owns every band); round 2: the strip's ONE ground
     // is --v2-bg-card, the lamp-grammar glow/filter never reach the hosted
     // row, and STEP's More copy shows at the measured-derived 360px band.
-    // PR3 round-3 repin: the `.step-cycler` comment now names the capsule
+    // PR3 round-3 repin: the `.step-cycler` comment now names the row
     // sheet's `:not(.step-cycler)` guard (round-3 finding 1).
-    expect(cssHash).toBe('773bde2d07df3565e191a85e55857f0f278a75852afcf09b7c02ca4fab2e1c88');
+    // MOR-2545 round-4 repin (owner style B): STEP's More copy follows the
+    // sheet's step band (327px phase-A estimate, re-pinned with the
+    // measurement), and the one-row/ground comments re-anchored.
+    expect(cssHash).toBe('5c1ae3ffa1e7e05cc4c4f448f5fe611c56e30b09fdda8027fd40966cdfb87ec8');
   });
 });
 
@@ -922,19 +925,36 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
     expect(TOOLBAR_SOURCE).toMatch(/onclick=\{\(\) => \{ showEiBi = true; closeMore\?\.\(\); \}\}/);
   });
 
-  // MOR-2545 PR3: the 360px band is derived from the reviewer's MEASURED
-  // capsule widths (scope-capsule.css carries the derivation); the geometry
-  // e2e in tests/e2e/i18n/desktop-geometry.spec.ts verifies the bands in a
-  // real browser. Round 3 added one LATER capsule-sheet band that retires
-  // CTR|FIX last (into More's permanent MODE row) — it lives in
-  // scope-capsule.css, not here; STEP stays the toolbar's own last copy.
-  it('moves STEP into More at the surface container query\'s measured-derived 360px band', () => {
-    expect(TOOLBAR_SOURCE).toMatch(/@container scope-controls \(max-width: 360px\)/);
+  // MOR-2545 round 4: the STEP band is whatever the row sheet's OWN step
+  // band is — the toolbar's More copy must appear at exactly the width the
+  // sheet hides the row's STEP at, or the control exists twice or not at
+  // all around the boundary. The derivation lives in scope-capsule.css;
+  // the geometry e2e in tests/e2e/i18n/desktop-geometry.spec.ts verifies
+  // the bands in a real browser.
+  it('moves STEP into More at the SAME band the row sheet hides the row STEP', () => {
+    const cssRaw = readFileSync('src/components/spectrum/scope-capsule.css', 'utf8');
+    const stepBand = cssRaw.match(
+      /@container scope-controls \(max-width: (\d+)px\) \{\s*\/\* No `.scope-more-overflow` copy here: STEP's[\s\S]*?\[data-overflow='step'\] \{ display: none; \}/,
+    );
+    expect(stepBand, 'the sheet carries a step band').not.toBeNull();
+    expect(TOOLBAR_SOURCE).toMatch(new RegExp(
+      `@container scope-controls \\(max-width: ${stepBand![1]}px\\) \\{`,
+    ));
     expect(TOOLBAR_SOURCE).toMatch(/\.toolbar-step-copy \{ display: flex; \}/);
     expect(TOOLBAR_SOURCE).not.toMatch(/spectrum-toolbar-row/);
     // BANDS, MORE and fullscreen never join the overflow set; only the
     // quick keys and STEP do (both from the row tail).
     expect(TOOLBAR_SOURCE).not.toMatch(/data-overflow="(?!step|quick)[a-z]+"/);
+  });
+
+  // MOR-2545 round 4 (owner style B): the hosted toolbar carries the
+  // family's own anchor classes so the Standard-face command family's
+  // selectors reach the row on sdr-test too (its layout root has
+  // `.sdr-test`, not `.standard-face`). Scoped to `hosted` — the only mode
+  // that renders the semantic row.
+  it('the hosted root carries the family anchors for sdr-test', () => {
+    expect(TOOLBAR_SOURCE).toMatch(/class:standard-face=\{hosted\}/);
+    expect(TOOLBAR_SOURCE).toMatch(/class:desktop-control-face=\{hosted\}/);
   });
 
   // MOR-2545 PR3: no bezel `toolbar-btn` in the row tail / screen group;
@@ -954,50 +974,67 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
     }
   });
 
-  it('the shared capsule stylesheet is chrome-free and token-only', () => {
+  it('the row sheet is geometry-only, family-fed and token-only', () => {
     const cssRaw = readFileSync('src/components/spectrum/scope-capsule.css', 'utf8');
     // Comments may NAME the banned properties; the rules may not carry them.
     const css = cssRaw.replace(/\/\*[\s\S]*?\*\//g, '');
-    // `box-shadow: none` is allowed — the ⛶ capsule kill resets the bezel's
-    // inset shadow; any other value is the bezel family leaking back in.
-    expect(css.match(/box-shadow:(?!\s*none\s*;)[^;}]+/)).toBeNull();
-    expect(css).not.toContain('text-shadow');
-    expect(css).not.toContain('linear-gradient');
     // MOR-977: no literal colours — only var() token references.
     expect(css.match(/#[0-9a-fA-F]{3,8}\b/)).toBeNull();
-    // The bezel family is scoped out: the capsule key/step-key names sit in
-    // control-button.css's :not() exclusion lists — pinned EXACTLY below.
-    const bezel = readFileSync('src/components-v2/controls/control-button.css', 'utf8');
-    expect(bezel).toContain('.scope-flat-key, .scope-step-key');
-    // One family everywhere: the capsule bands live in the capsule sheet
-    // with the measured-derivation comment (pinned exactly below).
-    expect(cssRaw).toContain('THE BANDS ARE DERIVED FROM THE REVIEWER\'S MEASURED WIDTHS');
-    expect(css).toMatch(/@container scope-controls \(max-width: 873px\)/);
+    expect(css.match(/(?:^|[^a-z-])(?:rgb|hsl)a?\(/i)).toBeNull();
+    // The capsule look must not come back: no teal color-mix wash, no
+    // segment frame or divider on the keys, no per-state key colours.
+    expect(css).not.toContain('color-mix');
+    expect(css).not.toContain('.scope-capsule > .scope-flat-key');
+    expect(css).not.toContain("[data-lit='true']");
+    // The only box-shadow is the family's --hw-* surface, on the two
+    // non-button wrappers (the stepper span, the palette select).
+    const shadows = css.match(/box-shadow:[^;}]+/g) ?? [];
+    expect(shadows).toHaveLength(1);
+    expect(shadows[0]).toContain('var(--hw-shadow-top)');
+    // The only background gradients are that same family surface.
+    const gradients = css.match(/linear-gradient\(/g) ?? [];
+    expect(gradients).toHaveLength(1);
+    // One band set: the FIRST band exists and the hide order is pinned
+    // exactly by the mutation-killer describe below.
+    expect(css).toMatch(/@container scope-controls \(max-width: 788px\)/);
   });
 
-  // PR3 round 2 (finding 8): the round-1 pins were substring matches that
-  // stayed green under real mutations. These pins assert EXACT structures.
-  describe('the capsule sheet pins (round 2: mutation-killing)', () => {
+  // PR3 round 2 (finding 8) / round 4: the round-1 pins were substring
+  // matches that stayed green under real mutations. These pins assert
+  // EXACT structures.
+  describe('the row sheet pins (mutation-killing)', () => {
     const cssRaw = readFileSync('src/components/spectrum/scope-capsule.css', 'utf8');
     // Comments may name colours; the rules may not carry literals.
     const css = cssRaw.replace(/\/\*[\s\S]*?\*\//g, '');
 
-    // MUTATION KILLED: "removing the lit fill" — the lit rule must carry
-    // the teal wash as its background, verbatim.
-    it('lit = FILLED: the hosted lit rule carries the teal color-mix fill', () => {
-      expect(css).toContain(
-        ".spectrum-toolbar.hosted .scope-flat-key[data-lit='true'] {\n"
-        + '  background: color-mix(in srgb, var(--v2-accent-cyan-teal, var(--v2-accent-cyan)) 50%, transparent);',
+    // MUTATION KILLED: "re-excluding the row keys" — the family sheets
+    // must not carry the flat-key name at all, while the step-key glyphs
+    // stay excluded in exactly the 13 control-button.css lists. (Comments
+    // are stripped first: they may NAME the split they document.)
+    it('the family sheets drop .scope-flat-key and keep .scope-step-key excluded', () => {
+      const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '');
+      const bezel = strip(readFileSync('src/components-v2/controls/control-button.css', 'utf8'));
+      expect(bezel).not.toContain('.scope-flat-key');
+      const skin = strip(readFileSync('src/skins/desktop-v2/semantic-controls.css', 'utf8'));
+      expect(skin).not.toContain('.scope-flat-key');
+      expect((bezel.match(/\.scope-step-key/g) ?? []).length).toBe(13);
+      expect((skin.match(/\.scope-step-key/g) ?? []).length).toBe(3);
+      // The MAIN exclusion list, verbatim (round-2 finding 8: substring
+      // pins let 12 other lists satisfy them).
+      const firstNot = bezel.match(/\):not\(([^)]*)\)/);
+      expect(firstNot).not.toBeNull();
+      expect(firstNot![1]).toBe(
+        '.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-step-key',
       );
     });
 
-    // MUTATION KILLED: "STEP band 335→900" and "receiver and hold bands
-    // swapped" — each band literal is asserted against ITS key (measured
-    // basis: full row 865, CTR|FIX 97.6, MAIN|SUB 104.5, ja MORE 65.9; the
-    // round-3 mode band is the measured 229 px never-hide remainder + 8).
+    // MUTATION KILLED: "a band literal drifts or two bands swap" — each
+    // band is asserted against ITS key (basis: the round-4 measured item
+    // widths, re-derived on the branch; see the derivation comment in
+    // scope-capsule.css).
     it('every overflow band matches its key and the measured derivation', () => {
       const bands: Record<string, number> = {
-        quick: 873, receiver: 781, hold: 673, ref: 623, span: 495, step: 360, mode: 237,
+        quick: 788, receiver: 701, hold: 617, ref: 572, span: 453, step: 327, mode: 201,
       };
       for (const [key, px] of Object.entries(bands)) {
         const block = css.match(new RegExp(
@@ -1012,30 +1049,31 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
       expect(hides).toEqual(['quick', 'receiver', 'hold', 'ref', 'span', 'step', 'mode']);
     });
 
-    // MUTATION KILLED: "dropping .scope-flat-key, .scope-step-key from the
-    // MAIN exclusion list" — the round-1 pin was a substring 12 other
-    // lists satisfy; the MAIN rule's :not() list is now asserted verbatim.
-    it('the main control-button.css exclusion list keeps the scope key names, verbatim', () => {
-      const bezel = readFileSync('src/components-v2/controls/control-button.css', 'utf8');
-      const firstNot = bezel.match(/\):not\(([^)]*)\)/);
-      expect(firstNot).not.toBeNull();
-      expect(firstNot![1]).toBe(
-        '.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-flat-key, .scope-step-key',
+    // Round 4: the two :where()-base colour resets — the family's idle
+    // token must win over the components' scoped colours, and nothing
+    // else may colour the keys from this sheet.
+    it('the two idle-colour resets point at the family idle token', () => {
+      expect(css).toContain(
+        '.spectrum-toolbar.hosted button.scope-flat-key {\n  color: var(--v2-text-subdued);\n}',
       );
+      const iconBtn = css.match(/\.desktop-control-face \.spectrum-toolbar\.hosted > button\.toolbar-btn\.icon-btn \{([\s\S]*?)\n\}/);
+      expect(iconBtn, 'the ⛶ geometry+reset rule exists').not.toBeNull();
+      expect(iconBtn![1]).toContain('color: var(--v2-text-subdued);');
+      expect(css).not.toContain('!important');
     });
 
-    // Round-2 findings 4–5: ⛶ and the palette select join the capsule
-    // family inside the hosted strip, by specificity — never !important.
-    it('⛶ and the More-panel select are restyled as hosted capsules, without !important', () => {
-      expect(css).toContain('.spectrum-toolbar.hosted .scope-more-panel .scope-capsule-select {');
-      expect(css).toContain('.desktop-control-face .spectrum-toolbar.hosted > button.toolbar-btn.icon-btn {');
-      expect(css).not.toContain('!important');
+    // Round-4 gap fix: 4 px is the family's key gap (the side panels'
+    // control rows); the rules must outrank the skin's 3 px at (0,3,0) by
+    // ONE more class, not by sheet order.
+    it('the row gap is the family key gap at a specificity that beats the skin', () => {
+      expect(css).toContain('.desktop-control-face .spectrum-toolbar.hosted .scope-controls-row { gap: 4px; }');
+      expect(css).toContain('.desktop-control-face .spectrum-toolbar.hosted .scope-more-row { gap: 4px; }');
     });
 
     // Round-3 finding 1 (MUTATION KILLED: sizing the cycler 16px/13px — it
     // collapsed across both arrows and ‹ could not be clicked). The arrow
     // box/glyph sizing reaches ONLY the arrow keys; the cycler keeps
-    // SpectrumToolbar's own `.step-cycler` rule (natural width, 11 px).
+    // SpectrumToolbar's own `.step-cycler` rule (natural width).
     it('the step-arrow sizing excludes the STEP cycler', () => {
       const arrow = css.match(/\.spectrum-toolbar\.hosted \.scope-step-key:not\(\.step-cycler\) \{([\s\S]*?)\n\}/);
       expect(arrow, 'the arrow-only rule exists').not.toBeNull();
@@ -1047,24 +1085,21 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
       expect(base![1]).not.toContain('font-size:');
     });
 
-    // Round-3 contrast (the verifier's per-theme measurement, row and More
-    // panel): lit text is the white token on the teal fill, values the
-    // bright token, unlit labels/arrows the lighter token.
-    it('the measured text tokens: white on the lit fill, bright values, lighter labels', () => {
-      const lit = css.match(/\.spectrum-toolbar\.hosted \.scope-flat-key\[data-lit='true'\] \{([\s\S]*?)\n\}/);
-      expect(lit![1]).toContain('color: var(--v2-text-white, var(--text));');
+    // Round-4 text tokens: values the bright token, labels/arrows the
+    // family idle token — mirroring ATT/AGC's dim-label/bright-value split.
+    it('the measured text tokens: bright values, subdued labels and arrows', () => {
       const value = css.match(/\.spectrum-toolbar\.hosted \.scope-step-value \{([\s\S]*?)\n\}/);
-      expect(value![1]).toContain('color: var(--v2-text-bright, var(--text));');
-      const key = css.match(/\.spectrum-toolbar\.hosted \.scope-flat-key \{([\s\S]*?)\n\}/);
-      expect(key![1]).toContain('color: var(--v2-text-lighter, var(--text));');
-      // A lit key keeps its white text on hover — the hover rule skips it.
-      expect(css).toContain(".spectrum-toolbar.hosted .scope-flat-key:not([data-lit='true']):hover:not(:disabled)");
+      expect(value![1]).toContain('color: var(--v2-text-bright);');
+      const key = css.match(/\.spectrum-toolbar\.hosted \.scope-step-key \{([\s\S]*?)\n\}/);
+      expect(key![1]).toContain('color: var(--v2-text-subdued);');
+      const name = css.match(/\.spectrum-toolbar\.hosted \.scope-name \{([\s\S]*?)\n\}/);
+      expect(name![1]).toContain('color: var(--v2-text-subdued);');
     });
 
     // Round-3 finding: ⛶ and the palette select measured 28 px tall — a
-    // min-height from other stylesheets was never reset. Every capsule
-    // rule that pins a height must also reset min-height.
-    it('every rule that pins a capsule height also resets min-height', () => {
+    // min-height from other stylesheets was never reset. Every rule that
+    // pins a height must also reset min-height.
+    it('every rule that pins a row height also resets min-height', () => {
       const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
       const heightRules = rules.filter(([, , body]) => /height: 2\dpx/.test(body));
       expect(heightRules.length).toBeGreaterThan(0);

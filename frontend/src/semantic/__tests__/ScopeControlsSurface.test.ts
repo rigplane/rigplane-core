@@ -19,20 +19,24 @@
  *       placeholders; unread = drawn unlit in place with its label; MAIN/SUB
  *       absent without the structural receiver fact; More opens on the
  *       [MORE ▾] key, closes on Esc and outside click, and returns focus.
- *   MOR-2545 PR3 — the capsule family (HOSTED mounts only, gated on the
- *   host toolbar's rowTail): CTR|FIX and MAIN|SUB are ONE segmented
- *   capsule each; a lit segment carries `data-lit='true'`; the More key's
+ *   MOR-2545 PR3 — the hosted look (HOSTED mounts only, gated on the
+ *   host toolbar's rowTail): CTR|FIX and MAIN|SUB are ONE keyed group
+ *   each; a lit segment carries `data-lit='true'`; the More key's
  *   label comes from the i18n system (pinned in ru-RU too); the rowTail
- *   renders between the receiver capsule and More; the overflow hooks
+ *   renders between the receiver group and More; the overflow hooks
  *   cover quick → receiver → hold → ref → span → step → mode (CTR|FIX
  *   hides last, into More's permanent MODE row); an unhosted mount
- *   (no rowTail) keeps PR1's flat grammar.
+ *   (no rowTail) keeps PR1's flat grammar. PR3 round 4 — the hosted LOOK
+ *   is the Standard-face raised-key family, and the CSS-mechanism pins at
+ *   the end of this file fail if the row falls back to the retired
+ *   capsule chrome.
  *
  * The More panel is opened through the [MORE ▾] key exactly as the operator
  * opens it — `openMore()` below is the ONLY helper that reaches into
  * More-hosted controls. Literal text assertions everywhere, never `t(key)`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount, createRawSnippet } from 'svelte';
 import { getLocale, setLocale } from '$lib/i18n';
 import ScopeControlsSurface, {
@@ -271,11 +275,11 @@ describe('the ONE always-visible row (MOR-2545)', () => {
   });
 });
 
-describe('the capsule family (MOR-2545 PR3, owner style C — HOSTED mounts only)', () => {
-  // PR3 round 2 (finding 3): capsule markup is gated on the host's
+describe('the hosted row look (MOR-2545 PR3 round 4, owner style B — HOSTED mounts only)', () => {
+  // PR3 round 2 (finding 3): keyed-group markup is gated on the host's
   // rowTail. Every assertion below mounts with a rowTail; the flat-grammar
   // test after this describe pins the unhosted mounts.
-  it('CTR|FIX is ONE segmented capsule: both keys are its only children', () => {
+  it('CTR|FIX is ONE keyed group: both keys are its only children', () => {
     const r = render(withSc({ mode: known(0) }), {}, { rowTail: true });
     const modeRow = r.el('scope-mode-row')!;
     expect(modeRow.classList.contains('scope-capsule')).toBe(true);
@@ -284,13 +288,16 @@ describe('the capsule family (MOR-2545 PR3, owner style C — HOSTED mounts only
     expect(keys).toHaveLength(2);
     expect(keys[0]!.textContent).toBe('CTR');
     expect(keys[1]!.textContent).toBe('FIX');
-    // Inner divider duty is the CSS sibling rule's; the structure it keys on
-    // (adjacent segment children of one capsule) is pinned here.
+    // Round 4: the group is a bare flex box of SEPARATE family keys — no
+    // shared frame, no inner divider (the segment rules are gone from the
+    // sheet; pinned by the CSS pins at the end of this describe). The
+    // structure the family keys on (adjacent segment children of one
+    // group) is pinned here.
     expect(keys[1]!.previousElementSibling).toBe(keys[0]);
     r.dispose();
   });
 
-  it('MAIN|SUB is ONE segmented capsule with exactly the two receiver keys', () => {
+  it('MAIN|SUB is ONE keyed group with exactly the two receiver keys', () => {
     const r = render(base(), {}, { rowTail: true });
     const receiver = r.el('scope-receiver')!;
     expect(receiver.classList.contains('scope-capsule')).toBe(true);
@@ -373,6 +380,30 @@ describe('the capsule family (MOR-2545 PR3, owner style C — HOSTED mounts only
     expect(r.el('row-tail-step')).not.toBeNull();
     expect(r.el('row-tail-quick')).not.toBeNull();
     r.dispose();
+  });
+
+  // MOR-2545 round 4 (owner style B): the surface's own CSS-mechanism pins.
+  // jsdom cannot compute the cascade, so these read the sheets directly and
+  // FAIL IF THE ROW FALLS BACK TO THE RETIRED CAPSULE LOOK: the exclusion
+  // lists re-closing, the teal lit wash or the segment frame/divider rules
+  // returning, or a colour literal re-entering the row sheet.
+  it('the hosted keys stay in the family and the capsule chrome stays dead', () => {
+    const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '');
+    const bezel = strip(readFileSync('src/components-v2/controls/control-button.css', 'utf8'));
+    expect(bezel).not.toContain('.scope-flat-key');
+    const skin = strip(readFileSync('src/skins/desktop-v2/semantic-controls.css', 'utf8'));
+    expect(skin).not.toContain('.scope-flat-key');
+    const cssRaw = readFileSync('src/components/spectrum/scope-capsule.css', 'utf8');
+    const css = cssRaw.replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(css).not.toContain('--v2-accent-cyan-teal');
+    expect(css).not.toContain('.scope-capsule > .scope-flat-key');
+    expect(css.match(/#[0-9a-fA-F]{3,8}\b/)).toBeNull();
+    // Geometry only: the sheet must not re-style a key's font weight or
+    // transform (the family owns type as of round 4).
+    const keyRule = css.match(/\.spectrum-toolbar\.hosted \.scope-flat-key \{([\s\S]*?)\n\}/);
+    expect(keyRule, 'the key geometry rule exists').not.toBeNull();
+    expect(keyRule![1]).not.toContain('font-');
+    expect(keyRule![1]).not.toContain('color:');
   });
 });
 

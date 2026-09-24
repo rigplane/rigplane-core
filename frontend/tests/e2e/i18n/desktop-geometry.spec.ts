@@ -1155,23 +1155,23 @@ test.describe('T185 transmit key pair', () => {
 });
 
 
-// MOR-2545 PR3 round 3 (verifier findings 1–3): the hosted capsule row's
-// overflow bands are derived from MEASURED widths (full row 865 px, CTR|FIX
-// 97.6, MAIN|SUB 104.5, ja-JP MORE 65.9; +8 px safety — see
-// src/components/spectrum/scope-capsule.css). The round-2 suite never
-// rendered a row — its fixture produced no `.spectrum-slot` — and stayed
-// green on the broken STEP arrows because it looked only at the row's
-// direct children. This round boots the dual-receiver catalog topology
-// with a hardware-scope stamp, checks the hit target at every visible
-// control's centre (row AND open More panel), and clicks the STEP arrows
-// both ways. Below 641 px of viewport the app IS the mobile face (no
-// hosted row exists), so 641 is the narrowest width tested; LCD/mobile
-// faces render the unhosted flat grammar (pinned in jsdom, not here).
+// MOR-2545 PR3 round 4 (owner style B "raised keys"): the row's keys are
+// the Standard-face command family, so every item is NARROWER (10px/400
+// type, family padding) and the bands are re-derived from the round-4
+// measured widths (see the derivation comment in
+// src/components/spectrum/scope-capsule.css; phase-A literals below are the
+// preview-B estimates until that measurement lands). The suite boots the
+// dual-receiver catalog topology with a hardware-scope stamp, checks the
+// hit target at every visible control's centre (row AND open More panel),
+// and clicks the STEP arrows both ways. Below 641 px of viewport the app
+// IS the mobile face (no hosted row exists), so 641 is the narrowest width
+// tested; LCD/mobile faces render the unhosted flat grammar (pinned in
+// jsdom, not here).
 test.describe('MOR-2545 PR3: the hosted scope row hides by band and never overlaps', () => {
   /** Band literals mirror scope-capsule.css (quick hides first, mode last). */
   const BANDS: readonly (readonly [string, number])[] = [
-    ['quick', 873], ['receiver', 781], ['hold', 673], ['ref', 623],
-    ['span', 495], ['step', 360], ['mode', 237],
+    ['quick', 788], ['receiver', 701], ['hold', 617], ['ref', 572],
+    ['span', 453], ['step', 327], ['mode', 201],
   ];
   const ROW_CONTROL_SELECTOR: Record<string, string> = {
     quick: '[data-testid="toolbar-quick-keys"]',
@@ -1282,8 +1282,9 @@ test.describe('MOR-2545 PR3: the hosted scope row hides by band and never overla
 
   test('the More STEP copy arrows move the step down and up', async ({ page }) => {
     await bootHosted(page, 'sdr-test', 700, 'en-US');
-    // At this width the container is under the 360px band: the row's STEP
-    // hides and its More copy (the toolbar's `.toolbar-step-copy`) shows.
+    // At this width the container is under the step band (327 px on the
+    // round-4 head): the row's STEP hides and its More copy (the
+    // toolbar's `.toolbar-step-copy`) shows.
     await expect(page.getByTestId('toolbar-row-step')).toBeHidden();
     await page.getByTestId('scope-more').click();
     const copy = page.getByTestId('scope-more-step');
@@ -1297,7 +1298,7 @@ test.describe('MOR-2545 PR3: the hosted scope row hides by band and never overla
     // outside the row on the round-2 head; 641 is the narrowest desktop
     // viewport (below it the app is the mobile face, no hosted row).
     ...[900, 800, 700, 641].map(width => ({ layout: 'sdr-test' as const, width, locale: 'en-US' as const })),
-    // The widest MORE label (その他 ▾, 65.9 px measured) must not break the row.
+    // The widest MORE label (その他 ▾, ja-JP) must not break the row.
     { layout: 'standard', width: 1280, locale: 'ja-JP' },
   ];
 
@@ -1380,15 +1381,15 @@ test.describe('MOR-2545 PR3: the hosted scope row hides by band and never overla
         expect.soft(control.hidden, `${key} hidden=${expectedHidden.has(key)} at container ${snapshot.containerWidth}px`)
           .toBe(expectedHidden.has(key));
       }
-      // At 1920 the strip carries measured dead space (465.7 px on the
-      // round-1 head), so the FULL row shows there. Narrower viewports are
-      // pinned by the measured-container predicates above, not viewport
-      // arithmetic — the Standard 1280 container is ~802 px, so the quick
-      // keys correctly move into More there (an 865 px row cannot fit).
+      // At 1920 the strip carries measured dead space, so the FULL row
+      // shows there. Narrower viewports are pinned by the
+      // measured-container predicates above, not viewport arithmetic —
+      // the Standard 1280 container is ~802 px, so the quick keys
+      // correctly move into More there if the full row cannot fit.
       if (layout === 'standard' && width === 1920) {
         expect.soft([...expectedHidden], 'the full row shows at 1920').toEqual([]);
       }
-      // MORE, BANDS and ⛶ never hide. CTR|FIX hides below the 237px band;
+      // MORE, BANDS and ⛶ never hide. CTR|FIX hides below the mode band;
       // its choice stays reachable from More's permanent MODE row (below).
       await expect(page.getByTestId('scope-more')).toBeVisible();
       await expect(page.locator('.spectrum-toolbar.hosted button.scope-flat-key', { hasText: 'BANDS' })).toBeVisible();
