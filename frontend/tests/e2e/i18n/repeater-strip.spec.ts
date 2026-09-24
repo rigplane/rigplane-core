@@ -127,8 +127,17 @@ test('the repeater strip is per-receiver and keeps the deck height fixed', async
   expect(withStrip).toBeGreaterThan(0);
 
   // Move SUB to HF (7.185 MHz) — the strip must vanish and the deck height
-  // must not move (placement B's measured 0 px).
-  const hf = { ...state, sub: { ...state.sub!, freqHz: 7_185_000 } };
+  // must not move (placement B's measured 0 px). Bump the revision counters
+  // so the mock WebSocket applies the frame as a fresh observation.
+  const hf = {
+    ...state,
+    revision: (state.revision ?? 0) + 1,
+    stateRevision: (state.stateRevision ?? 0) + 1,
+    freshnessRevision: (state.freshnessRevision ?? 0) + 1,
+    observationSeq: (state.observationSeq ?? 0) + 1,
+    updatedAt: new Date().toISOString(),
+    sub: { ...state.sub!, freqHz: 7_185_000 },
+  };
   await page.evaluate((next) => {
     window.dispatchEvent(new CustomEvent('geometry-state', { detail: next }));
   }, hf);
