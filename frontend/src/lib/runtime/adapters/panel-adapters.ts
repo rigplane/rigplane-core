@@ -229,11 +229,8 @@ const _keyboardHandlers = makeKeyboardHandlers();
 export function getKeyboardHandlers() { return _keyboardHandlers; }
 const _systemHandlers = makeSystemHandlers();
 export function getSystemHandlers() { return _systemHandlers; }
-/** MOR-2111 PR2 — the repeater strip's command handlers, a singleton like
- *  `getSystemHandlers` (NOT in `bindSemanticSurfaceHandlers`, whose frozen
- *  family set is pinned). Exposed at the adapter seam so
- *  `SemanticRadioSurfaces` reaches the dispatch without importing a command
- *  module across the radio-authority boundary. */
+/** MOR-2111 — the repeater panel's command handlers, a singleton like
+ *  `getSystemHandlers`. */
 const _repeaterHandlers = makeRepeaterHandlers();
 export function getRepeaterHandlers() { return _repeaterHandlers; }
 
@@ -1357,20 +1354,19 @@ export function getPendingNrOn(receiver: 0 | 1): boolean | null {
   return typeof value === 'boolean' ? value : null;
 }
 
-// ── Repeater strip pending targets (MOR-2111 PR2) ──
+// ── Repeater panel pending targets (MOR-2111) ──
 /**
- * Freshest unconfirmed repeater tone-mode target for `receiver`, or `null`.
- * The three-state selector is driven by two commands (the `CT` register's
- * two booleans), so the pending target is collapsed back from them with the
- * same decision table as the confirmed reading: a pending `set_repeater_tsql
- * on:true` means TSQL; `on:false` means TONE (the TSQL→TONE half); a pending
- * `set_repeater_tone on:true` means TONE; `on:false` means OFF.
+ * Freshest unconfirmed repeater tone-mode target for `receiver`, or `null`,
+ * collapsed from the in-flight `set_repeater_tone`/`set_repeater_tsql`
+ * pair: tone off means OFF (TONE→OFF, and TSQL→OFF, which sends both), then
+ * TSQL on means TSQL, then TSQL off or tone on means TONE.
  */
 export function getPendingRepeaterTone(receiver: 0 | 1): 'off' | 'tone' | 'tsql' | null {
   const tsql = latestPendingParam('set_repeater_tsql', 'on', receiver, 'repeaterTsql');
-  if (typeof tsql === 'boolean') return tsql ? 'tsql' : 'tone';
   const tone = latestPendingParam('set_repeater_tone', 'on', receiver, 'repeaterTone');
-  if (typeof tone === 'boolean') return tone ? 'tone' : 'off';
+  if (tone === false) return 'off';
+  if (tsql === true) return 'tsql';
+  if (tsql === false || tone === true) return 'tone';
   return null;
 }
 
@@ -1382,8 +1378,8 @@ export function getPendingRepeaterShift(receiver: 0 | 1): number | null {
 }
 
 /** Freshest unconfirmed CTCSS tone frequency (centiHz) for `receiver`, or
- *  `null`. The strip writes `set_tone_freq` in OFF/TONE and `set_tsql_freq`
- *  in TSQL (one `CN` register on the FTX-1), so both in-flight names count. */
+ *  `null`. The panel writes `set_tone_freq` in OFF/TONE and `set_tsql_freq`
+ *  in TSQL, so both in-flight names count. */
 export function getPendingToneFreq(receiver: 0 | 1): number | null {
   const tone = latestPendingParam('set_tone_freq', 'freq', receiver, 'toneFreq');
   if (typeof tone === 'number') return tone;

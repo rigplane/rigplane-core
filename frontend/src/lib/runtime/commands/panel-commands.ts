@@ -2012,12 +2012,10 @@ export function makeVoxHandlers() {
 }
 
 /**
- * MOR-2111 PR2 — the repeater strip's command handlers. The tone-mode
+ * MOR-2111 — the repeater panel's command handlers. The tone-mode
  * transition is spelled out as literal frames (not a `command.name` loop)
  * so the conformance completeness ledger sees each dispatched intent name.
- * The mapping is the Yaesu `CT` register's read-modify-write (see
- * `$lib/radio/repeater-transitions` for the code table); the receiver rides
- * every command.
+ * The receiver rides every command.
  *
  *   OFF  → TONE   set_repeater_tone on:true
  *   OFF  → TSQL   set_repeater_tone on:true, then set_repeater_tsql on:true

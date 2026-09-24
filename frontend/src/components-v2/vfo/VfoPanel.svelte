@@ -34,23 +34,6 @@
     key: 'nb' | 'nr' | 'notch';
   }
 
-  /** The repeater strip's three-state tone selector (MOR-2111 PR2). */
-  export type VfoPanelToneMode = 'off' | 'tone' | 'tsql';
-  /** The repeater strip's shift selector; ARS is never offered. */
-  export type VfoPanelShift = 'simplex' | 'minus' | 'plus';
-
-  /** The per-receiver repeater strip's facts, already collapsed by
-   *  `VfoSurface` from the semantic `repeater` group. `null` readings keep
-   *  every chip in place, unlit, with its label — never a placeholder. */
-  export interface VfoPanelRepeaterStrip {
-    toneMode: VfoPanelToneMode | null;
-    pendingToneMode: VfoPanelToneMode | null;
-    shift: VfoPanelShift | null;
-    pendingShift: VfoPanelShift | null;
-    toneFreqText: string | null;
-    toneFreqPending: boolean;
-  }
-
   /** Everything the panel screen draws besides the readout, the meter and
    *  the slot choices; built by `VfoSurface` (semantic) or the legacy
    *  adapter, never invented here. */
@@ -59,7 +42,6 @@
     annunciators: VfoPanelAnnunciator[];
     dsp: VfoPanelDspChip[];
     under: { rit?: VfoPanelSlot; xit?: VfoPanelSlot; split?: VfoPanelSlot };
-    repeater?: VfoPanelRepeaterStrip;
     tx: { lit: boolean; state: string };
   }
 
@@ -111,11 +93,6 @@
     onSelectSlot?: (key: string) => void;
     /** Selects this VFO from its header; frequency gestures remain independent. */
     onSelectHeader?: () => void;
-    /** MOR-2111 PR2 — the repeater strip's operated chips. Present only when
-     *  the strip is drawn; each closes over this panel's receiver upstream. */
-    onToneModeChange?: (next: VfoPanelToneMode) => void;
-    onShiftChange?: (next: VfoPanelShift) => void;
-    onToneFreqStep?: (direction: 1 | -1) => void;
     headerReason?: string;
   }
 
@@ -131,9 +108,6 @@
     onFrequencyClick,
     onSelectSlot,
     onSelectHeader,
-    onToneModeChange,
-    onShiftChange,
-    onToneFreqStep,
     headerReason,
   }: Props = $props();
 
@@ -155,15 +129,6 @@
     return [groups.mhz, groups.khz, groups.hz]
       .map((group) => group.map((digit) => digit.char).join('')).join('.');
   }
-
-  /** The repeater strip's fixed chip labels (MOR-2111 PR2) — the deck's own
-   *  short caps vocabulary, like RIT/XIT/SPLIT, never i18n'd. */
-  const TONE_MODE_LABELS: Record<VfoPanelToneMode, string> = {
-    off: 'OFF', tone: 'TONE', tsql: 'TSQL',
-  };
-  const SHIFT_LABELS: Record<VfoPanelShift, string> = {
-    simplex: 'SIMP', minus: '−', plus: '+',
-  };
 
   /** A legacy badge colour is either a token NAME (mapped to the theme's
    *  badge text token) or an already-resolved colour literal from a custom
@@ -331,39 +296,6 @@
         {#if sections.under.split}
           <span class="chip-amber" data-family="amber" data-chip="split"
             data-lit={sections.under.split.lit} data-state={sections.under.split.state}>{sections.under.split.text}</span>
-        {/if}
-        {#if sections.repeater}
-          <span class="repeater-strip" data-vfo-row="repeater" role="group" aria-label="Repeater">
-            {#each (['off', 'tone', 'tsql'] as const) as mode (mode)}
-              <button
-                type="button" class="chip-tone" data-repeater-tone={mode}
-                data-lit={sections.repeater.toneMode === mode}
-                data-pending-status={sections.repeater.pendingToneMode === mode ? 'pending' : 'confirmed'}
-                aria-pressed={sections.repeater.toneMode === null
-                  ? undefined : sections.repeater.toneMode === mode}
-                onclick={() => onToneModeChange?.(mode)}
-              >{TONE_MODE_LABELS[mode]}</button>
-            {/each}
-            {#each (['simplex', 'minus', 'plus'] as const) as shift (shift)}
-              <button
-                type="button" class="chip-shift" data-repeater-shift={shift}
-                data-lit={sections.repeater.shift === shift}
-                data-pending-status={sections.repeater.pendingShift === shift ? 'pending' : 'confirmed'}
-                aria-pressed={sections.repeater.shift === null
-                  ? undefined : sections.repeater.shift === shift}
-                onclick={() => onShiftChange?.(shift)}
-              >{SHIFT_LABELS[shift]}</button>
-            {/each}
-            <span class="chip-tone-value" data-repeater-tone-value
-              data-lit={sections.repeater.toneFreqText !== null}
-              data-pending-status={sections.repeater.toneFreqPending ? 'pending' : 'confirmed'}>
-              <button type="button" class="tone-step" aria-label="Decrease tone frequency"
-                onclick={() => onToneFreqStep?.(-1)}>‹</button>
-              <span class="tone-value-text">{sections.repeater.toneFreqText ?? ''}</span>
-              <button type="button" class="tone-step" aria-label="Increase tone frequency"
-                onclick={() => onToneFreqStep?.(1)}>›</button>
-            </span>
-          </span>
         {/if}
       </div>
     </div>
@@ -823,104 +755,6 @@
   }
 
   .chip-amber[data-lit='true'] { box-shadow: var(--vfo-amber-glow); }
-
-  /* ── Repeater strip (MOR-2111 PR2): the deck's first operated chips.
-     Same 22px chip height as RIT/XIT/SPLIT, drawn only when the receiver is
-     in a repeater band, so the under-row keeps its fixed rhythm and the
-     deck never grows. Colours reuse the existing --dl-vfo-* tokens only. */
-  .repeater-strip {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .chip-tone, .chip-shift {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    box-sizing: border-box;
-    flex: none;
-    height: 22px;
-    padding: 0 6px;
-    border: 1px solid;
-    border-radius: 4px;
-    font-family: inherit;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    white-space: nowrap;
-    font-variant-numeric: tabular-nums;
-    cursor: pointer;
-    background: transparent;
-  }
-
-  .chip-tone {
-    border-color: var(--vfo-dsp-border);
-    background: var(--vfo-dsp-fill);
-    color: var(--vfo-dsp-text);
-  }
-  .chip-tone[data-lit='false'] {
-    border-color: var(--vfo-dsp-border);
-    background: var(--vfo-unlit-fill);
-    color: var(--vfo-unlit-text);
-    opacity: 1;
-  }
-  .chip-tone[data-lit='true'] { box-shadow: var(--vfo-dsp-glow); }
-
-  .chip-shift {
-    border-color: var(--vfo-amber-chip-border);
-    background: var(--vfo-amber-chip-fill);
-    color: var(--vfo-amber-chip-text);
-  }
-  .chip-shift[data-lit='false'] {
-    border-color: var(--vfo-unlit-border);
-    color: var(--vfo-unlit-text);
-    background: var(--vfo-unlit-fill);
-    font-weight: 400;
-  }
-  .chip-shift[data-lit='true'] { box-shadow: var(--vfo-amber-glow); }
-
-  .chip-tone-value {
-    display: inline-flex;
-    align-items: center;
-    box-sizing: border-box;
-    flex: none;
-    height: 20px;
-    border: 1px solid var(--vfo-slate-frame);
-    border-radius: 4px;
-    background: var(--vfo-slate-fill);
-    color: var(--vfo-slate-text);
-    font-size: 12px;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-  }
-  .chip-tone-value[data-lit='false'] {
-    border-color: var(--vfo-unlit-border);
-    color: var(--vfo-unlit-text);
-    background: var(--vfo-unlit-fill);
-    font-weight: 400;
-  }
-  .tone-step {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 16px;
-    height: 100%;
-    border: 0;
-    padding: 0;
-    background: transparent;
-    color: inherit;
-    cursor: pointer;
-    font-family: inherit;
-    font-size: 11px;
-  }
-  .tone-value-text {
-    min-width: 42px;
-    text-align: center;
-    padding: 0 2px;
-  }
-  .repeater-strip [data-pending-status='pending'] { font-style: italic; opacity: 0.75; }
 
   .dsp {
     display: grid;

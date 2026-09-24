@@ -2724,7 +2724,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     renderAll('desktop-v2');
     expect(JSON.parse(localStorage.getItem('rigplane:panel-order')!)).toEqual([
       'semantic-rf-front-end', 'semantic-rit-xit', 'semantic-scan', 'band', 'semantic-filter',
-      'semantic-antenna',
+      'semantic-repeater', 'semantic-antenna',
     ]);
     expect(JSON.parse(localStorage.getItem('rigplane:panel-collapsed')!)).toMatchObject({
       'semantic-rit-xit': true, 'semantic-scan': true,
@@ -2936,8 +2936,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
 
 /**
  * MOR-1370 (v3-rework S6b-2) — `scopeControls` becomes ZONE-OWNED on
- * `desktop-v2`, the LAST surface in the whole MOR-1262 vocabulary to
- * graduate.
+ * `desktop-v2`.
  *
  * Unlike every other family in this file, its legacy twin is not a
  * sidebar/modal panel but the scope toolbar's fact-backed half

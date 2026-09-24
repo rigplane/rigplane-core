@@ -165,10 +165,8 @@ export function getPendingNrOn(_receiver: 0 | 1): boolean | null {
   return null;
 }
 
-/** MOR-2111 PR2 — the repeater strip's three pending accessors. Same
- *  MOR-1271/MOR-1320 module-resolution lesson as the accessors above: the
- *  offline harness never has an in-flight repeater command, so `null`
- *  ("nothing pending") is the only honest answer. */
+/** MOR-2111 — the repeater panel's three pending accessors, inert like the
+ *  accessors above: `null` means nothing pending. */
 export function getPendingRepeaterTone(_receiver: 0 | 1): 'off' | 'tone' | 'tsql' | null {
   return null;
 }
@@ -179,11 +177,8 @@ export function getPendingToneFreq(_receiver: 0 | 1): number | null {
   return null;
 }
 
-/** MOR-2111 PR2 — the repeater strip's command handlers. Inert, like
- *  `getMemoryHandlers`: the offline fixture never dispatches a radio command,
- *  and the baseline captures never click the strip, so a no-op is the honest
- *  answer (kept out of `./command-bus` for the same reason memory handlers
- *  are inlined). */
+/** MOR-2111 — the repeater panel's command handlers, inert like
+ *  `getMemoryHandlers`. */
 const repeaterHandlers = Object.freeze({
   onToneModeChange: (_from: string, _to: string, _receiver: number): void => {},
   onShiftChange: (_shift: string, _receiver: number): void => {},

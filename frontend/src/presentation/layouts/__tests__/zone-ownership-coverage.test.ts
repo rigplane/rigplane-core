@@ -15,7 +15,7 @@
  * This file is the decision ledger, and it is EXHAUSTIVE BY CONSTRUCTION: the
  * declared set is derived from the real manifest, the excused set is a hand-
  * written literal, and the two must partition `SEMANTIC_SURFACE_NAMES`
- * exactly. Appending a fourteenth-plus surface name therefore fails here until
+ * exactly. Appending a surface name therefore fails here until
  * someone either declares a zone for it or writes down why not — which is the
  * whole point. The reason strings are not decoration: they are what the next
  * slice reads instead of guessing.
@@ -26,7 +26,9 @@
  * was zone-owned on `desktop-v2`, with the partition pin holding on zero
  * excused entries. MOR-2425 (Memory lane, phase B1) reopened the ledger with
  * one entry for `memory`, which its phase B2 join closed by declaring a
- * `desktop-v2` zone. MOR-2111 reopens it with one entry for `repeater`.
+ * `desktop-v2` zone. MOR-2111 reopened it with one entry for `repeater` and
+ * closed it by declaring the `desktop-v2` `repeater` zone, so
+ * `RECORDED_REASONS` below is empty.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -43,16 +45,11 @@ const OWNED = declaredSurfaces(desktopV2Layout);
  * this map only by gaining a `desktop-v2` zone in the same commit.
  *
  * `filter`, `rfFrontEnd` (S7), `band`, `antenna`, `ritXitScan` (S8),
- * `rxAudio`, `dsp`, `cwKeyer` (S9), `scopeControls` (S6b-2) and `memory`
- * (MOR-2425, Memory lane phase B2) all graduated to real zones on
- * `desktopV2Layout` — `OWNED` covers every one of them. `repeater` is the one
- * live entry below.
+ * `rxAudio`, `dsp`, `cwKeyer` (S9), `scopeControls` (S6b-2), `memory`
+ * (MOR-2425, Memory lane phase B2) and `repeater` (MOR-2111) all graduated to
+ * real zones on `desktopV2Layout` — `OWNED` covers every one of them.
  */
-const RECORDED_REASONS: Partial<Record<SemanticSurfaceName, string>> = {
-  repeater:
-    'MOR-2111 admits `repeater` to the vocabulary without declaring a ' +
-    'desktop-v2 zone; the Standard zone and its mount land in #3613.',
-};
+const RECORDED_REASONS: Partial<Record<SemanticSurfaceName, string>> = {};
 
 describe('MOR-1317 — every semantic surface has a desktop-v2 decision', () => {
   /**

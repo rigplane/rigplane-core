@@ -1,10 +1,8 @@
 /**
- * MOR-2111 — `repeater` is DECLARABLE. No manifest declares it yet.
- *
- * This slice adds the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN
- * mount the surface later; it touches no manifest and adds no design-language
- * renderer slot (that set was frozen by MOR-1072). The inventory below is a
- * LITERAL of who declares it, mirroring `rf-front-end-declarability.test.ts`.
+ * MOR-2111 — `repeater` is DECLARABLE, and `desktop-v2` declares it. No
+ * design-language renderer slot is added for it (that set was frozen by
+ * MOR-1072). The inventory below is a LITERAL of who declares it, mirroring
+ * `rf-front-end-declarability.test.ts`.
  */
 import { describe, it, expect } from 'vitest';
 import { SEMANTIC_SURFACE_NAMES, validateLayoutManifest } from '../contract';
@@ -43,7 +41,7 @@ describe('repeater is a declarable semantic surface', () => {
 
 describe('exactly the reviewed manifests declare a repeater zone (MOR-2111)', () => {
   /** The literal — extend by hand, with a layout review, never silently. */
-  const DECLARES_REPEATER: readonly string[] = [];
+  const DECLARES_REPEATER: readonly string[] = ['desktop-v2'];
 
   // [id, manifest] pairs derived from the barrel's export surface
   // (MOR-2061) — never hand-listed. See `manifest-guard.ts`.

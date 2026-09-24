@@ -46,7 +46,7 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
   // either one — the pair per-zone suppression consumes.
   it('declares receiver-deck:[vfo], rx-tx:[rxTx], tx-aux:[txAux], meters:[meters], '
     + 'scope-display:[scopeDisplay], filter:[filter], rf-front-end:[rfFrontEnd], '
-    + 'band:[band], antenna:[antenna], rit-xit-scan:[ritXitScan], rx-audio:[rxAudio], '
+    + 'band:[band], antenna:[antenna], rit-xit-scan:[ritXitScan], repeater:[repeater], rx-audio:[rxAudio], '
     + 'dsp:[dsp], cw-keyer:[cwKeyer], memory:[memory] and scope-controls:[scopeControls]', () => {
     expect(desktopV2Layout.zones).toEqual([
       { id: 'receiver-deck', surfaces: ['vfo'] },
@@ -68,6 +68,8 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
       { id: 'band', surfaces: ['band'] },
       { id: 'antenna', surfaces: ['antenna'] },
       { id: 'rit-xit-scan', surfaces: ['ritXitScan'] },
+      // MOR-2111: the repeater panel. Not required.
+      { id: 'repeater', surfaces: ['repeater'] },
       // MOR-1368 (S9): the cross-sidebar family. `dsp` also retires `AgcPanel`
       // (DspSurface owns the AGC leaf, 5A/MOR-1290), and `cw-keyer` makes the
       // SAFETY-CRITICAL MOR-1310 surface the sole break-in affordance here.
@@ -78,8 +80,7 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
       // closing the ledger entry `zone-ownership-coverage.test.ts` opened in
       // phase B1. No RadioViewModel group backs it — it mounts unconditionally.
       { id: 'memory', surfaces: ['memory'] },
-      // MOR-1370 (S6b-2): scopeControls becomes zone-owned, the LAST surface
-      // in the MOR-1262 vocabulary to graduate. Not required.
+      // MOR-1370 (S6b-2): scopeControls becomes zone-owned. Not required.
       { id: 'scope-controls', surfaces: ['scopeControls'] },
     ]);
     expect([...desktopV2Layout.requiredSemanticSurfaces].sort()).toEqual(['rxTx', 'vfo']);
@@ -102,7 +103,7 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
   // is per-zone rather than per-manifest-first-zone.
   it('its zones flatten to the surfaces the shell suppresses legacy twins for', () => {
     expect([...declaredSurfaces(getLayout('desktop-v2'))].sort())
-      .toEqual(['antenna', 'band', 'cwKeyer', 'dsp', 'filter', 'memory', 'meters', 'rfFrontEnd', 'ritXitScan', 'rxAudio', 'rxTx', 'scopeControls', 'scopeDisplay', 'txAux', 'vfo']);
+      .toEqual(['antenna', 'band', 'cwKeyer', 'dsp', 'filter', 'memory', 'meters', 'repeater', 'rfFrontEnd', 'ritXitScan', 'rxAudio', 'rxTx', 'scopeControls', 'scopeDisplay', 'txAux', 'vfo']);
   });
 });
 

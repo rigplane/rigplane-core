@@ -104,7 +104,7 @@
     type FiniteRendererContext,
   } from '../../primitives/control-instruments/control-instrument-renderer.svelte';
   import type { ReceiverId, RadioViewModel, VfoSlot } from '../../semantic/radio-view-model';
-  import { stepToneFreq, type RepeaterStripPending } from '$lib/radio/repeater-transitions';
+  import { stepToneFreq, type RepeaterPending } from '$lib/radio/repeater-transitions';
   import RfFrontEndSurface, {
     type RfFrontEndLevelField,
   } from '../../semantic/RfFrontEndSurface.svelte';
@@ -146,6 +146,7 @@
     type CwKeyerInstrumentHandles,
   } from '../../semantic/CwKeyerInstrumentHost.svelte';
   import MemorySurface from '../../semantic/MemorySurface.svelte';
+  import RepeaterSurface, { repeaterReceiver } from '../../semantic/RepeaterSurface.svelte';
   import ScopeControlsSurface, {
     type ScopeChoiceField, type ScopeToggleField,
   } from '../../semantic/ScopeControlsSurface.svelte';
@@ -1839,12 +1840,10 @@
   }
 
   /**
-   * MOR-2111 PR2 — the repeater strip's command seam. The confirmed facts are
-   * read off the view model here; the dispatch (and the transition table) is
-   * the handler singleton (`getRepeaterHandlers`), so the radio-authority
-   * boundary is not crossed. The pending markers are folded from the shared
-   * command-lifecycle accessors (`getPendingRepeater*`), the same mechanism
-   * every other operated control uses — no second pending path.
+   * MOR-2111 — the repeater panel's command seam. The confirmed facts are
+   * read off the view model here; the dispatch is the handler singleton
+   * (`getRepeaterHandlers`), and the pending markers come from the shared
+   * command-lifecycle accessors (`getPendingRepeater*`).
    */
   const repeaterHandlers = getRepeaterHandlers();
   let ctcssTones = $derived(runtime.caps?.ctcssTones ?? []);
@@ -1867,46 +1866,23 @@
   function stepToneFreqFor(receiver: ReceiverId, direction: 1 | -1): void {
     const group = view?.repeater?.[receiver === 'SUB' ? 'sub' : 'main'];
     const freq = group?.toneFreq.reading;
-    if (freq?.status !== 'known') return;
+    const mode = group?.toneMode.reading;
+    if (freq?.status !== 'known' || mode?.status !== 'known') return;
     const next = stepToneFreq(freq.value, ctcssTones, direction);
     if (next === freq.value) return;
-    const mode = group?.toneMode.reading;
-    const tsql = mode?.status === 'known' && mode.value === 'tsql';
-    repeaterHandlers.onToneFreqChange(next, tsql, repeaterWireReceiver(receiver));
+    repeaterHandlers.onToneFreqChange(next, mode.value === 'tsql', repeaterWireReceiver(receiver));
   }
 
-  function repeaterPendingFor(wire: 0 | 1, tone: 'off' | 'tone' | 'tsql' | null,
-    shiftDir: number | null, freq: number | null): RepeaterStripPending {
+  function repeaterPendingFor(wire: 0 | 1): RepeaterPending {
+    const shift = getPendingRepeaterShift(wire);
     return {
-      toneMode: tone,
-      shift: shiftDir === null ? null : shiftDir === 0 ? 'simplex' : shiftDir === 1 ? 'plus' : 'minus',
-      toneFreq: freq !== null,
+      toneMode: getPendingRepeaterTone(wire),
+      shift: shift === null ? null : shift === 0 ? 'simplex' : shift === 1 ? 'plus' : 'minus',
+      toneFreq: getPendingToneFreq(wire) !== null,
     };
   }
-  // Memoized like `pendingFrequencyHzCache` (MOR-1441 review B5): every
-  // command-lifecycle mutation would otherwise mint a fresh object and
-  // re-render every VfoSurface on an unrelated command (e.g. a tuning burst).
-  let repeaterPendingCache: { main: RepeaterStripPending; sub: RepeaterStripPending;
-    value: Partial<Record<ReceiverId, RepeaterStripPending>> } | null = null;
-  let repeaterPending = $derived.by(() => {
-    const mainTone = getPendingRepeaterTone(0);
-    const mainShift = getPendingRepeaterShift(0);
-    const mainFreq = getPendingToneFreq(0);
-    const subTone = getPendingRepeaterTone(1);
-    const subShift = getPendingRepeaterShift(1);
-    const subFreq = getPendingToneFreq(1);
-    const cache = repeaterPendingCache;
-    const main = repeaterPendingFor(0, mainTone, mainShift, mainFreq);
-    const sub = repeaterPendingFor(1, subTone, subShift, subFreq);
-    if (cache !== null && cache.main.toneMode === main.toneMode
-      && cache.main.shift === main.shift && cache.main.toneFreq === main.toneFreq
-      && cache.sub.toneMode === sub.toneMode && cache.sub.shift === sub.shift
-      && cache.sub.toneFreq === sub.toneFreq) {
-      return cache.value;
-    }
-    const value: Partial<Record<ReceiverId, RepeaterStripPending>> = { MAIN: main, SUB: sub };
-    repeaterPendingCache = { main, sub, value };
-    return value;
+  let repeaterPending: Partial<Record<ReceiverId, RepeaterPending>> = $derived({
+    MAIN: repeaterPendingFor(0), SUB: repeaterPendingFor(1),
   });
 
   const vfoOperationCallbacks = Object.freeze({
@@ -1957,10 +1933,6 @@
         operationInput={vfoOperationInput ?? undefined}
         groupLabel={t('core.vfo.radioWideGroupLabel')}
         {hasDualReceiver}
-        onToneModeChange={selectToneMode}
-        onShiftChange={selectShift}
-        onToneFreqStep={stepToneFreqFor}
-        {repeaterPending}
       />
     {/if}
   {/snippet}
@@ -2139,10 +2111,6 @@
               {receiverInstruments}
               continuitySession={meterContinuitySession}
               {pendingFrequencyHz}
-              onToneModeChange={selectToneMode}
-              onShiftChange={selectShift}
-              onToneFreqStep={stepToneFreqFor}
-              {repeaterPending}
             />
           </div>
         {/each}
@@ -2195,10 +2163,6 @@
         {receiverInstruments}
         continuitySession={meterContinuitySession}
         {pendingFrequencyHz}
-        onToneModeChange={selectToneMode}
-        onShiftChange={selectShift}
-        onToneFreqStep={stepToneFreqFor}
-        {repeaterPending}
       />
     {/if}
   {/snippet}
@@ -2665,6 +2629,16 @@
     />
   {/snippet}
 
+  {#snippet repeaterSurface()}
+    <RepeaterSurface
+      {view}
+      pending={repeaterPending}
+      onToneModeChange={selectToneMode}
+      onShiftChange={selectShift}
+      onToneFreqStep={stepToneFreqFor}
+    />
+  {/snippet}
+
   <!--
     MOR-1312 (vocabulary slice 12B). Same structural gate and same reasoning
     as `txAuxSurface`/`metersSurface` above: the surface mounts only when the
@@ -2705,8 +2679,7 @@
     `__tests__/semantic-scope-controls-wiring.component.test.ts` and in
     `skins/dual-receiver-cockpit/__tests__/DualReceiverCockpit.component
     .test.ts`'s MOR-2150 describe block. No longer bare under `desktop-v2`,
-    which declared this zone in MOR-1370 (S6b-2) as the last surface in the
-    vocabulary to graduate. `sdr-test` also declares this zone; the remaining
+    which declared this zone in MOR-1370 (S6b-2). `sdr-test` also declares this zone; the remaining
     single-composition layouts (`mobile`/`lcd-*`) keep their existing bare path.
   -->
   {#snippet scopeControlsSurface(screenGroup?: Snippet, rowTail?: Snippet)}
@@ -2879,6 +2852,9 @@
   {#snippet hostedMemory(allowBare = allowBareSurfaces, chrome?: PanelChrome)}
     {@render zoned('memory', true, memorySurface, allowBare, chrome)}
   {/snippet}
+  {#snippet hostedRepeater(allowBare = allowBareSurfaces, chrome?: PanelChrome)}
+    {@render zoned('repeater', repeaterReceiver(view) !== null, repeaterSurface, allowBare, chrome)}
+  {/snippet}
   {#snippet hostedScopeDisplay(allowBare = allowBareSurfaces)}
     {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBare)}
   {/snippet}
@@ -2938,6 +2914,7 @@
       cwKeyerInstruments,
       cwKeyer: hostedCwKeyer,
       memory: hostedMemory,
+      repeater: hostedRepeater,
       scopeDisplay: hostedScopeDisplay,
       scopeControls: hostedScopeControls,
       txFaultRecovery,

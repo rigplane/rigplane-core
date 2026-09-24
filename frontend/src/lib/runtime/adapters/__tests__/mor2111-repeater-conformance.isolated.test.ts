@@ -1,18 +1,14 @@
 /**
- * MOR-2111 PR2 — repeater strip family conformance (the claim for the five
- * intents added in `claimed.ts`), plus the pure `$lib/radio/repeater-transitions`
- * helpers that table and the strip share.
+ * MOR-2111 — repeater panel family conformance (the claim for the five
+ * intents added in `claimed.ts`), the pending tone-mode target those intents
+ * leave in flight, and the pure `$lib/radio/repeater-transitions` helpers.
  *
- * Unlike most family walks, `makeRepeaterHandlers()` takes the CONFIRMED
- * mode/shift/frequency as explicit arguments — the view model collapses them
+ * `makeRepeaterHandlers()` takes the CONFIRMED mode/shift/frequency as
+ * explicit arguments — the view model collapses them
  * (`radio-view-model-adapter.ts::deriveRepeater`), not the command layer. The
  * dispatch is therefore pure and needs no fixture field-status gate: every
- * case below asserts the exact frames for the selector transitions the strip
- * can produce, with the receiver on every command.
- *
- * The tone-mode table is the Yaesu `CT` register's read-modify-write (see
- * `$lib/radio/repeater-transitions` for the code table). The pair (tone off,
- * TSQL on) is unrepresentable, so no transition emits it:
+ * case below asserts the exact frames for a selector transition, with the
+ * receiver on every command.
  *
  *   OFF  → TONE   set_repeater_tone on:true
  *   OFF  → TSQL   set_repeater_tone on:true, set_repeater_tsql on:true
@@ -21,12 +17,12 @@
  *   TONE → OFF    set_repeater_tone on:false
  *   TSQL → OFF    set_repeater_tsql on:false, set_repeater_tone on:false
  *
- * `set_tsql_freq` is dispatched only in TSQL (one `CN` register on the FTX-1);
- * `set_tone_freq` otherwise.
+ * `set_tsql_freq` is dispatched only in TSQL; `set_tone_freq` otherwise.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { expectFrames, expectRefusal, h } from './conformance/harness';
 import { makeRepeaterHandlers } from '../../commands/panel-commands';
+import { getPendingRepeaterTone } from '../panel-adapters';
 import { resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import {
   formatToneHz,
@@ -87,8 +83,8 @@ describe('makeRepeaterHandlers shift and tone-frequency frames (MOR-2111)', () =
   afterEach(() => resetCommandLifecycle());
 
   it.each([
-    ['simplex', 0, 0], ['plus', 1, 1], ['minus', 0, 2],
-  ] as const)('shift %s maps to OS direction %i', (shift, receiver, direction) => {
+    ['simplex', 0, 0], ['plus', 1, 1], ['minus', 2, 0],
+  ] as const)('shift %s maps to OS direction %i (receiver %i)', (shift, direction, receiver) => {
     expectFrames(() => handlers.onShiftChange(shift, receiver), [['set_repeater_shift', { direction, receiver }]]);
   });
 
@@ -98,6 +94,30 @@ describe('makeRepeaterHandlers shift and tone-frequency frames (MOR-2111)', () =
 
   it('tone frequency writes set_tsql_freq in TSQL', () => {
     expectFrames(() => handlers.onToneFreqChange(8850, true, 1), [['set_tsql_freq', { freq: 8850, receiver: 1 }]]);
+  });
+});
+
+describe('getPendingRepeaterTone collapses an in-flight transition to its target (MOR-2111)', () => {
+  beforeEach(() => h.sendCommand.mockClear());
+  afterEach(() => resetCommandLifecycle());
+
+  // Both two-command transitions leave both commands in flight at once.
+  it('TSQL → OFF (tsql off and tone off both pending) reads off', () => {
+    handlers.onToneModeChange('tsql', 'off', 0);
+    expect(getPendingRepeaterTone(0)).toBe('off');
+  });
+
+  it('OFF → TSQL (tone on and tsql on both pending) reads tsql', () => {
+    handlers.onToneModeChange('off', 'tsql', 1);
+    expect(getPendingRepeaterTone(1)).toBe('tsql');
+    expect(getPendingRepeaterTone(0)).toBeNull();
+  });
+
+  it.each([
+    ['off', 'tone', 'tone'], ['tone', 'tsql', 'tsql'], ['tsql', 'tone', 'tone'], ['tone', 'off', 'off'],
+  ] as const)('%s → %s (one command pending) reads %s', (from, to, expected) => {
+    handlers.onToneModeChange(from, to, 0);
+    expect(getPendingRepeaterTone(0)).toBe(expected);
   });
 });
 
@@ -116,10 +136,20 @@ describe('repeater-transitions pure helpers (MOR-2111)', () => {
     expect(stepToneFreq(6700, tones, -1)).toBe(6700);
   });
 
-  it('stepToneFreq snaps an off-chart current value to the nearest end', () => {
+  it('stepToneFreq moves an off-chart value to the nearest chart value in the pressed direction', () => {
     const tones = [6700, 8850, 10000];
-    expect(stepToneFreq(999999, tones, 1)).toBe(6700);
-    expect(stepToneFreq(999999, tones, -1)).toBe(10000);
+    expect(stepToneFreq(7000, tones, 1)).toBe(8850);
+    expect(stepToneFreq(7000, tones, -1)).toBe(6700);
+    expect(stepToneFreq(9999, tones, 1)).toBe(10000);
+    expect(stepToneFreq(9999, tones, -1)).toBe(8850);
+  });
+
+  it('stepToneFreq clamps an off-chart value beyond the chart to the end in the pressed direction', () => {
+    const tones = [6700, 8850, 10000];
+    expect(stepToneFreq(5000, tones, -1)).toBe(6700);
+    expect(stepToneFreq(5000, tones, 1)).toBe(6700);
+    expect(stepToneFreq(20000, tones, 1)).toBe(10000);
+    expect(stepToneFreq(20000, tones, -1)).toBe(10000);
     expect(stepToneFreq(8850, [], 1)).toBe(8850);
   });
 
