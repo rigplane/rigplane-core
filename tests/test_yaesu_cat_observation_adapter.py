@@ -3216,6 +3216,9 @@ _NOTCH_FREQ_PATH = "receiver.main.operator_controls.manual_notch_freq"
 
 def _availability_store(*, mode: str, freq_hz: int, active: str = "MAIN") -> StateStore:
     store = StateStore()
+    # A nonzero provider generation, as after connect: ``apply`` is
+    # generation-bound, so the observations go through ``apply_current``.
+    store.begin_provider_generation()
     # Both receivers carry the same mode/freq so the SUB manual-notch-freq
     # clause (a twin of MAIN's) resolves on the same snapshot. The active
     # receiver is observed too (MOR-2581): the attenuator's second clause
@@ -3228,7 +3231,7 @@ def _availability_store(*, mode: str, freq_hz: int, active: str = "MAIN") -> Sta
         (FieldPath.active("sub", "freq_mode", "freq_hz"), freq_hz),
         (FieldPath.global_("slow_state", "active"), active),
     ):
-        store.apply(
+        store.apply_current(
             Observation(
                 path=path,
                 value=value,
@@ -3336,7 +3339,6 @@ async def test_slow_poll_does_not_read_the_attenuator_while_sub_is_active() -> N
     recorded and the startup gate drops the field from its outstanding set.
     """
     store = _availability_store(mode="USB", freq_hz=14_074_000, active="SUB")
-    store.begin_provider_generation()  # the post-connect generation
     radio = _make_radio()
     radio._state_store = store
     scheduler = AcquisitionScheduler(profile=_profile_state_acquisition())
@@ -3369,7 +3371,6 @@ async def test_slow_poll_does_not_read_the_attenuator_while_sub_is_active() -> N
 async def test_slow_poll_reads_the_attenuator_while_main_is_active_on_hf() -> None:
     """The same ``RA0;`` read goes out as before while MAIN is active on HF."""
     store = _availability_store(mode="USB", freq_hz=14_074_000, active="MAIN")
-    store.begin_provider_generation()  # the post-connect generation
     radio, adapter = _availability_adapter(store)
 
     observations = await adapter.poll_slow_controls()
@@ -3529,7 +3530,7 @@ def _dual_watch_store(*, on: bool) -> StateStore:
     """``_availability_store`` plus an observed dual-receive state."""
 
     store = _availability_store(mode="USB", freq_hz=14_074_000)
-    store.apply(
+    store.apply_current(
         Observation(
             path=FieldPath.global_("tx_state", "dual_watch"),
             value=on,
