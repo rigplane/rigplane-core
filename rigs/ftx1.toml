@@ -93,6 +93,8 @@ features = [
     "repeater_tone",
     "tsql",
     "repeater_shift",
+    # ARS (OS P2 = 3) as a fourth shift key in the web UI (MOR-2111).
+    "repeater_shift_ars",
 ]
 
 [state_acquisition]

@@ -1370,8 +1370,7 @@ export function getPendingRepeaterTone(receiver: 0 | 1): 'off' | 'tone' | 'tsql'
   return null;
 }
 
-/** Freshest unconfirmed repeater shift direction (0-2) for `receiver`, or
- *  `null`. */
+/** Freshest unconfirmed repeater shift direction for `receiver`, or `null`. */
 export function getPendingRepeaterShift(receiver: 0 | 1): number | null {
   const value = latestPendingParam('set_repeater_shift', 'direction', receiver, 'repeaterShift');
   return typeof value === 'number' ? value : null;

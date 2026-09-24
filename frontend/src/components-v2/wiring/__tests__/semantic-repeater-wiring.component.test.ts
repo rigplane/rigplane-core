@@ -116,7 +116,7 @@ const unread = {
 } as const;
 
 /** One receiver's repeater registers: tone/tsql booleans, CTCSS centiHz and
- *  the wire shift (0 simplex / 1 plus / 2 minus). */
+ *  the wire shift (0 simplex / 1 plus / 2 minus / 3 ARS). */
 interface Repeater { tone: boolean; tsql: boolean; toneFreq: number; shift: number }
 const OFF: Repeater = { tone: false, tsql: false, toneFreq: 7190, shift: 0 };
 const REPEATER_LEAVES = ['repeaterTone', 'repeaterTsql', 'toneFreq', 'repeaterShift'] as const;
@@ -320,6 +320,43 @@ describe('each control draws only when its own field is structural (B1)', () => 
     renderHosted();
     expect(surface()).toBeNull();
     expect(q('[data-zone-id="repeater"]')).toBeNull();
+  });
+});
+
+describe('ARS: a fourth shift key only on a radio that declares it', () => {
+  /** FTX-1-shaped: `rigs/ftx1.toml` declares `repeater_shift_ars`. */
+  const FTX1_TAGS = ['repeater_tone', 'tsql', 'repeater_shift', 'repeater_shift_ars'] as const;
+  const shiftKeys = () => [...surface()!.querySelectorAll<HTMLButtonElement>('[data-testid^="repeater-shift-"]')];
+  const lit = () => shiftKeys().filter((node) => node.getAttribute('aria-checked') === 'true')
+    .map((node) => node.textContent?.trim());
+
+  it('FTX-1-shaped caps: four keys SIMP / − / + / ARS, and a reported 3 lights ARS alone', () => {
+    use(dualState({ mainHz: 14_250_000, subHz: 144_700_000, sub: { ...OFF, shift: 3 } }), dualCaps(FTX1_TAGS));
+    renderHosted();
+    expect(shiftKeys().map((node) => node.textContent?.trim())).toEqual(['SIMP', '−', '+', 'ARS']);
+    expect(lit()).toEqual(['ARS']);
+    expect(key('repeater-shift-ars')!.getAttribute('data-active')).toBe('true');
+  });
+
+  it('a click on ARS sends direction 3 with receiver 1 for SUB and marks ARS pending', () => {
+    use(dualState({ mainHz: 14_250_000, subHz: 144_700_000 }), dualCaps(FTX1_TAGS));
+    renderHosted();
+    press(key('repeater-shift-ars')!);
+    expect(commands()).toEqual([{ name: 'set_repeater_shift', params: { direction: 3, receiver: 1 } }]);
+    const armed = shiftKeys().filter((node) => node.getAttribute('data-armed') === 'true')
+      .map((node) => node.textContent?.trim());
+    expect(armed).toEqual(['ARS']);
+    const described = key('repeater-shift-ars')!.getAttribute('aria-describedby');
+    expect(described && document.getElementById(described)?.textContent).toBe('Pending, not yet confirmed');
+  });
+
+  it('caps without ARS: three keys, and a reported 3 lights none', () => {
+    use(dualState({ mainHz: 14_250_000, subHz: 144_700_000, sub: { ...OFF, shift: 3 } }), dualCaps());
+    renderHosted();
+    expect(shiftKeys().map((node) => node.textContent?.trim())).toEqual(['SIMP', '−', '+']);
+    expect(key('repeater-shift-ars')).toBeNull();
+    expect(lit()).toEqual([]);
+    expect(shiftKeys().every((node) => node.getAttribute('data-active') === 'false')).toBe(true);
   });
 });
 

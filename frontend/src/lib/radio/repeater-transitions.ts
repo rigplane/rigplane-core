@@ -1,10 +1,10 @@
 /**
  * MOR-2111 — the pure repeater command-layer vocabulary shared by
- * `panel-commands.ts`, `SemanticRadioSurfaces.svelte` and
- * `RepeaterSurface.svelte`. No store, transport, or radio import. The
- * OFF/TONE/TSQL selector's transition table is the literal dispatch in
- * `panel-commands.ts::makeRepeaterHandlers` (kept there so the conformance
- * ledger sees each `name:` literal).
+ * `panel-commands.ts`, `radio-view-model-adapter.ts`,
+ * `SemanticRadioSurfaces.svelte` and `RepeaterSurface.svelte`. No store,
+ * transport, or radio import. The OFF/TONE/TSQL selector's transition table
+ * is the literal dispatch in `panel-commands.ts::makeRepeaterHandlers` (kept
+ * there so the conformance ledger sees each `name:` literal).
  *
  * `RepeaterToneMode`/`RepeaterShift` mirror the semantic view-model's
  * same-named types structurally; they are declared here too so
@@ -12,7 +12,7 @@
  * dependency.
  */
 export type RepeaterToneMode = 'off' | 'tone' | 'tsql';
-export type RepeaterShift = 'simplex' | 'minus' | 'plus';
+export type RepeaterShift = 'simplex' | 'plus' | 'minus' | 'ars';
 
 /** One receiver's in-flight repeater targets; `null`/`false` = nothing
  *  pending. */
@@ -22,9 +22,18 @@ export interface RepeaterPending {
   readonly toneFreq: boolean;
 }
 
-/** The wire `OS` P2 direction for a shift choice (ARS 3 is never offered). */
+/** Indexed by the wire `OS` P2 direction. */
+const SHIFT_BY_DIRECTION: readonly RepeaterShift[] = ['simplex', 'plus', 'minus', 'ars'];
+
+/** The wire `OS` P2 direction for a shift choice. */
 export function shiftDirection(shift: RepeaterShift): number {
-  return shift === 'simplex' ? 0 : shift === 'plus' ? 1 : 2;
+  return SHIFT_BY_DIRECTION.indexOf(shift);
+}
+
+/** The shift choice for a wire `OS` P2 direction, or `null` for any other
+ *  number. */
+export function shiftFromDirection(direction: number): RepeaterShift | null {
+  return SHIFT_BY_DIRECTION[direction] ?? null;
 }
 
 /** Step a CTCSS frequency (centiHz) through the profile's chart, clamped at
