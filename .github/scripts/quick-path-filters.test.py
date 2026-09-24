@@ -42,6 +42,8 @@ class QuickPathFilterContractTest(unittest.TestCase):
                 continue
             block: list[str] = []
             for candidate in lines[index + 1 :]:
+                if candidate.startswith("      #"):
+                    continue  # comments may sit between list entries
                 if not candidate.startswith('      - "'):
                     break
                 block.append(candidate.removeprefix('      - "').removesuffix('"'))
@@ -50,14 +52,28 @@ class QuickPathFilterContractTest(unittest.TestCase):
 
     @staticmethod
     def ignored_by_block(path: str, patterns: list[str]) -> bool:
-        for pattern in patterns:
+        # Ordered semantics like GitHub path filters: every matching pattern
+        # re-decides, a leading "!" re-includes, the last match wins.
+        ignored = False
+        for raw in patterns:
+            negated = raw.startswith("!")
+            pattern = raw[1:] if negated else raw
+            matched = path == pattern
             if pattern.endswith("/**") and path.startswith(pattern[:-2]):
-                return True
+                matched = True
             if pattern.startswith("**/*.") and path.endswith(pattern[4:]):
-                return True
-            if path == pattern:
-                return True
-        return False
+                matched = True
+            if "/**/" in pattern:
+                prefix, _, rest = pattern.partition("/**/")
+                if (
+                    rest.startswith("*.")
+                    and path.startswith(prefix + "/")
+                    and path.endswith(rest[1:])
+                ):
+                    matched = True
+            if matched:
+                ignored = not negated
+        return ignored
 
     def docs_quick_script(self) -> str:
         workflow = DOCS_QUICK_YML.read_text(encoding="utf-8")
@@ -170,6 +186,30 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
                 self.assertRaises(CLASSIFIER.ClassificationError),
             ):
                 CLASSIFIER.classify([unsafe])
+
+    def test_docs_data_files_select_core_by_suffix_rule(self) -> None:
+        # The rule covers any *.json/*.toml/*.yaml/*.yml under docs/, including
+        # files not in the hand-maintained CORE_DOCS_TEST_INPUT_EXACT list: a
+        # machine-readable docs data file must select core and must never take
+        # the docs-only fast path (MOR-2580).
+        for path in (
+            "docs/internals/ui-radio-control-contract.toml",
+            "docs/parity/ic7610_command_matrix.json",
+            "docs/validation/templates/x6200.json",
+            "docs/validation/templates/future-radio.json",
+            "docs/internals/future-contract.yaml",
+            "docs/guide/data.YML",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    CLASSIFIER.classify([path]),
+                    {"core": True, "frontend": False, "ci": False, "docs": False},
+                )
+        # Prose and images under docs/ stay documentation-only, and the rule
+        # is scoped to docs/: .claude data files keep the docs-only path.
+        self.assert_docs_only(["docs/guide.md"])
+        self.assert_docs_only(["docs/assets/front-panel.png"])
+        self.assert_docs_only([".claude/settings.json"])
 
     def test_docs_test_input_files_classify_as_core(self) -> None:
         # Every path here is read by name (Path(...)/open()/read_text()) by a
@@ -295,6 +335,19 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         for pattern in ("docs/**", ".claude/**", *suffix_patterns):
             with self.subTest(pattern=pattern):
                 self.assertEqual(quick.count(f'      - "{pattern}"'), 2)
+        # docs/ data files are re-included after "docs/**" in both
+        # paths-ignore blocks so a data-only diff still runs quick (MOR-2580).
+        for pattern in (
+            "!docs/**/*.toml",
+            "!docs/**/*.json",
+            "!docs/**/*.yaml",
+            "!docs/**/*.yml",
+        ):
+            with self.subTest(pattern=pattern):
+                self.assertEqual(quick.count(f'      - "{pattern}"'), 2)
+        # The publisher predicate applies the same suffix rule before posting
+        # a synthetic green quick status.
+        self.assertIn('DOCS_DATA_SUFFIXES = new Set([".json", ".toml", ".yaml", ".yml"])', docs_paths)
 
         self.assertIn("pull_request_target:", docs_quick)
         self.assertNotIn("\n  pull_request:\n", docs_quick)
@@ -356,6 +409,27 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             ),
             (
                 {
+                    "files": [
+                        {"filename": "docs/internals/ui-radio-control-contract.toml"}
+                    ]
+                },
+                "docs-data-toml",
+            ),
+            (
+                {"files": [{"filename": "docs/validation/templates/x6200.json"}]},
+                "docs-data-json",
+            ),
+            (
+                {
+                    "files": [
+                        {"filename": "docs/guide.md"},
+                        {"filename": "docs/parity/ic7610_command_matrix.json"},
+                    ]
+                },
+                "docs-mixed-data",
+            ),
+            (
+                {
                     "files": [{"filename": "docs/guide.md"}],
                     "changed_files": 3000,
                 },
@@ -395,10 +469,26 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             "frontend/README.rſt",
             "frontend/README.md\n",
             "frontend/README.rst\r\n",
+            # docs/ data files are re-included by the ordered "!docs/**"
+            # negations, so both quick.yml triggers fire for them (MOR-2580).
+            "docs/internals/ui-radio-control-contract.toml",
+            "docs/parity/ic7610_command_matrix.json",
+            "docs/validation/templates/x6200.json",
+            "docs/internals/future-contract.yaml",
         ):
             with self.subTest(path=path):
                 self.assertTrue(
                     all(not self.ignored_by_block(path, block) for block in blocks)
+                )
+        # Prose under docs/ stays ignored by both triggers.
+        for path in (
+            "docs/guide.md",
+            "docs/parity/README.md",
+            "docs/internals/audio-capture-health.md",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(
+                    all(self.ignored_by_block(path, block) for block in blocks)
                 )
 
     def test_docs_only_does_not_trigger_citation_or_rebrand_jobs(self) -> None:
