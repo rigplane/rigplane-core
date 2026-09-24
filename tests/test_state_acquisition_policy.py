@@ -1034,6 +1034,10 @@ def test_acquisition_class_table_is_the_owner_approved_literal() -> None:
     }
 
     assert tuple(ACQUISITION_CLASS_TABLE) == tuple(expected)
+    # The enum docstring says definition order is the ranking, and the fit
+    # walks the table's order reversed: pin the enum to the literal's key
+    # order too, so a member swap or a new member with no row goes red.
+    assert tuple(AcquisitionClass) == tuple(expected)
     for klass, (nominal, ceiling, polled_in, held) in expected.items():
         policy = ACQUISITION_CLASS_TABLE[klass]
         assert policy.nominal_cadence_seconds == nominal, klass

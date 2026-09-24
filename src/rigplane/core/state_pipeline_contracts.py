@@ -539,9 +539,6 @@ PANEL_ADJUSTABLE_FIELD_NAMES: Final[frozenset[str]] = frozenset(
 PANEL_FIELD_NAMES: Final[frozenset[str]] = (
     PANEL_ADJUSTABLE_FIELD_NAMES - CONTROL_FIELD_NAMES
 )
-#: Menu settings that stay on-demand: reached by
-#: ``AcquisitionScheduler.prime_unobserved`` and refreshed by their own
-#: command response.
 ON_DEMAND_FIELD_NAMES: Final[frozenset[str]] = frozenset(
     {
         "agc_time_constant",
