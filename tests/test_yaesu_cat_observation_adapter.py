@@ -3021,6 +3021,11 @@ async def test_defective_read_names_every_declared_path_it_feeds(
     defect = scheduler.startup_defect
     assert defect is not None
     assert sorted(str(path) for path in defect.paths) == sorted(expected)
+    # The broken read is skipped, not synthesized: none of the paths it
+    # feeds appears in the cycle's observations, so no invented value
+    # (None, False, ...) leaks into the store (MOR-2578 review round 2).
+    emitted = {str(item.path) for item in observations}
+    assert emitted.isdisjoint(expected)
     # Nothing is released: the gate's outstanding set is exactly what it was.
     assert scheduler.unobserved_startup_paths(()) == before
 
@@ -3056,12 +3061,51 @@ async def test_refused_read_mid_cycle_still_emits_later_slow_fields() -> None:
     ]
     # main.att itself is skipped ...
     assert "receiver.main.operator_controls.att" not in by_path
-    # ... and every later slow field still publishes.
+    # ... and every later slow field still publishes — including the
+    # active-slot readout, the owner-visible symptom on the stand.
+    assert by_path["global.slow_state.active"] == "SUB"
     assert by_path["receiver.sub.operator_toggles.repeater_tone"] is True
     assert by_path["receiver.sub.operator_toggles.repeater_tsql"] is False
     assert by_path["receiver.sub.operator_controls.tone_freq"] == 8850
     assert by_path["receiver.sub.operator_controls.tsql_freq"] == 8850
     assert by_path["receiver.sub.operator_controls.repeater_shift"] == 1
+
+
+@pytest.mark.asyncio
+async def test_refused_declared_ptt_read_skips_ptt_and_publishes_unknown() -> None:
+    """MOR-2578: a refused declared PTT read skips PTT, not the medium lane.
+
+    The PTT branch of ``poll_medium`` is a direct call, not ``_safe_read``:
+    on a refusal it must record the defect, publish the observed PTT as
+    UNKNOWN (neither ON nor OFF — no invented False), keep
+    ``global.tx_state.ptt`` absent from the observations, and let the
+    lane's remaining reads (filter_width) still publish.
+    """
+    profile = _profile_state_acquisition()
+    scheduler = AcquisitionScheduler(profile=profile)
+    radio = _gate_radio()
+    radio._acquisition_scheduler = scheduler
+    _break_read(radio, "read_transmit_state", None, failure="reject")
+
+    observations = await YaesuObservationAdapter(
+        radio, profile=profile, clock=_clock
+    ).poll_medium()
+
+    defect = scheduler.startup_defect
+    assert defect is not None
+    assert [str(path) for path in defect.paths] == ["global.tx_state.ptt"]
+    paths = {str(item.path) for item in observations}
+    # The raw PTT path is skipped — no invented False leaks into the store.
+    assert "global.tx_state.ptt" not in paths
+    # The lane continues past the refused read: the earlier freq/mode pair
+    # and the later filter_width still publish.
+    assert "receiver.main.active.freq_mode.freq_hz" in paths
+    assert "receiver.main.active.freq_mode.filter_width" in paths
+    # Exactly one observed-PTT observation, and it is UNKNOWN: neither
+    # ON nor OFF.
+    observed = [item for item in observations if item.path == OBSERVED_PTT_PATH]
+    assert len(observed) == 1
+    assert observed[0].value is ObservedPtt.UNKNOWN
 
 
 @pytest.mark.asyncio
