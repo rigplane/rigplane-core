@@ -1,3 +1,4 @@
+import { UI_TELEMETRY_ENABLED, recordManagedTxPublication, recordUiMetric } from '$lib/diagnostics/ui-telemetry';
 import type { ManagedTxState } from './managed-state';
 
 export type ManagedOperation = 'transmit_on' | 'force_off';
@@ -46,7 +47,10 @@ export class ManagedTxController {
     this.#state = dependencies.snapshot();
     this.#offAudioDied = dependencies.onAudioDied(() => { void this.forceOff(); });
     this.#offPresentationTick = dependencies.onPresentationTick?.(() => this.#publish()) ?? (() => {});
-    this.#offAuthorityChanged = dependencies.onAuthorityChanged?.(() => { void this.refresh(); })
+    this.#offAuthorityChanged = dependencies.onAuthorityChanged?.(() => {
+      if (UI_TELEMETRY_ENABLED) recordUiMetric('txWsAuthorityRefresh');
+      void this.refresh();
+    })
       ?? (() => {});
   }
 
@@ -58,6 +62,7 @@ export class ManagedTxController {
   }
 
   async refresh(): Promise<void> {
+    if (UI_TELEMETRY_ENABLED) recordUiMetric('txControllerRefresh');
     const onCycle = this.#onCycle;
     const revision = this.dependencies.snapshotRevision?.() ?? null;
     try { await this.dependencies.refresh(); } catch { this.dependencies.invalidate(); }
@@ -217,6 +222,7 @@ export class ManagedTxController {
 
   #completeOnCycle(): void {
     this.#onCycle = { cycle: ++this.#onCycleSerial };
+    if (UI_TELEMETRY_ENABLED) recordUiMetric('txOnCycleRefresh');
     void this.refresh();
   }
 
@@ -249,7 +255,9 @@ export class ManagedTxController {
   }
 
   #publish(): void {
-    this.#state = this.dependencies.snapshot();
+    const next = this.dependencies.snapshot();
+    if (UI_TELEMETRY_ENABLED) recordManagedTxPublication(this.#state, next);
+    this.#state = next;
     for (const listener of this.#listeners) listener(this.#state);
   }
 }

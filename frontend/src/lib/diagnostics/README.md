@@ -29,4 +29,19 @@ option update and row push; separate effect-driven option updates and resize
 work are outside that metric. Only aggregate
 numbers are retained; no frame content, state, URL, token, or event log is kept.
 
+The managed-TX diagnostic rows count the App authority effect (synchronous wall
+time), its refresh calls split by whether the state reference changed, host
+session refresh requests, started/coalesced host refreshes, controller refreshes,
+WS authority and ON-cycle triggers, and the browser's 250 ms presentation ticks.
+`txGetStarted`, `txGetCompleted`, `txGetFailed`, and `txGetDiscarded` classify
+canonical managed-TX GETs; completed means the current client promise resolved,
+and discarded includes superseded responses and errors. `txGetInFlight` is the
+current gauge; its maximum resets to the current gauge when **Reset window** is
+pressed. `txGetHttpLatency` is client-promise wall time, not CPU time.
+`txProjection` counts full managed-TX projections, and `radioViewCompute` counts
+uncached radio view projection attempts. Publication attempts are split by exact
+equality versus change across all eleven fields of `ManagedTxState`; both paths
+still notify listeners. These rows contain only aggregate counts and timing,
+never authority values, fault text, GET URLs, or response data.
+
 Remove the temporary probes and this file after the comparison is complete.

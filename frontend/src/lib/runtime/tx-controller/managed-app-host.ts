@@ -1,3 +1,4 @@
+import { UI_TELEMETRY_ENABLED, recordUiMetric } from '$lib/diagnostics/ui-telemetry';
 import { getContext, setContext } from 'svelte';
 import { createManagedBrowserDependencies } from './browser-dependencies';
 import { ManagedTxController } from './managed-controller';
@@ -48,10 +49,12 @@ export function provideManagedAppTxHost(bindings: ManagedAppTxHostBindings): Man
     if (disposed) return;
     if (controlSessionEpoch === null || providerGeneration === null) return;
     if (refreshInFlight?.revision === contextRevision) {
+      if (UI_TELEMETRY_ENABLED) recordUiMetric('txHostRefreshQueued');
       refreshInFlight.queued = true;
       return;
     }
     const revision = contextRevision;
+    if (UI_TELEMETRY_ENABLED) recordUiMetric('txHostRefreshStarted');
     const promise = controller.refresh().finally(() => {
       if (refreshInFlight?.promise !== promise) return;
       const rerun = refreshInFlight.queued && contextRevision === revision;
@@ -105,6 +108,7 @@ export function provideManagedAppTxHost(bindings: ManagedAppTxHostBindings): Man
           contextRevision++;
           controller.invalidate();
         }
+        if (UI_TELEMETRY_ENABLED) recordUiMetric('txHostSessionRefresh');
         startRefresh();
       } else {
         controlSessionEpoch = null;

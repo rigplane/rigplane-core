@@ -23,6 +23,7 @@
  * `__tests__/radio-view-model-adapter.test.ts` additionally runs every
  * emitted model through the real `validateRadioViewModel`.
  */
+import { UI_TELEMETRY_ENABLED, recordUiMetric } from '$lib/diagnostics/ui-telemetry';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type {
@@ -1855,6 +1856,7 @@ export function toRadioViewModel(
     return lastBareProjection.view;
   }
   if (!caps) return null;
+  if (UI_TELEMETRY_ENABLED) recordUiMetric('radioViewCompute');
   const presentation = derivePresentationCapabilities(caps);
   const topology = presentation.topology;
   if (!topology) return null;

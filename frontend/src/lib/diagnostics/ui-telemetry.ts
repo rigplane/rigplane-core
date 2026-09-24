@@ -1,3 +1,5 @@
+import type { ManagedTxState } from '$lib/runtime/tx-controller/managed-state';
+
 /** Temporary, build-gated aggregate UI telemetry for MOR-2551. */
 export const UI_TELEMETRY_ENABLED = import.meta.env.VITE_UI_DIAGNOSTICS === '1';
 
@@ -7,7 +9,14 @@ type Metric =
   | 'radioCommit' | 'hardwareAccepted' | 'audioFftAccepted'
   | 'scopePublish' | 'spectrumDraw' | 'waterfallFrameWork' | 'audioSpectrumDraw'
   | 'controlParse' | 'stateApply' | 'stateEnvelopeValidation'
-  | 'stateStoreCommit' | 'stateStoreAccepted';
+  | 'stateStoreCommit' | 'stateStoreAccepted'
+  | 'txAppAuthorityEffect' | 'txAppStateRefresh' | 'txAppOtherRefresh'
+  | 'txHostSessionRefresh' | 'txHostRefreshStarted' | 'txHostRefreshQueued'
+  | 'txControllerRefresh' | 'txWsAuthorityRefresh' | 'txOnCycleRefresh'
+  | 'txPresentationTick' | 'txProjection'
+  | 'txPublicationAttempt' | 'txPublicationEqual' | 'txPublicationChanged'
+  | 'txGetStarted' | 'txGetCompleted' | 'txGetFailed' | 'txGetDiscarded'
+  | 'txGetHttpLatency' | 'radioViewCompute';
 
 type ControlCategory = 'stateFull' | 'stateDelta' | 'stateOther' | 'response'
   | 'error' | 'notification' | 'event' | 'commandLifecycle' | 'other' | 'malformed';
@@ -45,8 +54,30 @@ const metrics: Record<Metric, Counter> = {
   stateEnvelopeValidation: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
   stateStoreCommit: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
   stateStoreAccepted: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
+  txAppAuthorityEffect: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
+  txAppStateRefresh: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
+  txAppOtherRefresh: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
+  txHostSessionRefresh: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
+  txHostRefreshStarted: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
+  txHostRefreshQueued: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
+  txControllerRefresh: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
+  txWsAuthorityRefresh: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
+  txOnCycleRefresh: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
+  txPresentationTick: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
+  txProjection: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
+  txPublicationAttempt: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
+  txPublicationEqual: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
+  txPublicationChanged: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
+  txGetStarted: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
+  txGetCompleted: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
+  txGetFailed: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
+  txGetDiscarded: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
+  txGetHttpLatency: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
+  radioViewCompute: { count: 0, bytes: 0, durationMs: 0, maxMs: 0 },
 };
 
+let txGetInFlight = 0;
+let txGetMaxInFlight = 0;
 let startedAt = 0;
 let summary: HTMLElement | null = null;
 
@@ -56,14 +87,21 @@ function formatSummary(): string {
     'Rates are averages since reset; binary bytes are incoming ArrayBuffer lengths.'];
   for (const [name, metric] of Object.entries(metrics)) {
     const timed = name === 'controlParse' || name === 'stateApply'
-      || name === 'stateEnvelopeValidation' || name === 'stateStoreCommit';
+      || name === 'stateEnvelopeValidation' || name === 'stateStoreCommit'
+      || name === 'txAppAuthorityEffect' || name === 'txGetHttpLatency';
     const duration = metric.count && (metric.durationMs || timed)
       ? `; total ${metric.durationMs.toFixed(1)} ms; mean ${(metric.durationMs / metric.count).toFixed(2)} ms; max ${metric.maxMs.toFixed(2)} ms`
       : '';
-    const volume = timed || name === 'stateStoreAccepted' ? ''
+    const volume = timed || name === 'stateStoreAccepted'
+      || name.startsWith('tx') || name === 'radioViewCompute' ? ''
       : name === 'controlText' ? `; ${metric.bytes} UTF-16 code units` : `; ${metric.bytes} B`;
     lines.push(`${name}: ${metric.count} (${(metric.count / elapsedSeconds).toFixed(1)}/s)${volume}${duration}`);
   }
+  lines.push(`txGetInFlight: ${txGetInFlight}; txGetMaxInFlight: ${txGetMaxInFlight}`);
+  lines.push('txAppAuthorityEffect is synchronous effect work, including JSON stringify and refresh call. txAppStateRefresh means state reference changed since prior refresh; txAppOtherRefresh covers remaining effect triggers.');
+  lines.push('txHostRefreshStarted counts actual controller refresh calls; txHostRefreshQueued counts coalesced requests.');
+  lines.push('txGetCompleted means current GET resolved; failed means current request error; discarded means superseded response/error. txGetHttpLatency is client-promise wall time, not JS CPU.');
+  lines.push('txPublicationEqual compares every ManagedTxState field; attempts still notify every listener. txProjection counts full managed-TX projections; radioViewCompute counts uncached radio view projection attempts.');
   lines.push('Control categories (whole-envelope UTF-16 units; key-specific units unavailable):');
   const categorized = Object.values(controlCategories);
   lines.push(`categorized total: ${categorized.reduce((total, item) => total + item.count, 0)}; ${categorized.reduce((total, item) => total + item.units, 0)} UTF-16 units`);
@@ -145,12 +183,45 @@ function start(): void {
 
 export function recordUiMetric(metric: Metric, bytes = 0, durationMs = 0): void {
   if (!UI_TELEMETRY_ENABLED) return;
-  start();
-  const entry = metrics[metric];
-  entry.count++;
-  entry.bytes += bytes;
-  entry.durationMs += durationMs;
-  entry.maxMs = Math.max(entry.maxMs, durationMs);
+  try {
+    start();
+    const entry = metrics[metric];
+    entry.count++;
+    entry.bytes += bytes;
+    entry.durationMs += durationMs;
+    entry.maxMs = Math.max(entry.maxMs, durationMs);
+  } catch { /* Diagnostic UI failure must not interrupt radio or TX paths. */ }
+}
+
+const managedTxFields = Object.keys({
+  phase: true, intent: true, radioTx: true, txRisk: true, fault: true, faultDetail: true,
+  fresh: true, releaseRequired: true, configuredSeconds: true, remainingMs: true,
+  lastOperation: true,
+} satisfies Record<keyof ManagedTxState, true>) as (keyof ManagedTxState)[];
+
+/** Count a completed comparison without storing any authority value. */
+export function recordManagedTxPublication(before: Readonly<ManagedTxState>, after: Readonly<ManagedTxState>): void {
+  if (!UI_TELEMETRY_ENABLED) return;
+  recordUiMetric('txPublicationAttempt');
+  try {
+    recordUiMetric(managedTxFields.every((field) => Object.is(before[field], after[field]))
+      ? 'txPublicationEqual' : 'txPublicationChanged');
+  } catch { /* A diagnostic comparison must never suppress publication. */ }
+}
+
+export function recordManagedTxGetStart(): void {
+  if (!UI_TELEMETRY_ENABLED) return;
+  recordUiMetric('txGetStarted');
+  txGetInFlight++;
+  txGetMaxInFlight = Math.max(txGetMaxInFlight, txGetInFlight);
+}
+
+export function recordManagedTxGetFinish(outcome: 'completed' | 'failed' | 'discarded', latencyMs: number): void {
+  if (!UI_TELEMETRY_ENABLED) return;
+  txGetInFlight = Math.max(0, txGetInFlight - 1);
+  recordUiMetric(outcome === 'completed' ? 'txGetCompleted'
+    : outcome === 'failed' ? 'txGetFailed' : 'txGetDiscarded');
+  recordUiMetric('txGetHttpLatency', 0, latencyMs);
 }
 
 export function recordControlEnvelope(raw: unknown, units: number): void {
@@ -215,6 +286,7 @@ export function resetUiTelemetry(): void {
   deltaChangedKeyCount = 0;
   deltaOtherKeyCount = 0;
   deltaFieldStatusEntries = 0;
+  txGetMaxInFlight = txGetInFlight;
   startedAt = performance.now();
 }
 

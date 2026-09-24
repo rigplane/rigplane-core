@@ -1,3 +1,4 @@
+import type { ManagedTxState } from '$lib/runtime/tx-controller/managed-state';
 import { afterEach, expect, it, vi } from 'vitest';
 
 afterEach(() => {
@@ -48,6 +49,45 @@ it('reports fixed control categories and delta shape without exposing values, th
   expect(afterReset).toContain('Delta fieldStatus entries: 0');
 });
 
+it('counts TX publication equality and bounded GET outcomes without retaining values', async () => {
+  vi.useFakeTimers();
+  vi.stubEnv('VITE_UI_DIAGNOSTICS', '1');
+  vi.resetModules();
+  const telemetry = await import('../ui-telemetry');
+  const view: ManagedTxState = {
+    phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none',
+    fault: null, faultDetail: null, fresh: true, releaseRequired: false,
+    configuredSeconds: null, remainingMs: null, lastOperation: null,
+  };
+  telemetry.recordManagedTxPublication(view, { ...view });
+  telemetry.recordManagedTxPublication(view, { ...view, fault: 'private-error' });
+  telemetry.recordManagedTxPublication(view, { ...view, remainingMs: 999 });
+  telemetry.recordManagedTxGetStart();
+  telemetry.recordManagedTxGetStart();
+  telemetry.recordManagedTxGetFinish('completed', 12);
+  telemetry.recordManagedTxGetFinish('discarded', 24);
+  let report = telemetry.uiTelemetrySummary();
+  expect(report).toContain('txPublicationAttempt: 3 (');
+  expect(report).toContain('txPublicationEqual: 1 (');
+  expect(report).toContain('txPublicationChanged: 2 (');
+  expect(report).toContain('txGetStarted: 2 (');
+  expect(report).toContain('txGetCompleted: 1 (');
+  expect(report).toContain('txGetDiscarded: 1 (');
+  expect(report).toContain('txGetInFlight: 0; txGetMaxInFlight: 2');
+  expect(report).toContain('txGetHttpLatency: 2 (');
+  expect(report).toContain('total 36.0 ms');
+  expect(report).not.toContain('private-error');
+
+  telemetry.recordManagedTxGetStart();
+  telemetry.resetUiTelemetry();
+  report = telemetry.uiTelemetrySummary();
+  expect(report).toContain('txPublicationAttempt: 0 (');
+  expect(report).toContain('txGetStarted: 0 (');
+  expect(report).toContain('txGetInFlight: 1; txGetMaxInFlight: 1');
+  telemetry.recordManagedTxGetFinish('failed', 8);
+  expect(telemetry.uiTelemetrySummary()).toContain('txGetInFlight: 0; txGetMaxInFlight: 1');
+});
+
 it('does no recording or overlay work with diagnostics disabled', async () => {
   vi.stubEnv('VITE_UI_DIAGNOSTICS', '0');
   vi.resetModules();
@@ -55,6 +95,9 @@ it('does no recording or overlay work with diagnostics disabled', async () => {
   telemetry.recordUiMetric('controlText', 100);
   telemetry.recordControlEnvelope({ type: 'state_update', data: { type: 'delta', changed: {} } }, 100);
   telemetry.recordMalformedControl(10);
+  telemetry.recordManagedTxGetStart();
+  telemetry.recordManagedTxGetFinish('failed', 10);
+  telemetry.recordManagedTxPublication({} as ManagedTxState, {} as ManagedTxState);
   expect(telemetry.uiTelemetrySummary()).toBe('');
   expect(document.querySelector('details[aria-label="UI diagnostics"]')).toBeNull();
 });

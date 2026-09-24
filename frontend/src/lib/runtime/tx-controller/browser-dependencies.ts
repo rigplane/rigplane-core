@@ -1,3 +1,4 @@
+import { UI_TELEMETRY_ENABLED, recordUiMetric } from '$lib/diagnostics/ui-telemetry';
 import { getTxAudioControl } from '$lib/runtime/adapters/tx-adapter';
 import {
   invalidateManagedTransmit, managedTransmitAppliedRevision, managedTransmitIsStale,
@@ -38,6 +39,7 @@ export function createManagedBrowserDependencies() {
     if (disposed || presentationTimer !== null || presentationListeners.size === 0) return;
     presentationTimer = setInterval(() => {
       if (disposed) return;
+      if (UI_TELEMETRY_ENABLED) recordUiMetric('txPresentationTick');
       for (const listener of presentationListeners) listener();
     }, PRESENTATION_TICK_MS);
   };
@@ -90,9 +92,12 @@ export function createManagedBrowserDependencies() {
     });
   };
   const dependencies: ManagedTxDependencies = {
-    snapshot: () => projectManagedTx(
-      managedTransmitSnapshot(), managedTransmitIsStale(), managedTransmitRemainingMs(),
-    ),
+    snapshot: () => {
+      if (UI_TELEMETRY_ENABLED) recordUiMetric('txProjection');
+      return projectManagedTx(
+        managedTransmitSnapshot(), managedTransmitIsStale(), managedTransmitRemainingMs(),
+      );
+    },
     refresh: () => refreshManagedTransmit(),
     invalidate: invalidateManagedTransmit,
     snapshotRevision: managedTransmitAppliedRevision,

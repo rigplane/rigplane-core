@@ -1,3 +1,4 @@
+import { UI_TELEMETRY_ENABLED, recordManagedTxGetFinish, recordManagedTxGetStart } from '../diagnostics/ui-telemetry';
 import { ManagedTransmitClient } from '../transport/managed-transmit-client';
 import { startManagedTransmitCountdown, readManagedTransmitCountdown, type ManagedTransmitCountdown } from '../runtime/managed-transmit-countdown';
 import type { ManagedTransmitDocument } from '../types/managed-transmit';
@@ -32,15 +33,25 @@ export async function refreshManagedTransmit(
 ): Promise<void> {
   const invalidationAtStart = invalidationRevision;
   const refresh = ++refreshRevision;
+  const diagnosticStarted = UI_TELEMETRY_ENABLED ? performance.now() : 0;
+  if (UI_TELEMETRY_ENABLED) recordManagedTxGetStart();
   let value: ManagedTransmitDocument;
   try {
     value = await client.snapshot();
   } catch {
-    if (refresh !== refreshRevision || !contextIsCurrent(invalidationAtStart)) return;
+    const current = refresh === refreshRevision && contextIsCurrent(invalidationAtStart);
+    if (UI_TELEMETRY_ENABLED) recordManagedTxGetFinish(
+      current ? 'failed' : 'discarded', performance.now() - diagnosticStarted,
+    );
+    if (!current) return;
     invalidateManagedTransmit();
     return;
   }
-  if (refresh !== refreshRevision || !contextIsCurrent(invalidationAtStart)) return;
+  const current = refresh === refreshRevision && contextIsCurrent(invalidationAtStart);
+  if (UI_TELEMETRY_ENABLED) recordManagedTxGetFinish(
+    current ? 'completed' : 'discarded', performance.now() - diagnosticStarted,
+  );
+  if (!current) return;
   receiveManagedTransmitSnapshot(value);
 }
 export async function submitManagedTransmit(operation: 'transmit_on' | 'force_off', client = new ManagedTransmitClient()): Promise<'accepted' | 'rejected'> { const outcome = await client.command(operation); await refreshManagedTransmit(client); return outcome; }
