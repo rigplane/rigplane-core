@@ -4310,19 +4310,19 @@ async def test_yaesu_get_func_tone_not_known_answers_enavail(
 
 
 @pytest.mark.asyncio
-async def test_yaesu_get_func_tsql_not_known_on_sub_answers_enavail(
-    yaesu_radio: AsyncMock,
-) -> None:
+async def test_yaesu_get_func_tsql_not_known_on_sub_answers_enavail() -> None:
     """MOR-2572, SUB receiver: the routed VFOB projection holds the same
-    None contract (CT codes 3/4/5 on the SUB side answer ENAVAIL)."""
+    None contract (an observed None on the SUB path answers ENAVAIL, with
+    no live CT read that would invent False over it)."""
+    radio, _ct, _writes = _real_ftx1_ct_radio()
     store = StateStore()
     _seed_store_current(store, "receiver.sub.operator_toggles.repeater_tsql", None)
-    handler = RigctldHandler(yaesu_radio, RigctldConfig(), state_store=store)
+    handler = RigctldHandler(radio, RigctldConfig(), state_store=store)
 
     resp = await handler.execute(_vfo_func_cmd("get_func", "VFOB", "TSQL"))
 
     assert resp.error == HamlibError.ENAVAIL
-    yaesu_radio.get_repeater_tsql.assert_not_awaited()
+    radio._transport.query.assert_not_awaited()  # noqa: SLF001
 
 
 @pytest.mark.asyncio
