@@ -36,7 +36,7 @@
     hideSourceControls?: boolean;
     hideScopeControls?: boolean;
     hideAutoStepToggle?: boolean;
-    scopeControls?: Snippet<[allowBare?: boolean, screenGroup?: Snippet]>;
+    scopeControls?: Snippet<[allowBare?: boolean, screenGroup?: Snippet, rowTail?: Snippet]>;
     /** MOR-2545 PR2 — the compact scope-display indicator, mounted at the
      *  row's right end (the standalone status line row is gone). Named
      * `scopeStatusIndicator` so no source pin can confuse it with the dead
@@ -296,65 +296,84 @@
   MOR-2545 PR2 — the hosted screen-only group, rendered inside the More
   panel BELOW the radio-held group (the surface places it). Same handlers
   and state bindings as the unhosted row: this is a mount move, not a fork.
-  The surface hands the group a `closeMore` callback so entries that open
-  their own surface (EiBi) can close the panel, as the old layer dropdown
-  closed itself. The STEP row is the narrow-width overflow copy — visible
-  only while the row's own STEP is hidden by the container query below
-  (STEP hides after SPAN in PR1's hide order; BANDS, ⋯ and fullscreen
-  never hide).
+  `closeMore` lets entries that open their own surface (EiBi) close the
+  panel. The STEP row is the narrow-width overflow copy, shown only while
+  the row's own STEP is hidden by the `scope-controls` container's step
+  band (scope-capsule.css). MOR-2545 round 4 — every control here is the
+  Standard-face raised-key family (control-button.css): lit keys carry the
+  cyan edge-left bar, the stepper and select take the family `--hw-*`
+  surface from scope-capsule.css; AVG/PEAK render through the SAME
+  `avgPeakKeys` snippet the row's quick keys use.
 -->
+{#snippet avgPeakKeys()}
+  <!-- MOR-2545 PR3: ONE definition, TWO mounts (row quick keys + More); same
+       handlers, same bindable state — not a fork. -->
+  <button type="button" class="scope-flat-key" data-lit={enableAvg} aria-pressed={enableAvg}
+    onclick={() => (enableAvg = !enableAvg)}>AVG</button>
+  <button type="button" class="scope-flat-key" data-lit={enablePeakHold} aria-pressed={enablePeakHold}
+    onclick={() => (enablePeakHold = !enablePeakHold)}>PEAK</button>
+{/snippet}
+
+{#snippet rowTail()}
+  <!-- MOR-2545 PR3 — the host's row tail, placed by the surface between the
+       receiver capsule and [MORE ▾]: STEP · BANDS · spacer · the wide-only
+       AVG/PEAK quick keys (hidden FIRST by the container query, before the
+       receiver). BANDS keeps its lit state; its layers stay in More. -->
+  <span class="scope-stepper scope-capsule" data-overflow="step" data-testid="toolbar-row-step">
+    <button type="button" class="scope-step-key" onclick={cycleStepDown}
+      title="Decrease tuning step" aria-label="Decrease tuning step">&#8249;</button>
+    <button type="button" class="scope-step-key step-cycler" onclick={cycleStep}
+      oncontextmenu={cycleStepDown} title="Click to step up, right-click to step down">
+      <span class="scope-name">STEP</span>
+      <span class="scope-step-value step-wide-value">{stepLabel}</span>
+    </button>
+    <button type="button" class="scope-step-key" onclick={cycleStep}
+      title="Increase tuning step" aria-label="Increase tuning step">&#8250;</button>
+  </span>
+  <button type="button" class="scope-flat-key" data-lit={showBandPlan} aria-pressed={showBandPlan}
+    onclick={() => (showBandPlan = !showBandPlan)} title="Show/hide band plan overlay">BANDS</button>
+  <div class="toolbar-spacer"></div>
+  <div class="toolbar-group" data-overflow="quick" data-testid="toolbar-quick-keys">
+    {@render avgPeakKeys()}
+  </div>
+{/snippet}
+
 {#snippet screenGroup(closeMore?: () => void)}
   <div class="toolbar-group step-group toolbar-step-copy" data-testid="scope-more-step">
-    <button
-      class="toolbar-btn small step-arrow"
-      onclick={cycleStepDown}
-      title="Decrease tuning step"
-    >◀</button>
-    <button
-      class="toolbar-btn step-control"
-      onclick={cycleStep}
-      oncontextmenu={cycleStepDown}
-      title="Click to step up, right-click to step down"
-    >
-      <span class="toolbar-label">STEP</span>
-      <span class="toolbar-value">{stepLabel}</span>
-    </button>
-    <button
-      class="toolbar-btn small step-arrow"
-      onclick={cycleStep}
-      title="Increase tuning step"
-    >▶</button>
+    <span class="scope-stepper scope-capsule">
+      <button type="button" class="scope-step-key" onclick={cycleStepDown}
+        title="Decrease tuning step" aria-label="Decrease tuning step">&#8249;</button>
+      <button type="button" class="scope-step-key step-cycler" onclick={cycleStep}
+        oncontextmenu={cycleStepDown} title="Click to step up, right-click to step down">
+        <span class="scope-name">STEP</span>
+        <span class="scope-step-value step-wide-value">{stepLabel}</span>
+      </button>
+      <button type="button" class="scope-step-key" onclick={cycleStep}
+        title="Increase tuning step" aria-label="Increase tuning step">&#8250;</button>
+    </span>
   </div>
   <div class="toolbar-group">
-    <button
-      class="toolbar-btn scope-demand-toggle"
-      class:active={scopeDemandOn}
-      aria-pressed={scopeDemandOn}
-      onclick={() => onScopeDemandChange(!scopeDemandOn)}
-      title="Request scope viewer data"
-    >VIEW {scopeDemandOn ? 'ON' : 'OFF'}</button>
+    <button type="button" class="scope-flat-key scope-demand-toggle" data-lit={scopeDemandOn} aria-pressed={scopeDemandOn}
+      onclick={() => onScopeDemandChange(!scopeDemandOn)} title="Request scope viewer data">VIEW</button>
     <!-- MOR-1486 ruling B gate survives the move: AUTO renders only where a
          layout-supplied driver can actually honour mode-follow. -->
     {#if !hideAutoStepToggle}
-      <button
-        class="toolbar-btn small auto-step-toggle"
-        class:active={autoStep}
-        aria-pressed={autoStep}
+      <button type="button" class="scope-flat-key" data-lit={autoStep} aria-pressed={autoStep}
         onclick={toggleAutoStep}
-        title={autoStep ? t('core.spectrum.autoStep.onTitle') : t('core.spectrum.autoStep.offTitle')}
-      >AUTO</button>
+        title={autoStep ? t('core.spectrum.autoStep.onTitle') : t('core.spectrum.autoStep.offTitle')}>AUTO</button>
     {/if}
-    <button class="toolbar-btn" class:active={enableAvg} onclick={() => (enableAvg = !enableAvg)}>AVG</button>
-    <button class="toolbar-btn" class:active={enablePeakHold} onclick={() => (enablePeakHold = !enablePeakHold)}>PEAK</button>
+    {@render avgPeakKeys()}
+  </div>
+  <div class="scope-stepper scope-capsule" data-testid="scope-more-brt">
+    <span class="scope-name">BRT</span>
+    <button type="button" class="scope-step-key" onclick={() => (brtLevel = clampBrt(brtLevel, -5))}
+      aria-label="Decrease brightness">&#8722;</button>
+    <span class="scope-step-value">{brtLevel > 0 ? '+' : ''}{brtLevel}</span>
+    <button type="button" class="scope-step-key" onclick={() => (brtLevel = clampBrt(brtLevel, 5))}
+      aria-label="Increase brightness">+</button>
   </div>
   <div class="toolbar-group">
-    <span class="toolbar-label">BRT</span>
-    <button class="toolbar-btn small" onclick={() => (brtLevel = clampBrt(brtLevel, -5))}>−</button>
-    <span class="toolbar-value ref-value">{brtLevel > 0 ? '+' : ''}{brtLevel}</span>
-    <button class="toolbar-btn small" onclick={() => (brtLevel = clampBrt(brtLevel, 5))}>+</button>
-  </div>
-  <div class="toolbar-group">
-    <select class="toolbar-select" bind:value={colorScheme}>
+    <select class="scope-capsule-select" bind:value={colorScheme} title="Waterfall palette">
       <option value="classic">Classic</option>
       <option value="thermal">Thermal</option>
       <option value="grayscale">Gray</option>
@@ -366,44 +385,53 @@
         <div class="dropdown-section-label">Region</div>
         <div class="region-selector">
           {#each availableRegions as region}
-            <button
-              class="region-btn"
-              class:active={region === currentRegion}
-              onclick={() => setRegion(region)}
-            >{region}</button>
+            <button type="button" class="scope-flat-key region-key" data-lit={region === currentRegion}
+              aria-pressed={region === currentRegion}
+              onclick={() => setRegion(region)}>{region}</button>
           {/each}
         </div>
       {/if}
       <div class="dropdown-section-label">Layers</div>
       {#each availableLayers as layer}
-        <label class="layer-option">
-          <input
-            type="checkbox"
-            checked={isLayerVisible(hiddenLayers, layer.layer)}
-            onchange={() => toggleLayer(layer.layer)}
-          />
-          <span class="layer-name">{layer.name}</span>
-        </label>
+        <button type="button" class="scope-flat-key layer-key" data-lit={isLayerVisible(hiddenLayers, layer.layer)}
+          aria-pressed={isLayerVisible(hiddenLayers, layer.layer)}
+          onclick={() => toggleLayer(layer.layer)}>{layer.name}</button>
       {/each}
-      <button
-        class="eibi-browser-btn"
-        onclick={() => { showEiBi = true; closeMore?.(); }}
-      >📻 EiBi Stations...</button>
+      <button type="button" class="scope-flat-key eibi-key"
+        onclick={() => { showEiBi = true; closeMore?.(); }}>EiBi Stations</button>
     </div>
   {/if}
 {/snippet}
 
-<div class="spectrum-toolbar" class:hosted={hosted}>
-  {#if hasCapability('scope') && hideScopeControls && scopeControls}
-    <!-- MOR-2545 PR2: the PR1 radio-held row leads the one row, and carries
-         its screen group into the More panel through the second argument. -->
-    <div class="semantic-scope-controls-host toolbar-group-c">
-      {@render scopeControls(undefined, screenGroup)}
+<!-- MOR-2545 round 4 (owner style B): the hosted root carries the family's
+     own anchor classes. desktop-v2 already has them on the layout root;
+     sdr-test does NOT (its root class is `.sdr-test`), and without an
+     anchor the Standard-face command family's selectors
+     (`.desktop-control-face.standard-face :is(…)` in control-button.css)
+     never reach the row there. Scoping the anchors to `hosted` — the only
+     mode where this toolbar renders the semantic row — extends the FAMILY,
+     not a copy: no other `.standard-face` rule in the tree matches anything
+     inside this toolbar's subtree (verified by grep over every
+     `.standard-face` selector: the rest key on the band-tab, rx-tx-*,
+     .desktop-station-meters, VFO/status-bar parts, none of which render
+     here), so the toolbar is display-identical on desktop-v2 and keys-only
+     on sdr-test. -->
+<div
+  class="spectrum-toolbar"
+  class:hosted={hosted}
+  class:standard-face={hosted}
+  class:desktop-control-face={hosted}
+>  {#if hasCapability('scope') && hideScopeControls && scopeControls}
+    <!-- MOR-2545 PR3: the semantic row IS the one row — the toolbar hands it
+         the screen group (2nd arg, into More) and the row tail (3rd arg,
+         before [MORE ▾]). No separators, no cyan wash; token ground. -->
+    <div class="semantic-scope-controls-host">
+      {@render scopeControls(undefined, screenGroup, rowTail)}
     </div>
-    <div class="toolbar-separator"></div>
-  {/if}
-  <!-- Group A: Tuning (no wash) -->
-  <div class="toolbar-group step-group" data-overflow={hosted ? 'step' : undefined}>
+  {:else}
+  <!-- Group A: Tuning (no wash) — the UNHOSTED faces only (v1 desktop,
+       mobile, flagship probe); their look is out of MOR-2545 PR3 scope. -->
+  <div class="toolbar-group step-group">
     <button
       class="toolbar-btn small step-arrow"
       onclick={cycleStepDown}
@@ -423,7 +451,7 @@
       onclick={cycleStep}
       title="Increase tuning step"
     >▶</button>
-    {#if !hosted && !hideAutoStepToggle}
+    {#if !hideAutoStepToggle}
       <button
         class="toolbar-btn small auto-step-toggle"
         class:active={autoStep}
@@ -433,7 +461,6 @@
       >AUTO</button>
     {/if}
   </div>
-  {#if !hosted}
   {#if hasCapability('scope')}
     <div class="toolbar-separator"></div>
     <!-- Group B: Scope mode (cyan wash) -->
@@ -635,17 +662,8 @@
       {/if}
     </div>
   {/if}
-  {:else}
-    <!-- Hosted one-row tail: BANDS stays in the row; its layers moved into
-         the More screen group above (same handlers, same REST state). -->
-    <div class="toolbar-separator"></div>
-    <div class="toolbar-group bands-group">
-      <button class="toolbar-btn" class:active={showBandPlan} onclick={() => (showBandPlan = !showBandPlan)} title="Show/hide band plan overlay">
-        BANDS
-      </button>
-    </div>
-  {/if}
   <div class="toolbar-spacer"></div>
+  {/if}
   {#if scopeStatusIndicator}
     <!-- MOR-2545 PR2: the compact scope status indicator (tooltip carries
          the old status line's text, unread parts omitted). -->
@@ -705,9 +723,9 @@
     min-width: 0;
     max-width: 100%;
     height: auto;
+    flex: 1 1 auto;
     flex-wrap: wrap;
   }
-
   .semantic-scope-controls-host :global(.surface-zone),
   .semantic-scope-controls-host :global(.semantic-control-panel) { display: contents; }
 
@@ -726,19 +744,44 @@
     white-space: nowrap;
   }
 
-  /* MOR-2545 PR2 — hosted one-row layout: the toolbar is the query container
-      for its OWN keys' overflow. STEP hides into More below this band (STEP
-      goes after SPAN in PR1's hide order; BANDS, ⋯ and fullscreen never
-      hide). The band is measured by the independent reviewer on PR #3598:
-      with the status slot unshrinkable, the row overflows at a 440 px
-      toolbar (desktop-v2) = 424 px content box. */
-  .spectrum-toolbar.hosted { container-type: inline-size; container-name: spectrum-toolbar-row; }
+  /* MOR-2545 PR3 — hosted one-row layout: the semantic row spans the strip
+      (flex growth above) and its `scope-controls` query container owns
+      EVERY overflow band (see scope-capsule.css). The strip's ONE ground is
+      the scope section's own card token --v2-bg-card (round-2 finding 7:
+      the row sheet also switches the surface's own card paint off, so the
+      keys, SRC and ⛶ share it); the unhosted faces keep today's
+      gradient. */
+  .spectrum-toolbar.hosted { background: var(--v2-bg-card); }
 
+  /* The raised-key family owns hover and lit text inside the hosted row: the
+      PR1 lamp grammar's glow and brightness filter never reach it. */
+  .semantic-scope-controls-host :global(.scope-flat-key[data-lit='true']) { text-shadow: none; }
+  .semantic-scope-controls-host :global(.scope-flat-key:hover:not(:disabled)) { filter: none; }
+
+  /* The More STEP copy shows only while the row's STEP is hidden by the
+      surface container's step band — the SAME literal scope-capsule.css
+      hides the row's STEP with (container queries resolve on DOM ancestry,
+      so the fixed-position panel still sees the container; the band value
+      is pinned together with the sheet's by the component tests). */
   .toolbar-step-copy { display: none; }
 
-  @container spectrum-toolbar-row (max-width: 424px) {
-    .step-group[data-overflow='step'] { display: none; }
+  @container scope-controls (max-width: 320px) {
     .toolbar-step-copy { display: flex; }
+  }
+
+  /* The row's STEP cycler: label + reserved-width value in the stepper's
+     middle (click up / context-menu down). The capsule sheet sizes only
+     the arrow keys (`:not(.step-cycler)`), so this natural width and the
+     inherited 11 px stand unopposed (round-3 finding 1: the cycler sized
+     16 px collapsed across both arrows and ‹ could not be clicked). */
+  .step-cycler {
+    width: auto;
+    font-size: inherit;
+    gap: 3px;
+  }
+
+  .step-cycler .step-wide-value {
+    min-width: 48px;
   }
 
   /* The compact scope-status indicator seat: the zoned wrapper renders via

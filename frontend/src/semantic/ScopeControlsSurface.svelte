@@ -10,21 +10,33 @@
   controller (v3 ADR invariant 11); the only local state is the More panel's
   open/closed UI flag.
 
-  MOR-2545 PR1 SHAPE (owner-approved design, ticket comments 2026-09-23):
-  the NATIVE presentation is ONE always-visible row —
-  CTR/FIX (two flat keys of the mode choice; in S-C/S-F neither lights and
-  the More panel's full mode choice shows the current mode), SPAN ‹ value ›,
-  REF ‹ value ›, HOLD (flat toggle key), MAIN/SUB (only when the receiver
-  choice is structural — dual-receiver radios), and a ⋯ key that opens MORE.
-  More carries the rest of the radio-held controls: the full mode choice
-  CTR/FIX/S-C/S-F, the FIX edge 1–4 (only when applicable), centre type
-  Filter/Carrier/Abs, RBW W/M/N and VBW narrow, SPEED ‹ ›, DUAL, during TX.
-  Every toggle is a flat key (`ScopeFlatKey.svelte`) whose LIGHT is its state
-  — never `NAME: true/false` text. Unread stepper values are EMPTY with
-  reserved width — never `—`/`?` placeholders. When an external finite
+  MOR-2545 PR1 SHAPE (owner-approved design, ticket comments 2026-09-23),
+  restyled in PR3 round 4 to the owner's style B "raised keys" ("variant B,
+  owner, 2026-09-24 07:43 EDT") — HOSTED MOUNTS ONLY (round-2 finding 3):
+  the capsule markup and the row stylesheet
+  (`components/spectrum/scope-capsule.css`, scoped under
+  `.spectrum-toolbar.hosted`) apply only when the host toolbar hands over a
+  `rowTail` — the desktop-v2 Standard face and sdr-test. Every other
+  native mount (the LCD skins, mobile, bare zone mounts) renders PR1's
+  flat-key grammar — same keys, reserved widths and ⋯ More glyph as before
+  the restyle (the only markup difference: a display:contents segment
+  wrapper in the More panel, which lays out identically). HOSTED: the
+  NATIVE presentation is ONE always-visible row of Standard-face raised
+  keys — [CTR|FIX] (S-C/S-F stay in More; neither segment lights there and
+  the full mode choice shows the mode), [SPAN ‹value›], [REF ‹value›],
+  [HOLD], [MAIN|SUB] (only with the structural receiver fact), the host's
+  `rowTail` (STEP · BANDS · spacer · the wide-only AVG/PEAK quick keys,
+  moved inside this row in PR3 for the spec's left-to-right order), and
+  the [MORE ▾] key. Every control in the row AND in the More panel is the
+  ONE family (control-button.css); lit = the cyan edge-left bar, never
+  colour-only.
+  More carries the rest: the full mode choice CTR/FIX/S-C/S-F, the FIX edge
+  1–4 (only when applicable), centre type Filter/Carrier/Abs, RBW W/M/N and
+  VBW narrow, SPEED ‹ ›, DUAL, during TX. Unread stepper values are EMPTY
+  with reserved width — never `—`/`?` placeholders. When an external finite
   appearance is selected (`finiteAppearance`), the surface delegates to the
-  renderer hosts (the stacked layout below) — the
-  row/More split is the NATIVE appearance; a kit's renderer owns its own layout.
+  renderer hosts (the stacked layout below) — the row/More split is the
+  NATIVE appearance; a kit's renderer owns its own layout.
 
   BINDING CARRY-FORWARDS (11A/11A′/11A″ verify reports):
   (1) Renders ONLY from `view.scopeControls`. It never reaches into raw
@@ -96,6 +108,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import type { Snippet } from 'svelte';
+  import { t } from '$lib/i18n';
   import ScopeFlatKey from '../components/spectrum/ScopeFlatKey.svelte';
   import ScopeMorePanel from '../components/spectrum/ScopeMorePanel.svelte';
   import {
@@ -128,6 +141,13 @@
      * itself.
      */
     moreScreen?: Snippet<[closeMore?: () => void]>;
+    /**
+     * MOR-2545 PR3 — the host toolbar's row tail (STEP, BANDS, spacer,
+     * AVG/PEAK quick keys), rendered between the receiver capsule and
+     * [MORE ▾]; same channel as `moreScreen`. Renders bare (without the
+     * scope row) when the fact group is absent, so the controls survive.
+     */
+    rowTail?: Snippet;
   }
   type RendererSelection =
     | { finiteAppearance?: undefined; rendererContext?: undefined }
@@ -135,20 +155,27 @@
   type Props = ExistingProps & RendererSelection;
   let {
     view, onToggleChange, onChoiceChange, onSpanChange, onSpeedChange, onRefChange,
-    moreScreen, finiteAppearance, rendererContext,
+    moreScreen, rowTail, finiteAppearance, rendererContext,
   }: Props = $props();
 
   /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine). */
   let sc = $derived(view.scopeControls);
+  /** PR3 round 2 (finding 3): the capsule family renders ONLY when the host
+   *  toolbar handed over a rowTail — the hosted Standard-face/sdr-test row.
+   *  Every other mount keeps PR1's flat-key grammar exactly. */
+  let hosted = $derived(rowTail !== undefined);
   let modeKnown = $derived(
     sc?.mode.reading.status === 'known' ? sc.mode.reading.value : undefined,
   );
   let spanApplicable = $derived(isSpanApplicable(modeKnown));
   let edgeApplicable = $derived(isEdgeApplicable(modeKnown));
 
-  /** The ⋯ More panel — UI-local open flag (never radio state). */
+  /** The [MORE ▾] More panel — UI-local open flag (never radio state).
+   *  MOR-2545 PR3: the label comes from the i18n system
+   *  (`core.spectrum.more`), uppercased + ▾ by the capsule family. */
   let moreOpen = $state(false);
   let moreKeyEl = $state<HTMLElement | null>(null);
+  let moreLabel = $derived(`${t('core.spectrum.more')} ▾`);
 
   function toggleInstrument(field: ScopeToggleField) {
     return bindToggleInstrument(() => ({
@@ -255,7 +282,7 @@
 
       {#if spanApplicable && sc.span.availability.structural}
         <div class="scope-stepper" data-testid="scope-span">
-          <span class="scope-name">SPAN</span>
+          <span class="scope-finite-name">SPAN</span>
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('span', -1, 'scope span')} renderer={finiteAppearance.action}
           />{/key}{/key}
@@ -270,7 +297,7 @@
 
       {#if sc.speed.availability.structural}
         <div class="scope-stepper" data-testid="scope-speed">
-          <span class="scope-name">SPEED</span>
+          <span class="scope-finite-name">SPEED</span>
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('speed', -1, 'scope speed')} renderer={finiteAppearance.action}
           />{/key}{/key}
@@ -285,7 +312,7 @@
 
       {#if sc.refDb.availability.structural}
         <div class="scope-stepper" data-testid="scope-ref">
-          <span class="scope-name">REF</span>
+          <span class="scope-finite-name">REF</span>
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('refDb', -5, 'scope reference')} renderer={finiteAppearance.action}
           />{/key}{/key}
@@ -304,15 +331,18 @@
         {/if}
       {/each}
     {:else}
-      <!-- Native appearance: ONE always-visible row + the ⋯ More panel. -->
+      <!-- Native appearance: ONE always-visible capsule row + the [MORE ▾]
+           panel. The host toolbar's rowTail (STEP · BANDS · spacer ·
+           AVG/PEAK) rides between the receiver capsule and MORE. -->
       <div class="scope-controls-row" data-testid="scope-controls-row">
         {#if sc.mode.availability.structural}
           {@const modeQuick = choiceInstrument('mode', QUICK_MODE.map(([v]) => v))}
-          <span class="scope-key-group" role="radiogroup" aria-label="Scope mode" data-testid="scope-mode-row">
+          <span class={hosted ? 'scope-capsule' : 'scope-key-group'} role="radiogroup" aria-label="Scope mode" data-overflow="mode" data-testid="scope-mode-row">
             {#each QUICK_MODE as [v, label] (v)}
               <ScopeFlatKey kind="choice" {label} testid="scope-mode-row-{v}"
+                width={hosted ? undefined : '42px'}
                 lit={modeKnown === undefined ? null : modeKnown === v}
-                disabled={!modeQuick.available} onclick={() => modeQuick.invoke(v)} width="42px" />
+                disabled={!modeQuick.available} onclick={() => modeQuick.invoke(v)} />
             {/each}
           </span>
         {/if}
@@ -320,7 +350,7 @@
         {#if spanApplicable && sc.span.availability.structural}
           {@const spanDown = spanInstrument(-1)}
           {@const spanUp = spanInstrument(1)}
-          <span class="scope-stepper" data-overflow="span" data-testid="scope-span">
+          <span class="scope-stepper" class:scope-capsule={hosted} data-overflow="span" data-testid="scope-span">
             <span class="scope-name">SPAN</span>
             <button type="button" class="scope-step-key" aria-label="Decrease scope span"
               disabled={!spanDown.available} onclick={() => spanDown.invoke()}>&#8249;</button>
@@ -333,7 +363,7 @@
         {#if sc.refDb.availability.structural}
           {@const refDown = refInstrument(-5)}
           {@const refUp = refInstrument(5)}
-          <span class="scope-stepper" data-overflow="ref" data-testid="scope-ref">
+          <span class="scope-stepper" class:scope-capsule={hosted} data-overflow="ref" data-testid="scope-ref">
             <span class="scope-name">REF</span>
             <button type="button" class="scope-step-key" aria-label="Decrease scope reference"
               disabled={!refDown.available} onclick={() => refDown.invoke()}>&#8249;</button>
@@ -346,7 +376,7 @@
         {#if sc.hold.availability.structural}
           {@const hold = toggleInstrument('hold')}
           <span class="scope-key-group" data-overflow="hold">
-            <ScopeFlatKey label="HOLD" testid="scope-hold" width="52px"
+            <ScopeFlatKey label="HOLD" testid="scope-hold" width={hosted ? undefined : '52px'}
               lit={hold.confirmed ?? null} disabled={!hold.available} onclick={() => hold.invoke()} />
           </span>
         {/if}
@@ -354,18 +384,22 @@
         {#if sc.receiver.availability.structural}
           {@const receiverChoice = choiceInstrument('receiver', [0, 1])}
           {@const receiverValue = valueOf(sc.receiver)}
-          <span class="scope-key-group" role="radiogroup" aria-label="Scope receiver" data-overflow="receiver" data-testid="scope-receiver">
+          <span class={hosted ? 'scope-capsule' : 'scope-key-group'} role="radiogroup" aria-label="Scope receiver" data-overflow="receiver" data-testid="scope-receiver">
             {#each [[0, 'MAIN'], [1, 'SUB']] as const as [v, label] (v)}
-              <ScopeFlatKey kind="choice" {label} testid="scope-receiver-{v}" width="48px"
+              <ScopeFlatKey kind="choice" {label} testid="scope-receiver-{v}"
+                width={hosted ? undefined : '48px'}
                 lit={receiverValue === undefined ? null : receiverValue === v}
                 disabled={!receiverChoice.available} onclick={() => receiverChoice.invoke(v)} />
             {/each}
           </span>
         {/if}
 
+        {@render rowTail?.()}
+
         <span class="scope-more-anchor">
-          <ScopeFlatKey kind="action" label="⋯" ariaLabel="More scope controls"
-            ariaExpanded={moreOpen} lit={moreOpen ? true : null} testid="scope-more" width="30px"
+          <ScopeFlatKey kind="action" label={hosted ? moreLabel : '⋯'} ariaLabel="More scope controls"
+            title={hosted ? moreLabel : undefined} ariaExpanded={moreOpen} lit={moreOpen ? true : null}
+            testid="scope-more" width={hosted ? undefined : '30px'}
             bind:element={moreKeyEl} onclick={() => { moreOpen = !moreOpen; }} />
           {#if moreOpen}
             <ScopeMorePanel onClose={() => { moreOpen = false; }} anchor={moreKeyEl}>
@@ -376,11 +410,13 @@
                     {@const overflowReceiver = choiceInstrument('receiver', [0, 1])}{@const overflowReceiverValue = valueOf(sc.receiver)}
                     <div class="scope-more-row" role="radiogroup" aria-label="Scope receiver" data-overflow="receiver" data-testid="scope-overflow-receiver">
                       <span class="scope-name">MAIN/SUB</span>
-                      {#each [[0, 'MAIN'], [1, 'SUB']] as const as [v, label] (v)}
-                        <ScopeFlatKey kind="choice" {label} testid={`scope-overflow-receiver-${v}`} width="48px"
-                          lit={overflowReceiverValue === undefined ? null : overflowReceiverValue === v}
-                          disabled={!overflowReceiver.available} onclick={() => overflowReceiver.invoke(v)} />
-                      {/each}
+                      <span class={hosted ? 'scope-capsule' : 'scope-segment-group'}>
+                        {#each [[0, 'MAIN'], [1, 'SUB']] as const as [v, label] (v)}
+                          <ScopeFlatKey kind="choice" {label} testid={`scope-overflow-receiver-${v}`} width="48px"
+                            lit={overflowReceiverValue === undefined ? null : overflowReceiverValue === v}
+                            disabled={!overflowReceiver.available} onclick={() => overflowReceiver.invoke(v)} />
+                        {/each}
+                      </span>
                     </div>
                   {/if}
                   {#if sc.hold.availability.structural}
@@ -392,7 +428,7 @@
                   {/if}
                   {#if sc.refDb.availability.structural}
                     {@const overflowRefDown = refInstrument(-5)}{@const overflowRefUp = refInstrument(5)}
-                    <div class="scope-more-row scope-stepper" data-overflow="ref" data-testid="scope-overflow-ref">
+                    <div class="scope-more-row scope-stepper" class:scope-capsule={hosted} data-overflow="ref" data-testid="scope-overflow-ref">
                       <span class="scope-name">REF</span>
                       <button type="button" class="scope-step-key" aria-label="Decrease scope reference" disabled={!overflowRefDown.available} onclick={() => overflowRefDown.invoke()}>&#8249;</button>
                       <output class="scope-step-value" data-testid="scope-overflow-ref-value">{sc.refDb.reading.status === 'known' ? String(sc.refDb.reading.value) : ''}</output>
@@ -401,7 +437,7 @@
                   {/if}
                   {#if spanApplicable && sc.span.availability.structural}
                     {@const overflowSpanDown = spanInstrument(-1)}{@const overflowSpanUp = spanInstrument(1)}
-                    <div class="scope-more-row scope-stepper" data-overflow="span" data-testid="scope-overflow-span">
+                    <div class="scope-more-row scope-stepper" class:scope-capsule={hosted} data-overflow="span" data-testid="scope-overflow-span">
                       <span class="scope-name">SPAN</span>
                       <button type="button" class="scope-step-key" aria-label="Decrease scope span" disabled={!overflowSpanDown.available} onclick={() => overflowSpanDown.invoke()}>&#8249;</button>
                       <output class="scope-step-value" data-testid="scope-overflow-span-value">{usable(sc.span) ? (SPAN_LABELS[numberOf(sc.span, 3)] ?? '') : ''}</output>
@@ -414,11 +450,13 @@
                   {@const modeChoice = choiceInstrument('mode', MODE_BUTTONS.map(([v]) => v))}
                   <div class="scope-more-row" role="radiogroup" aria-label="Scope mode" data-testid="scope-mode">
                     <span class="scope-name">MODE</span>
-                    {#each MODE_BUTTONS as [v, label] (v)}
-                      <ScopeFlatKey kind="choice" {label} testid="scope-mode-{v}" width="44px"
-                        lit={modeKnown === undefined ? null : modeKnown === v}
-                        disabled={!modeChoice.available} onclick={() => modeChoice.invoke(v)} />
-                    {/each}
+                    <span class={hosted ? 'scope-capsule' : 'scope-segment-group'}>
+                      {#each MODE_BUTTONS as [v, label] (v)}
+                        <ScopeFlatKey kind="choice" {label} testid="scope-mode-{v}" width={hosted ? undefined : '44px'}
+                          lit={modeKnown === undefined ? null : modeKnown === v}
+                          disabled={!modeChoice.available} onclick={() => modeChoice.invoke(v)} />
+                      {/each}
+                    </span>
                   </div>
                 {/if}
 
@@ -428,11 +466,13 @@
                     {@const current = valueOf(sc[field])}
                     <div class="scope-more-row" role="radiogroup" aria-label={ariaLabel} data-testid={`scope-${field}`}>
                       <span class="scope-name">{shortName}</span>
-                      {#each options as [v, optLabel] (v)}
-                        <ScopeFlatKey kind="choice" label={optLabel} testid={`scope-${field}-${v}`} width="52px"
-                          lit={current === undefined ? null : current === v}
-                          disabled={!choice.available} onclick={() => choice.invoke(v)} />
-                      {/each}
+                      <span class={hosted ? 'scope-capsule' : 'scope-segment-group'}>
+                        {#each options as [v, optLabel] (v)}
+                          <ScopeFlatKey kind="choice" label={optLabel} testid={`scope-${field}-${v}`} width="52px"
+                            lit={current === undefined ? null : current === v}
+                            disabled={!choice.available} onclick={() => choice.invoke(v)} />
+                        {/each}
+                      </span>
                     </div>
                   {/if}
                 {/each}
@@ -440,7 +480,7 @@
                 {#if sc.speed.availability.structural}
                   {@const speedDown = speedInstrument(-1)}
                   {@const speedUp = speedInstrument(1)}
-                  <div class="scope-more-row scope-stepper" data-testid="scope-speed">
+                  <div class="scope-more-row scope-stepper" class:scope-capsule={hosted} data-testid="scope-speed">
                     <span class="scope-name">SPEED</span>
                     <button type="button" class="scope-step-key" aria-label="Decrease scope speed"
                       disabled={!speedDown.available} onclick={() => speedDown.invoke()}>&#8249;</button>
@@ -474,12 +514,24 @@
       </div>
     {/if}
   </section>
+{:else if rowTail}
+  <!-- No scope fact group: the host toolbar's tail still renders bare, so
+       STEP, BANDS and the quick keys never vanish with the radio-held row
+       (the PR2 hosted-vs-rendered gap, partly closed by PR3's move). -->
+  <section class="scope-controls-surface" data-testid="scope-controls-surface">
+    <div class="scope-controls-row" data-testid="scope-controls-row">{@render rowTail()}</div>
+  </section>
 {/if}
 
 <style>
-  /* Structure only — a design language owns colour (MOR-977, forced-colors). */
+  /* Structure only — colour lives in the design language / theme tokens
+     (MOR-977, forced-colors). These are the PR1/PR2 rules every mount
+     shares; the HOSTED raised-key family is layered on top from
+     control-button.css plus the geometry sheet
+     `components/spectrum/scope-capsule.css` (0,3,0+ beats these 0,2,0). */
   /* Query container for the row's overflow below; contain-intrinsic-inline-size
-     keeps shrink-to-fit hosts (the sdr-test toolbar) from collapsing to 0. */
+     keeps shrink-to-fit hosts from collapsing to 0. 530 = the PR1 flat-key
+     full row; the hosted row overrides it from the row sheet. */
   .scope-controls-surface { display: block; min-width: 0; container-type: inline-size; container-name: scope-controls; contain-intrinsic-inline-size: 530px; }
 
   /* The ONE always-visible row: never wraps, never reflows a key's box. */
@@ -492,12 +544,14 @@
   }
 
   /* Narrow-width overflow (MOR-2545, coordinator decision): below each band
-     the row's DIRECT child (`>` — the More panel sits inside the row's ⋯
+     the row's DIRECT child (`>` — the More panel sits inside the row's More
      anchor) with that hook hides and its More copy shows. Hide-first:
-     MAIN/SUB, HOLD, REF, SPAN; CTR/FIX and ⋯ always stay. Bands measured in
-     Chromium at the widest case (dual receiver, CTR). The REF band is 372:
-     the no-HOLD row fits at 371.3 px, and a 390 px phone's content width is
-     exactly 374 — 372 keeps REF on the row there. */
+     MAIN/SUB, HOLD, REF, SPAN; on these UNHOSTED bands CTR/FIX and the More
+     key always stay. Bands measured in Chromium at the widest case (dual
+     receiver, CTR). The REF band is 372: the no-HOLD row fits at 371.3 px,
+     and a 390 px phone's content width is exactly 374 — 372 keeps REF on
+     the row there. Hosted rows use the capsule sheet's own bands instead —
+     its last band retires CTR|FIX too (More's MODE row carries it). */
   .scope-more-overflow { display: contents; }
   .scope-more-overflow > [data-overflow] { display: none; }
   @container scope-controls (max-width: 529px) { .scope-controls-row > [data-overflow='receiver'] { display: none; } .scope-more-overflow > [data-overflow='receiver'] { display: flex; } }
@@ -506,6 +560,23 @@
   @container scope-controls (max-width: 299px) { .scope-controls-row > [data-overflow='span'] { display: none; } .scope-more-overflow > [data-overflow='span'] { display: flex; } }
 
   .scope-key-group { display: inline-flex; flex: none; align-items: center; }
+
+  /* Unhosted More-panel segment wrapper: display:contents keeps the keys
+     direct flex items of `.scope-more-row`, as the pre-PR3 markup. Hosted
+     swaps this class for `scope-capsule`. */
+  .scope-segment-group { display: contents; }
+
+  /* Finite (external renderer) hosts keep PR1's flat label look; the native
+     row's labels are the capsule css (hosted) or the rules below (unhosted). */
+  .scope-finite-name {
+    flex: none;
+    padding: 0 3px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+    color: var(--dl-vfo-unlit-text, var(--v2-text-muted, #5a6875));
+  }
 
   .scope-stepper {
     display: inline-flex;
@@ -557,7 +628,7 @@
     color: var(--vfo-lamp-color, var(--dl-vfo-red-text, var(--dl-vfo-red, #e2362c)));
   }
 
-  /* The ⋯ key's anchor: the More panel positions itself against this. */
+  /* The More key's anchor: the More panel positions itself against this. */
   .scope-more-anchor {
     position: relative;
     display: inline-flex;
