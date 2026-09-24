@@ -1951,11 +1951,14 @@ export function makeKeyboardHandlers() {
             // the semantic surface that actually mounts, reusing its existing
             // `data-testid` hooks rather than inventing a parallel
             // `data-panel`/`data-control` vocabulary no component emits.
-            // MOR-2579: with one AF knob per receiver, `af` is the selected
-            // receiver's knob (MAIN's while the selection is unknown).
-            const afRow = `rx-audio-af-${knownActiveReceiver() === 1 ? 'sub' : 'main'}`;
             const selectors: Record<string, string> = {
-              af: `[data-testid="rx-audio-af"] [role="slider"], [data-testid="${afRow}"] [role="slider"], [data-testid="rx-audio-af"] input[type="range"]`,
+              // MOR-2579: with one AF knob per receiver, `af` is the selected
+              // receiver's knob (MAIN's while the selection is unknown). A
+              // getter, so only this target reads the selection.
+              get af() {
+                const row = `rx-audio-af-${knownActiveReceiver() === 1 ? 'sub' : 'main'}`;
+                return `[data-testid="rx-audio-af"] [role="slider"], [data-testid="${row}"] [role="slider"], [data-testid="rx-audio-af"] input[type="range"]`;
+              },
               rf: '[data-testid="rf-front-end-rf-sql"] [role="slider"], [data-testid="rf-front-end-rfGain"] [role="slider"], [data-testid="rf-front-end-rf-sql"] input, [data-testid="rf-front-end-rfGain"] input',
               squelch: '[data-testid="rf-front-end-rf-sql"] [role="slider"], [data-testid="rf-front-end-squelch"] [role="slider"], [data-testid="rf-front-end-rf-sql"] input, [data-testid="rf-front-end-squelch"] input',
               filter: '[data-testid="filter-select"] button',
