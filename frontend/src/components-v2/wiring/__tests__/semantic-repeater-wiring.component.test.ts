@@ -130,14 +130,15 @@ const receiver = (hz: number, rep: Repeater) => ({
 
 function dualState(options: {
   mainHz: number; subHz: number; active?: 'MAIN' | 'SUB';
-  main?: Repeater; sub?: Repeater; repeaterRead?: boolean;
+  main?: Repeater; sub?: Repeater; repeaterRead?: boolean; activeRead?: boolean;
 }): ServerState {
-  const paths = ['active'];
+  const paths: string[] = [];
   for (const rx of ['main', 'sub']) {
     paths.push(`${rx}.freqHz`, `${rx}.mode`, `${rx}.filter`, `${rx}.activeSlot`);
     for (const v of ['vfoA', 'vfoB']) paths.push(`${rx}.${v}.freqHz`, `${rx}.${v}.mode`, `${rx}.${v}.filterNum`);
   }
   const fieldStatus: Record<string, unknown> = Object.fromEntries(paths.map((p) => [p, fresh]));
+  fieldStatus.active = options.activeRead === false ? unread : fresh;
   for (const rx of ['main', 'sub']) {
     for (const leaf of REPEATER_LEAVES) {
       fieldStatus[`${rx}.${leaf}`] = options.repeaterRead === false ? unread : fresh;
@@ -284,6 +285,13 @@ describe('which receiver the repeater panel controls', () => {
       { name: 'set_repeater_tone', params: { on: true, receiver: active === 'SUB' ? 1 : 0 } },
     ]);
   });
+
+  it('both on 144/430 with the selection unread: no panel and no zone', () => {
+    use(dualState({ mainHz: 145_500_000, subHz: 433_000_000, activeRead: false }), dualCaps());
+    renderHosted();
+    expect(surface()).toBeNull();
+    expect(q('[data-zone-id="repeater"]')).toBeNull();
+  });
 });
 
 describe('each control draws only when its own field is structural (B1)', () => {
@@ -295,6 +303,16 @@ describe('each control draws only when its own field is structural (B1)', () => 
     expect(q('[data-testid="repeater-tone-freq"]')).not.toBeNull();
     expect(q('[data-testid="repeater-shift"]')).toBeNull();
     expect(key('repeater-shift-simplex')).toBeNull();
+  });
+
+  it('repeater_shift without tone tags: only the shift selector', () => {
+    use(dualState({ mainHz: 14_250_000, subHz: 144_700_000 }), dualCaps(['repeater_shift']));
+    renderHosted();
+    expect(surface()!.getAttribute('data-receiver')).toBe('SUB');
+    expect(key('repeater-shift-simplex')).not.toBeNull();
+    expect(q('[data-testid="repeater-tone-mode"]')).toBeNull();
+    expect(key('repeater-tone-off')).toBeNull();
+    expect(q('[data-testid="repeater-tone-freq"]')).toBeNull();
   });
 
   it('no repeater control structural: no panel even on 2 m', () => {
