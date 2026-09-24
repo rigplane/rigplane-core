@@ -1007,24 +1007,31 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
     // Comments may name colours; the rules may not carry literals.
     const css = cssRaw.replace(/\/\*[\s\S]*?\*\//g, '');
 
-    // MUTATION KILLED: "re-excluding the row keys" — the family sheets
-    // must not carry the flat-key name at all, while the step-key glyphs
-    // stay excluded in exactly the 13 control-button.css lists. (Comments
-    // are stripped first: they may NAME the split they document.)
-    it('the family sheets drop .scope-flat-key and keep .scope-step-key excluded', () => {
+    // MUTATION KILLED: "the family leaks to unhosted mounts again" (round-5
+    // verifier defect: the desktop-v2/sdr-test standalone audio_fft
+    // surfaces picked up raised keys, 4421 px off base) — the flat-key
+    // exclusion must be HOSTED-ONLY, in exactly this conditional form, in
+    // every list. A bare `.scope-flat-key` (global exclusion) hides the
+    // hosted row's family; a bare admission is the leak itself.
+    it('the family reaches ONLY hosted flat keys: the exclusion is hosted-conditional', () => {
       const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '');
+      const HOSTED_ONLY = '.scope-flat-key:not(.spectrum-toolbar.hosted *)';
       const bezel = strip(readFileSync('src/components-v2/controls/control-button.css', 'utf8'));
-      expect(bezel).not.toContain('.scope-flat-key');
       const skin = strip(readFileSync('src/skins/desktop-v2/semantic-controls.css', 'utf8'));
-      expect(skin).not.toContain('.scope-flat-key');
+      expect(bezel.split(HOSTED_ONLY).length - 1).toBe(13);
+      expect(skin.split(HOSTED_ONLY).length - 1).toBe(3);
+      // With the conditional tokens removed, the flat-key name must be gone
+      // from both sheets entirely — this is the pin that fails if the
+      // exclusion is dropped globally again (the round-4 defect).
+      expect(bezel.split(HOSTED_ONLY).join('')).not.toContain('.scope-flat-key');
+      expect(skin.split(HOSTED_ONLY).join('')).not.toContain('.scope-flat-key');
       expect((bezel.match(/\.scope-step-key/g) ?? []).length).toBe(13);
       expect((skin.match(/\.scope-step-key/g) ?? []).length).toBe(3);
       // The MAIN exclusion list, verbatim (round-2 finding 8: substring
       // pins let 12 other lists satisfy them).
-      const firstNot = bezel.match(/\):not\(([^)]*)\)/);
-      expect(firstNot).not.toBeNull();
-      expect(firstNot![1]).toBe(
-        '.panel-header, .drag-handle, .passband-resize-zone, .band-segment, .scope-step-key',
+      expect(bezel).toContain(
+        '):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment, '
+        + `${HOSTED_ONLY}, .scope-step-key)`,
       );
     });
 

@@ -382,17 +382,26 @@ describe('the hosted row look (MOR-2545 PR3 round 4, owner style B — HOSTED mo
     r.dispose();
   });
 
-  // MOR-2545 round 4 (owner style B): the surface's own CSS-mechanism pins.
-  // jsdom cannot compute the cascade, so these read the sheets directly and
-  // FAIL IF THE ROW FALLS BACK TO THE RETIRED CAPSULE LOOK: the exclusion
-  // lists re-closing, the teal lit wash or the segment frame/divider rules
-  // returning, or a colour literal re-entering the row sheet.
-  it('the hosted keys stay in the family and the capsule chrome stays dead', () => {
+  // MOR-2545 round 4 (owner style B) + round 5 (verifier defect): the
+  // surface's own CSS-mechanism pins. jsdom cannot compute the cascade, so
+  // these read the sheets directly and FAIL IF THE ROW FALLS BACK TO THE
+  // RETIRED CAPSULE LOOK (the teal lit wash or the segment frame/divider
+  // rules returning, or a colour literal re-entering the row sheet) OR IF
+  // THE FAMILY LEAKS PAST THE HOSTED ROW: the flat-key exclusion is
+  // hosted-conditional, so the unhosted mounts — LCD, mobile, and the
+  // desktop standalone audio_fft surfaces this component renders without a
+  // host toolbar — keep the flat grammar, pixel-identical to origin/main.
+  it('the family reaches only hosted keys; unhosted mounts keep the flat look', () => {
     const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '');
+    const HOSTED_ONLY = '.scope-flat-key:not(.spectrum-toolbar.hosted *)';
     const bezel = strip(readFileSync('src/components-v2/controls/control-button.css', 'utf8'));
-    expect(bezel).not.toContain('.scope-flat-key');
     const skin = strip(readFileSync('src/skins/desktop-v2/semantic-controls.css', 'utf8'));
-    expect(skin).not.toContain('.scope-flat-key');
+    expect(bezel.split(HOSTED_ONLY).length - 1).toBe(13);
+    expect(skin.split(HOSTED_ONLY).length - 1).toBe(3);
+    // Fails if the exclusion is dropped globally again (round-4 defect:
+    // the audio_fft standalone surfaces got the raised keys).
+    expect(bezel.split(HOSTED_ONLY).join('')).not.toContain('.scope-flat-key');
+    expect(skin.split(HOSTED_ONLY).join('')).not.toContain('.scope-flat-key');
     const cssRaw = readFileSync('src/components/spectrum/scope-capsule.css', 'utf8');
     const css = cssRaw.replace(/\/\*[\s\S]*?\*\//g, '');
     expect(css).not.toContain('--v2-accent-cyan-teal');
