@@ -186,6 +186,11 @@ class FreqRangeInfo:
     end: int  # Hz
     label: str
     bands: tuple[BandInfo, ...] = ()
+    #: True when this range is a VHF/UHF repeater band (e.g. 2 m / 70 cm).
+    #: Data-only (MOR-2111): the frontend gates the per-receiver repeater
+    #: strip on a receiver's own frequency falling inside a flagged range;
+    #: no band name or frequency lives in code.
+    repeater: bool = False
 
 
 @dataclass(frozen=True, slots=True)

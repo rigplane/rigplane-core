@@ -598,6 +598,7 @@ bsr_code = 0x00
 label = "2m"
 start_hz = 144_000_000
 end_hz = 148_000_000
+repeater = true
 
 [[freq_ranges.ranges.bands]]
 name = "2m"
@@ -610,6 +611,7 @@ bsr_code = 0x0D
 label = "70cm"
 start_hz = 430_000_000
 end_hz = 450_000_000
+repeater = true
 
 [[freq_ranges.ranges.bands]]
 name = "70cm"

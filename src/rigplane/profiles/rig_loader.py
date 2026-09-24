@@ -682,6 +682,7 @@ class RigConfig:
                 start=r["start_hz"],
                 end=r["end_hz"],
                 label=r["label"],
+                repeater=r.get("repeater", False),
                 bands=tuple(
                     BandInfo(
                         name=b["name"],
@@ -2252,6 +2253,17 @@ def load_rig(path: Path) -> RigConfig:
 
     # Parse freq_ranges
     freq_ranges_data = data.get("freq_ranges", {}).get("ranges", [])
+
+    # MOR-2111: the optional per-range ``repeater`` flag marks a VHF/UHF
+    # repeater band. It is data only — no band name or frequency lives in
+    # code. Omitted defaults to false; any non-boolean value is a load error.
+    for index, rng in enumerate(freq_ranges_data):
+        if isinstance(rng, dict) and "repeater" in rng and not isinstance(
+            rng["repeater"], bool
+        ):
+            raise RigLoadError(
+                f"{filename}: freq_ranges.ranges[{index}].repeater must be a boolean"
+            )
 
     # Parse VFO bytes — explicit split (issue #710)
     vfo_main = tuple(vfo["main_select"]) if "main_select" in vfo else None

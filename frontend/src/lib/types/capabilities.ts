@@ -17,6 +17,11 @@ export interface FreqRange {
   end: number;
   label: string;
   bands?: Band[];
+  /** True when this range is a VHF/UHF repeater band (2 m / 70 cm). Absent
+   *  means false. Drives the per-receiver repeater-strip gate (MOR-2111);
+   *  the band identity always comes from profile data, never from a
+   *  frequency written here. */
+  repeater?: boolean;
 }
 
 export interface ScopeConfig {
@@ -191,6 +196,9 @@ export interface Capabilities {
   /** Provider identity semantics; absent on older compatible servers. */
   vfoReadback?: VfoReadback;
   freqRanges: FreqRange[];
+  /** Resolved CTCSS chart in centiHz, in the profile table's own order.
+   *  Present only when the profile declares `[ctcss]` (MOR-2111). */
+  ctcssTones?: number[];
   modes: string[];
   filters: string[];
   filterWidthMin?: number;   // Min filter width in Hz (default 50)
@@ -566,6 +574,9 @@ export function validateCapabilities(value: unknown): Capabilities {
     requireFiniteNumber(range.start, `${rangePath}.start`);
     requireFiniteNumber(range.end, `${rangePath}.end`);
     requireString(range.label, `${rangePath}.label`);
+    if ('repeater' in range) {
+      requireBoolean(range.repeater, `${rangePath}.repeater`);
+    }
     if ('bands' in range) {
       if (!Array.isArray(range.bands)) invalid(`${rangePath}.bands`, 'an array');
       range.bands.forEach((value, bandIndex) => {
@@ -583,6 +594,12 @@ export function validateCapabilities(value: unknown): Capabilities {
   });
   requireStringArray(raw.modes, '$.modes');
   requireStringArray(raw.filters, '$.filters');
+  if ('ctcssTones' in raw) {
+    if (!Array.isArray(raw.ctcssTones) || raw.ctcssTones.length === 0) {
+      invalid('$.ctcssTones', 'a non-empty array');
+    }
+    raw.ctcssTones.forEach((value, index) => requireInteger(value, `$.ctcssTones[${index}]`));
+  }
   if ('dataModeInputs' in raw) {
     if (!Array.isArray(raw.dataModeInputs) || raw.dataModeInputs.length > 6) {
       invalid('$.dataModeInputs', 'an array of at most 6 source options');

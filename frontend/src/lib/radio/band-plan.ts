@@ -59,3 +59,20 @@ export function findActiveBand(freq: number, freqRanges: FreqRange[]): string | 
   }
   return null;
 }
+
+/**
+ * True when `freq` falls inside a range flagged `repeater = true`.
+ * `findActiveBand` matches only NAMED sub-bands (`range.bands`), so a
+ * repeater band described as a bare range (the FTX-1 2 m / 70 cm carries
+ * no `bands` table) needs this range-level match instead (MOR-2111). The
+ * membership comes from the profile's own `freqRanges` data, never from a
+ * frequency written in code.
+ */
+export function receiverInRepeaterBand(freq: number, freqRanges: FreqRange[]): boolean {
+  for (const range of freqRanges) {
+    if (range.repeater && freq >= range.start && freq <= range.end) {
+      return true;
+    }
+  }
+  return false;
+}

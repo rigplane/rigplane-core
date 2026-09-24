@@ -482,6 +482,7 @@ Array of tables, each defining a frequency coverage range.
 | `start_hz` | int    | yes      | Start frequency in Hz                        |
 | `end_hz`   | int    | yes      | End frequency in Hz (must be > `start_hz`)   |
 | `bands`    | array  | no       | Amateur band definitions within this range   |
+| `repeater` | bool   | no       | This range is a VHF/UHF repeater band (e.g. 2 m / 70 cm). Optional, default `false`; a non-boolean value is a load error. Drives the per-receiver repeater-strip gate (MOR-2111). |
 
 ### `[[freq_ranges.ranges.bands]]` — Band Definitions
 
