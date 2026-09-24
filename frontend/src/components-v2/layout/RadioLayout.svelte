@@ -199,7 +199,7 @@
     storageKey: 'rigplane:panel-order',
     defaults: [
       'semantic-rf-front-end', 'semantic-filter',
-      'semantic-rit-xit', 'semantic-antenna', 'semantic-scan', 'band',
+      'semantic-rit-xit', 'semantic-repeater', 'semantic-antenna', 'semantic-scan', 'band',
     ],
     containerSelector: '.standard-panel-owner-left',
   }) : null;
@@ -713,6 +713,9 @@
     {@render instruments.ritXitScan(
       undefined, panelChrome(owner, 'semantic-rit-xit', 'RIT / XIT'), 'rit-xit',
     )}
+  {/if}
+  {#if owner.order.includes('semantic-repeater')}
+    {@render instruments.repeater?.(undefined, panelChrome(owner, 'semantic-repeater'))}
   {/if}
   {#if owner.order.includes('semantic-scan')}
     {@render instruments.ritXitScan(

@@ -16,8 +16,7 @@
  *       composition's only layout (`dual-receiver-cockpit.ts`) declares no
  *       `scopeControls` zone, so it mounts in the SINGLE composition only and
  *       renders NOTHING in the DUAL composition. Not bare under `desktop-v2`
- *       any more: MOR-1370 (S6b-2) declared that zone, the last surface in
- *       the vocabulary to graduate
+ *       any more: MOR-1370 (S6b-2) declared that zone
  *       — pinned with a view model that actually CARRIES the group (the
  *       rxAudio/ritXitScan/cwKeyer precedent), plus a control test mounting
  *       the same fixture in single to foreclose vacuity.

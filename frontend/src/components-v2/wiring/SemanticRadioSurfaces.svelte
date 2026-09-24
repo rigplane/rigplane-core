@@ -61,6 +61,8 @@
     getTxAuxControlFeedback, type TxAuxControlFeedbackField,
     getPendingFrequencyHz,
     getPendingFilterSelection, getPendingNbOn, getPendingNrOn, getPendingPreampLevel,
+    getPendingRepeaterShift, getPendingRepeaterTone, getPendingToneFreq,
+    getRepeaterHandlers,
     getSystemHandlers, getDataModeArmed, getModInputArmed,
     deriveMemoryPanelProps, getMemoryHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
@@ -102,6 +104,7 @@
     type FiniteRendererContext,
   } from '../../primitives/control-instruments/control-instrument-renderer.svelte';
   import type { ReceiverId, RadioViewModel, VfoSlot } from '../../semantic/radio-view-model';
+  import { stepToneFreq, type RepeaterPending } from '$lib/radio/repeater-transitions';
   import RfFrontEndSurface, {
     type RfFrontEndLevelField,
   } from '../../semantic/RfFrontEndSurface.svelte';
@@ -143,6 +146,7 @@
     type CwKeyerInstrumentHandles,
   } from '../../semantic/CwKeyerInstrumentHost.svelte';
   import MemorySurface from '../../semantic/MemorySurface.svelte';
+  import RepeaterSurface, { repeaterReceiver } from '../../semantic/RepeaterSurface.svelte';
   import ScopeControlsSurface, {
     type ScopeChoiceField, type ScopeToggleField,
   } from '../../semantic/ScopeControlsSurface.svelte';
@@ -1835,6 +1839,52 @@
     if (lock?.status === 'known') systemIntents.onDialLock(!lock.value);
   }
 
+  /**
+   * MOR-2111 — the repeater panel's command seam. The confirmed facts are
+   * read off the view model here; the dispatch is the handler singleton
+   * (`getRepeaterHandlers`), and the pending markers come from the shared
+   * command-lifecycle accessors (`getPendingRepeater*`).
+   */
+  const repeaterHandlers = getRepeaterHandlers();
+  let ctcssTones = $derived(runtime.caps?.ctcssTones ?? []);
+
+  function repeaterWireReceiver(receiver: ReceiverId): 0 | 1 {
+    return receiver === 'SUB' ? 1 : 0;
+  }
+
+  function selectToneMode(receiver: ReceiverId, next: 'off' | 'tone' | 'tsql'): void {
+    const group = view?.repeater?.[receiver === 'SUB' ? 'sub' : 'main'];
+    const reading = group?.toneMode.reading;
+    if (reading?.status !== 'known' || reading.value === next) return;
+    repeaterHandlers.onToneModeChange(reading.value, next, repeaterWireReceiver(receiver));
+  }
+
+  function selectShift(receiver: ReceiverId, shift: 'simplex' | 'minus' | 'plus'): void {
+    repeaterHandlers.onShiftChange(shift, repeaterWireReceiver(receiver));
+  }
+
+  function stepToneFreqFor(receiver: ReceiverId, direction: 1 | -1): void {
+    const group = view?.repeater?.[receiver === 'SUB' ? 'sub' : 'main'];
+    const freq = group?.toneFreq.reading;
+    const mode = group?.toneMode.reading;
+    if (freq?.status !== 'known' || mode?.status !== 'known') return;
+    const next = stepToneFreq(freq.value, ctcssTones, direction);
+    if (next === freq.value) return;
+    repeaterHandlers.onToneFreqChange(next, mode.value === 'tsql', repeaterWireReceiver(receiver));
+  }
+
+  function repeaterPendingFor(wire: 0 | 1): RepeaterPending {
+    const shift = getPendingRepeaterShift(wire);
+    return {
+      toneMode: getPendingRepeaterTone(wire),
+      shift: shift === null ? null : shift === 0 ? 'simplex' : shift === 1 ? 'plus' : 'minus',
+      toneFreq: getPendingToneFreq(wire) !== null,
+    };
+  }
+  let repeaterPending: Partial<Record<ReceiverId, RepeaterPending>> = $derived({
+    MAIN: repeaterPendingFor(0), SUB: repeaterPendingFor(1),
+  });
+
   const vfoOperationCallbacks = Object.freeze({
     onToggleSplit: vfo.onSplitToggle,
     onToggleDualWatch: toggleDualWatch,
@@ -2579,6 +2629,16 @@
     />
   {/snippet}
 
+  {#snippet repeaterSurface()}
+    <RepeaterSurface
+      {view}
+      pending={repeaterPending}
+      onToneModeChange={selectToneMode}
+      onShiftChange={selectShift}
+      onToneFreqStep={stepToneFreqFor}
+    />
+  {/snippet}
+
   <!--
     MOR-1312 (vocabulary slice 12B). Same structural gate and same reasoning
     as `txAuxSurface`/`metersSurface` above: the surface mounts only when the
@@ -2619,8 +2679,7 @@
     `__tests__/semantic-scope-controls-wiring.component.test.ts` and in
     `skins/dual-receiver-cockpit/__tests__/DualReceiverCockpit.component
     .test.ts`'s MOR-2150 describe block. No longer bare under `desktop-v2`,
-    which declared this zone in MOR-1370 (S6b-2) as the last surface in the
-    vocabulary to graduate. `sdr-test` also declares this zone; the remaining
+    which declared this zone in MOR-1370 (S6b-2). `sdr-test` also declares this zone; the remaining
     single-composition layouts (`mobile`/`lcd-*`) keep their existing bare path.
   -->
   {#snippet scopeControlsSurface(screenGroup?: Snippet, rowTail?: Snippet)}
@@ -2793,6 +2852,9 @@
   {#snippet hostedMemory(allowBare = allowBareSurfaces, chrome?: PanelChrome)}
     {@render zoned('memory', true, memorySurface, allowBare, chrome)}
   {/snippet}
+  {#snippet hostedRepeater(allowBare = allowBareSurfaces, chrome?: PanelChrome)}
+    {@render zoned('repeater', repeaterReceiver(view) !== null, repeaterSurface, allowBare, chrome)}
+  {/snippet}
   {#snippet hostedScopeDisplay(allowBare = allowBareSurfaces)}
     {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBare)}
   {/snippet}
@@ -2852,6 +2914,7 @@
       cwKeyerInstruments,
       cwKeyer: hostedCwKeyer,
       memory: hostedMemory,
+      repeater: hostedRepeater,
       scopeDisplay: hostedScopeDisplay,
       scopeControls: hostedScopeControls,
       txFaultRecovery,

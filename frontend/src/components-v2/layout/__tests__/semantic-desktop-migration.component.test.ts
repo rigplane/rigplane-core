@@ -1212,7 +1212,7 @@ describe("the SDR face's centre-top pair is zone-owned (MOR-2231, batch 4)", () 
     expect(after.filter((p) => !before.includes(p))).toEqual([]);
   });
 
-  // R9: the last two zones in the vocabulary add no key/unkey authority.
+  // R9: the centre-top pair adds no key/unkey authority.
   it('adds no key authority with the centre-top pair declared', () => {
     expect(renderAll('sdr-test').querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
   });
@@ -2724,7 +2724,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     renderAll('desktop-v2');
     expect(JSON.parse(localStorage.getItem('rigplane:panel-order')!)).toEqual([
       'semantic-rf-front-end', 'semantic-rit-xit', 'semantic-scan', 'band', 'semantic-filter',
-      'semantic-antenna',
+      'semantic-repeater', 'semantic-antenna',
     ]);
     expect(JSON.parse(localStorage.getItem('rigplane:panel-collapsed')!)).toMatchObject({
       'semantic-rit-xit': true, 'semantic-scan': true,
@@ -2936,8 +2936,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
 
 /**
  * MOR-1370 (v3-rework S6b-2) — `scopeControls` becomes ZONE-OWNED on
- * `desktop-v2`, the LAST surface in the whole MOR-1262 vocabulary to
- * graduate.
+ * `desktop-v2`.
  *
  * Unlike every other family in this file, its legacy twin is not a
  * sidebar/modal panel but the scope toolbar's fact-backed half
@@ -2978,8 +2977,7 @@ describe('scopeControls is zone-owned on desktop-v2, retiring the toolbar fact-b
 
   // §1.5 / MOR-1339: `compositionSurfaces(plan(desktopV2Layout))` grew by one
   // more member, and no `{#each singleOrder}` branch was added for it — the
-  // semantic surface must render exactly ONCE. This is the double-presentation
-  // CLOSED assertion for the last family in the vocabulary.
+  // semantic surface must render exactly ONCE.
   it('presents the scopeControls surface exactly ONCE on desktop-v2', () => {
     expect(render('desktop-v2').querySelectorAll('[data-testid="scope-controls-surface"]').length).toBe(1);
   });

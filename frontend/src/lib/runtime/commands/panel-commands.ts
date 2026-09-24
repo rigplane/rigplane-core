@@ -40,6 +40,11 @@ import {
   getSharedTuningAccumulator,
   type AcceptedTargetQuery,
 } from './tuning-accumulator';
+import {
+  shiftDirection,
+  type RepeaterShift,
+  type RepeaterToneMode,
+} from '$lib/radio/repeater-transitions';
 
 /* ── Shared helpers ──────────────────────────────────────────────── */
 
@@ -2004,4 +2009,56 @@ export function makeVoxHandlers() {
       dispatchRadioIntent({ name: 'set_vox_delay', params: { level } });
     },
   };
+}
+
+/**
+ * MOR-2111 — the repeater panel's command handlers. The tone-mode
+ * transition is spelled out as literal frames (not a `command.name` loop)
+ * so the conformance completeness ledger sees each dispatched intent name.
+ * The receiver rides every command.
+ *
+ *   OFF  → TONE   set_repeater_tone on:true
+ *   OFF  → TSQL   set_repeater_tone on:true, then set_repeater_tsql on:true
+ *   TONE → TSQL   set_repeater_tsql on:true
+ *   TSQL → TONE   set_repeater_tsql on:false
+ *   TONE → OFF    set_repeater_tone on:false
+ *   TSQL → OFF    set_repeater_tsql on:false, then set_repeater_tone on:false
+ *
+ * The tone frequency is one `CN` register on the FTX-1: `set_tsql_freq` is
+ * dispatched only in TSQL, `set_tone_freq` otherwise.
+ */
+export function makeRepeaterHandlers() {
+  return Object.freeze({
+    onToneModeChange(from: RepeaterToneMode, to: RepeaterToneMode, receiver: Receiver): void {
+      if (from === to) return;
+      if (from === 'off' && to === 'tone') {
+        dispatchRadioIntent({ name: 'set_repeater_tone', params: { on: true, receiver } });
+      } else if (from === 'off' && to === 'tsql') {
+        dispatchRadioIntent({ name: 'set_repeater_tone', params: { on: true, receiver } });
+        dispatchRadioIntent({ name: 'set_repeater_tsql', params: { on: true, receiver } });
+      } else if (from === 'tone' && to === 'off') {
+        dispatchRadioIntent({ name: 'set_repeater_tone', params: { on: false, receiver } });
+      } else if (from === 'tone' && to === 'tsql') {
+        dispatchRadioIntent({ name: 'set_repeater_tsql', params: { on: true, receiver } });
+      } else if (from === 'tsql' && to === 'off') {
+        dispatchRadioIntent({ name: 'set_repeater_tsql', params: { on: false, receiver } });
+        dispatchRadioIntent({ name: 'set_repeater_tone', params: { on: false, receiver } });
+      } else if (from === 'tsql' && to === 'tone') {
+        dispatchRadioIntent({ name: 'set_repeater_tsql', params: { on: false, receiver } });
+      }
+    },
+    onShiftChange(shift: RepeaterShift, receiver: Receiver): void {
+      dispatchRadioIntent({
+        name: 'set_repeater_shift',
+        params: { direction: shiftDirection(shift), receiver },
+      });
+    },
+    onToneFreqChange(freqHz: number, tsql: boolean, receiver: Receiver): void {
+      if (tsql) {
+        dispatchRadioIntent({ name: 'set_tsql_freq', params: { freq: freqHz, receiver } });
+      } else {
+        dispatchRadioIntent({ name: 'set_tone_freq', params: { freq: freqHz, receiver } });
+      }
+    },
+  });
 }

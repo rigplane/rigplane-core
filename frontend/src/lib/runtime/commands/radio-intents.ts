@@ -16,6 +16,13 @@ const intentSpecs = [
     'set_rx_antenna_ant1', 'set_rx_antenna_ant2', 'set_scope_during_tx', 'set_scope_hold', 'set_split', 'set_vox',
   ], params: { on: 'boolean' } },
   { names: ['set_auto_notch', 'set_digisel', 'set_ip_plus', 'set_manual_notch', 'set_nb', 'set_nr', 'set_twin_peak'], params: { on: 'boolean', receiver: 'receiver' } },
+  // MOR-2111 PR2 — the repeater tone family (OFF/TONE/TSQL selector + the
+  // CTCSS tone frequency stepper). The receiver rides every command; the
+  // shift direction is the wire integer 0 simplex / 1 plus / 2 minus (3 ARS
+  // is never offered).
+  { names: ['set_repeater_tone', 'set_repeater_tsql'], params: { on: 'boolean', receiver: 'receiver' } },
+  { names: ['set_tone_freq', 'set_tsql_freq'], params: { freq: 'integer', receiver: 'receiver' } },
+  { names: ['set_repeater_shift'], params: { direction: 'integer', receiver: 'receiver' } },
   { names: [
     'set_anti_vox_gain', 'set_break_in_delay', 'set_compressor_level', 'set_drive_gain', 'set_mic_gain',
     'set_monitor_gain', 'set_nb_depth', 'set_nb_width', 'set_vox_delay', 'set_vox_gain',

@@ -25,7 +25,7 @@ import {
   makeTxHandlers, makeFilterHandlers, makeBandHandlers,
   makePresetHandlers, makeAudioRoutingHandlers, makeRxAudioHandlers,
   makeVfoHandlers, makeScopeControlsHandlers, makeVoxHandlers, makeMemoryHandlers,
-  makeKeyboardHandlers, makeSystemHandlers,
+  makeKeyboardHandlers, makeSystemHandlers, makeRepeaterHandlers,
 } from '../commands/panel-commands';
 import { toRadioViewModel } from './radio-view-model-adapter';
 import {
@@ -229,6 +229,10 @@ const _keyboardHandlers = makeKeyboardHandlers();
 export function getKeyboardHandlers() { return _keyboardHandlers; }
 const _systemHandlers = makeSystemHandlers();
 export function getSystemHandlers() { return _systemHandlers; }
+/** MOR-2111 — the repeater panel's command handlers, a singleton like
+ *  `getSystemHandlers`. */
+const _repeaterHandlers = makeRepeaterHandlers();
+export function getRepeaterHandlers() { return _repeaterHandlers; }
 
 // ── Active frequency (MOR-1409 A15) ──
 /**
@@ -1348,6 +1352,39 @@ export function getPendingNbOn(receiver: 0 | 1): boolean | null {
 export function getPendingNrOn(receiver: 0 | 1): boolean | null {
   const value = latestPendingParam('set_nr', 'on', receiver, 'nr');
   return typeof value === 'boolean' ? value : null;
+}
+
+// ── Repeater panel pending targets (MOR-2111) ──
+/**
+ * Freshest unconfirmed repeater tone-mode target for `receiver`, or `null`,
+ * collapsed from the in-flight `set_repeater_tone`/`set_repeater_tsql`
+ * pair: tone off means OFF (TONE→OFF, and TSQL→OFF, which sends both), then
+ * TSQL on means TSQL, then TSQL off or tone on means TONE.
+ */
+export function getPendingRepeaterTone(receiver: 0 | 1): 'off' | 'tone' | 'tsql' | null {
+  const tsql = latestPendingParam('set_repeater_tsql', 'on', receiver, 'repeaterTsql');
+  const tone = latestPendingParam('set_repeater_tone', 'on', receiver, 'repeaterTone');
+  if (tone === false) return 'off';
+  if (tsql === true) return 'tsql';
+  if (tsql === false || tone === true) return 'tone';
+  return null;
+}
+
+/** Freshest unconfirmed repeater shift direction (0-2) for `receiver`, or
+ *  `null`. */
+export function getPendingRepeaterShift(receiver: 0 | 1): number | null {
+  const value = latestPendingParam('set_repeater_shift', 'direction', receiver, 'repeaterShift');
+  return typeof value === 'number' ? value : null;
+}
+
+/** Freshest unconfirmed CTCSS tone frequency (centiHz) for `receiver`, or
+ *  `null`. The panel writes `set_tone_freq` in OFF/TONE and `set_tsql_freq`
+ *  in TSQL, so both in-flight names count. */
+export function getPendingToneFreq(receiver: 0 | 1): number | null {
+  const tone = latestPendingParam('set_tone_freq', 'freq', receiver, 'toneFreq');
+  if (typeof tone === 'number') return tone;
+  const tsql = latestPendingParam('set_tsql_freq', 'freq', receiver, 'tsqlFreq');
+  return typeof tsql === 'number' ? tsql : null;
 }
 
 // ── Generic armed/pending signal (MOR-1519) ──

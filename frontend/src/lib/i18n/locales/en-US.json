@@ -241,6 +241,7 @@
   "core.filter.passband.supersededAnnouncement": "{control} request for {target} was superseded; confirmed value remains {confirmed}.",
   "core.rfFrontEnd.preamp.pendingAnnouncement": "Pending, not yet confirmed",
   "core.dsp.pendingAnnouncement": "Pending, not yet confirmed",
+  "core.repeater.pendingAnnouncement": "Pending, not yet confirmed",
   "core.vfo.split.label": "Split",
   "core.vfo.dualWatch.label": "Dual watch",
   "core.vfo.state.on": "on",

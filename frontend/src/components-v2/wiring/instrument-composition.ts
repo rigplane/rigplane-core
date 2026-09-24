@@ -98,6 +98,7 @@ export interface InstrumentComposition {
     instrumentLayout?: Snippet, standard?: boolean,
   ]>;
   readonly memory: Snippet<[allowBare?: boolean, chrome?: PanelChrome]>;
+  readonly repeater?: Snippet<[allowBare?: boolean, chrome?: PanelChrome]>;
   readonly scopeDisplay: Snippet<[allowBare?: boolean]>;
   readonly scopeControls: Snippet<[allowBare?: boolean]>;
   readonly txFaultRecovery: Snippet;

@@ -88,6 +88,9 @@ const DESKTOP_V2_ZONES = [
   { id: 'band', surfaces: ['band'] },
   { id: 'antenna', surfaces: ['antenna'] },
   { id: 'rit-xit-scan', surfaces: ['ritXitScan'] },
+  // MOR-2111: the repeater panel. Not `required`: it draws only while a
+  // receiver is tuned to a range the profile flags `repeater = true`.
+  { id: 'repeater', surfaces: ['repeater'] },
   // MOR-1368 (S9): the cross-sidebar family. `rxAudio`, `dsp` and `cwKeyer`
   // become zone-OWNED, and the MOR-1364 suppression channel retires their
   // legacy twins in BOTH sidebars (a cross-sidebar drag can move `rx-audio`,
@@ -121,8 +124,7 @@ const DESKTOP_V2_ZONES = [
   // nothing for `requiredSemanticSurfaces` to force-restore here, same as
   // every other non-vfo/rxTx zone in this manifest.
   { id: 'memory', surfaces: ['memory'] },
-  // MOR-1370 (S6b-2): scopeControls becomes zone-OWNED here — the LAST
-  // surface in the whole MOR-1262 vocabulary to graduate. Declaring it
+  // MOR-1370 (S6b-2): scopeControls becomes zone-OWNED here. Declaring it
   // activates the MOR-1369 (S6b-1) suppression channel: `RadioLayout.svelte`
   // already forwards `hideScopeControls={declared.has('scopeControls')}` to
   // `SpectrumPanel`, retiring the scope toolbar's twelve fact-backed
@@ -131,9 +133,6 @@ const DESKTOP_V2_ZONES = [
   // `ScopeControlsSurface` is control-bearing (MOR-1304 canon) and mounts
   // single-composition-only, so the dual-receiver cockpit is untouched by
   // this declaration.
-  //
-  // This empties `RECORDED_REASONS` in `zone-ownership-coverage.test.ts` —
-  // MOR-1317 closes, program-wide, on this line.
   //
   // Not `required`: a radio whose evidence gate declines the `scope`
   // capability must still resolve this layout, and the surface self-gates on
