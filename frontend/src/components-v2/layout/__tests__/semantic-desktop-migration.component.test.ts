@@ -2937,8 +2937,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
 /**
  * MOR-1370 (v3-rework S6b-2) — `scopeControls` becomes ZONE-OWNED on
  * `desktop-v2`, the LAST surface in the whole MOR-1262 vocabulary to
- * graduate; `zone-ownership-coverage.test.ts`'s `RECORDED_REASONS` ledger is
- * empty after this slice.
+ * graduate.
  *
  * Unlike every other family in this file, its legacy twin is not a
  * sidebar/modal panel but the scope toolbar's fact-backed half
