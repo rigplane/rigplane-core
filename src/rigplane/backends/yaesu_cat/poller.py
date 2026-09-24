@@ -1059,6 +1059,9 @@ class YaesuCatPoller:
         0x08: 8,  # 12m  → 24M
         0x09: 9,  # 10m  → 28M
         0x0A: 10,  # 6m   → 50M
+        0x0B: 11,  # 4m   → 70M/GEN
+        0x0D: 13,  # 2m   → 144M
+        0x0E: 14,  # 70cm → 430M
     }
 
     async def _execute_command(

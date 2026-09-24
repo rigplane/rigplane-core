@@ -970,10 +970,25 @@ end_hz = 29700000
 default_hz = 28500000
 bsr_code = 0x09
 
+# BS band codes: FTX-1 CAT OM 2508-C, BS BAND SELECT
+[[freq_ranges.ranges.bands]]
+name = "6m"
+start_hz = 50000000
+end_hz = 54000000
+default_hz = 50125000
+bsr_code = 0x0A
+
 [[freq_ranges.ranges]]
 label = "4m"
 start_hz = 70000000
 end_hz = 70500000
+
+[[freq_ranges.ranges.bands]]
+name = "4m"
+start_hz = 70000000
+end_hz = 70500000
+default_hz = 70200000
+bsr_code = 0x0B
 
 [[freq_ranges.ranges]]
 label = "2m"
@@ -981,11 +996,25 @@ start_hz = 144000000
 end_hz = 148000000
 repeater = true
 
+[[freq_ranges.ranges.bands]]
+name = "2m"
+start_hz = 144000000
+end_hz = 148000000
+default_hz = 145000000
+bsr_code = 0x0D
+
 [[freq_ranges.ranges]]
 label = "70cm"
 start_hz = 430000000
 end_hz = 450000000
 repeater = true
+
+[[freq_ranges.ranges.bands]]
+name = "70cm"
+start_hz = 430000000
+end_hz = 450000000
+default_hz = 432100000
+bsr_code = 0x0E
 
 [[freq_ranges.ranges]]
 label = "Air"
