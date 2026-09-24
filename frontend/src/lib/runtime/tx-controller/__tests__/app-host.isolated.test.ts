@@ -223,6 +223,26 @@ describe('managed App TX host', () => {
     host.dispose();
   });
 
+  it('keeps every authority refresh while an unchanged projection notifies nobody (MOR-2551)', async () => {
+    h.refresh.mockImplementation(async () => { h.state = { ...h.state }; });
+    const host = provideManagedAppTxHost(bindings());
+    const seen: ManagedTxState[] = [];
+    getManagedAppTxController().subscribe((state) => seen.push(state));
+    host.refreshAuthority(3);
+    h.session!({ state: 'connected', epoch: 4 });
+    await flush();
+
+    for (let push = 0; push < 3; push += 1) {
+      host.refreshAuthority(3);
+      await flush();
+    }
+
+    expect(h.refresh).toHaveBeenCalledTimes(4);
+    expect(seen).toEqual([]);
+    host.dispose();
+    await flush();
+  });
+
   it('dispatches one explicit TRANSMIT intent while a background refresh is pending', async () => {
     let resolveRefresh!: () => void;
     h.refresh.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveRefresh = resolve; }));
