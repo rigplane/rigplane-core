@@ -476,22 +476,18 @@ swap_main_sub = [0xB0]
 equal_main_sub = [0xB1]
 
 # ── Frequency Ranges ─────────────────────────────────────────────
-# USA version (the bench and the operator are in the US): IC-9700
+# USA version: IC-9700
 # Basic Manual, Specifications, "Frequency coverage (unit: MHz)",
 # USA Version Receiver/Transmitter: 144.000000 ~ 148.000000,
 # 430.000000 ~ 450.000000, 1240.000000 ~ 1300.000000. Other versions
 # (EUR/ITR/TPE/KOR) differ.
-# The IC-9700 is a VHF/UHF/SHF transceiver: no HF, no 6 m. The HF/6m
-# entries this block replaced were copied from an HF profile (MOR-2567).
+# The IC-9700 is a VHF/UHF/SHF transceiver: no HF, no 6 m (MOR-2567).
 # bsr_code: IC-9700 CI-V Reference Guide, "Band stacking register"
 # (command 1A 01), Frequency band codes: 01=VHF 144.000000~148.000000,
 # 02=UHF 430.000000~450.000000, 03=1.2GHz 1240.000000~1300.000000.
 # default_hz: the manuals state no per-band default tuning frequency,
 # and _schema.md makes the key required, so each band carries its
 # manual-given start edge as the BSR-recall fallback frequency.
-# repeater = true: the IC-9700's FM/DV repeater operation (Basic
-# Manual, "DUPLEX/SPLIT/REPEATER MODE", 2500 repeater memories, 99
-# memory channels x 3 bands) spans all three of its bands.
 
 [[freq_ranges.ranges]]
 label = "2m"
@@ -520,8 +516,7 @@ default_hz = 430_000_000
 bsr_code = 0x02
 
 [[freq_ranges.ranges]]
-# CI-V guide names this band family "1.2GHz"; "23cm" follows the same
-# metric shorthand the other profiles use for 1240-1300 MHz-class bands.
+# The CI-V guide names this band "1.2GHz".
 label = "23cm"
 start_hz = 1_240_000_000
 end_hz = 1_300_000_000
