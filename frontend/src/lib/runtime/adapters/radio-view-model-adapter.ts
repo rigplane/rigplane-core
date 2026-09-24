@@ -1827,6 +1827,16 @@ function deriveRxAudio(
   };
 }
 
+type BareProjectionCache = {
+  state: ServerState;
+  caps: Capabilities;
+  view: RadioViewModel;
+};
+
+// Production state and capabilities are replaced as snapshots. Keep only the last bare projection.
+// DEV callers include fixture mutation, so do not memoize there.
+let lastBareProjection: BareProjectionCache | null = null;
+
 /**
  * `null` when there is nothing safe to render at all: capabilities have not
  * loaded, or they describe a topology that contradicts itself
@@ -1839,6 +1849,11 @@ export function toRadioViewModel(
   rxAudioSnapshot?: RxAudioSnapshot | null,
   scopeDisplaySnapshot?: ScopeDisplaySnapshot | null,
 ): RadioViewModel | null {
+  const cacheBare = !import.meta.env.DEV && state !== null && caps !== null
+    && tx === undefined && rxAudioSnapshot === undefined && scopeDisplaySnapshot === undefined;
+  if (cacheBare && lastBareProjection?.state === state && lastBareProjection.caps === caps) {
+    return lastBareProjection.view;
+  }
   if (!caps) return null;
   const presentation = derivePresentationCapabilities(caps);
   const topology = presentation.topology;
@@ -2035,7 +2050,7 @@ export function toRadioViewModel(
   }
   disabledReasons.push(...deriveCwKeyerReasons(cwKeyer, modeFilter, txPermit));
 
-  return {
+  const view: RadioViewModel = {
     topologyId: `${topology.structuralCount}/${topology.scheme}`,
     vfoScheme: topology.scheme,
     activeReceiver,
@@ -2063,4 +2078,6 @@ export function toRadioViewModel(
     ...(scopeControls !== undefined ? { scopeControls } : {}),
     ...(scopeDisplay !== undefined ? { scopeDisplay } : {}),
   };
+  if (cacheBare && state !== null) lastBareProjection = { state, caps, view };
+  return view;
 }
