@@ -257,6 +257,11 @@ describe('debounce', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    // This file runs in the `fast` pool (`isolate: false`). Fake timers are
+    // process-global; leaving them installed leaks them into the next file
+    // in the worker, whose own `vi.useFakeTimers()`/`vi.useRealTimers()`
+    // then capture the fake timers as their "real" baseline (MOR-2549).
+    vi.useRealTimers();
   });
 
   it('delays function execution', () => {
