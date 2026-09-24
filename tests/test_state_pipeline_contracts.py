@@ -1375,7 +1375,10 @@ def test_registry_from_paths_derives_the_acquisition_class() -> None:
         (FieldPath.global_("operator_controls", "mic_gain"), AcquisitionClass.SETTING),
         (FieldPath.global_("tx_state", "vox_on"), AcquisitionClass.SETTING),
         # Families without a named exception default to setting.
-        (FieldPath.parse("connection.connected"), AcquisitionClass.SETTING),
+        (
+            FieldPath.parse("connection.connection.connected"),
+            AcquisitionClass.SETTING,
+        ),
         (
             FieldPath.scope_control("display", "span"),
             AcquisitionClass.MENU,
