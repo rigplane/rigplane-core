@@ -3,11 +3,22 @@ import { createServer } from 'node:http';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 
 const output = process.env.PROFILE_OUTPUT;
 assert(output && path.isAbsolute(output), 'PROFILE_OUTPUT must be absolute');
+const worktree = path.resolve(import.meta.dirname, '../../..');
+assert(path.resolve(output) !== worktree && !path.resolve(output).startsWith(worktree + path.sep), 'Output must be outside this worktree');
 const dist = path.join(output, 'dist');
-const smoke = process.argv.includes('--preflight');
+const check = process.argv.includes('--check');
+const smoke = check || process.argv.includes('--preflight');
+if (check) {
+  const frontend = path.resolve(import.meta.dirname, '../..');
+  await mkdir(output, { recursive: true });
+  const fixture = execFileSync('uv', ['run', 'python', 'frontend/profiling/mor2551/generate-fixture.py'], { cwd: path.dirname(frontend) });
+  await writeFile(path.join(output, 'canonical.json'), fixture);
+  execFileSync(process.execPath, [path.join(frontend, 'node_modules/vite/bin/vite.js'), 'build', '--config', 'profiling/mor2551/vite.config.ts'], { cwd: frontend, stdio: 'inherit' });
+}
 const browserType = process.argv.includes('--webkit') ? webkit : chromium;
 const serverRequests = [];
 const blocked = [];
@@ -62,8 +73,26 @@ try {
     assert.deepEqual(before.fixtureCheck, { frames: 400, fullCount: 4, deltaCount: 396, stateRevision: 1, freshnessRevision: 1, ptt: false });
     assert.deepEqual(before.errors, []); assert.deepEqual(errors, []); assert.deepEqual(forbidden, []); assert.deepEqual(blocked, []);
     assert.equal(before.sent.filter(m => m.type !== 'subscribe' && m.type !== 'ping').length, 0);
-    await writeFile(path.join(output, `${name}-preflight.json`), JSON.stringify(before, null, 2));
     console.log(JSON.stringify({ preflight: name, accepted: before.accepted.length, fields: before.fieldCount, observed: before.observedFields, deltaUnits: before.deltaUnits, commands: 0, blocked: 0 }));
+    if (smoke) {
+      // Separate browser tasks exercise delta delivery and the periodic full at 110.
+      await page.evaluate(async () => {
+        for (let i = 0; i < 118; i++) {
+          await new Promise(resolve => setTimeout(resolve, 0));
+          window.replay.emitState();
+        }
+      });
+      const replayed = await page.evaluate(() => window.replay.snapshot());
+      const result = { ...replayed, pageErrors: errors, forbidden, serverBlocked: blocked };
+      await writeFile(path.join(output, `${name}-replay.json`), JSON.stringify(result, null, 2));
+      assert.deepEqual(replayed.accepted.map(a => a.sequence), Array.from({ length: 121 }, (_, i) => i + 1));
+      assert.equal(replayed.stateSequence, 121); assert.equal(replayed.ptt, false);
+      assert.deepEqual(replayed.errors, []); assert.deepEqual(errors, []);
+      assert.deepEqual(forbidden, []); assert.deepEqual(blocked, []);
+      assert.equal(replayed.sent.filter(m => m.type !== 'subscribe' && m.type !== 'ping').length, 0);
+      if (mode === 'mounted') await page.getByRole('button', { name: 'VIEW OFF', exact: true }).waitFor({ state: 'visible' });
+      console.log(JSON.stringify({ replay: name, accepted: 121, commands: 0, blocked: 0 }));
+    }
     if (!smoke) {
       await page.evaluate(() => window.replay.start());
       await page.waitForTimeout(5000);

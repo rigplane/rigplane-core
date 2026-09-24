@@ -52,7 +52,7 @@ window.fetch = async (input, init) => {
   const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
   api.push(`${method} ${url.pathname}`);
   if (url.origin !== location.origin || url.search) fail('Unexpected fetch origin/query');
-  if (method === 'PUT' && url.pathname === '/api/local/v1/rc28/tuning-step' && !running) {
+  if (method === 'PUT' && url.pathname === '/api/local/v1/rc28/tuning-step' && !running && sequence === 1) {
     if (typeof init?.body !== 'string') fail('Unexpected startup body type');
     const body = JSON.parse(init!.body as string);
     if (Object.keys(body).length !== 1 || !Number.isFinite(body.tuning_step_hz)) fail('Unexpected startup body');

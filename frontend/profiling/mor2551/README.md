@@ -1,6 +1,6 @@
 # Offline state replay profiler
 
-This diagnostic entry imports production `src/main.ts` in `mounted` mode and
+This development-only entry imports production `src/main.ts` in `mounted` mode and
 production transport/stores in `store-only` mode. It is not part of the normal
 Vite entry. `run.mjs` requires the full state and two deltas to commit, the
 mounted desktop shell to render, and VIEW OFF before profiling.
@@ -17,6 +17,7 @@ npx vite build --config profiling/mor2551/vite.config.ts
 node profiling/mor2551/run.mjs --preflight
 node profiling/mor2551/run.mjs
 node profiling/mor2551/summarize.mjs
+# Optional; requires the Playwright WebKit browser:
 node profiling/mor2551/run.mjs --webkit
 npx svelte-check --tsconfig profiling/mor2551/tsconfig.json
 ```
@@ -48,3 +49,32 @@ WebKit runs the same cadence and acceptance checks without CDP profiling.
 and unmapped functions retain explicit labels. Sampled time is a statistical
 estimate, not process CPU. Synthetic Chromium results cannot establish an
 installed WebKit CPU cause or validate a product optimization.
+
+## Regression gate
+
+After `uv sync --all-extras`, `npm ci` in `frontend`, and Playwright Chromium
+provisioning (`npx playwright install chromium`), run from `frontend`:
+
+```sh
+export PROFILE_OUTPUT="$(mktemp -d)"
+npm run test:replay
+# Optional four-arm CPU capture and source-map summary, using that same build:
+npm run profile:replay
+```
+
+`test:replay` generates the canonical fixture, builds the dedicated entry, checks
+full + two delta acceptance, then delivers another 118 states as separate browser
+tasks in each mode. `run.mjs` asserts the exact accepted sequence 1–121, including
+the full frame at 110, PTT false, mounted VIEW OFF, and no forbidden I/O or commands.
+This fast replay checks acceptance, not real-time cadence or performance.
+Startup PUT sinks remain recorded in each `*-preflight.json` / `*-replay.json`.
+
+The ordinary `npm run check` includes the profiler typecheck. The existing quick
+Vitest run includes `radio-view-model-cache.isolated.test.ts` for snapshot and
+capability invalidation plus TX/audio/scope bypass. Browser replay is an explicit
+command: quick currently provisions Chromium after Vitest, and Python dependencies
+only for core paths. It does not automatically execute this command. Running it
+in CI requires Python dependencies and Chromium first; CDP is not used by this
+gate. No sampled-CPU threshold is enforced on shared runners. Profile-window
+frame counts remain measured arrivals and can differ at a timer boundary; inspect
+them before comparing profiles. Artifacts stay in the chosen external directory.
