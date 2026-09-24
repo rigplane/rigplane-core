@@ -28,6 +28,7 @@ from rigplane.core.state_acquisition_policy import (
     FieldCapability,
     MeterCoalescingPolicy,
     RadioAcquisitionProfile,
+    acquisition_policy_for_class,
     fit_to_budget,
 )
 from rigplane.core.state_pipeline_contracts import (
@@ -465,6 +466,93 @@ def test_loader_parses_tx_only_field_policy_flag(tmp_path: Path) -> None:
     # A path with no field_policies override must not silently inherit
     # tx_only=True from some other field's override.
     assert policy.default_policy.tx_only is False
+
+
+def test_loader_parses_a_class_override_with_its_reason(tmp_path: Path) -> None:
+    """MOR-2574 step 2: ``class`` takes the class policy whole.
+
+    A ``class = "<name>"`` entry resolves to that acquisition class's
+    policy; ``reason`` records why the entry exists and is required with
+    ``class``. A ``reason`` on an explicit-cadence entry loads today —
+    the later migration steps will require one there.
+    """
+
+    toml = _minimal_state_acquisition_toml(
+        """
+        [state_acquisition]
+        provider = "icom_civ"
+
+        [state_acquisition.capabilities]
+        polling_only = [
+            "global.tx_state.rit_on",
+            "global.tx_state.split",
+        ]
+
+        [state_acquisition.field_policies."global.tx_state.rit_on"]
+        class = "panel"
+        reason = "bench 2026-09-24: the RIT knob is watched at panel cadence"
+
+        [state_acquisition.field_policies."global.tx_state.split"]
+        cadence_seconds = 1.0
+        freshness_ttl_seconds = 2.0
+        reason = "split trails the VFO exchange; keep it fast"
+        """
+    )
+
+    acquisition = load_rig(_write_toml(tmp_path, toml)).to_profile().state_acquisition
+    rit_on = FieldPath.global_("tx_state", "rit_on")
+    split = FieldPath.global_("tx_state", "split")
+
+    assert acquisition is not None
+    resolved = acquisition.policy_for(rit_on)
+    assert resolved == acquisition_policy_for_class(AcquisitionClass.PANEL)
+    assert resolved.cadence_seconds == 5.0
+    assert resolved.freshness_ttl_seconds == 20.0
+    assert resolved.adaptive_decay.enabled is False
+    assert acquisition.policy_for(split).cadence_seconds == 1.0
+
+
+@pytest.mark.parametrize(
+    ("entry", "message"),
+    [
+        (
+            'class = "setting"',
+            r"class requires a reason",
+        ),
+        (
+            'class = "not_a_class"\nreason = "typo"',
+            r"is not an acquisition class: 'not_a_class'",
+        ),
+        (
+            'class = "panel"\nreason = "watched"\ncadence_seconds = 1.0',
+            r"cannot combine with class",
+        ),
+        (
+            'class = "panel"\nreason = "   "',
+            r"reason must be a non-empty string",
+        ),
+    ],
+)
+def test_loader_rejects_malformed_class_overrides(
+    tmp_path: Path,
+    entry: str,
+    message: str,
+) -> None:
+    toml = _minimal_state_acquisition_toml(
+        f"""
+        [state_acquisition]
+        provider = "icom_civ"
+
+        [state_acquisition.capabilities]
+        polling_only = ["global.tx_state.rit_on"]
+
+        [state_acquisition.field_policies."global.tx_state.rit_on"]
+        {entry}
+        """
+    )
+
+    with pytest.raises(RigLoadError, match=message):
+        load_rig(_write_toml(tmp_path, toml))
 
 
 def test_loader_parses_startup_optional_capability(tmp_path: Path) -> None:
@@ -1096,6 +1184,68 @@ def test_fit_to_budget_reproduces_the_design_ic7610_lan_receive_figure() -> None
         pytest.approx(14.09, abs=0.01)
     )
     assert fit.demand_hz == pytest.approx(0.75 * lan_budget_hz)
+
+
+# --- MOR-2574 step 2: the loader-era class fallback --------------------------
+
+
+def test_unowned_pollable_paths_resolve_to_their_class_policy() -> None:
+    """MOR-2574 step 2: no pollable path inherits the profile default.
+
+    ``policy_for`` resolves, for every shipped profile: an explicit
+    ``field_policies`` entry wins, exactly as declared; a pollable path
+    with no entry of its own gets exactly its acquisition class's policy
+    (the class the registry's ``FieldSpec.acquisition_class`` column
+    carries for the path); every other path — no capability, or none that
+    can poll — keeps ``default_policy``, the pre-step-2 behaviour. So the
+    paths whose cadence, TTL or ``tx_only`` changed against the old
+    ``field_policies.get(path, default_policy)`` resolution are exactly
+    the unowned pollable ones, and no explicit entry moved. The per-profile
+    old -> new idle query rates this prints are recorded in the MOR-2576
+    pull request, not pinned here.
+    """
+
+    for model, rig in sorted(discover_rigs(RIGS_DIR).items()):
+        acquisition = rig.to_profile().state_acquisition
+        if acquisition is None:
+            continue
+        changed: list[FieldPath] = []
+        unowned: list[FieldPath] = []
+        idle_old = 0.0
+        idle_new = 0.0
+        for capability in sorted(acquisition.capabilities, key=lambda c: str(c.path)):
+            path = capability.path
+            effective = acquisition.policy_for(path)
+            inherited = acquisition.field_policies.get(
+                path,
+                acquisition.default_policy,
+            )
+            if path in acquisition.field_policies:
+                assert effective == acquisition.field_policies[path], (model, path)
+                continue
+            if not capability.can_poll:
+                assert effective == acquisition.default_policy, (model, path)
+                continue
+            unowned.append(path)
+            assert effective == acquisition_policy_for_class(
+                acquisition_class_for_path(path)
+            ), (model, path)
+            if (
+                effective.cadence_seconds,
+                effective.freshness_ttl_seconds,
+                effective.tx_only,
+            ) != (
+                inherited.cadence_seconds,
+                inherited.freshness_ttl_seconds,
+                inherited.tx_only,
+            ):
+                changed.append(path)
+            if inherited.cadence_seconds is not None and not inherited.tx_only:
+                idle_old += 1.0 / inherited.cadence_seconds
+            if effective.cadence_seconds is not None and not effective.tx_only:
+                idle_new += 1.0 / effective.cadence_seconds
+        assert changed == unowned, (model, changed, unowned)
+        print(f"{model}: idle {idle_old:.3f} -> {idle_new:.3f} q/s")
 
 
 def test_ic7300_panel_knob_fields_are_polled_at_the_panel_class_cadence() -> None:
