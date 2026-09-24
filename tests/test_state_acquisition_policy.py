@@ -28,6 +28,7 @@ from rigplane.core.state_acquisition_policy import (
     FieldCapability,
     MeterCoalescingPolicy,
     RadioAcquisitionProfile,
+    acquisition_policy_for_class,
     fit_to_budget,
 )
 from rigplane.core.state_pipeline_contracts import (
@@ -43,6 +44,7 @@ from rigplane.core.state_pipeline_contracts import (
 from rigplane.core.state_store import FreshnessState, StateStore
 from rigplane.profiles import get_radio_profile
 from rigplane.rig_loader import RigLoadError, discover_rigs, load_rig
+from rigplane.runtime._civ_rx import _observation_max_age
 from _acquisition_query_helpers import (
     AcquisitionQueryCase,
     civ_frame_parts,
@@ -88,69 +90,6 @@ _LIVE_MAX_CADENCE_SECONDS = 1.0
 #: The owner's single threshold for a panel change reaching the web
 #: (ruling of 2026-09-07).
 _OPERATOR_SET_MAX_CADENCE_SECONDS = 5.0
-
-#: Classified paths with no own ``field_policies`` entry, so
-#: ``test_field_policies_obey_their_cadence_class_not_their_rig`` cannot see
-#: them (it walks ``field_policies.items()``, not ``capabilities``): each
-#: inherits the profile's ``default_cadence_seconds`` instead, and that
-#: inherited cadence exceeds the path's class bound. Reproduced by
-#: ``_inherited_default_out_of_class`` below, which walks the
-#: ``capabilities`` of every profile that declares ``field_policies`` and
-#: keeps only paths where that comparison fails. Profiles declaring no
-#: ``field_policies`` (X6100, since MOR-2540 the only one) are outside this
-#: list: the same walk without that skip finds 4 more such paths there,
-#: which no test bounds. IC-705/IC-9700 joined the walked set when MOR-2540
-#: gave their four TX meters ``field_policies`` entries.
-_INHERITED_DEFAULT_OUT_OF_CLASS: dict[str, tuple[FieldPath, ...]] = {
-    "X6200": (
-        # inherits default 2.0s; live bound is 1.0s
-        FieldPath.active("main", "freq_mode", "freq_hz"),
-    ),
-    "IC-705": (
-        # vd/id inherit default 2.0s; stream meter bound is 0.4s
-        FieldPath.global_("meters", "id"),
-        FieldPath.global_("meters", "vd"),
-        # inherits default 2.0s; live bound is 1.0s
-        FieldPath.global_("tx_state", "ptt"),
-        FieldPath.active("main", "freq_mode", "freq_hz"),
-        FieldPath.active("main", "freq_mode", "mode"),
-        # inherits default 2.0s; stream meter bound is 0.4s
-        FieldPath.receiver("main", "meters", "s_meter"),
-        # inherits default 2.0s; live bound is 1.0s
-        FieldPath.unselected("main", "freq_mode", "freq_hz"),
-        FieldPath.unselected("main", "freq_mode", "mode"),
-    ),
-    "IC-7610": (
-        # inherits default 2.0s; live bound is 1.0s
-        FieldPath.active("main", "freq_mode", "mode"),
-        FieldPath.active("sub", "freq_mode", "mode"),
-    ),
-    "IC-9700": (
-        # vd/id inherit default 2.0s; stream meter bound is 0.4s
-        FieldPath.global_("meters", "id"),
-        FieldPath.global_("meters", "vd"),
-        # inherits default 2.0s; live bound is 1.0s
-        FieldPath.global_("tx_state", "ptt"),
-        FieldPath.active("main", "freq_mode", "freq_hz"),
-        FieldPath.active("main", "freq_mode", "mode"),
-        # inherits default 2.0s; stream meter bound is 0.4s
-        FieldPath.receiver("main", "meters", "s_meter"),
-        # inherits default 2.0s; live bound is 1.0s
-        FieldPath.active("sub", "freq_mode", "freq_hz"),
-        FieldPath.active("sub", "freq_mode", "mode"),
-    ),
-    "IC-7300": (
-        # inherits default 1.5s; live bound is 1.0s
-        FieldPath.unselected("main", "freq_mode", "freq_hz"),
-        FieldPath.unselected("main", "freq_mode", "mode"),
-    ),
-    "FTX-1": (
-        # inherits default 2.0s; live bound is 1.0s
-        FieldPath.global_("tx_state", "ptt"),
-        FieldPath.active("main", "freq_mode", "freq_hz"),
-        FieldPath.active("main", "freq_mode", "mode"),
-    ),
-}
 
 #: The ten panel knobs the owner's ruling named, on the one rig it named.
 _IC7300_PANEL_KNOB_PATHS = (
@@ -260,7 +199,10 @@ def test_radio_acquisition_profile_serializes_capabilities_and_policy() -> None:
     assert restored == profile
     assert restored.capability_for(freq).can_poll is True
     assert restored.capability_for(s_meter).stream_like is True
-    assert restored.policy_for(freq).freshness_ttl_seconds == 6.0
+    # freq_hz is pollable with no own entry, so policy_for resolves it to
+    # its live class policy (MOR-2574 step 2); the round trip must agree
+    # with the original profile's resolution.
+    assert restored.policy_for(freq) == profile.policy_for(freq)
 
 
 def test_invalid_capability_and_policy_combinations_are_rejected() -> None:
@@ -807,13 +749,13 @@ def test_field_policies_obey_their_cadence_class_not_their_rig() -> None:
     ``test_ic7300_profile_enrolls_exact_supported_observation_rows``).
 
     This gate only checks a path that carries its own ``field_policies``
-    entry, because it walks ``field_policies.items()``. A classified path
-    that instead inherits the profile's ``default_cadence_seconds`` is
-    invisible to it -- see ``_INHERITED_DEFAULT_OUT_OF_CLASS`` and
-    ``test_inherited_default_cadence_out_of_class_paths_are_exactly_named``
-    below for the eight such paths that are out of class today. A profile that
-    declares no ``field_policies`` at all makes no per-field cadence claim --
-    every path inherits one default -- so it is skipped; ``checked ==
+    entry, because it walks ``field_policies.items()``. A pollable path
+    with no entry of its own resolves to its acquisition class's policy
+    since MOR-2574 step 2 — bounded by
+    ``test_unowned_pollable_paths_resolve_to_their_class_policy`` below —
+    so it can no longer sit on an out-of-class inherited default. A profile
+    that declares no ``field_policies`` at all makes no per-field cadence
+    claim — every path resolves by class — so it is skipped; ``checked ==
     {...}`` below pins which profiles were walked, not that every classified
     path on each one carries its own entry. A classified path whose
     capability is not pollable is the on-demand shape instead: nothing
@@ -851,54 +793,6 @@ def test_field_policies_obey_their_cadence_class_not_their_rig() -> None:
 
     assert not failures, f"field_policies entries outside their class: {failures}"
     assert checked == {"FTX-1", "IC-705", "IC-7300", "IC-7610", "IC-9700", "X6200"}
-
-
-def _inherited_default_out_of_class() -> dict[str, tuple[FieldPath, ...]]:
-    """Classified paths the gate above cannot see, that are out of class.
-
-    Walks the ``capabilities`` (not ``field_policies``, which is what the
-    gate above walks) of every profile that declares ``field_policies`` —
-    profiles declaring none are skipped, as the gate skips them — and keeps a
-    path only if it (a) has no own
-    ``field_policies`` entry, so its effective cadence is the profile's
-    inherited ``default_cadence_seconds``, and (b) that inherited cadence
-    exceeds its class bound.
-    """
-
-    found: dict[str, list[FieldPath]] = {}
-    for model, rig in sorted(discover_rigs(RIGS_DIR).items()):
-        acquisition = rig.to_profile().state_acquisition
-        if acquisition is None or not acquisition.field_policies:
-            continue
-        for capability in sorted(acquisition.capabilities, key=lambda c: str(c.path)):
-            path = capability.path
-            if path in acquisition.field_policies:
-                continue
-            classified = _cadence_class(path, capability)
-            if classified is None:
-                continue
-            _class_name, bound = classified
-            cadence = acquisition.policy_for(path).cadence_seconds
-            if cadence is not None and cadence <= bound:
-                continue
-            found.setdefault(model, []).append(path)
-    return {model: tuple(paths) for model, paths in found.items()}
-
-
-def test_inherited_default_cadence_out_of_class_paths_are_exactly_named() -> None:
-    """On the profiles the gate walks, the paths it cannot see are exactly the named eight.
-
-    ``test_field_policies_obey_their_cadence_class_not_their_rig`` only
-    checks a path with its own ``field_policies`` entry. This test covers
-    the gap: it re-derives ``_INHERITED_DEFAULT_OUT_OF_CLASS`` from the
-    profiles that declare ``field_policies``, so fixing one of the eight (or
-    introducing a new inherited-default violation on one of those profiles)
-    changes the derived set and this assertion goes red, naming what
-    changed. A profile with no ``field_policies`` is not walked, so a
-    violation introduced there is not caught here.
-    """
-
-    assert _inherited_default_out_of_class() == _INHERITED_DEFAULT_OUT_OF_CLASS
 
 
 def test_all_profiles_decay_ceiling_never_exceeds_freshness_limit() -> None:
@@ -1207,6 +1101,119 @@ def test_fit_to_budget_reproduces_the_design_ic7610_lan_receive_figure() -> None
         pytest.approx(14.09, abs=0.01)
     )
     assert fit.demand_hz == pytest.approx(0.75 * lan_budget_hz)
+
+
+# --- MOR-2574 step 2: the loader-era class fallback --------------------------
+
+
+def test_unowned_pollable_paths_resolve_to_their_class_policy() -> None:
+    """MOR-2574 step 2: no pollable path inherits the profile default.
+
+    ``policy_for`` resolves, for every shipped profile: an explicit
+    ``field_policies`` entry wins, exactly as declared; a pollable path
+    with no entry of its own gets exactly its acquisition class's policy
+    (the class the registry's ``FieldSpec.acquisition_class`` column
+    carries for the path); every other path — no capability, or none that
+    can poll — keeps ``default_policy``, the pre-step-2 behaviour. So the
+    paths whose cadence, TTL or ``tx_only`` changed against the old
+    ``field_policies.get(path, default_policy)`` resolution are exactly
+    the unowned pollable ones, and no explicit entry moved. The per-profile
+    old -> new idle query rates this prints are recorded in the MOR-2576
+    pull request, not pinned here.
+    """
+
+    for model, rig in sorted(discover_rigs(RIGS_DIR).items()):
+        acquisition = rig.to_profile().state_acquisition
+        if acquisition is None:
+            continue
+        changed: list[FieldPath] = []
+        unowned: list[FieldPath] = []
+        idle_old = 0.0
+        idle_new = 0.0
+        for capability in sorted(acquisition.capabilities, key=lambda c: str(c.path)):
+            path = capability.path
+            effective = acquisition.policy_for(path)
+            inherited = acquisition.field_policies.get(
+                path,
+                acquisition.default_policy,
+            )
+            if path in acquisition.field_policies:
+                assert effective == acquisition.field_policies[path], (model, path)
+                continue
+            if not capability.can_poll:
+                assert effective == acquisition.default_policy, (model, path)
+                continue
+            unowned.append(path)
+            assert effective == acquisition_policy_for_class(
+                acquisition_class_for_path(path)
+            ), (model, path)
+            if (
+                effective.cadence_seconds,
+                effective.freshness_ttl_seconds,
+                effective.tx_only,
+            ) != (
+                inherited.cadence_seconds,
+                inherited.freshness_ttl_seconds,
+                inherited.tx_only,
+            ):
+                changed.append(path)
+            if inherited.cadence_seconds is not None and not inherited.tx_only:
+                idle_old += 1.0 / inherited.cadence_seconds
+            if effective.cadence_seconds is not None and not effective.tx_only:
+                idle_new += 1.0 / effective.cadence_seconds
+        assert changed == unowned, (model, changed, unowned)
+        print(f"{model}: idle {idle_old:.3f} -> {idle_new:.3f} q/s")
+
+
+def test_civ_observation_stamp_is_the_policy_ttl_on_every_pollable_path() -> None:
+    """MOR-2576: one TTL source — the CI-V observation stamp is the policy TTL.
+
+    ``CivRuntime._observation`` stamps every CI-V observation through
+    ``_civ_rx._observation_max_age``. Since MOR-2574 step 2 that resolves
+    through ``policy_for`` for every path the profile declares or polls,
+    so the stamp must equal the resolved policy TTL on every pollable
+    CI-V path, and — where the path resolves from the acquisition class
+    table — the class TTL must cover at least two cadence intervals: a
+    poll landing between polls can never already read stale (the B1
+    defect: nb/nr and vd went stale before their next poll at the class
+    cadence while the stamp still came from the rig-blind fallback table).
+    Explicit entries keep exactly their declared TTL: the pre-existing
+    under-2x declared pairs (MOR-2574's own finding, 23 on IC-7610 and 4
+    on IC-7300) are the step 4-5 profile cleanup, not this gate.
+    """
+
+    failures: list[str] = []
+    checked: set[str] = set()
+    for model, rig in sorted(discover_rigs(RIGS_DIR).items()):
+        profile = rig.to_profile()
+        acquisition = profile.state_acquisition
+        if acquisition is None or not provider_uses_civ_acquisition(
+            acquisition.provider
+        ):
+            continue
+        checked.add(model)
+        for capability in sorted(acquisition.capabilities, key=lambda c: str(c.path)):
+            if not capability.can_poll:
+                continue
+            path = capability.path
+            policy = acquisition.policy_for(path)
+            stamped = _observation_max_age(profile, path)
+            if stamped != policy.freshness_ttl_seconds:
+                failures.append(
+                    f"{model}: {path} stamps {stamped}s, policy_for says "
+                    f"{policy.freshness_ttl_seconds}s"
+                )
+            if path in acquisition.field_policies:
+                continue
+            cadence = policy.cadence_seconds
+            if stamped is None or cadence is None or stamped < 2 * cadence:
+                failures.append(
+                    f"{model}: {path} (class-resolved) stamps {stamped}s for a "
+                    f"{cadence}s cadence: under two intervals"
+                )
+
+    assert not failures, f"CI-V observation stamps off-policy: {failures}"
+    assert checked == {"IC-705", "IC-7300", "IC-7610", "IC-9700", "X6100", "X6200"}
 
 
 def test_ic7300_panel_knob_fields_are_polled_at_the_panel_class_cadence() -> None:
@@ -1519,14 +1526,19 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
     # 0.2s -> 0.4s (5.0 -> 2.5 = -2.5 q/s). Net:
     # 19.833 + 2.0 - 2.5 = 19.333 q/s. MOR-2449 adds the IP+ read at 5.0s
     # (+0.2 q/s), for 19.533 q/s: still below the 20 q/s serial ceiling.
-    assert rx_state_demand_hz == pytest.approx(19.533, abs=0.001)
+    #
+    # MOR-2576 (MOR-2574 step 2) moves the seven unowned pollable paths from
+    # the 1.5s default to their class policies — split/af_level and the
+    # unselected freq/mode pair to control (1.5 -> 2.0s each), agc/NB/NR to
+    # setting (1.5 -> 10.0s each) — for a net -2.367 q/s: 17.167 q/s.
+    assert rx_state_demand_hz == pytest.approx(17.167, abs=0.001)
     assert rx_state_demand_hz < serial_ceiling_hz
     # Po/SWR/ALC/COMP: 4 fields / 1.0s = 4.0 q/s, ONLY while tx_only gating
     # lets them through (PTT observed true) — a transient TX-window cost, not
-    # a steady-state one. Untouched by MOR-1484.
+    # a steady-state one. Untouched by MOR-1484 and MOR-2576.
     assert tx_only_demand_hz == pytest.approx(4.0, abs=0.001)
     total_during_tx_hz = rx_state_demand_hz + tx_only_demand_hz
-    assert total_during_tx_hz == pytest.approx(23.533, abs=0.001)
+    assert total_during_tx_hz == pytest.approx(21.167, abs=0.001)
 
     assert (
         acquisition.capability_for(
@@ -1891,13 +1903,13 @@ def test_loader_parses_never_as_absent_freshness_ttl(tmp_path: Path) -> None:
 
     acquisition = load_rig(_write_toml(tmp_path, toml)).to_profile().state_acquisition
     vox_on = FieldPath.global_("tx_state", "vox_on")
-    power = FieldPath.global_("meters", "power")
 
     assert acquisition is not None
     assert acquisition.policy_for(vox_on).freshness_ttl_seconds is None
     assert acquisition.policy_for(vox_on).cadence_seconds == 25.0
-    # A path with no override still inherits the numeric profile default.
-    assert acquisition.policy_for(power).freshness_ttl_seconds == 8.0
+    # The numeric section default still loads onto default_policy; what
+    # changed in MOR-2576 is that a pollable path no longer resolves to it.
+    assert acquisition.default_policy.freshness_ttl_seconds == 8.0
 
 
 def test_ic7300_on_demand_field_primes_with_its_cadence_as_max_age() -> None:
@@ -2155,16 +2167,13 @@ _TX_ONLY_METER_PATHS = (
     FieldPath.global_("meters", "swr"),
 )
 
-#: (model, path) pairs deliberately left ungated. X6100 has no backend at
-#: all (``backends/factory.py`` refuses the model -- only the rigctld client
-#: reaches the radio) and neither X6100 nor X6200 declares a pollable or
-#: observable ``global.tx_state.ptt`` capability, so ``tx_only`` would fail
-#: closed (``acquisition_scheduler.derive_tx_active`` returns False for an
-#: unobserved PTT) and the power meter would never poll again. X6200 also
-#: declares swr/alc ``unknown`` and comp not at all, so power is its only
-#: declared transmit meter.
+#: (model, path) pairs deliberately left ungated. X6200 declares swr/alc
+#: ``unknown`` and comp not at all, so power is its only declared transmit
+#: meter, and it declares no pollable or observable
+#: ``global.tx_state.ptt`` capability, so ``tx_only`` would fail closed
+#: (``acquisition_scheduler.derive_tx_active`` returns False for an
+#: unobserved PTT) and the power meter would never poll again.
 _TX_METER_GATE_EXEMPTIONS = {
-    ("X6100", "global.meters.power"),
     ("X6200", "global.meters.power"),
 }
 
@@ -2190,6 +2199,14 @@ def test_every_declared_transmit_meter_is_gated_on_ptt() -> None:
         for path in _TX_ONLY_METER_PATHS:
             capability = acquisition.capability_for(path)
             if not (capability.can_poll or path in acquisition.field_policies):
+                continue
+            if capability.can_poll and path not in acquisition.field_policies:
+                # No declaration to gate: the acquisition class owns the
+                # path (MOR-2574 step 2), and the tx_meter class carries
+                # the tx_only half without the available_when clause.
+                policy = acquisition.policy_for(path)
+                assert policy.tx_only is True, (model, path)
+                assert policy.available_when == (), (model, path)
                 continue
             policy = acquisition.policy_for(path)
             if policy.tx_only and policy.available_when == (clause,):

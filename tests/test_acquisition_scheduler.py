@@ -283,7 +283,9 @@ def test_model_service_queues_backend_neutral_request_for_stale_field() -> None:
     assert result.request.timeout == 1.5
     assert result.request.deadline_monotonic == 20.85
     assert result.request.acquisition_method == "poll"
-    assert result.request.policy.freshness_ttl_seconds == 15.0
+    # freq_hz is pollable with no own entry, so it resolves to its live
+    # class policy (MOR-2574 step 2): TTL 2.0 s, not the 15.0 s default.
+    assert result.request.policy.freshness_ttl_seconds == 2.0
     assert scheduler.pending_requests() == (result.request,)
 
 
@@ -506,9 +508,14 @@ def test_external_cat_continue_policy_allows_non_conflicting_request() -> None:
     ptt = FieldPath.global_("tx_state", "ptt")
     profile = _profile(
         [ptt],
-        default_policy=AcquisitionPolicy(
-            external_cat_pause=ExternalCatPauseBehavior.CONTINUE,
-        ),
+        field_policies={
+            # Declared per path: ptt is pollable, so without an entry it
+            # would resolve to its keying class policy (MOR-2574 step 2),
+            # which carries the default pause behaviour this test overrides.
+            ptt: AcquisitionPolicy(
+                external_cat_pause=ExternalCatPauseBehavior.CONTINUE,
+            ),
+        },
     )
     scheduler = AcquisitionScheduler(profile=profile, clock=clock)
 
@@ -530,9 +537,14 @@ def test_external_cat_pause_preserves_existing_continue_policy_request() -> None
     ptt = FieldPath.global_("tx_state", "ptt")
     profile = _profile(
         [ptt],
-        default_policy=AcquisitionPolicy(
-            external_cat_pause=ExternalCatPauseBehavior.CONTINUE,
-        ),
+        field_policies={
+            # Declared per path: ptt is pollable, so without an entry it
+            # would resolve to its keying class policy (MOR-2574 step 2),
+            # which carries the default pause behaviour this test overrides.
+            ptt: AcquisitionPolicy(
+                external_cat_pause=ExternalCatPauseBehavior.CONTINUE,
+            ),
+        },
     )
     scheduler = AcquisitionScheduler(profile=profile, clock=clock)
 
@@ -2297,7 +2309,7 @@ def test_unchanged_acquisition_result_decays_cadence_exponentially_and_caps() ->
         ),
     )
     scheduler = AcquisitionScheduler(
-        profile=_profile([freq], default_policy=policy),
+        profile=_profile([freq], field_policies={freq: policy}),
         clock=clock,
     )
 
@@ -2335,7 +2347,7 @@ def test_idle_field_decay_never_exceeds_half_its_ttl() -> None:
         ),
     )
     scheduler = AcquisitionScheduler(
-        profile=_profile([freq], default_policy=policy),
+        profile=_profile([freq], field_policies={freq: policy}),
         clock=clock,
     )
 
@@ -2368,7 +2380,7 @@ def test_decay_clamp_holds_for_a_non_freq_hz_path() -> None:
         ),
     )
     scheduler = AcquisitionScheduler(
-        profile=_profile([mode], default_policy=policy),
+        profile=_profile([mode], field_policies={mode: policy}),
         clock=clock,
     )
 
@@ -2404,7 +2416,7 @@ def test_base_cadence_floor_never_speeds_up_a_slow_declared_field() -> None:
         ),
     )
     scheduler = AcquisitionScheduler(
-        profile=_profile([freq], default_policy=policy),
+        profile=_profile([freq], field_policies={freq: policy}),
         clock=clock,
     )
 
@@ -2439,7 +2451,7 @@ def test_healthy_link_timeout_does_not_count_or_decay_cadence() -> None:
         ),
     )
     scheduler = AcquisitionScheduler(
-        profile=_profile([freq], default_policy=policy),
+        profile=_profile([freq], field_policies={freq: policy}),
         clock=clock,
     )
 
@@ -2497,7 +2509,7 @@ def test_semantic_change_resets_adaptive_cadence_to_base_policy() -> None:
         ),
     )
     scheduler = AcquisitionScheduler(
-        profile=_profile([freq], default_policy=policy),
+        profile=_profile([freq], field_policies={freq: policy}),
         clock=clock,
     )
     first = scheduler.due_requests()[0]
@@ -2553,7 +2565,10 @@ def test_grouped_partial_semantic_change_resets_adaptive_cadence_after_all_paths
 
     for clock, changed_path, unchanged_path, change in cases:
         scheduler = AcquisitionScheduler(
-            profile=_profile([changed_path, unchanged_path], default_policy=policy),
+            profile=_profile(
+                [changed_path, unchanged_path],
+                field_policies={changed_path: policy, unchanged_path: policy},
+            ),
             clock=clock,
         )
 
@@ -2597,6 +2612,10 @@ def test_diagnostics_include_cadence_next_due_pending_pressure_and_counts() -> N
     profile = _profile(
         [freq, meter],
         field_policies={
+            # freq_hz declares the default-tier policy explicitly: as an
+            # unowned pollable path it would resolve to its live class
+            # policy (MOR-2574 step 2) and the 5.0 s base below moves.
+            freq: AcquisitionPolicy(),
             meter: AcquisitionPolicy(
                 external_cat_pause=ExternalCatPauseBehavior.CONTINUE,
             ),

@@ -659,13 +659,16 @@ async def test_medium_poll_emits_frequency_mode_and_ptt_observations() -> None:
     assert {item.source.provider for item in observations} == {"yaesu_cat"}
     assert {item.source.transport for item in observations} == {"serial"}
     assert all(item.timestamp_monotonic == 123.456 for item in observations)
-    # freq/mode/ptt use the default 8.0s freshness TTL; filter_width carries
-    # its own slow-control TTL (2.0s) from the per-field policy, even though
-    # it shares the freq/mode lane (MOR-445).
+    # freq/ptt/tx_target have no own entry, so each resolves to its
+    # acquisition class TTL (MOR-2574 step 2): ptt keying 1.2s, freq_hz live
+    # 2.0s, tx_target control 10.0s — the pre-step-2 inherited default was
+    # 8.0s for all three. filter_width carries its own slow-control TTL
+    # (2.0s) from the per-field policy, even though it shares the freq/mode
+    # lane (MOR-445).
     by_path = {str(item.path): item for item in observations}
-    assert by_path["global.tx_state.ptt"].max_age == 8.0
-    assert by_path["global.tx_state.tx_target"].max_age == 8.0
-    assert by_path["receiver.main.active.freq_mode.freq_hz"].max_age == 8.0
+    assert by_path["global.tx_state.ptt"].max_age == 1.2
+    assert by_path["global.tx_state.tx_target"].max_age == 10.0
+    assert by_path["receiver.main.active.freq_mode.freq_hz"].max_age == 2.0
     assert by_path["receiver.main.active.freq_mode.filter_width"].max_age == 2.0
     assert by_path["receiver.sub.active.freq_mode.filter_width"].max_age == 2.0
     assert all(item.source.capability_id == str(item.path) for item in observations)

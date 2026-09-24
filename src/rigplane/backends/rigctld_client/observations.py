@@ -47,6 +47,14 @@ _SLOW_CONTROL_POLICY = AcquisitionPolicy(
     cadence_seconds=30.0,
     freshness_ttl_seconds=120.0,
 )
+#: The medium read loop's interval. Declared per path (MOR-2576) so the
+#: external-rigctld profile keeps its own contract: an unowned pollable
+#: path resolves to its acquisition class since MOR-2574 step 2, and this
+#: provider's medium loop — not the class table — sets its cadence.
+_MEDIUM_READ_POLICY = AcquisitionPolicy(
+    cadence_seconds=2.0,
+    freshness_ttl_seconds=8.0,
+)
 
 
 class RigctldObservationRadio(Protocol):
@@ -173,6 +181,12 @@ def build_external_rigctld_acquisition_profile(
             freshness_ttl_seconds=8.0,
         ),
         field_policies={
+            _FREQ: _MEDIUM_READ_POLICY,
+            _MODE: _MEDIUM_READ_POLICY,
+            _FILTER: _MEDIUM_READ_POLICY,
+            _PTT: _MEDIUM_READ_POLICY,
+            OBSERVED_PTT_PATH: _MEDIUM_READ_POLICY,
+            _ACTIVE_VFO: _MEDIUM_READ_POLICY,
             _RF_GAIN: _SLOW_CONTROL_POLICY,
             _AF_LEVEL: _SLOW_CONTROL_POLICY,
             _PREAMP: _SLOW_CONTROL_POLICY,
