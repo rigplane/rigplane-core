@@ -24,7 +24,8 @@
  *   capsule each; a lit segment carries `data-lit='true'`; the More key's
  *   label comes from the i18n system (pinned in ru-RU too); the rowTail
  *   renders between the receiver capsule and More; the overflow hooks
- *   cover quick → receiver → hold → ref → span → step; an unhosted mount
+ *   cover quick → receiver → hold → ref → span → step → mode (CTR|FIX
+ *   hides last, into More's permanent MODE row); an unhosted mount
  *   (no rowTail) keeps PR1's flat grammar.
  *
  * The More panel is opened through the [MORE ▾] key exactly as the operator
@@ -380,9 +381,11 @@ describe('narrow widths: lower-priority keys overflow into More (MOR-2545)', () 
   it('row hooks mark the overflow groups and More renders their copies', () => {
     const r = render(withSc({ mode: known(0) }));
     const row = r.el('scope-controls-row')!;
-    // Display order; hide-first is the reverse; mode row and More stay unhooked (filtered out).
+    // Display order; hide-first is the reverse. CTR|FIX (mode) is hooked too
+    // (the hosted sheet's last band retires it into More's permanent MODE
+    // row); only the More anchor stays unhooked (filtered out).
     const hooked = [...row.children].map((c) => c.getAttribute('data-overflow')).filter(Boolean);
-    expect(hooked).toEqual(['span', 'ref', 'hold', 'receiver']);
+    expect(hooked).toEqual(['mode', 'span', 'ref', 'hold', 'receiver']);
     r.openMore();
     const overflow = r.el('scope-more-overflow')!;
     for (const hook of ['receiver', 'hold', 'ref', 'span']) expect(overflow.querySelector(`[data-overflow="${hook}"]`), hook).not.toBeNull();
@@ -390,15 +393,15 @@ describe('narrow widths: lower-priority keys overflow into More (MOR-2545)', () 
   });
 
   // MOR-2545 PR3: with the host's rowTail present, the hooked order is the
-  // FULL hide order — the quick keys (AVG/PEAK) hide FIRST, STEP hides LAST.
-  // DOM order over the whole row (the More panel is closed, so no overflow
-  // copies exist yet); the real hide rules key on direct children, but the
-  // probe wraps its two hooks in one div.
-  it('the full hide order with the rowTail present: quick → receiver → hold → ref → span → step', () => {
+  // FULL hide order — the quick keys (AVG/PEAK) hide FIRST, CTR|FIX (mode)
+  // hides LAST (round 3). DOM order over the whole row (the More panel is
+  // closed, so no overflow copies exist yet); the real hide rules key on
+  // direct children, but the probe wraps its two hooks in one div.
+  it('the full hide order with the rowTail present: quick → receiver → hold → ref → span → step → mode', () => {
     const r = render(withSc({ mode: known(0) }), {}, { rowTail: true });
     const row = r.el('scope-controls-row')!;
     const hooked = [...row.querySelectorAll('[data-overflow]')].map((c) => c.getAttribute('data-overflow'));
-    expect(hooked).toEqual(['span', 'ref', 'hold', 'receiver', 'step', 'quick']);
+    expect(hooked).toEqual(['mode', 'span', 'ref', 'hold', 'receiver', 'step', 'quick']);
     r.dispose();
   });
 });

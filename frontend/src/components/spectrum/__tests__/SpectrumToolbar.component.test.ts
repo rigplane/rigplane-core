@@ -920,10 +920,12 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
     expect(TOOLBAR_SOURCE).toMatch(/onclick=\{\(\) => \{ showEiBi = true; closeMore\?\.\(\); \}\}/);
   });
 
-  // MOR-2545 PR3 round 2: STEP hides LAST; the 360px band is derived from
-  // the reviewer's MEASURED capsule widths (scope-capsule.css carries the
-  // derivation); the geometry e2e in tests/e2e/i18n/desktop-geometry.spec.ts
-  // verifies the bands in a real browser.
+  // MOR-2545 PR3: the 360px band is derived from the reviewer's MEASURED
+  // capsule widths (scope-capsule.css carries the derivation); the geometry
+  // e2e in tests/e2e/i18n/desktop-geometry.spec.ts verifies the bands in a
+  // real browser. Round 3 added one LATER capsule-sheet band that retires
+  // CTR|FIX last (into More's permanent MODE row) — it lives in
+  // scope-capsule.css, not here; STEP stays the toolbar's own last copy.
   it('moves STEP into More at the surface container query\'s measured-derived 360px band', () => {
     expect(TOOLBAR_SOURCE).toMatch(/@container scope-controls \(max-width: 360px\)/);
     expect(TOOLBAR_SOURCE).toMatch(/\.toolbar-step-copy \{ display: flex; \}/);
@@ -989,10 +991,11 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
 
     // MUTATION KILLED: "STEP band 335→900" and "receiver and hold bands
     // swapped" — each band literal is asserted against ITS key (measured
-    // basis: full row 865, CTR|FIX 97.6, MAIN|SUB 104.5, ja MORE 65.9).
+    // basis: full row 865, CTR|FIX 97.6, MAIN|SUB 104.5, ja MORE 65.9; the
+    // round-3 mode band is the measured 229 px never-hide remainder + 8).
     it('every overflow band matches its key and the measured derivation', () => {
       const bands: Record<string, number> = {
-        quick: 873, receiver: 781, hold: 673, ref: 623, span: 495, step: 360,
+        quick: 873, receiver: 781, hold: 673, ref: 623, span: 495, step: 360, mode: 237,
       };
       for (const [key, px] of Object.entries(bands)) {
         const block = css.match(new RegExp(
@@ -1002,9 +1005,9 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
         expect(block![1], `band ${px}px hides ${key}`).toContain(`[data-overflow='${key}'] { display: none; }`);
       }
       // Swaps are caught twice over: a band block may hide exactly ONE key.
-      const hides = [...css.matchAll(/\[data-overflow='(quick|receiver|hold|ref|span|step)'\] \{ display: none; \}/g)]
+      const hides = [...css.matchAll(/\[data-overflow='(quick|receiver|hold|ref|span|step|mode)'\] \{ display: none; \}/g)]
         .map((m) => m[1]);
-      expect(hides).toEqual(['quick', 'receiver', 'hold', 'ref', 'span', 'step']);
+      expect(hides).toEqual(['quick', 'receiver', 'hold', 'ref', 'span', 'step', 'mode']);
     });
 
     // MUTATION KILLED: "dropping .scope-flat-key, .scope-step-key from the
@@ -1025,6 +1028,47 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
       expect(css).toContain('.spectrum-toolbar.hosted .scope-more-panel .scope-capsule-select {');
       expect(css).toContain('.desktop-control-face .spectrum-toolbar.hosted > button.toolbar-btn.icon-btn {');
       expect(css).not.toContain('!important');
+    });
+
+    // Round-3 finding 1 (MUTATION KILLED: sizing the cycler 16px/13px — it
+    // collapsed across both arrows and ‹ could not be clicked). The arrow
+    // box/glyph sizing reaches ONLY the arrow keys; the cycler keeps
+    // SpectrumToolbar's own `.step-cycler` rule (natural width, 11 px).
+    it('the step-arrow sizing excludes the STEP cycler', () => {
+      const arrow = css.match(/\.spectrum-toolbar\.hosted \.scope-step-key:not\(\.step-cycler\) \{([\s\S]*?)\n\}/);
+      expect(arrow, 'the arrow-only rule exists').not.toBeNull();
+      expect(arrow![1]).toContain('width: 16px;');
+      expect(arrow![1]).toContain('font-size: 13px;');
+      const base = css.match(/\.spectrum-toolbar\.hosted \.scope-step-key \{([\s\S]*?)\n\}/);
+      expect(base, 'the shared step-key rule exists').not.toBeNull();
+      expect(base![1]).not.toContain('width:');
+      expect(base![1]).not.toContain('font-size:');
+    });
+
+    // Round-3 contrast (the verifier's per-theme measurement, row and More
+    // panel): lit text is the white token on the teal fill, values the
+    // bright token, unlit labels/arrows the lighter token.
+    it('the measured text tokens: white on the lit fill, bright values, lighter labels', () => {
+      const lit = css.match(/\.spectrum-toolbar\.hosted \.scope-flat-key\[data-lit='true'\] \{([\s\S]*?)\n\}/);
+      expect(lit![1]).toContain('color: var(--v2-text-white, var(--text));');
+      const value = css.match(/\.spectrum-toolbar\.hosted \.scope-step-value \{([\s\S]*?)\n\}/);
+      expect(value![1]).toContain('color: var(--v2-text-bright, var(--text));');
+      const key = css.match(/\.spectrum-toolbar\.hosted \.scope-flat-key \{([\s\S]*?)\n\}/);
+      expect(key![1]).toContain('color: var(--v2-text-lighter, var(--text));');
+      // A lit key keeps its white text on hover — the hover rule skips it.
+      expect(css).toContain(".spectrum-toolbar.hosted .scope-flat-key:not([data-lit='true']):hover:not(:disabled)");
+    });
+
+    // Round-3 finding: ⛶ and the palette select measured 28 px tall — a
+    // min-height from other stylesheets was never reset. Every capsule
+    // rule that pins a height must also reset min-height.
+    it('every rule that pins a capsule height also resets min-height', () => {
+      const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
+      const heightRules = rules.filter(([, , body]) => /height: 2\dpx/.test(body));
+      expect(heightRules.length).toBeGreaterThan(0);
+      for (const [selector, , body] of heightRules) {
+        expect(body, `${selector.trim()} resets min-height`).toContain('min-height: 0;');
+      }
     });
   });
 
