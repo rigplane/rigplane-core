@@ -517,7 +517,7 @@
           <button class="toolbar-btn small step-arrow" disabled={!spanUsable} onclick={() => cycleSpan(-1)} title="Decrease span">◀</button>
           <button class="toolbar-btn step-control" disabled={!spanUsable} onclick={() => cycleSpan(1)} title="Scope span">
             <span class="toolbar-label">SPAN</span>
-            <span class="toolbar-value">{spanUsable ? (SPAN_LABELS[scopeSpan] ?? '—') : '—'}</span>
+            <span class="toolbar-value">{spanUsable && scopeSpan !== null ? (SPAN_LABELS[scopeSpan] ?? '—') : '—'}</span>
           </button>
           <button class="toolbar-btn small step-arrow" disabled={!spanUsable} onclick={() => cycleSpan(1)} title="Increase span">▶</button>
         </div>
