@@ -19,13 +19,13 @@
  *       placeholders; unread = drawn unlit in place with its label; MAIN/SUB
  *       absent without the structural receiver fact; More opens on the
  *       [MORE ▾] key, closes on Esc and outside click, and returns focus.
- *   MOR-2545 PR3 — the capsule family: CTR|FIX and MAIN|SUB are ONE
- *       segmented capsule each (a `.scope-capsule` radiogroup); a lit
- *       segment carries `data-lit='true'` and an unlit one does not; the
- *       More key's visible label comes from the i18n system; the host's
- *       rowTail renders between the receiver capsule and More, and the
- *       row's overflow hooks cover the full hide order
- *       quick → receiver → hold → ref → span → step.
+ *   MOR-2545 PR3 — the capsule family (HOSTED mounts only, gated on the
+ *   host toolbar's rowTail): CTR|FIX and MAIN|SUB are ONE segmented
+ *   capsule each; a lit segment carries `data-lit='true'`; the More key's
+ *   label comes from the i18n system (pinned in ru-RU too); the rowTail
+ *   renders between the receiver capsule and More; the overflow hooks
+ *   cover quick → receiver → hold → ref → span → step; an unhosted mount
+ *   (no rowTail) keeps PR1's flat grammar.
  *
  * The More panel is opened through the [MORE ▾] key exactly as the operator
  * opens it — `openMore()` below is the ONLY helper that reaches into
@@ -33,6 +33,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount, createRawSnippet } from 'svelte';
+import { getLocale, setLocale } from '$lib/i18n';
 import ScopeControlsSurface, {
   CHOICES, TOGGLES, type ScopeChoiceField, type ScopeToggleField,
 } from '../ScopeControlsSurface.svelte';
@@ -269,9 +270,12 @@ describe('the ONE always-visible row (MOR-2545)', () => {
   });
 });
 
-describe('the capsule family (MOR-2545 PR3, owner style C)', () => {
+describe('the capsule family (MOR-2545 PR3, owner style C — HOSTED mounts only)', () => {
+  // PR3 round 2 (finding 3): capsule markup is gated on the host's
+  // rowTail. Every assertion below mounts with a rowTail; the flat-grammar
+  // test after this describe pins the unhosted mounts.
   it('CTR|FIX is ONE segmented capsule: both keys are its only children', () => {
-    const r = render(withSc({ mode: known(0) }));
+    const r = render(withSc({ mode: known(0) }), {}, { rowTail: true });
     const modeRow = r.el('scope-mode-row')!;
     expect(modeRow.classList.contains('scope-capsule')).toBe(true);
     expect(modeRow.getAttribute('role')).toBe('radiogroup');
@@ -286,7 +290,7 @@ describe('the capsule family (MOR-2545 PR3, owner style C)', () => {
   });
 
   it('MAIN|SUB is ONE segmented capsule with exactly the two receiver keys', () => {
-    const r = render(base());
+    const r = render(base(), {}, { rowTail: true });
     const receiver = r.el('scope-receiver')!;
     expect(receiver.classList.contains('scope-capsule')).toBe(true);
     const keys = receiver.querySelectorAll('button');
@@ -306,7 +310,7 @@ describe('the capsule family (MOR-2545 PR3, owner style C)', () => {
   });
 
   it('[MORE ▾] exists with the i18n label, a title, and opens the More panel', () => {
-    const r = render(base());
+    const r = render(base(), {}, { rowTail: true });
     const more = r.el('scope-more')!;
     expect(more.textContent).toBe('More ▾'); // en catalog: core.spectrum.more
     expect(more.getAttribute('title')).toBe('More ▾');
@@ -315,6 +319,38 @@ describe('the capsule family (MOR-2545 PR3, owner style C)', () => {
     r.openMore();
     expect(r.el('scope-more-panel')).not.toBeNull();
     expect(more.getAttribute('aria-expanded')).toBe('true');
+    r.dispose();
+  });
+
+  // PR3 round 2 (finding 8): the label must go through t() — a hard-coded
+  // 'More ▾' stays green elsewhere (English-only renders). ru catalog:
+  // core.spectrum.more = "Ещё" (CSS uppercases it visually).
+  it('the hosted MORE label follows the locale: ru-RU renders Ещё, not More', () => {
+    const previous = getLocale();
+    setLocale('ru-RU');
+    try {
+      const r = render(base(), {}, { rowTail: true });
+      expect(r.el('scope-more')!.textContent).toBe('Ещё ▾');
+      r.dispose();
+    } finally {
+      setLocale(previous);
+    }
+  });
+
+  // PR3 round 2 (finding 3): without a host rowTail (LCD skins, mobile,
+  // bare mounts) the surface renders PR1's flat grammar exactly as before.
+  it('an unhosted mount keeps the PR1 flat grammar: key groups, reserved widths, ⋯ key', () => {
+    const r = render(withSc({ mode: known(0) }));
+    expect(r.el('scope-mode-row')!.classList.contains('scope-capsule')).toBe(false);
+    expect(r.el('scope-mode-row')!.classList.contains('scope-key-group')).toBe(true);
+    expect(r.el('scope-mode-row-0')!.getAttribute('style')).toBe('--scope-key-width: 42px');
+    expect(r.el('scope-receiver')!.classList.contains('scope-key-group')).toBe(true);
+    expect(r.el('scope-receiver-0')!.getAttribute('style')).toBe('--scope-key-width: 48px');
+    expect(r.el('scope-hold')!.getAttribute('style')).toBe('--scope-key-width: 52px');
+    const more = r.el('scope-more')!;
+    expect(more.textContent).toBe('⋯');
+    expect(more.getAttribute('style')).toBe('--scope-key-width: 30px');
+    expect(more.getAttribute('title')).toBeNull();
     r.dispose();
   });
 

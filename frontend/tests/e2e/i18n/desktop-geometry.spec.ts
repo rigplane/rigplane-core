@@ -42,11 +42,11 @@ function catalogFixture(id: TopologyId, known = true) {
 // Geometry-bearing values from the MOR-1413 IC-7300 observation (18f7e459).
 // Keep provider/session metadata out of this portable fixture. Unknown cases
 // retain raw values but withhold observation evidence, as the production smoke does.
-function fixture(known: boolean) {
+function fixture(known: boolean, dual = false) {
   const state = structuredClone(mockState);
   Object.assign(state, { powerLevel: 0, powerMeter: 0, swrMeter: 0, alcMeter: 0,
     compMeter: 0, vdMeter: 138, idMeter: 0, vfoSelect: 'A',
-    sub: null,
+    sub: dual ? structuredClone(mockState.sub) : null,
     scopeControls: { receiver: 0, dual: false, mode: 0, span: 1, edge: 1,
       speed: 0, refDb: 0, hold: false, duringTx: true, centerType: 2,
       vbwNarrow: false, rbw: 0,
@@ -71,7 +71,7 @@ function fixture(known: boolean) {
   delete fields['main.activeSlot'];
   delete fields.active;
   state.fieldStatus = fields as typeof state.fieldStatus;
-  const caps = { ...structuredClone(mockCapabilities), model: 'IC-7300', receivers: 1,
+  const caps = { ...structuredClone(mockCapabilities), model: 'IC-7300', receivers: dual ? 2 : 1,
     vfoScheme: 'ab', vfoReadback: 'selected_unselected',
     audioFftAvailable: true,
     capabilities: ['af_level', 'agc', 'attenuator', 'audio', 'band_edge', 'break_in',
@@ -90,12 +90,15 @@ function fixture(known: boolean) {
 interface BootOptions {
   height?: number;
   theme?: 'nord' | 'github-light';
-  locale?: 'en-US' | 'ru-RU';
+  locale?: 'en-US' | 'ru-RU' | 'ja-JP';
   extraCapabilities?: string[];
   absoluteVfoPair?: boolean;
   txState?: 'rx' | 'tx';
   txTargetSlot?: 'A' | 'B' | 'unknown';
-  /** The QA-only skin `?layout=flagship-probe` selects
+  /** MOR-2545 PR3 e2e: keep mockCapabilities' dual receivers (and the SUB
+   *  receiver state) so the hosted scope row renders its MAIN|SUB capsule. */
+  dualScopeRow?: boolean;
+  /** QA-only skin `?layout=flagship-probe` selects
    *  (`lib/stores/qa-cockpit-override.ts`). It is not a `CanonicalLayoutMode`,
    *  so the workspace `layout` this helper writes cannot carry it. */
   qaLayout?: 'flagship-probe';
@@ -103,7 +106,7 @@ interface BootOptions {
 
 async function boot(page: Page, layout: string, width: number, known: boolean, language = 'studioline', productionUnknown = false, topology?: TopologyId, options: BootOptions = {}) {
   const { state, caps } = topology ? catalogFixture(topology, known) : productionUnknown
-    ? { state: structuredClone(mockState), caps: structuredClone(mockCapabilities) } : fixture(known);
+    ? { state: structuredClone(mockState), caps: structuredClone(mockCapabilities) } : fixture(known, options.dualScopeRow === true);
   if (options.absoluteVfoPair) {
     const observed = (storePath: string) => ({ storePath, observed: true as const,
       freshness: 'fresh' as const, availability: 'available' as const, lastObservedMonotonic: 0 });
@@ -1143,4 +1146,161 @@ test.describe('T185 transmit key pair', () => {
     expect(contained(geometry.key, geometry.zone), 'the key stays inside its column').toBe(true);
     expect(contained(geometry.unkey, geometry.zone), 'the unkey stays inside its column').toBe(true);
   });
+});
+
+// MOR-2545 PR3 round 2 (verifier findings 1–3): the hosted capsule row's
+// overflow bands are derived from MEASURED widths (full row 865 px, CTR|FIX
+// 97.6, MAIN|SUB 104.5, ja-JP MORE 65.9; +8 px safety — see
+// src/components/spectrum/scope-capsule.css). This is the real-browser
+// geometry check that would have caught finding 1: below each band the
+// right control hides, every visible control stays inside the toolbar, and
+// no two controls overlap. LCD/mobile render the unhosted flat grammar
+// (pinned in jsdom, not here).
+test.describe('MOR-2545 PR3: the hosted scope row hides by band and never overlaps', () => {
+  /** Band literals mirror scope-capsule.css (quick hides first, step last). */
+  const BANDS: readonly (readonly [string, number])[] = [
+    ['quick', 873], ['receiver', 781], ['hold', 673], ['ref', 623], ['span', 495], ['step', 360],
+  ];
+  const ROW_CONTROL_SELECTOR: Record<string, string> = {
+    quick: '[data-testid="toolbar-quick-keys"]',
+    receiver: '[data-testid="scope-receiver"]',
+    hold: '[data-testid="scope-hold"]',
+    ref: '[data-testid="scope-ref"]',
+    span: '[data-testid="scope-span"]',
+    step: '[data-testid="toolbar-row-step"]',
+  };
+
+  /** boot()'s shell wait assumes viewports ≤640 mean the mobile layout;
+   *  sdr-test stays a desktop layout at any width, so boot wide and resize. */
+  async function bootHosted(page: Page, layout: 'standard' | 'sdr-test', width: number,
+    locale: 'en-US' | 'ja-JP') {
+    const bootWidth = Math.max(width, 641);
+    await boot(page, layout, bootWidth, true, 'studioline', false, undefined,
+      { height: 900, locale, dualScopeRow: true });
+    if (bootWidth !== width) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.evaluate(() => new Promise(resolve =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    }
+  }
+
+  const CASES: readonly { layout: 'standard' | 'sdr-test'; width: number; locale: 'en-US' | 'ja-JP' }[] = [
+    ...[1920, 1440, 1280, 1024].map(width => ({ layout: 'standard' as const, width, locale: 'en-US' as const })),
+    { layout: 'sdr-test', width: 900, locale: 'en-US' },
+    ...[800, 700, 600, 500, 400].map(width => ({ layout: 'sdr-test' as const, width, locale: 'en-US' as const })),
+    // The widest MORE label (その他 ▾, 65.9 px measured) must not break the row.
+    { layout: 'standard', width: 1280, locale: 'ja-JP' },
+  ];
+
+  for (const { layout, width, locale } of CASES) {
+    test(`hosted ${layout} ${width}${locale === 'ja-JP' ? ' ja-JP' : ''}: band hides, nothing overlaps`, async ({ page }, info) => {
+      await bootHosted(page, layout, width, locale);
+      const toolbar = page.locator('.spectrum-toolbar.hosted').first();
+      await expect(toolbar).toBeVisible();
+      const snapshot = await page.evaluate((selectors) => {
+        const toolbar = document.querySelector('.spectrum-toolbar.hosted')!;
+        const surface = document.querySelector('.scope-controls-surface')!;
+        const row = document.querySelector('[data-testid="scope-controls-row"]')!;
+        const rect = (e: Element) => {
+          const b = e.getBoundingClientRect();
+          return { x: b.x, y: b.y, width: b.width, height: b.height, right: b.right, bottom: b.bottom };
+        };
+        const controls = Object.fromEntries(Object.entries(selectors).map(([key, selector]) => {
+          const element = row.querySelector(selector);
+          if (!element) return [key, null];
+          const style = getComputedStyle(element);
+          const hidden = style.display === 'none' || element.getBoundingClientRect().width === 0;
+          return [key, { hidden, rect: rect(element) }];
+        }));
+        const visibleChildren = [...row.children].filter((child) => {
+          const style = getComputedStyle(child);
+          return style.display !== 'none' && style.visibility !== 'hidden'
+            && child.getBoundingClientRect().width > 0;
+        }).map((child) => ({
+          name: child.getAttribute('data-testid') ?? child.getAttribute('data-overflow') ?? child.className,
+          rect: rect(child),
+        }));
+        const overlaps: { a: string; b: string }[] = [];
+        for (let i = 0; i < visibleChildren.length; i++) {
+          for (let j = i + 1; j < visibleChildren.length; j++) {
+            const a = visibleChildren[i]!.rect, b = visibleChildren[j]!.rect;
+            const overlapX = Math.min(a.right, b.right) - Math.max(a.x, b.x);
+            const overlapY = Math.min(a.bottom, b.bottom) - Math.max(a.y, b.y);
+            if (overlapX > 1 && overlapY > 1) {
+              overlaps.push({ a: visibleChildren[i]!.name, b: visibleChildren[j]!.name });
+            }
+          }
+        }
+        const stripPeers = [
+          toolbar.querySelector('.semantic-scope-controls-host'),
+          toolbar.querySelector('[data-testid="toolbar-scope-status"]'),
+          toolbar.querySelector('button.icon-btn'),
+        ].filter((e): e is Element => e !== null && getComputedStyle(e).display !== 'none'
+          && e.getBoundingClientRect().width > 0)
+          .map((e) => ({ name: e.className || e.tagName, rect: rect(e) }));
+        for (let i = 0; i < stripPeers.length; i++) {
+          for (let j = i + 1; j < stripPeers.length; j++) {
+            const a = stripPeers[i]!.rect, b = stripPeers[j]!.rect;
+            const overlapX = Math.min(a.right, b.right) - Math.max(a.x, b.x);
+            const overlapY = Math.min(a.bottom, b.bottom) - Math.max(a.y, b.y);
+            if (overlapX > 1 && overlapY > 1) {
+              overlaps.push({ a: stripPeers[i]!.name, b: stripPeers[j]!.name });
+            }
+          }
+        }
+        return {
+          containerWidth: surface.getBoundingClientRect().width,
+          toolbar: rect(toolbar),
+          row: rect(row),
+          controls,
+          visibleChildren,
+          overlaps,
+          toolbarScrolls: toolbar.scrollWidth > toolbar.clientWidth + 1,
+        };
+      }, ROW_CONTROL_SELECTOR);
+      await info.attach('hosted-row', { body: JSON.stringify(snapshot), contentType: 'application/json' });
+
+      // Which controls are hidden must follow the bands and the MEASURED
+      // container width: key hides iff containerWidth ≤ its band.
+      const expectedHidden = new Set(BANDS
+        .filter(([, band]) => snapshot.containerWidth <= band + 0.5)
+        .map(([key]) => key));
+      for (const [key] of BANDS) {
+        const control = snapshot.controls[key]!;
+        expect(control, `${key} is rendered in the hosted row`).not.toBeNull();
+        expect.soft(control.hidden, `${key} hidden=${expectedHidden.has(key)} at container ${snapshot.containerWidth}px`)
+          .toBe(expectedHidden.has(key));
+      }
+      // At 1920 the strip carries measured dead space (465.7 px on the
+      // round-1 head), so the FULL row shows there. Narrower viewports are
+      // pinned by the measured-container predicates above, not viewport
+      // arithmetic — the Standard 1280 container is ~802 px, so the quick
+      // keys correctly move into More there (an 865 px row cannot fit).
+      if (layout === 'standard' && width === 1920) {
+        expect.soft([...expectedHidden], 'the full row shows at 1920').toEqual([]);
+      }
+      // MORE, CTR|FIX, BANDS and ⛶ never hide.
+      await expect(page.getByTestId('scope-more')).toBeVisible();
+      await expect(page.getByTestId('scope-mode-row')).toBeVisible();
+      await expect(page.locator('.spectrum-toolbar.hosted button.scope-flat-key', { hasText: 'BANDS' })).toBeVisible();
+      await expect(toolbar.locator('button.icon-btn')).toBeVisible();
+
+      // Geometry: every visible row child inside the row and the toolbar,
+      // no overlaps anywhere on the strip, the toolbar does not scroll.
+      expect.soft(snapshot.overlaps, 'no two visible controls overlap').toEqual([]);
+      expect.soft(snapshot.toolbarScrolls, 'the toolbar does not scroll horizontally').toBe(false);
+      for (const child of snapshot.visibleChildren) {
+        expect.soft(child.rect.x >= snapshot.row.x - 1
+          && child.rect.right <= snapshot.row.right + 1
+          && child.rect.y >= snapshot.row.y - 1
+          && child.rect.bottom <= snapshot.row.bottom + 1,
+          `row child ${child.name} stays inside the row`).toBe(true);
+      }
+      expect.soft(snapshot.row.right <= snapshot.toolbar.right + 1, 'the row ends inside the toolbar').toBe(true);
+      expect.soft(snapshot.row.x >= snapshot.toolbar.x - 1, 'the row starts inside the toolbar').toBe(true);
+      const screenshot = info.outputPath(`hosted-row-${layout}-${width}${locale === 'ja-JP' ? '-ja' : ''}.png`);
+      await page.screenshot({ path: screenshot, fullPage: true });
+      await info.attach('screenshot', { path: screenshot, contentType: 'image/png' });
+    });
+  }
 });
