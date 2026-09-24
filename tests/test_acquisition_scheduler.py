@@ -2282,6 +2282,9 @@ def test_state_freshness_service_ic7300_non_polling_populate_completes_within_25
 
 
 def test_unchanged_acquisition_result_decays_cadence_exponentially_and_caps() -> None:
+    # MOR-2540: the declared max_cadence_seconds (6.0) exceeds TTL / 2 (5.0),
+    # so the decayed cadence caps at the freshness limit, not the declared
+    # ceiling. 2.0 -> 4.0 -> 5.0 (5.0 = min(8.0, 10.0 / 2)).
     clock = FreshnessClock(start=210.0)
     freq = FieldPath.active("main", "freq_mode", "freq_hz")
     policy = AcquisitionPolicy(
@@ -2312,8 +2315,41 @@ def test_unchanged_acquisition_result_decays_cadence_exponentially_and_caps() ->
     scheduler.record_acquisition_result(second, _changeset(at=clock.now()))
 
     diagnostics = scheduler.diagnostics()
-    assert diagnostics["cadenceByPath"][str(freq)]["currentCadenceSeconds"] == 6.0
-    assert diagnostics["cadenceByPath"][str(freq)]["nextDueMonotonic"] == 220.0
+    assert diagnostics["cadenceByPath"][str(freq)]["currentCadenceSeconds"] == 5.0
+    assert diagnostics["cadenceByPath"][str(freq)]["nextDueMonotonic"] == 219.0
+
+
+def test_idle_field_decay_never_exceeds_half_its_ttl() -> None:
+    # MOR-2540: an idle field with adaptive decay enabled and a 2.0 s TTL must
+    # widen its cadence only up to TTL / 2 (1.0 s), even though the profile
+    # declares a 30 s decay ceiling. 0.25 -> 0.5 -> 1.0, then pinned at 1.0.
+    clock = FreshnessClock(start=200.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    policy = AcquisitionPolicy(
+        cadence_seconds=0.25,
+        freshness_ttl_seconds=2.0,
+        adaptive_decay=AdaptiveDecayPolicy(
+            enabled=True,
+            idle_multiplier=2.0,
+            max_cadence_seconds=30.0,
+        ),
+    )
+    scheduler = AcquisitionScheduler(
+        profile=_profile([freq], default_policy=policy),
+        clock=clock,
+    )
+
+    seen: list[float] = []
+    for _ in range(4):
+        request = scheduler.due_requests()[0]
+        scheduler.record_acquisition_result(request, _changeset(at=clock.now()))
+        cadence = scheduler.diagnostics()["cadenceByPath"][str(freq)][
+            "currentCadenceSeconds"
+        ]
+        seen.append(cadence)
+        clock.advance(cadence)
+
+    assert seen == [0.5, 1.0, 1.0, 1.0]
 
 
 def test_healthy_link_timeout_does_not_count_or_decay_cadence() -> None:

@@ -11,7 +11,10 @@ import pytest
 
 from rigplane.core.acquisition_scheduler import (
     AcquisitionScheduler,
+    FRESHNESS_DECAY_LIMIT_RATIO,
     StateFreshnessService,
+    adaptive_cadence_limit,
+    provider_uses_civ_acquisition,
 )
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import (
@@ -910,6 +913,55 @@ def test_inherited_default_cadence_out_of_class_paths_are_exactly_named() -> Non
     """
 
     assert _inherited_default_out_of_class() == _INHERITED_DEFAULT_OUT_OF_CLASS
+
+
+def test_all_profiles_decay_ceiling_never_exceeds_freshness_limit() -> None:
+    """MOR-2540: adaptive decay must never slow a field past its freshness window.
+
+    For every pollable path on a CI-V acquisition profile, with adaptive decay
+    enabled and a declared TTL, the effective maximum cadence — the base
+    cadence widened no further than
+    :func:`~rigplane.core.acquisition_scheduler.adaptive_cadence_limit` — must
+    stay at or below ``TTL / FRESHNESS_DECAY_LIMIT_RATIO``. At origin/main the
+    scheduler caps decay at ``max_cadence_seconds`` (30 s by profile default)
+    with no TTL awareness, so an idle ``freq_hz`` (TTL 2.0 s) decays to 30 s
+    and this walk fails, naming each profile and path; with the scheduler rule
+    in place every profile passes with no profile edits. Only the CI-V
+    acquisition providers (``icom_civ`` / ``xiegu_civ``) route through
+    ``AcquisitionScheduler.record_acquisition_result``, where the decay rule
+    lives; the Yaesu CAT path does not.
+    """
+
+    failures: list[str] = []
+    checked: set[str] = set()
+    for model, rig in sorted(discover_rigs(RIGS_DIR).items()):
+        acquisition = rig.to_profile().state_acquisition
+        if acquisition is None:
+            continue
+        if not provider_uses_civ_acquisition(acquisition.provider):
+            continue
+        checked.add(model)
+        for capability in sorted(acquisition.capabilities, key=lambda c: str(c.path)):
+            if not capability.can_poll:
+                continue
+            policy = acquisition.policy_for(capability.path)
+            if not policy.adaptive_decay.enabled:
+                continue
+            ttl = policy.freshness_ttl_seconds
+            base = policy.cadence_seconds
+            if ttl is None or base is None:
+                continue
+            limit = adaptive_cadence_limit(policy)
+            effective_max = base if limit is None else max(base, limit)
+            freshness_limit = ttl / FRESHNESS_DECAY_LIMIT_RATIO
+            if effective_max > freshness_limit:
+                failures.append(
+                    f"{model}: {capability.path} (base {base}s, decay ceiling "
+                    f"{limit}s) exceeds freshness limit {freshness_limit}s"
+                )
+
+    assert not failures, f"decay exceeds freshness window: {failures}"
+    assert checked == {"IC-705", "IC-7300", "IC-7610", "IC-9700", "X6100", "X6200"}
 
 
 def test_ic7300_panel_knob_fields_are_polled_at_the_panel_class_cadence() -> None:
