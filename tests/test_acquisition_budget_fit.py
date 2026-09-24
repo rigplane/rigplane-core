@@ -417,6 +417,27 @@ def test_a_completed_poll_waits_the_fitted_cadence_of_the_window_it_lands_in() -
     assert _next_due(scheduler, setting) == pytest.approx(40.0)
 
 
+def test_a_group_that_never_completed_retries_at_its_fitted_cadence() -> None:
+    """Transmit at 10 q/s fits control at 5 s (nominal 2 s), before any answer."""
+
+    clock = FreshnessClock(start=0.0)
+    scheduler = AcquisitionScheduler(
+        profile=_polled_profile(*_WINDOWED_PATHS),
+        clock=clock,
+        transport_budget_hz=10.0,
+    )
+    control = _CONTROLS[0]
+
+    queued = scheduler.due_requests(now=0.0, tx_active=True)
+    entry = scheduler.diagnostics()["cadenceByPath"][str(control)]
+    assert entry["currentCadenceSeconds"] == pytest.approx(5.0)
+    request = next(request for request in queued if control in request.paths)
+    scheduler.record_acquisition_failure(
+        request, reason="acquisition_request_failed", now=0.0
+    )
+    assert _next_due(scheduler, control) == pytest.approx(5.0)
+
+
 # --- (d) the budget is the radio's CI-V gap -----------------------------------
 
 
