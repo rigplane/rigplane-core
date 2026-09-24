@@ -15,26 +15,26 @@
  * `scope-step-key` names sit in control-button.css's `:not()` exclusion
  * lists, so the bezel family never reaches them).
  *
- * COLOURS (MOR-977, token-only, no literals; ratios computed from the theme
- * token values with WCAG relative luminance). The strip's ONE ground is the
- * scope section's card colour --v2-bg-card — the hosted toolbar paints it
- * and the surface's own card paint is switched off below, so capsules, SRC
- * and ⛶ share it (round-2 finding 7). On that ground and the More panel's
- * --v2-bg-darkest: border/divider var(--v2-text-secondary) >= 3:1 in every
- * theme (worst 3.08 solarized-light; a 60% color-mix draft dropped to
- * 2.23); lit fill color-mix(in srgb, var(--v2-accent-cyan-teal) 50%,
- * transparent) >= 1.5:1 everywhere (worst 1.56 nord-light — the plain
- * --v2-accent-cyan tops out at 1.64 SOLID there, so the darker accent is
- * the nearest token that clears the bar); lit text var(--v2-text-primary)
- * (>= 3.6:1 on the fill except solarized-light 1.78, that palette's
- * ceiling); unlit text, arrows and labels var(--v2-text-secondary); values
- * var(--v2-text-primary); the SRC indicator is recoloured to
+ * COLOURS (MOR-977, token-only, no literals; ratios computed with WCAG
+ * relative luminance from the theme token values). The strip's ONE ground
+ * is the scope section's card colour --v2-bg-card — the hosted toolbar
+ * paints it and the surface's own card paint is switched off below, so
+ * capsules, SRC and ⛶ share it (round-2 finding 7). On that ground and
+ * the More panel's --v2-bg-darkest: border/divider
+ * var(--v2-text-secondary) — worst 3.71:1 (solarized-light, More panel;
+ * 4.39 on the card; round 1's muted borders hit 1.75–2.92 in 9 of 14
+ * themes); lit fill color-mix(in srgb, var(--v2-accent-cyan-teal) 50%,
+ * transparent) — 1.56:1 (nord-light) to 3.08, a wash by design (a solid
+ * accent fill fails the light themes: 1.64 on nord-light); lit text
+ * var(--v2-text-primary) — worst 3.64:1 on the row fill (one-dark), 3.31
+ * on the More fill (catppuccin-latte), solarized-light 1.78/1.60 (its
+ * brightest token); unlit text/arrows/labels var(--v2-text-secondary);
+ * values var(--v2-text-primary); the SRC indicator joins
  * --v2-text-secondary on this row only (round-2 finding 7).
  *
  * Loaded via `import './scope-capsule.css'` from ScopeFlatKey.svelte and
- * SpectrumToolbar.svelte. The names `scope-flat-key`/`scope-step-key` are
- * historical (PR1) and kept: the Standard-face override sheets exclude
- * exactly those names.
+ * SpectrumToolbar.svelte. The `scope-flat-key`/`scope-step-key` names are
+ * historical (PR1), kept: the Standard-face sheets exclude exactly those.
  */
 
 /* ── The key ──────────────────────────────────────────────────────────── */
