@@ -498,7 +498,7 @@ CI run must compare successfully against these replacements.
 
 A subsequent exact-head quick run must confirm these four comparisons pass.
 
-## Linux re-pin provenance (current — 2026-09-23 MOR-2545 PR2 one-row panorama toolbar)
+## Linux re-pin provenance (superseded — 2026-09-23 MOR-2545 PR2 one-row panorama toolbar)
 
 | Field | Value |
 | --- | --- |
@@ -514,6 +514,25 @@ A subsequent exact-head quick run must confirm these four comparisons pass.
 | StudioLine light | compared-fail; inspected (one toolbar row, spectrum area moved up) and accepted | 85,287 | (238, 250, 1042, 443) | `a17195a363ed392416c8c5c59fdb38dc295a63945a9b1fc126a7d361f69cb461` |
 | FieldLine dark | compared-fail; inspected (one toolbar row, spectrum area moved up) and accepted | 76,607 | (238, 272, 1042, 459) | `b418b336b83343d773c6327adfc18f40a625968f93c105b53d7cc524c3740ece` |
 | FieldLine light | compared-fail; inspected (one toolbar row, spectrum area moved up) and accepted | 84,757 | (238, 272, 1042, 459) | `44a175ceed647a030ff96b19c0f20aa8f7fb31b65788362be828689a84595287` |
+
+A subsequent exact-head quick run must confirm these four comparisons pass.
+
+## Linux re-pin provenance (current — 2026-09-23 MOR-2545 PR3 capsule-group row)
+
+| Field | Value |
+| --- | --- |
+| Source code commit | `f96af8cbdd739534dfcbe4a475021d33544ca490` (branch `codex/scope-row-capsule-style`, PR #3606) |
+| CI run / job | [Tests (quick) #35948673003](https://github.com/rigplane/rigplane-core/actions/runs/35948673003) / job `107472277272` |
+| Command | `npm run test:e2e:i18n` (`playwright test -c ./playwright.i18n.config.ts`) |
+| Source | the `actual` attachments of the four MOR-1400 production-root cases in that run's `mor-1400-production-visual-diagnostics` artifact, identified by their attachment names (`<scene>--production-root-actual.png`) in the report's embedded test results, copied byte-for-byte |
+| Reason | MOR-2545 PR3: the panorama row takes the capsule-group style. CTR\|FIX, REF ‹ ›, HOLD, ‹ STEP value › and BANDS become bordered capsules on one ground, the ⋯ key becomes MORE ▾, and the SRC status and fullscreen join the same family. The spectrum area moves up by 3 px, found by aligning the old and new spectrum area (x 239–1041) over vertical offsets −8…+8. Deltas are measured against the superseded baselines with Pillow `ImageChops.difference(...).convert('L') > 8`. |
+
+| Scene | Disposition | Changed px (of 1,024,000) | Changed bbox (x0, y0, x1, y1) | SHA-256 |
+| --- | --- | --- | --- | --- |
+| StudioLine dark | compared-fail; inspected (capsule row, spectrum area 3 px higher) and accepted | 20,344 | (239, 251, 1041, 408) | `e4dcd807a47cd0753d0e31cd21dba180a08c5ac3387d37aedbbee384fc02a9d2` |
+| StudioLine light | compared-fail; inspected (capsule row, spectrum area 3 px higher) and accepted | 23,753 | (239, 251, 1041, 408) | `f19ed24d9a2abf060e49aaef21640599456e8d67c122e35f2c97efe12c311a5e` |
+| FieldLine dark | compared-fail; inspected (capsule row, spectrum area 3 px higher) and accepted | 17,209 | (239, 273, 1041, 424) | `d9696f148607f6ed9b20e4b497b7f9b2ed54de0761e820c97c736f27d3e35d8b` |
+| FieldLine light | compared-fail; inspected (capsule row, spectrum area 3 px higher) and accepted | 23,764 | (239, 273, 1041, 424) | `87139bd73a034f14e59d1dc47d21f326f62a4dbf49e3029daa67f1cd06be3ee5` |
 
 A subsequent exact-head quick run must confirm these four comparisons pass.
 
@@ -620,10 +639,10 @@ production-root comparisons below.
 
 | File | Workspace/theme case | SHA-256 |
 | --- | --- | --- |
-| `studioline--dark--production-root.png` | clean StudioLine × dark | `2a637b5acb3e5e98c5027cb4764f5ce5a965ec18a8b8b601d1dbbb580dd818c4` |
-| `studioline--light--production-root.png` | persisted StudioLine × light | `a17195a363ed392416c8c5c59fdb38dc295a63945a9b1fc126a7d361f69cb461` |
-| `fieldline--dark--production-root.png` | persisted FieldLine × dark | `b418b336b83343d773c6327adfc18f40a625968f93c105b53d7cc524c3740ece` |
-| `fieldline--light--production-root.png` | persisted FieldLine × light | `44a175ceed647a030ff96b19c0f20aa8f7fb31b65788362be828689a84595287` |
+| `studioline--dark--production-root.png` | clean StudioLine × dark | `e4dcd807a47cd0753d0e31cd21dba180a08c5ac3387d37aedbbee384fc02a9d2` |
+| `studioline--light--production-root.png` | persisted StudioLine × light | `f19ed24d9a2abf060e49aaef21640599456e8d67c122e35f2c97efe12c311a5e` |
+| `fieldline--dark--production-root.png` | persisted FieldLine × dark | `d9696f148607f6ed9b20e4b497b7f9b2ed54de0761e820c97c736f27d3e35d8b` |
+| `fieldline--light--production-root.png` | persisted FieldLine × light | `87139bd73a034f14e59d1dc47d21f326f62a4dbf49e3029daa67f1cd06be3ee5` |
 
 All images are RGB PNGs at 1280×800. Changes to any expected image require a
 new reviewed Linux re-pin with the same provenance record; macOS/local output
