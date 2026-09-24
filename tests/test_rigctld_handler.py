@@ -4292,6 +4292,56 @@ async def test_yaesu_get_func_tone_backend_fallback_records_state_store(
 
 
 @pytest.mark.asyncio
+async def test_yaesu_get_func_tone_not_known_answers_enavail(
+    yaesu_radio: AsyncMock,
+) -> None:
+    """MOR-2572: an observed None (FTX-1 CT codes 3/4/5 — DCS / PR FREQ /
+    REV TONE) has no bool to report. The routed Yaesu ``get_func`` must
+    answer ENAVAIL instead of bool(None)=0, and must not fall through to a
+    live read that would record an invented False over the published None."""
+    store = StateStore()
+    _seed_store_current(store, "receiver.main.operator_toggles.repeater_tone", None)
+    handler = RigctldHandler(yaesu_radio, RigctldConfig(), state_store=store)
+
+    resp = await handler.execute(get_cmd("get_func", "TONE"))
+
+    assert resp.error == HamlibError.ENAVAIL
+    yaesu_radio.get_repeater_tone.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_yaesu_get_func_tsql_not_known_on_sub_answers_enavail(
+    yaesu_radio: AsyncMock,
+) -> None:
+    """MOR-2572, SUB receiver: the routed VFOB projection holds the same
+    None contract (CT codes 3/4/5 on the SUB side answer ENAVAIL)."""
+    store = StateStore()
+    _seed_store_current(store, "receiver.sub.operator_toggles.repeater_tsql", None)
+    handler = RigctldHandler(yaesu_radio, RigctldConfig(), state_store=store)
+
+    resp = await handler.execute(_vfo_func_cmd("get_func", "VFOB", "TSQL"))
+
+    assert resp.error == HamlibError.ENAVAIL
+    yaesu_radio.get_repeater_tsql.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_func_tone_not_known_answers_enavail(
+    mock_radio: AsyncMock, config: RigctldConfig
+) -> None:
+    """MOR-2572, non-routed (built-in) path: the same observed-None contract
+    — ENAVAIL, never bool(None)=0, never a live read that invents False."""
+    store = StateStore()
+    _seed_store_current(store, "receiver.main.operator_toggles.repeater_tone", None)
+    handler = RigctldHandler(mock_radio, config, state_store=store)
+
+    resp = await handler.execute(get_cmd("get_func", "TONE"))
+
+    assert resp.error == HamlibError.ENAVAIL
+    mock_radio.get_repeater_tone.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_yaesu_get_func_lock(
     yaesu_handler: RigctldHandler, yaesu_radio: AsyncMock
 ) -> None:
