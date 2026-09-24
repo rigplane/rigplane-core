@@ -101,7 +101,7 @@ def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
 
 @pytest.mark.parametrize("tx", [False, True], ids=["receive", "transmit"])
 @pytest.mark.parametrize(
-    "budget_hz", [_LAN_BUDGET_HZ, _SERIAL_BUDGET_HZ], ids=["lan", "serial"]
+    "budget_hz", [_LAN_BUDGET_HZ, _SERIAL_BUDGET_HZ], ids=["35ms-gap", "50ms-gap"]
 )
 @pytest.mark.parametrize("model", sorted(_CIV_ACQUISITION))
 def test_fitted_demand_is_within_the_margin_or_the_warning_says_why(
@@ -448,7 +448,7 @@ def default_civ_gaps(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _lan_radio() -> IcomRadio:
-    return IcomRadio("192.0.2.1", model="IC-7300")
+    return IcomRadio("192.0.2.1", model="IC-7610")
 
 
 def _serial_radio() -> Ic7300SerialRadio:
