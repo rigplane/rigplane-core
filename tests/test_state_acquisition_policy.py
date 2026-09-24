@@ -2069,6 +2069,13 @@ def test_ftx1_declares_when_manual_notch_and_attenuator_exist() -> None:
             operator="max",
             value=60000000.0,
         ),
+        # MOR-2581 (stand 2026-09-24): `RA0;` was refused exactly while SUB
+        # was the active receiver, so the read exists only with MAIN active.
+        AvailabilityClause(
+            field=FieldPath.global_("slow_state", "active"),
+            operator="equals",
+            value="MAIN",
+        ),
     )
 
 
