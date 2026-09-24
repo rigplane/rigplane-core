@@ -19,6 +19,7 @@ import errno
 import hashlib
 import json
 import logging
+import socket
 import struct
 import time
 from types import SimpleNamespace
@@ -2542,22 +2543,75 @@ class TestHalfOpenWsReaper:
             assert ws.is_alive() is False
 
             # Saturate the server-side transport write buffer while the
-            # peer (this test's `reader`) never reads again -- push well
-            # past a lowered high-water mark directly via the transport
-            # so setup itself never blocks on drain().
+            # peer (this test's `reader`) never reads again.
+            #
+            # How much of a write() actually backs up in asyncio's
+            # user-space buffer depends on kernel socket buffer sizes:
+            # over loopback, Linux can absorb several MiB into the
+            # sender's autotuned SO_SNDBUF plus the peer's receive window
+            # before the asyncio buffer ever fills (the CI flake on MOR-
+            # 2582), and macOS loopback autotuning can likewise absorb a
+            # payload that only momentarily poked above the mark. Make the
+            # setup deterministic instead:
+            #  1. shrink BOTH kernel buffers to the platform minimum
+            #     (setting SO_RCVBUF also disables Linux receive
+            #     autotuning), bounding what the kernel can absorb;
+            #  2. feed the transport in chunks until get_write_buffer_
+            #     size() stays above the high-water mark for a settle
+            #     window of repeated flush opportunities, topping up
+            #     whenever it dips. The kernel can only drain the asyncio
+            #     buffer into its own finite buffers, so persistence
+            #     across the window -- with the event loop flushing the
+            #     whole time -- proves the kernel side is full and the
+            #     level cannot drop before the reaper's close() runs.
+            # Bounded by a write/iteration cap; skip (not fail) if a
+            # platform still refuses to saturate.
             transport = ws._writer.transport  # noqa: SLF001
-            transport.set_write_buffer_limits(high=4096)
-            big_chunk = b"\x00" * (1024 * 1024)  # 1 MiB per write, x4
-            for _ in range(4):
-                transport.write(big_chunk)
+            high_water = 4096
+            transport.set_write_buffer_limits(high=high_water)
+            server_sock = transport.get_extra_info("socket")
+            client_sock = writer.get_extra_info("socket")
+            for sock, opt in (
+                (server_sock, socket.SO_SNDBUF),
+                (client_sock, socket.SO_RCVBUF),  # also disables autotuning
+            ):
+                if sock is not None:
+                    with contextlib.suppress(OSError):
+                        sock.setsockopt(socket.SOL_SOCKET, opt, 4096)
+
+            chunk = b"\x00" * (256 * 1024)  # >> shrunken kernel buffers
+            max_writes = 256  # bounded: at most 64 MiB attempted
+            settle_needed = 10  # consecutive 50ms checks above the mark
+            max_iterations = max_writes + 10 * settle_needed
+            writes = 0
+            settle_ok = 0
+            saturated = False
+            for _ in range(max_iterations):
+                if transport.get_write_buffer_size() <= high_water:
+                    if writes >= max_writes:
+                        break
+                    transport.write(chunk)
+                    writes += 1
+                    settle_ok = 0  # kernel still absorbing; restart window
+                else:
+                    settle_ok += 1
+                    if settle_ok >= settle_needed:
+                        saturated = True
+                        break
+                # Yield so the loop's _write_ready() flushes whatever the
+                # kernel will take before the next measurement.
+                await asyncio.sleep(0.05)
             # `reader` is intentionally never read from below -- the peer
             # stops consuming, so both the OS socket buffers and the
             # transport's own queue fill and stay full.
-            await asyncio.sleep(0.05)
-            assert transport.get_write_buffer_size() > 4096, (
-                "setup invalid: transport buffer did not saturate above "
-                "the high-water mark"
-            )
+            if not saturated:
+                pytest.skip(
+                    "platform could not saturate the transport write buffer "
+                    f"(size={transport.get_write_buffer_size()} after "
+                    f"{writes} x {len(chunk)}-byte writes against "
+                    f"high-water={high_water}; kernel socket buffers too "
+                    "large or event loop not flushing)"
+                )
 
             reaper = asyncio.create_task(
                 server._zombie_reaper(interval=0.05)  # noqa: SLF001
