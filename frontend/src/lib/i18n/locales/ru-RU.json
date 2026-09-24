@@ -221,6 +221,7 @@
   "core.filter.passband.supersededAnnouncement": "Запрос {control} {target} заменён; подтверждённое значение остаётся {confirmed}.",
   "core.rfFrontEnd.preamp.pendingAnnouncement": "В ожидании, ещё не подтверждено",
   "core.dsp.pendingAnnouncement": "В ожидании, ещё не подтверждено",
+  "core.repeater.pendingAnnouncement": "В ожидании, ещё не подтверждено",
   "core.vfo.split.label": "Split",
   "core.vfo.dualWatch.label": "Dual watch",
   "core.vfo.state.on": "on",
