@@ -614,6 +614,73 @@ class TestYaesuExclusiveDuplexTx:
         assert not any(s.running for s in all_streams)
 
     @pytest.mark.asyncio()
+    async def test_rx_joins_a_keyed_tx_only_duplex_stream_without_flap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MOR-2563 round 3: keyed TX-only (forced intent, zero RX demand),
+        then an RX subscriber arrives — RX JOINS the running duplex stream.
+
+        The old session sequence ran stop/start: the stream opens went
+        (duplex, rx, tx) (1,0,0) → (2,1,0) and the TX leg dropped mid-key.
+        The strict fake raises the -50-shaped OSError on any second stream
+        on the device, and the assertions pin ONE duplex stream open over
+        the whole sequence — no close and reopen.
+        """
+        from rigplane.audio.session import AudioSessionState
+        from rigplane.audio.usb_driver import UsbAudioDriver
+        from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+
+        _patch_yaesu_offline(monkeypatch)
+        _forbid_cat(monkeypatch)
+        # Simulate the macOS same-device duplex policy on any test host.
+        monkeypatch.setattr(
+            "rigplane.audio.usb_driver.resolve_usb_duplex_mode",
+            lambda _rx, _tx: "exclusive",
+        )
+        backend = FakeAudioBackend(
+            devices=[DUPLEX_DEVICE], strict_device_exclusive=True
+        )
+        driver = UsbAudioDriver(
+            rx_device="USB Audio CODEC",
+            tx_device="USB Audio CODEC",
+            backend=backend,
+            rx_audio_channel="left",
+        )
+        radio = YaesuCatRadio(device="/dev/cu.fake", audio_driver=driver)
+        assert radio.audio_setup_order == "atomic"
+        session = radio.audio_session
+
+        # Key with zero RX: the forced arm-now intent opens ONE duplex stream.
+        lease = await session.acquire_tx("ptt", arm_now=True)
+        assert session.state is AudioSessionState.TX_ONLY
+        assert len(backend.duplex_streams) == 1
+        duplex = backend.duplex_streams[0]
+        assert duplex.running and driver.tx_running
+
+        sub = await session.subscribe_rx("web-audio")
+        try:
+            assert session.state is AudioSessionState.RX_TX
+            # Exactly one duplex open over the whole sequence — no close and
+            # reopen, and no plain RX stream opened in between.
+            assert backend.duplex_streams == [duplex]
+            assert duplex.running
+            assert backend.rx_streams == []
+            assert driver.tx_running  # the TX leg stayed live throughout
+            # RX frames flow through the joined duplex capture.
+            duplex.inject_frame(b"\x01\x02")
+            pkt = await sub.get(timeout=1.0)
+            assert pkt is not None and pkt.data == b"\x01\x02"
+            # TX frames still ride the same stream's TX queue.
+            await lease.push(b"\x05\x06")
+            assert duplex.written_frames == [b"\x05\x06"]
+        finally:
+            await sub.release()
+            await lease.release()
+        assert session.state is AudioSessionState.IDLE
+        all_streams = backend.rx_streams + backend.tx_streams + backend.duplex_streams
+        assert not any(s.running for s in all_streams)
+
+    @pytest.mark.asyncio()
     async def test_separate_devices_keep_the_two_stream_path(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

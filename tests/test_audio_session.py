@@ -324,6 +324,108 @@ async def test_bare_acquire_tx_still_defers_on_atomic() -> None:
     await lease.release()
 
 
+# ── Per-lease TX intent + the mid-key RX join (MOR-2563 round 3) ──────────────
+
+
+async def test_atomic_rx_join_mid_key_never_drops_the_tx_leg() -> None:
+    """RX arriving mid-key on atomic JOINS the running TX leg — no flap.
+
+    The raw same-device model: with a keyed TX-only session (forced intent,
+    zero RX), an RX subscriber must NOT run the rx_first stop/start — that
+    sequence re-arms TX onto the just-started RX, which on this model
+    silently kills the capture (MOR-531): the session reported RX_TX with
+    ``rx_running=False`` (the verifier's round-2 observation). The join
+    keeps both legs live, and ``calls`` pins that no stop/start ran.
+    """
+    radio = _AtomicExclusiveRadio()
+    session = AudioSession(radio)
+    lease = await session.acquire_tx("ptt", arm_now=True)
+    assert session.state is AudioSessionState.TX_ONLY
+    assert radio.tx_running is True
+
+    sub = await session.subscribe_rx("a")
+    try:
+        assert session.state is AudioSessionState.RX_TX
+        assert radio.rx_running is True  # joined — not silently killed
+        assert radio.tx_running is True  # the TX leg never dropped mid-key
+        # No stop/start flap: TX armed once, then RX joined it.
+        assert radio.calls == ["start_tx", "start_rx"]
+    finally:
+        await sub.release()
+        await lease.release()
+    assert session.state is AudioSessionState.IDLE
+
+
+async def test_arm_now_lease_keeps_tx_live_when_rx_drops_on_atomic() -> None:
+    """Key with RX subscribed, then drop RX mid-key: the TX leg stays live.
+
+    The arm-now ("ptt") lease carries recorded TX intent, so the RX-drop
+    edge keeps tx-only demand desired as TX_ONLY on atomic — before the
+    per-lease intent this converged to IDLE and idled the leg while the rig
+    was still keyed (measured: ``after_rx_release=False state=idle``).
+    """
+    radio = _AtomicExclusiveRadio()
+    session = AudioSession(radio)
+    sub = await session.subscribe_rx("a")
+    lease = await session.acquire_tx("ptt", arm_now=True)
+    assert session.state is AudioSessionState.RX_TX
+
+    await sub.release()  # rx → 0 mid-key, the lease still held
+    assert session.state is AudioSessionState.TX_ONLY
+    assert radio.tx_running is True  # the leg survives the RX drop
+    assert session.bus.subscriber_count == 0  # no phantom RX
+
+    await lease.release()
+    assert session.state is AudioSessionState.IDLE
+    assert radio.tx_running is False
+
+
+async def test_bare_lease_still_defers_when_rx_drops_on_atomic() -> None:
+    """A bare lease (no push, no arm-now, no reestablish) keeps today's
+    MOR-556 deferral: the RX-drop edge converges to IDLE, exactly as before
+    the per-lease intent."""
+    radio = _AtomicExclusiveRadio()
+    session = AudioSession(radio)
+    sub = await session.subscribe_rx("a")
+    lease = await session.acquire_tx("bridge")  # bare: no intent
+    assert session.state is AudioSessionState.RX_TX
+
+    await sub.release()
+    assert session.state is AudioSessionState.IDLE
+    assert radio.tx_running is False
+    await lease.release()
+
+
+async def test_reestablished_lease_keeps_tx_only_through_later_edges() -> None:
+    """A lease that survives a reestablish carries TX intent afterwards.
+
+    The reestablish edge itself was already forced (the held lease re-arms
+    TX_ONLY); what the per-lease intent adds is that LATER demand edges no
+    longer fall back to the bare-lease deferral: RX joins the live leg and
+    drops again, and the TX leg stays armed throughout.
+    """
+    radio = _AtomicExclusiveRadio()
+    session = AudioSession(radio)
+    lease = await session.acquire_tx("bridge")  # bare: defers (MOR-556)
+    assert session.state is AudioSessionState.IDLE
+
+    await session.reestablish()
+    assert session.state is AudioSessionState.TX_ONLY
+    assert radio.tx_running is True
+
+    sub = await session.subscribe_rx("a")  # RX joins the live leg — no flap
+    assert session.state is AudioSessionState.RX_TX
+    assert radio.rx_running is True
+    assert radio.tx_running is True
+
+    await sub.release()
+    assert session.state is AudioSessionState.TX_ONLY
+    assert radio.tx_running is True
+
+    await lease.release()
+    assert session.state is AudioSessionState.IDLE
+
+
 # ── audio_setup_order drives arming (descriptor-read, not hardcoded) ─────────
 
 
