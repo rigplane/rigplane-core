@@ -452,7 +452,7 @@ class TestRigProfileBSRCodes:
 
 
 class TestFtx1BandStackingCodes:
-    """Verify the FTX-1 HF bands carry CI-V band codes for set_band.
+    """Verify the FTX-1 bands carry CI-V band codes for set_band.
 
     Without ``bsr_code`` the v2 UI band buttons fall through to
     ``set_freq(default_hz)`` instead of issuing ``set_band``, which loses the
@@ -461,7 +461,9 @@ class TestFtx1BandStackingCodes:
     ``BS0{nn};`` band-stack recall.
     """
 
-    # CI-V band code per HF band (Yaesu scheme: 160m=0 … 10m=9).
+    # CI-V band code per band. HF (Yaesu scheme: 160m=0 … 10m=9); the
+    # VHF/UHF codes are the BS BAND SELECT P2 codes (FTX-1 CAT OM 2508-C:
+    # 10 = 50 MHz, 11 = 70 MHz/GEN, 13 = 144 MHz, 14 = 430 MHz).
     _EXPECTED_FTX1_BSR: dict[str, int] = {
         "160m": 0,
         "80m": 1,
@@ -473,6 +475,10 @@ class TestFtx1BandStackingCodes:
         "15m": 7,
         "12m": 8,
         "10m": 9,
+        "6m": 0x0A,
+        "4m": 0x0B,
+        "2m": 0x0D,
+        "70cm": 0x0E,
     }
 
     def _ftx1_bands(self) -> dict[str, int | None]:
@@ -480,7 +486,7 @@ class TestFtx1BandStackingCodes:
         return {bi.name: bi.bsr_code for fr in profile.freq_ranges for bi in fr.bands}
 
     def test_all_hf_bands_have_bsr_code(self) -> None:
-        """Every FTX-1 HF band must define a band code (none left None)."""
+        """Every FTX-1 band must define a band code (none left None)."""
         bands = self._ftx1_bands()
         for name in self._EXPECTED_FTX1_BSR:
             assert bands.get(name) is not None, (
@@ -500,6 +506,40 @@ class TestFtx1BandStackingCodes:
             f"FTX-1 {band_name}: expected bsr_code {expected_bsr}, "
             f"got {bands[band_name]}"
         )
+
+    @pytest.mark.parametrize(
+        "band_name,start_hz,end_hz,default_hz",
+        [
+            ("6m", 50_000_000, 54_000_000, 50_125_000),
+            ("4m", 70_000_000, 70_500_000, 70_200_000),
+            ("2m", 144_000_000, 148_000_000, 145_000_000),
+            ("70cm", 430_000_000, 450_000_000, 432_100_000),
+        ],
+    )
+    def test_vhf_uhf_band_boundaries(
+        self,
+        band_name: str,
+        start_hz: int,
+        end_hz: int,
+        default_hz: int,
+    ) -> None:
+        """VHF/UHF bands must load with their full boundaries through the loader."""
+        profile = resolve_radio_profile(model="FTX-1")
+        for fr in profile.freq_ranges:
+            for bi in fr.bands:
+                if bi.name == band_name:
+                    assert bi.start == start_hz, (
+                        f"FTX-1 {band_name}: expected start {start_hz}, got {bi.start}"
+                    )
+                    assert bi.end == end_hz, (
+                        f"FTX-1 {band_name}: expected end {end_hz}, got {bi.end}"
+                    )
+                    assert bi.default == default_hz, (
+                        f"FTX-1 {band_name}: expected default {default_hz}, "
+                        f"got {bi.default}"
+                    )
+                    return
+        pytest.fail(f"Band {band_name} not found in FTX-1 profile")
 
     def test_bsr_codes_are_valid_yaesu_band_keys(self) -> None:
         """Each FTX-1 bsr_code must map through _CIV_TO_YAESU_BAND for set_band."""
