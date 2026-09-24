@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
-from rigplane.core.acquisition_scheduler import DeclaredCommandDefect
+from rigplane.core.acquisition_scheduler import AcquisitionScheduler
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.runtime.managed_tx_fence import TxAbortFence
 from rigplane.runtime.local_tx_work import LocalTxWorkRunner
@@ -258,7 +258,9 @@ async def test_real_ac_observation_normalizes_or_faults_on_unknown(
 
     ``_read_atu_route`` raises ``ValueError`` for a src/type/state triple its
     table does not map; that reaches ``_safe_read`` on a read naming a
-    declared path, so it raises rather than emitting nothing.
+    declared path, so the defect is recorded on the scheduler (what the
+    startup gate reads) and the field is skipped — the cycle is not
+    aborted (MOR-2578).
     """
     radio = radio_with_answer(answer)
     path = FieldPath.global_("operator_controls", "tuner_status")
@@ -273,13 +275,17 @@ async def test_real_ac_observation_normalizes_or_faults_on_unknown(
         "_has_runtime_capability",
         lambda self, capability: capability == "tuner",
     )
+    profile = radio.profile.state_acquisition
+    assert profile is not None
+    scheduler = AcquisitionScheduler(profile=profile)
+    radio._acquisition_scheduler = scheduler
     adapter = YaesuObservationAdapter.from_radio(radio)
+    observations = await adapter.poll_tx_controls()
     if expected is None:
-        with pytest.raises(DeclaredCommandDefect) as caught:
-            await adapter.poll_tx_controls()
-        assert caught.value.paths == (path,)
+        assert observations == ()
+        assert scheduler.startup_defect is not None
+        assert scheduler.startup_defect.paths == (path,)
     else:
-        observations = await adapter.poll_tx_controls()
         assert len(observations) == 1
         assert observations[0].path == path
         assert observations[0].value == expected

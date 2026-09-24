@@ -11,10 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
-from rigplane.core.acquisition_scheduler import (
-    AcquisitionScheduler,
-    DeclaredCommandDefect,
-)
+from rigplane.core.acquisition_scheduler import AcquisitionScheduler
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
@@ -1923,7 +1920,7 @@ async def test_repeater_shift_emits_both_receivers_directly(code: int) -> None:
         (
             [ValueError("MAIN failed"), 2],
             "receiver.main.operator_controls.repeater_shift",
-            [call(0)],
+            [call(0), call(1)],
         ),
         (
             [1, ValueError("SUB failed")],
@@ -1938,18 +1935,21 @@ async def test_repeater_shift_receiver_failures_name_only_their_own_side(
 ) -> None:
     """OS0 and OS1 are read independently, so one side's defect names one path.
 
-    The read that fails raises where it fails; a side already read stays read
-    and a side not yet reached is not queried.
+    The read that fails records its defect and skips its own side only
+    (MOR-2578): the other side is still read and still publishes, so the
+    poll cycle no longer aborts at the first failing side.
     """
     radio = _make_radio()
     radio.capabilities.add("repeater_shift")
     radio.read_repeater_shift = AsyncMock(side_effect=side_effect)
+    scheduler = AcquisitionScheduler(profile=_profile_state_acquisition())
+    radio._acquisition_scheduler = scheduler
     adapter = YaesuObservationAdapter(radio, profile=_profile_state_acquisition())
 
-    with pytest.raises(DeclaredCommandDefect) as caught:
-        await adapter.poll_slow_controls()
+    await adapter.poll_slow_controls()
 
-    assert [str(path) for path in caught.value.paths] == [defective_path]
+    assert scheduler.startup_defect is not None
+    assert [str(path) for path in scheduler.startup_defect.paths] == [defective_path]
     assert radio.read_repeater_shift.await_args_list == awaited
 
 
@@ -2030,21 +2030,27 @@ async def test_sql_type_receiver_failure_names_only_its_own_side() -> None:
     """CT0 and CT1 are read independently, so one side's defect names one side.
 
     The SUB read fails after MAIN succeeded: the defect names only the SUB
-    paths, and the MAIN read was still made.
+    paths, the MAIN read was still made, and MAIN's own pair still
+    publishes (MOR-2578 — the cycle continues past the failed side).
     """
     radio = _make_radio()
     radio._poll_warned_fields = set()
     radio.read_sql_type = AsyncMock(side_effect=[1, ValueError("SUB failed")])
+    scheduler = AcquisitionScheduler(profile=_profile_state_acquisition())
+    radio._acquisition_scheduler = scheduler
     adapter = YaesuObservationAdapter(radio, profile=_profile_state_acquisition())
 
-    with pytest.raises(DeclaredCommandDefect) as caught:
-        await adapter.poll_slow_controls()
+    observations = await adapter.poll_slow_controls()
+    by_path = {str(item.path): item.value for item in observations}
 
-    assert [str(path) for path in caught.value.paths] == [
+    assert scheduler.startup_defect is not None
+    assert [str(path) for path in scheduler.startup_defect.paths] == [
         "receiver.sub.operator_toggles.repeater_tone",
         "receiver.sub.operator_toggles.repeater_tsql",
     ]
     assert radio.read_sql_type.await_args_list == [call(0), call(1)]
+    assert by_path["receiver.main.operator_toggles.repeater_tone"] is True
+    assert by_path["receiver.main.operator_toggles.repeater_tsql"] is False
 
 
 @pytest.mark.asyncio
@@ -2083,20 +2089,29 @@ async def test_ctcss_freq_emits_both_receivers_with_their_own_indices() -> None:
 
 @pytest.mark.asyncio
 async def test_ctcss_freq_receiver_failure_names_only_its_own_side() -> None:
-    """CN0 and CN1 are read independently, so one side's defect names one side."""
+    """CN0 and CN1 are read independently, so one side's defect names one side.
+
+    The SUB read fails after MAIN succeeded: the defect names only the SUB
+    paths, and MAIN's own centiHz pair still publishes (MOR-2578).
+    """
     radio = _make_radio()
     radio._poll_warned_fields = set()
     radio.read_ctcss_tone_index = AsyncMock(side_effect=[8, ValueError("SUB failed")])
+    scheduler = AcquisitionScheduler(profile=_profile_state_acquisition())
+    radio._acquisition_scheduler = scheduler
     adapter = YaesuObservationAdapter(radio, profile=_profile_state_acquisition())
 
-    with pytest.raises(DeclaredCommandDefect) as caught:
-        await adapter.poll_slow_controls()
+    observations = await adapter.poll_slow_controls()
+    by_path = {str(item.path): item.value for item in observations}
 
-    assert [str(path) for path in caught.value.paths] == [
+    assert scheduler.startup_defect is not None
+    assert [str(path) for path in scheduler.startup_defect.paths] == [
         "receiver.sub.operator_controls.tone_freq",
         "receiver.sub.operator_controls.tsql_freq",
     ]
     assert radio.read_ctcss_tone_index.await_args_list == [call(0), call(1)]
+    assert by_path["receiver.main.operator_controls.tone_freq"] == 8850
+    assert by_path["receiver.main.operator_controls.tsql_freq"] == 8850
 
 
 @pytest.mark.parametrize(
@@ -2497,11 +2512,13 @@ def _raise(exc: Exception) -> object:
 
 @pytest.mark.asyncio
 async def test_unparseable_sub_s_meter_is_a_startup_defect() -> None:
-    """A declared read answered in another shape stops the cycle, not the gate.
+    """A declared read answered in another shape records the defect, then skips.
 
     The sub ``SM1;`` answer fails to parse, so no
-    ``receiver.sub.meters.s_meter`` observation can ever arrive. The defect is
-    raised and recorded, and the path stays outstanding — nothing releases it.
+    ``receiver.sub.meters.s_meter`` observation can ever arrive. The defect
+    is recorded on the scheduler — what the startup gate reads — and only
+    that field is skipped: the MAIN meter still publishes and the path
+    stays outstanding, because nothing releases it (MOR-2578).
     """
     profile = _profile_state_acquisition()
     scheduler = AcquisitionScheduler(profile=profile)
@@ -2525,22 +2542,24 @@ async def test_unparseable_sub_s_meter_is_a_startup_defect() -> None:
         )
     )
 
-    with pytest.raises(DeclaredCommandDefect) as caught:
-        await YaesuObservationAdapter(
-            radio,
-            profile=profile,
-            clock=_clock,
-        ).poll_rx_meters()
+    observations = await YaesuObservationAdapter(
+        radio,
+        profile=profile,
+        clock=_clock,
+    ).poll_rx_meters()
 
-    assert caught.value.paths == (sub_path,)
-    assert caught.value.command == "SM{receiver}{raw:03d};"
-    assert caught.value.frame == "SM0048;"
-    assert scheduler.startup_defect is caught.value
-    message = str(caught.value)
+    defect = scheduler.startup_defect
+    assert defect is not None
+    assert defect.paths == (sub_path,)
+    assert defect.command == "SM{receiver}{raw:03d};"
+    assert defect.frame == "SM0048;"
+    message = str(defect)
     assert str(sub_path) in message
     assert "SM{receiver}{raw:03d};" in message
     assert "SM0048;" in message
     assert sub_path in scheduler.unobserved_startup_paths(())
+    # The failed read skipped only itself: MAIN's meter still emitted.
+    assert {str(item.path) for item in observations} == {"receiver.main.meters.s_meter"}
 
 
 @pytest.mark.asyncio
@@ -2980,11 +2999,13 @@ async def test_defective_read_names_every_declared_path_it_feeds(
     expected: tuple[str, ...],
     failure: str,
 ) -> None:
-    """One refused or wrong-shape read raises naming the paths it feeds.
+    """One refused or wrong-shape read records a defect naming the paths it feeds.
 
     A path the backend can never observe must not be released from the
     startup gate, and the defect must not name a path some other read still
-    supplies.
+    supplies. The read skips only its own field (MOR-2578): the poll
+    returns instead of aborting, but the record — what the gate reads —
+    still names exactly the broken read's declared paths.
     """
     profile = _profile_state_acquisition()
     scheduler = AcquisitionScheduler(profile=profile)
@@ -2994,13 +3015,53 @@ async def test_defective_read_names_every_declared_path_it_feeds(
     _break_read(radio, method, receiver, failure=failure)
 
     adapter = YaesuObservationAdapter(radio, profile=profile, clock=_clock)
-    with pytest.raises(DeclaredCommandDefect) as caught:
-        await getattr(adapter, poll)()
+    observations = await getattr(adapter, poll)()
 
-    assert sorted(str(path) for path in caught.value.paths) == sorted(expected)
-    assert scheduler.startup_defect is caught.value
+    assert isinstance(observations, tuple)
+    defect = scheduler.startup_defect
+    assert defect is not None
+    assert sorted(str(path) for path in defect.paths) == sorted(expected)
     # Nothing is released: the gate's outstanding set is exactly what it was.
     assert scheduler.unobserved_startup_paths(()) == before
+
+
+@pytest.mark.asyncio
+async def test_refused_read_mid_cycle_still_emits_later_slow_fields() -> None:
+    """MOR-2578: a refused declared read skips its own field, not the cycle.
+
+    On the live FTX-1 stand (2026-09-24) the radio refused ``RA0;`` (the
+    MAIN attenuator read) with ``?;`` roughly once a second; the raise
+    aborted the whole slow cycle, so every later field — SUB repeater
+    tone/TSQL, tone frequency, repeater shift — stayed stale forever. The
+    refusal now records the defect (what the startup gate reads) and skips
+    only ``main.att``; the later slow fields keep publishing.
+    """
+    radio = _make_radio()
+    radio._poll_warned_fields = set()
+    radio.capabilities.add("repeater_shift")
+    radio.read_repeater_shift = AsyncMock(side_effect=lambda receiver=0: receiver)
+    _break_read(radio, "read_attenuator", 0, failure="reject")
+    scheduler = AcquisitionScheduler(profile=_profile_state_acquisition())
+    radio._acquisition_scheduler = scheduler
+    adapter = YaesuObservationAdapter(
+        radio, profile=_profile_state_acquisition(), clock=_clock
+    )
+
+    observations = await adapter.poll_slow_controls()
+    by_path = {str(item.path): item.value for item in observations}
+
+    assert scheduler.startup_defect is not None
+    assert [str(path) for path in scheduler.startup_defect.paths] == [
+        "receiver.main.operator_controls.att"
+    ]
+    # main.att itself is skipped ...
+    assert "receiver.main.operator_controls.att" not in by_path
+    # ... and every later slow field still publishes.
+    assert by_path["receiver.sub.operator_toggles.repeater_tone"] is True
+    assert by_path["receiver.sub.operator_toggles.repeater_tsql"] is False
+    assert by_path["receiver.sub.operator_controls.tone_freq"] == 8850
+    assert by_path["receiver.sub.operator_controls.tsql_freq"] == 8850
+    assert by_path["receiver.sub.operator_controls.repeater_shift"] == 1
 
 
 @pytest.mark.asyncio
