@@ -160,8 +160,11 @@ compilation. Pixel-diff `visual` runs only for actual `frontend/**` changes,
 never because `visual.yml` itself changed.
 
 When every changed path is documentation or documentation metadata — including
-`docs/**`, Markdown/RST anywhere in the tree, `.claude/**`, and the doc-citation
-baseline files — only the GitHub-hosted classifier runs. The required `quick`
+`docs/**` except data files, Markdown/RST anywhere in the tree, `.claude/**`, and
+the doc-citation baseline files — only the GitHub-hosted classifier runs. Data
+files under `docs/` (`*.json`, `*.toml`, `*.yaml`, `*.yml`) are read by tests and
+get the normal checks (`.github/scripts/classify-quick-paths.py:
+DOCS_DATA_SUFFIXES`). The required `quick`
 job reports a server-side skipped/neutral context and never allocates the Mac
 mini. Do not run citation, link, Markdown, product, visual, or full automation;
 the exact-head independent review is the substantive gate. Documentation mixed
