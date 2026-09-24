@@ -7,7 +7,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, NoReturn, Protocol, TypeVar
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from rigplane.core.acquisition_scheduler import (
     AcquisitionScheduler,
@@ -186,10 +186,9 @@ _CW_SPOT = FieldPath.global_("slow_state", "cw_spot")
 # Both paths are emitted every cycle (including the False derivations) so the
 # store always reflects current state. Per-receiver ``operator_toggles`` like
 # nb/nr/auto_notch, emitted in the slow-control lane; CT0 and CT1 are read
-# independently, so a failing side's defect names only that side's paths — a
-# MAIN failure means SUB is never read, and a SUB failure aborts the poll,
-# discarding MAIN's emissions from that same poll. Raw device code
-# (cross-vendor calibration is MOR-453).
+# independently, so a failing side's defect names only that side's paths and
+# skips only that side's emissions — the other side still publishes. Raw
+# device code (cross-vendor calibration is MOR-453).
 _MAIN_REPEATER_TONE = FieldPath.receiver("main", "operator_toggles", "repeater_tone")
 _MAIN_REPEATER_TSQL = FieldPath.receiver("main", "operator_toggles", "repeater_tsql")
 _SUB_REPEATER_TONE = FieldPath.receiver("sub", "operator_toggles", "repeater_tone")
@@ -438,40 +437,49 @@ class YaesuObservationAdapter:
                 KeyError,
                 CatCommandRejected,
             ) as exc:
-                self._raise_declared_defect("ptt", exc, (_PTT,))
+                # Same rule as ``_safe_read``: record the defect (what the
+                # startup gate reads), skip this field, keep the cycle.
+                self._record_declared_defect("ptt", exc, (_PTT,))
+                self._log_field_skip(
+                    "ptt",
+                    "Skipping field %s — declared read refused or malformed: %s",
+                    exc,
+                )
+                publish_ptt_error()
             except Exception:
                 publish_ptt_error()
                 raise
-            if reading.failure is not None:
-                publish_ptt_error()
-                if reading.failure == "timeout":
-                    raise CatTimeoutError("PTT read failed: timeout")
-                if reading.failure == "transport":
-                    raise CatTransportError("PTT read failed: transport")
             else:
-                timestamp = self.clock()
-                if type(reading.value) is bool:
-                    observations.append(
-                        adapter.observation(
-                            _PTT,
-                            reading.value,
-                            native_id="read_ptt",
-                            timestamp_monotonic=timestamp,
-                        )
-                    )
-                qualified = (
-                    reading.verified_readback is True
-                    and reading.source == "yaesu_poll_response"
-                    and reading.attributed in ("rx", "tx_cat", "tx_other")
-                )
-                observation = self.observed_ptt_observation(
-                    reading.value if qualified else None,
-                    timestamp_monotonic=timestamp,
-                )
-                if ptt_callback is None:
-                    observations.append(observation)
+                if reading.failure is not None:
+                    publish_ptt_error()
+                    if reading.failure == "timeout":
+                        raise CatTimeoutError("PTT read failed: timeout")
+                    if reading.failure == "transport":
+                        raise CatTransportError("PTT read failed: transport")
                 else:
-                    ptt_callback(observation)
+                    timestamp = self.clock()
+                    if type(reading.value) is bool:
+                        observations.append(
+                            adapter.observation(
+                                _PTT,
+                                reading.value,
+                                native_id="read_ptt",
+                                timestamp_monotonic=timestamp,
+                            )
+                        )
+                    qualified = (
+                        reading.verified_readback is True
+                        and reading.source == "yaesu_poll_response"
+                        and reading.attributed in ("rx", "tx_cat", "tx_other")
+                    )
+                    observation = self.observed_ptt_observation(
+                        reading.value if qualified else None,
+                        timestamp_monotonic=timestamp,
+                    )
+                    if ptt_callback is None:
+                        observations.append(observation)
+                    else:
+                        ptt_callback(observation)
         # filter_width (MOR-445) is a ``freq_mode`` ACTIVE-slot field, so it
         # belongs in the freq/mode lane — mirroring the legacy poller, which
         # reads it in ``_poll_medium`` for responsive knob tracking. MAIN-only
@@ -1163,10 +1171,9 @@ class YaesuObservationAdapter:
         # (``CAP_SQL_TYPE``), a dedicated readback capability: ``"ctcss"`` is
         # not a known capability tag (rejected by the rig loader). CT0 and CT1
         # are read independently, so a failing side's defect names only that
-        # side's paths — a MAIN failure means SUB is never read, and a SUB
-        # failure aborts the poll, discarding MAIN's emissions from that same
-        # poll (same read shape as the ``OS`` routes below); the SUB read
-        # rides the ``dual_rx`` capability. Each emission is gated
+        # side's paths and skips only that side's emissions — the other side
+        # still publishes (same read shape as the ``OS`` routes below); the
+        # SUB read rides the ``dual_rx`` capability. Each emission is gated
         # independently by per-field policy.
         if self._has_runtime_capability("sql_type"):
             ct_routes = ((0, "main", _MAIN_REPEATER_TONE, _MAIN_REPEATER_TSQL),)
@@ -1572,11 +1579,11 @@ class YaesuObservationAdapter:
         """Await one field read, classifying a FIELD-level CAT failure.
 
         Returns ``(ok, value)``. A read naming declared ``paths`` that the
-        radio refuses (``?;``) or answers in another shape raises
-        :class:`DeclaredCommandDefect` — see :meth:`_raise_declared_defect`.
-        A read with no declared ``paths`` is skipped instead: the warning is
-        logged and ``(False, None)`` is returned so the caller drops just
-        that field.
+        radio refuses (``?;``) or answers in another shape RECORDS the
+        defect on the acquisition scheduler — the recording is what the
+        startup gate reads — and then skips that one field exactly like an
+        undeclared read, so a single refused read cannot abort the whole
+        poll cycle and starve every later field (MOR-2578).
 
         TRANSPORT errors are NOT caught — they RE-RAISE so the poller's
         ``_run_poll_cycle`` reconnect/backoff still fires. ``CatTimeoutError``
@@ -1590,7 +1597,7 @@ class YaesuObservationAdapter:
             # ValueError covers _read_meter / int() malformed-frame failures;
             # CatParse/FormatError subclass ValueError but are listed for clarity.
             if paths:
-                self._raise_declared_defect(label, exc, paths)
+                self._record_declared_defect(label, exc, paths)
             self._log_field_skip(
                 label,
                 "Skipping field %s — malformed CAT response: %s",
@@ -1599,7 +1606,7 @@ class YaesuObservationAdapter:
             return False, None
         except CatCommandRejected as exc:
             if paths:
-                self._raise_declared_defect(label, exc, paths)
+                self._record_declared_defect(label, exc, paths)
             self._log_field_skip(
                 label,
                 "Skipping field %s — command rejected (?;): %s",
@@ -1607,16 +1614,22 @@ class YaesuObservationAdapter:
             )
             return False, None
 
-    def _raise_declared_defect(
+    def _record_declared_defect(
         self,
         label: str,
         exc: Exception,
         paths: tuple[FieldPath, ...],
-    ) -> NoReturn:
-        """Record and raise the defect for a declared read that cannot answer.
+    ) -> None:
+        """Record the defect for a declared read that cannot answer.
 
-        The recording is what the startup gate reads: this raise itself only
-        reaches the poller task that drove the read.
+        The recording is what the startup gate reads: it checks the
+        scheduler's record before and during its wait, so a declared read
+        that fails before the gate completes refuses the bind. A refusal
+        that begins only after the gate has completed is recorded but
+        cannot undo a bind that already happened. The
+        read itself is skipped — only that field is dropped and the poll
+        cycle continues, so the field's own refusal cannot stall every
+        later field (MOR-2578).
         """
         command = ""
         frame = ""
@@ -1636,7 +1649,6 @@ class YaesuObservationAdapter:
         scheduler = getattr(self.radio, "_acquisition_scheduler", None)
         if isinstance(scheduler, AcquisitionScheduler):
             scheduler.record_startup_defect(defect)
-        raise defect from exc
 
     def _log_field_skip(
         self,
