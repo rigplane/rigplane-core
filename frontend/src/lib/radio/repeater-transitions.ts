@@ -9,7 +9,7 @@
  * `RepeaterToneMode`/`RepeaterShift` mirror the semantic view-model's
  * same-named types structurally; they are declared here too so
  * `panel-commands.ts` can import them without a `lib/runtime -> semantic`
- * dependency (v3 ADR invariant 1).
+ * dependency.
  */
 export type RepeaterToneMode = 'off' | 'tone' | 'tsql';
 export type RepeaterShift = 'simplex' | 'minus' | 'plus';

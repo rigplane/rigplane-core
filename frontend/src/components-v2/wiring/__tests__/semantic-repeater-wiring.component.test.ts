@@ -1,8 +1,9 @@
 /**
  * MOR-2111 — the repeater panel wired into `SemanticRadioSurfaces` and
  * mounted by the REAL `RadioLayout` in the `desktop-v2` `repeater` zone,
- * with facts from the real view-model adapter and commands through the real
- * `makeRepeaterHandlers` (only `sendCommand` is mocked).
+ * with facts from the real view-model adapter over a mocked runtime, and
+ * commands through the real `makeRepeaterHandlers` into a mocked
+ * `sendCommand`.
  *
  * Isolated pool by name (`*.component.test.ts`), per the MOR-1272 doctrine.
  */
@@ -202,7 +203,6 @@ let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 let txHarness: ManagedAppTxHarness;
 
-/** The runtime mock feeds the view model; the stores feed the layout. */
 function use(state: ServerState, caps: Capabilities, runtimeState = state, runtimeCaps = caps): void {
   resetRadioState();
   setRadioState(state);
@@ -324,7 +324,7 @@ describe('the CTCSS stepper (B4)', () => {
   });
 
   it('is disabled with an unread tone mode, and a forced click sends nothing', () => {
-    // tone off + TSQL on is unrepresentable, so the mode reads unknown.
+    // `deriveRepeater` maps tone off + TSQL on to no mode: it reads unknown.
     const odd: Repeater = { ...OFF, tone: false, tsql: true };
     use(dualState({ mainHz: 14_250_000, subHz: 144_700_000, sub: odd }), dualCaps());
     renderHosted();
@@ -348,7 +348,7 @@ describe('unread facts and pending markers (B4)', () => {
     expect(surface()!.textContent).not.toMatch(/\?|—|unknown|null/i);
   });
 
-  it('a click marks its target key (and a step its value) pending until the radio confirms', () => {
+  it('a click marks its target key pending, and a step marks the value pending', () => {
     use(dualState({ mainHz: 14_250_000, subHz: 144_700_000 }), dualCaps());
     renderHosted();
     const tsql = key('repeater-tone-tsql')!;

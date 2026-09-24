@@ -3,7 +3,7 @@
  * Boots the Standard face from the `topology-2-main-sub` fixture, patched with
  * repeater-band freqRanges, `ctcssTones` and the repeater capability tags.
  * Outgoing WebSocket frames are recorded, never forwarded: no radio, no TX,
- * no server.
+ * no rigplane server.
  */
 import { test, expect, type Page } from '@playwright/test';
 import { fixtureById } from '../../../fixtures/catalog';
