@@ -453,8 +453,8 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         for overrides, name in scenarios:
             with self.subTest(name=name):
                 result = self.run_docs_quick_script(
-                    heads=overrides.get("heads", [head] if name not in {"head-race", "base-race"} else [head, head]),
-                    bases=overrides.get("bases"),
+                    heads=overrides.get("heads", [head, head]),
+                    bases=overrides.get("bases", [base, base]),
                     files=overrides["files"],
                     changed_files=overrides.get("changed_files"),
                 )
