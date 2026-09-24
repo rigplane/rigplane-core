@@ -5,14 +5,21 @@ import {
   panoramaEaseOutCubic,
 } from '../panorama-motion';
 
+// MOR-2587: must go through `vi.stubGlobal`, never a plain assignment —
+// this file runs in the `fast` pool (`isolate: false`), where the
+// file-level `afterEach(() => vi.unstubAllGlobals())` below only restores
+// stubs registered with `vi.stubGlobal`. A plain `window.matchMedia = …`
+// survived that hook and leaked `{ matches: true }` into every later
+// `fast` file sharing the worker (observed victim: InstallPrompt.test.ts
+// "isStandalone returns false in normal browser mode").
 function enableReducedMotion(): void {
-  window.matchMedia = vi.fn().mockReturnValue({
+  vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({
     matches: true,
     addEventListener: () => {},
     removeEventListener: () => {},
     addListener: () => {},
     removeListener: () => {},
-  }) as unknown as typeof window.matchMedia;
+  }) as unknown as typeof window.matchMedia);
 }
 
 afterEach(() => vi.unstubAllGlobals());
