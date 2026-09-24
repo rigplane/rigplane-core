@@ -1994,3 +1994,127 @@ def test_ftx1_gates_nothing_on_dual_receive() -> None:
     dual_watch = FieldPath.global_("tx_state", "dual_watch")
     assert acquisition.capability_for(dual_watch).can_poll
     assert acquisition.policy_for(dual_watch).available_when == ()
+
+
+# ── MOR-2540: TX-target source coverage ─────────────────────────────────────
+
+_TX_TARGET_PATH = FieldPath.global_("tx_state", "tx_target")
+
+#: Profiles with a TX or tuner capability and NO TX-target source, each with
+#: the recorded reason. Membership is a deliberate decision, not an
+#: oversight: the guard below fails for any TX/tuner profile that is neither
+#: sourced nor listed here.
+_TX_TARGET_UNSUPPORTED: dict[str, str] = {
+    "IC-9700": (
+        "taken out of MOR-2540 round 2: its band-selection and split "
+        "semantics are unverified and no IC-9700 is on the bench, so no "
+        "receiver-labelling rule is declared for it; MOR-2567 covers its "
+        "other data problems"
+    ),
+    "TX-500": (
+        "kenwood_cat profile with no backend (backends/factory.py has no "
+        "TX-500 route); no TX-target read is wired for the Lab599 CAT set"
+    ),
+    "X6100": (
+        "backends/factory.py refuses the model (only the rigctld client "
+        "reaches the radio); the Xiegu CI-V dialect declares no "
+        "transmit-frequency read"
+    ),
+    "X6200": (
+        "Xiegu-dialect CI-V profile: no transmit-frequency read is declared, "
+        "and the RadioPoller derivation requires vfo_readback "
+        '"selected_unselected", which this profile does not carry'
+    ),
+}
+
+
+def _declared_tx_target_source(profile: Any) -> str | None:
+    """Name the mechanism that produces ``global.tx_state.tx_target``, if any."""
+
+    if profile.vfo_readback == "selected_unselected":
+        return "RadioPoller selected/unselected derivation (MOR-1496)"
+    acquisition = profile.state_acquisition
+    if acquisition is None:
+        return None
+    if not acquisition.capability_for(_TX_TARGET_PATH).can_poll:
+        return None
+    if provider_uses_civ_acquisition(acquisition.provider):
+        from rigplane.runtime._state_queries import (
+            acquisition_query_resolver_for_profile,
+        )
+
+        if acquisition_query_resolver_for_profile(profile)(_TX_TARGET_PATH) is None:
+            return None
+        return "CI-V get_tx_target read"
+    return f"{acquisition.provider} native read"
+
+
+def test_ic7610_declares_a_polled_1c03_tx_target() -> None:
+    """MOR-2540: the IC-7610 polls the radio's own transmit-frequency read
+    (CI-V 1C 03) instead of deriving the target from MAIN, and declares the
+    data rule that labels the transceiver-wide reply by split."""
+
+    from rigplane.runtime._state_queries import acquisition_query_resolver_for_profile
+
+    profile = get_radio_profile("IC-7610")
+    acquisition = profile.state_acquisition
+    assert acquisition is not None
+    capability = acquisition.capability_for(_TX_TARGET_PATH)
+    assert capability.can_poll is True
+    policy = acquisition.policy_for(_TX_TARGET_PATH)
+    assert policy.cadence_seconds == 1.0
+    assert policy.freshness_ttl_seconds == 4.0
+    assert policy.freshness_ttl_seconds >= 2 * policy.cadence_seconds
+    assert policy.adaptive_decay.enabled is False
+    assert profile.command_map is not None
+    assert profile.command_map.get("get_tx_target") == (0x1C, 0x03)
+    assert profile.tx_receiver_rule == "main_unless_split"
+    query = acquisition_query_resolver_for_profile(profile)(_TX_TARGET_PATH)
+    assert query is not None
+    assert (query.command, query.sub, query.data, query.receiver) == (
+        0x1C,
+        0x03,
+        b"",
+        None,
+    )
+
+
+def test_every_tx_capable_profile_declares_a_tx_target_source() -> None:
+    """MOR-2540: a profile with a TX or tuner capability must say where its
+    TX target comes from — a native read or the MOR-1496 derivation — or be
+    listed in ``_TX_TARGET_UNSUPPORTED`` with the reason.
+
+    Fails for a repeat of the IC-7610 gap: a main_sub profile whose
+    derivation silently never runs (``vfo_readback`` defaults to ``"none"``)
+    and whose profile declares no native read either, leaving TUNE and the
+    web TX authority fail-closed for the radio's whole lifetime.
+    """
+
+    sourced: dict[str, str] = {}
+    unsupported_seen: dict[str, str] = {}
+    for model, rig in sorted(discover_rigs(RIGS_DIR).items()):
+        profile = rig.to_profile()
+        features = set(profile.capabilities)
+        if "tx" not in features and "tuner" not in features:
+            continue
+        source = _declared_tx_target_source(profile)
+        if source is not None:
+            sourced[model] = source
+            assert model not in _TX_TARGET_UNSUPPORTED, (
+                f"{model}: has a TX-target source ({source}) yet is still "
+                "listed in _TX_TARGET_UNSUPPORTED — remove the stale entry"
+            )
+            continue
+        reason = _TX_TARGET_UNSUPPORTED.get(model)
+        assert reason is not None, (
+            f"{model}: TX/tuner capability but no TX-target source and no "
+            "recorded reason — declare a source (a native transmit-frequency "
+            "read, or the selected_unselected derivation) or add the model "
+            "to _TX_TARGET_UNSUPPORTED with the reason"
+        )
+        unsupported_seen[model] = reason
+
+    assert unsupported_seen == _TX_TARGET_UNSUPPORTED
+    # The MOR-2540 regression subject is sourced by the radio's own read;
+    # IC-9700 stays unsupported (see its entry above).
+    assert sourced.get("IC-7610") == "CI-V get_tx_target read"

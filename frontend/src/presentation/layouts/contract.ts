@@ -31,7 +31,7 @@ import { isValidLanguageId as isValidProductId } from '../languages/contract';
  *  surface. */
 export const SEMANTIC_SURFACE_NAMES = [
   'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band', 'antenna', 'ritXitScan',
-  'cwKeyer', 'scopeDisplay', 'scopeControls', 'memory',
+  'cwKeyer', 'scopeDisplay', 'scopeControls', 'memory', 'repeater',
 ] as const;
 export type SemanticSurfaceName = (typeof SEMANTIC_SURFACE_NAMES)[number];
 

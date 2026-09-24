@@ -603,7 +603,10 @@ class TestBuildStateQueries:
 
         assert queries == expected
         assert acquisition_query(0x18) not in queries
-        assert acquisition_query(0x1C, sub=0x03) not in queries
+        # MOR-2540: the profile declares get_tx_target = [0x1C, 0x03] and the
+        # tx_target capability, so the radio's own transmit-frequency read is
+        # part of the sweep now.
+        assert acquisition_query(0x1C, sub=0x03) in queries
 
     def test_command_map_mutation_changes_built_query(self) -> None:
         profile = resolve_radio_profile(model="IC-7300")
@@ -726,6 +729,8 @@ class TestBuildStateQueries:
         assert not excluded_sub_controls.intersection(pollable)
         assert not excluded_sub_freq_mode.intersection(pollable)
         queries = build_state_queries(profile)
+        # IC-9700 stays out of MOR-2540 (unverified band-selection/split
+        # semantics, no bench radio): no 1C 03 read is declared for it.
         assert len(pollable) == len(queries) == 34
         assert all(query.receiver is None for query in queries)
         assert not any(

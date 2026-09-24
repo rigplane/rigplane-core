@@ -3079,7 +3079,9 @@ def test_state_queries_include_transceiver_status_reads_for_ic7610() -> None:
         acquisition_query(0x21, sub=0x01),
         acquisition_query(0x21, sub=0x02),
     }.issubset(queries)
-    assert acquisition_query(0x1C, sub=0x03) not in queries
+    # MOR-2540: the profile-declared get_tx_target read (radio's own transmit
+    # frequency) is part of the sweep now.
+    assert acquisition_query(0x1C, sub=0x03) in queries
 
 
 @pytest.mark.asyncio
@@ -6122,6 +6124,35 @@ async def test_publish_tx_target_never_writes_for_unsupported_profile() -> None:
     poller._publish_tx_target()  # noqa: SLF001
 
     assert "global.tx_state.tx_target" not in store.snapshot().as_dict()
+
+
+@pytest.mark.asyncio
+async def test_publish_tx_target_never_overrides_the_radios_own_1c03_answer() -> None:
+    """MOR-2540: the IC-7610 (main_sub, declared 1C 03 read) keeps the
+    derivation silent even when the store already holds the radio-decoded
+    target — the CI-V observation path is the field's single authority on
+    this radio, so the poller must not become a second writer."""
+
+    radio = _make_radio(model="IC-7610")
+    store = StateStore()
+    generation = store.begin_provider_generation()
+    radios_answer = KnownTxTarget(receiver="MAIN", slot=None, frequency_hz=7_100_000)
+    _apply_tx_target_input(
+        store,
+        FieldPath.global_("tx_state", "tx_target"),
+        radios_answer,
+        generation=generation,
+    )
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+
+    poller._publish_tx_target()  # noqa: SLF001
+
+    field = store.snapshot().field("global.tx_state.tx_target")
+    assert field.value == radios_answer
+    assert field.source.source == "test"
+    computed = poller._compute_tx_target()  # noqa: SLF001
+    assert isinstance(computed, UnknownTxTarget)
+    assert computed.reason == "unsupported"
 
 
 @pytest.mark.asyncio
