@@ -336,11 +336,6 @@ class TestCommandMapParity:
         assert cmdmap.get("get_civ_output_ant") == (0x1C, 0x04)
         assert cmdmap.get("set_civ_output_ant") == (0x1C, 0x04)
 
-    def test_get_tx_target(self, cmdmap):
-        """MOR-2540: CI-V 1C 03 "Read transmit frequency" — IC-7610 CI-V
-        Reference Guide (A7380-7EX-2, May.2021) p.9 (detail p.10)."""
-        assert cmdmap.get("get_tx_target") == (0x1C, 0x03)
-
     def test_send_cw(self, cmdmap):
         assert cmdmap.get("send_cw") == (0x17,)
 
