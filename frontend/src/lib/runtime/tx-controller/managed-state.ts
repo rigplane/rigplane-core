@@ -25,6 +25,17 @@ const UNKNOWN: ManagedTxState = Object.freeze({
   remainingMs: null, lastOperation: null,
 });
 
+// `satisfies` fails type-checking when this map misses or adds a `ManagedTxState` field.
+const MANAGED_TX_FIELDS = Object.keys({
+  phase: true, intent: true, radioTx: true, txRisk: true, fault: true, faultDetail: true,
+  fresh: true, releaseRequired: true, configuredSeconds: true, remainingMs: true,
+  lastOperation: true,
+} satisfies Record<keyof ManagedTxState, true>) as ReadonlyArray<keyof ManagedTxState>;
+
+export function sameManagedTxState(a: ManagedTxState, b: ManagedTxState): boolean {
+  return MANAGED_TX_FIELDS.every((field) => a[field] === b[field]);
+}
+
 export function projectManagedTx(
   document: ManagedTransmitDocument | null,
   stale: boolean,

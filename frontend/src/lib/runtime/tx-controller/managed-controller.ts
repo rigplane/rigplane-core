@@ -1,4 +1,4 @@
-import type { ManagedTxState } from './managed-state';
+import { sameManagedTxState, type ManagedTxState } from './managed-state';
 
 export type ManagedOperation = 'transmit_on' | 'force_off';
 export type PttOperation = 'ptt_on' | 'ptt_off';
@@ -248,8 +248,11 @@ export class ManagedTxController {
     this.dependencies.stopLocalAudio();
   }
 
+  /** An equal projection keeps the delivered object and notifies nobody. */
   #publish(): void {
-    this.#state = this.dependencies.snapshot();
-    for (const listener of this.#listeners) listener(this.#state);
+    const next = this.dependencies.snapshot();
+    if (sameManagedTxState(next, this.#state)) return;
+    this.#state = next;
+    for (const listener of this.#listeners) listener(next);
   }
 }
