@@ -7,6 +7,7 @@
   import type { AppResource, ResourceLease } from '$lib/runtime/resource-demand';
   import { systemController } from '$lib/runtime/system-controller';
   import { provideManagedAppTxHost } from '$lib/runtime/tx-controller/managed-app-host';
+  import { managedTxAuthorityKey, ManagedTxAuthorityRefreshGate } from '$lib/runtime/tx-controller/authority-refresh-key';
   import { hasAnyScope } from './lib/stores/capabilities.svelte';
   import { getLayoutMode } from './lib/stores/layout.svelte';
   import { readQaCockpitLayoutOverride } from './lib/stores/qa-cockpit-override';
@@ -295,14 +296,15 @@
     },
   });
   let txAuthorityReady = $state(false);
+  // Plain, non-reactive: the effect below re-runs on every state-frame
+  // replacement, so the gate — not effect re-execution — decides refreshes.
+  let txAuthorityGate = new ManagedTxAuthorityRefreshGate();
   $effect(() => {
     const state = runtime.state, caps = runtime.caps;
-    void JSON.stringify([
-      state?.stateRevision, state?.freshnessRevision, state?.observationSeq, state?.ptt,
-      state?.active, state?.main?.dataMode, state?.sub?.dataMode, state?.txTarget, state?.fieldStatus,
-      caps?.tx, caps?.audioTx, caps?.audioTxRequiredModInputSource, caps?.capabilities, caps?.vfoScheme, caps?.txBands,
-    ]);
-    if (txAuthorityReady) txHost.refreshAuthority(state?.providerGeneration ?? null);
+    const key = managedTxAuthorityKey(state, caps);
+    if (txAuthorityReady && txAuthorityGate.shouldRefresh(key)) {
+      txHost.refreshAuthority(state?.providerGeneration ?? null);
+    }
   });
 
   onMount(() => {
