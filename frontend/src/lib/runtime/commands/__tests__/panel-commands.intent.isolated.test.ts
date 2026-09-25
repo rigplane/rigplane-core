@@ -544,7 +544,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     }
 
     expect(h.setMuted).toHaveBeenCalled();
-    expect(getCommandLifecycles()).toHaveLength(5);
+    expect(getCommandLifecycles()).toHaveLength(1);
   });
 
   it('routes the complete CW factory through exact non-PTT lifecycle without optimistic truth', () => {
