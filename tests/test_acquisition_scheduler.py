@@ -4730,10 +4730,18 @@ def _ic7610_scheduler(
     return store, service, scheduler, clock
 
 
-def _cadence_of(scheduler: AcquisitionScheduler, path: FieldPath) -> float:
-    entry = scheduler.diagnostics()["cadenceByPath"][str(path)]
-    assert entry["baseCadenceSeconds"] == pytest.approx(entry["currentCadenceSeconds"])
-    return entry["baseCadenceSeconds"]
+def _pending_request(
+    scheduler: AcquisitionScheduler, path: FieldPath
+) -> AcquisitionRequest:
+    """The single queued request carrying ``path`` (MOR-2599 assertions)."""
+
+    matches = [
+        request for request in scheduler.pending_requests() if path in request.paths
+    ]
+    assert len(matches) == 1, (
+        f"{path}: expected one pending request, got {len(matches)}"
+    )
+    return matches[0]
 
 
 @pytest.mark.parametrize(
@@ -4750,13 +4758,15 @@ def test_the_non_selected_receiver_polls_one_class_slower(
 
     active MAIN slows every class-derived ``receiver.sub.*`` path one class;
     active SUB slows ``receiver.main.*``; nothing observed slows nothing. The
-    selected receiver keeps its class cadence in every case.
+    selected receiver keeps its class cadence in every case, and demotion
+    never makes a path faster.
     """
 
     acquisition = _ic7610_acquisition()
-    store, service, scheduler, clock = _ic7610_scheduler(active)
+    _store, service, scheduler, clock = _ic7610_scheduler(active)
     service.tick(now=clock.now())
 
+    demoted_any = False
     for receiver in ("main", "sub"):
         for path in _class_derived_paths(acquisition, receiver):
             undemoted = acquisition.policy_for(path)
@@ -4767,14 +4777,7 @@ def test_the_non_selected_receiver_polls_one_class_slower(
             )
             assert expected.cadence_seconds is not None
             assert expected.freshness_ttl_seconds is not None
-            assert _cadence_of(scheduler, path) == pytest.approx(
-                expected.cadence_seconds
-            ), path
-            request = next(
-                request
-                for request in scheduler.pending_requests()
-                if path in request.paths
-            )
+            request = _pending_request(scheduler, path)
             assert request.policy.cadence_seconds == pytest.approx(
                 expected.cadence_seconds
             ), path
@@ -4782,16 +4785,18 @@ def test_the_non_selected_receiver_polls_one_class_slower(
                 expected.freshness_ttl_seconds
             ), path
             assert request.max_age == pytest.approx(expected.freshness_ttl_seconds)
+            assert (
+                pytest.approx(undemoted.cadence_seconds)
+                <= request.policy.cadence_seconds
+            ), (path, "demotion must never make a path faster")
+            demoted_any = demoted_any or (
+                receiver == slow_receiver
+                and expected.cadence_seconds != undemoted.cadence_seconds
+            )
     if slow_receiver is not None:
-        assert _class_derived_paths(acquisition, slow_receiver), (
-            "the IC-7610 has class-derived paths on both receivers"
+        assert demoted_any, (
+            "the IC-7610 has class-derived paths that actually demote one class"
         )
-    if fast_receiver is not None:
-        # The selected receiver's class cadence is the undemoted one.
-        for path in _class_derived_paths(acquisition, fast_receiver):
-            assert _cadence_of(scheduler, path) == pytest.approx(
-                acquisition.policy_for(path).cadence_seconds
-            ), path
 
 
 def test_the_demoted_paths_keep_the_demoted_class_ttl() -> None:
@@ -4803,7 +4808,7 @@ def test_the_demoted_paths_keep_the_demoted_class_ttl() -> None:
     """
 
     acquisition = _ic7610_acquisition()
-    store, service, scheduler, clock = _ic7610_scheduler("MAIN")
+    _store, service, scheduler, clock = _ic7610_scheduler("MAIN")
     service.tick(now=clock.now())
 
     slowed = _class_derived_paths(acquisition, "sub")
@@ -4817,6 +4822,8 @@ def test_the_demoted_paths_keep_the_demoted_class_ttl() -> None:
             policy.freshness_ttl_seconds
             > acquisition.policy_for(path).freshness_ttl_seconds
         )
+        request = _pending_request(scheduler, path)
+        assert request.max_age == pytest.approx(policy.freshness_ttl_seconds)
 
 
 def test_explicit_profile_overrides_keep_their_cadence_when_demoted() -> None:
@@ -4837,14 +4844,7 @@ def test_explicit_profile_overrides_keep_their_cadence_when_demoted() -> None:
     _store, service, scheduler, clock = _ic7610_scheduler("MAIN")
     service.tick(now=clock.now())
 
-    assert _cadence_of(scheduler, s_meter) == pytest.approx(override.cadence_seconds)
-    request = next(
-        request for request in scheduler.pending_requests() if s_meter in request.paths
-    )
-    assert request.policy.cadence_seconds == pytest.approx(override.cadence_seconds)
-    assert request.policy.freshness_ttl_seconds == pytest.approx(
-        override.freshness_ttl_seconds
-    )
+    request = _pending_request(scheduler, s_meter)
     assert request.policy.cadence_seconds == pytest.approx(override.cadence_seconds)
     assert request.policy.freshness_ttl_seconds == pytest.approx(
         override.freshness_ttl_seconds
@@ -4868,21 +4868,40 @@ def test_a_profile_without_active_is_unchanged() -> None:
     for path in acquisition.pollable_paths():
         expected = acquisition.policy_for(path)
         assert expected.cadence_seconds is not None
-        assert _cadence_of(scheduler, path) == pytest.approx(
-            expected.cadence_seconds
-        ), path
         if expected.tx_only:
             # TX-only groups are gated off the receive tick (MOR-1485).
             continue
-        request = next(
-            request for request in scheduler.pending_requests() if path in request.paths
-        )
+        request = _pending_request(scheduler, path)
         assert request.policy.cadence_seconds == pytest.approx(
             expected.cadence_seconds
         ), path
         assert request.policy.freshness_ttl_seconds == pytest.approx(
             expected.freshness_ttl_seconds
         ), path
+
+
+def _answer_pending(scheduler: AcquisitionScheduler, at: float) -> None:
+    """Complete every queued request, as the drain does between ticks.
+
+    A production flip of ``active`` lands seconds apart while the drain
+    answers polls in well under one; completing the queue between ticks
+    keeps the flip test about the scheduler, not about stale in-flight
+    requests.
+    """
+
+    for request in scheduler.pending_requests():
+        scheduler.record_acquisition_result(
+            request,
+            _changeset(
+                changes=(
+                    *(
+                        FieldChange(path=path, previous=None, current=None)
+                        for path in request.paths
+                    ),
+                ),
+                at=at,
+            ),
+        )
 
 
 def test_a_live_switch_of_active_flips_which_receiver_is_slow() -> None:
@@ -4901,20 +4920,32 @@ def test_a_live_switch_of_active_flips_which_receiver_is_slow() -> None:
     sub_path = FieldPath.parse("receiver.sub.operator_controls.af_level")
     main_path = FieldPath.parse("receiver.main.operator_controls.af_level")
     undemoted = acquisition.policy_for(sub_path)
-    assert _cadence_of(scheduler, sub_path) == pytest.approx(5.0)  # control -> panel
-    assert _cadence_of(scheduler, main_path) == pytest.approx(2.0)
+    demoted_main = acquisition.policy_for(main_path, observed_active="SUB")
+    assert _pending_request(scheduler, sub_path).policy.cadence_seconds == (
+        pytest.approx(5.0)  # control -> panel
+    )
+    assert _pending_request(scheduler, main_path).policy.cadence_seconds == (
+        pytest.approx(2.0)
+    )
 
+    _answer_pending(scheduler, at=clock.now())
     store.apply(
         _observation(FieldPath.global_("slow_state", "active"), "SUB", at=clock.now())
     )
+    clock.advance(2.0)
     service.tick(now=clock.now())
 
-    assert _cadence_of(scheduler, sub_path) == pytest.approx(undemoted.cadence_seconds)
-    assert _cadence_of(scheduler, main_path) == pytest.approx(5.0)
-    for request in scheduler.pending_requests():
-        if main_path in request.paths:
-            assert request.policy.cadence_seconds == pytest.approx(5.0)
-        if sub_path in request.paths:
-            assert request.policy.cadence_seconds == pytest.approx(
-                undemoted.cadence_seconds
-            )
+    sub_request = _pending_request(scheduler, sub_path)
+    main_request = _pending_request(scheduler, main_path)
+    assert sub_request.policy.cadence_seconds == pytest.approx(
+        undemoted.cadence_seconds
+    )
+    assert sub_request.policy.freshness_ttl_seconds == pytest.approx(
+        undemoted.freshness_ttl_seconds
+    )
+    assert main_request.policy.cadence_seconds == pytest.approx(
+        demoted_main.cadence_seconds
+    )
+    assert main_request.policy.freshness_ttl_seconds == pytest.approx(
+        demoted_main.freshness_ttl_seconds
+    )
