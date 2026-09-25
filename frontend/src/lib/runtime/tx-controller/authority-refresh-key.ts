@@ -10,6 +10,7 @@ import type { FieldStatus, ServerState } from '$lib/types/state';
 // behaviour additionally follows the listed capability fields.
 export interface ManagedTxAuthorityInputs {
   readonly ptt: boolean | null | undefined;
+  readonly pttFieldStatus: unknown;
   readonly pttObserved: boolean | undefined;
   readonly pttFreshness: FieldStatus['freshness'] | undefined;
   readonly pttAvailability: FieldStatus['availability'] | undefined;
@@ -28,8 +29,8 @@ export function managedTxAuthorityInputs(
   const pttStatus = state?.fieldStatus?.['ptt'];
   return {
     ptt: state?.ptt,
-    // Only the stable ptt status parts: `lastObservedMonotonic` advances on
-    // every ptt poll (~0.3 s) and must not move the key on an idle page.
+    // Temporary mutation: serialize the whole ptt status object again.
+    pttFieldStatus: pttStatus,
     pttObserved: pttStatus?.observed,
     pttFreshness: pttStatus?.freshness,
     pttAvailability: pttStatus?.availability,
