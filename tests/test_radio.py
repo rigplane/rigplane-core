@@ -1978,6 +1978,7 @@ class TestCivPacingIsSendToSend:
         radio._civ_min_interval = gap
         radio._civ_ack_sink_grace = 0.0
         radio._civ_get_timeout = 2.0
+        radio._civ_last_waiter_gc_monotonic = clock.now
         radio._last_civ_send_monotonic = 0.0
         starts: list[float] = []
         original_send = mock_transport.send_tracked
@@ -2037,6 +2038,7 @@ class TestCivPacingIsSendToSend:
         radio._civ_ack_sink_grace = 0.0
         radio._civ_get_timeout = 2.0
         radio._last_civ_send_monotonic = 0.0
+        radio._civ_last_waiter_gc_monotonic = clock.now
         starts: list[float] = []
         original_send = mock_transport.send_tracked
         reply = 0.005
@@ -2087,6 +2089,7 @@ class TestCivPacingIsSendToSend:
         clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
         radio._civ_ack_sink_grace = 0.0
+        radio._civ_last_waiter_gc_monotonic = clock.now
         radio._civ_get_timeout = 2.0
         radio._last_civ_send_monotonic = 0.0
         starts: list[float] = []
@@ -2135,6 +2138,7 @@ class TestCivPacingIsSendToSend:
         clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
         radio._civ_ack_sink_grace = 0.0
+        radio._civ_last_waiter_gc_monotonic = clock.now
         radio._civ_get_timeout = 2.0
         radio._last_civ_send_monotonic = 0.0
         observer: list[tx.ProviderPttObservation] = []
@@ -2184,9 +2188,11 @@ class TestCivPacingIsSendToSend:
     ) -> None:
         """The second blocking send leaves only after the first is answered."""
         gap = 0.010
-        _install_pacing_clock(monkeypatch, gap=gap)
+        clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
         radio._civ_ack_sink_grace = 0.0
+        radio._civ_get_timeout = 2.0
+        radio._civ_last_waiter_gc_monotonic = clock.now
         radio._last_civ_send_monotonic = 0.0
         radio._civ_runtime.start_worker()
         first_sent = asyncio.Event()
