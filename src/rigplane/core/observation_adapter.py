@@ -24,12 +24,25 @@ __all__ = ["ProviderObservationAdapter"]
 
 @dataclass(frozen=True, slots=True)
 class ProviderObservationAdapter:
-    """Build observations using provider capability and policy metadata."""
+    """Build observations using provider capability and policy metadata.
+
+    ``observed_active_getter`` lets a seat supply the currently observed
+    ``global.slow_state.active`` value (MOR-2599): on the only demoting
+    profile flow today (the IC-7610 via ``icom_civ``) TTL stamping happens
+    in ``runtime/_civ_rx.py``, which carries its own resolution; hamlib /
+    Yaesu seats never demote (the FTX-1 is outside scheduler cadence), so
+    the default ``None`` keeps every existing builder byte-identical.
+    """
 
     profile: RadioAcquisitionProfile
     source: ObservationSource
     transport: str | None = None
     clock: Clock = time.monotonic
+    observed_active_getter: Callable[[], str | None] | None = None
+
+    def _observed_active(self) -> str | None:
+        getter = self.observed_active_getter
+        return getter() if getter is not None else None
 
     def observation(
         self,
@@ -55,7 +68,9 @@ class ProviderObservationAdapter:
                 self.clock() if timestamp_monotonic is None else timestamp_monotonic
             ),
             max_age=(
-                self.profile.policy_for(path).freshness_ttl_seconds
+                self.profile.policy_for(
+                    path, observed_active=self._observed_active()
+                ).freshness_ttl_seconds
                 if max_age is None
                 else max_age
             ),
@@ -87,5 +102,7 @@ class ProviderObservationAdapter:
             timestamp_monotonic=observation.timestamp_monotonic,
             quality=observation.quality,
             correlation_id=observation.correlation_id,
-            max_age=self.profile.policy_for(intent.target).freshness_ttl_seconds,
+            max_age=self.profile.policy_for(
+                intent.target, observed_active=self._observed_active()
+            ).freshness_ttl_seconds,
         )

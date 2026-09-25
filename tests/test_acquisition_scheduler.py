@@ -27,6 +27,7 @@ from rigplane.core.acquisition_scheduler import (
     derive_tx_active,
     resolve_available_when,
 )
+from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
     AdaptiveDecayPolicy,
@@ -56,6 +57,7 @@ from rigplane.core.state_store import (
 )
 from rigplane.commands.command_map import CommandMap
 from rigplane.profiles import get_radio_profile
+from rigplane.runtime import _civ_rx
 from rigplane.runtime._state_queries import acquisition_query_from_wire_tuple
 from rigplane.profiles.rig_loader import load_rig
 from _acquisition_query_helpers import (
@@ -4951,3 +4953,114 @@ def test_a_live_switch_of_active_flips_which_receiver_is_slow() -> None:
     assert main_request.policy.freshness_ttl_seconds == pytest.approx(
         demoted_main.freshness_ttl_seconds
     )
+
+
+# --- PR #3643 round 2: cadence clock/dedupe and demoted TTL stamping ---------
+
+
+def test_the_demoted_receiver_polls_at_the_demoted_cadence_over_many_ticks() -> None:
+    """PR #3643 finding 1: many ticks with answered polls, constant active=MAIN.
+
+    Demotion re-keys the group map BEFORE due-ness is judged, so the demoted
+    group's cadence clock and the pending-request dedupe follow the key the
+    request is queued under. The non-selected receiver is polled at its
+    demoted cadence — LESS often than the selected twin, and never faster
+    than its undemoted cadence — not at the tick rate.
+    """
+
+    acquisition = _ic7610_acquisition()
+    _store, service, scheduler, clock = _ic7610_scheduler("MAIN")
+    sub_path = FieldPath.parse("receiver.sub.active.freq_mode.freq_hz")
+    main_path = FieldPath.parse("receiver.main.active.freq_mode.freq_hz")
+    undemoted_sub = acquisition.policy_for(sub_path)
+    demoted_sub = acquisition.policy_for(sub_path, observed_active="MAIN")
+    assert undemoted_sub.cadence_seconds is not None
+    assert demoted_sub.cadence_seconds is not None
+
+    step, seconds = 0.1, 20.0
+    at = clock.now()
+    counts: dict[FieldPath, int] = {sub_path: 0, main_path: 0}
+    for _ in range(int(seconds / step)):
+        service.tick(now=at)
+        for request in scheduler.pending_requests():
+            for path in (sub_path, main_path):
+                if path in request.paths:
+                    counts[path] += 1
+            scheduler.record_acquisition_result(request, _changeset(changes=(), at=at))
+        at += step
+
+    assert counts[main_path] > counts[sub_path] > 0
+    demoted_max = int(seconds / demoted_sub.cadence_seconds) + 2
+    undemoted_max = int(seconds / undemoted_sub.cadence_seconds) + 2
+    assert counts[sub_path] <= demoted_max, (
+        "the demoted receiver must not poll faster than its demoted cadence"
+    )
+    assert counts[sub_path] < undemoted_max, (
+        "the demoted receiver must poll less often than its undemoted cadence"
+    )
+
+
+def test_an_observation_of_a_demoted_path_carries_the_demoted_ttl_until_the_next_poll() -> (
+    None
+):
+    """PR #3643 finding 2: a poll answer stamps the demoted class's TTL.
+
+    The provider-adapter seam resolves ``policy_for(path, observed_active)``
+    at stamping time; the observation's ``max_age`` is at least 2x the
+    demoted cadence, so the path stays FRESH until the next demoted poll
+    lands (and never goes stale between polls).
+    """
+
+    acquisition = _ic7610_acquisition()
+    sub_path = FieldPath.parse("receiver.sub.active.freq_mode.freq_hz")
+    demoted = acquisition.policy_for(sub_path, observed_active="MAIN")
+    undemoted = acquisition.policy_for(sub_path)
+    assert demoted.cadence_seconds is not None
+    assert demoted.freshness_ttl_seconds is not None
+    adapter = ProviderObservationAdapter(
+        profile=acquisition,
+        source="poll_response",
+        observed_active_getter=lambda: "MAIN",
+    )
+    observation = adapter.observation(sub_path, 7_140_500.0, timestamp_monotonic=100.0)
+    clock = FreshnessClock(start=100.0)
+    store = StateStore(freshness_clock=clock)
+
+    assert observation.max_age == pytest.approx(demoted.freshness_ttl_seconds)
+    assert undemoted.freshness_ttl_seconds is not None
+    assert observation.max_age > undemoted.freshness_ttl_seconds
+    assert observation.max_age >= 2.0 * demoted.cadence_seconds
+    store.apply(observation)
+    assert store.snapshot().field(sub_path).freshness is FreshnessState.FRESH
+    for now in (101.0, 101.9):
+        store.mark_stale_due(now=now)
+        assert store.snapshot().field(sub_path).freshness is FreshnessState.FRESH, (
+            "must stay FRESH until the next demoted poll lands"
+        )
+
+
+def test_civ_rx_stamps_the_demoted_ttl_on_poll_responses() -> None:
+    """PR #3643 finding 2: the CI-V poll-response TTL site demotes.
+
+    ``runtime/_civ_rx._observation_max_age`` resolves the demoted class's
+    TTL for the non-selected receiver when the caller passes the observed
+    ``active`` value (the web seat derives it from the same store the
+    freshness tick reads).
+    """
+
+    profile = load_rig(RIGS_DIR / "ic7610.toml").to_profile()
+    sub_path = FieldPath.parse("receiver.sub.active.freq_mode.freq_hz")
+    acquisition = profile.state_acquisition
+    assert acquisition is not None
+    demoted = acquisition.policy_for(sub_path, observed_active="MAIN")
+    undemoted = acquisition.policy_for(sub_path)
+    assert demoted.cadence_seconds is not None
+    assert demoted.freshness_ttl_seconds is not None
+
+    stamped = _civ_rx._observation_max_age(  # noqa: SLF001
+        profile, sub_path, observed_active="MAIN"
+    )
+    assert stamped == pytest.approx(demoted.freshness_ttl_seconds)
+    assert undemoted.freshness_ttl_seconds is not None
+    assert stamped > undemoted.freshness_ttl_seconds
+    assert stamped >= 2.0 * demoted.cadence_seconds
