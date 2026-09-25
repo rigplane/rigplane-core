@@ -529,9 +529,14 @@ direction is documented in the [v3 architecture decision](../plans/2026-07-25-ui
 `web/radio_poller.py: RadioPoller` are how often the poller loop wakes, not
 how often any field is read: a pass dispatches whatever the acquisition
 scheduler already has queued. What puts a cadence request there is the
-field's own `cadence_seconds` in `rigs/*.toml`
-(`[state_acquisition.field_policies]`, falling back to that profile's
-`default_cadence_seconds`), emitted by
+field's resolved policy
+(`core/state_acquisition_policy.py: RadioAcquisitionProfile.policy_for`):
+its own entry in `rigs/*.toml`
+`[state_acquisition.field_policies]` if it has one; otherwise, for a
+pollable field, its acquisition class's policy, whose cadence the scheduler
+may stretch to fit the transport budget
+(`core/acquisition_scheduler.py: AcquisitionScheduler._fit_transport_budget`);
+otherwise the profile's default policy. It is emitted by
 `core/acquisition_scheduler.py: StateFreshnessService.tick`
 (`AcquisitionScheduler.ensure_fresh` and `.prime_unobserved` also enqueue
 requests, outside this cadence).
