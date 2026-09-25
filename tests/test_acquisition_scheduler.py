@@ -37,6 +37,7 @@ from rigplane.core.state_acquisition_policy import (
     MeterCoalescingPolicy,
     RadioAcquisitionProfile,
     ReconciliationPriority,
+    acquisition_policy_for_class,
 )
 from rigplane.core.state_pipeline_contracts import (
     ChangeSet,
@@ -44,6 +45,7 @@ from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
     SourceMetadata,
+    acquisition_class_for_path,
 )
 from rigplane.core.state_store import (
     FreshnessClock,
@@ -1078,13 +1080,14 @@ def test_ic7610_global_meter_query_for_path() -> None:
 
 
 def test_ic7610_real_profile_comp_vd_id_meters_are_enrolled_and_sent() -> None:
-    """MOR-485/MOR-2540: comp/vd/id are enrolled via stream_like_meters and poll.
+    """MOR-485/MOR-2540/MOR-2590: comp/vd/id are enrolled and poll.
 
-    vd/id are unconditional supply telemetry: due and sent while PTT is false
-    (RX). comp is a TX-only meter since MOR-2540 (``tx_only = true`` in
-    rigs/ic7610.toml), so the scheduler gates it on PTT exactly like the
-    IC-7300 tx_only cases: not due and never sent while ``tx_active`` is
-    false, fired immediately once ``tx_active`` is true.
+    vd is unconditional supply telemetry: due and sent while PTT is false
+    (RX). comp (``tx_only = true`` in rigs/ic7610.toml since MOR-2540) and id
+    (the tx_meter acquisition class since MOR-2590) are TX-only meters, so
+    the scheduler gates them on PTT exactly like the IC-7300 tx_only cases:
+    not due and never sent while ``tx_active`` is false, fired immediately
+    once ``tx_active`` is true.
     """
     acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
     assert acquisition is not None
@@ -1112,29 +1115,31 @@ def test_ic7610_real_profile_comp_vd_id_meters_are_enrolled_and_sent() -> None:
             failed.extend(execution.failed_paths)
         return sent, failed
 
-    # PTT false: vd/id are due and reach sent_paths with no
-    # `no_civ_query_mapping` failure; the tx_only comp is gated out entirely.
+    # PTT false: vd is due and reaches sent_paths with no
+    # `no_civ_query_mapping` failure; the tx_only comp and id are gated out.
     rx_requests = scheduler.due_requests(now=clock.now(), tx_active=False)
     rx_due = {path for request in rx_requests for path in request.paths}
-    assert {vd, id_} <= rx_due
+    assert vd in rx_due
     assert comp not in rx_due
+    assert id_ not in rx_due
 
     sent, failed = run(rx_requests)
     assert vd in sent
-    assert id_ in sent
     assert vd not in failed
-    assert id_ not in failed
     assert comp not in sent
+    assert id_ not in sent
 
-    # PTT true: the gated comp cadence group fires (its cadence clock was left
-    # untouched by the RX calls) and the query is sent without failure.
+    # PTT true: the gated comp and id cadence groups fire (their cadence
+    # clocks were left untouched by the RX calls) and are sent without failure.
     tx_requests = scheduler.due_requests(now=clock.now(), tx_active=True)
     tx_due = {path for request in tx_requests for path in request.paths}
-    assert comp in tx_due
+    assert {comp, id_} <= tx_due
 
     sent, failed = run(tx_requests)
     assert comp in sent
+    assert id_ in sent
     assert comp not in failed
+    assert id_ not in failed
 
 
 def test_ic7610_real_profile_sub_operator_controls_query_for_path() -> None:
@@ -1170,9 +1175,7 @@ def test_ic7610_real_profile_sql_att_pre_are_pollable_and_emit_reads() -> None:
     acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
     assert acquisition is not None
 
-    # MOR-488 batch 6 retune: MAIN rf_gain/af_level/squelch/att/preamp now FAST
-    # (cadence 1.5s, ttl 3.0s, adaptive_decay off) — operator found RFG/SQL laggy
-    # at the MOR-487 cadence (3.0s / 4.0s).
+    # MOR-2590: these paths take their acquisition-class policy.
     rf_gain = FieldPath.receiver("main", "operator_controls", "rf_gain")
     af_level = FieldPath.receiver("main", "operator_controls", "af_level")
     att = FieldPath.receiver("main", "operator_controls", "att")
@@ -1183,9 +1186,7 @@ def test_ic7610_real_profile_sql_att_pre_are_pollable_and_emit_reads() -> None:
     for path in target_paths:
         assert acquisition.capability_for(path).can_poll is True
         policy = acquisition.policy_for(path)
-        assert policy.cadence_seconds == 1.5
-        assert policy.freshness_ttl_seconds == 3.0
-        assert policy.adaptive_decay.enabled is False
+        assert policy == acquisition_policy_for_class(acquisition_class_for_path(path))
 
     clock = FreshnessClock(start=300.0)
     scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
@@ -1212,7 +1213,7 @@ def test_ic7610_real_profile_sql_att_pre_are_pollable_and_emit_reads() -> None:
 
 
 def test_ic7610_real_profile_sub_operator_controls_pollable_and_emit_reads() -> None:
-    """MOR-488 batch 6: SUB rf_gain/af_level/squelch/att/preamp poll at FAST."""
+    """MOR-488 batch 6: SUB rf_gain/af_level/squelch/att/preamp are pollable."""
     acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
     assert acquisition is not None
 
@@ -1226,9 +1227,7 @@ def test_ic7610_real_profile_sub_operator_controls_pollable_and_emit_reads() -> 
     for path in target_paths:
         assert acquisition.capability_for(path).can_poll is True
         policy = acquisition.policy_for(path)
-        assert policy.cadence_seconds == 1.5
-        assert policy.freshness_ttl_seconds == 3.0
-        assert policy.adaptive_decay.enabled is False
+        assert policy == acquisition_policy_for_class(acquisition_class_for_path(path))
 
     clock = FreshnessClock(start=300.0)
     scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
@@ -2834,9 +2833,7 @@ def test_ic7610_real_profile_rf_dsp_toggles_pollable_and_emit_reads() -> None:
     for path in target_paths:
         assert acquisition.capability_for(path).can_poll is True
         policy = acquisition.policy_for(path)
-        assert policy.cadence_seconds == 1.5
-        assert policy.freshness_ttl_seconds == 3.0
-        assert policy.adaptive_decay.enabled is False
+        assert policy == acquisition_policy_for_class(acquisition_class_for_path(path))
 
     clock = FreshnessClock(start=300.0)
     scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
@@ -2979,9 +2976,7 @@ def test_ic7610_real_profile_levels_pollable_and_emit_reads() -> None:
     for path in target_paths:
         assert acquisition.capability_for(path).can_poll is True
         policy = acquisition.policy_for(path)
-        assert policy.cadence_seconds == 3.0
-        assert policy.freshness_ttl_seconds == 5.0
-        assert policy.adaptive_decay.enabled is False
+        assert policy == acquisition_policy_for_class(acquisition_class_for_path(path))
 
     clock = FreshnessClock(start=300.0)
     scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
@@ -3172,9 +3167,7 @@ def test_ic7610_real_profile_filter_width_pollable_and_emit_reads() -> None:
     for path in target_paths:
         assert acquisition.capability_for(path).can_poll is True
         policy = acquisition.policy_for(path)
-        assert policy.cadence_seconds == 1.5
-        assert policy.freshness_ttl_seconds == 3.0
-        assert policy.adaptive_decay.enabled is False
+        assert policy == acquisition_policy_for_class(acquisition_class_for_path(path))
 
     clock = FreshnessClock(start=300.0)
     scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
@@ -3256,19 +3249,10 @@ def test_ic7610_real_profile_tx_vox_pollable_and_emit_reads() -> None:
     )
     target_paths = global_toggles + agc_tc_paths
 
-    for path in global_toggles:
+    for path in target_paths:
         assert acquisition.capability_for(path).can_poll is True
         policy = acquisition.policy_for(path)
-        assert policy.cadence_seconds == 1.5
-        assert policy.freshness_ttl_seconds == 3.0
-        assert policy.adaptive_decay.enabled is False
-
-    for path in agc_tc_paths:
-        assert acquisition.capability_for(path).can_poll is True
-        policy = acquisition.policy_for(path)
-        assert policy.cadence_seconds == 3.0
-        assert policy.freshness_ttl_seconds == 5.0
-        assert policy.adaptive_decay.enabled is False
+        assert policy == acquisition_policy_for_class(acquisition_class_for_path(path))
 
     clock = FreshnessClock(start=300.0)
     scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
@@ -3448,9 +3432,7 @@ def test_ic7610_real_profile_vfo_global_pollable_and_emit_reads() -> None:
     for path in fast_paths:
         assert acquisition.capability_for(path).can_poll is True
         policy = acquisition.policy_for(path)
-        assert policy.cadence_seconds == 1.5
-        assert policy.freshness_ttl_seconds == 3.0
-        assert policy.adaptive_decay.enabled is False
+        assert policy == acquisition_policy_for_class(acquisition_class_for_path(path))
 
     # MOR-488 batch 6: tuning_step is no longer polled — not in polling_only and
     # its slow_state read mapping was removed.
@@ -3554,7 +3536,7 @@ def test_ic9700_real_profile_tone_tuner_query_for_path() -> None:
 def test_ic7610_real_profile_tuner_pollable_tone_absent() -> None:
     """MOR-661: the IC-7610 has no FM-repeater CTCSS tone feature, so its
     tone/tsql state-acquisition paths are removed — they are no longer pollable
-    and never scheduled. The unrelated tuner_status fast path still polls."""
+    and never scheduled. The unrelated tuner_status path still polls."""
     acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
     assert acquisition is not None
 
@@ -3575,9 +3557,7 @@ def test_ic7610_real_profile_tuner_pollable_tone_absent() -> None:
     for path in fast_paths:
         assert acquisition.capability_for(path).can_poll is True
         policy = acquisition.policy_for(path)
-        assert policy.cadence_seconds == 1.5
-        assert policy.freshness_ttl_seconds == 3.0
-        assert policy.adaptive_decay.enabled is False
+        assert policy == acquisition_policy_for_class(acquisition_class_for_path(path))
 
     for path in removed_tone_paths:
         assert acquisition.capability_for(path).can_poll is False

@@ -1303,7 +1303,10 @@ async def test_civ_ptt_readback_emits_canonical_observed_state(
     snapshot = radio._state_store.snapshot()  # noqa: SLF001
     observed = snapshot.field(OBSERVED_PTT_PATH)
     assert observed.value is expected
-    assert observed.max_age == 1.0
+    acquisition = radio._profile.state_acquisition  # noqa: SLF001
+    assert acquisition is not None
+    ptt_policy = acquisition.policy_for(FieldPath.global_("tx_state", "ptt"))
+    assert observed.max_age == ptt_policy.freshness_ttl_seconds
     assert observed.provider_generation == snapshot.provider_generation
     assert observed.source.source == source
     assert project_observed_ptt(snapshot) is expected
@@ -3299,12 +3302,14 @@ def test_ptt_observation_max_age_matches_the_ic7300_profile_declaration(
 def test_ic7610_pbt_takes_the_profile_ttl_including_the_sub_receiver(
     radio: IcomRadio, receiver: int, stored: str
 ) -> None:
-    """IC-7610's own, shorter, cadence-backed TTL — for both receivers.
+    """IC-7610's profile TTL, not the table's — for both receivers.
 
-    ``rigs/ic7610.toml`` declares 5.0 s for ``receiver.main``/
-    ``receiver.sub`` while the table's entry for the same (scope, family,
-    name) is 10.0 s.  The profile spells the receiver ``main``/``sub`` and
-    the CI-V ingress spells it ``0``/``1``, so neither case lands without
+    ``rigs/ic7610.toml`` has no ``field_policies`` entry for
+    ``receiver.main``/``receiver.sub`` ``pbt_inner``, so ``policy_for``
+    resolves it to its acquisition-class TTL, which differs from the
+    table's entry for the same (scope, family, name) (asserted below).  The
+    profile spells the receiver ``main``/``sub`` and the CI-V ingress spells
+    it ``0``/``1``, so neither case lands without
     ``_profile_path_for_observation``'s alias resolution.
     """
 
@@ -3313,16 +3318,17 @@ def test_ic7610_pbt_takes_the_profile_ttl_including_the_sub_receiver(
     profile = resolve_radio_profile(model="IC-7610")
     radio._profile = profile  # noqa: SLF001
     assert profile.state_acquisition is not None
-    policy = profile.state_acquisition.field_policies[
-        FieldPath.receiver(
-            "main" if receiver == 0x00 else "sub", "operator_controls", "pbt_inner"
-        )
-    ]
-    assert policy.freshness_ttl_seconds == 5.0
+    path = FieldPath.receiver(
+        "main" if receiver == 0x00 else "sub", "operator_controls", "pbt_inner"
+    )
+    assert path not in profile.state_acquisition.field_policies
+    policy = profile.state_acquisition.policy_for(path)
+    assert policy.freshness_ttl_seconds is not None
     table_ttl = _OBSERVATION_MAX_AGE_SECONDS[
         ("receiver", "operator_controls", "pbt_inner")
     ]
     assert table_ttl == 10.0
+    assert policy.freshness_ttl_seconds != table_ttl
 
     observed_at = 900.0
     with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=observed_at):
@@ -4697,9 +4703,9 @@ def test_scope_control_observation_backed(
         field = snapshot.field(store_path)
         assert field.value == value
         assert field.freshness is FreshnessState.FRESH
-        # The fixture's IC-7610 profile declares 60.0 s against a 30.0 s
-        # scope-control cadence, so the decay window is the poller's rather
-        # than this module's fallback table (MOR-557, MOR-2425).
+        # The fixture's IC-7610 profile polls the scope controls, so the
+        # decay window is its policy TTL rather than this module's fallback
+        # table (MOR-557, MOR-2425).
         assert field.max_age == _expected_observation_max_age(radio, store_path)
 
 
@@ -5313,11 +5319,16 @@ def test_update_radio_state_direct_tx_frequency_stamps_profile_declared_max_age(
     radio_with_state: IcomRadio,
 ) -> None:
     # Full directed IC-7610 response: 1C/03 + 7.100 MHz in five-byte BCD.
-    # max_age is the profile's declared tx_target TTL (MOR-2540:
-    # rigs/ic7610.toml field_policies."global.tx_state.tx_target"), no longer
-    # the profile-default TTL this field inherited before it was declared.
+    # max_age is the tx_target TTL the IC-7610 profile resolves (its
+    # acquisition-class policy since MOR-2590), not the profile-default TTL.
     # A FRESH split=OFF readback licenses the MAIN label (the reply itself
     # carries no receiver).
+    acquisition = radio_with_state._profile.state_acquisition  # noqa: SLF001
+    assert acquisition is not None
+    tx_target_ttl = acquisition.policy_for(
+        FieldPath.global_("tx_state", "tx_target")
+    ).freshness_ttl_seconds
+    assert tx_target_ttl != acquisition.default_policy.freshness_ttl_seconds
     _feed_selected_and_split(radio_with_state, selected_sub=False, split_on=False)
     frame = parse_civ_frame(bytes.fromhex(_TX_FREQ_REPLY))
     radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
@@ -5327,7 +5338,7 @@ def test_update_radio_state_direct_tx_frequency_stamps_profile_declared_max_age(
     assert field.value == KnownTxTarget(
         receiver="MAIN", slot=None, frequency_hz=7_100_000
     )
-    assert field.max_age == 4.0
+    assert field.max_age == tx_target_ttl
     radio_with_state._state_store.mark_stale_due(
         now=field.last_observed_monotonic + field.max_age + 0.001
     )
@@ -5473,10 +5484,8 @@ def test_tx_target_fails_closed_immediately_when_split_is_stale(
     assert field.value == UnknownTxTarget(reason="stale")
 
 
-def _ic7610_split_and_tx_target_acquisition() -> RadioAcquisitionProfile:
-    """The IC-7610's own split/tx_target acquisition shape, limited to
-    those two fields (rigs/ic7610.toml: split 1.5 s cadence / 3.0 s TTL,
-    tx_target 1.0 s / 4.0 s, no adaptive decay) — the review R2 B3
+def _split_and_tx_target_acquisition() -> RadioAcquisitionProfile:
+    """A split/tx_target acquisition shape — the review R2 B3
     reproduction's scheduler model."""
 
     split = FieldPath.global_("tx_state", "split")
@@ -5512,7 +5521,7 @@ def test_unlabelled_1c03_reply_credits_its_request_and_resumes_on_cadence(
     issued on schedule, and the target reads unknown immediately."""
 
     tx_target = FieldPath.global_("tx_state", "tx_target")
-    scheduler = AcquisitionScheduler(profile=_ic7610_split_and_tx_target_acquisition())
+    scheduler = AcquisitionScheduler(profile=_split_and_tx_target_acquisition())
     radio_with_state._acquisition_scheduler = scheduler  # noqa: SLF001
 
     # A known target first, then split ages past its own 3.0 s TTL.
