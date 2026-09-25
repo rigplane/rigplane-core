@@ -192,12 +192,6 @@ function strictFieldAvailable(state: ServerState | null, field: string): boolean
   return seen(state, field) && topFieldAvailable(state, field);
 }
 
-/** MOR-2511 B2: true when the field is explicitly marked undeclared for this
- *  receiver (e.g. SUB.att on FTX-1). */
-function fieldUndeclared(state: ServerState | null, path: string): boolean {
-  return state?.fieldStatus?.[path]?.availability === 'undeclared';
-}
-
 /** `fieldFresh` is the raw `topFieldAvailable` read; a structurally-absent
  *  control must never report a "known" reading even if the (irrelevant)
  *  field happens to look fresh — so the reading gates on BOTH, same as
@@ -959,13 +953,14 @@ function deriveDsp(
       ...(agcProjection.autoSpeed === undefined ? {} : { autoSelectedSpeed: agcProjection.autoSpeed }),
     },
     agcModes: caps.agcModes ?? [],
-    // MOR-2527: `agc` alone is not proof of an AGC-time control — the FTX-1
-    // has AGC but no time constant, and the server says so
-    // (`fieldStatus["<rx>.agcTimeConstant"].availability === "undeclared"`).
-    // Same `fieldUndeclared` gate MOR-2511 put on att/preamp: an undeclared
-    // field is structurally ABSENT, not present-and-unread.
+    // MOR-2527/MOR-2588: `agc` alone is not proof of an AGC-time control —
+    // the FTX-1 has AGC but no time constant. The server serves
+    // `agc_time_constant` / `agc_time_constant_sub` only for receivers whose
+    // fields the profile declares (`web/runtime_helpers.py:
+    // projected_receiver_control_tags`), so the gate reads that declaration,
+    // never the field status a mis-credited reading could flip.
     agcTimeConstant: txAuxField(
-      hasAgcCap && !fieldUndeclared(state, `${base}agcTimeConstant`),
+      hasAgcCap && hasCap(caps, onSub ? 'agc_time_constant_sub' : 'agc_time_constant'),
       topFieldAvailable(state, `${base}agcTimeConstant`), numOrUndef(rx?.agcTimeConstant),
     ),
   };
@@ -1099,10 +1094,19 @@ function deriveReceiverIndicators(
     const sMeterOperational = receiverOperational && sMeterRetained;
     const providerGeneration = state?.providerGeneration;
 
-    // MOR-2511 B2: if the receiver's att/preamp is undeclared, it is
-    // structurally absent for THIS receiver regardless of radio-wide capability.
-    const attStructural = hasAttenuator && !fieldUndeclared(state, path('att'));
-    const preampStructural = hasPreamp && !fieldUndeclared(state, path('preamp'));
+    // MOR-2588: a receiver's att/preamp exists only when the radio declares
+    // it for THAT receiver — MAIN by the server-served
+    // `attenuator_main`/`preamp_main` tags, SUB by `attenuator_sub`/
+    // `preamp_sub` (`web/runtime_helpers.py: projected_receiver_control_tags`).
+    // The radio-wide `attenuator`/`preamp` capability alone only proves the
+    // COMMAND exists (tx500/x6100/x6200 declare it with no polled MAIN field),
+    // so it cannot light an indicator for a receiver that never declares the
+    // field. An observed reading credited to a receiver that never declared
+    // the field cannot light this.
+    const attStructural = hasAttenuator
+      && hasCap(caps, receiver === 'MAIN' ? 'attenuator_main' : 'attenuator_sub');
+    const preampStructural = hasPreamp
+      && hasCap(caps, receiver === 'MAIN' ? 'preamp_main' : 'preamp_sub');
 
     return {
       receiver,
@@ -2114,14 +2118,19 @@ export function toRadioViewModel(
     tx, txAux, ritXit, antenna,
   );
   if (rfFrontEndMutex) disabledReasons.push(rfFrontEndMutex);
-  // MOR-2511 B2: active receiver lacks att/preamp control (undeclared on this receiver)
-  if (rfFrontEnd) {
-    const onSub = state?.active === 'SUB';
-    const base = onSub ? 'sub.' : 'main.';
-    if (fieldUndeclared(state, `${base}att`)) {
+  // MOR-2588: the ACTIVE receiver lacks att/preamp when the radio declares
+  // the radio-wide capability but not the field for that receiver (no
+  // `attenuator_main`/`preamp_main` on MAIN, no `attenuator_sub`/
+  // `preamp_sub` on SUB) — e.g. tx500/x6100/x6200 on MAIN. The disabled
+  // control must still carry its explanation even if a mis-credited reading
+  // made the field status available.
+  const activeRx = state?.active;
+  if (rfFrontEnd && (activeRx === 'MAIN' || activeRx === 'SUB')) {
+    const onSub = activeRx === 'SUB';
+    if (hasCap(caps, 'attenuator') && !hasCap(caps, onSub ? 'attenuator_sub' : 'attenuator_main')) {
       disabledReasons.push({ field: 'rfFrontEnd.attenuator', code: 'receiver-lacks-control' });
     }
-    if (fieldUndeclared(state, `${base}preamp`)) {
+    if (hasCap(caps, 'preamp') && !hasCap(caps, onSub ? 'preamp_sub' : 'preamp_main')) {
       disabledReasons.push({ field: 'rfFrontEnd.preamp', code: 'receiver-lacks-control' });
     }
   }

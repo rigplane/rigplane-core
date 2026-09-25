@@ -104,11 +104,11 @@ function caps(
     ? { nb_depth: nbDepth }
     : { nr_level: nrLevel, nb_depth: nbDepth };
   return {
-    model: 'FTX-1 fixture',
+    model: 'DSP fixture',
     scope: false,
     audio: false,
     tx: false,
-    capabilities: ['nr', 'nb', 'notch', 'agc'],
+    capabilities: ['nr', 'nb', 'notch', 'agc', 'agc_time_constant'],
     receivers: 1,
     vfoScheme: 'single',
     freqRanges: [],

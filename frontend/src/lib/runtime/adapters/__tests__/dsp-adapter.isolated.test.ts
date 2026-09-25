@@ -159,13 +159,13 @@ describe('dsp per-field structural gates (MOR-1290)', () => {
     expect(view.dsp!.agcTimeConstant.availability.structural).toBe(false);
   });
 
-  // MOR-2527: `agc` alone is not proof of an AGC-time control — the FTX-1
-  // has AGC but no time constant, and the server says so with
-  // `availability: "undeclared"` on the receiver's agcTimeConstant field. An
-  // undeclared field is structurally ABSENT (not drawn), not
-  // present-and-unread. The first assertion fails on origin/main, where the
-  // gate was `agc` alone.
-  it('agcTimeConstant is structurally absent when the receiver marks it undeclared, even with the agc capability (FTX-1 shape)', () => {
+  // MOR-2527/MOR-2588: `agc` alone is not proof of an AGC-time control — the
+  // FTX-1 has AGC but no time constant, so the server never serves it the
+  // `agc_time_constant` tag (`web/runtime_helpers.py:
+  // projected_receiver_control_tags` serves the tag only for receivers whose
+  // fields the profile declares). The gate reads that declaration, never the
+  // field status a mis-credited reading could flip.
+  it('agcTimeConstant is structurally absent when the receiver is not declared, even with the agc capability (FTX-1 shape)', () => {
     const undeclared: FieldStatus = {
       storePath: 'x', observed: false, freshness: 'unknown', availability: 'undeclared',
     };
@@ -177,13 +177,40 @@ describe('dsp per-field structural gates (MOR-1290)', () => {
     expect(view.dsp!.agcTimeConstant.reading).toEqual({ status: 'unknown' });
   });
 
-  it('agcTimeConstant stays structural when the field is declared, and reports the reading once observed', () => {
+  it('agcTimeConstant stays structural when the receiver is declared (tag served), and reports the reading once observed', () => {
     const view = model(bareState({
       main: { ...bareState().main, agcTimeConstant: 3 },
       fieldStatus: { ...bareState().fieldStatus, 'main.agcTimeConstant': fresh },
-    }), caps({ capabilities: ['agc'] }));
+    }), caps({ capabilities: ['agc', 'agc_time_constant'] }));
     expect(view.dsp!.agcTimeConstant.availability).toEqual({ structural: true, operational: true });
     expect(view.dsp!.agcTimeConstant.reading).toEqual({ status: 'known', value: 3 });
+  });
+
+  // MOR-2588: the IC-9700 wrong-credit shape — an observed, available SUB
+  // reading with no `agc_time_constant_sub` tag must NOT light the control.
+  it('agcTimeConstant is structurally absent for an observed-but-undeclared SUB (no tag), even with the agc capability', () => {
+    const dual = caps({ receivers: 2, vfoScheme: 'main_sub', capabilities: ['dual_rx', 'agc'] });
+    const view = model(bareState({
+      active: 'SUB',
+      sub: { ...bareState().sub, agcTimeConstant: 5 },
+      fieldStatus: { ...bareState().fieldStatus, 'sub.agcTimeConstant': fresh },
+    }), dual);
+    expect(view.dsp!.agcTimeConstant.availability).toEqual({ structural: false, operational: false });
+    expect(view.dsp!.agcTimeConstant.reading).toEqual({ status: 'unknown' });
+  });
+
+  it('agcTimeConstant draws for a declared SUB once the tag is served', () => {
+    const dual = caps({
+      receivers: 2, vfoScheme: 'main_sub',
+      capabilities: ['dual_rx', 'agc', 'agc_time_constant_sub'],
+    });
+    const view = model(bareState({
+      active: 'SUB',
+      sub: { ...bareState().sub, agcTimeConstant: 5 },
+      fieldStatus: { ...bareState().fieldStatus, 'sub.agcTimeConstant': fresh },
+    }), dual);
+    expect(view.dsp!.agcTimeConstant.availability).toEqual({ structural: true, operational: true });
+    expect(view.dsp!.agcTimeConstant.reading).toEqual({ status: 'known', value: 5 });
   });
 
   it('follows the SUB receiver once it is the active one', () => {

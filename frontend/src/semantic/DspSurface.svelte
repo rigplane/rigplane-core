@@ -18,9 +18,11 @@
       `DspViewModel`. The finite host consumes `agcLabels`; the scalar host
       consumes the two scalar display props.
   (2) `agcTimeConstant` is structural only when the radio actually DECLARES
-      the field: `hasCap(caps, 'agc')` AND the receiver's
-      `agcTimeConstant` field status is not `undeclared` (MOR-2527 — the
-      FTX-1 has AGC but no time constant, so the key is NOT DRAWN there).
+      the field: `hasCap(caps, 'agc')` AND the per-receiver
+      `agc_time_constant`/`agc_time_constant_sub` tag
+      (`web/runtime_helpers.py: projected_receiver_control_tags`,
+      MOR-2527/MOR-2588 — the FTX-1 has AGC but no time constant, so the key
+      is NOT DRAWN there).
       A declared-but-unread field keeps the key in place with its label and
       NO value text — never a `?` stand-in, in the AGC-T key and the native
       level outputs alike — and the value span reserves its width so the key
