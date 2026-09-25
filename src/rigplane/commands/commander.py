@@ -280,6 +280,10 @@ class IcomCommander:
                             is_current=item.is_current,
                         )
                     execute_task = asyncio.ensure_future(execution)
+                    # Stamp at send, not after the reply. With one request
+                    # outstanding a query then costs max(gap, round trip).
+                    # A caller-cancelled item whose packet left still counts.
+                    self._last_send = asyncio.get_running_loop().time()
                     inflight = execute_task
 
                     def _propagate_cancel(
