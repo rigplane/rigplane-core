@@ -175,11 +175,11 @@ Optional per-field policy overrides. Supported keys are `cadence_seconds`,
 `_ACQUISITION_POLICY_KEYS` in `rig_loader.py`; anything else is rejected).
 Field-specific `meter_coalescing_window_seconds` is valid only for meter paths.
 
-`reason` is a string that says why the entry overrides the path's
-acquisition class. The loader rejects a non-string `reason` and does not
-otherwise use it. Every IC-7610 entry must have a non-empty one
+`reason` is a string that says why the entry exists. The loader rejects a
+non-string `reason` and does not otherwise use it. Every IC-7610 and
+IC-7300 entry must have a non-empty one
 (`tests/test_state_acquisition_policy.py:
-test_every_ic7610_field_policy_override_states_its_reason`).
+test_every_field_policy_override_states_its_reason`).
 
 A pollable field path with **no** `field_policies` entry of its own does
 not inherit the section defaults: it resolves to its shared acquisition
