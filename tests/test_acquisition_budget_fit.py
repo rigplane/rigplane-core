@@ -243,39 +243,47 @@ def _class_derived_starts(
     return result
 
 
-def test_ic7610_lan_receive_demand_fits_the_margin(
+@pytest.mark.parametrize(
+    ("model", "budget_hz"),
+    [("IC-7610", _LAN_BUDGET_HZ), ("IC-7300", _SERIAL_BUDGET_HZ)],
+    ids=["ic7610-lan", "ic7300-serial"],
+)
+def test_receive_demand_fits_the_margin(
+    model: str,
+    budget_hz: float,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """MOR-2590: the IC-7610's receive window over LAN fits 0.75 x budget.
+    """MOR-2590/MOR-2593: the receive window fits 0.75 x budget.
 
-    Its remaining explicit receive cadences are under the transport budget,
-    every polled path together is within the limit, and no receive warning
-    is logged.
+    The IC-7610 over LAN and the IC-7300 over USB serial: the remaining
+    explicit receive cadences are under the transport budget, every polled
+    path together is within the limit, and no receive warning is logged.
     """
 
-    acquisition = _CIV_ACQUISITION["IC-7610"]
-    assert _explicit_hz(acquisition, tx=False) < _LAN_BUDGET_HZ
+    acquisition = _CIV_ACQUISITION[model]
+    assert _explicit_hz(acquisition, tx=False) < budget_hz
 
     with caplog.at_level(logging.WARNING, logger="rigplane.core.acquisition_scheduler"):
-        cadences = _window_cadences(acquisition, _LAN_BUDGET_HZ, tx=False)
+        cadences = _window_cadences(acquisition, budget_hz, tx=False)
 
     demand = sum(1.0 / cadence for cadence in cadences.values())
-    assert demand <= ACQUISITION_BUDGET_MARGIN * _LAN_BUDGET_HZ + _EPSILON
+    assert demand <= ACQUISITION_BUDGET_MARGIN * budget_hz + _EPSILON
     assert not any("receive " in message for message in _warnings(caplog))
 
 
-@pytest.mark.parametrize("tx", [False, True], ids=["receive", "transmit"])
-def test_ic7300_serial_explicit_demand_under_the_budget_stretches_below_it(
-    tx: bool,
-) -> None:
-    """IC-7300 over USB: explicit demand under 20 q/s, so the classes stretch.
+def test_ic7610_serial_receive_explicit_demand_under_the_budget_stretches_below_it() -> (
+    None
+):
+    """IC-7610 over USB, receive: explicit demand under 20 q/s, so the classes
+    stretch.
 
-    It cannot reach the 15 q/s limit in either window, so every
-    class-derived path goes to its ceiling, which brings the window's
-    demand under the 20 q/s transport budget.
+    It cannot reach the 15 q/s limit, so every class-derived path goes to
+    its ceiling, which brings the window's demand under the 20 q/s
+    transport budget.
     """
 
-    acquisition = _CIV_ACQUISITION["IC-7300"]
+    acquisition = _CIV_ACQUISITION["IC-7610"]
+    tx = False
     assert _explicit_hz(acquisition, tx=tx) < _SERIAL_BUDGET_HZ
 
     cadences = _window_cadences(acquisition, _SERIAL_BUDGET_HZ, tx=tx)

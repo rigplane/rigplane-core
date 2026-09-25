@@ -2244,11 +2244,11 @@ def test_state_freshness_service_ic7300_non_polling_populate_completes_within_25
     # command_response_observable with no field_policies entry, so they could
     # never be primed), taking the count from 24 to 26, and then moves the ten
     # panel knobs onto a 5.0s cadence (R46), which drops them out of this
-    # non-polling set and takes the count from 26 to 16. ``nb_level`` is one
-    # of the ten: it keeps its field_policies entry but is now cadence-polled,
-    # so it is asserted for membership in field_policies only.
+    # non-polling set and takes the count from 26 to 16. MOR-2593 deletes
+    # their entries: ``nb_level`` is cadence-polled by its class policy.
     assert apf_path not in acquisition.field_policies
-    assert nb_level_path in acquisition.field_policies
+    assert nb_level_path not in acquisition.field_policies
+    assert acquisition.capability_for(nb_level_path).can_poll is True
     assert nb_level_path not in non_polling_paths
     assert len(non_polling_paths) == 16
 
@@ -3091,8 +3091,7 @@ def test_ic7300_real_profile_filter_num_and_data_mode_have_capability() -> None:
     never primed by ``AcquisitionScheduler.prime_unobserved`` (it only
     iterates ``field_policies``). Both fields carry the on-demand
     ``field_policies`` shape ``vox_on`` carries -- not ``polling_only``, so
-    ``due_requests`` still never touches them and the standing serial budget
-    accounted for at the bottom of ``rigs/ic7300.toml`` is unaffected.
+    ``due_requests`` still never touches them.
     """
     profile = get_radio_profile("IC-7300")
     acquisition = profile.state_acquisition
@@ -3133,9 +3132,7 @@ def test_ic7300_real_profile_ipplus_is_polled_as_plain_cmd16_read() -> None:
     assert capability.can_poll is True
     assert ipplus in acquisition.pollable_paths()
     policy = acquisition.policy_for(ipplus)
-    assert policy.cadence_seconds == 5.0
-    assert policy.freshness_ttl_seconds == 10.0
-    assert policy.adaptive_decay.enabled is False
+    assert policy == acquisition_policy_for_class(acquisition_class_for_path(ipplus))
 
     scheduler = AcquisitionScheduler(
         profile=acquisition, clock=FreshnessClock(start=300.0)

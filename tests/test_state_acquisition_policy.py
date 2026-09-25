@@ -105,10 +105,6 @@ _IC7300_PANEL_KNOB_PATHS = (
     FieldPath.receiver("main", "operator_toggles", "auto_notch"),
     FieldPath.receiver("main", "operator_toggles", "manual_notch"),
 )
-_IC7300_PANEL_KNOB_CADENCE_SECONDS = 5.0
-#: Twice the cadence, the ratio the IC-7300 profile default carries
-#: (1.5/3.0), as do its 1.0/2.0, 3.0/6.0 and 30.0/60.0 tiers.
-_IC7300_PANEL_KNOB_TTL_SECONDS = 10.0
 
 #: The menu settings that stay on-demand: reached by
 #: ``AcquisitionScheduler.prime_unobserved`` and refreshed by their own
@@ -781,9 +777,7 @@ def test_field_policies_obey_their_cadence_class_not_their_rig() -> None:
     Owner ruling (2026-09-07): a field's cadence follows what the field is,
     not which radio it sits on. Each class constant above is the longest the
     web may lag a front-panel change for the fields in it; a profile may poll
-    faster, and going slower needs a measured budget for that link (the only
-    one in this repo is IC-7300's 20 q/s serial ceiling, asserted in
-    ``test_ic7300_profile_enrolls_exact_supported_observation_rows``).
+    faster, and going slower needs a measured budget for that link.
 
     This gate only checks a path that carries its own ``field_policies``
     entry, because it walks ``field_policies.items()``. A pollable path
@@ -1268,16 +1262,17 @@ def test_ic7300_panel_knob_fields_are_polled_at_the_panel_class_cadence() -> Non
     for path in _IC7300_PANEL_KNOB_PATHS:
         capability = acquisition.capability_for(path)
         assert capability.can_poll is True, f"{path} is not cadence-polled"
+        assert path not in acquisition.field_policies, path
         policy = acquisition.policy_for(path)
-        assert policy.cadence_seconds == _IC7300_PANEL_KNOB_CADENCE_SECONDS, path
-        assert policy.freshness_ttl_seconds == _IC7300_PANEL_KNOB_TTL_SECONDS, path
+        assert policy == acquisition_policy_for_class(acquisition_class_for_path(path))
+        assert policy.cadence_seconds <= _OPERATOR_SET_MAX_CADENCE_SECONDS, path
 
 
 def test_ic7300_supply_meter_ttls_clear_twice_their_cadence() -> None:
     """MOR-2425: ``vd``/``id`` are what a CI-V observation is stamped with.
 
     Since ``runtime/_civ_rx.py: _observation_max_age`` reads this key, the
-    declared TTL is the window a supply-rail reading actually gets. These two
+    resolved TTL is the window a supply-rail reading actually gets. These two
     were the only IC-7300 meters whose TTL sat below twice their cadence.
     """
 
@@ -1288,8 +1283,7 @@ def test_ic7300_supply_meter_ttls_clear_twice_their_cadence() -> None:
         path = FieldPath.global_("meters", name)
         policy = acquisition.policy_for(path)
         assert acquisition.capability_for(path).can_poll is True, path
-        assert policy.cadence_seconds == 60.0, path
-        assert policy.freshness_ttl_seconds == 2 * policy.cadence_seconds, path
+        assert policy.freshness_ttl_seconds >= 2 * policy.cadence_seconds, path
 
 
 def test_ic7300_on_demand_fields_keep_the_never_ttl() -> None:
@@ -1406,8 +1400,7 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
         FieldPath.global_("operator_controls", "tuner_status"),
         FieldPath.global_("tx_state", "split"),
         # MOR-2425 (owner ruling, 2026-09-07): the ten panel knobs, moved off
-        # command_response-only membership onto a 5.0s cadence -- see
-        # _IC7300_PANEL_KNOB_PATHS and
+        # command_response-only membership -- see _IC7300_PANEL_KNOB_PATHS and
         # test_ic7300_panel_knob_fields_are_polled_at_the_panel_class_cadence.
         *_IC7300_PANEL_KNOB_PATHS,
         # MOR-1452: documented-readable 0x14 sub-commands (mic/monitor/VOX/
@@ -1418,9 +1411,7 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
         FieldPath.global_("operator_controls", "vox_gain"),
         FieldPath.global_("operator_controls", "anti_vox_gain"),
         # MOR-1485: TX/PA meters. Statically pollable (the capability layer
-        # doesn't know about runtime TX/RX gating) even though power/swr/alc/
-        # comp only actually fire while ``tx_only`` reads true at runtime —
-        # see the dedicated tx_only-partitioned demand assertion below.
+        # doesn't know about runtime TX/RX gating).
         FieldPath.global_("meters", "power"),
         FieldPath.global_("meters", "swr"),
         FieldPath.global_("meters", "alc"),
@@ -1453,38 +1444,31 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
     ):
         assert acquisition.capability_for(path).command_response_observable is True
 
-    # MOR-1452 (review fix) / MOR-1484 (bench-measured tightening): the 4
-    # mic/monitor/VOX/anti-VOX gain fields sit at 10.0s/15.0s, not 3.0s —
-    # IC-7300 is serial and shares one ~20 q/s software floor across every
-    # poll, operator command, and keep-alive on the same lane (see the
-    # serial-budget assertion below for the exact arithmetic that rules out
-    # 3.0s here). MOR-1484 tightened these from 15.0s/25.0s after the
-    # ticket's bench probe measured mic_gain populate (slow front-panel
-    # rotation) at 10.73s/16.25s against this tier's "<=15s populate" intent.
+    # MOR-2593: no field_policies entry of their own, so each takes its
+    # acquisition-class policy. The serial budget is the scheduler's fit,
+    # tested in tests/test_acquisition_budget_fit.py.
     for path in (
         FieldPath.global_("operator_controls", "mic_gain"),
         FieldPath.global_("operator_controls", "monitor_gain"),
         FieldPath.global_("operator_controls", "vox_gain"),
         FieldPath.global_("operator_controls", "anti_vox_gain"),
-    ):
-        policy = acquisition.policy_for(path)
-        assert policy.cadence_seconds == 10.0
-        assert policy.freshness_ttl_seconds == 15.0
-
-    # MOR-1484: freq_hz/mode (active VFO) and rf_gain/squelch were pulled out
-    # of the profile's shared 1.5s/3.0s default tier into their own 1.0s/2.0s
-    # tier — the bench probe's most-measured "pending frequency echo" /
-    # "slider trail" symptoms — so they no longer share the default policy's
-    # freshness TTL.
-    for path in (
         FieldPath.active("main", "freq_mode", "freq_hz"),
         FieldPath.active("main", "freq_mode", "mode"),
         FieldPath.receiver("main", "operator_controls", "rf_gain"),
         FieldPath.receiver("main", "operator_controls", "squelch"),
+        FieldPath.global_("operator_controls", "tuner_status"),
+        FieldPath.global_("operator_controls", "power_level"),
+        FieldPath.global_("tx_state", "compressor_on"),
+        FieldPath.global_("operator_controls", "compressor_level"),
+        FieldPath.receiver("main", "operator_controls", "att"),
+        FieldPath.receiver("main", "operator_controls", "preamp"),
+        FieldPath.receiver("main", "operator_toggles", "ipplus"),
+        FieldPath.global_("meters", "vd"),
     ):
-        policy = acquisition.policy_for(path)
-        assert policy.cadence_seconds == 1.0
-        assert policy.freshness_ttl_seconds == 2.0
+        assert path not in acquisition.field_policies, path
+        assert acquisition.policy_for(path) == acquisition_policy_for_class(
+            acquisition_class_for_path(path)
+        ), path
     assert (
         acquisition.policy_for(
             FieldPath.active("main", "freq_mode", "freq_hz")
@@ -1492,89 +1476,16 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
         < acquisition.default_policy.freshness_ttl_seconds
     )
 
-    # MOR-1484: budget freed for the tier above by giving back cadence on six
-    # rarely-touched settings (tuner match, RF power level, compressor
-    # on/level, attenuator, preamp) — none in the ticket's measured or
-    # operator-felt symptom list.
-    for path in (
-        FieldPath.global_("operator_controls", "tuner_status"),
-        FieldPath.global_("operator_controls", "power_level"),
-        FieldPath.global_("tx_state", "compressor_on"),
-        FieldPath.global_("operator_controls", "compressor_level"),
-        FieldPath.receiver("main", "operator_controls", "att"),
-        FieldPath.receiver("main", "operator_controls", "preamp"),
-    ):
-        policy = acquisition.policy_for(path)
-        assert policy.cadence_seconds == 3.0
-        assert policy.freshness_ttl_seconds == 6.0
-
-    ipplus_policy = acquisition.policy_for(
-        FieldPath.receiver("main", "operator_toggles", "ipplus")
-    )
-    assert ipplus_policy.cadence_seconds == 5.0
-    assert ipplus_policy.freshness_ttl_seconds == 10.0
-    assert ipplus_policy.adaptive_decay.enabled is False
-
-    # MOR-1452 (review fix): pin the actual serial-lane arithmetic, not just
-    # the cadence numbers, so a future "just speed this field up a bit" edit
-    # cannot silently blow the shared IC-7300 serial budget again. The
-    # software floor is one CI-V frame per _SERIAL_DEFAULT_CIV_MIN_INTERVAL_MS
-    # (50ms => 20 transactions/s), shared by every poll, every operator
-    # command, AND the keep-alive — polling demand alone must leave headroom
-    # under that ceiling, not just avoid exceeding it exactly.
-    from rigplane.backends._icom_serial_base import (
-        _SERIAL_DEFAULT_CIV_MIN_INTERVAL_MS,
-    )
-
-    serial_ceiling_hz = 1000.0 / _SERIAL_DEFAULT_CIV_MIN_INTERVAL_MS
-    assert serial_ceiling_hz == 20.0
-
-    # MOR-1485: TX/PA meters split the pollable set into an always-on
-    # (RX-state) share and a tx_only share that AcquisitionScheduler.
-    # due_requests only ever queries while PTT reads true (see
-    # test_acquisition_scheduler.py's due_polling_*tx_only* coverage for the
-    # gating behavior itself). The RX-state share is what MOR-1484's live
-    # medians (s_meter/ptt/freq) were measured against, so THAT figure is the
-    # one that must stay near the MOR-1484 baseline below -- not the
-    # transient TX-window total.
-    rx_state_demand_hz = sum(
-        1.0 / acquisition.policy_for(path).cadence_seconds
-        for path in acquisition.pollable_paths()
-        if not acquisition.policy_for(path).tx_only
-    )
-    tx_only_demand_hz = sum(
-        1.0 / acquisition.policy_for(path).cadence_seconds
+    # The TX/PA meters poll only while PTT reads true (MOR-1485; id since
+    # MOR-2593).
+    assert {
+        path
         for path in acquisition.pollable_paths()
         if acquisition.policy_for(path).tx_only
-    )
-    # MOR-1484 baseline: pre-MOR-1484 total was 19.967 q/s. MOR-1484 moved
-    # freq_hz(active)/mode(active)/rf_gain/squelch (4 fields) from the 1.5s
-    # default tier to a dedicated 1.0s tier (+2.667 -> +4.0 = +1.333 q/s) and
-    # mic/monitor/VOX/anti-VOX gain (4 fields) from 15.0s to 10.0s (+0.267 ->
-    # +0.4 = +0.133 q/s), funded by giving six rarely-touched settings
-    # (tuner_status, power_level, compressor_on/level, att, preamp; 6 fields)
-    # back from 1.5s to 3.0s (-4.0 -> -2.0 = -2.0 q/s). Net:
-    # 19.967 + 1.333 + 0.133 - 2.0 = 19.433 q/s before the twelve 30s scope
-    # reads declared by MOR-1983 add 0.4 q/s, for 19.833 q/s.
-    #
-    # MOR-2425 (owner ruling, 2026-09-07) enrols the ten panel knobs at 5.0s
-    # (10 x 1/5.0 = +2.0 q/s) and funds them by halving the S-meter's rate,
-    # 0.2s -> 0.4s (5.0 -> 2.5 = -2.5 q/s). Net:
-    # 19.833 + 2.0 - 2.5 = 19.333 q/s. MOR-2449 adds the IP+ read at 5.0s
-    # (+0.2 q/s), for 19.533 q/s: still below the 20 q/s serial ceiling.
-    #
-    # MOR-2576 (MOR-2574 step 2) moves the seven unowned pollable paths from
-    # the 1.5s default to their class policies — split/af_level and the
-    # unselected freq/mode pair to control (1.5 -> 2.0s each), agc/NB/NR to
-    # setting (1.5 -> 10.0s each) — for a net -2.367 q/s: 17.167 q/s.
-    assert rx_state_demand_hz == pytest.approx(17.167, abs=0.001)
-    assert rx_state_demand_hz < serial_ceiling_hz
-    # Po/SWR/ALC/COMP: 4 fields / 1.0s = 4.0 q/s, ONLY while tx_only gating
-    # lets them through (PTT observed true) — a transient TX-window cost, not
-    # a steady-state one. Untouched by MOR-1484 and MOR-2576.
-    assert tx_only_demand_hz == pytest.approx(4.0, abs=0.001)
-    total_during_tx_hz = rx_state_demand_hz + tx_only_demand_hz
-    assert total_during_tx_hz == pytest.approx(21.167, abs=0.001)
+    } == {
+        FieldPath.global_("meters", name)
+        for name in ("power", "swr", "alc", "comp", "id")
+    }
 
     assert (
         acquisition.capability_for(
@@ -2141,6 +2052,9 @@ def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
         ("IC-705", "global.meters.swr"),
         ("IC-7300", "global.meters.alc"),
         ("IC-7300", "global.meters.comp"),
+        # MOR-2593: not a probe: id gets the gate the other four IC-7300 TX
+        # meters carry, as MOR-2590 gave the IC-7610's id.
+        ("IC-7300", "global.meters.id"),
         ("IC-7300", "global.meters.power"),
         ("IC-7300", "global.meters.swr"),
         ("IC-7610", "global.meters.alc"),
@@ -2428,18 +2342,19 @@ def test_every_tx_capable_profile_declares_a_tx_target_source() -> None:
     assert sourced.get("IC-7610") == "CI-V get_tx_target read"
 
 
-# ── MOR-2590 (MOR-2574 step 4): IC-7610 overrides state their reason ─────────
+# ── MOR-2590 / MOR-2593 (MOR-2574 steps 4-5): overrides state their reason ───
 
 
-def test_every_ic7610_field_policy_override_states_its_reason() -> None:
-    """Every ``field_policies`` entry left on the IC-7610 says why it exists.
+@pytest.mark.parametrize("filename", ["ic7610.toml", "ic7300.toml"])
+def test_every_field_policy_override_states_its_reason(filename: str) -> None:
+    """Every ``field_policies`` entry left on the profile says why it exists.
 
     The overrides are the loaded profile's ``field_policies``; the loader
     checks that a ``reason`` is a string and keeps no copy, so the text is
     read from the same file.
     """
 
-    path = RIGS_DIR / "ic7610.toml"
+    path = RIGS_DIR / filename
     acquisition = load_rig(path).to_profile().state_acquisition
     assert acquisition is not None
     with path.open("rb") as handle:
@@ -2455,14 +2370,15 @@ def test_every_ic7610_field_policy_override_states_its_reason() -> None:
         if not (isinstance(reasons[override], str) and reasons[override].strip())
     )
     assert acquisition.field_policies
-    assert not missing, f"IC-7610 overrides without a reason: {missing}"
+    assert not missing, f"{filename} overrides without a reason: {missing}"
 
 
-def test_ic7610_id_meter_is_gated_on_ptt_like_the_other_tx_meters() -> None:
-    """MOR-2590: id polls only in TX and is discarded on dekey, through the
-    same PTT ``available_when`` clause the Po/SWR/ALC/COMP entries carry."""
+@pytest.mark.parametrize("model", ["IC-7610", "IC-7300"])
+def test_id_meter_is_gated_on_ptt_like_the_other_tx_meters(model: str) -> None:
+    """MOR-2590/MOR-2593: id polls only in TX and is discarded on dekey, through
+    the same PTT ``available_when`` clause the Po/SWR/ALC/COMP entries carry."""
 
-    acquisition = get_radio_profile("IC-7610").state_acquisition
+    acquisition = get_radio_profile(model).state_acquisition
     assert acquisition is not None
     ptt = FieldPath.global_("tx_state", "ptt")
     clause = AvailabilityClause(field=ptt, operator="equals", value=True)

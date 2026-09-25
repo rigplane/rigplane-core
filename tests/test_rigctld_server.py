@@ -700,9 +700,9 @@ class TestLifecycle:
     ) -> None:
         """``0x1C/0x00`` reaches the wire at the interval the profile declares.
 
-        ``rigs/ic7300.toml`` declares ``cadence_seconds = 0.3`` for
-        ``global.tx_state.ptt``; the interval asserted below is read from
-        that profile in this test, not written down here. Standalone
+        The interval asserted below is read from the IC-7300 profile's
+        policy for ``global.tx_state.ptt`` in this test, not written down
+        here. Standalone
         rigctld had no cadence driver at all before this change -- a
         hardcoded re-read loop stood in for one.
 

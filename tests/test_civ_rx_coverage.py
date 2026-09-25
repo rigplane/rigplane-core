@@ -62,6 +62,7 @@ from rigplane.core.state_acquisition_policy import (
     FieldCapability,
     MeterCoalescingPolicy,
     RadioAcquisitionProfile,
+    acquisition_policy_for_class,
 )
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.core.tx_target import KnownTxTarget, TxReceiver, UnknownTxTarget
@@ -75,6 +76,7 @@ from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
     SourceMetadata,
+    acquisition_class_for_path,
 )
 from rigplane.exceptions import CommandError, ConnectionError
 from rigplane.profiles import resolve_radio_profile
@@ -3170,15 +3172,17 @@ def test_s_meter_stamps_its_meter_class_ttl_with_no_field_policies(
 
 # Four IC-7300 fields under the owner's ruling R41: a field the operator has
 # not touched must not turn "stale" on a healthy link. ``pbt_inner`` and
-# ``filter_width`` are cadence-polled panel knobs (5.0 s), so they keep a
-# finite TTL of twice that; ``rit_on`` and ``tone_freq`` are on-demand and
-# ``rigs/ic7300.toml`` gives them ``freshness_ttl_seconds = "never"``.
-_R41_IC7300_EXPECTED_MAX_AGE = {
-    "receiver.0.operator_controls.pbt_inner": 10.0,
-    "receiver.0.active.freq_mode.filter_width": 10.0,
-    "global.tx_state.rit_on": None,
-    "receiver.0.operator_controls.tone_freq": None,
-}
+# ``filter_width`` are cadence-polled, so they keep their policy's finite
+# TTL; ``rit_on`` and ``tone_freq`` are on-demand and ``rigs/ic7300.toml``
+# gives them ``freshness_ttl_seconds = "never"``.
+_R41_IC7300_POLLED = (
+    "receiver.0.operator_controls.pbt_inner",
+    "receiver.0.active.freq_mode.filter_width",
+)
+_R41_IC7300_ON_DEMAND = (
+    "global.tx_state.rit_on",
+    "receiver.0.operator_controls.tone_freq",
+)
 
 
 def test_ic7300_profile_supplies_the_civ_observation_max_age(
@@ -3204,17 +3208,18 @@ def test_ic7300_profile_supplies_the_civ_observation_max_age(
             radio._civ_runtime._apply_state_store_observations(frame)
 
     snapshot = radio._state_store.snapshot()
-    assert {
-        path: snapshot.field(path).max_age for path in _R41_IC7300_EXPECTED_MAX_AGE
-    } == _R41_IC7300_EXPECTED_MAX_AGE
+    for path in _R41_IC7300_POLLED:
+        expected = _expected_observation_max_age(radio, path)
+        assert expected is not None, path
+        assert snapshot.field(path).max_age == expected, path
+    for path in _R41_IC7300_ON_DEMAND:
+        assert snapshot.field(path).max_age is None, path
 
     # 60 s idle: nothing re-reads the two on-demand fields, and nothing may
     # retire them either. (The two polled ones do decay here — no cadence read
     # renewed them; ``..._polled_pbt_stays_fresh_across_its_own_cadence``
     # covers the answered case.)
-    on_demand = [
-        path for path, ttl in _R41_IC7300_EXPECTED_MAX_AGE.items() if ttl is None
-    ]
+    on_demand = list(_R41_IC7300_ON_DEMAND)
     delta = radio._state_store.mark_stale_due(now=observed_at + 60.0)
     assert set(on_demand).isdisjoint(str(t.path) for t in delta.freshness)
     for path in on_demand:
@@ -3228,22 +3233,22 @@ def test_ic7300_polled_pbt_stays_fresh_across_its_own_cadence(
 ) -> None:
     """``pbt_inner`` keeps a TTL because a cadence read renews it.
 
-    Its profile TTL (10.0 s) is twice its profile cadence (5.0 s), so a link
-    that answers every cadence read leaves the field FRESH throughout — the
+    Its policy TTL is at least twice its policy cadence, so a link that
+    answers every cadence read leaves the field FRESH throughout — the
     field decays only when the reads stop.
     """
 
     profile = resolve_radio_profile(model="IC-7300")
     radio._profile = profile  # noqa: SLF001
     assert profile.state_acquisition is not None
-    policy = profile.state_acquisition.field_policies[
+    policy = profile.state_acquisition.policy_for(
         FieldPath.receiver("main", "operator_controls", "pbt_inner")
-    ]
-    assert policy.freshness_ttl_seconds == 2 * policy.cadence_seconds
+    )
+    assert policy.freshness_ttl_seconds >= 2 * policy.cadence_seconds
     stored = "receiver.0.operator_controls.pbt_inner"
 
     start = 500.0
-    for step in range(13):  # 0 s .. 60 s at the profile's own 5.0 s cadence
+    for step in range(13):  # 13 reads, one per policy cadence
         now = start + step * policy.cadence_seconds
         with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=now):
             radio._civ_runtime._apply_state_store_observations(
@@ -3263,25 +3268,21 @@ def test_ic7300_polled_pbt_stays_fresh_across_its_own_cadence(
     )
 
 
-def test_ptt_observation_max_age_matches_the_ic7300_profile_declaration(
+def test_ptt_observation_max_age_matches_the_ic7300_profile_policy(
     radio: IcomRadio,
 ) -> None:
-    """``ptt`` is 1.0 s in both the profile and the table, so this test cannot
-    tell which source answered; ``test_ic7610_pbt_takes_the_profile_ttl_including_the_sub_receiver``
-    is what pins the source.
-
-    ``rigs/ic7300.toml`` declares 1.0 s against a 0.3 s cadence, so the
-    observed-PTT window still clears its own poll interval by more than 2x.
+    """``rigs/ic7300.toml`` has no ``field_policies`` entry for ``ptt``, so the
+    CI-V ingress stamps its acquisition-class TTL, which clears the class
+    cadence by 2x or more.
     """
 
     profile = resolve_radio_profile(model="IC-7300")
     radio._profile = profile  # noqa: SLF001
     assert profile.state_acquisition is not None
-    policy = profile.state_acquisition.field_policies[
-        FieldPath.global_("tx_state", "ptt")
-    ]
-    assert policy.freshness_ttl_seconds == 1.0
-    assert policy.cadence_seconds == 0.3
+    ptt = FieldPath.global_("tx_state", "ptt")
+    assert ptt not in profile.state_acquisition.field_policies
+    policy = profile.state_acquisition.policy_for(ptt)
+    assert policy == acquisition_policy_for_class(acquisition_class_for_path(ptt))
     assert policy.freshness_ttl_seconds >= 2 * policy.cadence_seconds
 
     with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=800.0):
