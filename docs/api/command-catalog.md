@@ -166,6 +166,7 @@ Use `set_freq` directly for bands that have no `bsrCode` in capabilities.
 | `set_monitor` | `on?: bool=false` | `monitor` | Yes | TX monitor on/off. |
 | `set_monitor_gain` | `level: int` | `monitor` | Yes | |
 | `set_af_mute` | `on: bool`, `receiver?: int=0` | — | Yes | `on` is required (no default). |
+| `set_monitor_mute` | `on: bool` | `af_level` | No | Server-owned monitor MUTE (MOR-2583). Saves each receiver's AF, writes 0, and restores the saved levels on unmute. Runs in the web handler, not the command queue. |
 | `set_acc1_mod_level` | `level: int` | — | Yes | ACC1 modulation input level. |
 | `set_usb_mod_level` | `level: int` | — | Yes | USB modulation input level. |
 | `set_lan_mod_level` | `level: int` | — | Yes | LAN modulation input level. |

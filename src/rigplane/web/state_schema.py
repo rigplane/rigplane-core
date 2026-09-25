@@ -44,6 +44,8 @@ __all__ = [
     "ConnectionPublic",
     "RadioHealthPublic",
     "RadioDetailPublic",
+    "MonitorMuteSavedAfPublic",
+    "MonitorMutePublic",
     "WsClientsPublic",
     "ServerStatePublic",
     "StateUpdateEnvelope",
@@ -271,6 +273,28 @@ class RadioDetailPublic(_Strict):
     status: str
 
 
+class MonitorMuteSavedAfPublic(_Strict):
+    """AF levels monitor MUTE saved, one per receiver the radio has.
+
+    ``sub`` is absent when the radio has one receiver, matching the
+    top-level ``sub`` rule (MOR-2583).
+    """
+
+    main: float | None = None
+    sub: float | None = None
+
+
+class MonitorMutePublic(_Strict):
+    """Server-owned monitor MUTE (MOR-2583).
+
+    Process state, not a radio observation: it survives a page reload and a
+    radio reconnect. ``savedAf`` holds the levels unmute restores.
+    """
+
+    on: bool = False
+    savedAf: MonitorMuteSavedAfPublic = Field(default_factory=MonitorMuteSavedAfPublic)
+
+
 class WsClientsPublic(_Strict):
     """WebSocket client counts per channel."""
 
@@ -376,6 +400,9 @@ class ServerStatePublic(_Strict):
     radioDetail: RadioDetailPublic
     radioHealth: RadioHealthPublic
     wsClients: WsClientsPublic
+    # Server process state, injected by the web server after the radio
+    # projection. Absent on a payload built without a server (MOR-2583).
+    monitorMute: MonitorMutePublic | None = None
 
     # Snapshot path only — absent on the dataclass path, never null when
     # present (generated TS: ``fieldStatus?: Record<string, FieldStatusPublic>``).
