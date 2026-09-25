@@ -559,7 +559,11 @@ async def test_min_interval_throttling() -> None:
 
 
 class _Clock:
-    """Controllable loop clock: sleep advances it, nothing else does."""
+    """Controllable loop clock: sleep advances it, nothing else does.
+
+    ``wait_for`` is replaced too: a frozen loop clock never expires a
+    real timeout, so a positive timeout would hang the test.
+    """
 
     def __init__(self) -> None:
         self.now = 0.0
@@ -570,12 +574,20 @@ class _Clock:
     async def sleep(self, delay: float) -> None:
         self.now += delay
 
+    async def wait_for(self, awaitable, timeout):  # type: ignore[no-untyped-def]
+        if timeout is not None and timeout <= 0:
+            task = asyncio.ensure_future(awaitable)
+            task.cancel()
+            return await task
+        return await awaitable
+
 
 def _install_clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
     clock = _Clock()
     loop = asyncio.get_running_loop()
     monkeypatch.setattr(loop, "time", clock.time)
     monkeypatch.setattr(asyncio, "sleep", clock.sleep)
+    monkeypatch.setattr(asyncio, "wait_for", clock.wait_for)
     return clock
 
 
