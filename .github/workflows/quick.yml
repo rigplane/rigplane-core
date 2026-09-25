@@ -34,6 +34,21 @@ on:
       - "LICENSE.txt"
       - "NOTICE"
       - "mkdocs.yml"
+      # Markdown under docs/ that tests read (CORE_DOCS_TEST_INPUT_EXACT in
+      # classify-quick-paths.py) must still run quick: these ordered
+      # negations re-include each exact path after "docs/**" and "**/*.md".
+      - "!docs/PROJECT.md"
+      - "!docs/parity/README.md"
+      - "!docs/operations/managed-runtime-packaging.md"
+      - "!docs/api/web.md"
+      - "!docs/guide/web-ui.md"
+      - "!docs/api/command-catalog.md"
+      - "!docs/api/radio.md"
+      - "!docs/guide/connection.md"
+      - "!docs/api/audio.md"
+      - "!docs/guide/audio-recipes.md"
+      - "!docs/guide/diagnostic-reports.md"
+      - "!docs/internals/audio-capture-health.md"
   pull_request:
     branches: [main]
     types: [opened, reopened, synchronize, ready_for_review]
@@ -67,6 +82,20 @@ on:
       - "LICENSE.txt"
       - "NOTICE"
       - "mkdocs.yml"
+      # Same re-inclusion as the push trigger above, for test-read Markdown
+      # under docs/ (CORE_DOCS_TEST_INPUT_EXACT).
+      - "!docs/PROJECT.md"
+      - "!docs/parity/README.md"
+      - "!docs/operations/managed-runtime-packaging.md"
+      - "!docs/api/web.md"
+      - "!docs/guide/web-ui.md"
+      - "!docs/api/command-catalog.md"
+      - "!docs/api/radio.md"
+      - "!docs/guide/connection.md"
+      - "!docs/api/audio.md"
+      - "!docs/guide/audio-recipes.md"
+      - "!docs/guide/diagnostic-reports.md"
+      - "!docs/internals/audio-capture-health.md"
 
 permissions:
   contents: read

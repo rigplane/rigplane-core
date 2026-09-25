@@ -16,8 +16,30 @@ const DOC_EXACT = new Set([
 // base-gate-policy-v1.js plus the "!docs/**" negations in quick.yml.
 const DOCS_DATA_SUFFIXES = new Set([".json", ".toml", ".yaml", ".yml"]);
 
+// Markdown under docs/ that a test under tests/ reads at test time (the
+// CORE_DOCS_TEST_INPUT_EXACT list) is not documentation for CI purposes:
+// a change to one must get the normal quick run, not a synthetic green
+// status. Mirrors CORE_DOCS_TEST_INPUT_EXACT in classify-quick-paths.py
+// and base-gate-policy-v1.js plus the exact "!" negations in quick.yml's
+// paths-ignore.
+const CORE_DOCS_TEST_INPUT_EXACT = new Set([
+  "docs/PROJECT.md",
+  "docs/parity/README.md",
+  "docs/operations/managed-runtime-packaging.md",
+  "docs/api/web.md",
+  "docs/guide/web-ui.md",
+  "docs/api/command-catalog.md",
+  "docs/api/radio.md",
+  "docs/guide/connection.md",
+  "docs/api/audio.md",
+  "docs/guide/audio-recipes.md",
+  "docs/guide/diagnostic-reports.md",
+  "docs/internals/audio-capture-health.md",
+]);
+
 function isDocumentation(path) {
   if (typeof path !== "string" || !path || path.startsWith("/") || path.split("/").includes("..")) return false;
+  if (CORE_DOCS_TEST_INPUT_EXACT.has(path)) return false;
   const parts = path.split("/");
   const dot = path.lastIndexOf(".");
   const suffix = dot === -1 ? "" : path.slice(dot);
@@ -37,4 +59,4 @@ function allDocumentationFiles(files) {
   return Array.isArray(files) && files.length > 0 && files.every(isDocumentationFile);
 }
 
-module.exports = {DOC_EXACT, DOCS_DATA_SUFFIXES, isDocumentation, isDocumentationFile, allDocumentationFiles};
+module.exports = {DOC_EXACT, DOCS_DATA_SUFFIXES, CORE_DOCS_TEST_INPUT_EXACT, isDocumentation, isDocumentationFile, allDocumentationFiles};
