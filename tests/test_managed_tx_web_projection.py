@@ -264,7 +264,7 @@ def _drain(queue: BoundedQueue[dict]) -> list[dict]:
 
 
 def _web_server() -> WebServer:
-    return WebServer(None, WebConfig(host="127.0.0.1", port=0))
+    return WebServer(None, WebConfig(host="127.0.0.1", port=0, radio_model="IC-7610"))
 
 
 async def test_managed_tx_invalidation_fans_out_coalesced_to_control_queues() -> None:
