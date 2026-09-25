@@ -4785,13 +4785,15 @@ def test_the_non_selected_receiver_polls_one_class_slower(
                 expected.freshness_ttl_seconds
             ), path
             assert request.max_age == pytest.approx(expected.freshness_ttl_seconds)
-            assert (
-                pytest.approx(undemoted.cadence_seconds)
-                <= request.policy.cadence_seconds
-            ), (path, "demotion must never make a path faster")
+            assert undemoted.cadence_seconds is not None
+            undemoted_cadence: float = undemoted.cadence_seconds
+            assert request.policy.cadence_seconds >= undemoted_cadence - 1e-9, (
+                path,
+                "demotion must never make a path faster",
+            )
             demoted_any = demoted_any or (
                 receiver == slow_receiver
-                and expected.cadence_seconds != undemoted.cadence_seconds
+                and expected.cadence_seconds != undemoted_cadence
             )
     if slow_receiver is not None:
         assert demoted_any, (
