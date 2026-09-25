@@ -351,14 +351,9 @@ class IcomCivAcquisitionExecutor:
                 await self._send_query(query, request.priority)
             except BackgroundSendDropped:
                 if sent:
-                    # A later path of this request was dropped. The ones
-                    # already sent stay sent; the drain's error path
-                    # completes the rest so cadence can re-queue them.
                     return AcquisitionExecutionResult(sent_paths=tuple(sent))
                 raise
             sent.append(path)
-        if not sent and not failed:
-            raise BackgroundSendDropped("no path of this request was sent")
         return AcquisitionExecutionResult(
             sent_paths=tuple(sent),
             failed_paths=tuple(failed),

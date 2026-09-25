@@ -38,7 +38,6 @@ from typing import TYPE_CHECKING, Any, Callable, cast
 
 from ..exceptions import CommandError
 from ..exceptions import ConnectionError as RadioConnectionError
-from ..core.exceptions import BackgroundSendDropped
 from ..core.exceptions import TimeoutError as RigplaneTimeoutError
 from ..capabilities import (
     CAP_AGC,
@@ -3769,10 +3768,7 @@ class RadioPoller:
 
     async def _send_query(self) -> None:
         if self._acquisition_scheduler is not None:
-            try:
-                await self._send_scheduler_requests()
-            except BackgroundSendDropped:
-                return
+            await self._send_scheduler_requests()
             return
         # Without a scheduler there is nothing left to send: the legacy meter
         # rotation that used to run here was unreachable in production

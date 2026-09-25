@@ -41,6 +41,7 @@ from rigplane.runtime._poller_types import CommandQueue
 from rigplane.web.radio_poller import RadioPoller
 
 _FREQ = FieldPath.active("main", "freq_mode", "freq_hz")
+_MODE = FieldPath.active("main", "freq_mode", "mode")
 
 
 class _CapRadio:
@@ -56,7 +57,12 @@ class _CapRadio:
             receiver_count=1,
             capabilities=frozenset(),
             cmd29_routes=frozenset(),
-            command_map=CommandMap({"get_selected_freq": (0x25, 0x00)}),
+            command_map=CommandMap(
+                {
+                    "get_selected_freq": (0x25, 0x00),
+                    "get_selected_mode": (0x26, 0x00),
+                }
+            ),
         )
         self.capabilities: set[str] = set()
         self.connected = True
@@ -89,16 +95,19 @@ class _CapRadio:
 _CADENCE = 1.0  # LIVE class nominal cadence for an active freq_hz path
 
 
-def _profile() -> RadioAcquisitionProfile:
+def _profile(*paths: FieldPath) -> RadioAcquisitionProfile:
+    polled = paths or (_FREQ,)
     return RadioAcquisitionProfile(
         provider="icom_civ",
-        capabilities=(FieldCapability(path=_FREQ, polling=True),),
+        capabilities=tuple(FieldCapability(path=path, polling=True) for path in polled),
         default_policy=AcquisitionPolicy(),
     )
 
 
-def _scheduler(*, clock: FreshnessClock | None = None) -> AcquisitionScheduler:
-    return AcquisitionScheduler(profile=_profile(), clock=clock)
+def _scheduler(
+    *, clock: FreshnessClock | None = None, paths: tuple[FieldPath, ...] = ()
+) -> AcquisitionScheduler:
+    return AcquisitionScheduler(profile=_profile(*paths), clock=clock)
 
 
 async def _fill_background_cap(commander: IcomCommander) -> None:
@@ -214,3 +223,72 @@ async def test_a_command_priority_request_reaches_the_commander_as_normal() -> N
         await commander.stop()
 
     assert radio.seen == [Priority.NORMAL]
+
+
+@pytest.mark.asyncio
+async def test_a_later_path_dropped_at_the_cap_is_not_dispatched() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
+        if cmd == b"gate":
+            started.set()
+            await release.wait()
+        return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
+
+    commander = IcomCommander(execute, min_interval=0.0)
+    commander.start()
+    try:
+        gate = asyncio.create_task(commander.send(b"gate", priority=Priority.NORMAL))
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        for index in range(_MAX_BG_INFLIGHT - 1):
+            queued = await commander.send(
+                f"fill-{index}".encode(),
+                priority=Priority.BACKGROUND,
+                wait_response=False,
+                wait_dispatch=False,
+            )
+            assert queued is None
+
+        clock = FreshnessClock(start=100.0)
+        scheduler = _scheduler(clock=clock, paths=(_FREQ, _MODE))
+        store = StateStore(freshness_clock=clock)
+        service = StateFreshnessService(store=store, scheduler=scheduler)
+        radio = _CapRadio(commander)
+        radio._acquisition_scheduler = scheduler  # type: ignore[attr-defined]
+        poller = RadioPoller(
+            radio,  # type: ignore[arg-type]
+            CommandQueue(),
+            radio_state=RadioState(),
+            state_store=store,
+        )
+
+        service.tick(now=clock.now())
+        with patch("rigplane.core.acquisition_drain.time.monotonic", clock.now):
+            await poller._send_query()  # noqa: SLF001
+
+        pending = scheduler.pending_requests()
+        assert len(pending) == 1
+        request = pending[0]
+        assert scheduler.may_credit(request, observation_timestamp=clock.now())
+        dispatched = scheduler._dispatch_by_request_id[request.id]  # noqa: SLF001
+        assert set(dispatched) == {_FREQ}
+        in_flight = poller._acquisition_in_flight[request.id]  # noqa: SLF001
+        assert in_flight[0] == frozenset({_FREQ})
+
+        release.set()
+        await gate
+        await commander.stop()
+        commander._bg_inflight = 0  # noqa: SLF001
+        commander.start()
+        with patch("rigplane.core.acquisition_drain.time.monotonic", clock.now):
+            await poller._send_query()  # noqa: SLF001
+
+        in_flight = poller._acquisition_in_flight[request.id]  # noqa: SLF001
+        assert in_flight[0] == frozenset({_FREQ, _MODE})
+        dispatched = scheduler._dispatch_by_request_id[request.id]  # noqa: SLF001
+        assert set(dispatched) == {_FREQ, _MODE}
+    finally:
+        release.set()
+        await gate
+        await commander.stop()
