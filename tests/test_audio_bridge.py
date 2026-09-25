@@ -873,8 +873,11 @@ async def test_opening_gate_drops_frames_queued_while_closed():
 
     bridge._tx_gate = lambda: _open()
     bridge._running = True
-    bridge._enqueue_tx(later)
+    bridge._enqueue_tx(echo)
     bridge._tx_task = asyncio.create_task(bridge._tx_loop())
+    for _ in range(3):
+        await asyncio.sleep(0)
+    bridge._enqueue_tx(later)
     await _run_tx_until(bridge, frames=1)
 
     assert sent == [later]
