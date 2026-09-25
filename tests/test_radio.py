@@ -1944,11 +1944,13 @@ class _PacingClock:
         self._real_monotonic = _time.monotonic
         self._real0 = self._real_monotonic()
         self._real_sleep = asyncio.sleep
+        self.sleeps: list[float] = []
 
     def monotonic(self) -> float:
         return self._base + (self._real_monotonic() - self._real0)
 
     async def sleep(self, delay: float) -> None:
+        self.sleeps.append(delay)
         self._base += max(0.0, delay)
         await self._real_sleep(0)
 
@@ -2298,6 +2300,7 @@ class TestCivPacingIsSendToSend:
                         "pending": tracker.pending_count,
                         "sinks": tracker.ack_sink_count,
                         "resolves": resolve_calls,
+                        "sleeps": clock.sleeps,
                         "last_send": radio._last_civ_send_monotonic,
                         "clock": clock.monotonic(),
                         "pump_done": pump.done() if pump is not None else None,
