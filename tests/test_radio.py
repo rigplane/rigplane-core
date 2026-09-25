@@ -1955,6 +1955,14 @@ class _PacingClock:
         tracker = radio._civ_request_tracker
         tracker._stale_ttl = 10.0**9
 
+    async def wait_for_flag(self, flag: asyncio.Event, *, rounds: int = 2000) -> bool:
+        """Wait for an event on real time, immune to the frozen clock."""
+        for _ in range(rounds):
+            if flag.is_set():
+                return True
+            await self._real_sleep(0.001)
+        return flag.is_set()
+
     def install_wait_guard(self, radio: IcomRadio) -> None:
         """Stretch the answer window past the frozen controllable clock.
 
@@ -2145,7 +2153,18 @@ class TestCivPacingIsSendToSend:
                 first_task = asyncio.create_task(radio._execute_civ_raw(first_civ))
                 reply_task = asyncio.create_task(first_reply())
                 second_task = asyncio.create_task(radio._execute_civ_raw(second_civ))
-                await asyncio.wait_for(second_gated.wait(), timeout=10.0)
+                gated = await clock.wait_for_flag(second_gated)
+                probe = {
+                    "gated": gated,
+                    "sent": len(mock_transport.sent_packets),
+                    "pending": radio._civ_request_tracker.pending_count,
+                    "clock": clock.now,
+                    "last_send": radio._last_civ_send_monotonic,
+                    "first_done": first_task.done(),
+                    "second_done": second_task.done(),
+                    "reply_done": reply_task.done(),
+                }
+                assert gated, f"second send never left the gate: {probe}"
                 mock_transport.queue_response(_freq_response(14_075_000))
                 first = await asyncio.wait_for(first_task, timeout=10.0)
                 second = await asyncio.wait_for(second_task, timeout=10.0)
