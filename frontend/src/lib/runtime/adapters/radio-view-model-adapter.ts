@@ -192,10 +192,6 @@ function strictFieldAvailable(state: ServerState | null, field: string): boolean
   return seen(state, field) && topFieldAvailable(state, field);
 }
 
-function fieldUndeclared(state: ServerState | null, path: string): boolean {
-  return state?.fieldStatus?.[path]?.availability === 'undeclared';
-}
-
 /** `fieldFresh` is the raw `topFieldAvailable` read; a structurally-absent
  *  control must never report a "known" reading even if the (irrelevant)
  *  field happens to look fresh — so the reading gates on BOTH, same as
@@ -964,7 +960,7 @@ function deriveDsp(
     // projected_receiver_control_tags`), so the gate reads that declaration,
     // never the field status a mis-credited reading could flip.
     agcTimeConstant: txAuxField(
-      hasAgcCap && !fieldUndeclared(state, `${base}agcTimeConstant`),
+      hasAgcCap && hasCap(caps, onSub ? 'agc_time_constant_sub' : 'agc_time_constant'),
       topFieldAvailable(state, `${base}agcTimeConstant`), numOrUndef(rx?.agcTimeConstant),
     ),
   };
@@ -1104,8 +1100,10 @@ function deriveReceiverIndicators(
     // (`web/runtime_helpers.py: projected_receiver_control_tags`). An
     // observed reading credited to a receiver that never declared the field
     // cannot light this.
-    const attStructural = hasAttenuator && !fieldUndeclared(state, path('att'));
-    const preampStructural = hasPreamp && !fieldUndeclared(state, path('preamp'));
+    const attStructural = hasAttenuator
+      && (receiver === 'MAIN' || hasCap(caps, 'attenuator_sub'));
+    const preampStructural = hasPreamp
+      && (receiver === 'MAIN' || hasCap(caps, 'preamp_sub'));
 
     return {
       receiver,
@@ -2120,13 +2118,11 @@ export function toRadioViewModel(
   // MOR-2588: the active SUB receiver lacks att/preamp when the radio does
   // not declare them for SUB (no `attenuator_sub`/`preamp_sub` tag), even if
   // a mis-credited reading made the field status available.
-  if (rfFrontEnd) {
-    const onSub = state?.active === 'SUB';
-    const base = onSub ? 'sub.' : 'main.';
-    if (fieldUndeclared(state, `${base}att`)) {
+  if (rfFrontEnd && state?.active === 'SUB') {
+    if (hasCap(caps, 'attenuator') && !hasCap(caps, 'attenuator_sub')) {
       disabledReasons.push({ field: 'rfFrontEnd.attenuator', code: 'receiver-lacks-control' });
     }
-    if (fieldUndeclared(state, `${base}preamp`)) {
+    if (hasCap(caps, 'preamp') && !hasCap(caps, 'preamp_sub')) {
       disabledReasons.push({ field: 'rfFrontEnd.preamp', code: 'receiver-lacks-control' });
     }
   }
