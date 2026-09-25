@@ -2278,6 +2278,16 @@ class TestCivPacingIsSendToSend:
                         cmd, wait_response=False, is_current=lambda: False
                     )
                 mock_transport.queue_response_on_send(2, _ack_response())
+                tracker = radio._civ_request_tracker
+                resolve_calls: list[bool] = []
+                original_resolve = tracker.resolve
+
+                def counting_resolve(event, **kwargs):  # type: ignore[no-untyped-def]
+                    outcome = original_resolve(event, **kwargs)
+                    resolve_calls.append(outcome)
+                    return outcome
+
+                monkeypatch.setattr(tracker, "resolve", counting_resolve)
                 try:
                     frame = await radio._execute_civ_raw(cmd)
                 except TimeoutError as exc:
@@ -2285,8 +2295,9 @@ class TestCivPacingIsSendToSend:
                     probe = {
                         "sent": len(mock_transport.sent_packets),
                         "starts": starts,
-                        "pending": radio._civ_request_tracker.pending_count,
-                        "sinks": radio._civ_request_tracker.ack_sink_count,
+                        "pending": tracker.pending_count,
+                        "sinks": tracker.ack_sink_count,
+                        "resolves": resolve_calls,
                         "last_send": radio._last_civ_send_monotonic,
                         "clock": clock.monotonic(),
                         "pump_done": pump.done() if pump is not None else None,
