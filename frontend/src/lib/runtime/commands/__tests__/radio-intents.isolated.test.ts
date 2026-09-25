@@ -397,6 +397,8 @@ describe('typed non-PTT radio intents', () => {
       { name: 'set_freq', params: { freq: 1.5 } },
       { name: 'set_freq', params: { freq: 1 }, unexpected: true },
       { name: 'set_compressor', params: { on: 1 } },
+      { name: 'set_monitor_mute', params: { on: 1 } },
+      { name: 'set_monitor_mute', params: { on: true, receiver: 0 } },
       { name: 'set_af_level', params: { level: -0.01, receiver: 0 } },
       { name: 'set_af_level', params: { level: 1.01, receiver: 0 } },
       { name: 'set_af_level', params: { level: 10, receiver: 0 } },
@@ -480,6 +482,7 @@ describe('typed non-PTT radio intents', () => {
       { name: 'vfo_swap', params: {} },
       { name: 'memory_clear', params: { channel: 1 } },
       { name: 'set_compressor', params: { on: true } },
+      { name: 'set_monitor_mute', params: { on: true } },
       { name: 'set_nb', params: { on: false, receiver: 0 } },
       { name: 'set_mic_gain', params: { level: 10 } },
       { name: 'set_af_level', params: { level: 50 / 255, receiver: 1 } },
@@ -529,8 +532,10 @@ describe('typed non-PTT radio intents', () => {
     }
     // MOR-2538 removes three retired application intents from the prior 93;
     // MOR-2111 PR2 adds the five repeater family intents (90 + 5).
-    expect(intents.RADIO_INTENT_NAMES).toHaveLength(95);
-    expect(new Set(intents.RADIO_INTENT_NAMES).size).toBe(95);
+    // MOR-2583 PR2 adds the server-owned monitor MUTE (95 + 1).
+    expect(intents.RADIO_INTENT_NAMES).toHaveLength(96);
+    expect(new Set(intents.RADIO_INTENT_NAMES).size).toBe(96);
+    expect(intents.RADIO_INTENT_NAMES).toContain('set_monitor_mute');
     expect(intents.RADIO_INTENT_NAMES).toContain('reset_filter_width');
     expect(intents.RADIO_INTENT_NAMES).toContain('set_vfo_freq');
     expect(intents.RADIO_INTENT_NAMES).toContain('set_data3_mod_input');
