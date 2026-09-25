@@ -3208,6 +3208,191 @@ async def test_a_garbled_frame_on_the_wire_is_noise_not_a_defect() -> None:
     assert scheduler.startup_defect is None
 
 
+@pytest.mark.asyncio
+async def test_single_refusal_then_answer_records_nothing_and_publishes() -> None:
+    """MOR-2584: a one-off ``?;`` is re-read once; the answer wins.
+
+    On the live FTX-1 stand (2026-09-24) ``SM1;`` was refused once during
+    ``AG1`` writes and answered on the next cycle. ``sub.s_meter`` is
+    re-read exactly once and the answer publishes, so the startup gate sees
+    no defect and the bind is not refused — while the second command on the
+    wire is the bounded single retry.
+    """
+    profile = _profile_state_acquisition()
+    scheduler = AcquisitionScheduler(profile=profile)
+    radio = _make_radio()
+    radio._poll_warned_fields = set()
+    radio._acquisition_scheduler = scheduler
+    radio.read_s_meter = AsyncMock(
+        side_effect=[
+            150,
+            CatCommandRejected(
+                "Radio rejected command 'SM1;' (returned '?;')", command="SM1;"
+            ),
+            120,
+            120,
+            120,
+        ]
+    )
+
+    observations = await YaesuObservationAdapter(
+        radio, profile=profile, clock=_clock
+    ).poll_rx_meters()
+
+    assert scheduler.startup_defect is None
+    by_path = {str(item.path): item.value for item in observations}
+    assert "receiver.main.meters.s_meter" in by_path
+    assert "receiver.sub.meters.s_meter" in by_path
+    assert radio.read_s_meter.await_args_list == [
+        call(0),
+        call(1),
+        call(1),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_repeated_refusal_records_the_defect_and_skips_the_field() -> None:
+    """MOR-2584: a refusal the radio repeats is still a startup defect.
+
+    The same ``SUB_S_METER`` read refuses both attempts, so the defect is
+    recorded — what the startup gate reads, which refuses the bind — and
+    only that field is skipped.
+    """
+    profile = _profile_state_acquisition()
+    scheduler = AcquisitionScheduler(profile=profile)
+    radio = _make_radio()
+    radio._poll_warned_fields = set()
+    radio._acquisition_scheduler = scheduler
+    radio.read_s_meter = AsyncMock(
+        side_effect=lambda receiver=0: (
+            120
+            if receiver == 0
+            else _raise(
+                CatCommandRejected(
+                    "Radio rejected command 'SM1;' (returned '?;')", command="SM1;"
+                )
+            )
+        )
+    )
+
+    observations = await YaesuObservationAdapter(
+        radio, profile=profile, clock=_clock
+    ).poll_rx_meters()
+
+    defect = scheduler.startup_defect
+    assert defect is not None
+    assert [str(path) for path in defect.paths] == ["receiver.sub.meters.s_meter"]
+    assert defect.command == "SM1;"
+    assert defect.frame == "?;"
+    emitted = {str(item.path) for item in observations}
+    assert "receiver.sub.meters.s_meter" not in emitted
+    assert "receiver.main.meters.s_meter" in emitted
+    assert radio.read_s_meter.await_args_list == [call(0), call(1), call(1)]
+
+
+@pytest.mark.asyncio
+async def test_refusal_then_malformed_reread_records_the_field_defect() -> None:
+    """MOR-2584 review: a malformed answer on the re-read is a field defect.
+
+    The SUB meter refuses once, then answers in another shape. The defect
+    is recorded from the re-read's own exception — like a malformed first
+    read — and only that field is skipped; it never escapes to the
+    cycle-level handler.
+    """
+    profile = _profile_state_acquisition()
+    scheduler = AcquisitionScheduler(profile=profile)
+    radio = _make_radio()
+    radio._poll_warned_fields = set()
+    radio._acquisition_scheduler = scheduler
+    radio.read_s_meter = AsyncMock(
+        side_effect=[
+            150,
+            CatCommandRejected(
+                "Radio rejected command 'SM1;' (returned '?;')", command="SM1;"
+            ),
+            CatParseError(
+                "SM{receiver}{raw:03d};",
+                "SM0048;",
+                "Response does not match pattern",
+            ),
+            150,
+            150,
+        ]
+    )
+
+    observations = await YaesuObservationAdapter(
+        radio, profile=profile, clock=_clock
+    ).poll_rx_meters()
+
+    defect = scheduler.startup_defect
+    assert defect is not None
+    assert [str(path) for path in defect.paths] == ["receiver.sub.meters.s_meter"]
+    assert defect.command == "SM{receiver}{raw:03d};"
+    assert defect.frame == "SM0048;"
+    emitted = {str(item.path) for item in observations}
+    assert "receiver.sub.meters.s_meter" not in emitted
+    assert "receiver.main.meters.s_meter" in emitted
+    assert radio.read_s_meter.await_args_list == [
+        call(0),
+        call(1),
+        call(1),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_retry_is_generic_a_non_listed_label_rereads_too() -> None:
+    """MOR-2584 round 2: the retry is not a label list.
+
+    ``main.preamp`` was never in the old three-label mapping, yet one
+    refusal followed by an answer publishes and records nothing — while a
+    second refusal still records. Each declared-read site passes its own
+    remake, so a new declared read retries with no mapping change.
+    """
+    profile = _profile_state_acquisition()
+    scheduler = AcquisitionScheduler(profile=profile)
+    radio = _make_radio()
+    radio._poll_warned_fields = set()
+    radio._acquisition_scheduler = scheduler
+    radio.read_preamp = AsyncMock(
+        side_effect=[
+            CatCommandRejected(
+                "Radio rejected command 'PA0;' (returned '?;')", command="PA0;"
+            ),
+            1,
+        ]
+    )
+
+    observations = await YaesuObservationAdapter(
+        radio, profile=profile, clock=_clock
+    ).poll_slow_controls()
+    by_path = {str(item.path) for item in observations}
+
+    assert scheduler.startup_defect is None
+    assert "receiver.main.operator_controls.preamp" in by_path
+    assert radio.read_preamp.await_args_list == [call(0), call(0)]
+
+    radio.read_preamp = AsyncMock(
+        side_effect=CatCommandRejected(
+            "Radio rejected command 'PA0;' (returned '?;')", command="PA0;"
+        )
+    )
+    scheduler2 = AcquisitionScheduler(profile=profile)
+    radio._acquisition_scheduler = scheduler2
+
+    observations = await YaesuObservationAdapter(
+        radio, profile=profile, clock=_clock
+    ).poll_slow_controls()
+    emitted = {str(item.path) for item in observations}
+
+    defect = scheduler2.startup_defect
+    assert defect is not None
+    assert [str(path) for path in defect.paths] == [
+        "receiver.main.operator_controls.preamp"
+    ]
+    assert "receiver.main.operator_controls.preamp" not in emitted
+    assert radio.read_preamp.await_args_list == [call(0), call(0)]
+
+
 # ---------------------------------------------------------------------------
 # available_when: the two fields ``rigs/ftx1.toml`` declares conditional
 # ---------------------------------------------------------------------------
