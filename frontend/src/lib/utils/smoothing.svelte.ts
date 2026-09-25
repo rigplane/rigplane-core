@@ -77,6 +77,7 @@ export function createSmoother(attack = 0.12, release = 0.32, initialValue = 0) 
   }
 
   function tick(now: number) {
+    (globalThis as { __rafOrder?: string[] }).__rafOrder?.push('smoother');
     const dt = Math.min(0.05, (now - lastTime) / 1000);
     lastTime = now;
 
