@@ -245,6 +245,25 @@ describe('BandPlanOverlay (component)', () => {
     expect(segments.length).toBe(1);
   });
 
+  it('fetches a fixed visible range exactly once instead of looping (MOR-2605)', async () => {
+    mountOverlay({
+      startFreq: 14_000_000,
+      endFreq: 14_350_000,
+    });
+
+    // Well past several 100 ms debounce periods with no prop change.
+    await vi.advanceTimersByTimeAsync(1500);
+    flushSync();
+
+    const bandPlanCalls = mockFetch.mock.calls.filter(([input]) =>
+      String(input).startsWith('/api/v1/band-plan/segments'),
+    );
+    expect(bandPlanCalls).toHaveLength(1);
+    expect(bandPlanCalls[0][0]).toBe(
+      '/api/v1/band-plan/segments?start=13825000&end=14525000',
+    );
+  });
+
   it('unmounts cleanly', () => {
     const target = document.createElement('div');
     document.body.appendChild(target);
