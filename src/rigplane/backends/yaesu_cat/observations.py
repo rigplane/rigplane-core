@@ -1787,10 +1787,8 @@ class YaesuObservationAdapter:
             )
             return False, None
         except CatCommandRejected:
-            # MUTATION (round-2 proof): disable the generic retry — every
-            # refused declared read records on its first refusal again.
             try:
-                raise CatCommandRejected("no retry", command="")
+                return True, await remake()
             except CatCommandRejected as retry_exc:
                 if paths:
                     self._record_declared_defect(label, retry_exc, paths)
