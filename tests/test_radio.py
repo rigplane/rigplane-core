@@ -2262,7 +2262,9 @@ class TestCivPacingIsSendToSend:
 
         async def slow_send(data: bytes, **kwargs: object) -> None:
             starts.append(len(mock_transport.sent_packets))
-            await original_send(data, **kwargs)
+            # The guard kwarg (is_current) is a runtime-to-transport
+            # contract; the mock transport does not take it.
+            await original_send(data)
 
         monkeypatch.setattr(mock_transport, "send_tracked", slow_send)
         cmd = build_civ_frame(
