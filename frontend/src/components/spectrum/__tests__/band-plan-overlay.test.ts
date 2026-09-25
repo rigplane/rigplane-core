@@ -137,7 +137,7 @@ describe('filterOverlapping (overlap suppression)', () => {
   });
 });
 
-describe('shouldSkipFetch (debounce)', () => {
+describe('shouldSkipFetch (containment)', () => {
   it('first fetch is never skipped', () => {
     expect(shouldSkipFetch(14_000_000, 14_350_000, 0, 0)).toBe(false);
   });
@@ -146,21 +146,16 @@ describe('shouldSkipFetch (debounce)', () => {
     expect(shouldSkipFetch(14_000_000, 14_350_000, 14_000_000, 14_350_000)).toBe(true);
   });
 
-  it('small shift (<1% of span) is skipped', () => {
-    const span = 350_000;
-    const shift = span * 0.005; // 0.5% shift
-    expect(shouldSkipFetch(
-      14_000_000 + shift, 14_350_000 + shift,
-      14_000_000, 14_350_000,
-    )).toBe(true);
+  it('viewport inside the widened fetch range is skipped', () => {
+    // The component fetches the viewport plus a half-span margin on each side.
+    expect(shouldSkipFetch(14_000_000, 14_350_000, 13_825_000, 14_525_000)).toBe(true);
   });
 
-  it('large shift (>1% of span) triggers fetch', () => {
-    const span = 350_000;
-    const shift = span * 0.02; // 2% shift
-    expect(shouldSkipFetch(
-      14_000_000 + shift, 14_350_000 + shift,
-      14_000_000, 14_350_000,
-    )).toBe(false);
+  it('viewport past the left fetch edge triggers fetch', () => {
+    expect(shouldSkipFetch(13_800_000, 14_350_000, 13_825_000, 14_525_000)).toBe(false);
+  });
+
+  it('viewport past the right fetch edge triggers fetch', () => {
+    expect(shouldSkipFetch(14_000_000, 14_550_000, 13_825_000, 14_525_000)).toBe(false);
   });
 });
