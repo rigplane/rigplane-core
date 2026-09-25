@@ -623,7 +623,9 @@ class AcquisitionScheduler:
         than the undemoted one — wins.
         """
 
-        demoted = None  # MUTATION M-A: skip the demoted envelope
+        demoted = self._demoted_queue_envelope.get(key)
+        if demoted is not None:
+            return demoted[0]
         klass = self._fitted_class_by_key.get(key)
         if klass is None:
             return declared
