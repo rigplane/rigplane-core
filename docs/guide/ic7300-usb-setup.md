@@ -226,7 +226,7 @@ radio = IcomRadio(
     model="IC-7300",
     serial_port="/dev/cu.usbserial-A602RVAV",
 )
-# Set 100ms minimum between CI-V commands (default is 50ms)
+# Set 100ms minimum between CI-V commands (default is 25ms)
 import os
 os.environ["ICOM_SERIAL_CIV_MIN_INTERVAL_MS"] = "100"
 ```

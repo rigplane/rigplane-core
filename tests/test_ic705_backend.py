@@ -4,7 +4,8 @@ import pytest
 
 from rigplane.backends.config import SerialBackendConfig
 from rigplane.backends.factory import create_radio
-from rigplane.backends.ic705.serial import Ic705SerialRadio
+from rigplane.backends.ic705.serial import Ic705SerialRadio, XieguSerialRadio
+from rigplane.core.acquisition_scheduler import civ_transport_budget_hz
 from serial_stub import SerialMockRadio
 from rigplane.backends.icom7610.serial import Icom7610SerialRadio
 from rigplane.exceptions import CommandError
@@ -32,14 +33,17 @@ def test_ic7610_factory_creates_correct_backend():
     assert not isinstance(radio, Ic705SerialRadio)
 
 
-def test_x6200_factory_routes_to_ic705_class_without_warning(caplog):
-    """Regression for MOR-170: ``--model X6200`` must route to the IC-705
-    serial transport class (X6200 shares the IC-705 CI-V personality —
-    Hamlib ``x6100_priv_caps`` is reused by ``x6200_caps``) and MUST NOT
-    log the "Unknown model … defaulting to IC-7610" fallback warning.
+def test_x6200_factory_routes_to_its_own_serial_class_without_warning(
+    caplog, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.delenv("ICOM_SERIAL_CIV_MIN_INTERVAL_MS", raising=False)
+    """Regression for MOR-170: ``--model X6200`` must route to a serial
+    transport (X6200 shares the IC-705 CI-V session — Hamlib
+    ``x6100_priv_caps`` is reused by ``x6200_caps``) and MUST NOT log the
+    "Unknown model … defaulting to IC-7610" fallback warning.
 
-    Behaviour separation from IC-705 happens via the loaded
-    ``rigs/x6200.toml`` profile, not via a distinct serial class.
+    MOR-2595 gives it its own subclass so the unmeasured 50 ms gap stays
+    with it. The command set still comes from ``rigs/x6200.toml``.
     """
     config = SerialBackendConfig(
         device="/dev/ttyUSB0",
@@ -47,13 +51,19 @@ def test_x6200_factory_routes_to_ic705_class_without_warning(caplog):
     )
     with caplog.at_level("WARNING", logger="rigplane.backends.factory"):
         radio = create_radio(config)
-    assert isinstance(radio, Ic705SerialRadio)
+    assert isinstance(radio, XieguSerialRadio)
     assert radio.model == "X6200"
+    assert radio._civ_min_interval == pytest.approx(0.050)  # noqa: SLF001
+    assert civ_transport_budget_hz(radio) == pytest.approx(20.0)
     # No silent fallback to IC-7610.
     assert not any(
         "defaulting to IC-7610" in rec.getMessage() for rec in caplog.records
     )
     assert not any("Unknown model" in rec.getMessage() for rec in caplog.records)
+
+    ic705 = create_radio(SerialBackendConfig(device="/dev/ttyUSB0", model="IC-705"))
+    assert ic705._civ_min_interval == pytest.approx(0.025)  # noqa: SLF001
+    assert civ_transport_budget_hz(ic705) == pytest.approx(40.0)
 
 
 def test_ic705_backend_default_model():
