@@ -610,15 +610,18 @@ describe('MOR-2509 v7 VFO face — ballistics, peak hold and afterglow', () => {
   let rafSpy: ReturnType<typeof vi.spyOn>;
   let originalMatchMedia: typeof window.matchMedia;
 
+  const orderLog: string[] = [];
+
   function step(dtMilliseconds: number): void {
     now += dtMilliseconds;
     // A real requestAnimationFrame callback fires exactly once: take the
     // pending set out of the map before invoking it, so a callback that
     // reschedules itself runs on the NEXT step and the map cannot grow
     // without bound across a long script.
-    const pending = [...frames.values()];
+    const pending = [...frames.entries()];
     frames.clear();
-    for (const callback of pending) callback(now);
+    orderLog.push(pending.map(([id]) => String(id)).join(','));
+    for (const [, callback] of pending) callback(now);
     flushSync();
   }
 
@@ -691,9 +694,15 @@ describe('MOR-2509 v7 VFO face — ballistics, peak hold and afterglow', () => {
       flushSync();
       for (let i = 0; i < phase.frames; i += 1) {
         step(16.7);
-        expect(peakFraction(svgOf(target))).toBeGreaterThanOrEqual(
-          fillFraction(svgOf(target)) - 1e-6,
-        );
+        const peak = peakFraction(svgOf(target));
+        const fill = fillFraction(svgOf(target));
+        if (peak < fill - 1e-6) {
+          throw new Error(
+            `ORDER phase=${phase.value} frame=${i} pending=${orderLog.at(-1)} `
+            + `callbacks=${orderLog.at(-1)?.split(',').length} peak=${peak} fill=${fill}`,
+          );
+        }
+        expect(peak).toBeGreaterThanOrEqual(fill - 1e-6);
       }
     }
   });
