@@ -249,8 +249,8 @@ def test_ic7610_lan_receive_demand_fits_the_margin(
     """MOR-2590: the IC-7610's receive window over LAN fits 0.75 x budget.
 
     Its remaining explicit receive cadences are under the transport budget,
-    so the class-derived paths stretch until every polled path together is
-    within the limit, and no receive warning is logged.
+    every polled path together is within the limit, and no receive warning
+    is logged.
     """
 
     acquisition = _CIV_ACQUISITION["IC-7610"]
