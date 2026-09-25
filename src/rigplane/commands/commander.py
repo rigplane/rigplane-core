@@ -281,17 +281,7 @@ class IcomCommander:
                     item.future.add_done_callback(_propagate_cancel)
 
                     try:
-                        # MUTATION (MOR-2603 pin proof): detach the
-                        # in-flight execute instead of awaiting it, so the
-                        # worker pipelines the next item while the first
-                        # answer is still missing.
-                        detached = execute_task
-                        assert detached is not None
-                        detached.add_done_callback(
-                            lambda t: t.cancelled() or t.exception()
-                        )
-                        execute_task = None
-                        resp = None
+                        resp = await execute_task
                     except asyncio.CancelledError:
                         # Distinguish caller-driven cancel from worker
                         # teardown (c.stop()).  item.future.cancelled() alone
