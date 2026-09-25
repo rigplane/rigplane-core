@@ -280,6 +280,10 @@ class IcomCommander:
                             is_current=item.is_current,
                         )
                     execute_task = asyncio.ensure_future(execution)
+                    # Stamp at send, not after the reply. With one request
+                    # outstanding a query then costs max(gap, round trip).
+                    # A caller-cancelled item whose packet left still counts.
+                    self._last_send = asyncio.get_running_loop().time()
                     inflight = execute_task
 
                     def _propagate_cancel(
@@ -307,13 +311,11 @@ class IcomCommander:
                         # stop().  Task.cancelling() (3.11+) exposes the
                         # worker's own pending cancel request.
                         if item.future.cancelled() and not worker.cancelling():
-                            self._last_send = asyncio.get_running_loop().time()
                             continue
                         raise
 
                     if worker.cancelling():
                         raise asyncio.CancelledError
-                    self._last_send = asyncio.get_running_loop().time()
                     if not item.future.done():
                         item.future.set_result(resp)
                 except asyncio.CancelledError:

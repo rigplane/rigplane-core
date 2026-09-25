@@ -572,6 +572,9 @@ class _Clock:
         return self.now
 
     async def sleep(self, delay: float) -> None:
+        # Yield first, as a real sleep does, so a send the caller is
+        # waiting to observe has happened before the clock moves.
+        await real_sleep(0)
         self.now += delay
 
     async def wait_for(self, awaitable, timeout):  # type: ignore[no-untyped-def]
@@ -592,6 +595,9 @@ class _Clock:
         finally:
             if not shielded.done():
                 shielded.cancel()
+
+
+real_sleep = asyncio.sleep
 
 
 def _install_clock(monkeypatch: pytest.MonkeyPatch, *, start: float) -> _Clock:
@@ -620,8 +626,11 @@ async def test_pacing_is_send_to_send_when_the_reply_outlasts_the_gap(
     starts: list[float] = []
 
     async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
-        starts.append(clock.now)
+        # The reply wait is this side's, after the radio has the frame, so
+        # it must not move the pacing clock. A post-reply stamp would.
+        await real_sleep(0)
         await asyncio.sleep(reply)
+        starts.append(clock.now)
         return _ack()
 
     commander = IcomCommander(execute, min_interval=gap)
@@ -632,7 +641,7 @@ async def test_pacing_is_send_to_send_when_the_reply_outlasts_the_gap(
     finally:
         await commander.stop()
 
-    assert starts == [gap, gap + reply]
+    assert starts == [gap + reply, gap + reply + reply]
 
 
 @pytest.mark.asyncio
@@ -645,8 +654,9 @@ async def test_pacing_waits_the_gap_from_the_send_when_the_reply_is_shorter(
     starts: list[float] = []
 
     async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
-        starts.append(clock.now)
+        await real_sleep(0)
         await asyncio.sleep(reply)
+        starts.append(clock.now)
         return _ack()
 
     commander = IcomCommander(execute, min_interval=gap)
@@ -657,7 +667,7 @@ async def test_pacing_waits_the_gap_from_the_send_when_the_reply_is_shorter(
     finally:
         await commander.stop()
 
-    assert starts == [gap, gap + gap]
+    assert starts == [gap + reply, gap + gap]
 
 
 @pytest.mark.asyncio
@@ -670,10 +680,11 @@ async def test_a_caller_cancelled_inflight_send_still_paces_the_next(
     starts: list[float] = []
 
     async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
-        starts.append(clock.now)
+        await real_sleep(0)
         if cmd == b"slow":
             sent.set()
             await asyncio.sleep(1.0)
+        starts.append(clock.now)
         return _ack()
 
     commander = IcomCommander(execute, min_interval=gap)
@@ -687,7 +698,7 @@ async def test_a_caller_cancelled_inflight_send_still_paces_the_next(
     finally:
         await commander.stop()
 
-    assert starts == pytest.approx([gap, gap + gap])
+    assert starts == pytest.approx([gap + 1.0, gap + gap])
 
 
 @pytest.mark.asyncio
