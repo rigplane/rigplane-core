@@ -29,10 +29,11 @@ from rigplane.core.state_acquisition_policy import (
     RadioAcquisitionProfile,
 )
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
+from rigplane.core.radio_state import RadioState
 from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.types import CivFrame
 from rigplane.profiles import RadioProfile
 from rigplane.runtime._poller_types import CommandQueue
-from rigplane.types import CivFrame, RadioState
 from rigplane.web.radio_poller import RadioPoller
 
 _FREQ = FieldPath.active("main", "freq_mode", "freq_hz")
