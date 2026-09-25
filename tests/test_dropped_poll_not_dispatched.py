@@ -168,8 +168,8 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched(
         await commander.stop()
         commander.start()
         clock.advance(_CADENCE + 0.01)
-        service.tick(now=clock.now())
-        assert scheduler.diagnostics()["cadenceByGroup"] == {}
+        scheduler.due_requests(now=clock.now())
+        assert scheduler.pending_requests() != ()
         await poller._send_query()  # noqa: SLF001
         in_flight = poller._acquisition_in_flight  # noqa: SLF001
         assert len(in_flight) == 1
