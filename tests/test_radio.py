@@ -2071,6 +2071,40 @@ class TestCivPacingIsSendToSend:
         assert radio._last_civ_send_monotonic == gap
 
     @pytest.mark.asyncio
+    async def test_pump_smoke_two_sequential_sends(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Two sequential executes, each answered, with the clock installed."""
+        gap = 0.025
+        clock = _install_pacing_clock(monkeypatch, gap=gap)
+        radio._civ_min_interval = gap
+        radio._civ_ack_sink_grace = 0.0
+        clock.install_wait_guard(radio)
+        clock.install_gc_guard(radio)
+        radio._last_civ_send_monotonic = 0.0
+        radio._civ_runtime.start_pump()
+        try:
+            cmd = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
+            first_task = asyncio.create_task(radio._execute_civ_raw(cmd))
+            while not mock_transport.sent_packets:
+                await asyncio.sleep(0)
+            mock_transport.queue_response(_freq_response(14_074_000))
+            first = await asyncio.wait_for(first_task, timeout=10.0)
+            second_task = asyncio.create_task(radio._execute_civ_raw(cmd))
+            while len(mock_transport.sent_packets) < 2:
+                await asyncio.sleep(0)
+            mock_transport.queue_response(_freq_response(14_075_000))
+            second = await asyncio.wait_for(second_task, timeout=10.0)
+        finally:
+            await radio._civ_runtime.stop_pump()
+            radio._civ_request_tracker.fail_all(ConnectionError("test cleanup"))
+
+        assert first is not None and second is not None
+
+    @pytest.mark.asyncio
     async def test_long_reply_sends_next_immediately(
         self,
         radio: IcomRadio,
