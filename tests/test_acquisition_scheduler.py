@@ -4716,7 +4716,7 @@ def _ic7610_scheduler(
     """IC-7610 tick-wired scheduler with ``active`` stored FRESH (or absent)."""
 
     clock = FreshnessClock(start=100.0)
-    store = StateStore(clock=clock)
+    store = StateStore(freshness_clock=clock)
     scheduler = AcquisitionScheduler(profile=_ic7610_acquisition(), clock=clock)
     service = StateFreshnessService(store=store, scheduler=scheduler)
     if active_value is not None:
@@ -4861,7 +4861,7 @@ def test_a_profile_without_active_is_unchanged() -> None:
 
     acquisition = _ic7300_acquisition()
     clock = FreshnessClock(start=100.0)
-    store = StateStore(clock=clock)
+    store = StateStore(freshness_clock=clock)
     scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
     service = StateFreshnessService(store=store, scheduler=scheduler)
     service.tick(now=clock.now())
