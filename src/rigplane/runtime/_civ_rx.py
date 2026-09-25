@@ -3955,8 +3955,12 @@ class CivRuntime:
             check_current()
             pkt = self._wrap_civ(civ_frame)
             await transport.send_tracked(pkt, **guard)
-            check_current()
+            # The packet left the wire: stamp before the currency check
+            # below so a cancel or a stale attempt still paces the next
+            # send from this one (same shape as the fire-and-forget
+            # branch above).
             self._host._last_civ_send_monotonic = time.monotonic()
+            check_current()
             assert pending is not None
             # The answer window is spent from here, not from method entry:
             # ``_civ_get_timeout`` bounds how long the *radio* may take,
