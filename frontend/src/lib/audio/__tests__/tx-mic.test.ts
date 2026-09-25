@@ -19,11 +19,17 @@ beforeEach(() => {
     writable: true, configurable: true,
   });
 });
+const originalNavigator = globalThis.navigator;
 afterEach(() => {
   delete (globalThis as any).AudioEncoder;
   delete (globalThis as any).MediaStreamTrackProcessor;
   delete (globalThis as any).AudioContext;
   delete (globalThis as any).webkitAudioContext;
+  Object.defineProperty(globalThis, 'navigator', {
+    value: originalNavigator,
+    writable: true,
+    configurable: true,
+  });
 });
 
 describe('TxMic', () => {
