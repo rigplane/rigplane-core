@@ -67,7 +67,7 @@ export function createSmoother(attack = 0.12, release = 0.32, initialValue = 0) 
       current = newTarget;
       return;
     }
-    if (false && started && frameId === 0 && newTarget !== current) {
+    if (started && frameId === 0 && newTarget !== current) {
       loop();
     }
   }
