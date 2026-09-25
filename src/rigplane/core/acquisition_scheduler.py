@@ -452,7 +452,7 @@ def civ_transport_budget_hz(radio: object) -> float | None:
     rtt = getattr(radio, "_civ_rtt_estimate", 0.0)
     if isinstance(rtt, bool) or not isinstance(rtt, (int, float)) or rtt < 0:
         rtt = 0.0
-    return 1.0 / max(interval, rtt)
+    return 1.0 / interval
 
 
 class AcquisitionScheduler:

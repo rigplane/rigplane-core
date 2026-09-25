@@ -513,6 +513,9 @@ def test_the_budget_is_one_over_max_gap_and_round_trip(
     assert civ_transport_budget_hz(_serial_radio()) == pytest.approx(_SERIAL_BUDGET_HZ)
     monkeypatch.setenv("ICOM_CIV_MIN_INTERVAL_MS", "40")
     assert civ_transport_budget_hz(_lan_radio()) == pytest.approx(25.0)
+    monkeypatch.setenv("ICOM_CIV_MIN_INTERVAL_MS", "5")
+    # Gap 5 ms, round-trip estimate 9 ms: the budget follows the estimate.
+    assert civ_transport_budget_hz(_lan_radio()) == pytest.approx(1.0 / 0.009)
     assert civ_transport_budget_hz(object()) is None
 
 
