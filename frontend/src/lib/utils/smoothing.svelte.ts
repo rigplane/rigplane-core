@@ -87,8 +87,6 @@ export function createSmoother(attack = 0.12, release = 0.32, initialValue = 0) 
     if (Math.abs(target - current) < SETTLE_EPSILON) {
       frameId = 0;
       current = target;
-      // MUTATION (MOR-2613): snap, but keep requesting frames forever.
-      frameId = requestAnimationFrame(tick);
       return;
     }
 
