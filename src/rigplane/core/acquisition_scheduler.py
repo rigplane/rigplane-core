@@ -357,6 +357,9 @@ class IcomCivAcquisitionExecutor:
                     return AcquisitionExecutionResult(sent_paths=tuple(sent))
                 raise
             sent.append(path)
+        import sys
+
+        print("EXEC-RESULT", sent, failed, file=sys.stderr)
         if not sent and not failed:
             raise BackgroundSendDropped("no path of this request was sent")
         return AcquisitionExecutionResult(
