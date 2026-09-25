@@ -60,6 +60,9 @@ describe('managedTxAuthorityKey + refresh gate (MOR-2607)', () => {
   it('an idle stream of observation-only frames causes 0 refreshes', () => {
     const gate = new ManagedTxAuthorityRefreshGate();
     let state = baseState;
+    // The mounted page already refreshed once for the initial key; only
+    // idle frames must add nothing.
+    gate.shouldRefresh(managedTxAuthorityKey(state, baseCaps));
     let refreshes = 0;
     for (let frame = 0; frame < 10; frame += 1) {
       state = idleFrame(state, frame);
@@ -76,6 +79,7 @@ describe('managedTxAuthorityKey + refresh gate (MOR-2607)', () => {
     };
     observe(baseState);
     observe(idleFrame(baseState, 0));
+    expect(refreshes).toBe(1);
     observe({ ...baseState, ptt: true, fieldStatus: { ...baseState.fieldStatus, ptt: field(9) } } as unknown as ServerState);
     observe(idleFrame({ ...baseState, ptt: true } as unknown as ServerState, 1));
     expect(refreshes).toBe(2);
@@ -89,6 +93,7 @@ describe('managedTxAuthorityKey + refresh gate (MOR-2607)', () => {
     };
     observe(baseState);
     observe(idleFrame(baseState, 0));
+    expect(refreshes).toBe(1);
     observe({ ...baseState, providerGeneration: 4 } as unknown as ServerState);
     expect(refreshes).toBe(2);
   });
