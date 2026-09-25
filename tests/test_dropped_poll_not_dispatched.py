@@ -23,7 +23,9 @@ from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
     AcquisitionScheduler,
     AcquisitionStatus,
+    StateFreshnessService,
 )
+from rigplane.core.state_store import FreshnessClock, StateStore
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
     FieldCapability,
@@ -83,15 +85,20 @@ class _CapRadio:
         )
 
 
-def _scheduler() -> AcquisitionScheduler:
-    return AcquisitionScheduler(
-        profile=RadioAcquisitionProfile(
-            provider="icom_civ",
-            capabilities=(FieldCapability(path=_FREQ, polling=True),),
-            default_policy=AcquisitionPolicy(),
-            field_policies={_FREQ: AcquisitionPolicy(cadence_seconds=1.0)},
-        )
+_CADENCE = 1.0
+
+
+def _profile() -> RadioAcquisitionProfile:
+    return RadioAcquisitionProfile(
+        provider="icom_civ",
+        capabilities=(FieldCapability(path=_FREQ, polling=True),),
+        default_policy=AcquisitionPolicy(),
+        field_policies={_FREQ: AcquisitionPolicy(cadence_seconds=_CADENCE)},
     )
+
+
+def _scheduler(*, clock: FreshnessClock | None = None) -> AcquisitionScheduler:
+    return AcquisitionScheduler(profile=_profile(), clock=clock)
 
 
 async def _fill_background_cap(commander: IcomCommander) -> None:
@@ -125,15 +132,10 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched(
         await asyncio.wait_for(started.wait(), timeout=1.0)
         await _fill_background_cap(commander)
 
-        scheduler = _scheduler()
-        queued = scheduler.ensure_fresh(
-            _FREQ,
-            max_age=5.0,
-            priority=AcquisitionPriority.BACKGROUND,
-            reason="policy-cadence",
-        )
-        assert queued.status is AcquisitionStatus.QUEUED
-        assert queued.request is not None
+        clock = FreshnessClock(start=100.0)
+        scheduler = _scheduler(clock=clock)
+        store = StateStore(clock=clock)
+        service = StateFreshnessService(store=store, scheduler=scheduler)
         radio = _CapRadio(commander)
         radio._acquisition_scheduler = scheduler  # type: ignore[attr-defined]
         recorder = StateDiagnosticsRecorder(enabled=True)
@@ -141,23 +143,39 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched(
             radio,  # type: ignore[arg-type]
             CommandQueue(),
             radio_state=RadioState(),
+            state_store=store,
             diagnostics=recorder,
         )
 
+        service.tick(now=clock.now())
         with caplog.at_level(logging.DEBUG):
             await poller._send_query()  # noqa: SLF001
 
-        assert scheduler.may_credit(queued.request, observation_timestamp=1e9) is False
+        dropped = scheduler.pending_requests()
+        assert dropped == ()
         assert poller._acquisition_in_flight == {}  # noqa: SLF001
         assert [
             event.kind
             for event in recorder.events()
             if event.kind == "acquisition_request_sent"
         ] == []
-        assert queued.request.id in {
-            request.id for request in scheduler.pending_requests()
-        }
         assert caplog.records == []
+
+        # One cadence later the dropped path goes out again, well before
+        # max_age (5 s) plus the 6 s healthy-link grace. Free one cap slot
+        # first: the worker is still parked on the gate item.
+        release.set()
+        await gate
+        await commander.stop()
+        commander.start()
+        clock.advance(_CADENCE)
+        service.tick(now=clock.now())
+        await poller._send_query()  # noqa: SLF001
+        assert radio.seen[-1] is Priority.BACKGROUND
+        assert scheduler.pending_requests() != ()
+        assert scheduler.may_credit(
+            scheduler.pending_requests()[0], observation_timestamp=clock.now()
+        )
     finally:
         release.set()
         await gate

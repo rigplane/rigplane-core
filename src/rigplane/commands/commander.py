@@ -27,9 +27,8 @@ T = TypeVar("T")
 # scheduler's in-flight guard (~25 cadence groups), so this is a safety net
 # against pathological growth, not a normal-operation limit.  When the cap is
 # reached, the newest BACKGROUND fire-and-forget send is dropped: ``send``
-# raises ``BackgroundSendDropped`` instead of returning ``None``, which is also what an
-# enqueued fire-and-forget send returns.  The cap NEVER applies to
-# non-background sends or to ``wait_dispatch=True`` sends.
+# raises ``BackgroundSendDropped`` instead of returning ``None``.  The cap
+# NEVER applies to non-background sends or to ``wait_dispatch=True`` sends.
 _MAX_BG_INFLIGHT = 64
 
 
@@ -154,18 +153,18 @@ class IcomCommander:
     ) -> CivFrame | None:
         """Enqueue a CI-V command.
 
-                Args:
-                    wait_dispatch: When True (default), await the worker dispatching
-                        this item and return its result — the historical blocking
-                        contract for user commands.  When False, return ``None``
-                        immediately after enqueueing without awaiting the worker; the
-                        item is still paced, executed, and its future resolved by the
-                        worker, but the caller does not observe it.  Used by the
-                        background poller so the poll burst does not park the poll loop
-                        (responses arrive via the RX path, not this future).  For
-                        ``Priority.BACKGROUND`` fire-and-forget sends a defensive
-                        ``_MAX_BG_INFLIGHT`` cap bounds outstanding work (drop-newest,
-        #                 raising ``BackgroundSendDropped``).
+        Args:
+            wait_dispatch: When True (default), await the worker dispatching
+                this item and return its result — the historical blocking
+                contract for user commands.  When False, return ``None``
+                immediately after enqueueing without awaiting the worker; the
+                item is still paced, executed, and its future resolved by the
+                worker, but the caller does not observe it.  Used by the
+                background poller so the poll burst does not park the poll loop
+                (responses arrive via the RX path, not this future).  For
+                ``Priority.BACKGROUND`` fire-and-forget sends a defensive
+                ``_MAX_BG_INFLIGHT`` cap bounds outstanding work (drop-newest,
+                raising ``BackgroundSendDropped``).
         """
         if (
             self._queue is None

@@ -69,7 +69,6 @@ __all__ = [
     "adaptive_cadence_limit",
     "availability_clause_holds",
     "civ_acquisition_executor_for_provider",
-    "commander_priority_name",
     "civ_transport_budget_hz",
     "derive_active_receiver_value",
     "derive_tx_active",
@@ -134,7 +133,9 @@ class AcquisitionQuery:
     receiver: int | None = None
 
 
-AcquisitionQuerySender = Callable[..., Awaitable[None]]
+AcquisitionQuerySender = Callable[
+    [AcquisitionQuery, "AcquisitionPriority"], Awaitable[None]
+]
 AcquisitionQueryResolver = Callable[[FieldPath], AcquisitionQuery | None]
 CivCmd29Support = Callable[[int, int | None], bool]
 
@@ -347,14 +348,14 @@ class IcomCivAcquisitionExecutor:
                     continue
                 query = replace(query, receiver=None)
             try:
-                await self._send_query(
-                    query, getattr(request, "priority", AcquisitionPriority.BACKGROUND)
-                )
+                await self._send_query(query, request.priority)
             except BackgroundSendDropped:
-                # A fire-and-forget send the commander dropped at its cap.
-                # Leaving the path out of ``sent`` is what keeps the drain
-                # from recording a dispatch for a frame that never left.
-                continue
+                if sent:
+                    # A later path of this request was dropped. The ones
+                    # already sent stay sent; the drain's error path
+                    # completes the rest so cadence can re-queue them.
+                    return AcquisitionExecutionResult(sent_paths=tuple(sent))
+                raise
             sent.append(path)
         return AcquisitionExecutionResult(
             sent_paths=tuple(sent),
@@ -391,19 +392,6 @@ def civ_acquisition_executor_for_provider(
         resolve_query=resolve_query,
         supports_cmd29=supports_cmd29,
     )
-
-
-def commander_priority_name(priority: AcquisitionPriority) -> str:
-    """Lane name a CI-V commander should use for this acquisition priority.
-
-    ``COMMAND`` and ``USER`` are acquisitions a person or a write just asked
-    for, so they must not sit behind the poll burst. Everything else stays
-    on the background lane.
-    """
-
-    if priority in (AcquisitionPriority.COMMAND, AcquisitionPriority.USER):
-        return "normal"
-    return "background"
 
 
 _PRIORITY_RANK: dict[AcquisitionPriority, int] = {

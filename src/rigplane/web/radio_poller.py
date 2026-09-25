@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any, Callable, cast
 
 from ..exceptions import CommandError
 from ..exceptions import ConnectionError as RadioConnectionError
+from ..core.exceptions import BackgroundSendDropped
 from ..core.exceptions import TimeoutError as RigplaneTimeoutError
 from ..capabilities import (
     CAP_AGC,
@@ -88,7 +89,6 @@ from ..core.acquisition_scheduler import (
     AcquisitionRequest,
     AcquisitionScheduler,
     civ_acquisition_executor_for_provider,
-    commander_priority_name,
 )
 from ..core.state_pipeline_contracts import (
     CommandIntent,
@@ -1211,12 +1211,11 @@ class RadioPoller:
     ) -> None:
         """Send a single state query
 
-        ``priority`` is the request's own. A ``COMMAND`` or ``USER`` request
-        goes out at ``Priority.NORMAL`` so a post-write confirmation does not
-        wait behind the poll burst; everything else stays
-        ``Priority.BACKGROUND``. All sends here are fire-and-forget
-        (``wait_dispatch=False``) so the response still arrives via the CI-V
-        RX path.
+        A ``COMMAND`` or ``USER`` request goes out at ``Priority.NORMAL`` so
+        a post-write confirmation does not wait behind the poll burst;
+        everything else stays ``Priority.BACKGROUND``. All sends here are
+        fire-and-forget (``wait_dispatch=False``) so the response still
+        arrives via the CI-V RX path.
 
         The lossless query envelope keeps the CI-V sub-command, payload data,
         and optional cmd29 receiver route separate. Wire-frame assembly
@@ -1234,7 +1233,7 @@ class RadioPoller:
         command, sub, data = wire_parts_for_query(query, scope_rx)
         lane = (
             Priority.NORMAL
-            if commander_priority_name(priority) == "normal"
+            if priority in (AcquisitionPriority.COMMAND, AcquisitionPriority.USER)
             else Priority.BACKGROUND
         )
         await self._civ(
@@ -1822,6 +1821,8 @@ class RadioPoller:
                         "radio-poller: radio disconnected, backing off %.1fs", _backoff
                     )
                     continue
+                except BackgroundSendDropped:
+                    pass
                 except Exception:
                     # MOR-1440: a dead serial link surfaces here as a bare
                     # TimeoutError (CI-V transport recovery-wait gate), not
