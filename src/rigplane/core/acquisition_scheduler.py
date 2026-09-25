@@ -351,6 +351,7 @@ class IcomCivAcquisitionExecutor:
                 await self._send_query(query, request.priority)
             except BackgroundSendDropped:
                 if sent:
+                    sent.append(path)
                     return AcquisitionExecutionResult(sent_paths=tuple(sent))
                 raise
             sent.append(path)
