@@ -311,7 +311,6 @@ class IcomCommander:
                         # stop().  Task.cancelling() (3.11+) exposes the
                         # worker's own pending cancel request.
                         if item.future.cancelled() and not worker.cancelling():
-                            self._last_send = 0.0
                             continue
                         raise
 
