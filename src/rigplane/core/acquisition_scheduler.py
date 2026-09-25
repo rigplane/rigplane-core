@@ -1044,6 +1044,23 @@ class AcquisitionScheduler:
             if observed_active is not None
             else {}
         )
+        # MOR-2599 flip hygiene: a group no longer demoted (the receiver
+        # became selected, or active went unobserved) must not keep polling
+        # on its old demoted clock — drop the clock entry whose cadence
+        # exceeds the undemoted base, so due-ness re-computes at the class
+        # cadence on this very computation.
+        if observed_active is not None:
+            for key, state in tuple(self._cadence_by_key.items()):
+                if state is None:
+                    continue
+                base = self._fitted_cadence_seconds(
+                    key, key.policy.cadence_seconds or 0.0
+                )
+                if (
+                    key not in self._demoted_queue_envelope
+                    and state.current_cadence_seconds > base + 1e-9
+                ):
+                    del self._cadence_by_key[key]
         timestamp = self._clock.now() if now is None else now
         due = self._due_poll_groups(timestamp, tx_active=tx_active)
         queued: list[AcquisitionRequest] = []
