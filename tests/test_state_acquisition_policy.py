@@ -936,6 +936,25 @@ def test_registry_specs_carry_the_derived_acquisition_class() -> None:
     assert not mismatches, mismatches
 
 
+def test_tuner_status_polls_in_the_control_class() -> None:
+    """The TUNE badge must clear within seconds of the tune ending.
+
+    The end of a tune is radio-driven, so its visibility is the poll
+    cadence. As a setting (10 s nominal, 30 s ceiling, held at the ceiling
+    in TX) the badge cleared up to ~12 s late in RX on the IC-7300's
+    stretched serial fit and up to 30 s late when the radio reported PTT
+    during the tune. The control class (2 s nominal, 5 s ceiling, not
+    held) bounds that lag.
+    """
+
+    assert (
+        acquisition_class_for_path(
+            FieldPath.global_("operator_controls", "tuner_status")
+        )
+        is AcquisitionClass.CONTROL
+    )
+
+
 def test_acquisition_class_table_is_the_owner_approved_literal() -> None:
     """The table is exactly the owner-approved 8-row table of MOR-2574.
 
@@ -1094,14 +1113,15 @@ def test_fit_to_budget_applies_the_tx_window_rules() -> None:
 
 
 def test_fit_to_budget_reproduces_the_design_ic7610_lan_receive_figure() -> None:
-    """The design's IC-7610 LAN receive figure: setting stretched to ~14.09 s.
+    """The design's IC-7610 LAN receive figure: setting stretched to ~15.80 s.
 
     Class counts are computed here from the LOADED IC-7610 profile. The
     MOR-2574 headline measurement folded the panel knobs into the setting
     class, before the owner's 2026-09-24 decision gave the 2026-09-07
-    panel set its own 5 s class; this test reproduces that fold (57
-    setting fields) so the 21.43 q/s limit stretches setting to about
-    14.09 s and closes exactly on it.
+    panel set its own 5 s class; this test reproduces that fold (56
+    setting fields, with ``tuner_status`` in the control class) so the
+    21.43 q/s limit stretches setting to about 15.80 s and closes
+    exactly on it.
     """
 
     acquisition = get_radio_profile("IC-7610").state_acquisition
@@ -1128,7 +1148,7 @@ def test_fit_to_budget_reproduces_the_design_ic7610_lan_receive_figure() -> None
 
     assert fit.fits is True
     assert fit.effective_cadence_seconds[AcquisitionClass.SETTING] == (
-        pytest.approx(14.09, abs=0.01)
+        pytest.approx(15.80, abs=0.01)
     )
     assert fit.demand_hz == pytest.approx(0.75 * lan_budget_hz)
 
