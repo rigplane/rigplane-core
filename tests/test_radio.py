@@ -1996,6 +1996,15 @@ class TestCivPacingIsSendToSend:
     """
 
     @pytest.mark.asyncio
+    async def test_clock_wait_for_flag_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """wait_for_flag alone, no radio: must return in real time."""
+        clock = _install_pacing_clock(monkeypatch, gap=0.01)
+        flag = asyncio.Event()
+        assert await clock.wait_for_flag(flag, rounds=20) is False
+
+    @pytest.mark.asyncio
     async def test_pump_smoke_without_pacing_clock(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
