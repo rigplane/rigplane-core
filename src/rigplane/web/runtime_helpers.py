@@ -35,6 +35,7 @@ __all__ = [
     "primary_receiver_snapshot_ids",
     "VFO_CAPABILITY_TAGS",
     "projected_af_level_sub_tag",
+    "projected_receiver_control_tags",
     "projected_vfo_capability_tags",
 ]
 
@@ -675,6 +676,46 @@ def projected_af_level_sub_tag(
         return frozenset()
     admitted = supports("set_af_level", receiver=1) is True
     return frozenset({"af_level_sub"}) if admitted else frozenset()
+
+
+# Per-receiver control tags (MOR-2588) and the declared field path each one
+# is backed by. MAIN keeps the radio-wide capability (``attenuator``/
+# ``preamp``/``agc``), so only SUB carries an att/preamp tag; AGC time needs
+# both because ``agc`` alone is not proof of a time control (MOR-2527's
+# FTX-1).
+_RECEIVER_CONTROL_TAG_PATHS: tuple[tuple[str, FieldPath], ...] = (
+    ("attenuator_sub", FieldPath.parse("receiver.sub.operator_controls.att")),
+    ("preamp_sub", FieldPath.parse("receiver.sub.operator_controls.preamp")),
+    (
+        "agc_time_constant",
+        FieldPath.parse("receiver.main.operator_controls.agc_time_constant"),
+    ),
+    (
+        "agc_time_constant_sub",
+        FieldPath.parse("receiver.sub.operator_controls.agc_time_constant"),
+    ),
+)
+
+
+def projected_receiver_control_tags(radio: "Radio | None") -> frozenset[str]:
+    """Return the per-receiver control tags the profile itself declares
+    (MOR-2588), following ``projected_af_level_sub_tag``'s serving pattern.
+
+    The fact is the profile's declared acquisition paths, not
+    ``supports_command`` receiver admission: admission under-admits declared
+    fields (FTX-1 declares ``receiver.main.operator_controls.preamp`` with no
+    receiver-admitted write) and over-admits undeclared ones (IC-9700/IC-705
+    declare the 0x1A 04 command pair without declaring the polled field).
+    Fail-closed: no profile or acquisition state means no tags. No observed
+    reading enters the answer.
+    """
+    acquisition = getattr(getattr(radio, "profile", None), "state_acquisition", None)
+    if not isinstance(acquisition, RadioAcquisitionProfile):
+        return frozenset()
+    declared = declared_field_paths(acquisition)
+    return frozenset(
+        tag for tag, path in _RECEIVER_CONTROL_TAG_PATHS if path in declared
+    )
 
 
 def projected_vfo_capability_tags(
@@ -1498,6 +1539,23 @@ def build_public_state_payload(
     )
 
 
+def declared_field_paths(
+    acquisition: RadioAcquisitionProfile,
+) -> frozenset[FieldPath]:
+    """Return every field path the profile declares: ``field_policies`` keys
+    plus the capability paths it does not mark unavailable.
+
+    This is the same ``declared`` set ``snapshot_field_status_inputs``
+    reports, kept as one function so the served tags and the field-status
+    absence seed can never disagree on what "declared" means.
+    """
+    return frozenset(acquisition.field_policies) | frozenset(
+        capability.path
+        for capability in acquisition.capabilities
+        if not capability.is_unavailable
+    )
+
+
 def snapshot_field_status_inputs(
     acquisition: RadioAcquisitionProfile,
     snapshot: StateSnapshot,
@@ -1514,12 +1572,9 @@ def snapshot_field_status_inputs(
     would read ``undeclared``.
     """
 
-    declared = frozenset(acquisition.field_policies) | frozenset(
-        capability.path
-        for capability in acquisition.capabilities
-        if not capability.is_unavailable
+    return resolve_available_when(acquisition, snapshot), declared_field_paths(
+        acquisition
     )
-    return resolve_available_when(acquisition, snapshot), declared
 
 
 def build_public_state_payload_from_snapshot(

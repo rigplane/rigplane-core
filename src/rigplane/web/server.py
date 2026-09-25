@@ -109,6 +109,7 @@ from .runtime_helpers import (  # noqa: TID251
     classify_radio_health,
     primary_receiver_snapshot_ids,
     projected_af_level_sub_tag,
+    projected_receiver_control_tags,
     projected_vfo_capability_tags,
     radio_ready,
     runtime_capabilities,
@@ -1047,14 +1048,17 @@ class WebServer:
         return profile
 
     def _projected_runtime_capabilities(self) -> set[str]:
-        """Return runtime tags with VFO primitives trusted only from a profile
-        and ``af_level_sub`` only from the radio's own admission (MOR-2579)."""
+        """Return runtime tags with VFO primitives trusted only from a profile,
+        ``af_level_sub`` only from the radio's own admission (MOR-2579), and
+        the per-receiver att/preamp/AGC-time tags only from the profile's own
+        field declarations (MOR-2588)."""
         caps = _runtime_capabilities(self._radio) - VFO_CAPABILITY_TAGS
         return cast(
             set[str],
             caps
             | projected_vfo_capability_tags(self._radio, self._config.radio_model)
-            | projected_af_level_sub_tag(self._radio, caps),
+            | projected_af_level_sub_tag(self._radio, caps)
+            | projected_receiver_control_tags(self._radio),
         )
 
     def _bootstrap_state_acquisition(self) -> None:

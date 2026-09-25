@@ -192,12 +192,6 @@ function strictFieldAvailable(state: ServerState | null, field: string): boolean
   return seen(state, field) && topFieldAvailable(state, field);
 }
 
-/** MOR-2511 B2: true when the field is explicitly marked undeclared for this
- *  receiver (e.g. SUB.att on FTX-1). */
-function fieldUndeclared(state: ServerState | null, path: string): boolean {
-  return state?.fieldStatus?.[path]?.availability === 'undeclared';
-}
-
 /** `fieldFresh` is the raw `topFieldAvailable` read; a structurally-absent
  *  control must never report a "known" reading even if the (irrelevant)
  *  field happens to look fresh — so the reading gates on BOTH, same as
@@ -959,13 +953,14 @@ function deriveDsp(
       ...(agcProjection.autoSpeed === undefined ? {} : { autoSelectedSpeed: agcProjection.autoSpeed }),
     },
     agcModes: caps.agcModes ?? [],
-    // MOR-2527: `agc` alone is not proof of an AGC-time control — the FTX-1
-    // has AGC but no time constant, and the server says so
-    // (`fieldStatus["<rx>.agcTimeConstant"].availability === "undeclared"`).
-    // Same `fieldUndeclared` gate MOR-2511 put on att/preamp: an undeclared
-    // field is structurally ABSENT, not present-and-unread.
+    // MOR-2527/MOR-2588: `agc` alone is not proof of an AGC-time control —
+    // the FTX-1 has AGC but no time constant. The server serves
+    // `agc_time_constant` / `agc_time_constant_sub` only for receivers whose
+    // fields the profile declares (`web/runtime_helpers.py:
+    // projected_receiver_control_tags`), so the gate reads that declaration,
+    // never the field status a mis-credited reading could flip.
     agcTimeConstant: txAuxField(
-      hasAgcCap && !fieldUndeclared(state, `${base}agcTimeConstant`),
+      hasAgcCap && hasCap(caps, onSub ? 'agc_time_constant_sub' : 'agc_time_constant'),
       topFieldAvailable(state, `${base}agcTimeConstant`), numOrUndef(rx?.agcTimeConstant),
     ),
   };
@@ -1099,10 +1094,16 @@ function deriveReceiverIndicators(
     const sMeterOperational = receiverOperational && sMeterRetained;
     const providerGeneration = state?.providerGeneration;
 
-    // MOR-2511 B2: if the receiver's att/preamp is undeclared, it is
-    // structurally absent for THIS receiver regardless of radio-wide capability.
-    const attStructural = hasAttenuator && !fieldUndeclared(state, path('att'));
-    const preampStructural = hasPreamp && !fieldUndeclared(state, path('preamp'));
+    // MOR-2588: a receiver's att/preamp exists only when the radio declares
+    // it for THAT receiver — MAIN by the radio-wide capability, SUB by the
+    // server-served `attenuator_sub`/`preamp_sub` tags
+    // (`web/runtime_helpers.py: projected_receiver_control_tags`). An
+    // observed reading credited to a receiver that never declared the field
+    // cannot light this.
+    const attStructural = hasAttenuator
+      && (receiver === 'MAIN' || hasCap(caps, 'attenuator_sub'));
+    const preampStructural = hasPreamp
+      && (receiver === 'MAIN' || hasCap(caps, 'preamp_sub'));
 
     return {
       receiver,
@@ -2114,14 +2115,14 @@ export function toRadioViewModel(
     tx, txAux, ritXit, antenna,
   );
   if (rfFrontEndMutex) disabledReasons.push(rfFrontEndMutex);
-  // MOR-2511 B2: active receiver lacks att/preamp control (undeclared on this receiver)
-  if (rfFrontEnd) {
-    const onSub = state?.active === 'SUB';
-    const base = onSub ? 'sub.' : 'main.';
-    if (fieldUndeclared(state, `${base}att`)) {
+  // MOR-2588: the active SUB receiver lacks att/preamp when the radio does
+  // not declare them for SUB (no `attenuator_sub`/`preamp_sub` tag), even if
+  // a mis-credited reading made the field status available.
+  if (rfFrontEnd && state?.active === 'SUB') {
+    if (hasCap(caps, 'attenuator') && !hasCap(caps, 'attenuator_sub')) {
       disabledReasons.push({ field: 'rfFrontEnd.attenuator', code: 'receiver-lacks-control' });
     }
-    if (fieldUndeclared(state, `${base}preamp`)) {
+    if (hasCap(caps, 'preamp') && !hasCap(caps, 'preamp_sub')) {
       disabledReasons.push({ field: 'rfFrontEnd.preamp', code: 'receiver-lacks-control' });
     }
   }
