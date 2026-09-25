@@ -69,7 +69,6 @@ from ..core.state_pipeline_contracts import (
 )
 from ..core.state_store import StateSnapshot, StateStore
 from ..core.tx_observation import ObservedPtt, project_observed_ptt
-from ..runtime.managed_tx_state import ManagedTxIntentKind
 from ..radio_state import RadioState
 from ..capabilities import CAP_AUDIO
 from ..exceptions import TimeoutError as RigplaneTimeoutError
@@ -2881,6 +2880,7 @@ class WebServer:
         except Exception:
             logger.debug("audio-bridge: TX gate failed open", exc_info=True)
             return True
+        del projection
         return observed is not ObservedPtt.OFF
 
     async def start_audio_bridge(
