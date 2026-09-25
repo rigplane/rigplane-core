@@ -979,16 +979,21 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     expect(q('[data-testid="dsp-agcTimeConstant"]')!.closest('[data-part="agc"]')).toBeNull();
   });
 
-  // MOR-2527: the FTX-1 has AGC but NO AGC time constant — the server marks
-  // `main.agcTimeConstant` availability "undeclared", and an undeclared
-  // function is NOT DRAWN (owner rule 2026-09-21). Fails on origin/main,
-  // where any `agc` capability lit the key.
-  it('draws NO AGC-T key when the receiver marks agcTimeConstant undeclared (FTX-1 shape)', () => {
+  // MOR-2527/MOR-2588: the FTX-1 has AGC but NO AGC time constant — the server
+  // never serves it the `agc_time_constant` tag (the profile declares no such
+  // field), and a function the radio does not declare is NOT DRAWN (owner rule
+  // 2026-09-21). The field status stays the undeclared absence seed.
+  it('draws NO AGC-T key when the receiver is not declared (no agc_time_constant tag, FTX-1 shape)', () => {
     h.state = proxy(liveState(true) as object);
     (h.state as unknown as { fieldStatus: Record<string, unknown> })
       .fieldStatus['main.agcTimeConstant'] = {
         storePath: 'x', observed: false, freshness: 'unknown', availability: 'undeclared',
       };
+    h.caps = {
+      ...liveCaps(true),
+      capabilities: liveCaps(true).capabilities
+        .filter((capability) => capability !== 'agc_time_constant'),
+    };
     renderHosted();
     const agcButtons = [...target.querySelectorAll<HTMLButtonElement>('button')]
       .filter(button => button.textContent?.trim().startsWith('AGC-T'));
