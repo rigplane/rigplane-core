@@ -1952,6 +1952,8 @@ class _PacingClock:
         advances on patched sleeps) keeps waiters alive for the test.
         """
         radio._civ_last_waiter_gc_monotonic = self.now
+        tracker = radio._civ_request_tracker
+        tracker._stale_ttl = 10.0**9
 
     def install_wait_guard(self, radio: IcomRadio) -> None:
         """Stretch the answer window past the frozen controllable clock.
