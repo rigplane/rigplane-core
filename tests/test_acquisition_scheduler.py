@@ -27,6 +27,7 @@ from rigplane.core.acquisition_scheduler import (
     derive_tx_active,
     resolve_available_when,
 )
+from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
     AdaptiveDecayPolicy,
@@ -56,6 +57,7 @@ from rigplane.core.state_store import (
 )
 from rigplane.commands.command_map import CommandMap
 from rigplane.profiles import get_radio_profile
+from rigplane.runtime import _civ_rx
 from rigplane.runtime._state_queries import acquisition_query_from_wire_tuple
 from rigplane.profiles.rig_loader import load_rig
 from _acquisition_query_helpers import (
@@ -4683,3 +4685,368 @@ def test_fresh_dispatch_reissue_needs_only_one_incoming_path_dispatched() -> Non
     )
     assert readback.request is not None
     assert readback.request.id != cadence.request.id
+
+
+# --- MOR-2599: the non-selected receiver polls one class slower --------------
+
+
+def _ic7610_acquisition() -> RadioAcquisitionProfile:
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    return acquisition
+
+
+def _ic7300_acquisition() -> RadioAcquisitionProfile:
+    acquisition = load_rig(RIGS_DIR / "ic7300.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    return acquisition
+
+
+def _class_derived_paths(
+    acquisition: RadioAcquisitionProfile, receiver_id: str
+) -> tuple[FieldPath, ...]:
+    return tuple(
+        path
+        for path in acquisition.pollable_paths()
+        if path.receiver_id == receiver_id and path not in acquisition.field_policies
+    )
+
+
+def _ic7610_scheduler(
+    active_value: str | None,
+) -> tuple[StateStore, StateFreshnessService, AcquisitionScheduler, FreshnessClock]:
+    """IC-7610 tick-wired scheduler with ``active`` stored FRESH (or absent)."""
+
+    clock = FreshnessClock(start=100.0)
+    store = StateStore(freshness_clock=clock)
+    scheduler = AcquisitionScheduler(profile=_ic7610_acquisition(), clock=clock)
+    service = StateFreshnessService(store=store, scheduler=scheduler)
+    if active_value is not None:
+        store.apply(
+            _observation(
+                FieldPath.global_("slow_state", "active"),
+                active_value,
+                at=clock.now(),
+            )
+        )
+    return store, service, scheduler, clock
+
+
+def _pending_request(
+    scheduler: AcquisitionScheduler, path: FieldPath
+) -> AcquisitionRequest:
+    """The single queued request carrying ``path`` (MOR-2599 assertions)."""
+
+    matches = [
+        request for request in scheduler.pending_requests() if path in request.paths
+    ]
+    assert len(matches) == 1, (
+        f"{path}: expected one pending request, got {len(matches)}"
+    )
+    return matches[0]
+
+
+def _cadence_of(scheduler: AcquisitionScheduler, path: FieldPath) -> float:
+    """The group's base cadence from diagnostics — demote-aware (MOR-2599)."""
+
+    entry = scheduler.diagnostics()["cadenceByPath"][str(path)]
+    return entry["baseCadenceSeconds"]
+
+
+def _answer_pending(scheduler: AcquisitionScheduler, at: float) -> None:
+    """Answer every queued request, as the drain does between ticks.
+
+    A production change of ``active`` lands seconds apart while the drain
+    answers polls in well under one; completing the queue between ticks
+    keeps the flip/multi-tick tests about the scheduler, not about
+    stale in-flight requests.
+    """
+
+    for request in scheduler.pending_requests():
+        scheduler.record_acquisition_result(request, _changeset(changes=(), at=at))
+
+
+@pytest.mark.parametrize(
+    ("active", "slow_receiver", "fast_receiver"),
+    [("MAIN", "sub", "main"), ("SUB", "main", "sub"), (None, None, None)],
+    ids=["active-main", "active-sub", "active-unknown"],
+)
+def test_the_non_selected_receiver_polls_one_class_slower(
+    active: str | None,
+    slow_receiver: str | None,
+    fast_receiver: str | None,
+) -> None:
+    """MOR-2599: on the IC-7610, ``global.slow_state.active`` picks the slow receiver.
+
+    active MAIN slows every class-derived ``receiver.sub.*`` path one class;
+    active SUB slows ``receiver.main.*``; nothing observed slows nothing. The
+    selected receiver keeps its class cadence in every case, and demotion
+    never makes a path faster. The demoted TTL rides on the queued request's
+    max_age — group keys stay canonical, no re-keying.
+    """
+
+    acquisition = _ic7610_acquisition()
+    _store, service, scheduler, clock = _ic7610_scheduler(active)
+    service.tick(now=clock.now())
+
+    demoted_any = False
+    for receiver in ("main", "sub"):
+        for path in _class_derived_paths(acquisition, receiver):
+            undemoted = acquisition.policy_for(path)
+            expected = (
+                acquisition.policy_for(path, observed_active=active)
+                if receiver == slow_receiver
+                else undemoted
+            )
+            assert expected.cadence_seconds is not None
+            assert expected.freshness_ttl_seconds is not None
+            assert _cadence_of(scheduler, path) == pytest.approx(
+                expected.cadence_seconds
+            ), path
+            request = _pending_request(scheduler, path)
+            assert request.max_age == pytest.approx(expected.freshness_ttl_seconds), (
+                path,
+                "the demoted TTL rides on the queued request",
+            )
+            assert undemoted.cadence_seconds is not None
+            undemoted_cadence: float = undemoted.cadence_seconds
+            assert request.policy.cadence_seconds is not None
+            assert request.policy.cadence_seconds <= undemoted_cadence + 1e-9, (
+                path,
+                "demotion must never make a path faster",
+            )
+            demoted_any = demoted_any or (
+                receiver == slow_receiver
+                and expected.cadence_seconds != undemoted_cadence
+            )
+    if slow_receiver is not None:
+        assert demoted_any, (
+            "the IC-7610 has class-derived paths that actually demote one class"
+        )
+
+
+def test_the_demoted_paths_keep_the_demoted_class_ttl() -> None:
+    """MOR-2599 TTL rule: a demoted path's TTL follows its demoted class.
+
+    Every class-derived path on the non-selected receiver carries the
+    demoted class's TTL on its queued request's max_age (never below twice
+    the cadence it polls at), so it cannot age to stale between polls.
+    """
+
+    acquisition = _ic7610_acquisition()
+    _store, service, scheduler, clock = _ic7610_scheduler("MAIN")
+    service.tick(now=clock.now())
+
+    slowed = _class_derived_paths(acquisition, "sub")
+    assert slowed
+    for path in slowed:
+        policy = acquisition.policy_for(path, observed_active="MAIN")
+        assert policy.cadence_seconds is not None
+        assert policy.freshness_ttl_seconds is not None
+        assert policy.freshness_ttl_seconds >= 2.0 * policy.cadence_seconds
+        assert (
+            policy.freshness_ttl_seconds
+            > acquisition.policy_for(path).freshness_ttl_seconds
+        )
+        request = _pending_request(scheduler, path)
+        assert request.max_age == pytest.approx(policy.freshness_ttl_seconds)
+
+
+def test_explicit_profile_overrides_keep_their_cadence_when_demoted() -> None:
+    """MOR-2599 scope: only class-derived paths demote.
+
+    The IC-7610's explicit S-meter override (the reasoned 0.3 s / 2.0 s TTL
+    pin) sits on the SELECTED receiver when active is MAIN and keeps its
+    declared request cadence and envelope TTL: demotion never touches a
+    field_policies entry.
+    """
+
+    acquisition = _ic7610_acquisition()
+    s_meter = FieldPath.parse("receiver.main.meters.s_meter")
+    override = acquisition.field_policies[s_meter]
+    assert override.cadence_seconds is not None
+
+    _store, service, scheduler, clock = _ic7610_scheduler("MAIN")
+    service.tick(now=clock.now())
+
+    request = _pending_request(scheduler, s_meter)
+    assert request.policy.cadence_seconds == pytest.approx(override.cadence_seconds)
+    assert request.policy.freshness_ttl_seconds == pytest.approx(
+        override.freshness_ttl_seconds
+    )
+
+
+def test_a_profile_without_active_is_unchanged() -> None:
+    """MOR-2599 scope: a radio that never declares ``active`` cannot demote.
+
+    The IC-7300 polls no ``global.slow_state.active``, so the same tick —
+    same caller, same keyword — leaves every path at its undemoted class
+    cadence and TTL (request max_age too).
+    """
+
+    acquisition = _ic7300_acquisition()
+    clock = FreshnessClock(start=100.0)
+    store = StateStore(freshness_clock=clock)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    service = StateFreshnessService(store=store, scheduler=scheduler)
+    service.tick(now=clock.now())
+    for path in acquisition.pollable_paths():
+        expected = acquisition.policy_for(path)
+        assert expected.cadence_seconds is not None
+        if expected.tx_only:
+            # TX-only groups are gated off the receive tick (MOR-1485).
+            continue
+        request = _pending_request(scheduler, path)
+        assert request.policy.cadence_seconds == pytest.approx(
+            expected.cadence_seconds
+        ), path
+        assert request.policy.freshness_ttl_seconds == pytest.approx(
+            expected.freshness_ttl_seconds
+        ), path
+
+
+def test_a_live_switch_of_active_flips_which_receiver_is_slow() -> None:
+    """MOR-2599: a change of ``active`` takes effect on the next tick.
+
+    No reconnect: after the store's ``active`` observation flips MAIN -> SUB,
+    the very next due-request computation polls receiver.main's class-derived
+    paths at the demoted cadence and returns receiver.sub's to their class
+    cadence. Group keys are canonical, so no request pile-up happens.
+    """
+
+    acquisition = _ic7610_acquisition()
+    store, service, scheduler, clock = _ic7610_scheduler("MAIN")
+    service.tick(now=clock.now())
+
+    sub_path = FieldPath.parse("receiver.sub.operator_controls.af_level")
+    main_path = FieldPath.parse("receiver.main.operator_controls.af_level")
+    undemoted = acquisition.policy_for(sub_path)
+    demoted = acquisition.policy_for(main_path, observed_active="SUB")
+    assert demoted.freshness_ttl_seconds is not None
+    assert _cadence_of(scheduler, sub_path) == pytest.approx(5.0)  # control -> panel
+    assert _cadence_of(scheduler, main_path) == pytest.approx(2.0)
+
+    _answer_pending(scheduler, at=clock.now())
+    store.apply(
+        _observation(FieldPath.global_("slow_state", "active"), "SUB", at=clock.now())
+    )
+    clock.advance(2.0)
+    service.tick(now=clock.now())
+
+    assert _cadence_of(scheduler, sub_path) == pytest.approx(undemoted.cadence_seconds)
+    assert _cadence_of(scheduler, main_path) == pytest.approx(demoted.cadence_seconds)
+    sub_request = _pending_request(scheduler, sub_path)
+    main_request = _pending_request(scheduler, main_path)
+    assert sub_request.max_age == pytest.approx(undemoted.freshness_ttl_seconds)
+    assert main_request.max_age == pytest.approx(demoted.freshness_ttl_seconds)
+
+
+# --- PR #3643 round 2: cadence clock/dedupe and demoted TTL stamping ---------
+
+
+def test_the_demoted_receiver_polls_at_the_demoted_cadence_over_many_ticks() -> None:
+    """PR #3643 finding 1: many ticks with answered polls, constant active=MAIN.
+
+    Demotion re-keys the group map BEFORE due-ness is judged, so the demoted
+    group's cadence clock and the pending-request dedupe follow the key the
+    request is queued under. The non-selected receiver is polled at its
+    demoted cadence — LESS often than the selected twin, and never faster
+    than its undemoted cadence — not at the tick rate.
+    """
+
+    acquisition = _ic7610_acquisition()
+    _store, service, scheduler, clock = _ic7610_scheduler("MAIN")
+    sub_path = FieldPath.parse("receiver.sub.active.freq_mode.freq_hz")
+    main_path = FieldPath.parse("receiver.main.active.freq_mode.freq_hz")
+    undemoted_sub = acquisition.policy_for(sub_path)
+    demoted_sub = acquisition.policy_for(sub_path, observed_active="MAIN")
+    assert undemoted_sub.cadence_seconds is not None
+    assert demoted_sub.cadence_seconds is not None
+
+    step, seconds = 0.1, 20.0
+    at = clock.now()
+    counts: dict[FieldPath, int] = {sub_path: 0, main_path: 0}
+    for _ in range(int(seconds / step)):
+        service.tick(now=at)
+        for request in scheduler.pending_requests():
+            for path in (sub_path, main_path):
+                if path in request.paths:
+                    counts[path] += 1
+            scheduler.record_acquisition_result(request, _changeset(changes=(), at=at))
+        at += step
+
+    assert counts[main_path] > counts[sub_path] > 0
+    demoted_max = int(seconds / demoted_sub.cadence_seconds) + 2
+    undemoted_max = int(seconds / undemoted_sub.cadence_seconds) + 2
+    assert counts[sub_path] <= demoted_max, (
+        "the demoted receiver must not poll faster than its demoted cadence"
+    )
+    assert counts[sub_path] < undemoted_max, (
+        "the demoted receiver must poll less often than its undemoted cadence"
+    )
+
+
+def test_an_observation_of_a_demoted_path_carries_the_demoted_ttl_until_the_next_poll() -> (
+    None
+):
+    """PR #3643 finding 2: a poll answer stamps the demoted class's TTL.
+
+    The provider-adapter seam resolves ``policy_for(path, observed_active)``
+    at stamping time; the observation's ``max_age`` is at least 2x the
+    demoted cadence, so the path stays FRESH until the next demoted poll
+    lands (and never goes stale between polls).
+    """
+
+    acquisition = _ic7610_acquisition()
+    sub_path = FieldPath.parse("receiver.sub.active.freq_mode.freq_hz")
+    demoted = acquisition.policy_for(sub_path, observed_active="MAIN")
+    undemoted = acquisition.policy_for(sub_path)
+    assert demoted.cadence_seconds is not None
+    assert demoted.freshness_ttl_seconds is not None
+    adapter = ProviderObservationAdapter(
+        profile=acquisition,
+        source="poll_response",
+        observed_active_getter=lambda: "MAIN",
+    )
+    observation = adapter.observation(sub_path, 7_140_500.0, timestamp_monotonic=100.0)
+    clock = FreshnessClock(start=100.0)
+    store = StateStore(freshness_clock=clock)
+
+    assert observation.max_age == pytest.approx(demoted.freshness_ttl_seconds)
+    assert undemoted.freshness_ttl_seconds is not None
+    assert observation.max_age > undemoted.freshness_ttl_seconds
+    assert observation.max_age >= 2.0 * demoted.cadence_seconds
+    store.apply(observation)
+    assert store.snapshot().field(sub_path).freshness is FreshnessState.FRESH
+    for now in (101.0, 101.9):
+        store.mark_stale_due(now=now)
+        assert store.snapshot().field(sub_path).freshness is FreshnessState.FRESH, (
+            "must stay FRESH until the next demoted poll lands"
+        )
+
+
+def test_civ_rx_stamps_the_demoted_ttl_on_poll_responses() -> None:
+    """PR #3643 finding 2: the CI-V poll-response TTL site demotes.
+
+    ``runtime/_civ_rx._observation_max_age`` resolves the demoted class's
+    TTL for the non-selected receiver when the caller passes the observed
+    ``active`` value (the web seat derives it from the same store the
+    freshness tick reads).
+    """
+
+    profile = load_rig(RIGS_DIR / "ic7610.toml").to_profile()
+    sub_path = FieldPath.parse("receiver.sub.active.freq_mode.freq_hz")
+    acquisition = profile.state_acquisition
+    assert acquisition is not None
+    demoted = acquisition.policy_for(sub_path, observed_active="MAIN")
+    undemoted = acquisition.policy_for(sub_path)
+    assert demoted.cadence_seconds is not None
+    assert demoted.freshness_ttl_seconds is not None
+
+    stamped = _civ_rx._observation_max_age(  # noqa: SLF001
+        profile, sub_path, observed_active="MAIN"
+    )
+    assert stamped == pytest.approx(demoted.freshness_ttl_seconds)
+    assert undemoted.freshness_ttl_seconds is not None
+    assert stamped > undemoted.freshness_ttl_seconds
+    assert stamped >= 2.0 * demoted.cadence_seconds
