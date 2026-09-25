@@ -1104,9 +1104,9 @@ function deriveReceiverIndicators(
     // field. An observed reading credited to a receiver that never declared
     // the field cannot light this.
     const attStructural = hasAttenuator
-      && hasCap(caps, receiver === 'MAIN' ? 'attenuator_main' : 'attenuator_sub');
+      && (receiver === 'MAIN' || hasCap(caps, 'attenuator_sub'));
     const preampStructural = hasPreamp
-      && hasCap(caps, receiver === 'MAIN' ? 'preamp_main' : 'preamp_sub');
+      && (receiver === 'MAIN' || hasCap(caps, 'preamp_sub'));
 
     return {
       receiver,
@@ -2125,12 +2125,11 @@ export function toRadioViewModel(
   // control must still carry its explanation even if a mis-credited reading
   // made the field status available.
   const activeRx = state?.active;
-  if (rfFrontEnd && (activeRx === 'MAIN' || activeRx === 'SUB')) {
-    const onSub = activeRx === 'SUB';
-    if (hasCap(caps, 'attenuator') && !hasCap(caps, onSub ? 'attenuator_sub' : 'attenuator_main')) {
+  if (rfFrontEnd && activeRx === 'SUB') {
+    if (hasCap(caps, 'attenuator') && !hasCap(caps, 'attenuator_sub')) {
       disabledReasons.push({ field: 'rfFrontEnd.attenuator', code: 'receiver-lacks-control' });
     }
-    if (hasCap(caps, 'preamp') && !hasCap(caps, onSub ? 'preamp_sub' : 'preamp_main')) {
+    if (hasCap(caps, 'preamp') && !hasCap(caps, 'preamp_sub')) {
       disabledReasons.push({ field: 'rfFrontEnd.preamp', code: 'receiver-lacks-control' });
     }
   }
