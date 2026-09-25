@@ -45,7 +45,7 @@ _TWO_CHANNEL_CODECS = {
 # (IC-7300, IC-7610, IC-705, IC-9700; HasFDComms). Unmeasured until the
 # IC-7300 is on the bench. A subclass that is not an Icom keeps 50 ms.
 _ICOM_SERIAL_CIV_MIN_INTERVAL_MS = 25.0
-_NON_ICOM_SERIAL_CIV_MIN_INTERVAL_MS = 50.0
+_NON_ICOM_SERIAL_CIV_MIN_INTERVAL_MS = 25.0
 _SERIAL_SCOPE_MIN_BAUD = 115200
 
 
