@@ -452,11 +452,16 @@ class _GatePort:
 
 class _AcceptingActuator:
     async def actuate(
-        self, token: object, operation: object, **_kwargs: object
+        self,
+        token: object,
+        operation: object,
+        *,
+        is_current: object,
     ) -> object:
-        from rigplane.runtime.managed_tx_state import ActuationResult, ActuationSettled
+        del token, operation, is_current
+        from rigplane.runtime.managed_tx_state import ActuationResult
 
-        return ActuationSettled(token, operation, ActuationResult.ACCEPTED)  # type: ignore[arg-type]
+        return ActuationResult.ACCEPTED
 
 
 class _MemoryConfig:
@@ -474,7 +479,7 @@ class _MemoryConfig:
 
 def _gate_authority() -> ManagedTxAuthority:
     return ManagedTxAuthority(
-        ManagedTxEffectLane(_AcceptingActuator()),  # type: ignore[arg-type]
+        ManagedTxEffectLane(_AcceptingActuator()),
         _MemoryConfig(),  # type: ignore[arg-type]
         TxAbortFence(),
         provider_generation=7,
