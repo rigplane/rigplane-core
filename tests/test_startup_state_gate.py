@@ -843,15 +843,10 @@ async def test_gate_binds_when_a_one_off_refusal_answers_on_reread() -> None:
     from rigplane.backends.yaesu_cat.transport import CatCommandRejected
 
     radio = _MalformedSubMeterRadio()
-    radio.read_s_meter = AsyncMock(
-        side_effect=[
-            120,
-            CatCommandRejected(
-                "Radio rejected command 'SM1;' (returned '?;')", command="SM1;"
-            ),
-            120,
-        ]
+    refusal = CatCommandRejected(
+        "Radio rejected command 'SM1;' (returned '?;')", command="SM1;"
     )
+    radio.read_s_meter = AsyncMock(side_effect=[120, refusal, 120, 120, 120])
     server = WebServer(radio, _gated_config())
     scheduler = radio._acquisition_scheduler
     assert set(scheduler.unobserved_startup_paths(())) == {S_METER, SUB_S_METER}

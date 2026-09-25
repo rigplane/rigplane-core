@@ -3225,9 +3225,11 @@ async def test_single_refusal_then_answer_records_nothing_and_publishes() -> Non
     radio._acquisition_scheduler = scheduler
     radio.read_s_meter = AsyncMock(
         side_effect=[
+            150,
             CatCommandRejected(
                 "Radio rejected command 'SM1;' (returned '?;')", command="SM1;"
             ),
+            120,
             120,
             120,
         ]
@@ -3239,8 +3241,13 @@ async def test_single_refusal_then_answer_records_nothing_and_publishes() -> Non
 
     assert scheduler.startup_defect is None
     by_path = {str(item.path): item.value for item in observations}
+    assert "receiver.main.meters.s_meter" in by_path
     assert "receiver.sub.meters.s_meter" in by_path
-    assert radio.read_s_meter.await_args_list == [call(1), call(1)]
+    assert radio.read_s_meter.await_args_list == [
+        call(0),
+        call(1),
+        call(1),
+    ]
 
 
 @pytest.mark.asyncio
