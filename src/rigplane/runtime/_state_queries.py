@@ -206,7 +206,14 @@ def acquisition_query_resolver_for_profile(
             if family == "meters":
                 getter = "get_s_meter" if path.name == "s_meter" else None
             elif family == "operator_toggles":
-                getter = _RECEIVER_TOGGLE_GETTERS.get(path.name)
+                if (
+                    path.name in _TONE_SQUELCH_TYPE_GETTERS
+                    and command_map is not None
+                    and command_map.has("get_tone_squelch_type")
+                ):
+                    getter = _TONE_SQUELCH_TYPE_GETTERS[path.name]
+                else:
+                    getter = _RECEIVER_TOGGLE_GETTERS.get(path.name)
             elif family == "operator_controls":
                 getter = _RECEIVER_CONTROL_GETTERS.get(path.name)
             else:
