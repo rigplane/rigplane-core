@@ -920,6 +920,7 @@ class StateModelService(Protocol):
         priority: AcquisitionPriority | str,
         reason: str,
         timeout: float | None = None,
+        require_fresh_dispatch: bool = False,
     ) -> EnsureFreshResult:
         """Request freshness for ``paths`` and return immediately (no await).
 

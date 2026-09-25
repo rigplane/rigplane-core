@@ -338,6 +338,11 @@ class CommandService:
                 max_age=_WRITE_CONFIRMATION_MAX_AGE,
                 priority=AcquisitionPriority.COMMAND,
                 reason=f"post_write:{intent.name}",
+                # The answer must come from a send made after the write.
+                # Joined into a poll dispatched before the write, this
+                # confirmation would be answered by that poll — whose reply
+                # can still carry the pre-write value (MOR-2592).
+                require_fresh_dispatch=True,
             )
             status = getattr(result, "status", None)
             if status is not None and str(status) == AcquisitionStatus.UNAVAILABLE:

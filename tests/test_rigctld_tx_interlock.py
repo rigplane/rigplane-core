@@ -687,6 +687,7 @@ class _RecordingStateModelService:
         priority: object,
         reason: str,
         timeout: float | None = None,
+        require_fresh_dispatch: bool = False,
     ) -> None:
         self.requests.append((tuple(paths), str(priority), max_age))  # type: ignore[arg-type]
         return None

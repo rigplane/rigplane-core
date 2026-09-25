@@ -150,6 +150,7 @@ class _RecordingStateModelService:
         priority: str,
         reason: str,
         timeout: float | None = None,
+        require_fresh_dispatch: bool = False,
     ) -> object:
         if isinstance(paths, tuple):
             normalized = tuple(
@@ -461,6 +462,7 @@ async def test_ensure_fresh_skips_coroutine_service_per_sync_contract(
             priority: str,
             reason: str,
             timeout: float | None = None,
+            require_fresh_dispatch: bool = False,
         ) -> object:  # pragma: no cover - must never be invoked
             self.called = True
             return object()

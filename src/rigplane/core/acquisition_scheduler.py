@@ -2361,6 +2361,7 @@ class RadioStateModelService:
         priority: AcquisitionPriority | str,
         reason: str,
         timeout: float | None = None,
+        require_fresh_dispatch: bool = False,
     ) -> EnsureFreshResult:
         """Return fresh snapshots or queue acquisition through the scheduler.
 
@@ -2403,6 +2404,7 @@ class RadioStateModelService:
             priority=priority,
             reason=reason,
             timeout=timeout,
+            require_fresh_dispatch=require_fresh_dispatch,
         )
 
 
