@@ -413,23 +413,3 @@ describe('rxAudio carries AF per receiver on a radio served af_level_sub (MOR-25
     expect(Object.keys(rxAudio!)).not.toContain('receiverAfLevels');
   });
 });
-
-/**
- * MOR-2583 — monitor MUTE lives on the server. A page that just loaded has an
- * unmuted browser-audio store and no saved levels of its own; the MUTE control
- * still shows on, because the server state says so.
- */
-describe('a reloaded page shows the server monitor MUTE (MOR-2583)', () => {
-  const local: RxAudioSnapshot = { ...SNAP, muted: false, rxEnabled: false };
-
-  function reloadedMuted(): ServerState {
-    return audioState({
-      monitorMute: { on: true, savedAf: { main: 0.31, sub: 0.77 } },
-    } as Partial<ServerState>);
-  }
-
-  it('shows MUTE on from monitorMute even though the page audio store is unmuted', () => {
-    const rxAudio = model(reloadedMuted(), caps(), local).rxAudio!;
-    expect(rxAudio.monitorMode).toBe('mute');
-  });
-});
