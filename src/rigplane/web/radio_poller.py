@@ -1232,11 +1232,7 @@ class RadioPoller:
         if self._radio_state:
             scope_rx = self._radio_state.scope_controls.receiver
         command, sub, data = wire_parts_for_query(query, scope_rx)
-        lane = (
-            Priority.NORMAL
-            if commander_priority_name(priority) == "normal"
-            else Priority.BACKGROUND
-        )
+        lane = Priority.BACKGROUND
         await self._civ(
             command,
             sub=sub,
