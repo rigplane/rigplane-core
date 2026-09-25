@@ -870,6 +870,7 @@ async def test_opening_gate_drops_frames_queued_while_closed():
     bridge._running = False
     await bridge._tx_task
     bridge._running = True
+    closed_checks = 0
     bridge._enqueue_tx(echo)
     bridge._enqueue_tx(later)
     bridge._tx_task = asyncio.create_task(bridge._tx_loop())
