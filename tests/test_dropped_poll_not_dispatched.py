@@ -166,6 +166,8 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched(
         assert list(scheduler._cadence_by_key) == list(  # noqa: SLF001
             scheduler._poll_cadence_groups()  # noqa: SLF001
         )
+        state = next(iter(scheduler._cadence_by_key.values()))  # noqa: SLF001
+        assert state.next_due_monotonic == clock.now()
 
         # One cadence later the dropped path goes out again, well before
         # max_age (the LIVE class TTL, 1 s) plus the 6 s healthy-link grace.
