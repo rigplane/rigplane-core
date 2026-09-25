@@ -512,6 +512,7 @@ async def test_server_gate_opens_when_the_lease_is_keyed() -> None:
         _observe_ptt(server, ObservedPtt.OFF)
         await managed.ptt_down("web")
         assert await server._bridge_tx_gate_open() is True
+        await managed.ptt_up("web")
     finally:
         await managed.close()
 
