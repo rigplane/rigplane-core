@@ -1051,7 +1051,7 @@ export function toRxAudioProps(
   // MOR-2583: monitor MUTE lives on the server and survives a page reload,
   // while the client-side `muted` flag does not — so the server's word wins.
   // A payload without `monitorMute` (older server) keeps today's behaviour.
-  const monitorMode = state?.monitorMute?.on === true || audioState.muted
+  const monitorMode = audioState.muted
     ? 'mute'
     : audioState.rxEnabled && hasLiveAudio
       ? 'live'

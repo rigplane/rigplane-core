@@ -1885,7 +1885,7 @@ function deriveRxAudio(
   // the whole matrix is pinned in `__tests__/rx-audio-adapter.test.ts`.
   // MOR-2583: the server's monitor MUTE survives a page reload, the
   // client-side `muted` flag does not — the server's word wins.
-  const monitorMode: MonitorMode = state?.monitorMute?.on === true || audio.muted
+  const monitorMode: MonitorMode = audio.muted
     ? 'mute'
     : audio.rxEnabled && hasLiveAudio ? 'live' : 'local';
   const onSub = state?.active === 'SUB';
