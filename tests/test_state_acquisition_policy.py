@@ -1101,7 +1101,8 @@ def test_fit_to_budget_reproduces_the_design_ic7610_lan_receive_figure() -> None
     class, before the owner's 2026-09-24 decision gave the 2026-09-07
     panel set its own 5 s class; this test reproduces that fold (57
     setting fields). MOR-2595 budgets 1 / 10 ms = 100 q/s, so the 75 q/s
-    limit no longer stretches setting: it stays at its 10 s nominal.
+    limit no longer stretches anything: setting stays at its 10 s nominal
+    and the window's demand is the nominal 23.3 q/s, not the limit.
     """
 
     acquisition = get_radio_profile("IC-7610").state_acquisition
@@ -1131,7 +1132,7 @@ def test_fit_to_budget_reproduces_the_design_ic7610_lan_receive_figure() -> None
     assert fit.effective_cadence_seconds[AcquisitionClass.SETTING] == (
         pytest.approx(10.0)
     )
-    assert fit.demand_hz == pytest.approx(0.75 * lan_budget_hz)
+    assert fit.demand_hz == pytest.approx(23.3)
 
 
 # --- MOR-2574 step 2: the loader-era class fallback --------------------------
