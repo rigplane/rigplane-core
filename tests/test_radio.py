@@ -2179,7 +2179,7 @@ class TestCivPacingIsSendToSend:
                     "reply_done": reply_task.done(),
                 }
                 assert gated, f"second send never left the gate: {probe}"
-                mock_transport.queue_response(_freq_response(14_075_000))
+                mock_transport.queue_response(_mode_response(Mode.USB))
                 first = await asyncio.wait_for(first_task, timeout=10.0)
                 second = await asyncio.wait_for(second_task, timeout=10.0)
                 await reply_task
@@ -2260,9 +2260,9 @@ class TestCivPacingIsSendToSend:
         starts: list[float] = []
         original_send = mock_transport.send_tracked
 
-        async def slow_send(data: bytes) -> None:
+        async def slow_send(data: bytes, **kwargs: object) -> None:
             starts.append(len(mock_transport.sent_packets))
-            await original_send(data)
+            await original_send(data, **kwargs)
 
         monkeypatch.setattr(mock_transport, "send_tracked", slow_send)
         cmd = build_civ_frame(
