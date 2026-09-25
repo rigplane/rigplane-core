@@ -71,7 +71,7 @@ async def test_stop_joins_cancel_resistant_execute_before_worker_exit(
     failure: bool,
 ) -> None:
     execute = _HeldExecute(fail=failure)
-    c = IcomCommander(execute, min_interval=0.0)
+    c = IcomCommander(execute)
     c.start()
     worker = c._worker
     assert worker is not None
@@ -114,7 +114,7 @@ async def test_overlapping_stop_keeps_actual_worker_until_execute_unwinds(
     cancel_first: bool,
 ) -> None:
     execute = _HeldExecute()
-    c = IcomCommander(execute, min_interval=0.0)
+    c = IcomCommander(execute)
     c.start()
     worker = c._worker
     assert worker is not None
@@ -172,7 +172,7 @@ async def test_overlapping_stop_keeps_actual_worker_until_execute_unwinds(
 @pytest.mark.asyncio
 async def test_stop_accepts_terminal_execute_without_release() -> None:
     execute = _HeldExecute()
-    c = IcomCommander(execute, min_interval=0.0)
+    c = IcomCommander(execute)
     c.start()
     worker = c._worker
     assert worker is not None
@@ -205,7 +205,7 @@ async def test_old_stop_preserves_restart_from_worker_done_callback() -> None:
     async def execute(payload: bytes, wait_response: bool) -> None:
         seen.append(payload)
 
-    c = IcomCommander(execute, min_interval=0.0)
+    c = IcomCommander(execute)
     c.start()
     worker, queue = c._worker, c._queue
     assert worker is not None
@@ -252,7 +252,7 @@ async def test_old_stop_preserves_restart_from_worker_done_callback() -> None:
 @pytest.mark.parametrize("state", ["stopping", "dead"])
 async def test_send_refuses_stopping_or_dead_worker(state: str) -> None:
     execute = _HeldExecute()
-    c = IcomCommander(execute, min_interval=0.0)
+    c = IcomCommander(execute)
     c.start()
     worker = c._worker
     assert worker is not None
@@ -289,7 +289,7 @@ async def test_priority_ordering() -> None:
         order.append(cmd)
         return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
 
-    c = IcomCommander(execute, min_interval=0.0)
+    c = IcomCommander(execute)
     c.start()
     try:
         t1 = asyncio.create_task(c.send(b"normal-1", priority=Priority.NORMAL))
@@ -323,7 +323,7 @@ async def test_normal_command_preempts_queued_backgrounds() -> None:
         order.append(cmd)
         return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
 
-    c = IcomCommander(execute, min_interval=0.0)
+    c = IcomCommander(execute)
     c.start()
     try:
         gate = asyncio.create_task(c.send(b"gate", priority=Priority.NORMAL))
@@ -373,7 +373,7 @@ async def test_send_wait_dispatch_false_returns_before_dispatch() -> None:
         dispatched.append(cmd)
         return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
 
-    c = IcomCommander(execute, min_interval=0.0)
+    c = IcomCommander(execute)
     c.start()
     try:
         # Park the worker on the gate item.
@@ -413,7 +413,7 @@ async def test_wait_dispatch_true_still_awaits_result() -> None:
     async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
         return sentinel
 
-    c = IcomCommander(execute, min_interval=0.0)
+    c = IcomCommander(execute)
     c.start()
     try:
         result = await c.send(b"cmd", priority=Priority.NORMAL)
@@ -440,7 +440,7 @@ async def test_background_inflight_cap_bounds_queue() -> None:
             await release.wait()
         return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
 
-    c = IcomCommander(execute, min_interval=0.0)
+    c = IcomCommander(execute)
     c.start()
     try:
         # Park the worker so nothing drains.
@@ -484,7 +484,7 @@ async def test_dedupe_with_wait_dispatch_false_registers_and_cleans_key() -> Non
             await release.wait()
         return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
 
-    c = IcomCommander(execute, min_interval=0.0)
+    c = IcomCommander(execute)
     c.start()
     try:
         gate = asyncio.create_task(c.send(b"gate", priority=Priority.NORMAL))
@@ -514,7 +514,7 @@ async def test_transaction_restores_on_error() -> None:
     async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
         return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
 
-    c = IcomCommander(execute, min_interval=0.0)
+    c = IcomCommander(execute)
     c.start()
 
     calls: list[str] = []
@@ -539,189 +539,6 @@ async def test_transaction_restores_on_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_min_interval_throttling() -> None:
-    times: list[float] = []
-
-    async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
-        times.append(asyncio.get_running_loop().time())
-        return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
-
-    c = IcomCommander(execute, min_interval=0.03)
-    c.start()
-    try:
-        await c.send(b"a")
-        await c.send(b"b")
-    finally:
-        await c.stop()
-
-    assert len(times) == 2
-    assert times[1] - times[0] >= 0.02
-
-
-class _Clock:
-    """Controllable loop clock: sleep advances it, nothing else does.
-
-    ``wait_for`` is replaced too: a frozen loop clock never expires a
-    real timeout, so a positive timeout would hang the test.
-    """
-
-    def __init__(self) -> None:
-        self.now = 0.0
-
-    def time(self) -> float:
-        return self.now
-
-    async def sleep(self, delay: float) -> None:
-        self.now += delay
-
-    async def wait_for(self, awaitable, timeout):  # type: ignore[no-untyped-def]
-        task = asyncio.ensure_future(awaitable)
-        if timeout is None:
-            return await task
-        deadline = self.now + timeout
-        shielded = asyncio.shield(task)
-        try:
-            while self.now < deadline:
-                get = asyncio.ensure_future(shielded)
-                done, _pending = await asyncio.wait({get}, timeout=0)
-                if done:
-                    return get.result()
-                await asyncio.sleep(deadline - self.now)
-            task.cancel()
-            return await task
-        finally:
-            if not shielded.done():
-                shielded.cancel()
-
-
-real_sleep = asyncio.sleep
-
-
-def _install_clock(monkeypatch: pytest.MonkeyPatch, *, start: float) -> _Clock:
-    clock = _Clock()
-    clock.now = start
-    loop = asyncio.get_running_loop()
-    monkeypatch.setattr(loop, "time", clock.time)
-    monkeypatch.setattr(asyncio, "sleep", clock.sleep)
-    monkeypatch.setattr(asyncio, "wait_for", clock.wait_for)
-    return clock
-
-
-def _ack() -> CivFrame:
-    return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
-
-
-@pytest.mark.asyncio
-async def test_pacing_is_send_to_send_when_the_reply_outlasts_the_gap(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A query longer than the gap does not add the gap again after the reply.
-
-    The first reply is the long one. The second is instant, so the moment
-    it returns is the moment the second send was stamped: a post-reply
-    stamp would push it out by the first reply plus the gap.
-    """
-
-    gap = 0.010
-    clock = _install_clock(monkeypatch, start=gap)
-    reply = 0.040
-    starts: list[float] = []
-    started = asyncio.Event()
-
-    async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
-        starts.append(clock.now)
-        if not started.is_set():
-            await asyncio.sleep(reply)
-        started.set()
-        return _ack()
-
-    commander = IcomCommander(execute, min_interval=gap)
-    commander.start()
-    try:
-        first = asyncio.create_task(commander.send(b"a"))
-        await real_sleep(0)
-        await started.wait()
-        await commander.send(b"b")
-        await first
-    finally:
-        await commander.stop()
-
-    assert starts == [gap, gap + reply]
-
-
-@pytest.mark.asyncio
-async def test_pacing_waits_the_gap_from_the_send_when_the_reply_is_shorter(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    gap = 0.025
-    clock = _install_clock(monkeypatch, start=gap)
-    reply = 0.005
-    starts: list[float] = []
-    started = asyncio.Event()
-
-    async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
-        starts.append(clock.now)
-        await asyncio.sleep(reply)
-        started.set()
-        return _ack()
-
-    commander = IcomCommander(execute, min_interval=gap)
-    commander.start()
-    try:
-        first = asyncio.create_task(commander.send(b"a"))
-        await real_sleep(0)
-        await started.wait()
-        second = asyncio.create_task(commander.send(b"b"))
-        await real_sleep(0)
-        await commander.send(b"c")
-        await first
-        await second
-    finally:
-        await commander.stop()
-
-    assert starts == [gap, gap + gap, gap + gap + gap]
-
-
-@pytest.mark.asyncio
-async def test_a_caller_cancelled_inflight_send_still_paces_the_next(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    gap = 0.025
-    timeout = 0.010
-    clock = _install_clock(monkeypatch, start=gap)
-    sent = asyncio.Event()
-    released = asyncio.Event()
-    was_cancelled = asyncio.Event()
-    starts: list[float] = []
-
-    async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
-        starts.append(clock.now)
-        if cmd == b"slow":
-            sent.set()
-            try:
-                await released.wait()
-            except asyncio.CancelledError:
-                was_cancelled.set()
-                raise
-        return _ack()
-
-    commander = IcomCommander(execute, min_interval=gap)
-    commander.start()
-    try:
-        slow = asyncio.create_task(commander.send(b"slow", timeout=timeout))
-        await sent.wait()
-        with pytest.raises(asyncio.CancelledError):
-            await slow
-        await commander.send(b"next")
-    finally:
-        released.set()
-        await commander.stop()
-
-    assert was_cancelled.is_set()
-    assert starts == pytest.approx([gap, gap + gap])
-
-
-@pytest.mark.asyncio
 async def test_dedupe_returns_existing_future() -> None:
     count = 0
 
@@ -731,7 +548,7 @@ async def test_dedupe_returns_existing_future() -> None:
         await asyncio.sleep(0.02)
         return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
 
-    c = IcomCommander(execute, min_interval=0.0)
+    c = IcomCommander(execute)
     c.start()
     try:
         t1 = asyncio.create_task(
@@ -753,7 +570,7 @@ async def test_stop_fails_pending() -> None:
         await asyncio.sleep(0.5)
         return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
 
-    c = IcomCommander(execute, min_interval=0.0)
+    c = IcomCommander(execute)
     c.start()
     task = asyncio.create_task(c.send(b"long"))
     await asyncio.sleep(0.01)
@@ -771,7 +588,7 @@ async def test_stop_fails_inflight_command() -> None:
         await asyncio.sleep(10)
         return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
 
-    c = IcomCommander(execute, min_interval=0.0)
+    c = IcomCommander(execute)
     c.start()
     task = asyncio.create_task(c.send(b"slow"))
     await asyncio.wait_for(started.wait(), timeout=1.0)
@@ -810,7 +627,7 @@ async def test_caller_timeout_cancels_inflight_and_unblocks_queue() -> None:
             await block.wait()
         return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
 
-    c = IcomCommander(execute, min_interval=0.0)
+    c = IcomCommander(execute)
     c.start()
     try:
         # First command hangs; caller waits with a tight timeout.
@@ -852,7 +669,7 @@ async def test_cancelled_queued_request_is_not_executed() -> None:
             await release.wait()
         return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
 
-    c = IcomCommander(execute, min_interval=0.0)
+    c = IcomCommander(execute)
     c.start()
     try:
         t1 = asyncio.create_task(c.send(b"block"))
@@ -911,7 +728,7 @@ async def test_stop_unblocks_when_caller_cancel_races_teardown() -> None:
         await hang.wait()
         return None
 
-    c = IcomCommander(execute, min_interval=0.0)
+    c = IcomCommander(execute)
     c.start()
 
     send_task = asyncio.create_task(c.send(b"never-answered"))
@@ -943,7 +760,7 @@ async def test_stop_returns_after_send_timeout_without_yield() -> None:
         await hang.wait()
         return None
 
-    c = IcomCommander(execute, min_interval=0.0)
+    c = IcomCommander(execute)
     c.start()
 
     with pytest.raises(asyncio.TimeoutError):

@@ -74,7 +74,6 @@ class IcomCommander:
 
     Features:
     - strict in-order execution within priority levels
-    - configurable pacing between commands
     - optional dedup for background polling keys
     - transaction helper (snapshot/restore)
     """
@@ -82,15 +81,11 @@ class IcomCommander:
     def __init__(
         self,
         execute: Callable[[bytes, bool], Awaitable[CivFrame | None]],
-        *,
-        min_interval: float = 0.035,
     ) -> None:
         self._execute = execute
-        self._min_interval = min_interval
         self._queue: asyncio.PriorityQueue[tuple[int, int, _QueueItem]] | None = None
         self._worker: asyncio.Task[None] | None = None
         self._seq = 0
-        self._last_send = 0.0
         self._pending_by_key: dict[str, asyncio.Future[CivFrame | None]] = {}
         # Count of outstanding fire-and-forget BACKGROUND sends (see
         # ``_MAX_BG_INFLIGHT``).  Incremented at enqueue, decremented in the
@@ -158,7 +153,7 @@ class IcomCommander:
                 this item and return its result — the historical blocking
                 contract for user commands.  When False, return ``None``
                 immediately after enqueueing without awaiting the worker; the
-                item is still paced, executed, and its future resolved by the
+                item is still executed, and its future resolved by the
                 worker, but the caller does not observe it.  Used by the
                 background poller so the poll burst does not park the poll loop
                 (responses arrive via the RX path, not this future).  For
@@ -214,7 +209,7 @@ class IcomCommander:
         await self._queue.put((item.priority, item.seq, item))
 
         if not wait_dispatch:
-            # Fire-and-forget: the worker still paces, executes, and resolves
+            # Fire-and-forget: the worker still executes and resolves
             # the future, but the caller does not wait for dispatch.
             return None
 
@@ -257,15 +252,6 @@ class IcomCommander:
                     if item.future.done():
                         continue
 
-                    now = asyncio.get_running_loop().time()
-                    delta = now - self._last_send
-                    if delta < self._min_interval:
-                        await asyncio.sleep(self._min_interval - delta)
-
-                    # Could be cancelled during pacing sleep.
-                    if item.future.done():
-                        continue
-
                     # Run execute as an inner task so that a caller-side
                     # timeout (asyncio.wait_for in `send`) cancels JUST this
                     # in-flight command and the worker can move on, instead
@@ -280,10 +266,6 @@ class IcomCommander:
                             is_current=item.is_current,
                         )
                     execute_task = asyncio.ensure_future(execution)
-                    # Stamp at send, not after the reply. With one request
-                    # outstanding a query then costs max(gap, round trip).
-                    # A caller-cancelled item whose packet left still counts.
-                    self._last_send = asyncio.get_running_loop().time()
                     inflight = execute_task
 
                     def _propagate_cancel(
