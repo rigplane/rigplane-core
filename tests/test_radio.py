@@ -2001,7 +2001,6 @@ class TestCivPacingIsSendToSend:
         clock.install_wait_guard(radio)
         clock.install_gc_guard(radio)
         radio._last_civ_send_monotonic = 0.0
-        clock.install_gc_guard(radio)
         starts: list[float] = []
         original_send = mock_transport.send_tracked
         first_civ = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
