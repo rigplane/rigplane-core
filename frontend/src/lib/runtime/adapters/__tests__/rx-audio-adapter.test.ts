@@ -233,6 +233,38 @@ describe('rxAudio degrades honestly rather than to the shipped panel defaults', 
     expect(rxAudio.afLevel.reading).toEqual({ status: 'known', value: 0.31 });
   });
 
+  // MOR-2583: the server owns monitor MUTE, so it survives a page reload
+  // while the client-side `muted` flag does not. A fresh adapter fed the
+  // reloaded state (server MUTE on, client snapshot unmuted) shows MUTE —
+  // the reloaded page must not claim the radio is unmuted. Fails before the
+  // fix, where the derivation read only the client flag.
+  it.each([
+    ['the view-model adapter', (s: ServerState, c: Capabilities, a: RxAudioSnapshot) =>
+      model(s, c, a).rxAudio!.monitorMode],
+    ['the shipped mobile props', (s: ServerState, c: Capabilities, a: RxAudioSnapshot) =>
+      toRxAudioProps(s, c, { muted: a.muted, rxEnabled: a.rxEnabled, volume: a.volume }, a.connected).monitorMode],
+  ])('shows MUTE after a reload with server MUTE on and an unmuted client snapshot (%s)', (_label, read) => {
+    const reloaded = audioState({ monitorMute: { on: true, savedAf: { main: 0.31 } } });
+    const unmuted: RxAudioSnapshot = { ...SNAP, muted: false, rxEnabled: false };
+    expect(read(reloaded, caps(), unmuted)).toBe('mute');
+  });
+
+  it.each([
+    ['server MUTE on wins over a muted, live and unmuted snapshot alike',
+      { on: true, savedAf: { main: 0.31 } }, false, false, 'mute'],
+    ['server MUTE off keeps the client derivation', { on: false, savedAf: {} }, false, false, 'local'],
+    ['an absent server MUTE keeps the client derivation', undefined, true, false, 'mute'],
+    ['an absent server MUTE keeps the client derivation', undefined, false, false, 'local'],
+  ])('%s', (_label, monitorMute, muted, rxEnabled, expected) => {
+    const state = audioState({ ...(monitorMute === undefined ? {} : { monitorMute }) });
+    const snapshot: RxAudioSnapshot = { ...SNAP, muted, rxEnabled };
+    const rxAudio = model(state, caps(), snapshot).rxAudio!;
+    expect(rxAudio.monitorMode).toBe(expected);
+    expect(toRxAudioProps(
+      state, caps(), { muted: snapshot.muted, rxEnabled: snapshot.rxEnabled, volume: 42 }, true,
+    ).monitorMode).toBe(expected);
+  });
+
   it('reports AF unknown when the radio field is unobserved — matching the panel contract (MOR-1409 A12: no longer 0.5)', () => {
     const local: RxAudioSnapshot = { ...SNAP, rxEnabled: false };
     const state = audioState({

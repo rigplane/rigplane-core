@@ -60,7 +60,9 @@ vi.mock('$lib/runtime/frontend-runtime', async () => {
 
 import { audioManager } from '$lib/audio/audio-manager';
 import { setMuted, setVolume } from '$lib/stores/audio.svelte';
+import { getRadioState } from '$lib/stores/radio.svelte';
 import { sendCommand } from '$lib/transport/ws-client';
+import type { ServerState } from '$lib/types/state';
 import { makeRxAudioHandlers as makeRuntimeRxAudioHandlers } from '$lib/runtime/commands/panel-commands';
 
 
@@ -83,14 +85,26 @@ describe('RX-audio presentation command authority (MOR-1124)', () => {
     expect(existsSync('src/components-v2/wiring/command-bus.ts')).toBe(false);
   });
 
-  it('shares one saved AF value across repeated handlers from the sole public path', () => {
+  it('mutes through the single server command and unmutes only while the server says it is on', async () => {
+    const { getRadioState } = await import('$lib/stores/radio.svelte');
+    const radioState = { active: 'MAIN', main: { afLevel: 0.42 } } as unknown as ServerState;
+
+    vi.mocked(getRadioState).mockReturnValue(radioState);
     makeRuntimeRxAudioHandlers().onMonitorModeChange('mute');
     makeRuntimeRxAudioHandlers().onMonitorModeChange('radio');
 
-    expect(sendCommand).toHaveBeenNthCalledWith(1, 'set_af_level', { level: 0, receiver: 0 });
-    expect(sendCommand).toHaveBeenNthCalledWith(2, 'set_af_level', { level: 0.42, receiver: 0 });
+    // One server MUTE; leaving MUTE with the server off restores nothing.
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_monitor_mute', { on: true });
     expect(setMuted).toHaveBeenNthCalledWith(1, true);
     expect(setMuted).toHaveBeenNthCalledWith(2, false);
+
+    vi.mocked(sendCommand).mockClear();
+    vi.mocked(getRadioState).mockReturnValue({
+      ...radioState, monitorMute: { on: true, savedAf: { main: 0.42 } },
+    } as ServerState);
+    makeRuntimeRxAudioHandlers().onMonitorModeChange('radio');
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_monitor_mute', { on: false });
+    expect(setMuted).toHaveBeenNthCalledWith(3, false);
   });
 
   it('keeps LIVE start, settled exit stop, and browser-volume semantics on the shared authority', async () => {

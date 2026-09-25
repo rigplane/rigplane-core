@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any, Callable, cast
 
 from ..exceptions import CommandError
 from ..exceptions import ConnectionError as RadioConnectionError
+from ..core.exceptions import BackgroundSendDropped
 from ..core.exceptions import TimeoutError as RigplaneTimeoutError
 from ..capabilities import (
     CAP_AGC,
@@ -1206,16 +1207,15 @@ class RadioPoller:
     async def _send_one_state_query(
         self,
         query: AcquisitionQuery,
-        *,
-        priority: Priority = Priority.BACKGROUND,
+        priority: AcquisitionPriority = AcquisitionPriority.BACKGROUND,
     ) -> None:
         """Send a single state query
 
-        Defaults to ``Priority.BACKGROUND`` so
-        the acquisition-scheduler executor (which is bound to this method)
-        yield to user commands on the shared CI-V lane (MOR-497i).  All sends
-        here are fire-and-forget (``wait_dispatch=False``) so the
-        response still arrives via the CI-V RX path.
+        A ``COMMAND`` or ``USER`` request goes out at ``Priority.NORMAL`` so
+        a post-write confirmation does not wait behind the poll burst;
+        everything else stays ``Priority.BACKGROUND``. All sends here are
+        fire-and-forget (``wait_dispatch=False``) so the response still
+        arrives via the CI-V RX path.
 
         The lossless query envelope keeps the CI-V sub-command, payload data,
         and optional cmd29 receiver route separate. Wire-frame assembly
@@ -1231,11 +1231,16 @@ class RadioPoller:
         if self._radio_state:
             scope_rx = self._radio_state.scope_controls.receiver
         command, sub, data = wire_parts_for_query(query, scope_rx)
+        lane = (
+            Priority.NORMAL
+            if priority in (AcquisitionPriority.COMMAND, AcquisitionPriority.USER)
+            else Priority.BACKGROUND
+        )
         await self._civ(
             command,
             sub=sub,
             data=data,
-            priority=priority,
+            priority=lane,
             wait_dispatch=False,
         )
 
@@ -3662,7 +3667,9 @@ class RadioPoller:
         branch, MOR-1440's branch for any exception raised while the radio is
         disconnected, and the reconnection probe that clears the backoff on a
         ``_send_query()`` that returns. Once a scheduler is attached
-        ``_send_query`` has no other body, so swallowing anything here would
+        ``_send_query`` has no other body apart from swallowing
+        ``BackgroundSendDropped`` — a poll the commander dropped at its cap,
+        which is not a dead link — so swallowing anything else here would
         make that probe always succeed and announce a restored connection to a
         radio that is still down.
 
@@ -3764,7 +3771,10 @@ class RadioPoller:
 
     async def _send_query(self) -> None:
         if self._acquisition_scheduler is not None:
-            await self._send_scheduler_requests()
+            try:
+                await self._send_scheduler_requests()
+            except BackgroundSendDropped:
+                return
             return
         # Without a scheduler there is nothing left to send: the legacy meter
         # rotation that used to run here was unreachable in production

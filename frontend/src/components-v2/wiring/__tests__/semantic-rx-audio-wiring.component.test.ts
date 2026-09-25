@@ -1223,36 +1223,44 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
     expect(el('af-sub')).toBeNull();
   });
 
-  // Owner decision 2026-09-24: MUTE mutes both receivers.
-  const pickMonitor = (mode: 'mute' | 'local') => {
+  // MOR-2583: monitor MUTE lives on the server, which zeroes every
+  // receiver it has and restores the saved levels on unmute. The page only
+  // sends the intent; leaving MUTE unmutes only while the server says it is
+  // on, so the fixture carries the server's word after each pick.
+  const pickMonitor = (mode: 'mute' | 'local', serverMuteOn = false) => {
     vi.mocked(sendCommand).mockClear();
+    h.state = { ...(h.state as ServerState), monitorMute: { on: serverMuteOn, savedAf: {} } };
     el(`monitor-${mode}`)!.click();
     flushSync();
   };
-  // The saved MUTE levels are module state in `panel-commands.ts`, and the
-  // Standard->SDR persistence test above leaves MUTE engaged: leave it first.
-  const leaveEarlierMute = () => pickMonitor('local');
+  const muteCalls = () => vi.mocked(sendCommand).mock.calls
+    .filter(([name]) => name === 'set_monitor_mute').map(([, params]) => params);
+  // The Standard->SDR persistence test above leaves MUTE engaged: leave it
+  // first, with the server's word on so the unmute is sent.
+  const leaveEarlierMute = () => pickMonitor('local', true);
 
-  it('MUTE zeroes MAIN and SUB; unmute restores each its own level after a selection change', () => {
+  it('MUTE sends one server command and no AF writes; unmute restores through the server', () => {
     radioAf();
     renderHostedFace('desktop-v2');
     leaveEarlierMute();
     pickMonitor('mute');
-    expect(afCalls()).toEqual([{ level: 0, receiver: 0 }, { level: 0, receiver: 1 }]);
+    expect(muteCalls()).toEqual([{ on: true }]);
+    expect(afCalls()).toEqual([]);
     select('SUB');
-    pickMonitor('local');
-    expect(afCalls()).toEqual([{ level: 0.31, receiver: 0 }, { level: 0.77, receiver: 1 }]);
+    pickMonitor('local', true);
+    expect(muteCalls()).toEqual([{ on: false }]);
+    expect(afCalls()).toEqual([]);
   });
 
-  it('MUTE touches only the selected receiver without af_level_sub, as before', () => {
+  it('leaving MUTE sends no unmute when the server says MUTE is off', () => {
     radioAf();
-    h.caps = liveCaps(AUDIO_TAGS.filter((tag) => tag !== 'af_level_sub'));
-    expect(setCapabilities(h.caps as Capabilities)).toBe(true);
     renderHostedFace('desktop-v2');
     leaveEarlierMute();
     pickMonitor('mute');
-    expect(afCalls()).toEqual([{ level: 0, receiver: 0 }]);
-    pickMonitor('local');
-    expect(afCalls()).toEqual([{ level: 0.31, receiver: 0 }]);
+    expect(muteCalls()).toEqual([{ on: true }]);
+    // A client that never muted must not restore levels another client saved.
+    pickMonitor('local', false);
+    expect(muteCalls()).toEqual([]);
+    expect(afCalls()).toEqual([]);
   });
 });

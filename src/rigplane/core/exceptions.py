@@ -5,6 +5,7 @@ __all__ = [
     "ConnectionError",
     "AuthenticationError",
     "CommandError",
+    "BackgroundSendDropped",
     "CommandRejectedError",
     "TimeoutError",
     "AudioError",
@@ -28,6 +29,14 @@ class AuthenticationError(RigplaneError):
 
 class CommandError(RigplaneError):
     """Raised when a CI-V command fails or returns an error."""
+
+
+class BackgroundSendDropped(CommandError):
+    """A fire-and-forget background send was dropped at the commander cap.
+
+    Not a link failure: the cap is doing its job, and the caller re-queues
+    the request at its normal cadence.
+    """
 
 
 class CommandRejectedError(CommandError):

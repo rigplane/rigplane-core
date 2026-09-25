@@ -12,6 +12,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
+from rigplane.core.exceptions import BackgroundSendDropped
 from rigplane.core.state_acquisition_policy import (
     ACQUISITION_BUDGET_MARGIN,
     SLOW_RECEIVER_DEMOTION_PATH,
@@ -132,7 +133,9 @@ class AcquisitionQuery:
     receiver: int | None = None
 
 
-AcquisitionQuerySender = Callable[[AcquisitionQuery], Awaitable[None]]
+AcquisitionQuerySender = Callable[
+    [AcquisitionQuery, "AcquisitionPriority"], Awaitable[None]
+]
 AcquisitionQueryResolver = Callable[[FieldPath], AcquisitionQuery | None]
 CivCmd29Support = Callable[[int, int | None], bool]
 
@@ -344,7 +347,12 @@ class IcomCivAcquisitionExecutor:
                     failure_reason = failure_reason or "no_civ_receiver_route"
                     continue
                 query = replace(query, receiver=None)
-            await self._send_query(query)
+            try:
+                await self._send_query(query, request.priority)
+            except BackgroundSendDropped:
+                if sent:
+                    return AcquisitionExecutionResult(sent_paths=tuple(sent))
+                raise
             sent.append(path)
         return AcquisitionExecutionResult(
             sent_paths=tuple(sent),
