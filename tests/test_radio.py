@@ -2258,15 +2258,15 @@ class TestCivPacingIsSendToSend:
             import time as _rt
 
             _rt.sleep(8)
+            loop = asyncio.get_running_loop()
             with open("/tmp/hangdump2603.txt", "w") as fh:
-                for task in asyncio.all_tasks(test_loop):
+                for task in asyncio.all_tasks(loop):
                     fh.write(f"--- {task.get_name()} {task.get_coro()}\n")
                     for st in task.get_stack():
                         fh.write("".join(_traceback.format_stack(st)))
             _os._exit(1)
 
         monkeypatch.setattr(mock_transport, "send_tracked", gated_send)
-        test_loop = asyncio.get_running_loop()
         _threading.Thread(target=_watcher, daemon=True).start()
         try:
             runtime.start_pump()
