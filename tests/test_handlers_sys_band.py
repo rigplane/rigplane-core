@@ -169,7 +169,7 @@ def _capable_radio() -> SimpleNamespace:
         set_civ_output_ant=AsyncMock(),
         get_af_mute=AsyncMock(return_value=False),
         set_af_mute=AsyncMock(),
-        set_af_level=AsyncMock(),
+        set_af_level=AsyncMock(side_effect=_native_af_only),
         get_tuning_step=AsyncMock(return_value=3),
         set_tuning_step=AsyncMock(),
         get_utc_offset=AsyncMock(return_value=(9, 0, False)),
@@ -191,6 +191,12 @@ def _capable_radio() -> SimpleNamespace:
         get_quick_dual_watch=AsyncMock(return_value=False),
         set_quick_dual_watch=AsyncMock(),
     )
+
+
+async def _native_af_only(level: object, receiver: int = 0) -> None:
+    """The real ``Radio.set_af_level`` takes a native int, not a normalized float."""
+    if isinstance(level, bool) or not isinstance(level, int):
+        raise TypeError(f"AF level must be a native int, got {level!r}")
 
 
 class _QueueRecorder:
@@ -759,3 +765,19 @@ async def test_monitor_mute_is_rejected_in_an_http_batch() -> None:
 
     assert raised.value.error == "unsupported_in_batch"
     radio.set_af_level.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_monitor_unmute_writes_the_native_integer_the_radio_had() -> None:
+    radio = _capable_radio()
+    srv, mute = _mute_server(_af_store((0, 38 / 255), (1, 1 / 255)))
+    h = _handler(radio=radio, server=srv)
+    await h._enqueue_command("set_monitor_mute", {"on": True})
+    radio.set_af_level.reset_mock()
+
+    await h._enqueue_command("set_monitor_mute", {"on": False})
+
+    radio.set_af_level.assert_has_awaits(
+        [((38,), {"receiver": 0}), ((1,), {"receiver": 1})],
+        any_order=False,
+    )

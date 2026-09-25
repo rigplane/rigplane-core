@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from ..core.command_dispatch import _af_level_from_param
 from ..core.exceptions import CommandError
 from ..core.state_pipeline_contracts import FieldPath
 from ..core.state_store import FreshnessState, StateStore
@@ -36,6 +37,17 @@ class MonitorMuteState:
                 continue
             saved[name] = self.saved_af[name]
         return {"on": self.on, "savedAf": saved}
+
+
+def _native_af(level: float) -> int:
+    """The radio's native AF integer for a saved normalized level.
+
+    ``Radio.set_af_level`` takes that integer, not the 0.0-1.0 float the
+    store publishes. ``_af_level_from_param`` is the conversion the ordinary
+    ``set_af_level`` command already applies to a normalized float, so a
+    restored level is the same integer the operator's own command would write.
+    """
+    return int(_af_level_from_param(level))
 
 
 def _fresh_af(store: StateStore, receiver: int) -> float | None:
@@ -95,12 +107,12 @@ async def apply_monitor_mute(
         state.saved_af = saved
         state.on = True
         for index in receivers:
-            await radio.set_af_level(0, receiver=index)
+            await radio.set_af_level(_native_af(0), receiver=index)
         return
     for index in receivers:
         name = "main" if index == 0 else "sub"
         if name not in state.saved_af:
             continue
-        await radio.set_af_level(state.saved_af[name], receiver=index)
+        await radio.set_af_level(_native_af(state.saved_af[name]), receiver=index)
     state.saved_af.clear()
     state.on = False
