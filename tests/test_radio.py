@@ -1953,16 +1953,6 @@ class _PacingClock:
         """
         radio._civ_last_waiter_gc_monotonic = self.now
 
-    def install_wait_guard(self, radio: IcomRadio) -> None:
-        """Stretch the wait_for machinery past the frozen controllable clock.
-
-        The runtime's ``asyncio.wait_for`` and the real loop clock disagree
-        under the patched ``time.monotonic``: every reply wait would read
-        as already expired.  A 2 s answer window covers the whole test,
-        which advances the controllable clock by milliseconds only.
-        """
-        radio._civ_get_timeout = 2.0
-
 
 def _install_pacing_clock(
     monkeypatch: pytest.MonkeyPatch, *, gap: float
