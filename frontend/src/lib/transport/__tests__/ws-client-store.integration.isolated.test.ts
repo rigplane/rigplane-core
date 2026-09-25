@@ -21,7 +21,9 @@ vi.mock('../http-client', async (importOriginal) => ({
 // ``connection.svelte`` is also left REAL — its setters are plain ``$state``
 // assignments, harmless under jsdom.
 //
-// The ``fast`` vitest project runs with ``isolate: false`` and ws-client
+// This file runs in the ``isolated`` project: its module-level mock of
+// ``http-client`` must not share a worker cache with ``http-client.test.ts``.
+// ws-client
 // holds module-level singletons (``_ctrl``, ``_fullState``,
 // ``_hasReceivedFullState``) while radio.svelte holds module-level
 // revision trackers (``lastRevision`` etc.). We therefore reset the module

@@ -17,7 +17,7 @@
  * RX authority snapshot makes the TX meters not relevant in receive, so
  * they take the `relevance === 'idle'` early return before that description
  * branch runs, and both mounts render the same idle text either way. That fix is pinned by `bar-meter-projector.test.ts` and
- * `MetersSurface.test.ts` instead. The segmentline LCD skin still
+ * `MetersSurface.isolated.test.ts` instead. The segmentline LCD skin still
  * distinguishes the two and is not mounted here: out of scope.
  *
  * Isolated pool by name (`*.component.test.ts`), per the MOR-1272 doctrine.

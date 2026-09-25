@@ -1420,7 +1420,7 @@ describe('SWR relevance drives the shared row\'s own dim (MOR-2250 fix cycle)', 
 // jsdom does not apply a mounted Svelte component's own scoped `<style>`
 // block to `getComputedStyle` (confirmed empirically here, and already
 // documented as a known limitation by the F4 pattern in
-// `mor1536-armed-adoption.test.ts`), so block (A) below injects the file's
+// `mor1536-armed-adoption.isolated.test.ts`), so block (A) below injects the file's
 // REAL `<style>` text as a literal `<style>` tag — the same technique — to
 // get a genuine cascade computation rather than reading one group's own
 // attribute in isolation.

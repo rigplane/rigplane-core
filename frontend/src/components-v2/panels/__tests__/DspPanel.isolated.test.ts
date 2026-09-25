@@ -39,7 +39,7 @@ const mockHandlers = {
 
 // MOR-1536: DspPanel now also reads the notch armed signal — default
 // unarmed here, this file's tests are not about that behavior (covered by
-// `mor1536-armed-adoption.test.ts`).
+// `mor1536-armed-adoption.isolated.test.ts`).
 const unarmed = { armed: false, value: null };
 const feedbackOverrides = vi.hoisted(() => new Map<string, Record<string, unknown>>());
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({

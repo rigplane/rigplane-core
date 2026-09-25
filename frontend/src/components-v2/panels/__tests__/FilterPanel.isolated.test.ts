@@ -46,7 +46,7 @@ const mockHandlers = {
 
 // MOR-1536: FilterPanel now also reads the filter-select armed signal —
 // default unarmed here, this file's tests are not about that behavior
-// (covered by `mor1536-armed-adoption.test.ts`).
+// (covered by `mor1536-armed-adoption.isolated.test.ts`).
 const unarmed = { armed: false, value: null };
 const widthLifecycle = {
   confirmed: 2400,
