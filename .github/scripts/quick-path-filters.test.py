@@ -5,7 +5,9 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
+import tempfile
 import unittest
 
 
@@ -19,6 +21,7 @@ SPEC.loader.exec_module(CLASSIFIER)
 QUICK_YML = ROOT / ".github" / "workflows" / "quick.yml"
 DOCS_QUICK_YML = ROOT / ".github" / "workflows" / "docs-only-quick.yml"
 DOCS_PATHS_JS = ROOT / ".github" / "scripts" / "docs-only-paths.js"
+BASE_POLICY_JS = ROOT / ".github" / "scripts" / "base-gate-policy-v1.js"
 VISUAL_YML = ROOT / ".github" / "workflows" / "visual.yml"
 QUICK_WORKER = ROOT / ".github" / "scripts" / "quick-v2-worker-v1.sh"
 DOC_CITATION_YML = ROOT / ".github" / "workflows" / "doc-citation-gate.yml"
@@ -74,6 +77,12 @@ class QuickPathFilterContractTest(unittest.TestCase):
             if matched:
                 ignored = not negated
         return ignored
+
+    @staticmethod
+    def js_set_literals(source: str, name: str) -> set[str]:
+        match = re.search(rf"const {name} = new Set\(\[(.*?)\]\)", source, re.DOTALL)
+        assert match is not None
+        return set(re.findall(r'["\']([^"\']+)["\']', match.group(1)))
 
     def docs_quick_script(self) -> str:
         workflow = DOCS_QUICK_YML.read_text(encoding="utf-8")
@@ -210,6 +219,10 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assert_docs_only(["docs/guide.md"])
         self.assert_docs_only(["docs/assets/front-panel.png"])
         self.assert_docs_only([".claude/settings.json"])
+        # A Markdown sibling of a CORE_DOCS_TEST_INPUT_EXACT file that tests
+        # do not read keeps the docs-only path (MOR-2589 keeps the list exact).
+        self.assert_docs_only(["docs/api/unlisted.md"])
+        self.assert_docs_only(["docs/internals/unlisted.md"])
 
     def test_docs_test_input_files_classify_as_core(self) -> None:
         # Every path here is read by name (Path(...)/open()/read_text()) by a
@@ -251,6 +264,41 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             ),
             {"core": True, "frontend": False, "ci": False, "docs": False},
         )
+
+    def test_rename_from_docs_data_to_markdown_selects_core(self) -> None:
+        # git diff --name-only pairs renames and lists only the new name, so
+        # the deleted docs data side of a rename escaped classification;
+        # changed_paths must report both sides (MOR-2589).
+        with tempfile.TemporaryDirectory() as scratch:
+            repo = Path(scratch) / "repo"
+            (repo / "docs" / "data").mkdir(parents=True)
+
+            def git(*args: str) -> str:
+                completed = subprocess.run(
+                    ["git", "-C", str(repo), *args],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return completed.stdout.strip()
+
+            git("init")
+            git("config", "user.email", "ci@example.invalid")
+            git("config", "user.name", "ci")
+            (repo / "docs" / "data" / "x.json").write_text("payload", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-m", "base")
+            base = git("rev-parse", "HEAD")
+            git("mv", "docs/data/x.json", "docs/data/x.md")
+            git("commit", "-m", "rename")
+            head = git("rev-parse", "HEAD")
+
+            paths = CLASSIFIER.changed_paths(repo, base=base, head=head)
+            self.assertEqual(set(paths), {"docs/data/x.json", "docs/data/x.md"})
+            self.assertEqual(
+                CLASSIFIER.classify(paths),
+                {"core": True, "frontend": False, "ci": False, "docs": False},
+            )
 
     def test_workflows_pin_docs_skip_ready_guard_and_visual_exclusions(self) -> None:
         quick = QUICK_YML.read_text(encoding="utf-8")
@@ -345,9 +393,22 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         ):
             with self.subTest(pattern=pattern):
                 self.assertEqual(quick.count(f'      - "{pattern}"'), 2)
-        # The publisher predicate applies the same suffix rule before posting
-        # a synthetic green quick status.
-        self.assertIn('DOCS_DATA_SUFFIXES = new Set([".json", ".toml", ".yaml", ".yml"])', docs_paths)
+        # The publisher predicate and the base route policy mirror the
+        # classifier's docs data suffixes and test-read docs Markdown list;
+        # comparing parsed set contents fails when any mirror diverges.
+        base_policy = BASE_POLICY_JS.read_text(encoding="utf-8")
+        for name, expected in (
+            ("DOCS_DATA_SUFFIXES", set(CLASSIFIER.DOCS_DATA_SUFFIXES)),
+            ("CORE_DOCS_TEST_INPUT_EXACT", set(CLASSIFIER.CORE_DOCS_TEST_INPUT_EXACT)),
+        ):
+            with self.subTest(mirror=name):
+                self.assertEqual(self.js_set_literals(docs_paths, name), expected)
+                self.assertEqual(self.js_set_literals(base_policy, name), expected)
+        # quick.yml re-includes every test-read docs Markdown file in both
+        # paths-ignore blocks so such a diff reaches the classifier (MOR-2589).
+        for path in sorted(CLASSIFIER.CORE_DOCS_TEST_INPUT_EXACT):
+            with self.subTest(test_read_negation=path):
+                self.assertEqual(quick.count(f'      - "!{path}"'), 2)
 
         self.assertIn("pull_request_target:", docs_quick)
         self.assertNotIn("\n  pull_request:\n", docs_quick)
@@ -361,6 +422,7 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         base = "c" * 40
         docs = [
             {"filename": "docs/guide.md"},
+            {"filename": "docs/operations/unlisted.md"},
             {"filename": ".claude/agents/verifier.md"},
             {"filename": "frontend/README.MD"},
             {"filename": "guide.RsT"},
@@ -429,6 +491,30 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
                 "docs-mixed-data",
             ),
             (
+                {"files": [{"filename": "docs/PROJECT.md"}]},
+                "docs-test-input-md",
+            ),
+            (
+                {
+                    "files": [
+                        {"filename": "docs/guide.md"},
+                        {"filename": "docs/api/web.md"},
+                    ]
+                },
+                "docs-mixed-test-input",
+            ),
+            (
+                {
+                    "files": [
+                        {
+                            "filename": "docs/guide.md",
+                            "previous_filename": "docs/api/radio.md",
+                        }
+                    ]
+                },
+                "rename-old-side-test-input",
+            ),
+            (
                 {
                     "files": [{"filename": "docs/guide.md"}],
                     "changed_files": 3000,
@@ -471,20 +557,27 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             "frontend/README.rst\r\n",
             # docs/ data files are re-included by the ordered "!docs/**"
             # negations, so both quick.yml triggers fire for them (MOR-2580).
+            # Test-read Markdown under docs/ is re-included the same way by
+            # exact "!<path>" negations (MOR-2589).
             "docs/internals/ui-radio-control-contract.toml",
             "docs/parity/ic7610_command_matrix.json",
             "docs/validation/templates/x6200.json",
             "docs/internals/future-contract.yaml",
+            "docs/PROJECT.md",
+            "docs/parity/README.md",
+            "docs/api/web.md",
+            "docs/internals/audio-capture-health.md",
         ):
             with self.subTest(path=path):
                 self.assertTrue(
                     all(not self.ignored_by_block(path, block) for block in blocks)
                 )
-        # Prose under docs/ stays ignored by both triggers.
+        # Prose under docs/ that tests do not read stays ignored by both
+        # triggers.
         for path in (
             "docs/guide.md",
-            "docs/parity/README.md",
-            "docs/internals/audio-capture-health.md",
+            "docs/operations/other.md",
+            "docs/internals/unlisted.md",
         ):
             with self.subTest(path=path):
                 self.assertTrue(

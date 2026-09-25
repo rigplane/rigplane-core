@@ -20,6 +20,24 @@ const CI_EXACT = new Set(['tests/test_ci_path_filters.py']);
 // documentation and must route to a substantive quick run. Mirrors
 // DOCS_DATA_SUFFIXES in classify-quick-paths.py and docs-only-paths.js.
 const DOCS_DATA_SUFFIXES = new Set(['.json', '.toml', '.yaml', '.yml']);
+// Markdown under docs/ that a test under tests/ reads at test time (the
+// CORE_DOCS_TEST_INPUT_EXACT list) is not documentation and must route to
+// a substantive quick run. Mirrors CORE_DOCS_TEST_INPUT_EXACT in
+// classify-quick-paths.py and docs-only-paths.js.
+const CORE_DOCS_TEST_INPUT_EXACT = new Set([
+  'docs/PROJECT.md',
+  'docs/parity/README.md',
+  'docs/operations/managed-runtime-packaging.md',
+  'docs/api/web.md',
+  'docs/guide/web-ui.md',
+  'docs/api/command-catalog.md',
+  'docs/api/radio.md',
+  'docs/guide/connection.md',
+  'docs/api/audio.md',
+  'docs/guide/audio-recipes.md',
+  'docs/guide/diagnostic-reports.md',
+  'docs/internals/audio-capture-health.md',
+]);
 
 function assertSha(value, label) {
   if (typeof value !== 'string' || !SHA_PATTERN.test(value)) {
@@ -47,6 +65,9 @@ function pathParts(path) {
 
 function isDocumentation(path) {
   const parts = pathParts(path);
+  if (CORE_DOCS_TEST_INPUT_EXACT.has(path)) {
+    return false;
+  }
   const dot = path.lastIndexOf('.');
   const suffix = dot === -1 ? '' : path.slice(dot).toLowerCase();
   if (parts.length > 1 && parts[0] === 'docs' && DOCS_DATA_SUFFIXES.has(suffix)) {

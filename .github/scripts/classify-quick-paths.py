@@ -46,16 +46,17 @@ DOCS_DATA_SUFFIXES = {".json", ".toml", ".yaml", ".yml"}
 # Hand-maintained list of docs/ PROSE files that a test under tests/ actually
 # reads (Path(...)/open()/read_text()) at test time, found by grepping
 # tests/ for docs/ path literals and, separately, an open-audit of test
-# runs for files opened under docs/ and .claude/. It only matters for a
-# diff that also touches a non-docs path: quick.yml's paths-ignore lists
-# "docs/**" and "**/*.md" twice (push and pull_request), so a prose-docs-only
-# diff never reaches this classifier at all — docs-only-quick.yml posts a
-# synthetic green instead (data files under docs/ are the exception carved
-# out by DOCS_DATA_SUFFIXES above). This list is NOT complete: files read by
+# runs for files opened under docs/ and .claude/. A diff touching one of
+# them must select the core checks: quick.yml's paths-ignore re-includes
+# each exact path after "docs/**" and "**/*.md", and the docs-only publisher
+# predicate (.github/scripts/docs-only-paths.js) and the base route policy
+# (.github/scripts/base-gate-policy-v1.js) mirror this list, so neither
+# treats such a diff as documentation. Prose under docs/ that tests do not
+# read stays documentation-only. This list is NOT complete: files read by
 # tests/test_claude_instruction_paths.py under .claude/, and any *.py under
 # docs/ or .claude/ walked by tests/support/command_builders.py's
-# repository_python_paths, are not listed — grepping for literal path strings
-# cannot see either.
+# repository_python_paths, are not listed — grepping for literal path
+# strings cannot see either.
 CORE_DOCS_TEST_INPUT_EXACT = {
     "docs/PROJECT.md",  # tests/test_ic7610_parity_matrix.py
     "docs/parity/README.md",  # tests/test_ic7610_parity_matrix.py
@@ -165,7 +166,10 @@ def changed_paths(repo: Path, *, base: str, head: str) -> list[str]:
         _ensure_commit(repo, sha)
 
     completed = subprocess.run(
-        ["git", "diff", "--name-only", "-z", base, head, "--"],
+        # --no-renames: with rename detection (diff.renames defaults on for
+        # git diff), --name-only lists only the NEW name of a rename, so the
+        # deleted side escaped classification (MOR-2589).
+        ["git", "diff", "--name-only", "--no-renames", "-z", base, head, "--"],
         cwd=repo,
         check=False,
         stdout=subprocess.PIPE,
