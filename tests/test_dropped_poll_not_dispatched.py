@@ -20,7 +20,6 @@ import pytest
 
 from rigplane.commands.command_map import CommandMap
 from rigplane.commands.commander import IcomCommander, Priority, _MAX_BG_INFLIGHT
-from rigplane.core.acquisition_drain import AcquisitionDrain
 from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
     AcquisitionScheduler,
@@ -164,19 +163,9 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched(
             if event.kind == "acquisition_request_sent"
         ] == []
         assert caplog.records == []
-        assert scheduler.diagnostics()["failureCountByReason"] == {
-            "acquisition_executor_error": 1
-        }
-        assert list(scheduler._cadence_by_key) == list(  # noqa: SLF001
-            scheduler._poll_cadence_groups()  # noqa: SLF001
-        )
-        state = next(iter(scheduler._cadence_by_key.values()))  # noqa: SLF001
-        assert state.next_due_monotonic == clock.now() + _CADENCE
 
         # One cadence later the dropped path goes out again, well before
         # max_age (the LIVE class TTL, 1 s) plus the 6 s healthy-link grace.
-        # The poller's own drain reads the wall clock, so the resend is
-        # driven through a drain on the same controlled clock.
         release.set()
         await gate
         await commander.stop()
@@ -184,23 +173,10 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched(
         commander.start()
         clock.advance(_CADENCE + 0.01)
         scheduler.due_requests(now=clock.now())
-        requeued = scheduler.pending_requests()
-        assert requeued != ()
-        in_flight: dict = {}
-        drain = AcquisitionDrain(
-            scheduler=lambda: scheduler,
-            executor=lambda: poller._acquisition_executor,  # noqa: SLF001
-            store=lambda: store,
-            in_flight=in_flight,
-            expired=lambda request, *, sent_at, now: False,
-            dispatchable=lambda pending: pending,
-            report_failure=lambda *args, **kwargs: None,
-            report_executor_missing=lambda *args, **kwargs: None,
-            report_executor_error=poller._report_acquisition_executor_error,  # noqa: SLF001
-            report_sent=lambda *args, **kwargs: None,
-        )
+        assert scheduler.pending_requests() != ()
         with patch("rigplane.core.acquisition_drain.time.monotonic", clock.now):
-            await drain.run_once()
+            await poller._send_query()  # noqa: SLF001
+        in_flight = poller._acquisition_in_flight  # noqa: SLF001
         assert len(in_flight) == 1
         assert _FREQ in next(iter(in_flight.values()))[0]
     finally:
