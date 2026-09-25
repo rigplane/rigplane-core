@@ -302,7 +302,7 @@ class AcquisitionDrain:
             # the frame may already be on the wire still gets its own
             # dispatch. ``record_dispatch`` alone cannot cover that window:
             # it only runs after ``execute`` returns.
-            scheduler.note_execute_started(request.id)
+            # MUTATION PROBE: marker removed, confirmation must merge again.
             try:
                 result = await executor.execute(
                     request,
