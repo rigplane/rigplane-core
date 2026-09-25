@@ -90,5 +90,9 @@ export function shouldSkipFetch(
   lastEnd: number,
 ): boolean {
   if (lastStart === 0) return false;
-  return start >= lastStart && end <= lastEnd;
+  const span = end - start;
+  return (
+    Math.abs(start - lastStart) < span * 0.01 &&
+    Math.abs(end - lastEnd) < span * 0.01
+  );
 }
