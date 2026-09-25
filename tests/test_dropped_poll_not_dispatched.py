@@ -160,6 +160,9 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched(
             if event.kind == "acquisition_request_sent"
         ] == []
         assert caplog.records == []
+        assert scheduler.diagnostics()["failureCountByReason"] == {
+            "acquisition_executor_error": 1
+        }
 
         # One cadence later the dropped path goes out again, well before
         # max_age (the LIVE class TTL, 1 s) plus the 6 s healthy-link grace.
