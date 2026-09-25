@@ -1110,10 +1110,6 @@ class AudioBridge:
                 if capture is not None and not capture.running:
                     raise OSError("TX capture stream stopped unexpectedly")
 
-                if self._tx_gate_was_closed and not await self._tx_gate_is_closed():
-                    self._tx_gate_was_closed = False
-                    self._drop_queued_tx()
-
                 try:
                     pcm_bytes = await asyncio.wait_for(
                         self._tx_queue.get(), timeout=1.0
@@ -1124,6 +1120,9 @@ class AudioBridge:
                 if await self._tx_gate_is_closed():
                     self._tx_gate_suppressed += 1
                     continue
+                if self._tx_gate_was_closed:
+                    self._tx_gate_was_closed = False
+                    self._drop_queued_tx()
                     self._drop_queued_tx()
 
                 samples = _pcm16le_samples(pcm_bytes)
