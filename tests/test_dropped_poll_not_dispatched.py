@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from unittest.mock import patch
 
 import pytest
 
@@ -148,7 +149,10 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched(
         )
 
         service.tick(now=clock.now())
-        with caplog.at_level(logging.DEBUG):
+        with (
+            caplog.at_level(logging.DEBUG),
+            patch("rigplane.core.acquisition_drain.time.monotonic", clock.now),
+        ):
             await poller._send_query()  # noqa: SLF001
 
         dropped = scheduler.pending_requests()
@@ -167,7 +171,7 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched(
             scheduler._poll_cadence_groups()  # noqa: SLF001
         )
         state = next(iter(scheduler._cadence_by_key.values()))  # noqa: SLF001
-        assert state.next_due_monotonic == clock.now()
+        assert state.next_due_monotonic == clock.now() + _CADENCE
 
         # One cadence later the dropped path goes out again, well before
         # max_age (the LIVE class TTL, 1 s) plus the 6 s healthy-link grace.
