@@ -3952,14 +3952,11 @@ class CivRuntime:
             if delta < self._host._civ_min_interval:
                 await asyncio.sleep(self._host._civ_min_interval - delta)
 
-                check_current()
-                pkt = self._wrap_civ(civ_frame)
-                await transport.send_tracked(pkt, **guard)
-                check_current()
-                # MUTATION (MOR-2603 long-reply proof): stamp after the reply
-                # wait instead of at the send.
-                await asyncio.sleep(self._host._civ_min_interval)
-                self._host._last_civ_send_monotonic = time.monotonic()
+            check_current()
+            pkt = self._wrap_civ(civ_frame)
+            await transport.send_tracked(pkt, **guard)
+            check_current()
+            self._host._last_civ_send_monotonic = time.monotonic()
             assert pending is not None
             # The answer window is spent from here, not from method entry:
             # ``_civ_get_timeout`` bounds how long the *radio* may take,
