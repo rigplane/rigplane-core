@@ -867,8 +867,12 @@ async def test_opening_gate_drops_frames_queued_while_closed():
         if time.monotonic() - started > 1.0:
             raise AssertionError("closed gate did not suppress the echo")
         await asyncio.sleep(0)
+    bridge._running = False
+    await bridge._tx_task
+    bridge._running = True
     bridge._enqueue_tx(echo)
     bridge._enqueue_tx(later)
+    bridge._tx_task = asyncio.create_task(bridge._tx_loop())
     await _run_tx_until(bridge, frames=1)
 
     assert sent == [later]
