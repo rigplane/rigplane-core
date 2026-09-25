@@ -371,6 +371,130 @@ describe('createSmoother — target initial value (MOR-1251 F4)', () => {
   });
 });
 
+// MOR-2613: exponential approach never lands on the target, so an
+// unconditional rAF chain kept assigning `current` forever and every
+// consumer re-derived. Once the remaining gap is under the epsilon the
+// value snaps to the target and the chain stops; a later update restarts it.
+describe('createSmoother — settles and stops scheduling (MOR-2613)', () => {
+  function installFrameClock() {
+    let now = 0;
+    let nextId = 1;
+    let pending: { id: number; callback: FrameRequestCallback } | null = null;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      const id = nextId++;
+      pending = { id, callback };
+      return id;
+    });
+    const caf = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => {
+      if (pending?.id === id) pending = null;
+    });
+    return {
+      raf,
+      caf,
+      pending: () => pending,
+      step(dtMs = 16.67) {
+        const frame = pending;
+        expect(frame).not.toBeNull();
+        pending = null;
+        now += dtMs;
+        frame!.callback(now);
+      },
+    };
+  }
+
+  it('snaps to the target exactly and requests no further frame once the gap is under the epsilon', () => {
+    const { restore } = mockReducedMotion(false);
+    const clock = installFrameClock();
+    try {
+      const smoother = createSmoother(0.12, 0.32, 0);
+      smoother.update(10);
+      smoother.start();
+      expect(clock.pending()).not.toBeNull();
+
+      let frames = 0;
+      for (let i = 0; i < 400 && clock.pending() !== null; i += 1) {
+        clock.step();
+        frames += 1;
+      }
+
+      expect(frames).toBeLessThan(400);
+      expect(clock.pending()).toBeNull();
+      expect(smoother.value).toBe(10);
+      smoother.stop();
+    } finally {
+      restore();
+    }
+  });
+
+  it('a new update after settling schedules frames again and moves the value', () => {
+    const { restore } = mockReducedMotion(false);
+    const clock = installFrameClock();
+    try {
+      const smoother = createSmoother(0.12, 0.32, 0);
+      smoother.update(10);
+      smoother.start();
+      for (let i = 0; i < 400 && clock.pending() !== null; i += 1) {
+        clock.step();
+      }
+      expect(clock.pending()).toBeNull();
+      expect(smoother.value).toBe(10);
+
+      clock.raf.mockClear();
+      smoother.update(20);
+      expect(smoother.value).toBe(10);
+      expect(clock.pending()).not.toBeNull();
+      expect(clock.raf).toHaveBeenCalledTimes(1);
+
+      clock.step();
+      expect(smoother.value).toBeGreaterThan(10);
+      expect(smoother.value).toBeLessThan(20);
+      smoother.stop();
+    } finally {
+      restore();
+    }
+  });
+
+  it('reduced motion still snaps and schedules nothing, including after a settle', () => {
+    const { restore } = mockReducedMotion(true);
+    const raf = vi.spyOn(window, 'requestAnimationFrame');
+    try {
+      const smoother = createSmoother(0.12, 0.32, 0);
+      smoother.update(10);
+      smoother.start();
+      smoother.update(20);
+      expect(smoother.value).toBe(20);
+      expect(raf).not.toHaveBeenCalled();
+      smoother.stop();
+    } finally {
+      restore();
+    }
+  });
+
+  it('stop() after settling leaves nothing scheduled', () => {
+    const { restore } = mockReducedMotion(false);
+    const clock = installFrameClock();
+    try {
+      const smoother = createSmoother(0.12, 0.32, 0);
+      smoother.update(10);
+      smoother.start();
+      for (let i = 0; i < 400 && clock.pending() !== null; i += 1) {
+        clock.step();
+      }
+      expect(clock.pending()).toBeNull();
+
+      const scheduled = clock.raf.mock.calls.length;
+      smoother.stop();
+      smoother.update(30);
+      expect(clock.raf).toHaveBeenCalledTimes(scheduled);
+      expect(clock.pending()).toBeNull();
+      expect(smoother.value).toBe(10);
+    } finally {
+      restore();
+    }
+  });
+});
+
 it('reset clears current and target synchronously without changing the live schedule', () => {
   const { restore, setMatches } = mockReducedMotion(false);
   const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);

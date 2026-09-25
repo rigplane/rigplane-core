@@ -277,6 +277,17 @@ describe('createMeterBallistics frame-step strategy', () => {
   });
 });
 
+describe('createFrameStepPeakStrategy projection (MOR-2613)', () => {
+  it('projects the current value when the latched peak sits below it', () => {
+    const strategy = createFrameStepPeakStrategy({
+      holdMilliseconds: 1000,
+      decrementPerFrame: () => 1,
+    });
+    const state = strategy.seed(4, 0);
+    expect(strategy.project(state, 9, 0, false)).toBe(9);
+  });
+});
+
 describe('createMeterBallistics continuity boundaries (MOR-2400)', () => {
   it('keeps the omitted-source legacy path byte-for-behavior compatible', () => {
     const { meter, smoother } = frameSetup();
