@@ -2248,9 +2248,10 @@ class TestCivPacingIsSendToSend:
         """A send cancelled after the packet left still paces the next.
 
         The fire-and-forget branch runs ``check_current()`` between
-        ``send_tracked`` and the ``_last_civ_send_monotonic`` stamp; when
-        the cancel (or the stale-attempt refusal) lands there, the stamp
-        must already be in place.
+        ``send_tracked`` and the ``_last_civ_send_monotonic`` stamp.  The
+        attempt here is current while the packet leaves and goes stale
+        right after, so the refusal lands exactly in that window: the
+        stamp must already be in place for the next send to wait the gap.
         """
         gap = 0.025
         clock = _install_pacing_clock(monkeypatch, gap=gap)
@@ -2259,14 +2260,14 @@ class TestCivPacingIsSendToSend:
         clock.install_gc_guard(radio)
         clock.install_wait_guard(radio)
         radio._last_civ_send_monotonic = 0.0
-        starts: list[float] = []
+        current = [True]
         original_send = mock_transport.send_tracked
 
         async def slow_send(data: bytes, **kwargs: object) -> None:
-            starts.append(len(mock_transport.sent_packets))
             # The guard kwarg (is_current) is a runtime-to-transport
             # contract; the mock transport does not take it.
             await original_send(data)
+            current[0] = False
 
         monkeypatch.setattr(mock_transport, "send_tracked", slow_send)
         cmd = build_civ_frame(
@@ -2277,53 +2278,11 @@ class TestCivPacingIsSendToSend:
             try:
                 with pytest.raises(ConnectionError, match="stale"):
                     await radio._execute_civ_raw(
-                        cmd, wait_response=False, is_current=lambda: False
+                        cmd, wait_response=False, is_current=lambda: current[0]
                     )
+                assert len(mock_transport.sent_packets) == 1
                 mock_transport.queue_response_on_send(2, _ack_response())
-                tracker = radio._civ_request_tracker
-                resolve_calls: list[bool] = []
-                original_resolve = tracker.resolve
-
-                def counting_resolve(event, **kwargs):  # type: ignore[no-untyped-def]
-                    outcome = original_resolve(event, **kwargs)
-                    resolve_calls.append(outcome)
-                    return outcome
-
-                monkeypatch.setattr(tracker, "resolve", counting_resolve)
-                print(
-                    "BEFORE SECOND:",
-                    "min_interval=",
-                    radio._civ_min_interval,
-                    "last=",
-                    radio._last_civ_send_monotonic,
-                    "mono=",
-                    clock.monotonic(),
-                    "pending=",
-                    tracker.pending_count,
-                    "sinks=",
-                    tracker.ack_sink_count,
-                    "same_transport=",
-                    radio._civ_transport is mock_transport,
-                    "sent=",
-                    len(mock_transport.sent_packets),
-                )
-                try:
-                    frame = await radio._execute_civ_raw(cmd)
-                except TimeoutError as exc:
-                    pump = radio._civ_rx_task
-                    probe = {
-                        "sent": len(mock_transport.sent_packets),
-                        "starts": starts,
-                        "pending": tracker.pending_count,
-                        "sinks": tracker.ack_sink_count,
-                        "resolves": resolve_calls,
-                        "sleeps": clock.sleeps,
-                        "last_send": radio._last_civ_send_monotonic,
-                        "clock": clock.monotonic(),
-                        "pump_done": pump.done() if pump is not None else None,
-                        "queued": mock_transport._responses.qsize(),
-                    }
-                    raise AssertionError(f"no ACK handover: {probe}") from exc
+                frame = await radio._execute_civ_raw(cmd)
                 assert frame is not None
                 assert frame.command == _CMD_ACK
             finally:
@@ -2332,9 +2291,12 @@ class TestCivPacingIsSendToSend:
             radio._civ_request_tracker.fail_all(ConnectionError("test cleanup"))
 
         assert radio._civ_request_tracker.pending_count == 0
-        # One gap while the caller waits; the second send leaves exactly
-        # one gap after the cancelled packet left the wire.
-        assert starts == [0, 1]
+        assert len(mock_transport.sent_packets) == 2
+        # The follow-up waited the gap: exactly one pacing sleep, taken by
+        # it (the fire-and-forget send itself needed none, starting on a
+        # fresh clock).  Without the stamp-before-check fix the refusal
+        # would skip the stamp and this sleep would never happen.
+        assert clock.sleeps == pytest.approx([gap], abs=0.005)
         assert radio._last_civ_send_monotonic == pytest.approx(2 * gap, abs=0.005)
 
     @pytest.mark.asyncio
