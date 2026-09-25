@@ -4007,8 +4007,7 @@ class RadioPoller:
         radios (``vfo_readback == "selected_unselected"``) declare no
         ``tx_target`` capability, so ``policy_for`` falls back to the
         profile default. Radios with a native read (FTX-1; IC-7610's 1C 03,
-        MOR-2540) DO declare the capability; where a field policy is
-        declared too (IC-7610), that policy's TTL is what this returns.
+        MOR-2540) DO declare the capability.
         """
         # mypy --strict src/rigplane/web's own follow_imports=skip means the
         # cross-package call resolves to Any; float(...) makes the strict

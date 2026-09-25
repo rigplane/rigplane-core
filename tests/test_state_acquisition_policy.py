@@ -1454,8 +1454,7 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
         assert acquisition.capability_for(path).command_response_observable is True
 
     # MOR-1452 (review fix) / MOR-1484 (bench-measured tightening): the 4
-    # mic/monitor/VOX/anti-VOX gain fields sit at 10.0s/15.0s, NOT IC-7610's
-    # 3.0s/5.0s for the same fields (rigs/ic7610.toml) — IC-7610 is LAN,
+    # mic/monitor/VOX/anti-VOX gain fields sit at 10.0s/15.0s, not 3.0s —
     # IC-7300 is serial and shares one ~20 q/s software floor across every
     # poll, operator command, and keep-alive on the same lane (see the
     # serial-budget assertion below for the exact arithmetic that rules out
