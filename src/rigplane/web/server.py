@@ -103,6 +103,7 @@ from .radio_poller import (  # noqa: TID251
     EnableScope,
     RadioPoller,
 )
+from .monitor_mute import MonitorMuteState  # noqa: TID251
 from .runtime_helpers import (  # noqa: TID251
     VFO_CAPABILITY_TAGS,
     build_public_state_payload_from_snapshot,
@@ -166,6 +167,7 @@ class _PublicStatePayloadFromSnapshotFn(Protocol):
         audio_clients: int = 0,
         radio_health: dict[str, Any] | None = None,
         health_revision: int = 0,
+        monitor_mute: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]: ...
 
 
@@ -922,6 +924,9 @@ class WebServer:
         self._public_state_seq: int = 0
         self._last_public_state_seq_key: tuple[object, ...] | None = None
         self._health_revision: int = 0
+        # MOR-2583: monitor MUTE is server process state, not radio state, so a
+        # reconnect (which clears the StateStore) does not drop the saved levels.
+        self.monitor_mute: MonitorMuteState = MonitorMuteState()
         self._health_signature: tuple[object, ...] | None = None
         self._health_since_monotonic: float = time.monotonic()
         # Audio bridge (virtual device integration)
@@ -1629,6 +1634,16 @@ class WebServer:
         except asyncio.CancelledError:
             pass
 
+    def publish_monitor_mute(self) -> None:
+        """Tell connected clients the server-owned monitor MUTE changed.
+
+        The saved levels live outside the StateStore, so a store change never
+        announces them. Called only after the AF writes have landed.
+        """
+        self._cached_public_state_key = None
+        self._cached_public_state_payload = None
+        self._broadcast_state_update(force=True)
+
     def build_public_state(self, *, updated_at: str | None = None) -> dict[str, Any]:
         """Return the canonical public state payload for web consumers."""
         snapshot, payload = self._build_public_state_for_delivery(updated_at=updated_at)
@@ -1643,6 +1658,8 @@ class WebServer:
         health_revision: int,
     ) -> tuple[object, ...]:
         return (
+            self.monitor_mute.on,
+            tuple(sorted(self.monitor_mute.saved_af.items())),
             snapshot.state_revision,
             snapshot.freshness_revision,
             snapshot.observation_seq,
@@ -1722,6 +1739,7 @@ class WebServer:
             audio_clients=len(self._audio_broadcaster._clients),
             radio_health=health,
             health_revision=self._health_revision,
+            monitor_mute=self.monitor_mute.public(profile.receiver_count),
         )
         payload["publicStateSeq"] = public_state_seq
         payload["stateContractVersion"] = 1

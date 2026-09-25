@@ -117,6 +117,10 @@ _REQUIRED_BY_MODEL: dict[str, set[str]] = {
     # Envelope framing is always present; ``data`` (full) vs ``changed`` +
     # ``removed`` (delta) and the echoed revisions are frame-conditional.
     "StateUpdateEnvelope": {"type", "revision", "transportSeq"},
+    # MOR-2583: a saved level is omitted until mute saves it, and ``sub`` is
+    # omitted on a single-receiver radio. The key is absent, not null, so
+    # neither property is required.
+    "MonitorMuteSavedAfPublic": set(),
 }
 
 

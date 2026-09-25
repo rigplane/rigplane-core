@@ -1370,6 +1370,7 @@ def _build_public_state_payload_from_dict(
     audio_clients: int = 0,
     radio_health: dict[str, Any] | None = None,
     health_revision: int = 0,
+    monitor_mute: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     state = copy.deepcopy(state)
     for receiver in (state.get("main"), state.get("sub")):
@@ -1453,6 +1454,8 @@ def _build_public_state_payload_from_dict(
     public = _camel_case_state(state)
     _null_unobserved_public_leaves(public)
     _publish_last_commanded_power_off(public, radio)
+    if monitor_mute is not None:
+        public["monitorMute"] = copy.deepcopy(dict(monitor_mute))
     return public
 
 
@@ -1518,6 +1521,7 @@ def build_public_state_payload(
     audio_clients: int = 0,
     radio_health: dict[str, Any] | None = None,
     health_revision: int = 0,
+    monitor_mute: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the canonical public web state payload from RadioState.
 
@@ -1539,6 +1543,7 @@ def build_public_state_payload(
         audio_clients=audio_clients,
         radio_health=radio_health,
         health_revision=health_revision,
+        monitor_mute=monitor_mute,
     )
 
 
@@ -1593,6 +1598,7 @@ def build_public_state_payload_from_snapshot(
     audio_clients: int = 0,
     radio_health: dict[str, Any] | None = None,
     health_revision: int = 0,
+    monitor_mute: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the public web payload from one StateStore snapshot."""
 
@@ -1618,4 +1624,5 @@ def build_public_state_payload_from_snapshot(
         audio_clients=audio_clients,
         radio_health=radio_health,
         health_revision=health_revision,
+        monitor_mute=monitor_mute,
     )
