@@ -665,9 +665,9 @@ async def test_success_without_a_lifecycle_record_is_only_the_tx_drop() -> None:
 
 # ── MOR-1892: the seat's own unkey must not blind its RF truth ─────────────
 # The interlock reads the OBSERVED PTT field, and after a client's unkey that
-# observation still reads "transmitting" until the next poll — up to the
-# field's 0.3 s cadence on an IC-7300. WSJT-X in "Fake It" split restores the
-# dial a fixed 100 ms after its unkey (``QThread::msleep(100)`` in its own
+# observation still reads "transmitting" until the next poll. WSJT-X in
+# "Fake It" split restores the dial a fixed 100 ms after its unkey
+# (``QThread::msleep(100)`` in its own
 # ``TransceiverBase::set``), squarely inside that window, so the restore is
 # dropped and the rig is left on the transmit-shifted frequency.
 #
@@ -687,6 +687,7 @@ class _RecordingStateModelService:
         priority: object,
         reason: str,
         timeout: float | None = None,
+        require_fresh_dispatch: bool = False,
     ) -> None:
         self.requests.append((tuple(paths), str(priority), max_age))  # type: ignore[arg-type]
         return None

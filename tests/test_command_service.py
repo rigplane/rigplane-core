@@ -6,13 +6,19 @@ import asyncio
 import logging
 from collections.abc import Sequence
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
 
-from rigplane.core.acquisition_scheduler import AcquisitionStatus
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionPriority,
+    AcquisitionScheduler,
+    AcquisitionStatus,
+    RadioStateModelService,
+)
 from rigplane.core.command_service import (
     CommandExecutionResult,
     CommandService,
@@ -31,6 +37,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.profiles.rig_loader import load_rig
 
 
 class FakeExecutor:
@@ -2126,6 +2133,7 @@ class FakeStateModelService:
         priority: Any,
         reason: str,
         timeout: float | None = None,
+        require_fresh_dispatch: bool = False,
     ) -> None:
         self.requests.append(
             {
@@ -2133,6 +2141,7 @@ class FakeStateModelService:
                 "max_age": max_age,
                 "priority": str(priority),
                 "reason": reason,
+                "require_fresh_dispatch": require_fresh_dispatch,
             }
         )
         return None
@@ -2166,6 +2175,8 @@ async def test_acknowledged_write_requests_reobservation_of_its_target() -> None
     assert request["max_age"] > 0
     assert request["max_age"] < 1e-6
     assert "set_freq" in request["reason"]
+    # The answer must come from a send made after the write (MOR-2592).
+    assert request["require_fresh_dispatch"] is True
 
 
 @pytest.mark.asyncio  # type: ignore[untyped-decorator]
@@ -2318,3 +2329,62 @@ async def test_reobservation_still_requested_for_an_unrelated_observation() -> N
     await service.execute(_intent())
 
     assert [request["paths"] for request in freshness.requests] == [(_freq_path(),)]
+
+
+# ── MOR-2592: the confirmation must not ride a poll sent before the write ──
+# Without ``require_fresh_dispatch`` a confirmation for a path with a poll
+# already in flight joins that poll's request, and the poll went out before
+# the write — its reply can carry the pre-write value, so the TX interlock
+# keeps reading the old PTT state until the next cadence poll.
+
+
+_RIGS_DIR = Path(__file__).parents[1] / "rigs"
+
+
+@pytest.mark.parametrize("rig_file", ["ic7610.toml", "ic7300.toml"])
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_write_confirmation_reissues_an_in_flight_ptt_poll(
+    rig_file: str,
+) -> None:
+    """A ptt poll is in flight when the write confirmation asks for ptt back.
+
+    The confirmation goes through the real ``RadioStateModelService`` over a
+    real profile's scheduler: the ptt poll is dispatched, the confirmation
+    arrives while its answer is still outstanding, and the confirmation must
+    leave with its own request id — one no send has covered, so the in-flight
+    poll's pre-write answer cannot complete it.
+    """
+    acquisition = load_rig(_RIGS_DIR / rig_file).to_profile().state_acquisition
+    assert acquisition is not None
+    scheduler = AcquisitionScheduler(profile=acquisition)
+    store = StateStore()
+    service = CommandService(
+        executor=FakeExecutor(),
+        state_store=store,
+        state_model_service=RadioStateModelService(store=store, scheduler=scheduler),
+    )
+    ptt = FieldPath.global_("tx_state", "ptt")
+    poll = scheduler.ensure_fresh(
+        ptt, max_age=5.0, priority="background", reason="policy-cadence"
+    )
+    assert poll.request is not None
+    scheduler.record_dispatch(poll.request.id, paths=(ptt,), now=50.0)
+
+    await service.execute(
+        command_intent_from_request(
+            "set_ptt",
+            {"on": False},
+            source="rigctld",
+            command_id="rigctld-set-ptt-1",
+        )
+    )
+
+    pending = scheduler.pending_requests()
+    assert len(pending) == 1
+    confirmation = pending[0]
+    assert confirmation.id != poll.request.id
+    assert confirmation.priority is AcquisitionPriority.COMMAND
+    assert ptt in confirmation.paths
+    # No send has covered the reissued id, so a reply to the poll sent at
+    # 50.0 cannot satisfy the confirmation.
+    assert scheduler.may_credit(confirmation, observation_timestamp=60.0) is False
