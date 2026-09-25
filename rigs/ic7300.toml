@@ -419,14 +419,14 @@ available_when = [
 # them. cadence_seconds is still load-bearing — with no TTL,
 # prime_unobserved passes it as the prime read's max_age.
 [state_acquisition.field_policies."global.tx_state.vox_on"]
-reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring (MOR-1490)"
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.tx_state.monitor_on"]
-reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring (MOR-1490)"
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
@@ -435,7 +435,7 @@ adaptive_decay = false
 # MOR-1483 (leg 2): voxDelay joins the same non-polling membership as the
 # VOX/MON toggles above.
 [state_acquisition.field_policies."global.operator_controls.vox_delay"]
-reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring (MOR-1490)"
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
@@ -444,77 +444,77 @@ adaptive_decay = false
 # prime_unobserved() iterates field_policies only, so without an entry here
 # these two paths are never primed.
 [state_acquisition.field_policies."receiver.main.active.freq_mode.filter_num"]
-reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring (MOR-1490)"
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.active.freq_mode.data_mode"]
-reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring (MOR-1490)"
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_controls.filter_shape"]
-reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring (MOR-1490)"
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_controls.agc_time_constant"]
-reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring (MOR-1490)"
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.tx_state.rit_on"]
-reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring (MOR-1490)"
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.tx_state.rit_tx"]
-reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring (MOR-1490)"
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.operator_controls.break_in"]
-reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring (MOR-1490)"
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.operator_controls.break_in_delay"]
-reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring (MOR-1490)"
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.operator_controls.key_speed"]
-reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring (MOR-1490)"
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.operator_controls.cw_pitch"]
-reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring (MOR-1490)"
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_toggles.twin_peak_filter"]
-reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring (MOR-1490)"
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
@@ -523,14 +523,14 @@ adaptive_decay = false
 # MOR-2234 group B: tone/TSQL frequency join the same non-polling
 # command_response membership as the CW keyer setpoints above.
 [state_acquisition.field_policies."receiver.main.operator_controls.tone_freq"]
-reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring (MOR-1490)"
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_controls.tsql_freq"]
-reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring (MOR-1490)"
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
