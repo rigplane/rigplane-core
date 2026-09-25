@@ -1506,7 +1506,7 @@ async def test_execute_set_break_in_delay_uses_ic7300_readback_route() -> None:
         sub=0x0F,
         data=b"",
         wait_response=False,
-        priority=Priority.NORMAL,
+        priority=Priority.BACKGROUND,
         wait_dispatch=False,
     )
 
