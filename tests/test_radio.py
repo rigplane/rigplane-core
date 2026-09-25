@@ -2278,7 +2278,21 @@ class TestCivPacingIsSendToSend:
                         cmd, wait_response=False, is_current=lambda: False
                     )
                 mock_transport.queue_response_on_send(2, _ack_response())
-                frame = await radio._execute_civ_raw(cmd)
+                try:
+                    frame = await radio._execute_civ_raw(cmd)
+                except TimeoutError as exc:
+                    pump = radio._civ_rx_task
+                    probe = {
+                        "sent": len(mock_transport.sent_packets),
+                        "starts": starts,
+                        "pending": radio._civ_request_tracker.pending_count,
+                        "sinks": radio._civ_request_tracker.ack_sink_count,
+                        "last_send": radio._last_civ_send_monotonic,
+                        "clock": clock.monotonic(),
+                        "pump_done": pump.done() if pump is not None else None,
+                        "queued": mock_transport._responses.qsize(),
+                    }
+                    raise AssertionError(f"no ACK handover: {probe}") from exc
                 assert frame is not None
                 assert frame.command == _CMD_ACK
             finally:
