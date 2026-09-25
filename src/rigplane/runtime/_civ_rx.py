@@ -1282,13 +1282,13 @@ class CivRuntime:
         try:
             await task
         except asyncio.CancelledError:
-            # A cancel can land after the packet left the wire but before
-            # the stamp below -- or while the send task still runs past
-            # the send, which no outside check can distinguish from a
-            # cancel before it.  Stamp unconditionally: a stamp without a
-            # packet only adds one gap to the next send, while a packet
-            # without a stamp breaks pacing.
-            self._host._last_civ_send_monotonic = time.monotonic()
+            # The send task may already have put the packet on the wire
+            # when this await is cancelled (or when the transport raises
+            # through it after a completed send): stamp from the finished
+            # send so the next send is still paced from this one.
+            if task.done() and not task.cancelled():
+                task.exception()
+                self._host._last_civ_send_monotonic = time.monotonic()
             if token is not None and not self._managed_tx_port_is_current(token):
                 raise ConnectionError("managed TX send invalidated") from None
             raise

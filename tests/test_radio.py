@@ -2223,10 +2223,9 @@ class TestCivPacingIsSendToSend:
         """A `_send_civ_frame_now` cancelled after the send still paces.
 
         The frame runs as an inner task and the stamp comes after
-        ``await task``.  Here the send task cancels itself after the
-        packet left the wire, so the outer await raises ``CancelledError``
-        deterministically with the packet already sent: the next send
-        must still wait the gap from it.
+        ``await task``.  When the outer await is cancelled after the send
+        task already finished, the packet is on the wire and the next
+        send must still wait the gap from it.
         """
         gap = 0.025
         clock = _install_pacing_clock(monkeypatch, gap=gap)
@@ -2239,21 +2238,30 @@ class TestCivPacingIsSendToSend:
         frame = build_civ_frame(
             IC_7610_ADDR, CONTROLLER_ADDR, _CMD_PTT, sub=_SUB_PTT, data=b"\x00"
         )
+        release_send = asyncio.Event()
         original_send = mock_transport.send_tracked
 
         async def gated_send(data: bytes) -> None:
             await original_send(data)
-            me = asyncio.current_task()
-            assert me is not None
-            me.cancel()
+            release_send.set()
+            # One real yield: the inner task finishes on it while the
+            # outer await is still parked, so the cancel below lands in
+            # the window between the finished send and the stamp.
             await asyncio.sleep(0)
 
         monkeypatch.setattr(mock_transport, "send_tracked", gated_send)
         try:
             runtime.start_pump()
             try:
+                first = asyncio.create_task(runtime._send_civ_frame_now(frame))
+                await asyncio.wait_for(release_send.wait(), timeout=10.0)
+                # Cancel via call_soon: it queues ahead of the outer
+                # await's wakeup (scheduled by the finishing inner task),
+                # so the cancel lands while the inner task is already done
+                # and the outer await has not resumed yet.
+                asyncio.get_running_loop().call_soon(first.cancel)
                 with pytest.raises(asyncio.CancelledError):
-                    await runtime._send_civ_frame_now(frame)
+                    await first
                 assert len(mock_transport.sent_packets) == 1
                 mock_transport.queue_response_on_send(2, _ack_response())
                 answer = await radio._execute_civ_raw(frame)
