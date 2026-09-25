@@ -2124,9 +2124,10 @@ class TestCivPacingIsSendToSend:
         second_civ = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x04)
         release_first_answer = asyncio.Event()
         second_gated = asyncio.Event()
+        original_send = mock_transport.send_tracked
 
         async def slow_send(data: bytes) -> None:
-            await mock_transport.send_tracked(data)
+            await original_send(data)
             if len(mock_transport.sent_packets) == 1:
                 release_first_answer.set()
                 await clock.sleep(reply)
