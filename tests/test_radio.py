@@ -2248,7 +2248,26 @@ class TestCivPacingIsSendToSend:
             me.cancel()
             await asyncio.sleep(0)
 
+        # DIAGNOSTIC watcher: real-time thread, immune to the patched
+        # clock. Dumps every task stack to /tmp and kills the process.
+        import os as _os
+        import threading as _threading
+        import traceback as _traceback
+
+        def _watcher() -> None:
+            import time as _rt
+
+            _rt.sleep(8)
+            loop = asyncio.get_running_loop()
+            with open("/tmp/hangdump2603.txt", "w") as fh:
+                for task in asyncio.all_tasks(loop):
+                    fh.write(f"--- {task.get_name()} {task.get_coro()}\n")
+                    for st in task.get_stack():
+                        fh.write("".join(_traceback.format_stack(st)))
+            _os._exit(1)
+
         monkeypatch.setattr(mock_transport, "send_tracked", gated_send)
+        _threading.Thread(target=_watcher, daemon=True).start()
         try:
             runtime.start_pump()
             try:
