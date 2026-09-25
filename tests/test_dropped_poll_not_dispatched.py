@@ -134,7 +134,7 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched(
 
         clock = FreshnessClock(start=100.0)
         scheduler = _scheduler(clock=clock)
-        store = StateStore(clock=clock)
+        store = StateStore(freshness_clock=clock)
         service = StateFreshnessService(store=store, scheduler=scheduler)
         radio = _CapRadio(commander)
         radio._acquisition_scheduler = scheduler  # type: ignore[attr-defined]
