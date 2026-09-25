@@ -10,7 +10,6 @@ import type { ServerState } from '$lib/types/state';
 // behaviour additionally follows the listed capability fields.
 export interface ManagedTxAuthorityInputs {
   readonly ptt: boolean | null | undefined;
-  readonly observationSeq: number | null | undefined;
   readonly pttFieldStatus: unknown;
   readonly providerGeneration: number | null | undefined;
   readonly caps: Pick<
@@ -26,7 +25,6 @@ export function managedTxAuthorityInputs(
 ): ManagedTxAuthorityInputs {
   return {
     ptt: state?.ptt,
-    observationSeq: state?.observationSeq,
     pttFieldStatus: state?.fieldStatus?.['ptt'],
     providerGeneration: state?.providerGeneration,
     caps: caps == null
