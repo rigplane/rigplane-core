@@ -2245,7 +2245,11 @@ class TestCivPacingIsSendToSend:
         async def gated_send(data: bytes) -> None:
             await original_send(data)
             release_send.set()
-            await hold_send.wait()
+            # Park only the first send past the wire; the follow-up send
+            # must flow so the test can reach the finally that releases
+            # this hold.
+            if len(mock_transport.sent_packets) == 1:
+                await hold_send.wait()
 
         monkeypatch.setattr(mock_transport, "send_tracked", gated_send)
         try:
