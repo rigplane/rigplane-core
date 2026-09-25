@@ -32,6 +32,7 @@ from ..core.acquisition_scheduler import (
     RadioStateModelService,
     StateFreshnessService,
     civ_acquisition_executor_for_provider,
+    civ_transport_budget_hz,
     provider_uses_civ_acquisition,
 )
 from ..profiles import RadioProfile
@@ -517,7 +518,10 @@ class RigctldServer:
                     )
             return
 
-        scheduler = AcquisitionScheduler(profile=acquisition_profile)
+        scheduler = AcquisitionScheduler(
+            profile=acquisition_profile,
+            transport_budget_hz=civ_transport_budget_hz(self._radio),
+        )
         model_service = RadioStateModelService(
             store=self._state_store,
             scheduler=scheduler,

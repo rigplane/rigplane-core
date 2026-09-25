@@ -19,6 +19,7 @@ from rigplane.core.state_pipeline_contracts import (
 )
 
 __all__ = [
+    "ACQUISITION_BUDGET_MARGIN",
     "ACQUISITION_CLASS_TABLE",
     "AcquisitionClassPolicy",
     "AcquisitionPhase",
@@ -208,6 +209,10 @@ ACQUISITION_CLASS_TABLE: Final[dict[AcquisitionClass, AcquisitionClassPolicy]] =
     ),
 }
 
+#: Share of a transport budget the scheduler fits cadence polls into
+#: (coordinator decision, MOR-2574).
+ACQUISITION_BUDGET_MARGIN: Final[float] = 0.75
+
 #: Float slack when deciding a fitted demand meets the margin-limited
 #: budget, so a fit that closes exactly on the limit is not read as over.
 _FIT_EPSILON: Final[float] = 1e-9
@@ -234,10 +239,14 @@ class BudgetFit:
 
     #: Effective cadence per class present in the demand, in seconds.
     effective_cadence_seconds: dict[AcquisitionClass, float]
-    #: Total demand the fit settled on, in queries per second.
+    #: Total demand the fit settled on, ``reserved_hz`` included, in
+    #: queries per second.
     demand_hz: float
     #: Whether that demand fits within ``margin x budget_hz``.
     fits: bool
+    #: Whether ``reserved_hz`` alone was at or above ``budget_hz`` (to within
+    #: ``_FIT_EPSILON``), in which case no class was stretched.
+    saturated: bool
 
 
 def fit_to_budget(
@@ -245,25 +254,32 @@ def fit_to_budget(
     budget_hz: float,
     margin: float,
     tx: bool,
+    reserved_hz: float = 0.0,
 ) -> BudgetFit:
     """Fit per-class poll demand to a transport budget (MOR-2574).
 
     ``counts_per_class`` maps each acquisition class to the number of
-    polled fields in it. Starting from every class's nominal cadence (its
-    ceiling when the class is held at the ceiling during TX and ``tx`` is
-    set), the fit stretches the lowest-ranked classes first, up to their
-    ceiling, until the total demand is at or below ``margin x budget_hz``.
-    TX-only classes are excluded unless ``tx`` is set. A class never ends
-    beyond its ceiling; when the ceilings alone cannot bring the demand
-    under the limit, ``fits`` is false and every stretched class sits at
-    its ceiling. Pure function.
+    polled fields in it. ``reserved_hz`` is demand the fit may not
+    stretch, counted against the same limit. Starting from every class's
+    nominal cadence (its ceiling when the class is held at the ceiling
+    during TX and ``tx`` is set), the fit stretches the lowest-ranked
+    classes first, up to their ceiling, until the total demand is at or
+    below ``margin x budget_hz``. TX-only classes are excluded unless
+    ``tx`` is set. A class never ends beyond its ceiling. When
+    ``reserved_hz`` alone is at or above ``budget_hz`` itself, no class is
+    stretched (coordinator decision, MOR-2586); otherwise, when the
+    ceilings cannot bring the demand under the limit, ``fits`` is false
+    and every stretched class sits at its ceiling. Pure function.
     """
 
     if budget_hz <= 0:
         raise ValueError("budget_hz must be positive")
     if margin <= 0:
         raise ValueError("margin must be positive")
+    if reserved_hz < 0:
+        raise ValueError("reserved_hz must not be negative")
     limit = margin * budget_hz
+    saturated = reserved_hz >= budget_hz - _FIT_EPSILON
 
     def tx_only(klass: AcquisitionClass) -> bool:
         return ACQUISITION_CLASS_TABLE[klass].polled_in is AcquisitionPhase.TRANSMIT
@@ -283,11 +299,13 @@ def fit_to_budget(
     }
 
     def demand() -> float:
-        return sum(count / cadence[klass] for klass, count in live.items())
+        return reserved_hz + sum(
+            count / cadence[klass] for klass, count in live.items()
+        )
 
     # Lowest rank first: the table iterates high -> low.
     for klass in reversed(tuple(ACQUISITION_CLASS_TABLE)):
-        if klass not in live or demand() <= limit:
+        if klass not in live or demand() <= limit or saturated:
             continue
         # Queries per second this class must still contribute for the
         # total to close on the limit.
@@ -299,6 +317,7 @@ def fit_to_budget(
         effective_cadence_seconds=cadence,
         demand_hz=settled,
         fits=settled <= limit + _FIT_EPSILON,
+        saturated=saturated,
     )
 
 
