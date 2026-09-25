@@ -1035,8 +1035,7 @@ class AcquisitionScheduler:
         **Cadence-owned paths are skipped entirely**, not just deduped
         against an in-flight request (MOR-1490 review R3): a
         ``field_policies`` override doesn't imply the field is
-        *unpolled* — on the shipped IC-7300 profile 44 of its 60 overrides
-        sit on capabilities with ``polling=True``. Priming one of those anyway
+        *unpolled*. Priming one that is polled anyway
         queues a request under the exact same
         ``_AcquisitionRequestKey`` that :meth:`due_requests`'s
         ``_due_poll_groups`` groups by, and that method skips a whole
@@ -2087,13 +2086,7 @@ class StateFreshnessService:
     #: Fast re-derivation spacing used WHILE at least one explicit
     #: ``field_policies`` field remains unobserved (MOR-1501, verifier-
     #: prescribed on #2421's review). :meth:`prime_unobserved` queues at
-    #: most ``_PRIME_UNOBSERVED_BURST_LIMIT`` (5) new paths per call, and
-    #: ``rigs/ic7300.toml`` leaves 16 of its 60 ``field_policies`` paths
-    #: unskipped by that method's cadence-owned test (``sum(1 for path,
-    #: policy in field_policies.items() if not (capability_for(path).can_poll
-    #: and policy.cadence_seconds is not None))``), so queueing them all
-    #: takes at least ``ceil(16 / 5) == 4`` calls — the fourth lands ~90s in
-    #: at the 30s interval below, ~15s in at this one. The burst cap
+    #: most ``_PRIME_UNOBSERVED_BURST_LIMIT`` (5) new paths per call. The burst cap
     #: (unchanged, still the lane-protection knob) is what still bounds each
     #: wave's size, this constant only bounds how long a capped-out
     #: straggler waits between waves. See
