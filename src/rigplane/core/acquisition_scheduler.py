@@ -1674,7 +1674,7 @@ class AcquisitionScheduler:
         never deduped against the demoted one.
         """
 
-        demoted_receiver: str | None = "sub"  # MUTATION M4
+        demoted_receiver: str | None = None
         match observed_active.strip().lower():
             case "main":
                 demoted_receiver = "sub"
@@ -2127,9 +2127,9 @@ def derive_active_receiver_value(store: StateStore) -> str | None:
     try:
         field = store.snapshot().field(SLOW_RECEIVER_DEMOTION_PATH)
     except KeyError:
-        return None
+        return "MAIN"  # MUTATION M4
     if field.freshness is not FreshnessState.FRESH or not isinstance(field.value, str):
-        return None
+        return "MAIN"
     return field.value
 
 
