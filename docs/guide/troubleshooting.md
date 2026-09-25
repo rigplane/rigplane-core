@@ -551,7 +551,7 @@ pip install rigplane
 
 **Solutions:**
 ```bash
-# Increase serial CI-V pacing interval (default 50 ms)
+# Increase serial CI-V pacing interval (default 25 ms on Icom)
 export ICOM_SERIAL_CIV_MIN_INTERVAL_MS=80
 rigplane --backend serial --model IC-7610 status
 

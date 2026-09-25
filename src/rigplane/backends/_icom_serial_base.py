@@ -41,7 +41,11 @@ _TWO_CHANNEL_CODECS = {
     AudioCodec.ULAW_2CH,
     AudioCodec.OPUS_2CH,
 }
-_SERIAL_DEFAULT_CIV_MIN_INTERVAL_MS = 50.0
+# MOR-2595: Icom serial gap, wfview's 25 ms send-to-send for these radios
+# (IC-7300, IC-7610, IC-705, IC-9700; HasFDComms). Unmeasured until the
+# IC-7300 is on the bench. A subclass that is not an Icom keeps 50 ms.
+_ICOM_SERIAL_CIV_MIN_INTERVAL_MS = 25.0
+_NON_ICOM_SERIAL_CIV_MIN_INTERVAL_MS = 50.0
 _SERIAL_SCOPE_MIN_BAUD = 115200
 
 
@@ -111,6 +115,7 @@ class _IcomSerialRadioBase(CoreRadio):
     """
 
     _DEFAULT_MODEL: str = ""
+    _serial_civ_min_interval_ms: float = _ICOM_SERIAL_CIV_MIN_INTERVAL_MS
     _SERIAL_WATCHDOG_INTERVAL_S = 0.2
     _SERIAL_WATCHDOG_RETRY_S = 0.5
     # Cap for the exponential backoff applied after repeated reconnect failures
@@ -204,12 +209,15 @@ class _IcomSerialRadioBase(CoreRadio):
         serial_min_interval_ms = float(
             os.environ.get(
                 "ICOM_SERIAL_CIV_MIN_INTERVAL_MS",
-                f"{_SERIAL_DEFAULT_CIV_MIN_INTERVAL_MS}",
+                f"{self._serial_civ_min_interval_ms}",
             )
         )
         if serial_min_interval_ms <= 0:
             raise ValueError("ICOM_SERIAL_CIV_MIN_INTERVAL_MS must be > 0")
         self._civ_min_interval = serial_min_interval_ms / 1000.0
+        # MOR-2595: serial round trip is unmeasured, so the estimate is the
+        # gap itself until the IC-7300 is measured.
+        self._civ_rtt_estimate = self._civ_min_interval
         serial_link = civ_link or SerialCivLink(device=device, baudrate=baudrate)
         self._serial_session = session_driver or SerialSessionDriver(serial_link)
         # MOR-1453: raw link ref for rediscovery's set_device rebind. None

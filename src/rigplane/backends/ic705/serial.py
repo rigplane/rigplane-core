@@ -6,9 +6,22 @@ Profile-driven routing with ic705.toml configuration.
 
 from __future__ import annotations
 
-from .._icom_serial_base import _IcomSerialRadioBase
+from .._icom_serial_base import (
+    _IcomSerialRadioBase,
+    _NON_ICOM_SERIAL_CIV_MIN_INTERVAL_MS,
+)
 
-__all__ = ["Ic705SerialRadio"]
+__all__ = ["Ic705SerialRadio", "XieguSerialRadio"]
+
+
+class XieguSerialRadio(_IcomSerialRadioBase):
+    """X6200 on the IC-705 serial transport, at the unmeasured gap.
+
+    Same CI-V session as the IC-705; the gap stays 50 ms (MOR-2595). X6100
+    has no serial backend and is not routed here.
+    """
+
+    _serial_civ_min_interval_ms = _NON_ICOM_SERIAL_CIV_MIN_INTERVAL_MS
 
 
 class Ic705SerialRadio(_IcomSerialRadioBase):

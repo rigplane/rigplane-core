@@ -39,11 +39,11 @@ from test_icom7610_serial_radio import _FakeSerialCivLink
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
 
-#: Budgets of the CI-V send gaps the radios default to (35 ms LAN, 50 ms
-#: serial); ``test_the_budget_is_the_inverse_of_the_radio_civ_gap`` pins
-#: both to real radios.
-_LAN_BUDGET_HZ = 1.0 / 0.035
-_SERIAL_BUDGET_HZ = 1.0 / 0.050
+#: Query budgets: 1 / max(gap, round-trip estimate). LAN gap is 10 ms and
+#: the measured IC-7610 p95 round trip is 9 ms, so the LAN cost is the gap.
+#: Serial round trip is unmeasured, so its estimate is the 25 ms Icom gap.
+_LAN_BUDGET_HZ = 1.0 / 0.010
+_SERIAL_BUDGET_HZ = 1.0 / 0.025
 
 _CIV_ACQUISITION: dict[str, RadioAcquisitionProfile] = {
     model: acquisition
@@ -101,7 +101,7 @@ def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
 
 @pytest.mark.parametrize("tx", [False, True], ids=["receive", "transmit"])
 @pytest.mark.parametrize(
-    "budget_hz", [_LAN_BUDGET_HZ, _SERIAL_BUDGET_HZ], ids=["35ms-gap", "50ms-gap"]
+    "budget_hz", [_LAN_BUDGET_HZ, _SERIAL_BUDGET_HZ], ids=["10ms-gap", "25ms-gap"]
 )
 @pytest.mark.parametrize("model", sorted(_CIV_ACQUISITION))
 def test_fitted_demand_is_within_the_margin_or_the_warning_says_why(
@@ -271,15 +271,14 @@ def test_receive_demand_fits_the_margin(
     assert not any("receive " in message for message in _warnings(caplog))
 
 
-def test_ic7610_serial_receive_explicit_demand_under_the_budget_stretches_below_it() -> (
+def test_ic7610_serial_receive_explicit_demand_under_the_budget_does_not_stretch() -> (
     None
 ):
-    """IC-7610 over USB, receive: explicit demand under 20 q/s, so the classes
-    stretch.
+    """IC-7610 over USB, receive: 40 q/s leaves the classes at their start.
 
-    It cannot reach the 15 q/s limit, so every class-derived path goes to
-    its ceiling, which brings the window's demand under the 20 q/s
-    transport budget.
+    Explicit demand is under the 30 q/s limit, and so is the whole window
+    at nominal cadences (25.9 q/s), so nothing stretches and the window
+    stays under the 40 q/s transport budget.
     """
 
     acquisition = _CIV_ACQUISITION["IC-7610"]
@@ -289,40 +288,43 @@ def test_ic7610_serial_receive_explicit_demand_under_the_budget_stretches_below_
     cadences = _window_cadences(acquisition, _SERIAL_BUDGET_HZ, tx=tx)
 
     class_derived = _class_derived_starts(acquisition, cadences, tx=tx)
-    assert any(start < ceiling for _, start, ceiling in class_derived.values())
-    for path, (cadence, _start, ceiling) in class_derived.items():
-        assert cadence == pytest.approx(ceiling), path
+    for path, (cadence, start, _ceiling) in class_derived.items():
+        assert cadence == pytest.approx(start), path
     demand = sum(1.0 / cadence for cadence in cadences.values())
-    assert ACQUISITION_BUDGET_MARGIN * _SERIAL_BUDGET_HZ < demand < _SERIAL_BUDGET_HZ
+    assert demand == pytest.approx(25.9)
+    assert demand < ACQUISITION_BUDGET_MARGIN * _SERIAL_BUDGET_HZ
 
 
-@pytest.mark.parametrize(
-    ("budget_hz", "stretched"),
-    [(_SERIAL_BUDGET_HZ, False), (_LAN_BUDGET_HZ, True)],
-    ids=["serial-at-the-budget", "lan-under-the-budget"],
-)
-def test_ic705_transmit_explicit_demand_equal_to_the_budget_is_not_stretched(
-    budget_hz: float,
-    stretched: bool,
-) -> None:
-    """The boundary: explicit transmit demand equal to the budget saturates it.
+def test_ic705_transmit_at_the_serial_budget_stretches_but_not_to_the_ceiling() -> None:
+    """IC-705 transmit at 40 q/s: 20 q/s of explicit meters, classes stretch.
 
-    IC-705's four hand-declared TX meters at 0.2 s are 20 q/s: equal to
-    the USB budget, so nothing stretches there; under the LAN budget, so
-    the classes go to their ceilings there.
+    The 30 q/s limit is above the explicit demand, so classes do stretch,
+    and below the nominal window, so the fit closes on the limit before
+    every class has reached its ceiling.
     """
 
     acquisition = _CIV_ACQUISITION["IC-705"]
-    assert _explicit_hz(acquisition, tx=True) == pytest.approx(
-        _SERIAL_BUDGET_HZ, rel=1e-12
-    )
+    assert _explicit_hz(acquisition, tx=True) == pytest.approx(20.0)
 
-    cadences = _window_cadences(acquisition, budget_hz, tx=True)
+    cadences = _window_cadences(acquisition, _SERIAL_BUDGET_HZ, tx=True)
 
     class_derived = _class_derived_starts(acquisition, cadences, tx=True)
-    assert any(start < ceiling for _, start, ceiling in class_derived.values())
-    for path, (cadence, start, ceiling) in class_derived.items():
-        assert cadence == pytest.approx(ceiling if stretched else start), path
+    assert any(
+        start < cadence < ceiling for cadence, start, ceiling in class_derived.values()
+    )
+    demand = sum(1.0 / cadence for cadence in cadences.values())
+    assert demand == pytest.approx(ACQUISITION_BUDGET_MARGIN * _SERIAL_BUDGET_HZ)
+
+
+def test_ic705_transmit_under_the_lan_budget_stays_at_its_start() -> None:
+    """IC-705 transmit at 100 q/s: the 20 q/s of explicit meters fit, so nothing stretches."""
+
+    acquisition = _CIV_ACQUISITION["IC-705"]
+    cadences = _window_cadences(acquisition, _LAN_BUDGET_HZ, tx=True)
+
+    class_derived = _class_derived_starts(acquisition, cadences, tx=True)
+    for path, (cadence, start, _ceiling) in class_derived.items():
+        assert cadence == pytest.approx(start), path
 
 
 # --- (b) dispatch order -------------------------------------------------------
@@ -486,7 +488,7 @@ def test_a_group_that_never_completed_retries_at_its_fitted_cadence() -> None:
     assert _next_due(scheduler, control) == pytest.approx(5.0)
 
 
-# --- (d) the budget is the radio's CI-V gap -----------------------------------
+# --- (d) the budget is max(gap, round-trip estimate) --------------------------
 
 
 @pytest.fixture
@@ -503,7 +505,7 @@ def _serial_radio() -> Ic7300SerialRadio:
     return Ic7300SerialRadio(device="/dev/ttyUSB0", civ_link=_FakeSerialCivLink())
 
 
-def test_the_budget_is_the_inverse_of_the_radio_civ_gap(
+def test_the_budget_is_one_over_max_gap_and_round_trip(
     default_civ_gaps: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -511,6 +513,9 @@ def test_the_budget_is_the_inverse_of_the_radio_civ_gap(
     assert civ_transport_budget_hz(_serial_radio()) == pytest.approx(_SERIAL_BUDGET_HZ)
     monkeypatch.setenv("ICOM_CIV_MIN_INTERVAL_MS", "40")
     assert civ_transport_budget_hz(_lan_radio()) == pytest.approx(25.0)
+    monkeypatch.setenv("ICOM_CIV_MIN_INTERVAL_MS", "5")
+    # Gap 5 ms, round-trip estimate 9 ms: the budget follows the estimate.
+    assert civ_transport_budget_hz(_lan_radio()) == pytest.approx(1.0 / 0.009)
     assert civ_transport_budget_hz(object()) is None
 
 
