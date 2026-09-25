@@ -754,15 +754,10 @@ class _MalformedSubMeterRadio:
         )
         self._poll_warned_fields: set[str] = set()
         self._INITIAL_STATE_GAP_SERIAL = 0.005
+        self.read_s_meter = AsyncMock(side_effect=self._answer_s_meter)
 
-    @property
-    def state_store(self) -> StateStore:
-        return self._state_store
-
-    def supports_command(self, _command: str) -> bool:
-        return False
-
-    async def read_s_meter(self, receiver: int = 0) -> int:
+    @staticmethod
+    async def _answer_s_meter(receiver: int = 0) -> int:
         from rigplane.backends.yaesu_cat.parser import CatParseError
 
         if receiver == 0:
@@ -770,6 +765,13 @@ class _MalformedSubMeterRadio:
         raise CatParseError(
             "SM1{raw:03d};", "SM0000;", "Response does not match pattern"
         )
+
+    @property
+    def state_store(self) -> StateStore:
+        return self._state_store
+
+    def supports_command(self, _command: str) -> bool:
+        return False
 
     def create_observation_poller(
         self, *, callback: Callable[[Sequence[Observation]], None], **_kwargs: object
@@ -825,6 +827,83 @@ async def test_gate_refuses_to_bind_when_a_declared_read_never_parses() -> None:
     assert str(SUB_S_METER) in message
     assert "SM1{raw:03d};" in message
     assert "SM0000;" in message
+    assert SUB_S_METER in scheduler.unobserved_startup_paths(
+        _observed_paths(server, scheduler)
+    )
+
+
+@pytest.mark.asyncio
+async def test_gate_binds_when_a_one_off_refusal_answers_on_reread() -> None:
+    """MOR-2584: one refusal followed by a normal answer does not abort startup.
+
+    The SUB meter refuses once (the live ``SM1;`` ``?;`` during ``AG1``
+    writes, 2026-09-24) and answers the single re-read, so no defect is
+    recorded and the listener binds — with the field populated.
+    """
+    from rigplane.backends.yaesu_cat.transport import CatCommandRejected
+
+    radio = _MalformedSubMeterRadio()
+    refusal = CatCommandRejected(
+        "Radio rejected command 'SM1;' (returned '?;')", command="SM1;"
+    )
+    radio.read_s_meter = AsyncMock(side_effect=[120, refusal, 120, 120, 120])
+    server = WebServer(radio, _gated_config())
+    scheduler = radio._acquisition_scheduler
+    assert set(scheduler.unobserved_startup_paths(())) == {S_METER, SUB_S_METER}
+    binds: list[str] = []
+
+    async def _bind(*_args: object, **_kwargs: object) -> _FakeAsyncServer:
+        binds.append("bind")
+        return _FakeAsyncServer()
+
+    with patch("rigplane.web.web_startup.asyncio.start_server", new=_bind):
+        await asyncio.wait_for(server.start(), timeout=10.0)
+        await server.stop()
+
+    assert binds == ["bind"]
+    assert scheduler.startup_defect is None
+    assert scheduler.unobserved_startup_paths(_observed_paths(server, scheduler)) == ()
+
+
+def _refuse_sm1() -> int:
+    from rigplane.backends.yaesu_cat.transport import CatCommandRejected
+
+    raise CatCommandRejected(
+        "Radio rejected command 'SM1;' (returned '?;')", command="SM1;"
+    )
+
+
+@pytest.mark.asyncio
+async def test_gate_still_refuses_a_refusal_the_radio_repeats() -> None:
+    """MOR-2584: a command refused on every attempt still aborts startup.
+
+    The SUB meter refuses both the first read and the single re-read, so the
+    existing defect record — and its message — is what refuses the bind.
+    """
+    radio = _MalformedSubMeterRadio()
+    radio.read_s_meter = AsyncMock(
+        side_effect=lambda receiver=0: 120 if receiver == 0 else _refuse_sm1()
+    )
+    server = WebServer(radio, _gated_config())
+    scheduler = radio._acquisition_scheduler
+    binds: list[str] = []
+
+    async def _bind(*_args: object, **_kwargs: object) -> _FakeAsyncServer:
+        binds.append("bind")
+        return _FakeAsyncServer()
+
+    with patch("rigplane.web.web_startup.asyncio.start_server", new=_bind):
+        with pytest.raises(RuntimeError) as caught:
+            await asyncio.wait_for(server.start(), timeout=10.0)
+        await server.stop()
+
+    assert binds == []
+    message = str(caught.value)
+    assert message.startswith("web startup aborted: ")
+    assert message.endswith("Refusing to start a half-working server.")
+    assert str(SUB_S_METER) in message
+    assert "SM1;" in message
+    assert "?;" in message
     assert SUB_S_METER in scheduler.unobserved_startup_paths(
         _observed_paths(server, scheduler)
     )
