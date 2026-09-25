@@ -174,6 +174,7 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched(
         clock.advance(_CADENCE + 0.01)
         scheduler.due_requests(now=clock.now())
         assert scheduler.diagnostics()["cadenceByGroup"] == earlier
+        assert scheduler.pending_requests() != ()
         in_flight: dict = {}
         drain = AcquisitionDrain(
             scheduler=lambda: scheduler,
