@@ -1546,10 +1546,11 @@ class WebServer:
         # or aged readings project to unknown while `ptt` keeps its value).
         # Announce projection changes with the existing invalidation event so
         # the page refetches the document it actually displays.
+        # Temporary mutation: announce on every broadcast regardless of change.
         observed_ptt = project_observed_ptt(snapshot)
         if self._last_announced_observed_ptt is None:
             self._last_announced_observed_ptt = observed_ptt
-        elif observed_ptt != self._last_announced_observed_ptt:
+        elif observed_ptt != self._last_announced_observed_ptt or True:
             self._last_announced_observed_ptt = observed_ptt
             self._on_managed_tx_changed()
         # Skip the public-state build/delta/fan-out when no control client is
