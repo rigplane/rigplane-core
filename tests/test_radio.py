@@ -1990,7 +1990,7 @@ class TestCivPacingIsSendToSend:
             await original_send(data)
             if len(starts) == 1:
                 first_answer.set()
-                await clock.advance(reply)
+                await clock.sleep(reply)
             else:
                 second_gated.set()
 
@@ -2045,7 +2045,7 @@ class TestCivPacingIsSendToSend:
             starts.append(clock.now)
             await original_send(data)
             sent_releases[-1].set()
-            await clock.advance(reply)
+            await clock.sleep(reply)
 
         monkeypatch.setattr(mock_transport, "send_tracked", slow_send)
         cmd = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
