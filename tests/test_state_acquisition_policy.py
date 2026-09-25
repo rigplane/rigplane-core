@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import textwrap
+import tomllib
 from collections import Counter
 from pathlib import Path
 from typing import Any, cast
@@ -611,6 +612,13 @@ def test_loader_rejects_coerced_state_acquisition_values(
             """,
             r"\[state_acquisition.field_policies.receiver.main.active.freq_mode.freq_hz\].*cadence_seconds must be a number",
         ),
+        (
+            """
+            [state_acquisition.field_policies."receiver.main.active.freq_mode.freq_hz"]
+            reason = 1
+            """,
+            r"\[state_acquisition.field_policies.receiver.main.active.freq_mode.freq_hz\].*reason must be a string",
+        ),
     )
 
     for index, (state_acquisition, message) in enumerate(cases):
@@ -622,6 +630,35 @@ def test_loader_rejects_coerced_state_acquisition_values(
                     name=f"coerced-{index}.toml",
                 )
             )
+
+
+def test_loader_accepts_a_string_reason_on_a_field_policy(tmp_path: Path) -> None:
+    """MOR-2590: ``reason`` loads and leaves the resolved policy unchanged."""
+
+    section = """
+        [state_acquisition]
+        provider = "icom_civ"
+
+        [state_acquisition.capabilities]
+        polling_only = ["global.meters.power"]
+
+        [state_acquisition.field_policies."global.meters.power"]
+        cadence_seconds = 1.0
+        freshness_ttl_seconds = 2.0
+        tx_only = true
+        """
+    power = FieldPath.global_("meters", "power")
+    policies = []
+    for index, extra in enumerate(("", 'reason = "why this override exists"')):
+        toml = _minimal_state_acquisition_toml(section + "        " + extra + "\n")
+        profile = load_rig(
+            _write_toml(tmp_path, toml, name=f"reason-{index}.toml")
+        ).to_profile()
+        assert profile.state_acquisition is not None
+        policies.append(profile.state_acquisition.policy_for(power))
+
+    assert policies[1] == policies[0]
+    assert policies[1].cadence_seconds == 1.0
 
 
 def test_known_profiles_load_with_state_acquisition_compatibility() -> None:
@@ -1417,8 +1454,7 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
         assert acquisition.capability_for(path).command_response_observable is True
 
     # MOR-1452 (review fix) / MOR-1484 (bench-measured tightening): the 4
-    # mic/monitor/VOX/anti-VOX gain fields sit at 10.0s/15.0s, NOT IC-7610's
-    # 3.0s/5.0s for the same fields (rigs/ic7610.toml) — IC-7610 is LAN,
+    # mic/monitor/VOX/anti-VOX gain fields sit at 10.0s/15.0s, not 3.0s —
     # IC-7300 is serial and shares one ~20 q/s software floor across every
     # poll, operator command, and keep-alive on the same lane (see the
     # serial-budget assertion below for the exact arithmetic that rules out
@@ -2109,6 +2145,9 @@ def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
         ("IC-7300", "global.meters.swr"),
         ("IC-7610", "global.meters.alc"),
         ("IC-7610", "global.meters.comp"),
+        # MOR-2590: a coordinator decision, not a probe: id gets the gate
+        # the other four IC-7610 TX meters carry.
+        ("IC-7610", "global.meters.id"),
         ("IC-7610", "global.meters.power"),
         ("IC-7610", "global.meters.swr"),
         ("IC-9700", "global.meters.alc"),
@@ -2387,3 +2426,49 @@ def test_every_tx_capable_profile_declares_a_tx_target_source() -> None:
     # The MOR-2540 regression subject is sourced by the radio's own read;
     # IC-9700 stays unsupported (see its entry above).
     assert sourced.get("IC-7610") == "CI-V get_tx_target read"
+
+
+# ── MOR-2590 (MOR-2574 step 4): IC-7610 overrides state their reason ─────────
+
+
+def test_every_ic7610_field_policy_override_states_its_reason() -> None:
+    """Every ``field_policies`` entry left on the IC-7610 says why it exists.
+
+    The overrides are the loaded profile's ``field_policies``; the loader
+    checks that a ``reason`` is a string and keeps no copy, so the text is
+    read from the same file.
+    """
+
+    path = RIGS_DIR / "ic7610.toml"
+    acquisition = load_rig(path).to_profile().state_acquisition
+    assert acquisition is not None
+    with path.open("rb") as handle:
+        entries = tomllib.load(handle)["state_acquisition"]["field_policies"]
+    reasons = {
+        FieldPath.parse(text): entry.get("reason") for text, entry in entries.items()
+    }
+    assert set(reasons) == set(acquisition.field_policies)
+
+    missing = sorted(
+        str(override)
+        for override in acquisition.field_policies
+        if not (isinstance(reasons[override], str) and reasons[override].strip())
+    )
+    assert acquisition.field_policies
+    assert not missing, f"IC-7610 overrides without a reason: {missing}"
+
+
+def test_ic7610_id_meter_is_gated_on_ptt_like_the_other_tx_meters() -> None:
+    """MOR-2590: id polls only in TX and is discarded on dekey, through the
+    same PTT ``available_when`` clause the Po/SWR/ALC/COMP entries carry."""
+
+    acquisition = get_radio_profile("IC-7610").state_acquisition
+    assert acquisition is not None
+    ptt = FieldPath.global_("tx_state", "ptt")
+    clause = AvailabilityClause(field=ptt, operator="equals", value=True)
+    id_policy = acquisition.field_policies[FieldPath.global_("meters", "id")]
+    power_policy = acquisition.field_policies[FieldPath.global_("meters", "power")]
+
+    assert id_policy.tx_only is True
+    assert id_policy.available_when == (clause,)
+    assert power_policy.available_when == (clause,)

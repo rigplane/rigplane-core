@@ -185,9 +185,8 @@ supported_controls = [
 # StateFreshnessService.tick discard the last TX values on dekey. They keep
 # their stream_like_meters membership and coalescing window, so the stream
 # meter cadence class (tests/test_state_acquisition_policy.py) binds them to
-# <=0.4s: 0.2s/2.0s mirrors the IC-7610 tier and only ever fires while the
-# key is down. vd/id stay unconditional supply telemetry; the S-meter stays
-# the unconditional RX meter.
+# <=0.4s: 0.2s/2.0s only ever fires while the key is down. The S-meter
+# stays the unconditional RX meter.
 [state_acquisition.field_policies."global.meters.power"]
 cadence_seconds = 0.2
 freshness_ttl_seconds = 2.0

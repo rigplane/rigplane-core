@@ -258,6 +258,13 @@ polling_only = [
     # needed for those.
     "global.operator_controls.break_in",
     "global.operator_controls.break_in_delay",
+    # MOR-2590: vd and id are polled meters, not stream_like_meters: the
+    # owner's 2026-09-24 decision (MOR-2574) puts vd in the setting class and
+    # id in the tx_meter class, and a stream-like meter is held to a cadence
+    # of at most 0.4 s and to a coalescing window by
+    # test_known_profiles_stream_like_meters_use_fast_non_decaying_policies.
+    "global.meters.vd",
+    "global.meters.id",
     "scope_controls.global.display.receiver",
     "scope_controls.global.display.dual",
     "scope_controls.global.display.mode",
@@ -293,8 +300,6 @@ stream_like_meters = [
     "global.meters.swr",
     "global.meters.alc",
     "global.meters.comp",
-    "global.meters.vd",
-    "global.meters.id",
 ]
 command_response_observable = [
     "receiver.main.active.freq_mode.freq_hz",
@@ -315,8 +320,12 @@ supported_controls = [
     "global.tx_state.ptt",
 ]
 
+# MOR-2590: a pollable path with no entry below takes its acquisition-class
+# policy (RadioAcquisitionProfile.policy_for). An entry overrides its class
+# and says why in `reason`.
 [state_acquisition.field_policies."receiver.main.meters.s_meter"]
-cadence_seconds = 0.2
+reason = "keeps a 2.0 s TTL: IC-7610 S-meter readings arrived about 1 s apart and a 0.8 s TTL left the meter stale at S0 (commit 8a64942f); a stream-like meter keeps the coalescing window"
+cadence_seconds = 0.3
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
@@ -332,12 +341,10 @@ meter_coalescing_window_seconds = 0.2
 # entirely while PTT reads false (zero steady-state RX cost), and the
 # `available_when` clause declares them absent while `global.tx_state.ptt`
 # reads false so StateFreshnessService.tick discards the last TX values on
-# dekey. Cadence/TTL/coalescing are unchanged (0.2s/2.0s/0.2s) -- they now
-# fire only inside a TX window. vd/id below stay unconditional supply
-# telemetry and the S-meter stays the unconditional RX meter, as on the
-# IC-7300.
+# dekey.
 [state_acquisition.field_policies."global.meters.power"]
-cadence_seconds = 0.2
+reason = "available_when: absent while PTT reads false, so the last TX reading is discarded on dekey (MOR-2540); a stream-like meter keeps the coalescing window"
+cadence_seconds = 0.25
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
@@ -347,7 +354,8 @@ available_when = [
 ]
 
 [state_acquisition.field_policies."global.meters.swr"]
-cadence_seconds = 0.2
+reason = "available_when: absent while PTT reads false, so the last TX reading is discarded on dekey (MOR-2540); a stream-like meter keeps the coalescing window"
+cadence_seconds = 0.25
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
@@ -357,7 +365,8 @@ available_when = [
 ]
 
 [state_acquisition.field_policies."global.meters.alc"]
-cadence_seconds = 0.2
+reason = "available_when: absent while PTT reads false, so the last TX reading is discarded on dekey (MOR-2540); a stream-like meter keeps the coalescing window"
+cadence_seconds = 0.25
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
@@ -367,7 +376,8 @@ available_when = [
 ]
 
 [state_acquisition.field_policies."global.meters.comp"]
-cadence_seconds = 0.2
+reason = "available_when: absent while PTT reads false, so the last TX reading is discarded on dekey (MOR-2540); a stream-like meter keeps the coalescing window"
+cadence_seconds = 0.25
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
@@ -376,443 +386,21 @@ available_when = [
     { field = "global.tx_state.ptt", equals = true },
 ]
 
-[state_acquisition.field_policies."global.meters.vd"]
-cadence_seconds = 0.2
-freshness_ttl_seconds = 2.0
-adaptive_decay = false
-meter_coalescing_window_seconds = 0.2
-
 [state_acquisition.field_policies."global.meters.id"]
-cadence_seconds = 0.2
+reason = "available_when: absent while PTT reads false, so the last TX reading is discarded on dekey, as for Po/SWR/ALC/COMP (MOR-2540)"
+cadence_seconds = 0.25
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
-meter_coalescing_window_seconds = 0.2
+tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
 
-[state_acquisition.field_policies."receiver.main.active.freq_mode.freq_hz"]
-cadence_seconds = 0.5
-freshness_ttl_seconds = 2.0
-
-[state_acquisition.field_policies."receiver.sub.active.freq_mode.freq_hz"]
-cadence_seconds = 0.5
-freshness_ttl_seconds = 2.0
-
-# MOR-488 batch 6: operator found RFG/SQL laggy at the MOR-487 cadence (3.0s /
-# 4.0s); rf_gain/af_level/squelch/att/preamp now poll FAST (1.5s / 3.0s) on both
-# receivers so a front-panel turn reaches the v2 UI within ~one fast cycle.
-[state_acquisition.field_policies."receiver.main.operator_controls.af_level"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.rf_gain"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.squelch"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.att"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.preamp"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_controls.af_level"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_controls.rf_gain"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_controls.squelch"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_controls.att"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_controls.preamp"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_toggles.digisel"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_toggles.ipplus"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_toggles.nb"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_toggles.nr"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_toggles.auto_notch"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_toggles.manual_notch"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_toggles.twin_peak_filter"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.agc"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.audio_peak_filter"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_toggles.digisel"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_toggles.ipplus"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_toggles.nb"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_toggles.nr"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_toggles.auto_notch"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_toggles.manual_notch"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_toggles.twin_peak_filter"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_controls.agc"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_controls.audio_peak_filter"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.nr_level"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.nb_level"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.pbt_inner"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.pbt_outer"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.apf_type_level"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_controls.nr_level"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_controls.nb_level"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_controls.pbt_inner"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_controls.pbt_outer"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_controls.apf_type_level"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."global.operator_controls.power_level"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."global.operator_controls.mic_gain"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."global.operator_controls.compressor_level"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."global.operator_controls.monitor_gain"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."global.operator_controls.vox_gain"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."global.operator_controls.anti_vox_gain"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."global.operator_controls.cw_pitch"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."global.operator_controls.key_speed"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.active.freq_mode.filter_width"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.active.freq_mode.filter_width"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-# MOR-496: poll ptt fast enough to track front-panel TX on the v2 UI. A bare
-# 0x1C 0x00 READ (~3 q/s) is a negligible lane load; do NOT go below 0.2s.
-[state_acquisition.field_policies."global.tx_state.ptt"]
-cadence_seconds = 0.3
-freshness_ttl_seconds = 1.0
-adaptive_decay = false
-
-# MOR-2540: TUNE fails closed while tx_target is not FRESH, so this read
-# must track the radio at operator-action cadence yet stay cheap on the CI-V
-# lane. 1.0s costs one bare 1C 03 read per second (+1.0 q/s); the 4.0s TTL
-# (4x cadence, >= the required 2x) still fails closed 4s after the radio
-# stops answering (FTX-1's tx_target rides the looser 2.0s/8.0s profile
-# default). adaptive_decay stays off: a decayed 30s ceiling is what kept
-# freq_hz stale ~93% of the time on this radio.
 [state_acquisition.field_policies."global.tx_state.tx_target"]
+reason = "TUNE fails closed while tx_target is not FRESH, so its 4.0 s TTL blocks TUNE within 4 s of the 1C 03 readings stopping (MOR-2540)"
 cadence_seconds = 1.0
 freshness_ttl_seconds = 4.0
 adaptive_decay = false
-
-[state_acquisition.field_policies."global.tx_state.compressor_on"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."global.tx_state.monitor_on"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."global.tx_state.vox_on"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.agc_time_constant"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_controls.agc_time_constant"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."global.tx_state.split"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."global.tx_state.dual_watch"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."global.operator_controls.tuner_status"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-# MOR-1491 (field-policy membership wave, profile parity). Cadence tier
-# matches the closest existing sibling: filter_shape shares the 0x16-family
-# tier with audio_peak_filter/auto_notch (1.5s/3.0s).
-[state_acquisition.field_policies."receiver.main.operator_controls.filter_shape"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_controls.filter_shape"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-# MOR-1492 (field-policy membership wave, profile parity). notch_filter
-# matches nr_level/pbt_inner's 3.0s/5.0s 0x14-level tier; manual_notch_width
-# matches filter_shape's 1.5s/3.0s 0x16-family tier above. notch_filter
-# reclassified receiver-scoped under MOR-1548 (see the polling_only comment
-# above) — same cadence/freshness tier, one entry per receiver.
-[state_acquisition.field_policies."receiver.main.operator_controls.notch_filter"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_controls.notch_filter"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.manual_notch_width"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.sub.operator_controls.manual_notch_width"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-# MOR-1493 (field-policy membership wave, profile parity). break_in matches
-# compressor_on/monitor_on/vox_on's 1.5s/3.0s 0x16-toggle tier; break_in_delay
-# matches notch_filter's 3.0s/5.0s 0x14-level tier above.
-[state_acquisition.field_policies."global.operator_controls.break_in"]
-cadence_seconds = 1.5
-freshness_ttl_seconds = 3.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."global.operator_controls.break_in_delay"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 5.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."scope_controls.global.display.receiver"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = true
-
-[state_acquisition.field_policies."scope_controls.global.display.dual"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = true
-
-[state_acquisition.field_policies."scope_controls.global.display.mode"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = true
-
-[state_acquisition.field_policies."scope_controls.global.display.span"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = true
-
-[state_acquisition.field_policies."scope_controls.global.display.edge"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = true
-
-[state_acquisition.field_policies."scope_controls.global.display.hold"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = true
-
-[state_acquisition.field_policies."scope_controls.global.display.ref_db"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = true
-
-[state_acquisition.field_policies."scope_controls.global.display.speed"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = true
-
-[state_acquisition.field_policies."scope_controls.global.display.during_tx"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = true
-
-[state_acquisition.field_policies."scope_controls.global.display.center_type"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = true
-
-[state_acquisition.field_policies."scope_controls.global.display.vbw_narrow"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = true
-
-[state_acquisition.field_policies."scope_controls.global.display.fixed_edge"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = true
-
-[state_acquisition.field_policies."scope_controls.global.display.rbw"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = true
 
 # ── Parameterized Capabilities ───────────────────────────────────
 

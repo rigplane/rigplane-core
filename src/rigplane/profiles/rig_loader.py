@@ -1541,6 +1541,7 @@ _ACQUISITION_POLICY_KEYS = frozenset(
         "meter_coalescing_window_seconds",
         "tx_only",
         "available_when",
+        "reason",
     }
 )
 
@@ -1633,6 +1634,8 @@ def _parse_acquisition_policy(
     key_labels: dict[str, str] | None = None,
 ) -> AcquisitionPolicy:
     _reject_unknown_keys(filename, prefix, raw, _ACQUISITION_POLICY_KEYS)
+    if not isinstance(raw.get("reason", ""), str):
+        raise RigLoadError(f"{filename}: {prefix}.reason must be a string")
     labels = key_labels or {}
     available_when = (
         _parse_available_when(filename, prefix, raw["available_when"])
