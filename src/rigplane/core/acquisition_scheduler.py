@@ -2116,9 +2116,21 @@ class MeterObservationCoalescer:
 
 
 def derive_active_receiver_value(store: StateStore) -> str | None:
-    """Return the observed selected receiver the MOR-2599 demotion reads."""
+    """Return the observed selected receiver the MOR-2599 demotion reads.
 
-    return "SUB"  # MUTATION M5
+    ``global.slow_state.active`` (``"MAIN"``/``"SUB"`` on MAIN/SUB radios)
+    in ``store``, FRESH-gated. Fails open: unobserved, stale or a non-string
+    value yields None, so no receiver's cadence is demoted on a fact nobody
+    has established.
+    """
+
+    try:
+        field = store.snapshot().field(SLOW_RECEIVER_DEMOTION_PATH)
+    except KeyError:
+        return None
+    if field.freshness is not FreshnessState.FRESH or not isinstance(field.value, str):
+        return None
+    return field.value
 
 
 def derive_tx_active(store: StateStore) -> bool:
