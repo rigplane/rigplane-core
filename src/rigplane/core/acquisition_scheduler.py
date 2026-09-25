@@ -463,6 +463,7 @@ class AcquisitionScheduler:
         "_class_derived_group_receivers",
         "_deferred",
         "_dispatch_by_request_id",
+        "_executing_request_ids",
         "_external_cat_owner",
         "_external_cat_paused",
         "_external_cat_reason",
@@ -495,6 +496,12 @@ class AcquisitionScheduler:
         # request id -> per-path timestamp of the drain pass that sent it,
         # dropped where the request is removed from ``_requests_by_key``.
         self._dispatch_by_request_id: dict[str, dict[FieldPath, float]] = {}
+        # Request ids whose executor is inside ``execute`` right now: the
+        # frame may already be on the wire while ``record_dispatch`` has not
+        # run yet (it only runs after ``execute`` returns). A write
+        # confirmation arriving in that window must still get its own
+        # dispatch (MOR-2594).
+        self._executing_request_ids: set[str] = set()
         self._pending_cadence_by_key: dict[
             _AcquisitionRequestKey,
             _PendingCadenceUpdate,
@@ -673,6 +680,22 @@ class AcquisitionScheduler:
         ):
             del self._claims_by_request_id[request_id]
 
+    def note_execute_started(self, request_id: str) -> None:
+        """Mark ``request_id`` as inside its executor until it settles.
+
+        The drain calls this before awaiting ``executor.execute`` and calls
+        :meth:`note_execute_finished` once the result (or error) is in, so a
+        write confirmation arriving while the frame may already be on the
+        wire still gets its own dispatch (MOR-2594).
+        """
+
+        self._executing_request_ids.add(request_id)
+
+    def note_execute_finished(self, request_id: str) -> None:
+        """Clear the marker set by :meth:`note_execute_started`."""
+
+        self._executing_request_ids.discard(request_id)
+
     def record_dispatch(
         self,
         request_id: str,
@@ -715,6 +738,10 @@ class AcquisitionScheduler:
 
     def _forget_dispatch(self, request_id: str) -> None:
         self._dispatch_by_request_id.pop(request_id, None)
+        self._executing_request_ids.discard(request_id)
+
+    def _in_execute(self, *, request_id: str) -> bool:
+        return request_id in self._executing_request_ids
 
     def _dispatch_covers(
         self,
@@ -1596,9 +1623,12 @@ class AcquisitionScheduler:
                     requested_at=requested_at,
                     deadline_monotonic=request_deadline,
                 )
-                if require_fresh_dispatch and self._dispatch_covers(
-                    existing.id,
-                    grouped_paths,
+                if require_fresh_dispatch and (
+                    self._dispatch_covers(
+                        existing.id,
+                        grouped_paths,
+                    )
+                    or self._in_execute(request_id=existing.id)
                 ):
                     request = self._reissue(
                         request,
