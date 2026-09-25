@@ -1714,7 +1714,10 @@ class AcquisitionScheduler:
             policy = replace(
                 key.policy,
                 cadence_seconds=cadence,
-            )  # MUTATION M3
+                freshness_ttl_seconds=acquisition_policy_for_class(
+                    target
+                ).freshness_ttl_seconds,
+            )
             demoted_key = _request_key(
                 paths[0], acquisition_method="poll", policy=policy
             )
