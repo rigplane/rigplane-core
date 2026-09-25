@@ -618,7 +618,12 @@ def _ack() -> CivFrame:
 async def test_pacing_is_send_to_send_when_the_reply_outlasts_the_gap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A query longer than the gap does not add the gap again after the reply."""
+    """A query longer than the gap does not add the gap again after the reply.
+
+    The first reply is the long one. The second is instant, so the moment
+    it returns is the moment the second send was stamped: a post-reply
+    stamp would push it out by the first reply plus the gap.
+    """
 
     gap = 0.010
     clock = _install_clock(monkeypatch, start=gap)
@@ -626,10 +631,9 @@ async def test_pacing_is_send_to_send_when_the_reply_outlasts_the_gap(
     starts: list[float] = []
 
     async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
-        # The reply wait is this side's, after the radio has the frame, so
-        # it must not move the pacing clock. A post-reply stamp would.
         await real_sleep(0)
-        await asyncio.sleep(reply)
+        if not starts:
+            await asyncio.sleep(reply)
         starts.append(clock.now)
         return _ack()
 
@@ -641,7 +645,7 @@ async def test_pacing_is_send_to_send_when_the_reply_outlasts_the_gap(
     finally:
         await commander.stop()
 
-    assert starts == [gap + reply, gap + reply + reply]
+    assert starts == [gap + reply, gap + reply]
 
 
 @pytest.mark.asyncio
