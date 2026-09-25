@@ -14,6 +14,7 @@ from typing import Literal
 from rigplane.core.acquisition_scheduler import (
     AcquisitionScheduler,
     MeterObservationCoalescer,
+    derive_active_receiver_value,
 )
 from rigplane.core.civ import (
     CivEvent,
@@ -525,7 +526,9 @@ def _profile_path_for_observation(profile: Any, path: FieldPath) -> FieldPath:
     return path
 
 
-def _observation_max_age(profile: Any, path: FieldPath) -> float | None:
+def _observation_max_age(
+    profile: Any, path: FieldPath, *, observed_active: str | None = None
+) -> float | None:
     """Freshness TTL to stamp on one CI-V observation of ``path``.
 
     One source for the TTL: ``RadioAcquisitionProfile.policy_for``. The
@@ -535,8 +538,12 @@ def _observation_max_age(profile: Any, path: FieldPath) -> float | None:
     StateStore.mark_stale_due`` unable to age the field at all. A path
     with no entry of its own but a pollable capability resolves to its
     acquisition class policy (MOR-2574 step 2), so the stamped TTL always
-    covers the cadence the class polls at. Everything else — paths the
-    profile does not poll at all — falls back to
+    covers the cadence the class polls at; when the profile demotes the
+    non-selected receiver (MOR-2599) and ``observed_active`` carries the
+    observed value, the demoted path stamps its DEMOTED class's TTL —
+    the same value the demoted poll itself carries — so it never ages to
+    stale between demoted polls (PR #3643 finding 2). Everything else —
+    paths the profile does not poll at all — falls back to
     :data:`_OBSERVATION_MAX_AGE_SECONDS`: ``policy_for`` would answer the
     profile default there, which applies to every path in the rig,
     including the ones no author considered when writing it.
@@ -549,7 +556,7 @@ def _observation_max_age(profile: Any, path: FieldPath) -> float | None:
             acquisition.capability_for(profile_path).can_poll
         ):
             ttl: float | None = acquisition.policy_for(
-                profile_path
+                profile_path, observed_active=observed_active
             ).freshness_ttl_seconds
             return ttl
     return _OBSERVATION_MAX_AGE_SECONDS.get(
@@ -2936,7 +2943,16 @@ class CivRuntime:
         max_age_path = (
             FieldPath.global_("tx_state", "ptt") if path == OBSERVED_PTT_PATH else path
         )
-        max_age = _observation_max_age(self._host._profile, max_age_path)
+        # MOR-2599: a demoted path stamps its demoted class's TTL — read the
+        # selected receiver from the same store the freshness tick reads.
+        store = getattr(self._host, "_state_store", None)
+        max_age = _observation_max_age(
+            self._host._profile,
+            max_age_path,
+            observed_active=(
+                derive_active_receiver_value(store) if store is not None else None
+            ),
+        )
         if path == FieldPath.global_("tx_state", "tx_target"):
             # MOR-2223: single source shared with
             # ``RadioPoller._tx_target_max_age`` — see

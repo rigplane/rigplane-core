@@ -4,6 +4,7 @@ transport budget and dispatches by class rank."""
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ from rigplane.core.state_acquisition_policy import (
     ACQUISITION_CLASS_TABLE,
     FieldCapability,
     RadioAcquisitionProfile,
+    fit_to_budget,
 )
 from rigplane.core.state_pipeline_contracts import (
     AcquisitionClass,
@@ -566,3 +568,36 @@ async def test_the_rigctld_seat_builds_its_scheduler_on_the_radio_budget(
     )._bootstrap_state_acquisition()
 
     assert budgets == [pytest.approx(budget_hz)]
+
+
+# --- MOR-2599: the non-selected receiver's demotion leaves the fit alone -----
+
+
+def test_the_fit_counts_the_undemoted_demand_as_the_upper_bound() -> None:
+    """MOR-2599 budget rule: demotion never re-fits.
+
+    The scheduler's fitted receive cadences for the IC-7610 over LAN are
+    exactly what fit_to_budget settles on for the UNDEMOTED demand, whether
+    or not the caller reports a selected receiver (MAIN or SUB). Demotion
+    only lowers the demand the scheduler actually pays, so the fit is an
+    upper bound and stays safe without re-fitting on every switch.
+    """
+
+    acquisition = _CIV_ACQUISITION["IC-7610"]
+    counts: Counter[AcquisitionClass] = Counter()
+    for path in acquisition.pollable_paths():
+        if path not in acquisition.field_policies:
+            counts[acquisition_class_for_path(path)] += 1
+    expected = fit_to_budget(
+        counts,
+        _LAN_BUDGET_HZ,
+        ACQUISITION_BUDGET_MARGIN,
+        False,
+        reserved_hz=_explicit_hz(acquisition, tx=False),
+    )
+    cadences = _window_cadences(acquisition, _LAN_BUDGET_HZ, tx=False)
+    for path, cadence in cadences.items():
+        if path in acquisition.field_policies:
+            continue
+        klass = acquisition_class_for_path(path)
+        assert cadence == expected.effective_cadence_seconds[klass], path

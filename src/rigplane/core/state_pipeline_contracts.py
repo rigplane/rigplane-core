@@ -41,6 +41,7 @@ __all__ = [
     "TX_METER_FIELD_NAMES",
     "VfoSlot",
     "acquisition_class_for_path",
+    "demoted_acquisition_class",
 ]
 
 LOCAL_MONOTONIC_CLOCK_DOMAIN = "local_monotonic"
@@ -564,13 +565,37 @@ ON_DEMAND_FIELD_NAMES: Final[frozenset[str]] = frozenset(
 )
 
 
+#: MOR-2599: the non-selected receiver polls one class slower — the next
+#: class with a LONGER nominal cadence (owner decision 3, 2026-09-24), so
+#: METER lands on CONTROL, not on LIVE. KEYING and TX_METER are not
+#: receiver-scoped and are never demoted.
+_DEMOTION_MAP: Final[dict[AcquisitionClass, AcquisitionClass]] = {
+    AcquisitionClass.LIVE: AcquisitionClass.CONTROL,
+    AcquisitionClass.METER: AcquisitionClass.CONTROL,
+    AcquisitionClass.CONTROL: AcquisitionClass.PANEL,
+    AcquisitionClass.PANEL: AcquisitionClass.SETTING,
+    AcquisitionClass.SETTING: AcquisitionClass.MENU,
+    AcquisitionClass.MENU: AcquisitionClass.MENU,
+}
+
+
+def demoted_acquisition_class(klass: AcquisitionClass) -> AcquisitionClass:
+    """Return the class one step slower than ``klass`` (MOR-2599).
+
+    "Slower" means the next class with a longer nominal cadence, per the
+    owner-approved table — not the next class in rank order. Classes with
+    no entry in the map (KEYING, TX_METER) are not receiver-scoped and are
+    returned unchanged.
+    """
+
+    return _DEMOTION_MAP.get(AcquisitionClass(str(klass)), klass)
+
+
 def acquisition_class_for_path(path: FieldPath) -> AcquisitionClass:
     """Default acquisition class for a canonical path (MOR-2574 design).
 
     The class defaults from ``FieldPath.family`` with the named exceptions
-    in the sets above. The non-selected-receiver demotion (owner decision
-    3, 2026-09-24) is a later migration step and is deliberately not
-    applied here.
+    in the sets above.
     """
 
     if path.family is FieldFamily.METERS:

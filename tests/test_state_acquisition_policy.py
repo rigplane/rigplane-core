@@ -41,6 +41,7 @@ from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     FieldScope,
     acquisition_class_for_path,
+    demoted_acquisition_class,
 )
 from rigplane.core.state_store import FreshnessState, StateStore
 from rigplane.profiles import get_radio_profile
@@ -2408,3 +2409,36 @@ def test_id_meter_is_gated_on_ptt_like_the_other_tx_meters(model: str) -> None:
     assert id_policy.tx_only is True
     assert id_policy.available_when == (clause,)
     assert power_policy.available_when == (clause,)
+
+
+# --- MOR-2599: the non-selected receiver polls one class slower --------------
+
+
+def test_demotion_map_is_the_owner_approved_next_slower_class() -> None:
+    """MOR-2599: "one class slower" is the next LONGER nominal cadence.
+
+    Rank order would demote METER onto the slower-but-higher-ranked LIVE
+    (0.3 s -> 1.0 s is still slower, but the owner-approved map sends both
+    LIVE and METER to CONTROL); this pins the table the ticket lists.
+    """
+
+    expected = {
+        AcquisitionClass.LIVE: AcquisitionClass.CONTROL,
+        AcquisitionClass.METER: AcquisitionClass.CONTROL,
+        AcquisitionClass.CONTROL: AcquisitionClass.PANEL,
+        AcquisitionClass.PANEL: AcquisitionClass.SETTING,
+        AcquisitionClass.SETTING: AcquisitionClass.MENU,
+        AcquisitionClass.MENU: AcquisitionClass.MENU,
+    }
+    for source, target in expected.items():
+        assert demoted_acquisition_class(source) is target
+        assert (
+            ACQUISITION_CLASS_TABLE[target].nominal_cadence_seconds
+            >= ACQUISITION_CLASS_TABLE[source].nominal_cadence_seconds
+        )
+    # KEYING and TX_METER are not receiver-scoped: they never demote.
+    assert demoted_acquisition_class(AcquisitionClass.KEYING) is AcquisitionClass.KEYING
+    assert (
+        demoted_acquisition_class(AcquisitionClass.TX_METER)
+        is AcquisitionClass.TX_METER
+    )

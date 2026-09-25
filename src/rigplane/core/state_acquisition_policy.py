@@ -16,6 +16,7 @@ from rigplane.core.state_pipeline_contracts import (
     FieldFamily,
     FieldPath,
     acquisition_class_for_path,
+    demoted_acquisition_class,
 )
 
 __all__ = [
@@ -33,9 +34,11 @@ __all__ = [
     "FieldCapability",
     "MeterCoalescingPolicy",
     "OPERATOR_SET_MAX_CADENCE_SECONDS",
+    "SLOW_RECEIVER_DEMOTION_PATH",
     "RadioAcquisitionProfile",
     "ReconciliationPriority",
     "acquisition_policy_for_class",
+    "acquisition_policy_for_class_with_demotion",
     "fit_to_budget",
 ]
 
@@ -233,6 +236,15 @@ def acquisition_policy_for_class(klass: AcquisitionClass) -> AcquisitionPolicy:
     )
 
 
+def acquisition_policy_for_class_with_demotion(
+    klass: AcquisitionClass,
+) -> AcquisitionPolicy:
+    """Class policy one step slower (MOR-2599): the demoted class's cadence
+    and TTL, so a demoted path never ages to stale between polls."""
+
+    return acquisition_policy_for_class(demoted_acquisition_class(klass))
+
+
 @dataclass(frozen=True, slots=True)
 class BudgetFit:
     """Result of :func:`fit_to_budget`."""
@@ -247,6 +259,44 @@ class BudgetFit:
     #: Whether ``reserved_hz`` alone was at or above ``budget_hz`` (to within
     #: ``_FIT_EPSILON``), in which case no class was stretched.
     saturated: bool
+
+
+#: MOR-2599: the field whose observed value selects the slow receiver on a
+#: MAIN/SUB radio. A profile that polls it (the IC-7610 does) demotes the
+#: non-selected receiver's class-derived paths one class; every other radio
+#: is unchanged. The observed value reads case-insensitively: ``main``
+#: demotes ``receiver.sub.*``, ``sub`` demotes ``receiver.main.*``.
+SLOW_RECEIVER_DEMOTION_PATH: Final[FieldPath] = FieldPath.global_(
+    "slow_state", "active"
+)
+
+
+def _demoted_receiver_id(
+    capabilities: tuple[FieldCapability, ...],
+    observed_active: str | None,
+) -> str | None:
+    """Return the receiver whose class-derived paths demote, else None.
+
+    Demotion arms only when the profile polls
+    :data:`SLOW_RECEIVER_DEMOTION_PATH` and the observed value names a
+    selected receiver. An unknown or unobserved value demotes nothing (the
+    normal cadence).
+    """
+
+    if observed_active is None:
+        return None
+    if not any(
+        capability.path == SLOW_RECEIVER_DEMOTION_PATH and capability.can_poll
+        for capability in capabilities
+    ):
+        return None
+    match observed_active.strip().lower():
+        case "main":
+            return "sub"
+        case "sub":
+            return "main"
+        case _:  # a value that names no selected receiver demotes nothing
+            return None
 
 
 def fit_to_budget(
@@ -801,7 +851,12 @@ class RadioAcquisitionProfile:
             diagnostic=f"{path}: missing capability metadata",
         )
 
-    def policy_for(self, path: FieldPath) -> AcquisitionPolicy:
+    def policy_for(
+        self,
+        path: FieldPath,
+        *,
+        observed_active: str | None = None,
+    ) -> AcquisitionPolicy:
         """Effective acquisition policy for one path (MOR-2574 step 2).
 
         An explicit :attr:`field_policies` entry wins, unchanged. A path
@@ -811,6 +866,12 @@ class RadioAcquisitionProfile:
         stamps on the registry's ``FieldSpec.acquisition_class`` — via
         :func:`acquisition_policy_for_class`. Everything else (paths with
         no capability, or none that can poll) keeps :attr:`default_policy`.
+
+        ``observed_active`` is the currently observed value of
+        :data:`SLOW_RECEIVER_DEMOTION_PATH` (MOR-2599): on a profile that
+        polls it, the non-selected receiver's class-derived paths resolve
+        one class slower. Explicit ``field_policies`` entries keep their
+        cadence; an unknown or unobserved value demotes nothing.
         """
 
         declared = self.field_policies.get(path)
@@ -818,6 +879,11 @@ class RadioAcquisitionProfile:
             return declared
         capability = self._capabilities_by_path.get(path)
         if capability is not None and capability.can_poll:
+            demoted = _demoted_receiver_id(self.capabilities, observed_active)
+            if demoted is not None and path.receiver_id == demoted:
+                return acquisition_policy_for_class_with_demotion(
+                    acquisition_class_for_path(path)
+                )
             return acquisition_policy_for_class(acquisition_class_for_path(path))
         return self.default_policy
 
