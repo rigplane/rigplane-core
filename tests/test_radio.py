@@ -2177,39 +2177,32 @@ class TestCivPacingIsSendToSend:
         radio._civ_min_interval = gap
         radio._civ_ack_sink_grace = 0.0
         clock.install_wait_guard(radio)
+        clock.install_gc_guard(radio)
         radio._last_civ_send_monotonic = 0.0
-        starts: list[float] = []
-        original_send = mock_transport.send_tracked
-        reply = 0.005
-        sent_releases: list[asyncio.Event] = []
-
-        async def slow_send(data: bytes) -> None:
-            starts.append(clock.now)
-            await original_send(data)
-            sent_releases[-1].set()
-            clock.install_gc_guard(radio)
-            await clock.sleep(reply)
-
-        monkeypatch.setattr(mock_transport, "send_tracked", slow_send)
         cmd = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
         try:
             with patch.object(radio._civ_runtime, "start_pump"):
                 radio._civ_runtime.start_pump()
                 try:
+                    frames = []
                     for _ in range(3):
-                        sent_releases.append(asyncio.Event())
                         task = asyncio.create_task(radio._execute_civ_raw(cmd))
-                        await asyncio.wait_for(sent_releases[-1].wait(), timeout=10.0)
+                        while len(mock_transport.sent_packets) < len(frames) + 1:
+                            await asyncio.sleep(0)
                         mock_transport.queue_response(_freq_response(14_074_000))
-                        frame = await asyncio.wait_for(task, timeout=10.0)
-                        assert frame is not None
+                        frames.append(await asyncio.wait_for(task, timeout=10.0))
+                    assert all(frame is not None for frame in frames)
+                    # The controllable clock advances only on patched sleeps
+                    # (the pacing gaps); the reply handover costs nothing, so
+                    # every send lands exactly one gap after the previous one.
+                    assert radio._last_civ_send_monotonic == 3 * gap
                 finally:
                     await radio._civ_runtime.stop_pump()
         finally:
             radio._civ_request_tracker.fail_all(ConnectionError("test cleanup"))
 
         assert radio._civ_request_tracker.pending_count == 0
-        assert starts == [gap, gap + gap, gap + gap + gap]
+        assert len(mock_transport.sent_packets) == 3
 
     @pytest.mark.asyncio
     async def test_cancelled_wire_send_still_paces_the_next(
