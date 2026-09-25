@@ -169,8 +169,7 @@ polling_only = [
     # the TX-aux panel showed them as an honest but permanent "?".
     # The active profile declares getters for these 4 controls. The acquisition
     # scheduler resolves their canonical getter names through the profile-bound
-    # resolver and this profile's CommandMap, not a hardcoded scheduler table;
-    # slow field_policies below, not the freq/mode/keep-alive fast tier.
+    # resolver and this profile's CommandMap, not a hardcoded scheduler table.
     "global.operator_controls.mic_gain",
     "global.operator_controls.monitor_gain",
     "global.operator_controls.vox_gain",
@@ -178,12 +177,7 @@ polling_only = [
     # MOR-2425 (owner ruling, 2026-09-07): the ten panel knobs. As
     # command_response-only membership they were never re-read after their
     # first observation, so a front-panel turn reached the web only when a
-    # command happened to touch the same field. Their cadence is 5.0s below
-    # -- the one threshold the owner set for a panel change appearing in the
-    # web -- and the 2.5 q/s that funds it comes from the S-meter moving
-    # 0.2s -> 0.4s (see its field_policies entry below and the serial-budget
-    # assertion in tests/test_state_acquisition_policy.py::
-    # test_ic7300_profile_enrolls_exact_supported_observation_rows).
+    # command happened to touch the same field.
     "receiver.main.active.freq_mode.filter_width",
     "receiver.main.operator_controls.pbt_inner",
     "receiver.main.operator_controls.pbt_outer",
@@ -206,8 +200,7 @@ polling_only = [
     # value. Not stream_like_meters (that class is pinned to a fast cadence
     # and a <=2.0s TTL by
     # test_known_profiles_stream_like_meters_use_fast_non_decaying_policies
-    # for every profile including this one) — plain polling_only instead,
-    # with cadence chosen for THIS profile's serial budget below.
+    # for every profile including this one) — plain polling_only instead.
     "global.meters.power",
     "global.meters.swr",
     "global.meters.alc",
@@ -330,184 +323,24 @@ supported_controls = [
     "global.tx_state.split",
 ]
 
-# MOR-2425 (owner ruling, 2026-09-07): 0.2s -> 0.4s. The S-meter was the
-# single largest share of this profile's RX-state demand (5.0 of 19.833 q/s);
-# halving its rate gives back 2.5 q/s, which is what pays for the ten
-# panel-knob fields now polled at 5.0s below. freshness_ttl_seconds stays
-# 2.0s: the <=2.0s bound on a streaming meter's TTL is about detecting a
+# MOR-2593: a pollable path with no entry below takes its acquisition-class
+# policy (RadioAcquisitionProfile.policy_for). Each entry says why it exists
+# in `reason`.
+
+# MOR-2425 (owner ruling, 2026-09-07): 0.2s -> 0.4s. freshness_ttl_seconds
+# stays 2.0s: the <=2.0s bound on a streaming meter's TTL is about detecting a
 # stopped stream promptly (MOR-334), not about the cadence, and 0.4s still
 # leaves the TTL five sample intervals of headroom.
 [state_acquisition.field_policies."receiver.main.meters.s_meter"]
+reason = "a stream-like meter keeps the coalescing window, which its class policy does not carry (as on the IC-7610, MOR-2590); 0.4 s is the MOR-2425 owner ruling"
 cadence_seconds = 0.4
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
 
-# A bare 0x1C/0x00 read observes the front-panel TX state and carries no data
-# byte, so it cannot key the radio. Keep the existing PTT safety lane unchanged.
-[state_acquisition.field_policies."global.tx_state.ptt"]
-cadence_seconds = 0.3
-freshness_ttl_seconds = 1.0
-adaptive_decay = false
-
-# MOR-1484: bench-measured cadence tightening for the ACTIVE-VFO freq/mode
-# pair and the RF-gain/squelch sliders -- the fields the ticket's live IC-7300
-# probe (serial @115200) found trailing the operator most (medians 1.30s/
-# 2.16s/1.33s/2.22s, worst case up to 2.92s).
-#
-# Mechanism (MOR-1484 review R1 correction): AcquisitionScheduler groups
-# pollable fields by (scope, family, receiver_id, slot, policy) --
-# ``_AcquisitionRequestKey`` / ``_poll_cadence_groups`` in
-# acquisition_scheduler.py -- and each group gets its OWN independent cadence
-# clock; there is no single flat round-robin across every default-tier field.
-# freq_hz(active)/mode(active) (family ``freq_mode``) were ALREADY their own
-# isolated 2-field group before this PR, sharing a clock with nothing else,
-# so their gain here is purely the 1.5s -> 1.0s cadence-ratio speedup (a
-# ~33% shorter worst-case gap between polls of that pair), not a change in
-# how many fields they share a clock with. rf_gain/squelch (family
-# ``operator_controls``, same scope/receiver/slot) DID share a larger group
-# pre-PR -- {af_level, rf_gain, squelch, att, preamp, agc}, 6 fields, one
-# clock -- so pulling them into their own 2-field group has a genuine but
-# SECOND-ORDER extra benefit on top of the cadence-ratio gain: when that
-# clock fires, the executor no longer has to clear up to 4 other same-tick
-# siblings' frames through the ~20 q/s serial rate limiter
-# (_SERIAL_DEFAULT_CIV_MIN_INTERVAL_MS, 50ms/frame) before rf_gain/squelch's
-# own frames go out -- worth roughly 100-200ms off the worst case, not
-# several seconds.
-#
-# Deliberately NOT 0.5-0.8s: MOR-1484's post-write readback mechanism
-# (``RadioPoller._request_post_write_readback``, USER priority) already
-# gives the operator's OWN write an immediate confirmed readback -- this
-# tier only has to catch up a front-panel/other-CAT-client change or the
-# very first poll after connect, so 1.0s is a modest, budget-conservative
-# choice (see the serial-budget accounting at the bottom of this file), not
-# an attempt to match the post-write path's latency. unselectedVfo (measured
-# 1.18s/2.54s) and af_level are deliberately left on the default 1.5s tier --
-# the ticket's operator-felt symptoms (pending-frequency echo, slider trail)
-# are about the ACTIVE vfo and rf_gain/squelch specifically; widening this
-# tier further would eat into the budget freed below for no measured gain.
-[state_acquisition.field_policies."receiver.main.active.freq_mode.freq_hz"]
-cadence_seconds = 1.0
-freshness_ttl_seconds = 2.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.active.freq_mode.mode"]
-cadence_seconds = 1.0
-freshness_ttl_seconds = 2.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.rf_gain"]
-cadence_seconds = 1.0
-freshness_ttl_seconds = 2.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.squelch"]
-cadence_seconds = 1.0
-freshness_ttl_seconds = 2.0
-adaptive_decay = false
-
-# MOR-1484: this profile's ~20 q/s serial floor (see the accounting at the
-# bottom of this file) has essentially no free headroom for the 1.0s tier
-# above without giving something back. These six fields are settings an
-# operator changes rarely mid-QSO (tuner match, RF power level, compressor
-# on/level, attenuator, preamp) rather than continuously-live readouts like
-# freq/mode/rf_gain/squelch/s_meter/ptt, and none of them appear in the
-# ticket's measured or operator-felt symptom list -- 3.0s/6.0s trades a cheap,
-# low-stakes cadence give-back on these for real headroom to spend on the
-# fields that were actually measured trailing the operator.
-[state_acquisition.field_policies."global.operator_controls.tuner_status"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 6.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."global.operator_controls.power_level"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 6.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."global.tx_state.compressor_on"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 6.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."global.operator_controls.compressor_level"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 6.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.att"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 6.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.preamp"]
-cadence_seconds = 3.0
-freshness_ttl_seconds = 6.0
-adaptive_decay = false
-
-# MOR-1452 (review fix): mic/monitor/VOX/anti-VOX gain. IC-7300
-# is SERIAL, sharing one ~20 transactions/s software floor
-# (_SERIAL_DEFAULT_CIV_MIN_INTERVAL_MS, 50ms/frame) across every poll,
-# operator command, AND the keep-alive on this same lane. Copying 3.0s
-# verbatim would add 4 fields / 3.0s = 1.333 q/s on top of this profile's
-# pre-existing ~19.667 q/s demand (freq/mode/keep-alive/af/rf/squelch/
-# att/preamp/agc/nb/nr/power/compressor/ptt/tuner/split, each 1/cadence) —
-# 21.0 q/s, structurally over the 20 q/s ceiling, degrading cadence on EVERY
-# polled field including PTT (0.3s) and freq/mode (1.5s). 15.0s/25.0s was
-# chosen instead to leave real headroom rather than sitting exactly on the
-# boundary.
-#
-# MOR-1484 (bench-measured follow-up): the ticket's live probe measured
-# mic_gain populate (slow front-panel knob rotation, not a rigplane write —
-# nothing this profile owns can accelerate that with a post-write readback)
-# at 10.73s median / 16.25s worst case against this 15.0s-cadence tier's
-# "<=15s populate" intent — these 4 fields share ONE cadence clock/group
-# (same scope/family/receiver/policy, see the mechanism note above the
-# freq/mode/rf_gain/squelch tier) and fire together each time it is due, but
-# the resulting frames still have to clear the ~20 q/s whole-lane serial rate
-# limiter alongside every OTHER group's traffic due around the same moment —
-# that contention, not anything internal to this group, is why the observed
-# worst case exceeds the nominal cadence. 10.0s/15.0s tightens the cadence
-# with margin (a fresh value is now due within 10s, not 15s, cutting the
-# plausible worst case well clear of the 15s target) at a modest added cost: 4 fields /
-# 10.0s = 0.4 q/s vs the previous 4/15.0 = 0.267 q/s, +0.133 q/s. The budget
-# accounting comment above the freq/mode/rf_gain/squelch tier (this file,
-# above) shows where that -- and the freq/mode/rf_gain/squelch tightening's
-# larger cost -- comes from.
-[state_acquisition.field_policies."global.operator_controls.mic_gain"]
-cadence_seconds = 10.0
-freshness_ttl_seconds = 15.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."global.operator_controls.monitor_gain"]
-cadence_seconds = 10.0
-freshness_ttl_seconds = 15.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."global.operator_controls.vox_gain"]
-cadence_seconds = 10.0
-freshness_ttl_seconds = 15.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."global.operator_controls.anti_vox_gain"]
-cadence_seconds = 10.0
-freshness_ttl_seconds = 15.0
-adaptive_decay = false
-
-# MOR-1485 (TX/PA meters dead on serial): owner ruling splits the six 0x15
-# meters into two gating shapes.
-#
 # Po/SWR/ALC/COMP are meaningful only while transmitting (`tx_only = true`),
 # so AcquisitionScheduler.due_requests skips their cadence group entirely
-# while PTT reads false -- ZERO steady-state (RX) serial cost. 1.0s cadence
-# is chosen for TX-window responsiveness, matching this profile's own
-# 1.5s-or-faster tier for everything else that matters live; it only ever
-# fires during a TX segment, transiently adding 4 fields / 1.0s = 4.0 q/s on
-# top of this profile's RX-state demand (see vd/id below; 19.967 q/s when
-# this was written, 19.333 q/s after the MOR-1484, MOR-1983 and MOR-2425
-# cadence changes)
-# for as long as the key is down -- an accepted, TX-scoped tradeoff, not a
-# steady-state regression of the MOR-1484 serial medians.
+# while PTT reads false -- ZERO steady-state (RX) serial cost.
 #
 # MOR-2425/T141: observed on the bench 2026-09-08 -- after dekey the four
 # stayed in the store carrying their last transmit values instead of leaving
@@ -520,6 +353,7 @@ adaptive_decay = false
 # test_startup_state_gate.py::
 # test_unobserved_tx_only_path_does_not_keep_the_predicate_incomplete).
 [state_acquisition.field_policies."global.meters.power"]
+reason = "available_when: absent while PTT reads false, so the last TX reading is discarded on dekey (observed on the bench 2026-09-08, MOR-2425/T141)"
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
@@ -529,6 +363,7 @@ available_when = [
 ]
 
 [state_acquisition.field_policies."global.meters.swr"]
+reason = "available_when: absent while PTT reads false, so the last TX reading is discarded on dekey (observed on the bench 2026-09-08, MOR-2425/T141)"
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
@@ -538,6 +373,7 @@ available_when = [
 ]
 
 [state_acquisition.field_policies."global.meters.alc"]
+reason = "available_when: absent while PTT reads false, so the last TX reading is discarded on dekey (observed on the bench 2026-09-08, MOR-2425/T141)"
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
@@ -547,6 +383,7 @@ available_when = [
 ]
 
 [state_acquisition.field_policies."global.meters.comp"]
+reason = "available_when: absent while PTT reads false, so the last TX reading is discarded on dekey (observed on the bench 2026-09-08, MOR-2425/T141)"
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
@@ -555,105 +392,15 @@ available_when = [
     { field = "global.tx_state.ptt", equals = true },
 ]
 
-# Vd/Id are supply telemetry, not TX readings -- the radio answers them in RX
-# too (proven: rigctld's ``_OBSERVABLE_CMD15_FIELDS`` one-shots already flip
-# these to observed outside TX), so they poll unconditionally (``tx_only``
-# defaults false). The pre-existing RX-state demand (19.933 q/s) already
-# sits only 0.067 q/s below the 20 q/s serial ceiling (see the serial-budget
-# assertion in tests/test_state_acquisition_policy.py) -- there is no room
-# for anything faster than a very slow cadence here without regressing every
-# OTHER field's actual throughput, which is exactly what MOR-1485 must not do
-# to the MOR-1484 medians. 60.0s spends under half of that remaining headroom
-# (2 fields / 60.0s = 0.033 q/s, 19.933 -> 19.967 q/s) while still refreshing
-# a slowly-varying supply rail/current reading roughly once a minute --
-# "live", just not fast. (These 19.933/19.967 figures predate the MOR-1484
-# cadence tightening above/below this block -- see the serial-budget
-# assertion in tests/test_state_acquisition_policy.py for the current total,
-# 19.333 q/s.)
-# MOR-2425: freshness_ttl_seconds is what a CI-V observation of these two is
-# now stamped with (runtime/_civ_rx.py: _observation_max_age), so it is the
-# window a reading actually gets. 90.0 was 1.5x the cadence; 120.0 is the 2x
-# this profile's default policy (1.5/3.0) and its 1.0/2.0, 3.0/6.0, 5.0/10.0
-# and 30.0/60.0 tiers already carry.
-[state_acquisition.field_policies."global.meters.vd"]
-cadence_seconds = 60.0
-freshness_ttl_seconds = 120.0
-adaptive_decay = false
-
 [state_acquisition.field_policies."global.meters.id"]
-cadence_seconds = 60.0
-freshness_ttl_seconds = 120.0
+reason = "available_when: absent while PTT reads false, so the last TX reading is discarded on dekey, as for Po/SWR/ALC/COMP here and for the IC-7610's id (MOR-2590)"
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
 adaptive_decay = false
-
-# MOR-2425 (owner ruling, 2026-09-07): the ten panel knobs, cadence-polled.
-# Class rule, not a per-rig number: a field the operator reaches by turning a
-# knob must reach the web within 5.0s, and freshness_ttl_seconds is twice the
-# cadence -- the ratio this profile's own default carries (1.5/3.0), as do
-# its 1.0/2.0, 3.0/6.0 and 30.0/60.0 tiers. These paths ARE in
-# [state_acquisition.capabilities].polling_only above, so due_requests()
-# reaches them and no reconciliation_priority override is needed: the file
-# default ("poll") now matches how they are actually acquired. Their cost,
-# 10 x 1/5.0 = 2.0 q/s, is funded by the S-meter's 0.2s -> 0.4s (-2.5 q/s);
-# both sides are pinned by the serial-budget assertion in
-# tests/test_state_acquisition_policy.py::
-# test_ic7300_profile_enrolls_exact_supported_observation_rows.
-[state_acquisition.field_policies."receiver.main.active.freq_mode.filter_width"]
-cadence_seconds = 5.0
-freshness_ttl_seconds = 10.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.pbt_inner"]
-cadence_seconds = 5.0
-freshness_ttl_seconds = 10.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.pbt_outer"]
-cadence_seconds = 5.0
-freshness_ttl_seconds = 10.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.nr_level"]
-cadence_seconds = 5.0
-freshness_ttl_seconds = 10.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.nb_level"]
-cadence_seconds = 5.0
-freshness_ttl_seconds = 10.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.notch_filter"]
-cadence_seconds = 5.0
-freshness_ttl_seconds = 10.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.manual_notch_width"]
-cadence_seconds = 5.0
-freshness_ttl_seconds = 10.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_toggles.auto_notch"]
-cadence_seconds = 5.0
-freshness_ttl_seconds = 10.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_toggles.manual_notch"]
-cadence_seconds = 5.0
-freshness_ttl_seconds = 10.0
-adaptive_decay = false
-
-# MOR-2449: a front-panel IP+ change must converge through canonical
-# acquisition. The 5.0s/10.0s panel tier adds 0.2 q/s and retains serial
-# headroom below the IC-7300's 20 q/s ceiling (pinned in the policy test).
-[state_acquisition.field_policies."receiver.main.operator_toggles.ipplus"]
-cadence_seconds = 5.0
-freshness_ttl_seconds = 10.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."global.operator_controls.rit_freq"]
-cadence_seconds = 5.0
-freshness_ttl_seconds = 10.0
-adaptive_decay = false
+tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
 
 # MOR-1483/1491/1492/1493 (field-policy membership wave): non-polling
 # (command_response) membership riding the MOR-1490 priming mechanism
@@ -672,12 +419,14 @@ adaptive_decay = false
 # them. cadence_seconds is still load-bearing — with no TTL,
 # prime_unobserved passes it as the prime read's max_age.
 [state_acquisition.field_policies."global.tx_state.vox_on"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.tx_state.monitor_on"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
@@ -686,6 +435,7 @@ adaptive_decay = false
 # MOR-1483 (leg 2): voxDelay joins the same non-polling membership as the
 # VOX/MON toggles above.
 [state_acquisition.field_policies."global.operator_controls.vox_delay"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
@@ -694,66 +444,77 @@ adaptive_decay = false
 # prime_unobserved() iterates field_policies only, so without an entry here
 # these two paths are never primed.
 [state_acquisition.field_policies."receiver.main.active.freq_mode.filter_num"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.active.freq_mode.data_mode"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_controls.filter_shape"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_controls.agc_time_constant"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.tx_state.rit_on"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.tx_state.rit_tx"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.operator_controls.break_in"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.operator_controls.break_in_delay"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.operator_controls.key_speed"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.operator_controls.cw_pitch"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_toggles.twin_peak_filter"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
@@ -762,75 +523,17 @@ adaptive_decay = false
 # MOR-2234 group B: tone/TSQL frequency join the same non-polling
 # command_response membership as the CW keyer setpoints above.
 [state_acquisition.field_policies."receiver.main.operator_controls.tone_freq"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_controls.tsql_freq"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
-adaptive_decay = false
-
-[state_acquisition.field_policies."scope_controls.global.display.receiver"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."scope_controls.global.display.dual"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."scope_controls.global.display.mode"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."scope_controls.global.display.span"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."scope_controls.global.display.edge"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."scope_controls.global.display.hold"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."scope_controls.global.display.ref_db"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."scope_controls.global.display.speed"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."scope_controls.global.display.during_tx"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."scope_controls.global.display.center_type"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."scope_controls.global.display.vbw_narrow"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
-adaptive_decay = false
-
-[state_acquisition.field_policies."scope_controls.global.display.fixed_edge"]
-cadence_seconds = 30.0
-freshness_ttl_seconds = 60.0
 adaptive_decay = false
 
 # ── Parameterized Capabilities ───────────────────────────────────

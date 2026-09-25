@@ -1365,19 +1365,17 @@ async def test_execute_set_attenuator_readback_does_not_depend_on_slowed_cadence
     None
 ):
     """MOR-1484 review R1: att's confirming readback after a write must be
-    immediate regardless of this profile's OWN (now 3.0s, slowed to fund the
-    freq/mode/rf_gain/squelch tightening) cadence tier for that field -- the
-    armed #2452 affordance's confirm can never be left depending on that slow
-    tier, or a slice of clicks would grace-expire (3000ms ACK_CONFIRM_GRACE)
-    before the field is ever re-polled. Uses the REAL ic7300 profile (not a
-    synthetic one) so this pins the actual shipped cadence, not an assumption
-    about it.
+    immediate regardless of this profile's OWN cadence tier for that field --
+    the armed #2452 affordance's confirm can never be left depending on that
+    slow tier, or a slice of clicks would grace-expire (3000ms
+    ACK_CONFIRM_GRACE) before the field is ever re-polled. Uses the REAL
+    ic7300 profile (not a synthetic one).
     """
     profile = resolve_radio_profile(model="IC-7300")
     assert profile.state_acquisition is not None
     att_path = FieldPath.receiver("main", "operator_controls", "att")
     att_policy = profile.state_acquisition.policy_for(att_path)
-    assert att_policy.cadence_seconds == 3.0  # the slowed give-back tier
+    assert att_policy.cadence_seconds >= 3.0  # no faster than the 3000ms grace
 
     radio = _make_radio(active="MAIN", model="IC-7300")
     scheduler = AcquisitionScheduler(profile=profile.state_acquisition)
@@ -1392,7 +1390,7 @@ async def test_execute_set_attenuator_readback_does_not_depend_on_slowed_cadence
     # USER outranks every cadence-driven priority (BACKGROUND/RECONCILIATION/
     # NORMAL) regardless of the field's own (slow) cadence_seconds -- the
     # confirming read is dispatched on the very next drain, not gated by the
-    # 3.0s tier at all.
+    # cadence tier at all.
     assert pending[0].priority is AcquisitionPriority.USER
 
 
@@ -6586,25 +6584,23 @@ def test_scan_facts_seed_labelled_command_response_not_poll_response() -> None:
 # so background groups now dispatch by their class TTLs: the same 53
 # frames, ordered by the class-grouped deadlines. MOR-2586 sorts requests of
 # one priority by the highest acquisition class among their paths before the
-# deadline: the same 53 frames again, re-ordered. The vd/id request
-# (0x15 15/16) dispatches second because ``id`` is a tx_meter-class path.
+# deadline: the same 53 frames again, re-ordered. MOR-2593 deletes 39 of the
+# IC-7300's field_policies entries, so those paths dispatch by their class
+# policies, and ``id`` becomes TX-only, dropping its 0x15 16 read from this
+# receive cycle: 53 -> 52 frames, re-ordered.
 _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x1C, 0x00, b""),
-    (0x15, 0x16, b""),
-    (0x15, 0x15, b""),
     (0x25, None, b"\x00"),
     (0x26, None, b"\x00"),
     (0x15, 0x02, b""),
-    (0x14, 0x02, b""),
-    (0x14, 0x03, b""),
-    (0x14, 0x0E, b""),
-    (0x14, 0x0A, b""),
-    (0x1C, 0x01, b""),
     (0x0F, None, b""),
     (0x1A, 0x03, b""),
     (0x14, 0x01, b""),
+    (0x14, 0x02, b""),
+    (0x14, 0x03, b""),
     (0x25, None, b"\x01"),
     (0x26, None, b"\x01"),
+    (0x14, 0x0A, b""),
     (0x16, 0x57, b""),
     (0x14, 0x12, b""),
     (0x14, 0x0D, b""),
@@ -6612,24 +6608,27 @@ _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x14, 0x07, b""),
     (0x14, 0x08, b""),
     (0x16, 0x41, b""),
-    (0x16, 0x65, b""),
     (0x16, 0x48, b""),
     (0x21, 0x00, b""),
-    (0x11, None, b""),
-    (0x16, 0x02, b""),
-    (0x16, 0x44, b""),
-    (0x14, 0x17, b""),
-    (0x14, 0x0B, b""),
-    (0x14, 0x15, b""),
-    (0x14, 0x16, b""),
     (0x16, 0x45, b""),
     (0x16, 0x46, b""),
     (0x1A, 0x05, b"\x01\x91"),
     (0x1A, 0x06, b""),
     (0x26, None, b"\x00"),
     (0x16, 0x12, b""),
+    (0x11, None, b""),
+    (0x16, 0x02, b""),
+    (0x16, 0x65, b""),
     (0x16, 0x22, b""),
     (0x16, 0x40, b""),
+    (0x15, 0x15, b""),
+    (0x14, 0x17, b""),
+    (0x14, 0x0E, b""),
+    (0x14, 0x0B, b""),
+    (0x14, 0x15, b""),
+    (0x1C, 0x01, b""),
+    (0x14, 0x16, b""),
+    (0x16, 0x44, b""),
     (0x27, 0x1C, b""),
     (0x27, 0x13, b""),
     (0x27, 0x1B, b""),
