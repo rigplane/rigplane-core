@@ -1,7 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
-vi.stubGlobal('matchMedia', () => ({ matches: false }));
-
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe('fetchCapabilities', () => {
