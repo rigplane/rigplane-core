@@ -1942,6 +1942,17 @@ class _PacingClock:
         self.now += max(0.0, delay)
         await self._real_sleep(0)
 
+    def install_gc_guard(self, radio: IcomRadio) -> None:
+        """Keep the waiter GC quiet while the patched clock stands still.
+
+        ``_cleanup_stale_civ_waiters`` compares ``time.monotonic`` against
+        the last GC stamp; a real-time stamp reads as ancient under the
+        patched clock and every execute would reap its own waiter.
+        Refreshing the stamp from the controllable clock (which only
+        advances on patched sleeps) keeps waiters alive for the test.
+        """
+        radio._civ_last_waiter_gc_monotonic = self.now
+
 
 def _install_pacing_clock(
     monkeypatch: pytest.MonkeyPatch, *, gap: float
@@ -1978,8 +1989,9 @@ class TestCivPacingIsSendToSend:
         radio._civ_min_interval = gap
         radio._civ_ack_sink_grace = 0.0
         radio._civ_get_timeout = 2.0
-        radio._civ_last_waiter_gc_monotonic = clock.now
+        clock.install_gc_guard(radio)
         radio._last_civ_send_monotonic = 0.0
+        clock.install_gc_guard(radio)
         starts: list[float] = []
         original_send = mock_transport.send_tracked
         first_civ = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
@@ -2038,7 +2050,6 @@ class TestCivPacingIsSendToSend:
         radio._civ_ack_sink_grace = 0.0
         radio._civ_get_timeout = 2.0
         radio._last_civ_send_monotonic = 0.0
-        radio._civ_last_waiter_gc_monotonic = clock.now
         starts: list[float] = []
         original_send = mock_transport.send_tracked
         reply = 0.005
@@ -2048,6 +2059,7 @@ class TestCivPacingIsSendToSend:
             starts.append(clock.now)
             await original_send(data)
             sent_releases[-1].set()
+            clock.install_gc_guard(radio)
             await clock.sleep(reply)
 
         monkeypatch.setattr(mock_transport, "send_tracked", slow_send)
@@ -2089,7 +2101,7 @@ class TestCivPacingIsSendToSend:
         clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
         radio._civ_ack_sink_grace = 0.0
-        radio._civ_last_waiter_gc_monotonic = clock.now
+        clock.install_gc_guard(radio)
         radio._civ_get_timeout = 2.0
         radio._last_civ_send_monotonic = 0.0
         starts: list[float] = []
@@ -2138,7 +2150,7 @@ class TestCivPacingIsSendToSend:
         clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
         radio._civ_ack_sink_grace = 0.0
-        radio._civ_last_waiter_gc_monotonic = clock.now
+        clock.install_gc_guard(radio)
         radio._civ_get_timeout = 2.0
         radio._last_civ_send_monotonic = 0.0
         observer: list[tx.ProviderPttObservation] = []
@@ -2192,7 +2204,7 @@ class TestCivPacingIsSendToSend:
         radio._civ_min_interval = gap
         radio._civ_ack_sink_grace = 0.0
         radio._civ_get_timeout = 2.0
-        radio._civ_last_waiter_gc_monotonic = clock.now
+        clock.install_gc_guard(radio)
         radio._last_civ_send_monotonic = 0.0
         radio._civ_runtime.start_worker()
         first_sent = asyncio.Event()
