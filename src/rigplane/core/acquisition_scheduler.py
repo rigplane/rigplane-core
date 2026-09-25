@@ -610,7 +610,8 @@ class AcquisitionScheduler:
         if klass is None:
             return declared
         fit = self._budget_fit[self._tx_active]
-        return fit.effective_cadence_seconds.get(klass, declared)
+        cadence: float = fit.effective_cadence_seconds.get(klass, declared)
+        return cadence
 
     @property
     def provider(self) -> str:
@@ -1687,15 +1688,20 @@ class AcquisitionScheduler:
             ):
                 result.append((key, paths))
                 continue
-            klass = self._fitted_class_by_key[key]
+            klass = self._fitted_class_by_key.get(key)
+            if klass is None:
+                # No transport budget was fitted (the common seat shape):
+                # the group's declared cadence IS its class's nominal.
+                klass = acquisition_class_for_path(paths[0])
             target = demoted_acquisition_class(klass)
             assert key.policy.cadence_seconds is not None
-            cadence = acquisition_policy_for_class(target).cadence_seconds
+            cadence: float = float(
+                acquisition_policy_for_class(target).cadence_seconds or 0.0
+            )
             if self._fits_without_demote is not None:
                 cadence = self._fits_without_demote[
                     self._tx_active
                 ].effective_cadence_seconds.get(target, cadence)
-            assert cadence is not None
             cadence = max(
                 cadence, self._fitted_cadence_seconds(key, key.policy.cadence_seconds)
             )
