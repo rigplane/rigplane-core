@@ -276,7 +276,8 @@ const INDICATOR_CAPS = caps({
   agcLabels: { '2': 'SLOW' },
   capabilities: [
     ...DUAL, 'filter_width', 'agc', 'nb', 'nr', 'notch', 'attenuator', 'preamp',
-    'attenuator_sub', 'preamp_sub', 'rf_gain', 'digisel', 'ip_plus',
+    'attenuator_main', 'preamp_main', 'attenuator_sub', 'preamp_sub',
+    'rf_gain', 'digisel', 'ip_plus',
   ],
 });
 const INDICATOR_LEAVES = [
@@ -453,14 +454,18 @@ describe('receiver indicators are structural-receiver addressed (MOR-2299 slice 
   });
 
   // MOR-2588: per-receiver att/preamp decide from what the radio declares —
-  // the server-served `attenuator_sub`/`preamp_sub` tags
+  // the server-served `attenuator_main`/`preamp_main` (MAIN) and
+  // `attenuator_sub`/`preamp_sub` (SUB) tags
   // (`web/runtime_helpers.py: projected_receiver_control_tags`) — never from
-  // whether a reading was observed. An IC-9700 with SUB selected credits
-  // MAIN's poll answer to SUB: the field status flips to `available` although
-  // the profile never declared SUB att/preamp, and only the missing tag says
-  // so (replaces the MOR-2511 B2 `fieldUndeclared` gates).
+  // the radio-wide `attenuator`/`preamp` capability alone (tx500/x6100/x6200
+  // declare the command with no polled MAIN field) and never from whether a
+  // reading was observed. An IC-9700 with SUB selected credits MAIN's poll
+  // answer to SUB: the field status flips to `available` although the
+  // profile never declared SUB att/preamp, and only the missing tag says so
+  // (replaces the MOR-2511 B2 `fieldUndeclared` gates).
   describe('MOR-2588: per-receiver att/preamp gates read the declared tags', () => {
-    // The IC-9700 shape: radio-wide attenuator/preamp, no per-receiver tags.
+    // The tx500/x6100/x6200 shape: radio-wide attenuator/preamp capability
+    // (the command exists), no per-receiver declared-field tags.
     const UNDECLARED_SUB_CAPS = caps({
       stateContractVersion: 1,
       providerGeneration: 1,
@@ -498,12 +503,32 @@ describe('receiver indicators are structural-receiver addressed (MOR-2299 slice 
       expect(view.disabledReasons.some((r) => r.code === 'receiver-lacks-control')).toBe(false);
     });
 
-    it('keeps MAIN att/preamp declared by the radio-wide capability even without the tags', () => {
+    it('keeps observed-but-undeclared MAIN att/preamp structurally absent with the receiver-lacks-control reasons', () => {
+      // The Finding-A case: tx500/x6100/x6200 carry the radio-wide
+      // attenuator/preamp capability but declare no MAIN att/preamp field.
+      // The capability alone must not light MAIN, and the disabled reason
+      // must explain the control on MAIN exactly as on SUB.
       const view = model(indicatorState({ active: 'MAIN' }), UNDECLARED_SUB_CAPS, RECEIVING);
+      const main = view.receiverIndicators?.find((indicator) => indicator.receiver === 'MAIN');
+      expect(main?.attenuator.availability).toEqual({ structural: false, operational: false });
+      expect(main?.attenuator.reading).toEqual({ status: 'unknown' });
+      expect(main?.preamp.availability).toEqual({ structural: false, operational: false });
+      expect(main?.preamp.reading).toEqual({ status: 'unknown' });
+      // The active-receiver group still reports the (wrongly credited) fresh
+      // reading on MAIN exactly as on SUB; the disabled reason is what keeps
+      // the control hidden and explained.
+      expect(view.rfFrontEnd?.attenuator.availability).toEqual({ structural: true, operational: true });
+      expect(view.disabledReasons).toContainEqual({ field: 'rfFrontEnd.attenuator', code: 'receiver-lacks-control' });
+      expect(view.disabledReasons).toContainEqual({ field: 'rfFrontEnd.preamp', code: 'receiver-lacks-control' });
+    });
+
+    it('draws MAIN att/preamp when the radio declares them for MAIN (tags served)', () => {
+      const view = model(indicatorState({ active: 'MAIN' }), INDICATOR_CAPS, RECEIVING);
       const main = view.receiverIndicators?.find((indicator) => indicator.receiver === 'MAIN');
       expect(main?.attenuator.availability).toEqual({ structural: true, operational: true });
       expect(main?.attenuator.reading).toEqual({ status: 'known', value: 0 });
       expect(main?.preamp.availability).toEqual({ structural: true, operational: true });
+      expect(main?.preamp.reading).toEqual({ status: 'known', value: 0 });
       expect(view.disabledReasons.some((r) => r.code === 'receiver-lacks-control')).toBe(false);
     });
   });

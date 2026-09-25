@@ -975,15 +975,18 @@ class TestSubReceiverAfLevelTag:
 
 
 class TestReceiverDeclaredControlTags:
-    """``attenuator_sub``/``preamp_sub``/``agc_time_constant``/
-    ``agc_time_constant_sub`` are served only for receivers whose fields the
-    profile itself declares (MOR-2588), following the ``af_level_sub``
-    serving pattern (MOR-2579) with the profile's declared acquisition paths
-    as the fact. ``supports_command`` admission is not the fact here: it
-    under-admits (FTX-1 declares ``receiver.main.operator_controls.preamp``
-    with no receiver-admitted write) and over-admits (IC-9700/IC-705 declare
-    the 0x1A 04 command pair without declaring the polled field). Real radios
-    on the bundled profiles, not mocks."""
+    """``attenuator_main``/``preamp_main``/``attenuator_sub``/``preamp_sub``/
+    ``agc_time_constant``/``agc_time_constant_sub`` are served only for
+    receivers whose fields the profile itself declares (MOR-2588), following
+    the ``af_level_sub`` serving pattern (MOR-2579) with the profile's
+    declared acquisition paths as the fact. ``supports_command`` admission is
+    not the fact here: it under-admits (FTX-1 declares
+    ``receiver.main.operator_controls.preamp`` with no receiver-admitted
+    write) and over-admits (IC-9700/IC-705 declare the 0x1A 04 command pair
+    without declaring the polled field). The radio-wide ``attenuator``/
+    ``preamp`` capability is likewise not the fact: tx500/x6100/x6200 declare
+    the command with no polled MAIN field. Real radios on the bundled
+    profiles, not mocks."""
 
     @pytest.mark.parametrize(
         ("rig", "expected"),
@@ -991,16 +994,24 @@ class TestReceiverDeclaredControlTags:
             (
                 "ic7610",
                 {
+                    "attenuator_main",
+                    "preamp_main",
                     "attenuator_sub",
                     "preamp_sub",
                     "agc_time_constant",
                     "agc_time_constant_sub",
                 },
             ),
-            ("ic7300", {"agc_time_constant"}),
+            (
+                "ic7300",
+                {"attenuator_main", "preamp_main", "agc_time_constant"},
+            ),
             ("ic9700", set()),
             ("ic705", set()),
-            ("ftx1", set()),
+            ("ftx1", {"attenuator_main", "preamp_main"}),
+            ("tx500", set()),
+            ("x6100", set()),
+            ("x6200", set()),
         ],
     )
     def test_tags_follow_the_profile_declared_fields(self, rig, expected):
@@ -1037,6 +1048,8 @@ class TestReceiverDeclaredControlTags:
 
         reserved = frozenset(
             {
+                "attenuator_main",
+                "preamp_main",
                 "attenuator_sub",
                 "preamp_sub",
                 "agc_time_constant",
@@ -1044,6 +1057,8 @@ class TestReceiverDeclaredControlTags:
             }
         )
         undeclared = {
+            FieldPath.parse("receiver.main.operator_controls.att"),
+            FieldPath.parse("receiver.main.operator_controls.preamp"),
             FieldPath.parse("receiver.sub.operator_controls.att"),
             FieldPath.parse("receiver.sub.operator_controls.preamp"),
             FieldPath.parse("receiver.main.operator_controls.agc_time_constant"),

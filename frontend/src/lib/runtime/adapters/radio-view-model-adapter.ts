@@ -1095,15 +1095,18 @@ function deriveReceiverIndicators(
     const providerGeneration = state?.providerGeneration;
 
     // MOR-2588: a receiver's att/preamp exists only when the radio declares
-    // it for THAT receiver — MAIN by the radio-wide capability, SUB by the
-    // server-served `attenuator_sub`/`preamp_sub` tags
-    // (`web/runtime_helpers.py: projected_receiver_control_tags`). An
-    // observed reading credited to a receiver that never declared the field
-    // cannot light this.
+    // it for THAT receiver — MAIN by the server-served
+    // `attenuator_main`/`preamp_main` tags, SUB by `attenuator_sub`/
+    // `preamp_sub` (`web/runtime_helpers.py: projected_receiver_control_tags`).
+    // The radio-wide `attenuator`/`preamp` capability alone only proves the
+    // COMMAND exists (tx500/x6100/x6200 declare it with no polled MAIN field),
+    // so it cannot light an indicator for a receiver that never declares the
+    // field. An observed reading credited to a receiver that never declared
+    // the field cannot light this.
     const attStructural = hasAttenuator
-      && (receiver === 'MAIN' || hasCap(caps, 'attenuator_sub'));
+      && hasCap(caps, receiver === 'MAIN' ? 'attenuator_main' : 'attenuator_sub');
     const preampStructural = hasPreamp
-      && (receiver === 'MAIN' || hasCap(caps, 'preamp_sub'));
+      && hasCap(caps, receiver === 'MAIN' ? 'preamp_main' : 'preamp_sub');
 
     return {
       receiver,
@@ -2115,14 +2118,19 @@ export function toRadioViewModel(
     tx, txAux, ritXit, antenna,
   );
   if (rfFrontEndMutex) disabledReasons.push(rfFrontEndMutex);
-  // MOR-2588: the active SUB receiver lacks att/preamp when the radio does
-  // not declare them for SUB (no `attenuator_sub`/`preamp_sub` tag), even if
-  // a mis-credited reading made the field status available.
-  if (rfFrontEnd && state?.active === 'SUB') {
-    if (hasCap(caps, 'attenuator') && !hasCap(caps, 'attenuator_sub')) {
+  // MOR-2588: the ACTIVE receiver lacks att/preamp when the radio declares
+  // the radio-wide capability but not the field for that receiver (no
+  // `attenuator_main`/`preamp_main` on MAIN, no `attenuator_sub`/
+  // `preamp_sub` on SUB) — e.g. tx500/x6100/x6200 on MAIN. The disabled
+  // control must still carry its explanation even if a mis-credited reading
+  // made the field status available.
+  const activeRx = state?.active;
+  if (rfFrontEnd && (activeRx === 'MAIN' || activeRx === 'SUB')) {
+    const onSub = activeRx === 'SUB';
+    if (hasCap(caps, 'attenuator') && !hasCap(caps, onSub ? 'attenuator_sub' : 'attenuator_main')) {
       disabledReasons.push({ field: 'rfFrontEnd.attenuator', code: 'receiver-lacks-control' });
     }
-    if (hasCap(caps, 'preamp') && !hasCap(caps, 'preamp_sub')) {
+    if (hasCap(caps, 'preamp') && !hasCap(caps, onSub ? 'preamp_sub' : 'preamp_main')) {
       disabledReasons.push({ field: 'rfFrontEnd.preamp', code: 'receiver-lacks-control' });
     }
   }

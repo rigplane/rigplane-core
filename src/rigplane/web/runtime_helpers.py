@@ -679,11 +679,14 @@ def projected_af_level_sub_tag(
 
 
 # Per-receiver control tags (MOR-2588) and the declared field path each one
-# is backed by. MAIN keeps the radio-wide capability (``attenuator``/
-# ``preamp``/``agc``), so only SUB carries an att/preamp tag; AGC time needs
-# both because ``agc`` alone is not proof of a time control (MOR-2527's
-# FTX-1).
+# is backed by. The bare ``attenuator``/``preamp`` names are already the
+# radio-wide CAPABILITY tags (a radio declares the command without declaring
+# the polled MAIN field — tx500/x6100/x6200), so att/preamp need an explicit
+# scope suffix on BOTH sides, unlike ``agc_time_constant`` whose bare name is
+# free for MAIN.
 _RECEIVER_CONTROL_TAG_PATHS: tuple[tuple[str, FieldPath], ...] = (
+    ("attenuator_main", FieldPath.parse("receiver.main.operator_controls.att")),
+    ("preamp_main", FieldPath.parse("receiver.main.operator_controls.preamp")),
     ("attenuator_sub", FieldPath.parse("receiver.sub.operator_controls.att")),
     ("preamp_sub", FieldPath.parse("receiver.sub.operator_controls.preamp")),
     (

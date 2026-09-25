@@ -275,6 +275,13 @@ const baseCaps = (): Capabilities => ({
   capabilities: [
     'audio', 'tx', 'dual_rx', 'tuner', 'dual_watch', 'lan_dual_rx_audio_routing',
     'af_level', 'rf_gain', 'squelch', 'attenuator', 'preamp', 'digisel', 'ip_plus',
+    // MOR-2588: the per-receiver declared-field tags the real server serves
+    // for this dual-receiver radio shape (`web/runtime_helpers.py:
+    // projected_receiver_control_tags`). An IC-7610-class profile declares
+    // att/preamp for BOTH receivers, so the real server serves all four tags;
+    // without them the adapter gates SUB (and MAIN) att/preamp off and the
+    // rendering no longer matches the approved baselines.
+    'attenuator_main', 'preamp_main', 'attenuator_sub', 'preamp_sub',
     'antenna', 'rx_antenna', 'nb', 'nr', 'notch', 'apf', 'twin_peak', 'pbt',
     'filter_width', 'filter_shape', 'split', 'ssb_tx_bw', 'cw', 'break_in', 'rit', 'xit',
     'meters', 'data_mode', 'mod_input_routing', 'agc', 'power_control', 'dial_lock',
