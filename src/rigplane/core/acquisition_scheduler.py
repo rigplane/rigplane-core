@@ -435,8 +435,12 @@ def adaptive_cadence_limit(policy: AcquisitionPolicy) -> float | None:
 
 
 def civ_transport_budget_hz(radio: object) -> float | None:
-    """Return ``1 / radio._civ_min_interval``, the radio's CI-V query budget.
+    """Return ``1 / max(gap, round-trip estimate)``, the CI-V query budget.
 
+    A query costs the larger of the send-to-send gap and the round trip,
+    because the pacing clock is stamped at send (MOR-2595). The round-trip
+    estimate is ``radio._civ_rtt_estimate``: 9 ms on LAN (IC-7610 p95,
+    2026-09-25) and the gap itself on serial, which is unmeasured.
     ``None`` when the radio carries no positive ``_civ_min_interval``.
     """
 
@@ -445,7 +449,10 @@ def civ_transport_budget_hz(radio: object) -> float | None:
         return None
     if interval <= 0:
         return None
-    return 1.0 / interval
+    rtt = getattr(radio, "_civ_rtt_estimate", 0.0)
+    if isinstance(rtt, bool) or not isinstance(rtt, (int, float)) or rtt < 0:
+        rtt = 0.0
+    return 1.0 / max(interval, rtt)
 
 
 class AcquisitionScheduler:
@@ -2300,8 +2307,7 @@ class StateFreshnessService:
         frame/s worst case, versus <= 5 frames / 30s ~= 0.167 frames/s
         before. The count per window still cannot exceed the burst cap
         (bounded, not growing) — the wire load stays a small, constant
-        fraction of the ~20 q/s serial ceiling
-        (``_SERIAL_DEFAULT_CIV_MIN_INTERVAL_MS``); it does not accumulate
+        fraction of the serial CI-V ceiling; it does not accumulate
         across windows because record_acquisition_failure clears the
         request rather than leaving it queued twice.
         """

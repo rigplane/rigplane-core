@@ -1113,15 +1113,15 @@ def test_fit_to_budget_applies_the_tx_window_rules() -> None:
 
 
 def test_fit_to_budget_reproduces_the_design_ic7610_lan_receive_figure() -> None:
-    """The design's IC-7610 LAN receive figure: setting stretched to ~15.80 s.
+    """The design's IC-7610 LAN receive figure, re-derived for the 10 ms gap.
 
     Class counts are computed here from the LOADED IC-7610 profile. The
     MOR-2574 headline measurement folded the panel knobs into the setting
     class, before the owner's 2026-09-24 decision gave the 2026-09-07
     panel set its own 5 s class; this test reproduces that fold (56
-    setting fields, with ``tuner_status`` in the control class) so the
-    21.43 q/s limit stretches setting to about 15.80 s and closes
-    exactly on it.
+    setting fields, with ``tuner_status`` in the control class).
+    MOR-2595 budgets 1 / 10 ms = 100 q/s, so the 75 q/s limit no longer
+    stretches anything: setting stays at its 10 s nominal.
     """
 
     acquisition = get_radio_profile("IC-7610").state_acquisition
@@ -1137,8 +1137,9 @@ def test_fit_to_budget_reproduces_the_design_ic7610_lan_receive_figure() -> None
     folded[AcquisitionClass.SETTING] = folded.get(
         AcquisitionClass.SETTING, 0
     ) + folded.pop(AcquisitionClass.PANEL, 0)
-    # LAN CI-V gap: runtime/radio.py ICOM_CIV_MIN_INTERVAL_MS default 35 ms.
-    lan_budget_hz = 1.0 / 0.035
+    # LAN CI-V gap: runtime/radio.py ICOM_CIV_MIN_INTERVAL_MS default 10 ms.
+    # The 9 ms round-trip estimate is below the gap, so the budget is 1/gap.
+    lan_budget_hz = 1.0 / 0.010
     fit = fit_to_budget(
         folded,
         budget_hz=lan_budget_hz,
@@ -1148,9 +1149,9 @@ def test_fit_to_budget_reproduces_the_design_ic7610_lan_receive_figure() -> None
 
     assert fit.fits is True
     assert fit.effective_cadence_seconds[AcquisitionClass.SETTING] == (
-        pytest.approx(15.80, abs=0.01)
+        pytest.approx(10.0)
     )
-    assert fit.demand_hz == pytest.approx(0.75 * lan_budget_hz)
+    assert fit.demand_hz == pytest.approx(23.7)
 
 
 # --- MOR-2574 step 2: the loader-era class fallback --------------------------

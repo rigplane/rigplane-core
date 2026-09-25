@@ -476,9 +476,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._civ_send_seq: int = 0
         self._audio_send_seq: int = 0
         self._last_civ_send_monotonic: float = 0.0
+        # MOR-2595: 10 ms LAN gap. IC-7610 over LAN, 2026-09-25: 03 round
+        # trip median 7.55 ms, p95 9.0 ms; 0 errors at a 0 ms post-reply gap.
         self._civ_min_interval: float = (
-            float(os.environ.get("ICOM_CIV_MIN_INTERVAL_MS", "35")) / 1000.0
+            float(os.environ.get("ICOM_CIV_MIN_INTERVAL_MS", "10")) / 1000.0
         )
+        # MOR-2595: LAN round-trip estimate, the measured IC-7610 p95.
+        self._civ_rtt_estimate: float = 0.009
         self._commander: IcomCommander | None = None
         self._filter_width: int | None = None
         self._attenuator_state: bool | None = None
