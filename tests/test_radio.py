@@ -2040,6 +2040,37 @@ class TestCivPacingIsSendToSend:
         assert frame.command == 0x03
 
     @pytest.mark.asyncio
+    async def test_pump_smoke_with_pacing_clock_one_gap(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Same handover with one real patched pacing sleep before the send."""
+        gap = 0.025
+        clock = _install_pacing_clock(monkeypatch, gap=gap)
+        radio._civ_min_interval = gap
+        radio._civ_ack_sink_grace = 0.0
+        clock.install_wait_guard(radio)
+        clock.install_gc_guard(radio)
+        radio._last_civ_send_monotonic = 0.0
+        radio._civ_runtime.start_pump()
+        try:
+            cmd = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
+            task = asyncio.create_task(radio._execute_civ_raw(cmd))
+            while not mock_transport.sent_packets:
+                await asyncio.sleep(0)
+            mock_transport.queue_response(_freq_response(14_074_000))
+            frame = await asyncio.wait_for(task, timeout=10.0)
+        finally:
+            await radio._civ_runtime.stop_pump()
+            radio._civ_request_tracker.fail_all(ConnectionError("test cleanup"))
+
+        assert frame is not None
+        assert frame.command == 0x03
+        assert radio._last_civ_send_monotonic == gap
+
+    @pytest.mark.asyncio
     async def test_long_reply_sends_next_immediately(
         self,
         radio: IcomRadio,
