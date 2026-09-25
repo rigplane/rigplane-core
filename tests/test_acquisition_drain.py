@@ -70,6 +70,13 @@ class _StubScheduler:
         self.claimant_by_request: dict[str, object] = {}
         self.claim_generation_by_request: dict[str, int] = {}
         self.dispatches: list[tuple[str, tuple[FieldPath, ...], float]] = []
+        self.executing: list[str] = []
+
+    def note_execute_started(self, request_id: str) -> None:
+        self.executing.append(request_id)
+
+    def note_execute_finished(self, request_id: str) -> None:
+        self.executing.remove(request_id)
 
     def record_dispatch(
         self,
