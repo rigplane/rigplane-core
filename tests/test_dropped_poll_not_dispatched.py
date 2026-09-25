@@ -171,10 +171,10 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched(
         clock.advance(_CADENCE)
         service.tick(now=clock.now())
         await poller._send_query()  # noqa: SLF001
-        assert radio.seen, radio.seen
         assert radio.seen[-1] is Priority.BACKGROUND
-        resent = next(iter(poller._acquisition_in_flight.values()))  # noqa: SLF001
-        assert _FREQ in resent[0]
+        in_flight = poller._acquisition_in_flight  # noqa: SLF001
+        assert len(in_flight) == 1
+        assert _FREQ in next(iter(in_flight.values()))[0]
     finally:
         release.set()
         await gate
