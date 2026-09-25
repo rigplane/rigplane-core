@@ -35,8 +35,7 @@ import logging
 import sys
 import time
 from array import array
-from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 import math
 
@@ -248,10 +247,6 @@ class AudioBridge:
         retry_base_delay: Initial backoff delay in seconds.
         retry_max_delay: Maximum backoff delay in seconds.
         on_state_changed: Callback fired on every state transition.
-        tx_gate: Optional async predicate. ``None`` (the default) always
-            sends, which is what the standalone bridge CLI relies on. A
-            gate is fail-open: it closes only when it returns ``False``.
-            ``True``, an exception, or anything else sends.
     """
 
     def __init__(
@@ -272,7 +267,6 @@ class AudioBridge:
         retry_max_delay: float = 30.0,
         on_state_changed: Callable[[BridgeStateChange], None] | None = None,
         on_metrics: Callable[[BridgeMetrics], None] | None = None,
-        tx_gate: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         self._radio = radio
         self._label = label
@@ -333,7 +327,6 @@ class AudioBridge:
         self._rx_underruns = 0
         self._tx_overruns = 0
         self._tx_silence_suppressed = 0
-        self._tx_gate_suppressed = 0
         self._capture_input_overflows = 0
         self._capture_input_underflows = 0
         self._capture_callback_status_flags: dict[str, int] = {}
@@ -347,8 +340,6 @@ class AudioBridge:
         self._last_rx_level_dbfs: float = -96.0
         self._last_tx_level_dbfs: float = -96.0
         self._on_metrics = on_metrics
-        self._tx_gate = tx_gate
-        self._tx_gate_was_closed = False
 
         # Silence frame (raw PCM bytes)
         frame_bytes = self._samples_per_frame * channels * BYTES_PER_SAMPLE
@@ -404,7 +395,6 @@ class AudioBridge:
             tx_frames=self._tx_frames,
             rx_drops=self._rx_drops,
             tx_silence_suppressed=self._tx_silence_suppressed,
-            tx_gate_suppressed=self._tx_gate_suppressed,
             rx_underruns=self._rx_underruns,
             tx_overruns=self._tx_overruns,
             capture_input_overflows=self._capture_input_overflows,
@@ -943,28 +933,6 @@ class AudioBridge:
         if loop is not None and loop.is_running():
             loop.call_soon_threadsafe(self._enqueue_tx, frame)
 
-    async def _tx_gate_is_closed(self) -> bool:
-        """Fail-open: only an explicit ``False`` closes the gate."""
-        gate = self._tx_gate
-        if gate is None:
-            return False
-        try:
-            closed = await gate() is False
-        except Exception:
-            logger.debug("%s: TX gate failed open", self._label, exc_info=True)
-            closed = False
-        if closed:
-            self._tx_gate_was_closed = True
-        return closed
-
-    def _drop_queued_tx(self) -> None:
-        """Drop the echo tail captured while the gate was closed."""
-        while True:
-            try:
-                self._tx_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                return
-
     def _enqueue_tx(self, frame: bytes) -> None:
         """Thread-safe target for _on_tx_capture — runs on the event loop."""
         try:
@@ -1116,12 +1084,6 @@ class AudioBridge:
                     )
                 except asyncio.TimeoutError:
                     continue
-
-                if await self._tx_gate_is_closed():
-                    self._tx_gate_suppressed += 1
-                if self._tx_gate_was_closed:
-                    self._tx_gate_was_closed = False
-                    self._drop_queued_tx()
 
                 samples = _pcm16le_samples(pcm_bytes)
                 peak = max((abs(sample) for sample in samples), default=0)
