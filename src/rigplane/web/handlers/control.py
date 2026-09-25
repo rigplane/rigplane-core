@@ -30,6 +30,7 @@ from ...core.exceptions import CommandError, CommandRejectedError
 from ...core.exceptions import TimeoutError as RigplaneTimeoutError
 from ...core.state_pipeline_contracts import CommandIntent, CommandSource, FieldPath
 from ...core.state_store import FreshnessState, StateStore
+from ..monitor_mute import MonitorMuteState, apply_monitor_mute  # noqa: TID251
 from ...profiles import RadioProfile, resolve_radio_profile
 from ...profiles.control_domain import encode_legacy_control, validate_control_raw_value
 from ...runtime.tx_interlock import RfState, evaluate_tx_interlock
@@ -652,6 +653,7 @@ class ControlHandler:
             "set_civ_output_ant",
             "get_af_mute",
             "set_af_mute",
+            "set_monitor_mute",
             "get_tuning_step",
             "set_tuning_step",
             "get_utc_offset",
@@ -1997,10 +1999,38 @@ class ControlHandler:
 
         Returns None if *name* is not a read-only command.
         """
+        if name == "set_monitor_mute":
+            return await self._apply_monitor_mute(params, radio)
         handler = self._READ_ONLY_HANDLERS.get(name)
         if handler is None:
             return None
         return await handler(self, params, radio)
+
+    async def _apply_monitor_mute(
+        self, params: dict[str, Any], radio: "Radio | None"
+    ) -> dict[str, Any]:
+        """Save or restore the pre-MUTE AF levels, then write them (MOR-2583).
+
+        Runs here rather than through the command queue: one operator action
+        writes every receiver the radio has, and the saved levels are server
+        process state, not a radio field the queue can carry.
+        """
+        if radio is None:
+            raise RuntimeError("radio connection not available")
+        if "af_level" not in self._capabilities():
+            raise CommandUnsupportedError("radio does not support AF level control")
+        server = self._server
+        state = getattr(server, "monitor_mute", None)
+        store = getattr(server, "command_state_store", None)
+        if not isinstance(state, MonitorMuteState) or not isinstance(store, StateStore):
+            raise RuntimeError("monitor mute state is not available")
+        on = params.get("on")
+        if type(on) is not bool:
+            raise ValueError("monitor mute 'on' must be a boolean")
+        await apply_monitor_mute(state, radio, store, on=on)
+        if hasattr(server, "publish_monitor_mute"):
+            server.publish_monitor_mute()
+        return {"on": on}
 
     # ------------------------------------------------------------------
     # Read-only command handlers (one per command, dispatched via table)

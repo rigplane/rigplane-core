@@ -91,6 +91,7 @@ export interface ServerStatePublic {
   radioDetail?: RadioDetailPublic;
   radioHealth?: RadioHealthPublic;
   wsClients?: WsClientsPublic;
+  monitorMute?: MonitorMutePublic | null;
   fieldStatus?: {
     [k: string]: FieldStatusPublic;
   };
@@ -248,6 +249,26 @@ export interface WsClientsPublic {
   scope: number;
   control: number;
   audio: number;
+}
+/**
+ * Server-owned monitor MUTE (MOR-2583).
+ *
+ * Process state, not a radio observation: it survives a page reload and a
+ * radio reconnect. ``savedAf`` holds the levels unmute restores.
+ */
+export interface MonitorMutePublic {
+  on: boolean;
+  savedAf: MonitorMuteSavedAfPublic;
+}
+/**
+ * AF levels monitor MUTE saved, one per receiver the radio has.
+ *
+ * ``sub`` is absent when the radio has one receiver, matching the
+ * top-level ``sub`` rule (MOR-2583).
+ */
+export interface MonitorMuteSavedAfPublic {
+  main: number | null;
+  sub: number | null;
 }
 /**
  * Per-field freshness / availability entry (snapshot path only).

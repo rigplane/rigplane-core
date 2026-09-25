@@ -583,8 +583,9 @@ def _af_store(*levels: tuple[int, float]) -> StateStore:
 
 def _mute_server(store: StateStore) -> tuple[SimpleNamespace, MonitorMuteState]:
     mute = MonitorMuteState()
-    return SimpleNamespace(command_queue=_QueueRecorder(), command_state_store=store,
-                           monitor_mute=mute), mute
+    return SimpleNamespace(
+        command_queue=_QueueRecorder(), command_state_store=store, monitor_mute=mute
+    ), mute
 
 
 def _mute_payload(mute: MonitorMuteState, radio: SimpleNamespace) -> dict[str, object]:
