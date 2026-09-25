@@ -80,7 +80,8 @@ export function filterOverlapping(
 
 /**
  * Should the debounced fetch be skipped?
- * Returns true when range moved less than 1% of span (and it's not the first fetch).
+ * Returns true when the viewport already lies inside the last fetched range
+ * (the component fetches with a margin on each side) and false on first fetch.
  */
 export function shouldSkipFetch(
   start: number,
@@ -89,9 +90,5 @@ export function shouldSkipFetch(
   lastEnd: number,
 ): boolean {
   if (lastStart === 0) return false;
-  const span = end - start;
-  return (
-    Math.abs(start - lastStart) < span * 0.01 &&
-    Math.abs(end - lastEnd) < span * 0.01
-  );
+  return start >= lastStart && end <= lastEnd;
 }
