@@ -2127,9 +2127,9 @@ def derive_active_receiver_value(store: StateStore) -> str | None:
     try:
         field = store.snapshot().field(SLOW_RECEIVER_DEMOTION_PATH)
     except KeyError:
-        return "MAIN"  # MUTATION M4
+        return None
     if field.freshness is not FreshnessState.FRESH or not isinstance(field.value, str):
-        return "MAIN"
+        return None
     return field.value
 
 
