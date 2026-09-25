@@ -187,8 +187,10 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched(
             report_sent=lambda *args, **kwargs: None,
         )
         await drain.run_once()
-        assert [request.id for request in scheduler.pending_requests()] == list(in_flight)
-        assert _FREQ in next(iter(in_flight.values()))[0]
+        assert (
+            [request.id for request in scheduler.pending_requests()],
+            list(in_flight),
+        ) == (["queued"], ["sent"])
     finally:
         release.set()
         await gate
