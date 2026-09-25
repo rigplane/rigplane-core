@@ -329,6 +329,7 @@ class IcomCivAcquisitionExecutor:
         sent: list[FieldPath] = []
         failed: list[FieldPath] = []
         failure_reason = ""
+        sent_queries: set[AcquisitionQuery] = set()
         for path in request.paths:
             if path in already_sent_paths:
                 continue
@@ -347,12 +348,16 @@ class IcomCivAcquisitionExecutor:
                     failure_reason = failure_reason or "no_civ_receiver_route"
                     continue
                 query = replace(query, receiver=None)
+            if query in sent_queries:
+                sent.append(path)
+                continue
             try:
                 await self._send_query(query, request.priority)
             except BackgroundSendDropped:
                 if sent:
                     return AcquisitionExecutionResult(sent_paths=tuple(sent))
                 raise
+            sent_queries.add(query)
             sent.append(path)
         return AcquisitionExecutionResult(
             sent_paths=tuple(sent),

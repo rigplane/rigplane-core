@@ -459,6 +459,19 @@ _OBSERVABLE_CMD16_FIELDS = {
     0x46: ("global", "tx_state", "vox_on"),
 }
 
+# IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.4 and the English
+# CI-V guide p.4 both list 0x16 0x5D as one exclusive Tone squelch selector:
+# 00=OFF, 01=TONE, 02=TSQL, 03=DTCS, 06=DTCS (T), 07=TONE (T)/DTCS (R),
+# 08=DTCS (T)/TSQL (R), 09=TONE (T)/TSQL (R). Codes 03 and 06-09 are outside
+# the two-boolean vocabulary, same as FTX-1 CT codes 3/4/5 (MOR-2572):
+# publish None on both axes instead of inventing OFF.
+_TONE_SQUELCH_TYPE_SUB = 0x5D
+_TONE_SQUELCH_TYPE_BOOLS: dict[int, tuple[bool, bool]] = {
+    0x00: (False, False),
+    0x01: (True, False),
+    0x02: (True, True),
+}
+
 # 0x16 value sub-commands → (FieldPath spec, decode mode). ``raw`` keeps the
 # data byte verbatim (preamp), ``bcd_nibble`` decodes the BCD-nibble pair the
 # legacy mirror used for agc. Both reuse the exact decode of ``_handle_16``.
@@ -2444,7 +2457,29 @@ class CivRuntime:
                 data = data[1:]
             mapping = _OBSERVABLE_CMD16_FIELDS.get(sub)
             value_mapping = _OBSERVABLE_CMD16_VALUE_FIELDS.get(sub)
-            if mapping is not None and data:
+            if (
+                sub == _TONE_SQUELCH_TYPE_SUB
+                and data
+                and self._host._profile.command_map is not None
+                and self._host._profile.command_map.has("get_tone_squelch_type")
+            ):
+                pair = _TONE_SQUELCH_TYPE_BOOLS.get(data[0])
+                derived: tuple[tuple[str, bool | None], ...] = (
+                    ("repeater_tone", None if pair is None else pair[0]),
+                    ("repeater_tsql", None if pair is None else pair[1]),
+                )
+                for name, derived_value in derived:
+                    observations.append(
+                        self._observation(
+                            self._field_path(
+                                ("receiver", "operator_toggles", name),
+                                receiver_id=receiver_id,
+                            ),
+                            derived_value,
+                            frame=frame,
+                        )
+                    )
+            elif mapping is not None and data:
                 observations.append(
                     self._observation(
                         self._field_path(mapping, receiver_id=receiver_id),

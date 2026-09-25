@@ -196,6 +196,11 @@ def test_acquisition_profile_resolver_six_profile_census_and_exact_declared_byte
         resolver = acquisition_query_resolver_for_profile(profile)
         assert profile.command_map is not None
         for path, getter in _profile_resolver_cases():
+            if path.name in {
+                "repeater_tone",
+                "repeater_tsql",
+            } and profile.command_map.has("get_tone_squelch_type"):
+                getter = "get_tone_squelch_type"
             if profile.command_map.has(getter):
                 census[
                     "diverge" if (model, getter) in former_divergences else "agree"

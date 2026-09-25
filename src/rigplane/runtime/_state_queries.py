@@ -33,6 +33,12 @@ _RECEIVER_TOGGLE_GETTERS = {
     "repeater_tone": "get_repeater_tone",
     "repeater_tsql": "get_repeater_tsql",
 }
+# Profiles that declare get_tone_squelch_type (IC-705, 0x16 0x5D) express
+# OFF/TONE/TSQL as one exclusive selector. The two on/off reads do not.
+_TONE_SQUELCH_TYPE_GETTERS = {
+    "repeater_tone": "get_tone_squelch_type",
+    "repeater_tsql": "get_tone_squelch_type",
+}
 _RECEIVER_CONTROL_GETTERS = {
     "af_level": "get_af_level",
     "rf_gain": "get_rf_gain",
@@ -200,7 +206,14 @@ def acquisition_query_resolver_for_profile(
             if family == "meters":
                 getter = "get_s_meter" if path.name == "s_meter" else None
             elif family == "operator_toggles":
-                getter = _RECEIVER_TOGGLE_GETTERS.get(path.name)
+                if (
+                    path.name in _TONE_SQUELCH_TYPE_GETTERS
+                    and command_map is not None
+                    and command_map.has("get_tone_squelch_type")
+                ):
+                    getter = _TONE_SQUELCH_TYPE_GETTERS[path.name]
+                else:
+                    getter = _RECEIVER_TOGGLE_GETTERS.get(path.name)
             elif family == "operator_controls":
                 getter = _RECEIVER_CONTROL_GETTERS.get(path.name)
             else:
