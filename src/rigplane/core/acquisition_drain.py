@@ -297,6 +297,12 @@ class AcquisitionDrain:
                     )
                 continue
 
+            # MOR-2594: the id is in execute from here until the result (or
+            # error) settles below, so a write confirmation arriving while
+            # the frame may already be on the wire still gets its own
+            # dispatch. ``record_dispatch`` alone cannot cover that window:
+            # it only runs after ``execute`` returns.
+            scheduler.note_execute_started(request.id)
             try:
                 result = await executor.execute(
                     request,
@@ -338,6 +344,8 @@ class AcquisitionDrain:
                     provider_generation=provider_generation,
                 )
                 continue
+            finally:
+                scheduler.note_execute_finished(request.id)
 
             if not self._claim_is_current(
                 scheduler,
