@@ -853,7 +853,7 @@ async def test_opening_gate_drops_frames_queued_while_closed():
     async def gate() -> bool:
         nonlocal closed_checks
         closed_checks += 1
-        return closed_checks > 1
+        return closed_checks > 2
 
     bridge = AudioBridge(radio, tx_gate=gate)
     bridge._running = True
