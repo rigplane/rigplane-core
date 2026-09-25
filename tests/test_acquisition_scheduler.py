@@ -4683,3 +4683,229 @@ def test_fresh_dispatch_reissue_needs_only_one_incoming_path_dispatched() -> Non
     )
     assert readback.request is not None
     assert readback.request.id != cadence.request.id
+
+
+# --- MOR-2599: the non-selected receiver polls one class slower --------------
+
+
+def _ic7610_acquisition() -> RadioAcquisitionProfile:
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    return acquisition
+
+
+def _ic7300_acquisition() -> RadioAcquisitionProfile:
+    acquisition = load_rig(RIGS_DIR / "ic7300.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    return acquisition
+
+
+def _class_derived_paths(
+    acquisition: RadioAcquisitionProfile, receiver_id: str
+) -> tuple[FieldPath, ...]:
+    return tuple(
+        path
+        for path in acquisition.pollable_paths()
+        if path.receiver_id == receiver_id and path not in acquisition.field_policies
+    )
+
+
+def _ic7610_scheduler(
+    active_value: str | None,
+) -> tuple[StateStore, StateFreshnessService, AcquisitionScheduler, FreshnessClock]:
+    """IC-7610 tick-wired scheduler with ``active`` stored FRESH (or absent)."""
+
+    clock = FreshnessClock(start=100.0)
+    store = StateStore(clock=clock)
+    scheduler = AcquisitionScheduler(profile=_ic7610_acquisition(), clock=clock)
+    service = StateFreshnessService(store=store, scheduler=scheduler)
+    if active_value is not None:
+        store.apply(
+            _observation(
+                FieldPath.global_("slow_state", "active"),
+                active_value,
+                at=clock.now(),
+            )
+        )
+    return store, service, scheduler, clock
+
+
+def _cadence_of(scheduler: AcquisitionScheduler, path: FieldPath) -> float:
+    entry = scheduler.diagnostics()["cadenceByPath"][str(path)]
+    assert entry["baseCadenceSeconds"] == pytest.approx(entry["currentCadenceSeconds"])
+    return entry["baseCadenceSeconds"]
+
+
+@pytest.mark.parametrize(
+    ("active", "slow_receiver", "fast_receiver"),
+    [("MAIN", "sub", "main"), ("SUB", "main", "sub"), (None, None, None)],
+    ids=["active-main", "active-sub", "active-unknown"],
+)
+def test_the_non_selected_receiver_polls_one_class_slower(
+    active: str | None,
+    slow_receiver: str | None,
+    fast_receiver: str | None,
+) -> None:
+    """MOR-2599: on the IC-7610, ``global.slow_state.active`` picks the slow receiver.
+
+    active MAIN slows every class-derived ``receiver.sub.*`` path one class;
+    active SUB slows ``receiver.main.*``; nothing observed slows nothing. The
+    selected receiver keeps its class cadence in every case.
+    """
+
+    acquisition = _ic7610_acquisition()
+    store, service, scheduler, clock = _ic7610_scheduler(active)
+    service.tick(now=clock.now())
+
+    for receiver in ("main", "sub"):
+        for path in _class_derived_paths(acquisition, receiver):
+            undemoted = acquisition.policy_for(path)
+            expected = (
+                acquisition.policy_for(path, observed_active=active)
+                if receiver == slow_receiver
+                else undemoted
+            )
+            assert expected.cadence_seconds is not None
+            assert expected.freshness_ttl_seconds is not None
+            assert _cadence_of(scheduler, path) == pytest.approx(
+                expected.cadence_seconds
+            ), path
+            request = next(
+                request
+                for request in scheduler.pending_requests()
+                if path in request.paths
+            )
+            assert request.policy.cadence_seconds == pytest.approx(
+                expected.cadence_seconds
+            ), path
+            assert request.policy.freshness_ttl_seconds == pytest.approx(
+                expected.freshness_ttl_seconds
+            ), path
+            assert request.max_age == pytest.approx(expected.freshness_ttl_seconds)
+        if receiver == slow_receiver:
+            slowed = _class_derived_paths(acquisition, receiver)
+            assert slowed, "the IC-7610 has class-derived paths on both receivers"
+        if fast_receiver is not None and receiver == fast_receiver:
+            # The selected receiver's class cadence is the undemoted one.
+            for path in _class_derived_paths(acquisition, receiver):
+                assert _cadence_of(scheduler, path) == pytest.approx(
+                    acquisition.policy_for(path).cadence_seconds
+                ), path
+
+
+def test_the_demoted_paths_keep_the_demoted_class_ttl() -> None:
+    """MOR-2599 TTL rule: a demoted path's TTL follows its demoted class.
+
+    Every class-derived path on the non-selected receiver carries the
+    demoted class's TTL (never below twice the cadence it polls at), so it
+    cannot age to stale between polls.
+    """
+
+    acquisition = _ic7610_acquisition()
+    store, service, scheduler, clock = _ic7610_scheduler("MAIN")
+    service.tick(now=clock.now())
+
+    slowed = _class_derived_paths(acquisition, "sub")
+    assert slowed
+    for path in slowed:
+        policy = acquisition.policy_for(path, observed_active="MAIN")
+        assert policy.cadence_seconds is not None
+        assert policy.freshness_ttl_seconds is not None
+        assert policy.freshness_ttl_seconds >= 2.0 * policy.cadence_seconds
+        assert (
+            policy.freshness_ttl_seconds
+            > acquisition.policy_for(path).freshness_ttl_seconds
+        )
+
+
+def test_explicit_profile_overrides_keep_their_cadence_when_demoted() -> None:
+    """MOR-2599 scope: only class-derived paths demote.
+
+    The IC-7610's explicit S-meter override (the reasoned 0.3 s / 2.0 s TTL
+    pin) sits on the non-selected receiver when active is MAIN and keeps its
+    declared cadence and TTL — demotion never touches a field_policies entry.
+    """
+
+    acquisition = _ic7610_acquisition()
+    s_meter = FieldPath.parse("receiver.sub.meters.s_meter")
+    override = acquisition.field_policies[s_meter]
+    assert override.cadence_seconds is not None
+
+    _store, service, scheduler, clock = _ic7610_scheduler("MAIN")
+    service.tick(now=clock.now())
+
+    assert _cadence_of(scheduler, s_meter) == pytest.approx(override.cadence_seconds)
+    request = next(
+        request for request in scheduler.pending_requests() if s_meter in request.paths
+    )
+    assert request.policy.cadence_seconds == pytest.approx(override.cadence_seconds)
+    assert request.policy.freshness_ttl_seconds == pytest.approx(
+        override.freshness_ttl_seconds
+    )
+
+
+def test_a_profile_without_active_is_unchanged() -> None:
+    """MOR-2599 scope: a radio that never declares ``active`` cannot demote.
+
+    The IC-7300 polls no ``global.slow_state.active``, so the same tick —
+    same caller, same keyword — leaves every path at its undemoted class
+    cadence and TTL.
+    """
+
+    acquisition = _ic7300_acquisition()
+    clock = FreshnessClock(start=100.0)
+    store = StateStore(clock=clock)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    service = StateFreshnessService(store=store, scheduler=scheduler)
+    service.tick(now=clock.now())
+
+    for path in acquisition.pollable_paths():
+        expected = acquisition.policy_for(path)
+        assert expected.cadence_seconds is not None
+        assert _cadence_of(scheduler, path) == pytest.approx(
+            expected.cadence_seconds
+        ), path
+        request = next(
+            request for request in scheduler.pending_requests() if path in request.paths
+        )
+        assert request.policy.cadence_seconds == pytest.approx(
+            expected.cadence_seconds
+        ), path
+        assert request.policy.freshness_ttl_seconds == pytest.approx(
+            expected.freshness_ttl_seconds
+        ), path
+
+
+def test_a_live_switch_of_active_flips_which_receiver_is_slow() -> None:
+    """MOR-2599: a change of ``active`` takes effect on the next tick.
+
+    No reconnect: after the store's ``active`` observation flips MAIN -> SUB,
+    the very next due-request computation demotes receiver.main's
+    class-derived paths one class and returns receiver.sub's to their class
+    cadence.
+    """
+
+    acquisition = _ic7610_acquisition()
+    store, service, scheduler, clock = _ic7610_scheduler("MAIN")
+    service.tick(now=clock.now())
+
+    sub_path = FieldPath.parse("receiver.sub.operator_controls.af_level")
+    main_path = FieldPath.parse("receiver.main.operator_controls.af_level")
+    undemoted = acquisition.policy_for(sub_path)
+    assert _cadence_of(scheduler, sub_path) == pytest.approx(5.0)  # control -> panel
+    assert _cadence_of(scheduler, main_path) == pytest.approx(2.0)
+
+    store.apply(
+        _observation(FieldPath.global_("slow_state", "active"), "SUB", at=clock.now())
+    )
+    service.tick(now=clock.now())
+
+    assert _cadence_of(scheduler, sub_path) == pytest.approx(undemoted.cadence_seconds)
+    assert _cadence_of(scheduler, main_path) == pytest.approx(5.0)
+    for request in scheduler.pending_requests():
+        if main_path in request.paths:
+            assert request.policy.cadence_seconds == pytest.approx(5.0)
+        if sub_path in request.paths:
+            assert request.policy.cadence_seconds == pytest.approx(
+                undemoted.cadence_seconds
+            )
