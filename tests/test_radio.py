@@ -1923,40 +1923,46 @@ class TestResponseDeadlineOpensAtSend:
 
 
 class _PacingClock:
-    """Controllable clock for the runtime send gate: only sleeps advance it.
+    """Controllable clock for the runtime send gate.
 
-    Patches ``asyncio.sleep`` and ``time.monotonic`` inside
-    ``runtime/_civ_rx.py`` only, leaving the RX pump and wait_for machinery
-    on real time.  Each patched sleep advances the clock by its delay and
-    then yields once so parked tasks wake without any real delay.
+    Patches ``asyncio.sleep`` and ``time.monotonic`` as seen from
+    ``runtime/_civ_rx.py``. Patching ``time.monotonic`` necessarily moves
+    the whole process clock -- including the event loop's own timers --
+    so the patched clock keeps real pace and only *adds* controllable
+    jumps: ``monotonic`` returns the installed base plus real elapsed
+    time, and each patched sleep jumps the base by its delay, then yields
+    once so parked tasks wake without waiting out the jump in real time.
+    Freezing the clock instead would freeze every loop timer with it (an
+    ``asyncio.sleep(0.001)`` would never wake), turning any missed
+    handover into a hang rather than a fast failure.
     """
 
     def __init__(self) -> None:
-        self.now = 0.0
+        import time as _time
+
+        self._base = 0.0
+        self._real_monotonic = _time.monotonic
+        self._real0 = self._real_monotonic()
         self._real_sleep = asyncio.sleep
 
     def monotonic(self) -> float:
-        return self.now
+        return self._base + (self._real_monotonic() - self._real0)
 
     async def sleep(self, delay: float) -> None:
-        self.now += max(0.0, delay)
+        self._base += max(0.0, delay)
         await self._real_sleep(0)
 
     def install_gc_guard(self, radio: IcomRadio) -> None:
-        """Keep the waiter GC quiet while the patched clock stands still.
+        """Keep waiter GC from reaping live waiters mid-test.
 
-        ``_cleanup_stale_civ_waiters`` compares ``time.monotonic`` against
-        the last GC stamp; a real-time stamp reads as ancient under the
-        patched clock and every execute would reap its own waiter.
-        Refreshing the stamp from the controllable clock (which only
-        advances on patched sleeps) keeps waiters alive for the test.
+        ``_cleanup_stale_civ_waiters`` runs at most once a second of clock
+        time; the test advances the clock by jumps, so refresh its stamp
+        from the controllable clock on every send.
         """
-        radio._civ_last_waiter_gc_monotonic = self.now
-        tracker = radio._civ_request_tracker
-        tracker._stale_ttl = 10.0**9
+        radio._civ_last_waiter_gc_monotonic = self.monotonic()
 
     async def wait_for_flag(self, flag: asyncio.Event, *, rounds: int = 2000) -> bool:
-        """Wait for an event on real time, immune to the frozen clock."""
+        """Wait for an event on real time, immune to clock jumps."""
         for _ in range(rounds):
             if flag.is_set():
                 return True
@@ -1964,12 +1970,11 @@ class _PacingClock:
         return flag.is_set()
 
     def install_wait_guard(self, radio: IcomRadio) -> None:
-        """Stretch the answer window past the frozen controllable clock.
+        """Stretch the answer window past the test's clock jumps.
 
         ``_execute_civ_raw`` spends its ``asyncio.wait_for`` budget from
-        the send onward, but the patched ``time.monotonic`` stands still
-        everywhere except the pacing sleeps.  A 2 s window covers the whole
-        test, which advances the controllable clock by milliseconds only.
+        the send onward. A 2 s window covers the whole test, which jumps
+        the controllable clock by milliseconds only.
         """
         radio._civ_get_timeout = 2.0
 
@@ -1978,7 +1983,7 @@ def _install_pacing_clock(
     monkeypatch: pytest.MonkeyPatch, *, gap: float
 ) -> _PacingClock:
     clock = _PacingClock()
-    clock.now = gap
+    clock._base = gap
     monkeypatch.setattr("rigplane.runtime._civ_rx.time.monotonic", clock.monotonic)
     monkeypatch.setattr("rigplane.runtime._civ_rx.asyncio.sleep", clock.sleep)
     return clock
@@ -2085,7 +2090,7 @@ class TestCivPacingIsSendToSend:
 
         assert frame is not None
         assert frame.command == 0x03
-        assert radio._last_civ_send_monotonic == gap
+        assert radio._last_civ_send_monotonic == pytest.approx(gap, abs=0.005)
 
     @pytest.mark.asyncio
     async def test_pump_smoke_two_sequential_sends(
@@ -2167,7 +2172,7 @@ class TestCivPacingIsSendToSend:
                     "gated": gated,
                     "sent": len(mock_transport.sent_packets),
                     "pending": radio._civ_request_tracker.pending_count,
-                    "clock": clock.now,
+                    "clock": clock.monotonic(),
                     "last_send": radio._last_civ_send_monotonic,
                     "first_done": first_task.done(),
                     "second_done": second_task.done(),
@@ -2188,7 +2193,7 @@ class TestCivPacingIsSendToSend:
         # The first send waits the opening gap; the controllable clock then
         # jumps the long reply, and the second send leaves immediately with
         # no extra gap: exactly one gap of paced sleep in total.
-        assert radio._last_civ_send_monotonic == gap + reply
+        assert radio._last_civ_send_monotonic == pytest.approx(gap + reply, abs=0.005)
 
     @pytest.mark.asyncio
     async def test_short_reply_waits_the_gap_from_the_send(
@@ -2220,7 +2225,9 @@ class TestCivPacingIsSendToSend:
                 # The controllable clock advances only on patched sleeps
                 # (the pacing gaps); the reply handover costs nothing, so
                 # every send lands exactly one gap after the previous one.
-                assert radio._last_civ_send_monotonic == 3 * gap
+                assert radio._last_civ_send_monotonic == pytest.approx(
+                    3 * gap, abs=0.005
+                )
             finally:
                 await radio._civ_runtime.stop_pump()
         finally:
@@ -2254,7 +2261,7 @@ class TestCivPacingIsSendToSend:
         original_send = mock_transport.send_tracked
 
         async def slow_send(data: bytes) -> None:
-            starts.append(clock.now)
+            starts.append(len(mock_transport.sent_packets))
             await original_send(data)
 
         monkeypatch.setattr(mock_transport, "send_tracked", slow_send)
@@ -2280,8 +2287,8 @@ class TestCivPacingIsSendToSend:
         assert radio._civ_request_tracker.pending_count == 0
         # One gap while the caller waits; the second send leaves exactly
         # one gap after the cancelled packet left the wire.
-        assert starts == [gap, gap + gap]
-        assert radio._last_civ_send_monotonic == gap + gap
+        assert starts == [0, 1]
+        assert radio._last_civ_send_monotonic == pytest.approx(2 * gap, abs=0.005)
 
     @pytest.mark.asyncio
     async def test_managed_ptt_is_spaced_on_both_sides(
@@ -2305,7 +2312,7 @@ class TestCivPacingIsSendToSend:
         first_released = asyncio.Event()
 
         async def gated_send(data: bytes) -> None:
-            starts.append(clock.now)
+            starts.append(len(mock_transport.sent_packets))
             await original_send(data)
             first_released.set()
 
@@ -2332,8 +2339,8 @@ class TestCivPacingIsSendToSend:
         finally:
             radio._civ_request_tracker.fail_all(ConnectionError("test cleanup"))
 
-        assert starts == [gap, gap + gap, gap + gap + gap]
-        assert radio._last_civ_send_monotonic == gap + gap + gap
+        assert starts == [0, 1, 2]
+        assert radio._last_civ_send_monotonic == pytest.approx(3 * gap, abs=0.005)
 
     @pytest.mark.asyncio
     async def test_blocking_sends_stay_one_outstanding(
