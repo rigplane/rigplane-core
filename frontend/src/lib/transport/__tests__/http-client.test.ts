@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
+vi.mock('../ws-client', () => ({}));
+window.matchMedia = null;
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe('fetchCapabilities', () => {
