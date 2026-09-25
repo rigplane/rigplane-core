@@ -567,7 +567,7 @@ ON_DEMAND_FIELD_NAMES: Final[frozenset[str]] = frozenset(
 #: METER lands on CONTROL, not on LIVE. KEYING and TX_METER are not
 #: receiver-scoped and are never demoted.
 _DEMOTION_MAP: Final[dict[AcquisitionClass, AcquisitionClass]] = {
-    AcquisitionClass.LIVE: AcquisitionClass.PANEL,  # MUTATION M1
+    AcquisitionClass.LIVE: AcquisitionClass.CONTROL,
     AcquisitionClass.METER: AcquisitionClass.CONTROL,
     AcquisitionClass.CONTROL: AcquisitionClass.PANEL,
     AcquisitionClass.PANEL: AcquisitionClass.SETTING,
