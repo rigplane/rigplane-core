@@ -2874,8 +2874,8 @@ class WebServer:
         """Start the audio bridge to a virtual audio device.
 
         Args:
-            device_name: Device name for RX (e.g. "BlackHole 2ch"). Auto-detects if None.
-            tx_device_name: Separate device for TX (e.g. "BlackHole 16ch").
+            device_name: Device name for RX (e.g. "RigPlane Virtual Cable Output"). Auto-detects if None.
+            tx_device_name: Separate device for TX (e.g. "RigPlane Virtual Cable Input").
                             Required for bidirectional audio to avoid feedback.
             tx_enabled: Whether to bridge TX (device → radio).
             label: Descriptive label for log messages. If ``None``, derived from radio model.

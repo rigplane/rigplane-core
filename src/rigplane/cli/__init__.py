@@ -924,21 +924,21 @@ def _build_parser() -> argparse.ArgumentParser:
     # bridge
     audio_bridge_p = audio_sub.add_parser(
         "bridge",
-        help="Bridge radio audio to a virtual audio device (e.g. BlackHole)",
+        help="Bridge radio audio to a virtual audio device (e.g. RigPlane Virtual Cable)",
         description=(
             "Bidirectional PCM audio bridge between the radio and a system\n"
             "audio device. Allows WSJT-X, fldigi, JS8Call etc. to use the\n"
             "radio by selecting the virtual device as their sound card.\n\n"
             "Requires: pip install rigplane[bridge]\n"
-            "Virtual device: brew install blackhole-2ch\n\n"
-            "Example: rigplane audio bridge --device 'BlackHole 2ch'"
+            "Virtual device: RigPlane Virtual Cable\n\n"
+            "Example: rigplane audio bridge --device 'RigPlane Virtual Cable Output'"
         ),
     )
     audio_bridge_p.add_argument(
         "--device",
         type=str,
         default=None,
-        help="Audio device name (default: auto-detect BlackHole/Loopback)",
+        help="Audio device name (default: auto-detect RigPlane Virtual Cable/Loopback)",
     )
     audio_bridge_p.add_argument(
         "--tx-device",
@@ -1322,7 +1322,7 @@ def _build_parser() -> argparse.ArgumentParser:
         const="auto",
         metavar="DEVICE",
         help=(
-            "Start audio bridge to virtual device (e.g. 'BlackHole 2ch'). "
+            "Start audio bridge to virtual device (e.g. 'RigPlane Virtual Cable Output'). "
             "Default: auto-detect; if no loopback is found, the bridge is "
             "skipped with a warning. Pass an explicit DEVICE to fail hard "
             "when missing."
@@ -1333,7 +1333,7 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="web_bridge_tx_device",
         default=None,
         metavar="DEVICE",
-        help="Separate TX device for bridge (e.g. 'BlackHole 16ch'). Required for bidirectional audio.",
+        help="Separate TX device for bridge (e.g. 'RigPlane Virtual Cable Input'). Required for bidirectional audio.",
     )
     web_p.add_argument(
         "--bridge-rx-only",
@@ -3579,7 +3579,7 @@ async def _cmd_audio_bridge(radio: Radio, args: argparse.Namespace) -> int:
             max_in = dev.get("max_input_channels", 0)
             max_out = dev.get("max_output_channels", 0)
             # Mark likely virtual devices
-            for hint in ("BlackHole", "Loopback", "VB-Audio", "Virtual"):
+            for hint in ("RigPlane Virtual Cable", "Loopback", "VB-Audio", "Virtual"):
                 if hint.lower() in name.lower():
                     marker = " ← virtual"
                     break

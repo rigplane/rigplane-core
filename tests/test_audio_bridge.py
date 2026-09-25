@@ -42,9 +42,9 @@ from rigplane.audio_bridge import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-_BH_DEVICE = AudioDeviceInfo(
+_RP_DEVICE = AudioDeviceInfo(
     id=AudioDeviceId(1),
-    name="BlackHole 2ch",
+    name="RigPlane Virtual Cable",
     input_channels=2,
     output_channels=2,
 )
@@ -98,7 +98,7 @@ def _bridge_backend(
                 name="Built-in Output",
                 output_channels=2,
             ),
-            _BH_DEVICE,
+            _RP_DEVICE,
         ]
     )
 
@@ -151,19 +151,19 @@ def test_constants():
 def test_find_loopback_device_no_sounddevice():
     with patch.dict("sys.modules", {"sounddevice": None}):
         with pytest.raises(ImportError, match="sounddevice"):
-            find_loopback_device("BlackHole")
+            find_loopback_device("RigPlane Virtual Cable")
 
 
 def test_find_loopback_device_found():
     mock_sd = MagicMock()
     mock_sd.query_devices.return_value = [
         {"name": "Built-in Output", "index": 0},
-        {"name": "BlackHole 2ch", "index": 1},
+        {"name": "RigPlane Virtual Cable Output", "index": 1},
     ]
     with patch.dict("sys.modules", {"sounddevice": mock_sd}):
-        dev = find_loopback_device("BlackHole")
+        dev = find_loopback_device("RigPlane Virtual Cable")
     assert dev is not None
-    assert dev["name"] == "BlackHole 2ch"
+    assert dev["name"] == "RigPlane Virtual Cable Output"
 
 
 def test_find_loopback_device_not_found():
@@ -173,7 +173,7 @@ def test_find_loopback_device_not_found():
         {"name": "Built-in Input", "index": 1},
     ]
     with patch.dict("sys.modules", {"sounddevice": mock_sd}):
-        dev = find_loopback_device("BlackHole")
+        dev = find_loopback_device("RigPlane Virtual Cable")
     assert dev is None
 
 
@@ -265,11 +265,126 @@ async def test_bridge_start_no_device():
     backend = FakeAudioBackend(
         [AudioDeviceInfo(id=AudioDeviceId(0), name="Built-in", output_channels=2)]
     )
-    bridge = AudioBridge(radio, device_name="BlackHole", backend=backend)
+    bridge = AudioBridge(radio, device_name="RigPlane Virtual Cable", backend=backend)
     with pytest.raises(RuntimeError, match="Virtual audio device not found"):
         await bridge.start()
     # State should revert to IDLE on start failure
     assert bridge.bridge_state == BridgeState.IDLE
+
+
+# ---------------------------------------------------------------------------
+# Direction-aware loopback detection (RigPlane Virtual Cable split ends)
+# ---------------------------------------------------------------------------
+
+
+def _split_cable_backend() -> FakeAudioBackend:
+    """Fake backend modeling the RigPlane driver plus a decoy input-only device.
+
+    The decoy sorts before the cable ends and matches the generic "Virtual"
+    candidate — the old direction-blind search picked it for RX playback.
+    """
+    return FakeAudioBackend(
+        [
+            AudioDeviceInfo(
+                id=AudioDeviceId(0),
+                name="Virtual Microphone",
+                input_channels=2,
+                output_channels=0,
+            ),
+            AudioDeviceInfo(
+                id=AudioDeviceId(1),
+                name="RigPlane Virtual Cable Output",
+                input_channels=0,
+                output_channels=2,
+            ),
+            AudioDeviceInfo(
+                id=AudioDeviceId(2),
+                name="RigPlane Virtual Cable Input",
+                input_channels=2,
+                output_channels=0,
+            ),
+        ]
+    )
+
+
+def test_auto_detect_picks_cable_output_for_rx_and_input_for_tx():
+    """Auto mode: RX playback → Output end, TX capture → Input end."""
+    from rigplane.audio.bridge import _find_device_in_backend
+
+    backend = _split_cable_backend()
+    rx_dev = _find_device_in_backend(backend, None, direction="playback")
+    tx_dev = _find_device_in_backend(backend, None, direction="capture")
+    assert rx_dev is not None and rx_dev.name == "RigPlane Virtual Cable Output"
+    assert tx_dev is not None and tx_dev.name == "RigPlane Virtual Cable Input"
+
+
+def test_input_only_device_is_never_chosen_for_rx_playback():
+    """An input-only device must not serve the RX playback leg."""
+    from rigplane.audio.bridge import _find_device_in_backend
+
+    backend = _split_cable_backend()
+    rx_dev = _find_device_in_backend(backend, None, direction="playback")
+    assert rx_dev is not None
+    assert rx_dev.output_channels > 0
+    assert rx_dev.name != "Virtual Microphone"
+
+
+def test_explicit_tx_device_still_wins():
+    """An explicit TX name resolves for the capture direction."""
+    from rigplane.audio.bridge import _find_device_in_backend
+
+    backend = FakeAudioBackend(
+        [
+            AudioDeviceInfo(
+                id=AudioDeviceId(0),
+                name="RigPlane Virtual Cable Output",
+                input_channels=0,
+                output_channels=2,
+            ),
+            AudioDeviceInfo(
+                id=AudioDeviceId(1),
+                name="USB Microphone",
+                input_channels=2,
+                output_channels=0,
+            ),
+        ]
+    )
+    tx_dev = _find_device_in_backend(backend, "USB Microphone", direction="capture")
+    assert tx_dev is not None and tx_dev.name == "USB Microphone"
+
+
+def test_bidirectional_loopback_serves_both_directions():
+    """A single bidirectional loopback is picked for RX and TX alike."""
+    from rigplane.audio.bridge import _find_device_in_backend
+
+    backend = FakeAudioBackend(
+        [
+            AudioDeviceInfo(
+                id=AudioDeviceId(0),
+                name="PipeWire Loopback",
+                input_channels=2,
+                output_channels=2,
+            ),
+        ]
+    )
+    rx_dev = _find_device_in_backend(backend, None, direction="playback")
+    tx_dev = _find_device_in_backend(backend, None, direction="capture")
+    assert rx_dev is not None and rx_dev.name == "PipeWire Loopback"
+    assert tx_dev is not None and tx_dev.name == "PipeWire Loopback"
+
+
+async def test_bridge_auto_mode_starts_rx_and_tx_on_split_cable():
+    """Auto mode on the split cable: playback + capture legs both come up."""
+    radio = _make_radio()
+    backend = _split_cable_backend()
+    bridge = AudioBridge(radio, backend=backend)
+    await bridge.start()
+    try:
+        assert len(backend.tx_streams) == 1  # radio→device playback (open_tx)
+        assert len(backend.rx_streams) == 1  # device→radio capture (open_rx)
+        assert bridge._tx_started
+    finally:
+        await bridge.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +396,7 @@ async def test_bridge_start_stop_rx_only():
     radio = _make_radio()
     backend = _bridge_backend()
     bridge = AudioBridge(
-        radio, device_name="BlackHole", tx_enabled=False, backend=backend
+        radio, device_name="RigPlane Virtual Cable", tx_enabled=False, backend=backend
     )
     await bridge.start()
 
@@ -302,7 +417,7 @@ async def test_bridge_start_already_running():
     radio = _make_radio()
     backend = _bridge_backend()
     bridge = AudioBridge(
-        radio, device_name="BlackHole", tx_enabled=False, backend=backend
+        radio, device_name="RigPlane Virtual Cable", tx_enabled=False, backend=backend
     )
     await bridge.start()
     await bridge.start()  # no-op
@@ -332,7 +447,7 @@ async def test_bridge_subscribes_rx_before_arming_tx():
     """
     radio = LanLikeRadio()
     backend = _bridge_backend()
-    bridge = AudioBridge(radio, device_name="BlackHole", backend=backend)
+    bridge = AudioBridge(radio, device_name="RigPlane Virtual Cable", backend=backend)
     await bridge.start()
     try:
         # RX must be live on the radio — the regression left it dead.
@@ -353,7 +468,7 @@ async def test_bridge_rx_only_never_arms_tx_on_lan_state_machine():
     radio = LanLikeRadio()
     backend = _bridge_backend()
     bridge = AudioBridge(
-        radio, device_name="BlackHole", tx_enabled=False, backend=backend
+        radio, device_name="RigPlane Virtual Cable", tx_enabled=False, backend=backend
     )
     await bridge.start()
     try:
@@ -377,7 +492,7 @@ async def test_bridge_arms_tx_before_rx_on_exclusive_duplex():
     """
     radio = ExclusiveUsbRadio()
     backend = _bridge_backend()
-    bridge = AudioBridge(radio, device_name="BlackHole", backend=backend)
+    bridge = AudioBridge(radio, device_name="RigPlane Virtual Cable", backend=backend)
     await bridge.start()
     try:
         assert radio.calls == ["start_tx", "start_rx"]
@@ -396,7 +511,7 @@ async def test_bridge_rx_only_on_exclusive_duplex_still_starts_rx():
     radio = ExclusiveUsbRadio()
     backend = _bridge_backend()
     bridge = AudioBridge(
-        radio, device_name="BlackHole", tx_enabled=False, backend=backend
+        radio, device_name="RigPlane Virtual Cable", tx_enabled=False, backend=backend
     )
     await bridge.start()
     try:
@@ -418,7 +533,7 @@ async def test_bridge_routes_radio_side_through_audio_session():
 
     radio = LanLikeRadio()
     backend = _bridge_backend()
-    bridge = AudioBridge(radio, device_name="BlackHole", backend=backend)
+    bridge = AudioBridge(radio, device_name="RigPlane Virtual Cable", backend=backend)
     await bridge.start()
     try:
         assert isinstance(bridge._session, AudioSession)
@@ -480,7 +595,7 @@ async def test_bridge_failed_rx_start_releases_bus_subscription():
     radio = _RxStartFailRadio()
     backend = _bridge_backend()
     bridge = AudioBridge(
-        radio, device_name="BlackHole", tx_enabled=False, backend=backend
+        radio, device_name="RigPlane Virtual Cable", tx_enabled=False, backend=backend
     )
     with pytest.raises(RuntimeError, match="radio RX failed to start"):
         await bridge.start()
@@ -501,11 +616,11 @@ async def test_bridge_failed_stream_open_releases_bus_subscription():
                 name="Built-in Output",
                 output_channels=2,
             ),
-            _BH_DEVICE,
+            _RP_DEVICE,
         ]
     )
     bridge = AudioBridge(
-        radio, device_name="BlackHole", tx_enabled=False, backend=backend
+        radio, device_name="RigPlane Virtual Cable", tx_enabled=False, backend=backend
     )
     with pytest.raises(OSError, match="simulated PortAudio open failure"):
         await bridge.start()
@@ -525,7 +640,7 @@ async def test_bridge_rx_via_bus():
     radio = _make_radio()
     backend = _bridge_backend()
     bridge = AudioBridge(
-        radio, device_name="BlackHole", tx_enabled=False, backend=backend
+        radio, device_name="RigPlane Virtual Cable", tx_enabled=False, backend=backend
     )
     await bridge.start()
 
@@ -611,7 +726,10 @@ async def test_bridge_opus_decoder_found_via_fallback_prefix(
     radio = _make_radio()
     radio.audio_codec = AudioCodec.OPUS_1CH
     bridge = AudioBridge(
-        radio, device_name="BlackHole", tx_enabled=False, backend=_bridge_backend()
+        radio,
+        device_name="RigPlane Virtual Cable",
+        tx_enabled=False,
+        backend=_bridge_backend(),
     )
 
     await bridge.start()
@@ -643,7 +761,10 @@ async def test_bridge_opus_decoder_absent_everywhere_stays_fail_closed(
     radio = _make_radio()
     radio.audio_codec = AudioCodec.OPUS_1CH
     bridge = AudioBridge(
-        radio, device_name="BlackHole", tx_enabled=False, backend=_bridge_backend()
+        radio,
+        device_name="RigPlane Virtual Cable",
+        tx_enabled=False,
+        backend=_bridge_backend(),
     )
 
     with pytest.raises(Exception, match="Could not find Opus library"):
@@ -663,7 +784,7 @@ async def test_bridge_tx_path_uses_backend_rx_stream():
     radio = _make_radio()
     backend = _bridge_backend()
     bridge = AudioBridge(
-        radio, device_name="BlackHole", tx_enabled=True, backend=backend
+        radio, device_name="RigPlane Virtual Cable", tx_enabled=True, backend=backend
     )
     await bridge.start()
 
@@ -698,7 +819,10 @@ async def test_bridge_tx_path_keeps_pcm_api_for_opus_radio():
         patch.dict("sys.modules", {"opuslib": fake_opuslib}),
     ):
         bridge = AudioBridge(
-            radio, device_name="BlackHole", tx_enabled=True, backend=backend
+            radio,
+            device_name="RigPlane Virtual Cable",
+            tx_enabled=True,
+            backend=backend,
         )
         await bridge.start()
 
@@ -815,7 +939,7 @@ async def test_state_transitions_to_running_on_start():
     events: list[BridgeStateChange] = []
     bridge = AudioBridge(
         radio,
-        device_name="BlackHole",
+        device_name="RigPlane Virtual Cable",
         tx_enabled=False,
         backend=backend,
         on_state_changed=events.append,
@@ -844,7 +968,7 @@ async def test_on_state_changed_callback_fires():
     events: list[BridgeStateChange] = []
     bridge = AudioBridge(
         radio,
-        device_name="BlackHole",
+        device_name="RigPlane Virtual Cable",
         tx_enabled=False,
         backend=backend,
         on_state_changed=events.append,
@@ -871,7 +995,7 @@ async def test_reconnect_on_stream_write_failure():
     waiter = _StateWaiter()
     bridge = AudioBridge(
         radio,
-        device_name="BlackHole",
+        device_name="RigPlane Virtual Cable",
         tx_enabled=False,
         backend=backend,
         max_retries=2,
@@ -900,7 +1024,7 @@ async def test_reconnect_succeeds_when_device_returns():
     waiter = _StateWaiter()
     bridge = AudioBridge(
         radio,
-        device_name="BlackHole",
+        device_name="RigPlane Virtual Cable",
         tx_enabled=False,
         backend=backend,
         max_retries=5,
@@ -920,7 +1044,7 @@ async def test_reconnect_succeeds_when_device_returns():
     await waiter.wait_for(BridgeState.RECONNECTING, after=checkpoint, timeout=2.0)
 
     # Bring device back — reconnect loop will find it on next retry
-    backend.add_device(_BH_DEVICE)
+    backend.add_device(_RP_DEVICE)
 
     # Wait for successful reconnect
     await waiter.wait_for(BridgeState.RUNNING, after=checkpoint, timeout=2.0)
@@ -937,7 +1061,7 @@ async def test_failed_state_after_max_retries():
     waiter = _StateWaiter()
     bridge = AudioBridge(
         radio,
-        device_name="BlackHole",
+        device_name="RigPlane Virtual Cable",
         tx_enabled=False,
         backend=backend,
         max_retries=2,
@@ -965,7 +1089,7 @@ async def test_stop_cancels_reconnect_task():
     waiter = _StateWaiter()
     bridge = AudioBridge(
         radio,
-        device_name="BlackHole",
+        device_name="RigPlane Virtual Cable",
         tx_enabled=False,
         backend=backend,
         max_retries=10,
@@ -992,7 +1116,7 @@ async def test_stats_includes_bridge_state():
     radio = _make_radio()
     backend = _bridge_backend()
     bridge = AudioBridge(
-        radio, device_name="BlackHole", tx_enabled=False, backend=backend
+        radio, device_name="RigPlane Virtual Cable", tx_enabled=False, backend=backend
     )
     assert bridge.stats["bridge_state"] == "idle"
     await bridge.start()
@@ -1173,7 +1297,7 @@ async def test_on_metrics_callback():
     metrics_list: list[BridgeMetrics] = []
     bridge = AudioBridge(
         radio,
-        device_name="BlackHole",
+        device_name="RigPlane Virtual Cable",
         tx_enabled=False,
         backend=backend,
         on_metrics=metrics_list.append,
@@ -1196,7 +1320,7 @@ async def test_on_metrics_callback():
 async def test_bridge_metrics_surface_capture_overflow_separately_from_queue_drops():
     radio = _make_radio()
     backend = _bridge_backend()
-    bridge = AudioBridge(radio, device_name="BlackHole", backend=backend)
+    bridge = AudioBridge(radio, device_name="RigPlane Virtual Cable", backend=backend)
     await bridge.start()
     try:
         capture = backend.rx_streams[0]
@@ -1217,7 +1341,7 @@ async def test_bridge_metrics_surface_capture_overflow_separately_from_queue_dro
 async def test_bridge_metrics_track_silence_suppression_separately_from_capture_health():
     radio = _make_radio()
     backend = _bridge_backend()
-    bridge = AudioBridge(radio, device_name="BlackHole", backend=backend)
+    bridge = AudioBridge(radio, device_name="RigPlane Virtual Cable", backend=backend)
     await bridge.start()
     try:
         capture = backend.rx_streams[0]
@@ -1293,10 +1417,10 @@ async def test_strict_stop_frees_device_for_next_stream():
 async def test_strict_streams_on_different_devices_coexist():
     """Exclusivity is per-device: distinct device ids never collide."""
     backend = FakeAudioBackend(
-        [_CODEC_DEVICE, _BH_DEVICE], strict_device_exclusive=True
+        [_CODEC_DEVICE, _RP_DEVICE], strict_device_exclusive=True
     )
     rx = backend.open_rx(_CODEC_DEVICE.id)
-    tx = backend.open_tx(_BH_DEVICE.id)
+    tx = backend.open_tx(_RP_DEVICE.id)
     await rx.start(lambda _frame: None)
     await tx.start()
     assert rx.running and tx.running

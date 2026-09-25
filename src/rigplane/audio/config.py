@@ -5,8 +5,8 @@ Precedence: CLI flags > audio.toml > defaults.
 Example ``audio.toml``::
 
     [bridge]
-    device = "BlackHole 2ch"
-    tx_device = "BlackHole 16ch"
+    device = "RigPlane Virtual Cable Output"
+    tx_device = "RigPlane Virtual Cable Input"
     rx_only = false
 
     [bridge.reconnect]
