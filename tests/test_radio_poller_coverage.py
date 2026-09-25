@@ -662,9 +662,9 @@ async def test_ic7300_profile_scheduler_emits_only_passive_exact_wire_reads() ->
             sub=sub,
             data=b"",
             wait_response=False,
-            priority=Priority.BACKGROUND,
-            wait_dispatch=False,
-        )
+        priority=Priority.NORMAL,
+        wait_dispatch=False,
+    )
     assert all(call_.args[0] != 0x29 for call_ in radio.send_civ.await_args_list)
     assert scheduler.pending_requests()
 
@@ -1506,7 +1506,7 @@ async def test_execute_set_break_in_delay_uses_ic7300_readback_route() -> None:
         sub=0x0F,
         data=b"",
         wait_response=False,
-        priority=Priority.BACKGROUND,
+        priority=Priority.NORMAL,
         wait_dispatch=False,
     )
 
