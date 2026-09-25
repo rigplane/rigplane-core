@@ -13,10 +13,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from rigplane.core.acquisition_drain import AcquisitionDrain, InFlightLedger
 from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
+    AcquisitionQuery,
+    AcquisitionRequest,
     AcquisitionScheduler,
     AcquisitionStatus,
+    IcomCivAcquisitionExecutor,
     RadioStateModelService,
 )
 from rigplane.core.command_service import (
@@ -38,6 +42,8 @@ from rigplane.core.state_pipeline_contracts import (
 )
 from rigplane.core.state_store import FreshnessClock, StateStore
 from rigplane.profiles.rig_loader import load_rig
+from rigplane.rigctld.server import RigctldServer
+from rigplane.runtime._state_queries import acquisition_query_resolver_for_profile
 
 
 class FakeExecutor:
@@ -2388,3 +2394,155 @@ async def test_write_confirmation_reissues_an_in_flight_ptt_poll(
     # No send has covered the reissued id, so a reply to the poll sent at
     # 50.0 cannot satisfy the confirmation.
     assert scheduler.may_credit(confirmation, observation_timestamp=60.0) is False
+
+
+class _PausingPttQuerySender:
+    """Pretend the ptt frame went out, then park mid-execute (MOR-2594).
+
+    The real rigctld sender awaits the frame write, so the drain parks
+    inside ``await executor.execute(...)`` while the frame is already on the
+    wire. This sender records the send, then blocks on ``release`` so the
+    test can inject the write confirmation into exactly that window.
+    """
+
+    def __init__(self) -> None:
+        self.sent: list[AcquisitionQuery] = []
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def __call__(self, query: AcquisitionQuery) -> None:
+        self.sent.append(query)
+        self.entered.set()
+        await self.release.wait()
+
+
+def _rigctld_seat_drain(
+    *,
+    scheduler: AcquisitionScheduler,
+    store: StateStore,
+    executor: IcomCivAcquisitionExecutor,
+) -> AcquisitionDrain:
+    """Build this seat's drain the way ``RigctldServer`` does.
+
+    The expiry rule, the ``link_healthy=False`` failure path, and the
+    claimant are the rigctld seat's own wiring
+    (``rigctld/server.py: _acquisition_request_expired``,
+    ``_record_acquisition_failure``, ``_state_acquisition_drain``); the test
+    reuses them rather than inventing seat behaviour.
+    """
+    in_flight: InFlightLedger = {}
+
+    def _report_failure(
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        reason: str,
+        failed_paths: tuple[FieldPath, ...] | frozenset[FieldPath],
+        now: float,
+    ) -> None:
+        scheduler.record_acquisition_failure(
+            request,
+            reason=reason,
+            failed_paths=failed_paths,
+            now=now,
+            link_healthy=False,
+        )
+
+    return AcquisitionDrain(
+        scheduler=lambda: scheduler,
+        executor=lambda: executor,
+        store=lambda: store,
+        in_flight=in_flight,
+        expired=RigctldServer._acquisition_request_expired,
+        dispatchable=lambda pending: pending,
+        report_failure=_report_failure,
+        report_executor_missing=lambda scheduler, request, *, now: _report_failure(
+            scheduler,
+            request,
+            reason="acquisition_executor_missing",
+            failed_paths=request.paths,
+            now=now,
+        ),
+        report_executor_error=lambda scheduler, request, *, error, sent_paths, now: (
+            _report_failure(
+                scheduler,
+                request,
+                reason="acquisition_executor_error",
+                failed_paths=tuple(
+                    path for path in request.paths if path not in sent_paths
+                ),
+                now=now,
+            )
+        ),
+        report_sent=lambda request, *, paths, pending_request_count: None,
+    )
+
+
+@pytest.mark.parametrize("rig_file", ["ic7610.toml", "ic7300.toml"])
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_write_confirmation_arriving_mid_execute_gets_its_own_dispatch(
+    rig_file: str,
+) -> None:
+    """A confirmation sent mid-execute must not join the pre-write request.
+
+    The poll's ptt frame is already on the wire when the confirmation
+    arrives, but the drain records the dispatch only after ``execute``
+    returns — so no send covers the old id yet and the confirmation merges
+    into it. The poll's pre-write reply is then credited to the
+    confirmation, which must read post-write truth (MOR-2594).
+    """
+    profile = load_rig(_RIGS_DIR / rig_file).to_profile()
+    acquisition = profile.state_acquisition
+    assert acquisition is not None
+    scheduler = AcquisitionScheduler(profile=acquisition)
+    store = StateStore()
+    ptt = FieldPath.global_("tx_state", "ptt")
+    poll = scheduler.ensure_fresh(
+        ptt, max_age=5.0, priority="background", reason="policy-cadence"
+    )
+    assert poll.request is not None
+    sender = _PausingPttQuerySender()
+    executor = IcomCivAcquisitionExecutor(
+        sender,
+        resolve_query=acquisition_query_resolver_for_profile(profile),
+    )
+    drain = _rigctld_seat_drain(scheduler=scheduler, store=store, executor=executor)
+    drain_task = asyncio.create_task(drain.run_once())
+    try:
+        await asyncio.wait_for(sender.entered.wait(), timeout=5.0)
+        # The ptt frame is on the wire, but the drain has not recorded the
+        # dispatch yet — that only happens after ``execute`` returns.
+        assert [request.id for request in scheduler.pending_requests()] == [
+            poll.request.id
+        ]
+
+        service = CommandService(
+            executor=FakeExecutor(),
+            state_store=store,
+            state_model_service=RadioStateModelService(
+                store=store, scheduler=scheduler
+            ),
+        )
+        await service.execute(
+            command_intent_from_request(
+                "set_ptt",
+                {"on": False},
+                source="rigctld",
+                command_id="rigctld-set-ptt-1",
+            )
+        )
+    finally:
+        sender.release.set()
+        await drain_task
+
+    pending = scheduler.pending_requests()
+    assert len(pending) == 1
+    confirmation = pending[0]
+    assert confirmation.id != poll.request.id
+    assert confirmation.priority is AcquisitionPriority.COMMAND
+    assert ptt in confirmation.paths
+    # No send has covered the reissued id, so the pre-write reply cannot
+    # satisfy the confirmation: it has to come from a send made after the
+    # write.
+    assert scheduler.may_credit(confirmation, observation_timestamp=60.0) is False
+    assert sender.sent != []
