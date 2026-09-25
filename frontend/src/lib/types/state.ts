@@ -267,8 +267,8 @@ export interface MonitorMutePublic {
  * top-level ``sub`` rule (MOR-2583).
  */
 export interface MonitorMuteSavedAfPublic {
-  main: number | null;
-  sub: number | null;
+  main?: number | null;
+  sub?: number | null;
 }
 /**
  * Per-field freshness / availability entry (snapshot path only).
