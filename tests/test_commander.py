@@ -676,7 +676,7 @@ async def test_pacing_waits_the_gap_from_the_send_when_the_reply_is_shorter(
     finally:
         await commander.stop()
 
-    assert starts == [gap + reply, gap + gap]
+    assert starts == [gap + reply, gap + gap], (starts, clock.now)
 
 
 @pytest.mark.asyncio
