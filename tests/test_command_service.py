@@ -2539,7 +2539,10 @@ async def test_write_confirmation_arriving_mid_execute_gets_its_own_dispatch(
     assert len(pending) == 1
     confirmation = pending[0]
     assert confirmation.id != poll.request.id
-    # The poll's pre-write reply (sent at 50.0 in pass time) must not satisfy
-    # the confirmation: it has to come from a send made after the write.
+    assert confirmation.priority is AcquisitionPriority.COMMAND
+    assert ptt in confirmation.paths
+    # No send has covered the reissued id, so the pre-write reply cannot
+    # satisfy the confirmation: it has to come from a send made after the
+    # write.
     assert scheduler.may_credit(confirmation, observation_timestamp=60.0) is False
     assert sender.sent != []
