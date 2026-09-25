@@ -307,13 +307,11 @@ class IcomCommander:
                         # stop().  Task.cancelling() (3.11+) exposes the
                         # worker's own pending cancel request.
                         if item.future.cancelled() and not worker.cancelling():
-                            self._last_send = asyncio.get_running_loop().time()
                             continue
                         raise
 
                     if worker.cancelling():
                         raise asyncio.CancelledError
-                    self._last_send = asyncio.get_running_loop().time()
                     if not item.future.done():
                         item.future.set_result(resp)
                 except asyncio.CancelledError:
