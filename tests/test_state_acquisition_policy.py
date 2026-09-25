@@ -937,7 +937,7 @@ def test_registry_specs_carry_the_derived_acquisition_class() -> None:
 
 
 def test_tuner_status_polls_in_the_control_class() -> None:
-    """MOR-2596: the TUNE badge must clear within seconds of the tune ending.
+    """The TUNE badge must clear within seconds of the tune ending.
 
     The end of a tune is radio-driven, so its visibility is the poll
     cadence. As a setting (10 s nominal, 30 s ceiling, held at the ceiling
@@ -1119,8 +1119,8 @@ def test_fit_to_budget_reproduces_the_design_ic7610_lan_receive_figure() -> None
     MOR-2574 headline measurement folded the panel knobs into the setting
     class, before the owner's 2026-09-24 decision gave the 2026-09-07
     panel set its own 5 s class; this test reproduces that fold (56
-    setting fields, since MOR-2596 moved ``tuner_status`` to control) so
-    the 21.43 q/s limit stretches setting to about 15.80 s and closes
+    setting fields, with ``tuner_status`` in the control class) so the
+    21.43 q/s limit stretches setting to about 15.80 s and closes
     exactly on it.
     """
 
