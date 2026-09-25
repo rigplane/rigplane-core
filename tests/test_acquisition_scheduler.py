@@ -4782,15 +4782,16 @@ def test_the_non_selected_receiver_polls_one_class_slower(
                 expected.freshness_ttl_seconds
             ), path
             assert request.max_age == pytest.approx(expected.freshness_ttl_seconds)
-        if receiver == slow_receiver:
-            slowed = _class_derived_paths(acquisition, receiver)
-            assert slowed, "the IC-7610 has class-derived paths on both receivers"
-        if fast_receiver is not None and receiver == fast_receiver:
-            # The selected receiver's class cadence is the undemoted one.
-            for path in _class_derived_paths(acquisition, receiver):
-                assert _cadence_of(scheduler, path) == pytest.approx(
-                    acquisition.policy_for(path).cadence_seconds
-                ), path
+    if slow_receiver is not None:
+        assert _class_derived_paths(acquisition, slow_receiver), (
+            "the IC-7610 has class-derived paths on both receivers"
+        )
+    if fast_receiver is not None:
+        # The selected receiver's class cadence is the undemoted one.
+        for path in _class_derived_paths(acquisition, fast_receiver):
+            assert _cadence_of(scheduler, path) == pytest.approx(
+                acquisition.policy_for(path).cadence_seconds
+            ), path
 
 
 def test_the_demoted_paths_keep_the_demoted_class_ttl() -> None:
@@ -4822,12 +4823,14 @@ def test_explicit_profile_overrides_keep_their_cadence_when_demoted() -> None:
     """MOR-2599 scope: only class-derived paths demote.
 
     The IC-7610's explicit S-meter override (the reasoned 0.3 s / 2.0 s TTL
-    pin) sits on the non-selected receiver when active is MAIN and keeps its
-    declared cadence and TTL — demotion never touches a field_policies entry.
+    pin) sits on the SELECTED receiver when active is MAIN; its demotion on
+    the profile's other receiver variant — which the same group covers —
+    leaves the override's group cadence and TTL untouched: demotion never
+    re-keys a group whose paths carry a field_policies entry.
     """
 
     acquisition = _ic7610_acquisition()
-    s_meter = FieldPath.parse("receiver.sub.meters.s_meter")
+    s_meter = FieldPath.parse("receiver.main.meters.s_meter")
     override = acquisition.field_policies[s_meter]
     assert override.cadence_seconds is not None
 
@@ -4837,6 +4840,10 @@ def test_explicit_profile_overrides_keep_their_cadence_when_demoted() -> None:
     assert _cadence_of(scheduler, s_meter) == pytest.approx(override.cadence_seconds)
     request = next(
         request for request in scheduler.pending_requests() if s_meter in request.paths
+    )
+    assert request.policy.cadence_seconds == pytest.approx(override.cadence_seconds)
+    assert request.policy.freshness_ttl_seconds == pytest.approx(
+        override.freshness_ttl_seconds
     )
     assert request.policy.cadence_seconds == pytest.approx(override.cadence_seconds)
     assert request.policy.freshness_ttl_seconds == pytest.approx(
@@ -4858,22 +4865,24 @@ def test_a_profile_without_active_is_unchanged() -> None:
     scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
     service = StateFreshnessService(store=store, scheduler=scheduler)
     service.tick(now=clock.now())
-
     for path in acquisition.pollable_paths():
         expected = acquisition.policy_for(path)
         assert expected.cadence_seconds is not None
         assert _cadence_of(scheduler, path) == pytest.approx(
             expected.cadence_seconds
         ), path
-        request = next(
-            request for request in scheduler.pending_requests() if path in request.paths
-        )
-        assert request.policy.cadence_seconds == pytest.approx(
-            expected.cadence_seconds
-        ), path
-        assert request.policy.freshness_ttl_seconds == pytest.approx(
-            expected.freshness_ttl_seconds
-        ), path
+        if expected.freshness_ttl_seconds is not None:
+            request = next(
+                request
+                for request in scheduler.pending_requests()
+                if path in request.paths
+            )
+            assert request.policy.cadence_seconds == pytest.approx(
+                expected.cadence_seconds
+            ), path
+            assert request.policy.freshness_ttl_seconds == pytest.approx(
+                expected.freshness_ttl_seconds
+            ), path
 
 
 def test_a_live_switch_of_active_flips_which_receiver_is_slow() -> None:
