@@ -556,7 +556,7 @@ def _observation_max_age(
             acquisition.capability_for(profile_path).can_poll
         ):
             ttl: float | None = acquisition.policy_for(
-                profile_path, observed_active=None  # MUTATION M-B2
+                profile_path, observed_active=observed_active
             ).freshness_ttl_seconds
             return ttl
     return _OBSERVATION_MAX_AGE_SECONDS.get(
