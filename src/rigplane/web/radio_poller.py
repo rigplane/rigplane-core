@@ -88,6 +88,7 @@ from ..core.acquisition_scheduler import (
     AcquisitionRequest,
     AcquisitionScheduler,
     civ_acquisition_executor_for_provider,
+    commander_priority_name,
 )
 from ..core.state_pipeline_contracts import (
     CommandIntent,
@@ -1206,16 +1207,16 @@ class RadioPoller:
     async def _send_one_state_query(
         self,
         query: AcquisitionQuery,
-        *,
-        priority: Priority = Priority.BACKGROUND,
+        priority: AcquisitionPriority = AcquisitionPriority.BACKGROUND,
     ) -> None:
         """Send a single state query
 
-        Defaults to ``Priority.BACKGROUND`` so
-        the acquisition-scheduler executor (which is bound to this method)
-        yield to user commands on the shared CI-V lane (MOR-497i).  All sends
-        here are fire-and-forget (``wait_dispatch=False``) so the
-        response still arrives via the CI-V RX path.
+        ``priority`` is the request's own. A ``COMMAND`` or ``USER`` request
+        goes out at ``Priority.NORMAL`` so a post-write confirmation does not
+        wait behind the poll burst; everything else stays
+        ``Priority.BACKGROUND``. All sends here are fire-and-forget
+        (``wait_dispatch=False``) so the response still arrives via the CI-V
+        RX path.
 
         The lossless query envelope keeps the CI-V sub-command, payload data,
         and optional cmd29 receiver route separate. Wire-frame assembly
@@ -1231,11 +1232,16 @@ class RadioPoller:
         if self._radio_state:
             scope_rx = self._radio_state.scope_controls.receiver
         command, sub, data = wire_parts_for_query(query, scope_rx)
+        lane = (
+            Priority.NORMAL
+            if commander_priority_name(priority) == "normal"
+            else Priority.BACKGROUND
+        )
         await self._civ(
             command,
             sub=sub,
             data=data,
-            priority=priority,
+            priority=lane,
             wait_dispatch=False,
         )
 

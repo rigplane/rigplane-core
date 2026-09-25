@@ -23,8 +23,10 @@ from collections.abc import Coroutine, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from ..core.acquisition_drain import AcquisitionDrain
+from ..commands.commander import Priority
 from ..core.acquisition_scheduler import (
     AcquisitionExecutor,
+    AcquisitionPriority,
     AcquisitionRequest,
     AcquisitionScheduler,
     AcquisitionQuery,
@@ -33,6 +35,7 @@ from ..core.acquisition_scheduler import (
     StateFreshnessService,
     civ_acquisition_executor_for_provider,
     civ_transport_budget_hz,
+    commander_priority_name,
     provider_uses_civ_acquisition,
 )
 from ..profiles import RadioProfile
@@ -436,7 +439,8 @@ class RigctldServer:
         return None
 
     def _provider_uses_civ_executor(self, provider: str) -> bool:
-        return provider_uses_civ_acquisition(provider)
+        uses_civ: bool = provider_uses_civ_acquisition(provider)
+        return uses_civ
 
     def _default_acquisition_executor_for_scheduler(
         self,
@@ -571,6 +575,7 @@ class RigctldServer:
     async def _send_one_state_query(
         self,
         query: AcquisitionQuery,
+        priority: AcquisitionPriority = AcquisitionPriority.BACKGROUND,
     ) -> None:
         """Send a single acquisition-scheduler CI-V state query.
 
@@ -589,11 +594,18 @@ class RigctldServer:
         command, sub, data = wire_parts_for_query(
             query, self._radio.radio_state.scope_controls.receiver
         )
+        lane = (
+            Priority.NORMAL
+            if commander_priority_name(priority) == "normal"
+            else Priority.BACKGROUND
+        )
         await radio.send_civ(
             command,
             sub=sub,
             data=data,
             wait_response=False,
+            priority=lane,
+            wait_dispatch=False,
         )
 
     def _record_state_diagnostic(

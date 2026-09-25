@@ -13,6 +13,7 @@ mocked.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
@@ -44,6 +45,7 @@ class _CapRadio:
 
     def __init__(self, commander: IcomCommander) -> None:
         self._commander = commander
+        self.seen: list[Priority] = []
         self.profile = RadioProfile(
             id="cap-test",
             model="Cap Test",
@@ -67,6 +69,7 @@ class _CapRadio:
         priority: Priority = Priority.NORMAL,
         wait_dispatch: bool = True,
     ) -> CivFrame | None:
+        self.seen.append(priority)
         payload = bytes([command])
         if sub is not None:
             payload += bytes([sub])
@@ -103,7 +106,9 @@ async def _fill_background_cap(commander: IcomCommander) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched() -> None:
+async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -139,7 +144,8 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched() -> None:
             diagnostics=recorder,
         )
 
-        await poller._send_query()  # noqa: SLF001
+        with caplog.at_level(logging.DEBUG):
+            await poller._send_query()  # noqa: SLF001
 
         assert scheduler.may_credit(queued.request, observation_timestamp=1e9) is False
         assert poller._acquisition_in_flight == {}  # noqa: SLF001
@@ -151,6 +157,7 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched() -> None:
         assert queued.request.id in {
             request.id for request in scheduler.pending_requests()
         }
+        assert caplog.records == []
     finally:
         release.set()
         await gate
@@ -159,38 +166,10 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched() -> None:
 
 @pytest.mark.asyncio
 async def test_a_command_priority_request_reaches_the_commander_as_normal() -> None:
-    seen: list[Priority] = []
-
     async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
         return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
 
     commander = IcomCommander(execute, min_interval=0.0)
-    real_send = commander.send
-
-    async def recording_send(
-        payload: bytes,
-        *,
-        priority: Priority = Priority.NORMAL,
-        key: str | None = None,
-        dedupe: bool = False,
-        timeout: float | None = None,
-        wait_response: bool = True,
-        wait_dispatch: bool = True,
-        is_current: object = None,
-    ) -> CivFrame | None:
-        seen.append(priority)
-        return await real_send(
-            payload,
-            priority=priority,
-            key=key,
-            dedupe=dedupe,
-            timeout=timeout,
-            wait_response=wait_response,
-            wait_dispatch=wait_dispatch,
-            is_current=is_current,  # type: ignore[arg-type]
-        )
-
-    commander.send = recording_send  # type: ignore[method-assign]
     commander.start()
     try:
         scheduler = _scheduler()
@@ -213,4 +192,4 @@ async def test_a_command_priority_request_reaches_the_commander_as_normal() -> N
     finally:
         await commander.stop()
 
-    assert seen == [Priority.NORMAL]
+    assert radio.seen == [Priority.NORMAL]
