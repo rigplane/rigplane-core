@@ -4,6 +4,7 @@ Issue #410: system/config commands (ref_adjust, civ_transceive, civ_output_ant,
             af_mute, tuning_step, utc_offset)
 Issue #411: band/split advanced commands (band_edge_freq, xfc_status,
             quick_split, quick_dual_watch)
+MOR-2583: monitor MUTE and the pre-MUTE AF levels live on the server.
 """
 
 from __future__ import annotations
@@ -15,9 +16,18 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from _caps import FULL_ICOM_CAPS
-from rigplane.core.state_pipeline_contracts import CommandIntent
+from rigplane.core.state_pipeline_contracts import (
+    CommandIntent,
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from rigplane.core.state_store import StateStore
 from rigplane.profiles import resolve_radio_profile
 from rigplane.web.handlers import ControlHandler
+from rigplane.web.monitor_mute import MonitorMuteState
+from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
+from rigplane.web.state_schema import ServerStatePublic
 from rigplane.web.radio_poller import (
     QuickDualWatch,
     QuickSplit,
@@ -159,6 +169,7 @@ def _capable_radio() -> SimpleNamespace:
         set_civ_output_ant=AsyncMock(),
         get_af_mute=AsyncMock(return_value=False),
         set_af_mute=AsyncMock(),
+        set_af_level=AsyncMock(),
         get_tuning_step=AsyncMock(return_value=3),
         set_tuning_step=AsyncMock(),
         get_utc_offset=AsyncMock(return_value=(9, 0, False)),
@@ -547,3 +558,129 @@ def test_new_commands_registered() -> None:
         "set_quick_dual_watch",
     }
     assert expected <= ControlHandler._COMMANDS
+
+
+# ---------------------------------------------------------------------------
+# MOR-2583: monitor MUTE lives on the server
+# ---------------------------------------------------------------------------
+
+
+def _af_store(*levels: tuple[int, float]) -> StateStore:
+    store = StateStore()
+    source = SourceMetadata(source="test", provider="test")
+    for receiver, level in levels:
+        store.apply(
+            Observation(
+                path=FieldPath.receiver(str(receiver), "operator_controls", "af_level"),
+                value=level,
+                source=source,
+                timestamp_monotonic=1.0,
+                provider_generation=store.provider_generation,
+            )
+        )
+    return store
+
+
+def _mute_server(store: StateStore) -> tuple[SimpleNamespace, MonitorMuteState]:
+    mute = MonitorMuteState()
+    return SimpleNamespace(command_queue=_QueueRecorder(), command_state_store=store,
+                           monitor_mute=mute), mute
+
+
+def _mute_payload(mute: MonitorMuteState, radio: SimpleNamespace) -> dict[str, object]:
+    payload = build_public_state_payload_from_snapshot(
+        StateStore().snapshot(),
+        radio=radio,
+        receiver_count=radio.profile.receiver_count,
+        monitor_mute=mute.public(radio.profile.receiver_count),
+    )
+    ServerStatePublic.model_validate(payload)
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_monitor_mute_saves_both_af_levels_and_sets_zero() -> None:
+    radio = _capable_radio()
+    store = _af_store((0, 0.31), (1, 0.77))
+    srv, mute = _mute_server(store)
+    h = _handler(radio=radio, server=srv)
+
+    result = await h._enqueue_command("set_monitor_mute", {"on": True})
+
+    assert result == {"on": True}
+    assert mute.on is True
+    assert mute.saved_af == {"main": 0.31, "sub": 0.77}
+    radio.set_af_level.assert_has_awaits(
+        [((0,), {"receiver": 0}), ((0,), {"receiver": 1})],
+        any_order=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_monitor_unmute_restores_saved_levels() -> None:
+    radio = _capable_radio()
+    srv, mute = _mute_server(StateStore())
+    mute.on = True
+    mute.saved_af = {"main": 0.31, "sub": 0.77}
+    h = _handler(radio=radio, server=srv)
+
+    result = await h._enqueue_command("set_monitor_mute", {"on": False})
+
+    assert result == {"on": False}
+    radio.set_af_level.assert_has_awaits(
+        [((0.31,), {"receiver": 0}), ((0.77,), {"receiver": 1})],
+        any_order=False,
+    )
+    assert mute.on is False
+    assert mute.saved_af == {}
+
+
+@pytest.mark.asyncio
+async def test_monitor_unmute_after_reconnect_restores_before_af_reread() -> None:
+    radio = _capable_radio()
+    store = _af_store((0, 0.31), (1, 0.77))
+    srv, mute = _mute_server(store)
+    h = _handler(radio=radio, server=srv)
+    await h._enqueue_command("set_monitor_mute", {"on": True})
+    radio.set_af_level.reset_mock()
+    store.begin_provider_generation()
+
+    await h._enqueue_command("set_monitor_mute", {"on": False})
+
+    radio.set_af_level.assert_has_awaits(
+        [((0.31,), {"receiver": 0}), ((0.77,), {"receiver": 1})],
+        any_order=False,
+    )
+
+
+def test_monitor_mute_payload_shows_state_and_saved_levels() -> None:
+    radio = _capable_radio()
+    mute = MonitorMuteState(on=True, saved_af={"main": 0.31, "sub": 0.77})
+
+    assert _mute_payload(mute, radio)["monitorMute"] == {
+        "on": True,
+        "savedAf": {"main": 0.31, "sub": 0.77},
+    }
+
+
+def test_monitor_mute_payload_omits_sub_on_a_single_receiver_radio() -> None:
+    radio = SimpleNamespace(profile=resolve_radio_profile(model="IC-7300"))
+    mute = MonitorMuteState(on=True, saved_af={"main": 0.4, "sub": 0.9})
+
+    assert _mute_payload(mute, radio)["monitorMute"] == {
+        "on": True,
+        "savedAf": {"main": 0.4},
+    }
+
+
+@pytest.mark.asyncio
+async def test_monitor_mute_on_a_single_receiver_radio_never_writes_sub() -> None:
+    radio = _capable_radio()
+    radio.profile = resolve_radio_profile(model="IC-7300")
+    srv, mute = _mute_server(_af_store((0, 0.4), (1, 0.9)))
+    h = _handler(radio=radio, server=srv)
+
+    await h._enqueue_command("set_monitor_mute", {"on": True})
+
+    radio.set_af_level.assert_awaited_once_with(0, receiver=0)
+    assert mute.saved_af == {"main": 0.4}
