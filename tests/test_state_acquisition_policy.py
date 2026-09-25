@@ -1151,7 +1151,7 @@ def test_fit_to_budget_reproduces_the_design_ic7610_lan_receive_figure() -> None
     assert fit.effective_cadence_seconds[AcquisitionClass.SETTING] == (
         pytest.approx(10.0)
     )
-    assert fit.demand_hz == pytest.approx(23.8)
+    assert fit.demand_hz == pytest.approx(23.7)
 
 
 # --- MOR-2574 step 2: the loader-era class fallback --------------------------

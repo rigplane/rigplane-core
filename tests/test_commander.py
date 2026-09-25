@@ -573,9 +573,11 @@ class _Clock:
 
     async def sleep(self, delay: float) -> None:
         # Yield first, as a real sleep does, so a send the caller is
-        # waiting to observe has happened before the clock moves.
+        # waiting to observe has happened before the clock moves. A zero
+        # delay only yields: it is the test's own handshake, not a gap.
         await real_sleep(0)
-        self.now += delay
+        if delay > 0:
+            self.now += delay
 
     async def wait_for(self, awaitable, timeout):  # type: ignore[no-untyped-def]
         task = asyncio.ensure_future(awaitable)
@@ -634,6 +636,8 @@ async def test_pacing_is_send_to_send_when_the_reply_outlasts_the_gap(
         await real_sleep(0)
         if not starts:
             await asyncio.sleep(reply)
+        else:
+            await asyncio.sleep(0)
         starts.append(clock.now)
         return _ack()
 
@@ -660,6 +664,7 @@ async def test_pacing_waits_the_gap_from_the_send_when_the_reply_is_shorter(
     async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
         await real_sleep(0)
         await asyncio.sleep(reply)
+        await asyncio.sleep(0)
         starts.append(clock.now)
         return _ack()
 
@@ -688,6 +693,8 @@ async def test_a_caller_cancelled_inflight_send_still_paces_the_next(
         if cmd == b"slow":
             sent.set()
             await asyncio.sleep(1.0)
+        else:
+            await asyncio.sleep(0)
         starts.append(clock.now)
         return _ack()
 
