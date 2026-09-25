@@ -346,7 +346,7 @@ freshness_ttl_seconds = 2.0
 # pinned by tests/test_yaesu_cat_observation_adapter.py::
 # test_single_receive_is_observed_as_dual_watch_false, so it rides the same
 # YaesuCatPoller._SLOW_INTERVAL as the rest of this tier and carries that
-# tier's cadence rather than the IC-7610's 1.5s.
+# tier's cadence.
 [state_acquisition.field_policies."global.tx_state.dual_watch"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0

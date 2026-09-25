@@ -445,8 +445,7 @@ cadence_seconds = 3.0
 freshness_ttl_seconds = 6.0
 adaptive_decay = false
 
-# MOR-1452 (review fix): mic/monitor/VOX/anti-VOX gain. IC-7610 polls these
-# same 4 fields at 3.0s/5.0s (rigs/ic7610.toml), but IC-7610 is LAN — IC-7300
+# MOR-1452 (review fix): mic/monitor/VOX/anti-VOX gain. IC-7300
 # is SERIAL, sharing one ~20 transactions/s software floor
 # (_SERIAL_DEFAULT_CIV_MIN_INTERVAL_MS, 50ms/frame) across every poll,
 # operator command, AND the keep-alive on this same lane. Copying 3.0s
