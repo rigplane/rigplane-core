@@ -2410,7 +2410,7 @@ class _PausingPttQuerySender:
         self.entered = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def __call__(self, query: AcquisitionQuery) -> None:
+    async def __call__(self, query: AcquisitionQuery, _priority: str) -> None:
         self.sent.append(query)
         self.entered.set()
         await self.release.wait()

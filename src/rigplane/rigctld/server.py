@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, cast
 from ..core.acquisition_drain import AcquisitionDrain
 from ..core.acquisition_scheduler import (
     AcquisitionExecutor,
+    AcquisitionPriority,
     AcquisitionRequest,
     AcquisitionScheduler,
     AcquisitionQuery,
@@ -571,6 +572,7 @@ class RigctldServer:
     async def _send_one_state_query(
         self,
         query: AcquisitionQuery,
+        priority: AcquisitionPriority = AcquisitionPriority.BACKGROUND,
     ) -> None:
         """Send a single acquisition-scheduler CI-V state query.
 

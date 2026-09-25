@@ -447,18 +447,22 @@ async def test_background_inflight_cap_bounds_queue() -> None:
         gate = asyncio.create_task(c.send(b"gate", priority=Priority.NORMAL))
         await asyncio.wait_for(started.wait(), timeout=1.0)
 
+        from rigplane.core.exceptions import BackgroundSendDropped
+
         overflow = 10
         for i in range(_MAX_BG_INFLIGHT + overflow):
-            result = await asyncio.wait_for(
-                c.send(
-                    f"bg-{i}".encode(),
-                    priority=Priority.BACKGROUND,
-                    wait_response=False,
-                    wait_dispatch=False,
-                ),
-                timeout=0.5,
+            send = c.send(
+                f"bg-{i}".encode(),
+                priority=Priority.BACKGROUND,
+                wait_response=False,
+                wait_dispatch=False,
             )
-            assert result is None
+            if i < _MAX_BG_INFLIGHT:
+                result = await asyncio.wait_for(send, timeout=0.5)
+                assert result is None
+            else:
+                with pytest.raises(BackgroundSendDropped):
+                    await asyncio.wait_for(send, timeout=0.5)
 
         # Queue holds at most the cap (the gate item is already in-flight,
         # popped off the queue, so it is not counted here).

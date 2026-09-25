@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import TypeVar
 
-from rigplane.core.exceptions import ConnectionError
+from rigplane.core.exceptions import BackgroundSendDropped, ConnectionError
 from rigplane.core.types import CivFrame
 
 __all__ = ["IcomCommander", "Priority"]
@@ -26,8 +26,8 @@ T = TypeVar("T")
 # (``wait_dispatch=False``).  Background polls are already bounded by the
 # scheduler's in-flight guard (~25 cadence groups), so this is a safety net
 # against pathological growth, not a normal-operation limit.  When the cap is
-# reached, the newest BACKGROUND fire-and-forget send is dropped (its future is
-# resolved with ``None`` so the caller still returns immediately).  The cap
+# reached, the newest BACKGROUND fire-and-forget send is dropped: ``send``
+# raises ``BackgroundSendDropped`` instead of returning ``None``.  The cap
 # NEVER applies to non-background sends or to ``wait_dispatch=True`` sends.
 _MAX_BG_INFLIGHT = 64
 
@@ -163,7 +163,8 @@ class IcomCommander:
                 background poller so the poll burst does not park the poll loop
                 (responses arrive via the RX path, not this future).  For
                 ``Priority.BACKGROUND`` fire-and-forget sends a defensive
-                ``_MAX_BG_INFLIGHT`` cap bounds outstanding work (drop-newest).
+                ``_MAX_BG_INFLIGHT`` cap bounds outstanding work (drop-newest,
+                raising ``BackgroundSendDropped``).
         """
         if (
             self._queue is None
@@ -188,10 +189,10 @@ class IcomCommander:
         # IMMEDIATE, and any wait_dispatch=True send is never capped.
         counts_bg_inflight = not wait_dispatch and priority == Priority.BACKGROUND
         if counts_bg_inflight and self._bg_inflight >= _MAX_BG_INFLIGHT:
-            # Drop-newest: resolve the future so the caller still returns
-            # immediately, and do NOT enqueue (so no key registration either).
-            fut.set_result(None)
-            return None
+            # Drop-newest: do not enqueue. Raising (rather than returning
+            # ``None``) is what tells a fire-and-forget caller the send never
+            # left; ``None`` is also what an enqueued send returns.
+            raise BackgroundSendDropped("background send dropped: commander at cap")
 
         item = _QueueItem(
             int(priority),
