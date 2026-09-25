@@ -22,6 +22,7 @@ import time
 from collections.abc import Coroutine, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
+from ..core.exceptions import BackgroundSendDropped
 from ..core.acquisition_drain import AcquisitionDrain
 from ..core.acquisition_scheduler import (
     AcquisitionExecutor,
@@ -437,7 +438,8 @@ class RigctldServer:
         return None
 
     def _provider_uses_civ_executor(self, provider: str) -> bool:
-        return provider_uses_civ_acquisition(provider)
+        uses_civ: bool = provider_uses_civ_acquisition(provider)
+        return uses_civ
 
     def _default_acquisition_executor_for_scheduler(
         self,
@@ -627,6 +629,8 @@ class RigctldServer:
                 await asyncio.sleep(0.05)
             except asyncio.CancelledError:
                 break
+            except BackgroundSendDropped:
+                await asyncio.sleep(0.05)
             except Exception as exc:
                 logger.warning(
                     "rigctld state acquisition drain failed: %s",

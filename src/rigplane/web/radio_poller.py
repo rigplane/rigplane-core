@@ -1821,8 +1821,6 @@ class RadioPoller:
                         "radio-poller: radio disconnected, backing off %.1fs", _backoff
                     )
                     continue
-                except BackgroundSendDropped:
-                    pass
                 except Exception:
                     # MOR-1440: a dead serial link surfaces here as a bare
                     # TimeoutError (CI-V transport recovery-wait gate), not
@@ -3771,7 +3769,10 @@ class RadioPoller:
 
     async def _send_query(self) -> None:
         if self._acquisition_scheduler is not None:
-            await self._send_scheduler_requests()
+            try:
+                await self._send_scheduler_requests()
+            except BackgroundSendDropped:
+                return
             return
         # Without a scheduler there is nothing left to send: the legacy meter
         # rotation that used to run here was unreachable in production
