@@ -180,11 +180,14 @@ _CW_SPOT = FieldPath.global_("slow_state", "cw_spot")
 #   P2 code 0 (OFF)                      -> repeater_tone=False, repeater_tsql=False
 #   P2 code 1 (ENC ON / DEC OFF, "TONE") -> repeater_tone=True,  repeater_tsql=False
 #   P2 code 2 (ENC ON / DEC ON,  "TSQL") -> repeater_tone=True,  repeater_tsql=True
-#   P2 codes 3/4/5 (DCS / PR-FREQ / REV-TONE) -> both False (the two-boolean
-#       vocabulary has no representation for them — a limit of the
-#       representation, not of this derivation).
-# Both paths are emitted every cycle (including the False derivations) so the
-# store always reflects current state. Per-receiver ``operator_toggles`` like
+#   P2 codes 3/4/5 (DCS / PR FREQ / REV TONE) -> both None (observed, but the
+#       two-boolean vocabulary has no representation for them; publishing
+#       False would invent OFF while the radio is in DCS — MOR-2572). The
+#       store's existing "None = not known" semantics carry the value, so the
+#       web schema's ``bool | None`` and the frontend's ``boolOrUndef`` render
+#       it as an unlit tone-mode with no further change.
+# Both paths are emitted every cycle (including the False/None derivations)
+# so the store always reflects current state. Per-receiver ``operator_toggles`` like
 # nb/nr/auto_notch, emitted in the slow-control lane; CT0 and CT1 are read
 # independently, so a failing side's defect names only that side's paths and
 # skips only that side's emissions — the other side still publishes. Raw
@@ -1165,9 +1168,12 @@ class YaesuObservationAdapter:
         # which the two independent neutral CTCSS booleans are DERIVED per
         # ``RepeaterControlCapable``'s own docstrings (see the module-level
         # mapping comment): code 1 -> encode only, code 2 -> encode AND decode
-        # (both True), codes 0/3/4/5 -> both False. Both paths are emitted
-        # every cycle (incl. the False derivations) so the store always
-        # reflects current state. Gated on the ``sql_type`` runtime capability
+        # (both True), codes 0 -> both False, codes 3/4/5 (DCS / PR FREQ /
+        # REV TONE) -> both None ("observed, not known"; MOR-2572 — the
+        # two-boolean vocabulary cannot represent them, and a False pair
+        # would invent OFF). Both paths are emitted every cycle (incl. the
+        # False/None derivations) so the store always reflects current
+        # state. Gated on the ``sql_type`` runtime capability
         # (``CAP_SQL_TYPE``), a dedicated readback capability: ``"ctcss"`` is
         # not a known capability tag (rejected by the rig loader). CT0 and CT1
         # are read independently, so a failing side's defect names only that
@@ -1186,11 +1192,18 @@ class YaesuObservationAdapter:
                     paths=(tone_path, tsql_path),
                 )
                 if ok and sql_type is not None:
+                    # CT codes 3/4/5 (DCS / PR FREQ / REV TONE) sit outside
+                    # the two-boolean vocabulary: publish None ("observed,
+                    # not known") on BOTH axes instead of an invented False
+                    # pair (MOR-2572).
+                    representable = sql_type in (0, 1, 2)
+                    tone_value = sql_type in (1, 2) if representable else None
+                    tsql_value = sql_type == 2 if representable else None
                     if self._can_poll(tone_path):
                         observations.append(
                             adapter.observation(
                                 tone_path,
-                                sql_type in (1, 2),
+                                tone_value,
                                 native_id="read_sql_type",
                             )
                         )
@@ -1198,7 +1211,7 @@ class YaesuObservationAdapter:
                         observations.append(
                             adapter.observation(
                                 tsql_path,
-                                sql_type == 2,
+                                tsql_value,
                                 native_id="read_sql_type",
                             )
                         )

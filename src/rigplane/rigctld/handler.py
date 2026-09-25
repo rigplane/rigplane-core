@@ -1301,6 +1301,12 @@ class RigctldHandler:
         projected = projection.value(path)
         if projected is None:
             return None
+        if projected.value is None:
+            # Observed-but-not-known (FTX-1 CT codes 3/4/5, MOR-2572): no
+            # bool to project. Formatting would answer bool(None)=0 — an
+            # invented OFF — and the live fallback below would echo the same
+            # invention back into the store, so answer "not available".
+            return _err(HamlibError.ENAVAIL)
         response = format_state_func(func, projected.value)
         return response if isinstance(response, RigctldResponse) else None
 
@@ -2710,6 +2716,12 @@ class RigctldHandler:
         )
         projected = projection.value(func_path)
         if projected is not None:
+            if projected.value is None:
+                # Observed-but-not-known (FTX-1 CT codes 3/4/5, MOR-2572):
+                # answer "not available" instead of bool(None)=0, and do
+                # NOT fall through to a live read — the fallback would
+                # record an invented False over the published None.
+                return _err(HamlibError.ENAVAIL)
             return RigctldResponse(values=[str(int(bool(projected.value)))])
         method = getattr(self._radio, _FUNC_GET[func])
         # NB / NR are per-receiver on dual-RX Icoms.  Other funcs are

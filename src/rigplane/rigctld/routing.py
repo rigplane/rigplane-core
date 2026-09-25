@@ -570,7 +570,16 @@ class YaesuRouting:
             getter = (
                 radio.get_repeater_tone if func == "TONE" else radio.get_repeater_tsql
             )
-            value = bool(await getter(receiver=receiver))
+            try:
+                value = bool(await getter(receiver=receiver))
+            except ValueError:
+                # FTX-1 CT codes 3/4/5 (DCS / PR FREQ / REV TONE) have no
+                # two-boolean pair: the Yaesu getters refuse loudly instead
+                # of inventing False (MOR-2572). Answer "not available" and
+                # record nothing — an observed False would light the
+                # repeater strip OFF while the radio is in DCS. (The write
+                # side of the same condition is ERJCTED, see set_func.)
+                return _err(HamlibError.ENAVAIL)
             self._observe(self.state_path_for_func(func, receiver=receiver), value)
             return RigctldResponse(values=[str(int(value))])
         if func == "LOCK":

@@ -28,16 +28,16 @@ function repeaterCaps(): Capabilities {
 
 type RepeaterRx = {
   freqHz: number;
-  repeaterTone: boolean;
-  repeaterTsql: boolean;
+  repeaterTone: boolean | null;
+  repeaterTsql: boolean | null;
   toneFreq: number | null;
   repeaterShift: number | null;
 };
 
 function receiver(
   freqHz: number,
-  repeaterTone: boolean,
-  repeaterTsql: boolean,
+  repeaterTone: boolean | null,
+  repeaterTsql: boolean | null,
   toneFreq: number | null,
   repeaterShift: number | null,
 ): RepeaterRx {
@@ -126,6 +126,18 @@ describe('deriveRepeater (per-receiver repeater facts, MOR-2111)', () => {
   it('reads toneMode unknown for the unrepresentable pair (tone off, TSQL on)', () => {
     const group = repeater(
       receiver(144_000_000, false, true, 8850, 0),
+      receiver(14_250_000, false, false, 8850, 0),
+    );
+    expect(group.main.toneMode.reading).toEqual({ status: 'unknown' });
+    expect(group.main.toneMode.availability.structural).toBe(true);
+  });
+
+  it('reads toneMode unknown when the observed pair is null (FTX-1 CT 3/4/5, MOR-2572)', () => {
+    // The backend publishes null for both axes when the CT squelch type is
+    // DCS / PR FREQ / REV TONE — observed, but outside the two-boolean
+    // vocabulary. No tone-mode key may light (never an invented OFF).
+    const group = repeater(
+      receiver(144_000_000, null, null, 8850, 0),
       receiver(14_250_000, false, false, 8850, 0),
     );
     expect(group.main.toneMode.reading).toEqual({ status: 'unknown' });

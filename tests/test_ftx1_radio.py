@@ -2326,9 +2326,6 @@ async def test_get_tone_freq_uses_active_profile_domain(connected_radio):
         (0, False, False),
         (1, True, False),
         (2, True, True),
-        (3, False, False),  # DCS — no two-boolean representation (MOR-2130)
-        (4, False, False),  # PR FREQ
-        (5, False, False),  # REV TONE
     ],
 )
 @pytest.mark.parametrize("receiver", [0, 1])
@@ -2340,6 +2337,25 @@ async def test_repeater_tone_tsql_derivation_matrix(
     connected_radio._transport.query = AsyncMock(return_value=f"CT{receiver}{code}")
     assert await connected_radio.get_repeater_tone(receiver) is expected_tone
     assert await connected_radio.get_repeater_tsql(receiver) is expected_tsql
+    connected_radio._transport.query.assert_any_call(f"CT{receiver};")
+
+
+@pytest.mark.parametrize("code", [3, 4, 5])
+@pytest.mark.parametrize("receiver", [0, 1])
+@pytest.mark.asyncio
+async def test_repeater_tone_tsql_refuses_ct_other_modes(
+    connected_radio, code: int, receiver: int
+):
+    """MOR-2572: CT 3/4/5 (DCS / PR FREQ / REV TONE) have no two-boolean
+    pair, so both getters refuse loudly instead of inventing False — the
+    same ValueError the setters raise for the same CT state."""
+    connected_radio._transport.query = AsyncMock(return_value=f"CT{receiver}{code}")
+    for getter in (
+        connected_radio.get_repeater_tone,
+        connected_radio.get_repeater_tsql,
+    ):
+        with pytest.raises(ValueError, match=r"DCS/PR FREQ/REV TONE"):
+            await getter(receiver)
     connected_radio._transport.query.assert_any_call(f"CT{receiver};")
 
 

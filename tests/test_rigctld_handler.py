@@ -4292,6 +4292,84 @@ async def test_yaesu_get_func_tone_backend_fallback_records_state_store(
 
 
 @pytest.mark.asyncio
+async def test_yaesu_get_func_tone_not_known_answers_enavail(
+    yaesu_radio: AsyncMock,
+) -> None:
+    """MOR-2572: an observed None (FTX-1 CT codes 3/4/5 — DCS / PR FREQ /
+    REV TONE) has no bool to report. The routed Yaesu ``get_func`` must
+    answer ENAVAIL instead of bool(None)=0, and must not fall through to a
+    live read that would record an invented False over the published None."""
+    store = StateStore()
+    _seed_store_current(store, "receiver.main.operator_toggles.repeater_tone", None)
+    handler = RigctldHandler(yaesu_radio, RigctldConfig(), state_store=store)
+
+    resp = await handler.execute(get_cmd("get_func", "TONE"))
+
+    assert resp.error == HamlibError.ENAVAIL
+    yaesu_radio.get_repeater_tone.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_yaesu_get_func_tone_empty_store_ct_dcs_answers_enavail() -> None:
+    """MOR-2572 fix round: with NOTHING seeded — the first ``get_func`` after
+    connect, before the poller has recorded the field — the routed
+    projection misses and the live fallback reaches the radio getters. With
+    the radio in DCS (CT code 3) the getters refuse, and the answer is
+    ENAVAIL for both TONE and TSQL with NOTHING recorded in the store: an
+    observed False would light the repeater strip OFF while the radio is in
+    DCS."""
+    radio, ct, _writes = _real_ftx1_ct_radio()
+    ct[0] = 3  # MAIN in DCS
+    store = StateStore()
+    handler = RigctldHandler(radio, RigctldConfig(), state_store=store)
+
+    for func in ("TONE", "TSQL"):
+        resp = await handler.execute(get_cmd("get_func", func))
+        assert resp.error == HamlibError.ENAVAIL
+
+    # The live CT read happened (the fallback really reached the radio)...
+    radio._transport.query.assert_awaited_with("CT0;")  # noqa: SLF001
+    # ...but no value — in particular no invented False — was recorded.
+    snapshot = store.snapshot()
+    with pytest.raises(KeyError):
+        snapshot.field("receiver.main.operator_toggles.repeater_tone")
+    with pytest.raises(KeyError):
+        snapshot.field("receiver.main.operator_toggles.repeater_tsql")
+
+
+@pytest.mark.asyncio
+async def test_yaesu_get_func_tsql_not_known_on_sub_answers_enavail() -> None:
+    """MOR-2572, SUB receiver: the routed VFOB projection holds the same
+    None contract (an observed None on the SUB path answers ENAVAIL, with
+    no live CT read that would invent False over it)."""
+    radio, _ct, _writes = _real_ftx1_ct_radio()
+    store = StateStore()
+    _seed_store_current(store, "receiver.sub.operator_toggles.repeater_tsql", None)
+    handler = RigctldHandler(radio, RigctldConfig(), state_store=store)
+
+    resp = await handler.execute(_vfo_func_cmd("get_func", "VFOB", "TSQL"))
+
+    assert resp.error == HamlibError.ENAVAIL
+    radio._transport.query.assert_not_awaited()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_get_func_tone_not_known_answers_enavail(
+    mock_radio: AsyncMock, config: RigctldConfig
+) -> None:
+    """MOR-2572, non-routed (built-in) path: the same observed-None contract
+    — ENAVAIL, never bool(None)=0, never a live read that invents False."""
+    store = StateStore()
+    _seed_store_current(store, "receiver.main.operator_toggles.repeater_tone", None)
+    handler = RigctldHandler(mock_radio, config, state_store=store)
+
+    resp = await handler.execute(get_cmd("get_func", "TONE"))
+
+    assert resp.error == HamlibError.ENAVAIL
+    mock_radio.get_repeater_tone.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_yaesu_get_func_lock(
     yaesu_handler: RigctldHandler, yaesu_radio: AsyncMock
 ) -> None:

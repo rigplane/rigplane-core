@@ -950,6 +950,59 @@ async def test_selector_radio_in_tsql_skips_before_any_write(check_id, capabilit
     assert store["mode"] == "TSQL"
 
 
+def _ftx1_dcs_repeater_mock():
+    """FTX-1 in DCS: CT code 3 has no tone/tsql pair, so the getters refuse
+    loudly exactly like the real Yaesu backend does for CT 3/4/5 (MOR-2572)."""
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "FTX-1"
+    radio.capabilities = {"repeater_tone", "tsql", "sql_type"}
+    writes: list[tuple[str, bool]] = []
+
+    async def _read_sql_type(receiver: int = 0) -> int:
+        return 3
+
+    async def _get_tone(receiver: int = 0) -> bool:
+        raise ValueError(
+            "cannot express a CTCSS tone pair over CT code 3 (DCS/PR FREQ/REV TONE)"
+        )
+
+    async def _get_tsql(receiver: int = 0) -> bool:
+        raise ValueError(
+            "cannot express a CTCSS tone pair over CT code 3 (DCS/PR FREQ/REV TONE)"
+        )
+
+    async def _set_tone(on: bool, receiver: int = 0) -> None:
+        writes.append(("tone", on))
+
+    async def _set_tsql(on: bool, receiver: int = 0) -> None:
+        writes.append(("tsql", on))
+
+    radio.read_sql_type = AsyncMock(side_effect=_read_sql_type)
+    radio.get_repeater_tone = AsyncMock(side_effect=_get_tone)
+    radio.get_repeater_tsql = AsyncMock(side_effect=_get_tsql)
+    radio.set_repeater_tone = AsyncMock(side_effect=_set_tone)
+    radio.set_repeater_tsql = AsyncMock(side_effect=_set_tsql)
+    return radio, writes
+
+
+@pytest.mark.parametrize(
+    ("check_id", "capability"),
+    [("repeater_tone.set", "repeater_tone"), ("tsql.set", "tsql")],
+)
+async def test_ftx1_in_dcs_skips_before_any_pair_read_or_write(check_id, capability):
+    """MOR-2572: CT 3 (DCS) has no tone/tsql pair — the check SKIPs on the
+    CT-code gate before the first pair read and any write; the getters'
+    refusal never becomes a FAIL and the radio is untouched."""
+    radio, writes = _ftx1_dcs_repeater_mock()
+    check = await _run(radio, check_id=check_id, capability=capability)
+    assert check.status is CheckStatus.SKIP
+    assert "DCS/PR FREQ/REV TONE" in check.evidence["reason"]
+    assert writes == []
+    radio.get_repeater_tone.assert_not_awaited()
+    radio.set_repeater_tone.assert_not_awaited()
+
+
 async def test_tsql_set_restore_readback_mismatch_fails():
     """The restore is only believed when the pair reads back equal to the
     start. A selector radio whose encode-on write does not stick ends the
