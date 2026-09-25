@@ -731,7 +731,9 @@ describe('SDR hosted semantic scope controls (MOR-2358)', () => {
       expect(leaf!.closest('[data-testid="scope-toolbar-host"]')).not.toBeNull();
     }
     expect(el('scope-edge') !== null).toBe(mode === 1 || mode === 3);
-    expect(el('scope-span') !== null).toBe(mode === 0 || mode === 2);
+    // MOR-2565: an unread mode (null) keeps SPAN in its slot — only a read
+    // FIX/S-F mode folds it away.
+    expect(el('scope-span') !== null).toBe(mode === null || mode === 0 || mode === 2);
     if (mode === null) expect((el('scope-mode-0') as HTMLButtonElement).disabled).toBe(true);
   });
 

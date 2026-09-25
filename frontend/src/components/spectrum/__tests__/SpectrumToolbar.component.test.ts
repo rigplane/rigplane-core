@@ -481,11 +481,23 @@ describe('fail-closed field handling', () => {
     });
   }
 
-  it('unknown mode exposes neither span nor edge and never fabricates CTR', () => {
+  // MOR-2565 (owner ruling 2026-09-21): an unread mode keeps SPAN in its
+  // slot, unlit and inert (the fixture's span is read — the unread MODE
+  // alone must unlight it); EDGE keeps the old hide contract; no CTR guess.
+  it('unknown mode keeps SPAN in place unlit and inert, hides EDGE, never fabricates CTR', () => {
     authorityHarness.current = authority({ scopeControls: scopeFacts({ mode: field(0, { known: false }) }) });
     const target = mountToolbar();
     expect(button(target, 'CTR')?.classList.contains('active')).toBe(false);
-    expect(target.textContent).not.toContain('SPAN');
+    const spanDown = buttons(target).find((item) => item.title === 'Decrease span')!;
+    expect(spanDown).toBeDefined();
+    expect(spanDown.disabled).toBe(true);
+    expect(target.textContent).toContain('SPAN');
+    // MOR-2565 review: the unread-mode SPAN value is EMPTY (reserved width),
+    // never the forbidden '—' placeholder.
+    const spanValue = buttons(target).find((item) => item.title === 'Scope span')!
+      .querySelector('.toolbar-value')!;
+    expect(spanValue.textContent).toBe('');
+    expect(target.textContent).not.toContain('±25k'); // the read value stays dark
     expect(target.textContent).not.toContain('EDGE');
   });
 });

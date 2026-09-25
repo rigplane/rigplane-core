@@ -248,7 +248,14 @@
   let scopeDual = $derived(acceptedBoolean('dual'));
   let scopeReceiver = $derived(acceptedNumber('receiver', 0, 1));
 
-  let spanApplicable = $derived(scopeMode !== null && isSpanApplicable(scopeMode));
+  // MOR-2565: while the mode is unread SPAN keeps its slot (owner ruling
+  //  2026-09-21 — unread renders unlit in place, not absent); only a READ
+  //  inapplicable mode (FIX/S-F) removes it.
+  let spanApplicable = $derived(scopeMode === null || isSpanApplicable(scopeMode));
+  /** MOR-2565 — the stepper lights only once BOTH the mode and the span
+   *  value are read; an unread mode makes it inert exactly like an unread
+   *  value (the neighbouring SPEED/REF steppers' unread pattern). */
+  let spanUsable = $derived(scopeMode !== null && scopeSpan !== null);
   let edgeApplicable = $derived(scopeMode !== null && isEdgeApplicable(scopeMode));
 
   function selectMode(mode: number) {
@@ -262,7 +269,7 @@
   }
 
   function cycleSpan(delta: -1 | 1) {
-    if (scopeSpan === null) return;
+    if (scopeMode === null || scopeSpan === null) return;
     scopeHandlers.onSpanChange(clampSpan(scopeSpan, delta));
   }
 
@@ -507,12 +514,15 @@
       <div class="toolbar-group-c">
       {#if spanApplicable}
         <div class="toolbar-group step-group">
-          <button class="toolbar-btn small step-arrow" disabled={scopeSpan === null} onclick={() => cycleSpan(-1)} title="Decrease span">◀</button>
-          <button class="toolbar-btn step-control" disabled={scopeSpan === null} onclick={() => cycleSpan(1)} title="Scope span">
+          <button class="toolbar-btn small step-arrow" disabled={!spanUsable} onclick={() => cycleSpan(-1)} title="Decrease span">◀</button>
+          <button class="toolbar-btn step-control" disabled={!spanUsable} onclick={() => cycleSpan(1)} title="Scope span">
             <span class="toolbar-label">SPAN</span>
-            <span class="toolbar-value">{scopeSpan === null ? '—' : (SPAN_LABELS[scopeSpan] ?? '—')}</span>
+            <!-- MOR-2565: an unread mode (or value) renders EMPTY with the
+                 reserved width — never a '—' placeholder; a known span index
+                 (0–7, acceptedNumber's range) always hits SPAN_LABELS. -->
+            <span class="toolbar-value">{spanUsable && scopeSpan !== null ? SPAN_LABELS[scopeSpan] : ''}</span>
           </button>
-          <button class="toolbar-btn small step-arrow" disabled={scopeSpan === null} onclick={() => cycleSpan(1)} title="Increase span">▶</button>
+          <button class="toolbar-btn small step-arrow" disabled={!spanUsable} onclick={() => cycleSpan(1)} title="Increase span">▶</button>
         </div>
         <div class="toolbar-sub-separator"></div>
       {/if}

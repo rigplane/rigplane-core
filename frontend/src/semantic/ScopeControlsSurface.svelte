@@ -48,9 +48,11 @@
       modes CTR/S-C) are always structurally available; their conditional
       VISIBILITY is a rendering decision layered on top, using the real
       `spectrum-toolbar-logic.ts` predicates (do-not-re-derive doctrine) —
-      never a new gate. Both predicates return `false` on an unobserved
-      `mode`, so EDGE stays out of More and SPAN out of the row rather than
-      rendering with a fabricated CTR/S-C guess.
+      never a new gate. MOR-2565 split the unread-mode story: EDGE keeps the
+      old contract (out of More until the mode is read), while SPAN KEEPS
+      ITS SLOT unlit — an unread mode never removes a control the radio
+      has (owner ruling 2026-09-21); only a READ inapplicable mode
+      (FIX/S-F) folds SPAN away.
   (5) The four popover-only leaves (duringTx/centerType/vbwNarrow/rbw) are
       rendered from facts exactly like the eight toolbar leaves.
       `fixedEdge` stays excluded (no fact-layer home, MOR-1354).
@@ -167,8 +169,20 @@
   let modeKnown = $derived(
     sc?.mode.reading.status === 'known' ? sc.mode.reading.value : undefined,
   );
-  let spanApplicable = $derived(isSpanApplicable(modeKnown));
+  // MOR-2565: while the mode is unread SPAN keeps its slot unlit instead of
+  // disappearing (owner ruling 2026-09-21 — unread renders in place), so
+  // visibility folds ONLY the read-inapplicable modes (FIX/S-F) away. EDGE
+  // keeps the old contract: it stays out of More until the mode is read.
+  let spanApplicable = $derived(modeKnown === undefined || isSpanApplicable(modeKnown));
   let edgeApplicable = $derived(isEdgeApplicable(modeKnown));
+  /** MOR-2565 — the observed span label; EMPTY (reserved width, never a
+   *  placeholder) while the mode is unread or the value itself is unread:
+   *  the control is unlit in place until the mode read lights it. */
+  let spanText = $derived(
+    sc && modeKnown !== undefined && usable(sc.span)
+      ? (SPAN_LABELS[numberOf(sc.span, 3)] ?? '')
+      : '',
+  );
 
   /** The [MORE ▾] More panel — UI-local open flag (never radio state).
    *  MOR-2545 PR3: the label comes from the i18n system
@@ -192,7 +206,12 @@
   function spanInstrument(delta: -1 | 1) {
     return bindActionInstrument(() => {
       const field = sc?.span;
-      return { field, invoke: () => onSpanChange?.(clampSpan(numberOf(field!, 3), delta)) };
+      // MOR-2565: unread mode ⇒ the keys stay inert even with a read span.
+      return {
+        field,
+        blocked: modeKnown === undefined,
+        invoke: () => onSpanChange?.(clampSpan(numberOf(field!, 3), delta)),
+      };
     });
   }
   function speedInstrument(delta: -1 | 1) {
@@ -241,6 +260,8 @@
       seat = createActionRendererSeat(() => ({
         context: rendererContext ?? null, field: sc?.[field], label: delta < 0 ? '−' : '+',
         accessibleLabel: `${delta < 0 ? 'Decrease' : 'Increase'} ${label}`,
+        // MOR-2565: the span keys stay inert while the mode is unread.
+        blocked: field === 'span' ? modeKnown === undefined : undefined,
         invoke: () => {
           const current = numberOf(sc![field], field === 'span' ? 3 : field === 'speed' ? 1 : 0);
           if (field === 'span') onSpanChange?.(clampSpan(current, delta as -1 | 1));
@@ -287,7 +308,7 @@
             seat={actionSeat('span', -1, 'scope span')} renderer={finiteAppearance.action}
           />{/key}{/key}
           <output data-testid="scope-span-value">
-            {usable(sc.span) ? (SPAN_LABELS[numberOf(sc.span, 3)] ?? UNKNOWN_TEXT) : UNKNOWN_TEXT}
+            {modeKnown !== undefined && usable(sc.span) ? (SPAN_LABELS[numberOf(sc.span, 3)] ?? UNKNOWN_TEXT) : UNKNOWN_TEXT}
           </output>
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('span', 1, 'scope span')} renderer={finiteAppearance.action}
@@ -354,7 +375,7 @@
             <span class="scope-name">SPAN</span>
             <button type="button" class="scope-step-key" aria-label="Decrease scope span"
               disabled={!spanDown.available} onclick={() => spanDown.invoke()}>&#8249;</button>
-            <output class="scope-step-value" data-testid="scope-span-value">{usable(sc.span) ? (SPAN_LABELS[numberOf(sc.span, 3)] ?? '') : ''}</output>
+            <output class="scope-step-value" data-testid="scope-span-value">{spanText}</output>
             <button type="button" class="scope-step-key" aria-label="Increase scope span"
               disabled={!spanUp.available} onclick={() => spanUp.invoke()}>&#8250;</button>
           </span>
@@ -440,7 +461,7 @@
                     <div class="scope-more-row scope-stepper" class:scope-capsule={hosted} data-overflow="span" data-testid="scope-overflow-span">
                       <span class="scope-name">SPAN</span>
                       <button type="button" class="scope-step-key" aria-label="Decrease scope span" disabled={!overflowSpanDown.available} onclick={() => overflowSpanDown.invoke()}>&#8249;</button>
-                      <output class="scope-step-value" data-testid="scope-overflow-span-value">{usable(sc.span) ? (SPAN_LABELS[numberOf(sc.span, 3)] ?? '') : ''}</output>
+                      <output class="scope-step-value" data-testid="scope-overflow-span-value">{spanText}</output>
                       <button type="button" class="scope-step-key" aria-label="Increase scope span" disabled={!overflowSpanUp.available} onclick={() => overflowSpanUp.invoke()}>&#8250;</button>
                     </div>
                   {/if}

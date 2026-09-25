@@ -8,8 +8,10 @@
  *   (2) `receiver` is the ONE MAIN/SUB control; no second "source" control.
  *   (3) EDGE/SPAN visibility is a RENDERING decision (`isEdgeApplicable`/
  *       `isSpanApplicable`, reused from `spectrum-toolbar-logic.ts`) layered
- *       on facts that are always structurally available; an unread `mode`
- *       hides BOTH rather than guessing CTR.
+ *       on facts that are always structurally available; a read FIX/S-F
+ *       mode hides SPAN, a read CTR/S-C mode hides EDGE, and an unread
+ *       mode hides only EDGE — SPAN keeps its slot unlit (MOR-2565, owner
+ *       ruling 2026-09-21) instead of vanishing with the layout.
  *   handler guards — pinned independently of `disabled` (MOR-1304 F3
  *       recipe): a direct dispatched click/input on a disabled control must
  *       not reach the callback.
@@ -141,13 +143,41 @@ describe('carry-forward (3): EDGE/SPAN visibility is a rendering decision on top
     r.dispose();
   });
 
-  // Carry-forward (3), the exact wording: an unobserved mode hides BOTH
-  // rather than rendering either with a fabricated guess.
-  it('hides BOTH EDGE and SPAN when mode is unread, never fabricating CTR', () => {
+  // MOR-2565 (owner ruling 2026-09-21): an unread mode keeps SPAN in its
+  // slot, unlit and inert — only EDGE stays hidden until the mode is read.
+  // The fixture's span is known(3): the unread MODE alone must unlight it.
+  it('keeps SPAN in the row unlit and inert while the mode is unread (MOR-2565)', () => {
     const r = render(withSc({ mode: unread() }));
+    const span = r.el('scope-span');
+    expect(span).not.toBeNull();
+    expect(r.el('scope-span-value')!.textContent).toBe('');
+    for (const key of span!.querySelectorAll('button')) {
+      expect(key.hasAttribute('disabled'), 'span key is inert').toBe(true);
+    }
+    r.openMore();
+    expect(r.el('scope-edge')).toBeNull(); // EDGE keeps the old contract
+    // The More overflow copy keeps its slot too, equally unlit.
+    expect(r.el('scope-overflow-span')).not.toBeNull();
+    expect(r.el('scope-overflow-span-value')!.textContent).toBe('');
+    r.dispose();
+  });
+
+  // Same slot, now lit: the mode read alone lights the value — no layout
+  // change, no placeholder in between.
+  it('lights the SPAN value once the mode is read (CTR)', () => {
+    const r = render(withSc({ mode: known(0) }));
+    expect(r.el('scope-span')!.querySelector('button')!.hasAttribute('disabled')).toBe(false);
+    expect(r.el('scope-span-value')!.textContent).toBe('±25k'); // fixture span = 3
+    r.dispose();
+  });
+
+  // A radio with no span control at all draws nothing — the unread case is
+  // "kept unlit", the structurally-absent case is "not drawn" (MOR-2565).
+  it('omits SPAN entirely when the radio has no span control (structural false)', () => {
+    const r = render(withSc({ mode: known(0), span: unread(OFF) }));
     expect(r.el('scope-span')).toBeNull();
     r.openMore();
-    expect(r.el('scope-edge')).toBeNull();
+    expect(r.el('scope-overflow-span')).toBeNull();
     r.dispose();
   });
 
@@ -533,6 +563,17 @@ describe('handler guards are pinned independently of `disabled` (MOR-1304 F3)', 
   it('refuses a stepper click dispatched directly at a disabled control', () => {
     const onSpanChange = vi.fn();
     const r = render(withSc({ mode: known(0), span: unread() }), { onSpanChange });
+    bypassClick(r.el('scope-span')!.querySelector('button')!);
+    flushSync();
+    expect(onSpanChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  // MOR-2565: an unread mode must make the span keys inert even when the
+  // span value itself is read — the guard is the mode, not the value.
+  it('refuses a span step while the mode is unread even with a read span', () => {
+    const onSpanChange = vi.fn();
+    const r = render(withSc({ mode: unread() }), { onSpanChange });
     bypassClick(r.el('scope-span')!.querySelector('button')!);
     flushSync();
     expect(onSpanChange).not.toHaveBeenCalled();
