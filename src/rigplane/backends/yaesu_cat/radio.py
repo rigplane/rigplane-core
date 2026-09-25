@@ -2571,11 +2571,18 @@ class YaesuCatRadio:
     async def get_repeater_tone(self, receiver: int = 0) -> bool:
         """Get repeater tone (CTCSS ENC) on/off state, derived from ``CT``.
 
-        Codes 1 and 2 carry CTCSS encode (MOR-2130); codes 3/4/5 (DCS /
-        PR FREQ / REV TONE) have no two-boolean representation and derive
-        ``False``.
+        Codes 1 and 2 carry CTCSS encode (MOR-2130). Codes 3/4/5 (DCS /
+        PR FREQ / REV TONE) have no two-boolean representation, so the read
+        refuses loudly with ``ValueError`` — the same refusal the setters
+        make — instead of inventing ``False`` (MOR-2572).
         """
-        return await self.read_sql_type(receiver) in (1, 2)
+        code = await self.read_sql_type(receiver)
+        if code not in (0, 1, 2):
+            raise ValueError(
+                f"cannot express a CTCSS tone pair over CT code {code} "
+                "(DCS/PR FREQ/REV TONE)"
+            )
+        return code in (1, 2)
 
     async def set_repeater_tone(self, on: bool, receiver: int = 0) -> None:
         """Set repeater tone (CTCSS ENC) on/off (CT command, read-modify-write).
@@ -2606,10 +2613,18 @@ class YaesuCatRadio:
     async def get_repeater_tsql(self, receiver: int = 0) -> bool:
         """Get tone squelch (CTCSS ENC+DEC) on/off state, derived from ``CT``.
 
-        Only code 2 carries decode (MOR-2130); every other code derives
-        ``False``.
+        Only code 2 carries decode (MOR-2130). Codes 3/4/5 (DCS / PR FREQ /
+        REV TONE) have no two-boolean representation, so the read refuses
+        loudly with ``ValueError`` — the same refusal the setters make —
+        instead of inventing ``False`` (MOR-2572).
         """
-        return await self.read_sql_type(receiver) == 2
+        code = await self.read_sql_type(receiver)
+        if code not in (0, 1, 2):
+            raise ValueError(
+                f"cannot express a CTCSS tone pair over CT code {code} "
+                "(DCS/PR FREQ/REV TONE)"
+            )
+        return code == 2
 
     async def set_repeater_tsql(self, on: bool, receiver: int = 0) -> None:
         """Set tone squelch (CTCSS ENC+DEC) on/off (CT command, read-modify-write).

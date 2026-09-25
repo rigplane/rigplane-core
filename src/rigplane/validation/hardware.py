@@ -2403,6 +2403,31 @@ async def _repeater_toggle_rmvr(
             CheckStatus.UNSUPPORTED,
             evidence={"reason": f"radio is missing get/set op for {entry.check_id}"},
         )
+    # CT codes 3/4/5 (DCS / PR FREQ / REV TONE) have no two-boolean pair:
+    # the Yaesu getters refuse loudly for them (MOR-2572). Gate on the CT
+    # code itself before the first pair read — SKIP with the reason, not a
+    # getter ValueError FAIL, and not a toggle over an invented OFF. Radios
+    # without a ``read_sql_type`` read (the mock/generic shapes) keep the
+    # start-pair read below as their gate.
+    read_sql_type = getattr(repeater, "read_sql_type", None)
+    if callable(read_sql_type):
+        ct_code, fail = await _guard(
+            read_sql_type(0), entry, per_check_timeout=per_check_timeout
+        )
+        if fail is not None:
+            return fail
+        if ct_code not in (0, 1, 2):
+            return _base_result(
+                entry,
+                CheckStatus.SKIP,
+                evidence={
+                    "reason": (
+                        f"CT squelch type code {ct_code} (DCS/PR FREQ/REV TONE) "
+                        "has no tone/tsql pair; the toggle is not runnable in "
+                        "this state"
+                    )
+                },
+            )
     start_tone, fail = await _guard(
         repeater.get_repeater_tone(0), entry, per_check_timeout=per_check_timeout
     )
