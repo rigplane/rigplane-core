@@ -4610,7 +4610,7 @@ async def test_command_preempts_in_flight_poll_burst() -> None:
         order.append(cmd)
         return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
 
-    c = IcomCommander(execute, min_interval=0.0)
+    c = IcomCommander(execute)
     c.start()
     try:
         gate = asyncio.create_task(c.send(b"gate", priority=Priority.NORMAL))

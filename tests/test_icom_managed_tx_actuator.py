@@ -145,7 +145,7 @@ async def test_force_release_overtakes_queued_abort_without_preempting_active() 
             entered.set()
             await release.wait()
 
-    commander = IcomCommander(execute, min_interval=0.0)
+    commander = IcomCommander(execute)
     commander.start()
     active = asyncio.create_task(commander.send(b"active", priority=Priority.NORMAL))
     abort = None
@@ -208,7 +208,7 @@ async def test_commander_propagates_currency_to_final_executor() -> None:
     ) -> None:
         observed.append(is_current)
 
-    commander = IcomCommander(execute, min_interval=0.0)
+    commander = IcomCommander(execute)
 
     def current() -> bool:
         return True
@@ -234,7 +234,7 @@ async def test_provider_replacement_cannot_retarget_queued_on(
     radio._connected = True
     radio._civ_min_interval = 0.0
     monkeypatch.setattr(radio._civ_runtime, "start_pump", lambda: None)
-    commander = IcomCommander(radio._civ_runtime.execute_civ_raw, min_interval=0.0)
+    commander = IcomCommander(radio._civ_runtime.execute_civ_raw)
     radio._commander = commander
     commander.start()
     blocker = asyncio.create_task(

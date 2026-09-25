@@ -1922,6 +1922,269 @@ class TestResponseDeadlineOpensAtSend:
         assert frame.command == 0x03
 
 
+class _PacingClock:
+    """Controllable clock for the runtime send gate: only sleeps advance it.
+
+    Patches ``asyncio.sleep`` and ``time.monotonic`` inside
+    ``runtime/_civ_rx.py`` only, leaving the RX pump and wait_for machinery
+    on real time.  Each patched sleep advances the clock by its delay and
+    then yields once so parked tasks wake without any real delay.
+    """
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        self.now += max(0.0, delay)
+        await asyncio.sleep(0)
+
+
+def _install_pacing_clock(
+    monkeypatch: pytest.MonkeyPatch, *, gap: float
+) -> _PacingClock:
+    clock = _PacingClock()
+    clock.now = gap
+    monkeypatch.setattr("rigplane.runtime._civ_rx.time.monotonic", clock.monotonic)
+    monkeypatch.setattr("rigplane.runtime._civ_rx.asyncio.sleep", clock.sleep)
+    return clock
+
+
+class TestCivPacingIsSendToSend:
+    """The runtime send gate is the only CI-V pacer (MOR-2603).
+
+    ``IcomCommander`` serializes items in priority order but sleeps no gap
+    of its own; every send waits in ``_execute_civ_raw`` until
+    ``_civ_min_interval`` has passed since ``_last_civ_send_monotonic``,
+    which is stamped when the packet leaves the wire.  These tests pin the
+    gate's send-to-send arithmetic with a controllable clock, never real
+    sleeps.
+    """
+
+    @pytest.mark.asyncio
+    async def test_long_reply_sends_next_immediately(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A reply longer than the gap adds no extra gap after it."""
+        gap = 0.010
+        reply = 0.040
+        clock = _install_pacing_clock(monkeypatch, gap=gap)
+        radio._civ_min_interval = gap
+        radio._civ_ack_sink_grace = 0.0
+        radio._last_civ_send_monotonic = 0.0
+        starts: list[float] = []
+        original_send = mock_transport.send_tracked
+        first_civ = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
+        second_civ = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x04)
+        release_first_answer = asyncio.Event()
+        second_entered_gate = asyncio.Event()
+
+        async def slow_send(data: bytes) -> None:
+            starts.append(clock.now)
+            await original_send(data)
+            if len(starts) == 1:
+                await release_first_answer.wait()
+            else:
+                second_entered_gate.set()
+
+        monkeypatch.setattr(mock_transport, "send_tracked", slow_send)
+        try:
+            with patch.object(radio._civ_runtime, "start_pump"):
+                first_task = asyncio.create_task(radio._execute_civ_raw(first_civ))
+                while not mock_transport.sent_packets:
+                    await asyncio.sleep(0)
+                second_task = asyncio.create_task(radio._execute_civ_raw(second_civ))
+                while not second_entered_gate.is_set():
+                    mock_transport.queue_response(_freq_response(14_074_000))
+                    await asyncio.sleep(0)
+                release_first_answer.set()
+                first = await asyncio.wait_for(first_task, timeout=2.0)
+                mock_transport.queue_response(_freq_response(14_075_000))
+                second = await asyncio.wait_for(second_task, timeout=2.0)
+        finally:
+            radio._civ_request_tracker.fail_all(ConnectionError("test cleanup"))
+
+        assert first is not None and second is not None
+        assert radio._civ_request_tracker.pending_count == 0
+        assert starts[0] == gap
+        assert starts[1] >= gap + reply
+
+    @pytest.mark.asyncio
+    async def test_short_reply_waits_the_gap_from_the_send(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A reply shorter than the gap still waits one gap from the send."""
+        gap = 0.025
+        clock = _install_pacing_clock(monkeypatch, gap=gap)
+        radio._civ_min_interval = gap
+        radio._civ_ack_sink_grace = 0.0
+        radio._last_civ_send_monotonic = 0.0
+        starts: list[float] = []
+        original_send = mock_transport.send_tracked
+
+        async def slow_send(data: bytes) -> None:
+            starts.append(clock.now)
+            await original_send(data)
+
+        monkeypatch.setattr(mock_transport, "send_tracked", slow_send)
+        cmd = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
+        try:
+            with patch.object(radio._civ_runtime, "start_pump"):
+                for _ in range(3):
+                    task = asyncio.create_task(radio._execute_civ_raw(cmd))
+                    while len(mock_transport.sent_packets) < len(starts):
+                        await asyncio.sleep(0)
+                    mock_transport.queue_response(_freq_response(14_074_000))
+                    frame = await asyncio.wait_for(task, timeout=2.0)
+                    assert frame is not None
+        finally:
+            radio._civ_request_tracker.fail_all(ConnectionError("test cleanup"))
+
+        assert radio._civ_request_tracker.pending_count == 0
+        assert starts == [gap, gap + gap, gap + gap + gap]
+
+    @pytest.mark.asyncio
+    async def test_cancelled_wire_send_still_paces_the_next(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A send cancelled after the packet left still paces the next.
+
+        The fire-and-forget branch runs ``check_current()`` between
+        ``send_tracked`` and the ``_last_civ_send_monotonic`` stamp; when
+        the cancel (or the stale-attempt refusal) lands there, the stamp
+        must already be in place.
+        """
+        gap = 0.025
+        clock = _install_pacing_clock(monkeypatch, gap=gap)
+        radio._civ_min_interval = gap
+        radio._civ_ack_sink_grace = 0.0
+        radio._last_civ_send_monotonic = 0.0
+        starts: list[float] = []
+        original_send = mock_transport.send_tracked
+
+        async def slow_send(data: bytes) -> None:
+            starts.append(clock.now)
+            await original_send(data)
+
+        monkeypatch.setattr(mock_transport, "send_tracked", slow_send)
+        cmd = build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, _CMD_PTT, sub=_SUB_PTT, data=b"\x00"
+        )
+        try:
+            with patch.object(radio._civ_runtime, "start_pump"):
+                with pytest.raises(ConnectionError, match="stale"):
+                    await radio._execute_civ_raw(
+                        cmd, wait_response=False, is_current=lambda: False
+                    )
+                mock_transport.queue_response_on_send(2, _ack_response())
+                frame = await radio._execute_civ_raw(cmd)
+                assert frame is not None
+                assert frame.command == _CMD_ACK
+        finally:
+            radio._civ_request_tracker.fail_all(ConnectionError("test cleanup"))
+
+        assert radio._civ_request_tracker.pending_count == 0
+        # One gap while the caller waits; the second send leaves exactly
+        # one gap after the cancelled packet left the wire.
+        assert starts == [gap, gap + gap]
+        assert radio._last_civ_send_monotonic == gap + gap
+
+    @pytest.mark.asyncio
+    async def test_managed_ptt_is_spaced_on_both_sides(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A managed write between two sends waits the gap on each side."""
+        gap = 0.025
+        clock = _install_pacing_clock(monkeypatch, gap=gap)
+        radio._civ_min_interval = gap
+        radio._civ_ack_sink_grace = 0.0
+        radio._last_civ_send_monotonic = 0.0
+        observer: list[tx.ProviderPttObservation] = []
+        assert radio._capture_managed_tx_port(11, observer.append)
+        starts: list[float] = []
+        original_send = mock_transport.send_tracked
+
+        async def slow_send(data: bytes) -> None:
+            starts.append(clock.now)
+            await original_send(data)
+
+        monkeypatch.setattr(mock_transport, "send_tracked", slow_send)
+        cmd = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
+        try:
+            with patch.object(radio._civ_runtime, "start_pump"):
+                first_task = asyncio.create_task(radio._execute_civ_raw(cmd))
+                while not mock_transport.sent_packets:
+                    await asyncio.sleep(0)
+                mock_transport.queue_response(_freq_response(14_074_000))
+                first = await asyncio.wait_for(first_task, timeout=2.0)
+                assert first is not None
+                await radio._write_managed_ptt(11, True)
+                second_task = asyncio.create_task(radio._execute_civ_raw(cmd))
+                while len(mock_transport.sent_packets) < 3:
+                    await asyncio.sleep(0)
+                mock_transport.queue_response(_freq_response(14_075_000))
+                second = await asyncio.wait_for(second_task, timeout=2.0)
+                assert second is not None
+            await radio._retire_managed_tx_port(11)
+        finally:
+            radio._civ_request_tracker.fail_all(ConnectionError("test cleanup"))
+
+        assert starts == [gap, gap + gap, gap + gap + gap]
+        assert radio._last_civ_send_monotonic == gap + gap + gap
+
+    @pytest.mark.asyncio
+    async def test_blocking_sends_stay_one_outstanding(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The second blocking send leaves only after the first is answered."""
+        gap = 0.010
+        _install_pacing_clock(monkeypatch, gap=gap)
+        radio._civ_min_interval = gap
+        radio._civ_ack_sink_grace = 0.0
+        radio._last_civ_send_monotonic = 0.0
+        radio._civ_runtime.start_worker()
+        try:
+            cmd = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
+            first_task = asyncio.create_task(radio._send_civ_raw(cmd))
+            while not mock_transport.sent_packets:
+                await asyncio.sleep(0)
+            second_task = asyncio.create_task(radio._send_civ_raw(cmd))
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert len(mock_transport.sent_packets) == 1
+            assert not second_task.done()
+            mock_transport.queue_response(_freq_response(14_074_000))
+            first = await asyncio.wait_for(first_task, timeout=2.0)
+            assert first is not None
+            while len(mock_transport.sent_packets) < 2:
+                await asyncio.sleep(0)
+            mock_transport.queue_response(_freq_response(14_075_000))
+            second = await asyncio.wait_for(second_task, timeout=2.0)
+            assert second is not None
+        finally:
+            await radio._civ_runtime.stop_worker()
+            radio._civ_request_tracker.fail_all(ConnectionError("test cleanup"))
+
+        assert len(mock_transport.sent_packets) == 2
+
+
 class TestScopeCallbackSafety:
     """Scope callback failures must not break command routing."""
 

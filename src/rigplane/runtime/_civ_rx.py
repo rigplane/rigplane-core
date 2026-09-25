@@ -1320,10 +1320,7 @@ class CivRuntime:
         self._ensure_civ_runtime()
         self.start_pump()
         if self._host._commander is None:
-            self._host._commander = IcomCommander(
-                self.execute_civ_raw,
-                min_interval=self._host._civ_min_interval,
-            )
+            self._host._commander = IcomCommander(self.execute_civ_raw)
         self._host._commander.start()
 
     async def stop_worker(self) -> None:
@@ -3912,6 +3909,10 @@ class CivRuntime:
                 check_current()
                 pkt = self._wrap_civ(civ_frame)
                 await transport.send_tracked(pkt, **guard)
+                # The packet left the wire: stamp before the currency checks
+                # below so a cancel or a stale attempt still paces the next
+                # send from this one.
+                self._host._last_civ_send_monotonic = time.monotonic()
                 check_current()
             except (Exception, asyncio.CancelledError) as exc:
                 if ack_sink_token is not None:
@@ -3920,7 +3921,6 @@ class CivRuntime:
                     check_current()
                 raise
 
-            self._host._last_civ_send_monotonic = time.monotonic()
             return None
 
         await self._drain_ack_sinks_before_blocking(check_current=check_current)
