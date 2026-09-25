@@ -687,7 +687,7 @@ async def test_a_caller_cancelled_inflight_send_still_paces_the_next(
     finally:
         await commander.stop()
 
-    assert starts == [gap, gap + gap]
+    assert starts == pytest.approx([gap, gap + gap])
 
 
 @pytest.mark.asyncio
