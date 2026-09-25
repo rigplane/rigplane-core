@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any, Callable, cast
 
 from ..exceptions import CommandError
 from ..exceptions import ConnectionError as RadioConnectionError
+from ..core.exceptions import BackgroundSendDropped
 from ..core.exceptions import TimeoutError as RigplaneTimeoutError
 from ..capabilities import (
     CAP_AGC,
@@ -3666,7 +3667,9 @@ class RadioPoller:
         branch, MOR-1440's branch for any exception raised while the radio is
         disconnected, and the reconnection probe that clears the backoff on a
         ``_send_query()`` that returns. Once a scheduler is attached
-        ``_send_query`` has no other body, so swallowing anything here would
+        ``_send_query`` has no other body apart from swallowing
+        ``BackgroundSendDropped`` — a poll the commander dropped at its cap,
+        which is not a dead link — so swallowing anything else here would
         make that probe always succeed and announce a restored connection to a
         radio that is still down.
 
@@ -3768,7 +3771,10 @@ class RadioPoller:
 
     async def _send_query(self) -> None:
         if self._acquisition_scheduler is not None:
-            await self._send_scheduler_requests()
+            try:
+                await self._send_scheduler_requests()
+            except BackgroundSendDropped:
+                return
             return
         # Without a scheduler there is nothing left to send: the legacy meter
         # rotation that used to run here was unreachable in production
