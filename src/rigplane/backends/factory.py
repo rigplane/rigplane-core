@@ -90,12 +90,13 @@ def create_radio(config: BackendConfig) -> Radio:
             | type[Ic9700SerialRadio]
             | type[Icom7610SerialRadio]
         )
-        if model in ("X6100", "X6200"):
-            # Xiegu shares the IC-705 CI-V session (same default address
+        if model == "X6200":
+            # X6200 shares the IC-705 CI-V session (same default address
             # 0xA4 — see MOR-170, Hamlib's x6100_priv_caps reused by both
             # x6100_caps and x6200_caps). Its own subclass keeps the
             # unmeasured 50 ms gap; the command set still comes from the
-            # loaded rig via ``model``.
+            # loaded rig via ``model``. X6100 has no serial backend and
+            # stays refused.
             serial_class = XieguSerialRadio
         elif model == "IC-705":
             serial_class = Ic705SerialRadio
