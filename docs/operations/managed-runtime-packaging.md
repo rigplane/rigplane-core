@@ -11,7 +11,7 @@ runtime dependency contracts stay here in `rigplane-core`.
 |------|----------------|---------------------------|-------|
 | Serial control | `pyserial`, `pyserial-asyncio` | OS USB serial driver and device permissions | Required for USB CI-V and CAT backends. |
 | LAN audio codec | `opuslib` | `libopus` discoverable by the dynamic loader | Required for Opus encode/decode paths used by LAN audio and bridge transcoding. |
-| Local audio bridge | `sounddevice`, `numpy` | PortAudio | Required for BlackHole, VB-Cable, PipeWire, PulseAudio, and other local loopback devices. |
+| Local audio bridge | `sounddevice`, `numpy` | PortAudio | Required for the RigPlane Virtual Cable, VB-Cable, PipeWire, PulseAudio, and other local loopback devices. |
 | macOS USB audio lookup | stdlib `ctypes` | CoreAudio framework | Used to map PortAudio/sounddevice devices to stable CoreAudio UIDs where available. |
 | Optional DSP | `scipy` when enabled | platform wheels/native libraries | Not required for the minimum managed-runtime startup contract. |
 
@@ -19,7 +19,7 @@ runtime dependency contracts stay here in `rigplane-core`.
 
 | Platform | Serial/USB control | Local audio topology | Current support posture |
 |----------|--------------------|----------------------|-------------------------|
-| macOS | `/dev/cu.*` USB serial devices via `pyserial`; user may need device permissions | CoreAudio through PortAudio/sounddevice; BlackHole or Loopback for virtual bridge; direct radio USB audio appears as CoreAudio input/output devices | Best-covered development path. Minimum paid-v1 support should include direct LAN audio, USB serial control, and documented BlackHole/Loopback setup. |
+| macOS | `/dev/cu.*` USB serial devices via `pyserial`; user may need device permissions | CoreAudio through PortAudio/sounddevice; the RigPlane Virtual Cable for virtual bridge; direct radio USB audio appears as CoreAudio input/output devices | Best-covered development path. Minimum paid-v1 support should include direct LAN audio, USB serial control, and documented RigPlane Virtual Cable setup. |
 | Windows | COM ports via `pyserial`; radio/vendor driver may be required | PortAudio/sounddevice over WASAPI/MME/DirectSound; VB-Cable is the expected virtual bridge path | Supported target, but USB audio device naming and VB-Cable routing need release smoke before paid-v1. |
 | Linux | `/dev/ttyUSB*`/`/dev/ttyACM*`; user may need `dialout`/udev access | PortAudio/sounddevice over ALSA/PulseAudio/PipeWire; PipeWire loopback, PulseAudio null sink, or ALSA `snd-aloop` | Supported target for technical users; paid-v1 should document PipeWire/PulseAudio topology and package native dependencies explicitly. |
 
@@ -32,7 +32,7 @@ paths are green:
 
 | Platform | Minimum viable paid-v1 support |
 |----------|--------------------------------|
-| macOS | Pro bundle starts managed runtime, discovers LAN and USB serial candidates, reports structured startup/runtime status, and can route WSJT-X audio through LAN direct or a documented BlackHole/Loopback bridge. |
+| macOS | Pro bundle starts managed runtime, discovers LAN and USB serial candidates, reports structured startup/runtime status, and can route WSJT-X audio through LAN direct or a documented RigPlane Virtual Cable bridge. |
 | Windows | Pro bundle starts managed runtime, discovers LAN and COM-port candidates, includes/loads `libopus` and PortAudio/sounddevice successfully, and documents VB-Cable/manual device selection for WSJT-X. |
 | Linux | Pro package starts managed runtime, discovers LAN and USB serial candidates when permissions allow, includes/loads `libopus` and PortAudio/sounddevice successfully, and documents PipeWire/PulseAudio loopback setup. |
 

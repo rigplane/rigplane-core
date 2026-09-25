@@ -105,7 +105,7 @@ Example output:
   [0] IC-7610 USB Audio  (in=2, out=2)
   [1] Built-in Microphone  (in=2, out=0)
   [2] Built-in Output  (in=0, out=2)
-  [3] BlackHole 2ch  (in=2, out=2)
+  [3] RigPlane Virtual Cable Output  (in=0, out=2)
 ```
 
 The IC-7610 USB audio device is typically named `IC-7610 USB Audio` or similar.

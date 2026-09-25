@@ -150,7 +150,7 @@ def _usb_audio_contract(radio: Any) -> dict[str, Any] | None:
 
 
 # macOS device labels embed the local account name in parens, e.g.
-# ``"BlackHole 2ch (moroz's Mac)"`` or ``"... (Alice's MacBook Pro)"``.
+# ``"Speakers (moroz's Mac)"`` or ``"... (Alice's MacBook Pro)"``.
 # Match the wrapping ``(... 's <Mac variant> ...)`` and replace with a
 # stable redacted token. The non-greedy class avoids spanning closing parens.
 _MACOS_USER_LABEL = re.compile(

@@ -143,7 +143,7 @@ The bar for moving (or keeping) something Pro-only is narrow:
 Examples that pass the test (acceptable Pro features):
 
 - RC-28 USB HID controller integration — needs a desktop OS USB stack.
-- OS-level virtual audio routing (BlackHole, VB-Cable, loopback devices) —
+- OS-level virtual audio routing (RigPlane Virtual Cable, VB-Cable, loopback devices) —
   needs OS audio driver access.
 - Tauri global hotkeys, system tray, OS notifications — needs a desktop
   shell.

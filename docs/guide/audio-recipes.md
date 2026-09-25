@@ -87,7 +87,7 @@ uv run pytest tests/test_audio_pipeline_os_smoke.py -q -rs
 
 `RIGPLANE_OS_AUDIO_RX_DEVICE` is where the generated test tone is played.
 `RIGPLANE_OS_AUDIO_TX_DEVICE` is what rigplane captures and transmits. Use a
-loopback pair such as BlackHole, Loopback, VB-Cable, or PipeWire if you want
+loopback pair such as the RigPlane Virtual Cable, Loopback, VB-Cable, or PipeWire if you want
 the generated tone to feed TX capture without WSJT-X. The smoke skips unless
 `RIGPLANE_OS_AUDIO_SMOKE=1` and explicit devices are provided. Set
 `RIGPLANE_OS_AUDIO_SMOKE_FRAMES=<count>` to override the default 12 frames.
@@ -414,28 +414,30 @@ Run Web UI + audio bridge + rigctld in a single command:
 ```bash
 # Install (audio-bridge deps ship with the core install since v0.19)
 pip install rigplane
-brew install blackhole-2ch blackhole-16ch  # macOS
+# macOS: the RigPlane Virtual Audio Driver ships with RigPlane Pro
 
 # Start everything
 rigplane --host 192.168.1.100 --user USER --pass PASS \
-    web --bridge "BlackHole 2ch" --bridge-tx-device "BlackHole 16ch"
+    web --bridge "RigPlane Virtual Cable Output" --bridge-tx-device "RigPlane Virtual Cable Input"
 
 # WSJT-X settings:
 #   Radio: Hamlib NET rigctl, localhost:4532
-#   Audio Input:  BlackHole 2ch
-#   Audio Output: BlackHole 16ch
+#   Audio Input:  RigPlane Virtual Cable Input
+#   Audio Output: RigPlane Virtual Cable Output
 ```
 
 The direction matters:
 
-- `--bridge "BlackHole 2ch"` is the RX playback loopback:
-  **radio RX → rigplane → BlackHole 2ch → WSJT-X Input**.
-- `--bridge-tx-device "BlackHole 16ch"` is the TX capture loopback:
-  **WSJT-X Output → BlackHole 16ch → rigplane → radio TX**.
+- `--bridge "RigPlane Virtual Cable Output"` is the RX playback end of the cable:
+  **radio RX → rigplane → RigPlane Virtual Cable Output → WSJT-X Input**.
+- `--bridge-tx-device "RigPlane Virtual Cable Input"` is the TX capture end of the cable:
+  **WSJT-X Output → RigPlane Virtual Cable Input → rigplane → radio TX**.
 
-Use two separate loopback devices for bidirectional operation. Reusing one
-device for both WSJT-X input and output can feed rigplane's RX audio back into
-its TX capture path.
+The RigPlane cable is a single loopback: audio played into the Output end
+appears on the Input end. In the web server, captured audio reaches the
+radio only while a managed transmit authority is keyed, or while observed
+PTT is not OFF; radios without managed transmit keep receiving all
+non-silent captured audio.
 
 Serial USB-audio radios use the same direction. The shared serial audio backend
 arms PCM TX for IC-705, IC-7300, IC-9700, X6200, and related USB-audio
@@ -456,7 +458,7 @@ The audio bridge runs the TX path (reading from the virtual device and sending t
    ```python
    from concurrent.futures import ThreadPoolExecutor
    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bridge-tx")
-   bridge = AudioBridge(radio, device_name="BlackHole 2ch", tx_executor=executor)
+    bridge = AudioBridge(radio, device_name="RigPlane Virtual Cable Output", tx_executor=executor)
    ```
    You can use `max_workers=1` or `2`; the bridge only runs one TX read at a time.
 

@@ -163,19 +163,16 @@ async with radio:
 
 ### WSJT-X Integration
 
-Use macOS BlackHole (or Loopback) to bridge rigplane audio to WSJT-X:
+On macOS, bridge rigplane audio to WSJT-X through the RigPlane Virtual Cable
+(the RigPlane Virtual Audio Driver is installed by RigPlane Pro):
 
-1. **Install BlackHole 2ch**: https://github.com/ExistentialAudio/BlackHole
-2. **Create aggregate device**:
-   - Audio Midi Setup → + → "IC-7300 Bridge"
-   - Add "IC-7300" input + "BlackHole 2ch" output
-3. **Start audio bridge**:
-   ```bash
-   rigplane --model IC-7300 audio bridge --serial-port ic-7300-usb-in --loopback "BlackHole 2ch"
-   ```
-4. **WSJT-X settings**:
-   - Input Device: "IC-7300 Bridge"
-   - Output Device: "BlackHole 2ch" or USB audio device
+1. Start the audio bridge against the cable ends:
+    ```bash
+    rigplane --model IC-7300 audio bridge --device "RigPlane Virtual Cable Output" --tx-device "RigPlane Virtual Cable Input"
+    ```
+2. **WSJT-X settings**:
+    - Input Device: "RigPlane Virtual Cable Input"
+    - Output Device: "RigPlane Virtual Cable Output"
 
 ## Troubleshooting
 

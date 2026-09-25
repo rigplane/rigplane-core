@@ -38,7 +38,7 @@ rigplane-pro contract and **must remain stable**.
   subscriber — never swallowed — with the failed subscriber rolled
   back.
 - **`audio/bridge.py` — `AudioBridge`**: pure session consumer +
-  device-side loopback pump (BlackHole / PipeWire null-sink / VB-Cable
+  device-side loopback pump (RigPlane Virtual Cable / PipeWire null-sink / VB-Cable
   → WSJT-X/fldigi). Declares RX demand and a TX lease on
   `radio.audio_session`; owns no radio-side ordering (the old
   `rx_first` branch is gone) and no radio-side recovery — only

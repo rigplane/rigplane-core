@@ -334,7 +334,7 @@ Central audio distribution hub for multi-consumer audio streaming:
 ```
 Radio (opus RX) → AudioBus._on_opus_packet()
                     → AudioSubscription("web-audio")   → WebSocket clients
-                    → AudioSubscription("audio-bridge") → BlackHole → WSJT-X
+                    → AudioSubscription("audio-bridge") → RigPlane Virtual Cable → WSJT-X
                     → AudioSubscription("recorder")     → WAV file
 ```
 
@@ -342,7 +342,7 @@ Radio (opus RX) → AudioBus._on_opus_packet()
 
 Bidirectional PCM bridge between radio and virtual audio devices:
 
-- RX: opus → decode → PCM → sounddevice OutputStream → BlackHole/Loopback
+- RX: opus → decode → PCM → sounddevice OutputStream → RigPlane Virtual Cable/Loopback
 - TX: sounddevice InputStream → noise gate → opus encode → radio
 - Uses AudioBus subscription (shares RX stream with other consumers)
 - Dependencies: `sounddevice`, `numpy`, `opuslib` ship with the core install (since v0.19, #1090)
@@ -687,7 +687,7 @@ flowchart TD
         AudioBus[AudioBus\naudio_bus.py]
         WsAudio[WebSocket\nclients]
         Bridge[AudioBridge\naudio_bridge.py]
-        BlackHole[BlackHole /\nLoopback]
+        RigCable[RigPlane Virtual Cable /\nLoopback]
         WSJTX[WSJT-X /\nfldigi]
     end
 
@@ -710,8 +710,8 @@ flowchart TD
     AudioStream --> AudioBus
     AudioBus -->|Opus/PCM| WsAudio
     AudioBus --> Bridge
-    Bridge --> BlackHole
-    BlackHole --> WSJTX
+    Bridge --> RigCable
+    RigCable --> WSJTX
 ```
 
 ## Key Design Decisions
@@ -814,7 +814,7 @@ flowchart LR
     CivRxM --> RStat
 ```
 
-### Audio: IC-7610 → AudioBus → [WebSocket, Bridge → BlackHole → WSJT-X]
+### Audio: IC-7610 → AudioBus → [WebSocket, Bridge → RigPlane Virtual Cable → WSJT-X]
 
 ```mermaid
 flowchart TD
@@ -826,7 +826,7 @@ flowchart TD
     WsBcast -->|PCM16 binary frames| WsClients[Browser\nWeb Audio API]
     Bridge -->|opus_to_pcm| Xcode[_audio_transcoder.py]
     Xcode -->|s16le PCM| SndDev[sounddevice OutputStream]
-    SndDev --> BH[BlackHole / Loopback]
+    SndDev --> BH[RigPlane Virtual Cable / Loopback]
     BH --> WSJTX[WSJT-X / fldigi]
 ```
 
