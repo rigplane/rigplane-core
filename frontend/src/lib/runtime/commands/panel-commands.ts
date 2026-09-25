@@ -1193,7 +1193,7 @@ export function makeRxAudioHandlers() {
 
       if (mode === 'mute') {
         runtime.setMuted(true);
-        dispatchRadioIntent({ name: 'set_monitor_mute', params: { on: false } });
+        dispatchRadioIntent({ name: 'set_monitor_mute', params: { on: true } });
       } else {
         runtime.setMuted(false);
         unmuteServerMonitor();
