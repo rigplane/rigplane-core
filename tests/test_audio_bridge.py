@@ -799,6 +799,14 @@ async def test_bridge_tx_silence_gate_counts_suppressed_frames_separately():
     radio.push_audio_tx_pcm.assert_not_awaited()
 
 
+async def _closed() -> bool:
+    return False
+
+
+async def _open() -> bool:
+    return True
+
+
 def _loud_frame(sample: int) -> bytes:
     return sample.to_bytes(2, "little", signed=True) * SAMPLES_PER_FRAME
 
@@ -848,14 +856,7 @@ async def test_opening_gate_drops_frames_queued_while_closed():
         sent.append(frame)
 
     radio = _bare_radio(push_audio_tx_pcm=AsyncMock(side_effect=push_audio_tx_pcm))
-    closed_checks = 0
-
-    async def gate() -> bool:
-        nonlocal closed_checks
-        closed_checks += 1
-        return closed_checks > 2
-
-    bridge = AudioBridge(radio, tx_gate=gate)
+    bridge = AudioBridge(radio, tx_gate=lambda: _closed())
     bridge._running = True
     bridge._tx_stream = types.SimpleNamespace(running=True)
     echo = _loud_frame(1000)
@@ -869,8 +870,9 @@ async def test_opening_gate_drops_frames_queued_while_closed():
         await asyncio.sleep(0)
     bridge._running = False
     await bridge._tx_task
+
+    bridge._tx_gate = lambda: _open()
     bridge._running = True
-    closed_checks = 0
     bridge._enqueue_tx(echo)
     bridge._enqueue_tx(later)
     bridge._tx_task = asyncio.create_task(bridge._tx_loop())
