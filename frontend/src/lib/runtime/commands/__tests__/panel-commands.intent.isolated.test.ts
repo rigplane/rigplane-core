@@ -444,15 +444,17 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expectIntentTransport();
   });
 
-  it('preserves browser-local RX effects while radio AF commands use observed truth and typed lifecycle', () => {
+  it('mutes through the server monitor MUTE and unmutes only while the server says it is on (MOR-2583)', () => {
     const rxAudio = makeRxAudioHandlers();
     rxAudio.onMonitorModeChange('mute');
     rxAudio.onMonitorModeChange('local');
     rxAudio.onAfLevelChange(0.42);
 
+    // MUTE is one server command, never a client-side AF zero-write; the
+    // fixture state carries no `monitorMute.on`, so leaving MUTE restores
+    // nothing — a client that never muted must not unmute stale levels.
     expect(exactCalls()).toEqual([
-      ['set_af_level', { level: 0, receiver: 0, level_unit: 'normalized' }],
-      ['set_af_level', { level: 50 / 255, receiver: 0, level_unit: 'normalized' }],
+      ['set_monitor_mute', { on: true }],
       ['set_af_level', { level: 0.42, receiver: 0, level_unit: 'normalized' }],
     ]);
     expectIntentTransport();
@@ -469,6 +471,18 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(h.setRxVolume).toHaveBeenCalledWith(0.37);
     expect(h.setVolume).toHaveBeenCalledWith(37);
     expect(h.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('unmutes through the server monitor MUTE when the server says it is on (MOR-2583)', () => {
+    h.state = { ...state(), monitorMute: { on: true, savedAf: { main: 50 / 255 } } };
+    const rxAudio = makeRxAudioHandlers();
+    for (const mode of ['local', 'radio', 'live']) {
+      h.sendCommand.mockClear();
+      resetCommandLifecycle();
+      rxAudio.onMonitorModeChange(mode);
+      expect(exactCalls()).toEqual([['set_monitor_mute', { on: false }]]);
+    }
+    expectIntentTransport();
   });
 
   it('rejects invalid normalized AF input before radio lifecycle or transport', () => {
@@ -518,18 +532,19 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(getCommandLifecycles()).toHaveLength(0);
   });
 
-  it('never turns an invalid observed AF level into a mute or restore command', () => {
+  it('mutes through the server command regardless of the observed AF level (MOR-2583)', () => {
     const rxAudio = makeRxAudioHandlers();
     for (const level of [-0.01, 1.01, 10, Number.NaN, Number.POSITIVE_INFINITY]) {
       h.state = state();
       h.state!.main!.afLevel = level;
+      h.sendCommand.mockClear();
+      resetCommandLifecycle();
       rxAudio.onMonitorModeChange('mute');
-      rxAudio.onMonitorModeChange('local');
+      expect(exactCalls()).toEqual([['set_monitor_mute', { on: true }]]);
     }
 
     expect(h.setMuted).toHaveBeenCalled();
-    expect(h.sendCommand).not.toHaveBeenCalled();
-    expect(getCommandLifecycles()).toHaveLength(0);
+    expect(getCommandLifecycles()).toHaveLength(1);
   });
 
   it('routes the complete CW factory through exact non-PTT lifecycle without optimistic truth', () => {

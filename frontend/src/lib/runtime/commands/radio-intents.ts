@@ -15,6 +15,10 @@ const intentSpecs = [
     'set_main_sub_tracking', 'set_monitor', 'set_powerstat', 'set_rit_status', 'set_rit_tx_status',
     'set_rx_antenna_ant1', 'set_rx_antenna_ant2', 'set_scope_during_tx', 'set_scope_hold', 'set_split', 'set_vox',
   ], params: { on: 'boolean' } },
+  // MOR-2583 PR2: the server owns monitor MUTE (saved AF lives in the
+  // server process and survives a page reload); the page only sends the
+  // intent, exactly like the other top-level boolean commands above.
+  { names: ['set_monitor_mute'], params: { on: 'boolean' } },
   { names: ['set_auto_notch', 'set_digisel', 'set_ip_plus', 'set_manual_notch', 'set_nb', 'set_nr', 'set_twin_peak'], params: { on: 'boolean', receiver: 'receiver' } },
   // MOR-2111 PR2 — the repeater tone family (OFF/TONE/TSQL selector + the
   // CTCSS tone frequency stepper). The receiver rides every command.

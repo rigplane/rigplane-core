@@ -1048,7 +1048,10 @@ export function toRxAudioProps(
   const rx = state ? activeRx(state) : null;
   const hasLiveAudio = hasCap(caps, 'audio');
   const hasAfLevel = hasCap(caps, 'af_level') || hasLiveAudio;
-  const monitorMode = audioState.muted
+  // MOR-2583: monitor MUTE lives on the server and survives a page reload,
+  // while the client-side `muted` flag does not — so the server's word wins.
+  // A payload without `monitorMute` (older server) keeps today's behaviour.
+  const monitorMode = state?.monitorMute?.on === true || audioState.muted
     ? 'mute'
     : audioState.rxEnabled && hasLiveAudio
       ? 'live'
