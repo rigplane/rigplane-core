@@ -3,7 +3,10 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe('fetchCapabilities', () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
 
   function makeCapabilities(overrides: Record<string, unknown> = {}) {
     return {
@@ -30,10 +33,10 @@ describe('fetchCapabilities', () => {
   }
 
   function mockCapabilities(payload: unknown) {
-    globalThis.fetch = vi.fn().mockResolvedValue({
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       json: () => Promise.resolve(payload),
-    });
+    }));
   }
 
   it('returns the same validated raw object with additive extensions intact', async () => {
@@ -220,14 +223,17 @@ describe('fetchCapabilities', () => {
 });
 
 describe('fetchInfo', () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
 
   it('returns parsed InfoResponse', async () => {
     const info = { version: '0.1.0', revision: 5, updatedAt: '2026-03-07T00:00:00Z', uptime: 42 };
-    globalThis.fetch = vi.fn().mockResolvedValue({
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       json: () => Promise.resolve(info),
-    });
+    }));
 
     const { fetchInfo } = await import('../http-client');
     const result = await fetchInfo();

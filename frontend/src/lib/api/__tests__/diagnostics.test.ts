@@ -61,6 +61,7 @@ function fakeErrorResponse(status: number, body: unknown, statusText = 'Error'):
 describe('previewBundle', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     try {
       globalThis.localStorage?.clear?.();
     } catch {
@@ -70,7 +71,7 @@ describe('previewBundle', () => {
 
   it('POSTs to /api/v1/diagnose/preview with JSON body', async () => {
     const fetchMock = vi.fn().mockResolvedValue(fakeOkResponse(makePreviewResponse()));
-    globalThis.fetch = fetchMock;
+    vi.stubGlobal('fetch', fetchMock);
 
     const result = await previewBundle({
       description: 'Audio dropouts',
@@ -122,7 +123,7 @@ describe('previewBundle', () => {
     });
 
     const fetchMock = vi.fn().mockResolvedValue(fakeOkResponse(makePreviewResponse()));
-    globalThis.fetch = fetchMock;
+    vi.stubGlobal('fetch', fetchMock);
 
     await request();
 
@@ -135,7 +136,7 @@ describe('previewBundle', () => {
     const fetchMock = vi.fn().mockResolvedValue(
       fakeErrorResponse(403, { error: 'origin_mismatch', message: 'Bad origin' }, 'Forbidden'),
     );
-    globalThis.fetch = fetchMock;
+    vi.stubGlobal('fetch', fetchMock);
 
     await expect(previewBundle({})).rejects.toBeInstanceOf(DiagnosticsApiError);
     try {
@@ -152,7 +153,7 @@ describe('previewBundle', () => {
     const fetchMock = vi.fn().mockResolvedValue(
       fakeErrorResponse(500, null, 'Internal Server Error'),
     );
-    globalThis.fetch = fetchMock;
+    vi.stubGlobal('fetch', fetchMock);
 
     try {
       await previewBundle({});
@@ -170,6 +171,7 @@ describe('previewBundle', () => {
 describe('sendBundle', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     try {
       globalThis.localStorage?.clear?.();
     } catch {
@@ -179,7 +181,7 @@ describe('sendBundle', () => {
 
   it('POSTs CSRF token + consent flag', async () => {
     const fetchMock = vi.fn().mockResolvedValue(fakeOkResponse(makeReportSubmitted()));
-    globalThis.fetch = fetchMock;
+    vi.stubGlobal('fetch', fetchMock);
 
     const result = await sendBundle('prev-abc', 'csrf-xyz');
 
@@ -193,9 +195,9 @@ describe('sendBundle', () => {
   });
 
   it('surfaces rate_limited error code', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
       fakeErrorResponse(429, { error: 'rate_limited', message: 'Try again later' }),
-    );
+    ));
 
     try {
       await sendBundle('prev-abc', 'csrf-xyz');
@@ -208,13 +210,13 @@ describe('sendBundle', () => {
   });
 
   it('carries retry_after_seconds from the server response body', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
       fakeErrorResponse(429, {
         error: 'rate_limited',
         message: 'Try again later',
         retry_after_seconds: 30,
       }),
-    );
+    ));
 
     try {
       await sendBundle('prev-abc', 'csrf-xyz');
@@ -230,17 +232,20 @@ describe('sendBundle', () => {
 // ─── saveBundle ──────────────────────────────────────────────────────────────
 
 describe('saveBundle', () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
 
   it('returns a Blob when server responds 200', async () => {
     const fakeBlob = new Blob(['zip-bytes']);
-    globalThis.fetch = vi.fn().mockResolvedValue({
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
       statusText: 'OK',
       blob: () => Promise.resolve(fakeBlob),
       json: () => Promise.resolve({}),
-    } as unknown as Response);
+    } as unknown as Response));
 
     const blob = await saveBundle('prev-abc', 'csrf-xyz');
     expect(blob).toBeInstanceOf(Blob);
@@ -254,7 +259,7 @@ describe('saveBundle', () => {
       blob: () => Promise.resolve(new Blob()),
       json: () => Promise.resolve({}),
     } as unknown as Response);
-    globalThis.fetch = fetchMock;
+    vi.stubGlobal('fetch', fetchMock);
 
     await saveBundle('prev-abc', 'csrf-xyz');
 
@@ -264,9 +269,9 @@ describe('saveBundle', () => {
   });
 
   it('throws DiagnosticsApiError on 4xx', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
       fakeErrorResponse(404, { error: 'preview_not_found', message: 'gone' }),
-    );
+    ));
     await expect(saveBundle('prev-abc', 'csrf-xyz')).rejects.toBeInstanceOf(
       DiagnosticsApiError,
     );
@@ -276,7 +281,10 @@ describe('saveBundle', () => {
 // ─── deletePreview ───────────────────────────────────────────────────────────
 
 describe('deletePreview', () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
 
   it('DELETEs /api/v1/diagnose/preview/{id} with CSRF header', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
@@ -285,7 +293,7 @@ describe('deletePreview', () => {
       statusText: 'No Content',
       json: () => Promise.resolve({}),
     } as unknown as Response);
-    globalThis.fetch = fetchMock;
+    vi.stubGlobal('fetch', fetchMock);
 
     await deletePreview('prev-abc', 'csrf-xyz');
 
@@ -296,9 +304,9 @@ describe('deletePreview', () => {
   });
 
   it('throws DiagnosticsApiError on 4xx', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
       fakeErrorResponse(403, { error: 'forbidden', message: 'csrf bad' }),
-    );
+    ));
     await expect(deletePreview('prev-abc', 'csrf-xyz')).rejects.toBeInstanceOf(
       DiagnosticsApiError,
     );
