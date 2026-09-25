@@ -2881,7 +2881,8 @@ class WebServer:
         except Exception:
             logger.debug("audio-bridge: TX gate failed open", exc_info=True)
             return True
-        return observed is not ObservedPtt.OFF
+        keyed = projection.state.intent.kind is not ManagedTxIntentKind.RX
+        return keyed or observed is not ObservedPtt.OFF
 
     async def start_audio_bridge(
         self,
