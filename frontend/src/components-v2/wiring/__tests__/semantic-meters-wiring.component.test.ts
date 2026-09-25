@@ -1,7 +1,7 @@
 /**
  * MOR-1273 — the semantic meters surface wired into `SemanticRadioSurfaces`.
  *
- * The unit tests in `semantic/__tests__/MetersSurface.test.ts` prove what the
+ * The unit tests in `semantic/__tests__/MetersSurface.isolated.test.ts` prove what the
  * surface does with a view model. This file proves the thing only the composed
  * tree can prove: WHERE the meters' TX truth comes from.
  *
@@ -607,7 +607,7 @@ describe('meter TX relevance follows the App TX authority and nothing else', () 
   // for it to read; the composed-tree "no second derivation" guarantee for
   // SWR specifically is re-asserted just below instead, through the real
   // rendered `data-lower-fault` attribute on the same mounted tree — not a
-  // unit-level mock. (`MetersSurface.test.ts` and
+  // unit-level mock. (`MetersSurface.isolated.test.ts` and
   // `LinearSMeter.lower-scale.test.ts` separately cover the fault VALUE
   // logic at the unit level; this block only needs to prove the composed
   // tree wires the same authority through to this DOM location.)

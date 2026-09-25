@@ -674,7 +674,7 @@ export function makeDspHandlers() {
         // a bug (owner-decided: keep this behavior). Dispatch-order pin:
         // panel-commands.intent.isolated.test.ts:396. Rendered-armed pin
         // (both buttons show data-armed together): mor1536-armed-adoption
-        // .test.ts, "DspPanel notch armed signal".
+        // .isolated.test.ts, "DspPanel notch armed signal".
         dispatchRadioIntent({ name: 'set_auto_notch', params: { on: false, receiver } });
         dispatchRadioIntent({ name: 'set_manual_notch', params: { on: false, receiver } });
       }

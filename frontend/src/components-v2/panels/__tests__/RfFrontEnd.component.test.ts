@@ -64,7 +64,7 @@ const mockHandlers = {
 
 // MOR-1536: RfFrontEnd now also reads the preamp/attenuator armed signals —
 // default unarmed here, this file's tests are not about that behavior
-// (covered by `mor1536-armed-adoption.test.ts`).
+// (covered by `mor1536-armed-adoption.isolated.test.ts`).
 const unarmed = { armed: false, value: null };
 
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
