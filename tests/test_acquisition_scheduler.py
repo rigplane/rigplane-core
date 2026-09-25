@@ -1083,9 +1083,9 @@ def test_ic7610_real_profile_comp_vd_id_meters_are_enrolled_and_sent() -> None:
     """MOR-485/MOR-2540/MOR-2590: comp/vd/id are enrolled and poll.
 
     vd is unconditional supply telemetry: due and sent while PTT is false
-    (RX). comp (``tx_only = true`` in rigs/ic7610.toml since MOR-2540) and id
-    (the tx_meter acquisition class since MOR-2590) are TX-only meters, so
-    the scheduler gates them on PTT exactly like the IC-7300 tx_only cases:
+    (RX). comp and id are TX-only meters (``tx_only = true`` in
+    rigs/ic7610.toml: comp since MOR-2540, id since MOR-2590), so the
+    scheduler gates them on PTT exactly like the IC-7300 tx_only cases:
     not due and never sent while ``tx_active`` is false, fired immediately
     once ``tx_active`` is true.
     """

@@ -2145,6 +2145,9 @@ def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
         ("IC-7300", "global.meters.swr"),
         ("IC-7610", "global.meters.alc"),
         ("IC-7610", "global.meters.comp"),
+        # MOR-2590: a coordinator decision, not a probe: id gets the gate
+        # the other four IC-7610 TX meters carry.
+        ("IC-7610", "global.meters.id"),
         ("IC-7610", "global.meters.power"),
         ("IC-7610", "global.meters.swr"),
         ("IC-9700", "global.meters.alc"),
@@ -2367,11 +2370,8 @@ def test_ic7610_declares_a_polled_1c03_tx_target() -> None:
     capability = acquisition.capability_for(_TX_TARGET_PATH)
     assert capability.can_poll is True
     policy = acquisition.policy_for(_TX_TARGET_PATH)
-    # MOR-2590: the control acquisition class sets its cadence and TTL.
-    assert _TX_TARGET_PATH not in acquisition.field_policies
-    assert policy == acquisition_policy_for_class(AcquisitionClass.CONTROL)
-    assert policy.cadence_seconds is not None
-    assert policy.freshness_ttl_seconds is not None
+    assert policy.cadence_seconds == 1.0
+    assert policy.freshness_ttl_seconds == 4.0
     assert policy.freshness_ttl_seconds >= 2 * policy.cadence_seconds
     assert policy.adaptive_decay.enabled is False
     assert profile.command_map is not None
@@ -2456,3 +2456,19 @@ def test_every_ic7610_field_policy_override_states_its_reason() -> None:
     )
     assert acquisition.field_policies
     assert not missing, f"IC-7610 overrides without a reason: {missing}"
+
+
+def test_ic7610_id_meter_is_gated_on_ptt_like_the_other_tx_meters() -> None:
+    """MOR-2590: id polls only in TX and is discarded on dekey, through the
+    same PTT ``available_when`` clause the Po/SWR/ALC/COMP entries carry."""
+
+    acquisition = get_radio_profile("IC-7610").state_acquisition
+    assert acquisition is not None
+    ptt = FieldPath.global_("tx_state", "ptt")
+    clause = AvailabilityClause(field=ptt, operator="equals", value=True)
+    id_policy = acquisition.field_policies[FieldPath.global_("meters", "id")]
+    power_policy = acquisition.field_policies[FieldPath.global_("meters", "power")]
+
+    assert id_policy.tx_only is True
+    assert id_policy.available_when == (clause,)
+    assert power_policy.available_when == (clause,)

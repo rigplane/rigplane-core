@@ -386,6 +386,22 @@ available_when = [
     { field = "global.tx_state.ptt", equals = true },
 ]
 
+[state_acquisition.field_policies."global.meters.id"]
+reason = "available_when: absent while PTT reads false, so the last TX reading is discarded on dekey, as for Po/SWR/ALC/COMP (MOR-2540)"
+cadence_seconds = 0.25
+freshness_ttl_seconds = 2.0
+adaptive_decay = false
+tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
+
+[state_acquisition.field_policies."global.tx_state.tx_target"]
+reason = "TUNE fails closed while tx_target is not FRESH, so its 4.0 s TTL blocks TUNE within 4 s of the 1C 03 readings stopping (MOR-2540)"
+cadence_seconds = 1.0
+freshness_ttl_seconds = 4.0
+adaptive_decay = false
+
 # ── Parameterized Capabilities ───────────────────────────────────
 
 [attenuator]
@@ -669,7 +685,7 @@ equal_main_sub = [0xB1]  # MAIN = SUB receiver equalize (issue #710)
 # readback (get_split) is ON. An unknown or stale split fact withdraws the
 # label: the reply publishes an unknown target, which both credits the read
 # request and fails closed -- TUNE blocks from that reply on; until it
-# arrives, the last FRESH target can stay valid up to its own TTL.
+# arrives, the last FRESH target can stay valid up to its own 4.0s TTL.
 tx_receiver_rule = "main_unless_split"
 
 # ── Frequency Ranges ─────────────────────────────────────────────

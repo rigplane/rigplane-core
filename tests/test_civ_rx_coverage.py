@@ -5319,16 +5319,11 @@ def test_update_radio_state_direct_tx_frequency_stamps_profile_declared_max_age(
     radio_with_state: IcomRadio,
 ) -> None:
     # Full directed IC-7610 response: 1C/03 + 7.100 MHz in five-byte BCD.
-    # max_age is the tx_target TTL the IC-7610 profile resolves (its
-    # acquisition-class policy since MOR-2590), not the profile-default TTL.
+    # max_age is the profile's declared tx_target TTL (MOR-2540:
+    # rigs/ic7610.toml field_policies."global.tx_state.tx_target"), no longer
+    # the profile-default TTL this field inherited before it was declared.
     # A FRESH split=OFF readback licenses the MAIN label (the reply itself
     # carries no receiver).
-    acquisition = radio_with_state._profile.state_acquisition  # noqa: SLF001
-    assert acquisition is not None
-    tx_target_ttl = acquisition.policy_for(
-        FieldPath.global_("tx_state", "tx_target")
-    ).freshness_ttl_seconds
-    assert tx_target_ttl != acquisition.default_policy.freshness_ttl_seconds
     _feed_selected_and_split(radio_with_state, selected_sub=False, split_on=False)
     frame = parse_civ_frame(bytes.fromhex(_TX_FREQ_REPLY))
     radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
@@ -5338,7 +5333,7 @@ def test_update_radio_state_direct_tx_frequency_stamps_profile_declared_max_age(
     assert field.value == KnownTxTarget(
         receiver="MAIN", slot=None, frequency_hz=7_100_000
     )
-    assert field.max_age == tx_target_ttl
+    assert field.max_age == 4.0
     radio_with_state._state_store.mark_stale_due(
         now=field.last_observed_monotonic + field.max_age + 0.001
     )
