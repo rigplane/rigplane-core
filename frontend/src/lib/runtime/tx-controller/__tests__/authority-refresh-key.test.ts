@@ -1,7 +1,7 @@
 // MOR-2607: an idle page must not refetch GET /api/v1/managed-transmit on
 // every radio observation — only when a TX input changes.
 import { describe, expect, it } from 'vitest';
-import { managedTxAuthorityKey } from '../authority-refresh-key';
+import { managedTxAuthorityKey, ManagedTxAuthorityRefreshGate } from '../authority-refresh-key';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 
@@ -41,39 +41,63 @@ const baseCaps = {
   txBands: [{ start: 100, end: 200 }],
 } as unknown as Capabilities;
 
-describe('managedTxAuthorityKey (MOR-2607)', () => {
-  it('an idle stream of observation-only frames keeps one key: 0 refetches', () => {
-    const keys = new Set<string>();
+/** One idle observation frame: a NEW state object, counters advanced, the
+ * ptt poll timestamp advanced — but nothing TX-relevant changed. */
+const idleFrame = (state: ServerState, frame: number): ServerState => ({
+  ...state,
+  stateRevision: state.stateRevision + 1,
+  freshnessRevision: state.freshnessRevision + 1,
+  observationSeq: state.observationSeq + 1,
+  fieldStatus: {
+    ...state.fieldStatus,
+    ptt: field(frame + 2),
+    'main.sMeter': field(frame + 2),
+  },
+  main: { ...state.main, sMeter: frame },
+}) as unknown as ServerState;
+
+describe('managedTxAuthorityKey + refresh gate (MOR-2607)', () => {
+  it('an idle stream of observation-only frames causes 0 refreshes', () => {
+    const gate = new ManagedTxAuthorityRefreshGate();
     let state = baseState;
+    let refreshes = 0;
     for (let frame = 0; frame < 10; frame += 1) {
-      state = {
-        ...state,
-        stateRevision: state.stateRevision + 1,
-        freshnessRevision: state.freshnessRevision + 1,
-        observationSeq: state.observationSeq + 1,
-        fieldStatus: { ...state.fieldStatus, 'main.sMeter': field(frame + 2) },
-        main: { ...state.main, sMeter: frame },
-      } as unknown as ServerState;
-      keys.add(managedTxAuthorityKey(state, baseCaps));
+      state = idleFrame(state, frame);
+      if (gate.shouldRefresh(managedTxAuthorityKey(state, baseCaps))) refreshes += 1;
     }
-    expect(keys.size).toBe(1);
+    expect(refreshes).toBe(0);
   });
 
-  it('a ptt change moves the key: exactly 1 refetch', () => {
-    const before = managedTxAuthorityKey(baseState, baseCaps);
-    const after = managedTxAuthorityKey(
-      { ...baseState, ptt: true, fieldStatus: { ...baseState.fieldStatus, ptt: field(2) } } as unknown as ServerState,
-      baseCaps,
-    );
-    expect(after).not.toBe(before);
+  it('a ptt value change causes exactly 1 refresh', () => {
+    const gate = new ManagedTxAuthorityRefreshGate();
+    let refreshes = 0;
+    const observe = (state: ServerState) => {
+      if (gate.shouldRefresh(managedTxAuthorityKey(state, baseCaps))) refreshes += 1;
+    };
+    observe(baseState);
+    observe(idleFrame(baseState, 0));
+    observe({ ...baseState, ptt: true, fieldStatus: { ...baseState.fieldStatus, ptt: field(9) } } as unknown as ServerState);
+    observe(idleFrame({ ...baseState, ptt: true } as unknown as ServerState, 1));
+    expect(refreshes).toBe(2);
   });
 
-  it('a providerGeneration change moves the key: exactly 1 refetch', () => {
-    const before = managedTxAuthorityKey(baseState, baseCaps);
-    const after = managedTxAuthorityKey(
-      { ...baseState, providerGeneration: 4 } as unknown as ServerState,
-      baseCaps,
-    );
-    expect(after).not.toBe(before);
+  it('a providerGeneration change causes exactly 1 refresh', () => {
+    const gate = new ManagedTxAuthorityRefreshGate();
+    let refreshes = 0;
+    const observe = (state: ServerState) => {
+      if (gate.shouldRefresh(managedTxAuthorityKey(state, baseCaps))) refreshes += 1;
+    };
+    observe(baseState);
+    observe(idleFrame(baseState, 0));
+    observe({ ...baseState, providerGeneration: 4 } as unknown as ServerState);
+    expect(refreshes).toBe(2);
+  });
+
+  it('repeating the same key never refreshes again', () => {
+    const gate = new ManagedTxAuthorityRefreshGate();
+    const key = managedTxAuthorityKey(baseState, baseCaps);
+    expect(gate.shouldRefresh(key)).toBe(true);
+    expect(gate.shouldRefresh(key)).toBe(false);
+    expect(gate.shouldRefresh(key)).toBe(false);
   });
 });

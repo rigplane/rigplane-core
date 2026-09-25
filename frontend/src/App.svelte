@@ -7,7 +7,7 @@
   import type { AppResource, ResourceLease } from '$lib/runtime/resource-demand';
   import { systemController } from '$lib/runtime/system-controller';
   import { provideManagedAppTxHost } from '$lib/runtime/tx-controller/managed-app-host';
-  import { managedTxAuthorityKey } from '$lib/runtime/tx-controller/authority-refresh-key';
+  import { managedTxAuthorityKey, ManagedTxAuthorityRefreshGate } from '$lib/runtime/tx-controller/authority-refresh-key';
   import { hasAnyScope } from './lib/stores/capabilities.svelte';
   import { getLayoutMode } from './lib/stores/layout.svelte';
   import { readQaCockpitLayoutOverride } from './lib/stores/qa-cockpit-override';
@@ -296,10 +296,15 @@
     },
   });
   let txAuthorityReady = $state(false);
+  // Plain, non-reactive: the effect below re-runs on every state-frame
+  // replacement, so the gate — not effect re-execution — decides refreshes.
+  let txAuthorityGate = new ManagedTxAuthorityRefreshGate();
   $effect(() => {
     const state = runtime.state, caps = runtime.caps;
-    void managedTxAuthorityKey(state, caps);
-    if (txAuthorityReady) txHost.refreshAuthority(state?.providerGeneration ?? null);
+    const key = managedTxAuthorityKey(state, caps);
+    if (txAuthorityReady && txAuthorityGate.shouldRefresh(key)) {
+      txHost.refreshAuthority(state?.providerGeneration ?? null);
+    }
   });
 
   onMount(() => {
