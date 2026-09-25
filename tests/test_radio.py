@@ -2142,21 +2142,18 @@ class TestCivPacingIsSendToSend:
 
         monkeypatch.setattr(mock_transport, "send_tracked", slow_send)
         try:
-            with patch.object(radio._civ_runtime, "start_pump"):
-                radio._civ_runtime.start_pump()
-                try:
-                    first_task = asyncio.create_task(radio._execute_civ_raw(first_civ))
-                    reply_task = asyncio.create_task(first_reply())
-                    second_task = asyncio.create_task(
-                        radio._execute_civ_raw(second_civ)
-                    )
-                    await asyncio.wait_for(second_gated.wait(), timeout=10.0)
-                    mock_transport.queue_response(_freq_response(14_075_000))
-                    first = await asyncio.wait_for(first_task, timeout=10.0)
-                    second = await asyncio.wait_for(second_task, timeout=10.0)
-                    await reply_task
-                finally:
-                    await radio._civ_runtime.stop_pump()
+            radio._civ_runtime.start_pump()
+            try:
+                first_task = asyncio.create_task(radio._execute_civ_raw(first_civ))
+                reply_task = asyncio.create_task(first_reply())
+                second_task = asyncio.create_task(radio._execute_civ_raw(second_civ))
+                await asyncio.wait_for(second_gated.wait(), timeout=10.0)
+                mock_transport.queue_response(_freq_response(14_075_000))
+                first = await asyncio.wait_for(first_task, timeout=10.0)
+                second = await asyncio.wait_for(second_task, timeout=10.0)
+                await reply_task
+            finally:
+                await radio._civ_runtime.stop_pump()
         finally:
             radio._civ_request_tracker.fail_all(ConnectionError("test cleanup"))
 
@@ -2181,23 +2178,22 @@ class TestCivPacingIsSendToSend:
         radio._last_civ_send_monotonic = 0.0
         cmd = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
         try:
-            with patch.object(radio._civ_runtime, "start_pump"):
-                radio._civ_runtime.start_pump()
-                try:
-                    frames = []
-                    for _ in range(3):
-                        task = asyncio.create_task(radio._execute_civ_raw(cmd))
-                        while len(mock_transport.sent_packets) < len(frames) + 1:
-                            await asyncio.sleep(0)
-                        mock_transport.queue_response(_freq_response(14_074_000))
-                        frames.append(await asyncio.wait_for(task, timeout=10.0))
-                    assert all(frame is not None for frame in frames)
-                    # The controllable clock advances only on patched sleeps
-                    # (the pacing gaps); the reply handover costs nothing, so
-                    # every send lands exactly one gap after the previous one.
-                    assert radio._last_civ_send_monotonic == 3 * gap
-                finally:
-                    await radio._civ_runtime.stop_pump()
+            radio._civ_runtime.start_pump()
+            try:
+                frames = []
+                for _ in range(3):
+                    task = asyncio.create_task(radio._execute_civ_raw(cmd))
+                    while len(mock_transport.sent_packets) < len(frames) + 1:
+                        await asyncio.sleep(0)
+                    mock_transport.queue_response(_freq_response(14_074_000))
+                    frames.append(await asyncio.wait_for(task, timeout=10.0))
+                assert all(frame is not None for frame in frames)
+                # The controllable clock advances only on patched sleeps
+                # (the pacing gaps); the reply handover costs nothing, so
+                # every send lands exactly one gap after the previous one.
+                assert radio._last_civ_send_monotonic == 3 * gap
+            finally:
+                await radio._civ_runtime.stop_pump()
         finally:
             radio._civ_request_tracker.fail_all(ConnectionError("test cleanup"))
 
@@ -2237,19 +2233,18 @@ class TestCivPacingIsSendToSend:
             IC_7610_ADDR, CONTROLLER_ADDR, _CMD_PTT, sub=_SUB_PTT, data=b"\x00"
         )
         try:
-            with patch.object(radio._civ_runtime, "start_pump"):
-                radio._civ_runtime.start_pump()
-                try:
-                    with pytest.raises(ConnectionError, match="stale"):
-                        await radio._execute_civ_raw(
-                            cmd, wait_response=False, is_current=lambda: False
-                        )
-                    mock_transport.queue_response_on_send(2, _ack_response())
-                    frame = await radio._execute_civ_raw(cmd)
-                    assert frame is not None
-                    assert frame.command == _CMD_ACK
-                finally:
-                    await radio._civ_runtime.stop_pump()
+            radio._civ_runtime.start_pump()
+            try:
+                with pytest.raises(ConnectionError, match="stale"):
+                    await radio._execute_civ_raw(
+                        cmd, wait_response=False, is_current=lambda: False
+                    )
+                mock_transport.queue_response_on_send(2, _ack_response())
+                frame = await radio._execute_civ_raw(cmd)
+                assert frame is not None
+                assert frame.command == _CMD_ACK
+            finally:
+                await radio._civ_runtime.stop_pump()
         finally:
             radio._civ_request_tracker.fail_all(ConnectionError("test cleanup"))
 
@@ -2288,23 +2283,22 @@ class TestCivPacingIsSendToSend:
         monkeypatch.setattr(mock_transport, "send_tracked", gated_send)
         cmd = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
         try:
-            with patch.object(radio._civ_runtime, "start_pump"):
-                radio._civ_runtime.start_pump()
-                try:
-                    first_task = asyncio.create_task(radio._execute_civ_raw(cmd))
-                    await asyncio.wait_for(first_released.wait(), timeout=10.0)
-                    mock_transport.queue_response(_freq_response(14_074_000))
-                    first = await asyncio.wait_for(first_task, timeout=10.0)
-                    assert first is not None
-                    await radio._write_managed_ptt(11, True)
-                    second_task = asyncio.create_task(radio._execute_civ_raw(cmd))
-                    while len(mock_transport.sent_packets) < 3:
-                        await asyncio.sleep(0)
-                    mock_transport.queue_response(_freq_response(14_075_000))
-                    second = await asyncio.wait_for(second_task, timeout=10.0)
-                    assert second is not None
-                finally:
-                    await radio._civ_runtime.stop_pump()
+            radio._civ_runtime.start_pump()
+            try:
+                first_task = asyncio.create_task(radio._execute_civ_raw(cmd))
+                await asyncio.wait_for(first_released.wait(), timeout=10.0)
+                mock_transport.queue_response(_freq_response(14_074_000))
+                first = await asyncio.wait_for(first_task, timeout=10.0)
+                assert first is not None
+                await radio._write_managed_ptt(11, True)
+                second_task = asyncio.create_task(radio._execute_civ_raw(cmd))
+                while len(mock_transport.sent_packets) < 3:
+                    await asyncio.sleep(0)
+                mock_transport.queue_response(_freq_response(14_075_000))
+                second = await asyncio.wait_for(second_task, timeout=10.0)
+                assert second is not None
+            finally:
+                await radio._civ_runtime.stop_pump()
             await radio._retire_managed_tx_port(11)
         finally:
             radio._civ_request_tracker.fail_all(ConnectionError("test cleanup"))
