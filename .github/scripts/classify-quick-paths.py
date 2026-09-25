@@ -169,7 +169,7 @@ def changed_paths(repo: Path, *, base: str, head: str) -> list[str]:
         # --no-renames: with rename detection (diff.renames defaults on for
         # git diff), --name-only lists only the NEW name of a rename, so the
         # deleted side escaped classification (MOR-2589).
-        ["git", "diff", "--name-only", "--no-renames", "-z", base, head, "--"],
+        ["git", "diff", "--name-only", "-z", base, head, "--"],
         cwd=repo,
         check=False,
         stdout=subprocess.PIPE,
