@@ -243,40 +243,25 @@ def _class_derived_starts(
     return result
 
 
-@pytest.mark.parametrize(
-    "budget_hz", [_LAN_BUDGET_HZ, _SERIAL_BUDGET_HZ], ids=["lan", "serial"]
-)
-def test_ic7610_explicit_demand_alone_over_the_budget_leaves_class_paths_unstretched(
-    budget_hz: float,
+def test_ic7610_lan_receive_demand_fits_the_margin(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Coordinator decision: explicit fields alone saturate the channel.
+    """MOR-2590: the IC-7610's receive window over LAN fits 0.75 x budget.
 
-    IC-7610's hand-declared receive cadences alone are over the transport
-    budget itself, so its class-derived paths keep their nominal
-    cadences, and the warning says why.
+    Its remaining explicit receive cadences are under the transport budget,
+    so the class-derived paths stretch until every polled path together is
+    within the limit, and no receive warning is logged.
     """
 
     acquisition = _CIV_ACQUISITION["IC-7610"]
-    explicit = _explicit_hz(acquisition, tx=False)
-    assert explicit > budget_hz
+    assert _explicit_hz(acquisition, tx=False) < _LAN_BUDGET_HZ
 
     with caplog.at_level(logging.WARNING, logger="rigplane.core.acquisition_scheduler"):
-        cadences = _window_cadences(acquisition, budget_hz, tx=False)
+        cadences = _window_cadences(acquisition, _LAN_BUDGET_HZ, tx=False)
 
-    nominal = {
-        FieldPath.global_("slow_state", "active"): 2.0,
-        FieldPath.global_("operator_controls", "rit_freq"): 5.0,
-        FieldPath.global_("tx_state", "rit_on"): 10.0,
-        FieldPath.global_("tx_state", "rit_tx"): 10.0,
-    }
-    for path, cadence in nominal.items():
-        assert path not in acquisition.field_policies, path
-        assert cadences[path] == pytest.approx(cadence), path
-    assert any(
-        f"({explicit:.2f} q/s {_UNSTRETCHED_OUTCOME})" in message
-        for message in _warnings(caplog)
-    ), _warnings(caplog)
+    demand = sum(1.0 / cadence for cadence in cadences.values())
+    assert demand <= ACQUISITION_BUDGET_MARGIN * _LAN_BUDGET_HZ + _EPSILON
+    assert not any("receive " in message for message in _warnings(caplog))
 
 
 @pytest.mark.parametrize("tx", [False, True], ids=["receive", "transmit"])
