@@ -62,7 +62,7 @@ describe('managedTxAuthorityKey (MOR-2607)', () => {
   it('a ptt change moves the key: exactly 1 refetch', () => {
     const before = managedTxAuthorityKey(baseState, baseCaps);
     const after = managedTxAuthorityKey(
-      { ...baseState, ptt: true, fieldStatus: { ...baseState.fieldStatus, ptt: field(2) } } as ServerState,
+      { ...baseState, ptt: true, fieldStatus: { ...baseState.fieldStatus, ptt: field(2) } } as unknown as ServerState,
       baseCaps,
     );
     expect(after).not.toBe(before);
@@ -71,7 +71,7 @@ describe('managedTxAuthorityKey (MOR-2607)', () => {
   it('a providerGeneration change moves the key: exactly 1 refetch', () => {
     const before = managedTxAuthorityKey(baseState, baseCaps);
     const after = managedTxAuthorityKey(
-      { ...baseState, providerGeneration: 4 } as ServerState,
+      { ...baseState, providerGeneration: 4 } as unknown as ServerState,
       baseCaps,
     );
     expect(after).not.toBe(before);
