@@ -1933,13 +1933,14 @@ class _PacingClock:
 
     def __init__(self) -> None:
         self.now = 0.0
+        self._real_sleep = asyncio.sleep
 
     def monotonic(self) -> float:
         return self.now
 
     async def sleep(self, delay: float) -> None:
         self.now += max(0.0, delay)
-        await asyncio.sleep(0)
+        await self._real_sleep(0)
 
 
 def _install_pacing_clock(
