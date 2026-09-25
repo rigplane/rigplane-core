@@ -3909,11 +3909,10 @@ class CivRuntime:
                 check_current()
                 pkt = self._wrap_civ(civ_frame)
                 await transport.send_tracked(pkt, **guard)
-                # The packet left the wire: stamp before the currency checks
-                # below so a cancel or a stale attempt still paces the next
-                # send from this one.
-                self._host._last_civ_send_monotonic = time.monotonic()
+                # MUTATION (MOR-2603 cancelled-send proof): stamp after the
+                # currency check, so a refusal there skips the stamp.
                 check_current()
+                self._host._last_civ_send_monotonic = time.monotonic()
             except (Exception, asyncio.CancelledError) as exc:
                 if ack_sink_token is not None:
                     tracker.unregister_ack_sink(ack_sink_token)
