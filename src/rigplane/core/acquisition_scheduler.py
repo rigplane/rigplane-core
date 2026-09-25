@@ -541,7 +541,8 @@ class AcquisitionScheduler:
         self._budget_fit: dict[bool, BudgetFit] = {}
         # MOR-2599: every class-derived cadence group, keyed by receiver_id
         # ('' when the group's paths are not receiver-scoped); see
-        # _poll_cadence_groups. Read at due_requests time by _demote_groups.
+        # _poll_cadence_groups. Read at due_requests time by
+        # _demote_queue_envelopes.
         self._class_derived_group_receivers: dict[_AcquisitionRequestKey, str] = {}
         self._fits_without_demote: dict[bool, BudgetFit] | None = None
         if transport_budget_hz is not None:
@@ -1817,7 +1818,7 @@ class AcquisitionScheduler:
             grouped.setdefault(key, []).append(capability.path)
         groups = {key: tuple(sorted(paths, key=str)) for key, paths in grouped.items()}
         # MOR-2599: remember each class-derived group's receiver so
-        # _demote_groups can re-key the non-selected receiver's groups
+        # _demote_queue_envelopes can find the non-selected receiver's groups
         # without recomputing which groups are class-derived. A group whose
         # paths span receivers (none today: receiver-scoped paths key on
         # receiver_id) keeps '' and is never demoted.
