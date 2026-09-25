@@ -3950,7 +3950,9 @@ class CivRuntime:
             now = time.monotonic()
             delta = now - self._host._last_civ_send_monotonic
             if delta < self._host._civ_min_interval:
-                await asyncio.sleep(self._host._civ_min_interval - delta)
+                # MUTATION (MOR-2603 short-reply proof): always sleep the
+                # whole gap instead of the remaining gap.
+                await asyncio.sleep(self._host._civ_min_interval)
 
             check_current()
             pkt = self._wrap_civ(civ_frame)
