@@ -66,11 +66,14 @@ async def apply_monitor_mute(
 ) -> None:
     """Mute or restore every receiver the radio has, through the Radio protocol.
 
-    Mute saves each receiver's current AF before writing 0, and only for a
-    receiver whose level is not already saved. Unmute restores every saved
-    level and then clears it, even when that receiver's AF has not been read
-    again since a reconnect. A receiver the radio does not have is never
-    written and never appears in the saved levels.
+    Mute saves each receiver's current AF, and commits those saved levels
+    before the first write. A later write that fails must not lose a level
+    already taken off the radio. A receiver whose level is already saved is
+    not overwritten, so a retry after that failure does not save the 0 the
+    failed write left behind. Unmute restores every saved level and then
+    clears it, even when that receiver's AF has not been read again since a
+    reconnect. A receiver the radio does not have is never written and never
+    appears in the saved levels.
     """
     profile = getattr(radio, "profile", None)
     receiver_count = getattr(profile, "receiver_count", None)
@@ -89,10 +92,10 @@ async def apply_monitor_mute(
                     f"monitor mute has no fresh AF level for receiver {index}"
                 )
             saved[name] = current
-        for index in receivers:
-            await radio.set_af_level(0, receiver=index)
         state.saved_af = saved
         state.on = True
+        for index in receivers:
+            await radio.set_af_level(0, receiver=index)
         return
     for index in receivers:
         name = "main" if index == 0 else "sub"

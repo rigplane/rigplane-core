@@ -685,3 +685,77 @@ async def test_monitor_mute_on_a_single_receiver_radio_never_writes_sub() -> Non
 
     radio.set_af_level.assert_awaited_once_with(0, receiver=0)
     assert mute.saved_af == {"main": 0.4}
+
+
+@pytest.mark.asyncio
+async def test_monitor_mute_keeps_the_saved_level_when_a_later_write_fails() -> None:
+    radio = _capable_radio()
+
+    async def _write(level: float, receiver: int = 0) -> None:
+        if receiver == 1:
+            raise RuntimeError("sub write failed")
+
+    radio.set_af_level = AsyncMock(side_effect=_write)
+    srv, mute = _mute_server(_af_store((0, 0.31), (1, 0.77)))
+    h = _handler(radio=radio, server=srv)
+
+    with pytest.raises(RuntimeError, match="sub write failed"):
+        await h._enqueue_command("set_monitor_mute", {"on": True})
+
+    assert mute.on is True
+    assert mute.saved_af == {"main": 0.31, "sub": 0.77}
+    payload = _mute_payload(mute, radio)["monitorMute"]
+    assert payload["savedAf"] == {"main": 0.31, "sub": 0.77}
+
+    radio.set_af_level = AsyncMock()
+    store = srv.command_state_store
+    store.begin_provider_generation()
+    store.apply(
+        Observation(
+            path=FieldPath.receiver("0", "operator_controls", "af_level"),
+            value=0.0,
+            source=SourceMetadata(source="test", provider="test"),
+            timestamp_monotonic=2.0,
+            provider_generation=store.provider_generation,
+        )
+    )
+    await h._enqueue_command("set_monitor_mute", {"on": True})
+    assert mute.saved_af["main"] == 0.31
+
+    radio.set_af_level.reset_mock()
+    await h._enqueue_command("set_monitor_mute", {"on": False})
+    radio.set_af_level.assert_any_await(0.31, receiver=0)
+
+
+def test_monitor_mute_payload_omits_unsaved_keys() -> None:
+    radio = _capable_radio()
+    unmuted = _mute_payload(MonitorMuteState(), radio)["monitorMute"]
+    assert unmuted["on"] is False
+    assert unmuted["savedAf"] == {}
+    assert "main" not in unmuted["savedAf"]
+    assert "sub" not in unmuted["savedAf"]
+
+    single = _mute_payload(
+        MonitorMuteState(on=True, saved_af={"main": 0.4}),
+        SimpleNamespace(profile=resolve_radio_profile(model="IC-7300")),
+    )["monitorMute"]
+    assert single["savedAf"] == {"main": 0.4}
+    assert "sub" not in single["savedAf"]
+
+
+@pytest.mark.asyncio
+async def test_monitor_mute_is_rejected_in_an_http_batch() -> None:
+    from rigplane.web.server import WebConfig, WebServer, _HttpBatchValidationError
+
+    radio = _capable_radio()
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+
+    with pytest.raises(
+        _HttpBatchValidationError, match="bypasses the command queue"
+    ) as raised:
+        await server._prepare_http_batch_step(
+            0, {"name": "set_monitor_mute", "params": {"on": True}}
+        )
+
+    assert raised.value.error == "unsupported_in_batch"
+    radio.set_af_level.assert_not_called()
