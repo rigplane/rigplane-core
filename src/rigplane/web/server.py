@@ -68,7 +68,7 @@ from ..core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from ..core.state_store import StateSnapshot, StateStore
-from ..core.tx_observation import project_observed_ptt
+from ..core.tx_observation import ObservedPtt, project_observed_ptt
 from ..radio_state import RadioState
 from ..capabilities import CAP_AUDIO
 from ..exceptions import TimeoutError as RigplaneTimeoutError
@@ -919,6 +919,14 @@ class WebServer:
         # never owns or advances the provider generation itself.
         self._last_delta_encoder_generation: int | None = None
         self._last_broadcast_state_key: tuple[object, ...] | None = None
+        # Last observed-PTT value announced to managed-transmit clients. The
+        # managed-transmit document carries `txObservation.observedPtt`, which
+        # is projected from the separate `global.tx_state.observed_ptt` store
+        # path (not the public `ptt` leaf), so its changes are announced here
+        # with the existing invalidation event. `None` means no snapshot has
+        # been seen yet: the first snapshot seeds the baseline without
+        # emitting, because the page fetches the document on connect anyway.
+        self._last_announced_observed_ptt: ObservedPtt | None = None
         self._cached_public_state_key: tuple[object, ...] | None = None
         self._cached_public_state_payload: dict[str, Any] | None = None
         self._public_state_seq: int = 0
@@ -1532,6 +1540,18 @@ class WebServer:
         # from the same canonical snapshot used for Web delivery.
         self._update_fft_scope_freq(snapshot)
         self._update_fft_scope_mode(snapshot)
+        # The managed-transmit document carries `txObservation.observedPtt`,
+        # projected from the store path `global.tx_state.observed_ptt` — not
+        # from the public `ptt` leaf, which can diverge from it (unqualified
+        # or aged readings project to unknown while `ptt` keeps its value).
+        # Announce projection changes with the existing invalidation event so
+        # the page refetches the document it actually displays.
+        observed_ptt = project_observed_ptt(snapshot)
+        if self._last_announced_observed_ptt is None:
+            self._last_announced_observed_ptt = observed_ptt
+        elif observed_ptt != self._last_announced_observed_ptt:
+            self._last_announced_observed_ptt = observed_ptt
+            self._on_managed_tx_changed()
         # Skip the public-state build/delta/fan-out when no control client is
         # subscribed (a connecting client gets initial state on connect via force=True).
         if not force and not self._control_event_queues:

@@ -71,7 +71,7 @@ describe('managedTxAuthorityKey + refresh gate (MOR-2607)', () => {
     expect(refreshes).toBe(0);
   });
 
-  it('a ptt value change causes exactly 1 refresh', () => {
+  it('a ptt value change alone causes no refresh: observedPtt arrives via the server event', () => {
     const gate = new ManagedTxAuthorityRefreshGate();
     let refreshes = 0;
     const observe = (state: ServerState) => {
@@ -82,7 +82,7 @@ describe('managedTxAuthorityKey + refresh gate (MOR-2607)', () => {
     expect(refreshes).toBe(1);
     observe({ ...baseState, ptt: true, fieldStatus: { ...baseState.fieldStatus, ptt: field(9) } } as unknown as ServerState);
     observe(idleFrame({ ...baseState, ptt: true } as unknown as ServerState, 1));
-    expect(refreshes).toBe(2);
+    expect(refreshes).toBe(1);
   });
 
   it('a providerGeneration change causes exactly 1 refresh', () => {

@@ -1,12 +1,18 @@
 """Managed-transmit public projection and web invalidation delivery tests."""
 
 import asyncio
+import time
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
 from rigplane.core._bounded_queue import BoundedQueue
-from rigplane.core.tx_observation import ObservedPtt
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from rigplane.core.tx_observation import OBSERVED_PTT_PATH, ObservedPtt
 from rigplane.runtime.managed_tx_authority import ManagedTxProjection
 from rigplane.runtime.managed_tx_state import (
     AbortError,
@@ -318,3 +324,98 @@ async def test_control_handler_forwards_managed_transmit_changed() -> None:
         await asyncio.gather(task, return_exceptions=True)
 
     assert sent == [_INVALIDATION, {"type": "notification", "message": "hello"}]
+
+
+_SOURCE = SourceMetadata(source="poll_response", provider="test")
+
+
+def _observe_ptt(server: WebServer, value: object) -> None:
+    server.command_state_store.apply_current(
+        Observation(
+            path=OBSERVED_PTT_PATH,
+            value=value,
+            source=_SOURCE,
+            timestamp_monotonic=time.monotonic(),
+            max_age=60.0,
+        )
+    )
+
+
+def _observe_public_ptt(server: WebServer, value: object) -> None:
+    server.command_state_store.apply_current(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=value,
+            source=_SOURCE,
+            timestamp_monotonic=time.monotonic(),
+            max_age=60.0,
+        )
+    )
+
+
+def _broadcast(server: WebServer) -> None:
+    server._last_state_broadcast = 0.0  # noqa: SLF001
+    server._broadcast_state_update(force=True)  # noqa: SLF001
+
+
+def _managed_tx_events(queue: BoundedQueue[dict]) -> list[dict]:
+    return [
+        event
+        for event in _drain(queue)
+        if event.get("name") == "managed_transmit_changed"
+    ]
+
+
+def _announcing_server() -> tuple[WebServer, BoundedQueue[dict]]:
+    server = _web_server()
+    queue: BoundedQueue[dict] = BoundedQueue(maxsize=100)
+    server._control_event_queues.add(queue)  # noqa: SLF001
+    return server, queue
+
+
+def test_broadcast_seeds_baseline_without_emitting() -> None:
+    server, queue = _announcing_server()
+    _observe_ptt(server, ObservedPtt.OFF)
+
+    _broadcast(server)
+
+    assert _managed_tx_events(queue) == []
+
+
+def test_broadcast_announces_off_to_unknown_with_public_ptt_unchanged() -> None:
+    server, queue = _announcing_server()
+    _observe_ptt(server, ObservedPtt.OFF)
+    _observe_public_ptt(server, False)
+    _broadcast(server)
+    assert _managed_tx_events(queue) == []
+
+    _observe_ptt(server, ObservedPtt.UNKNOWN)
+    _observe_public_ptt(server, False)
+    _broadcast(server)
+
+    assert _managed_tx_events(queue) == [_INVALIDATION]
+
+
+def test_broadcast_announces_off_to_on() -> None:
+    server, queue = _announcing_server()
+    _observe_ptt(server, ObservedPtt.OFF)
+    _broadcast(server)
+    assert _managed_tx_events(queue) == []
+
+    _observe_ptt(server, ObservedPtt.ON)
+    _broadcast(server)
+
+    assert _managed_tx_events(queue) == [_INVALIDATION]
+
+
+def test_broadcast_emits_nothing_for_an_unchanged_projection() -> None:
+    server, queue = _announcing_server()
+    _observe_ptt(server, ObservedPtt.OFF)
+    _broadcast(server)
+    assert _managed_tx_events(queue) == []
+
+    _observe_ptt(server, ObservedPtt.OFF)
+    _broadcast(server)
+    _broadcast(server)
+
+    assert _managed_tx_events(queue) == []

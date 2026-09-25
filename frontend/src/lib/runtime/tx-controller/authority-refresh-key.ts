@@ -1,18 +1,17 @@
 import type { Capabilities } from '$lib/types/capabilities';
-import type { FieldStatus, ServerState } from '$lib/types/state';
+import type { ServerState } from '$lib/types/state';
 
 // MOR-2607: the inputs of the managed-transmit authority refresh. The
-// document (`GET /api/v1/managed-transmit`, built by
-// `web/managed_tx_view.py: build_managed_tx_view`) carries the authority
-// projection plus `txObservation.observedPtt`, which is projected from the
-// radio state's ptt field and its freshness. `refreshAuthority` also
-// invalidates across provider generations, and the page's TX controller
-// behaviour additionally follows the listed capability fields.
+// managed-transmit document changes only through the authority state (whose
+// mutations the server already announces with `managed_transmit_changed`)
+// and through `txObservation.observedPtt`. `observedPtt` is projected from
+// the separate `global.tx_state.observed_ptt` store path — not from anything
+// in this key — and its changes arrive through the same server
+// `managed_transmit_changed` event, so the page refetches exactly then.
+// `refreshAuthority` also invalidates across provider generations, and the
+// page's TX controller behaviour additionally follows the listed capability
+// fields.
 export interface ManagedTxAuthorityInputs {
-  readonly ptt: boolean | null | undefined;
-  readonly pttObserved: boolean | undefined;
-  readonly pttFreshness: FieldStatus['freshness'] | undefined;
-  readonly pttAvailability: FieldStatus['availability'] | undefined;
   readonly providerGeneration: number | null | undefined;
   readonly caps: Pick<
     Capabilities,
@@ -25,14 +24,7 @@ export function managedTxAuthorityInputs(
   state: ServerState | null | undefined,
   caps: Capabilities | null | undefined,
 ): ManagedTxAuthorityInputs {
-  const pttStatus = state?.fieldStatus?.['ptt'];
   return {
-    ptt: state?.ptt,
-    // Only the stable ptt status parts: `lastObservedMonotonic` advances on
-    // every ptt poll (~0.3 s) and must not move the key on an idle page.
-    pttObserved: pttStatus?.observed,
-    pttFreshness: pttStatus?.freshness,
-    pttAvailability: pttStatus?.availability,
     providerGeneration: state?.providerGeneration,
     caps: caps == null
       ? caps ?? null
