@@ -2255,8 +2255,11 @@ class TestCivPacingIsSendToSend:
             try:
                 first = asyncio.create_task(runtime._send_civ_frame_now(frame))
                 await asyncio.wait_for(release_send.wait(), timeout=10.0)
-                await asyncio.sleep(0)
-                first.cancel()
+                # Cancel via call_soon: it queues ahead of the outer
+                # await's wakeup (scheduled by the finishing inner task),
+                # so the cancel lands while the inner task is already done
+                # and the outer await has not resumed yet.
+                asyncio.get_running_loop().call_soon(first.cancel)
                 with pytest.raises(asyncio.CancelledError):
                     await first
                 assert len(mock_transport.sent_packets) == 1
