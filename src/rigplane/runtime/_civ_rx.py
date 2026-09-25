@@ -3956,8 +3956,7 @@ class CivRuntime:
             pkt = self._wrap_civ(civ_frame)
             await transport.send_tracked(pkt, **guard)
             check_current()
-            # MUTATION (MOR-2603 short-reply proof): never advance the send
-            # clock, so every send after the first skips the gap.
+            self._host._last_civ_send_monotonic = time.monotonic()
             assert pending is not None
             # The answer window is spent from here, not from method entry:
             # ``_civ_get_timeout`` bounds how long the *radio* may take,
