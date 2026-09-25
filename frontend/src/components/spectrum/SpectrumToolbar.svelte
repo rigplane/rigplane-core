@@ -517,7 +517,10 @@
           <button class="toolbar-btn small step-arrow" disabled={!spanUsable} onclick={() => cycleSpan(-1)} title="Decrease span">◀</button>
           <button class="toolbar-btn step-control" disabled={!spanUsable} onclick={() => cycleSpan(1)} title="Scope span">
             <span class="toolbar-label">SPAN</span>
-            <span class="toolbar-value">{spanUsable && scopeSpan !== null ? (SPAN_LABELS[scopeSpan] ?? '—') : '—'}</span>
+            <!-- MOR-2565: an unread mode (or value) renders EMPTY with the
+                 reserved width — never a '—' placeholder; a known span index
+                 (0–7, acceptedNumber's range) always hits SPAN_LABELS. -->
+            <span class="toolbar-value">{spanUsable && scopeSpan !== null ? SPAN_LABELS[scopeSpan] : ''}</span>
           </button>
           <button class="toolbar-btn small step-arrow" disabled={!spanUsable} onclick={() => cycleSpan(1)} title="Increase span">▶</button>
         </div>

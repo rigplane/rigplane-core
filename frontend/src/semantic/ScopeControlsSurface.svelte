@@ -44,7 +44,7 @@
       program removes.
   (2) "receiver/source" is ONE field (`scopeControls.receiver`) — the
       MAIN/SUB keys below, never a second invented source control.
-      (3) EDGE (`isEdgeApplicable`, modes FIX/S-F) and SPAN (`isSpanApplicable`,
+  (3) EDGE (`isEdgeApplicable`, modes FIX/S-F) and SPAN (`isSpanApplicable`,
       modes CTR/S-C) are always structurally available; their conditional
       VISIBILITY is a rendering decision layered on top, using the real
       `spectrum-toolbar-logic.ts` predicates (do-not-re-derive doctrine) —

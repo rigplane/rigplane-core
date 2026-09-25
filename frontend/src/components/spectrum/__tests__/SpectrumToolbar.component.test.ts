@@ -492,6 +492,11 @@ describe('fail-closed field handling', () => {
     expect(spanDown).toBeDefined();
     expect(spanDown.disabled).toBe(true);
     expect(target.textContent).toContain('SPAN');
+    // MOR-2565 review: the unread-mode SPAN value is EMPTY (reserved width),
+    // never the forbidden '—' placeholder.
+    const spanValue = buttons(target).find((item) => item.title === 'Scope span')!
+      .querySelector('.toolbar-value')!;
+    expect(spanValue.textContent).toBe('');
     expect(target.textContent).not.toContain('±25k'); // the read value stays dark
     expect(target.textContent).not.toContain('EDGE');
   });
