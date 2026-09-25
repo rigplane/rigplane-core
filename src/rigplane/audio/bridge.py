@@ -96,9 +96,7 @@ FRAME_BYTES = SAMPLES_PER_FRAME * CHANNELS * BYTES_PER_SAMPLE  # 1920
 # Virtual loopback device name candidates for auto-detection.
 # The RigPlane driver is first: other platforms' loopbacks follow in their
 # previous relative order.
-# MUTATION 2 (must break the input-only test): generic "Virtual" first.
 _LOOPBACK_CANDIDATES = (
-    "Virtual",  # generic virtual device
     "RigPlane Virtual Cable",  # RigPlane's own driver (default)
     "Loopback",  # macOS (Rogue Amoeba) / Linux (generic)
     "VB-Audio",  # Windows (VB-Cable)
