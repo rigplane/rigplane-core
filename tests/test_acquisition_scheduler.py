@@ -2210,13 +2210,13 @@ def test_state_freshness_service_ic7300_non_polling_populate_completes_within_25
 ):
     """MOR-1501 acceptance criterion.
 
-    Simulates the real IC-7300 acquisition profile's 26 non-polling
+    Simulates the real IC-7300 acquisition profile's non-polling
     ``field_policies`` fields populating from a cold connect (empty store).
     Before adaptive pacing, the flat 30s re-derivation interval combined
     with the unchanged 5-field burst cap gave this profile a ~120s tail
     (five 5-field-capped waves, 30s apart), even though each field's true
     CI-V round-trip cost is ~1.1s — the interval, not the serial link, was
-    the bottleneck. With the 5s adaptive interval the same 5 waves complete
+    the bottleneck. With the 5s adaptive interval the waves complete
     in ~20-25s. This drives the scheduler/service pair directly (no real
     transport), answering every primed request as soon as it is queued —
     the "best case" the acceptance criterion is stated against; real serial

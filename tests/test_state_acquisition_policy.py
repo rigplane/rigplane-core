@@ -81,8 +81,7 @@ _UNPRIMABLE_COMMAND_RESPONSE_EXEMPTIONS: dict[str, frozenset[FieldPath]] = {
 
 #: Continuously-moving readings the profile declares ``stream_like``
 #: (owner ruling 2026-09-07; 0.4s is IC-7300's cadence after the S-meter
-#: gave 2.5 q/s back to fund the panel tier below; every other profile
-#: declares 0.2s or 0.25s).
+#: gave 2.5 q/s back to fund the panel tier below).
 _STREAM_METER_MAX_CADENCE_SECONDS = 0.4
 #: Facts that move while the operator tunes or keys (owner ruling
 #: 2026-09-07).
