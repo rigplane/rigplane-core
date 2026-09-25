@@ -1076,7 +1076,14 @@ class TestReceiverDeclaredControlTags:
             info, capabilities, hello = await _endpoint_vfo_tags(
                 radio, reserved=reserved
             )
-            assert (info, capabilities, hello) == (expected, expected, expected)
+            # The tags gate the HTTP surface the frontend store consumes
+            # (`ws-client.ts: refreshCapabilities` fetches
+            # /api/v1/capabilities). The websocket hello's capabilities are
+            # the control channel's command-admission view and carry none
+            # of the projected per-receiver tags — the same boundary
+            # MOR-2579 set for `af_level_sub`.
+            assert (info, capabilities) == (expected, expected)
+            assert hello == frozenset()
 
 
 # ── Profile-declared dual watch (MOR-2425) ─────────────────────
