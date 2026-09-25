@@ -281,10 +281,7 @@ class IcomCommander:
                     item.future.add_done_callback(_propagate_cancel)
 
                     try:
-                        # MUTATION (MOR-2603 pin proof): do not wait for the
-                        # in-flight command; the worker pipelines the next
-                        # item while the first answer is still missing.
-                        resp = await asyncio.sleep(0, result=None)
+                        resp = await execute_task
                     except asyncio.CancelledError:
                         # Distinguish caller-driven cancel from worker
                         # teardown (c.stop()).  item.future.cancelled() alone
