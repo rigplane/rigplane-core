@@ -1999,8 +1999,6 @@ class ControlHandler:
 
         Returns None if *name* is not a read-only command.
         """
-        if name == "set_monitor_mute":
-            return await self._apply_monitor_mute(params, radio)
         handler = self._READ_ONLY_HANDLERS.get(name)
         if handler is None:
             return None
@@ -2356,6 +2354,7 @@ class ControlHandler:
         "get_civ_transceive": _ro_get_civ_transceive,
         "get_civ_output_ant": _ro_get_civ_output_ant,
         "get_af_mute": _ro_get_af_mute,
+        "set_monitor_mute": _apply_monitor_mute,
         "get_tuning_step": _ro_get_tuning_step,
         "get_utc_offset": _ro_get_utc_offset,
         "get_band_edge_freq": _ro_get_band_edge_freq,
