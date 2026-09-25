@@ -134,7 +134,7 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched(
             await release.wait()
         return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
 
-    commander = IcomCommander(execute, min_interval=0.0)
+    commander = IcomCommander(execute)
     commander.start()
     try:
         gate = asyncio.create_task(commander.send(b"gate", priority=Priority.NORMAL))
@@ -199,7 +199,7 @@ async def test_a_command_priority_request_reaches_the_commander_as_normal() -> N
     async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
         return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
 
-    commander = IcomCommander(execute, min_interval=0.0)
+    commander = IcomCommander(execute)
     commander.start()
     try:
         scheduler = _scheduler()
@@ -236,7 +236,7 @@ async def test_a_later_path_dropped_at_the_cap_is_not_dispatched() -> None:
             await release.wait()
         return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
 
-    commander = IcomCommander(execute, min_interval=0.0)
+    commander = IcomCommander(execute)
     commander.start()
     try:
         gate = asyncio.create_task(commander.send(b"gate", priority=Priority.NORMAL))
