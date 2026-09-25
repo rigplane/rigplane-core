@@ -575,11 +575,23 @@ class _Clock:
         self.now += delay
 
     async def wait_for(self, awaitable, timeout):  # type: ignore[no-untyped-def]
-        if timeout is not None and timeout <= 0:
-            task = asyncio.ensure_future(awaitable)
+        task = asyncio.ensure_future(awaitable)
+        if timeout is None:
+            return await task
+        deadline = self.now + timeout
+        shielded = asyncio.shield(task)
+        try:
+            while self.now < deadline:
+                get = asyncio.ensure_future(shielded)
+                done, _pending = await asyncio.wait({get}, timeout=0)
+                if done:
+                    return get.result()
+                await asyncio.sleep(0)
             task.cancel()
             return await task
-        return await awaitable
+        finally:
+            if not shielded.done():
+                shielded.cancel()
 
 
 def _install_clock(monkeypatch: pytest.MonkeyPatch, *, start: float) -> _Clock:
@@ -667,7 +679,7 @@ async def test_a_caller_cancelled_inflight_send_still_paces_the_next(
     commander = IcomCommander(execute, min_interval=gap)
     commander.start()
     try:
-        slow = asyncio.create_task(commander.send(b"slow", timeout=0.0))
+        slow = asyncio.create_task(commander.send(b"slow", timeout=gap))
         await sent.wait()
         with pytest.raises(asyncio.TimeoutError):
             await slow
