@@ -586,7 +586,7 @@ class _Clock:
                 done, _pending = await asyncio.wait({get}, timeout=0)
                 if done:
                     return get.result()
-                await asyncio.sleep(0)
+                await asyncio.sleep(deadline - self.now)
             task.cancel()
             return await task
         finally:
