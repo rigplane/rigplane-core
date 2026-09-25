@@ -41,7 +41,8 @@ class ProviderObservationAdapter:
     observed_active_getter: Callable[[], str | None] | None = None
 
     def _observed_active(self) -> str | None:
-        return None  # MUTATION M-B1
+        getter = self.observed_active_getter
+        return getter() if getter is not None else None
 
     def observation(
         self,
