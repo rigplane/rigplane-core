@@ -671,12 +671,15 @@ async def test_pacing_waits_the_gap_from_the_send_when_the_reply_is_shorter(
         first = asyncio.create_task(commander.send(b"a"))
         await real_sleep(0)
         await started.wait()
-        await commander.send(b"b")
+        second = asyncio.create_task(commander.send(b"b"))
+        await real_sleep(0)
+        await commander.send(b"c")
         await first
+        await second
     finally:
         await commander.stop()
 
-    assert starts == [gap, gap + gap]
+    assert starts == [gap, gap + gap, gap + gap + gap]
 
 
 @pytest.mark.asyncio
@@ -684,28 +687,37 @@ async def test_a_caller_cancelled_inflight_send_still_paces_the_next(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gap = 0.025
+    timeout = 0.010
     clock = _install_clock(monkeypatch, start=gap)
     sent = asyncio.Event()
+    released = asyncio.Event()
+    was_cancelled = asyncio.Event()
     starts: list[float] = []
 
     async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
         starts.append(clock.now)
         if cmd == b"slow":
             sent.set()
-            await asyncio.sleep(1.0)
+            try:
+                await released.wait()
+            except asyncio.CancelledError:
+                was_cancelled.set()
+                raise
         return _ack()
 
     commander = IcomCommander(execute, min_interval=gap)
     commander.start()
     try:
-        slow = asyncio.create_task(commander.send(b"slow", timeout=gap))
+        slow = asyncio.create_task(commander.send(b"slow", timeout=timeout))
         await sent.wait()
         with pytest.raises(asyncio.CancelledError):
             await slow
         await commander.send(b"next")
     finally:
+        released.set()
         await commander.stop()
 
+    assert was_cancelled.is_set()
     assert starts == pytest.approx([gap, gap + gap])
 
 

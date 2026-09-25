@@ -17,9 +17,8 @@ __all__ = ["Ic705SerialRadio", "XieguSerialRadio"]
 class XieguSerialRadio(_IcomSerialRadioBase):
     """X6200 on the IC-705 serial transport, at the unmeasured gap.
 
-    Same CI-V session as the IC-705; the gap stays 50 ms because that radio
-    was not on the bench that set the Icom serial gap (MOR-2595). X6100 has
-    no serial backend and is not routed here.
+    Same CI-V session as the IC-705; the gap stays 50 ms (MOR-2595). X6100
+    has no serial backend and is not routed here.
     """
 
     _serial_civ_min_interval_ms = _NON_ICOM_SERIAL_CIV_MIN_INTERVAL_MS
