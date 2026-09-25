@@ -137,7 +137,7 @@ def _bridge_backend() -> FakeAudioBackend:
             ),
             AudioDeviceInfo(
                 id=AudioDeviceId(1),
-                name="BlackHole 2ch",
+                name="RigPlane Virtual Cable",
                 input_channels=2,
                 output_channels=2,
             ),
@@ -158,7 +158,7 @@ async def test_bridge_tx_reaches_serial_driver_without_runtime_error() -> None:
 
     backend = _bridge_backend()
     bridge = AudioBridge(
-        radio, device_name="BlackHole", tx_enabled=True, backend=backend
+        radio, device_name="RigPlane Virtual Cable", tx_enabled=True, backend=backend
     )
     await bridge.start()
 
@@ -218,7 +218,7 @@ async def test_bridge_downgrades_to_rx_only_when_tx_rejected(
     radio = _TxRejectingRadio()
     backend = _bridge_backend()
     bridge = AudioBridge(
-        radio, device_name="BlackHole", tx_enabled=True, backend=backend
+        radio, device_name="RigPlane Virtual Cable", tx_enabled=True, backend=backend
     )
 
     with caplog.at_level(logging.WARNING, logger="rigplane.audio.bridge"):

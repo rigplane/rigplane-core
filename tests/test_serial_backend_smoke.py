@@ -140,7 +140,7 @@ class _BridgeSoundDevice:
         self.input_stream = _BridgeInputStream()
 
     def query_devices(self):  # type: ignore[no-untyped-def]
-        return [{"name": "BlackHole 2ch", "index": 1}]
+        return [{"name": "RigPlane Virtual Cable", "index": 1}]
 
     def OutputStream(self, **kwargs):  # noqa: N802 # type: ignore[no-untyped-def]
         _ = kwargs
@@ -461,13 +461,13 @@ async def test_audio_bridge_smoke_with_serial_backend_audio_driver() -> None:
     # in-loop — no thread pool scheduling, no call_soon_threadsafe delays.
     device = AudioDeviceInfo(
         id=AudioDeviceId(1),
-        name="BlackHole 2ch",
+        name="RigPlane Virtual Cable",
         input_channels=2,
         output_channels=2,
     )
     backend = FakeAudioBackend(devices=[device])
     bridge = AudioBridge(
-        radio, device_name="BlackHole", tx_enabled=True, backend=backend
+        radio, device_name="RigPlane Virtual Cable", tx_enabled=True, backend=backend
     )
     try:
         await bridge.start()
