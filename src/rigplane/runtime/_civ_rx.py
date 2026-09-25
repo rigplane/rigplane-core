@@ -469,7 +469,7 @@ _TONE_SQUELCH_TYPE_SUB = 0x5D
 _TONE_SQUELCH_TYPE_BOOLS: dict[int, tuple[bool, bool]] = {
     0x00: (False, False),
     0x01: (True, False),
-    0x02: (True, False),
+    0x02: (True, True),
 }
 
 # 0x16 value sub-commands → (FieldPath spec, decode mode). ``raw`` keeps the
