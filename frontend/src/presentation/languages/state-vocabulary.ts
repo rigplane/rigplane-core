@@ -69,7 +69,7 @@ export type TxTargetStatus = (typeof TX_TARGET_STATUSES)[number];
  *  - `MetersSurface.svelte`'s `.meter-tile`: a plain over-threshold boolean,
  *    stringified the same way `data-relevant`/`data-observed` are.
  * Left unrenamed here: both attributes have existing test assertions keyed
- * to this exact name (e.g. `MetersSurface.test.ts`,
+ * to this exact name (e.g. `MetersSurface.isolated.test.ts`,
  * `rx-tx-surface.component.test.ts`) that a rename would break, for no
  * benefit to this ticket.
  */

@@ -12,7 +12,7 @@
  * `button`/`input`/`onclick`-shaped syntax AND a rendered-DOM query, so a
  * behavioural mutation (adding a control) and a source-level one (adding
  * a handler prop) both die — the same double instrument
- * `MetersSurface.test.ts` block 1/5 uses.
+ * `MetersSurface.isolated.test.ts` block 1/5 uses.
  *
  * Two carry-forward mutation probes this file exists to satisfy:
  *   (1) flip the `health`-state -> tone/text branch mapping and a test dies

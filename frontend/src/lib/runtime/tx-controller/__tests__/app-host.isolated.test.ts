@@ -3,7 +3,7 @@
  * …)`) to stand in for the component context that `managed-app-host.ts`
  * reads through `getContext`/`setContext`. Under `isolate: false` a sibling
  * fast-pool file that imports `panel-adapters` → `managed-app-host` (e.g.
- * `pbt-if-shift-terminal-outcome-retention.test.ts`) caches `managed-app-host`
+ * `pbt-if-shift-terminal-outcome-retention.isolated.test.ts`) caches `managed-app-host`
  * bound to the REAL `svelte`; this file's mock then never rebinds the
  * cached module, `provideManagedAppTxHost` calls the real `getContext`
  * outside a component, and every test fails with `lifecycle_outside_component`

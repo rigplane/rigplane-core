@@ -759,10 +759,6 @@ docs/validation/desktop-v2-v3-parity.md	MetersSurface.svelte:145-148
 docs/validation/desktop-v2-v3-parity.md	MetersSurface.svelte:161
 docs/validation/desktop-v2-v3-parity.md	MetersSurface.svelte:57-64
 docs/validation/desktop-v2-v3-parity.md	MetersSurface.svelte:75-82
-docs/validation/desktop-v2-v3-parity.md	MetersSurface.test.ts:127
-docs/validation/desktop-v2-v3-parity.md	MetersSurface.test.ts:467
-docs/validation/desktop-v2-v3-parity.md	MetersSurface.test.ts:493
-docs/validation/desktop-v2-v3-parity.md	MetersSurface.test.ts:540-670
 docs/validation/desktop-v2-v3-parity.md	MobileRadioLayout.svelte:493
 docs/validation/desktop-v2-v3-parity.md	ModePanel.svelte:103
 docs/validation/desktop-v2-v3-parity.md	ModePanel.svelte:107
