@@ -635,7 +635,10 @@ async def test_monitor_unmute_restores_saved_levels() -> None:
 
     assert result == {"on": False}
     radio.set_af_level.assert_has_awaits(
-        [((0.31,), {"receiver": 0}), ((0.77,), {"receiver": 1})],
+        [
+            ((round(0.31 * 255),), {"receiver": 0}),
+            ((round(0.77 * 255),), {"receiver": 1}),
+        ],
         any_order=False,
     )
     assert mute.on is False
@@ -655,7 +658,10 @@ async def test_monitor_unmute_after_reconnect_restores_before_af_reread() -> Non
     await h._enqueue_command("set_monitor_mute", {"on": False})
 
     radio.set_af_level.assert_has_awaits(
-        [((0.31,), {"receiver": 0}), ((0.77,), {"receiver": 1})],
+        [
+            ((round(0.31 * 255),), {"receiver": 0}),
+            ((round(0.77 * 255),), {"receiver": 1}),
+        ],
         any_order=False,
     )
 
@@ -730,7 +736,7 @@ async def test_monitor_mute_keeps_the_saved_level_when_a_later_write_fails() -> 
 
     radio.set_af_level.reset_mock()
     await h._enqueue_command("set_monitor_mute", {"on": False})
-    radio.set_af_level.assert_any_await(0.31, receiver=0)
+    radio.set_af_level.assert_any_await(round(0.31 * 255), receiver=0)
 
 
 def test_monitor_mute_payload_omits_unsaved_keys() -> None:
