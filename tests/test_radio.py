@@ -2290,6 +2290,23 @@ class TestCivPacingIsSendToSend:
                     return outcome
 
                 monkeypatch.setattr(tracker, "resolve", counting_resolve)
+                print(
+                    "BEFORE SECOND:",
+                    "min_interval=",
+                    radio._civ_min_interval,
+                    "last=",
+                    radio._last_civ_send_monotonic,
+                    "mono=",
+                    clock.monotonic(),
+                    "pending=",
+                    tracker.pending_count,
+                    "sinks=",
+                    tracker.ack_sink_count,
+                    "same_transport=",
+                    radio._civ_transport is mock_transport,
+                    "sent=",
+                    len(mock_transport.sent_packets),
+                )
                 try:
                     frame = await radio._execute_civ_raw(cmd)
                 except TimeoutError as exc:
