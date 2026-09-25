@@ -37,6 +37,19 @@ def _radio() -> IcomRadio:
     return radio
 
 
+def test_profile_without_tone_squelch_type_ignores_16_5d() -> None:
+    radio = IcomRadio("192.168.1.100", model="IC-7300")
+    radio._civ_transport = MockTransport()
+    radio._ctrl_transport = radio._civ_transport
+    radio._connected = True
+    radio._civ_runtime._update_state_cache_from_frame(_frame(b"\x02"))
+    snapshot = radio._state_store.snapshot()
+    for name in ("repeater_tone", "repeater_tsql"):
+        with pytest.raises(KeyError):
+            snapshot.field(f"receiver.0.operator_toggles.{name}")
+    radio._connected = False
+
+
 def test_ic705_declares_no_repeater_shift() -> None:
     profile = get_radio_profile("IC-705")
     assert "repeater_shift" not in profile.capabilities
