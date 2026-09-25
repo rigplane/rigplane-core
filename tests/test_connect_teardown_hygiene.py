@@ -118,7 +118,7 @@ class TestCommanderStopHygiene:
         old_handler = loop.get_exception_handler()
         loop.set_exception_handler(capture)
         try:
-            commander = IcomCommander(execute, min_interval=0.0)
+            commander = IcomCommander(execute)
             commander.start()
             # Fire-and-forget background polls: nobody ever awaits these
             # futures (the live IC-7610 stale-slot flood, MOR-595).
