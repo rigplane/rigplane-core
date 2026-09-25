@@ -681,7 +681,7 @@ async def test_a_caller_cancelled_inflight_send_still_paces_the_next(
     try:
         slow = asyncio.create_task(commander.send(b"slow", timeout=gap))
         await sent.wait()
-        with pytest.raises(asyncio.TimeoutError):
+        with pytest.raises(asyncio.CancelledError):
             await slow
         await commander.send(b"next")
     finally:
