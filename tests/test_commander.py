@@ -629,10 +629,10 @@ async def test_pacing_is_send_to_send_when_the_reply_outlasts_the_gap(
     started = asyncio.Event()
 
     async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
-        if not starts:
+        starts.append(clock.now)
+        if not started.is_set():
             await asyncio.sleep(reply)
         started.set()
-        starts.append(clock.now)
         return _ack()
 
     commander = IcomCommander(execute, min_interval=gap)
@@ -646,7 +646,7 @@ async def test_pacing_is_send_to_send_when_the_reply_outlasts_the_gap(
     finally:
         await commander.stop()
 
-    assert starts == [gap + reply, gap + reply]
+    assert starts == [gap, gap + reply]
 
 
 @pytest.mark.asyncio
@@ -660,9 +660,9 @@ async def test_pacing_waits_the_gap_from_the_send_when_the_reply_is_shorter(
     started = asyncio.Event()
 
     async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
+        starts.append(clock.now)
         await asyncio.sleep(reply)
         started.set()
-        starts.append(clock.now)
         return _ack()
 
     commander = IcomCommander(execute, min_interval=gap)
@@ -676,7 +676,7 @@ async def test_pacing_waits_the_gap_from_the_send_when_the_reply_is_shorter(
     finally:
         await commander.stop()
 
-    assert starts == [gap + reply, gap + gap], (starts, clock.now)
+    assert starts == [gap, gap + gap]
 
 
 @pytest.mark.asyncio
@@ -689,10 +689,10 @@ async def test_a_caller_cancelled_inflight_send_still_paces_the_next(
     starts: list[float] = []
 
     async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
+        starts.append(clock.now)
         if cmd == b"slow":
             sent.set()
             await asyncio.sleep(1.0)
-        starts.append(clock.now)
         return _ack()
 
     commander = IcomCommander(execute, min_interval=gap)
@@ -706,7 +706,7 @@ async def test_a_caller_cancelled_inflight_send_still_paces_the_next(
     finally:
         await commander.stop()
 
-    assert starts == pytest.approx([gap + 1.0, gap + gap])
+    assert starts == pytest.approx([gap, gap + gap])
 
 
 @pytest.mark.asyncio
