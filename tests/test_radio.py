@@ -2252,12 +2252,8 @@ class TestCivPacingIsSendToSend:
         try:
             runtime.start_pump()
             try:
-                # DIAGNOSTIC bound: real pace is kept, so this fires in 5 s
-                # of real time and shows where the hang sits.
                 with pytest.raises(asyncio.CancelledError):
-                    await asyncio.wait_for(
-                        runtime._send_civ_frame_now(frame), timeout=5.0
-                    )
+                    await runtime._send_civ_frame_now(frame)
                 assert len(mock_transport.sent_packets) == 1
                 mock_transport.queue_response_on_send(2, _ack_response())
                 answer = await radio._execute_civ_raw(frame)
