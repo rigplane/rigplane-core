@@ -2259,10 +2259,6 @@ class TestCivPacingIsSendToSend:
 
             _rt.sleep(8)
             with open("/tmp/hangdump2603.txt", "w") as fh:
-                fh.write(
-                    f"mono={clock.monotonic()!r} base={clock._base!r} "
-                    f"real0={clock._real0!r} realnow={clock._real_monotonic()!r}\n"
-                )
                 for task in asyncio.all_tasks(test_loop):
                     fh.write(f"--- {task.get_name()} {task.get_coro()}\n")
                     for st in task.get_stack():
