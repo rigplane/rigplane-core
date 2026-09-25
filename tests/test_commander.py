@@ -582,8 +582,9 @@ class _Clock:
         return await awaitable
 
 
-def _install_clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+def _install_clock(monkeypatch: pytest.MonkeyPatch, *, start: float) -> _Clock:
     clock = _Clock()
+    clock.now = start
     loop = asyncio.get_running_loop()
     monkeypatch.setattr(loop, "time", clock.time)
     monkeypatch.setattr(asyncio, "sleep", clock.sleep)
@@ -601,8 +602,8 @@ async def test_pacing_is_send_to_send_when_the_reply_outlasts_the_gap(
 ) -> None:
     """A query longer than the gap does not add the gap again after the reply."""
 
-    clock = _install_clock(monkeypatch)
     gap = 0.010
+    clock = _install_clock(monkeypatch, start=gap)
     reply = 0.040
     starts: list[float] = []
 
@@ -619,15 +620,15 @@ async def test_pacing_is_send_to_send_when_the_reply_outlasts_the_gap(
     finally:
         await commander.stop()
 
-    assert starts == [0.0, reply]
+    assert starts == [gap, gap + reply]
 
 
 @pytest.mark.asyncio
 async def test_pacing_waits_the_gap_from_the_send_when_the_reply_is_shorter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    clock = _install_clock(monkeypatch)
     gap = 0.025
+    clock = _install_clock(monkeypatch, start=gap)
     reply = 0.005
     starts: list[float] = []
 
@@ -644,15 +645,15 @@ async def test_pacing_waits_the_gap_from_the_send_when_the_reply_is_shorter(
     finally:
         await commander.stop()
 
-    assert starts == [0.0, gap]
+    assert starts == [gap, gap + gap]
 
 
 @pytest.mark.asyncio
 async def test_a_caller_cancelled_inflight_send_still_paces_the_next(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    clock = _install_clock(monkeypatch)
     gap = 0.025
+    clock = _install_clock(monkeypatch, start=gap)
     sent = asyncio.Event()
     starts: list[float] = []
 
@@ -674,7 +675,7 @@ async def test_a_caller_cancelled_inflight_send_still_paces_the_next(
     finally:
         await commander.stop()
 
-    assert starts == [0.0, gap]
+    assert starts == [gap, gap + gap]
 
 
 @pytest.mark.asyncio
