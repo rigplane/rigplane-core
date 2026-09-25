@@ -848,16 +848,17 @@ async def test_opening_gate_drops_frames_queued_while_closed():
         sent.append(frame)
 
     radio = _bare_radio(push_audio_tx_pcm=AsyncMock(side_effect=push_audio_tx_pcm))
-    open_gate = False
+    held = 0
 
     async def gate() -> bool:
-        return open_gate
+        return held >= 2
 
     bridge = AudioBridge(radio, tx_gate=gate)
     bridge._running = True
     bridge._tx_stream = types.SimpleNamespace(running=True)
     echo = _loud_frame(1000)
     later = _loud_frame(2000)
+    bridge._enqueue_tx(echo)
     bridge._enqueue_tx(echo)
     bridge._tx_task = asyncio.create_task(bridge._tx_loop())
 
@@ -867,11 +868,8 @@ async def test_opening_gate_drops_frames_queued_while_closed():
             raise AssertionError("closed gate did not suppress the echo")
         await asyncio.sleep(0)
 
-    bridge._enqueue_tx(echo)
-    open_gate = True
     bridge._enqueue_tx(later)
-    for _ in range(5):
-        await asyncio.sleep(0)
+    held = 2
     await _run_tx_until(bridge, frames=1)
 
     assert sent == [later]
