@@ -351,7 +351,10 @@ class IcomCivAcquisitionExecutor:
                     query, getattr(request, "priority", AcquisitionPriority.BACKGROUND)
                 )
             except BackgroundSendDropped:
-                pass
+                # A fire-and-forget send the commander dropped at its cap.
+                # Leaving the path out of ``sent`` is what keeps the drain
+                # from recording a dispatch for a frame that never left.
+                continue
             sent.append(path)
         return AcquisitionExecutionResult(
             sent_paths=tuple(sent),
