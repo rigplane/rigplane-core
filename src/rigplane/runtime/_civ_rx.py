@@ -1288,9 +1288,7 @@ class CivRuntime:
         finally:
             if tasks is not None:
                 tasks.discard(task)
-        # MUTATION (MOR-2603 managed-PTT proof): never advance the send
-        # clock here, so a managed write between two sends does not pace
-        # the send behind it.
+        self._host._last_civ_send_monotonic = time.monotonic()
 
     @staticmethod
     def _civ_frame_to_bytes(frame: CivFrame) -> bytes:
