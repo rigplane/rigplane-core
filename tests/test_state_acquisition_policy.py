@@ -936,6 +936,25 @@ def test_registry_specs_carry_the_derived_acquisition_class() -> None:
     assert not mismatches, mismatches
 
 
+def test_tuner_status_polls_in_the_control_class() -> None:
+    """MOR-2596: the TUNE badge must clear within seconds of the tune ending.
+
+    The end of a tune is radio-driven, so its visibility is the poll
+    cadence. As a setting (10 s nominal, 30 s ceiling, held at the ceiling
+    in TX) the badge cleared up to ~12 s late in RX on the IC-7300's
+    stretched serial fit and up to 30 s late when the radio reported PTT
+    during the tune. The control class (2 s nominal, 5 s ceiling, not
+    held) bounds that lag.
+    """
+
+    assert (
+        acquisition_class_for_path(
+            FieldPath.global_("operator_controls", "tuner_status")
+        )
+        is AcquisitionClass.CONTROL
+    )
+
+
 def test_acquisition_class_table_is_the_owner_approved_literal() -> None:
     """The table is exactly the owner-approved 8-row table of MOR-2574.
 
