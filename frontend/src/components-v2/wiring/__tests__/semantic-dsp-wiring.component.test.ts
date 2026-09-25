@@ -306,7 +306,7 @@ const liveCaps = (withDsp: boolean): Capabilities => ({
   stateContractVersion: 1, providerGeneration: 1,
   model: 'fixture', scope: false, audio: true, tx: true,
   capabilities: withDsp
-    ? ['audio', 'tx', 'dual_rx', 'nr', 'nb', 'notch', 'agc', 'lan_dual_rx_audio_routing']
+    ? ['audio', 'tx', 'dual_rx', 'nr', 'nb', 'notch', 'agc', 'agc_time_constant', 'lan_dual_rx_audio_routing']
     : ['audio', 'tx', 'dual_rx', 'lan_dual_rx_audio_routing'],
   receivers: 2, vfoScheme: 'main_sub', freqRanges: [], modes: [], filters: [],
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },

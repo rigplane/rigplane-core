@@ -971,6 +971,114 @@ class TestSubReceiverAfLevelTag:
             assert (info, capabilities) == (expected, expected)
 
 
+# ── Per-receiver declared controls (MOR-2588) ────────────────────
+
+
+class TestReceiverDeclaredControlTags:
+    """``attenuator_sub``/``preamp_sub``/``agc_time_constant``/
+    ``agc_time_constant_sub`` are served only for receivers whose fields the
+    profile itself declares (MOR-2588), following the ``af_level_sub``
+    serving pattern (MOR-2579) with the profile's declared acquisition paths
+    as the fact. ``supports_command`` admission is not the fact here: it
+    under-admits (FTX-1 declares ``receiver.main.operator_controls.preamp``
+    with no receiver-admitted write) and over-admits (IC-9700/IC-705 declare
+    the 0x1A 04 command pair without declaring the polled field). Real radios
+    on the bundled profiles, not mocks."""
+
+    @pytest.mark.parametrize(
+        ("rig", "expected"),
+        [
+            (
+                "ic7610",
+                {
+                    "attenuator_sub",
+                    "preamp_sub",
+                    "agc_time_constant",
+                    "agc_time_constant_sub",
+                },
+            ),
+            ("ic7300", {"agc_time_constant"}),
+            ("ic9700", set()),
+            ("ic705", set()),
+            ("ftx1", set()),
+        ],
+    )
+    def test_tags_follow_the_profile_declared_fields(self, rig, expected):
+        from rigplane.rig_loader import load_rig
+        from rigplane.runtime.radio import CoreRadio
+        from rigplane.web.runtime_helpers import projected_receiver_control_tags
+
+        config = load_rig(_RIGS_DIR / f"{rig}.toml")
+        radio = (
+            YaesuCatRadio("/dev/null", profile=config)
+            if rig == "ftx1"
+            else CoreRadio("127.0.0.1", profile=config.to_profile())
+        )
+        assert projected_receiver_control_tags(radio) == frozenset(expected)
+
+    def test_command_declarations_alone_do_not_project_the_agc_time_tags(self):
+        """IC-9700 and IC-705 declare get/set_agc_time_constant without
+        declaring the polled field; admission would light a control that
+        never reads."""
+        from rigplane.rig_loader import load_rig
+        from rigplane.runtime.radio import CoreRadio
+        from rigplane.web.runtime_helpers import projected_receiver_control_tags
+
+        for rig in ("ic9700", "ic705"):
+            config = load_rig(_RIGS_DIR / f"{rig}.toml")
+            radio = CoreRadio("127.0.0.1", profile=config.to_profile())
+            assert radio.profile.supports_command("set_agc_time_constant")
+            assert "agc_time_constant" not in projected_receiver_control_tags(radio)
+
+    @pytest.mark.asyncio
+    async def test_info_and_capabilities_serve_the_declared_tags(self):
+        from rigplane.core.state_pipeline_contracts import FieldPath
+        from rigplane.web.runtime_helpers import projected_receiver_control_tags
+
+        reserved = frozenset(
+            {
+                "attenuator_sub",
+                "preamp_sub",
+                "agc_time_constant",
+                "agc_time_constant_sub",
+            }
+        )
+        undeclared = {
+            FieldPath.parse("receiver.sub.operator_controls.att"),
+            FieldPath.parse("receiver.sub.operator_controls.preamp"),
+            FieldPath.parse("receiver.main.operator_controls.agc_time_constant"),
+            FieldPath.parse("receiver.sub.operator_controls.agc_time_constant"),
+        }
+        stripped = _make_radio("IC-7610")
+        acquisition = stripped.profile.state_acquisition
+        assert acquisition is not None
+        stripped.profile = replace(
+            stripped.profile,
+            state_acquisition=replace(
+                acquisition,
+                capabilities=tuple(
+                    capability
+                    for capability in acquisition.capabilities
+                    if capability.path not in undeclared
+                ),
+                field_policies={
+                    path: policy
+                    for path, policy in acquisition.field_policies.items()
+                    if path not in undeclared
+                },
+            ),
+        )
+        for radio, expected in (
+            (_make_radio("IC-7610"), reserved),
+            (stripped, frozenset()),
+        ):
+            assert projected_receiver_control_tags(radio) == expected
+            info, capabilities, hello = await _endpoint_vfo_tags(
+                radio, reserved=reserved
+            )
+            assert (info, capabilities, hello) == (expected, expected, expected)
+
+
 # ── Profile-declared dual watch (MOR-2425) ─────────────────────
 
 
