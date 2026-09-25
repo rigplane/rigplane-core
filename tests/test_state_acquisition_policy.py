@@ -1113,14 +1113,15 @@ def test_fit_to_budget_applies_the_tx_window_rules() -> None:
 
 
 def test_fit_to_budget_reproduces_the_design_ic7610_lan_receive_figure() -> None:
-    """The design's IC-7610 LAN receive figure: setting stretched to ~14.09 s.
+    """The design's IC-7610 LAN receive figure: setting stretched to ~15.80 s.
 
     Class counts are computed here from the LOADED IC-7610 profile. The
     MOR-2574 headline measurement folded the panel knobs into the setting
     class, before the owner's 2026-09-24 decision gave the 2026-09-07
-    panel set its own 5 s class; this test reproduces that fold (57
-    setting fields) so the 21.43 q/s limit stretches setting to about
-    14.09 s and closes exactly on it.
+    panel set its own 5 s class; this test reproduces that fold (56
+    setting fields, since MOR-2596 moved ``tuner_status`` to control) so
+    the 21.43 q/s limit stretches setting to about 15.80 s and closes
+    exactly on it.
     """
 
     acquisition = get_radio_profile("IC-7610").state_acquisition
@@ -1147,7 +1148,7 @@ def test_fit_to_budget_reproduces_the_design_ic7610_lan_receive_figure() -> None
 
     assert fit.fits is True
     assert fit.effective_cadence_seconds[AcquisitionClass.SETTING] == (
-        pytest.approx(14.09, abs=0.01)
+        pytest.approx(15.80, abs=0.01)
     )
     assert fit.demand_hz == pytest.approx(0.75 * lan_budget_hz)
 
