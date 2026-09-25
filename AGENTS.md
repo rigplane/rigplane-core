@@ -166,9 +166,10 @@ required `quick` job reports a server-side skipped/neutral context and never
 allocates the Mac mini. Do not run citation, link, Markdown, product, visual,
 or full automation; the exact-head independent review is the substantive gate.
 Documentation mixed with code follows the normal checks selected by the code
-paths. Data files under `docs/` (`*.json`, `*.toml`, `*.yaml`, `*.yml`) are not
-documentation here and get the normal checks
-(`.github/scripts/classify-quick-paths.py: DOCS_DATA_SUFFIXES`).
+paths. Data files under `docs/` (`*.json`, `*.toml`, `*.yaml`, `*.yml`) and the
+Markdown files that tests read are not documentation here and get the normal
+checks (`.github/scripts/classify-quick-paths.py: DOCS_DATA_SUFFIXES`,
+`CORE_DOCS_TEST_INPUT_EXACT`).
 
 ## Multi-agent Git hygiene
 
