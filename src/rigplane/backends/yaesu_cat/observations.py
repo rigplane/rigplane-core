@@ -1635,17 +1635,13 @@ class YaesuObservationAdapter:
                 return False, None
             try:
                 return True, await retry()
-            except CatCommandRejected as retry_exc:
-                logger.debug(
-                    "declared read %s refused twice; recording the defect",
-                    label,
-                )
+            except CatCommandRejected:
                 if paths:
-                    self._record_declared_defect(label, retry_exc, paths)
+                    self._record_declared_defect(label, exc, paths)
                 self._log_field_skip(
                     label,
                     "Skipping field %s — command rejected (?;): %s",
-                    retry_exc,
+                    exc,
                 )
                 return False, None
 
