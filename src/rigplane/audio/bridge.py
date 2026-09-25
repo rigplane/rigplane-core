@@ -236,7 +236,10 @@ def _find_device_in_backend(
         for dev in devices:
             if not _candidate_matches(dev.name, search):
                 continue
-            # MUTATION (must break direction tests): ignore channel direction.
+            if direction == "capture" and dev.input_channels <= 0:
+                continue
+            if direction == "playback" and dev.output_channels <= 0:
+                continue
             return dev
     return None
 
