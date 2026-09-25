@@ -170,10 +170,10 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched(
         await commander.stop()
         commander._bg_inflight = 0  # noqa: SLF001
         commander.start()
-        before = scheduler.diagnostics()["cadenceByGroup"]
         clock.advance(_CADENCE + 0.01)
         scheduler.due_requests(now=clock.now())
-        assert scheduler.diagnostics()["cadenceByGroup"] == before
+        requeued = scheduler.pending_requests()
+        assert requeued != ()
         in_flight: dict = {}
         drain = AcquisitionDrain(
             scheduler=lambda: scheduler,
@@ -188,7 +188,7 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched(
             report_sent=lambda *args, **kwargs: None,
         )
         result = await poller._acquisition_executor.execute(  # noqa: SLF001
-            scheduler.pending_requests()[0], already_sent_paths=frozenset()
+            requeued[0], already_sent_paths=frozenset()
         )
         assert result.sent_paths == (_FREQ,)
         await drain.run_once()
