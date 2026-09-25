@@ -245,7 +245,7 @@ def _bridge_backend() -> FakeAudioBackend:
         [
             AudioDeviceInfo(
                 id=AudioDeviceId(1),
-                name="BlackHole 2ch",
+                name="RigPlane Virtual Cable",
                 input_channels=2,
                 output_channels=2,
             )
@@ -279,7 +279,7 @@ async def test_bridge_uses_neutral_tx_surface() -> None:
     radio = _neutral_radio()
     backend = _bridge_backend()
     bridge = AudioBridge(
-        radio, device_name="BlackHole", tx_enabled=True, backend=backend
+        radio, device_name="RigPlane Virtual Cable", tx_enabled=True, backend=backend
     )
     await bridge.start()
 
@@ -308,7 +308,7 @@ async def test_bridge_degrades_to_rx_only_on_non_pcm_tx_codec(
     radio = _neutral_radio(tx_codec=AudioCodec.OPUS_1CH)
     backend = _bridge_backend()
     bridge = AudioBridge(
-        radio, device_name="BlackHole", tx_enabled=True, backend=backend
+        radio, device_name="RigPlane Virtual Cable", tx_enabled=True, backend=backend
     )
     with caplog.at_level(logging.WARNING, logger="rigplane.audio.bridge"):
         await bridge.start()
@@ -339,7 +339,7 @@ async def test_bridge_legacy_radio_keeps_pcm_path() -> None:
     radio.audio_bus = AudioBus(radio)
     backend = _bridge_backend()
     bridge = AudioBridge(
-        radio, device_name="BlackHole", tx_enabled=True, backend=backend
+        radio, device_name="RigPlane Virtual Cable", tx_enabled=True, backend=backend
     )
     await bridge.start()
     radio.start_audio_tx_pcm.assert_awaited_once()

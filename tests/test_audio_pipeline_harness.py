@@ -49,7 +49,7 @@ async def test_bridge_tx_pipeline_sends_raw_pcm_when_tx_codec_is_pcm() -> None:
         [
             AudioDeviceInfo(
                 id=AudioDeviceId(1),
-                name="BlackHole Test",
+                name="RigPlane Virtual Cable Test",
                 input_channels=2,
                 output_channels=2,
             )
@@ -57,7 +57,7 @@ async def test_bridge_tx_pipeline_sends_raw_pcm_when_tx_codec_is_pcm() -> None:
     )
     bridge = AudioBridge(
         radio,
-        device_name="BlackHole Test",
+        device_name="RigPlane Virtual Cable Test",
         tx_enabled=True,
         backend=backend,
     )
@@ -122,7 +122,7 @@ async def test_bridge_tx_pipeline_degrades_to_rx_only_when_tx_codec_is_opus() ->
         [
             AudioDeviceInfo(
                 id=AudioDeviceId(1),
-                name="BlackHole Test",
+                name="RigPlane Virtual Cable Test",
                 input_channels=2,
                 output_channels=2,
             )
@@ -130,7 +130,7 @@ async def test_bridge_tx_pipeline_degrades_to_rx_only_when_tx_codec_is_opus() ->
     )
     bridge = AudioBridge(
         radio,
-        device_name="BlackHole Test",
+        device_name="RigPlane Virtual Cable Test",
         tx_enabled=True,
         backend=backend,
     )

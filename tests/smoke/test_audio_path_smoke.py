@@ -76,7 +76,10 @@ from rigplane.web.server import WebConfig, WebServer
 _RX_DEV = AudioDeviceInfo(id=AudioDeviceId(11), name="Rig CODEC In", input_channels=2)
 _TX_DEV = AudioDeviceInfo(id=AudioDeviceId(12), name="Rig CODEC Out", output_channels=2)
 _LOOPBACK = AudioDeviceInfo(
-    id=AudioDeviceId(1), name="BlackHole 2ch", input_channels=2, output_channels=2
+    id=AudioDeviceId(1),
+    name="RigPlane Virtual Cable",
+    input_channels=2,
+    output_channels=2,
 )
 
 # One 20 ms s16le frame @ 48 kHz with a clearly non-silent constant pattern.
@@ -496,7 +499,10 @@ async def test_bridge_end_to_end_roundtrip_and_clean_stop(case: str) -> None:
     shape = await _make_bridge_shape(case)
     bridge_backend = FakeAudioBackend([_LOOPBACK])
     bridge = AudioBridge(
-        shape.radio, device_name="BlackHole", tx_enabled=True, backend=bridge_backend
+        shape.radio,
+        device_name="RigPlane Virtual Cable",
+        tx_enabled=True,
+        backend=bridge_backend,
     )
     try:
         await bridge.start()
@@ -566,7 +572,7 @@ async def test_session_lifecycle_via_bridge_and_web_tx_lease(
 
     bridge = AudioBridge(
         radio,
-        device_name="BlackHole",
+        device_name="RigPlane Virtual Cable",
         tx_enabled=False,  # RX-only demand → session settles at RX_ONLY
         backend=FakeAudioBackend([_LOOPBACK]),
     )
@@ -640,7 +646,7 @@ async def test_watchdog_recovering_surfaces_in_runtime_payload() -> None:
     await server.start()
     bridge = AudioBridge(
         rig.radio,
-        device_name="BlackHole",
+        device_name="RigPlane Virtual Cable",
         tx_enabled=False,
         backend=FakeAudioBackend([_LOOPBACK]),
     )

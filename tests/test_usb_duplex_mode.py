@@ -53,7 +53,7 @@ def test_virtual_loopback_on_macos_is_full(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _darwin(monkeypatch)
-    dev = _codec(name="BlackHole 2ch")
+    dev = _codec(name="RigPlane Virtual Cable")
     assert resolve_usb_duplex_mode(dev, dev) == "full"
 
 
@@ -111,7 +111,7 @@ def test_driver_duplex_mode_property_loopback_macos(
         [
             AudioDeviceInfo(
                 id=AudioDeviceId(1),
-                name="BlackHole 2ch",
+                name="RigPlane Virtual Cable",
                 input_channels=2,
                 output_channels=2,
             ),

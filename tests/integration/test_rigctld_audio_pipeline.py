@@ -229,7 +229,7 @@ async def rigctld_audio_setup() -> AsyncGenerator[
         [
             AudioDeviceInfo(
                 id=AudioDeviceId(1),
-                name="BlackHole Test",
+                name="RigPlane Virtual Cable Test",
                 input_channels=2,
                 output_channels=2,
             )
@@ -237,7 +237,7 @@ async def rigctld_audio_setup() -> AsyncGenerator[
     )
     bridge = AudioBridge(
         radio,
-        device_name="BlackHole Test",
+        device_name="RigPlane Virtual Cable Test",
         tx_enabled=True,
         backend=backend,
     )

@@ -11,7 +11,7 @@ Architecture::
     Radio ←(LAN/Opus)→ rigplane ←(PCM)→ AudioBackend ←(PortAudio)→ Loopback device ←→ WSJT-X
 
 Supported loopback drivers:
-    - **macOS**: BlackHole (``brew install blackhole-2ch``) or Rogue Amoeba Loopback
+    - **macOS**: RigPlane Virtual Cable or Rogue Amoeba Loopback
     - **Linux**: PipeWire loopback, PulseAudio null-sink, or ALSA snd-aloop
     - **Windows**: VB-Cable (https://vb-audio.com/Cable/)
 
@@ -21,7 +21,7 @@ Requirements:
 
 Usage::
 
-    bridge = AudioBridge(radio, device_name="BlackHole 2ch")  # macOS
+    bridge = AudioBridge(radio, device_name="RigPlane Virtual Cable Output")  # macOS
     bridge = AudioBridge(radio, device_name="VB-Cable")       # Windows
     await bridge.start()    # begins bidirectional audio flow
     ...
@@ -94,9 +94,11 @@ SAMPLES_PER_FRAME = SAMPLE_RATE * FRAME_MS // 1000  # 960
 BYTES_PER_SAMPLE = 2  # s16le
 FRAME_BYTES = SAMPLES_PER_FRAME * CHANNELS * BYTES_PER_SAMPLE  # 1920
 
-# Virtual loopback device name candidates for auto-detection
+# Virtual loopback device name candidates for auto-detection.
+# The RigPlane driver is first: other platforms' loopbacks follow in their
+# previous relative order.
 _LOOPBACK_CANDIDATES = (
-    "BlackHole",  # macOS (brew install blackhole-2ch)
+    "RigPlane Virtual Cable",  # RigPlane's own driver (default)
     "Loopback",  # macOS (Rogue Amoeba) / Linux (generic)
     "VB-Audio",  # Windows (VB-Cable)
     "Virtual",  # generic virtual device
@@ -203,23 +205,48 @@ def list_audio_devices() -> list[dict[str, Any]]:
     return list(sd.query_devices())
 
 
+def _candidate_matches(name: str, search: str) -> bool:
+    """Whether *search* matches the device *name* (case-insensitive substring)."""
+    return search.lower() in name.lower()
+
+
 def _find_device_in_backend(
     backend: AudioBackend,
     name: str | None,
+    *,
+    direction: str = "playback",
 ) -> AudioDeviceInfo | None:
-    """Find a virtual loopback device using the backend's device list."""
+    """Find a virtual loopback device using the backend's device list.
+
+    Args:
+        backend: Backend exposing the device list.
+        name: Explicit name (or substring) — wins over auto-detection.
+        direction: ``"playback"`` (RX leg writes here — needs output
+            channels) or ``"capture"`` (TX leg reads here — needs input
+            channels).
+
+    The search is direction-aware: an explicit name still resolves to the
+    first device whose name matches *and* which serves the direction, and
+    auto-detection walks the candidate list in order, picking the first
+    match per direction. A single bidirectional loopback matches both.
+    """
     devices = backend.list_devices()
     search_names = [name] if name else list(_LOOPBACK_CANDIDATES)
 
-    for dev in devices:
-        for search in search_names:
-            if search.lower() in dev.name.lower():
-                return dev
+    for search in search_names:
+        for dev in devices:
+            if not _candidate_matches(dev.name, search):
+                continue
+            if direction == "capture" and dev.input_channels <= 0:
+                continue
+            if direction == "playback" and dev.output_channels <= 0:
+                continue
+            return dev
     return None
 
 
 def _is_virtual_loopback_device(dev: AudioDeviceInfo) -> bool:
-    """Whether *dev* is a virtual loopback (BlackHole/VB-Cable/PipeWire/…).
+    """Whether *dev* is a virtual loopback (RigPlane cable/VB-Cable/PipeWire/…).
 
     The same-device full-duplex path (MOR-531) exists to dodge the macOS
     CoreAudio AUHAL -50 that two separate streams cause on one *real* C-Media
@@ -465,13 +492,20 @@ class AudioBridge:
 
         Raises on failure (RuntimeError, ValueError, OSError, etc.).
         """
-        dev = _find_device_in_backend(self._backend, self._device_name)
+        # The RigPlane cable is a single loop (Output → Input): resolve the
+        # RX-playback (output) and TX-capture (input) devices separately —
+        # they may be two ends of the same cable.
+        dev = _find_device_in_backend(
+            self._backend, self._device_name, direction="playback"
+        )
         if dev is None:
-            searched = self._device_name or "BlackHole/Loopback/VB-Cable/PipeWire"
+            searched = (
+                self._device_name or "RigPlane Virtual Cable/Loopback/VB-Cable/PipeWire"
+            )
             raise LoopbackNotFoundError(
                 f"Virtual audio device not found (searched: {searched}). "
                 f"Install a loopback driver: "
-                f"macOS → brew install blackhole-2ch | "
+                f"macOS → RigPlane Virtual Cable | "
                 f"Linux → pw-loopback or pactl load-module module-null-sink | "
                 f"Windows → vb-audio.com/Cable/"
             )
@@ -479,19 +513,29 @@ class AudioBridge:
         dev_id = dev.id
         logger.info("%s: using device %r (id %d)", self._label, dev.name, int(dev_id))
 
-        # Resolve the TX-capture device up front: it shares the RX-playback
-        # device unless an explicit TX device name resolves to a different one.
+        # Resolve the TX-capture device up front: an explicit TX device
+        # name wins; otherwise the capture leg reuses the RX-playback
+        # device when it serves input, or resolves the same name/
+        # candidate list for the input direction (the cable's other end).
         tx_dev_id = dev_id
         if self._tx_device_name:
-            tx_dev = _find_device_in_backend(self._backend, self._tx_device_name)
-            if tx_dev is None:
+            explicit = _find_device_in_backend(
+                self._backend, self._tx_device_name, direction="capture"
+            )
+            if explicit is None:
                 logger.warning(
                     "%s: TX device %r not found, using RX device",
                     self._label,
                     self._tx_device_name,
                 )
             else:
-                tx_dev_id = tx_dev.id
+                tx_dev_id = explicit.id
+        elif dev.input_channels <= 0:
+            auto_tx = _find_device_in_backend(
+                self._backend, self._device_name, direction="capture"
+            )
+            if auto_tx is not None:
+                tx_dev_id = auto_tx.id
 
         # Codec detection
         from rigplane.core.types import AudioCodec
@@ -628,7 +672,7 @@ class AudioBridge:
                 self._tx_started = True
 
         # Same-device duplex only for a REAL CODEC: a virtual loopback
-        # (BlackHole/VB-Cable/PipeWire) has no AUHAL -50 limitation and stays on
+        # (RigPlane cable/VB-Cable/PipeWire) has no AUHAL -50 limitation and stays on
         # the two-stream path (MOR-531 targets the C-Media same-device case).
         use_duplex = (
             tx_armed
