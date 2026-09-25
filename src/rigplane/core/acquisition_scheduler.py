@@ -563,7 +563,6 @@ class AcquisitionScheduler:
                     reserved[False] += rate
                 continue
             klass = acquisition_class_for_path(paths[0])
-            klass = demoted_acquisition_class(klass)  # MUTATION M6
             self._fitted_class_by_key[key] = klass
             counts[klass] += len(paths)
         for tx, window in ((False, "receive"), (True, "transmit")):
