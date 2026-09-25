@@ -1592,11 +1592,16 @@ class YaesuObservationAdapter:
         """Await one field read, classifying a FIELD-level CAT failure.
 
         Returns ``(ok, value)``. A read naming declared ``paths`` that the
-        radio refuses (``?;``) or answers in another shape RECORDS the
-        defect on the acquisition scheduler — the recording is what the
-        startup gate reads — and then skips that one field exactly like an
-        undeclared read, so a single refused read cannot abort the whole
-        poll cycle and starve every later field (MOR-2578).
+        radio answers in another shape RECORDS the defect on the acquisition
+        scheduler — the recording is what the startup gate reads — and then
+        skips that one field exactly like an undeclared read. A read the
+        radio refuses (``?;``) is re-read ONCE before it is recorded: a
+        refusal the radio repeats still records the defect, while a refusal
+        followed by a normal answer publishes the answer and records nothing,
+        so a one-off radio state (MOR-2584) does not refuse the bind. A
+        twice-refused field is still skipped on that cycle, so a refused read
+        cannot abort the whole poll cycle and starve every later field
+        (MOR-2578).
 
         TRANSPORT errors are NOT caught — they RE-RAISE so the poller's
         ``_run_poll_cycle`` reconnect/backoff still fires. ``CatTimeoutError``
@@ -1618,14 +1623,67 @@ class YaesuObservationAdapter:
             )
             return False, None
         except CatCommandRejected as exc:
-            if paths:
-                self._record_declared_defect(label, exc, paths)
-            self._log_field_skip(
-                label,
-                "Skipping field %s — command rejected (?;): %s",
-                exc,
-            )
-            return False, None
+            retry = self._single_declared_reread(label)
+            if retry is None:
+                if paths:
+                    self._record_declared_defect(label, exc, paths)
+                self._log_field_skip(
+                    label,
+                    "Skipping field %s — command rejected (?;): %s",
+                    exc,
+                )
+                return False, None
+            try:
+                return True, await retry()
+            except CatCommandRejected as retry_exc:
+                logger.debug(
+                    "declared read %s refused twice; recording the defect",
+                    label,
+                )
+                if paths:
+                    self._record_declared_defect(label, retry_exc, paths)
+                self._log_field_skip(
+                    label,
+                    "Skipping field %s — command rejected (?;): %s",
+                    retry_exc,
+                )
+                return False, None
+
+    def _single_declared_reread(self, label: str) -> Callable[[], Awaitable[_T]] | None:
+        """Return a thunk re-issuing ``label``'s read once, or ``None``.
+
+        The radio answers ``?;`` to a declared read while it is busy or
+        mid-transition (``NA1;`` while switching display modes, ``SM1;``
+        during ``AG1`` writes, ``RA0;`` right after SUB was selected — live
+        FTX-1, 2026-09-24), then answers the same read on the next cycle.
+        The retry applies only to the refusal branch: a refusal followed by
+        a normal answer publishes the answer and records nothing (MOR-2584),
+        while a refusal the radio repeats still records the defect the
+        startup gate reads. A malformed-frame failure is still a shape the
+        radio never answers, so it still records on the first failure. The
+        mapping covers only the refusal-shaped reads the stand recorded as
+        one-off refusals; every other label's first refusal records at once.
+        """
+
+        method: str
+        args: tuple[object, ...]
+        if label == "main.att":
+            method, args = "read_attenuator", (0,)
+        elif label == "sub.s_meter":
+            method, args = "read_s_meter", (1,)
+        elif label == "sub.af_level":
+            method, args = "read_af_level", (1,)
+        else:
+            return None
+        call = getattr(self.radio, method, None)
+        if not callable(call):
+            return None
+
+        async def _reread() -> _T:
+            value: _T = await call(*args)
+            return value
+
+        return _reread
 
     def _record_declared_defect(
         self,
@@ -1637,7 +1695,8 @@ class YaesuObservationAdapter:
 
         The recording is what the startup gate reads: it checks the
         scheduler's record before and during its wait, so a declared read
-        that fails before the gate completes refuses the bind. A refusal
+        that fails twice before the gate completes refuses the bind — a
+        refusal the re-read answers (MOR-2584) records nothing. A refusal
         that begins only after the gate has completed is recorded but
         cannot undo a bind that already happened. The
         read itself is skipped — only that field is dropped and the poll
