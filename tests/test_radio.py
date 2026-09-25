@@ -1953,6 +1953,16 @@ class _PacingClock:
         """
         radio._civ_last_waiter_gc_monotonic = self.now
 
+    def install_wait_guard(self, radio: IcomRadio) -> None:
+        """Stretch the answer window past the frozen controllable clock.
+
+        ``_execute_civ_raw`` spends its ``asyncio.wait_for`` budget from
+        the send onward, but the patched ``time.monotonic`` stands still
+        everywhere except the pacing sleeps.  A 2 s window covers the whole
+        test, which advances the controllable clock by milliseconds only.
+        """
+        radio._civ_get_timeout = 2.0
+
 
 def _install_pacing_clock(
     monkeypatch: pytest.MonkeyPatch, *, gap: float
@@ -1988,7 +1998,7 @@ class TestCivPacingIsSendToSend:
         clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
         radio._civ_ack_sink_grace = 0.0
-        radio._civ_get_timeout = 2.0
+        clock.install_wait_guard(radio)
         clock.install_gc_guard(radio)
         radio._last_civ_send_monotonic = 0.0
         clock.install_gc_guard(radio)
@@ -2048,7 +2058,7 @@ class TestCivPacingIsSendToSend:
         clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
         radio._civ_ack_sink_grace = 0.0
-        radio._civ_get_timeout = 2.0
+        clock.install_wait_guard(radio)
         radio._last_civ_send_monotonic = 0.0
         starts: list[float] = []
         original_send = mock_transport.send_tracked
@@ -2102,7 +2112,7 @@ class TestCivPacingIsSendToSend:
         radio._civ_min_interval = gap
         radio._civ_ack_sink_grace = 0.0
         clock.install_gc_guard(radio)
-        radio._civ_get_timeout = 2.0
+        clock.install_wait_guard(radio)
         radio._last_civ_send_monotonic = 0.0
         starts: list[float] = []
         original_send = mock_transport.send_tracked
@@ -2151,7 +2161,7 @@ class TestCivPacingIsSendToSend:
         radio._civ_min_interval = gap
         radio._civ_ack_sink_grace = 0.0
         clock.install_gc_guard(radio)
-        radio._civ_get_timeout = 2.0
+        clock.install_wait_guard(radio)
         radio._last_civ_send_monotonic = 0.0
         observer: list[tx.ProviderPttObservation] = []
         assert radio._capture_managed_tx_port(11, observer.append)
@@ -2203,7 +2213,7 @@ class TestCivPacingIsSendToSend:
         clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
         radio._civ_ack_sink_grace = 0.0
-        radio._civ_get_timeout = 2.0
+        clock.install_wait_guard(radio)
         clock.install_gc_guard(radio)
         radio._last_civ_send_monotonic = 0.0
         radio._civ_runtime.start_worker()
