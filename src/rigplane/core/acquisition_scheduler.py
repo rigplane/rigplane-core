@@ -1694,6 +1694,12 @@ class AcquisitionScheduler:
                 # the group's declared cadence IS its class's nominal.
                 klass = acquisition_class_for_path(paths[0])
             target = demoted_acquisition_class(klass)
+            if target is klass:
+                # Already the slowest demotable class (e.g. a menu-scope
+                # path): demotion is a no-op — keep the original key and
+                # cadence clock rather than re-issue under a fresh one.
+                result.append((key, paths))
+                continue
             assert key.policy.cadence_seconds is not None
             cadence: float = float(
                 acquisition_policy_for_class(target).cadence_seconds or 0.0
