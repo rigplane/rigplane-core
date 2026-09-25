@@ -85,7 +85,7 @@ class _CapRadio:
         )
 
 
-_CADENCE = 1.0
+_CADENCE = 1.0  # LIVE class nominal cadence for an active freq_hz path
 
 
 def _profile() -> RadioAcquisitionProfile:
@@ -93,7 +93,6 @@ def _profile() -> RadioAcquisitionProfile:
         provider="icom_civ",
         capabilities=(FieldCapability(path=_FREQ, polling=True),),
         default_policy=AcquisitionPolicy(),
-        field_policies={_FREQ: AcquisitionPolicy(cadence_seconds=_CADENCE)},
     )
 
 
