@@ -1682,10 +1682,7 @@ class AcquisitionScheduler:
                 demoted_receiver = "main"
         result: list[tuple[_AcquisitionRequestKey, tuple[FieldPath, ...]]] = []
         for key, paths in groups:
-            if (
-                demoted_receiver is None
-                or self._class_derived_group_receivers.get(key) != demoted_receiver
-            ):
+            if demoted_receiver is None:  # MUTATION M2
                 result.append((key, paths))
                 continue
             klass = self._fitted_class_by_key.get(key)
