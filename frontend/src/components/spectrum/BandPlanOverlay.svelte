@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import {
     getVisibleSegments,
     SEGMENT_COLORS,
@@ -51,7 +52,9 @@
 
   // Debounced fetch from REST API
   function fetchSegments(start: number, end: number) {
-    if (shouldSkipFetch(start, end, lastFetchRange.start, lastFetchRange.end)) {
+    // lastFetchRange is bookkeeping written by this fetch: read it outside
+    // tracking so the store write below does not re-run the effect.
+    if (untrack(() => shouldSkipFetch(start, end, lastFetchRange.start, lastFetchRange.end))) {
       return;
     }
 
