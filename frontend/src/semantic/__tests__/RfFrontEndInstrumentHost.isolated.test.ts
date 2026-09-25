@@ -872,7 +872,11 @@ describe('MOR-2425/R29 weakest witness: preamp stays enabled while stale-but-obs
   const r29Caps = (): Capabilities => ({
     stateContractVersion: 1, providerGeneration: 1,
     model: 'R29-WITNESS', scope: false, audio: true, tx: false,
-    capabilities: ['audio', 'preamp'],
+    // MOR-2588: `preamp_main` is the MAIN-scoped declared-field tag a real
+    // single-receiver server serves when it declares the polled preamp field;
+    // without it MAIN's preamp is receiver-lacks-control and the control is
+    // disabled instead of staying enabled for this witness.
+    capabilities: ['audio', 'preamp', 'preamp_main'],
     receivers: 1, vfoScheme: 'single',
     freqRanges: [], modes: [], filters: [], preValues: [0, 1, 2], attValues: [],
     audioConfig: { sampleRate: 48_000, channels: 1, codecs: [] },
@@ -950,7 +954,10 @@ describe('MOR-2425/R29 consistency witness: one stale-but-observed state, scalar
   const consistencyCaps = (): Capabilities => ({
     stateContractVersion: 1, providerGeneration: 1,
     model: 'R29-CONSISTENCY', scope: false, audio: true, tx: false,
-    capabilities: ['audio', 'preamp', 'rf_gain'],
+    // MOR-2588: `preamp_main` is the MAIN-scoped declared-field tag a real
+    // single-receiver server serves when it declares the polled preamp field;
+    // without it MAIN's preamp is receiver-lacks-control (unavailable) here.
+    capabilities: ['audio', 'preamp', 'preamp_main', 'rf_gain'],
     receivers: 1, vfoScheme: 'single',
     freqRanges: [], modes: [], filters: [], preValues: [0, 1, 2], attValues: [],
     audioConfig: { sampleRate: 48_000, channels: 1, codecs: [] },

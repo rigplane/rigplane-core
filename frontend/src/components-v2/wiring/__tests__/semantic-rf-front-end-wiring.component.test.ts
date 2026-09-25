@@ -336,7 +336,12 @@ const liveCaps = (withRfFrontEnd: boolean, rfSqlControlModel?: 'separate' | 'com
   stateContractVersion: 1, providerGeneration: 3,
   model: 'fixture', scope: false, audio: true, tx: true,
   capabilities: withRfFrontEnd
-    ? ['audio', 'tx', 'dual_rx', 'preamp', 'attenuator', 'rf_gain', 'squelch', 'digisel', 'ip_plus']
+    ? ['audio', 'tx', 'dual_rx', 'preamp', 'attenuator', 'rf_gain', 'squelch', 'digisel', 'ip_plus',
+      // MOR-2588: the per-receiver declared-field tags a real dual-receiver
+      // server serves when att/preamp are declared for BOTH receivers. Without
+      // them the adapter marks the active receiver's att/preamp
+      // receiver-lacks-control and the controls under test go disabled.
+      'preamp_main', 'attenuator_main', 'preamp_sub', 'attenuator_sub']
     : ['audio', 'tx', 'dual_rx'],
   preValues: [0, 1, 2], attValues: [0, 6, 12, 18],
   receivers: 2, vfoScheme: 'main_sub', freqRanges: [], modes: [], filters: [],

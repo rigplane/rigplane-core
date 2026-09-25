@@ -100,7 +100,15 @@ function observedAgain(base: ServerState, path: string, marker: number): ServerS
 function liveCaps(): Capabilities {
   return {
     model: 'fixture', scope: false, audio: true, tx: true,
-    capabilities: ['audio', 'tx', 'filter_width', 'preamp', 'nb', 'nr'],
+    capabilities: [
+      'audio', 'tx', 'filter_width', 'preamp',
+      // MOR-2588: the MAIN-scoped declared-field tag a real single-receiver
+      // server serves when it declares the polled preamp field; without it the
+      // adapter marks MAIN's preamp receiver-lacks-control and the control
+      // under test goes disabled.
+      'preamp_main',
+      'nb', 'nr',
+    ],
     preValues: [0, 1, 2], attValues: [0, 6, 12, 18],
     receivers: 1, vfoScheme: 'single',
     freqRanges: [], modes: ['USB', 'LSB'], filters: ['FIL1', 'FIL2', 'FIL3'],
