@@ -1124,6 +1124,8 @@ class AudioBridge:
                 if await self._tx_gate_is_closed():
                     self._tx_gate_suppressed += 1
                     continue
+                if self._tx_gate_was_closed:
+                    self._tx_gate_was_closed = False
                     self._drop_queued_tx()
 
                 samples = _pcm16le_samples(pcm_bytes)
