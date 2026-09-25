@@ -3290,6 +3290,109 @@ async def test_repeated_refusal_records_the_defect_and_skips_the_field() -> None
     assert radio.read_s_meter.await_args_list == [call(0), call(1), call(1)]
 
 
+@pytest.mark.asyncio
+async def test_refusal_then_malformed_reread_records_the_field_defect() -> None:
+    """MOR-2584 review: a malformed answer on the re-read is a field defect.
+
+    The SUB meter refuses once, then answers in another shape. The defect
+    is recorded from the re-read's own exception — like a malformed first
+    read — and only that field is skipped; it never escapes to the
+    cycle-level handler.
+    """
+    profile = _profile_state_acquisition()
+    scheduler = AcquisitionScheduler(profile=profile)
+    radio = _make_radio()
+    radio._poll_warned_fields = set()
+    radio._acquisition_scheduler = scheduler
+    radio.read_s_meter = AsyncMock(
+        side_effect=[
+            150,
+            CatCommandRejected(
+                "Radio rejected command 'SM1;' (returned '?;')", command="SM1;"
+            ),
+            CatParseError(
+                "SM{receiver}{raw:03d};",
+                "SM0048;",
+                "Response does not match pattern",
+            ),
+            150,
+            150,
+        ]
+    )
+
+    observations = await YaesuObservationAdapter(
+        radio, profile=profile, clock=_clock
+    ).poll_rx_meters()
+
+    defect = scheduler.startup_defect
+    assert defect is not None
+    assert [str(path) for path in defect.paths] == ["receiver.sub.meters.s_meter"]
+    assert defect.command == "SM{receiver}{raw:03d};"
+    assert defect.frame == "SM0048;"
+    emitted = {str(item.path) for item in observations}
+    assert "receiver.sub.meters.s_meter" not in emitted
+    assert "receiver.main.meters.s_meter" in emitted
+    assert radio.read_s_meter.await_args_list == [
+        call(0),
+        call(1),
+        call(1),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_retry_is_generic_a_non_listed_label_rereads_too() -> None:
+    """MOR-2584 round 2: the retry is not a label list.
+
+    ``main.preamp`` was never in the old three-label mapping, yet one
+    refusal followed by an answer publishes and records nothing — while a
+    second refusal still records. Each declared-read site passes its own
+    remake, so a new declared read retries with no mapping change.
+    """
+    profile = _profile_state_acquisition()
+    scheduler = AcquisitionScheduler(profile=profile)
+    radio = _make_radio()
+    radio._poll_warned_fields = set()
+    radio._acquisition_scheduler = scheduler
+    radio.read_preamp = AsyncMock(
+        side_effect=[
+            CatCommandRejected(
+                "Radio rejected command 'PA0;' (returned '?;')", command="PA0;"
+            ),
+            1,
+        ]
+    )
+
+    observations = await YaesuObservationAdapter(
+        radio, profile=profile, clock=_clock
+    ).poll_slow_controls()
+    by_path = {str(item.path) for item in observations}
+
+    assert scheduler.startup_defect is None
+    assert "receiver.main.operator_controls.preamp" in by_path
+    assert radio.read_preamp.await_args_list == [call(0), call(0)]
+
+    radio.read_preamp = AsyncMock(
+        side_effect=CatCommandRejected(
+            "Radio rejected command 'PA0;' (returned '?;')", command="PA0;"
+        )
+    )
+    scheduler2 = AcquisitionScheduler(profile=profile)
+    radio._acquisition_scheduler = scheduler2
+
+    observations = await YaesuObservationAdapter(
+        radio, profile=profile, clock=_clock
+    ).poll_slow_controls()
+    emitted = {str(item.path) for item in observations}
+
+    defect = scheduler2.startup_defect
+    assert defect is not None
+    assert [str(path) for path in defect.paths] == [
+        "receiver.main.operator_controls.preamp"
+    ]
+    assert "receiver.main.operator_controls.preamp" not in emitted
+    assert radio.read_preamp.await_args_list == [call(0), call(0)]
+
+
 # ---------------------------------------------------------------------------
 # available_when: the two fields ``rigs/ftx1.toml`` declares conditional
 # ---------------------------------------------------------------------------
