@@ -12,6 +12,8 @@ import type { ServerState } from '$lib/types/state';
 // page's TX controller behaviour additionally follows the listed capability
 // fields.
 export interface ManagedTxAuthorityInputs {
+  // Temporary mutation: the public ptt leaf back in the key.
+  readonly ptt: boolean | null | undefined;
   readonly providerGeneration: number | null | undefined;
   readonly caps: Pick<
     Capabilities,
@@ -25,6 +27,7 @@ export function managedTxAuthorityInputs(
   caps: Capabilities | null | undefined,
 ): ManagedTxAuthorityInputs {
   return {
+    ptt: state?.ptt,
     providerGeneration: state?.providerGeneration,
     caps: caps == null
       ? caps ?? null
