@@ -1123,6 +1123,7 @@ class AudioBridge:
                 if self._tx_gate_was_closed:
                     self._tx_gate_was_closed = False
                     self._drop_queued_tx()
+                    continue
 
                 samples = _pcm16le_samples(pcm_bytes)
                 peak = max((abs(sample) for sample in samples), default=0)
