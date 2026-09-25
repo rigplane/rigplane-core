@@ -545,7 +545,7 @@ def resolve_usb_duplex_mode(
 
     Returns ``"exclusive"`` iff the platform is macOS AND RX and TX resolve
     to the same device index AND the device is a real CODEC (not a virtual
-    loopback such as BlackHole/VB-Cable). On macOS CoreAudio, two separate
+    loopback such as the RigPlane Virtual Cable/VB-Cable/PipeWire). On macOS CoreAudio, two separate
     streams on one real C-Media USB CODEC fail with AUHAL -50 (MOR-531), so
     such a device must be owned exclusively by ONE full-duplex stream.
     Everything else — separate devices, virtual loopbacks, non-macOS

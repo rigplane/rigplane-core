@@ -763,13 +763,13 @@ rigplane web --preset digimode          # Bridge + rigctld + WSJT-X compat
 rigplane web --preset hamradio          # Bridge + rigctld
 
 # Web UI + audio bridge + rigctld (recommended for WSJT-X)
-rigplane web --bridge "BlackHole 2ch"
+rigplane web --bridge "RigPlane Virtual Cable Output"
 
 # Web UI + WSJT-X compatibility on embedded rigctld
 rigplane web --bridge --wsjtx-compat
 
 # Web UI + bridge (RX only, no TX from virtual device)
-rigplane web --bridge "BlackHole 2ch" --bridge-rx-only
+rigplane web --bridge "RigPlane Virtual Cable Output" --bridge-rx-only
 
 # Disable rigctld (enabled by default on :4532)
 rigplane web --no-rigctld
@@ -788,7 +788,7 @@ rigplane station --port 0
 | `--managed` | off | Use managed local defaults: loopback bind, embedded rigctld on loopback |
 | `--static-dir PATH` | — | Serve static files from a custom directory (default: built-in assets) |
 | `--bridge DEVICE` | — | Start audio bridge with named virtual device |
-| `--bridge-tx-device DEVICE` | — | Separate TX-only device for bidirectional bridge (e.g. `BlackHole 16ch`) |
+| `--bridge-tx-device DEVICE` | — | Separate TX-only device for bidirectional bridge (e.g. `RigPlane Virtual Cable Input`) |
 | `--bridge-rx-only` | — | Bridge receives only (no TX from virtual device) |
 | `--no-rigctld` | — | Disable built-in rigctld server |
 | `--rigctld-port` | `4532` | Rigctld listen port |
@@ -845,17 +845,17 @@ fields; clients that understand fleets should prefer `radios[]` when present.
 
 ### `audio bridge`
 
-Route radio audio to/from a virtual audio device (BlackHole, Loopback, VB-Audio).
+Route radio audio to/from a virtual audio device (RigPlane Virtual Cable, Loopback, VB-Audio).
 
 ```bash
 # List available audio devices
 rigplane audio bridge --list-devices
 
 # Start bridge
-rigplane audio bridge --device "BlackHole 2ch"
+rigplane audio bridge --device "RigPlane Virtual Cable Output"
 
 # RX only (no TX from virtual device)
-rigplane audio bridge --device "BlackHole 2ch" --rx-only
+rigplane audio bridge --device "RigPlane Virtual Cable Output" --rx-only
 ```
 
 The TX capture path preserves real-time latency by dropping the oldest queued
@@ -866,11 +866,9 @@ before transmit. For 48 kHz mono 16-bit audio and `frame_ms=20`, each TX frame
 is 1920 bytes.
 
 !!! tip "macOS Setup"
-    Install BlackHole for virtual audio routing:
-    ```bash
-    brew install blackhole-2ch
-    ```
-    After install, reboot to load the audio driver. Then `BlackHole 2ch` appears as an audio device.
+    On macOS the bridge uses the RigPlane Virtual Audio Driver, installed by
+    RigPlane Pro. After install, `RigPlane Virtual Cable Output` (RX playback)
+    and `RigPlane Virtual Cable Input` (TX capture) appear as audio devices.
 
 !!! note "Dependencies"
     Audio-bridge dependencies (`opuslib`, `sounddevice`, `numpy`) ship with
@@ -1067,8 +1065,8 @@ rigplane proxy --radio 192.168.1.100 --listen 10.8.0.1
 | `--preset NAME` | `web` | *(none)* | Apply a named preset: `hamradio`, `digimode`, `serial`, `headless` |
 
 ```bash
-# Bidirectional bridge: RX from BlackHole 2ch, TX through BlackHole 16ch
-rigplane web --bridge "BlackHole 2ch" --bridge-tx-device "BlackHole 16ch"
+# Bidirectional bridge: RX into the cable Output end, TX captured from the Input end
+rigplane web --bridge "RigPlane Virtual Cable Output" --bridge-tx-device "RigPlane Virtual Cable Input"
 
 # Serve a custom-built web UI from a local directory
 rigplane web --static-dir /opt/icom-ui/dist

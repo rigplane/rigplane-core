@@ -7,7 +7,7 @@ the same audio stream from the radio.
 Architecture::
 
     Radio ──(opus packets)──► AudioBus ──► subscriber 1 (browser)
-                                       ──► subscriber 2 (BlackHole)
+                                       ──► subscriber 2 (virtual cable)
                                        ──► subscriber 3 (recorder)
                                        ──► ...
 

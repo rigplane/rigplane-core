@@ -21,21 +21,16 @@ for the provider-facing setup.
 # Install rigplane (audio-bridge deps ship with the core install since v0.19)
 pip install rigplane
 
-# Install BlackHole virtual audio devices (macOS)
-# Two devices required: one for RX, one for TX (single device creates feedback loop)
-brew install blackhole-2ch
-brew install blackhole-16ch
+# Install the RigPlane Virtual Audio Driver (macOS, ships with RigPlane Pro)
 
-# IMPORTANT: Reboot after installing BlackHole to activate the audio drivers!
-
-# Start all-in-one server with separate RX/TX devices
+# Start all-in-one server; the bridge auto-detects the RigPlane cable ends
 rigplane --host <RADIO_IP> --user <USER> --pass <PASS> web \
-  --bridge "BlackHole 2ch" --bridge-tx-device "BlackHole 16ch"
+  --bridge "RigPlane Virtual Cable Output" --bridge-tx-device "RigPlane Virtual Cable Input"
 ```
 
 This starts:
 - **Web UI** on `:8080`
-- **Audio bridge** routing radio RX → BlackHole 2ch, BlackHole 16ch → radio TX
+- **Audio bridge** routing radio RX → RigPlane Virtual Cable Output, RigPlane Virtual Cable Input → radio TX
 - **Rigctld** on `:4532` (enabled by default)
 
 Serial USB-audio radios use the same bridge direction: RX audio is played to
@@ -72,24 +67,28 @@ Press **Test PTT** — the radio should key up briefly.
     also consuming an external Hamlib `rigctld` provider underneath, keep the two
     TCP ports distinct so WSJT-X talks to RigPlane, not around it.
 
-### 3. Configure WSJT-X Audio (with BlackHole bridge)
+### 3. Configure WSJT-X Audio (with the RigPlane Virtual Cable)
 
-Configure WSJT-X audio to use the BlackHole devices:
+On macOS the bridge plays RX into `RigPlane Virtual Cable Output` and
+captures TX from `RigPlane Virtual Cable Input`; the cable is a single
+loopback, so audio played into Output appears on Input. Set WSJT-X to the
+same two ends:
 
 In **Settings → Audio**:
 
 | Setting | Value | Why |
 |---------|-------|-----|
-| **Input** | `BlackHole 2ch` | Receives RX audio from radio |
-| **Output** | `BlackHole 16ch` | Sends TX audio to radio |
-
-> ⚠️ **Why two devices?** BlackHole is a unidirectional loopback — if you use the
-> same device for both input and output, the bridge reads its own RX output as TX
-> input, creating a feedback loop. Two separate devices isolate the paths.
+| **Input** | `RigPlane Virtual Cable Input` | Receives RX audio played into the cable Output end |
+| **Output** | `RigPlane Virtual Cable Output` | Sends TX audio captured from the cable Input end |
 
 The audio bridge routes:
-- **Radio RX → rigplane → BlackHole 2ch → WSJT-X Input** (decode FT8/FT4)
-- **WSJT-X Output → BlackHole 16ch → rigplane → Radio TX** (transmit FT8/FT4)
+- **Radio RX → rigplane → RigPlane Virtual Cable Output → WSJT-X Input** (decode FT8/FT4)
+- **WSJT-X Output → RigPlane Virtual Cable Input → rigplane → Radio TX** (transmit FT8/FT4)
+
+In the web server, the bridge sends captured audio to the radio only while a
+managed transmit authority is keyed, or while observed PTT is not OFF. The
+standalone `rigplane audio bridge` CLI has no gate: it keeps sending all
+non-silent captured audio.
 
 `--bridge` only describes the local audio loopback between WSJT-X and
 rigplane. Radio DATA policy is derived from the resolved audio route:
