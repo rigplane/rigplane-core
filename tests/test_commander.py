@@ -558,6 +558,113 @@ async def test_min_interval_throttling() -> None:
     assert times[1] - times[0] >= 0.02
 
 
+class _Clock:
+    """Controllable loop clock: sleep advances it, nothing else does."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def time(self) -> float:
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        self.now += delay
+
+
+def _install_clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+    clock = _Clock()
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "time", clock.time)
+    monkeypatch.setattr(asyncio, "sleep", clock.sleep)
+    return clock
+
+
+def _ack() -> CivFrame:
+    return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
+
+
+@pytest.mark.asyncio
+async def test_pacing_is_send_to_send_when_the_reply_outlasts_the_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A query longer than the gap does not add the gap again after the reply."""
+
+    clock = _install_clock(monkeypatch)
+    gap = 0.010
+    reply = 0.040
+    starts: list[float] = []
+
+    async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
+        starts.append(clock.now)
+        await asyncio.sleep(reply)
+        return _ack()
+
+    commander = IcomCommander(execute, min_interval=gap)
+    commander.start()
+    try:
+        await commander.send(b"a")
+        await commander.send(b"b")
+    finally:
+        await commander.stop()
+
+    assert starts == [0.0, reply]
+
+
+@pytest.mark.asyncio
+async def test_pacing_waits_the_gap_from_the_send_when_the_reply_is_shorter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _install_clock(monkeypatch)
+    gap = 0.025
+    reply = 0.005
+    starts: list[float] = []
+
+    async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
+        starts.append(clock.now)
+        await asyncio.sleep(reply)
+        return _ack()
+
+    commander = IcomCommander(execute, min_interval=gap)
+    commander.start()
+    try:
+        await commander.send(b"a")
+        await commander.send(b"b")
+    finally:
+        await commander.stop()
+
+    assert starts == [0.0, gap]
+
+
+@pytest.mark.asyncio
+async def test_a_caller_cancelled_inflight_send_still_paces_the_next(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _install_clock(monkeypatch)
+    gap = 0.025
+    sent = asyncio.Event()
+    starts: list[float] = []
+
+    async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
+        starts.append(clock.now)
+        if cmd == b"slow":
+            sent.set()
+            await asyncio.sleep(1.0)
+        return _ack()
+
+    commander = IcomCommander(execute, min_interval=gap)
+    commander.start()
+    try:
+        slow = asyncio.create_task(commander.send(b"slow", timeout=0.0))
+        await sent.wait()
+        with pytest.raises(asyncio.TimeoutError):
+            await slow
+        await commander.send(b"next")
+    finally:
+        await commander.stop()
+
+    assert starts == [0.0, gap]
+
+
 @pytest.mark.asyncio
 async def test_dedupe_returns_existing_future() -> None:
     count = 0

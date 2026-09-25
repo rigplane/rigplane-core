@@ -12,7 +12,7 @@ from .config import (
     YaesuCatBackendConfig,
 )
 from .ic7300.serial import Ic7300SerialRadio
-from .ic705.serial import Ic705SerialRadio
+from .ic705.serial import Ic705SerialRadio, XieguSerialRadio
 from .ic9700.serial import Ic9700SerialRadio
 from .icom7610.serial import Icom7610SerialRadio
 from .rigctld_client.radio import RigctldClientRadio
@@ -85,18 +85,19 @@ def create_radio(config: BackendConfig) -> Radio:
 
         serial_class: (
             type[Ic705SerialRadio]
+            | type[XieguSerialRadio]
             | type[Ic7300SerialRadio]
             | type[Ic9700SerialRadio]
             | type[Icom7610SerialRadio]
         )
-        if model in ("IC-705", "X6200"):
-            # X6200 shares the IC-705 CI-V personality (same default address
-            # 0xA4, same transport class is fine — see MOR-170, Hamlib's
-            # x6100_priv_caps reused by both x6100_caps and x6200_caps).
-            # The actual command set comes from the loaded rigs/x6200.toml
-            # via the ``model="X6200"`` argument passed through to the
-            # serial class constructor; the transport machinery here is
-            # transport-only, not personality-bearing.
+        if model in ("X6100", "X6200"):
+            # Xiegu shares the IC-705 CI-V session (same default address
+            # 0xA4 — see MOR-170, Hamlib's x6100_priv_caps reused by both
+            # x6100_caps and x6200_caps). Its own subclass keeps the
+            # unmeasured 50 ms gap; the command set still comes from the
+            # loaded rig via ``model``.
+            serial_class = XieguSerialRadio
+        elif model == "IC-705":
             serial_class = Ic705SerialRadio
         elif model == "IC-7300":
             serial_class = Ic7300SerialRadio

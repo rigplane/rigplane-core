@@ -99,7 +99,7 @@ The CI-V and audio ports are **negotiated during the handshake** — the library
 | `ICOM_ALLOW_POWER_CONTROL=1` | Enable guarded power off/on integration test |
 | `ICOM_SOAK_SECONDS=<N>` | Run soak integration for N seconds |
 | `ICOM_CIV_MIN_INTERVAL_MS=<ms>` | Tune CI-V pacing interval in commander |
-| `ICOM_SERIAL_CIV_MIN_INTERVAL_MS=<ms>` | Serial-backend CI-V pacing override (default 50 ms) |
+| `ICOM_SERIAL_CIV_MIN_INTERVAL_MS=<ms>` | Serial-backend CI-V pacing override (default 25 ms Icom, 50 ms Xiegu) |
 | `ICOM_SERIAL_SCOPE_ALLOW_LOW_BAUD=1` | Override serial scope low-baud guardrail (use with caution) |
 | `ICOM_STRICT_FRONTEND=1` | Enable strict ATT/PREAMP integration profile (fail instead of skip) |
 

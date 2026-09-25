@@ -52,6 +52,7 @@ class CivRuntimeHost(Protocol):
     _civ_send_seq: int
     _last_civ_send_monotonic: float
     _civ_min_interval: float
+    _civ_rtt_estimate: float
 
     # CI-V RX pump and watchdog tasks
     _civ_rx_task: "asyncio.Task[None] | None"
