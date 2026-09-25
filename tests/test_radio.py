@@ -2239,13 +2239,11 @@ class TestCivPacingIsSendToSend:
             IC_7610_ADDR, CONTROLLER_ADDR, _CMD_PTT, sub=_SUB_PTT, data=b"\x00"
         )
         release_send = asyncio.Event()
-        hold_send = asyncio.Event()
         original_send = mock_transport.send_tracked
 
         async def gated_send(data: bytes) -> None:
             await original_send(data)
             release_send.set()
-            await hold_send.wait()
 
         monkeypatch.setattr(mock_transport, "send_tracked", gated_send)
         try:
@@ -2253,9 +2251,6 @@ class TestCivPacingIsSendToSend:
             try:
                 first = asyncio.create_task(runtime._send_civ_frame_now(frame))
                 await asyncio.wait_for(release_send.wait(), timeout=10.0)
-                # The packet left the wire; the inner send task is parked
-                # past it, so cancelling the outer await lands exactly in
-                # the window between the send and the stamp.
                 first.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await first
@@ -2265,7 +2260,6 @@ class TestCivPacingIsSendToSend:
                 assert answer is not None
                 assert answer.command == _CMD_ACK
             finally:
-                hold_send.set()
                 await runtime.stop_pump()
         finally:
             radio._civ_request_tracker.fail_all(ConnectionError("test cleanup"))
