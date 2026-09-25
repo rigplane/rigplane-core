@@ -26,6 +26,7 @@ class BridgeMetrics:
     tx_frames: int = 0
     rx_drops: int = 0
     tx_silence_suppressed: int = 0
+    tx_gate_suppressed: int = 0
 
     # Underrun / overrun
     rx_underruns: int = 0

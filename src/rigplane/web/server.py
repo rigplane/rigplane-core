@@ -69,6 +69,7 @@ from ..core.state_pipeline_contracts import (
 )
 from ..core.state_store import StateSnapshot, StateStore
 from ..core.tx_observation import ObservedPtt, project_observed_ptt
+from ..runtime.managed_tx_state import ManagedTxIntentKind
 from ..radio_state import RadioState
 from ..capabilities import CAP_AUDIO
 from ..exceptions import TimeoutError as RigplaneTimeoutError
@@ -2862,6 +2863,27 @@ class WebServer:
     # Audio Bridge (virtual device integration)
     # ------------------------------------------------------------------
 
+    async def _bridge_tx_gate_open(self) -> bool:
+        """Whether the bridge may push captured audio to the radio.
+
+        Fail-open. Closed only when a managed transmit authority exists, holds
+        no keyed transmission, and observed PTT is exactly OFF. A keyed
+        transmission is an intent other than receive: PTT or transmit. Anything
+        unknown — no authority, a snapshot that cannot be read, observed PTT
+        that is not exactly OFF — sends.
+        """
+        authority = self._managed_tx_authority()
+        if authority is None:
+            return True
+        try:
+            projection = await authority.snapshot()
+            observed = project_observed_ptt(self.command_state_store.snapshot())
+        except Exception:
+            logger.debug("audio-bridge: TX gate failed open", exc_info=True)
+            return True
+        keyed = projection.state.intent.kind is not ManagedTxIntentKind.RX
+        return keyed or observed is not ObservedPtt.OFF
+
     async def start_audio_bridge(
         self,
         device_name: str | None = None,
@@ -2902,6 +2924,7 @@ class WebServer:
             label=label,
             max_retries=max_retries,
             retry_base_delay=retry_base_delay,
+            tx_gate=self._bridge_tx_gate_open,
         )
         await self._audio_bridge.start()
         self.broadcast_notification(

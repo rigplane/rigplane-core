@@ -13,7 +13,15 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.tx_observation import OBSERVED_PTT_PATH, ObservedPtt
-from rigplane.runtime.managed_tx_authority import ManagedTxProjection
+from rigplane.audio.bus import AudioBus
+from rigplane.capabilities import CAP_AUDIO
+from rigplane.runtime.managed_tx_authority import (
+    ManagedTxAuthority,
+    ManagedTxProjection,
+)
+from rigplane.runtime.managed_tx_config import ManagedTxTotConfig
+from rigplane.runtime.managed_tx_effect_lane import ManagedTxEffectLane
+from rigplane.runtime.managed_tx_fence import TxAbortFence
 from rigplane.runtime.managed_tx_state import (
     AbortError,
     AbortOperation,
@@ -406,6 +414,123 @@ def test_broadcast_announces_off_to_on() -> None:
     _broadcast(server)
 
     assert _managed_tx_events(queue) == [_INVALIDATION]
+
+
+class _GateRadio:
+    """Audio-capable radio whose state store is the server's own store."""
+
+    def __init__(self, store: object) -> None:
+        self.capabilities = {CAP_AUDIO}
+        self.state_store = store
+        self.audio_bus = AudioBus(self)
+        self.audio_codec = None
+        self.audio_sample_rate = 48000
+
+    async def start_audio_rx_opus(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    async def stop_audio_rx_opus(self) -> None:
+        return None
+
+    async def start_audio_tx_pcm(self) -> None:
+        return None
+
+    async def stop_audio_tx_pcm(self) -> None:
+        return None
+
+    async def push_audio_tx_pcm(self, _frame: bytes) -> None:
+        return None
+
+    async def push_audio_tx_opus(self, _frame: bytes) -> None:
+        return None
+
+
+class _GatePort:
+    def __init__(self, managed: ManagedTxAuthority) -> None:
+        self.authority = managed
+
+
+class _AcceptingActuator:
+    async def actuate(
+        self,
+        token: object,
+        operation: object,
+        *,
+        is_current: object,
+    ) -> object:
+        del token, operation, is_current
+        from rigplane.runtime.managed_tx_state import ActuationResult
+
+        return ActuationResult.ACCEPTED
+
+
+class _MemoryConfig:
+    def __init__(self) -> None:
+        self._config = ManagedTxTotConfig(10.0)
+
+    @property
+    def config(self) -> ManagedTxTotConfig:
+        return self._config
+
+    def set_timeout_seconds(self, value: object) -> ManagedTxTotConfig:
+        del value
+        return self._config
+
+
+def _gate_authority() -> ManagedTxAuthority:
+    return ManagedTxAuthority(
+        ManagedTxEffectLane(_AcceptingActuator()),
+        _MemoryConfig(),  # type: ignore[arg-type]
+        TxAbortFence(),
+        provider_generation=7,
+    )
+
+
+def _gate_server(managed: ManagedTxAuthority | None) -> WebServer:
+    server = _web_server()
+    radio = _GateRadio(server.command_state_store)
+    server._radio = radio
+    if managed is not None:
+        server._production_managed_tx_port = _GatePort(managed)  # type: ignore[assignment]
+    return server
+
+
+async def test_server_gate_is_closed_when_managed_and_observed_off() -> None:
+    managed = _gate_authority()
+    try:
+        server = _gate_server(managed)
+        _observe_ptt(server, ObservedPtt.OFF)
+        assert await server._bridge_tx_gate_open() is False
+    finally:
+        await managed.close()
+
+
+async def test_server_gate_opens_when_the_lease_is_keyed() -> None:
+    managed = _gate_authority()
+    try:
+        server = _gate_server(managed)
+        _observe_ptt(server, ObservedPtt.OFF)
+        await managed.ptt_down("web")
+        assert await server._bridge_tx_gate_open() is True
+        await managed.ptt_up("web")
+    finally:
+        await managed.close()
+
+
+async def test_server_gate_opens_when_observed_ptt_is_on() -> None:
+    managed = _gate_authority()
+    try:
+        server = _gate_server(managed)
+        _observe_ptt(server, ObservedPtt.ON)
+        assert await server._bridge_tx_gate_open() is True
+    finally:
+        await managed.close()
+
+
+async def test_server_gate_stays_open_without_managed_tx() -> None:
+    server = _gate_server(None)
+    _observe_ptt(server, ObservedPtt.OFF)
+    assert await server._bridge_tx_gate_open() is True
 
 
 def test_broadcast_emits_nothing_for_an_unchanged_projection() -> None:
