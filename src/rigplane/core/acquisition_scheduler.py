@@ -357,6 +357,8 @@ class IcomCivAcquisitionExecutor:
                     return AcquisitionExecutionResult(sent_paths=tuple(sent))
                 raise
             sent.append(path)
+        if not sent and not failed:
+            raise BackgroundSendDropped("no path of this request was sent")
         return AcquisitionExecutionResult(
             sent_paths=tuple(sent),
             failed_paths=tuple(failed),
