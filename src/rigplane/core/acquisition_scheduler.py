@@ -1674,7 +1674,7 @@ class AcquisitionScheduler:
         never deduped against the demoted one.
         """
 
-        demoted_receiver: str | None = None
+        demoted_receiver: str | None = "sub"  # MUTATION M4
         match observed_active.strip().lower():
             case "main":
                 demoted_receiver = "sub"
