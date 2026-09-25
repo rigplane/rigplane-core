@@ -19,9 +19,6 @@ from rigplane.runtime.managed_tx_authority import (
     ManagedTxAuthority,
     ManagedTxProjection,
 )
-from rigplane.runtime.managed_tx_config import ManagedTxTotConfig
-from rigplane.runtime.managed_tx_effect_lane import ManagedTxEffectLane
-from rigplane.runtime.managed_tx_fence import TxAbortFence
 from rigplane.runtime.managed_tx_state import (
     AbortError,
     AbortOperation,
@@ -450,35 +447,6 @@ class _GatePort:
         self.authority = managed
 
 
-class _AcceptingActuator:
-    async def actuate(self, token: object, operation: object, **_kwargs: object) -> object:
-        from rigplane.runtime.managed_tx_state import ActuationResult, ActuationSettled
-
-        return ActuationSettled(token, operation, ActuationResult.ACCEPTED)  # type: ignore[arg-type]
-
-
-class _MemoryConfig:
-    def __init__(self) -> None:
-        self._config = ManagedTxTotConfig(10.0)
-
-    @property
-    def config(self) -> ManagedTxTotConfig:
-        return self._config
-
-    def set_timeout_seconds(self, value: object) -> ManagedTxTotConfig:
-        del value
-        return self._config
-
-
-def _gate_authority() -> ManagedTxAuthority:
-    return ManagedTxAuthority(
-        ManagedTxEffectLane(_AcceptingActuator()),  # type: ignore[arg-type]
-        _MemoryConfig(),  # type: ignore[arg-type]
-        TxAbortFence(),
-        provider_generation=7,
-    )
-
-
 def _gate_server(managed: ManagedTxAuthority | None) -> WebServer:
     server = _web_server()
     radio = _GateRadio(server.command_state_store)
@@ -489,7 +457,9 @@ def _gate_server(managed: ManagedTxAuthority | None) -> WebServer:
 
 
 async def test_server_gate_is_closed_when_managed_and_observed_off() -> None:
-    managed = _gate_authority()
+    from tests.test_managed_tx_authority import authority
+
+    managed, _, _, _, _, _ = authority()
     try:
         server = _gate_server(managed)
         _observe_ptt(server, ObservedPtt.OFF)
@@ -499,7 +469,9 @@ async def test_server_gate_is_closed_when_managed_and_observed_off() -> None:
 
 
 async def test_server_gate_opens_when_the_lease_is_keyed() -> None:
-    managed = _gate_authority()
+    from tests.test_managed_tx_authority import authority
+
+    managed, _, _, _, _, _ = authority()
     try:
         server = _gate_server(managed)
         _observe_ptt(server, ObservedPtt.OFF)
@@ -510,7 +482,9 @@ async def test_server_gate_opens_when_the_lease_is_keyed() -> None:
 
 
 async def test_server_gate_opens_when_observed_ptt_is_on() -> None:
-    managed = _gate_authority()
+    from tests.test_managed_tx_authority import authority
+
+    managed, _, _, _, _, _ = authority()
     try:
         server = _gate_server(managed)
         _observe_ptt(server, ObservedPtt.ON)
