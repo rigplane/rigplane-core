@@ -502,7 +502,9 @@ TX_METER_FIELD_NAMES: Final[frozenset[str]] = frozenset(
 )
 #: Controls the operator touches while listening. ``filter_width`` and
 #: ``split`` are here, which is why they are control rather than panel
-#: despite being operator-adjustable.
+#: despite being operator-adjustable. ``tuner_status`` is here: the end of
+#: a tune is radio-driven, so the TUNE badge follows the poll cadence, and
+#: the setting class would clear it up to 30 s late.
 CONTROL_FIELD_NAMES: Final[frozenset[str]] = frozenset(
     {
         "af_level",
@@ -514,6 +516,7 @@ CONTROL_FIELD_NAMES: Final[frozenset[str]] = frozenset(
         "active",
         "power_level",
         "dual_watch",
+        "tuner_status",
     }
 )
 #: Everything the operator reaches by turning a knob or opening a menu —

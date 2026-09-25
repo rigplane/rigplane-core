@@ -6587,7 +6587,10 @@ def test_scan_facts_seed_labelled_command_response_not_poll_response() -> None:
 # deadline: the same 53 frames again, re-ordered. MOR-2593 deletes 39 of the
 # IC-7300's field_policies entries, so those paths dispatch by their class
 # policies, and ``id`` becomes TX-only, dropping its 0x15 16 read from this
-# receive cycle: 53 -> 52 frames, re-ordered.
+# receive cycle: 53 -> 52 frames, re-ordered. MOR-2596 moves tuner_status
+# (0x1C 01) from the setting class to the control class, and dispatch sorts
+# one priority by class rank before deadline, so the read leaves the
+# setting group for the control group: the same 52 frames, re-ordered.
 _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x1C, 0x00, b""),
     (0x25, None, b"\x00"),
@@ -6601,6 +6604,7 @@ _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x25, None, b"\x01"),
     (0x26, None, b"\x01"),
     (0x14, 0x0A, b""),
+    (0x1C, 0x01, b""),
     (0x16, 0x57, b""),
     (0x14, 0x12, b""),
     (0x14, 0x0D, b""),
@@ -6626,7 +6630,6 @@ _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x14, 0x0E, b""),
     (0x14, 0x0B, b""),
     (0x14, 0x15, b""),
-    (0x1C, 0x01, b""),
     (0x14, 0x16, b""),
     (0x16, 0x44, b""),
     (0x27, 0x1C, b""),
