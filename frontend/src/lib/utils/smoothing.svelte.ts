@@ -45,18 +45,30 @@ export function onReducedMotionChange(callback: (reduced: boolean) => void): () 
  * scheduled. Fix cycle 1: the loop also reacts to the preference changing
  * mid-session in both directions (start()/stop() alone only decide at
  * mount).
+ *
+ * MOR-2613: exponential approach never lands on the target, so the frame loop
+ * used to assign `current` forever. Once the remaining gap is under
+ * SETTLE_EPSILON the value snaps to the target and the loop stops. A later
+ * update that differs from the settled value restarts it.
  */
+const SETTLE_EPSILON = 1e-4;
+
 export function createSmoother(attack = 0.12, release = 0.32, initialValue = 0) {
   let current = $state(initialValue);
   let target = initialValue;
   let frameId = 0;
   let lastTime = 0;
+  let started = false;
   let unsubscribe: (() => void) | null = null;
 
   function update(newTarget: number) {
     target = newTarget;
     if (prefersReducedMotion()) {
       current = newTarget;
+      return;
+    }
+    if (started && frameId === 0 && newTarget !== current) {
+      loop();
     }
   }
 
@@ -72,6 +84,12 @@ export function createSmoother(attack = 0.12, release = 0.32, initialValue = 0) 
     const alpha = 1 - Math.exp(-dt / tau);
     current += (target - current) * alpha;
 
+    if (Math.abs(target - current) < SETTLE_EPSILON) {
+      frameId = 0;
+      current = target;
+      return;
+    }
+
     frameId = requestAnimationFrame(tick);
   }
 
@@ -85,6 +103,7 @@ export function createSmoother(attack = 0.12, release = 0.32, initialValue = 0) 
       cancelAnimationFrame(frameId);
       frameId = 0;
     }
+    started = true;
 
     if (prefersReducedMotion()) {
       current = target;
@@ -107,6 +126,7 @@ export function createSmoother(attack = 0.12, release = 0.32, initialValue = 0) 
   }
 
   function stop() {
+    started = false;
     if (frameId) {
       cancelAnimationFrame(frameId);
       frameId = 0;

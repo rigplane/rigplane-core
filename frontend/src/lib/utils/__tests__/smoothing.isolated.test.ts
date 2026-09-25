@@ -412,13 +412,15 @@ describe('createSmoother — settles and stops scheduling (MOR-2613)', () => {
       smoother.start();
       expect(clock.pending()).not.toBeNull();
 
+      let frames = 0;
       for (let i = 0; i < 400 && clock.pending() !== null; i += 1) {
         clock.step();
+        frames += 1;
       }
 
+      expect(frames).toBeLessThan(400);
       expect(clock.pending()).toBeNull();
       expect(smoother.value).toBe(10);
-      expect(clock.raf).toHaveBeenCalledTimes(clock.raf.mock.calls.length);
       smoother.stop();
     } finally {
       restore();
