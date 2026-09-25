@@ -1718,12 +1718,10 @@ class AcquisitionScheduler:
                     target
                 ).freshness_ttl_seconds,
             )
-            result.append(
-                (
-                    _request_key(paths[0], acquisition_method="poll", policy=policy),
-                    paths,
-                )
+            demoted_key = _request_key(
+                paths[0], acquisition_method="poll", policy=policy
             )
+            result.append((demoted_key, paths))
         return tuple(result)
 
     def _poll_cadence_groups(
