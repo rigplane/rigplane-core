@@ -1,0 +1,215 @@
+"""A poll the commander drops at its cap is not reported as dispatched.
+
+MOR-2602. The commander drops a fire-and-forget BACKGROUND send once 64 are
+already in flight, and that drop used to look exactly like a send that was
+enqueued: the executor appended the path to ``sent``, and the drain recorded
+a dispatch. The field then sat stale for max_age plus the healthy-link grace.
+
+These tests drive the real executor and the real drain against a real
+commander sitting at the cap. The commander and the poller's sender are not
+mocked.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+from rigplane.commands.command_map import CommandMap
+from rigplane.commands.commander import IcomCommander, Priority, _MAX_BG_INFLIGHT
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionPriority,
+    AcquisitionScheduler,
+    AcquisitionStatus,
+)
+from rigplane.core.state_acquisition_policy import (
+    AcquisitionPolicy,
+    FieldCapability,
+    RadioAcquisitionProfile,
+)
+from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
+from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.profiles import RadioProfile
+from rigplane.runtime._poller_types import CommandQueue
+from rigplane.types import CivFrame, RadioState
+from rigplane.web.radio_poller import RadioPoller
+
+_FREQ = FieldPath.active("main", "freq_mode", "freq_hz")
+
+
+class _CapRadio:
+    """A radio whose CI-V lane is a real commander held at the background cap."""
+
+    def __init__(self, commander: IcomCommander) -> None:
+        self._commander = commander
+        self.profile = RadioProfile(
+            id="cap-test",
+            model="Cap Test",
+            civ_addr=0x98,
+            receiver_count=1,
+            capabilities=frozenset(),
+            cmd29_routes=frozenset(),
+            command_map=CommandMap({"get_selected_freq": (0x25, 0x00)}),
+        )
+        self.capabilities: set[str] = set()
+        self.connected = True
+        self.radio_ready = True
+
+    async def send_civ(
+        self,
+        command: int,
+        sub: int | None = None,
+        data: bytes | None = None,
+        *,
+        wait_response: bool = True,
+        priority: Priority = Priority.NORMAL,
+        wait_dispatch: bool = True,
+    ) -> CivFrame | None:
+        payload = bytes([command])
+        if sub is not None:
+            payload += bytes([sub])
+        if data:
+            payload += data
+        return await self._commander.send(
+            payload,
+            priority=priority,
+            wait_response=wait_response,
+            wait_dispatch=wait_dispatch,
+        )
+
+
+def _scheduler() -> AcquisitionScheduler:
+    return AcquisitionScheduler(
+        profile=RadioAcquisitionProfile(
+            provider="icom_civ",
+            capabilities=(FieldCapability(path=_FREQ, polling=True),),
+            default_policy=AcquisitionPolicy(),
+            field_policies={_FREQ: AcquisitionPolicy(cadence_seconds=1.0)},
+        )
+    )
+
+
+async def _fill_background_cap(commander: IcomCommander) -> None:
+    for index in range(_MAX_BG_INFLIGHT):
+        dropped = await commander.send(
+            f"fill-{index}".encode(),
+            priority=Priority.BACKGROUND,
+            wait_response=False,
+            wait_dispatch=False,
+        )
+        assert dropped is None
+
+
+@pytest.mark.asyncio
+async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
+        if cmd == b"gate":
+            started.set()
+            await release.wait()
+        return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
+
+    commander = IcomCommander(execute, min_interval=0.0)
+    commander.start()
+    try:
+        gate = asyncio.create_task(commander.send(b"gate", priority=Priority.NORMAL))
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        await _fill_background_cap(commander)
+
+        scheduler = _scheduler()
+        queued = scheduler.ensure_fresh(
+            _FREQ,
+            max_age=5.0,
+            priority=AcquisitionPriority.BACKGROUND,
+            reason="policy-cadence",
+        )
+        assert queued.status is AcquisitionStatus.QUEUED
+        assert queued.request is not None
+        radio = _CapRadio(commander)
+        radio._acquisition_scheduler = scheduler  # type: ignore[attr-defined]
+        recorder = StateDiagnosticsRecorder(enabled=True)
+        poller = RadioPoller(
+            radio,  # type: ignore[arg-type]
+            CommandQueue(),
+            radio_state=RadioState(),
+            diagnostics=recorder,
+        )
+
+        await poller._send_query()  # noqa: SLF001
+
+        assert scheduler.may_credit(queued.request, observation_timestamp=1e9) is False
+        assert poller._acquisition_in_flight == {}  # noqa: SLF001
+        assert [
+            event.kind
+            for event in recorder.events()
+            if event.kind == "acquisition_request_sent"
+        ] == []
+        assert queued.request.id in {
+            request.id for request in scheduler.pending_requests()
+        }
+    finally:
+        release.set()
+        await gate
+        await commander.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_command_priority_request_reaches_the_commander_as_normal() -> None:
+    seen: list[Priority] = []
+
+    async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
+        return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
+
+    commander = IcomCommander(execute, min_interval=0.0)
+    real_send = commander.send
+
+    async def recording_send(
+        payload: bytes,
+        *,
+        priority: Priority = Priority.NORMAL,
+        key: str | None = None,
+        dedupe: bool = False,
+        timeout: float | None = None,
+        wait_response: bool = True,
+        wait_dispatch: bool = True,
+        is_current: object = None,
+    ) -> CivFrame | None:
+        seen.append(priority)
+        return await real_send(
+            payload,
+            priority=priority,
+            key=key,
+            dedupe=dedupe,
+            timeout=timeout,
+            wait_response=wait_response,
+            wait_dispatch=wait_dispatch,
+            is_current=is_current,  # type: ignore[arg-type]
+        )
+
+    commander.send = recording_send  # type: ignore[method-assign]
+    commander.start()
+    try:
+        scheduler = _scheduler()
+        queued = scheduler.ensure_fresh(
+            _FREQ,
+            max_age=5.0,
+            priority=AcquisitionPriority.COMMAND,
+            reason="post_write:set_freq",
+        )
+        assert queued.status is AcquisitionStatus.QUEUED
+        radio = _CapRadio(commander)
+        radio._acquisition_scheduler = scheduler  # type: ignore[attr-defined]
+        poller = RadioPoller(
+            radio,  # type: ignore[arg-type]
+            CommandQueue(),
+            radio_state=RadioState(),
+        )
+
+        await poller._send_query()  # noqa: SLF001
+    finally:
+        await commander.stop()
+
+    assert seen == [Priority.NORMAL]
