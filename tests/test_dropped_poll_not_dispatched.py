@@ -187,6 +187,10 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched(
             report_executor_error=poller._report_acquisition_executor_error,  # noqa: SLF001
             report_sent=lambda *args, **kwargs: None,
         )
+        result = await poller._acquisition_executor.execute(  # noqa: SLF001
+            scheduler.pending_requests()[0], already_sent_paths=frozenset()
+        )
+        assert result.sent_paths == (_FREQ,)
         await drain.run_once()
         assert len(in_flight) == 1
         assert _FREQ in next(iter(in_flight.values()))[0]
