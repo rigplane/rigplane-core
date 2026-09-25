@@ -348,9 +348,6 @@ class IcomCivAcquisitionExecutor:
                     failure_reason = failure_reason or "no_civ_receiver_route"
                     continue
                 query = replace(query, receiver=None)
-            if query in sent_queries:
-                sent.append(path)
-                continue
             try:
                 await self._send_query(query, request.priority)
             except BackgroundSendDropped:
