@@ -454,9 +454,7 @@ async def test_receiver_zero_fallback_preserves_sub_and_data() -> None:
     )
     sent: list[AcquisitionQueryCase] = []
 
-    async def sender(
-        sent_query: AcquisitionQueryCase, _priority: str
-    ) -> None:
+    async def sender(sent_query: AcquisitionQueryCase, _priority: str) -> None:
         sent.append(sent_query)
 
     executor = IcomCivAcquisitionExecutor(
@@ -464,7 +462,7 @@ async def test_receiver_zero_fallback_preserves_sub_and_data() -> None:
         resolve_query=lambda _path: query,
         supports_cmd29=lambda _command, _sub: False,
     )
-    request = SimpleNamespace(paths=(path,))
+    request = SimpleNamespace(paths=(path,), priority="background")
     result = await executor.execute(  # type: ignore[arg-type]
         request,
         already_sent_paths=frozenset(),
@@ -488,7 +486,7 @@ async def test_executor_does_not_swallow_sender_exception() -> None:
         sender,
         resolve_query=lambda _path: acquisition_query(0x1C, sub=0x00),
     )
-    request = SimpleNamespace(paths=(path,))
+    request = SimpleNamespace(paths=(path,), priority="background")
 
     with pytest.raises(RuntimeError, match="send failed"):
         await executor.execute(  # type: ignore[arg-type]
@@ -704,7 +702,7 @@ class TestBuildStateQueries:
             supports_cmd29=profile.supports_cmd29,
         )
         result = await executor.execute(  # type: ignore[arg-type]
-            SimpleNamespace(paths=pollable),
+            SimpleNamespace(paths=pollable, priority="background"),
             already_sent_paths=frozenset(),
         )
 
