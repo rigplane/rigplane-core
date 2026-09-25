@@ -106,7 +106,7 @@ export function createFrameStepPeakStrategy(options: Readonly<{
       if (now - state.latchedAt <= options.holdMilliseconds) return state;
       return { ...state, value: Math.max(current, state.value - options.decrementPerFrame()) };
     },
-    project: (state, _current) => state.value,
+    project: (state, current) => Math.max(state.value, current),
   };
 }
 
