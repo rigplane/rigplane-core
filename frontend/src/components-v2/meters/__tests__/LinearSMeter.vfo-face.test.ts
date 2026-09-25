@@ -696,14 +696,12 @@ describe('MOR-2509 v7 VFO face — ballistics, peak hold and afterglow', () => {
         step(16.7);
         const peak = peakFraction(svgOf(target));
         const fill = fillFraction(svgOf(target));
-        const fired = (globalThis as { __rafOrder?: string[] }).__rafOrder ?? [];
         if (peak < fill - 1e-6) {
           throw new Error(
             `ORDER phase=${phase.value} frame=${i} pending=${orderLog.at(-1)} `
-            + `fired=${fired.join('>')} peak=${peak} fill=${fill}`,
+            + `callbacks=${orderLog.at(-1)?.split(',').length} peak=${peak} fill=${fill}`,
           );
         }
-        fired.length = 0;
         expect(peak).toBeGreaterThanOrEqual(fill - 1e-6);
       }
     }

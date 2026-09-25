@@ -124,7 +124,6 @@ export function createSignalMeterMotion(
   }
 
   function afterglowTick(now: number): void {
-    (globalThis as { __rafOrder?: string[] }).__rafOrder?.push('afterglow');
     afterglowFrameId = 0;
     const displayed = smoother.value;
     afterglowTrail.push({ time: now, value: displayed });

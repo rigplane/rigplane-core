@@ -206,7 +206,6 @@ function createTickerLifecycle(
     if (!started || reduced || !enabled() || scheduleId !== undefined) return;
     if (ticker.kind === 'animation-frame') {
       scheduleId = host.requestFrame((now) => {
-        (globalThis as { __rafOrder?: string[] }).__rafOrder?.push('peak');
         scheduleId = undefined;
         if (!started || reduced || !enabled()) return;
         hooks.onTick(now);
