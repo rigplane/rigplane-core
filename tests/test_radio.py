@@ -2120,24 +2120,21 @@ class TestCivPacingIsSendToSend:
         clock.install_wait_guard(radio)
         clock.install_gc_guard(radio)
         radio._last_civ_send_monotonic = 0.0
-        starts: list[float] = []
-        original_send = mock_transport.send_tracked
         first_civ = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
         second_civ = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x04)
-        first_answer = asyncio.Event()
+        release_first_answer = asyncio.Event()
         second_gated = asyncio.Event()
 
         async def slow_send(data: bytes) -> None:
-            starts.append(clock.now)
-            await original_send(data)
-            if len(starts) == 1:
-                first_answer.set()
+            await mock_transport.send_tracked(data)
+            if len(mock_transport.sent_packets) == 1:
+                release_first_answer.set()
                 await clock.sleep(reply)
             else:
                 second_gated.set()
 
         async def first_reply() -> None:
-            await first_answer.wait()
+            await release_first_answer.wait()
             mock_transport.queue_response(_freq_response(14_074_000))
 
         monkeypatch.setattr(mock_transport, "send_tracked", slow_send)
@@ -2159,7 +2156,10 @@ class TestCivPacingIsSendToSend:
 
         assert first is not None and second is not None
         assert radio._civ_request_tracker.pending_count == 0
-        assert starts == [gap, gap + reply]
+        # The first send waits the opening gap; the controllable clock then
+        # jumps the long reply, and the second send leaves immediately with
+        # no extra gap: exactly one gap of paced sleep in total.
+        assert radio._last_civ_send_monotonic == gap + reply
 
     @pytest.mark.asyncio
     async def test_short_reply_waits_the_gap_from_the_send(
