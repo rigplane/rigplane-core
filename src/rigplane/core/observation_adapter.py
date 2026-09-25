@@ -95,6 +95,9 @@ class ProviderObservationAdapter:
         )
         if intent.target is None:
             return observation
+        freshness_ttl: float | None = self.profile.policy_for(
+            intent.target, observed_active=self._observed_active()
+        ).freshness_ttl_seconds
         return Observation(
             path=observation.path,
             value=observation.value,
@@ -102,7 +105,5 @@ class ProviderObservationAdapter:
             timestamp_monotonic=observation.timestamp_monotonic,
             quality=observation.quality,
             correlation_id=observation.correlation_id,
-            max_age=self.profile.policy_for(
-                intent.target, observed_active=self._observed_active()
-            ).freshness_ttl_seconds,
+            max_age=freshness_ttl,
         )

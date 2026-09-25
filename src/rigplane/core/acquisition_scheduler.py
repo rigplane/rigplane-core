@@ -472,7 +472,7 @@ class AcquisitionScheduler:
         "_fitted_class_by_key",
         "_fits_without_demote",
         "_next_id",
-        "_observed_active",
+        "_demoted_queue_envelope",
         "_pending_cadence_by_key",
         "_prime_cursor",
         "_profile",
@@ -529,10 +529,12 @@ class AcquisitionScheduler:
         # calls either update method keeps its pre-existing, unfiltered
         # reconciliation behavior.
         self._tx_active = True
-        # MOR-2599: last ``observed_active`` reported by ``due_requests``;
-        # ``_request_groups`` resolves demotion-aware policies on it. None
-        # keeps every pre-existing resolution unchanged.
-        self._observed_active: str | None = None
+        # MOR-2599: the demotation map from the last ``due_requests``
+        # computation (key -> (cadence, TTL)); empty otherwise — the demoted
+        # cadence clock and queue TTL read it.
+        self._demoted_queue_envelope: dict[
+            _AcquisitionRequestKey, tuple[float, float]
+        ] = {}
         # MOR-2586: empty unless a transport budget was given; see
         # _fit_transport_budget.
         self._fitted_class_by_key: dict[_AcquisitionRequestKey, AcquisitionClass] = {}
@@ -615,9 +617,15 @@ class AcquisitionScheduler:
 
         Reads the fit for the cached ``tx_active`` (see
         :meth:`note_tx_active`); a class absent from that fit keeps
-        ``declared``.
+        ``declared``. MOR-2599: when the group's key has a demoted-queue
+        envelope (the non-selected receiver, per the last
+        ``due_requests`` computation), the demoted cadence — never faster
+        than the undemoted one — wins.
         """
 
+        demoted = self._demoted_queue_envelope.get(key)
+        if demoted is not None:
+            return demoted[0]
         klass = self._fitted_class_by_key.get(key)
         if klass is None:
             return declared
@@ -1001,15 +1009,16 @@ class AcquisitionScheduler:
         ``observed_active`` is the currently observed value of
         ``global.slow_state.active`` (MOR-2599): on a profile that polls
         that field, the non-selected receiver's class-derived cadence
-        groups poll one class slower (:meth:`_demote_groups`). The caller
-        reads it from the same store the rest of the tick already reads
-        (see :func:`derive_active_receiver_value`); a change takes effect
-        on this next computation, with no reconnect. Unknown or unobserved
-        demotes nothing. Demotion re-keys the group map BEFORE due-ness is
-        judged, so the demoted group's cadence clock and the pending-request
-        dedupe both follow the key the request is actually queued under —
-        the demoted receiver is polled at its demoted cadence, never at the
-        tick rate (PR #3643 finding 1).
+        groups poll one class slower. The caller reads it from the same
+        store the rest of the tick already reads (see
+        :func:`derive_active_receiver_value`); a change takes effect on
+        this next computation, with no reconnect. Unknown or unobserved
+        demotes nothing. Demotion never re-keys a group — the cadence
+        clock and the pending-request dedupe keep following the group's
+        canonical key; only the WIRE cadence (the clock value, never
+        faster than the undemoted one) and the queued request's TTL
+        change (PR #3643 findings 1–2; see
+        :meth:`_demote_queue_envelopes`).
         """
 
         # MOR-1531: remember the caller's tx_active so
@@ -1019,26 +1028,40 @@ class AcquisitionScheduler:
         # second writer with a different value wins -- see
         # note_tx_active()'s docstring.
         self._tx_active = tx_active
-        # MOR-2599: remember the caller's observed active so
-        # ensure_fresh/_request_groups resolve demotion-aware policies
-        # (their TTL hint follows the demoted class) without a new access
-        # path — the same per-call caching shape as ``_tx_active``.
-        self._observed_active = observed_active
+        # MOR-2599: the demotion map for THIS computation (and the
+        # ``record_acquisition_result`` that answers its requests): demote
+        # the CADENCE of the non-selected receiver's class-derived groups
+        # and the TTL of the queued request, never the group's key. The
+        # request key groups by (scope, family, receiver, slot, method,
+        # policy); two classes sharing one (scope, family, receiver, slot)
+        # can resolve to the same demoted policy — a re-keyed demoted
+        # group would collide with a DIFFERENT class's group (measured on
+        # PR #3643: CONTROL demoted to PANEL became key-identical with the
+        # receiver's real PANEL group, so the demoted group was silently
+        # never polled).
+        self._demoted_queue_envelope = (
+            self._demote_queue_envelopes(observed_active)
+            if observed_active is not None
+            else {}
+        )
         timestamp = self._clock.now() if now is None else now
-        group_map = self._poll_cadence_groups()
-        if observed_active is not None:
-            group_map = self._demote_groups(group_map, observed_active)
-        self._purge_receiver_group_variants(group_map)
-        due = self._due_poll_groups(timestamp, groups=group_map, tx_active=tx_active)
+        due = self._due_poll_groups(timestamp, tx_active=tx_active)
         queued: list[AcquisitionRequest] = []
         for key, grouped_paths in due:
             policy = key.policy
             assert policy.cadence_seconds is not None
-            max_age = (
-                policy.freshness_ttl_seconds
-                if policy.freshness_ttl_seconds is not None
-                else policy.cadence_seconds
-            )
+            demoted = self._demoted_queue_envelope.get(key)
+            if demoted is not None:
+                # Demoted path: the queue envelope carries the demoted
+                # class's TTL; the poll gap comes from the demoted cadence
+                # clock (see _fitted_cadence_seconds).
+                max_age = demoted[1]
+            else:
+                max_age = (
+                    policy.freshness_ttl_seconds
+                    if policy.freshness_ttl_seconds is not None
+                    else policy.cadence_seconds
+                )
             if self._external_cat_paused and self._must_defer_for_external_cat(
                 grouped_paths
             ):
@@ -1677,12 +1700,9 @@ class AcquisitionScheduler:
         now: float,
         *,
         tx_active: bool = False,
-        groups: Mapping[_AcquisitionRequestKey, tuple[FieldPath, ...]] | None = None,
     ) -> tuple[tuple[_AcquisitionRequestKey, tuple[FieldPath, ...]], ...]:
-        if groups is None:
-            groups = self._poll_cadence_groups()
         due: list[tuple[_AcquisitionRequestKey, FieldPath]] = []
-        for key, paths in groups.items():
+        for key, paths in self._poll_cadence_groups().items():
             if key in self._requests_by_key or key in self._deferred:
                 continue
             policy = key.policy
@@ -1704,23 +1724,23 @@ class AcquisitionScheduler:
             (key, tuple(sorted(paths, key=str))) for key, paths in grouped.items()
         )
 
-    def _demote_groups(
+    def _demote_queue_envelopes(
         self,
-        groups: Mapping[_AcquisitionRequestKey, tuple[FieldPath, ...]],
         observed_active: str,
-    ) -> dict[_AcquisitionRequestKey, tuple[FieldPath, ...]]:
-        """Re-key the non-selected receiver's class-derived groups (MOR-2599).
+    ) -> dict[_AcquisitionRequestKey, tuple[float, float]]:
+        """``key -> (demoted cadence, demoted TTL)`` for today's demoted groups.
 
         Only groups ``_poll_cadence_groups`` recorded as class-derived AND
-        receiver-scoped on the non-selected receiver change; explicit
+        receiver-scoped on the non-selected receiver demote; explicit
         ``field_policies`` groups are untouched, and a profile that does not
         poll ``global.slow_state.active`` records nothing, so every other
-        radio is byte-identical. The demoted policy is the demoted class's
-        nominal policy, lifted to the demoted class's fitted cadence under
-        the same budget fit and never faster than the undemoted cadence.
-        Called BEFORE due-ness is judged (see :meth:`due_requests`), so the
-        demoted key is where the cadence clock and the pending-request
-        dedupe look for this group.
+        radio is byte-identical. The demoted cadence is the demoted class's
+        nominal (or its fitted cadence under the same budget fit), never
+        faster than the undemoted one; the TTL is the demoted class's, so
+        the path never ages to stale between demoted polls. Group keys are
+        NOT re-keyed — identity stays with the original group, so the
+        pending-request dedupe and the cadence clock stay coherent across
+        ticks (PR #3643 finding 1's root fix).
         """
 
         demoted_receiver: str | None = None
@@ -1729,13 +1749,12 @@ class AcquisitionScheduler:
                 demoted_receiver = "sub"
             case "sub":
                 demoted_receiver = "main"
-        result: dict[_AcquisitionRequestKey, tuple[FieldPath, ...]] = {}
-        for key, paths in groups.items():
+        envelopes: dict[_AcquisitionRequestKey, tuple[float, float]] = {}
+        for key, paths in self._poll_cadence_groups().items():
             if (
                 demoted_receiver is None
                 or self._class_derived_group_receivers.get(key) != demoted_receiver
             ):
-                result[key] = paths
                 continue
             klass = self._fitted_class_by_key.get(key)
             if klass is None:
@@ -1745,8 +1764,7 @@ class AcquisitionScheduler:
             target = demoted_acquisition_class(klass)
             if target is klass:
                 # Already the slowest demotable class (e.g. a menu-scope
-                # path): demotion is a no-op — keep the original key.
-                result[key] = paths
+                # path): demotion is a no-op.
                 continue
             assert key.policy.cadence_seconds is not None
             cadence: float = float(
@@ -1759,71 +1777,10 @@ class AcquisitionScheduler:
             cadence = max(
                 cadence, self._fitted_cadence_seconds(key, key.policy.cadence_seconds)
             )
-            policy = replace(
-                key.policy,
-                cadence_seconds=cadence,
-                freshness_ttl_seconds=acquisition_policy_for_class(
-                    target
-                ).freshness_ttl_seconds,
-            )
-            demoted_key = _request_key(
-                paths[0], acquisition_method="poll", policy=policy
-            )
-            result[demoted_key] = paths
-        return result
-
-    def _purge_receiver_group_variants(
-        self,
-        current: Mapping[_AcquisitionRequestKey, tuple[FieldPath, ...]],
-    ) -> None:
-        """Drop BACKGROUND requests queued under this group's KEY VARIANT.
-
-        MOR-2599 flip hygiene: demotion re-keys a class-derived receiver
-        group under the demoted policy, and a flip back re-keys it under the
-        original. A request enqueued under the OLD variant would otherwise
-        sit beside the CURRENT one (a different key never dedupes), so the
-        same paths get polled twice until the stale one settles. This drops
-        the stale variant at the next due-request computation — restricted
-        to BACKGROUND priority so an in-flight user/command read is never
-        silently cancelled by a cadence flip.
-        """
-
-        current_by_clock_key = {
-            (key.scope, key.family, key.receiver_id or "", key.slot or ""): key
-            for key in current
-        }
-        for key, request in tuple(self._requests_by_key.items()):
-            if key.receiver_id is None:
-                continue
-            if request.priority is not AcquisitionPriority.BACKGROUND:
-                continue
-            clock_key = (
-                key.scope,
-                key.family,
-                key.receiver_id,
-                key.slot or "",
-            )
-            wanted = current_by_clock_key.get(clock_key)
-            if wanted is None or wanted == key:
-                continue
-            del self._requests_by_key[key]
-            self._claims_by_request_id.pop(request.id, None)
-            self._forget_dispatch(request.id)
-            self._pending_cadence_by_key.pop(key, None)
-        for key, item in tuple(self._deferred.items()):
-            if key.receiver_id is None:
-                continue
-            if item.priority is not AcquisitionPriority.BACKGROUND:
-                continue
-            clock_key = (
-                key.scope,
-                key.family,
-                key.receiver_id,
-                key.slot or "",
-            )
-            wanted = current_by_clock_key.get(clock_key)
-            if wanted is not None and wanted != key:
-                del self._deferred[key]
+            ttl = acquisition_policy_for_class(target).freshness_ttl_seconds
+            assert ttl is not None
+            envelopes[key] = (cadence, max(ttl, key.policy.cadence_seconds))
+        return envelopes
 
     def _poll_cadence_groups(
         self,
@@ -1898,11 +1855,7 @@ class AcquisitionScheduler:
         grouped: dict[_AcquisitionRequestKey, list[FieldPath]] = {}
         for path in paths:
             capability = self._profile.capability_for(path)
-            # MOR-2599: a demoted path's policy — TTL included — follows its
-            # demoted class here too, matching the due-cadence groups.
-            policy = self._profile.policy_for(
-                path, observed_active=self._observed_active
-            )
+            policy = self._profile.policy_for(path)
             key = _request_key(
                 path,
                 acquisition_method=_capability_method(capability, policy),

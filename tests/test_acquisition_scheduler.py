@@ -4746,6 +4746,26 @@ def _pending_request(
     return matches[0]
 
 
+def _cadence_of(scheduler: AcquisitionScheduler, path: FieldPath) -> float:
+    """The group's base cadence from diagnostics — demote-aware (MOR-2599)."""
+
+    entry = scheduler.diagnostics()["cadenceByPath"][str(path)]
+    return entry["baseCadenceSeconds"]
+
+
+def _answer_pending(scheduler: AcquisitionScheduler, at: float) -> None:
+    """Answer every queued request, as the drain does between ticks.
+
+    A production change of ``active`` lands seconds apart while the drain
+    answers polls in well under one; completing the queue between ticks
+    keeps the flip/multi-tick tests about the scheduler, not about
+    stale in-flight requests.
+    """
+
+    for request in scheduler.pending_requests():
+        scheduler.record_acquisition_result(request, _changeset(changes=(), at=at))
+
+
 @pytest.mark.parametrize(
     ("active", "slow_receiver", "fast_receiver"),
     [("MAIN", "sub", "main"), ("SUB", "main", "sub"), (None, None, None)],
@@ -4761,7 +4781,8 @@ def test_the_non_selected_receiver_polls_one_class_slower(
     active MAIN slows every class-derived ``receiver.sub.*`` path one class;
     active SUB slows ``receiver.main.*``; nothing observed slows nothing. The
     selected receiver keeps its class cadence in every case, and demotion
-    never makes a path faster.
+    never makes a path faster. The demoted TTL rides on the queued request's
+    max_age — group keys stay canonical, no re-keying.
     """
 
     acquisition = _ic7610_acquisition()
@@ -4779,17 +4800,18 @@ def test_the_non_selected_receiver_polls_one_class_slower(
             )
             assert expected.cadence_seconds is not None
             assert expected.freshness_ttl_seconds is not None
-            request = _pending_request(scheduler, path)
-            assert request.policy.cadence_seconds == pytest.approx(
+            assert _cadence_of(scheduler, path) == pytest.approx(
                 expected.cadence_seconds
             ), path
-            assert request.policy.freshness_ttl_seconds == pytest.approx(
-                expected.freshness_ttl_seconds
-            ), path
-            assert request.max_age == pytest.approx(expected.freshness_ttl_seconds)
+            request = _pending_request(scheduler, path)
+            assert request.max_age == pytest.approx(expected.freshness_ttl_seconds), (
+                path,
+                "the demoted TTL rides on the queued request",
+            )
             assert undemoted.cadence_seconds is not None
             undemoted_cadence: float = undemoted.cadence_seconds
-            assert request.policy.cadence_seconds >= undemoted_cadence - 1e-9, (
+            assert request.policy.cadence_seconds is not None
+            assert request.policy.cadence_seconds <= undemoted_cadence + 1e-9, (
                 path,
                 "demotion must never make a path faster",
             )
@@ -4807,8 +4829,8 @@ def test_the_demoted_paths_keep_the_demoted_class_ttl() -> None:
     """MOR-2599 TTL rule: a demoted path's TTL follows its demoted class.
 
     Every class-derived path on the non-selected receiver carries the
-    demoted class's TTL (never below twice the cadence it polls at), so it
-    cannot age to stale between polls.
+    demoted class's TTL on its queued request's max_age (never below twice
+    the cadence it polls at), so it cannot age to stale between polls.
     """
 
     acquisition = _ic7610_acquisition()
@@ -4834,10 +4856,9 @@ def test_explicit_profile_overrides_keep_their_cadence_when_demoted() -> None:
     """MOR-2599 scope: only class-derived paths demote.
 
     The IC-7610's explicit S-meter override (the reasoned 0.3 s / 2.0 s TTL
-    pin) sits on the SELECTED receiver when active is MAIN; its demotion on
-    the profile's other receiver variant — which the same group covers —
-    leaves the override's group cadence and TTL untouched: demotion never
-    re-keys a group whose paths carry a field_policies entry.
+    pin) sits on the SELECTED receiver when active is MAIN and keeps its
+    declared request cadence and envelope TTL: demotion never touches a
+    field_policies entry.
     """
 
     acquisition = _ic7610_acquisition()
@@ -4860,7 +4881,7 @@ def test_a_profile_without_active_is_unchanged() -> None:
 
     The IC-7300 polls no ``global.slow_state.active``, so the same tick —
     same caller, same keyword — leaves every path at its undemoted class
-    cadence and TTL.
+    cadence and TTL (request max_age too).
     """
 
     acquisition = _ic7300_acquisition()
@@ -4884,37 +4905,13 @@ def test_a_profile_without_active_is_unchanged() -> None:
         ), path
 
 
-def _answer_pending(scheduler: AcquisitionScheduler, at: float) -> None:
-    """Complete every queued request, as the drain does between ticks.
-
-    A production flip of ``active`` lands seconds apart while the drain
-    answers polls in well under one; completing the queue between ticks
-    keeps the flip test about the scheduler, not about stale in-flight
-    requests.
-    """
-
-    for request in scheduler.pending_requests():
-        scheduler.record_acquisition_result(
-            request,
-            _changeset(
-                changes=(
-                    *(
-                        FieldChange(path=path, previous=None, current=None)
-                        for path in request.paths
-                    ),
-                ),
-                at=at,
-            ),
-        )
-
-
 def test_a_live_switch_of_active_flips_which_receiver_is_slow() -> None:
     """MOR-2599: a change of ``active`` takes effect on the next tick.
 
     No reconnect: after the store's ``active`` observation flips MAIN -> SUB,
-    the very next due-request computation demotes receiver.main's
-    class-derived paths one class and returns receiver.sub's to their class
-    cadence.
+    the very next due-request computation polls receiver.main's class-derived
+    paths at the demoted cadence and returns receiver.sub's to their class
+    cadence. Group keys are canonical, so no request pile-up happens.
     """
 
     acquisition = _ic7610_acquisition()
@@ -4924,13 +4921,10 @@ def test_a_live_switch_of_active_flips_which_receiver_is_slow() -> None:
     sub_path = FieldPath.parse("receiver.sub.operator_controls.af_level")
     main_path = FieldPath.parse("receiver.main.operator_controls.af_level")
     undemoted = acquisition.policy_for(sub_path)
-    demoted_main = acquisition.policy_for(main_path, observed_active="SUB")
-    assert _pending_request(scheduler, sub_path).policy.cadence_seconds == (
-        pytest.approx(5.0)  # control -> panel
-    )
-    assert _pending_request(scheduler, main_path).policy.cadence_seconds == (
-        pytest.approx(2.0)
-    )
+    demoted = acquisition.policy_for(main_path, observed_active="SUB")
+    assert demoted.freshness_ttl_seconds is not None
+    assert _cadence_of(scheduler, sub_path) == pytest.approx(5.0)  # control -> panel
+    assert _cadence_of(scheduler, main_path) == pytest.approx(2.0)
 
     _answer_pending(scheduler, at=clock.now())
     store.apply(
@@ -4939,20 +4933,12 @@ def test_a_live_switch_of_active_flips_which_receiver_is_slow() -> None:
     clock.advance(2.0)
     service.tick(now=clock.now())
 
+    assert _cadence_of(scheduler, sub_path) == pytest.approx(undemoted.cadence_seconds)
+    assert _cadence_of(scheduler, main_path) == pytest.approx(demoted.cadence_seconds)
     sub_request = _pending_request(scheduler, sub_path)
     main_request = _pending_request(scheduler, main_path)
-    assert sub_request.policy.cadence_seconds == pytest.approx(
-        undemoted.cadence_seconds
-    )
-    assert sub_request.policy.freshness_ttl_seconds == pytest.approx(
-        undemoted.freshness_ttl_seconds
-    )
-    assert main_request.policy.cadence_seconds == pytest.approx(
-        demoted_main.cadence_seconds
-    )
-    assert main_request.policy.freshness_ttl_seconds == pytest.approx(
-        demoted_main.freshness_ttl_seconds
-    )
+    assert sub_request.max_age == pytest.approx(undemoted.freshness_ttl_seconds)
+    assert main_request.max_age == pytest.approx(demoted.freshness_ttl_seconds)
 
 
 # --- PR #3643 round 2: cadence clock/dedupe and demoted TTL stamping ---------
