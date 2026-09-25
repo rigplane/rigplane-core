@@ -4871,18 +4871,18 @@ def test_a_profile_without_active_is_unchanged() -> None:
         assert _cadence_of(scheduler, path) == pytest.approx(
             expected.cadence_seconds
         ), path
-        if expected.freshness_ttl_seconds is not None:
-            request = next(
-                request
-                for request in scheduler.pending_requests()
-                if path in request.paths
-            )
-            assert request.policy.cadence_seconds == pytest.approx(
-                expected.cadence_seconds
-            ), path
-            assert request.policy.freshness_ttl_seconds == pytest.approx(
-                expected.freshness_ttl_seconds
-            ), path
+        if expected.tx_only:
+            # TX-only groups are gated off the receive tick (MOR-1485).
+            continue
+        request = next(
+            request for request in scheduler.pending_requests() if path in request.paths
+        )
+        assert request.policy.cadence_seconds == pytest.approx(
+            expected.cadence_seconds
+        ), path
+        assert request.policy.freshness_ttl_seconds == pytest.approx(
+            expected.freshness_ttl_seconds
+        ), path
 
 
 def test_a_live_switch_of_active_flips_which_receiver_is_slow() -> None:
