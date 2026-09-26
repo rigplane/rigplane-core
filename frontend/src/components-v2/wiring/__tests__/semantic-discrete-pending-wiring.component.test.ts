@@ -109,6 +109,10 @@ function liveCaps(): Capabilities {
       'preamp_main',
       'nb', 'nr', 'notch',
     ],
+    notchWidthChoices: [
+      { value: 0, label: 'WIDE' }, { value: 1, label: 'MID' }, { value: 2, label: 'NAR' },
+    ],
+    ],
     preValues: [0, 1, 2], attValues: [0, 6, 12, 18],
     receivers: 1, vfoScheme: 'single',
     freqRanges: [], modes: ['USB', 'LSB'], filters: ['FIL1', 'FIL2', 'FIL3'],
@@ -124,7 +128,7 @@ function liveState(): ServerState {
     'active', 'split', 'dualWatch', 'txTarget',
     'main.freqHz', 'main.mode', 'main.filter', 'main.activeSlot',
     'main.nb', 'main.nr', 'main.filterWidth', 'main.preamp',
-    'main.autoNotch', 'main.manualNotch',
+    'main.autoNotch', 'main.manualNotch', 'main.manualNotchWidth',
   ];
   return {
     stateContractVersion: 1,
@@ -136,7 +140,7 @@ function liveState(): ServerState {
     main: {
       freqHz: 14250000, mode: 'USB', filter: 1, dataMode: 0, sMeter: 20,
       att: 0, preamp: 0, nb: false, nr: false, afLevel: 100, rfGain: 255, squelch: 0,
-      activeSlot: 'A', filterWidth: 2400, autoNotch: false, manualNotch: false,
+      activeSlot: 'A', filterWidth: 2400,       autoNotch: false, manualNotch: false, manualNotchWidth: 0,
     },
     connection: { rigConnected: true, radioReady: true, controlConnected: true },
     fieldStatus: Object.fromEntries(paths.map((p) => [p, fresh])),
@@ -419,6 +423,25 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
     // Confirmed reading stays the selection source: still off.
     expect(q('[data-testid="dsp-notchMode-off"]')!.getAttribute('aria-pressed')).toBe('true');
     expect(q('[data-testid="dsp-notchMode-auto"]')!.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('marks the clicked notch-width choice pending while set_manual_notch_width is in flight (DspSurface)', () => {
+    render();
+    const group = () => q('[data-testid="dsp-manualNotchWidth"]')!;
+    const choice = (value: number) => q(`[data-testid="dsp-manualNotchWidth-${value}"]`)!;
+    expect(group().dataset.notchWidthStatus).toBe('confirmed');
+
+    choice(1).click();
+    flushSync();
+
+    expect(group().dataset.notchWidthStatus).toBe('pending');
+    expect(choice(1).dataset.pending).toBe('true');
+    expect(choice(0).dataset.pending).toBe('false');
+    expect(choice(2).dataset.pending).toBe('false');
+    // Confirmed reading stays the selection source: still 0.
+    expect(choice(0).getAttribute('aria-checked')).toBe('true');
+    expect(choice(1).getAttribute('aria-checked')).toBe('false');
+    expect(group().querySelector('.sr-only')).not.toBeNull();
   });
 
   it('marks off pending after the MOR-1541 pair (both strands off) is in flight (DspSurface)', () => {

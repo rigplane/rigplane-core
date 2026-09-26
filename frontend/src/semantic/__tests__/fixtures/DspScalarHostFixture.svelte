@@ -27,6 +27,7 @@
     pendingNb?: boolean | null;
     pendingNr?: boolean | null;
     pendingNotch?: DspNotchMode | null;
+    pendingNotchWidth?: number | null;
     finiteAppearance?: FiniteControlAppearance<DspFiniteChoiceValue>;
     rendererContext?: FiniteRendererContext | null;
     onToggle?: (field: DspToggleField, next: boolean) => void;
@@ -37,7 +38,8 @@
   let { view, feedback, presentation = 'grouped', scalarPresentation,
     agcLabels = {}, notchWidthChoices, nbLevelMax = 255, nbLevelPercent = false,
     scalarAppearance, presentationIsCurrent,
-    pendingNb = null, pendingNr = null, pendingNotch = null, finiteAppearance, rendererContext = null,
+    pendingNb = null, pendingNr = null, pendingNotch = null, pendingNotchWidth = null,
+    finiteAppearance, rendererContext = null,
     onToggle, onLevelChange, onNotchModeChange, onAgcModeChange }: Props = $props();
   let finiteSelection = $derived(finiteAppearance === undefined
     ? {} : { finiteAppearance, rendererContext });
@@ -67,7 +69,7 @@
   {onNotchModeChange} {onAgcModeChange} {...finiteSelection}>
   {#snippet children(finiteHandles: DspFiniteHandles)}
     <DspScalarHost {view} feedback={scalarFeedback} {nbLevelMax} {nbLevelPercent} {notchWidthChoices}
-      {scalarAppearance} {presentationIsCurrent}
+      {pendingNotchWidth} {scalarAppearance} {presentationIsCurrent}
       onLevelChange={(field, value) => onLevelChange?.(field, value)}>
       {#snippet children(scalarHandles: DspScalarHandles)}
         {#snippet independentFinite(handles: DspFiniteHandles)}
@@ -98,6 +100,7 @@
             </section>
           {:else}
             <DspSurface {view} {finiteHandles} scalarHandles={scalarHandles} {notchWidthChoices}
+              {pendingNotchWidth}
               finiteLayout={presentation === 'independent' ? independentFinite : undefined}
               scalarLayout={presentation === 'independent' ? independentScalars : undefined}
               onLevelChange={(field, value) => onLevelChange?.(field, value)} />

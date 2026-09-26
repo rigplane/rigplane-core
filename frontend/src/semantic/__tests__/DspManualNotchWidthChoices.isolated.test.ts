@@ -42,6 +42,7 @@ afterEach(() => { target.remove(); });
 type Props = {
   onLevelChange?: (field: DspLevelField, value: number) => void;
   notchWidthChoices?: readonly { value: number; label: string }[];
+  pendingNotchWidth?: number | null;
 };
 
 function render(view: RadioViewModel, props: Props = {}) {
@@ -51,6 +52,7 @@ function render(view: RadioViewModel, props: Props = {}) {
     props: proxy({
       view, presentation: 'grouped', onLevelChange,
       notchWidthChoices: props.notchWidthChoices,
+      pendingNotchWidth: props.pendingNotchWidth ?? null,
     }),
   });
   flushSync();
@@ -101,6 +103,30 @@ describe('manual notch width renders profile-derived choices (MOR-1685)', () => 
     expect(checked('NAR')).toBe('true');
     expect(checked('WIDE')).toBe('false');
     expect(checked('MID')).toBe('false');
+    r.dispose();
+  });
+
+  it('marks the requested choice pending while keeping aria-checked on CONFIRMED', () => {
+    const r = render(withWidthReading(base(), 0), {
+      notchWidthChoices: [...IC7300_WIDTH_CHOICES], pendingNotchWidth: 1,
+    });
+    const group = r.width()!;
+    const choice = (label: string) => [...group.querySelectorAll('button')]
+      .find((button) => button.textContent?.trim() === label)!;
+    expect(group.dataset.notchWidthStatus).toBe('pending');
+    expect(choice('MID').dataset.pending).toBe('true');
+    expect(choice('WIDE').dataset.pending).toBe('false');
+    expect(choice('NAR').dataset.pending).toBe('false');
+    expect(choice('WIDE').getAttribute('aria-checked')).toBe('true');
+    expect(choice('MID').getAttribute('aria-checked')).toBe('false');
+    expect(group.querySelector('.sr-only')).not.toBeNull();
+    r.dispose();
+  });
+
+  it('renders confirmed status and no announcement when nothing is pending', () => {
+    const r = render(withWidthReading(base(), 0), { notchWidthChoices: [...IC7300_WIDTH_CHOICES] });
+    expect(r.width()!.dataset.notchWidthStatus).toBe('confirmed');
+    expect(r.width()!.querySelector('.sr-only')).toBeNull();
     r.dispose();
   });
 

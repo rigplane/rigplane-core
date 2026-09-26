@@ -27,11 +27,15 @@ let target: HTMLDivElement;
 beforeEach(() => { target = document.createElement('div'); document.body.appendChild(target); });
 afterEach(() => { target.remove(); });
 
-function render(view: RadioViewModel, notchWidthChoices?: readonly { value: number; label: string }[]) {
+function render(
+  view: RadioViewModel,
+  notchWidthChoices?: readonly { value: number; label: string }[],
+  pendingNotchWidth: number | null = null,
+) {
   const onLevelChange = vi.fn((_field: DspLevelField, _value: number) => {});
   const component = mount(DspScalarHostFixture, {
     target,
-    props: proxy({ view, presentation: 'compact-notch', onLevelChange, notchWidthChoices }),
+    props: proxy({ view, presentation: 'compact-notch', onLevelChange, notchWidthChoices, pendingNotchWidth }),
   });
   flushSync();
   const section = () => target.querySelector<HTMLElement>('[data-testid="compact-notch-width"]');
@@ -94,6 +98,38 @@ describe('compact manual notch width renders profile-derived choices (MOR-1685)'
     expect(checked('MID')).toBe('true');
     expect(checked('WIDE')).toBe('false');
     expect(checked('NAR')).toBe('false');
+    r.dispose();
+  });
+
+  it('marks the requested choice pending while keeping aria-checked on CONFIRMED', () => {
+    const view = {
+      ...base(),
+      dsp: {
+        ...base().dsp!,
+        manualNotchWidth: {
+          ...base().dsp!.manualNotchWidth,
+          reading: { status: 'known' as const, value: 0 },
+        },
+      },
+    };
+    const r = render(view, [...IC7300_WIDTH_CHOICES], 2);
+    const group = r.width()!;
+    const choice = (label: string) => [...group.querySelectorAll('button')]
+      .find((button) => button.textContent?.trim() === label)!;
+    expect(group.dataset.notchWidthStatus).toBe('pending');
+    expect(choice('NAR').dataset.pending).toBe('true');
+    expect(choice('WIDE').dataset.pending).toBe('false');
+    expect(choice('MID').dataset.pending).toBe('false');
+    expect(choice('WIDE').getAttribute('aria-checked')).toBe('true');
+    expect(choice('NAR').getAttribute('aria-checked')).toBe('false');
+    expect(group.querySelector('.sr-only')).not.toBeNull();
+    r.dispose();
+  });
+
+  it('renders confirmed status and no announcement when nothing is pending', () => {
+    const r = render(base(), [...IC7300_WIDTH_CHOICES]);
+    expect(r.width()!.dataset.notchWidthStatus).toBe('confirmed');
+    expect(r.width()!.querySelector('.sr-only')).toBeNull();
     r.dispose();
   });
 
