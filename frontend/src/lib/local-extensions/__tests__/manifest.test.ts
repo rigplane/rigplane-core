@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   LOCAL_EXTENSION_MANIFEST_URL,
+  LOCAL_SUPERVISOR_META_NAME,
   loadLocalExtensionManifest,
+  localSupervisorAdvertised,
   parseLocalExtensionManifest,
 } from '../manifest';
 
@@ -22,7 +24,7 @@ describe('loadLocalExtensionManifest', () => {
   it('treats 404 as no local extensions', async () => {
     const fetch = vi.fn().mockResolvedValue(mockResponse(404, null));
 
-    await expect(loadLocalExtensionManifest({ fetch })).resolves.toBeNull();
+    await expect(loadLocalExtensionManifest({ fetch, supervisorAdvertised: true })).resolves.toBeNull();
     expect(fetch).toHaveBeenCalledWith(
       LOCAL_EXTENSION_MANIFEST_URL,
       expect.objectContaining({
@@ -35,7 +37,7 @@ describe('loadLocalExtensionManifest', () => {
   it('treats network failures as no local extensions', async () => {
     const fetch = vi.fn().mockRejectedValue(new TypeError('failed'));
 
-    await expect(loadLocalExtensionManifest({ fetch })).resolves.toBeNull();
+    await expect(loadLocalExtensionManifest({ fetch, supervisorAdvertised: true })).resolves.toBeNull();
   });
 
   it('treats invalid JSON as no local extensions', async () => {
@@ -45,7 +47,7 @@ describe('loadLocalExtensionManifest', () => {
       json: vi.fn().mockRejectedValue(new SyntaxError('bad json')),
     } as unknown as Response);
 
-    await expect(loadLocalExtensionManifest({ fetch })).resolves.toBeNull();
+    await expect(loadLocalExtensionManifest({ fetch, supervisorAdvertised: true })).resolves.toBeNull();
   });
 
   it('treats unsupported manifest versions as no local extensions', async () => {
@@ -54,7 +56,7 @@ describe('loadLocalExtensionManifest', () => {
       extensions: [{ id: 'one', mount: 'floating-overlay', entry: '/local/one.js' }],
     }));
 
-    await expect(loadLocalExtensionManifest({ fetch })).resolves.toBeNull();
+    await expect(loadLocalExtensionManifest({ fetch, supervisorAdvertised: true })).resolves.toBeNull();
   });
 
   it('treats unsupported host API versions as no local extensions', async () => {
@@ -64,7 +66,7 @@ describe('loadLocalExtensionManifest', () => {
       extensions: [{ id: 'one', mount: 'floating-overlay', entry: '/local/one.js' }],
     }));
 
-    await expect(loadLocalExtensionManifest({ fetch })).resolves.toBeNull();
+    await expect(loadLocalExtensionManifest({ fetch, supervisorAdvertised: true })).resolves.toBeNull();
   });
 
   it('treats malformed host API versions as no local extensions', async () => {
@@ -74,7 +76,7 @@ describe('loadLocalExtensionManifest', () => {
       extensions: [{ id: 'one', mount: 'floating-overlay', entry: '/local/one.js' }],
     }));
 
-    await expect(loadLocalExtensionManifest({ fetch })).resolves.toBeNull();
+    await expect(loadLocalExtensionManifest({ fetch, supervisorAdvertised: true })).resolves.toBeNull();
   });
 
   it('loads valid same-origin floating overlay extensions', async () => {
@@ -95,6 +97,7 @@ describe('loadLocalExtensionManifest', () => {
 
     const manifest = await loadLocalExtensionManifest({
       fetch,
+      supervisorAdvertised: true,
       baseUrl: 'http://radio.local/ui/',
     });
 
@@ -112,6 +115,51 @@ describe('loadLocalExtensionManifest', () => {
         },
       ],
     });
+  });
+});
+
+/**
+ * MOR-2242 — /api/local/v1/* is the Pro supervisor surface and does not
+ * exist on a core-only server, and the browser logs a console error for every
+ * failed fetch regardless of how page JS handles the response. So the loader
+ * must not fire the manifest request at all unless the local supervisor
+ * advertises itself through the `<meta name="rigplane-local-supervisor">`
+ * marker injected into the served page.
+ */
+describe('local supervisor advertisement gate (MOR-2242)', () => {
+  afterEach(() => {
+    document.querySelector(`meta[name="${LOCAL_SUPERVISOR_META_NAME}"]`)?.remove();
+  });
+
+  it('localSupervisorAdvertised reads the supervisor meta tag from the document', () => {
+    expect(localSupervisorAdvertised()).toBe(false);
+    const meta = document.createElement('meta');
+    meta.name = LOCAL_SUPERVISOR_META_NAME;
+    document.head.appendChild(meta);
+    expect(localSupervisorAdvertised()).toBe(true);
+  });
+
+  it('does not fetch the manifest when no local supervisor advertises itself', async () => {
+    const fetch = vi.fn();
+
+    await expect(loadLocalExtensionManifest({ fetch })).resolves.toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('fetches the manifest when the supervisor meta tag is present', async () => {
+    const meta = document.createElement('meta');
+    meta.name = LOCAL_SUPERVISOR_META_NAME;
+    document.head.appendChild(meta);
+    const fetch = vi.fn().mockResolvedValue(mockResponse(404, null));
+
+    await expect(loadLocalExtensionManifest({ fetch })).resolves.toBeNull();
+    expect(fetch).toHaveBeenCalledWith(
+      LOCAL_EXTENSION_MANIFEST_URL,
+      expect.objectContaining({
+        credentials: 'same-origin',
+        cache: 'no-store',
+      }),
+    );
   });
 });
 

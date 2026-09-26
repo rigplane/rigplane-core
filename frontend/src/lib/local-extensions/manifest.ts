@@ -2,6 +2,24 @@ export const LOCAL_EXTENSION_MANIFEST_URL = '/api/local/v1/ui/manifest';
 export const LOCAL_EXTENSION_MANIFEST_VERSION = 1;
 export const LOCAL_EXTENSION_HOST_API_VERSION = '2.0';
 
+/**
+ * MOR-2242 — `/api/local/v1/*` is the Pro station-supervisor surface and does
+ * not exist on a core-only server. The browser logs a console error for every
+ * failed fetch regardless of how page JS handles the response, so the UI must
+ * not fire any `/api/local` request unless the supervisor is known to serve
+ * it. The supervisor advertises itself by injecting this meta tag into the
+ * served page; the tag is plain DOM, so no CSP allowance is needed for it.
+ */
+export const LOCAL_SUPERVISOR_META_NAME = 'rigplane-local-supervisor';
+
+/** True when the local (Pro) supervisor advertises itself on the served page. */
+export function localSupervisorAdvertised(doc?: Document): boolean {
+  const document_ = doc ?? globalThis.document;
+  return document_?.querySelector(
+    `meta[name="${LOCAL_SUPERVISOR_META_NAME}"]`,
+  ) != null;
+}
+
 export type LocalExtensionMount = 'floating-overlay';
 
 export interface LocalExtensionDescriptor {
@@ -23,6 +41,8 @@ export interface LoadManifestOptions {
   fetch?: typeof globalThis.fetch;
   url?: string;
   baseUrl?: string;
+  /** Override the supervisor-advertisement check (tests pin both outcomes). */
+  supervisorAdvertised?: boolean;
 }
 
 const SUPPORTED_MOUNTS = new Set<LocalExtensionMount>(['floating-overlay']);
@@ -122,6 +142,12 @@ export async function loadLocalExtensionManifest(
 ): Promise<LocalExtensionManifest | null> {
   const fetcher = options.fetch ?? globalThis.fetch;
   if (typeof fetcher !== 'function') {
+    return null;
+  }
+
+  // MOR-2242: without a supervisor advertisement there is nothing to load,
+  // and firing the request on a core-only server would log a console 404.
+  if (!(options.supervisorAdvertised ?? localSupervisorAdvertised())) {
     return null;
   }
 

@@ -8,6 +8,10 @@ and Content-Security-Policy.
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import pathlib
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -163,3 +167,44 @@ class TestSecurityHeaders:
         assert headers.get("x-frame-options") == "DENY"
         assert headers.get("referrer-policy") == "no-referrer"
         assert "default-src" in headers.get("content-security-policy", "")
+
+    async def _csp(self, sec_server: WebServer) -> str:
+        host, port = _addr(sec_server)
+        _, headers, _ = await _http_get(host, port, "/api/v1/state")
+        return headers.get("content-security-policy", "")
+
+    async def test_csp_carries_hash_of_inline_sw_cleanup_script(
+        self, sec_server: WebServer
+    ) -> None:
+        """MOR-2242 — script-src must carry the exact hash of index.html's inline
+        service-worker-cleanup script.
+
+        Without a ``script-src`` directive the ``default-src 'self'`` policy
+        blocks the inline script, so the stale-service-worker cleanup never
+        runs in production. The hash must match the script byte-for-byte:
+        this test recomputes it from ``frontend/index.html`` so any edit to
+        the inline script that forgets the CSP update fails here first.
+        """
+        index_html = (
+            pathlib.Path(__file__).resolve().parents[1] / "frontend" / "index.html"
+        ).read_bytes()
+        match = re.search(rb"<script>\n(.*?)\n    </script>", index_html, re.S)
+        assert match is not None, "inline SW cleanup script not found in index.html"
+        digest = base64.b64encode(
+            hashlib.sha256(match.group(1) + b"\n").digest()
+        ).decode("ascii")
+        csp = await self._csp(sec_server)
+        assert f"'sha256-{digest}'" in csp, (
+            "script-src must carry the current hash of index.html's inline script"
+        )
+
+    async def test_csp_allows_data_media(self, sec_server: WebServer) -> None:
+        """MOR-2242 — media-src must allow data: for the no-sleep video.
+
+        ``MobileRadioLayout.svelte`` keeps iOS Safari awake with a
+        ``data:video/mp4`` source; without an explicit ``media-src`` the
+        ``default-src 'self'`` policy blocks it and the browser logs a
+        console error on every wake-lock attempt.
+        """
+        csp = await self._csp(sec_server)
+        assert "media-src 'self' data:" in csp
