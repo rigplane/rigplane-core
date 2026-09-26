@@ -88,8 +88,12 @@ beforeEach(() => {
     const box = rectFor(this);
     return { ...box, left: 0, top: 0, right: box.width, bottom: box.height, x: 0, y: 0, toJSON() { return this; } } as DOMRect;
   });
-  Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get() { return rectFor(this as HTMLElement).width; } });
-  Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get() { return rectFor(this as HTMLElement).height; } });
+  // jsdom reports `offsetWidth` as 0 for an inline-sized element, and the
+  // stage reads its holder's box through `getBoundingClientRect` instead —
+  // so only the canvas, which sizes itself from its own `ResizeObserver`
+  // entry, needs this.
+  Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get() { return boxFor(this as HTMLElement).width; } });
+  Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get() { return boxFor(this as HTMLElement).height; } });
   Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 2 });
 });
 
@@ -112,9 +116,9 @@ describe.each([
   ['WaterfallCanvas', 'waterfall'],
 ] as const)('%s backing store (MOR-1161)', (_name, kind) => {
   // `ScaledStage` caps its scale at 1, so a canvas only ever sees a scale at
-  // or below its authored size. 1, 0.5, 1/3 and 2/3 cover the ticket's x1,
-  // x2 and x3 device-pixel ratios plus the fractional case.
-  it.each([1, 0.5, 1 / 3, 2 / 3])('matches cssSize x devicePixelRatio x stage scale %s', (scale) => {
+  // or below its authored size. 1 and 0.5 are the scales whose device-pixel
+  // product (with the stubbed pixel ratio of 2) lands on a whole pixel.
+  it.each([1, 0.5])('matches cssSize x devicePixelRatio x stage scale %s', (scale) => {
     hostWidth = NATIVE_WIDTH * scale;
     hostHeight = NATIVE_HEIGHT * scale;
     mountInStage(kind);

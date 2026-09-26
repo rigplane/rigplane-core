@@ -2,9 +2,11 @@
   /**
    * jsdom gives a canvas no layout box of its own, and a `ResizeObserver`
    * reports the observed element's own box — so the canvas is given an
-   * explicit one here, through its own style. The stage's box still comes
-   * from the test's host stub; nothing here fires an observer callback.
+   * explicit inline size here, which is the only size jsdom exposes. The
+   * stage's box still comes from the test's host stub; nothing here fires
+   * an observer callback.
    */
+  import { onMount } from 'svelte';
   import ScaledStage from '../../../primitives/stage/ScaledStage.svelte';
   import SpectrumCanvas from '../SpectrumCanvas.svelte';
   import WaterfallCanvas from '../WaterfallCanvas.svelte';
@@ -16,10 +18,19 @@
   }
 
   let { canvas, nativeW, nativeH }: Props = $props();
+
+  let slot: HTMLDivElement | undefined = $state();
+
+  onMount(() => {
+    slot?.querySelectorAll<HTMLElement>('canvas, .spectrum-container').forEach((element) => {
+      element.style.width = '200px';
+      element.style.height = '100px';
+    });
+  });
 </script>
 
 <ScaledStage {nativeW} {nativeH}>
-  <div class="canvas-slot">
+  <div class="canvas-slot" bind:this={slot}>
     {#if canvas === 'spectrum'}
       <SpectrumCanvas data={null} />
     {:else}
@@ -27,17 +38,3 @@
     {/if}
   </div>
 </ScaledStage>
-
-<style>
-  .canvas-slot {
-    width: 200px;
-    height: 100px;
-  }
-
-  .canvas-slot :global(.spectrum-container),
-  .canvas-slot :global(canvas) {
-    display: block;
-    width: 200px;
-    height: 100px;
-  }
-</style>
