@@ -492,14 +492,12 @@ describe('unknown TX target', () => {
       const t = target.querySelector('[data-testid="rx-tx-target"]') as HTMLElement;
       expect(t.textContent).not.toContain('—');
       expect(t.textContent).not.toMatch(/Hz/);
+      // No extra element: a nested span grew the default-path sequence, and a
+      // min-width on this paragraph shifted the phone-portrait column. The
+      // sentence itself ("TX target: … · ") is wider than the frequency it
+      // stands in for, so the slot does not shrink when the reading arrives.
       expect(t.querySelector('[data-testid="rx-tx-target-frequency"]')).toBeNull();
-      // Reservation lives on the existing `rx-tx-target` paragraph, so the
-      // default-path element sequence does not grow. The pin builds the
-      // widest known sentence the view model can carry (8-digit frequency).
-      const rule = /\.rx-tx-target\s*\{([^}]*)\}/.exec(rxTxSurfaceSource)?.[1] ?? '';
-      const reserved = Number((rule.match(/min-width:\s*(\d+)ch/) ?? [])[1]);
-      const widest = 'TX target: MAIN unslotted · 99999999 Hz';
-      expect(reserved).toBeGreaterThanOrEqual(widest.length);
+      expect(rxTxSurfaceSource).not.toMatch(/rx-tx-target-frequency/);
     });
   });
 });
