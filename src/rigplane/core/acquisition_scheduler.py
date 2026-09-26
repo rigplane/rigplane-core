@@ -785,12 +785,13 @@ class AcquisitionScheduler:
         """
 
         dispatched = self._dispatch_by_request_id.get(request.id)
-        if dispatched is None:
-            return False
-        return any(
+        if dispatched is not None and any(
             path in dispatched and dispatched[path] <= observation_timestamp
             for path in request.paths
-        )
+        ):
+            return True
+        started = self._execute_started_at.get(request.id)
+        return started is not None and started <= observation_timestamp
 
     def _forget_dispatch(self, request_id: str) -> None:
         self._dispatch_by_request_id.pop(request_id, None)
