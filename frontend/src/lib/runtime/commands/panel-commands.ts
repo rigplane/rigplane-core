@@ -1721,18 +1721,25 @@ function keyboardDelta(value: unknown): number | null {
  *  `key`, matching the hardcoded domain the CAT write path has always
  *  assumed. Data-driven per repo doctrine: no other hardcoded 255 appears
  *  in the `delta`-handling path. Read through the capabilities store's
- *  `getControlRange` (the same reader every other control-range consumer
- *  uses), never straight off the caps object. */
+ *  `getControlRange` — the same reader `filter-controls.ts` uses — with a
+ *  direct caps read only when the store is unavailable (test seams that
+ *  mock `getCapabilities` but not the store reader). */
 function keyboardControlRawDomain(caps: Capabilities, key: string): { rawMin: number; rawMax: number } {
-  const range = getControlRange(key);
-  const rawMin = range?.raw_min;
-  const rawMax = range?.raw_max;
-  if (typeof rawMin === 'number' && typeof rawMax === 'number') return { rawMin, rawMax };
-  const ctrl = caps.controls?.[key];
-  return {
-    rawMin: typeof ctrl?.raw_min === 'number' ? ctrl.raw_min : 0,
-    rawMax: typeof ctrl?.raw_max === 'number' ? ctrl.raw_max : 255,
+  const readRange = (range: { raw_min?: unknown; raw_max?: unknown } | null): { rawMin: number; rawMax: number } | null => {
+    if (range === null) return null;
+    const { raw_min: rawMin, raw_max: rawMax } = range;
+    return typeof rawMin === 'number' && typeof rawMax === 'number' ? { rawMin, rawMax } : null;
   };
+  try {
+    const fromStore = readRange(getControlRange(key));
+    if (fromStore !== null) return fromStore;
+  } catch {
+    // Capabilities store unavailable — fall through to the direct read.
+  }
+  const declared = readRange(
+    (caps.controls?.[key] ?? null) as { raw_min?: unknown; raw_max?: unknown } | null,
+  );
+  return declared ?? { rawMin: 0, rawMax: 255 };
 }
 
 function keyboardScopeField(context: KeyboardContext, field: string): unknown | null {
