@@ -241,12 +241,20 @@ _PENDING_LATER_PR: frozenset[str] = frozenset(
 )
 
 
-def _set_command_arms() -> frozenset[str]:
-    """Every ``case Set*``/``case Reset*`` arm in ``RadioPoller._execute``'s
-    ``match cmd:`` (``ResetFilterWidth``, MOR-2535, is the one non-``Set``
-    write command; counting only ``Set`` prefixes would exempt it from the
-    readback classification every other write arm gets)."""
-    source = (_SRC / "web" / "radio_poller.py").read_text()
+def _set_command_arms(
+    path: Path = _SRC / "web" / "radio_poller.py",
+) -> frozenset[str]:
+    """Every ``case Set*``/``case Reset*`` arm in a ``match`` statement of
+    *path*.
+
+    Default is ``web/radio_poller.py`` (``RadioPoller._execute``), which is
+    the Icom executor. ``backends/yaesu_cat/poller.py``
+    (``YaesuCatPoller._execute_command``) is the other executor and uses the
+    same ``case SetX(...)`` shape; a command dispatched only there still
+    needs a readback classification. ``ResetFilterWidth`` (MOR-2535) is the
+    one non-``Set`` write command; counting only ``Set`` prefixes would
+    exempt it from the classification every other write arm gets."""
+    source = path.read_text()
     tree = ast.parse(source)
     arms: set[str] = set()
     for node in ast.walk(tree):
@@ -319,6 +327,7 @@ def _web_ingress_names() -> dict[str, set[str]]:
 
 def test_every_set_command_arm_is_classified() -> None:
     arms = _set_command_arms()
+    yaesu_arms = _set_command_arms(_SRC / "backends" / "yaesu_cat" / "poller.py")
     covered = {cls.__name__ for cls in LEGACY_COMMAND_NAMES}
     no_field = frozenset(_NO_OBSERVABLE_FIELD)
     classified = covered | no_field | _PENDING_LATER_PR
@@ -328,8 +337,9 @@ def test_every_set_command_arm_is_classified() -> None:
         "LEGACY_COMMAND_NAMES, or to _NO_OBSERVABLE_FIELD / _PENDING_LATER_PR "
         "here with a reason"
     )
-    assert classified - arms == set(), (
-        "classification names a dispatch arm that is gone"
+    assert classified - (arms | yaesu_arms) == set(), (
+        "classified command has no arm in either executor "
+        "(web/radio_poller.py or backends/yaesu_cat/poller.py)"
     )
     assert covered & no_field == set()
     assert covered & _PENDING_LATER_PR == set()
