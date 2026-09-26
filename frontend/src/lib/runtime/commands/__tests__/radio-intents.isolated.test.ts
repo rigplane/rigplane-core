@@ -79,28 +79,23 @@ describe('typed non-PTT radio intents', () => {
     const { createDefaultLocalExtensionHostApi } = await import('$lib/local-extensions/host-api');
     const api = createDefaultLocalExtensionHostApi();
     const examples = [
-      ['set_freq', { freq: 14_074_000, receiver: 0 }],
-      ['set_mode', { mode: 'CW', receiver: 1 }],
+      ['set_freq', { freq: 14_074_000, receiver: 0 }, { freq: 14_074_000, receiver: 0 }],
+      ['set_mode', { mode: 'CW', receiver: 1 }, { mode: 'CW', receiver: 1 }],
       // MOR-1676 part A (AF): the caller states the unit in the intent
       // params. A float is always the legacy normalized level (tagged);
       // `level_unit: 'raw'` states a raw integer (stripped before
       // `sendCommand`). The number alone never decides (`1.0 === 1`).
-      ['set_af_level', { level: 0.5, receiver: 0 }],
-      ['set_af_level', { level: 128, receiver: 0, level_unit: 'raw' }],
-      ['vfo_swap', {}],
+      // Each entry is [name, intentParams, wireParams].
+      ['set_af_level', { level: 0.5, receiver: 0 },
+        { level: 0.5, receiver: 0, level_unit: 'normalized' }],
+      ['set_af_level', { level: 128, receiver: 0, level_unit: 'raw' },
+        { level: 128, receiver: 0 }],
+      ['vfo_swap', {}, {}],
     ] as const;
-    for (const [name, params] of examples) {
+    for (const [name, params, wireParams] of examples) {
       for (const accepted of [false, true, false]) {
         harness.sendCommand.mockClear().mockReturnValue(accepted);
         expect(api[method](name, params)).toBe(accepted);
-        const { level_unit: _intentUnit, ...rest } = params as Record<string, unknown>;
-        // Only the AF examples carry a unit: the float tags `normalized`,
-        // the raw int strips to nothing. Every other example passes
-        // through byte-for-byte.
-        const wireParams = name !== 'set_af_level' ? params
-          : (params as Record<string, unknown>).level_unit === 'raw'
-            ? rest
-            : { ...params, level_unit: 'normalized' };
         expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith(name, wireParams, expect.any(String));
         expect(lifecycle.getCommandLifecycles().at(-1)).toMatchObject({ name, params, status: 'pending' });
       }
