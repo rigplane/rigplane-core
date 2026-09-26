@@ -1153,6 +1153,10 @@ class _GatePacedTransport:
         finally:
             self._busy -= 1
 
+    async def receive_packet(self, timeout: float = 0.2) -> bytes:
+        await asyncio.sleep(timeout)
+        raise asyncio.TimeoutError
+
 
 @pytest.mark.asyncio
 async def test_startup_fetch_never_outruns_the_send_gate() -> None:
