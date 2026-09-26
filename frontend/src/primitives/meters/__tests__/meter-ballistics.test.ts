@@ -231,7 +231,6 @@ describe('createMeterBallistics frame-step strategy', () => {
     host.advance(900);
     meter.sync({ sample: 8, smoothTarget: 8, peakEnabled: true });
     expect(host.activeFrames).toBe(1);
-    host.flushFrame(0);
     host.flushFrame(900);
     expect(meter.view.peakValue).toBe(10);
     host.flushFrame(101);
