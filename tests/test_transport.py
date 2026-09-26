@@ -766,13 +766,14 @@ class TestPacketQueueOverflow:
         assert len(warnings) == 3
         assert "evicting for CI-V control" in warnings[0].message
 
-        reported = 1
-        for rec in warnings[1:]:
+        reported = 0
+        for rec in warnings:
             match = re.search(r"evicted (\d+) since last", rec.message)
             assert match is not None, rec.message
             reported += int(match.group(1))
             assert "total=" in rec.message
-        assert reported == expected_evictions
+        # Evictions after the last summary stay on the counter, not in a line.
+        assert reported + transport._overflow_evicted == expected_evictions
 
     def test_control_packet_is_queued_while_full(
         self, transport: IcomTransport
