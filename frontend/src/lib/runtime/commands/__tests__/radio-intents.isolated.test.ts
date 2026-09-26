@@ -94,9 +94,13 @@ describe('typed non-PTT radio intents', () => {
         harness.sendCommand.mockClear().mockReturnValue(accepted);
         expect(api[method](name, params)).toBe(accepted);
         const { level_unit: _intentUnit, ...rest } = params as Record<string, unknown>;
-        const wireParams = (params as Record<string, unknown>).level_unit === 'raw'
-          ? rest
-          : { ...params, level_unit: 'normalized' };
+        // Only the AF examples carry a unit: the float tags `normalized`,
+        // the raw int strips to nothing. Every other example passes
+        // through byte-for-byte.
+        const wireParams = name !== 'set_af_level' ? params
+          : (params as Record<string, unknown>).level_unit === 'raw'
+            ? rest
+            : { ...params, level_unit: 'normalized' };
         expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith(name, wireParams, expect.any(String));
         expect(lifecycle.getCommandLifecycles().at(-1)).toMatchObject({ name, params, status: 'pending' });
       }
