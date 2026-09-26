@@ -1563,6 +1563,9 @@ class CivRuntime:
                     "escalating to full reconnect"
                 )
                 await self._host._control_phase.release()
+                # remote_id == 0 makes IcomTransport.reconnect fall back to a
+                # full connect() with discovery.
+                self._host._ctrl_transport.remote_id = 0
             await self._host.soft_reconnect()
             if not escalate:
                 self._soft_recovery_epoch = self._host._civ_epoch
