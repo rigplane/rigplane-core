@@ -5381,6 +5381,11 @@ class WebServer:
         try:
             if path == "/api/v1/radio/disconnect":
                 await radio.disconnect()
+                # MOR-2615: a clean operator disconnect ends the provider
+                # epoch on the shared store — the same invalidation the
+                # fallback-store teardown performs — so TTL-less SETTING
+                # and MENU fields cannot stay FRESH past the disconnect.
+                self.command_state_store.begin_provider_generation()
                 resp = {"status": "disconnected"}
             elif path == "/api/v1/radio/connect":
                 poller = self._radio_poller

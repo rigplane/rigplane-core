@@ -6935,6 +6935,11 @@ def test_scan_facts_seed_labelled_command_response_not_poll_response() -> None:
 # (0x1C 01) from the setting class to the control class, and dispatch sorts
 # one priority by class rank before deadline, so the read leaves the
 # setting group for the control group: the same 52 frames, re-ordered.
+# MOR-2615 removes the SETTING/MENU class TTLs, so a class-resolved
+# setting group dispatches by its cadence deadline instead of its old TTL
+# deadline: the same 52 frames, with the AGC read (0x16 0x12, the only
+# class-resolved setting in this cycle) moving ahead of the monitor/vox
+# reads it used to follow.
 _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x1C, 0x00, b""),
     (0x25, None, b"\x00"),
@@ -6958,11 +6963,6 @@ _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x16, 0x41, b""),
     (0x16, 0x48, b""),
     (0x21, 0x00, b""),
-    (0x16, 0x45, b""),
-    (0x16, 0x46, b""),
-    (0x1A, 0x05, b"\x01\x91"),
-    (0x1A, 0x06, b""),
-    (0x26, None, b"\x00"),
     (0x16, 0x12, b""),
     (0x11, None, b""),
     (0x16, 0x02, b""),
@@ -6976,6 +6976,11 @@ _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x14, 0x15, b""),
     (0x14, 0x16, b""),
     (0x16, 0x44, b""),
+    (0x16, 0x45, b""),
+    (0x16, 0x46, b""),
+    (0x1A, 0x05, b"\x01\x91"),
+    (0x1A, 0x06, b""),
+    (0x26, None, b"\x00"),
     (0x27, 0x1C, b""),
     (0x27, 0x13, b""),
     (0x27, 0x1B, b""),

@@ -4899,15 +4899,27 @@ def test_the_non_selected_receiver_polls_one_class_slower(
                 else undemoted
             )
             assert expected.cadence_seconds is not None
-            assert expected.freshness_ttl_seconds is not None
             assert _cadence_of(scheduler, path) == pytest.approx(
                 expected.cadence_seconds
             ), path
             request = _pending_request(scheduler, path)
-            assert request.max_age == pytest.approx(expected.freshness_ttl_seconds), (
-                path,
-                "the demoted TTL rides on the queued request",
-            )
+            if expected.freshness_ttl_seconds is None:
+                # MOR-2615: a class-derived SETTING/MENU path stamps no TTL;
+                # the queued request still carries a finite deadline from
+                # its demoted cadence so the drain can time out a lost
+                # answer.
+                assert expected.cadence_seconds is not None
+                assert request.max_age == pytest.approx(_cadence_of(scheduler, path)), (
+                    path,
+                    "a TTL-less demoted path keeps its demoted-cadence deadline",
+                )
+            else:
+                assert request.max_age == pytest.approx(
+                    expected.freshness_ttl_seconds
+                ), (
+                    path,
+                    "the demoted TTL rides on the queued request",
+                )
             assert undemoted.cadence_seconds is not None
             undemoted_cadence: float = undemoted.cadence_seconds
             assert request.policy.cadence_seconds is not None
@@ -4931,6 +4943,8 @@ def test_the_demoted_paths_keep_the_demoted_class_ttl() -> None:
     Every class-derived path on the non-selected receiver carries the
     demoted class's TTL on its queued request's max_age (never below twice
     the cadence it polls at), so it cannot age to stale between polls.
+    MOR-2615: SETTING demotes to MENU and both carry no TTL — those paths
+    stamp ``None`` and keep a cadence-derived request deadline instead.
     """
 
     acquisition = _ic7610_acquisition()
@@ -4939,17 +4953,22 @@ def test_the_demoted_paths_keep_the_demoted_class_ttl() -> None:
 
     slowed = _class_derived_paths(acquisition, "sub")
     assert slowed
+    seen_ttl_less = False
     for path in slowed:
         policy = acquisition.policy_for(path, observed_active="MAIN")
         assert policy.cadence_seconds is not None
-        assert policy.freshness_ttl_seconds is not None
+        request = _pending_request(scheduler, path)
+        if policy.freshness_ttl_seconds is None:
+            seen_ttl_less = True
+            assert request.max_age == pytest.approx(_cadence_of(scheduler, path)), path
+            continue
         assert policy.freshness_ttl_seconds >= 2.0 * policy.cadence_seconds
         assert (
             policy.freshness_ttl_seconds
             > acquisition.policy_for(path).freshness_ttl_seconds
         )
-        request = _pending_request(scheduler, path)
         assert request.max_age == pytest.approx(policy.freshness_ttl_seconds)
+    assert seen_ttl_less, "the IC-7610 has demoted SETTING paths with no TTL"
 
 
 def test_explicit_profile_overrides_keep_their_cadence_when_demoted() -> None:
@@ -5037,6 +5056,8 @@ def test_a_live_switch_of_active_flips_which_receiver_is_slow() -> None:
     assert _cadence_of(scheduler, main_path) == pytest.approx(demoted.cadence_seconds)
     sub_request = _pending_request(scheduler, sub_path)
     main_request = _pending_request(scheduler, main_path)
+    assert undemoted.freshness_ttl_seconds is not None
+    assert demoted.freshness_ttl_seconds is not None
     assert sub_request.max_age == pytest.approx(undemoted.freshness_ttl_seconds)
     assert main_request.max_age == pytest.approx(demoted.freshness_ttl_seconds)
 

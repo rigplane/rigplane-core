@@ -746,6 +746,49 @@ async def test_explicit_disconnect_connect_uses_the_same_new_epoch_policy() -> N
     assert radio.refetches == 1
 
 
+async def test_operator_disconnect_leaves_no_fresh_field() -> None:
+    """MOR-2615: the real disconnect handler invalidates the shared store.
+
+    A SETTING field observed once through the class policy carries no TTL,
+    so without the disconnect-time generation advance it would read FRESH
+    forever after. The handler must leave no FRESH field behind.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from rigplane.core.acquisition_scheduler import StateFreshnessService
+    from rigplane.core.observation_adapter import ProviderObservationAdapter
+    from rigplane.core.state_pipeline_contracts import (
+        AcquisitionClass,
+        FieldPath,
+        acquisition_class_for_path,
+    )
+    from test_radio_poller_tx_interlock import connect_vfo_poller
+
+    poller, radio, store = connect_vfo_poller()
+    server = WebServer(radio)
+    server._radio_poller = poller
+    assert server.command_state_store is store
+
+    setting = FieldPath.global_("operator_controls", "mic_gain")
+    assert acquisition_class_for_path(setting) is AcquisitionClass.SETTING
+    acquisition = radio._profile.state_acquisition
+    assert acquisition is not None
+    adapter = ProviderObservationAdapter(
+        profile=acquisition,
+        source="poll_response",
+    )
+    store.apply_current(adapter.observation(setting, 50))
+    assert store.snapshot().field(setting).max_age is None
+
+    radio.disconnect = AsyncMock()
+    writer = MagicMock(drain=AsyncMock())
+    await server._handle_radio_control("/api/v1/radio/disconnect", writer)
+    radio.disconnect.assert_awaited_once()
+
+    assert list(store.snapshot().fields) == []
+    assert StateFreshnessService(store=store).tick().freshness == ()
+
+
 async def test_reconnect_with_ptt_aged_by_refetch_reads_rx_before_selecting_a() -> None:
     from unittest.mock import AsyncMock
     from test_radio_poller_tx_interlock import (

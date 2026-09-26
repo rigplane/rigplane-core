@@ -138,13 +138,18 @@ class AcquisitionClassPolicy:
     """Cadence envelope for one acquisition class (MOR-2574).
 
     ``ceiling_cadence_seconds`` is the slowest the budget fit may stretch
-    the class to.
+    the class to. ``expires_by_time`` is False for classes whose fields
+    stay FRESH while the link is healthy (MOR-2615): they are still
+    cadence-polled, but resolve to ``freshness_ttl_seconds=None`` so the
+    store never ages them by time; only a provider generation advance
+    (link loss, session change, operator disconnect) invalidates them.
     """
 
     nominal_cadence_seconds: float
     ceiling_cadence_seconds: float
     polled_in: AcquisitionPhase = AcquisitionPhase.BOTH
     held_at_ceiling_in_tx: bool = False
+    expires_by_time: bool = True
 
     def __post_init__(self) -> None:
         nominal = _strict_float(
@@ -168,11 +173,21 @@ class AcquisitionClassPolicy:
             "held_at_ceiling_in_tx",
             _strict_bool(self.held_at_ceiling_in_tx, label="held_at_ceiling_in_tx"),
         )
+        object.__setattr__(
+            self,
+            "expires_by_time",
+            _strict_bool(self.expires_by_time, label="expires_by_time"),
+        )
 
     @property
-    def freshness_ttl_seconds(self) -> float:
-        """TTL for the class: ``max(2 x ceiling, ceiling + 0.7)`` seconds."""
+    def freshness_ttl_seconds(self) -> float | None:
+        """TTL for the class: ``max(2 x ceiling, ceiling + 0.7)`` seconds.
 
+        ``None`` when the class does not expire by time (MOR-2615).
+        """
+
+        if not self.expires_by_time:
+            return None
         return max(
             2.0 * self.ceiling_cadence_seconds,
             self.ceiling_cadence_seconds + 0.7,
@@ -204,11 +219,13 @@ ACQUISITION_CLASS_TABLE: Final[dict[AcquisitionClass, AcquisitionClassPolicy]] =
         10.0,
         30.0,
         held_at_ceiling_in_tx=True,
+        expires_by_time=False,
     ),
     AcquisitionClass.MENU: AcquisitionClassPolicy(
         30.0,
         60.0,
         held_at_ceiling_in_tx=True,
+        expires_by_time=False,
     ),
 }
 
@@ -226,6 +243,8 @@ def acquisition_policy_for_class(klass: AcquisitionClass) -> AcquisitionPolicy:
 
     The class's nominal cadence and its freshness TTL, TX-only when the
     table polls the class during transmit only, and adaptive decay off.
+    Classes that do not expire by time (MOR-2615) resolve to a ``None``
+    TTL; cadence and ceiling are unchanged.
     """
 
     entry = ACQUISITION_CLASS_TABLE[klass]
@@ -240,7 +259,11 @@ def acquisition_policy_for_class_with_demotion(
     klass: AcquisitionClass,
 ) -> AcquisitionPolicy:
     """Class policy one step slower (MOR-2599): the demoted class's cadence
-    and TTL, so a demoted path never ages to stale between polls."""
+    and TTL, so a demoted path never ages to stale between polls.
+
+    A demoted SETTING path lands on MENU (also non-expiring under
+    MOR-2615), so the ``None`` TTL passes through unchanged.
+    """
 
     return acquisition_policy_for_class(demoted_acquisition_class(klass))
 
