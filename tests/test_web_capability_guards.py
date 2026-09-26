@@ -829,6 +829,7 @@ class TestReceiverValidationSeat:
 
     def test_single_receiver_refused_before_enqueue(self):
         from rigplane.web.handlers import ControlHandler
+        from rigplane.web.handlers.control import _ensure_receiver_supported
 
         radio = _make_radio("IC-7300")
         handler = ControlHandler.__new__(ControlHandler)
@@ -837,11 +838,16 @@ class TestReceiverValidationSeat:
 
         with pytest.raises(ValueError, match="receiver=1"):
             handler._enqueue_rc_frequency(  # noqa: SLF001
-                "set_freq", {"freq": 14_074_000, "receiver": 1},
-                SimpleNamespace(put=queue.append), radio,
+                "set_freq",
+                {"freq": 14_074_000, "receiver": 1},
+                SimpleNamespace(put=queue.append),
+                radio,
             )
         assert queue == []
-        assert not hasattr(handler, "_ensure_receiver_supported")
+        # The web copy is gone: the gate is the module-level function
+        # delegating to the radio's profile, not a ControlHandler method.
+        assert not hasattr(ControlHandler, "_ensure_receiver_supported")
+        assert callable(_ensure_receiver_supported)
 
     def test_dual_receiver_admitted_to_queue(self):
         from rigplane.web.handlers import ControlHandler
@@ -852,8 +858,10 @@ class TestReceiverValidationSeat:
         queue: list[object] = []
 
         result = handler._enqueue_rc_frequency(  # noqa: SLF001
-            "set_freq", {"freq": 14_074_000, "receiver": 1},
-            SimpleNamespace(put=queue.append), radio,
+            "set_freq",
+            {"freq": 14_074_000, "receiver": 1},
+            SimpleNamespace(put=queue.append),
+            radio,
         )
         assert result == {"freq": 14_074_000, "receiver": 1}
         assert len(queue) == 1
