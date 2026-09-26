@@ -90,10 +90,6 @@ vi.mock('../../../skins/registry', async (importOriginal) => ({
   resolveSkinId: vi.fn(() => 'desktop-v2'),
 }));
 
-vi.mock('../../../lib/utils/battery', () => ({
-  initBatteryMonitor: vi.fn(async () => vi.fn()),
-}));
-
 vi.mock('../../../lib/media/media-session', () => ({
   initMediaSession: vi.fn(),
   destroyMediaSession: vi.fn(),

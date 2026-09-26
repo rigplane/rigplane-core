@@ -27,7 +27,6 @@ const h = vi.hoisted(() => ({
   provide: vi.fn(),
   registerBarrier: vi.fn(),
   bootstrap: vi.fn(),
-  initBattery: vi.fn(),
   resolveSkin: vi.fn(),
   loadSkin: vi.fn(),
 }));
@@ -98,7 +97,6 @@ vi.mock('../skins/registry', () => ({
   loadSkin: h.loadSkin,
   getPresentationRecord: (id: unknown) => ({ id, kind: 'built-in-self-contained', resources: [] }),
 }));
-vi.mock('../lib/utils/battery', () => ({ initBatteryMonitor: h.initBattery }));
 vi.mock('../lib/media/media-session', () => ({ initMediaSession: vi.fn(), destroyMediaSession: vi.fn() }));
 vi.mock('../components-v2/wiring/SemanticRadioSurfaces.svelte', async () => ({
   default: (await import('./LayoutStub.svelte')).default,
@@ -162,7 +160,6 @@ beforeEach(() => {
   Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 });
   h.onMessage.mockReturnValue(h.offMessage);
   h.bootstrap.mockResolvedValue(vi.fn());
-  h.initBattery.mockResolvedValue(vi.fn());
   h.resolveSkin.mockImplementation(({ isMobile }: { isMobile: boolean }) => (isMobile ? 'mobile' : 'desktop-v2'));
   h.loadSkin.mockImplementation(async (skinId: string) => presentationStub(skinId));
   h.provide.mockReturnValue({ refreshAuthority: vi.fn(), release: vi.fn(), dispose: vi.fn() });

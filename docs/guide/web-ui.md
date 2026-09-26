@@ -501,9 +501,8 @@ The browser app startup path is implemented in `frontend/src/App.svelte` and
 1. Initialize the workspace-backed skin selector (see "Layout and skin resolution" below).
 2. Register MediaSession handlers (when API is available).
 3. Start HTTP polling loop for `/api/v1/state` (interval set to `1000ms` in app bootstrap).
-4. Start battery monitor (progressive enhancement) and adjust polling multiplier.
-5. Fetch capabilities once from `/api/v1/capabilities`.
-6. Connect control WebSocket (`/api/v1/ws`) and subscribe to events.
+4. Fetch capabilities once from `/api/v1/capabilities`.
+5. Connect control WebSocket (`/api/v1/ws`) and subscribe to events.
 
 ### Runtime ownership (actual code paths)
 
@@ -550,18 +549,6 @@ requests, outside this cadence).
   when frequency/mode/meter state did not change.
 - On transient HTTP errors, cached ETag is cleared to force a fresh `200` response.
 - After repeated HTTP failures, the connection store marks HTTP as disconnected until recovery.
-
-### Battery-aware polling behavior
-
-`frontend/src/lib/utils/battery.ts` adjusts polling interval multiplier:
-
-| Battery state | Multiplier | Effective poll interval (base 1000ms) |
-|---|---:|---:|
-| Charging or >20% | `1x` | `1000ms` |
-| 10–20% and not charging | `2x` | `2000ms` |
-| <=10% and not charging | `4x` | `4000ms` |
-
-If the Battery Status API is unavailable, multiplier stays at `1x`.
 
 ### MediaSession mappings (mobile/headset controls)
 
@@ -875,8 +862,6 @@ const sub = state.sub ?? null;
   availability plays no part in it.
 - **System action error surfacing:** connect/disconnect/power actions in v2 call
   `runtime.system.*` and surface backend HTTP errors directly in the UI.
-- **Battery API availability:** polling slowdown on low battery is best-effort; browsers without
-  `navigator.getBattery()` remain on normal polling cadence.
 - **MediaSession availability:** headset/lock-screen controls are enabled only when
   `navigator.mediaSession` exists.
 
