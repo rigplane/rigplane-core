@@ -447,7 +447,7 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
   });
 
   it.each(['rfGain', 'squelch'] as const)(
-    'a step up then down from every raw R in 0..255 dispatches R+1 then R (clamped at 255)',
+    'the raw R ↔ R/255 lattice round-trips exactly for every R in 0..255',
     (field) => {
       const lattice = Array.from({ length: 256 }, (_, raw) => raw);
       for (const raw of lattice) {
