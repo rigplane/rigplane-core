@@ -262,6 +262,32 @@ async def test_async_iteration(bus, mock_radio):
     assert collected == pkts
 
 
+async def test_cancelled_async_iteration_raises_cancelled_error(bus, mock_radio):
+    sub = bus.subscribe(name="s1")
+    await sub.start()
+
+    async def consume() -> None:
+        async for _pkt in sub:
+            pass
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await sub.aclose()
+
+
+async def test_stopped_empty_subscription_ends_async_iteration(bus, mock_radio):
+    sub = bus.subscribe(name="s1")
+    await sub.start()
+    await sub.aclose()
+
+    collected = [pkt async for pkt in sub]
+    assert collected == []
+
+
 # ---------------------------------------------------------------------------
 # Context manager
 # ---------------------------------------------------------------------------
