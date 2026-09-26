@@ -73,9 +73,8 @@ function createFakeSmoother(initial = 0): MeterSmoother & { set(value: number): 
     get value() { return current; },
     get settled() { return !pending && current === target; },
     update: vi.fn((value: number) => {
+      pending = value !== current;
       target = value;
-      current = value;
-      pending = false;
     }),
     reset: vi.fn((value: number) => {
       current = target = value;
@@ -295,10 +294,13 @@ describe('createMeterBallistics idle peak ticker (MOR-2613)', () => {
   const VALUE = 10;
 
   it('requests no further frame once the smoother has settled and the peak equals the value', () => {
-    const { host, meter } = frameSetup();
+    const { host, meter, smoother } = frameSetup();
     meter.sync({ sample: VALUE, smoothTarget: VALUE, peakEnabled: true });
     meter.start();
     expect(host.activeFrames).toBe(1);
+    host.flushFrame();
+    expect(host.activeFrames).toBe(1);
+    smoother.set(VALUE);
     host.flushFrame();
     expect(host.activeFrames).toBe(0);
     expect(meter.view.peakValue).toBe(VALUE);
@@ -309,9 +311,11 @@ describe('createMeterBallistics idle peak ticker (MOR-2613)', () => {
   });
 
   it('wakes on a higher sample, holds for the hold window, decays, and stops again', () => {
-    const { host, meter } = frameSetup();
+    const { host, meter, smoother } = frameSetup();
     meter.sync({ sample: VALUE, smoothTarget: VALUE, peakEnabled: true });
     meter.start();
+    host.flushFrame();
+    smoother.set(VALUE);
     host.flushFrame();
     expect(host.activeFrames).toBe(0);
 
@@ -322,6 +326,7 @@ describe('createMeterBallistics idle peak ticker (MOR-2613)', () => {
     expect(meter.view.peakValue).toBeGreaterThanOrEqual(meter.view.smoothedValue);
 
     host.advance(1000);
+    smoother.set(higher);
     host.flushFrame(0);
     expect(meter.view.peakValue).toBe(higher);
     expect(meter.view.peakValue).toBeGreaterThanOrEqual(meter.view.smoothedValue);
@@ -342,9 +347,11 @@ describe('createMeterBallistics idle peak ticker (MOR-2613)', () => {
   });
 
   it('holds a peak above a lower sample for the hold window, then decays and stops', () => {
-    const { host, meter } = frameSetup();
+    const { host, meter, smoother } = frameSetup();
     meter.sync({ sample: VALUE, smoothTarget: VALUE, peakEnabled: true });
     meter.start();
+    host.flushFrame();
+    smoother.set(VALUE);
     host.flushFrame();
 
     const lower = 4;
@@ -354,6 +361,7 @@ describe('createMeterBallistics idle peak ticker (MOR-2613)', () => {
     expect(meter.view.peakValue).toBeGreaterThan(meter.view.smoothedValue);
 
     host.advance(1000);
+    smoother.set(lower);
     host.flushFrame(0);
     expect(meter.view.peakValue).toBe(VALUE);
     expect(meter.view.peakValue).toBeGreaterThanOrEqual(meter.view.smoothedValue);
