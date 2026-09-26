@@ -265,6 +265,10 @@ const FORBIDDEN_PRIMITIVES_IMPORTS = {
       // "Themes" row). gitignore-style `group` has no inline-negative
       // alternative, so each non-theme subtree is listed and theme/ is the
       // documented omission; both alias and relative spellings are covered.
+      // NOTE: a bare `**/components-v2` entry is NOT listed — the same
+      // directory-prefix C1-A trap: it would also match theme/ children.
+      // Any NEW components-v2 subtree is unlisted until added here; review
+      // owns that gap.
       group: [
         '**/components-v2/panels/**',
         '**/components-v2/layout/**',
@@ -275,7 +279,6 @@ const FORBIDDEN_PRIMITIVES_IMPORTS = {
         '**/components-v2/wiring/**',
         '**/components-v2/dialogs/**',
         '**/components-v2/skins/**',
-        '**/components-v2',
       ],
       message:
         'Primitives must not import components-v2/ outside theme/ — components ' +
