@@ -70,9 +70,11 @@
   let audioState = $derived(runtime.audio);
   let txCapable = $derived(hasTx());
 
-  // MOR-2442 — the one SemanticRadioSurfaces-managed scope region, bound from
-  // this layout's SRS instance and forwarded to the SpectrumPanel of whichever
-  // orientation is on screen. No second subscriber joins the scope lease.
+  // MOR-2442 — the PORTRAIT mount's managed scope region: the bare
+  // `scopeManaged` SRS instance below binds it out here, and the portrait
+  // SpectrumPanel reads it. The landscape branch hosts its own instance and
+  // forwards its region through the `children` snippet instead — this bind
+  // never serves landscape.
   let managedScopeRegion = $state<ManagedScopeRegion | undefined>(undefined);
 
   // ── VFO props ──
