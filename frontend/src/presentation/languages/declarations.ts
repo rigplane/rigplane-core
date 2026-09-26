@@ -49,7 +49,7 @@ export const studioline: DesignLanguageManifest = {
   displayName: 'Studioline',
   tokens: STUDIOLINE_TOKENS,
   // Holds all three density steps without collision (MOR-977 §4.2.3).
-  density: { kind: 'clamped', supported: ['comfortable', 'compact', 'dense'] },
+  density: { kind: 'clamped', supported: ['comfortable', 'compact', 'dense'], default: 'comfortable' },
   // The mirror of fieldline's declaration below: two borderless channel
   // strips sharing one optical margin is the natural dual-receiver form
   // (MOR-977 §4.2.2), so the reference language says so as a manifest fact.
@@ -69,7 +69,7 @@ export const fieldline: DesignLanguageManifest = {
   displayName: 'Fieldline',
   tokens: FIELDLINE_TOKENS,
   // dense clamped out — fieldline runs at 0.6 relative density (MOR-977 §4.4).
-  density: { kind: 'clamped', supported: ['comfortable', 'compact'] },
+  density: { kind: 'clamped', supported: ['comfortable', 'compact'], default: 'comfortable' },
   layoutCompatibility: [
     {
       layoutId: 'dual-receiver-cockpit',
@@ -91,7 +91,7 @@ export const segmentline: DesignLanguageManifest = {
   tokens: SEGMENTLINE_TOKENS,
   // Clamped out at dense — the outlined cells collide with the 7px meter
   // pitch (tokens.ts `meters`).
-  density: { kind: 'clamped', supported: ['comfortable', 'compact'] },
+  density: { kind: 'clamped', supported: ['comfortable', 'compact'], default: 'comfortable' },
   layoutCompatibility: [
     { layoutId: 'peer-split', compatible: true },
     { layoutId: 'unified-instrument', compatible: true },

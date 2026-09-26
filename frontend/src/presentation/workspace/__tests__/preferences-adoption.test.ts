@@ -92,7 +92,7 @@ describe('MOR-1082 — density resolves against the ACTIVE design language', () 
   };
 
   it('clamps an out-of-clamp override down to the active language default', () => {
-    expect(fieldline.density).toEqual({ kind: 'clamped', supported: ['comfortable', 'compact'] });
+    expect(fieldline.density).toEqual({ kind: 'clamped', supported: ['comfortable', 'compact'], default: 'comfortable' });
     expect(densityActivation(fieldline, 'desktop-v2', 'dense')).toBe('comfortable');
     expect(densityActivation(fieldline, 'desktop-v2', 'compact')).toBe('compact');
     expect(densityActivation(activeFieldline, 'dual-receiver-cockpit', 'dense')).toBe('comfortable');
