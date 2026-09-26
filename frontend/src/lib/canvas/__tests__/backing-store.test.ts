@@ -56,12 +56,13 @@ describe('watchDevicePixelRatio', () => {
         if (listeners.get(query) === listener) listeners.delete(query);
       },
     }));
-    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 1 });
+    let ratio = 1;
+    vi.spyOn(window, 'devicePixelRatio', 'get').mockImplementation(() => ratio);
     const onChange = vi.fn();
     const stop = watchDevicePixelRatio(onChange);
     listeners.get('(resolution: 1dppx)')?.();
     expect(onChange).toHaveBeenCalledTimes(1);
-    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 2 });
+    ratio = 2;
     listeners.get('(resolution: 2dppx)')?.();
     expect(onChange).toHaveBeenCalledTimes(2);
     stop();

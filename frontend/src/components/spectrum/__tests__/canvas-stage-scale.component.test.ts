@@ -39,7 +39,7 @@ beforeEach(() => {
     disconnect() {}
   });
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
-    setTransform: () => {}, clearRect: () => {},
+    setTransform: () => {}, clearRect: () => {}, fillRect: () => {}, drawImage: () => {},
     createImageData: (w: number) => ({ data: new Uint8ClampedArray(w * 4), width: w, height: 1 }),
   } as unknown as CanvasRenderingContext2D);
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
