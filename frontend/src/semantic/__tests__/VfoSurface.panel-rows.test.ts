@@ -849,7 +849,7 @@ describe('source pins: fixed slot widths (MOR-2509 slice 2)', () => {
     expect(value).toMatch(/tabular-nums/);
     const role = rulesFor(surfaceCss, '.vfo-role').join('\n');
     expect(role).toMatch(/display:\s*inline-block/);
-    expect(role).toMatch(/min-width:\s*14ch/);
+    expect(role).toMatch(/min-width:\s*6ch/);
     expect(role).toMatch(/tabular-nums/);
   });
 

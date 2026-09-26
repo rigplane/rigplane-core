@@ -720,7 +720,7 @@ describe('MOR-1482: unselected-tile frequency format is stable and dot-grouped',
 // ── UNCERTAINTY IS VISIBLE ───────────────────────────────────────────────────
 
 describe('uncertainty is rendered explicitly, never defaulted', () => {
-  it('unknown activeReceiver renders an explicit "unknown" state, never MAIN', () => {
+  it('unknown activeReceiver draws the unlit label in a reserved slot, never MAIN or the word unknown', () => {
     const model: RadioViewModel = validateRadioViewModel({
       ...topologyFixtures['1/single'],
       activeReceiver: { status: 'unknown' },
@@ -751,7 +751,7 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
     expect(onSelectSubReceiver).not.toHaveBeenCalled();
   });
 
-  it('unknown VFO slot renders an explicit "unknown" state, never defaults to A', () => {
+  it('unknown VFO slot draws the receiver name unlit, never the word unknown and never slot A', () => {
     const base = topologyFixtures['1/ab'];
     const model: RadioViewModel = validateRadioViewModel({
       ...base,

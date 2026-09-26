@@ -409,7 +409,11 @@ describe('MOR-1474 — the default-permit label resolves each status through its
       name: '20m', startHz: 14000000, endHz: 14350000, defaultHz: 14074000, bsrCode: 4,
       defaultHzTxPermit: { status: 'unknown', reason: 'ranges-unconfigured' },
     };
-    expect(defaultPermitLabel(choice)).toBe('TX at 14.074 MHz:');
+    expect(defaultPermitLabel(choice)).toBe(
+      t('core.band.tx.defaultPermit.unread', { frequency: mhz(choice.defaultHz) }),
+    );
+    expect(t('core.band.tx.defaultPermit.unread', { frequency: '14.074 MHz' }))
+      .toBe('TX at 14.074 MHz:');
     expect(defaultPermitLabel(choice)).not.toMatch(/unknown/i);
     expect(defaultPermitLabel(choice)).not.toContain('—');
   });

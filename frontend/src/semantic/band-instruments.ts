@@ -22,7 +22,9 @@ const DEFAULT_PERMIT_STATUS_KEY: Record<'allowed' | 'denied', string> = {
 export const defaultPermitLabel = (choice: BandChoice): string => {
   const frequency = mhz(choice.defaultHz);
   const permit = choice.defaultHzTxPermit;
-  if (permit.status === 'unknown') return `TX at ${frequency}:`;
+  if (permit.status === 'unknown') {
+    return t('core.band.tx.defaultPermit.unread', { frequency });
+  }
   return t('core.band.tx.defaultPermit.label', {
     frequency,
     status: t(DEFAULT_PERMIT_STATUS_KEY[permit.status]),
