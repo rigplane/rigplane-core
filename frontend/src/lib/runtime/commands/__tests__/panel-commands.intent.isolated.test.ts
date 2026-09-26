@@ -551,11 +551,16 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
   });
 
   it('MOR-1676 part A (AF): the radio-AF path restores the exact raw value after a reversible keyboard step', () => {
-    // Exhaustive invariant for R in 0..255: normalized reading R/255 →
-    // one step up then one step down dispatches the integer R (and after
-    // one step up it is R+1, clamped at 255). The keyboard handler steps
-    // by round(0.05 * raw_max) raw units through the same raw-int dispatch
-    // as the slider.
+    // Exhaustive invariant for R in 0..255 (including 0, 1, 127, 128, 254,
+    // 255): normalized reading R/255 → one step up dispatches
+    // min(255, R+13), clamped at the top rail; one step down dispatches
+    // max(0, up-13). Away from the rails (R ≤ 242) up then down restores
+    // the SAME raw value R — the required reversibility. At the top rail
+    // the up-step saturates (243..255 → 255), so the down-step lands on
+    // 242: clamping discards information by definition, and the test pins
+    // that honest saturation instead of claiming restoration there. The
+    // keyboard handler steps by round(0.05 * raw_max) raw units and
+    // dispatches the raw int with the explicit `'raw'` unit.
     h.caps = {
       ...h.caps!,
       controls: {
@@ -576,7 +581,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       h.sendCommand.mockClear();
       resetCommandLifecycle();
       expect(dispatchKeyboardRadioAction({ action: 'adjust_af_level', params: { direction: 'down' } })).toBe(true);
-      expect(exactCalls()).toEqual([['set_af_level', { level: raw, receiver: 0 }]]);
+      expect(exactCalls()).toEqual([['set_af_level', { level: Math.max(0, up - step), receiver: 0 }]]);
     }
   });
 
