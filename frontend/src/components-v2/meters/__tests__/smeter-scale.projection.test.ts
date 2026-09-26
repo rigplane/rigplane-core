@@ -88,8 +88,8 @@ describe('projectSignalMeter', () => {
     expect(unknown.ticks).toEqual(zero.ticks);
     expect(zero.motionFraction).toBe(11 / 20);
     expect(zero.primaryText).toBe('S9');
-    expect(zero.secondaryText).toBe('−121 dBm');
-    expect(zero.accessibleDescription).toBe('S meter S9, −121 dBm');
+    expect(zero.secondaryText).toBe('−73 dBm');
+    expect(zero.accessibleDescription).toBe('S meter S9, −73 dBm');
   });
 
   it.each([
