@@ -262,6 +262,10 @@ const liveCaps = (tags: readonly string[]): Capabilities => ({
   scopeSource: null, audioFftAvailable: false,
   stateContractVersion: 1,
   providerGeneration: 1,
+  // MOR-1676 part A (AF): the dual-receiver radio publishes the control's
+  // declared raw domain, so the radio-AF knobs move on the raw integer
+  // lattice (one step = one raw unit) instead of the normalized lattice.
+  controls: { af_level: { raw_min: 0, raw_max: 255 } },
 } as unknown as Capabilities);
 
 const AUDIO_TAGS = [
