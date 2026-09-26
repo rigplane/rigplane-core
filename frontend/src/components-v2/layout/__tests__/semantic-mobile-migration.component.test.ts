@@ -155,6 +155,7 @@ import MobileRadioLayout from '../MobileRadioLayout.svelte';
 import mobileLayoutSource from '../MobileRadioLayout.svelte?raw';
 import mobileSkinSource from '../../../skins/mobile/MobileSkin.svelte?raw';
 import { hasTx } from '$lib/stores/capabilities.svelte';
+import { deriveModInputTxGuardProps } from '$lib/runtime/adapters/mod-input-tx-guard.svelte';
 
 const RX: ManagedTxState = Object.freeze({
   phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
@@ -300,6 +301,42 @@ describe('semantic VFO / RX-TX adoption in the mobile shell', () => {
     // No mobile-local RX/TX or VFO surface reimplementation.
     expect(mobileLayoutSource).not.toContain('RxTxSurface');
     expect(mobileLayoutSource).not.toContain('VfoSurface');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1c. MOR-1245 — the MOD-input TX preflight banner renders exactly once per
+//     orientation. The portrait deck mounts the shared wiring (whose copy
+//     exists since MOR-1065 slice c) beside the shell's fixed overlay, which
+//     without a suppression prop means two banners, one trigger.
+// ---------------------------------------------------------------------------
+describe('MOR-1245 — one MOD-input TX banner per orientation', () => {
+  beforeEach(() => {
+    vi.mocked(deriveModInputTxGuardProps).mockReturnValue({ visible: true, sourceLabel: 'MIC' });
+  });
+  afterEach(() => {
+    vi.mocked(deriveModInputTxGuardProps).mockReturnValue({ visible: false, sourceLabel: null });
+  });
+
+  // Kills the MOR-1094 duplicate: the shell's fixed overlay and the shared
+  // wiring's `txAdjacentAlerts` both mounting in portrait. The FIXED
+  // instance is the survivor — an operator cannot scroll past it while
+  // keying (MOR-1094's reason for keeping it outside the scroll deck).
+  it('renders exactly one banner in portrait, and it is the fixed overlay one', () => {
+    const t = mountMobile();
+    const banners = t.querySelectorAll('[data-testid="mod-input-tx-warning"]');
+    expect(banners).toHaveLength(1);
+    expect(t.querySelector('.m-mod-input-warning')!.contains(banners[0])).toBe(true);
+  });
+
+  // Kills the suppression leaking into landscape: the semantic deck unmounts
+  // there (`rotate(true)` → zero `semantic-radio-surfaces` per 1 above), so
+  // the fixed overlay is the ONLY possible instance and must keep rendering.
+  it('renders exactly one banner in landscape', () => {
+    const t = mountMobile();
+    rotate(true);
+    expect(t.querySelectorAll('[data-testid="mod-input-tx-warning"]')).toHaveLength(1);
+    expect(t.querySelector('.m-mod-input-warning')).not.toBeNull();
   });
 });
 
