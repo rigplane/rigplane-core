@@ -1410,13 +1410,14 @@ class CivRuntime:
                     else _CIV_DATA_WATCHDOG_TIMEOUT / 2
                 )
 
+                now = time.monotonic()
+                if last_rx_advance is None:
+                    last_rx_advance = now
+
                 last = getattr(self._host, "_last_civ_data_received", None)
                 if last is None:
                     continue
 
-                now = time.monotonic()
-                if last_rx_advance is None:
-                    last_rx_advance = now
                 civ_t = getattr(self._host, "_civ_transport", None)
                 raw_count = (
                     getattr(civ_t, "rx_packet_count", None)
