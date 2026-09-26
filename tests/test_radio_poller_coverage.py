@@ -19,6 +19,7 @@ from rigplane.commands.commander import IcomCommander, Priority
 from rigplane.core.capabilities import CAP_AGC, CAP_SCOPE
 from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
+    AcquisitionRequest,
     AcquisitionScheduler,
     AcquisitionStatus,
     StateFreshnessService,
@@ -671,6 +672,13 @@ async def test_ic7300_profile_scheduler_emits_only_passive_exact_wire_reads() ->
 
 @pytest.mark.asyncio
 async def test_scheduler_due_request_timeout_is_terminal_not_resent_each_tick() -> None:
+    # A real (unhealthy-link) timeout drops the request; the retry is
+    # re-queued by the cadence clock, not re-sent inside the same drain
+    # pass. MOR-2614: the sent request expires after one short answer
+    # window (``_ACQUISITION_ANSWER_WINDOW_SECONDS``), so cycles at 100.0
+    # (send), 100.6 (deadline fires, request drops), 100.7 (re-queued
+    # request sent exactly once — the pin is "terminal per drop, paced
+    # by cadence", not "never re-sent").
     radio = _make_radio(active="MAIN")
     path = FieldPath.receiver("main", "meters", "s_meter")
     policy = AcquisitionPolicy(cadence_seconds=1.0, freshness_ttl_seconds=1.0)
@@ -682,17 +690,20 @@ async def test_scheduler_due_request_timeout_is_terminal_not_resent_each_tick() 
     # implementation detail of the drain -- it changed twice while MOR-2280 was
     # in flight. Drive a settable clock rather than a fixed sequence, so this
     # test fails on the cadence behaviour it is about and not on a read count.
+    from rigplane.web.radio_poller import _ACQUISITION_ANSWER_WINDOW_SECONDS
+
     clock = {"t": 100.0}
     with patch(
         "rigplane.web.radio_poller.time.monotonic", side_effect=lambda: clock["t"]
     ):
-        for cycle_now in (100.0, 101.1, 101.2):
+        window = _ACQUISITION_ANSWER_WINDOW_SECONDS
+        for cycle_now in (100.0, 100.0 + window + 0.1, 100.0 + window + 0.2):
             clock["t"] = cycle_now
             _tick_cadence(poller, now=cycle_now)
             await poller._send_query()  # noqa: SLF001
 
-    radio.send_civ.assert_awaited_once()
-    assert scheduler.pending_requests() == ()
+    assert radio.send_civ.await_count == 2
+    assert scheduler.pending_requests() != ()
     diagnostics = scheduler.diagnostics()
     assert diagnostics["failedRequestCount"] == 1
     assert diagnostics["failureCountByReason"]["acquisition_request_timeout"] == 1
@@ -714,6 +725,13 @@ async def test_sent_request_deadline_is_send_relative_not_enqueue_relative() -> 
     # from its SEND time, not enqueue time. With send_at far past
     # enqueue + max_age, the request must NOT yet be expired while still
     # inside its send-relative window.
+    #
+    # MOR-2614: the send-relative window is one short answer window
+    # (``_ACQUISITION_ANSWER_WINDOW_SECONDS``), not the whole TTL: the TTL
+    # answers "how old may the store observation be", the expiry answers
+    # "how long may the radio take to answer one query".
+    from rigplane.web.radio_poller import _ACQUISITION_ANSWER_WINDOW_SECONDS
+
     radio = _make_radio(active="MAIN")
     path = FieldPath.receiver("main", "meters", "s_meter")
     policy = AcquisitionPolicy(cadence_seconds=1.0, freshness_ttl_seconds=1.0)
@@ -723,20 +741,21 @@ async def test_sent_request_deadline_is_send_relative_not_enqueue_relative() -> 
     request = scheduler.due_requests(now=100.0)[0]
 
     # Enqueue-relative deadline is enqueue(100.0) + max_age(1.0) = 101.0, but
-    # the request was actually SENT at 200.0; at 200.5 (0.5 s after send) it is
-    # still well within the 1.0 s window and must not be expired.
+    # the request was actually SENT at 200.0; at 200.25 it is still well
+    # within the answer window and must not be expired.
     sent_relative = poller._acquisition_request_expired(  # noqa: SLF001
         request,
         sent_at=200.0,
-        now=200.5,
+        now=200.0 + _ACQUISITION_ANSWER_WINDOW_SECONDS / 2.0,
     )
     assert sent_relative is False
-    # Past the send-relative window (200.0 + 1.0) it does expire.
+    # Past the send-relative window it does expire — even though the
+    # enqueue-relative TTL window (200.0 + 1.0) has not elapsed.
     assert (
         poller._acquisition_request_expired(  # noqa: SLF001
             request,
             sent_at=200.0,
-            now=201.1,
+            now=200.0 + _ACQUISITION_ANSWER_WINDOW_SECONDS + 0.1,
         )
         is True
     )
@@ -824,18 +843,19 @@ async def test_healthy_link_false_timeout_does_not_decay_freq_mode_cadence() -> 
         acquisition_executor=executor,
     )
 
-    # Cycle 1 sends the request. Cycle 2 advances 3 s — past the 2 s
-    # send-relative window so the deadline fires — but the CI-V link stays
-    # healthy (last-civ kept within the 2 s readiness window of the advancing
-    # clock): a WSJT-X-style load with the radio answering fast but the deadline
-    # racing. The expiry is suppressed (still inside the bounded grace window),
-    # then the slightly-late answer arrives and CREDITS the request — the true
-    # happy path the grace exists to protect.
+    # Cycle 1 sends the request. Cycle 2 advances past the short
+    # send-relative answer window so the deadline fires — but the CI-V link
+    # stays healthy (last-civ kept within the 2 s readiness window of the
+    # advancing clock): a WSJT-X-style load with the radio answering fast
+    # but the deadline racing. The expiry is suppressed (still inside the
+    # bounded grace window), then the slightly-late answer arrives and
+    # CREDITS the request — the true happy path the grace exists to protect.
     from rigplane.core.state_pipeline_contracts import (
         ChangeSet,
         FieldChange,
         SourceMetadata,
     )
+    from rigplane.web.radio_poller import _ACQUISITION_ANSWER_WINDOW_SECONDS
 
     clock = {"t": 700.0}
 
@@ -848,7 +868,7 @@ async def test_healthy_link_false_timeout_does_not_decay_freq_mode_cadence() -> 
         _tick_cadence(poller)
         await poller._send_scheduler_requests()  # noqa: SLF001
         request = scheduler.pending_requests()[0]
-        clock["t"] += 3.0
+        clock["t"] += _ACQUISITION_ANSWER_WINDOW_SECONDS + 0.1
 
         # Cycle 2: deadline fires while healthy → suppressed within grace, no
         # re-send (executor still called exactly once).
@@ -858,7 +878,7 @@ async def test_healthy_link_false_timeout_does_not_decay_freq_mode_cadence() -> 
         assert len(executor.calls) == 1
 
         # The slightly-late answer lands and credits the request (still well
-        # inside the 6 s grace window). It carries a value change, so cadence
+        # inside the bounded grace window). It carries a value change, so cadence
         # resets to base — proving the credit path ran and the suppressed
         # false timeout never advanced/decayed cadence.
         scheduler.record_acquisition_result(
@@ -891,17 +911,337 @@ async def test_healthy_link_false_timeout_does_not_decay_freq_mode_cadence() -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path_factory", "cadence", "ttl", "case"),
+    [
+        (
+            lambda: FieldPath.receiver("main", "meters", "s_meter"),
+            0.3,
+            2.0,
+            "meter",
+        ),
+        (
+            lambda: FieldPath.global_("tx_state", "split"),
+            2.0,
+            10.0,
+            "control",
+        ),
+        (
+            lambda: FieldPath.global_("slow_state", "active"),
+            10.0,
+            60.0,
+            "setting",
+        ),
+    ],
+    ids=["meter", "control", "setting"],
+)
+async def test_lost_answer_is_repolled_before_freshness_ttl_expires(
+    path_factory: Callable[[], FieldPath],
+    cadence: float,
+    ttl: float,
+    case: str,
+) -> None:
+    # MOR-2614 acceptance: the answer for a field is lost once, every later
+    # answer arrives normally. The re-sent query must then be dispatched early
+    # enough that the field is observed again before
+    # ``last_observed + freshness_ttl_seconds``. The store is the fact the
+    # invariant is about: the first observation seeds ``last_observed``, the
+    # lost answer never credits, and the re-sent answer must land inside TTL.
+    from rigplane.core.state_pipeline_contracts import (
+        ChangeSet,
+        FieldChange,
+        Observation,
+        SourceMetadata,
+    )
+    from rigplane.web.radio_poller import (
+        _ACQUISITION_ANSWER_WINDOW_SECONDS,
+        _ACQUISITION_HEALTHY_GRACE_SECONDS,
+    )
+
+    path = path_factory()
+    policy = AcquisitionPolicy(
+        cadence_seconds=cadence,
+        freshness_ttl_seconds=ttl,
+    )
+    radio = _healthy_radio(last_civ=1000.0)
+    store = StateStore()
+    scheduler_clock = FreshnessClock(start=1000.0)
+    scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(path, policy=policy),
+        clock=scheduler_clock,
+    )
+    radio._acquisition_scheduler = scheduler
+    executor = _InjectedAcquisitionExecutor()
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        radio_state=RadioState(),
+        state_store=store,
+        acquisition_executor=executor,
+    )
+    clock = {"t": 1000.0}
+
+    def _now() -> float:
+        return clock["t"]
+
+    deadline = _ACQUISITION_ANSWER_WINDOW_SECONDS
+    assert deadline <= ttl
+    expected_grace = min(
+        max((ttl - cadence) / 2.0, deadline), _ACQUISITION_HEALTHY_GRACE_SECONDS
+    )
+    assert poller._healthy_grace_seconds_for(  # noqa: SLF001
+        AcquisitionRequest(
+            id="probe",
+            paths=(path,),
+            priority=AcquisitionPriority.BACKGROUND,
+            reason="probe",
+            reasons=("probe",),
+            requested_at_monotonic=clock["t"],
+            deadline_monotonic=clock["t"] + ttl,
+            max_age=ttl,
+            timeout=None,
+            provider="icom_civ",
+            acquisition_method="poll",
+            policy=policy,
+            capability_ids=(str(path),),
+        )
+    ) == pytest.approx(expected_grace)
+
+    answered: list[float] = []
+    resent: list[float] = []
+    dropped: list[float] = []
+
+    async def _losing_execute(
+        request: object,
+        *,
+        already_sent_paths: frozenset[FieldPath],
+    ) -> object:
+        paths = tuple(getattr(request, "paths"))
+        executor.calls.append((request, already_sent_paths))
+        if len(executor.calls) <= 2:
+            # The seed poll answers; the re-poll's answer is lost on the
+            # wire: sent, never credited.
+            return SimpleNamespace(sent_paths=paths, failed_paths=(), failure_reason="")
+        resent.append(clock["t"])
+        store.apply_current(
+            Observation(
+                path=path,
+                value=1,
+                source=SourceMetadata(source="poll_response", provider="icom_civ"),
+                timestamp_monotonic=clock["t"],
+                max_age=ttl,
+            )
+        )
+        request_id = getattr(request, "id")
+        matching = next(
+            item for item in scheduler.pending_requests() if item.id == request_id
+        )
+        scheduler.record_acquisition_result(
+            matching,
+            ChangeSet(
+                revision=1,
+                freshness_revision=1,
+                observation_seq=len(resent),
+                changes=(FieldChange(path=path, previous=0, current=1),),
+                timestamp_monotonic=clock["t"],
+                sources=(SourceMetadata(source="poll_response", provider="icom_civ"),),
+            ),
+        )
+        answered.append(clock["t"])
+        return SimpleNamespace(sent_paths=paths, failed_paths=(), failure_reason="")
+
+    executor.execute = _losing_execute  # type: ignore[method-assign]
+    with patch("rigplane.web.radio_poller.time.monotonic", side_effect=_now):
+        # Seed last_observed: observe the field, then let one full cadence
+        # pass so the next poll is a steady-state re-poll, not startup.
+        store.apply_current(
+            Observation(
+                path=path,
+                value=0,
+                source=SourceMetadata(source="poll_response", provider="icom_civ"),
+                timestamp_monotonic=clock["t"],
+                max_age=ttl,
+            )
+        )
+        last_observed = clock["t"]
+        scheduler.due_requests(now=clock["t"], tx_active=True)
+        await poller._send_scheduler_requests()  # noqa: SLF001
+        assert len(executor.calls) == 1
+        first = scheduler.pending_requests()[0]
+        scheduler.record_acquisition_result(
+            first,
+            ChangeSet(
+                revision=1,
+                freshness_revision=1,
+                observation_seq=0,
+                changes=(FieldChange(path=path, previous=None, current=0),),
+                timestamp_monotonic=clock["t"],
+                sources=(SourceMetadata(source="poll_response", provider="icom_civ"),),
+            ),
+        )
+        clock["t"] += cadence
+        scheduler_clock.advance(cadence)
+        radio._last_civ_data_received = clock["t"] - 0.1
+
+        # The re-poll whose answer is lost.
+        scheduler.due_requests(now=clock["t"], tx_active=True)
+        await poller._send_scheduler_requests()  # noqa: SLF001
+        lost_send_at = clock["t"]
+        sent_at = last_observed
+        assert len(executor.calls) == 2
+
+        # Small drain steps: the deadline fires, the bounded grace expires,
+        # the request drops, cadence re-queues it, and the re-send answers.
+        # The test drain steps at 0.05 s (production steps every
+        # _fast_interval = 0.025 s on LAN), so allow two drain steps of
+        # slack on the re-send dispatch. The scheduler's cadence clock is
+        # its own FreshnessClock: advance it with the fake drain clock so
+        # due-ness is evaluated in one time domain. The invariant is
+        # measured against the last OBSERVED value (``sent_at`` = the seed
+        # observation): the lost query's own send time is only used for the
+        # drop-time arithmetic below.
+        drop_at = lost_send_at + deadline + expected_grace
+        steps = 0
+        while not answered and steps < 800:
+            clock["t"] += 0.05
+            scheduler_clock.advance(0.05)
+            radio._last_civ_data_received = clock["t"] - 0.1
+            before = {item.id for item in scheduler.pending_requests()}
+            scheduler.due_requests(now=clock["t"], tx_active=True)
+            await poller._send_scheduler_requests()  # noqa: SLF001
+            after = {item.id for item in scheduler.pending_requests()}
+            if before - after and not dropped:
+                dropped.append(clock["t"])
+            steps += 1
+
+    assert answered, f"{case}: the re-sent query never answered"
+    assert dropped, f"{case}: the lost request was never dropped"
+    assert dropped[0] == pytest.approx(drop_at, abs=0.1), (
+        f"{case}: drop at {dropped[0]}, expected grace expiry {drop_at}"
+    )
+    assert answered[0] < sent_at + ttl, (
+        f"{case}: re-observed at {answered[0]}, TTL expired at {sent_at + ttl}"
+    )
+    assert len(executor.calls) >= 3
+    resend_at = resent[0]
+    assert resend_at <= lost_send_at + deadline + expected_grace + cadence + 0.1
+
+
+@pytest.mark.asyncio
+async def test_late_answer_inside_bounded_grace_still_credits_without_resend() -> None:
+    # MOR-2614 pin on MOR-874's case: a late answer that arrives inside the
+    # bounded grace still credits the request, with no re-send.
+    from rigplane.core.state_pipeline_contracts import (
+        ChangeSet,
+        FieldChange,
+    )
+    from rigplane.web.radio_poller import _ACQUISITION_ANSWER_WINDOW_SECONDS
+
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    policy = AcquisitionPolicy(cadence_seconds=0.3, freshness_ttl_seconds=2.0)
+    radio = _healthy_radio(last_civ=700.0)
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path, policy=policy))
+    radio._acquisition_scheduler = scheduler
+    executor = _InjectedAcquisitionExecutor()
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        radio_state=RadioState(),
+        acquisition_executor=executor,
+    )
+    clock = {"t": 700.0}
+
+    def _now() -> float:
+        return clock["t"]
+
+    with patch("rigplane.web.radio_poller.time.monotonic", side_effect=_now):
+        radio._last_civ_data_received = clock["t"] - 0.1
+        _tick_cadence(poller)
+        await poller._send_scheduler_requests()  # noqa: SLF001
+        request = scheduler.pending_requests()[0]
+        grace = poller._healthy_grace_seconds_for(request)  # noqa: SLF001
+        assert grace == pytest.approx((2.0 - 0.3) / 2.0)
+
+        # Deadline (one short answer window) fires while healthy ->
+        # suppressed, no re-send.
+        clock["t"] += _ACQUISITION_ANSWER_WINDOW_SECONDS + grace / 2.0
+        radio._last_civ_data_received = clock["t"] - 0.1
+        _tick_cadence(poller)
+        await poller._send_scheduler_requests()  # noqa: SLF001
+        assert len(executor.calls) == 1
+
+        # The slightly-late answer lands inside the grace and credits.
+        scheduler.record_acquisition_result(
+            request,
+            ChangeSet(
+                revision=1,
+                freshness_revision=1,
+                observation_seq=1,
+                changes=(FieldChange(path=path, previous=0, current=1),),
+                timestamp_monotonic=clock["t"],
+                sources=(SourceMetadata(source="poll_response", provider="icom_civ"),),
+            ),
+        )
+        clock["t"] += 0.1
+        radio._last_civ_data_received = clock["t"] - 0.1
+        _tick_cadence(poller)
+        await poller._send_scheduler_requests()  # noqa: SLF001
+
+    assert len(executor.calls) == 1
+    assert scheduler.diagnostics()["failedRequestCount"] == 0
+
+
+@pytest.mark.asyncio
+async def test_lost_answer_on_unhealthy_link_is_terminal_immediately() -> None:
+    # MOR-2614 pin: a lost answer on an unhealthy link is still terminal
+    # immediately, as today — no grace applies.
+    radio = _make_radio(active="MAIN")
+    radio._civ_recovering = True
+    radio._last_civ_data_received = 900.0
+    radio._civ_ready_idle_timeout = 2.0
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    policy = AcquisitionPolicy(cadence_seconds=0.3, freshness_ttl_seconds=2.0)
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path, policy=policy))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        radio_state=RadioState(),
+        acquisition_executor=_InjectedAcquisitionExecutor(),
+    )
+    clock = {"t": 900.0}
+
+    def _now() -> float:
+        return clock["t"]
+
+    with patch("rigplane.web.radio_poller.time.monotonic", side_effect=_now):
+        _tick_cadence(poller)
+        await poller._send_scheduler_requests()  # noqa: SLF001
+        assert len(scheduler.pending_requests()) == 1
+        # Past the short send-relative answer window: terminal at once.
+        clock["t"] += 0.6
+        radio._last_civ_data_received = clock["t"] - 100.0
+        _tick_cadence(poller)
+        await poller._send_scheduler_requests()  # noqa: SLF001
+
+    assert scheduler.pending_requests() == ()
+    diagnostics = scheduler.diagnostics()
+    assert diagnostics["failedRequestCount"] == 1
+    assert diagnostics["failureCountByReason"]["acquisition_request_timeout"] == 1
+
+
+@pytest.mark.asyncio
 async def test_healthy_link_uncredited_request_is_resent_and_eventually_fails() -> None:
     # MOR-874 regression (BLOCKING fix): the health gate reads the GLOBAL
     # last-CI-V timestamp, so under external-CAT load it reads healthy
     # ~permanently. A request whose SPECIFIC answer is genuinely lost (UDP drop
     # / radio silently ignores the command) must NOT be pinned in flight
-    # forever. The bounded grace window
-    # (_ACQUISITION_HEALTHY_GRACE_SECONDS) caps the false-timeout suppression:
-    # once it elapses with the request still uncredited, the request is treated
-    # as a REAL timeout — dropped so the scheduler re-queues/re-sends it, with
-    # normal failure accounting. This proves recovery (executor called > 1) and
-    # that the loss is eventually accounted as a real failure (not pinned).
+    # forever. The class-bounded grace window (MOR-2614) caps the
+    # false-timeout suppression: once it elapses with the request still
+    # uncredited, the request is treated as a REAL timeout — dropped so the
+    # scheduler re-queues/re-sends it, with normal failure accounting. This
+    # proves recovery (executor called > 1) and that the loss is eventually
+    # accounted as a real failure (not pinned).
     from rigplane.web.radio_poller import _ACQUISITION_HEALTHY_GRACE_SECONDS
 
     path = FieldPath.active("main", "freq_mode", "freq_hz")
@@ -934,8 +1274,9 @@ async def test_healthy_link_uncredited_request_is_resent_and_eventually_fails() 
     def _now() -> float:
         return clock["t"]
 
-    # Step well past the grace window per cycle so the bound is provably
-    # crossed within a small, bounded number of cycles.
+    # Step well past the (class-bounded, at most 6.0 s) grace window per
+    # cycle so the bound is provably crossed within a small, bounded number
+    # of cycles.
     step = _ACQUISITION_HEALTHY_GRACE_SECONDS + 2.0
 
     with patch("rigplane.web.radio_poller.time.monotonic", side_effect=_now):
@@ -1181,6 +1522,9 @@ async def test_scheduler_active_freq_mode_requests_use_receiver_payload(
 
 @pytest.mark.asyncio
 async def test_scheduler_unknown_query_mapping_is_recorded_and_failed() -> None:
+    # MOR-2614: the failed mapping drops the request and the cadence clock
+    # re-queues it, so cycle 2 sends (and fails) it again — the count pins
+    # "failed and re-queued", not "failed exactly once".
     radio = _make_radio(active="MAIN")
     path = FieldPath.global_("slow_state", "overflow")
     scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
@@ -1202,7 +1546,7 @@ async def test_scheduler_unknown_query_mapping_is_recorded_and_failed() -> None:
 
     radio.send_civ.assert_not_awaited()
     assert scheduler.pending_requests() == ()
-    assert scheduler.diagnostics()["failureCountByReason"]["no_civ_query_mapping"] == 1
+    assert scheduler.diagnostics()["failureCountByReason"]["no_civ_query_mapping"] >= 1
     assert any(
         args[:2] == ("acquisition_request_failed", "web.radio_poller")
         and kwargs["request_id"] == "acq-1"
