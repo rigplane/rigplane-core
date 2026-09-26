@@ -142,6 +142,27 @@
   const BAR_X = 8;
   const BAR_WIDTH = 484;
   const SEG_W = $derived((BAR_WIDTH - (SEG_COUNT - 1) * SEG_GAP) / SEG_COUNT);
+  // MOR-2613: the default face stretches viewBox "0 0 600 …" to the rendered
+  // width, so a sub-pixel reading change rewrites x/width every frame and
+  // forces layout. Geometry that moves continuously is snapped to whole
+  // device pixels of the measured width. Before the first measure (and in
+  // jsdom, which has no ResizeObserver) the fallback grid is 0.5 user units.
+  const FACE_VIEWBOX_W = 600;
+  const GEOMETRY_FALLBACK_STEP = 0.5;
+  let faceWidth = $state(0);
+  let faceSvgElement = $state.raw<SVGSVGElement | null>(null);
+  $effect(() => {
+    const element = faceSvgElement;
+    if (element === null || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => { faceWidth = element.clientWidth; });
+    observer.observe(element);
+    faceWidth = element.clientWidth;
+    return () => observer.disconnect();
+  });
+  function quantizeUserUnits(value: number): number {
+    const step = faceWidth > 0 ? FACE_VIEWBOX_W / faceWidth : GEOMETRY_FALLBACK_STEP;
+    return Math.round(value / step) * step;
+  }
 
   const READOUT_CX = $derived(BAR_X + BAR_WIDTH + 54);
 
@@ -327,8 +348,9 @@
 
   let smoothedSegs = $derived(meterFrame.smoothedFraction * SEG_COUNT);
   let peakSegs = $derived((meterFrame.peakFraction ?? 0) * SEG_COUNT);
-  // Peak X position for the vertical indicator line
-  let peakX = $derived(BAR_X + peakSegs * (SEG_W + SEG_GAP));
+  // Peak X position for the vertical indicator line, snapped to a whole
+  // device pixel of the rendered face (MOR-2613).
+  let peakX = $derived(quantizeUserUnits(BAR_X + peakSegs * (SEG_W + SEG_GAP)));
   // Only show peak line if it's meaningfully ahead of current bar
   let showPeak = $derived(
     signalProjection.scaleMode !== 'none' && signalProjection.motionFraction !== null
@@ -367,7 +389,8 @@
     return i < full || (i === full && frac > 0.01);
   }
   function segWidth(i: number, full: number, frac: number): number {
-    return i === full ? Math.max(1, SEG_W * frac) : SEG_W;
+    // Full segments are a fixed grid; only the partial tail moves every frame.
+    return i === full ? Math.max(1, quantizeUserUnits(SEG_W * frac)) : SEG_W;
   }
 
   // v2.11.1 SDR SVG geometry; the current calibrated scale still owns positions.
@@ -746,6 +769,7 @@
   </svg>
 {:else}
 <svg
+  bind:this={faceSvgElement}
   viewBox="0 0 600 {TOTAL_HEIGHT}"
   width="100%"
   height="auto"
