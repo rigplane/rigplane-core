@@ -440,6 +440,24 @@
     onTuneFrequency?.(vfo.receiver, frequencyHz);
   }
 
+  /**
+   * MOR-1331 — the digit widget's clamp at this seam. `adjustFreqByDigit`
+   * already clamps every wheel/arrow step, but this surface passed none of
+   * the band facts it owns, so the dead `0 … 999 MHz` defaults clamped
+   * nothing a real radio can reach. The band envelope is a plain readout
+   * bound, not a TX gate (fail-open past the edge stays radio-protected +
+   * txPermit fail-closed): unknown/absent/half-known bounds keep the legacy
+   * wide-open clamp exactly.
+   */
+  function tuneBounds(): { minFreq: number; maxFreq: number } | undefined {
+    const minHz = viewModel.band?.tuneMinHz;
+    const maxHz = viewModel.band?.tuneMaxHz;
+    if (minHz == null || maxHz == null || !Number.isFinite(minHz) || !Number.isFinite(maxHz)) {
+      return undefined;
+    }
+    return { minFreq: minHz, maxFreq: maxHz };
+  }
+
   function isSelectable(vfo: VfoViewModel): boolean {
     return hasVfoPair && vfo.slot.kind !== 'relative' && !vfo.isActive;
   }
@@ -776,6 +794,7 @@
               compact={appearance === 'semantic'}
               active={vfo.isActive}
               receiver={vfo.receiver === 'SUB' ? 'sub' : 'main'}
+              {...tuneBounds()}
               onFreqChange={(hz) => tuneFrequency(vfo, hz)}
               vfoFreqHook={false}
             />
@@ -1012,6 +1031,8 @@
             ? `${frequencyLifetimeKey ?? 'unscoped'}:${viewModel.topologyId}:${receiver}:${dominant ? slotKey(dominant.slot) : 'unknown'}`
             : undefined}
           frequencyDisabled={!dominant || (fixed !== undefined && !fixed.isActiveSlot) || readoutDisabled(dominant)}
+          tuneMinHz={viewModel.band?.tuneMinHz ?? null}
+          tuneMaxHz={viewModel.band?.tuneMaxHz ?? null}
           controlsDisabled={fixed !== undefined && !fixed.isActiveSlot}
           mode={displayModeOrFilter(dominant, dominant?.display?.mode, dominant?.mode ?? null,
             viewModel.modeFilter?.currentMode)}

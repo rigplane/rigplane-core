@@ -623,6 +623,33 @@ describe('explicit presentation contract', () => {
     expect(onSelectSlot).toHaveBeenCalledExactlyOnceWith('SUB:B');
   });
 
+  // MOR-1331: the card's own clamp at its seam — a +1 MHz wheel step past
+  // the band's tuneMaxHz clamps to the edge, and a half-known bound pair
+  // keeps the legacy wide-open clamp exactly.
+  it('clamps a digit step to tuneMaxHz when both band edges are known', () => {
+    const onFreqChange = vi.fn();
+    const t = mountPanel({
+      ...explicit, freq: 14_250_000, tuneMinHz: 14_200_000, tuneMaxHz: 14_300_000, onFreqChange,
+    });
+    const digits = t.querySelectorAll<HTMLElement>('.digit');
+    const mhzDigit = [...digits].find((digit) => digit.textContent === '4')!;
+    mhzDigit.click();
+    mhzDigit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_300_000);
+  });
+
+  it('keeps the legacy wide clamp while one band edge is unknown', () => {
+    const onFreqChange = vi.fn();
+    const t = mountPanel({
+      ...explicit, freq: 998_999_000, tuneMinHz: 30_000, tuneMaxHz: null, onFreqChange,
+    });
+    const digits = t.querySelectorAll<HTMLElement>('.digit');
+    const mhzDigit = [...digits].find((digit) => digit.textContent === '8')!;
+    mhzDigit.click();
+    mhzDigit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(999_000_000);
+  });
+
   it('contains no capability, runtime, or store imports', () => {
     const source = readFileSync('src/components-v2/vfo/VfoPanel.svelte', 'utf8');
     expect(source).not.toMatch(/stores\/|runtime\/|capabilities/);
