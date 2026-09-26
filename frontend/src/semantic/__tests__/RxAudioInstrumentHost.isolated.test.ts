@@ -454,7 +454,7 @@ describe('RxAudioInstrumentHost radio-AF raw steps (MOR-1676)', () => {
     }
   });
 
-  it('dispatches the integer 255 (not 1) at the top of the range', () => {
+  it('dispatches the integer 255 at the top of the range', () => {
     const r = renderRaw(audio(254 / 255));
     expect(r.slider().rendererLease.key({ key: 'ArrowRight', fine: false })).toBe(true);
     expect(r.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(255);

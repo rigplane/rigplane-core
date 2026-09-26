@@ -511,15 +511,12 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
   });
 
   it('MOR-1676 part A (AF): the radio-AF path dispatches the raw integer, untagged', () => {
-    // Owner decision 2026-09-26 (option A): inside, the radio-AF slider
-    // moves on the radio's raw integer lattice; the public API and the
-    // state snapshot do not change. The pinning test this replaces proved
-    // the OLD wire shape: `onAfLevelChange(1)` dispatched the normalized
-    // float `1` with `level_unit: 'normalized'` — which JSON cannot
-    // distinguish from the raw int `1` (`JSON.stringify(1.0) === "1"`), so
-    // the 100 % position reached the server as raw 1. Now the radio target
-    // dispatches the raw INTEGER with no `level_unit`, so the server's int
-    // branch applies.
+    // Owner decision 2026-09-26 (option A): the radio-AF slider steps on
+    // the raw 0..255 lattice, so a step and its reverse restore the exact
+    // raw value; the public API and the state snapshot do not change. The
+    // wire form for the radio-AF path is a raw int without the tag, which
+    // the server already accepts (its int branch). This test pins the
+    // radio-AF dispatch at 100 %: the integer 255, untagged.
     h.caps = {
       ...h.caps!,
       controls: {

@@ -102,8 +102,7 @@ function matchesValue(kind: FieldKind, value: unknown): boolean {
   if (kind === 'normalized') return isNormalizedLevel(value);
   // MOR-1676 part A (AF): an int is a raw 0-255 level (the radio-AF path),
   // a float is a normalized 0.0-1.0 level — dispatch on JSON type, exactly
-  // like the server's `_af_level_from_param` (notably `1` the int is raw 1,
-  // never normalized 100 %).
+  // like the server's `_af_level_from_param`.
   if (kind === 'normalized-or-raw-level') {
     if (typeof value !== 'number' || !Number.isFinite(value)) return false;
     return Number.isInteger(value) ? value >= 0 && value <= 255 : value >= 0 && value <= 1;
@@ -183,8 +182,8 @@ export function dispatchRadioIntentWithResult(intent: RadioIntent): RadioIntentD
   const originalEpoch = getControlSession().epoch;
   const lifecycle = beginCommand({ id, name, params: params as Record<string, unknown>, originalEpoch });
   // MOR-1676 part A (AF): tag a float normalized AF level, never a raw int —
-  // the server's `_consume_normalized_level_unit` rejects an int tagged
-  // `normalized` (`1` the int is raw 1, not 100 %).
+  // the server's `_consume_normalized_level_unit` requires a 0.0-1.0 number
+  // once the tag is present, so a tagged int is rejected.
   const afLevel = name === 'set_af_level'
     ? (params as Record<string, unknown>).level : undefined;
   const wireParams = specsByName.get(name)?.level === 'normalized'
