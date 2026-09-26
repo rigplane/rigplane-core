@@ -171,7 +171,22 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched(
             for event in recorder.events()
             if event.kind == "acquisition_request_sent"
         ] == []
-        assert caplog.records == []
+        # MOR-2629: assert only on the loggers this code path owns. A bare
+        # ``caplog.records == []`` also sees foreign records — e.g. another
+        # test's Radio warning at GC time — and flakes. Exact names: a
+        # ``rigplane.`` prefix would match the flake source too.
+        own_records = [
+            record
+            for record in caplog.records
+            if record.name
+            in {
+                "rigplane.web.radio_poller",
+                "rigplane.core.acquisition_drain",
+                "rigplane.core.acquisition_scheduler",
+                "rigplane.core.state_store",
+            }
+        ]
+        assert own_records == []
 
         # One cadence later the dropped path goes out again, well before
         # max_age (the LIVE class TTL, 1 s) plus the 6 s healthy-link grace.
