@@ -580,18 +580,17 @@ export default [
   // dual-receiver-strips.ts filters RadioViewModels only (import type from
   // semantic/radio-view-model is its sole legal import). wiring/ is the seam
   // that IS allowed to reach the runtime, so no zone covers it — this
-  // file-scoped rule is the purity guard. Allow the semantic CONTRACT
-  // type-only via the typescript-eslint variant (same idiom as the adapters
-  // exception above); any value import from semantic/, and any import from
-  // runtime/transport/audio/stores/commands, stays an error.
+  // file-scoped rule is the purity guard. It supersedes (not stacks with)
+  // the primitives zone: `files` blocks later in flat config replace the
+  // `no-restricted-imports` value entirely for this one file.
   {
     files: ['src/components-v2/wiring/dual-receiver-strips.ts'],
     plugins: { '@typescript-eslint': tsPlugin },
     rules: {
-      'no-restricted-imports': [
+      'no-restricted-imports': 'off',
+      '@typescript-eslint/no-restricted-imports': [
         'error',
         {
-          paths: [{ name: '$lib/runtime', message: SLICER_PURITY_MSG }],
           patterns: [
             {
               group: [
@@ -599,7 +598,9 @@ export default [
                 '**/lib/transport/*',
                 '$lib/stores/*',
                 '**/lib/stores/*',
+                '$lib/runtime',
                 '$lib/runtime/*',
+                '**/lib/runtime',
                 '**/lib/runtime/*',
                 '$lib/audio/*',
                 '**/lib/audio/*',
@@ -608,13 +609,6 @@ export default [
               ],
               message: SLICER_PURITY_MSG,
             },
-          ],
-        },
-      ],
-      '@typescript-eslint/no-restricted-imports': [
-        'error',
-        {
-          patterns: [
             {
               group: ['**/semantic/**', '**/semantic'],
               allowTypeImports: true,
