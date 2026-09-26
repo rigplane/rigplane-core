@@ -395,7 +395,10 @@ describe('RxAudioInstrumentHost radio-AF raw steps (MOR-1676)', () => {
     const setReading = (normalized: number) => {
       props.rxAudio = audio(normalized); publisher.emit(props.publication); flushSync();
     };
-    return { onAfLevelChange, slider, setReading };
+    const dispose = () => {
+      unmount(component); components = components.filter((item) => item !== component);
+    };
+    return { onAfLevelChange, slider, setReading, dispose };
   }
 
   it('reads the normalized readback as the exact raw value on the raw lattice', () => {
@@ -411,46 +414,48 @@ describe('RxAudioInstrumentHost radio-AF raw steps (MOR-1676)', () => {
     expect(r.slider().rendererLease.view.canonical).toBe(128);
     r.setReading(254 / 255);
     expect(r.slider().rendererLease.view.canonical).toBe(254);
+    r.dispose();
   });
 
+  // Each raw value gets a FRESH mount per step: the scenario under test is
+  // "the radio confirmed R, the operator steps once" — no accumulated
+  // gesture state carries across scenarios.
   it('restores the exact raw value after a reversible keyboard step, for every raw value', () => {
-    const r = renderRaw();
     for (let raw = 0; raw <= 255; raw += 1) {
-      r.setReading(raw / 255);
-      r.onAfLevelChange.mockClear();
-      const lease = r.slider().rendererLease;
-      expect(lease.view.canonical).toBe(raw);
-      expect(lease.key({ key: 'ArrowRight', fine: false })).toBe(true);
       const up = Math.min(255, raw + 1);
-      expect(r.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(up, 'raw');
-      expect(Number.isInteger(r.onAfLevelChange.mock.calls[0][0])).toBe(true);
+      const stepped = renderRaw(audio(raw / 255));
+      expect(stepped.slider().rendererLease.view.canonical).toBe(raw);
+      expect(stepped.slider().rendererLease.key({ key: 'ArrowRight', fine: false })).toBe(true);
+      expect(stepped.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(up, 'raw');
+      expect(Number.isInteger(stepped.onAfLevelChange.mock.calls[0][0])).toBe(true);
+      stepped.dispose();
       // The radio confirms the stepped raw value; the reverse step restores.
-      r.setReading(up / 255);
-      r.onAfLevelChange.mockClear();
-      expect(r.slider().rendererLease.key({ key: 'ArrowLeft', fine: false })).toBe(true);
-      expect(r.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(raw, 'raw');
+      const restored = renderRaw(audio(up / 255));
+      expect(restored.slider().rendererLease.key({ key: 'ArrowLeft', fine: false })).toBe(true);
+      expect(restored.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(raw, 'raw');
+      restored.dispose();
     }
   });
 
   it('restores the exact raw value after a reversible pointer step, for every raw value', () => {
-    const r = renderRaw();
     for (let raw = 0; raw <= 255; raw += 1) {
-      r.setReading(raw / 255);
-      r.onAfLevelChange.mockClear();
-      const lease = r.slider().rendererLease;
+      const up = Math.min(255, raw + 1);
+      const stepped = renderRaw(audio(raw / 255));
+      const lease = stepped.slider().rendererLease;
       const token = lease.beginPointer();
       expect(token).not.toBeNull();
-      const up = Math.min(255, raw + 1);
       lease.pointer(token!, up); lease.endPointer(token!);
-      expect(r.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(up, 'raw');
-      expect(Number.isInteger(r.onAfLevelChange.mock.calls[0][0])).toBe(true);
-      r.setReading(up / 255);
-      r.onAfLevelChange.mockClear();
-      const down = r.slider().rendererLease.beginPointer();
+      expect(stepped.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(up, 'raw');
+      expect(Number.isInteger(stepped.onAfLevelChange.mock.calls[0][0])).toBe(true);
+      stepped.dispose();
+      const restored = renderRaw(audio(up / 255));
+      const downLease = restored.slider().rendererLease;
+      const down = downLease.beginPointer();
       expect(down).not.toBeNull();
-      r.slider().rendererLease.pointer(down!, raw);
-      r.slider().rendererLease.endPointer(down!);
-      expect(r.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(raw, 'raw');
+      downLease.pointer(down!, raw);
+      downLease.endPointer(down!);
+      expect(restored.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(raw, 'raw');
+      restored.dispose();
     }
   });
 
