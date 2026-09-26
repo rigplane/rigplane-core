@@ -122,9 +122,9 @@
    *  mode. `MemoryPanelProps` carries neither a mode list nor a frequency
    *  range, so the bound is the widest reading a shipped rig profile can
    *  produce (`rigs/*.toml`, counted 2026-09-26): highest `end_hz` is
-   *  IC-9700's 1_300_000_000 (`1240.000.000`, 11), longest `[modes].list`
-   *  label is FTX-1's `DATA-FM-N` (9). 11 + 1 + 9 = 21. */
-  const ACTIVE_VFO_RESERVE_CH = 21;
+   *  IC-9700's 1_300_000_000 (`1300.000.000`, 12), longest `[modes].list`
+   *  label is FTX-1's `DATA-FM-N` (9). 12 + 1 + 9 = 22. */
+  const ACTIVE_VFO_RESERVE_CH = 22;
 </script>
 
 <section class="memory-surface" data-testid="memory-surface" aria-label="Memory channels">
@@ -249,7 +249,7 @@
   .memory-toolbar { display: flex; align-items: center; gap: 0.5rem; }
   .active-vfo {
     display: inline-block;
-    min-width: var(--memory-active-vfo-width, 21ch);
+    min-width: var(--memory-active-vfo-width, 22ch);
     font-variant-numeric: tabular-nums;
   }
   .channel-count { margin-left: auto; }

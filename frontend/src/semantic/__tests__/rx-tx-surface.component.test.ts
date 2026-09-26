@@ -494,9 +494,8 @@ describe('unknown TX target', () => {
       expect(t.textContent).not.toMatch(/Hz/);
       expect(t.querySelector('[data-testid="rx-tx-target-frequency"]')).toBeNull();
       // Reservation lives on the existing `rx-tx-target` paragraph, so the
-      // default-path element sequence does not grow. 32ch covers the known
-      // sentence plus the longest frequency the view model carries (8 digits)
-      // and ` Hz`.
+      // default-path element sequence does not grow. The pin builds the
+      // widest known sentence the view model can carry (8-digit frequency).
       const rule = /\.rx-tx-target\s*\{([^}]*)\}/.exec(rxTxSurfaceSource)?.[1] ?? '';
       const reserved = Number((rule.match(/min-width:\s*(\d+)ch/) ?? [])[1]);
       const widest = 'TX target: MAIN unslotted · 99999999 Hz';

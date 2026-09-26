@@ -212,7 +212,7 @@ describe('unknown VFO identity (WRONG-VFO GUARD)', () => {
     // shipped `[modes].list` label (FTX-1, DATA-FM-N). The pin builds that
     // string; a literal `14ch` that merely repeats the rule is not enough.
     const widest = `${formatFrequencyString(1_300_000_000)} DATA-FM-N`;
-    expect(widest).toBe('1240.000.000 DATA-FM-N');
+    expect(widest).toBe('1300.000.000 DATA-FM-N');
     const reserved = Number(
       ((readout as HTMLElement).style.getPropertyValue('--memory-active-vfo-width').match(/^(\d+)ch$/) ?? [])[1],
     );
