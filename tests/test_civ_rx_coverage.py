@@ -2477,20 +2477,36 @@ def test_civ_projected_active_rit_xit_fields_become_stale(
             radio._state_store.snapshot().field(path)
             for _frame, path in frames_and_paths
         )
-        max_age = max(field.max_age or 0.0 for field in fields)
+        # MOR-2615: rit_on/rit_tx are class-resolved SETTING fields with no
+        # TTL of their own, so they stamp None and never expire by time;
+        # active (CONTROL) and rit_freq (PANEL) keep finite TTLs. The idle
+        # horizon below covers only the expiring pair.
+        expiring = tuple(field for field in fields if field.max_age is not None)
+        assert {str(field.path) for field in expiring} == {
+            "global.slow_state.active",
+            "global.operator_controls.rit_freq",
+        }
+        max_age = max(field.max_age or 0.0 for field in expiring)
 
         assert all(field.freshness is FreshnessState.FRESH for field in fields)
-        assert all(field.max_age is not None for field in fields)
 
         stale = radio._state_store.mark_stale_due(now=time.monotonic() + max_age + 1.0)
 
-        expected_paths = {path for _frame, path in frames_and_paths}
+        expected_paths = {str(field.path) for field in expiring}
         assert {
             str(transition.path) for transition in stale.freshness
         } >= expected_paths
         assert {
             str(request.path) for request in stale.reconciliation_requests
         } >= expected_paths
+        assert {
+            str(field.path)
+            for field in radio._state_store.snapshot().fields
+            if field.freshness is FreshnessState.FRESH
+        } >= {
+            "global.tx_state.rit_on",
+            "global.tx_state.rit_tx",
+        }
     finally:
         radio._connected = False
 
