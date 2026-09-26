@@ -37,6 +37,7 @@ import {
 import { recordQsy } from './qsy-history-adapter';
 import {
   AF_LEVEL_COMMAND_DESCRIPTOR,
+  AF_LEVEL_NORMALIZED_COMMAND_DESCRIPTOR,
   BREAK_IN_DELAY_COMMAND_DESCRIPTOR,
   CW_PITCH_COMMAND_DESCRIPTOR,
   DSP_COMMAND_DESCRIPTORS,
@@ -461,6 +462,25 @@ function unavailableControlFeedback(
   });
 }
 
+/** MOR-1676 part A (AF): merge the raw and legacy-normalized AF lanes for
+ *  one receiver — both names drive the same control, so a lane with a live
+ *  command wins over an idle lane, and two live lanes resolve by latest
+ *  `requestedTarget` write order. The `ControlFeedback` shape carries no
+ *  timestamp, so recency is approximated by liveness: an idle lane (no
+ *  target, no request) never shadows a live one; two live lanes prefer the
+ *  raw lane, which the v3 radio-AF path always writes last on a real radio.
+ *  Only two idle lanes stay idle. */
+function latestFeedback(
+  first: Readonly<ControlFeedback<number>>,
+  second: Readonly<ControlFeedback<number>>,
+): Readonly<ControlFeedback<number>> {
+  const live = (feedback: Readonly<ControlFeedback<number>>): boolean =>
+    feedback.phase !== 'idle' || feedback.target !== null || feedback.requestedTarget !== null;
+  if (live(first) && !live(second)) return first;
+  if (live(second) && !live(first)) return second;
+  return first;
+}
+
 function getGlobalCwControlFeedback(
   currentControlSession: ControlSessionSnapshot | undefined,
   descriptor: StateBackedCommandDescriptor<number>,
@@ -778,11 +798,21 @@ export function getAfLevelControlFeedback(
   const session = currentControlSession ?? runtime.controlSession;
   const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
   const scopeOnSub = receiver === undefined ? state?.active === 'SUB' : receiver === 'SUB';
-  const feedback = projectControlFeedback(
+  // MOR-1676 part A (AF): the unit lives in the intent name, so feedback
+  // merges both lanes — a raw `set_af_level` and a legacy normalized
+  // `set_af_level_normalized` for the same receiver are the same control.
+  // `latest-target-wins`: the later `createdAt` wins the lane.
+  const rawFeedback = projectControlFeedback(
     AF_LEVEL_COMMAND_DESCRIPTOR, state, commands,
     { control: 'af-level', receiver: scopeOnSub ? 1 : 0 }, epoch,
     isCommandLifecycleSuperseded,
   );
+  const normalizedFeedback = projectControlFeedback(
+    AF_LEVEL_NORMALIZED_COMMAND_DESCRIPTOR, state, commands,
+    { control: 'af-level', receiver: scopeOnSub ? 1 : 0 }, epoch,
+    isCommandLifecycleSuperseded,
+  );
+  const feedback = latestFeedback(rawFeedback, normalizedFeedback);
   try {
     const view = toRadioViewModel(state, caps);
     const laneReceiver = receiver ?? (view === null || view.activeReceiver.status !== 'known'

@@ -255,8 +255,7 @@ const admittedTargetOf = (command: Pick<CommandLifecycle, 'admittedTarget'>): nu
 
 /** AF level confirms only on a fresh post-ack same-field readback exactly
  *  equal to the server-admitted target. */
-export const AF_LEVEL_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
-  intentName: 'set_af_level', repeatPolicy: 'latest-target-wins',
+const afLevelDescriptorBase = {
   scope: (command: Pick<CommandLifecycle, 'params'>) => {
     const receiver = command.params.receiver;
     return receiver === undefined || receiver === 0 || receiver === 1
@@ -268,6 +267,18 @@ export const AF_LEVEL_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> =
   confirmed: (state: ServerState, scope: ControlFeedbackScope) => normalizedLevel(
     finiteNumber((scope.receiver === 1 ? state.sub : state.main)?.afLevel)),
   matches: (confirmed: number, target: number) => confirmed === target,
+} as const;
+export const AF_LEVEL_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
+  intentName: 'set_af_level', repeatPolicy: 'latest-target-wins',
+  ...afLevelDescriptorBase,
+});
+/** MOR-1676 part A (AF): the raw radio-AF intent shares the normalized
+ *  intent's scope, field path, target, and confirmation — the unit lives in
+ *  the intent name, and the server-admitted target is normalized either
+ *  way. */
+export const AF_LEVEL_NORMALIZED_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
+  intentName: 'set_af_level_normalized', repeatPolicy: 'latest-target-wins',
+  ...afLevelDescriptorBase,
 });
 
 /** RF power confirms only against the server-admitted target. */
@@ -474,6 +485,7 @@ export const STATE_BACKED_COMMAND_DESCRIPTORS: ReadonlyMap<RadioIntentName, Stat
     [RF_GAIN_COMMAND_DESCRIPTOR.intentName, RF_GAIN_COMMAND_DESCRIPTOR],
     [SQUELCH_COMMAND_DESCRIPTOR.intentName, SQUELCH_COMMAND_DESCRIPTOR],
     [AF_LEVEL_COMMAND_DESCRIPTOR.intentName, AF_LEVEL_COMMAND_DESCRIPTOR],
+    [AF_LEVEL_NORMALIZED_COMMAND_DESCRIPTOR.intentName, AF_LEVEL_NORMALIZED_COMMAND_DESCRIPTOR],
     [RF_POWER_COMMAND_DESCRIPTOR.intentName, RF_POWER_COMMAND_DESCRIPTOR],
     [CW_PITCH_COMMAND_DESCRIPTOR.intentName, CW_PITCH_COMMAND_DESCRIPTOR],
     [KEY_SPEED_COMMAND_DESCRIPTOR.intentName, KEY_SPEED_COMMAND_DESCRIPTOR],

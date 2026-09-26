@@ -1137,7 +1137,7 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
       row.querySelector('[role="slider"]')?.getAttribute('aria-valuenow'),
     ]);
   const afCalls = () => vi.mocked(sendCommand).mock.calls
-    .filter(([name]) => name === 'set_af_level').map(([, params]) => params);
+    .filter(([name]) => name === 'set_af_level' || name === 'set_af_level_normalized').map(([, params]) => params);
   const BOTH = [
     ['rx-audio-af-main', 'AF MAIN', '31%', 'AF MAIN', '0.31'],
     ['rx-audio-af-sub', 'AF SUB', '77%', 'AF SUB', '0.77'],
