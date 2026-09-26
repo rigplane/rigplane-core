@@ -3,7 +3,7 @@
 import struct
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -14,6 +14,7 @@ from rigplane.exceptions import (
 from rigplane.radio import (
     CONNINFO_SIZE,
     IcomRadio,
+    RadioConnectionState,
     STATUS_SIZE,
     TOKEN_ACK_SIZE,
 )
@@ -164,6 +165,53 @@ class TestSendTokenAck:
         # token should be at offset 0x1C
         token = struct.unpack_from("<I", pkt, 0x1C)[0]
         assert token == 0x12345678
+
+
+class TestConninfoNoticeWiring:
+    @pytest.mark.asyncio
+    async def test_setup_keeps_the_notice_callback_clear_so_guid_is_queued(
+        self,
+    ) -> None:
+        """During setup the 0x90 still lands in the queue for _receive_guid."""
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
+        mt = ConnectMockTransport()
+        radio._ctrl_transport = mt
+        radio._conn_state = RadioConnectionState.CONNECTING
+        radio._ctrl_transport._discard_data_packets = False
+        radio._ctrl_transport._conninfo_notice_callback = None
+        mt.queue_response(_build_conninfo())
+        guid = await radio._control_phase._receive_guid()
+        assert guid is not None
+        assert radio._ctrl_transport._conninfo_notice_callback is None
+
+    def test_after_setup_the_callback_is_the_notice_handler(self) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
+        radio._ctrl_transport._discard_data_packets = True
+        radio._ctrl_transport._conninfo_notice_callback = (
+            radio._control_phase._on_conninfo_notice
+        )
+        assert (
+            radio._ctrl_transport._conninfo_notice_callback
+            is radio._control_phase._on_conninfo_notice
+        )
+
+    def test_busy_zero_requests_recovery(self) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
+        radio._civ_runtime.request_recovery_now = MagicMock()
+        pkt = bytearray(_build_conninfo())
+        struct.pack_into("<I", pkt, 0x60, 0)
+        radio._control_phase._on_conninfo_notice(bytes(pkt))
+        radio._civ_runtime.request_recovery_now.assert_called_once_with(
+            "radio reported the LAN session free (conninfo busy=0)"
+        )
+
+    def test_busy_one_does_not_request_recovery(self) -> None:
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
+        radio._civ_runtime.request_recovery_now = MagicMock()
+        pkt = bytearray(_build_conninfo())
+        struct.pack_into("<I", pkt, 0x60, 1)
+        radio._control_phase._on_conninfo_notice(bytes(pkt))
+        radio._civ_runtime.request_recovery_now.assert_not_called()
 
 
 class TestReceiveGuid:

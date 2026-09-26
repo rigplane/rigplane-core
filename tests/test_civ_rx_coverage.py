@@ -43,6 +43,7 @@ from test_radio import MockTransport, _wrap_civ_in_udp
 
 from rigplane import IC_7610_ADDR
 from rigplane.runtime._civ_rx import CIV_HEADER_SIZE
+from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.commands import (
     CONTROLLER_ADDR,
     build_civ_frame,
@@ -918,6 +919,134 @@ class _WatchdogClock:
 
     def advance(self, delay: float) -> None:
         self.now += delay
+
+
+# ---------------------------------------------------------------------------
+# MOR-2627 — a radio "session free" notice starts the same escalation now.
+# ---------------------------------------------------------------------------
+
+
+def _arm_notice_recovery(radio: IcomRadio) -> list[str]:
+    radio._conn_state = RadioConnectionState.CONNECTED
+    radio._civ_recovering = False
+    radio._civ_runtime._reconnect_task = None
+    order: list[str] = []
+
+    async def record_force_cleanup() -> None:
+        order.append("force_cleanup")
+
+    async def record_release() -> None:
+        order.append("release")
+
+    radio._force_cleanup_civ = record_force_cleanup
+    radio._control_phase.release = record_release
+    radio._ctrl_transport.remote_id = 0xEF167A45
+
+    async def record_soft_reconnect() -> None:
+        order.append("soft_reconnect")
+        order.append(f"remote_id={radio._ctrl_transport.remote_id}")
+
+    radio.soft_reconnect = record_soft_reconnect
+    return order
+
+
+async def test_request_recovery_now_starts_one_full_reconnect(
+    radio: IcomRadio,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A free-session notice starts exactly one recovery that releases the
+    control session before soft_reconnect and logs the given reason."""
+    order = _arm_notice_recovery(radio)
+    reason = "radio reported the LAN session free (conninfo busy=0)"
+
+    with (
+        patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()),
+        caplog.at_level("WARNING"),
+    ):
+        radio._civ_runtime.request_recovery_now(reason)
+        radio._civ_runtime.request_recovery_now(reason)
+        task = radio._civ_runtime._reconnect_task
+        assert task is not None
+        await task
+
+    assert order == ["force_cleanup", "release", "soft_reconnect", "remote_id=0"]
+    assert any(reason in r.message for r in caplog.records)
+    assert not any(
+        "soft reconnect restored no data" in r.message for r in caplog.records
+    )
+
+
+@pytest.mark.parametrize(
+    "blocker",
+    ["not_connected", "recovering", "live_task"],
+)
+async def test_request_recovery_now_is_a_no_op_when_blocked(
+    radio: IcomRadio,
+    blocker: str,
+) -> None:
+    """Not CONNECTED, already recovering, or a live recovery task: do nothing."""
+    _arm_notice_recovery(radio)
+    if blocker == "not_connected":
+        radio._conn_state = RadioConnectionState.DISCONNECTED
+    elif blocker == "recovering":
+        radio._civ_recovering = True
+    else:
+        live: asyncio.Task[None] = asyncio.create_task(asyncio.sleep(60))
+        radio._civ_runtime._reconnect_task = live
+    try:
+        radio._civ_runtime.request_recovery_now("busy=0")
+        assert radio._civ_runtime._reconnect_task is (
+            None if blocker != "live_task" else live
+        )
+        radio._control_phase.release.assert_not_called()
+    finally:
+        if blocker == "live_task":
+            live.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await live
+
+
+async def test_watchdog_handoff_does_not_replace_a_live_reconnect_task(
+    radio: IcomRadio,
+) -> None:
+    """The watchdog's own hand-off leaves a recovery already in flight alone."""
+    clock = _WatchdogClock()
+    radio._last_civ_data_received = clock.now
+    radio._last_civ_send_monotonic = clock.now + 0.5
+    radio._civ_transport.rx_packet_count = 0
+    radio._civ_recovering = False
+    live: asyncio.Task[None] = asyncio.create_task(asyncio.sleep(60))
+    radio._civ_runtime._reconnect_task = live
+    created: list[object] = []
+    real_create_task = asyncio.create_task
+
+    def capture(coro: object, *args: object, **kwargs: object) -> asyncio.Task[object]:
+        created.append(coro)
+        close = getattr(coro, "close", None)
+        if callable(close):
+            close()
+        return real_create_task(asyncio.sleep(0))
+
+    async def tick(delay: float) -> None:
+        clock.advance(delay)
+
+    try:
+        with (
+            patch("asyncio.sleep", side_effect=tick),
+            patch("time.monotonic", side_effect=clock.monotonic),
+            patch(
+                "rigplane.runtime._civ_rx.time.monotonic", side_effect=clock.monotonic
+            ),
+            patch("asyncio.create_task", side_effect=capture),
+            patch.object(radio, "_send_open_close", new=AsyncMock()),
+        ):
+            await radio._civ_runtime._civ_data_watchdog_loop()
+        assert created == []
+        assert radio._civ_runtime._reconnect_task is live
+    finally:
+        live.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await live
 
 
 async def test_watchdog_pings_only_is_not_a_stall(radio: IcomRadio) -> None:

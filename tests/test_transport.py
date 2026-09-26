@@ -731,6 +731,44 @@ class TestHandlePacket:
         assert not transport._packet_queue.empty()
 
 
+def _conninfo_notice() -> bytes:
+    """A 0x90-byte ptype-0 packet, the radio's conninfo notice."""
+    pkt = bytearray(0x90)
+    struct.pack_into("<I", pkt, 0, 0x90)
+    struct.pack_into("<H", pkt, 4, 0x00)
+    struct.pack_into("<H", pkt, 6, 1)
+    return bytes(pkt)
+
+
+class TestConninfoNoticeCallback:
+    def test_conninfo_reaches_callback_and_is_not_queued(
+        self, transport: IcomTransport
+    ) -> None:
+        seen: list[bytes] = []
+        transport._discard_data_packets = True
+        transport._conninfo_notice_callback = seen.append
+        pkt = _conninfo_notice()
+        transport._handle_packet(pkt)
+        assert seen == [pkt]
+        assert transport._packet_queue.empty()
+
+    def test_other_length_ptype0_is_discarded(self, transport: IcomTransport) -> None:
+        seen: list[bytes] = []
+        transport._discard_data_packets = True
+        transport._conninfo_notice_callback = seen.append
+        transport._handle_packet(_build_data_packet(seq=1))
+        assert seen == []
+        assert transport._packet_queue.empty()
+
+    def test_conninfo_discarded_when_callback_is_none(
+        self, transport: IcomTransport
+    ) -> None:
+        transport._discard_data_packets = True
+        transport._conninfo_notice_callback = None
+        transport._handle_packet(_conninfo_notice())
+        assert transport._packet_queue.empty()
+
+
 # ---------------------------------------------------------------------------
 # Packet queue capacity / overflow
 # ---------------------------------------------------------------------------
