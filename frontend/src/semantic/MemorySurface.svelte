@@ -118,6 +118,13 @@
    *  on whether the raw fields happen to be finite/non-sentinel. */
   let activeFreqText = $derived(facts.vfoIdentityKnown ? formatFrequencyString(facts.activeFreqHz) : UNKNOWN_TEXT);
   let activeModeText = $derived(facts.vfoIdentityKnown ? facts.activeMode : UNKNOWN_TEXT);
+  /** Reserved width of the unread slot: formatted frequency, a space, and the
+   *  mode. `MemoryPanelProps` carries neither a mode list nor a frequency
+   *  range, so the bound is the widest reading a shipped rig profile can
+   *  produce (`rigs/*.toml`, counted 2026-09-26): highest `end_hz` is
+   *  IC-9700's 1_300_000_000 (`1240.000.000`, 11), longest `[modes].list`
+   *  label is FTX-1's `DATA-FM-N` (9). 11 + 1 + 9 = 21. */
+  const ACTIVE_VFO_RESERVE_CH = 21;
 </script>
 
 <section class="memory-surface" data-testid="memory-surface" aria-label="Memory channels">
@@ -127,7 +134,10 @@
       <span>All</span>
     </label>
     <span class="channel-count" data-testid="memory-count">{populatedCount}/{MAX_MEMORY_CHANNELS}</span>
-    <span class="active-vfo" data-testid="memory-active-vfo" data-observed={facts.vfoIdentityKnown}>
+    <span
+      class="active-vfo" data-testid="memory-active-vfo" data-observed={facts.vfoIdentityKnown}
+      style:--memory-active-vfo-width="{ACTIVE_VFO_RESERVE_CH}ch"
+    >
       {activeFreqText} {activeModeText}
     </span>
     <button
@@ -237,7 +247,11 @@
   /* Structure only — a design language owns colour (MOR-977, forced-colors). */
   .memory-surface { display: flex; flex-direction: column; gap: 0.25rem; }
   .memory-toolbar { display: flex; align-items: center; gap: 0.5rem; }
-  .active-vfo { display: inline-block; min-width: 14ch; font-variant-numeric: tabular-nums; }
+  .active-vfo {
+    display: inline-block;
+    min-width: var(--memory-active-vfo-width, 21ch);
+    font-variant-numeric: tabular-nums;
+  }
   .channel-count { margin-left: auto; }
   .channel-list { display: flex; flex-direction: column; }
   .channel-row { display: flex; align-items: center; gap: 0.375rem; }

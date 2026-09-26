@@ -492,9 +492,15 @@ describe('unknown TX target', () => {
       const t = target.querySelector('[data-testid="rx-tx-target"]') as HTMLElement;
       expect(t.textContent).not.toContain('—');
       expect(t.textContent).not.toMatch(/Hz/);
-      expect(t.querySelector('[data-testid="rx-tx-target-frequency"]')?.textContent).toBe('');
-      const rule = /\.rx-tx-target-frequency\s*\{([^}]*)\}/.exec(rxTxSurfaceSource)?.[1] ?? '';
-      expect(rule).toMatch(/min-width:\s*10ch/);
+      expect(t.querySelector('[data-testid="rx-tx-target-frequency"]')).toBeNull();
+      // Reservation lives on the existing `rx-tx-target` paragraph, so the
+      // default-path element sequence does not grow. 32ch covers the known
+      // sentence plus the longest frequency the view model carries (8 digits)
+      // and ` Hz`.
+      const rule = /\.rx-tx-target\s*\{([^}]*)\}/.exec(rxTxSurfaceSource)?.[1] ?? '';
+      const reserved = Number((rule.match(/min-width:\s*(\d+)ch/) ?? [])[1]);
+      const widest = 'TX target: MAIN unslotted · 99999999 Hz';
+      expect(reserved).toBeGreaterThanOrEqual(widest.length);
     });
   });
 });

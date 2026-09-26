@@ -120,12 +120,12 @@
   {/if}
 
   {#if known}
-    <p class:sr-only={standard} data-testid="rx-tx-target" data-target="known"
+    <p class="rx-tx-target" class:sr-only={standard} data-testid="rx-tx-target" data-target="known"
       data-receiver={receiver} data-slot={slot}>
-      TX target: {receiver} {slot} · <span class="rx-tx-target-frequency" data-testid="rx-tx-target-frequency">{frequencyHz ?? ''}</span>{#if frequencyHz !== null} Hz{/if}
+      TX target: {receiver} {slot} · {frequencyHz ?? ''}{#if frequencyHz !== null} Hz{/if}
     </p>
   {:else}
-    <p class:sr-only={standard} data-testid="rx-tx-target" data-target="unknown" data-reason={reason}>
+    <p class="rx-tx-target" class:sr-only={standard} data-testid="rx-tx-target" data-target="unknown" data-reason={reason}>
       {unknownTargetMessage}
     </p>
   {/if}
@@ -166,7 +166,7 @@
   .rx-tx-surface { display: flex; flex-direction: column; gap: 0.25rem; }
   .rx-tx-state { display: flex; align-items: baseline; gap: 0.4ch; margin: 0; }
   .rx-tx-state[hidden] { display: none !important; }
-  .rx-tx-target-frequency { display: inline-block; min-width: 10ch; font-variant-numeric: tabular-nums; }
+  .rx-tx-target { min-width: 32ch; font-variant-numeric: tabular-nums; }
   .rx-tx-mark { display: inline-block; min-inline-size: 1ch; }
   .rx-tx-label { min-inline-size: 3ch; font-weight: 700; letter-spacing: 0.08em; }
   .rx-tx-fault { margin: 0; font-weight: 700; }
