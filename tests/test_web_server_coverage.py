@@ -3698,6 +3698,42 @@ async def test_deferred_lifecycle_ack_identity_and_bounded_queue() -> None:
 
 
 @pytest.mark.asyncio
+async def test_link_loss_termination_reason_pins_toast_filter_contract_with_page() -> None:
+    # MOR-2241: pins the contract with frontend/src/components/shared/Toast.svelte —
+    # the page suppresses per-command toasts while disconnected only for this
+    # exact code/params pair; rewording the server literal silently breaks it.
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
+    issuer_q, bystander_q = _register_two_sessions(srv)
+    srv.command_service._executor = _StubCommandExecutor()  # noqa: SLF001
+    service = srv.command_service
+
+    intent = command_intent_from_request(
+        "set_freq",
+        {"freq_hz": 14250000},
+        source="websocket",
+        command_id="cmd-link-loss-1",
+        session_id="session-issuer",
+    )
+    await service.execute(intent)  # real accepted/queued/sent/acknowledged path
+
+    # The real provider-invalidation edge: __init__ subscribed
+    # _on_provider_generation, which calls terminate_active_commands.
+    srv.command_state_store.begin_provider_generation()
+
+    n = issuer_q.get_nowait()
+    assert n["type"] == "notification"
+    assert n["level"] == "error"
+    assert n["category"] == "command"
+    assert n["code"] == "commandExecutionFailed"
+    assert n["params"] == {"reason": "provider generation invalidated"}
+    lifecycle = issuer_q.get_nowait()
+    assert lifecycle["type"] == "command_lifecycle"
+    assert lifecycle["state"] == "failed"
+    assert lifecycle["commandId"] == "cmd-link-loss-1" and issuer_q.empty()
+    assert bystander_q.empty()  # zero — never broadcast
+
+
+@pytest.mark.asyncio
 async def test_post_ack_command_failure_notifies_issuer_only() -> None:
     """A command that fails AFTER being acknowledged reaches the session
     that issued it, and only that session — a second connected client
