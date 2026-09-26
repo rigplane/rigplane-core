@@ -1125,6 +1125,10 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
       ...state, stateContractVersion: 1, sub: { ...state.sub!, afLevel: 0.77 },
       fieldStatus: { ...state.fieldStatus, 'main.afLevel': observedAt(1), 'sub.afLevel': observedAt(1) },
     } as ServerState;
+    // The mounted wiring reads caps through the real capabilities store
+    // (not the `h.caps` seam), so re-seed the store after every swap —
+    // `beforeEach` seeds only the initial `liveCaps`.
+    expect(setCapabilities(h.caps as Capabilities)).toBe(true);
   }
   function select(active: 'MAIN' | 'SUB'): void {
     h.state = { ...(h.state as ServerState), active };
