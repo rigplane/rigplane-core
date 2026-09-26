@@ -3,10 +3,11 @@
  * injected fake `Storage`; no global is stubbed, so this file stays in the
  * fast pool (MOR-1272).
  *
- * Pins, in ticket order: atomic write / failure fallback, reload, invalid
- * stored state, migration idempotency, unknown future version — plus the two
- * carry-forwards this layer owns outright (legacy keys are never written or
- * deleted; the workspace key has exactly one writer in `src/`).
+ * Pins, in ticket order: atomic write / failure fallback, reload, the
+ * MOR-1300 corrupt-store fallback to legacy migration, migration idempotency,
+ * unknown future version — plus the two carry-forwards this layer owns
+ * outright (legacy keys are never written or deleted; the workspace key has
+ * exactly one writer in `src/`).
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -116,14 +117,39 @@ describe('workspace load (MOR-1079)', () => {
     ['a JSON scalar', '"nope"'],
     ['a JSON array', '[1,2,3]'],
     ['empty bytes', ''],
-  ])('resets on invalid stored state: %s', (_label, raw) => {
+  ])('falls back to legacy migration on corrupt stored bytes when the sentinel is absent: %s', (_label, raw) => {
     const storage = new FakeStorage();
     storage.map.set(WORKSPACE_STORAGE_KEY, raw);
 
-    const { result } = loadWorkspace(storage);
+    const { result, source } = loadWorkspace(storage);
 
-    expect(result.outcome).toBe('reset');
+    // MOR-1300: outcome 'reset' + no sentinel → the migration branch, exactly
+    // like a first run; with no legacy keys this lands on the defaults.
+    expect(source).toBe('migrated');
     expect(result.workspace).toEqual(DEFAULT_WORKSPACE);
+  });
+
+  it('a corrupt stored object over a full legacy snapshot recovers the v2 preferences (MOR-1300)', () => {
+    const storage = new FakeStorage();
+    seedLegacy(storage);
+    storage.map.set(WORKSPACE_STORAGE_KEY, '{{{');
+
+    const { result, source } = loadWorkspace(storage);
+
+    expect(source).toBe('migrated');
+    expect(result.workspace.theme).toBe('nord');
+    expect(result.workspace.layout).toBe('lcd-cockpit');
+  });
+
+  it('corrupt bytes keep their reset notice once the migration already ran (MOR-1300)', () => {
+    const storage = new FakeStorage();
+    storage.map.set(WORKSPACE_MIGRATION_SENTINEL_KEY, '1');
+    storage.map.set(WORKSPACE_STORAGE_KEY, '{{{');
+
+    const { result, source } = loadWorkspace(storage);
+
+    expect(source).toBe('stored');
+    expect(result.outcome).toBe('reset');
   });
 
   it('degrades to defaults when getItem itself throws', () => {
@@ -195,12 +221,17 @@ describe('workspace unknown future versions (MOR-1079)', () => {
     expect(writable).toBe(true);
   });
 
-  it.each([0, 4, 99, 1.5, 'two', null])('discards an unreadable version: %s', (version) => {
+  it.each([0, 4, 99, 1.5, 'two', null])('discards an unreadable version, NEVER falling back to migration: %s', (version) => {
     const storage = new FakeStorage();
+    seedLegacy(storage);
     store(storage, { ...DEFAULT_WORKSPACE, version, theme: 'nord' });
 
-    const { result } = loadWorkspace(storage);
+    const { result, source } = loadWorkspace(storage);
 
+    // MOR-1300 narrowing (N1): only 'reset' may fall back. A version-discarded
+    // newer object keeps the frozen MOR-1076 discard semantics in the stored
+    // branch — legacy seeds are ignored, nothing is overwritten.
+    expect(source).toBe('stored');
     expect(result.outcome).toBe('version-discarded');
     expect(result.workspace).toEqual(DEFAULT_WORKSPACE);
     if (result.outcome === 'version-discarded') expect(result.discardedVersion).toBe(version);

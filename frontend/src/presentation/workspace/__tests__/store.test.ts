@@ -175,6 +175,8 @@ describe('the discard signal is surfaced, never swallowed (MOR-1079)', () => {
   });
 
   it('publishes reset for unusable bytes and repaired for a partial recovery', () => {
+    // Once migration has already run, unusable bytes keep the reset notice.
+    storage.map.set(WORKSPACE_MIGRATION_SENTINEL_KEY, '1');
     storage.map.set(WORKSPACE_STORAGE_KEY, '{{{');
     initWorkspaceStore(storage);
     expect(getWorkspaceNotice()?.kind).toBe('reset');
@@ -184,6 +186,20 @@ describe('the discard signal is surfaced, never swallowed (MOR-1079)', () => {
     initWorkspaceStore(other);
     expect(getWorkspaceNotice()?.kind).toBe('repaired');
     expect(getWorkspaceNotice()?.rejections).toContainEqual({ field: 'theme', reason: 'unknown-id' });
+  });
+
+  it('corrupt bytes with the sentinel absent fall back to legacy migration (MOR-1300)', () => {
+    storage.map.set('rigplane:theme-user-choice', 'nord');
+    storage.map.set(WORKSPACE_STORAGE_KEY, '{{{');
+
+    initWorkspaceStore(storage);
+
+    // The operator's v2 preferences are recovered instead of defaults, and the
+    // corrupt bytes are replaced by the committed migration result.
+    expect(getWorkspace().theme).toBe('nord');
+    expect(getWorkspaceNotice()).toBeNull();
+    expect(storage.getItem(WORKSPACE_MIGRATION_SENTINEL_KEY)).toBe('1');
+    expect(stored(storage).theme).toBe('nord');
   });
 
   it('is dismissable and does not come back on a clean update', () => {
