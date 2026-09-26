@@ -76,6 +76,7 @@ from ..radio_poller import (  # noqa: TID251
     SetIpPlus,
     SetLanModLevel,
     SetManualNotch,
+    SetNarrow,
     SetMicGain,
     SetMode,
     SetMonitor,
@@ -537,6 +538,7 @@ class ControlHandler:
             "set_nb_level",
             "set_auto_notch",
             "set_manual_notch",
+            "set_narrow",
             "set_notch_filter",
             "set_digisel",
             "set_ip_plus",
@@ -2804,6 +2806,13 @@ class ControlHandler:
                 self._ensure_capability("notch", "set_manual_notch")
                 self._ensure_receiver_supported(rx)
                 q.put(SetManualNotch(on, receiver=rx))
+                return {"on": on, "receiver": rx}
+            case "set_narrow":
+                on = bool(params.get("on", False))
+                rx = int(params.get("receiver", 0))
+                self._ensure_capability("narrow", "set_narrow")
+                self._ensure_receiver_supported(rx)
+                q.put(SetNarrow(on, receiver=rx))
                 return {"on": on, "receiver": rx}
             case "set_notch_filter":
                 rx = int(params.get("receiver", 0))

@@ -91,9 +91,7 @@ async def test_set_narrow_enqueues_the_typed_intent() -> None:
     )
     handler = _handler(radio, server)
 
-    result = await handler._enqueue_command(
-        "set_narrow", {"on": False, "receiver": 1}
-    )
+    result = await handler._enqueue_command("set_narrow", {"on": False, "receiver": 1})
 
     assert result == {"on": False, "receiver": 1}
     assert queue.items == [SetNarrow(False, receiver=1)]

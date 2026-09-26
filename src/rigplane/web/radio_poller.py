@@ -420,6 +420,7 @@ from .._poller_types import (  # noqa: E402
     SetMainSubTracking,
     SetManualNotch,
     SetManualNotchWidth,
+    SetNarrow,
     SetMemoryContents,
     SetMemoryMode,
     SetMicGain,
@@ -2648,6 +2649,8 @@ class RadioPoller:
                 await _r.set_auto_notch(on, receiver=rx)
             case SetManualNotch(on=on, receiver=rx):
                 await _r.set_manual_notch(on, receiver=rx)
+            case SetNarrow(on=on, receiver=rx):
+                await _r.set_narrow(on, receiver=rx)
             case SetNotchFilter(level=level, receiver=rx):
                 await _r.set_notch_filter(level, receiver=rx)
             case SetAgcTimeConstant(value=value, receiver=rx):

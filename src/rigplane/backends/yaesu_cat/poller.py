@@ -1123,6 +1123,7 @@ class YaesuCatPoller:
             SetIpPlus,
             SetKeySpeed,
             SetManualNotch,
+            SetNarrow,
             SetMicGain,
             SetMode,
             SetMonitor,
@@ -1273,6 +1274,8 @@ class YaesuCatPoller:
                 await radio.set_auto_notch(on, receiver=rx)
             case SetManualNotch(on=on, receiver=rx):
                 await radio.set_manual_notch(on, receiver=rx)
+            case SetNarrow(on=on, receiver=rx):
+                await radio.set_narrow(on, receiver=rx)
             case SetNotchFilter(level=level, receiver=rx):
                 await radio.set_manual_notch_freq(level, receiver=rx)
 

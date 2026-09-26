@@ -97,6 +97,7 @@ __all__ = [
     "SetMode",
     "SetMonitor",
     "SetMonitorGain",
+    "SetNarrow",
     "SetNB",
     "SetNBLevel",
     "SetNR",
@@ -342,6 +343,12 @@ class SetAutoNotch:
 
 @dataclass(frozen=True, slots=True)
 class SetManualNotch:
+    on: bool
+    receiver: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class SetNarrow:
     on: bool
     receiver: int = 0
 
@@ -911,6 +918,7 @@ Command: TypeAlias = (
     | SetNBLevel
     | SetAutoNotch
     | SetManualNotch
+    | SetNarrow
     | SetNotchFilter
     | SetAgcTimeConstant
     | SetCwPitch
@@ -1066,6 +1074,7 @@ LEGACY_COMMAND_NAMES: dict[type, str] = {
     SetNRLevel: "set_nr_level",
     SetAutoNotch: "set_auto_notch",
     SetManualNotch: "set_manual_notch",
+    SetNarrow: "set_narrow",
     SetManualNotchWidth: "set_manual_notch_width",
     SetNotchFilter: "set_notch_filter",
     SetTwinPeak: "set_twin_peak",

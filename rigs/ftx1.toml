@@ -61,6 +61,9 @@ features = [
     "nb",
     "nr",
     "notch",
+    # NA0/NA1 narrow filter (set_narrow / set_narrow_sub below). Radios that
+    # do not declare this tag refuse the web command.
+    "narrow",
     "agc",
     "if_shift",
     "contour",
