@@ -65,7 +65,7 @@
      value draws nothing — the bare label stays — and a first reading lights
      the slot without moving the rail. Digits are tabular. */
   .status-flag {
-    min-width: 8ch;
+    min-width: 10ch;
     font-variant-numeric: tabular-nums;
   }
   :global(.peer-display[data-rf-state='transmitting']) .status-flag.active { color: #7a1a0a; }

@@ -154,9 +154,9 @@
   .receiver-label, .receiver-facts span {
     display: inline-block;
     /* MOR-2650: the fact slot stays reserved at the widest text it can
-       render (`DATA-FM-N`, 8ch). Unread draws nothing; a first reading
+       render (`DATA-FM-N`, 8 glyphs + letter-spacing → 10ch floor). Unread draws nothing; a first reading
        lights the slot without moving its neighbours. */
-    min-width: 8ch;
+    min-width: 10ch;
     box-sizing: border-box;
     border: 1.25px solid var(--ink-mid);
     border-radius: 2px;

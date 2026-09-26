@@ -91,15 +91,17 @@ describe('LCD display helpers', () => {
     };
     // NOTE: jsdom has no layout, so the reserved box is pinned by rule, not
     // pixels: each slot's `min-width` must cover its widest text —
-    // mode `DATA-FM-N` (8ch), offset `−54.500` (7ch), flag `ATT 0` (8ch).
-    expect(styleOf('CenterstageDisplay.svelte')).toMatch(/\.orbit-value\s*\{[^}]*min-width:\s*8ch/);
-    expect(styleOf('PanadapterDisplay.svelte')).toContain('min-width: 8ch;');
+    // mode `DATA-FM-N` (8 glyphs + letter-spacing → 10ch floor), offset
+    // `−54.500` (7ch), flag `ATT 0` (10ch floor with its label).
+    expect(styleOf('CenterstageDisplay.svelte')).toMatch(/\.orbit-value\s*\{[^}]*min-width:\s*10ch/);
+    expect(styleOf('PanadapterDisplay.svelte')).toContain('min-width: 10ch;');
     expect(styleOf('LcdOffsetRail.svelte')).toMatch(/\.offset-value\s*\{[^}]*min-width:\s*7ch/);
-    expect(styleOf('LcdFlagRail.svelte')).toMatch(/\.status-flag\s*\{[^}]*min-width:\s*8ch/);
-    // Peer/Dominant pills and facts already carry min-width (58px/50px) —
-    // an empty string keeps the box, so unread === read width by structure.
-    expect(styleOf('PeerSplitDisplay.svelte')).toContain('min-width: 50px');
-    expect(styleOf('DominantUnifiedDisplay.svelte')).toContain('min-width: 58px');
+    expect(styleOf('LcdFlagRail.svelte')).toMatch(/\.status-flag\s*\{[^}]*min-width:\s*10ch/);
+    // Peer/Dominant pills and facts reserve their box by structure (min-width
+    // over the widest pill/fact text) — an empty string keeps the box, so
+    // unread === read width without layout.
+    expect(styleOf('PeerSplitDisplay.svelte')).toMatch(/\.vfo-tag,\s*\.lcd-pill\s*\{[^}]*min-width/);
+    expect(styleOf('DominantUnifiedDisplay.svelte')).toMatch(/\.fact\s*\{[^}]*min-width:\s*max\(58px,\s*10ch\)/);
   });
 
   it('keeps unknown meters at empty geometry and clamps calibrated fill', () => {
