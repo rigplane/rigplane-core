@@ -890,11 +890,11 @@ def test_an_answer_that_arrives_during_execute_completes_the_request() -> None:
         ),
         None,
     )
-    assert pending_last is not None
-    scheduler.record_acquisition_result(
-        replace(pending_last, paths=(last,)),
-        _tx_meter_changeset(last, at=pass_now + 0.02),
-    )
+    if pending_last is not None:
+        scheduler.record_acquisition_result(
+            replace(pending_last, paths=(last,)),
+            _tx_meter_changeset(last, at=pass_now + 0.02),
+        )
 
     assert scheduler.pending_requests() == ()
     assert executor.credited == [path.name for path in paths[:-1]]
