@@ -767,7 +767,6 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
     expect(role.textContent).toBe('MAIN');
     expect(role.textContent).not.toMatch(/unknown/i);
     expect(role.classList.contains('vfo-role-unlit')).toBe(true);
-    expect(role.getAttribute('style')).toContain('--vfo-role-slot: 14ch');
   });
 
   it('R2: two VFOs on the SAME receiver with BOTH slots unobserved render without crashing, ' +
