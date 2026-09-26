@@ -2250,14 +2250,16 @@ describe('per-receiver tuning (MOR-1335) — cross-dispatch is impossible', () =
     });
     const onTuneFrequency = vi.fn();
     const t = mountSurface({ viewModel: model, onTuneFrequency });
+    // Same digit pick as the VfoPanel pin: the leading '9' (100 MHz) is
+    // trimmed, so the first rendered digit is the 10 MHz '9'. Stepping it
+    // stays inside the legacy clamp and proves the band edge did not engage.
     const digits = activeSlot(t).querySelectorAll<HTMLElement>('.digit');
-    // Same digit pick as the VfoPanel pin: the two '9's share the 100/10 MHz
-    // places, so the 1 MHz '8' is the step source.
-    const mhzDigit = [...digits].find((digit) => digit.textContent === '8')!;
-    mhzDigit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    mhzDigit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
+    const tenMhzDigit = digits[0];
+    expect(tenMhzDigit.textContent).toBe('9');
+    tenMhzDigit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    tenMhzDigit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
     flushSync();
-    expect(onTuneFrequency).toHaveBeenCalledExactlyOnceWith('MAIN', 999_999_000);
+    expect(onTuneFrequency).toHaveBeenCalledExactlyOnceWith('MAIN', 998_999_000 + 10_000_000);
   });
 });
 

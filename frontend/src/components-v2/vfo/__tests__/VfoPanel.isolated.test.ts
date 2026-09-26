@@ -643,13 +643,16 @@ describe('explicit presentation contract', () => {
     const t = mountPanel({
       ...explicit, freq: 998_999_000, tuneMinHz: 30_000, tuneMaxHz: null, onFreqChange,
     });
+    // 998.999.000 renders as "998.999.000" but the leading '9' (100 MHz place)
+    // is trimmed as a leading zero of the 9-digit pad, so the first rendered
+    // digit is the 10 MHz '9'. Step it: +10 MHz stays inside the legacy clamp
+    // and proves the band edge did not engage.
     const digits = t.querySelectorAll<HTMLElement>('.digit');
-    // 998.999.000 renders as "998.999.000": two '9's share the 100/10 MHz
-    // places, and the 1 MHz digit is '8' — the step source, not '9'.
-    const mhzDigit = [...digits].find((digit) => digit.textContent === '8')!;
-    mhzDigit.click();
-    mhzDigit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
-    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(999_999_000);
+    const tenMhzDigit = digits[0];
+    expect(tenMhzDigit.textContent).toBe('9');
+    tenMhzDigit.click();
+    tenMhzDigit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(998_999_000 + 10_000_000);
   });
 
   it('contains no capability, runtime, or store imports', () => {
