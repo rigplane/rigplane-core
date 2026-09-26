@@ -667,6 +667,8 @@ async def test_watchdog_recover_escalates_when_soft_reconnect_restored_no_data(
         order.append("soft_reconnect")
         seen["remote_id"] = radio._ctrl_transport.remote_id
 
+    radio.soft_reconnect = record_soft_reconnect
+
     with (
         patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()),
         caplog.at_level("WARNING"),
