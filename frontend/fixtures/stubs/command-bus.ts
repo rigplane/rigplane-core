@@ -43,12 +43,14 @@
  */
 import { record } from '../harness-state';
 
-/** Records `<channel>.<handler>` with the call's arguments, for a list of handler names. */
+/** Records `<channel>.<handler>` with the call's arguments, for a list of handler names.
+ *  `seams` keeps the short names the fixture harness already asserts
+ *  (`capture.mjs` expects `vfo.split`, not `vfo.onSplitToggle`). */
 function recorders<K extends string>(
-  channel: string, names: readonly K[],
+  channel: string, names: readonly K[], seams: Partial<Record<K, string>> = {},
 ): Record<K, (...args: unknown[]) => void> {
   return Object.fromEntries(
-    names.map((name) => [name, (...args: unknown[]) => record(`${channel}.${name}`, args)]),
+    names.map((name) => [name, (...args: unknown[]) => record(seams[name] ?? `${channel}.${name}`, args)]),
   ) as Record<K, (...args: unknown[]) => void>;
 }
 
@@ -64,7 +66,13 @@ export function makeVfoHandlers() {
     'onDirectFrequencyChange', 'onMainModeClick', 'onSubModeClick', 'onMainFreqChange',
     'onSubFreqChange', 'onFreqChange', 'onModeChange', 'onFilterChange', 'onDualWatchToggle',
     'onTrackingToggle',
-  ] as const);
+  ] as const, {
+    onSplitToggle: 'vfo.split',
+    onVfoSelect: 'vfo.select',
+    onDualWatchToggle: 'vfo.dualWatch',
+    onMainFreqChange: 'vfo.mainFreq',
+    onSubFreqChange: 'vfo.subFreq',
+  });
 }
 
 export function makeVoxHandlers() {
