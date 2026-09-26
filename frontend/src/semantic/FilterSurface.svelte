@@ -251,10 +251,13 @@
     fallback: string,
     error: string | null,
   ): string {
-    const target = Number.isFinite(feedback.requestedTarget ?? Number.NaN)
-      ? String(feedback.requestedTarget) : '---';
-    const confirmed = Number.isFinite(feedback.confirmed ?? Number.NaN)
-      ? String(feedback.confirmed) : '---';
+    // MOR-2648: a screen reader must never hear a placeholder — while a
+    // value the message needs is unread, the announcement is skipped
+    // entirely (see `nextFilterWidthAnnouncement`).
+    const target = feedback.requestedTarget !== null && Number.isFinite(feedback.requestedTarget)
+      ? String(feedback.requestedTarget) : null;
+    const confirmed = feedback.confirmed !== null && Number.isFinite(feedback.confirmed)
+      ? String(feedback.confirmed) : null;
     const english = getLocale() === 'en-US';
     let message: string;
     switch (phase) {
@@ -262,21 +265,27 @@
       case 'queued':
       case 'dispatched':
       case 'awaiting-confirmation':
+        if (target === null) return '';
         message = english ? fallback : t('core.filter.width.pendingAnnouncement', { target });
         break;
       case 'confirmed':
+        if (confirmed === null) return '';
         message = english ? fallback : t('core.filter.width.confirmedAnnouncement', { confirmed });
         break;
       case 'failed':
+        if (target === null || confirmed === null) return '';
         message = english ? fallback : t('core.filter.width.failedAnnouncement', { target, confirmed });
         break;
       case 'timed-out':
+        if (target === null || confirmed === null) return '';
         message = english ? fallback : t('core.filter.width.timedOutAnnouncement', { target, confirmed });
         break;
       case 'cancelled':
+        if (target === null || confirmed === null) return '';
         message = english ? fallback : t('core.filter.width.cancelledAnnouncement', { target, confirmed });
         break;
       case 'superseded':
+        if (target === null || confirmed === null) return '';
         message = english ? fallback : t('core.filter.width.supersededAnnouncement', { target, confirmed });
         break;
       default:
@@ -293,12 +302,18 @@
     if (issued === null || issued === undefined || current.evidence !== 'command-feedback') {
       return previous?.authorityKey === authorityKey ? previous : null;
     }
+    const text = formatWidthAnnouncementText(
+      current.feedback, issued.phase, current.announcement ?? '', current.error,
+    );
+    // MOR-2648: an unread value skips the announcement — an empty live
+    // region is never minted for it.
+    if (text === '') {
+      return previous?.authorityKey === authorityKey ? previous : null;
+    }
     return Object.freeze({
       authorityKey,
       eventKey: JSON.stringify([authorityKey, issued.transitionId]),
-      text: formatWidthAnnouncementText(
-        current.feedback, issued.phase, current.announcement ?? '', current.error,
-      ),
+      text,
     });
   }
   let filterWidthAnnouncement: IssuedAnnouncement | null = $state(
@@ -435,35 +450,44 @@
     error: string | null,
   ): string {
     const controlName = t(`core.filter.passband.control.${field}`);
+    // MOR-2648: a screen reader must never hear a placeholder — while a
+    // value the message needs is unread, the announcement is skipped
+    // entirely (see `nextPassbandAnnouncement`).
     const target = feedback.requestedTarget !== null && Number.isFinite(feedback.requestedTarget)
-      ? `${feedback.requestedTarget} Hz` : '--- Hz';
+      ? `${feedback.requestedTarget} Hz` : null;
     const confirmed = feedback.confirmed !== null && Number.isFinite(feedback.confirmed)
-      ? `${feedback.confirmed} Hz` : '--- Hz';
+      ? `${feedback.confirmed} Hz` : null;
     let message: string;
     switch (phase) {
       case 'submitted':
       case 'queued':
       case 'dispatched':
       case 'awaiting-confirmation':
+        if (target === null) return '';
         message = t('core.filter.passband.pendingAnnouncement', { control: controlName, target });
         break;
       case 'confirmed':
+        if (confirmed === null) return '';
         message = t('core.filter.passband.confirmedAnnouncement', { control: controlName, confirmed });
         break;
       case 'failed':
+        if (target === null || confirmed === null) return '';
         message = t('core.filter.passband.failedAnnouncement', { control: controlName, target, confirmed });
         break;
       case 'timed-out':
+        if (target === null || confirmed === null) return '';
         message = t('core.filter.passband.timedOutAnnouncement', { control: controlName, target, confirmed });
         break;
       case 'cancelled':
+        if (target === null || confirmed === null) return '';
         message = t('core.filter.passband.cancelledAnnouncement', { control: controlName, target, confirmed });
         break;
       case 'superseded':
+        if (target === null || confirmed === null) return '';
         message = t('core.filter.passband.supersededAnnouncement', { control: controlName, target, confirmed });
         break;
       default:
-        message = '';
+        return '';
     }
     return error === null ? message : `${message.replace(/[.!?]$/, '')}: ${error}`;
   }
@@ -480,10 +504,16 @@
     if (issued === null || issued === undefined || current.announcement === null) {
       return previous?.authorityKey === authorityKey ? previous : null;
     }
+    const text = formatPassbandAnnouncementText(field, current.feedback, issued.phase, current.error);
+    // MOR-2648: an unread value skips the announcement — an empty live
+    // region is never minted for it.
+    if (text === '') {
+      return previous?.authorityKey === authorityKey ? previous : null;
+    }
     return Object.freeze({
       authorityKey,
       eventKey: JSON.stringify([authorityKey, issued.transitionId]),
-      text: formatPassbandAnnouncementText(field, current.feedback, issued.phase, current.error),
+      text,
     });
   }
 
@@ -667,9 +697,10 @@
               <span class="pbt-slot" data-pbt-slot>
                 {#if display.state === 'current' || display.state === 'stale'}
                   {@render passbandRange(field, limits.min, limits.max, limits.step)}
-                {:else}
-                  <span class="pbt-unknown">{t('core.vfo.state.unknown')}</span>
                 {/if}
+                <!-- MOR-2648: an unmeasured PBT renders nothing in the
+                     reserved slot — never a localized "unknown" word; the
+                     `.pbt-slot` box below keeps the row's geometry. -->
               </span>
               <!-- svelte-ignore a11y_no_static_element_interactions -->
               <!-- MOR-2648: an unmeasured PBT renders an unlit box — empty
@@ -747,7 +778,6 @@
   .filter-toggle[data-pending-status='pending'] { font-style: italic; opacity: 0.75; }
   .pbt-slot { display: inline-flex; align-items: center; width: 8rem; height: 1.5rem; }
   .pbt-slot input { width: 100%; margin-inline: 0; }
-  .pbt-unknown { width: 100%; text-align: center; }
   .pbt-value { min-width: 6ch; font-variant-numeric: tabular-nums; }
   .pbt-reset-button { align-self: flex-start; }
   .sr-only {

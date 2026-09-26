@@ -55,7 +55,10 @@ describe('FilterInstrumentHost finite ownership', () => {
     const unknown = target.querySelector<HTMLSelectElement>('[data-testid="mod-input-select"]')!;
     expect(unknown.disabled).toBe(true);
     expect(unknown.value).toBe('');
-    expect([...unknown.options].map(option => option.text)).toEqual(['—', 'MIC', 'USB']);
+    // MOR-2648: an unread select shows a blank, unlit choice — an empty
+    // option, never a dash or a fabricated value.
+    expect([...unknown.options].map(option => option.text)).toEqual(['', 'MIC', 'USB']);
+    expect(unknown.options[0]?.textContent).toBe('');
     expect(unknown.closest('[data-mod-input-status]')?.getAttribute('data-mod-input-status')).toBe('unknown');
     unmount(component);
   });

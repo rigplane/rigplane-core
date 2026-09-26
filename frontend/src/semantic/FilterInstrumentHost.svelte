@@ -247,7 +247,10 @@
               data-pending-value={pendingModInput === null ? undefined : pendingModInput}
               disabled={!usable(filterPassband.modInputSource)}
               onchange={(event) => onModInputChange?.(Number(event.currentTarget.value))}>
-              {#if filterPassband.modInputSource.reading.status !== 'known'}<option value="" disabled selected>—</option>{/if}
+              <!-- MOR-2648: an unread select shows a blank, unlit choice —
+                   an empty option, never a dash or a fabricated value; the
+                   select's grid column keeps its width reserved. -->
+              {#if filterPassband.modInputSource.reading.status !== 'known'}<option value="" disabled selected></option>{/if}
               {#each filterPassband.modInputChoices ?? [] as choice (choice.value)}
                 <option value={choice.value}
                   selected={filterPassband.modInputSource.reading.status === 'known'

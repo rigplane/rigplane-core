@@ -864,6 +864,19 @@ describe('full Filter Width scalar feedback', () => {
     }) });
   });
 
+  // MOR-2648: a screen reader must never hear a placeholder — while a
+  // value the message needs is unread, the width announcement is skipped
+  // entirely, never a `'---'` fallback.
+  it('announces nothing while a value the width message needs is unread — never a placeholder', () => {
+    withSurface(base(), (surface) => {
+      expect(surface.group('filter-width')!.querySelector('[data-control-feedback-status]')).toBeNull();
+    }, {}, { filterWidthFeedback: widthFeedback('failed', {
+      confirmed: null, requestedTarget: null,
+      outcome: { phase: 'failed', error: 'radio refused width' },
+      lifecycleId: '7:width', transitionId: '7:width:failed',
+    }) });
+  });
+
   it('retains an issued status only while its presentation authority is unchanged', () => {
     const state = new SvelteMap<string, Readonly<CommandScalarFeedback>>();
     state.set('feedback', widthFeedback('failed', {
@@ -1057,6 +1070,31 @@ describe('passband scalar feedback (MOR-1687 part 1)', () => {
     }, {}, { [feedbackKey]: passbandFeedback(control, PENDING) } as PendingProps);
   });
 
+  // MOR-2648: a screen reader must never hear a placeholder — while a
+  // value the message needs is unread, the announcement is skipped
+  // entirely, never `'--- Hz'`/`'---'`.
+  it.each(ROWS)('%s: announces nothing while a value the message needs is unread — never a placeholder', (field, _handler, control, feedbackKey) => {
+    withSurface(base(), (s) => {
+      expect(s.group(`filter-${field}`)!.querySelector('[data-control-feedback-status]')).toBeNull();
+    }, {}, {
+      [feedbackKey]: passbandFeedback(control, {
+        confirmed: null, requestedTarget: null, phase: 'failed',
+        outcome: { phase: 'failed', error: 'radio refused' },
+        lifecycleId: '7:passband', transitionId: '7:passband:failed',
+      }),
+    } as PendingProps);
+  });
+
+  it.each(ROWS)('%s: announces a submitted command with no target read as nothing, never a placeholder', (field, _handler, control, feedbackKey) => {
+    withSurface(base(), (s) => {
+      expect(s.group(`filter-${field}`)!.querySelector('[data-control-feedback-status]')).toBeNull();
+    }, {}, {
+      [feedbackKey]: passbandFeedback(control, {
+        ...PENDING, requestedTarget: null, target: null, transitionId: '7:passband:submitted-2',
+      }),
+    } as PendingProps);
+  });
+
   it.each(ROWS)('%s: announces the confirmed outcome with the confirmed Hz', (field, _handler, control, feedbackKey) => {
     const current = base();
     const group = current.filterPassband!;
@@ -1214,7 +1252,12 @@ describe('unknown PBT has no fabricated numeric semantics (MOR-1705)', () => {
       const group = s.group(`filter-${field}`)!;
       expect(group.getAttribute('role')).toBe('group');
       expect(group.getAttribute('aria-label')).toBe(label);
-      expect(group.textContent).toContain('unknown');
+      // MOR-2648: an unmeasured PBT renders nothing in its reserved slot —
+      // never a localized "unknown" word; the `[data-pbt-slot]` box (pinned
+      // structurally in the geometry describe) keeps the row's geometry.
+      expect(group.querySelector('[data-pbt-slot]')?.textContent).toBe('');
+      expect(group.textContent).not.toContain('unknown');
+      expect(group.textContent).toContain(label);
       expect(group.querySelector('[data-pbt-slot]')).not.toBeNull();
       expect(group.querySelector('[aria-live]:not([aria-live="off"]), [role="status"]')).toBeNull();
       expect(group.querySelector('output')?.getAttribute('aria-live')).toBe('off');
@@ -1784,5 +1827,14 @@ describe('unread readouts keep their reserved boxes (MOR-2648)', () => {
     expect(Number.isFinite(minWidth)).toBe(true);
     expect(minWidth).toBeGreaterThanOrEqual('0'.length);
     expect(rule![1]).toContain('tabular-nums');
+  });
+
+  it('reserves the mod-input select column: the grid track never depends on the option text', () => {
+    // MOR-2648: an unread select shows a blank `<option>` — the select's
+    // width comes from the `standard-mod-input` grid track, so the blank
+    // option cannot shrink it next to the widest real choice ('MIC').
+    const rule = hostSource.match(/\.standard-mod-input \{([^}]*)\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![1]).toContain('grid-template-columns: 1fr minmax(0, 1fr)');
   });
 });
