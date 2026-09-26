@@ -154,7 +154,7 @@ vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
 import MobileRadioLayout from '../MobileRadioLayout.svelte';
 import mobileLayoutSource from '../MobileRadioLayout.svelte?raw';
 import mobileSkinSource from '../../../skins/mobile/MobileSkin.svelte?raw';
-import { hasTx } from '$lib/stores/capabilities.svelte';
+import { hasTx, getScopeSource } from '$lib/stores/capabilities.svelte';
 
 const RX: ManagedTxState = Object.freeze({
   phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
@@ -315,6 +315,33 @@ describe('spectrum slot with a spectrum-capable radio (MOR-2511)', () => {
       const t = mountMobile();
       const slot = t.querySelector(landscape ? '.m-ls-spectrum' : '.m-spectrum');
       expect(slot?.querySelector('.spectrum-panel-stub')).not.toBeNull();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 1c. Managed scope contract (MOR-2442): both orientations receive the ONE
+// SemanticRadioSurfaces-managed projection/demand region — no second
+// subscriber, no legacy panel subscription.
+// ---------------------------------------------------------------------------
+describe('managed scope contract on a hardware-scope radio (MOR-2442)', () => {
+  beforeEach(() => {
+    vi.mocked(getScopeSource).mockReturnValue('hardware');
+  });
+  afterEach(() => {
+    vi.mocked(getScopeSource).mockReturnValue(null);
+  });
+
+  it.each([['portrait', false], ['landscape', true]] as const)(
+    'receives the SemanticRadioSurfaces-managed region in %s', (_label, landscape) => {
+      setViewport(landscape);
+      const t = mountMobile();
+      const slot = t.querySelector(landscape ? '.m-ls-spectrum' : '.m-spectrum');
+      const panel = slot?.querySelector('.spectrum-panel-stub');
+      // Projection may still be null while no frame has been accepted; the
+      // contract is the bound region object itself, non-`undefined`.
+      expect(panel?.getAttribute('data-managed-scope')).toBe('true');
+      expect(panel?.getAttribute('data-scope-demanded')).toBe('true');
+      expect(panel?.getAttribute('data-has-scope-demand-handler')).toBe('true');
     });
 });
 
