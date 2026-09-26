@@ -383,10 +383,9 @@ def test_ftx1_every_declared_polling_path_is_polled() -> None:
     # poller treats as withheld exactly like a contradicted clause.
     store = StateStore()
     availability = resolve_available_when(acquisition, store.snapshot())
+    deficit = pollable - read
     available_when_exempt = {
-        path
-        for path in pollable
-        if availability.get(path) is not True and path not in read
+        path for path in deficit if availability.get(path) is not True
     }
     tx_only_exempt = {
         path
