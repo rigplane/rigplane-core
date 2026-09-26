@@ -952,6 +952,26 @@ describe('VFO selection intent', () => {
     expect(activeTile.querySelector('[data-vfo-select]')).toBeNull();
   });
 
+  // MOR-1260: colour is not a state channel under forced-colors. jsdom does
+  // not inject a Svelte <style>, so the component's own tile rules are
+  // applied as a sheet and the difference is read from computed style.
+  it('marks the active tile by border style, not colour alone (MOR-1260)', () => {
+    const source = readFileSync('src/semantic/VfoSurface.svelte', 'utf8');
+    const styleBlock = source.slice(source.indexOf('<style>') + '<style>'.length, source.indexOf('</style>'));
+    const style = document.createElement('style');
+    style.textContent = styleBlock.replace(/\/\*[\s\S]*?\*\//g, '');
+    document.head.appendChild(style);
+    const target = mountSurface({ viewModel: topologyFixtures['2/main_sub'] });
+    const active = target.querySelector<HTMLElement>('[data-vfo-active="true"]')!;
+    const inactive = target.querySelector<HTMLElement>('[data-vfo-active="false"]')!;
+    const activeStyle = getComputedStyle(active);
+    const inactiveStyle = getComputedStyle(inactive);
+    expect(activeStyle.borderTopStyle).not.toBe(inactiveStyle.borderTopStyle);
+    expect(activeStyle.borderTopStyle).not.toBe('none');
+    expect(['solid', 'double', 'dashed', 'dotted']).toContain(activeStyle.borderTopStyle);
+    style.remove();
+  });
+
   it('a single-VFO topology renders no select control — structurally nothing to choose', () => {
     const target = mountSurface({ viewModel: topologyFixtures['1/single'] });
     expect(target.querySelector('[data-vfo-select]')).toBeNull();

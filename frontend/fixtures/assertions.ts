@@ -755,6 +755,10 @@ export function styleProbe(rootTestId: string): Record<string, Record<string, st
       backgroundColor: cs.backgroundColor,
       borderColor: cs.borderTopColor,
       borderLeftColor: cs.borderLeftColor,
+      borderTopStyle: cs.borderTopStyle,
+      borderLeftStyle: cs.borderLeftStyle,
+      borderTopWidth: cs.borderTopWidth,
+      borderLeftWidth: cs.borderLeftWidth,
       forcedColorAdjust: cs.forcedColorAdjust,
     };
   }
