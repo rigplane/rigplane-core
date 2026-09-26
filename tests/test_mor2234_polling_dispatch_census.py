@@ -353,6 +353,11 @@ async def _run_ftx1_poll_cycles(*, cycles: int) -> set[FieldPath]:
         await poller._poll_slow()  # noqa: SLF001
         read.update(item.path for item in collected)
         collected.clear()
+    read_reads = radio.read_mic_gain.await_count
+    assert read_reads >= cycles, (
+        f"mock CAT transport did not answer mic_gain every cycle: "
+        f"{read_reads} reads in {cycles} cycles"
+    )
     return read
 
 
