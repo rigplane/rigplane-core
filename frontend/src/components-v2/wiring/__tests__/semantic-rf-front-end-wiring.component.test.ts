@@ -352,6 +352,16 @@ const liveCaps = (withRfFrontEnd: boolean, rfSqlControlModel?: 'separate' | 'com
   ...(rfSqlControlModel !== undefined ? { rfSqlControlModel } : {}),
 } as unknown as Capabilities);
 
+/** MOR-1676 part R: caps WITH the published raw range — the host moves on
+ *  raw ints and the seam dispatches them as is. The separate-slider tests
+ *  below use these; every other test keeps the legacy caps above. */
+const liveCapsRaw = (
+  withRfFrontEnd: boolean, rfSqlControlModel?: 'separate' | 'combined',
+): Capabilities => ({
+  ...liveCaps(withRfFrontEnd, rfSqlControlModel),
+  controls: { rf_gain: { raw_min: 0, raw_max: 255 }, squelch: { raw_min: 0, raw_max: 255 } },
+} as unknown as Capabilities);
+
 /** MOR-2425 RF-B — same shared external-renderer fixture the DSP/CW-keyer
  *  wiring tests use, so a mounted choice/toggle seat can be identified by its
  *  own accessible label (`retainedInvocations`) across a re-render. */
@@ -443,6 +453,10 @@ function levelDriver(root: ParentNode): LevelDriver {
 
 const level = (id: string) => levelDriver(el(id)!);
 let acceptedState: ServerState;
+
+function resyncCapsStore(): void {
+  expect(setCapabilities(h.caps as Capabilities)).toBe(true);
+}
 
 function publishAuthority(): void {
   const next = {
@@ -592,37 +606,58 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
   // anything else — so the wiring must convert on the way through. This was
   // the input-snaps-to-0%-or-100% regression: an unconverted intermediate
   // drag silently failed the real handler's integer guard.
-  // MOR-1447 verifier follow-up: literal expected value, not the same
-  // `Math.round(...)` formula the production seam itself uses — a mutation
-  // that swapped `Math.round` for `Math.trunc`/`Math.floor` would still pass
-  // a formula-mirroring assertion (140.25 truncates to 140 too). 0.55*255 is
-  // pinned as the literal 140.
-  it('routes the RF-gain slider to onRfGainChange, converted to the raw 0-255 wire level', () => {
+  // MOR-1676 part R: with `controls.rf_gain` published the host moves on
+  // the raw lattice, so the slider value IS the raw int and the seam
+  // dispatches it as is — no double scaling (a slider value of 140
+  // dispatches 140, not 140*255).
+  it('routes the RF-gain slider to onRfGainChange as the raw wire int, no double scaling', () => {
+    h.caps = liveCapsRaw(true);
+    resyncCapsStore();
     render();
-    level('rfGain').input(0.55);
+    level('rfGain').input(140 / 255);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(140);
     for (const other of ALL.filter((s) => s !== h.rfGain)) expect(other).not.toHaveBeenCalled();
   });
 
-  it('routes the squelch slider to onSquelchChange, converted to the raw 0-255 wire level', () => {
+  it('routes the squelch slider to onSquelchChange as the raw wire int, no double scaling', () => {
+    h.caps = liveCapsRaw(true);
+    resyncCapsStore();
     render();
-    level('squelch').input(0.2);
+    level('squelch').input(51 / 255);
     flushSync();
     expect(h.squelch).toHaveBeenCalledExactlyOnceWith(51);
     for (const other of ALL.filter((s) => s !== h.squelch)) expect(other).not.toHaveBeenCalled();
   });
 
-  // Rounding-rule pin (MOR-1447 leg 1 verifier follow-up item a): 0.5 is the
-  // exact tie case where `Math.round` (128) and a truncating conversion
-  // (127) diverge — 0.5*255 = 127.5. The literal 128 is the ONLY value that
-  // proves `Math.round` specifically, not merely "some" integer conversion.
-  it('rounds a 0.5 drag to the raw wire level 128, not the truncated 127', () => {
+  it('a slider value of 200 dispatches 200, not 200*255', () => {
+    h.caps = liveCapsRaw(true);
+    resyncCapsStore();
     render();
-    level('rfGain').input(0.5);
+    level('rfGain').input(200 / 255);
     flushSync();
-    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(128);
+    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(200);
+    const dispatched: number = h.rfGain.mock.calls[0][0];
+    expect(Number.isInteger(dispatched)).toBe(true);
+    expect(dispatched).not.toBe(200 * 255);
   });
+
+  it.each([0, 1, 127, 128, 254, 255])(
+    'a step up then down from raw %i dispatches R+1 (clamped) then R',
+    (raw) => {
+      h.caps = liveCapsRaw(true);
+    resyncCapsStore();
+      render();
+      const up = Math.min(255, raw + 1);
+      level('rfGain').input(up / 255);
+      flushSync();
+      expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(up);
+      h.rfGain.mockClear();
+      level('rfGain').input((raw === 255 ? 254 : raw) / 255);
+      flushSync();
+      expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(raw === 255 ? 254 : raw);
+    },
+  );
 
   // (d): `onDigiSelToggle`/`onIpPlusToggle` take an explicit `on: boolean` —
   // the wiring must pass the FLIPPED value the surface computed, not call
@@ -891,11 +926,15 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
   });
 
   it('follows confirmed RF truth and keeps an SQL draft until its lifecycle completes', () => {
+    h.caps = liveCapsRaw(true);
+    resyncCapsStore();
     render();
     const rfInput = level('rfGain');
     const sqlInput = level('squelch');
 
-    rfInput.input(0.7);
+    // MOR-1676 part R: the raw lattice carries absolute values — 179 and
+    // 153 directly, no 0..1 fraction in between.
+    rfInput.input(179 / 255);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(179);
     expect(h.sentCommands).toHaveLength(1);
@@ -912,7 +951,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     flushSync();
     expect(el('rfGain')!.dataset.commandPhase).toBe('confirmed');
 
-    sqlInput.input(0.6);
+    sqlInput.input(153 / 255);
     flushSync();
     expect(h.squelch).toHaveBeenCalledExactlyOnceWith(153);
     expect(h.sentCommands).toHaveLength(2);
@@ -924,21 +963,23 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     state = observedMainLevels(state, { rfGain: 204 / 255 }, 7);
     acknowledgeSent(sqlCommand);
     flushSync();
-    expect(level('rfGain').value()).toBe(0.8);
+    // The confirmed reading projects back through the raw range: 204/255
+    // reads as raw 204, shown as 80%.
+    expect(level('rfGain').value()).toBeCloseTo(204 / 255, 5);
     expect(el('rfGain')!.querySelector('output')!.textContent).toBe('80%');
     expect(el('squelch')!.dataset.commandPhase).toBe('awaiting-confirmation');
     expect(level('squelch').value()).toBe(0.6);
     expect(el('squelch')!.querySelector('output')!.textContent).toBe('60%');
     expect(target.querySelector('[data-control-feedback-status][data-feedback-lane="sql"]')?.textContent)
-      .toBe('Awaiting confirmation: 0.6');
+      .toBe('Awaiting confirmation: 153');
 
     confirmCommand(sqlCommand.id, 7, 7);
     flushSync();
     expect(el('squelch')!.dataset.commandPhase).toBe('confirmed');
-    expect(level('squelch').value()).toBe(0.1);
+    expect(level('squelch').value()).toBeCloseTo(26 / 255, 5);
     expect(el('squelch')!.querySelector('output')!.textContent).toBe('10%');
     expect(target.querySelector('[data-control-feedback-status][data-feedback-lane="sql"]')?.textContent)
-      .toBe('Confirmed: 0.1');
+      .toBe('Confirmed: 26');
     expect(h.rfGain).toHaveBeenCalledTimes(1);
     expect(h.squelch).toHaveBeenCalledTimes(1);
   });
@@ -1055,6 +1096,8 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
 
 describe('the hosted RF owner survives replaceable presentation layouts', () => {
   it('retains authority while replacing renderers, and cancels detached or revoked drafts', () => {
+    h.caps = liveCapsRaw(true);
+    resyncCapsStore();
     const props = renderHosted();
     const originalSubscribers = [...h.authorityListeners];
     const old = level('rfGain');
@@ -1063,7 +1106,7 @@ describe('the hosted RF owner survives replaceable presentation layouts', () => 
       setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn(),
     });
     old.slider.dispatchEvent(new PointerEvent('pointerdown', {
-      pointerId: 7, clientX: 70, bubbles: true,
+      pointerId: 7, clientX: 179 / 2.55, bubbles: true,
     }));
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(179);
@@ -1076,16 +1119,17 @@ describe('the hosted RF owner survives replaceable presentation layouts', () => 
     expect(target.querySelector('[data-rf-layout="independent"]')).not.toBeNull();
     expect(target.querySelectorAll('[data-testid="rf-front-end-rfGain"]')).toHaveLength(1);
     expect([...h.authorityListeners]).toEqual(originalSubscribers);
+    // MOR-1676 part R: `.value()` reads the CSS fill fraction — 204/255.
     expect(replacement.value()).toBe(0.8);
 
     old.slider.dispatchEvent(new PointerEvent('pointermove', {
-      pointerId: 7, clientX: 90, bubbles: true,
+      pointerId: 7, clientX: 230 / 2.55, bubbles: true,
     }));
     old.slider.dispatchEvent(new PointerEvent('pointerup', { pointerId: 7, bubbles: true }));
     old.slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     expect(h.rfGain).not.toHaveBeenCalled();
 
-    replacement.input(0.55, 8);
+    replacement.input(140 / 255, 8);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(140);
     h.rfGain.mockClear();
@@ -1096,7 +1140,7 @@ describe('the hosted RF owner survives replaceable presentation layouts', () => 
     const revoked = level('rfGain');
     expect(revoked.disabled()).toBe(true);
     expect(el('rfGain')!.querySelector('output')!.textContent).toBe('');
-    revoked.input(0.9, 9);
+    revoked.input(230 / 255, 9);
     expect(h.rfGain).not.toHaveBeenCalled();
     expect([...h.authorityListeners]).toEqual(originalSubscribers);
 

@@ -62,6 +62,7 @@
   import {
     DISABLED_REASON_LABEL,
     RF_FRONT_END_LEVELS,
+    RF_FRONT_END_RAW_CONTROL_KEY,
     RF_FRONT_END_TOGGLES,
     type RfFrontEndAuthorityPublication,
     type RfFrontEndFiniteChoiceValue,
@@ -173,10 +174,81 @@
   const PAIR_LANES: readonly DualParamLane[] = ['rf', 'sql'];
   const row = (field: RfFrontEndLevelField) =>
     RF_FRONT_END_LEVELS.find(([candidate]) => candidate === field)!;
-  const domain = {
-    min: RF_FRONT_END_LEVELS[0][2], max: RF_FRONT_END_LEVELS[0][3],
-    step: RF_FRONT_END_LEVELS[0][4], defaultValue: null, fineStepDivisor: 10,
-  } as const;
+  /** MOR-1676 part R: the slider domain comes from the published raw range
+   *  (`caps.controls.rf_gain` / `caps.controls.squelch`), read the same way
+   *  other controls read their ranges (`SemanticRadioSurfaces.svelte`'s
+   *  `nbLevelRange` precedent: `runtime.caps?.controls?.<key> ?? null`).
+   *  With the entry published the slider moves on the radio's raw integer
+   *  lattice (step 1); without it the slider keeps the legacy normalized
+   *  domain. The reading text stays a percentage either way. */
+  const safeRawBound = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isSafeInteger(value) ? value : null;
+  function rawRangeOf(key: string): { rawMin: number; rawMax: number } | null {
+    const entry = (presentation.caps?.controls as
+      Record<string, { raw_min?: unknown; raw_max?: unknown }> | undefined)?.[key];
+    const rawMin = safeRawBound(entry?.raw_min);
+    const rawMax = safeRawBound(entry?.raw_max);
+    return rawMin !== null && rawMax !== null && rawMax > rawMin
+      ? { rawMin, rawMax } : null;
+  }
+  function levelDomain(field: RfFrontEndLevelField): {
+    min: number; max: number; step: number; defaultValue: null; fineStepDivisor: number;
+  } {
+    const raw = rawRangeOf(RF_FRONT_END_RAW_CONTROL_KEY[field]);
+    if (raw !== null) {
+      return { min: raw.rawMin, max: raw.rawMax, step: 1, defaultValue: null, fineStepDivisor: 1 };
+    }
+    return {
+      min: RF_FRONT_END_LEVELS[0][2], max: RF_FRONT_END_LEVELS[0][3],
+      step: RF_FRONT_END_LEVELS[0][4], defaultValue: null, fineStepDivisor: 10,
+    };
+  }
+  const domainOf = (field: RfFrontEndLevelField): {
+    min: number; max: number; step: number; defaultValue: null; fineStepDivisor: number;
+  } => levelDomain(field);
+  const normalizedToRaw = (field: RfFrontEndLevelField, normalized: number): number | null => {
+    const raw = rawRangeOf(RF_FRONT_END_RAW_CONTROL_KEY[field]);
+    if (raw === null || !Number.isFinite(normalized)) return null;
+    return Math.round(normalized * raw.rawMax);
+  };
+  const rawToPercent = (field: RfFrontEndLevelField, raw: number): string => {
+    const range = rawRangeOf(RF_FRONT_END_RAW_CONTROL_KEY[field]);
+    if (range === null) return formatKnownLevel(raw, 0, 1);
+    const span = range.rawMax - range.rawMin;
+    return span <= 0 ? '0%' : `${Math.round(((raw - range.rawMin) / span) * 100)}%`;
+  };
+  const readingOf = (field: RfFrontEndLevelField): { status: 'known'; value: number } | { status: 'unknown' } => {
+    const reading = rf?.[field].reading;
+    if (reading?.status !== 'known' || typeof reading.value !== 'number'
+      || !Number.isFinite(reading.value)) return { status: 'unknown' };
+    const raw = normalizedToRaw(field, reading.value);
+    return raw === null ? reading : { status: 'known', value: raw };
+  };
+  /** MOR-1676 part R: command-feedback lanes carry normalized 0..1
+   *  `confirmed`/`target`/`requestedTarget` (the `set_rf_gain` /
+   *  `set_squelch` descriptors' own unit — the snapshot contract is
+   *  unchanged). On the raw lattice they project to raw ints with the same
+   *  `Math.round(normalized * raw_max)` rule as the reading; without a
+   *  published range the lane passes through untouched. */
+  function feedbackLaneOf(
+    field: RfFrontEndLevelField,
+    lane: Readonly<{ command: string; feedback: Readonly<CommandScalarFeedback> }>,
+  ): Readonly<{ command: string; feedback: Readonly<CommandScalarFeedback> }> {
+    const raw = rawRangeOf(RF_FRONT_END_RAW_CONTROL_KEY[field]);
+    if (raw === null) return lane;
+    const project = (value: number | null): number | null =>
+      value === null || !Number.isFinite(value) ? value : Math.round(value * raw.rawMax);
+    const feedback = lane.feedback;
+    return {
+      command: lane.command,
+      feedback: {
+        ...feedback,
+        confirmed: project(feedback.confirmed),
+        target: project(feedback.target),
+        requestedTarget: project(feedback.requestedTarget),
+      },
+    };
+  };
   const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
   const currentAuthority = (): RfAuthority | null => published === null ? null : authority(published);
   const presentedAuthority = (): RfAuthority | null => authority(
@@ -197,7 +269,7 @@
   }
   function pairInput(): Readonly<ContinuousPairInput> {
     const common = {
-      domain,
+      domain: levelDomain('rfGain'),
       requestRf: (value: number) => request('rfGain', value),
       requestSql: (value: number) => request('squelch', value),
     };
@@ -209,7 +281,8 @@
       sql: { reading: { status: 'unknown' }, availability: 'unavailable' },
     };
     if (feedback !== undefined) return {
-      ...common, evidence: 'command-feedback', rf: feedback.rf, sql: feedback.sql,
+      ...common, evidence: 'command-feedback',
+      rf: feedbackLaneOf('rfGain', feedback.rf), sql: feedbackLaneOf('squelch', feedback.sql),
       enabled: authorityCurrent() && currentForm === 'combined' && onLevelChange !== undefined,
     };
     const availability = (field: RfFrontEndField<number> | undefined) =>
@@ -219,24 +292,24 @@
       ...common, evidence: 'reading', ownerKey: authorityKey(currentAuthority()),
       enabled: authorityCurrent() && currentForm === 'combined' && onLevelChange !== undefined,
       rf: {
-        reading: rf?.rfGain.reading ?? { status: 'unknown' },
+        reading: readingOf('rfGain'),
         availability: availability(rf?.rfGain),
       },
       sql: {
-        reading: rf?.squelch.reading ?? { status: 'unknown' },
+        reading: readingOf('squelch'),
         availability: availability(rf?.squelch),
       },
     };
   }
   function scalarInput(field: RfFrontEndLevelField): Readonly<ContinuousScalarInput> {
-    const common = { domain, request: (value: number) => request(field, value) };
+    const common = { domain: levelDomain(field), request: (value: number) => request(field, value) };
     const feedback = presentation.rfSqlFeedback;
     if (feedback === null) return {
       ...common, evidence: 'reading', enabled: false,
       ownerKey: authorityKey(currentAuthority(), field), reading: { status: 'unknown' },
     };
     if (feedback !== undefined) {
-      const lane = feedback[laneFor(field)];
+      const lane = feedbackLaneOf(field, feedback[laneFor(field)]);
       return {
         ...common, evidence: 'command-feedback', command: lane.command, feedback: lane.feedback,
         enabled: authorityCurrent() && currentForm === 'separate'
@@ -248,7 +321,7 @@
       ...common, evidence: 'reading', ownerKey: authorityKey(currentAuthority(), field),
       enabled: authorityCurrent() && currentForm === 'separate'
         && usable(fact) && onLevelChange !== undefined,
-      reading: fact?.reading ?? { status: 'unknown' },
+      reading: readingOf(field),
     };
   }
 
@@ -331,9 +404,12 @@
    *  a `?` stand-in. The heading labels stay, and each `<output>` keeps its
    *  box reserved (`display: inline-block; min-width: 4ch` on
    *  `.rf-front-end-reading output` below — the widest value is `100%`), so
-   *  the SQL label cannot move when a value arrives. */
-  const valueText = (value: number | null): string => value === null
-    ? '' : formatKnownLevel(value, domain.min, domain.max);
+   *  the SQL label cannot move when a value arrives.
+   *  MOR-1676 part R: on the raw lattice the value is already the raw int —
+   *  the text is the percentage of the published raw range, same unit as
+   *  today's normalized path. */
+  const valueText = (field: RfFrontEndLevelField, value: number | null): string => value === null
+    ? '' : rawToPercent(field, value);
   function pairLaneValue(view: Readonly<ContinuousPairView>, lane: DualParamLane): number | null {
     const laneView = view.lanes[lane];
     return view.draft?.[lane]
@@ -469,8 +545,8 @@
     aria-busy={view.busy}
   >
     <div class="rf-front-end-heading">
-      <span class="rf-front-end-reading">RF <output data-testid="rf-front-end-rf-sql-rf-value">{valueText(pairLaneValue(view, 'rf'))}</output></span>
-      <span class="rf-front-end-reading">SQL <output data-testid="rf-front-end-rf-sql-sql-value">{valueText(pairLaneValue(view, 'sql'))}</output></span>
+      <span class="rf-front-end-reading">RF <output data-testid="rf-front-end-rf-sql-rf-value">{valueText('rfGain', pairLaneValue(view, 'rf'))}</output></span>
+      <span class="rf-front-end-reading">SQL <output data-testid="rf-front-end-rf-sql-sql-value">{valueText('squelch', pairLaneValue(view, 'sql'))}</output></span>
     </div>
     <div class="rf-front-end-slider">
       {#key rendererEpoch}
@@ -503,7 +579,7 @@
       aria-busy={view.busy}
     >
       <div class="rf-front-end-heading">
-        <span class="rf-front-end-reading">{label} <output>{valueText(scalarValue(view))}</output></span>
+        <span class="rf-front-end-reading">{label} <output>{valueText(field, scalarValue(view))}</output></span>
       </div>
       <div class="rf-front-end-slider">
         {#key rendererEpoch}
@@ -512,7 +588,7 @@
             binding={binding} {label} renderer="hbar" showLabel={false} showValue={false} compact={true}
             variant={hardware ? 'hardware-illuminated' : 'modern'}
             accentColor={hardware ? 'var(--v2-accent-cyan-alt)' : 'var(--v2-accent-cyan)'}
-            displayFn={valueText} issuedStatusPresentation={scalarIssuedStatuses[field]}
+            displayFn={(value) => valueText(field, value)} issuedStatusPresentation={scalarIssuedStatuses[field]}
           />
         {/key}
       </div>
