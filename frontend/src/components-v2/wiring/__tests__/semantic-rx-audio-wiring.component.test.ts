@@ -1189,6 +1189,7 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
     publishAuthority();
     flushSync();
     expect(knob(receiver)!.getAttribute('aria-valuemax')).toBe('255');
+    expect(knob(receiver)!.getAttribute('aria-valuenow')).toBe(receiver === 'sub' ? '196' : '79');
     knob(receiver)!.dispatchEvent(new KeyboardEvent(
       'keydown', { key: 'ArrowRight', bubbles: true, cancelable: true },
     ));
