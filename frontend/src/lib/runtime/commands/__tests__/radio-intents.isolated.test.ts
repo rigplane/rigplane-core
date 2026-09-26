@@ -434,7 +434,11 @@ describe('typed non-PTT radio intents', () => {
   });
 
   it('accepts exact normalized AF boundaries and fractions without weakening integer fields', () => {
-    const levels = [0, 1, 50 / 255] as const;
+    // MOR-1676 part A (AF): only NON-INTEGER floats are normalized levels
+    // and carry the tag. `0` and `1` are integers, so they are raw levels
+    // and go untagged (see the raw-integer test below) — JS cannot
+    // distinguish `1.0` from `1`, so the intent layer must not guess.
+    const levels = [0.5, 50 / 255] as const;
     levels.forEach((level, index) => intents.dispatchRadioIntent({
       id: `af-normalized-${index}`, name: 'set_af_level', params: { level, receiver: 0 },
     }));
