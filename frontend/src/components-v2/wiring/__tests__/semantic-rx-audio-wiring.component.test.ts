@@ -1182,9 +1182,11 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
     renderHostedFace('desktop-v2');
     // The host snapshots the authority publication when it subscribes on
     // mount; republish the already-seeded authority so the fresh caps
-    // (with `controls.af_level`) reach its `published` snapshot.
+    // (with `controls.af_level`) reach its `published` snapshot. The knob
+    // must sit on the raw lattice — assert it before stepping.
     publishAuthority();
     flushSync();
+    expect(knob(receiver)!.getAttribute('aria-valuemax')).toBe('255');
     knob(receiver)!.dispatchEvent(new KeyboardEvent(
       'keydown', { key: 'ArrowRight', bubbles: true, cancelable: true },
     ));
