@@ -395,10 +395,12 @@ describe('manual-notch pending status units (MOR-2635)', () => {
 
   it('FTX-1: pending raw 160 shows 1600 Hz for requested and confirmed alike', () => {
     const r = render({
+      presentation: 'independent',
+      scalarPresentation: { form: 'hbar' },
       view: notchView(1600, FTX1_NOTCH_DOMAIN),
       feedback: pendingNotch(1600, 160),
     });
-    const status = r.row('notchFreq')?.querySelector('[data-command-status]')?.textContent;
+    const status = r.row('notchFreq')?.querySelector('[data-command-status]')?.textContent ?? '';
     expect(status).toContain('requested 1600');
     expect(status).toContain('confirmed 1600');
     expect(status).not.toContain('requested 160;');
@@ -407,10 +409,12 @@ describe('manual-notch pending status units (MOR-2635)', () => {
 
   it('IC-family: no published domain keeps requested and confirmed raw', () => {
     const r = render({
+      presentation: 'independent',
+      scalarPresentation: { form: 'hbar' },
       view: notchView(128),
       feedback: pendingNotch(128, 160),
     });
-    const status = r.row('notchFreq')?.querySelector('[data-command-status]')?.textContent;
+    const status = r.row('notchFreq')?.querySelector('[data-command-status]')?.textContent ?? '';
     expect(status).toContain('requested 160');
     expect(status).toContain('confirmed 128');
     expect(status).not.toContain('1600');
