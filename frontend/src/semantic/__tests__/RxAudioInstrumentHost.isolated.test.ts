@@ -442,8 +442,12 @@ describe('RxAudioInstrumentHost radio-AF raw steps (MOR-1676)', () => {
     };
     return { onAfLevelChange, slider, dispose };
   }
-  it('restores the exact raw value after a reversible keyboard step, for every raw value', () => {
-    for (let raw = 0; raw <= 255; raw += 1) {
+  // Exhaustive over 0..255 in four per-`it` chunks: each raw value is an
+  // independent "the radio confirmed R, the operator steps once" scenario
+  // with a fresh mount in its own host element.
+  const RAW_CHUNKS = [[0, 63], [64, 127], [128, 191], [192, 255]] as const;
+  it.each(RAW_CHUNKS)('restores the exact raw value after a reversible keyboard step, raw %i..%i', (lo, hi) => {
+    for (let raw = lo; raw <= hi; raw += 1) {
       const up = Math.min(255, raw + 1);
       const stepped = renderRawAt(raw / 255);
       expect(stepped.slider().rendererLease.view.canonical).toBe(raw);
@@ -459,8 +463,8 @@ describe('RxAudioInstrumentHost radio-AF raw steps (MOR-1676)', () => {
     }
   });
 
-  it('restores the exact raw value after a reversible pointer step, for every raw value', () => {
-    for (let raw = 0; raw <= 255; raw += 1) {
+  it.each(RAW_CHUNKS)('restores the exact raw value after a reversible pointer step, raw %i..%i', (lo, hi) => {
+    for (let raw = lo; raw <= hi; raw += 1) {
       const up = Math.min(255, raw + 1);
       const stepped = renderRawAt(raw / 255);
       const lease = stepped.slider().rendererLease;
