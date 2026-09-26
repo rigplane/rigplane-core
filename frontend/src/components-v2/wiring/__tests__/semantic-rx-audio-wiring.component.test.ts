@@ -35,7 +35,7 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
-import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
+import { clearCapabilities, getCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 
 
 const h = vi.hoisted(() => ({
@@ -140,8 +140,11 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
     get controlSession() { return { state: 'connected' as const, epoch: 1 }; },
     subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
       h.authoritySubscribers.add(handler);
+      // The host snapshots this publication on subscribe and derives the
+      // knob lattice from it — deliver the CURRENT `h.caps` (the store
+      // holds the same object after `setCapabilities`), not a stale one.
       handler({
-        state: h.state, caps: h.caps, session: { state: 'connected', epoch: 1 },
+        state: h.state, caps: getCapabilities() ?? h.caps, session: { state: 'connected', epoch: 1 },
         rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
       });
       return () => { h.authoritySubscribers.delete(handler); };
