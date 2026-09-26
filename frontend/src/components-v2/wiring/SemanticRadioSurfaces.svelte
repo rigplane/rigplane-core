@@ -2205,6 +2205,7 @@
         {receiverInstruments}
         continuitySession={meterContinuitySession}
         {pendingFrequencyHz}
+        disabledForReceiver={(receiver) => !isOperationalStrip(view, receiver)}
       />
     {/if}
   {/snippet}
@@ -3085,19 +3086,8 @@
     {#each singleOrder as surface (surface)}
       {#if surface === 'vfo'}
         {@render vfoSurface()}
-      {:else if surface === 'rxTx'}
-        <!-- Preserve the pre-region compiled anchor topology on this literal path. -->
-        {#if !regions}
-          {@render rxTxSurface()}
-        {/if}
       {/if}
     {/each}
-    <!-- MOR-1784: `singleOrder` ends in `rxTx` in every shipped layout
-         (`SINGLE_COMPOSITION`, and a plan can only reorder or subtract), so
-         this lands directly behind the fault line instead of at the bottom of
-         the column — while still rendering unconditionally, so a fault raised
-         by any lease source keeps a way out even if `rxTx` is absent. -->
-    {@render txFaultRecovery()}
     <!-- MOR-2231 (step 1, batch 5): the twelve OPTIONAL surfaces take
          `allowBareSurfaces` (see its declaration above) instead of the bare
          default. `vfo`/`rxTx` above keep the default: they are in
@@ -3126,6 +3116,15 @@
       'scopeControls', view?.scopeControls !== undefined, scopeControlsSurface,
       allowBareSurfaces,
     )}
+    {#each singleOrder as surface (surface)}
+      {#if surface === 'rxTx'}
+        {@render rxTxSurface()}
+      {/if}
+    {/each}
+    <!-- MOR-1347: rx-tx stays last once optional surfaces such as rx-audio
+         have mounted. The fault recovery still follows the key immediately,
+         and still renders when a plan has subtracted rxTx. -->
+    {@render txFaultRecovery()}
     {@render txAdjacentAlerts()}
     {/if}
   {/if}
