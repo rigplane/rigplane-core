@@ -1,13 +1,4 @@
-/**
- * Backing-store size for a canvas that may sit inside a CSS-scaled stage.
- *
- * `fixed-native` (MOR-1160) paints the stage with one `transform: scale()`.
- * SVG re-rasterizes under that transform; a canvas is resampled and blurs
- * unless its backing store already holds `cssSize * devicePixelRatio *
- * stageScale` device pixels (MOR-1161). Drawing then uses the same product
- * as the context transform, so one canvas pixel still maps to one device
- * pixel at integer multipliers.
- */
+/** Backing store for a canvas inside a CSS-scaled stage (MOR-1161). */
 
 export interface CanvasBackingSize {
   readonly width: number;
@@ -34,14 +25,7 @@ export function canvasBackingSize(
   };
 }
 
-/**
- * Uniform scale of the nearest transformed ancestor, or 1.
- *
- * `getBoundingClientRect` already includes every ancestor transform, and
- * `offsetWidth` does not, so their ratio is the scale the canvas is painted
- * at — including `ScaledStage`'s `translate() scale()`. A non-uniform
- * stretch is not a stage scale and is ignored.
- */
+/** Uniform ancestor scale, from painted size over layout size. Non-uniform stretch is ignored. */
 export function readAncestorScale(element: HTMLElement): number {
   const layoutWidth = element.offsetWidth;
   const layoutHeight = element.offsetHeight;
@@ -52,4 +36,18 @@ export function readAncestorScale(element: HTMLElement): number {
   if (!Number.isFinite(scaleX) || scaleX <= 0) return 1;
   if (Math.abs(scaleX - scaleY) > 0.01) return 1;
   return scaleX;
+}
+
+/** Calls `onChange` when the window pixel ratio changes. Returns the unsubscribe. */
+export function watchDevicePixelRatio(onChange: () => void): () => void {
+  if (typeof window.matchMedia !== 'function') return () => {};
+  let query = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+  const onMediaChange = () => {
+    query.removeEventListener('change', onMediaChange);
+    query = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    query.addEventListener('change', onMediaChange);
+    onChange();
+  };
+  query.addEventListener('change', onMediaChange);
+  return () => query.removeEventListener('change', onMediaChange);
 }

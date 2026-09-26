@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import type { ControlDisplayDomain } from '$lib/radio/filter-controls';
-  import { canvasBackingSize, readAncestorScale } from '../../../lib/canvas/backing-store';
+  import { canvasBackingSize, readAncestorScale, watchDevicePixelRatio } from '../../../lib/canvas/backing-store';
 
   interface Props {
     /** FFT pixel data from AudioFftScope (0-160 range) */
@@ -431,9 +431,11 @@
       applyBackingStore(cssWidth, cssHeight);
     });
     ro.observe(canvas);
+    const stopPixelWatch = watchDevicePixelRatio(() => applyBackingStore(cssWidth, cssHeight));
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);
+      stopPixelWatch();
       ro.disconnect();
       cancelAnimationFrame(rafId);
       rafId = 0;

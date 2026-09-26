@@ -7,7 +7,7 @@
   } from '../../lib/renderers/waterfall-renderer';
   import { gesture } from '../../lib/gestures/use-gesture';
   import { vibrate } from '../../lib/utils/haptics';
-  import { canvasBackingSize, readAncestorScale } from '../../lib/canvas/backing-store';
+  import { canvasBackingSize, readAncestorScale, watchDevicePixelRatio } from '../../lib/canvas/backing-store';
 
   interface Props {
     options?: WaterfallOptions;
@@ -53,20 +53,25 @@
     renderer = new WaterfallRenderer(canvas, options);
     onRegisterPush?.(directPush);
 
+    let cssWidth = 0;
+    let cssHeight = 0;
+    function applyBackingStore(): void {
+      const backing = canvasBackingSize(cssWidth, cssHeight, window.devicePixelRatio || 1, readAncestorScale(canvas));
+      renderer?.resize(backing.width, backing.height);
+    }
+
     const ro = new ResizeObserver((entries) => {
       const rect = entries[0]?.contentRect;
       if (!rect) return;
-      const backing = canvasBackingSize(
-        rect.width,
-        rect.height,
-        window.devicePixelRatio || 1,
-        readAncestorScale(canvas),
-      );
-      renderer?.resize(backing.width, backing.height);
+      cssWidth = rect.width;
+      cssHeight = rect.height;
+      applyBackingStore();
     });
     ro.observe(canvas);
+    const stopPixelWatch = watchDevicePixelRatio(applyBackingStore);
 
     return () => {
+      stopPixelWatch();
       ro.disconnect();
       renderer?.destroy();
       renderer = null;

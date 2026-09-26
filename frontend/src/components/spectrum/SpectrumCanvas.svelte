@@ -5,7 +5,7 @@
     defaultSpectrumOptions,
     type SpectrumOptions,
   } from '../../lib/renderers/spectrum-renderer';
-  import { canvasBackingSize, readAncestorScale } from '../../lib/canvas/backing-store';
+  import { canvasBackingSize, readAncestorScale, watchDevicePixelRatio } from '../../lib/canvas/backing-store';
   interface Props {
     data: Uint8Array | null;
     options?: SpectrumOptions;
@@ -45,6 +45,13 @@
     rafId = requestAnimationFrame(draw);
   }
 
+  function applyBackingStore(): void {
+    const backing = canvasBackingSize(cssWidth, cssHeight, window.devicePixelRatio || 1, readAncestorScale(canvas));
+    canvas.width = backing.width;
+    canvas.height = backing.height;
+    canvas.getContext('2d')?.setTransform(backing.pixelScale, 0, 0, backing.pixelScale, 0, 0);
+  }
+
   function draw(): void {
     rafId = 0;
     if (!visible) return; // restarted by visibilitychange
@@ -82,21 +89,18 @@
       if (!rect) return;
       cssWidth = Math.max(1, Math.floor(rect.width));
       cssHeight = Math.max(1, Math.floor(rect.height));
-      const backing = canvasBackingSize(
-        cssWidth,
-        cssHeight,
-        window.devicePixelRatio || 1,
-        readAncestorScale(canvas),
-      );
-      canvas.width = backing.width;
-      canvas.height = backing.height;
-      canvas.getContext('2d')?.setTransform(backing.pixelScale, 0, 0, backing.pixelScale, 0, 0);
+      applyBackingStore();
       scheduleDraw();
     });
     ro.observe(canvas);
+    const stopPixelWatch = watchDevicePixelRatio(() => {
+      applyBackingStore();
+      scheduleDraw();
+    });
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);
+      stopPixelWatch();
       ro.disconnect();
       cancelAnimationFrame(rafId);
       rafId = 0;

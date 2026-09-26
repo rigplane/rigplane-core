@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { canvasBackingSize, readAncestorScale } from '../backing-store';
+import { describe, expect, it, vi } from 'vitest';
+import { canvasBackingSize, readAncestorScale, watchDevicePixelRatio } from '../backing-store';
 
 describe('canvasBackingSize', () => {
   it.each([
@@ -14,51 +14,58 @@ describe('canvasBackingSize', () => {
     expect(canvasBackingSize(320, 160, dpr, stageScale)).toEqual({ width, height, pixelScale: dpr * stageScale });
   });
 
-  it('floors a missing or non-positive scale at 1 so the store is never empty', () => {
-    expect(canvasBackingSize(10, 8, 0, 0)).toEqual({ width: 10, height: 8, pixelScale: 1 });
-    expect(canvasBackingSize(10, 8, Number.NaN, Number.NaN).width).toBe(10);
-  });
-
-  it('rounds a fractional product instead of truncating it', () => {
+  it('floors a missing scale at 1 and rounds a fractional product', () => {
+    expect(canvasBackingSize(10, 8, 0, Number.NaN)).toEqual({ width: 10, height: 8, pixelScale: 1 });
     expect(canvasBackingSize(100, 50, 1.25, 1.5)).toEqual({ width: 188, height: 94, pixelScale: 1.875 });
   });
 });
 
+function box(element: HTMLElement, layout: number, painted: number): void {
+  Object.defineProperty(element, 'offsetWidth', { configurable: true, value: layout });
+  Object.defineProperty(element, 'offsetHeight', { configurable: true, value: layout });
+  element.getBoundingClientRect = () => ({ width: painted, height: painted, left: 0, top: 0, right: painted, bottom: painted, x: 0, y: 0, toJSON() { return this; } }) as DOMRect;
+}
+
 describe('readAncestorScale', () => {
-  it('returns 1 when nothing between the canvas and the root is scaled', () => {
+  it.each([
+    [200, 200, 1],
+    [200, 400, 2],
+    [200, 300, 1.5],
+    [0, 0, 1],
+  ])('layout %s painted %s reads scale %s', (layout, painted, scale) => {
     const canvas = document.createElement('canvas');
-    document.body.appendChild(canvas);
+    box(canvas, layout, painted);
+    expect(readAncestorScale(canvas)).toBe(scale);
+  });
+
+  it('ignores a non-uniform stretch', () => {
+    const canvas = document.createElement('canvas');
+    Object.defineProperty(canvas, 'offsetWidth', { configurable: true, value: 200 });
+    Object.defineProperty(canvas, 'offsetHeight', { configurable: true, value: 200 });
+    canvas.getBoundingClientRect = () => ({ width: 400, height: 600, left: 0, top: 0, right: 400, bottom: 600, x: 0, y: 0, toJSON() { return this; } }) as DOMRect;
     expect(readAncestorScale(canvas)).toBe(1);
-    canvas.remove();
   });
+});
 
-  it('reads a uniform ancestor scale of 2 from the transform matrix', () => {
-    const stage = document.createElement('div');
-    stage.style.transform = 'scale(2)';
-    const canvas = document.createElement('canvas');
-    stage.appendChild(canvas);
-    document.body.appendChild(stage);
-    expect(readAncestorScale(canvas)).toBe(2);
-    stage.remove();
-  });
-
-  it('reads a translate-then-scale(1.5) the way ScaledStage writes it', () => {
-    const stage = document.createElement('div');
-    stage.style.transform = 'translate(12px, 4px) scale(1.5)';
-    const canvas = document.createElement('canvas');
-    stage.appendChild(canvas);
-    document.body.appendChild(stage);
-    expect(readAncestorScale(canvas)).toBe(1.5);
-    stage.remove();
-  });
-
-  it('ignores a non-uniform stretch and keeps only a uniform scale', () => {
-    const stretched = document.createElement('div');
-    stretched.style.transform = 'scale(2, 3)';
-    const canvas = document.createElement('canvas');
-    stretched.appendChild(canvas);
-    document.body.appendChild(stretched);
-    expect(readAncestorScale(canvas)).toBe(1);
-    stretched.remove();
+describe('watchDevicePixelRatio', () => {
+  it('fires on a resolution change and resubscribes at the new ratio', () => {
+    const listeners = new Map<string, () => void>();
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      addEventListener: (_type: string, listener: () => void) => { listeners.set(query, listener); },
+      removeEventListener: (_type: string, listener: () => void) => {
+        if (listeners.get(query) === listener) listeners.delete(query);
+      },
+    }));
+    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 1, writable: true });
+    const onChange = vi.fn();
+    const stop = watchDevicePixelRatio(onChange);
+    listeners.get('(resolution: 1dppx)')?.();
+    expect(onChange).toHaveBeenCalledTimes(1);
+    window.devicePixelRatio = 2;
+    listeners.get('(resolution: 2dppx)')?.();
+    expect(onChange).toHaveBeenCalledTimes(2);
+    stop();
+    expect(listeners.size).toBe(0);
+    vi.unstubAllGlobals();
   });
 });

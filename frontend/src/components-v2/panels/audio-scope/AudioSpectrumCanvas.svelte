@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { renderAudioSpectrum, AudioSpectrumRendererState, type SpectrumState } from './audio-spectrum-renderer';
   import type { ControlDisplayDomain, PbtRange } from '$lib/radio/filter-controls';
-  import { canvasBackingSize, readAncestorScale } from '../../../lib/canvas/backing-store';
+  import { canvasBackingSize, readAncestorScale, watchDevicePixelRatio } from '../../../lib/canvas/backing-store';
 
   interface Props {
     /** FFT pixel data from AudioFftScope (0-160 range) */
@@ -104,6 +104,13 @@
     scheduleDraw();
   }
 
+  function applyBackingStore(): void {
+    const backing = canvasBackingSize(cssWidth, cssHeight, window.devicePixelRatio || 1, readAncestorScale(canvas));
+    canvas.width = backing.width;
+    canvas.height = backing.height;
+    canvas.getContext('2d')?.setTransform(backing.pixelScale, 0, 0, backing.pixelScale, 0, 0);
+  }
+
   // A control/readout change must repaint even between FFT frames.
   $effect(() => {
     data; bandwidth; filterWidth; filterWidthMax; ifShift; pbtInner; pbtOuter;
@@ -126,22 +133,16 @@
       if (!rect) return;
       cssWidth = Math.max(1, Math.floor(rect.width));
       cssHeight = Math.max(1, Math.floor(rect.height));
-      const backing = canvasBackingSize(
-        cssWidth,
-        cssHeight,
-        window.devicePixelRatio || 1,
-        readAncestorScale(canvas),
-      );
-      canvas.width = backing.width;
-      canvas.height = backing.height;
-      canvas.getContext('2d')?.setTransform(backing.pixelScale, 0, 0, backing.pixelScale, 0, 0);
+      applyBackingStore();
       rendererState.reset();
       scheduleDraw();
     });
     ro.observe(canvas);
+    const stopPixelWatch = watchDevicePixelRatio(applyBackingStore);
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);
+      stopPixelWatch();
       ro.disconnect();
       cancelAnimationFrame(rafId);
       rafId = 0;
