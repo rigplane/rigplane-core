@@ -295,9 +295,13 @@ describe('IC-7300 fixture — handler dispatch through real factories (MOR-1418/
   });
 
   it('AF level: dispatches set_af_level on receiver 0', () => {
+    // MOR-1676 part A (AF): the unit-less call is the legacy normalized
+    // float, converted through the fixture's published raw domain
+    // (`controls.af_level` 0..255): round(0.5 * 255) = 128, dispatched as
+    // the untagged raw integer.
     expectFrames(
       () => makeRxAudioHandlers().onAfLevelChange(0.5),
-      [['set_af_level', { level: 0.5, receiver: 0, level_unit: 'normalized' }]],
+      [['set_af_level', { level: 128, receiver: 0 }]],
     );
   });
 

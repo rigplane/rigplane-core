@@ -218,13 +218,19 @@ const CASES: readonly KeyboardCase[] = [
   { action: 'toggle_xit', frames: [], gate: 'top-level ritTx unobserved' },
   { action: 'clear_rit_xit', frames: [], gate: 'top-level ritFreq unobserved' },
   { action: 'adjust_af_level', params: { delta: 5 },
+    // MOR-1676 part A (AF): the radio target steps in raw units against the
+    // fixture's published domain (`controls.af_level` 0..255) and dispatches
+    // the untagged raw int. The fixture's confirmed level is raw 1
+    // (`main.afLevel` = 1/255), so the expression below is 1 + 5 = 6 —
+    // derived from the profile's domain, not copied from a failure log.
     frames: [['set_af_level', {
-      level: Math.max(0, Math.min(1, probeAfLevel + 5 / (afLevelRange.raw_max - afLevelRange.raw_min))),
+      level: Math.round(
+        afLevelRange.raw_min + probeAfLevel * (afLevelRange.raw_max - afLevelRange.raw_min),
+      ) + 5,
       receiver: 0,
-      level_unit: 'normalized',
     }]],
-    gate: 'declared af-level-up binding ({delta:5}); main.afLevel observed; delta scaled against '
-      + 'caps.controls.af_level raw domain (MOR-1577, fixed)' },
+    gate: 'declared af-level-up binding ({delta:5}); main.afLevel observed; delta applied in '
+      + 'caps.controls.af_level raw units and dispatched as the untagged raw int (MOR-1676, fixed)' },
   { action: 'adjust_rf_gain', params: { delta: -5 },
     frames: [['set_rf_gain', {
       level: Math.round(Math.max(rfGainRange.raw_min, Math.min(rfGainRange.raw_max,
@@ -324,12 +330,19 @@ describe('IC-7300 fixture — keyboard action fan-out conformance (MOR-1563)', (
   // header ("explicit delta wins") is still intact after the fix, exercised
   // with a synthetic `{ direction }` param no fixture binding actually sends.
   it('HANDLER-CAPABILITY PROBE (not profile behavior, MOR-1577): adjust_af_level dispatches set_af_level given {direction}', () => {
+    // MOR-1676 part A (AF): the `direction` fallback steps round(0.05 * span)
+    // raw units against the fixture's published domain
+    // (`controls.af_level` 0..255, span 255) and dispatches the untagged raw
+    // int. The fixture's confirmed level is raw 1 (`main.afLevel` = 1/255),
+    // so the expression below is 1 + max(1, round(0.05 * 255)) = 1 + 13 = 14
+    // — derived from the profile's domain, not copied from a failure log.
     expectFrames(
       () => dispatchKeyboardRadioAction({ action: 'adjust_af_level', params: { direction: 'up' } }),
       [['set_af_level', {
-        level: Math.max(0, Math.min(1, probeAfLevel + 0.05)),
+        level: Math.round(
+          afLevelRange.raw_min + probeAfLevel * (afLevelRange.raw_max - afLevelRange.raw_min),
+        ) + Math.max(1, Math.round(0.05 * (afLevelRange.raw_max - afLevelRange.raw_min))),
         receiver: 0,
-        level_unit: 'normalized',
       }]],
     );
   });
