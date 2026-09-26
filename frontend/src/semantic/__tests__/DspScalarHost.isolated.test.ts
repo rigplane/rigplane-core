@@ -71,7 +71,7 @@ const view = (): RadioViewModel => withDsp(topologyFixtures['1/single']);
 
 type RendererNode = HTMLButtonElement & { readonly rendererLease: ContinuousScalarRendererLease };
 type Props = {
-  view: RadioViewModel; feedback: DspScalarFeedback; presentation: 'grouped' | 'independent' | 'nr';
+  view: RadioViewModel; feedback: DspScalarFeedback;   presentation: 'grouped' | 'independent' | 'nr' | 'notch-status';
   scalarPresentation?: Readonly<DspScalarPresentation>; nbLevelMax?: number;
   nbLevelPercent?: boolean; onLevelChange?: (field: DspScalarField, value: number) => void;
   scalarAppearance?: Skin; presentationIsCurrent?: () => boolean;
@@ -358,6 +358,97 @@ describe('two-scalar DSP family host', () => {
     lease.wheel({ direction: 1, fine: false });
     expect(lease.key({ key: 'ArrowRight', fine: false })).toBe(false);
     expect(r.onLevelChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+});
+
+describe('manual-notch pending status units (MOR-2635)', () => {
+  // The FTX-1's published `controls.manual_notch_freq` domain, as the
+  // view-model adapter already projects it: raw 1..320 ↔ 10..3200 Hz.
+  const FTX1_NOTCH_DOMAIN = { min: 10, max: 3200, step: 10, origin: 10 } as const;
+
+  function notchView(hz: number, domain?: typeof FTX1_NOTCH_DOMAIN): RadioViewModel {
+    const current = view();
+    return {
+      ...current,
+      dsp: {
+        ...current.dsp!,
+        notchFreq: {
+          ...current.dsp!.notchFreq,
+          reading: { status: 'known' as const, value: hz },
+        },
+        ...(domain === undefined ? {} : { notchFreqDomain: domain }),
+      },
+    };
+  }
+
+  function pendingNotch(confirmed: number, target: number): DspScalarFeedback {
+    return feedback({
+      notchFreq: commandFeedback('notchFreq', {
+        confirmed, target, requestedTarget: target,
+        phase: 'submitted', busy: true,
+        lifecycleId: 'notch-pending', transitionId: 'notch-submitted',
+        scope: Object.freeze({ control: 'notch-position', receiver: 0 }),
+      }),
+    });
+  }
+
+  function notchStatus(r: ReturnType<typeof render>): string {
+    return r.row('notchFreq')?.querySelector('[data-command-status]')?.textContent ?? '';
+  }
+
+  it('FTX-1: a decoded pending target shows 1600 Hz for requested and confirmed alike', () => {
+    const r = render({
+      presentation: 'notch-status',
+      scalarPresentation: { form: 'hbar' },
+      view: notchView(1600, FTX1_NOTCH_DOMAIN),
+      feedback: pendingNotch(1600, 1600),
+    });
+    const status = notchStatus(r);
+    expect(status).toContain('requested 1600');
+    expect(status).toContain('confirmed 1600');
+    r.dispose();
+  });
+
+  it('FTX-1 overlap: confirmed 160 Hz and requested 1600 Hz stay distinct', () => {
+    const r = render({
+      presentation: 'notch-status',
+      scalarPresentation: { form: 'hbar' },
+      view: notchView(160, FTX1_NOTCH_DOMAIN),
+      feedback: pendingNotch(160, 1600),
+    });
+    const status = notchStatus(r);
+    expect(status).toContain('requested 1600');
+    expect(status).toContain('confirmed 160');
+    expect(status).not.toContain('confirmed 1600');
+    r.dispose();
+  });
+
+  it('raw fallback: a published domain with a raw reading shows both halves raw', () => {
+    const r = render({
+      presentation: 'notch-status',
+      scalarPresentation: { form: 'hbar' },
+      view: notchView(40, FTX1_NOTCH_DOMAIN),
+      feedback: pendingNotch(40, 160),
+    });
+    const status = notchStatus(r);
+    expect(status).toContain('requested 160');
+    expect(status).toContain('confirmed 40');
+    expect(status).not.toContain('1600');
+    r.dispose();
+  });
+
+  it('IC-family: no published domain keeps requested and confirmed raw', () => {
+    const r = render({
+      presentation: 'notch-status',
+      scalarPresentation: { form: 'hbar' },
+      view: notchView(128),
+      feedback: pendingNotch(128, 160),
+    });
+    const status = notchStatus(r);
+    expect(status).toContain('requested 160');
+    expect(status).toContain('confirmed 128');
+    expect(status).not.toContain('1600');
     r.dispose();
   });
 });

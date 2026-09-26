@@ -595,9 +595,17 @@ export function getDspControlFeedback(
               : field === 'manualNotchWidth' ? 'manual-notch-width' : 'agc-time',
     receiver: field === 'nbWidth' || field === 'nbDepth' ? 0 as const : receiver,
   });
-  const feedback = projectControlFeedback(
+  const rawFeedback = projectControlFeedback(
     echoDescriptor, state, commands, scope, epoch, isCommandLifecycleSuperseded,
   );
+  // MOR-2635: the pending target is the raw CAT code the command dispatched.
+  // Decode it through the SAME resolved contract and the SAME source decision
+  // the confirmed reading uses. A reading that fell back to the raw field
+  // (no published domain, or the domain's field unusable) keeps the target raw.
+  const feedback = notchReading?.source === 'manualNotchFreq'
+    ? projectPendingTargetToDisplay(rawFeedback, (raw) =>
+      resolveControlContract(caps, 'manual_notch_freq').rawToDisplay(raw))
+    : rawFeedback;
   try {
     const view = toRadioViewModel(state, caps);
     if (session.state !== 'connected' || epoch < 0
@@ -678,6 +686,24 @@ export function projectControlFeedbackToDisplay(
     return unavailableControlFeedback(feedback);
   }
   return Object.freeze({ ...feedback, confirmed, target, requestedTarget });
+}
+
+/** MOR-2635: the confirmed slot is already display units (the echo above
+ *  decoded it). Only the pending target and its requested echo are still the
+ *  raw CAT code, so only those two are decoded. A null stays null; a raw the
+ *  contract rejects fails the whole feedback closed. */
+function projectPendingTargetToDisplay(
+  feedback: Readonly<ControlFeedback<number>>,
+  project: (raw: number) => number | null,
+): Readonly<ControlFeedback<number>> {
+  const target = feedback.target === null ? null : project(feedback.target);
+  const requestedTarget = feedback.requestedTarget === null
+    ? null : project(feedback.requestedTarget);
+  if ((feedback.target !== null && target === null)
+    || (feedback.requestedTarget !== null && requestedTarget === null)) {
+    return unavailableControlFeedback(feedback);
+  }
+  return Object.freeze({ ...feedback, target, requestedTarget });
 }
 
 /** Pure raw-to-display projection; descriptor-unit confirmation remains untouched. */
