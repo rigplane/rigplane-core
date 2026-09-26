@@ -56,12 +56,12 @@ describe('watchDevicePixelRatio', () => {
         if (listeners.get(query) === listener) listeners.delete(query);
       },
     }));
-    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 1, writable: true });
+    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 1 });
     const onChange = vi.fn();
     const stop = watchDevicePixelRatio(onChange);
     listeners.get('(resolution: 1dppx)')?.();
     expect(onChange).toHaveBeenCalledTimes(1);
-    window.devicePixelRatio = 2;
+    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 2 });
     listeners.get('(resolution: 2dppx)')?.();
     expect(onChange).toHaveBeenCalledTimes(2);
     stop();
