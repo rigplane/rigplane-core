@@ -182,8 +182,9 @@ export function dispatchRadioIntentWithResult(intent: RadioIntent): RadioIntentD
   const originalEpoch = getControlSession().epoch;
   const lifecycle = beginCommand({ id, name, params: params as Record<string, unknown>, originalEpoch });
   // MOR-1676 part A (AF): tag a float normalized AF level, never a raw int —
-  // the server's `_consume_normalized_level_unit` requires a 0.0-1.0 number
-  // once the tag is present, so a tagged int is rejected.
+  // a `level_unit: 'normalized'` tag forces the server to read the value as
+  // normalized 0.0..1.0 (an out-of-range tagged value is rejected), so an
+  // int must never be tagged.
   const afLevel = name === 'set_af_level'
     ? (params as Record<string, unknown>).level : undefined;
   const wireParams = specsByName.get(name)?.level === 'normalized'
