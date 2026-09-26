@@ -239,19 +239,59 @@
       feedback.availability, feedback.scope.control, feedback.scope.receiver, feedback.scope.slot,
     ]);
   }
+  function formatExactWidth(value: number): string {
+    return Number.isFinite(value) ? `${value} Hz` : '--- Hz';
+  }
+  function formatWidthAnnouncementText(
+    feedback: Readonly<CommandScalarFeedback>,
+    phase: Readonly<PoliteControlAnnouncement['phase']>,
+    error: string | null,
+  ): string {
+    const target = Number.isFinite(feedback.requestedTarget ?? Number.NaN)
+      ? String(feedback.requestedTarget) : '--- Hz';
+    const confirmed = formatExactWidth(feedback.confirmed ?? Number.NaN);
+    let message: string;
+    switch (phase) {
+      case 'submitted':
+      case 'queued':
+      case 'dispatched':
+      case 'awaiting-confirmation':
+        message = t('core.filter.width.pendingAnnouncement', { target });
+        break;
+      case 'confirmed':
+        message = t('core.filter.width.confirmedAnnouncement', { confirmed });
+        break;
+      case 'failed':
+        message = t('core.filter.width.failedAnnouncement', { target, confirmed });
+        break;
+      case 'timed-out':
+        message = t('core.filter.width.timedOutAnnouncement', { target, confirmed });
+        break;
+      case 'cancelled':
+        message = t('core.filter.width.cancelledAnnouncement', { target, confirmed });
+        break;
+      case 'superseded':
+        message = t('core.filter.width.supersededAnnouncement', { target, confirmed });
+        break;
+      default:
+        message = '';
+    }
+    return error === null || message.length === 0 ? message
+      : `${message.replace(/[.!?]$/, '')}: ${error}`;
+  }
   function nextFilterWidthAnnouncement(
     current: Readonly<ContinuousScalarView>,
     previous: IssuedAnnouncement | null,
   ): IssuedAnnouncement | null {
     const authorityKey = scalarAuthorityKey(current);
     const issued = current.presentation?.politeAnnouncement;
-    if (issued === null || issued === undefined || current.announcement === null) {
+    if (issued === null || issued === undefined || current.evidence !== 'command-feedback') {
       return previous?.authorityKey === authorityKey ? previous : null;
     }
     return Object.freeze({
       authorityKey,
       eventKey: JSON.stringify([authorityKey, issued.transitionId]),
-      text: current.error === null ? current.announcement : `${current.announcement}: ${current.error}`,
+      text: formatWidthAnnouncementText(current.feedback, issued.phase, current.error),
     });
   }
   let filterWidthAnnouncement: IssuedAnnouncement | null = $state(
@@ -523,7 +563,11 @@
               value={filterWidthView.displayed ?? numberOf(modeFilter.filterWidth, 0)}
               disabled={!filterWidthView.editable}
               data-command-phase={filterWidthView.phase ?? undefined}
-              aria-busy={filterWidthView.busy}
+              aria-busy={filterWidthView.evidence === 'command-feedback'
+                ? filterWidthView.presentation.attributes['aria-busy'] : undefined}
+              aria-valuenow={filterWidthView.canonical ?? undefined}
+              aria-valuetext={filterWidthView.canonical === null
+                ? undefined : formatExactWidth(filterWidthView.canonical)}
               oninput={(event) => filterWidthLease?.nativeInput(event.currentTarget.valueAsNumber)}
             />
           {/if}
@@ -666,6 +710,20 @@
   .filter-surface { display: flex; flex-direction: column; gap: 0.25rem; }
   .filter-level { display: flex; align-items: baseline; gap: 0.5rem; }
   .filter-level-name { min-width: 8ch; }
+  .filter-level[data-testid="filter-width"] input {
+    border: 1px solid CanvasText;
+  }
+  @media (forced-colors: active) {
+    .filter-level[data-testid="filter-width"] input { forced-color-adjust: none; }
+    .filter-level[data-testid="filter-width"] [data-control-feedback-status] {
+      forced-color-adjust: none;
+      color: CanvasText;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .filter-level[data-testid="filter-width"],
+    .filter-level[data-testid="filter-width"] * { transition: none; animation: none; }
+  }
   /* MOR-2640: the NARROW key's light — the same structural
      (forced-colors safe) weight the DSP toggles use, on the state
      attribute itself. */

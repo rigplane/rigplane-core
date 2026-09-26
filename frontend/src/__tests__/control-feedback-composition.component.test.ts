@@ -9,6 +9,7 @@
  *
  * Isolated pool by name (`*.component.test.ts`).
  */
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
@@ -149,14 +150,13 @@ function widthControl(): HTMLElement | null {
 
 function snapshot() {
   const control = widthControl();
-  const live = target.querySelector('[data-control-feedback-status], [data-filter-width-live]');
+  const live = target.querySelector('[data-testid="filter-width"] [data-control-feedback-status]');
   return {
     mounted: control !== null,
     phase: control?.getAttribute('data-command-phase') ?? null,
     busy: control?.getAttribute('aria-busy'),
-    canonical: control?.getAttribute('aria-valuenow') ?? control?.getAttribute('value'),
+    canonical: control?.getAttribute('aria-valuenow'),
     live: live?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
-    pending: target.querySelector('[data-pending-width-target]')?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
   };
 }
 
@@ -200,8 +200,9 @@ describe('one Filter Width lifecycle is equivalent on desktop, narrow mobile and
       expect(seen.phase).toBe('submitted');
       expect(seen.busy).toBe('true');
       expect(seen.canonical).toBe(String(CONFIRMED_HZ));
-      expect(seen.live).toContain('3000');
-      expect(seen.live).toMatch(/not yet confirmed|requested/i);
+      expect(seen.live).toBe(
+        'Filter width 3000 requested; not yet confirmed by the radio.',
+      );
     },
   );
 
@@ -219,7 +220,8 @@ describe('one Filter Width lifecycle is equivalent on desktop, narrow mobile and
       component = null;
       document.body.innerHTML = '';
       resetCommandLifecycle();
-      expect(setRadioState(liveState())).toBe(true);
+      resetRadioState();
+      expect(setRadioState(liveState(kind === 'desktop' ? 4 : kind === 'narrow-mobile' ? 5 : 6))).toBe(true);
     }
     expect(dispatched[0]).toEqual(dispatched[1]);
     expect(dispatched[1]).toEqual(dispatched[2]);
@@ -236,14 +238,16 @@ describe('structural feedback survives locale, forced-colors and reduced-motion 
     const seen = snapshot();
     expect(seen.phase).toBe('submitted');
     expect(seen.busy).toBe('true');
-    expect(seen.live).toMatch(/[А-Яа-я]/);
-    expect(seen.live).toContain('3000');
+    expect(seen.canonical).toBe(String(CONFIRMED_HZ));
+    expect(seen.live).toBe('Запрошена ширина фильтра 3000; радио ещё не подтвердило её.');
   });
 
-  it('keeps forced-colors and reduced-motion as structural rules, not the only signal', () => {
-    render('desktop');
-    const sheets = [...document.querySelectorAll('style')].map((node) => node.textContent ?? '').join('\n');
-    const source = sheets + (target.innerHTML.includes('forced-colors') ? '' : '');
-    expect(source.includes('@media (forced-colors: active)') || source.includes('prefers-reduced-motion')).toBe(true);
+  it('keeps forced-colors and reduced-motion as structural rules beside the phase attribute', () => {
+    const source = readFileSync('src/semantic/FilterSurface.svelte', 'utf8');
+    const widthRule = source.slice(source.indexOf('[data-testid="filter-width"]'));
+    expect(widthRule).toContain('@media (forced-colors: active)');
+    expect(widthRule).toContain('@media (prefers-reduced-motion: reduce)');
+    expect(widthRule).toContain('data-command-phase');
+    expect(widthRule).not.toContain('font-style: italic');
   });
 });
