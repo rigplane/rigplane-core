@@ -2251,11 +2251,13 @@ describe('per-receiver tuning (MOR-1335) — cross-dispatch is impossible', () =
     const onTuneFrequency = vi.fn();
     const t = mountSurface({ viewModel: model, onTuneFrequency });
     const digits = activeSlot(t).querySelectorAll<HTMLElement>('.digit');
+    // Same digit pick as the VfoPanel pin: the two '9's share the 100/10 MHz
+    // places, so the 1 MHz '8' is the step source.
     const mhzDigit = [...digits].find((digit) => digit.textContent === '8')!;
     mhzDigit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     mhzDigit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
     flushSync();
-    expect(onTuneFrequency).toHaveBeenCalledExactlyOnceWith('MAIN', 999_000_000);
+    expect(onTuneFrequency).toHaveBeenCalledExactlyOnceWith('MAIN', 999_999_000);
   });
 });
 

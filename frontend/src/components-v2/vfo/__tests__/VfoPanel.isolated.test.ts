@@ -644,10 +644,12 @@ describe('explicit presentation contract', () => {
       ...explicit, freq: 998_999_000, tuneMinHz: 30_000, tuneMaxHz: null, onFreqChange,
     });
     const digits = t.querySelectorAll<HTMLElement>('.digit');
+    // 998.999.000 renders as "998.999.000": two '9's share the 100/10 MHz
+    // places, and the 1 MHz digit is '8' — the step source, not '9'.
     const mhzDigit = [...digits].find((digit) => digit.textContent === '8')!;
     mhzDigit.click();
     mhzDigit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
-    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(999_000_000);
+    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(999_999_000);
   });
 
   it('contains no capability, runtime, or store imports', () => {
