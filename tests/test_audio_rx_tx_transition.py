@@ -35,7 +35,6 @@ from rigplane.types import AudioCodec
 from rigplane.web.radio_poller import (
     CommandQueue,
     PttOff,
-    PttOn,
     RadioPoller,
     _should_restart_rx,
 )
@@ -104,23 +103,6 @@ def poller(
 
 
 @pytest.mark.asyncio
-async def test_ptt_on_starts_tx_audio(
-    poller: RadioPoller, radio: SimpleNamespace
-) -> None:
-    """PTT ON должен запускать TX audio stream."""
-    # Execute PTT ON command directly
-    await poller._execute(PttOn())
-
-    # Verify TX audio started before PTT
-    radio.start_audio_tx_opus.assert_awaited_once()
-    radio.set_ptt.assert_awaited_once_with(True)
-
-    # Verify call order: audio first, then PTT
-    assert radio.start_audio_tx_opus.await_count == 1
-    assert radio.set_ptt.await_count == 1
-
-
-@pytest.mark.asyncio
 async def test_ptt_off_restarts_rx_audio(
     poller: RadioPoller, radio: SimpleNamespace
 ) -> None:
@@ -151,28 +133,6 @@ async def test_ptt_off_restarts_rx_audio(
 
 
 @pytest.mark.asyncio
-async def test_ptt_cycle_full_sequence(
-    poller: RadioPoller, radio: SimpleNamespace
-) -> None:
-    """Полный цикл PTT ON → PTT OFF должен корректно переключать audio streams."""
-    # PTT ON
-    await poller._execute(PttOn())
-
-    assert radio.start_audio_tx_opus.await_count == 1
-    assert radio.set_ptt.call_args_list[-1][0][0] is True  # Last call was True
-
-    # PTT OFF
-    await poller._execute(PttOff())
-
-    assert radio.stop_audio_tx_opus.await_count == 1
-    assert radio.set_ptt.call_args_list[-1][0][0] is False  # Last call was False
-
-    # CRITICAL: RX audio должен быть восстановлен через bus (MOR-506)
-    assert radio.audio_bus.restart_rx.await_count == 1
-    radio.start_audio_rx_opus.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_ptt_off_handles_audio_errors_gracefully(
     poller: RadioPoller, radio: SimpleNamespace
 ) -> None:
@@ -186,24 +146,6 @@ async def test_ptt_off_handles_audio_errors_gracefully(
 
     # PTT still turned off despite audio errors
     radio.set_ptt.assert_awaited_once_with(False)
-
-
-@pytest.mark.asyncio
-async def test_multiple_ptt_cycles(poller: RadioPoller, radio: SimpleNamespace) -> None:
-    """Множественные PTT циклы должны работать стабильно."""
-    for i in range(3):
-        # PTT ON
-        await poller._execute(PttOn())
-
-        # PTT OFF
-        await poller._execute(PttOff())
-
-    # Each cycle should call all methods
-    assert radio.start_audio_tx_opus.await_count == 3
-    assert radio.stop_audio_tx_opus.await_count == 3
-    assert radio.audio_bus.restart_rx.await_count == 3  # RX re-armed via bus
-    radio.start_audio_rx_opus.assert_not_awaited()
-    assert radio.set_ptt.await_count == 6  # 3 ON + 3 OFF
 
 
 @pytest.mark.asyncio
@@ -224,11 +166,8 @@ async def test_ptt_cycle_uses_pcm_when_audio_contract_tx_codec_is_pcm(
         tx_sample_rate_source=AudioConfigSource.PROFILE_DEFAULT,
     )
 
-    await poller._execute(PttOn())
     await poller._execute(PttOff())
 
-    radio.start_audio_tx_pcm.assert_awaited_once_with(sample_rate=16000)
-    radio.start_audio_tx_opus.assert_not_awaited()
     radio.stop_audio_tx_pcm.assert_awaited_once()
     radio.stop_audio_tx_opus.assert_not_awaited()
 
@@ -251,20 +190,6 @@ def _make_neutral_radio(duplex_mode: str | None = "full") -> SimpleNamespace:
     if duplex_mode is not None:
         radio.audio_duplex_mode = duplex_mode
     return radio
-
-
-@pytest.mark.asyncio
-async def test_ptt_on_neutral_radio_uses_start_tx() -> None:
-    """PTT ON on a neutral radio calls start_tx() with no codec branching."""
-    radio = _make_neutral_radio()
-    poller = RadioPoller(radio, StateCache(), CommandQueue())
-
-    await poller._execute(PttOn())
-
-    radio.start_tx.assert_awaited_once_with()
-    radio.start_audio_tx_opus.assert_not_awaited()
-    radio.start_audio_tx_pcm.assert_not_awaited()
-    radio.set_ptt.assert_awaited_once_with(True)
 
 
 @pytest.mark.asyncio
@@ -302,10 +227,8 @@ async def test_legacy_radio_without_neutral_methods_uses_codec_fallback(
     assert not hasattr(radio, "start_tx")
     assert not hasattr(radio, "stop_tx")
 
-    await poller._execute(PttOn())
     await poller._execute(PttOff())
 
-    radio.start_audio_tx_opus.assert_awaited_once()
     radio.stop_audio_tx_opus.assert_awaited_once()
     radio.audio_bus.restart_rx.assert_awaited_once()
 
@@ -433,7 +356,6 @@ async def test_ptt_off_does_not_clobber_audio_bus_subscriber() -> None:
     radio.deliver(pkt)
     assert sub.get_nowait() is pkt
 
-    await poller._execute(PttOn())
     await poller._execute(PttOff())
 
     pkt2 = AudioPacket(ident=0x01, send_seq=2, data=b"frame2")

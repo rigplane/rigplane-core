@@ -469,10 +469,8 @@ async def test_webrtc_control_handler_receives_explicit_exact_authority(
 
 
 def test_managed_web_ptt_cannot_reach_legacy_control_producers() -> None:
-    run_source = inspect.getsource(ControlHandler.run)
     enqueue_source = inspect.getsource(ControlHandler._enqueue_command)
 
-    assert "_release_ptt_on_teardown" not in run_source
     assert enqueue_source.index("_MANAGED_PTT_COMMANDS") < enqueue_source.index(
         "_command_service.execute"
     )

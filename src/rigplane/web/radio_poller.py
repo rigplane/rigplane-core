@@ -105,7 +105,6 @@ from ..core.radio_protocol import (
 )
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_store import FreshnessState, StateSnapshot, StateStore
-from ..core.tx_safety import BACKEND_MAX_KEY_DOWN_SECONDS, TxOutcome
 from ..core.tx_target import (
     KnownTxTarget,
     TxReceiver,
@@ -119,7 +118,8 @@ from ..runtime._state_queries import (
     tx_target_max_age,
     wire_parts_for_query,
 )
-from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
+from ..runtime.managed_tx_ingress import bind_managed_tx
+from ..types import AudioCodec
 from ..runtime.tx_interlock import (
     DeferredTxCommandLane,
     RfState,
@@ -130,7 +130,6 @@ from ..runtime.tx_interlock import (
     evaluate_tx_interlock,
     get_tx_interlock_command_family_metadata,
 )
-from ..types import AudioCodec
 
 if TYPE_CHECKING:
     from ..radio_protocol import Radio
@@ -234,8 +233,6 @@ _WEB_IMMEDIATE_BLOCK_FAMILIES = (
 )
 
 
-_KEY_ACCEPTED = frozenset({TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT})  # lease is ours
-
 # MOR-1181: how long the shutdown TX-safety drain may hold teardown open.
 # ``CoreRadio._shutdown_managed_tx``'s doctrine — a wedged rig must not hold
 # shutdown open, since closing the socket is itself the de-key of last resort —
@@ -243,15 +240,6 @@ _KEY_ACCEPTED = frozenset({TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT})  # lease i
 # the disconnect that then spends that 5 s on the managed release. 2.0 s matches
 # every other bound there and dwarfs a fire-and-forget CI-V unkey.
 _SHUTDOWN_TX_DRAIN_TIMEOUT_S: float = 2.0
-
-# MOR-1220: max key-down for a radio that arms NO supervisor — every shipped
-# serial/USB Icom backend (``_IcomSerialRadioBase.connect`` never calls
-# ``_arm_managed_tx``). Since MOR-1011/1012 deleted the frontend's 3-minute
-# ``PTT_SAFETY_MS`` timers those rigs had NO key-down bound anywhere in the
-# product. Restored here, where the key is issued, at the managed watchdog's own
-# duration — imported, not re-spelled. The managed path keeps its own bound; a
-# key this poller never issued is not its to time out.
-_MAX_KEY_DOWN_SECONDS: float = BACKEND_MAX_KEY_DOWN_SECONDS
 
 # MOR-874: how long a healthy-link in-flight acquisition request may stay
 # suppressed after its FIRST send-relative deadline expiry before being
@@ -619,14 +607,6 @@ class RadioPoller:
         # MOR-615: (main, sub) data_mode pair seen at the last MOD-input fetch;
         # a change triggers a refetch of the per-DATA-group MOD-input sources.
         self._mod_input_data_modes: tuple[int, int] | None = None
-        # MOR-1220: the unmanaged max-key-down backstop. Per-instance, so a new
-        # connect starts unarmed; overridable for tests.
-        self._max_key_down_seconds: float = _MAX_KEY_DOWN_SECONDS
-        self._max_key_down_timer: asyncio.TimerHandle | None = None
-        # MOR-1878: identity of the session whose key-ON this poller last wrote
-        # on the unmanaged branch, so automated teardown housekeeping releases
-        # only its own keyer. A single remembered identity, not a lease.
-        self._last_keyer: tuple[CommandSource, str | None] | None = None
         self._deferred_tx_lane = DeferredTxCommandLane()
         self._deferred_tx_entry: CommandQueueEntry | None = None
 
@@ -946,65 +926,6 @@ class RadioPoller:
             **params,
         )
 
-    def teardown_unkey_permitted(
-        self, source: CommandSource, session_id: str | None
-    ) -> bool:
-        """Whether an automated teardown unkey from this session may enqueue.
-
-        MOR-1878: deliberate operator unkeys never consult this — I1 (PTT OFF
-        always attemptable) covers operator action; this gate exists solely so
-        one session's teardown housekeeping cannot drop another session's live
-        transmission on an unmanaged rig. The bias is toward the unkey: no
-        recorded keyer, an observed OFF (nothing left to protect — the stale
-        record is voided), or the keyer itself tearing down all permit it.
-        Only a live record naming a DIFFERENT session withholds it.
-        """
-        keyer = self._last_keyer
-        if keyer is None:
-            return True
-        if self._current_rf_state() is RfState.RX:
-            self._last_keyer = None
-            return True
-        return keyer == (source, session_id)
-
-    def _arm_max_key_down(self, source: CommandSource, session_id: str | None) -> None:
-        """Bound a key this poller just issued on an unmanaged radio (MOR-1220).
-
-        Restart-on-key: a re-key replaces the pending bound. The key's ingress
-        identity rides along, so the forced unkey binds what the operator's own
-        unkey would have.
-        """
-        self._cancel_max_key_down()
-        seconds = self._max_key_down_seconds
-        self._max_key_down_timer = asyncio.get_running_loop().call_later(
-            seconds, self._on_max_key_down, seconds, source, session_id
-        )
-
-    def _cancel_max_key_down(self) -> None:
-        """Disarm the backstop; safe to call when nothing is armed."""
-        if self._max_key_down_timer is not None:
-            self._max_key_down_timer.cancel()
-            self._max_key_down_timer = None
-
-    def _on_max_key_down(
-        self, seconds: float, source: CommandSource, session_id: str | None
-    ) -> None:
-        """Force the unkey the operator did not send.
-
-        ENQUEUED, never written here: the loop then gives it the audio teardown
-        and the managed/legacy split every other unkey gets, and a shutdown
-        racing this expiry finds a ``PttOff`` in the queue — exactly what
-        MOR-1181's drain exists to deliver.
-        """
-        self._max_key_down_timer = None
-        logger.error(
-            "radio-poller: max key-down (%gs) exceeded on unmanaged radio; "
-            "forcing unkey",
-            seconds,
-        )
-        self._queue.put(PttOff(), source=source, session_id=session_id)
-        self._emit("tx_max_key_down", {"seconds": seconds, "session_id": session_id})
-
     def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
@@ -1029,12 +950,6 @@ class RadioPoller:
         caller keeps the poller and awaits :meth:`drain_tx_safety_commands` once
         those tasks have been gathered (MOR-1181, ``stop_web_server``).
         """
-        # MOR-1220: an unfired backstop must not outlive its poller. What it
-        # enqueued BEFORE this survives — a ``PttOff`` the final drain still
-        # delivers — but minting one after promises what nothing is left to keep.
-        # On this path the teardown ``PttOff`` is the whole cover for an
-        # unmanaged rig: ``CoreRadio.disconnect`` de-keys the managed path only.
-        self._cancel_max_key_down()
         if self._connection_generation_bound:
             self._queue.unbind_connection_generation(
                 self._connection_generation_capture
@@ -1879,10 +1794,6 @@ class RadioPoller:
             # transmitter. Covers every cancellation of this task; the shutdown
             # ORDERING — the teardown unkey is not enqueued until long after
             # this runs — is the caller's half, in ``stop_web_server``.
-            # MOR-1220: same disarm as ``stop()`` — this covers cancellations
-            # that never went through it. Ahead of the drain, which still
-            # delivers an expiry already in the queue.
-            self._cancel_max_key_down()
             await self.drain_tx_safety_commands()
         except Exception:
             logger.exception(
@@ -2033,33 +1944,6 @@ class RadioPoller:
         """
         return bind_managed_tx(self._radio, source, session_id)
 
-    def _refuse_key_from_gone_session(
-        self, source: CommandSource, session_id: str | None
-    ) -> None:
-        """Reject a key enqueued by a control session that is already gone.
-
-        The entry outlives its author: a session can enqueue PTT ON and drop
-        before this drain, and the supervisor grants a lease to any owner, alive
-        or dead. Gated on the same pair as ``_managed_tx`` — only a websocket
-        session publishes liveness, and ``session_id is None`` (HTTP PTT)
-        carries none to check, so it passes through. ON only: an unkey refused
-        for being late would strand the rig keyed.
-
-        That last sentence is the whole reason the teardown unkey is safe, and
-        it is the only reason: since MOR-1185 it arrives carrying its session's
-        id, and by drain time that session is already unregistered. Hoisting
-        this call anywhere the ``PttOff`` arm can reach would strand a keyed
-        rig on every disconnect.
-
-        This narrows the window; it does not close it. A session can still die
-        between this check and the write it guards.
-        """
-        if source != "websocket" or not session_id:
-            return
-        if self._queue.session_is_live(session_id):
-            return
-        raise CommandError(f"control session {session_id} is gone: PTT ON refused")
-
     async def _stop_tx_audio_leg(self) -> None:
         """Stop the TX audio stream and re-arm RX; never raises."""
         radio = self._radio
@@ -2110,8 +1994,6 @@ class RadioPoller:
             source=source,
             session_id=session_id,
         )
-        if self._managed_tx_authority is not None and isinstance(cmd, PttOn):
-            raise CommandError("managed PTT ON requires a positive TX queue submission")
         if isinstance(cmd, CommandIntent):
             await execute_command_intent(
                 self._radio,
@@ -2417,104 +2299,6 @@ class RadioPoller:
                     self._on_state_event(
                         "filter_shape_changed", {"shape": shape, "receiver": rx}
                     )
-            case PttOn():
-                # Before the log line, the TX audio leg, and the lease: a
-                # refused key must leave no trace on the air or in the rig.
-                self._refuse_key_from_gone_session(command_source, session_id)
-                logger.info("poller: PTT ON")
-                managed = self._managed_tx(command_source, session_id)
-                # Start TX audio stream before PTT (LAN audio requires this)
-                if CAP_AUDIO in self._caps:
-                    try:
-                        start_tx = getattr(radio, "start_tx", None)
-                        if start_tx is not None:
-                            # Neutral AudioTransport surface (MOR-543): the
-                            # backend resolves the TX format from its
-                            # negotiated contract.
-                            await start_tx()
-                            logger.info(
-                                "poller: TX audio stream started (neutral start_tx)"
-                            )
-                        else:
-                            # Legacy per-codec fallback for radios without
-                            # the neutral surface.
-                            tx_codec, tx_sr = _audio_tx_codec_and_rate(radio)
-                            if tx_codec == AudioCodec.PCM_1CH_16BIT:
-                                await radio.start_audio_tx_pcm(sample_rate=tx_sr)
-                            else:
-                                await radio.start_audio_tx_opus()
-                            logger.info(
-                                "poller: TX audio stream started (tx_codec=%s, sr=%d)",
-                                tx_codec,
-                                tx_sr,
-                            )
-                    except Exception as e:
-                        # MOR-1178: a failed arm refuses the key. Swallowed, it
-                        # fell through to the write below and keyed a rig whose
-                        # modulation path is dead — an unmodulated carrier the
-                        # operator believes is a transmission — and did so
-                        # before any lease existed to record it. So disarm the
-                        # half-armed leg and refuse, exactly as the two
-                        # refusals below: a refused key leaves no trace on the
-                        # air, and costs one reported, recoverable transmission
-                        # where a silent carrier costs airtime nobody can see.
-                        logger.warning(
-                            "poller: refusing PTT ON: start TX audio failed: %s", e
-                        )
-                        await self._stop_tx_audio_leg()
-                        raise CommandError(
-                            f"TX audio failed to arm, refusing PTT ON: {e}"
-                        ) from e
-                if managed is None:
-                    # Binding nothing is two findings, and only one may reach
-                    # the raw write: an unmanaged rig (every shipped
-                    # serial/USB Icom backend this poller serves; bounded
-                    # below by MOR-1220's 180s backstop, full managed arm
-                    # pending MOR-1219), or an ingress with no owner a lease could be
-                    # released against — which on a managed rig would key with
-                    # no lease, no owner and no watchdog, the unsupervised
-                    # bypass management exists to close. Resolving a supervisor
-                    # is backend code that can fail (MOR-1187) and runs with the
-                    # TX audio leg above already armed, so refusal and failed
-                    # resolution alike disarm it on the way out, mirroring the
-                    # managed refusal below: a refused key leaves no trace on
-                    # the air.
-                    try:
-                        if refuse_key_without_owner(radio, command_source, session_id):
-                            logger.warning(
-                                "poller: refusing PTT ON from %s ingress: this "
-                                "radio is managed and the request carries no "
-                                "releasable owner",
-                                command_source,
-                            )
-                            raise CommandError(
-                                f"managed TX refused PTT ON from {command_source}: "
-                                "no owner identity to hold the lease"
-                            )
-                    except BaseException:
-                        await self._stop_tx_audio_leg()
-                        raise
-                    await radio.set_ptt(True)
-                    # MOR-1220: only now, and only here. After the write, so a
-                    # key that never reached the rig arms no bound; on this arm
-                    # only, so the managed path keeps the supervisor's watchdog
-                    # as its single bound and an EXTERNAL key stays untouched.
-                    self._arm_max_key_down(command_source, session_id)
-                    # MOR-1878: same placement discipline as the bound above.
-                    # The managed branch records nothing — its lease already
-                    # answers STALE to a non-owner's release.
-                    self._last_keyer = (command_source, session_id)
-                else:
-                    transition = await managed.set_ptt(True)
-                    if transition.outcome not in _KEY_ACCEPTED:
-                        # The TX audio leg above is armed but the rig is not
-                        # ours: disarm it, or modulation keeps flowing towards
-                        # a rig nobody keyed. Reported, never swallowed — the
-                        # operator must not believe they are on the air.
-                        await self._stop_tx_audio_leg()
-                        raise CommandError(
-                            f"managed TX rejected PTT ON: {transition.outcome}"
-                        )
             case PttOff():
                 logger.info("poller: PTT OFF")
                 # The unkey is a fire-and-forget CI-V write and can raise
@@ -2532,11 +2316,9 @@ class RadioPoller:
                 try:
                     managed = self._managed_tx(command_source, session_id)
                     if managed is None:
-                        # No owner gate here, and there must never be one: the
-                        # key arm above refuses an ownerless ingress, but an
-                        # unkey refused for the same reason strands a keyed
-                        # transmitter with nobody able to take it off the air
-                        # (the ``_refuse_key_from_gone_session`` asymmetry).
+                        # No owner gate here, and there must never be one: an
+                        # unkey refused for lacking an owner strands a keyed
+                        # transmitter with nobody able to take it off the air.
                         # Ownerless de-keys keep the unconditional legacy write.
                         await radio.set_ptt(False)
                     else:
@@ -2544,16 +2326,7 @@ class RadioPoller:
                         # another owner holds the lease. Neither is actionable,
                         # and raising would break defensive unkeys in ``finally``.
                         await managed.set_ptt(False)
-                    # MOR-1220: every unkey this poller issues disarms the
-                    # backstop — operator, teardown and drain all reach here.
-                    # Below the write, never in the ``finally``: an unkey that
-                    # RAISED left the rig keyed, and must not drop the bound.
-                    self._cancel_max_key_down()
                 finally:
-                    # MOR-1878: cleared on the ATTEMPT, not on success — if the
-                    # unkey write raised, the rig may still be keyed and the
-                    # next teardown must be free to send OFF again.
-                    self._last_keyer = None
                     await self._stop_tx_audio_leg()
             case SetPower(level=level, unit=unit):
                 if unit != "raw_255":

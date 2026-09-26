@@ -1,15 +1,9 @@
-"""Tests for control-session teardown (MOR-624/MOR-993/MOR-1013).
+"""Tests for control-session MOD-input bookkeeping (MOR-624/MOR-993).
 
-Two concerns share the teardown path and are deliberately kept apart:
-
-* **PTT release** — a writable session that disconnects always requests PTT
-  OFF. Unkeying is the safe direction, so no session state may gate it
-  (MOR-1013). Read-only sessions are excluded: ``ptt_off`` is a
-  ``_TX_COMMANDS`` member they may never issue, so they cannot have keyed.
-* **MOD-input bookkeeping** — the frontend auto-LAN feature (MOR-618) arms a
-  restore at TX start and disarms it on a clean TX stop. Teardown consumes the
-  arm and discards it; no command outcome or queue ordering authorizes a
-  previous-source MOD SET (MOR-993).
+The frontend auto-LAN feature (MOR-618) arms a restore at TX start and
+disarms it on a clean TX stop. Teardown consumes the arm and discards it; no
+command outcome or queue ordering authorizes a previous-source MOD SET
+(MOR-993).
 """
 
 from __future__ import annotations
@@ -21,9 +15,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from rigplane.profiles import resolve_radio_profile
 from rigplane.web.handlers.control import ControlHandler
-from rigplane.web.radio_poller import CommandQueue, PttOff, PttOn, RadioPoller
+from rigplane.web.radio_poller import CommandQueue
 
 
 _MOD_COMMANDS = (
@@ -49,12 +42,6 @@ def _make_handler(*, read_only: bool = False) -> tuple[ControlHandler, CommandQu
     return handler, command_queue
 
 
-def _teardown(handler: ControlHandler) -> None:
-    """Run the teardown steps in the same order as ``run()``'s finally block."""
-    handler._release_ptt_on_teardown()
-    handler._clear_mod_input_restore_on_teardown()
-
-
 def _make_run_handler(*, unregister: Any = None) -> tuple[ControlHandler, CommandQueue]:
     """Build a handler whose ``run()`` reaches teardown on the first ``recv``."""
     command_queue = CommandQueue()
@@ -75,22 +62,6 @@ def _make_run_handler(*, unregister: Any = None) -> tuple[ControlHandler, Comman
             build_state_update_envelope=MagicMock(return_value={}),
         ),
     ), command_queue
-
-
-def _provider_poller(error: Exception | None) -> tuple[RadioPoller, MagicMock]:
-    radio = MagicMock()
-    radio.profile = resolve_radio_profile(model="IC-7610")
-    radio.capabilities = set(radio.profile.capabilities) - {"audio"}
-    # No managed TX runtime: the teardown unkey under test is the legacy
-    # ``set_ptt`` write. ``None`` reads unmanaged on every interpreter; a bare
-    # Mock does not, because runtime-checkable protocols use hasattr on 3.11
-    # and getattr_static on 3.12+ (gh-102433).
-    # Full note: the ``mock_radio`` fixture in tests/test_web_server.py.
-    radio.managed_tx = None
-    radio.set_ptt = AsyncMock(side_effect=error)
-    for name in _MOD_COMMANDS:
-        setattr(radio, name, AsyncMock())
-    return RadioPoller(radio, CommandQueue()), radio
 
 
 class TestArmDisarm:
@@ -158,22 +129,6 @@ class TestArmDisarm:
 class TestTeardownModRestoreInvariant:
     """MOR-993: teardown may never replay the remembered MOD SET."""
 
-    @pytest.mark.parametrize("command", _MOD_COMMANDS)
-    def test_teardown_when_armed_enqueues_ptt_off_and_no_mod_set(
-        self, command: str
-    ) -> None:
-        handler, q = _make_handler()
-        handler._apply_mod_input_restore_cmd(
-            "arm_mod_input_restore",
-            {"command": command, "source": 0},
-        )
-
-        _teardown(handler)
-
-        # Exact list equality: a MOD SET of any kind would show up here.
-        assert q.drain() == [PttOff()]
-        assert handler._mod_input_restore is None
-
     def test_clearing_bookkeeping_never_enqueues_anything(self) -> None:
         handler, q = _make_handler()
         handler._apply_mod_input_restore_cmd(
@@ -185,156 +140,6 @@ class TestTeardownModRestoreInvariant:
 
         assert handler._mod_input_restore is None
         assert q.drain() == []
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "error",
-        [
-            None,
-            TimeoutError("OFF timed out"),
-            ConnectionError("radio unreachable"),
-            RuntimeError("provider failure"),
-        ],
-        ids=["success", "timeout", "unreachable", "provider-failure"],
-    )
-    async def test_off_outcome_never_invokes_mod_provider(
-        self, error: Exception | None
-    ) -> None:
-        handler, q = _make_handler()
-        handler._apply_mod_input_restore_cmd(
-            "arm_mod_input_restore",
-            {"command": "set_data3_mod_input", "source": 3},
-        )
-        _teardown(handler)
-        commands = q.drain()
-        assert commands == [PttOff()]
-
-        poller, radio = _provider_poller(error)
-        try:
-            await poller._execute(commands[0])
-        except Exception as exc:
-            assert exc is error
-        radio.set_ptt.assert_awaited_once_with(False)
-        for name in _MOD_COMMANDS:
-            getattr(radio, name).assert_not_awaited()
-
-
-class TestTeardownPttRelease:
-    """MOR-1013: the teardown unkey is not gated on any session state."""
-
-    def test_teardown_when_not_armed_enqueues_ptt_off(self) -> None:
-        """Behaviour change: this used to assert that nothing was enqueued.
-
-        A session that keyed but never armed a MOD restore previously
-        disconnected with no PTT OFF at all, leaving the rig transmitting.
-        """
-        handler, q = _make_handler()
-
-        _teardown(handler)
-
-        assert q.drain() == [PttOff()]
-
-    def test_teardown_after_disarm_enqueues_ptt_off(self) -> None:
-        """A clean TX stop disarms; the teardown unkey must survive it."""
-        handler, q = _make_handler()
-        handler._apply_mod_input_restore_cmd(
-            "arm_mod_input_restore",
-            {"command": "set_data1_mod_input", "source": 2},
-        )
-        handler._apply_mod_input_restore_cmd("disarm_mod_input_restore", {})
-
-        _teardown(handler)
-
-        assert q.drain() == [PttOff()]
-
-    def test_keyed_session_without_arm_is_released_on_teardown(self) -> None:
-        """The reported defect: key via ptt_on, never arm, then disconnect."""
-        handler, q = _make_handler()
-
-        handler._enqueue_rc_power("ptt_on", {}, q, handler._radio)
-        assert handler._mod_input_restore is None
-        _teardown(handler)
-
-        assert q.drain() == [PttOn(), PttOff()]
-
-    def test_release_is_not_suppressed_by_prior_release(self) -> None:
-        """No consume-once flag: re-entering teardown re-requests the unkey.
-
-        Idempotency state would be another gate able to swallow the release;
-        a duplicate OFF is harmless, a missing one is not.
-        """
-        handler, q = _make_handler()
-
-        _teardown(handler)
-        _teardown(handler)
-
-        assert q.drain() == [PttOff(), PttOff()]
-
-    def test_read_only_teardown_enqueues_nothing(self) -> None:
-        """A read-only session may never issue ptt_off, so it cannot have keyed.
-
-        Releasing here would de-key whoever is actually transmitting.
-        """
-        handler, q = _make_handler(read_only=True)
-
-        _teardown(handler)
-
-        assert q.drain() == []
-
-    def test_teardown_without_server_does_not_raise(self) -> None:
-        handler = ControlHandler(
-            ws=MagicMock(),
-            radio=MagicMock(),
-            server_version="test",
-            radio_model="IC-7610",
-            server=None,
-        )
-
-        _teardown(handler)
-
-        assert handler._mod_input_restore is None
-
-    def test_teardown_without_command_queue_does_not_raise(self) -> None:
-        handler = ControlHandler(
-            ws=MagicMock(),
-            radio=MagicMock(),
-            server_version="test",
-            radio_model="IC-7610",
-            server=SimpleNamespace(),
-        )
-
-        _teardown(handler)
-
-        assert handler._mod_input_restore is None
-
-    def test_teardown_survives_queue_put_failure(self) -> None:
-        """Teardown stays bounded: an enqueue failure must not escape."""
-        queue = MagicMock()
-        queue.put.side_effect = RuntimeError("queue is gone")
-        handler = ControlHandler(
-            ws=MagicMock(),
-            radio=MagicMock(),
-            server_version="test",
-            radio_model="IC-7610",
-            server=SimpleNamespace(command_queue=queue),
-        )
-        handler._apply_mod_input_restore_cmd(
-            "arm_mod_input_restore",
-            {"command": "set_data1_mod_input", "source": 1},
-        )
-
-        _teardown(handler)
-
-        # MOR-1185: enqueued through the metadata wrapper, so the entry carries
-        # this session's stable id — the owner a managed release has to match.
-        assert queue.put.call_count == 1
-        args, kwargs = queue.put.call_args
-        assert args == (PttOff(),)
-        assert (kwargs["source"], kwargs["session_id"]) == (
-            "websocket",
-            handler._session_id,
-        )
-        assert handler._mod_input_restore is None
 
 
 class TestRunTeardownWiring:
@@ -352,19 +157,17 @@ class TestRunTeardownWiring:
         handler._ws.send_text = AsyncMock(
             side_effect=[None, None, ConnectionResetError("egress socket closed")]
         )
-        handler._enqueue_rc_power("ptt_on", {}, q, handler._radio)
         handler._event_queue.put_nowait({"type": "state_update"})
         with pytest.raises(ConnectionResetError):
             await handler.run()
-        assert q.drain() == [PttOn()]
+        assert q.drain() == []
 
     @pytest.mark.asyncio
     async def test_unregister_failure_does_not_add_a_legacy_release(self) -> None:
         handler, q = _make_run_handler(unregister=MagicMock(side_effect=RuntimeError))
-        handler._enqueue_rc_power("ptt_on", {}, q, handler._radio)
         with pytest.raises(RuntimeError):
             await handler.run()
-        assert q.drain() == [PttOn()]
+        assert q.drain() == []
 
 
 class TestCommandRouting:
@@ -400,171 +203,9 @@ class TestCommandRouting:
                 "id": "x",
             }
         )
-        _teardown(handler)
+        handler._clear_mod_input_restore_on_teardown()
 
         assert handler._mod_input_restore is None
         assert not q.has_commands
         sent: Any = handler._ws.send_text.await_args.args[0]
         assert '"ok":true' in sent and '"armed":false' in sent
-
-
-class TestKeyerAttributedTeardown:
-    """MOR-1878: an automated teardown unkey releases only its own keyer.
-
-    Deliberate operator unkeys never consult the record — I1 (PTT OFF always
-    attemptable) applies to operator action; this gate covers housekeeping only.
-    """
-
-    @staticmethod
-    def _wired(
-        *, sessions: tuple[str, ...]
-    ) -> tuple[list[ControlHandler], CommandQueue, RadioPoller, MagicMock]:
-        from rigplane.core.state_store import StateStore
-
-        command_queue = CommandQueue()
-        radio = MagicMock()
-        radio.profile = resolve_radio_profile(model="IC-7610")
-        radio.capabilities = set(radio.profile.capabilities) - {"audio"}
-        radio.managed_tx = None  # unmanaged: the MOR-1878 path under test
-        radio.set_ptt = AsyncMock()
-        store = StateStore()
-        store.begin_provider_generation()
-        poller = RadioPoller(radio, command_queue, state_store=store)
-        server = SimpleNamespace(command_queue=command_queue, _radio_poller=poller)
-        handlers = [
-            ControlHandler(
-                ws=MagicMock(),
-                radio=radio,
-                server_version="test",
-                radio_model="IC-7610",
-                server=server,
-                session_id=session,
-            )
-            for session in sessions
-        ]
-        return handlers, command_queue, poller, radio
-
-    @classmethod
-    async def _key(cls, poller: RadioPoller, session_id: str) -> None:
-        """Key the rig the way an operator does: observed RX, then the write.
-
-        MOR-1879 gates ``ptt_on`` at the interlock seat, so a key request needs
-        a fresh RX observation to pass. The rig is transmitting afterwards, so
-        the TX observation that follows is what the poll loop would report —
-        and it is what keeps the keyer record live for the teardown gate.
-        """
-        cls._observe_ptt(poller, value=False)
-        await poller._execute(PttOn(), source="websocket", session_id=session_id)  # noqa: SLF001
-        cls._observe_ptt(poller, value=True)
-
-    @staticmethod
-    def _observe_ptt(poller: RadioPoller, *, value: bool) -> None:
-        import time as _time
-
-        from rigplane.core.state_pipeline_contracts import (
-            FieldPath,
-            Observation,
-            SourceMetadata,
-        )
-
-        store = poller._state_store  # noqa: SLF001
-        store.apply(
-            Observation(
-                path=FieldPath.global_("tx_state", "ptt"),
-                value=value,
-                source=SourceMetadata(source="poll_response", provider="test"),
-                timestamp_monotonic=_time.monotonic(),
-                max_age=5.0,
-                provider_generation=store.provider_generation,
-            )
-        )
-
-    @staticmethod
-    def _observe_rx(poller: RadioPoller) -> None:
-        import time as _time
-
-        from rigplane.core.state_pipeline_contracts import (
-            FieldPath,
-            Observation,
-            SourceMetadata,
-        )
-
-        store = poller._state_store
-        store.apply(
-            Observation(
-                path=FieldPath.global_("tx_state", "ptt"),
-                value=False,
-                source=SourceMetadata(source="poll_response", provider="test"),
-                timestamp_monotonic=_time.monotonic(),
-                max_age=5.0,
-                provider_generation=store.provider_generation,
-            )
-        )
-
-    async def test_foreign_session_teardown_leaves_the_keyer_on_the_air(self) -> None:
-        (a, b), q, poller, radio = self._wired(sessions=("ws-a", "ws-b"))
-        await self._key(poller, a._session_id)
-        radio.set_ptt.assert_awaited_once_with(True)
-
-        _teardown(b)
-
-        assert q.drain() == []
-
-    async def test_own_session_teardown_still_unkeys(self) -> None:
-        (a, _b), q, poller, _radio = self._wired(sessions=("ws-a", "ws-b"))
-        await self._key(poller, a._session_id)
-
-        _teardown(a)
-
-        assert q.drain() == [PttOff()]
-
-    async def test_observed_off_voids_the_record_and_restores_the_unkey(self) -> None:
-        (a, b), q, poller, _radio = self._wired(sessions=("ws-a", "ws-b"))
-        await self._key(poller, a._session_id)
-        self._observe_rx(poller)
-
-        _teardown(b)
-
-        assert q.drain() == [PttOff()]
-
-    async def test_no_recorded_keyer_biases_toward_the_unkey(self) -> None:
-        (_a, b), q, _poller, _radio = self._wired(sessions=("ws-a", "ws-b"))
-
-        _teardown(b)
-
-        assert q.drain() == [PttOff()]
-
-    async def test_ptt_off_write_clears_the_record(self) -> None:
-        (a, b), q, poller, _radio = self._wired(sessions=("ws-a", "ws-b"))
-        await self._key(poller, a._session_id)
-        await poller._execute(PttOff(), source="websocket", session_id=a._session_id)
-
-        _teardown(b)
-
-        assert q.drain() == [PttOff()]
-
-    async def test_operator_unkey_ignores_the_record(self) -> None:
-        (a, b), q, poller, _radio = self._wired(sessions=("ws-a", "ws-b"))
-        await self._key(poller, a._session_id)
-
-        result = b._enqueue_rc_power("ptt_off", {}, q, b._radio)
-
-        assert result == {}
-        assert q.drain() == [PttOff()]
-
-    async def test_managed_path_records_nothing(self) -> None:
-        (a, b), q, poller, radio = self._wired(sessions=("ws-a", "ws-b"))
-        managed = MagicMock()
-        managed.set_ptt = AsyncMock(
-            return_value=SimpleNamespace(
-                outcome=__import__(
-                    "rigplane.core.tx_safety", fromlist=["TxOutcome"]
-                ).TxOutcome.ACCEPTED
-            )
-        )
-        poller._managed_tx = lambda source, session: managed  # type: ignore[method-assign]
-        await self._key(poller, a._session_id)
-
-        _teardown(b)
-
-        assert q.drain() == [PttOff()]

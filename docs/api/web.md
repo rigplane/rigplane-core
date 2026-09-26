@@ -1093,12 +1093,6 @@ Error response:
 {"type":"response","id":"42","ok":false,"error":"command_failed","message":"..."}
 ```
 
-PTT keying (`ptt` with `state:true`, or `ptt_on`) on a degraded session — the
-backend reports `radio_ready:false` or a connect/reconnect cycle is in flight —
-is rejected with `"error":"radio_not_ready"` instead of a silent enqueue-ACK
-(MOR-620). Unkeying (`ptt` with `state:false`, or `ptt_off`) always goes
-through: it is the safe direction.
-
 High-frequency `set_*` commands (same command name, same session, arriving
 faster than one per 50ms) are coalesced with last-value-wins semantics
 (MOR-1427) instead of being dropped. Only one physical enqueue happens per

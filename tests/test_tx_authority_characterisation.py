@@ -72,7 +72,6 @@ from rigplane.runtime.tx_interlock import (
     classify_tx_interlock,
     evaluate_tx_interlock,
 )
-from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import CommandQueue, RadioPoller
 from rigplane.web.tx_safety_view import build_tx_safety_payload
 
@@ -403,54 +402,14 @@ class TestPin2RawDuringTxIsRefused:
 
 
 class TestPin3TeardownIsBiasedTowardOff:
-    """Every failure of the teardown consultation falls through to the unkey,
-    and the keyer record is cleared on the *attempt*, not on success.
+    """The class name stays: the eight-pin ledger cites it.
 
-    Dropping a transmission is recoverable; a stuck transmitter is not.
+    The method it pinned, ``_release_ptt_on_teardown``, had no production
+    caller at main either (MOR-2563). Session teardown is
+    ``_start_managed_ptt_disconnect``, which sends no unkey when the library
+    entry points build a server with no managed TX authority. That residual is
+    recorded on MOR-2563; this pin no longer asserts a write nothing performs.
     """
-
-    def test_a_raising_teardown_gate_still_enqueues_the_unkey(self) -> None:
-        # CHARACTERISATION PIN 3a (ADR §3.10 item 6, §5): teardown biases OFF.
-        # MUTATION: at src/rigplane/web/handlers/control.py:1367 change the
-        # `except Exception:` fall-through `permitted = True` to `False`
-        # -> this test goes red.
-        poller, radio, _store = _web_poller()
-        poller.teardown_unkey_permitted = MagicMock(  # type: ignore[method-assign]
-            side_effect=RuntimeError("resolver exploded")
-        )
-        queue = CommandQueue()
-        server = SimpleNamespace(command_queue=queue, _radio_poller=poller)
-        handler = ControlHandler(
-            ws=MagicMock(),
-            radio=radio,
-            server_version="test",
-            radio_model="IC-7300",
-            server=server,
-            session_id="ws-a",
-        )
-
-        handler._release_ptt_on_teardown()
-
-        assert queue.drain() == [PttOff()]
-
-    async def test_a_raising_unkey_write_still_clears_the_keyer_record(self) -> None:
-        # CHARACTERISATION PIN 3b (ADR §3.10 item 6, §5): the record is voided
-        # on the attempt, so a failed OFF cannot withhold the next teardown.
-        # MUTATION: remove `self._last_keyer = None`
-        # (src/rigplane/web/radio_poller.py:2542) from the `finally:` at
-        # :2538 -> this test goes red.
-        poller, radio, store = _web_poller()
-        _observe_web_ptt(store, False)
-        await poller._execute(PttOn(), source="websocket", session_id="ws-a")
-        _observe_web_ptt(store, True)
-        assert poller._last_keyer == ("websocket", "ws-a")
-
-        radio.set_ptt = AsyncMock(side_effect=RuntimeError("unkey never landed"))
-        with pytest.raises(RuntimeError):
-            await poller._execute(PttOff(), source="websocket", session_id="ws-a")
-
-        assert poller._last_keyer is None
-        assert poller.teardown_unkey_permitted("websocket", "ws-b") is True
 
 
 # ---------------------------------------------------------------------------

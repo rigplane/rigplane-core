@@ -38,17 +38,12 @@ its Yaesu CAT / rigctld-client siblings.
 
 from __future__ import annotations
 
-import asyncio
 import time
-from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from rigplane.core.capabilities import CAP_AUDIO
-from rigplane.core.exceptions import CommandError
-from rigplane.core.radio_protocol import ManagedTxApi, PrivilegedTxApi
 from rigplane.core.tx_safety import (
     ProviderPttObservation,
     RadioTx,
@@ -56,27 +51,18 @@ from rigplane.core.tx_safety import (
     TxOwner,
     TxReleaseReason,
     TxSafetySupervisor,
-    TxSource,
     TxTransition,
 )
 from rigplane.profiles import resolve_radio_profile
-from rigplane.runtime import managed_tx_ingress
-from rigplane.runtime.managed_tx_ingress import (
-    bind_managed_tx,
-    refuse_key_without_owner,
-    resolve_supervisor,
-)
-from rigplane.web import radio_poller as radio_poller_module
-from rigplane.web.handlers.control import ControlHandler
-from rigplane.web.radio_poller import CommandQueue, PttOff, PttOn, RadioPoller
+from rigplane.runtime.managed_tx_ingress import refuse_key_without_owner
+from rigplane.web.radio_poller import CommandQueue, PttOff, RadioPoller
 
 # MOR-1879: this suite drives PTT dispatch directly; the interlock seat at
 # ``_execute`` now gates ptt_on too, so the RF premise (radio observed in
 # RX before keying) is stated once here — see the conftest fixture.
 pytestmark = pytest.mark.usefixtures("observed_rx_dispatch_premise")
 
-_KEY, _TEARDOWN = ["start_tx", "set_ptt(True)"], ["stop_tx", "restart_rx"]
-_WS1, _WS2 = TxOwner(TxSource.WEBSOCKET, "ws-1"), TxOwner(TxSource.WEBSOCKET, "ws-2")
+_TEARDOWN = ["stop_tx", "restart_rx"]
 
 
 class _Supervisor:
@@ -152,103 +138,6 @@ def _poller(supervisor: _Supervisor | None) -> tuple[RadioPoller, _Radio]:
     return RadioPoller(radio, CommandQueue()), radio  # type: ignore[arg-type]
 
 
-def _run_handler(
-    queue: CommandQueue | None = None,
-) -> tuple[ControlHandler, CommandQueue]:
-    """A handler whose ``run()`` reaches teardown on the first ``recv``."""
-    queue = CommandQueue() if queue is None else queue
-
-    async def recv() -> tuple[int, bytes]:
-        await asyncio.sleep(0.01)  # let the event-sender task run before EOF
-        raise EOFError
-
-    return ControlHandler(
-        ws=SimpleNamespace(send_text=AsyncMock(), recv=recv),
-        radio=SimpleNamespace(connected=True, radio_ready=True),
-        server_version="test",
-        radio_model="IC-7610",
-        server=SimpleNamespace(
-            command_queue=queue,
-            register_control_event_queue=MagicMock(),
-            unregister_control_event_queue=MagicMock(),
-            build_state_update_envelope=MagicMock(return_value={}),
-        ),
-    ), queue
-
-
-async def _drain(poller: RadioPoller) -> None:
-    """Execute queued entries exactly as ``_run``'s drain does — including its
-    default of ``source="websocket"`` for an entry that carries no source."""
-    for entry in poller._queue.drain_entries():
-        await poller._execute(
-            entry.command,
-            command_id=entry.command_id,
-            source=entry.source or "websocket",
-            session_id=entry.session_id,
-            command_service=entry.command_service,
-        )
-
-
-async def test_unmanaged_radio_keeps_the_legacy_write_and_ordering() -> None:
-    """Every shipped radio binds to ``None`` and keeps today's behaviour."""
-    poller, radio = _poller(None)
-
-    assert ManagedTxApi.bind(radio, _WS1) is None
-    await poller._execute(PttOn(), command_id="c1", session_id="ws-1")
-    await poller._execute(PttOff(), command_id="c2", session_id="ws-1")
-
-    # start_tx strictly before the key; teardown after the unkey.
-    assert radio.calls == [*_KEY, "set_ptt(False)", *_TEARDOWN]
-
-
-async def test_key_and_release_share_one_stable_owner() -> None:
-    """A real supervisor accepts the release only if the owner matches."""
-    supervisor = _Supervisor()
-    poller, radio = _poller(supervisor)
-
-    await poller._execute(PttOn(), command_id="c1", session_id="ws-1")
-    await poller._execute(PttOff(), command_id="c2", session_id="ws-1")
-
-    assert supervisor.entries == [(True, _WS1), (False, _WS1)]
-    # STALE would mean the release missed its own lease.
-    assert supervisor.outcomes == [TxOutcome.ACCEPTED, TxOutcome.ACCEPTED]
-    # No bypass: the supervisor's own effect path owns the provider write.
-    assert radio.calls == ["start_tx", *_TEARDOWN]
-
-
-async def test_a_second_session_gets_its_own_owner_and_is_refused() -> None:
-    """Two sessions, two owners — and a refused key disarms the TX leg."""
-    supervisor = _Supervisor()
-    poller, radio = _poller(supervisor)
-
-    await poller._execute(PttOn(), command_id="c1", session_id="ws-1")
-    with pytest.raises(CommandError, match=TxOutcome.BUSY):
-        await poller._execute(PttOn(), command_id="c2", session_id="ws-2")
-
-    assert supervisor.entries == [(True, _WS1), (True, _WS2)]
-    assert supervisor.outcomes == [TxOutcome.ACCEPTED, TxOutcome.BUSY]
-    # Refusal must not leave modulation flowing towards a rig nobody keyed.
-    assert radio.calls == ["start_tx", "start_tx", *_TEARDOWN]
-
-
-async def test_a_same_owner_re_key_is_accepted_and_keeps_its_leg_armed() -> None:
-    """IDEMPOTENT answers 'already yours', which is acceptance, not refusal.
-
-    Read as a refusal it would trip the disarm above — tearing down a LIVE audio
-    leg mid-transmission while the lease, and the rig, stay keyed: the operator
-    is still on the air with nothing feeding it.
-    """
-    supervisor = _Supervisor()
-    poller, radio = _poller(supervisor)
-
-    await poller._execute(PttOn(), command_id="c1", session_id="ws-1")
-    await poller._execute(PttOn(), command_id="c2", session_id="ws-1")
-
-    assert supervisor.entries == [(True, _WS1), (True, _WS1)]
-    assert supervisor.outcomes == [TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT]
-    assert radio.calls == ["start_tx", "start_tx"]  # no _TEARDOWN
-
-
 async def test_a_refused_release_is_tolerated_and_still_tears_down() -> None:
     """STALE means nothing of ours is keyed; raising would break ``finally``."""
     supervisor = _Supervisor()
@@ -295,33 +184,6 @@ async def test_a_websocket_unkey_without_a_session_id_stays_unmanaged() -> None:
     assert radio.calls == ["set_ptt(False)", *_TEARDOWN]
 
 
-async def test_http_ingress_never_binds_an_owner_and_is_refused_the_key() -> None:
-    """HTTP has no session and no teardown hook, so a lease taken there could
-    never be released — and its params are caller-supplied, not a session.
-
-    MOR-1016 PR 5 draws the consequence the bind alone could not: on a MANAGED
-    rig, "binds no owner" used to mean "falls through to the raw
-    ``set_ptt(True)``" — an unsupervised key with no lease, no owner and no
-    watchdog behind it, which is the bypass management exists to close. So an
-    ingress that cannot hold a lease is refused the key outright, and the
-    supervisor never hears about it.
-    """
-    supervisor = _Supervisor()
-    poller, radio = _poller(supervisor)
-
-    with pytest.raises(CommandError, match="no owner"):
-        await poller._execute(PttOn(), source="http", session_id=None)
-    # A caller-supplied ``session_id`` is not a session: same refusal.
-    with pytest.raises(CommandError, match="http"):
-        await poller._execute(PttOn(), source="http", session_id="forged")
-
-    # No lease attempt, and above all no provider write: the refusal leaves no
-    # trace on the air, and each armed TX audio leg is disarmed behind it.
-    assert supervisor.entries == []
-    assert "set_ptt(True)" not in radio.calls
-    assert radio.calls == ["start_tx", *_TEARDOWN, "start_tx", *_TEARDOWN]
-
-
 async def test_an_http_unkey_on_a_managed_rig_still_writes_the_legacy_off() -> None:
     """The asymmetry, stated: a refused unkey strands a keyed transmitter.
 
@@ -341,97 +203,6 @@ async def test_an_http_unkey_on_a_managed_rig_still_writes_the_legacy_off() -> N
     assert radio.calls == ["set_ptt(False)", *_TEARDOWN]
 
 
-async def test_an_unmanaged_rig_keeps_the_legacy_http_path_on_both_arms() -> None:
-    """Legacy unmanaged backends publish no supervisor, so HTTP PTT is untouched.
-
-    The gate asks the radio, not the request: with no supervisor published there
-    is nothing to be refused on behalf of, and refusing here would break HTTP
-    PTT for every serial/USB Icom, Yaesu CAT, or rigctld-client rig in the
-    field — the LAN Icom path is managed and does not take this branch.
-    """
-    poller, radio = _poller(None)
-
-    await poller._execute(PttOn(), source="http", session_id=None)
-    await poller._execute(PttOff(), source="http", session_id=None)
-
-    assert radio.calls == [*_KEY, "set_ptt(False)", *_TEARDOWN]
-
-
-async def test_a_raising_accessor_on_the_key_path_disarms_the_tx_leg_too() -> None:
-    """The gate resolves a supervisor, so it runs backend code that can fail.
-
-    MOR-1187's lesson applied to the other arm: the resolution happens with the
-    TX audio leg already armed, so it belongs inside the guard that disarms it.
-    A failed resolution is not "unmanaged" — it propagates — but it must not
-    leave modulation flowing towards a rig this ingress never keyed.
-    """
-    radio = _BrokenSupervisorRadio(None)
-    poller = RadioPoller(radio, CommandQueue())  # type: ignore[arg-type]
-
-    with pytest.raises(RuntimeError, match="accessor exploded"):
-        await poller._execute(PttOn(), source="http", session_id=None)
-
-    assert "set_ptt(True)" not in radio.calls
-    assert radio.calls == ["start_tx", *_TEARDOWN]
-
-
-async def test_a_key_from_a_gone_session_costs_nothing() -> None:
-    """Slice 5: the queue entry outlives its author; the key must not."""
-    supervisor = _Supervisor()
-    poller, radio = _poller(supervisor)
-    poller._queue.register_session("ws-1")
-    poller._queue.unregister_session("ws-1")
-
-    with pytest.raises(CommandError, match="ws-1"):
-        await poller._execute(PttOn(), command_id="c1", session_id="ws-1")
-
-    # Refused ahead of the TX audio leg and ahead of the lease. Raising is the
-    # poller's failure channel (``_mark_queued_command_failed`` plus
-    # ``future.set_exception``), so a refusal can never be read as success.
-    assert supervisor.entries == []
-    assert radio.calls == []
-
-
-async def test_a_live_session_keys_exactly_as_it_does_today() -> None:
-    """The gate is invisible to the session that is actually connected."""
-    supervisor = _Supervisor()
-    poller, radio = _poller(supervisor)
-    poller._queue.register_session("ws-1")
-
-    await poller._execute(PttOn(), command_id="c1", session_id="ws-1")
-    await poller._execute(PttOff(), command_id="c2", session_id="ws-1")
-
-    assert supervisor.entries == [(True, _WS1), (False, _WS1)]
-    assert supervisor.outcomes == [TxOutcome.ACCEPTED, TxOutcome.ACCEPTED]
-    assert radio.calls == ["start_tx", *_TEARDOWN]
-
-
-async def test_a_queue_no_session_registered_on_assumes_nobody_is_gone() -> None:
-    """No registration means no knowledge — not 'every session is dead'."""
-    poller, radio = _poller(None)
-
-    await poller._execute(PttOn(), command_id="c1", session_id="ws-1")
-
-    assert poller._queue.session_is_live("ws-1")
-    assert radio.calls == _KEY
-
-
-async def test_a_command_with_no_session_id_keys_and_unkeys() -> None:
-    """HTTP PTT carries no session at all, so it has no liveness to check even
-    once the queue is tracking sessions. Both source arms matter, because the
-    drain defaults a sourceless entry to ``source="websocket"`` — the arm the
-    teardown unkey took until MOR-1185 gave it the metadata wrapper."""
-    poller, radio = _poller(None)
-    poller._queue.register_session("ws-1")
-    poller._queue.unregister_session("ws-1")
-
-    await poller._execute(PttOn(), source="http", session_id=None)
-    await poller._execute(PttOn(), session_id=None)
-    await poller._execute(PttOff(), session_id=None)
-
-    assert radio.calls == [*_KEY, *_KEY, "set_ptt(False)", *_TEARDOWN]
-
-
 async def test_a_gone_session_may_still_unkey() -> None:
     """Gating OFF would strand the rig keyed — the opposite of the point."""
     poller, radio = _poller(None)
@@ -441,94 +212,6 @@ async def test_a_gone_session_may_still_unkey() -> None:
     await poller._execute(PttOff(), command_id="c1", session_id="ws-1")
 
     assert radio.calls == ["set_ptt(False)", *_TEARDOWN]
-
-
-async def test_a_session_is_registered_for_the_whole_of_its_run() -> None:
-    """Published before the recv loop can accept a single command of its own."""
-    handler, queue = _run_handler()
-    seen: list[bool] = []
-
-    async def recv() -> tuple[int, bytes]:
-        seen.append(queue.session_is_live(handler._session_id))
-        raise EOFError
-
-    handler._ws.recv = recv
-    await handler.run()
-
-    assert seen == [True]
-    assert not queue.session_is_live(handler._session_id)
-
-
-async def test_teardown_marks_the_session_gone_through_a_dead_egress_socket() -> None:
-    """``await event_task`` re-raises here and skips everything behind it — the
-    trap slice 2 moved the PTT release out of. A session left marked live is a
-    session that can still key."""
-    handler, queue = _run_handler()
-    handler._ws.send_text = AsyncMock(
-        side_effect=[None, None, ConnectionResetError("egress socket closed")]
-    )
-    handler._event_queue.put_nowait({"type": "state_update"})
-
-    with pytest.raises(ConnectionResetError):
-        await handler.run()
-
-    assert not queue.session_is_live(handler._session_id)
-
-
-# --- the ingress gate itself (rigplane.runtime.managed_tx_ingress) ----------
-
-
-def test_resolve_supervisor_propagates_a_raising_accessor() -> None:
-    """A broken accessor is a broken backend, never a positive 'unmanaged'.
-
-    This is the whole reason the two-step read exists rather than
-    ``getattr(radio, "managed_tx", None)``, whose default absorbs an
-    ``AttributeError`` raised *inside* the property and hands a managed rig to
-    the unsupervised write (MOR-1187, MOR-1193, MOR-1196).
-    """
-    with pytest.raises(RuntimeError, match="accessor exploded"):
-        resolve_supervisor(_BrokenSupervisorRadio(None))
-
-
-def test_resolve_supervisor_reads_absence_and_a_published_none_as_unmanaged() -> None:
-    """Both unmanaged shapes: no such member, and a member holding ``None``."""
-    assert resolve_supervisor(object()) is None
-    assert resolve_supervisor(_Radio(None)) is None
-
-
-def test_resolve_supervisor_answers_a_supervisor_with_no_privileged_surface() -> None:
-    """``ManagedTxSupervisor`` is the guaranteed minimum, and it is enough.
-
-    ``_Supervisor`` publishes ``request_on``/``release_owner`` and nothing else,
-    so ``PrivilegedTxApi`` correctly declines it. The gate must not: requiring
-    ``force_unkey`` here would read a conformant managed backend as unmanaged
-    and reopen the very fallthrough this gate closes.
-    """
-    supervisor = _Supervisor()
-    radio = _Radio(supervisor)
-
-    assert resolve_supervisor(radio) is supervisor
-    assert PrivilegedTxApi.bind(radio, _WS1) is None
-
-
-def test_bind_managed_tx_binds_only_a_stable_owner() -> None:
-    """The poller's old ``_managed_tx`` body, now shared and unchanged."""
-    supervisor = _Supervisor()
-    radio = _Radio(supervisor)
-
-    managed = bind_managed_tx(radio, "websocket", "ws-1")
-    assert managed is not None
-    assert managed.owner == _WS1
-    assert managed.supervisor is supervisor
-
-    # No stable owner anywhere else: HTTP (with or without a forged id), and a
-    # websocket entry that carries no id at all.
-    assert bind_managed_tx(radio, "http", None) is None
-    assert bind_managed_tx(radio, "http", "forged") is None
-    assert bind_managed_tx(radio, "websocket", None) is None
-    assert bind_managed_tx(radio, "websocket", "") is None
-    # Unmanaged radios bind nothing even from a stable owner.
-    assert bind_managed_tx(_Radio(None), "websocket", "ws-1") is None
 
 
 def test_refuse_key_without_owner_is_exactly_managed_minus_ownable() -> None:
@@ -551,21 +234,3 @@ def test_refuse_key_without_owner_is_exactly_managed_minus_ownable() -> None:
     # radio cannot turn a keyable session into an error.
     owned = refuse_key_without_owner(_BrokenSupervisorRadio(None), "websocket", "ws-1")
     assert owned is False
-
-
-def test_the_poller_carries_no_second_copy_of_the_supervisor_read() -> None:
-    """MOR-1198: one two-step read, in the layer every ingress can reach.
-
-    A structural assertion because the duplication is what the bug is made of:
-    three call sites resolved the supervisor independently and two of them got
-    the failure discipline wrong. The poller now asks the gate; it builds no
-    ``TxOwner`` and reads no ``managed_tx`` member of its own.
-    """
-    gate_src = Path(managed_tx_ingress.__file__).read_text()
-    poller_src = Path(radio_poller_module.__file__).read_text()
-
-    assert "getattr_static" in gate_src  # the canonical read lives here
-    assert "getattr_static" not in poller_src
-    assert "ManagedTxApi.bind(" not in poller_src
-    assert "TxOwner(" not in poller_src
-    assert "managed_tx_ingress" in poller_src

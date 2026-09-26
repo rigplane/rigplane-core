@@ -42,8 +42,6 @@ from ..protocol import (  # noqa: TID251
 )
 from ..radio_poller import (  # noqa: TID251
     CommandQueue,
-    PttOff,
-    PttOn,
     ResetFilterWidth,
     ScanSetDfSpan,
     ScanSetResume,
@@ -194,7 +192,7 @@ from ...radio_protocol import (
     PowerControlCapable,
 )
 
-__all__ = ["ControlHandler", "RadioNotReadyError"]
+__all__ = ["ControlHandler"]
 
 logger = logging.getLogger(__name__)
 _MAX_CW_TEXT_CHARS = 512
@@ -207,17 +205,6 @@ _MOD_INPUT_RESTORE_ACTIONS: dict[str, Any] = {
     "set_data2_mod_input": SetData2ModInput,
     "set_data3_mod_input": SetData3ModInput,
 }
-
-
-class RadioNotReadyError(RuntimeError):
-    """PTT keying rejected because the radio session is degraded (MOR-620).
-
-    Raised when the backend explicitly reports ``radio_ready`` False (CI-V
-    stream unhealthy — the command would be enqueued but never executed) or
-    a connect/reconnect cycle is in flight. Mapped to the ``radio_not_ready``
-    error code on the control WebSocket so the client gets a truthful
-    failure instead of a silent enqueue-ACK.
-    """
 
 
 @dataclass(slots=True)
@@ -997,25 +984,6 @@ class ControlHandler:
         connected_bool = connected if isinstance(connected, bool) else False
         return bool(connected_bool and not self._radio_ready())
 
-    def _ensure_tx_session_ready(self) -> None:
-        """Reject PTT keying when the session is degraded (MOR-620).
-
-        Only an explicit ``radio_ready: False`` bool from the backend (or an
-        in-flight connect/reconnect cycle per ``_backend_recovering``) blocks
-        keying; radios that expose no ``radio_ready`` bool are not gated.
-        PTT OFF intentionally bypasses this gate — unkeying is the safe
-        direction and must always be attempted.
-        """
-        if self._radio is None:
-            return
-        ready = getattr(self._radio, "radio_ready", None)
-        explicitly_not_ready = isinstance(ready, bool) and not ready
-        if explicitly_not_ready or self._backend_recovering():
-            raise RadioNotReadyError(
-                "radio session is not ready (CI-V link degraded or "
-                "reconnecting); PTT keying rejected"
-            )
-
     async def _handle_text(self, text: str) -> None:
         try:
             msg = decode_json(text)
@@ -1497,9 +1465,7 @@ class ControlHandler:
     ) -> None:
         logger.warning("control: command %r failed: %s", name, exc)
         message = str(exc)
-        if isinstance(exc, RadioNotReadyError):
-            error = "radio_not_ready"
-        elif isinstance(exc, CommandUnsupportedError):
+        if isinstance(exc, CommandUnsupportedError):
             error = "unsupported_command"
         elif isinstance(exc, CommandRejectedError):
             error = "radio_nak"
@@ -1553,82 +1519,6 @@ class ControlHandler:
             return {"armed": False}
         self._mod_input_restore = (command, source)
         return {"armed": True}
-
-    def _release_ptt_on_teardown(self) -> None:
-        """Request best-effort PTT OFF whenever a writable session tears down.
-
-        Near-unconditional by design (MOR-1013); MOR-1878 adds exactly one
-        withholding condition — the poller's recorded keyer names a different
-        live session. This release used to be reachable
-        only through the MOD-input arm, so a session that keyed the radio but
-        never armed a restore disconnected with no unkey enqueued at all and
-        stranded the rig in TX. Unkeying is the safe direction, so no session
-        state may gate it — see the same rule for ``_ensure_tx_session_ready``.
-
-        Read-only sessions are excluded: ``ptt_off`` is a ``_TX_COMMANDS``
-        member they may never issue, so they cannot have keyed, and an
-        unsolicited OFF from a passive monitor would de-key another operator.
-
-        The ``_server``/``queue`` checks are structural (no transport to enqueue
-        onto), not policy. Enqueue failures are swallowed so teardown stays
-        bounded.
-
-        Enqueued through the same metadata wrapper as every other unkey, so the
-        entry reaches the drain carrying this session's STABLE id (MOR-1185). On
-        a managed runtime that id IS the owner ``release_owner`` matches, so the
-        disconnect gives the lease back instead of only de-keying the rig and
-        leaving the next session to wait out MOR-1191's watchdog. It also
-        replaces today's unconditional write: a session holding no lease answers
-        STALE and nothing reaches the rig — which is the point, because one
-        session's disconnect must not de-key another's transmission. The
-        unmanaged path binds no owner and writes exactly as it does now.
-
-        The command id is synthetic: no client acked this OFF, and the poller
-        uses the id only to report a failure back to a command that does not
-        exist here. Liveness cannot refuse it — the gate covers ``PttOn`` alone,
-        and this is always drained after its own author has been unregistered.
-        """
-        if self._read_only or self._server is None:
-            return
-        queue = getattr(self._server, "command_queue", None)
-        if queue is None:
-            return
-        # MOR-1878: automated housekeeping releases only its own keyer. The
-        # poller remembers who keyed the unmanaged rig; a different session's
-        # teardown must not drop that transmission mid-over. Every failure of
-        # this consultation (no poller, error) falls through to the unkey —
-        # dropping a transmission is recoverable, a stuck transmitter is not.
-        # Operator-pressed ptt_off never routes through here and stays ungated.
-        poller = getattr(self._server, "_radio_poller", None)
-        if poller is not None:
-            try:
-                permitted = poller.teardown_unkey_permitted(
-                    "websocket", self._session_id
-                )
-            except Exception:
-                permitted = True
-            if not permitted:
-                logger.info(
-                    "control: teardown PTT OFF withheld — another session's "
-                    "key is live (session=%s)",
-                    self._session_id,
-                )
-                return
-        try:
-            _CommandMetadataQueue(
-                queue,
-                command_id=f"teardown-ptt-off-{self._session_id}",
-                source="websocket",
-                session_id=self._session_id,
-                command_service=self._command_service,
-            ).put(PttOff())
-        except Exception:
-            logger.debug("control: teardown PTT OFF enqueue failed", exc_info=True)
-        else:
-            logger.info(
-                "control: requested PTT OFF on control session teardown (session=%s)",
-                self._session_id,
-            )
 
     def _start_managed_ptt_disconnect(self) -> asyncio.Task[ManagedTxOutcome] | None:
         authority = self._managed_tx_authority
@@ -2681,26 +2571,6 @@ class ControlHandler:
         radio: "Radio | None",
     ) -> dict[str, Any] | None:
         match name:
-            case "ptt":
-                if self._read_only:
-                    raise PermissionError("read-only mode: PTT rejected")
-                on = bool(params["state"])
-                if on:
-                    self._ensure_tx_session_ready()
-                logger.info("handler: PTT %s received", "ON" if on else "OFF")
-                q.put(PttOn() if on else PttOff())
-                return {"state": on}
-            case "ptt_on":
-                if self._read_only:
-                    raise PermissionError("read-only mode: PTT rejected")
-                self._ensure_tx_session_ready()
-                q.put(PttOn())
-                return {}
-            case "ptt_off":
-                if self._read_only:
-                    raise PermissionError("read-only mode: PTT rejected")
-                q.put(PttOff())
-                return {}
             case "set_rf_power" | "set_power":
                 if radio is None:
                     raise RuntimeError("radio connection not available")
