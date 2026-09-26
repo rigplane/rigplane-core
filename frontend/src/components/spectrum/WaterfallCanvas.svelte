@@ -8,6 +8,7 @@
   import { gesture } from '../../lib/gestures/use-gesture';
   import { vibrate } from '../../lib/utils/haptics';
   import { canvasBackingSize, watchDevicePixelRatio, watchStageScale } from '../../lib/canvas/backing-store.svelte';
+  import { getStageScale } from '../../primitives/stage/stage-scale';
 
   interface Props {
     options?: WaterfallOptions;
@@ -54,7 +55,7 @@
 
   // The stage's transform does not resize this canvas, so nothing else here
   // notices a scale change (MOR-1161).
-  watchStageScale(() => { void backingEpoch; applyBackingStore(1); });
+  watchStageScale(() => { void backingEpoch; applyBackingStore(getStageScale()()); });
 
   // Tap-to-tune only — drag-to-pan handled by SpectrumPanel (parent).
   const waterfallGestures = {

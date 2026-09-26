@@ -6,6 +6,7 @@
     type SpectrumOptions,
   } from '../../lib/renderers/spectrum-renderer';
   import { canvasBackingSize, watchDevicePixelRatio, watchStageScale } from '../../lib/canvas/backing-store.svelte';
+  import { getStageScale } from '../../primitives/stage/stage-scale';
   interface Props {
     data: Uint8Array | null;
     options?: SpectrumOptions;
@@ -74,7 +75,7 @@
 
   // The stage's transform does not resize this canvas, so nothing else here
   // notices a scale change (MOR-1161).
-  watchStageScale(() => { void backingEpoch; if (mounted) { applyBackingStore(1); scheduleDraw(); } });
+  watchStageScale(() => { void backingEpoch; if (mounted) { applyBackingStore(getStageScale()()); scheduleDraw(); } });
 
   // Renderer options and fallback prop data can change without a stream push.
   $effect(() => {
