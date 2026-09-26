@@ -70,7 +70,9 @@ describe('density clamp', () => {
   });
 
   it('accepts a clamped subset of density levels (e.g. dense excluded)', () => {
-    const manifest = validManifest({ density: { kind: 'clamped', supported: ['comfortable', 'compact'] } });
+    const manifest = validManifest({
+      density: { kind: 'clamped', supported: ['comfortable', 'compact'], default: 'comfortable' },
+    });
     expect(() => validateManifest(manifest)).not.toThrow();
     expect(manifest.density.kind === 'clamped' && manifest.density.supported).not.toContain('dense');
   });
