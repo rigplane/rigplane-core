@@ -118,6 +118,10 @@ async function mountReactive(smoothedFraction: number, peakFraction: number) {
   });
   components.push(component);
   flushSync();
+  await Promise.resolve();
+  flushSync();
+  FakeResizeObserver.fire();
+  flushSync();
   return {
     target,
     step(nextSmoothed: number, nextPeak: number) {

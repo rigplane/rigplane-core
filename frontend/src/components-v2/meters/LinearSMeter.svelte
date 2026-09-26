@@ -150,17 +150,17 @@
   const FACE_VIEWBOX_W = 600;
   const GEOMETRY_FALLBACK_STEP = 0.5;
   let faceWidth = $state(0);
-  // An action rather than bind:this: the VFO face already binds that SVG,
-  // and an action runs as the node is created, which is what jsdom tests can
-  // drive. Same hand-rolled observer the VFO face uses.
-  function measureFace(element: SVGSVGElement) {
-    if (typeof ResizeObserver === 'undefined') return;
+  let faceSvgElement = $state.raw<SVGSVGElement | null>(null);
+  // Same hand-rolled observer the VFO face uses (around the vfoWidth measure).
+  $effect(() => {
+    const element = faceSvgElement;
+    if (element === null || typeof ResizeObserver === 'undefined') return;
     const read = () => { faceWidth = element.clientWidth; };
     const observer = new ResizeObserver(read);
     observer.observe(element);
     read();
-    return { destroy: () => observer.disconnect() };
-  }
+    return () => observer.disconnect();
+  });
   function quantizeUserUnits(value: number): number {
     const step = faceWidth > 0 ? FACE_VIEWBOX_W / faceWidth : GEOMETRY_FALLBACK_STEP;
     return Math.round(value / step) * step;
@@ -771,7 +771,7 @@
   </svg>
 {:else}
 <svg
-  use:measureFace
+  bind:this={faceSvgElement}
   viewBox="0 0 600 {TOTAL_HEIGHT}"
   width="100%"
   height="auto"
