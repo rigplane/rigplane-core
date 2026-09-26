@@ -10,6 +10,7 @@
 
 import { RxPlayer, type RxAudioFocus } from './rx-player';
 import { TxMic, type TxCodec } from './tx-mic';
+import { SAMPLE_RATE, TX_PCM_SAMPLE_RATES } from './constants';
 import { setAudioConnected } from '../stores/connection.svelte';
 import { setRxEnabled, setTxEnabled, setTxCodecFallback } from '../stores/audio.svelte';
 import { authenticatedWsUrl } from '../transport/ws-url';
@@ -59,6 +60,14 @@ function makeClientId(): string {
   const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
   if (c?.randomUUID) return c.randomUUID();
   return `audio-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** Rate the `audio_tx_format` ack names, or null when it names one we cannot
+ *  deliver. Absent means the server predates the field: keep 48 kHz. */
+function negotiatedTxSampleRate(value: unknown): number | null {
+  if (value === undefined) return SAMPLE_RATE;
+  if (typeof value !== 'number' || !Number.isInteger(value)) return null;
+  return (TX_PCM_SAMPLE_RATES as readonly number[]).includes(value) ? value : null;
 }
 
 function preferredRxCodec(): 'opus' | 'pcm16' {
@@ -380,7 +389,10 @@ class AudioManager {
   }
 
   private _handleServerMessage(raw: string): void {
-    let msg: { type?: unknown; codec?: unknown; opus_decode?: unknown; message?: unknown };
+    let msg: {
+      type?: unknown; codec?: unknown; opus_decode?: unknown;
+      sample_rate?: unknown; message?: unknown;
+    };
     try {
       msg = JSON.parse(raw) as typeof msg;
     } catch {
@@ -400,8 +412,19 @@ class AudioManager {
     // fail open on exactly the condition this negotiation exists for.
     const codec = msg.codec === 'pcm16' ? 'pcm16' : msg.codec === 'opus' ? 'opus' : null;
     if (codec === null) return;
+    // The ack names the rate the radio will play PCM16 at (MOR-1794). An
+    // older server omits it; that keeps the 48 kHz the PCM leg always used.
+    // A present-but-unusable rate is refused through the same fault path as
+    // a PCM leg that will not start — never guessed and never played wrong.
+    const sampleRate = negotiatedTxSampleRate(msg.sample_rate);
+    if (sampleRate === null) {
+      this._failTxAudio(
+        `TX MIC: negotiated sample rate ${String(msg.sample_rate)} Hz is not supported`,
+      );
+      return;
+    }
 
-    const { switched, error } = this.txMic.applyServerCodec(codec);
+    const { switched, error } = this.txMic.applyServerCodec(codec, sampleRate);
     if (error !== null) {
       this._failTxAudio(error);
       return;

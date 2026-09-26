@@ -64,7 +64,7 @@
     getPendingNrOn, getPendingPreampLevel,
     getPendingRepeaterShift, getPendingRepeaterTone, getPendingToneFreq,
     getRepeaterHandlers,
-    getSystemHandlers, getDataModeArmed, getModInputArmed,
+    getSystemHandlers, getDataModeArmed, getModInputArmed, getFilterShapeArmed,
     deriveMemoryPanelProps, getMemoryHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
   import { toRitXitProps } from '$lib/runtime/props/panel-props';
@@ -193,6 +193,11 @@
     scopeControlsInRegionContent?: boolean;
     regionExtras?: Snippet<['left' | 'right']>;
     vfoAppearance?: 'semantic' | 'sdr' | 'standard';
+    /** MOR-1245 — set by a shell that mounts its OWN fixed-position
+     *  `ModInputTxWarning` (MobileRadioLayout, both orientations), so the
+     *  `txAdjacentAlerts` instance suppresses itself and the preflight
+     *  cannot render twice. Default keeps every other composition. */
+    suppressModInputTxWarning?: boolean;
     /** Whether the fallback band key PRINTS its permit sentence. The key's
      *  accessible name and its `data-default-permit` carry that fact either
      *  way — `semantic/BandInstrumentHost.svelte` owns the fact, the face
@@ -232,7 +237,7 @@
    * `zoneOwning()` returns non-null on both faces.
    */
   let {
-    children: hostedChildren, externalPresentation = null, strips = 'single', stripBy = 'receiver', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', bandPermitCaption = true, displayFrameSource, readonlyDisplay, scopeManaged = false, managedScopeRegion = $bindable(),
+    children: hostedChildren, externalPresentation = null, strips = 'single', stripBy = 'receiver', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', suppressModInputTxWarning = false, bandPermitCaption = true, displayFrameSource, readonlyDisplay, scopeManaged = false, managedScopeRegion = $bindable(),
   }: Props = $props();
 
   /**
@@ -1721,6 +1726,12 @@
   ) as unknown as TxAuxLevelFeedback);
   let dataModeArmed = $derived(getDataModeArmed());
   let pendingDataMode = $derived(dataModeArmed.armed ? dataModeArmed.value : null);
+  // MOR-1689: Filter Shape's own pending target (set_filter_shape), fed to
+  // FilterInstrumentHost the same way pendingDataMode above is — the
+  // desktop-v2 shape buttons live there, not in the settings-modal
+  // FilterPanel.
+  let filterShapeArmed = $derived(getFilterShapeArmed());
+  let pendingFilterShape = $derived(filterShapeArmed.armed ? filterShapeArmed.value : null);
   let modInputArmed = $derived(getModInputArmed());
   let pendingModInput = $derived(modInputArmed.armed ? modInputArmed.value : null);
   let pendingPreamp = $derived(
@@ -2037,7 +2048,7 @@
   {#snippet children(rfFrontEndInstruments)}
   {#snippet vfoInstrumentComposition(vfoOperations: VfoOperationHandles)}
   <FilterInstrumentHost
-    {...filterFiniteRendererSelection} {view} {pendingFilter} {pendingDataMode} {pendingModInput}
+    {...filterFiniteRendererSelection} {view} {pendingFilter} {pendingFilterShape} {pendingDataMode} {pendingModInput}
     onModeChange={filterIntents.onModeChange}
     onFilterChange={filterIntents.onFilterChange}
     onFilterShapeChange={filterIntents.onFilterShapeChange}
@@ -2287,7 +2298,12 @@
     capabilities load.
   -->
   {#snippet txAdjacentAlerts()}
-    <ModInputTxWarning />
+    <!-- MOR-1245: one gate covers every render path (dual zone, single
+         regions, single default, and the hostedChildren handoff), so a
+         shell with its own fixed instance turns ALL of them off together. -->
+    {#if !suppressModInputTxWarning}
+      <ModInputTxWarning />
+    {/if}
   {/snippet}
 
   <!--

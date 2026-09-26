@@ -411,6 +411,38 @@ describe('MobileRadioLayout structure', () => {
   });
 });
 
+// MOR-2240 — phone-landscape must consume the full viewport width, and every
+// scalar the mobile path mounts must render through a formatter (percent/dB),
+// never the raw normalized float the bench caught on the AF slider.
+describe('MobileRadioLayout landscape spans the viewport (MOR-2240)', () => {
+  it('mounts the full-width landscape root, never the portrait column', () => {
+    const t = mountLandscape();
+    expect(t.querySelector('.m-landscape')).not.toBeNull();
+    expect(t.querySelector('.m-layout')).toBeNull();
+    expect(t.querySelector('.m-ls-overlay')).not.toBeNull();
+  });
+
+  // jsdom computes no CSS, so the full-width contract is pinned in the
+  // component source — the same raw-source idiom "hides the AUTO toggle"
+  // below applies to the SpectrumPanel branch's `hideAutoStepToggle` prop.
+  it('declares the landscape surface at full viewport width', () => {
+    const block = mobileLayoutSource.match(/\.m-landscape\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(block).toContain('width: 100dvw');
+    expect(block).toContain('left: 0');
+    expect(block).not.toContain('max-width');
+  });
+
+  // The RF Power modal is the only inline scalar this layout mounts on its
+  // own; child panels' levels (e.g. the AF control in EssentialsPanel)
+  // carry their own formatter pins. A conditional-less grep over the raw
+  // source keeps the contract against any future bare float.
+  it('routes every inline ValueControl through a display formatter', () => {
+    const tags = [...mobileLayoutSource.matchAll(/<ValueControl[\s\S]*?\/>/g)].map((m) => m[0]);
+    expect(tags.length).toBeGreaterThan(0);
+    for (const tag of tags) expect(tag).toContain('displayFn=');
+  });
+});
+
 // MOR-1486 ruling B (owner, session 19) — mobile has no `applyModeDefault()`
 // mode-follow driver (only RadioLayout and, per ruling A, LcdLayout have
 // one) and its own STEP picker is disconnected local state that can
@@ -932,7 +964,9 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
   });
 
   it('mounts the managed TOT control only through the TxPanel fallback', () => {
-    expect(mobileLayoutSource).toContain('<TxPanel showManagedTotControl={true} />');
+    // MOR-1245: the sheet's TxPanel also suppresses its inline MOD-input
+    // warning — the shell's fixed overlay is the one banner on mobile.
+    expect(mobileLayoutSource).toContain('<TxPanel showManagedTotControl={true} suppressModInputTxWarning />');
     expect(mobileLayoutSource).not.toContain('import ManagedTotControl');
     expect(mobileLayoutSource).not.toContain('<ManagedTotControl');
   });

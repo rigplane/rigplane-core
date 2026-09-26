@@ -10,6 +10,8 @@
  * group contract.
  */
 
+import { getContext, setContext } from 'svelte';
+
 export interface StageBox {
   readonly width: number;
   readonly height: number;
@@ -48,6 +50,22 @@ export interface StageOffset {
 }
 
 /**
+ * Reactive stage scale for descendants (MOR-1161). `ScaledStage` publishes
+ * its own `scale` state through this; a canvas reads it back with
+ * `getStageScale()` and re-sizes its backing store when the value changes.
+ * A getter rather than a number, so the reader's `$effect` re-runs on the
+ * change instead of capturing the scale from mount time.
+ */
+export interface StageScaleSource {
+  (): number;
+}
+
+export const STAGE_SCALE_CONTEXT_KEY = Symbol('StageScale');
+
+/** Scale reported to a canvas mounted outside any `ScaledStage`. */
+export const NO_STAGE_SCALE: StageScaleSource = () => 1;
+
+/**
  * Returns the `translate()` offset (in host-box CSS pixels) that keeps a
  * `scale`d `native` box centred inside `host`, for `ScaledStage`'s `anchor:
  * 'center'` prop (see that component's file header). The stage element sits
@@ -64,6 +82,16 @@ export interface StageOffset {
  * the origin instead. `stage-scale.test.ts` pins the both-axes and the
  * per-axis case.
  */
+/** Publishes `ScaledStage`'s live scale to its descendants. */
+export function provideStageScale(source: StageScaleSource): void {
+  setContext(STAGE_SCALE_CONTEXT_KEY, source);
+}
+
+/** The enclosing stage's current scale, or 1 when there is no stage. */
+export function getStageScale(): StageScaleSource {
+  return getContext<StageScaleSource | undefined>(STAGE_SCALE_CONTEXT_KEY) ?? NO_STAGE_SCALE;
+}
+
 export function computeStageCenterOffset(host: StageBox, native: StageBox, scale: number): StageOffset {
   return {
     x: Math.max(0, (host.width - native.width * scale) / 2),

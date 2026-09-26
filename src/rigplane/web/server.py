@@ -6373,7 +6373,15 @@ _SECURITY_HEADERS: dict[str, str] = {
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
     "Content-Security-Policy": (
+        # MOR-2242: script-src carries the sha256 of index.html's inline
+        # service-worker-cleanup script (without a script-src directive the
+        # default-src 'self' policy blocks it); media-src data: allows the
+        # MobileRadioLayout no-sleep data:video/mp4. The hash is pinned by
+        # tests/test_security_headers.py, which recomputes it from
+        # frontend/index.html — update both together.
         "default-src 'self' ws: wss:; img-src 'self' data:; "
+        "script-src 'self' 'sha256-GUkgFZWOoTHs5UPoBwFCxrG65uTrZSQGbn1bxxn2pAo='; "
+        "media-src 'self' data:; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net"
     ),

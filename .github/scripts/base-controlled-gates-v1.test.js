@@ -122,6 +122,25 @@ test('terminal topology refuses skipped success and injected or incomplete jobs'
   assert.equal(observer.evaluateJobTopology(run, valid, {...routes, docs: true}, false).code, 'route_mismatch');
 });
 
+test('legacy attempt jobs consume the normalized pagination shape', async () => {
+  const classify = {name: 'classify', status: 'completed', conclusion: 'success', run_attempt: 1, runner_name: 'GitHub Actions 1', labels: ['ubuntu-latest']};
+  const quick = {name: 'quick', status: 'completed', conclusion: 'success', run_attempt: 1, runner_name: 'mm-build-core-1', labels: ['self-hosted', 'linux', 'build']};
+  // Pinned actions/github-script paginate.iterator normalizes the list-jobs
+  // response: the page data is the jobs array itself, not an object with a
+  // `jobs` key (MOR-2434).
+  const page = (jobs, total_count) => ({data: Object.assign([...jobs], {total_count})});
+  const github = {paginate: {iterator: async function* () {
+    yield page([classify], 2);
+    yield page([quick], 2);
+  }}};
+  const jobs = await observer.listAttemptJobs(github, observer.REPOSITORY.owner, observer.REPOSITORY.repo, 9000, 1);
+  assert.deepEqual(jobs, [classify, quick]);
+  const incomplete = {paginate: {iterator: async function* () { yield page([classify], 2); }}};
+  await assert.rejects(observer.listAttemptJobs(incomplete, observer.REPOSITORY.owner, observer.REPOSITORY.repo, 9000, 1), /topology is incomplete/u);
+  const wrapped = {paginate: {iterator: async function* () { yield {data: {total_count: 2, jobs: [classify, quick]}}; }}};
+  await assert.rejects(observer.listAttemptJobs(wrapped, observer.REPOSITORY.owner, observer.REPOSITORY.repo, 9000, 1), /job metadata is invalid/u);
+});
+
 test('exact pull binding rejects stale base/head and identifies forks', () => {
   const base = 'b'.repeat(40); const head = 'a'.repeat(40); const pull = canonicalPull(41, head, base);
   assert.deepEqual(observer.bindPull(pull, base, head), {headSha: head, baseSha: base, sameRepository: true});

@@ -998,8 +998,10 @@ function deriveDsp(
  * `preValues`/`attValues` are the capability-derived choice sets
  * (`Capabilities.preValues`/`.attValues`, verbatim) — see
  * `RfFrontEndViewModel`'s doc comment. Deliberately `?? []`, never the
- * shipped panel's `[0, 1, 2]`/`[0, 6, 12, 18]` IC-7610-shaped UI-convenience
- * fallback (X6200 lesson: no radio-specific tables in the fact layer).
+ * shipped panel's `[0, 1, 2]`/`[0, 6, 12, 18]` presentation-only
+ * UI-convenience fallback (the IC-7610's actual ATT ladder is 16 × 3 dB
+ * steps per `rigs/ic7610.toml`; X6200 lesson: no radio-specific tables in
+ * the fact layer).
  *
  * THE MUTEX is NOT derived here — it lives in `toRadioViewModel`, below,
  * where it reads THIS function's own `digiSel` field back rather than

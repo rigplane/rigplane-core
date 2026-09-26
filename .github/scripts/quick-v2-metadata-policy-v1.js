@@ -139,9 +139,11 @@ async function assertMergeParents(github, owner, repo, pull, baseSha, headSha) {
 async function listAttemptJobs(github, owner, repo, runId, runAttempt) { const jobs = [];
   let totalCount = null;
   const iterator = github.paginate.iterator( 'GET /repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt_number}/jobs', {owner, repo, run_id: runId, attempt_number: runAttempt, per_page: 100}, );
-  for await (const response of iterator) { if (!Number.isSafeInteger(response.data.total_count) || !Array.isArray(response.data.jobs)) { throw new ObservationError('invalid_binding', 'legacy quick job metadata is invalid'); }
-    totalCount ??= response.data.total_count;
-    jobs.push(...response.data.jobs);
+  for await (const response of iterator) { const page = response.data;
+    if (!Array.isArray(page) || !Number.isSafeInteger(page.total_count)) { throw new ObservationError('invalid_binding', 'legacy quick job metadata is invalid'); }
+    const pageJobs = page;
+    totalCount ??= page.total_count;
+    jobs.push(...pageJobs);
   }
   if (totalCount === null || jobs.length !== totalCount) { throw new ObservationError('invalid_binding', 'legacy quick job topology is incomplete'); }
   return jobs;
@@ -247,4 +249,4 @@ async function assess({github, context, liveBaseSha}) { assertSha(liveBaseSha, '
   if (context.eventName === 'workflow_run') { return assessWorkflowRun({github, context, liveBaseSha}); }
   return assessment({kind: 'unknown', code: 'ignored_event'});
 }
-module.exports = { CONTROL_PATHS, LEGACY_WORKFLOW, OBSERVATION_CONTEXT, OBSERVER_PATH, REPOSITORY, assess, assertControlsUnchanged, assertJobTopologyUnchanged, assertRunPublicationSnapshot, assertUniqueCurrentPullMatchesRun, bindPull, bindRunPullRequest, evaluateJobTopology, getTreeEntry, jobTopologySnapshot, rebindForPublication, relevantLifecycle, stableAssessment, };
+module.exports = { CONTROL_PATHS, LEGACY_WORKFLOW, OBSERVATION_CONTEXT, OBSERVER_PATH, REPOSITORY, assess, assertControlsUnchanged, assertJobTopologyUnchanged, assertRunPublicationSnapshot, assertUniqueCurrentPullMatchesRun, bindPull, bindRunPullRequest, evaluateJobTopology, getTreeEntry, jobTopologySnapshot, listAttemptJobs, rebindForPublication, relevantLifecycle, stableAssessment, };

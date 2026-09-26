@@ -554,6 +554,18 @@ describe('ReceiverInstrumentHost', () => {
       .toBeCloseTo(retainedFill, 6);
   });
 
+  // MOR-1331: the hosted digit clamp reads the LIVE band envelope. The base
+  // caps carry `freqRanges: []`, so the band group is absent and the clamp
+  // stays wide open; one emission at 14.250 MHz must still leave as +1 Hz.
+  it('keeps the legacy wide clamp while the band group is absent', () => {
+    const publisher = new Publisher(publication()); const tune = vi.fn();
+    const root = mountFixture(publisher, { onTuneFrequency: tune });
+    const readout = root.querySelector<HTMLElement>('[data-frequency-owner="MAIN"] [data-alternate-frequency-readout]')!;
+    readout.querySelector<HTMLButtonElement>('[data-multiplier="1"]')!.click();
+    readout.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    expect(tune).toHaveBeenCalledExactlyOnceWith('MAIN', 14_250_001);
+  });
+
   it('requires the synchronous publisher and owns no fallback clocks or continuity comparison', () => {
     const addedSources = [
       'src/semantic/meter-renderer-view.ts',

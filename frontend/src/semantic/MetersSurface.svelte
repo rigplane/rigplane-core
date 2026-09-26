@@ -142,7 +142,7 @@
     data-rf-state={rfState} aria-label="Station meters"
   >
     <p class="meters-rf" data-testid="meters-rf">
-      <span data-testid="meters-rf-mark">{RF_MARK[rfState]}</span>
+      <span data-testid="meters-rf-mark" aria-hidden="true">{RF_MARK[rfState]}</span>
       <span data-testid="meters-rf-label">{RF_LABEL[rfState]}</span>
     </p>
 

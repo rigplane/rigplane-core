@@ -69,6 +69,11 @@
     frequencyState?: 'current' | 'stale' | 'unknown' | 'unsupported';
     contextKey?: string;
     frequencyDisabled?: boolean;
+    /** MOR-1331 — the digit widget's clamp at this card's seam. Omitted
+     *  (or half-known) keeps the primitive's legacy wide-open clamp exactly:
+     *  the band envelope is a plain readout bound, never a TX gate. */
+    tuneMinHz?: number | null;
+    tuneMaxHz?: number | null;
     controlsDisabled?: boolean;
     /** Tri-state: a string is known text, null is unread (dim label),
      *  undefined is structurally unsupported (slot kept, chip not drawn). */
@@ -98,7 +103,8 @@
 
   let {
     receiver, receiverLabel, slotTag, frequency, freq, displayHz, pendingDisplayHz = null,
-    frequencyState = 'current', contextKey, frequencyDisabled = false, controlsDisabled = false,
+    frequencyState = 'current', contextKey, frequencyDisabled = false,
+    tuneMinHz = null, tuneMaxHz = null, controlsDisabled = false,
     mode, filter, sMeter, sValue, meterPresent = true, meterOperational, meterSource, continuitySession,
     isActive,
     sections, slotChoices = [], reserveMeterSpace = false,
@@ -112,6 +118,9 @@
   }: Props = $props();
 
   let meterVariant = $derived(layoutProfile === 'wide' ? 'vfo-wide' : 'vfo');
+  /** MOR-1331: both band edges known, or the primitive's own wide-open clamp. */
+  let tuneBoundsKnown = $derived(tuneMinHz != null && tuneMaxHz != null
+    && Number.isFinite(tuneMinHz) && Number.isFinite(tuneMaxHz));
   let frequencyEntryButton = $derived(onFrequencyClick !== undefined
     && (frequencyState === 'current' || frequencyState === 'stale')
     && freq !== null && freq !== undefined && Number.isFinite(freq));
@@ -276,6 +285,8 @@
                 disabled={frequencyDisabled
                   || (frequencyState !== 'current' && frequencyState !== 'stale')}
                 active={isActive} {receiver} {onFreqChange} vfoFreqHook={false}
+                minFreq={tuneBoundsKnown ? tuneMinHz! : undefined}
+                maxFreq={tuneBoundsKnown ? tuneMaxHz! : undefined}
               />
             {:else}
               <span class="freq unknown-frequency">{formatFrequency(pendingDisplayHz ?? displayHz)}</span>

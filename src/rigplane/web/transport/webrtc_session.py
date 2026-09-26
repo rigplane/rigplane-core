@@ -90,7 +90,11 @@ class _Session:
                 await task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
-        await self.pc.close()
+        # Shielded: aiortc resolves its internal "closed" future only at the
+        # end of pc teardown, so a cancel landing here would poison every
+        # later ``pc.close()`` await (MOR-1431). The shielded teardown still
+        # runs to completion; the CancelledError is re-raised afterwards.
+        await asyncio.shield(self.pc.close())
 
 
 class WebRtcSessionManager:

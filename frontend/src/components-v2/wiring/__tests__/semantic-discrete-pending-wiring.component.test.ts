@@ -318,6 +318,69 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
     expect(sendCommand).toHaveBeenCalledOnce();
   });
 
+  /**
+   * MOR-1689 — IC-7300-shaped seed for the Filter Shape half: the liveCaps
+   * topology plus the `filter_shape` capability and an evidenced
+   * `main.filterShape` reading, so `FilterInstrumentHost`'s shape snippet
+   * (the SHARP/SOFT buttons desktop-v2 actually mounts) renders live.
+   */
+  function seedShape(): void {
+    resetRadioState();
+    clearCapabilities();
+    expect(setCapabilities({
+      ...liveCaps(), capabilities: [...liveCaps().capabilities, 'filter_shape'],
+    })).toBe(true);
+    const state = liveState();
+    expect(setRadioState({
+      ...state,
+      main: { ...state.main, filterShape: 0 },
+      fieldStatus: { ...state.fieldStatus, 'main.filterShape': fresh },
+    } as unknown as ServerState)).toBe(true);
+  }
+
+  it('marks the clicked shape choice pending while set_filter_shape is in flight (FilterSurface, MOR-1689)', () => {
+    seedShape();
+    render();
+    const sharp = q<HTMLButtonElement>('[data-testid="filter-shape-0"]')!;
+    const soft = q<HTMLButtonElement>('[data-testid="filter-shape-1"]')!;
+    expect(sharp).not.toBeNull();
+    expect(sharp.getAttribute('aria-pressed')).toBe('true');
+
+    soft.click();
+    flushSync();
+
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith(
+      'set_filter_shape', { shape: 1, receiver: 0 }, expect.any(String),
+    );
+    // The targeted choice alone reads pending; the confirmed reading stays
+    // the sole selection source while the command is in flight.
+    expect(soft.dataset.pending).toBe('true');
+    expect(sharp.dataset.pending).toBe('false');
+    expect(sharp.getAttribute('aria-pressed')).toBe('true');
+    expect(soft.getAttribute('aria-pressed')).toBe('false');
+    const shapeGroup = q('[data-testid="filter-shape"]')!;
+    const describedBy = shapeGroup.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy!)?.classList.contains('sr-only')).toBe(true);
+
+    // A confirming re-read of main.filterShape clears the marker and moves
+    // the confirmed selection — the marker never substitutes for it.
+    const commands = getCommandLifecycles().filter(command => command.name === 'set_filter_shape');
+    expect(commands).toHaveLength(1);
+    acknowledgeCommand(commands[0].id, commands[0].originalEpoch, commands[0].originalEpoch);
+    flushSync();
+    expect(soft.dataset.pending).toBe('true');
+    const base = liveState();
+    expect(setRadioState(observedAgain({
+      ...base, revision: 2, stateRevision: 2,
+      main: { ...base.main, filterShape: 1 },
+    } as unknown as ServerState, 'main.filterShape', 2))).toBe(true);
+    flushSync();
+    expect(soft.dataset.pending).toBe('false');
+    expect(sharp.getAttribute('aria-pressed')).toBe('false');
+    expect(soft.getAttribute('aria-pressed')).toBe('true');
+  });
+
   it('marks the clicked filter choice pending while set_filter is in flight (FilterSurface)', () => {
     render();
     expect(q('[data-testid="filter-select"]')!.dataset.filterStatus).toBe('confirmed');

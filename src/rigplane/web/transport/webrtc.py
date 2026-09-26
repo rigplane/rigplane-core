@@ -134,10 +134,15 @@ class WebRtcDataChannelConnection:
 
         ``code`` and ``reason`` are accepted for protocol parity with the
         WebSocket transport; WebRTC has no equivalent close frame.
+
+        ``pc.close()`` runs under ``asyncio.shield``: aiortc arms its
+        internal "closed" future first and resolves it only at the end of
+        teardown, so cancelling this await mid-teardown would leave every
+        later ``pc.close()`` hanging on the never-resolved future (MOR-1431).
         """
         self._mark_closed()
         self._channel.close()
-        await self._pc.close()
+        await asyncio.shield(self._pc.close())
 
     def abort(self) -> None:
         """Synchronously mark the channel closed, for ``Connection`` parity.

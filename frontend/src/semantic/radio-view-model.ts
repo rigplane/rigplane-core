@@ -573,8 +573,9 @@ export type RfFrontEndField<T> = TxAuxField<T>;
  * live reading that can itself go stale. Per the X6200 lesson, these are
  * read from the `caps` ARGUMENT only — never a radio-specific fallback table
  * (the shipped panel's own `[0, 6, 12, 18]`/`[0, 1, 2]` UI-convenience
- * defaults are presentation, not a fact — see `radio-view-model-adapter.ts`'s
- * `deriveRfFrontEnd`).
+ * defaults are presentation, not a fact — the IC-7610's actual ATT ladder
+ * is 16 × 3 dB steps per `rigs/ic7610.toml`, not these values — see
+ * `radio-view-model-adapter.ts`'s `deriveRfFrontEnd`).
  *
  * THE MUTEX (MOR-479, MOR-1293): the shipped panel derives an IC-7610
  * hardware mutex from `digiSel` — the radio silently ignores a PREAMP set
@@ -687,8 +688,7 @@ export interface BandChoice {
  * the declared `freqRanges` (range bounds, not band bounds — the gaps between
  * bands are still tunable). `null` when the radio declares no range at all;
  * never `primitives/frequency/frequency-tuning.ts::adjustFreqByDigit`'s
- * fabricated `0 … 999 MHz` defaults, which is the only bound v2 has (that
- * function has no production caller that supplies one).
+ * fabricated `0 … 999 MHz` defaults.
  */
 export interface BandViewModel {
   currentBand: BandField<string>;

@@ -68,7 +68,7 @@ vi.mock('$lib/runtime/adapters/radio-view-model-adapter', () => ({
 }));
 
 import {
-  getAgcArmed, getFilterArmed, getPreampArmed, getAttenuatorArmed,
+  getAgcArmed, getFilterArmed, getFilterShapeArmed, getPreampArmed, getAttenuatorArmed,
   getDataModeArmed, getModInputArmed, getAutoNotchArmed, getManualNotchArmed,
 } from '../panel-adapters';
 
@@ -98,6 +98,11 @@ type Fixture = {
 const fixtures: Fixture[] = [
   { label: 'getAgcArmed', accessor: getAgcArmed, intentName: 'set_agc', paramKey: 'mode', confirmedField: 'agc', target: 2, otherTarget: 1 },
   { label: 'getFilterArmed', accessor: getFilterArmed, intentName: 'set_filter', paramKey: 'filter', confirmedField: 'filter', target: 2, otherTarget: 1 },
+  // MOR-1689: filter SHAPE (SHARP/SOFT, `set_filter_shape`) is a DIFFERENT
+  // intent from filter SELECTION (`set_filter`) — both can be in flight at
+  // once and must not be conflated (same class as `getDataModeArmed`'s
+  // separation from `getModeArmed`).
+  { label: 'getFilterShapeArmed', accessor: getFilterShapeArmed, intentName: 'set_filter_shape', paramKey: 'shape', confirmedField: 'filterShape', target: 1, otherTarget: 0 },
   { label: 'getPreampArmed', accessor: getPreampArmed, intentName: 'set_preamp', paramKey: 'level', confirmedField: 'preamp', target: 1, otherTarget: 0 },
   { label: 'getAttenuatorArmed', accessor: getAttenuatorArmed, intentName: 'set_attenuator', paramKey: 'db', confirmedField: 'att', target: 20, otherTarget: 0 },
   { label: 'getDataModeArmed', accessor: getDataModeArmed, intentName: 'set_data_mode', paramKey: 'mode', confirmedField: 'dataMode', target: 1, otherTarget: 0 },

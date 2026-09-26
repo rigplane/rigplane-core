@@ -597,6 +597,7 @@
       </g>
       {#each Array(SDR_CELLS * 2) as _, index}
         <rect data-sdr-segment={index}
+          data-lit={index < sdrFill ? 'true' : 'false'}
           x={14 + Math.floor(index / 2) * SDR_CELL_WIDTH + (index % 2) * (SDR_SUB_WIDTH + 0.5)}
           y="22" width={SDR_SUB_WIDTH} height="18" fill={sdrColor(index)} />
       {/each}
@@ -1027,5 +1028,59 @@
   [data-meter-fill],
   [data-meter-fill-red] {
     filter: var(--v2-meter-lit-filter, none);
+  }
+
+  /* ── MOR-1250: forced-colors (Windows High Contrast Mode) ──────────────
+   * WHCM forces `color`/`background` but not SVG presentation attributes,
+    * so this component's own palette — the 20-entry ACTIVE_COLORS list
+    * (three of the entries are CSS custom-property tokens), the dim/lower
+    * hex literals, sdrColor — rendered unchanged under it (the
+   * MOR-1233 verify probe). Author CSS overrides presentation attributes
+   * in the cascade, so this block re-paints every face onto system
+   * colours: lit state Highlight, unlit structure GrayText, ink
+   * CanvasText, faces Canvas. `forced-color-adjust: none` pins the meter
+    * to exactly these paints instead of engine-dependent forcing. The
+    * reading also lives in text and aria-labels, so colour is
+    * never the only channel. Pinned by
+   * __tests__/LinearSMeter.forced-colors.test.ts. */
+  @media (forced-colors: active) {
+    svg {
+      forced-color-adjust: none;
+    }
+    text {
+      fill: CanvasText;
+    }
+    line {
+      stroke: CanvasText;
+    }
+    /* Container and track backgrounds: canvas with a text-colour outline. */
+    rect:not([data-segment]):not([data-lower-segment]):not([data-meter-fill]):not([data-lower-fill]):not([data-sdr-segment]) {
+      fill: Canvas;
+      stroke: CanvasText;
+    }
+    /* Unlit structure: dim segments and the SDR face's unlit cells. */
+    rect[data-segment],
+    rect[data-lower-segment],
+    rect[data-sdr-segment][data-lit='false'] {
+      fill: GrayText;
+    }
+    /* The reading: lit segments on the default face and the lower row. */
+    rect[data-meter-fill],
+    rect[data-lower-fill],
+    rect[data-sdr-segment][data-lit='true'] {
+      fill: Highlight;
+    }
+    /* vfo/vfo-wide face: the bar is dash-patterned lines, not rects. */
+    line[data-meter-track],
+    line[data-lower-track] {
+      stroke: GrayText;
+    }
+    line[data-meter-fill],
+    line[data-meter-fill-red],
+    line[data-meter-glow],
+    line[data-meter-glow-red],
+    line[data-lower-fill] {
+      stroke: Highlight;
+    }
   }
 </style>
