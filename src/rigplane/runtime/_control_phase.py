@@ -917,7 +917,7 @@ class ControlPhaseRuntime:
         logger.debug("Token ack sent (token=0x%08X)", h._token)
 
     def _on_conninfo_notice(self, data: bytes) -> None:
-        """A 0x90 notice on the control port. busy=0 means the radio dropped us.
+        """A 0x90 notice on the control port. On the IC-7610, busy=0 is sent when the radio drops our streams.
 
         Runs inside the datagram callback, so it only reads the flag and asks
         the CI-V runtime to recover. busy=1 is our own connect or another
