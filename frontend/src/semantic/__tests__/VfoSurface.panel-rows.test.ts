@@ -842,6 +842,18 @@ const studiolineCss = readFileSync('src/presentation/languages/studioline/studio
   .replace(/\/\*[\s\S]*?\*\//g, '');
 
 describe('source pins: fixed slot widths (MOR-2509 slice 2)', () => {
+  it('the unread active-receiver value and the unread VFO role keep a reserved slot', () => {
+    const value = rulesFor(surfaceCss, '.active-receiver-value').join('\n');
+    expect(value).toMatch(/display:\s*inline-block/);
+    expect(value).toMatch(/min-width:\s*5ch/);
+    expect(value).toMatch(/tabular-nums/);
+    const role = rulesFor(surfaceCss, '.vfo-role').join('\n');
+    expect(role).toMatch(/display:\s*inline-block/);
+    expect(role).toMatch(/min-width:\s*var\(--vfo-role-slot,\s*14ch\)/);
+    expect(role).toMatch(/tabular-nums/);
+    expect(surfaceSource).toContain('style:--vfo-role-slot=');
+  });
+
   it('every tray tab, lamp and large chip declares a fixed width and never wraps', () => {
     for (const selector of ['.tab', '.lamp', '.chip-lg', '.chip-amber']) {
       const bodies = rulesFor(panelCss, selector).join('\n');

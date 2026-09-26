@@ -342,7 +342,7 @@
     if (slot.kind === 'relative') {
       return slot.role === 'selected' ? 'Selected VFO' : 'Unselected VFO';
     }
-    if (slot.kind === 'unknown') return `${vfo.receiver} (${t('core.vfo.state.unknown')})`;
+    if (slot.kind === 'unknown') return vfo.receiver;
     return vfo.receiver;
   }
 
@@ -713,14 +713,13 @@
   {#if showRadioWideFacts && hasDualReceiver}
     <p
       class="active-receiver"
+      class:active-receiver-unlit={viewModel.activeReceiver.status !== 'known'}
       data-testid="vfo-active-receiver"
       data-active-receiver={viewModel.activeReceiver.status === 'known'
         ? viewModel.activeReceiver.receiver
         : 'unknown'}
     >
-      {viewModel.activeReceiver.status === 'known'
-        ? t('core.vfo.activeReceiver.known', { receiver: viewModel.activeReceiver.receiver })
-        : t('core.vfo.activeReceiver.unknown')}
+      {t('core.vfo.activeReceiver.label')}<span class="active-receiver-value">{viewModel.activeReceiver.status === 'known' ? ` ${viewModel.activeReceiver.receiver}` : ''}</span>
     </p>
   {/if}
   {/snippet}
@@ -753,7 +752,11 @@
         data-vfo-active-slot={vfo.isActiveSlot}
         data-vfo-tx-target={vfo.isTxTarget}
       >
-        <span class="vfo-role">{roleLabel(vfo)}</span>
+        <span
+          class="vfo-role"
+          class:vfo-role-unlit={vfo.slot.kind === 'unknown'}
+          style:--vfo-role-slot={`${roleLabel(vfo).length}ch`}
+        >{roleLabel(vfo)}</span>
         <span
           class="vfo-freq" class:display-unknown={displayHz === null && pendingHz === null}
           {...(appearance === 'semantic' ? freq?.attributes ?? {} : {})}
@@ -1129,11 +1132,14 @@
   /* Semantic-neutral layout only — existing --v2-* theme tokens, sensible fallbacks. */
   .vfo-surface { display: flex; flex-direction: column; gap: 8px; font-family: 'Roboto Mono', monospace; color: var(--v2-text-primary, #e8e8e8); }
   .active-receiver { margin: 0; font-size: 11px; color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55)); }
+  .active-receiver-value { display: inline-block; min-width: 5ch; font-variant-numeric: tabular-nums; }
+  .active-receiver-unlit { color: var(--dl-vfo-unlit-text, var(--v2-text-muted, #5a6875)); }
   .vfo-list { display: flex; flex-wrap: wrap; gap: 6px; }
   .receiver-indicators { display: grid; gap: 6px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
   .vfo-tile { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12)); border-radius: 4px; background: var(--v2-bg-panel, rgba(255, 255, 255, 0.03)); }
   .vfo-tile.is-active { border-color: var(--v2-accent-cyan, #00d4ff); }
-  .vfo-role { font-weight: 700; color: var(--v2-text-secondary, rgba(255, 255, 255, 0.8)); }
+  .vfo-role { font-weight: 700; color: var(--v2-text-secondary, rgba(255, 255, 255, 0.8)); display: inline-block; min-width: var(--vfo-role-slot, 14ch); font-variant-numeric: tabular-nums; }
+  .vfo-role-unlit { color: var(--dl-vfo-unlit-text, var(--v2-text-muted, #5a6875)); }
   [data-vfo-appearance='semantic'] .vfo-tile { position: relative; }
   .vfo-badge { padding: 1px 4px; border-radius: 3px; font-size: 10px; color: var(--v2-accent-red, #ff2020); border: 1px solid var(--v2-accent-red, #ff2020); }
   .vfo-select { border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12)); border-radius: 4px; background: transparent; color: inherit; cursor: pointer; padding: 3px 6px; }

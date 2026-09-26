@@ -39,6 +39,7 @@ import {
 } from '$lib/runtime/adapters/__tests__/fixtures/ftx1-profile';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import { t } from '$lib/i18n';
 import { setLocale, _resetLocale } from '$lib/i18n/store.svelte';
 import { splitFrequencyToDigits, groupDigitsForDisplay } from '../../primitives/frequency/frequency-tuning';
 
@@ -728,7 +729,11 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
     const el = target.querySelector('[data-testid="vfo-active-receiver"]');
     expect(el?.getAttribute('data-active-receiver')).toBe('unknown');
     expect(el?.getAttribute('data-active-receiver')).not.toBe('MAIN');
-    expect(el?.textContent).toContain('unknown');
+    // MOR-2655: unread is the unlit label in a reserved slot, never the word
+    // "unknown" as a value. The old pin was `toContain('unknown')`.
+    expect(el?.textContent?.trim()).toBe(t('core.vfo.activeReceiver.label'));
+    expect(el?.textContent).not.toMatch(/unknown/i);
+    expect(el?.getAttribute('aria-label') ?? '').not.toMatch(/unknown/i);
   });
 
   it('unknown activeReceiver checks neither operation segment through the real group', () => {
@@ -756,7 +761,13 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
     const tiles = target.querySelectorAll<HTMLElement>('[data-vfo-tile]');
     expect(tiles[1].dataset.vfoSlot).toBe('unknown');
     expect(tiles[1].dataset.vfoSlot).not.toBe('A');
-    expect(tiles[1].querySelector('.vfo-role')?.textContent).toContain('unknown');
+    // MOR-2655: the slot stays reserved and unlit. The old pin was
+    // `toContain('unknown')` ("MAIN (unknown)").
+    const role = tiles[1].querySelector('.vfo-role')!;
+    expect(role.textContent).toBe('MAIN');
+    expect(role.textContent).not.toMatch(/unknown/i);
+    expect(role.classList.contains('vfo-role-unlit')).toBe(true);
+    expect(role.getAttribute('style')).toContain('--vfo-role-slot: 14ch');
   });
 
   it('R2: two VFOs on the SAME receiver with BOTH slots unobserved render without crashing, ' +
@@ -783,7 +794,12 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
     tiles.forEach((tile) => {
       expect(tile.dataset.vfoSlot).toBe('unknown');
       expect(tile.dataset.vfoSlot).not.toBe('A');
-      expect(tile.querySelector('.vfo-role')?.textContent).toContain('unknown');
+      // MOR-2655: unlit receiver name, never "MAIN (unknown)". The old pin
+      // was `toContain('unknown')`.
+      const role = tile.querySelector('.vfo-role')!;
+      expect(role.textContent).toBe(tile.dataset.vfoReceiver);
+      expect(role.textContent).not.toMatch(/unknown/i);
+      expect(role.classList.contains('vfo-role-unlit')).toBe(true);
     });
   });
 
