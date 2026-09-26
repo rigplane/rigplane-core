@@ -59,7 +59,7 @@ import { readWorkspace } from '../presentation/workspace/contract';
 import {
   resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan,
 } from '../presentation/workspace/resolution';
-import { setLocale } from '$lib/i18n';
+import { getLocale, setLocale } from '$lib/i18n';
 
 const PROVIDER_GENERATION = 1;
 const CONFIRMED_HZ = 2400;
@@ -199,9 +199,11 @@ describe('one Filter Width lifecycle is equivalent on desktop, narrow mobile and
       expect(seen.phase).toBe('submitted');
       expect(seen.busy).toBe('true');
       expect(seen.canonical).toBe(String(CONFIRMED_HZ));
-      expect(seen.live).toBe(
-        'Filter width 3000 requested; not yet confirmed by the radio.',
-      );
+      // beforeEach pins en-US. That locale keeps the projector sentence the
+      // width tests already accepted ("Submitting: 3000"), not the catalog
+      // sentence. A non-English locale is pinned separately below.
+      expect(getLocale()).toBe('en-US');
+      expect(seen.live).toBe('Submitting: 3000');
     },
   );
 
