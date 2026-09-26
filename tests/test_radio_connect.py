@@ -256,7 +256,7 @@ class TestConninfoNoticeWiring:
         mt.queue_response(_build_conninfo())
         seen: list[object] = []
 
-        def record(callback: object) -> None:
+        def record(_self: object, callback: object) -> None:
             seen.append(callback)
 
         with (
