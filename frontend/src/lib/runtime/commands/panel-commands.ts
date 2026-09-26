@@ -1160,6 +1160,22 @@ export function makePresetHandlers() {
 
 /* ── RX Audio Handlers ───────────────────────────────────────────── */
 
+/** Dispatch a radio-AF intent with its unit stated (MOR-1676 part A): the
+ *  raw radio-AF path carries `level_unit: 'raw'` (stripped before
+ *  `sendCommand`), the legacy normalized path `level_unit: 'normalized'`.
+ *  A single literal call site so the completeness ledger
+ *  (`panel-commands-completeness.test.ts`) keeps parsing every AF dispatch.
+ *  Lives beside the AF handlers (below the memory section) so the memory
+ *  source scan (`memory-command-authority.test.ts`) stays free of
+ *  transport-adjacent vocabulary.
+ */
+function dispatchAfLevelIntent(level: number, receiver: Receiver, unit: 'raw'): void {
+  dispatchRadioIntent({ name: 'set_af_level', params: { level, receiver, level_unit: unit } });
+}
+function dispatchAfLevelNormalizedIntent(level: number, receiver: Receiver): void {
+  dispatchRadioIntent({ name: 'set_af_level', params: { level, receiver, level_unit: 'normalized' } });
+}
+
 /** The radio AF of the NAMED receiver, whichever is selected; `true` when sent.
  *
  *  MOR-1676 part A (AF): `unit` names the wire meaning explicitly. `'raw'`
@@ -1202,19 +1218,6 @@ function rawAfLevelFromInput(caps: Capabilities, level: number, unit?: 'raw'): n
   if (!Number.isInteger(level)) return null;
   const { rawMin, rawMax } = keyboardControlRawDomain(caps, 'af_level');
   return level >= rawMin && level <= rawMax ? level : null;
-}
-
-/** Dispatch a radio-AF intent with its unit stated (MOR-1676 part A): the
- *  raw radio-AF path carries `level_unit: 'raw'` (stripped before
- *  `sendCommand`), the legacy normalized path `level_unit: 'normalized'`.
- *  A single literal call site so the completeness ledger
- *  (`panel-commands-completeness.test.ts`) keeps parsing every AF dispatch.
- */
-function dispatchAfLevelIntent(level: number, receiver: Receiver, unit: 'raw'): void {
-  dispatchRadioIntent({ name: 'set_af_level', params: { level, receiver, level_unit: unit } });
-}
-function dispatchAfLevelNormalizedIntent(level: number, receiver: Receiver): void {
-  dispatchRadioIntent({ name: 'set_af_level', params: { level, receiver, level_unit: 'normalized' } });
 }
 
 function setReceiverAf(target: 'main' | 'sub', level: number, unit?: 'raw'): boolean {
