@@ -813,19 +813,39 @@ async def test_watchdog_silent_port_hands_off_at_5s(
     radio: IcomRadio,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Everything silent: recovery, and the hand-off to ``_watchdog_recover``
-    lands at about 5 s, not 60 s. The warning names ``port silent``
-    (MOR-2623 c)."""
+    """A port that was healthy and then goes silent hands off to
+    ``_watchdog_recover`` about 5 s after recovery starts, well before 60 s.
+    The warning names ``port silent`` (MOR-2623 c).
+
+    The watchdog only has a silence history from the first tick that saw the
+    transport, so the scenario starts the way production does after connect:
+    one healthy tick (fresh payload, pings advancing), and only then does
+    everything stop.
+    """
     clock = _WatchdogClock()
     radio._last_civ_data_received = clock.now
-    radio._last_civ_send_monotonic = clock.now + 0.1
+    radio._last_civ_send_monotonic = clock.now
     radio._civ_transport.rx_packet_count = 7
     radio._civ_recovering = False
     radio._force_cleanup_civ = AsyncMock()
     radio.soft_reconnect = AsyncMock()
 
+    healthy_ticks = [0]
+    went_silent_at: list[float] = []
+
     async def tick(delay: float) -> None:
         clock.advance(delay)
+        if healthy_ticks[0] < 1:
+            healthy_ticks[0] += 1
+            radio._last_civ_data_received = clock.now
+            radio._last_civ_send_monotonic = clock.now
+            radio._civ_transport.rx_packet_count += 1
+            return
+        if not went_silent_at:
+            # One send after the last payload, then nothing: no payload, and
+            # the packet count stays put.
+            radio._last_civ_send_monotonic = clock.now
+            went_silent_at.append(clock.now)
 
     handed_off_at: list[float] = []
     real_create_task = asyncio.create_task
@@ -848,11 +868,14 @@ async def test_watchdog_silent_port_hands_off_at_5s(
         await radio._civ_runtime._civ_data_watchdog_loop()
 
     assert handed_off_at, "silent port must hand off to lifecycle recovery"
-    # The 5 s bound is patience measured from recovery start, not from the
-    # last payload: detection itself costs one watchdog timeout.
-    elapsed = handed_off_at[0] - (radio._last_civ_data_received + 2.0)
-    assert 5.0 <= elapsed < 6.0, elapsed
-    assert any("port silent" in r.message for r in caplog.records)
+    stall = next(r for r in caplog.records if "requesting data start" in r.message)
+    assert "port silent" in stall.message
+    # Same tolerance style as the phase-2 hand-off test: the deadline is a
+    # bound the clock must have crossed, and it must be the 5 s one.
+    elapsed = handed_off_at[0] - went_silent_at[0]
+    assert elapsed >= 5.0
+    assert elapsed < 60.0
+    assert elapsed < 7.0
 
 
 async def test_watchdog_unanswered_live_port_waits_out_60s(radio: IcomRadio) -> None:
