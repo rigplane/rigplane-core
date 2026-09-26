@@ -668,6 +668,10 @@ _CTL_MEM_VOX_DELAY_PREFIXES = (
 # If no CI-V data for this long, send open_close to restart the stream.
 _CIV_DATA_WATCHDOG_TIMEOUT = 2.0  # seconds (wfview: 2000ms)
 _CIV_DATA_WATCHDOG_RETRY = 0.1  # retry interval (wfview: 100ms via startCivDataTimer)
+# Patient OpenClose before handing a live-but-unanswered port to lifecycle
+# recovery. A port that has gone completely silent gives up much sooner.
+_OPENCLOSE_DEADLINE = 60.0
+_SILENT_OPENCLOSE_DEADLINE = 5.0
 
 
 class CivRuntime:
@@ -1382,10 +1386,22 @@ class CivRuntime:
         The task is detached so the recovery (including the lifecycle's backoff
         sleeps) survives this watchdog loop exiting (the self-cancel guard in
         :meth:`stop_data_watchdog` keeps it from cancelling itself).
+
+        A quiet link is not a stall. Recovery starts only when payload has been
+        idle past ``_CIV_DATA_WATCHDOG_TIMEOUT`` AND either the CI-V port itself
+        has gone silent (``rx_packet_count`` stopped advancing, pings included)
+        or a send made after the last payload is still unanswered. A port that
+        is completely silent hands off after ``_SILENT_OPENCLOSE_DEADLINE``;
+        a live port that merely leaves queries unanswered keeps the 60 s
+        patience.
         """
-        _OPENCLOSE_DEADLINE = 60.0
         recovering = False
         recovery_start: float = 0.0
+        last_rx_advance: float | None = None
+        rx_baseline: int | None = None
+        baseline_transport: object | None = None
+        first_unanswered_send: float | None = None
+        quiet_logged = False
         try:
             while True:
                 await asyncio.sleep(
@@ -1398,28 +1414,78 @@ class CivRuntime:
                 if last is None:
                     continue
 
-                idle = time.monotonic() - last
-                if idle > _CIV_DATA_WATCHDOG_TIMEOUT:
+                now = time.monotonic()
+                civ_t = getattr(self._host, "_civ_transport", None)
+                raw_count = (
+                    getattr(civ_t, "rx_packet_count", None)
+                    if civ_t is not None
+                    else None
+                )
+                rx_count = raw_count if isinstance(raw_count, int) else None
+                if civ_t is not baseline_transport:
+                    last_rx_advance = now
+                    rx_baseline = rx_count
+                    baseline_transport = civ_t
+                elif rx_count is not None and rx_count != rx_baseline:
+                    last_rx_advance = now
+                    rx_baseline = rx_count
+                port_silent = (
+                    last_rx_advance is not None
+                    and now - last_rx_advance > _CIV_DATA_WATCHDOG_TIMEOUT
+                )
+
+                last_send = getattr(self._host, "_last_civ_send_monotonic", None)
+                if last_send is None or last_send <= last:
+                    first_unanswered_send = None
+                elif first_unanswered_send is None or first_unanswered_send <= last:
+                    first_unanswered_send = last_send
+                unanswered = (
+                    first_unanswered_send is not None
+                    and now - first_unanswered_send > _CIV_DATA_WATCHDOG_TIMEOUT
+                )
+
+                payload_idle = now - last > _CIV_DATA_WATCHDOG_TIMEOUT
+                stalled = payload_idle and (port_silent or unanswered)
+                if payload_idle and not stalled:
+                    if not quiet_logged:
+                        logger.debug(
+                            "civ-data-watchdog: quiet but alive "
+                            "(payload idle %.1fs, port answering, nothing asked)",
+                            now - last,
+                        )
+                        quiet_logged = True
+                    continue
+                quiet_logged = False
+
+                if stalled:
                     if not recovering:
-                        civ_t = getattr(self._host, "_civ_transport", None)
-                        rx_count = civ_t.rx_packet_count if civ_t else -1
+                        logged_rx = rx_count if rx_count is not None else -1
                         q_size = civ_t._packet_queue.qsize() if civ_t else -1
+                        evidence = (
+                            "port silent" if port_silent else "queries unanswered"
+                        )
                         logger.warning(
                             "civ-data-watchdog: no CI-V data for %.1fs, "
                             "requesting data start "
-                            "(transport rx_count=%d, queue=%d)",
-                            idle,
-                            rx_count,
+                            "(transport rx_count=%d, queue=%d) %s",
+                            now - last,
+                            logged_rx,
                             q_size,
+                            evidence,
                         )
                         recovering = True
                         self._host._civ_recovering = True
                         self._host._civ_stream_ready = False
-                        recovery_start = time.monotonic()
+                        recovery_start = now
 
-                    elapsed_recovery = time.monotonic() - recovery_start
+                    elapsed_recovery = now - recovery_start
+                    deadline = (
+                        _SILENT_OPENCLOSE_DEADLINE
+                        if port_silent
+                        else _OPENCLOSE_DEADLINE
+                    )
 
-                    if elapsed_recovery < _OPENCLOSE_DEADLINE:
+                    if elapsed_recovery < deadline:
                         try:
                             await self._host._send_open_close(open_stream=True)
                         except (ConnectionError, TimeoutError, OSError) as exc:
