@@ -1136,10 +1136,15 @@ _STARTUP_IN_FLIGHT_BOUND = 2
 
 
 class _GatePacedTransport:
-    """Dispatch that sleeps the gate's gap, the way ``_execute_civ_raw`` does."""
+    """A dispatch whose wire send is paced exactly like the runtime gate.
 
-    def __init__(self, gap: float) -> None:
-        self._gap = gap
+    The gate sleeps ``_civ_min_interval`` and only then calls
+    ``send_tracked``. This transport records how many of those calls overlap
+    and accepts the packet at once, so the overlap is the fetch's own, not a
+    delay invented here.
+    """
+
+    def __init__(self) -> None:
         self.sent = 0
         self.peak = 0
         self._busy = 0
@@ -1149,11 +1154,8 @@ class _GatePacedTransport:
     async def send_tracked(self, _data: bytes) -> None:
         self._busy += 1
         self.peak = max(self.peak, self._busy)
-        try:
-            await asyncio.sleep(self._gap)
-            self.sent += 1
-        finally:
-            self._busy -= 1
+        self.sent += 1
+        self._busy -= 1
 
     async def receive_packet(self, timeout: float = 0.2) -> bytes:
         await asyncio.sleep(timeout)
@@ -1171,7 +1173,7 @@ async def test_startup_fetch_never_outruns_the_send_gate() -> None:
     from rigplane.radio import CoreRadio
 
     gap = 0.035
-    transport = _GatePacedTransport(gap)
+    transport = _GatePacedTransport()
     radio = CoreRadio("192.168.1.100", timeout=2.0, model="IC-7610")
     assert len(build_state_queries(radio._profile)) >= _STARTUP_QUERY_COUNT
     radio._civ_transport = transport
