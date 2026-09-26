@@ -997,12 +997,11 @@ describe('the txAux surface mounts only when the view model carries the group', 
     // MOR-2509: this fixture's caps declare neither split nor dual_watch,
     // so the capability gates render no SPLIT/DW keys and no fact-toggle
     // container at all in the default path.
-    + 'div div section div span div div button button '
+    + 'div div section div span div div button button p span span '
     // MOR-1347: zone-less direct mount keeps rx-tx last, after rx-audio.
     // MOR-2438: the idle READY session span is absent; the hidden status row
     // retains only its RF mark/label contract and occupies no layout space.
-    + 'section div button button button label span div div div div div div p div button button ul '
-    + 'output div button button button output div button button output';
+    + 'section div button button button label span div div div div div div output div button button button output div button button output section p span span p div button button ul';
 
   it.each(['single', 'dual'] as const)('renders no txAux surface at all without the group (%s)', (strips) => {
     h.state = liveState(false);
