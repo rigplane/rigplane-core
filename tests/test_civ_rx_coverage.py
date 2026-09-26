@@ -632,6 +632,167 @@ async def test_watchdog_recover_cleans_up_then_drives_lifecycle(
     assert order == ["force_cleanup", "soft_reconnect"]
 
 
+# ---------------------------------------------------------------------------
+# MOR-2625 — a soft reconnect that restores no CI-V payload escalates once
+# to a full reconnect (control-session release, then the same soft_reconnect).
+# ---------------------------------------------------------------------------
+
+
+async def test_watchdog_recover_escalates_when_soft_reconnect_restored_no_data(
+    radio: IcomRadio,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """(a) A soft recovery whose epoch is still this session's, and no payload
+    since, makes the next handoff release the control session before
+    soft_reconnect, in that order."""
+    radio._civ_epoch = 7
+    radio._civ_runtime._soft_recovery_epoch = 7
+    order: list[str] = []
+
+    async def record_force_cleanup() -> None:
+        order.append("force_cleanup")
+
+    async def record_release() -> None:
+        order.append("release")
+
+    async def record_soft_reconnect() -> None:
+        order.append("soft_reconnect")
+
+    radio._force_cleanup_civ = record_force_cleanup
+    radio._control_phase.release = record_release
+    radio.soft_reconnect = record_soft_reconnect
+
+    with (
+        patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()),
+        caplog.at_level("WARNING"),
+    ):
+        await radio._civ_runtime._watchdog_recover()
+
+    assert order == ["force_cleanup", "release", "soft_reconnect"]
+    assert any(
+        "soft reconnect restored no data, escalating to full reconnect" in r.message
+        for r in caplog.records
+    )
+    assert radio._civ_runtime._soft_recovery_epoch is None
+
+
+async def test_watchdog_recover_stays_soft_after_payload(
+    radio: IcomRadio,
+) -> None:
+    """(b) A payload drained between recoveries clears the epoch, so the next
+    recovery is soft-only."""
+    radio._civ_epoch = 7
+    radio._civ_runtime._soft_recovery_epoch = 7
+    radio._civ_transport = MagicMock()
+    radio._civ_transport.receive_packet = AsyncMock(
+        side_effect=asyncio.CancelledError()
+    )
+    queue = MagicMock()
+    queue.empty.return_value = True
+    radio._civ_transport._packet_queue = queue
+
+    await radio._civ_runtime._civ_rx_loop(
+        source_generation=7, store_provider_generation=0
+    )
+
+    assert radio._civ_runtime._soft_recovery_epoch is None
+
+    released = AsyncMock()
+    radio._control_phase.release = released
+    radio._force_cleanup_civ = AsyncMock()
+    radio.soft_reconnect = AsyncMock()
+    with patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()):
+        await radio._civ_runtime._watchdog_recover()
+
+    released.assert_not_awaited()
+    radio.soft_reconnect.assert_awaited_once()
+
+
+async def test_watchdog_recover_does_not_escalate_twice(
+    radio: IcomRadio,
+) -> None:
+    """(c) After an escalated recovery that itself restored no payload, the
+    following recovery does not escalate again."""
+    radio._civ_epoch = 7
+    radio._civ_runtime._soft_recovery_epoch = 7
+    radio._force_cleanup_civ = AsyncMock()
+    radio._control_phase.release = AsyncMock()
+    radio.soft_reconnect = AsyncMock()
+
+    with patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()):
+        await radio._civ_runtime._watchdog_recover()
+        radio._control_phase.release.reset_mock()
+        await radio._civ_runtime._watchdog_recover()
+
+    radio._control_phase.release.assert_not_awaited()
+    assert radio.soft_reconnect.await_count == 2
+
+
+async def test_watchdog_recover_ignores_stale_epoch(radio: IcomRadio) -> None:
+    """(d) A changed CI-V epoch (a new session) ignores a remembered epoch."""
+    radio._civ_epoch = 8
+    radio._civ_runtime._soft_recovery_epoch = 7
+    released = AsyncMock()
+    radio._control_phase.release = released
+    radio._force_cleanup_civ = AsyncMock()
+    radio.soft_reconnect = AsyncMock()
+
+    with patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()):
+        await radio._civ_runtime._watchdog_recover()
+
+    released.assert_not_awaited()
+    radio.soft_reconnect.assert_awaited_once()
+    assert radio._civ_runtime._soft_recovery_epoch == 8
+
+
+async def test_watchdog_deadline_is_5s_after_no_payload_soft_recovery(
+    radio: IcomRadio,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """(e) After a soft recovery that restored no payload, OpenClose patience
+    is the 5 s silent deadline even while the port keeps answering pings."""
+    clock = _WatchdogClock()
+    radio._civ_epoch = 7
+    radio._civ_runtime._soft_recovery_epoch = 7
+    radio._last_civ_data_received = clock.now
+    radio._last_civ_send_monotonic = clock.now + 0.5
+    radio._civ_transport.rx_packet_count = 0
+    radio._civ_recovering = False
+    radio._force_cleanup_civ = AsyncMock()
+    radio.soft_reconnect = AsyncMock()
+
+    handed_off_at: list[float] = []
+    real_create_task = asyncio.create_task
+
+    def capture(coro: object, *args: object, **kwargs: object) -> asyncio.Task[object]:
+        handed_off_at.append(clock.now)
+        close = getattr(coro, "close", None)
+        if callable(close):
+            close()
+        return real_create_task(asyncio.sleep(0))
+
+    async def tick(delay: float) -> None:
+        clock.advance(delay)
+        radio._civ_transport.rx_packet_count += 1
+
+    with (
+        patch("asyncio.sleep", side_effect=tick),
+        patch("time.monotonic", side_effect=clock.monotonic),
+        patch("rigplane.runtime._civ_rx.time.monotonic", side_effect=clock.monotonic),
+        patch("asyncio.create_task", side_effect=capture),
+        patch.object(radio, "_send_open_close", new=AsyncMock()),
+        caplog.at_level("WARNING"),
+    ):
+        await radio._civ_runtime._civ_data_watchdog_loop()
+
+    assert handed_off_at
+    handoff = next(
+        r for r in caplog.records if "handing off to lifecycle recovery" in r.message
+    )
+    assert "OpenClose failed for 5." in handoff.message
+    assert handed_off_at[0] - radio._last_civ_data_received < 60.0
+
+
 async def test_stop_data_watchdog_cancels_pending_reconnect_task(
     radio: IcomRadio,
 ) -> None:

@@ -719,7 +719,18 @@ class ControlPhaseRuntime:
             # lifecycle owns retry.  A full re-establish here is a single
             # mechanism attempt (``_connect_once``); the lifecycle's RECOVERING
             # accounting / exhaustion handles repeated failures.
+            audio_runtime = getattr(h, "_audio_runtime", None)
+            audio_snapshot = (
+                audio_runtime.capture_snapshot() if audio_runtime is not None else None
+            )
+            teardown_audio = getattr(h, "_teardown_audio_transport", None)
+            if teardown_audio is not None:
+                try:
+                    await teardown_audio()
+                except Exception:
+                    logger.debug("soft_reconnect: audio teardown failed", exc_info=True)
             await self._connect_once()
+            await self._after_reconnect(audio_runtime, audio_snapshot)
             return
 
         h._conn_state = RadioConnectionState.CONNECTING
@@ -821,7 +832,17 @@ class ControlPhaseRuntime:
             h._start_civ_worker()
             h._start_civ_data_watchdog()
         logger.info("Soft reconnect to %s (civ=%d)", h._host, h._civ_port)
+        await self._after_reconnect(audio_runtime, audio_snapshot)
 
+    async def _after_reconnect(
+        self, audio_runtime: object, audio_snapshot: object
+    ) -> None:
+        """Tail shared by the CI-V rebuild and the full-connect fallback.
+
+        Fail-soft throughout: a CI-V reconnect that otherwise succeeded is never
+        failed by the managed-TX re-arm, the web callback, or the audio re-arm.
+        """
+        h = self._host
         # Managed TX is re-armed here, ahead of every reconnect consumer, so
         # the durable OFF a drop armed reaches the wire before any recovered
         # work does — and so it happens at all on a headless rig, which has no
@@ -866,7 +887,9 @@ class ControlPhaseRuntime:
                     and audio_snapshot is not None
                     and getattr(h, "_auto_recover_audio", False)
                 ):
-                    await audio_runtime.recover(audio_snapshot)
+                    recover = getattr(audio_runtime, "recover", None)
+                    if recover is not None:
+                        await recover(audio_snapshot)
             except Exception:
                 logger.debug("soft_reconnect: audio re-arm failed", exc_info=True)
 

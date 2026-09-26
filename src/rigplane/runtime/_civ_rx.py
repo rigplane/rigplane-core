@@ -688,6 +688,7 @@ class CivRuntime:
         # late soft_reconnect from firing after an explicit disconnect
         # (Codex P1 on PR #851).
         self._reconnect_task: asyncio.Task[None] | None = None
+        self._soft_recovery_epoch: int | None = None
         self._raw_received_frame_bytes: dict[int, bytes] = {}
         self._ptt_observer: Callable[[ProviderPttObservation], None] | None = None
         self._ptt_observer_provider_generation: int | None = None
@@ -1485,6 +1486,7 @@ class CivRuntime:
                     deadline = (
                         _SILENT_OPENCLOSE_DEADLINE
                         if port_silent
+                        or self._soft_recovery_epoch == self._host._civ_epoch
                         else _OPENCLOSE_DEADLINE
                     )
 
@@ -1548,9 +1550,22 @@ class CivRuntime:
         successful lifecycle exhaustion → CLOSING, where there is nothing left
         to watch.
         """
+        escalate = (
+            self._soft_recovery_epoch is not None
+            and self._soft_recovery_epoch == self._host._civ_epoch
+        )
+        self._soft_recovery_epoch = None
         try:
             await self._host._force_cleanup_civ()
+            if escalate:
+                logger.warning(
+                    "civ-data-watchdog: soft reconnect restored no data, "
+                    "escalating to full reconnect"
+                )
+                await self._host._control_phase.release()
             await self._host.soft_reconnect()
+            if not escalate:
+                self._soft_recovery_epoch = self._host._civ_epoch
         except (ConnectionError, TimeoutError, OSError):
             logger.error(
                 "civ-data-watchdog: lifecycle recovery failed (exhausted or "
@@ -1682,6 +1697,7 @@ class CivRuntime:
                 packets = self._shed_scope_backlog(packets)
 
                 self._host._last_civ_data_received = time.monotonic()
+                self._soft_recovery_epoch = None
                 self._host._civ_stream_ready = True
                 self._host._civ_recovering = False
 

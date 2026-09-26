@@ -351,11 +351,20 @@ async def test_soft_reconnect_does_full_connect_when_ctrl_dead(
     radio._ctrl_transport._udp_transport = None  # type: ignore[attr-defined]
 
     connect_mock = AsyncMock()
+    rearm = AsyncMock()
+    ensure_audio = AsyncMock()
+    on_reconnect = MagicMock()
+    radio.rearm_managed_tx = rearm
+    radio._ensure_audio_transport = ensure_audio
+    radio._on_reconnect = on_reconnect
 
     with patch.object(radio._control_phase, "_connect_once", side_effect=connect_mock):
         await radio.soft_reconnect()
 
     connect_mock.assert_awaited_once()
+    rearm.assert_awaited_once()
+    on_reconnect.assert_called_once()
+    ensure_audio.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
