@@ -657,9 +657,7 @@ async def test_watchdog_recover_escalates_when_soft_reconnect_restored_no_data(
 
     radio._force_cleanup_civ = record_force_cleanup
     radio._control_phase.release = record_release
-    ctrl = MagicMock()
-    ctrl.remote_id = 0xEF167A45
-    radio._ctrl_transport = ctrl
+    radio._ctrl_transport.remote_id = 0xEF167A45
     seen: dict[str, int] = {}
 
     async def record_soft_reconnect() -> None:
@@ -705,9 +703,7 @@ async def test_watchdog_recover_stays_soft_after_payload(
     released = AsyncMock()
     radio._control_phase.release = released
     radio._force_cleanup_civ = AsyncMock()
-    ctrl = MagicMock()
-    ctrl.remote_id = 0xEF167A45
-    radio._ctrl_transport = ctrl
+    radio._ctrl_transport.remote_id = 0xEF167A45
     seen: dict[str, int] = {}
 
     async def record_soft_reconnect() -> None:
