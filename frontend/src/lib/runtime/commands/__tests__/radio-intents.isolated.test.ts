@@ -85,8 +85,10 @@ describe('typed non-PTT radio intents', () => {
       // params. A float is always the legacy normalized level (tagged);
       // `level_unit: 'raw'` states a raw integer (stripped before
       // `sendCommand`). The number alone never decides (`1.0 === 1`).
-      // Each entry is [name, intentParams, wireParams].
-      ['set_af_level', { level: 0.5, receiver: 0 },
+      // Each entry is [name, intentParams, wireParams]. The host API
+      // passes intent params through `dispatchThroughIntentFacade`, so a
+      // unit-less AF level is malformed there — extensions must state it.
+      ['set_af_level', { level: 0.5, receiver: 0, level_unit: 'normalized' },
         { level: 0.5, receiver: 0, level_unit: 'normalized' }],
       ['set_af_level', { level: 128, receiver: 0, level_unit: 'raw' },
         { level: 128, receiver: 0 }],
