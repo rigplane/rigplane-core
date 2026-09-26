@@ -82,8 +82,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recovery in 5 seconds instead of 60. If a CI-V-only reconnect
   restores no data, the next handoff does one full reconnect with a
   fresh radio session. When the radio itself reports the session free,
-  recovery starts then, not after the watchdog wait. On the stand that
-  gap was about 1 second, against about 71 seconds before. A second
+  recovery starts then, not after the watchdog wait. On the IC-7610
+  stand that gap was about 1 second, against about 71 seconds before. A
+  second
   server's busy notice does not start recovery.
 
 - **A refused LAN session says what the error code means
@@ -170,12 +171,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A second SIGTERM during shutdown no longer crashes the CLI
   (MOR-2626).** The first signal starts shutdown; a later one is
-  ignored through `loop.close()`, and the process still exits.
+  ignored, and the process still exits.
 
 - **The notch choice shows the requested mode until the radio confirms
   it (MOR-2236).** AUTO, MANUAL or OFF is marked pending as soon as it
-  is sent, the same way NB and NR already were. The confirmed choice
-  stays unlit until the radio's answer arrives.
+  is sent, the same way NB and NR already were.
 
 ### Documentation
 
