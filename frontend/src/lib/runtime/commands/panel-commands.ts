@@ -1921,14 +1921,20 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
       const delta = keyboardDelta(safeParams.delta);
       if (delta !== null) {
         const nextRaw = Math.max(rawMin, Math.min(rawMax, currentRaw + Math.round(delta)));
-        makeRxAudioHandlers().onAfLevelChange(nextRaw, 'raw');
+        dispatchRadioIntent({
+          name: 'set_af_level',
+          params: { level: nextRaw, receiver: context.receiver, level_unit: 'raw' },
+        });
         return true;
       }
       const direction = keyboardDirection(safeParams.direction);
       if (direction) {
         const step = Math.max(1, Math.round(0.05 * span));
         const nextRaw = Math.max(rawMin, Math.min(rawMax, currentRaw + (direction === 'down' ? -step : step)));
-        makeRxAudioHandlers().onAfLevelChange(nextRaw, 'raw');
+        dispatchRadioIntent({
+          name: 'set_af_level',
+          params: { level: nextRaw, receiver: context.receiver, level_unit: 'raw' },
+        });
       }
       return true;
     }
