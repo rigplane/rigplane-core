@@ -164,6 +164,11 @@ export function getPendingNbOn(_receiver: 0 | 1): boolean | null {
 export function getPendingNrOn(_receiver: 0 | 1): boolean | null {
   return null;
 }
+/** MOR-2640 — the NARROW pending accessor, inert like the accessors
+ *  above: `null` means nothing pending. */
+export function getPendingNarrow(_receiver: 0 | 1): boolean | null {
+  return null;
+}
 export function getPendingNotchMode(_receiver: 0 | 1): 'off' | 'auto' | 'manual' | null {
   return null;
 }

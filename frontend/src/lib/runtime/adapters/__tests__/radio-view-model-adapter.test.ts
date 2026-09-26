@@ -1425,9 +1425,10 @@ describe('RF gain additive display observation', () => {
     // MOR-2537: In "preserves legacy strict model members", the digest moved because the fixture now carries the `agcModes` catalog the server always emits; the readings it guards are asserted unchanged alongside.
     // MOR-2538: re-read after `radioWideIndicators.actions` dropped the quickSplit/quickDualWatch/speak members (backend-only commands now).
     // MOR-2588: re-read after the per-receiver AGC-time gate began deciding from the served `agc_time_constant` tag (INDICATOR_CAPS carries none, so the control is now structurally absent).
+    // MOR-2640: re-read after filterPassband gained narrow (structurally absent in this fixture); the payload diff from the base adds only that member.
     expect(view.dsp?.agcMode.reading).toEqual({ status: 'known', value: 0 });
     expect(view.receiverIndicators?.[0].agcMode.reading).toEqual({ status: 'known', value: 0 });
-    expect(digest).toBe('ce2d4aeaee8888a2f31d6ed8b8e2c5470db097a873e1854fa52d6beb4d0419a2');
+    expect(digest).toBe('b90d372ec5dfd37d22b659d079fabc85bd00db4117f474fc7989c8cfbd147146');
   });
   it.each([false, true])('projects the explicit display and HOLDS RF gain, stale=%s', (stale) => {
     const view = model(displayState(stale), displayCaps, RECEIVING);

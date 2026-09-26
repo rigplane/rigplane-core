@@ -44,7 +44,7 @@ vi.mock('$lib/runtime/adapters/radio-view-model-adapter', () => ({
 }));
 
 import {
-  getPendingFilterSelection, getPendingManualNotchWidth, getPendingNbOn, getPendingNotchMode,
+  getPendingFilterSelection, getPendingManualNotchWidth, getPendingNarrow, getPendingNbOn, getPendingNotchMode,
   getPendingNrOn, getPendingPreampLevel,
 } from '../panel-adapters';
 
@@ -82,6 +82,10 @@ const CASES: readonly Case[] = [
   {
     label: 'getPendingNrOn', accessor: getPendingNrOn,
     intentName: 'set_nr', paramKey: 'on', confirmedField: 'nr', value: true, otherValue: false,
+  },
+  {
+    label: 'getPendingNarrow', accessor: getPendingNarrow,
+    intentName: 'set_narrow', paramKey: 'on', confirmedField: 'narrow', value: true, otherValue: false,
   },
 ];
 

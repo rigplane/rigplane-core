@@ -95,7 +95,11 @@ function view(): RadioViewModel {
       dataModeChoices: [],
       filterShape: known(1), filterShapeControlStructural: false,
       ifShift: known(250), ifShiftControlStructural: false,
-      pbtInner: known(400), pbtOuter: known(-400), dataMode: unknown(false),
+      pbtInner: known(400), pbtOuter: known(-400),
+      // MOR-2640: the display hand-built fixture names every required
+      // filterPassband key — the NARROW toggle's fact rides along.
+      narrow: known(false),
+      dataMode: unknown(false),
     },
   };
 }

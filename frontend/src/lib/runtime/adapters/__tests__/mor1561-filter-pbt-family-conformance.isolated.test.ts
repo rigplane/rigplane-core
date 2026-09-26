@@ -9,6 +9,9 @@
  * follow-up adds a sixth member to the family below: `reset_filter_width`
  * (`onFilterWidthReset`), claimed via `expectRefusal` — the derived
  * `filter_width_radio_default` capability is not declared on this profile.
+ * MOR-2640 adds a seventh: `set_narrow` (`onNarrowToggle`), claimed via
+ * `expectRefusal` — the `narrow` capability is not declared on this
+ * profile either.
  *
  * UNLIKE MOR-1560's DSP walk (9/9 uniform refusals), `set_filter_width` has
  * FOUR distinct dispatch sites (`onFilterWidthChange`, `onFilterWidthCommit`,
@@ -193,6 +196,35 @@ describe('IC-7300 fixture — filter/PBT family conformance (MOR-1561)', () => {
   it('reset_filter_width: REFUSES — the derived filter_width_radio_default capability is not declared on this profile, so onFilterWidthReset (the only dispatch site, MOR-2535 follow-up) never reaches the wire', () => {
     expect(IC7300_CAPABILITIES.capabilities).not.toContain('filter_width_radio_default');
     expectRefusal(() => makeFilterHandlers().onFilterWidthReset());
+  });
+
+  it('set_narrow: REFUSES — narrow is not a declared capability on this profile (onNarrowToggle is the only dispatch site; the structural gate refuses before any field check)', () => {
+    expect(IC7300_CAPABILITIES.capabilities).not.toContain('narrow');
+    expect(IC7300_STATE.fieldStatus?.['main.narrow']?.observed).not.toBe(true);
+    expectRefusal(() => makeFilterHandlers().onNarrowToggle());
+  });
+
+  it('set_narrow: DISPATCHES exactly one frame with the active receiver and the negated confirmed reading', () => {
+    // Same IC-7300 single-receiver profile, plus the `narrow` declaration
+    // and an observed `main.narrow: false` — the FTX-1 shape (`rigs/
+    // ftx1.toml` declares `narrow`; the backend #3689 confirms the
+    // readback). The handler negates the CONFIRMED reading for the ACTIVE
+    // receiver (MAIN → wire 0): one frame, no more. The `main.narrow`
+    // entry is copied from the fixture's own observed `main.filter`
+    // shape — no invented field-status vocabulary.
+    h.caps = fixtureCaps(profile);
+    h.caps.capabilities = [...h.caps.capabilities, 'narrow'];
+    h.state = fixtureState(profile);
+    h.state.main = { ...h.state.main, narrow: false };
+    h.state.fieldStatus = {
+      ...h.state.fieldStatus,
+      'main.narrow': { ...h.state.fieldStatus!['main.filter'] },
+    };
+    expect(h.state.fieldStatus['main.narrow']?.observed).toBe(true);
+    expect(h.caps.receivers).toBe(1);
+    expectFrames(() => makeFilterHandlers().onNarrowToggle(), [
+      ['set_narrow', { on: true, receiver: 0 }],
+    ]);
   });
 
   it('set_filter_shape: REFUSES — main.filterShape is unobserved (onFilterShapeChange is the only dispatch site)', () => {

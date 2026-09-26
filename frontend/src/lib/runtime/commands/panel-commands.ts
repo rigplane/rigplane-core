@@ -963,6 +963,21 @@ export function makeFilterHandlers() {
       if (receiver === null) return;
       dispatchRadioIntent({ name: 'set_filter_shape', params: { shape, receiver } });
     },
+    // MOR-2640: NARROW for the ACTIVE receiver (`set_narrow {on,
+    // receiver}`, backend #3689). Same inversion shape as
+    // `makeCwPanelHandlers().onTwinPeakToggle`: negate the CONFIRMED
+    // reading, never a pending target — the pending marker is
+    // display-only (MOR-1441 leg-1 doctrine). Gated on the
+    // profile-declared `narrow` capability; the view model hides the
+    // control without it, this gate refuses the dispatch.
+    onNarrowToggle: () => {
+      const receiver = knownActiveReceiver('narrow');
+      const state = getRadioState();
+      const rx = receiver === 0 ? state?.main : state?.sub;
+      if (!hasCapability('narrow') || receiver === null
+        || typeof rx?.narrow !== 'boolean') return;
+      dispatchRadioIntent({ name: 'set_narrow', params: { on: !rx.narrow, receiver } });
+    },
     // MOR-1518: `width` is a direct-entry value from the filter-settings
     // modal's per-preset slider (`FilterPanel.svelte`'s `handlePresetChange`)
     // — the same "any direct-entry path into the width command" the ticket

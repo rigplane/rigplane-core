@@ -28,6 +28,8 @@
     onIfShiftChange?: (value: number) => void;
     onPbtInnerChange?: (value: number) => void;
     onPbtOuterChange?: (value: number) => void;
+    onNarrowToggle?: () => void;
+    pendingNarrow?: boolean | null;
   }
   let {
     view, presentation = 'grouped', renderSurface = false,
@@ -35,7 +37,7 @@
     ifShiftFeedback, pbtInnerFeedback, pbtOuterFeedback,
     finiteAppearance, rendererContext = null, onModeChange, onFilterChange,
     onDataModeChange, onModInputChange, onFilterWidthChange, onFilterShapeChange,
-    onIfShiftChange, onPbtInnerChange, onPbtOuterChange,
+    onIfShiftChange, onPbtInnerChange, onPbtOuterChange, onNarrowToggle, pendingNarrow = null,
   }: Props = $props();
   let selection = $derived(finiteAppearance === undefined ? {} : { finiteAppearance, rendererContext });
 </script>
@@ -56,6 +58,7 @@
         {filterWidthFeedback} {ifShiftFeedback} {pbtInnerFeedback} {pbtOuterFeedback}
         {onFilterWidthChange}
         {onIfShiftChange} {onPbtInnerChange} {onPbtOuterChange}
+        {onNarrowToggle} {pendingNarrow}
       />
     {:else}
       {#key presentation}
