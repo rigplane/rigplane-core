@@ -14,7 +14,6 @@ from rigplane.exceptions import (
 from rigplane.radio import (
     CONNINFO_SIZE,
     IcomRadio,
-    RadioConnectionState,
     STATUS_SIZE,
     TOKEN_ACK_SIZE,
 )
@@ -167,29 +166,96 @@ class TestSendTokenAck:
         assert token == 0x12345678
 
 
+class _ConnectOnceStubs:
+    """Patches that let _connect_once run without a radio or a real socket.
+
+    The GUID step is left real: the queued 0x90 is what _receive_guid reads.
+    """
+
+    def __init__(self, radio: IcomRadio) -> None:
+        fake_civ_transport = ConnectMockTransport()
+        self._patches = (
+            patch.object(
+                radio._control_phase,
+                "_resolve_local_bind_host",
+                return_value="127.0.0.1",
+            ),
+            patch.object(
+                radio._control_phase,
+                "_wait_for_packet",
+                new=AsyncMock(return_value=_build_login_response()),
+            ),
+            patch.object(radio._control_phase, "_send_token_ack", new=AsyncMock()),
+            patch.object(radio._control_phase, "_send_conninfo", new=AsyncMock()),
+            patch.object(
+                radio._control_phase,
+                "_receive_civ_port",
+                new=AsyncMock(return_value=50002),
+            ),
+            patch.object(
+                radio._control_phase, "_flush_queue", new=AsyncMock(return_value=0)
+            ),
+            patch.object(radio._control_phase, "_start_token_renewal"),
+            patch.object(radio._control_phase, "_start_watchdog"),
+            patch.object(radio._civ_runtime, "advance_generation"),
+            patch.object(radio._civ_runtime, "start_pump"),
+            patch.object(radio._civ_runtime, "start_data_watchdog"),
+            patch.object(radio._civ_runtime, "start_worker"),
+            patch("rigplane.transport.IcomTransport", return_value=fake_civ_transport),
+            patch("rigplane._control_phase.asyncio.sleep", new=AsyncMock()),
+            patch(
+                "rigplane._control_phase.wait_for_radio_startup_ready",
+                new=AsyncMock(),
+            ),
+        )
+
+    def __enter__(self) -> "_ConnectOnceStubs":
+        for item in self._patches:
+            item.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        for item in reversed(self._patches):
+            item.stop()
+
+
 class TestConninfoNoticeWiring:
     @pytest.mark.asyncio
     async def test_setup_keeps_the_notice_callback_clear_so_guid_is_queued(
         self,
     ) -> None:
-        """During setup the 0x90 still lands in the queue for _receive_guid."""
-        radio = IcomRadio("192.168.1.100", model="IC-7610")
+        """During setup the callback is clear and _receive_guid reads the 0x90."""
+        radio = IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610")
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
-        radio._conn_state = RadioConnectionState.CONNECTING
-        radio._ctrl_transport._discard_data_packets = False
-        radio._ctrl_transport._conninfo_notice_callback = None
-        mt.queue_response(_build_conninfo())
-        guid = await radio._control_phase._receive_guid()
-        assert guid is not None
-        assert radio._ctrl_transport._conninfo_notice_callback is None
-
-    def test_after_setup_the_callback_is_the_notice_handler(self) -> None:
-        radio = IcomRadio("192.168.1.100", model="IC-7610")
-        radio._ctrl_transport._discard_data_packets = True
         radio._ctrl_transport._conninfo_notice_callback = (
             radio._control_phase._on_conninfo_notice
         )
+        seen: list[bool] = []
+        real_receive_guid = radio._control_phase._receive_guid
+
+        async def spy_receive_guid() -> bytes | None:
+            seen.append(radio._ctrl_transport._conninfo_notice_callback is None)
+            return await real_receive_guid()
+
+        mt.queue_response(_build_conninfo())
+        with (
+            _ConnectOnceStubs(radio),
+            patch.object(
+                radio._control_phase, "_receive_guid", side_effect=spy_receive_guid
+            ),
+        ):
+            await radio._control_phase._connect_once()
+        assert seen == [True]
+
+    @pytest.mark.asyncio
+    async def test_after_setup_the_callback_is_the_notice_handler(self) -> None:
+        radio = IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610")
+        mt = ConnectMockTransport()
+        radio._ctrl_transport = mt
+        mt.queue_response(_build_conninfo())
+        with _ConnectOnceStubs(radio):
+            await radio._control_phase._connect_once()
         assert (
             radio._ctrl_transport._conninfo_notice_callback
             is radio._control_phase._on_conninfo_notice
