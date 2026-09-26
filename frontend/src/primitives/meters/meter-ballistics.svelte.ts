@@ -339,10 +339,6 @@ export function createMeterBallistics<State>(
         lifecycle.reconcile();
         return;
       }
-      // The ticker is idle while the peak sits on the value; deliver the frame it skipped so a hold that starts with this sample starts now.
-      if (peakEnabled && !lifecycle.reducedMotion && !peakAboveCurrent()) {
-        channel.advance(peakCurrent(), projectionNow);
-      }
       sample = input.sample;
       if (boundary) {
         smoother.reset(input.smoothTarget);
