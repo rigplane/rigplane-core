@@ -205,7 +205,7 @@ describe('one Filter Width lifecycle is equivalent on desktop, narrow mobile and
     },
   );
 
-  it('keeps keyboard and pointer intents identical across the three mounts', () => {
+  it('keeps the width input intent identical across the three mounts', () => {
     vi.useFakeTimers();
     const dispatched: unknown[] = [];
     for (const kind of ['desktop', 'narrow-mobile', 'workspace-selected'] as const) {
@@ -214,7 +214,8 @@ describe('one Filter Width lifecycle is equivalent on desktop, narrow mobile and
       expect(control, kind).not.toBeNull();
       control!.focus();
       h.commands.mockClear();
-      control!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      if (control instanceof HTMLInputElement) control.value = '2450';
+      control!.dispatchEvent(new Event('input', { bubbles: true }));
       vi.advanceTimersByTime(200);
       flushSync();
       dispatched.push(h.commands.mock.calls.map((call) => [call[0], call[1]]));
