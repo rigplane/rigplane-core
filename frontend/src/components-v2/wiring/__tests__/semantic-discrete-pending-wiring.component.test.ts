@@ -441,7 +441,8 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
     // Confirmed reading stays the selection source: still 0.
     expect(choice(0).getAttribute('aria-checked')).toBe('true');
     expect(choice(1).getAttribute('aria-checked')).toBe('false');
-    expect(group().querySelector('.sr-only')).not.toBeNull();
+    expect(group().querySelector(`#${group().getAttribute('aria-describedby')}`)?.textContent)
+      .toBe('Pending, not yet confirmed');
   });
 
   it('marks off pending after the MOR-1541 pair (both strands off) is in flight (DspSurface)', () => {

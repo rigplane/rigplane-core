@@ -122,14 +122,15 @@ describe('compact manual notch width renders profile-derived choices (MOR-1685)'
     expect(choice('MID').dataset.pending).toBe('false');
     expect(choice('WIDE').getAttribute('aria-checked')).toBe('true');
     expect(choice('NAR').getAttribute('aria-checked')).toBe('false');
-    expect(group.querySelector('.sr-only')).not.toBeNull();
+    expect(group.querySelector(`#${group.getAttribute('aria-describedby')}`)?.textContent)
+      .toBe('Pending, not yet confirmed');
     r.dispose();
   });
 
   it('renders confirmed status and no announcement when nothing is pending', () => {
     const r = render(base(), [...IC7300_WIDTH_CHOICES]);
     expect(r.width()!.dataset.notchWidthStatus).toBe('confirmed');
-    expect(r.width()!.querySelector('.sr-only')).toBeNull();
+    expect(r.width()!.getAttribute('aria-describedby')).toBeNull();
     r.dispose();
   });
 

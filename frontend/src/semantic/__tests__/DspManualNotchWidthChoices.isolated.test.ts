@@ -119,7 +119,8 @@ describe('manual notch width renders profile-derived choices (MOR-1685)', () => 
     expect(choice('NAR').dataset.pending).toBe('false');
     expect(choice('WIDE').getAttribute('aria-checked')).toBe('true');
     expect(choice('MID').getAttribute('aria-checked')).toBe('false');
-    expect(group.querySelector('.sr-only')).not.toBeNull();
+    expect(group.querySelector(`#${group.getAttribute('aria-describedby')}`)?.textContent)
+      .toBe('Pending, not yet confirmed');
     r.dispose();
   });
 
