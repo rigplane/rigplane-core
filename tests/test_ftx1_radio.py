@@ -2868,13 +2868,11 @@ async def test_set_nb_sub_reads_and_writes_sub(connected_radio):
 
 @pytest.mark.asyncio
 async def test_set_nb_off_sends_level_zero(connected_radio):
-    """set_nb(False) reads the live level first, then sends level 0
-    (= OFF for FTX-1). A nonzero live level is remembered for the next on."""
-    connected_radio._transport.query = AsyncMock(return_value="NL0003")
+    """set_nb(False) sends level 0 (= OFF for FTX-1)."""
+    connected_radio._transport.query = AsyncMock()
     connected_radio._transport.write = AsyncMock()
     connected_radio._state.main.nb_level = 5
     await connected_radio.set_nb(False)
-    connected_radio._transport.query.assert_called_once_with("NL0;")
     connected_radio._transport.write.assert_called_once_with("NL0000;")
 
 
@@ -2914,13 +2912,11 @@ async def test_set_nr_sub_reads_and_writes_sub(connected_radio):
 
 @pytest.mark.asyncio
 async def test_set_nr_off_sends_level_zero(connected_radio):
-    """set_nr(False) reads the live level first, then sends level 0
-    (= OFF for FTX-1). A nonzero live level is remembered for the next on."""
-    connected_radio._transport.query = AsyncMock(return_value="RL003")
+    """set_nr(False) sends level 0 (= OFF for FTX-1)."""
+    connected_radio._transport.query = AsyncMock()
     connected_radio._transport.write = AsyncMock()
     connected_radio._state.main.nr_level = 7
     await connected_radio.set_nr(False)
-    connected_radio._transport.query.assert_called_once_with("RL0;")
     connected_radio._transport.write.assert_called_once_with("RL000;")
 
 
