@@ -247,10 +247,10 @@ def _set_command_arms(
     """Every ``case Set*``/``case Reset*`` arm in a ``match`` statement of
     *path*.
 
-    Default is ``web/radio_poller.py`` (``RadioPoller._execute``), which is
-    the Icom executor. ``backends/yaesu_cat/poller.py``
-    (``YaesuCatPoller._execute_command``) is the other executor and uses the
-    same ``case SetX(...)`` shape; a command dispatched only there still
+    Default is ``web/radio_poller.py`` (``RadioPoller._execute``). The test
+    also scans ``backends/yaesu_cat/poller.py``
+    (``YaesuCatPoller._execute_command``), which uses the same
+    ``case SetX(...)`` shape, so a command dispatched only there still
     needs a readback classification. ``ResetFilterWidth`` (MOR-2535) is the
     one non-``Set`` write command; counting only ``Set`` prefixes would
     exempt it from the classification every other write arm gets."""
@@ -338,8 +338,8 @@ def test_every_set_command_arm_is_classified() -> None:
         "here with a reason"
     )
     assert classified - (arms | yaesu_arms) == set(), (
-        "classified command has no arm in either executor "
-        "(web/radio_poller.py or backends/yaesu_cat/poller.py)"
+        "classified command has no arm in web/radio_poller.py "
+        "or backends/yaesu_cat/poller.py"
     )
     assert covered & no_field == set()
     assert covered & _PENDING_LATER_PR == set()
