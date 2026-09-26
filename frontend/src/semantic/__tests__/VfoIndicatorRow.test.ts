@@ -195,10 +195,11 @@ describe('radio-wide singleton indicators (MOR-2309)', () => {
     // Both parts unread → exactly the label. Same for XIT.
     for (const key of ['rit', 'xit'] as const) {
       const label = key.toUpperCase();
-      const both = key === 'rit'
-        ? { ritActive: unknown(), ritOffset: unknown() }
-        : { xitActive: unknown(), xitOffset: unknown() };
-      const root = render({ radioWide: { ...shared(), ...both } });
+      const root = render({ radioWide: {
+        ...shared(),
+        ritActive: unknown(), ritOffset: unknown(),
+        xitActive: unknown(), xitOffset: unknown(),
+      } });
       const node = root.querySelector(`[data-indicator-fact="${key}"]`);
       expect(node?.textContent?.trim()).toBe(label);
       expect(node?.textContent).not.toContain('Hz');
