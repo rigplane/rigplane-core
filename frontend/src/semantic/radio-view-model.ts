@@ -571,11 +571,11 @@ export type RfFrontEndField<T> = TxAuxField<T>;
  * verbatim) — plain lists, not field-wrapped, same reasoning as `dsp`'s
  * `agcModes`: a choice set is a structural fact about the radio MODEL, not a
  * live reading that can itself go stale. Per the X6200 lesson, these are
-  * read from the `caps` ARGUMENT only — never a radio-specific fallback table
-  * (the shipped panel's own `[0, 6, 12, 18]`/`[0, 1, 2]` UI-convenience
-  * defaults are presentation, not a fact, and no rig profile declares them —
-  * the IC-7610's actual ATT ladder is 16 × 3 dB steps per `rigs/ic7610.toml`,
-  * not these values — see `radio-view-model-adapter.ts`'s `deriveRfFrontEnd`).
+ * read from the `caps` ARGUMENT only — never a radio-specific fallback table
+ * (the shipped panel's own `[0, 6, 12, 18]`/`[0, 1, 2]` UI-convenience
+ * defaults are presentation, not a fact — the IC-7610's actual ATT ladder
+ * is 16 × 3 dB steps per `rigs/ic7610.toml`, not these values — see
+ * `radio-view-model-adapter.ts`'s `deriveRfFrontEnd`).
  *
  * THE MUTEX (MOR-479, MOR-1293): the shipped panel derives an IC-7610
  * hardware mutex from `digiSel` — the radio silently ignores a PREAMP set

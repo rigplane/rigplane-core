@@ -583,13 +583,14 @@ export function runAssertions(
       `aria-describedby="${describedBy}" resolves to "${description}"`);
   }
   // MOR-1350 — the same doctrine for `TxAuxSurface`'s TUNE control, the
-  // surface's own authority actuator: a disabled TUNE must carry a reason a
-  // screen reader can actually read through `aria-describedby`, never only
-  // the `data-reason` hooks on the blocked list's `<li>` items. The
-  // control-level wiring is `TxAuxFiniteHost.svelte`'s title/aria-describedby
-  // pair (pinned in `TxAuxSurface.test.ts`, MOR-1422/MOR-1481); this check
-  // extends that pin to the browser evidence build, which before MOR-1355
-  // had no txAux fixture to run it against.
+  // surface's own authority actuator: a disabled TUNE must carry an
+  // `aria-describedby` that resolves to non-empty reason text a screen
+  // reader can actually read — the id alone, a dangling target, or an
+  // empty-text span all fail. The control-level wiring is
+  // `TxAuxFiniteHost.svelte`'s title/aria-describedby pair (pinned in
+  // `TxAuxSurface.test.ts`, MOR-1422/MOR-1481); this check extends that
+  // pin to the browser evidence build, which before MOR-1355 had no txAux
+  // fixture to run it against.
   const tuneButton = q<HTMLButtonElement>('[data-testid="tx-aux-atu-tune"]');
   if (tuneButton?.disabled) {
     const describedBy = tuneButton.getAttribute('aria-describedby');

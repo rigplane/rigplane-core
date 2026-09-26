@@ -555,9 +555,11 @@ describe('TX truth reaches this surface only through the fact layer (R9)', () =>
     expect(SOURCE).not.toMatch(/RF_LABEL\s*(:|=)\s*\{/);
   });
 
-  // MOR-1283: the mark glyph is decorative — the RF state is already
-  // announced through the label beside it, so the mark span must be hidden
-  // from assistive technology exactly like the caption spans above it.
+  // MOR-1283: the mark glyph is decorative duplication — the label span
+  // beside it already carries the RF state whenever there is text to read
+  // (`RF_LABEL` is `''` for `receiving`/`unknown`, where there is nothing
+  // to say), so the mark span must be hidden from assistive technology
+  // exactly like the caption spans above it.
   it('hides the decorative RF mark from assistive technology (MOR-1283)', () => {
     withSurface(base('transmitting'), (s) => {
       expect(s.rfMark()).toBe(RF_MARK.transmitting);
