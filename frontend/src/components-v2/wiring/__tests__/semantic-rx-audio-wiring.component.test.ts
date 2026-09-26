@@ -1180,6 +1180,11 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
   ] as const)('with %s selected, a step on the %s knob sets that receiver\'s AF', (active, receiver, index, level) => {
     radioAf(active);
     renderHostedFace('desktop-v2');
+    // The host snapshots the authority publication when it subscribes on
+    // mount; republish the already-seeded authority so the fresh caps
+    // (with `controls.af_level`) reach its `published` snapshot.
+    publishAuthority();
+    flushSync();
     knob(receiver)!.dispatchEvent(new KeyboardEvent(
       'keydown', { key: 'ArrowRight', bubbles: true, cancelable: true },
     ));
