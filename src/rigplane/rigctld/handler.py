@@ -2295,22 +2295,14 @@ class RigctldHandler:
             select_receiver = getattr(self._radio, "select_receiver", None)
             if select_receiver is not None:
                 target = "MAIN" if vfo == "VFOA" else "SUB"
-                try:
-                    await select_receiver(target)
-                except CommandError as exc:
-                    logger.debug("rigctld: set_vfo %s rejected: %s", vfo, exc)
-                    return HamlibError.ERJCTED
+                await select_receiver(target)
                 return HamlibError.OK
             target = "MAIN" if vfo == "VFOA" else "SUB"
         else:
             set_vfo_slot = getattr(self._radio, "set_vfo_slot", None)
             if set_vfo_slot is not None:
                 slot = "A" if vfo == "VFOA" else "B"
-                try:
-                    await set_vfo_slot(slot)
-                except CommandError as exc:
-                    logger.debug("rigctld: set_vfo %s rejected: %s", vfo, exc)
-                    return HamlibError.ERJCTED
+                await set_vfo_slot(slot)
                 return HamlibError.OK
             target = "A" if vfo == "VFOA" else "B"
         # Issue #1189: legacy backends (e.g. SerialMockRadio,
