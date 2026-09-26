@@ -217,9 +217,6 @@ export function dispatchRadioIntentWithResult(intent: RadioIntent): RadioIntentD
   // than silently reinterpret it.
   const wireParams = (() => {
     const base = params as Record<string, unknown>;
-    if (specsByName.get(name)?.some((spec) => spec.level === 'normalized')) {
-      return { ...base, level_unit: 'normalized' };
-    }
     if (name === 'set_af_level') {
       // A raw intent states `level_unit: 'raw'` and goes out stripped. A
       // caller that computed the raw int itself and states no unit (the
@@ -232,6 +229,9 @@ export function dispatchRadioIntentWithResult(intent: RadioIntent): RadioIntentD
         const { level_unit: _stripped, ...untagged } = base;
         return untagged;
       }
+      return { ...base, level_unit: 'normalized' };
+    }
+    if (specsByName.get(name)?.some((spec) => spec.level === 'normalized')) {
       return { ...base, level_unit: 'normalized' };
     }
     return base;
