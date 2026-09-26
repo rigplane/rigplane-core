@@ -254,12 +254,22 @@ class TestConninfoNoticeWiring:
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
         mt.queue_response(_build_conninfo())
-        with _ConnectOnceStubs(radio):
+        seen: list[object] = []
+
+        def record(callback: object) -> None:
+            seen.append(callback)
+
+        with (
+            _ConnectOnceStubs(radio),
+            patch.object(
+                type(mt),
+                "_conninfo_notice_callback",
+                property(lambda self: None, record),
+                create=True,
+            ),
+        ):
             await radio._control_phase._connect_once()
-        assert (
-            radio._ctrl_transport._conninfo_notice_callback
-            is radio._control_phase._on_conninfo_notice
-        )
+        assert seen[-1] == radio._control_phase._on_conninfo_notice
 
     def test_busy_zero_requests_recovery(self) -> None:
         radio = IcomRadio("192.168.1.100", model="IC-7610")
