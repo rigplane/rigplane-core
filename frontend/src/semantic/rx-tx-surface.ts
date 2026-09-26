@@ -89,6 +89,34 @@ const BLOCKED_KEY: Record<KeyBlockedReason, string> = {
  *  a live locale switch (MOR-1448 `reasonLabel` precedent). */
 export const blockedLabel = (code: KeyBlockedReason): string => t(BLOCKED_KEY[code]);
 
+/**
+ * MOR-1890: the wire→semantic naming seam for TX-interlock refusals. The
+ * server delivers a `failed` lifecycle with `{blockedBy: 'tx_interlock',
+ * reason: <snake_case code>}`; this surface keys its blocked vocabulary off
+ * kebab-case, so the mapping step below is where the two spellings meet.
+ * An unrecognised wire code must NOT produce a `KeyBlockedReason` — the
+ * refusal then falls back to the raw server message rather than being
+ * swallowed by a wrong label.
+ */
+const REFUSAL_BY_WIRE_CODE: Readonly<Record<string, KeyBlockedReason>> = Object.freeze({
+  rf_state_unknown: 'rf-state-unknown',
+  radio_transmitting: 'radio-transmitting',
+});
+/** A wire refusal code, if and only if it is one this surface has heard of. */
+export const refusalBlockedReason = (code: string): KeyBlockedReason | undefined =>
+  Object.prototype.hasOwnProperty.call(REFUSAL_BY_WIRE_CODE, code)
+    ? REFUSAL_BY_WIRE_CODE[code] : undefined;
+/** One call from a stored refusal code to its operator-legible sentence;
+ *  `undefined` for anything that is not a known code, so a raw server
+ *  message keeps its verbatim fallback. */
+export const blockedReasonLabel = (code: string): string | undefined => {
+  // The refusal code is stored kebab-case (mapped at the transport edge);
+  // validate it against the same catalog the label resolves through, so a
+  // plain English message never looks up `prototype` junk either.
+  return Object.prototype.hasOwnProperty.call(BLOCKED_KEY, code)
+    ? blockedLabel(code as KeyBlockedReason) : undefined;
+};
+
 export type TxTargetUnknownReason = Extract<TxTargetViewModel, { status: 'unknown' }>['reason'];
 /** MOR-1474: `view.txTarget`'s four `status: 'unknown'` reasons
  *  (`radio-view-model.ts`), each backed by ITS OWN catalog key rather than

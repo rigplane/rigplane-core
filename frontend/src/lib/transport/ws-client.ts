@@ -1,5 +1,6 @@
 import type { WsCommand, WsIncoming } from '../types/protocol';
 import { makeCommandId } from '../types/protocol';
+import { refusalBlockedReason, type KeyBlockedReason } from '../../semantic/rx-tx-surface';
 import { isLiveRadioAvailable, setWsConnected, markStateUpdated, setReconnecting, setRadioStatus } from '../stores/connection.svelte';
 import { isValidServerState, matchesCurrentCapabilityTopology, resetRadioState, setRadioState } from '../stores/radio.svelte';
 import { capabilitiesMatchGeneration, clearCapabilities, setCapabilities } from '../stores/capabilities.svelte';
@@ -629,7 +630,23 @@ export class WsChannel {
     } else {
       if (raw.message !== undefined && raw.message !== null && typeof raw.message !== 'string') return;
       kind = state === 'timed_out' ? 'timed-out' : state;
-      if (typeof raw.message === 'string') error = raw.message;
+      /**
+       * MOR-1890: on a `failed` frame, `details` used to die unread — the
+       * server's refusal code reached the client and was dropped here. Read
+       * exactly one validation: a `blockedBy: 'tx_interlock'` refusal named
+       * by a known snake_case wire code maps onto the semantic blocked
+       * vocabulary (kebab-case) and then REPLACES the raw English message
+       * as `error`, so the refusal can render from its i18n key. Anything
+       * unrecognised falls back to the raw message verbatim.
+       */
+      let refusalReason: KeyBlockedReason | undefined;
+      if (state === 'failed' && isPlainRecord(raw.details)) {
+        const wireReason = raw.details.reason;
+        refusalReason = raw.details.blockedBy === 'tx_interlock' && typeof wireReason === 'string'
+          ? refusalBlockedReason(wireReason) : undefined;
+      }
+      reason = refusalReason;
+      error = refusalReason ?? (typeof raw.message === 'string' ? raw.message : undefined);
     }
     if (tracked.seen.has(kind)) return;
     tracked.seen.add(kind);

@@ -28,6 +28,7 @@ import {
   makeKeyboardHandlers, makeSystemHandlers, makeRepeaterHandlers,
 } from '../commands/panel-commands';
 import { toRadioViewModel } from './radio-view-model-adapter';
+import { blockedReasonLabel } from '../../../semantic/rx-tx-surface';
 import {
   getManagedAppTxController, type ManagedAppTxController,
 } from '../tx-controller/managed-app-host';
@@ -397,8 +398,14 @@ export function projectControlFeedback<T>(
     : latest.dispatchedEventEpoch !== undefined ? 'dispatched' : 'submitted';
   const outcomePhase: ControlFeedbackOutcome = latest.terminalOutcome === 'superseded'
     ? 'superseded' : latest.status as ControlFeedbackOutcome;
+  // MOR-1890: a TX-interlock refusal stores its reason as the kebab-case
+  // semantic code (ws-client mapped it on the wire); resolve that code to
+  // the operator-legible sentence here, at the one outcome-build point, so
+  // every renderer (scalar renderers, per-panel issued-status formatters,
+  // polite announcements) reads the SAME text. Unrecognised text — a raw
+  // server message — falls back verbatim, sliced as before.
   const error = terminal && typeof latest.error === 'string' && latest.error.length > 0
-    ? latest.error.slice(0, 256) : undefined;
+    ? (blockedReasonLabel(latest.error) ?? latest.error.slice(0, 256)) : undefined;
   const transitionId = phase === 'dispatched'
     ? JSON.stringify([latest.originalEpoch, latest.id, phase, latest.dispatchedEventEpoch])
     : phase === 'queued'
