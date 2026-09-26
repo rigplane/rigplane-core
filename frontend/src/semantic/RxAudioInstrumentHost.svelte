@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount, type Snippet } from 'svelte';
+  import { onDestroy, onMount, untrack, type Snippet } from 'svelte';
   import { t } from '$lib/i18n';
   import { LAN_MOD_INPUT_SOURCE } from '$lib/radio/mod-input';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
@@ -303,6 +303,19 @@
     return { min: rawMin, max: rawMax, step: 1, defaultValue: null, fineStepDivisor: 1 };
   }
 
+  /** The domain the named-receiver knob reads: `radioAfDomain`, but off the
+   *  render-time `presentation` caps (see above) without tracking them —
+   *  the lattice must follow delivered caps, never re-pulse on authority. */
+  function receiverAfDomain(): {
+    min: number; max: number; step: 1; defaultValue: null; fineStepDivisor: 1;
+  } | null {
+    const control = untrack(() => presentation.caps)?.controls?.af_level;
+    if (control === undefined || 'mapping' in control) return null;
+    const { raw_min: rawMin, raw_max: rawMax } = control;
+    if (!Number.isSafeInteger(rawMin) || !Number.isSafeInteger(rawMax) || rawMax <= rawMin) return null;
+    return { min: rawMin, max: rawMax, step: 1, defaultValue: null, fineStepDivisor: 1 };
+  }
+
   function input(): Readonly<ContinuousScalarInput> {
     const field = presentation.rxAudio?.afLevel;
     const currentAuthority = publishedAfAuthority;
@@ -407,11 +420,11 @@
     // MOR-1676 part A (AF): the named-receiver knob moves on the radio's raw
     // integer lattice, like the active-receiver slider above — the value in
     // IS the raw value, dispatched with the explicit `'raw'` unit. The
-    // domain follows the PUBLISHED authority (`published`), the same
-    // snapshot the gate above compares — never the render-time
-    // `presentation` prop, whose caps the publisher may not have delivered
-    // yet.
-    const rawDomain = radioAfDomain(published);
+    // domain follows the render-time `presentation` caps (untracked read —
+    // see `receiverAfDomain`): the publisher delivers caps with the view,
+    // while the `published` snapshot only refreshes on a delivered
+    // publication and may lag one behind.
+    const rawDomain = receiverAfDomain();
     const domain = rawDomain ?? AF_DOMAIN;
     const rawReading = rawDomain !== null && reading.status === 'known'
       ? {
