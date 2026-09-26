@@ -105,7 +105,12 @@ export type RadioIntentName = RadioIntent['name'];
 
 const specEntries = intentSpecs.flatMap(({ names, params }) => names.map((name) => [name, params] as const));
 export const RADIO_INTENT_NAMES = Object.freeze(specEntries.map(([name]) => name)) as readonly RadioIntentName[];
-const specsByName = new Map<string, Readonly<Record<string, FieldSpec>>>(specEntries);
+const specsByName = new Map<string, ReadonlyArray<Readonly<Record<string, FieldSpec>>>>();
+for (const [name, params] of specEntries) {
+  const list = specsByName.get(name);
+  if (list === undefined) specsByName.set(name, [params]);
+  else (list as Array<Readonly<Record<string, FieldSpec>>>).push(params);
+}
 
 export function isNormalizedLevel(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
@@ -187,7 +192,7 @@ export function dispatchRadioIntentWithResult(intent: RadioIntent): RadioIntentD
   const params = candidate.params;
   const paramsRecord = params as Record<PropertyKey, unknown>;
   if (typeof params !== 'object' || params === null || Array.isArray(params)
-    || !matchesParams(specsByName.get(name)!, paramsRecord)
+    || !specsByName.get(name)!.some((spec) => matchesParams(spec, paramsRecord))
     || (name === 'set_rf_power' && paramsRecord.level_unit === 'normalized'
       && !isNormalizedLevel(paramsRecord.level))
     || (candidate.id !== undefined && (typeof candidate.id !== 'string' || candidate.id.length === 0))) {
@@ -206,7 +211,7 @@ export function dispatchRadioIntentWithResult(intent: RadioIntent): RadioIntentD
   // because the server rejects any `level_unit` other than `'normalized'`.
   const wireParams = (() => {
     const base = params as Record<string, unknown>;
-    if (specsByName.get(name)?.level === 'normalized') {
+    if (specsByName.get(name)?.some((spec) => spec.level === 'normalized')) {
       return { ...base, level_unit: 'normalized' };
     }
     if (name === 'set_af_level') {
