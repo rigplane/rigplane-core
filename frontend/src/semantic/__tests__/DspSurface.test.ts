@@ -16,6 +16,7 @@ import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { DSP_LEVELS, DSP_TOGGLES, type DspLevelField, type DspToggleField } from '../DspSurface.svelte';
+import type { DspNotchMode } from '../dsp-instruments';
 import { topologyFixtures, withDsp } from '../fixtures/topologies';
 import type { Availability, DspViewModel, RadioViewModel } from '../radio-view-model';
 import DspScalarHostFixture from './fixtures/DspScalarHostFixture.svelte';
@@ -97,6 +98,7 @@ type Handlers = {
 type Props = Handlers & {
   agcLabels?: Record<string, string>; nbLevelMax?: number; nbLevelPercent?: boolean;
   pendingNb?: boolean | null; pendingNr?: boolean | null;
+  pendingNotch?: DspNotchMode | null;
 };
 
 function render(view: RadioViewModel, props: Props = {}) {
@@ -710,6 +712,44 @@ describe('pending-target affordance (MOR-1441 leg 2)', () => {
       flushSync();
       expect(onToggle).toHaveBeenCalledExactlyOnceWith('nbActive', true);
     }, { onToggle, pendingNb: true });
+  });
+});
+
+// ── 7c. Notch-mode pending target (MOR-2236 remainder) ──────────────────────
+
+describe('notchMode pending target (MOR-2236 remainder)', () => {
+  // withDsp(): notchMode known('off').
+  it('marks the requested choice pending while keeping aria-pressed on CONFIRMED', () => {
+    withSurface(base(), (s) => {
+      const group = s.control('notchMode')!;
+      expect(group.dataset.notchStatus).toBe('pending');
+      expect(s.notchButton('auto')!.dataset.pending).toBe('true');
+      expect(s.notchButton('off')!.dataset.pending).toBe('false');
+      expect(s.notchButton('off')!.getAttribute('aria-pressed')).toBe('true');
+      expect(s.notchButton('auto')!.getAttribute('aria-pressed')).toBe('false');
+    }, { pendingNotch: 'auto' });
+  });
+
+  it('renders confirmed status and no announcement when nothing is pending', () => {
+    withSurface(base(), (s) => {
+      expect(s.control('notchMode')!.dataset.notchStatus).toBe('confirmed');
+      expect(s.control('notchMode')!.querySelector('.sr-only')).toBeNull();
+    });
+  });
+
+  it('renders a screen-reader announcement while a choice is pending', () => {
+    withSurface(base(), (s) => {
+      expect(s.control('notchMode')!.querySelector('.sr-only')).not.toBeNull();
+    }, { pendingNotch: 'manual' });
+  });
+
+  it('SEAM: choosing while pending dispatches the CLICKED mode, never derived from pending', () => {
+    const onNotchModeChange = vi.fn();
+    withSurface(base(), (s) => {
+      s.notchButton('manual')!.click();
+      flushSync();
+      expect(onNotchModeChange).toHaveBeenCalledExactlyOnceWith('manual');
+    }, { onNotchModeChange, pendingNotch: 'auto' });
   });
 });
 

@@ -11,6 +11,186 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Repeater controls are a side panel on the receiver tuned to a
+  repeater band (MOR-2111).** On the Standard face the panel sits in
+  the left column after RIT / XIT, and only while a receiver's
+  frequency is in a range the profile flags `repeater`. The FTX-1 and
+  IC-705 flag 2 m and 70 cm; the IC-7300 and IC-7610 flag none, so the
+  panel never draws there. It shows OFF / TONE / TSQL, shift SIMP / −
+  / +, and a CTCSS stepper through the profile's tone chart. On a
+  radio that declares automatic repeater shift — the FTX-1 does — the
+  shift row adds ARS; a reported ARS value on a radio without that
+  declaration lights no key. The panel names the receiver it controls:
+  the one in a repeater range, or the selected receiver when both are.
+  The FTX-1 band selector also names 6 m, 4 m, 2 m and 70 cm, so those
+  bands can be selected. The IC-9700 profile now lists its own 2 m,
+  70 cm and 23 cm bands, each flagged as a repeater band, instead of
+  HF and 6 m (MOR-2567).
+
+- **`set_monitor_mute` saves each receiver's AF and writes 0, or
+  restores the saved levels (MOR-2583).** The state payload carries
+  `monitorMute` with `on` and the saved levels. A reload while muted
+  still shows MUTE, and leaving MUTE restores the levels the server
+  saved. On a dual-receiver radio that admits a SUB AF write — the
+  FTX-1 and IC-7610 do, the IC-9700 does not — RX AUDIO shows AF MAIN
+  and AF SUB side by side, and MUTE mutes both (MOR-2579).
+
+- **The capabilities payload lists the profile's manual-notch-width
+  choices (MOR-1685).** `/api/v1/info` and `/api/v1/capabilities` carry
+  `notchWidthChoices` as value and label pairs, in the profile's
+  order. The IC-7300, IC-7610, IC-705 and IC-9700 publish WIDE, MID
+  and NAR; a profile with no notch widths publishes an empty list. A
+  profile that declares a width without a label fails to load.
+
+### Changed
+
+- **Pollable fields take an acquisition class, and the scheduler
+  fits those cadences to the transport budget (MOR-2576, MOR-2586,
+  MOR-2590, MOR-2593).** A pollable path with no field-policy entry
+  takes its class cadence. On the IC-7610 the hand-written entries are
+  gone except the S-meter, the transmit meters (including Id, now
+  transmit-only), and the transmit target. On the IC-7300 the same is
+  true except the S-meter, the transmit meters (Id now transmit-only
+  and gated on PTT), and the on-demand fields that are primed once and
+  do not expire. On a MAIN/SUB radio that reports the selected
+  receiver, the non-selected receiver's class-derived polls run one
+  class slower (MOR-2599). Settings and menu fields stay fresh while
+  the link is up; they are dropped on link loss, a session change, or
+  disconnect (MOR-2615).
+
+- **The audio bridge defaults to the RigPlane Virtual Cable and no
+  longer looks for BlackHole (MOR-2590).** With no device names given,
+  RX is "RigPlane Virtual Cable Output" and TX is "RigPlane Virtual
+  Cable Input". While a managed transmit authority is in receive and
+  observed PTT is off, captured audio is not sent to the radio; the
+  standalone bridge CLI still sends. The setup guides name the cable
+  the same way.
+
+- **The panorama row uses the Standard face's raised keys (MOR-2545).**
+  Lit keys show the cyan left-edge bar; unread keys use the family's
+  disabled look. On a narrow row, controls hide into More in a fixed
+  order and stay reachable there. The More label reads More / Ещё /
+  その他.
+
+### Fixed
+
+- **A dropped IC-7610 LAN session comes back on the radio's "session
+  free" notice (MOR-2627, MOR-2625, MOR-2623).** A quiet link that
+  still exchanges packets is left alone. A silent port is handed to
+  recovery in 5 seconds instead of 60. If a CI-V-only reconnect
+  restores no data, the next handoff does one full reconnect with a
+  fresh radio session. When the radio itself reports the session free,
+  recovery starts then, not after the watchdog wait. On the IC-7610
+  stand that gap was about 1 second, against about 71 seconds before. A
+  second
+  server's busy notice does not start recovery.
+
+- **A refused LAN session says what the error code means
+  (MOR-2630).** `0xFFFFFFFF` tells you to stop the other client on
+  this computer; `0xFDFFFFFF` says a client on another computer holds
+  the session. Other codes keep a hedged retry hint. The old "wait
+  30-60s and retry" line is gone.
+
+- **The IC-7610 names its transmitting receiver, so TUNE is no longer
+  blocked by an unknown TX target (MOR-2540).** It polls CI-V `1C 03`
+  and labels the target MAIN, or SUB while split is on and that fact
+  is fresh. COMP, Vd and Id in the station-meter strip read dB, V and
+  A from the CI-V reference guide instead of raw device bytes. An idle
+  field's poll no longer slows past half its freshness window, on
+  every CI-V radio that uses adaptive decay (MOR-2540).
+
+- **The TUNE badge clears on the control-class poll (MOR-2596).**
+  `tuner_status` polls with the control class (2 seconds nominal,
+  5 second ceiling) instead of the setting class.
+
+- **CI-V queries are spaced from the send, not from the reply
+  (MOR-2595).** A slow answer no longer adds the gap on top of the
+  round trip. The default gap is 10 ms on LAN and 25 ms on Icom
+  serial; the X6200 keeps 50 ms.
+
+- **Transmit meters start polling when managed transmit keys, not
+  after the radio confirms PTT (MOR-2616).** Radios without a managed
+  transmit authority still wait for observed PTT.
+
+- **A lost CI-V answer is asked again before the field's freshness
+  window ends (MOR-2614).** A poll the commander drops at its cap is
+  not recorded as sent, and the next cadence tick asks again
+  (MOR-2602). An answer that arrives while its request is still being
+  sent is credited (MOR-2617). A write confirmation that arrives in
+  that same window gets its own read, so a reply from before the
+  write cannot confirm it (MOR-2592, MOR-2594).
+
+- **The IC-705 repeater tone mode is read from `16 5D` (MOR-2573).**
+  That one selector is OFF, TONE or TSQL. The old pair of on/off reads
+  never showed TSQL, so the panel could not step the tone-squelch
+  frequency.
+
+- **On the FTX-1, DCS, PR FREQ and REV TONE light no tone key
+  (MOR-2572).** Those squelch-type codes are reported as not known,
+  not as OFF. rigctld answers `ENAVAIL` for TONE and TSQL in that
+  state. A VFO select the radio rejects answers `RIG_ERJCTED` instead
+  of an internal error (MOR-2621).
+
+- **The FTX-1 server starts while SUB is the active receiver
+  (MOR-2581).** The MAIN attenuator read is withheld unless MAIN is
+  selected; the radio refuses that read while SUB is active. A
+  declared Yaesu read the radio refuses skips that field instead of
+  aborting the poll cycle (MOR-2578). A refusal that does not repeat
+  is read once more before it counts as a startup defect (MOR-2584).
+
+- **The scope SPAN control stays in its row, unlit, while the scope
+  mode is unread (MOR-2565).** It hides only for a read FIX or
+  S-F mode.
+
+- **ATT, P.AMP and the AGC time constant appear only where that
+  receiver declares them (MOR-2588).** A radio that admits the command
+  but does not poll the MAIN field no longer shows a permanently dark
+  MAIN lamp.
+
+- **The band-plan overlay fetches a frequency range once (MOR-2605).**
+  Panning inside the last fetched range does not ask again. An idle
+  page refetches managed transmit only when a transmit input changes,
+  not on every radio-state frame (MOR-2607).
+
+- **S-meter geometry updates only when a whole pixel changes, and the
+  needle animation stops once it has settled (MOR-2613).** The peak
+  hold ticker runs only while the needle is still moving or the peak
+  sits above the value.
+
+- **An undrained audio queue no longer logs one warning per dropped
+  packet (MOR-2612).** The first drop is logged at once; while drops
+  continue, at most one summary every 5 seconds. Stopping RX discards
+  incoming audio packets instead of filling the queue. Cancelling an
+  audio subscription raises `CancelledError` instead of ending the
+  stream as if it had finished (MOR-2620).
+
+- **A DX-cluster connect that never completes times out after 10
+  seconds and enters the reconnect backoff (MOR-2619).**
+
+- **A second SIGTERM during shutdown no longer crashes the CLI
+  (MOR-2626).** The first signal starts shutdown; a later one is
+  ignored, and the process still exits.
+
+- **The notch choice shows the requested mode until the radio confirms
+  it (MOR-2236).** AUTO, MANUAL or OFF is marked pending as soon as it
+  is sent, the same way NB and NR already were.
+
+### Documentation
+
+- **Run one RigPlane server per radio (MOR-2622, MOR-2628).** The CLI
+  guide says so. Measured on an IC-7610: a second server on the same
+  computer is refused with `error=0xFFFFFFFF`, and about 90 seconds
+  later the radio also drops the first session; a second server on
+  another computer is refused with `error=0xFDFFFFFF`, and the first
+  session keeps running.
+
+- **The web UI guide describes class poll cadences (no ticket).** A
+  pollable path with no field-policy entry takes its acquisition-class
+  policy, which the scheduler may stretch to the transport budget,
+  instead of the profile default.
+
 ## [3.0.0b7] — 2026-09-23
 
 ### Added

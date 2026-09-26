@@ -18,6 +18,7 @@ from rigplane.web.api_contract import (
     WebSocketRoute,
 )
 from rigplane.web.server import WebConfig, WebServer
+from rigplane.profiles import resolve_radio_profile
 from rigplane.rig_loader import load_rig
 
 
@@ -183,6 +184,43 @@ async def test_control_domains_round_trip_through_both_capability_endpoints(
         assert capability_payload["hasRxAntenna"] is True
         assert capability_payload["scanTypeValues"] == [0x01, 0x03, 0x13, 0x23]
         assert capability_payload["scanResumeValues"] == [0xD0, 0xD3]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-7300", "FTX-1"])
+async def test_capability_endpoints_publish_notch_width_choices(model: str) -> None:
+    """MOR-1685: the capabilities payload publishes the profile's manual
+    notch-width choices in ``notch_width_values`` order (MOR-1685), ``[]``
+    when the profile declares no domain. Literal expectations, never read
+    back from the profile under test."""
+    profile = resolve_radio_profile(model=model)
+    radio = SimpleNamespace(
+        model=profile.model,
+        profile=profile,
+        capabilities=set(profile.capabilities),
+        connected=False,
+        control_connected=False,
+        radio_ready=False,
+    )
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    expected = (
+        [
+            {"value": 0, "label": "WIDE"},
+            {"value": 1, "label": "MID"},
+            {"value": 2, "label": "NAR"},
+        ]
+        if model == "IC-7300"
+        else []
+    )
+    for path in ("/api/v1/info", "/api/v1/capabilities"):
+        writer = _Writer()
+        await server._handle_http(writer, "GET", path, headers={})  # noqa: SLF001
+        status, payload = _json_response(writer)
+        assert status == 200
+        capability_payload = (
+            payload["capabilities"] if path == "/api/v1/info" else payload
+        )
+        assert capability_payload["notchWidthChoices"] == expected
 
 
 @pytest.mark.asyncio

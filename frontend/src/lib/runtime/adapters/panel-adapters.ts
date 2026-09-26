@@ -1357,6 +1357,50 @@ export function getPendingNrOn(receiver: 0 | 1): boolean | null {
   return typeof value === 'boolean' ? value : null;
 }
 
+/**
+ * Freshest unconfirmed notch-mode choice for `receiver`, or `null`.
+ * Notch mode is written as TWO independent boolean commands (`set_auto_notch`
+ * /`set_manual_notch`, `makeDspHandlers().onNotchModeChange`), so the single
+ * requested choice is folded from both strands over the SAME lifecycle
+ * decision table (`latestPendingParam`) the sibling accessors above use —
+ * confirmation, failure and supersession clear it by the same rule:
+ *  - an `on:true` auto strand requests 'auto', an `on:true` manual strand
+ *    requests 'manual';
+ *  - 'off' needs the MOR-1541 pair: BOTH strands in flight with `on:false`
+ *    (a lone `on:false` strand is a half-arrived pair, not yet 'off');
+ *  - when both strands carry a pending `on:true`, the FRESHEST strand wins
+ *    (latest-target-wins, same tie-break `latestPendingParam` uses).
+ */
+export function getPendingNotchMode(receiver: 0 | 1): 'off' | 'auto' | 'manual' | null {
+  const auto = latestPendingParam('set_auto_notch', 'on', receiver, 'autoNotch');
+  const manual = latestPendingParam('set_manual_notch', 'on', receiver, 'manualNotch');
+  const autoBool = typeof auto === 'boolean' ? auto : null;
+  const manualBool = typeof manual === 'boolean' ? manual : null;
+  if (autoBool === true && manualBool === true) {
+    return freshestNotchStrand(receiver) === 'auto' ? 'auto' : 'manual';
+  }
+  if (autoBool === true) return 'auto';
+  if (manualBool === true) return 'manual';
+  if (autoBool === false && manualBool === false) return 'off';
+  return null;
+}
+
+/** Which of the two notch strands holds the freshest non-terminal record. */
+function freshestNotchStrand(receiver: 0 | 1): 'auto' | 'manual' {
+  let autoAt = Number.NEGATIVE_INFINITY;
+  let manualAt = Number.NEGATIVE_INFINITY;
+  for (const command of getCommandLifecycles()) {
+    if (command.params.receiver !== receiver) continue;
+    if (command.id !== undefined && command.originalEpoch !== undefined
+      && isCommandLifecycleSuperseded(command)) continue;
+    if (typeof command.params.on !== 'boolean' || command.params.on !== true) continue;
+    if (command.status !== 'pending' && command.status !== 'acknowledged') continue;
+    if (command.name === 'set_auto_notch' && command.createdAt >= autoAt) autoAt = command.createdAt;
+    else if (command.name === 'set_manual_notch' && command.createdAt >= manualAt) manualAt = command.createdAt;
+  }
+  return autoAt >= manualAt ? 'auto' : 'manual';
+}
+
 // ── Repeater panel pending targets (MOR-2111) ──
 /**
  * Freshest unconfirmed repeater tone-mode target for `receiver`, or `null`,
