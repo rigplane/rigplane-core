@@ -224,12 +224,14 @@ describe('createMeterBallistics frame-step strategy', () => {
   });
 
   it('relatches equality, holds after separation, then decrements once per delivered frame', () => {
-    const { host, meter, smoother } = frameSetup();
+    const { host, meter } = frameSetup();
     meter.sync({ sample: 10, smoothTarget: 10, peakEnabled: true });
     meter.start();
+    expect(host.activeFrames).toBe(0);
     host.advance(900);
+    meter.sync({ sample: 8, smoothTarget: 8, peakEnabled: true });
+    expect(host.activeFrames).toBe(1);
     host.flushFrame(0);
-    smoother.set(8);
     host.flushFrame(900);
     expect(meter.view.peakValue).toBe(10);
     host.flushFrame(101);
@@ -240,10 +242,10 @@ describe('createMeterBallistics frame-step strategy', () => {
 
   it('uses the current caller decrement and never falls below the smoother', () => {
     let decrement = 1;
-    const { host, meter, smoother } = frameSetup({ decrement: () => decrement });
+    const { host, meter } = frameSetup({ decrement: () => decrement });
     meter.sync({ sample: 12, smoothTarget: 12, peakEnabled: true });
     meter.start();
-    smoother.set(3);
+    meter.sync({ sample: 3, smoothTarget: 3, peakEnabled: true });
     host.flushFrame(1001);
     expect(meter.view.peakValue).toBe(11);
     decrement = 20;
@@ -298,8 +300,6 @@ describe('createMeterBallistics idle peak ticker (MOR-2613)', () => {
     const { host, meter } = frameSetup();
     meter.sync({ sample: VALUE, smoothTarget: VALUE, peakEnabled: true });
     meter.start();
-    expect(host.activeFrames).toBe(1);
-    host.flushFrame();
     expect(host.activeFrames).toBe(0);
     expect(meter.view.peakValue).toBe(VALUE);
     expect(meter.view.smoothedValue).toBe(VALUE);
@@ -312,14 +312,18 @@ describe('createMeterBallistics idle peak ticker (MOR-2613)', () => {
     const { host, meter } = frameSetup();
     meter.sync({ sample: VALUE, smoothTarget: VALUE, peakEnabled: true });
     meter.start();
-    host.flushFrame();
     expect(host.activeFrames).toBe(0);
 
     const higher = 14;
     meter.sync({ sample: higher, smoothTarget: higher, peakEnabled: true });
-    expect(host.activeFrames).toBe(1);
+    expect(host.activeFrames).toBe(0);
     expect(meter.view.peakValue).toBe(higher);
     expect(meter.view.peakValue).toBeGreaterThanOrEqual(meter.view.smoothedValue);
+
+    meter.sync({ sample: VALUE, smoothTarget: VALUE, peakEnabled: true });
+    expect(host.activeFrames).toBe(1);
+    expect(meter.view.peakValue).toBe(higher);
+    expect(meter.view.peakValue).toBeGreaterThan(meter.view.smoothedValue);
 
     host.advance(1000);
     host.flushFrame(0);
@@ -337,15 +341,14 @@ describe('createMeterBallistics idle peak ticker (MOR-2613)', () => {
       expect(meter.view.peakValue).toBeGreaterThanOrEqual(meter.view.smoothedValue);
     }
     expect(host.activeFrames).toBe(0);
-    expect(meter.view.peakValue).toBe(higher);
-    expect(meter.view.smoothedValue).toBe(higher);
+    expect(meter.view.peakValue).toBe(VALUE);
+    expect(meter.view.smoothedValue).toBe(VALUE);
   });
 
   it('holds a peak above a lower sample for the hold window, then decays and stops', () => {
     const { host, meter } = frameSetup();
     meter.sync({ sample: VALUE, smoothTarget: VALUE, peakEnabled: true });
     meter.start();
-    host.flushFrame();
 
     const lower = 4;
     meter.sync({ sample: lower, smoothTarget: lower, peakEnabled: true });
@@ -574,6 +577,9 @@ describe('createMeterBallistics elapsed-envelope strategy', () => {
     const { host, meter, update } = elapsedSetup();
     meter.sync({ sample: 1, smoothTarget: 10, peakEnabled: true });
     meter.start();
+    expect(host.activeIntervals).toBe(0);
+    meter.sync({ sample: 0.2, smoothTarget: 2, peakEnabled: true });
+    expect(host.activeIntervals).toBe(1);
     update.mockClear();
     host.setReduced(true);
     host.setReduced(false);
@@ -685,8 +691,12 @@ describe('createMeterBallistics scheduling lifecycle', () => {
     });
     meter.start();
     expect(smoother.start).toHaveBeenCalledTimes(1);
-    expect(host[count]).toBe(1);
+    expect(host[count]).toBe(0);
     expect(host.listenerCount).toBe(1);
+    meter.sync({
+      sample: 0.2, smoothTarget: 0.2, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
+    expect(host[count]).toBe(1);
     host.setReduced(true);
     expect(host[count]).toBe(0);
     host.setReduced(false);
