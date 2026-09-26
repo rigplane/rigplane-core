@@ -28,6 +28,8 @@ export interface MeterBallisticsView {
 
 export interface MeterSmoother {
   readonly value: number;
+  /** True when no frame is pending and the displayed value equals the target. */
+  readonly settled: boolean;
   update(value: number): void;
   reset(value: number): void;
   start(): void;
@@ -273,7 +275,15 @@ export function createMeterBallistics<State>(
     return policy.peakSource === 'sample' ? sample : smoother.value;
   }
 
-  const lifecycle = createTickerLifecycle(host, policy.ticker, () => peakEnabled, {
+  const peakAboveCurrent = (): boolean => {
+    const projected = channel.project(peakCurrent(), host.now(), lifecycle.reducedMotion);
+    return projected !== null && projected > peakCurrent() + 1e-6;
+  };
+  const lifecycle = createTickerLifecycle(
+    host,
+    policy.ticker,
+    () => peakEnabled && (!smoother.settled || peakAboveCurrent()),
+    {
     onTick(now) {
       projectionNow = now;
       channel.advance(peakCurrent(), now);
@@ -327,6 +337,9 @@ export function createMeterBallistics<State>(
         channel.reset();
         lifecycle.reconcile();
         return;
+      }
+      if (peakEnabled && !lifecycle.reducedMotion && !peakAboveCurrent()) {
+        channel.advance(peakCurrent(), projectionNow);
       }
       sample = input.sample;
       if (boundary) {

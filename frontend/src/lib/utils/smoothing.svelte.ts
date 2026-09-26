@@ -137,6 +137,7 @@ export function createSmoother(attack = 0.12, release = 0.32, initialValue = 0) 
 
   return {
     get value() { return current; },
+    get settled() { return frameId === 0 && current === target; },
     update,
     reset,
     start,

@@ -264,6 +264,75 @@ describe('createSignalMeterMotion ballistics constants and afterglow (MOR-2509)'
     expect(harness!.activeFrames).toBe(0);
   });
 
+  it('stops the peak ticker on a steady sample and wakes it again on a higher one (MOR-2613)', () => {
+    const binding = createSignalMeterMotion({
+      projection: projection(0.4), present: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
+    binding.start();
+    let frames = 0;
+    for (; frames < 400 && harness!.activeFrames > 0; frames += 1) {
+      harness!.runFrame((frames + 1) * 16.67);
+      const peak = binding.frame.peakFraction;
+      if (peak !== null) expect(peak).toBeGreaterThanOrEqual(binding.frame.smoothedFraction - 1e-9);
+    }
+    expect(frames).toBeLessThan(400);
+    expect(harness!.activeFrames).toBe(0);
+    expect(binding.frame.peakFraction).toBeCloseTo(0.4, 5);
+    expect(binding.frame.smoothedFraction).toBeCloseTo(0.4, 5);
+
+    const settledAt = frames * 16.67;
+    binding.sync({
+      projection: projection(0.8), present: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
+    expect(harness!.activeFrames).toBeGreaterThan(0);
+    let latched = false;
+    let heldThroughWindow = true;
+    for (let step = 1; step <= 400 && harness!.activeFrames > 0; step += 1) {
+      const now = settledAt + step * 16.67;
+      harness!.runFrame(now);
+      const peak = binding.frame.peakFraction!;
+      expect(peak).toBeGreaterThanOrEqual(binding.frame.smoothedFraction - 1e-9);
+      if (Math.abs(peak - 0.8) < 1e-4) latched = true;
+      if (now - settledAt <= 1000 && peak + 1e-4 < 0.4) heldThroughWindow = false;
+    }
+    expect(latched).toBe(true);
+    expect(heldThroughWindow).toBe(true);
+    expect(harness!.activeFrames).toBe(0);
+    expect(binding.frame.peakFraction).toBeCloseTo(0.8, 4);
+    binding.stop();
+  });
+
+  it('holds the peak above a lower sample, then decays to it and stops (MOR-2613)', () => {
+    const binding = createSignalMeterMotion({
+      projection: projection(0.8), present: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
+    binding.start();
+    let frames = 0;
+    for (; frames < 400 && harness!.activeFrames > 0; frames += 1) {
+      harness!.runFrame((frames + 1) * 16.67);
+    }
+    expect(harness!.activeFrames).toBe(0);
+    const settledAt = frames * 16.67;
+
+    binding.sync({
+      projection: projection(0.2), present: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
+    expect(harness!.activeFrames).toBeGreaterThan(0);
+    let stillHeldAtWindow = false;
+    for (let step = 1; step <= 400 && harness!.activeFrames > 0; step += 1) {
+      const now = settledAt + step * 16.67;
+      harness!.runFrame(now);
+      const peak = binding.frame.peakFraction!;
+      expect(peak).toBeGreaterThanOrEqual(binding.frame.smoothedFraction - 1e-9);
+      if (Math.abs(now - settledAt - 1000) < 20) stillHeldAtWindow = peak > 0.2 + 0.05;
+    }
+    expect(stillHeldAtWindow).toBe(true);
+    expect(harness!.activeFrames).toBe(0);
+    expect(binding.frame.peakFraction).toBeCloseTo(0.2, 3);
+    expect(binding.frame.smoothedFraction).toBeCloseTo(0.2, 3);
+    binding.stop();
+  });
+
   it('reports a null afterglow and the reduced flag under reduced motion', () => {
     const binding = createSignalMeterMotion({
       projection: projection(0.8), present: true, source: MAIN_SOURCE, session: SESSION_1,
