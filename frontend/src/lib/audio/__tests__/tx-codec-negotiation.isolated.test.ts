@@ -437,7 +437,11 @@ describe('AudioManager consumes the server TX codec ack', () => {
     ws.open();
     ws.send = (data: unknown) => {
       if (data instanceof ArrayBuffer) sent.push(data);
-      else realSend.call(ws, data);
+      else if (
+        typeof data === 'string'
+        || data instanceof Blob
+        || ArrayBuffer.isView(data)
+      ) realSend.call(ws, data);
     };
 
     ws.serverText({
