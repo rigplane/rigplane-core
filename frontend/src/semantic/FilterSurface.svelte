@@ -84,8 +84,10 @@
     f.availability.structural && f.availability.operational && f.reading.status === 'known';
   const reasonOf = (f: TxAuxField<unknown>): 'field-not-observed' | undefined =>
     usable(f) ? undefined : 'field-not-observed';
+  // MOR-2648: an unread value renders an unlit box — empty text, never a
+  // `?` glyph; the box itself stays reserved (the style rules below).
   const textOf = (f: TxAuxField<unknown>): string =>
-    f.reading.status === 'known' ? String(f.reading.value) : '?';
+    f.reading.status === 'known' ? String(f.reading.value) : '';
   const presentationOf = (f: TxAuxField<unknown>): 'confirmed' | 'retained' | 'unknown' =>
     usable(f) ? 'confirmed' : f.reading.status === 'known' ? 'retained' : 'unknown';
   const pbtDisplay = (f: DisplayObservedField<number>) => f.display ?? (
@@ -621,7 +623,10 @@
                 {/if}
               </span>
               <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <output class="pbt-value" aria-live="off" ondblclick={() => onPbtReset?.()}>{measured && 'value' in display ? display.value : '—'}</output>
+              <!-- MOR-2648: an unmeasured PBT renders an unlit box — empty
+                   text, never a `—` dash; the `.pbt-value` box stays
+                   reserved. -->
+              <output class="pbt-value" aria-live="off" ondblclick={() => onPbtReset?.()}>{measured && 'value' in display ? display.value : ''}</output>
               {@render passbandStatus(field)}
             </div>
           {:else}
@@ -666,6 +671,12 @@
   .filter-surface { display: flex; flex-direction: column; gap: 0.25rem; }
   .filter-level { display: flex; align-items: baseline; gap: 0.5rem; }
   .filter-level-name { min-width: 8ch; }
+  /* MOR-2648: the width/IF-shift value box stays reserved — a flex child,
+     so the min-width applies; 5ch covers the widest text today (the width
+     fallback max '9999', the IF-shift lower bound '-1200'), tabular digits
+     keep a changing value from shifting the row. The PBT output keeps its
+     own wider `.pbt-value` box. */
+  .filter-level > output:not(.pbt-value) { min-width: 5ch; font-variant-numeric: tabular-nums; }
   /* MOR-2640: the NARROW key's light — the same structural
      (forced-colors safe) weight the DSP toggles use, on the state
      attribute itself. */
