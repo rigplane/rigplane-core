@@ -46,8 +46,8 @@
     rafId = requestAnimationFrame(draw);
   }
 
-  function applyBackingStore(): void {
-    const backing = canvasBackingSize(cssWidth, cssHeight, window.devicePixelRatio || 1, getStageScale()());
+  function applyBackingStore(stageScale: number): void {
+    const backing = canvasBackingSize(cssWidth, cssHeight, window.devicePixelRatio || 1, stageScale);
     canvas.width = backing.width;
     canvas.height = backing.height;
     canvas.getContext('2d')?.setTransform(backing.pixelScale, 0, 0, backing.pixelScale, 0, 0);
@@ -70,7 +70,7 @@
 
   // The stage's transform does not resize this canvas, so nothing else here
   // notices a scale change (MOR-1161).
-  watchStageScale(() => { if (mounted) { applyBackingStore(); scheduleDraw(); } });
+  watchStageScale(() => { if (mounted) { applyBackingStore(getStageScale()()); scheduleDraw(); } });
 
   // Renderer options and fallback prop data can change without a stream push.
   $effect(() => {
@@ -94,11 +94,11 @@
       if (!rect) return;
       cssWidth = Math.max(1, Math.floor(rect.width));
       cssHeight = Math.max(1, Math.floor(rect.height));
-      applyBackingStore();
+      applyBackingStore(getStageScale()());
       scheduleDraw();
     });
     ro.observe(canvas);
-    const stopPixelWatch = watchDevicePixelRatio(() => { applyBackingStore(); scheduleDraw(); });
+    const stopPixelWatch = watchDevicePixelRatio(() => { applyBackingStore(getStageScale()()); scheduleDraw(); });
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);

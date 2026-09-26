@@ -109,7 +109,7 @@
       if (w > 1 && h > 1) {
         cssWidth = w;
         cssHeight = h;
-        applyBackingStore(w, h);
+        applyBackingStore(w, h, getStageScale()());
       }
     }
     // Detect how fast the knob is turning
@@ -404,8 +404,8 @@
     }
   }
 
-  function applyBackingStore(cssW: number, cssH: number): void {
-    const backing = canvasBackingSize(cssW, cssH, window.devicePixelRatio || 1, getStageScale()());
+  function applyBackingStore(cssW: number, cssH: number, stageScale: number): void {
+    const backing = canvasBackingSize(cssW, cssH, window.devicePixelRatio || 1, stageScale);
     canvas.width = backing.width;
     canvas.height = backing.height;
     canvas.getContext('2d')?.setTransform(backing.pixelScale, 0, 0, backing.pixelScale, 0, 0);
@@ -413,7 +413,7 @@
 
   // The stage's transform does not resize this canvas, so nothing else here
   // notices a scale change (MOR-1161).
-  watchStageScale(() => { if (canvas) applyBackingStore(cssWidth, cssHeight); });
+  watchStageScale(() => { if (canvas) applyBackingStore(cssWidth, cssHeight, getStageScale()()); });
 
   function onVisibilityChange() {
     visible = !document.hidden;
@@ -433,10 +433,10 @@
       if (!rect) return;
       cssWidth = Math.max(1, Math.floor(rect.width));
       cssHeight = Math.max(1, Math.floor(rect.height));
-      applyBackingStore(cssWidth, cssHeight);
+      applyBackingStore(cssWidth, cssHeight, getStageScale()());
     });
     ro.observe(canvas);
-    const stopPixelWatch = watchDevicePixelRatio(() => applyBackingStore(cssWidth, cssHeight));
+    const stopPixelWatch = watchDevicePixelRatio(() => applyBackingStore(cssWidth, cssHeight, getStageScale()()));
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);
