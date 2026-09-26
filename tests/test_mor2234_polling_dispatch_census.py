@@ -366,11 +366,12 @@ async def _run_ftx1_poll_cycles(
             await poller._poll_slow()  # noqa: SLF001
             acquired.update(item.path for item in collected)
             collected.clear()
-        for name in (
+        # Medium/slow-lane reads answer in both windows; the fast lane
+        # switches by PTT (S-meter in RX, TX meters in TX).
+        always_names = (
             "read_freq",
             "read_mode",
             "read_transmit_state",
-            "read_s_meter",
             "read_af_level",
             "read_rf_gain",
             "read_squelch",
@@ -408,7 +409,18 @@ async def _run_ftx1_poll_cycles(
             "get_tx_func",
             "get_vd_meter",
             "get_id_meter",
-        ):
+        )
+        fast_names = (
+            ("read_s_meter",)
+            if not ptt
+            else (
+                "read_alc_meter",
+                "read_comp_meter",
+                "read_power_meter",
+                "read_swr_meter",
+            )
+        )
+        for name in always_names + fast_names:
             mock = getattr(radio, name, None)
             count = mock.await_count if mock is not None else 0
             reads[f"{'tx' if ptt else 'rx'}.{name}"] = count
@@ -417,20 +429,6 @@ async def _run_ftx1_poll_cycles(
                 f"({'TX' if ptt else 'RX'} window): "
                 f"{count} reads in {cycles} cycles"
             )
-        for name in (
-            "read_alc_meter",
-            "read_comp_meter",
-            "read_power_meter",
-            "read_swr_meter",
-        ):
-            mock = getattr(radio, name, None)
-            count = mock.await_count if mock is not None else 0
-            reads[f"{'tx' if ptt else 'rx'}.{name}"] = count
-            if ptt:
-                assert count >= cycles, (
-                    f"mock CAT transport did not answer {name} every cycle "
-                    f"(TX window): {count} reads in {cycles} cycles"
-                )
     return acquired, reads
 
 
