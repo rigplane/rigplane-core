@@ -17,6 +17,7 @@
     agcLabels?: Record<string, string>;
     pendingNb?: boolean | null;
     pendingNr?: boolean | null;
+    pendingNotch?: DspNotchMode | null;
     onToggle?: (field: DspToggleField, next: boolean) => void;
     onNotchModeChange?: (mode: DspNotchMode) => void;
     onAgcModeChange?: (mode: number) => void;
@@ -30,7 +31,7 @@
   type Props = ExistingProps & RendererSelection;
 
   let {
-    view, agcLabels = {}, pendingNb = null, pendingNr = null,
+    view, agcLabels = {}, pendingNb = null, pendingNr = null, pendingNotch = null,
     onToggle, onNotchModeChange, onAgcModeChange, settingsPanel = null, onOpenSettings,
     finiteAppearance, rendererContext, children,
   }: Props = $props();
@@ -63,6 +64,8 @@
     const target = pendingOf(field);
     return target === null ? undefined : { kind: 'requested-target' as const, target };
   };
+  const requestedNotch = () => pendingNotch === null
+    ? undefined : { kind: 'requested-target' as const, target: pendingNotch };
   const nrSeat = createToggleRendererSeat(() => ({
     context: rendererContext ?? null, field: dsp?.nrActive, label: 'NR',
     requested: requested('nrActive'), invoke: (next) => onToggle?.('nrActive', next),
@@ -74,6 +77,7 @@
   const notchSeat = createChoiceRendererSeat<DspFiniteChoiceValue>(() => ({
     context: rendererContext ?? null, field: dsp?.notchMode, label: 'Notch mode',
     options: DSP_NOTCH_MODES.map(value => ({ value, label: value })),
+    requested: requestedNotch(),
     invoke: (mode) => onNotchModeChange?.(mode as DspNotchMode),
   }));
   const notchToggleField = (mode: 'manual' | 'auto') => {
@@ -257,18 +261,23 @@
 {#snippet nbActive()}{@render toggle('nbActive', DSP_TOGGLES[1][1])}{/snippet}
 {#snippet notchMode()}
   {#if dsp?.notchMode.availability.structural}
+    {@const notchPendingId = `${pendingId}-notchMode`}
     {#if finiteAppearance}
       {#key rendererContext}{#key finiteAppearance.choice}<ControlInstrumentRendererHost
         seat={notchSeat} renderer={finiteAppearance.choice}
       />{/key}{/key}
     {:else}
       <div class="dsp-row" data-testid="dsp-notchMode"
-        data-disabled-reason={notchBehavior.available ? undefined : 'field-not-observed'}>
+        data-disabled-reason={notchBehavior.available ? undefined : 'field-not-observed'}
+        data-notch-status={pendingNotch !== null ? 'pending' : 'confirmed'}
+        aria-describedby={pendingNotch !== null ? notchPendingId : undefined}>
         {#each DSP_NOTCH_MODES as mode (mode)}
           <button type="button" class="dsp-choice" data-testid={`dsp-notchMode-${mode}`}
             aria-pressed={notchBehavior.selected === undefined ? undefined : notchBehavior.isSelected(mode)}
+            data-pending={pendingNotch === mode}
             disabled={!notchBehavior.available} onclick={() => notchBehavior.invoke(mode)}>{mode}</button>
         {/each}
+        {#if pendingNotch !== null}<span id={notchPendingId} class="sr-only">{t('core.dsp.notch.pendingAnnouncement')}</span>{/if}
       </div>
     {/if}
   {/if}
@@ -357,6 +366,7 @@
   .dsp-toggle[aria-pressed='true'], .dsp-choice[aria-pressed='true'] { font-weight: 700; }
   .dsp-toggle:disabled, .dsp-choice:disabled { cursor: not-allowed; }
   .dsp-toggle[data-pending-status='pending'] { font-style: italic; opacity: 0.75; }
+  .dsp-choice[data-pending='true'] { font-style: italic; opacity: 0.75; }
   .sr-only {
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
     overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
