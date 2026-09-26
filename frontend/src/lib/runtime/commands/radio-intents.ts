@@ -212,7 +212,9 @@ export function dispatchRadioIntentWithResult(intent: RadioIntent): RadioIntentD
   // still goes out untagged — `sendCommand` is the last writer, and the
   // server reads an untagged int as raw. The raw unit is STRIPPED before
   // `sendCommand` because the server rejects any `level_unit` other than
-  // `'normalized'`.
+  // `'normalized'`. A present-but-unknown unit is a caller bug: tag it
+  // `'normalized'` and let the server reject the out-of-range value rather
+  // than silently reinterpret it.
   const wireParams = (() => {
     const base = params as Record<string, unknown>;
     if (specsByName.get(name)?.some((spec) => spec.level === 'normalized')) {
@@ -222,14 +224,13 @@ export function dispatchRadioIntentWithResult(intent: RadioIntent): RadioIntentD
       // A raw intent states `level_unit: 'raw'` and goes out stripped. A
       // caller that computed the raw int itself and states no unit (the
       // keyboard fan-out) also goes out untagged — the server reads an
-      // untagged int as raw, which is exactly this path's meaning.
-      if (base.level_unit === 'raw') {
+      // untagged int as raw, which is exactly this path's meaning. A
+      // non-integer level is always the legacy normalized float.
+      if (base.level_unit === 'raw'
+        || (base.level_unit === undefined
+          && typeof base.level === 'number' && Number.isInteger(base.level))) {
         const { level_unit: _stripped, ...untagged } = base;
         return untagged;
-      }
-      if (base.level_unit === undefined
-        && typeof base.level === 'number' && Number.isInteger(base.level)) {
-        return base;
       }
       return { ...base, level_unit: 'normalized' };
     }
