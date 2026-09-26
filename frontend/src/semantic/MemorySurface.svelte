@@ -32,7 +32,8 @@
 <script module lang="ts">
   import { MAX_MEMORY_CHANNELS, loadMemoryChannels, persistMemoryChannels } from './memory-channels';
   export { MAX_MEMORY_CHANNELS };
-  export const UNKNOWN_TEXT = '—';
+  /** MOR-2652: an unread active VFO prints nothing — an unlit slot, never a dash. */
+  export const UNKNOWN_TEXT = '';
 </script>
 
 <script lang="ts">
@@ -170,7 +171,7 @@
 
         {#if entry}
           <span class="ch-freq" data-testid={`memory-channel-${ch}-freq`}>{formatFrequencyString(entry.freq)}</span>
-          <span class="ch-mode">{entry.mode || UNKNOWN_TEXT}</span>
+          <span class="ch-mode">{entry.mode}</span>
 
           {#if editingName === ch}
             <input
@@ -185,7 +186,7 @@
               data-testid={`memory-channel-${ch}-name`}
               onclick={() => startEditName(ch)}
             >
-              {entry.name || UNKNOWN_TEXT}
+              {entry.name}
             </button>
           {/if}
 
@@ -236,6 +237,7 @@
   /* Structure only — a design language owns colour (MOR-977, forced-colors). */
   .memory-surface { display: flex; flex-direction: column; gap: 0.25rem; }
   .memory-toolbar { display: flex; align-items: center; gap: 0.5rem; }
+  .active-vfo { display: inline-block; min-width: 14ch; font-variant-numeric: tabular-nums; }
   .channel-count { margin-left: auto; }
   .channel-list { display: flex; flex-direction: column; }
   .channel-row { display: flex; align-items: center; gap: 0.375rem; }
