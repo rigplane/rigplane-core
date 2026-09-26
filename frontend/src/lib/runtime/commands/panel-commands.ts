@@ -1160,12 +1160,44 @@ export function makePresetHandlers() {
 
 /* ── RX Audio Handlers ───────────────────────────────────────────── */
 
-/** The radio AF of the NAMED receiver, whichever is selected; `true` when sent. */
+/** The radio AF of the NAMED receiver, whichever is selected; `true` when sent.
+ *
+ *  MOR-1676 part A (AF): dispatch on JSON type, like `onAfLevelChange` —
+ *  an int is the raw level (the v3 named-receiver knob sends raw ints),
+ *  a float is the legacy normalized level and converts through the
+ *  control's declared raw domain. The browser-volume branch
+ *  (`runtime.rxEnabled`) never reaches here. */
+/** Raw AF level for a known normalized readback against the control's
+ *  declared raw domain (`caps.controls.af_level`, MOR-1676 part A) — the
+ *  exact inverse of the server's normalized readback (`raw/255`), so every
+ *  raw value round-trips. Falls back to the 0-255 domain the CAT write
+ *  (`AG0{level:03d}`) has always assumed when caps declares nothing. */
+function rawAfLevel(caps: Capabilities, normalized: number): number | null {
+  if (!isNormalizedLevel(normalized)) return null;
+  const { rawMin, rawMax } = keyboardControlRawDomain(caps, 'af_level');
+  if (!Number.isSafeInteger(rawMin) || !Number.isSafeInteger(rawMax) || rawMax <= rawMin) return null;
+  return Math.round(rawMin + normalized * (rawMax - rawMin));
+}
+
+/** Raw AF level for a handler input that may already be raw (MOR-1676 part
+ *  A): an int dispatches as-is when inside the declared domain; a float
+ *  converts through `rawAfLevel`. Anything else fails closed. */
+function rawAfLevelFromInput(caps: Capabilities, level: number): number | null {
+  if (Number.isInteger(level)) {
+    const { rawMin, rawMax } = keyboardControlRawDomain(caps, 'af_level');
+    return level >= rawMin && level <= rawMax ? level : null;
+  }
+  return rawAfLevel(caps, level);
+}
+
 function setReceiverAf(target: 'main' | 'sub', level: number): boolean {
-  if (!isNormalizedLevel(level) || !hasCapability('af_level')) return false;
+  const caps = getCapabilities();
+  if (caps === null || !hasCapability('af_level')) return false;
+  const raw = rawAfLevelFromInput(caps, level);
+  if (raw === null) return false;
   const receiver = knownActiveReceiver('afLevel', target === 'sub' ? 'SUB' : 'MAIN');
   if (receiver === null) return false;
-  dispatchRadioIntent({ name: 'set_af_level', params: { level, receiver } });
+  dispatchRadioIntent({ name: 'set_af_level', params: { level: raw, receiver } });
   return true;
 }
 
@@ -1200,14 +1232,28 @@ export function makeRxAudioHandlers() {
       }
     },
     onAfLevelChange: (level: number) => {
-      if (!isNormalizedLevel(level)) return;
       if (runtime.rxEnabled) {
+        // The browser-volume branch keeps its normalized behaviour — a
+        // different meaning of the same slider, never a radio raw value.
+        if (!isNormalizedLevel(level)) return;
         runtime.setRxVolume(level);
         runtime.setVolume(Math.round(level * 100));
       } else {
+        // MOR-1676 part A (AF): dispatch on JSON type, exactly like the
+        // server's `_af_level_from_param` — an int is the raw level and is
+        // dispatched untagged (a step plus its reverse restore the exact
+        // raw value); a float is the legacy normalized level (the v2 panels
+        // and the keyboard fallback still send floats) and converts through
+        // the control's declared raw domain. No float for the radio target
+        // originates on the v3 radio-AF path itself — the host sends raw
+        // ints there (see `RxAudioInstrumentHost.svelte`).
+        const caps = getCapabilities();
+        if (caps === null || !hasCapability('af_level')) return;
         const receiver = knownReceiverField('afLevel');
-        if (!hasCapability('af_level') || receiver === null) return;
-        dispatchRadioIntent({ name: 'set_af_level', params: { level, receiver } });
+        if (receiver === null) return;
+        const raw = rawAfLevelFromInput(caps, level);
+        if (raw === null) return;
+        dispatchRadioIntent({ name: 'set_af_level', params: { level: raw, receiver } });
       }
     },
     /** MOR-2579: the radio AF of the NAMED receiver, whichever is selected. */
@@ -1805,21 +1851,28 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
     case 'adjust_af_level': {
       const current = rx?.afLevel;
       if (!keyboardReceiverField(context, 'afLevel') || !isNormalizedLevel(current)) return true;
+      // MOR-1676 part A (AF): the keyboard handler steps in RAW units
+      // against the control's declared domain and dispatches the raw int
+      // (untagged `set_af_level`), symmetric up/down and clamped — never a
+      // normalized float, so a step plus its reverse restore the exact raw
+      // value. The delta bindings (`af-level-up`/`-down`, `{ delta: ±5 }`)
+      // already arrive in raw units; the `direction` fallback steps by
+      // `round(0.05 * span)` raw units.
+      const { rawMin, rawMax } = keyboardControlRawDomain(context.caps, 'af_level');
+      if (rawMax <= rawMin) return true;
+      const span = rawMax - rawMin;
+      const currentRaw = Math.round(rawMin + current * span);
       const delta = keyboardDelta(safeParams.delta);
       if (delta !== null) {
-        // MOR-1577: `delta` is declared in RAW units against the control's
-        // domain (`af-level-up`/`-down` bindings), converted here to the
-        // handler's normalized 0-1 wire shape — same shape `direction`
-        // already produced, just scaled from the declared domain instead
-        // of a hardcoded 5%.
-        const { rawMin, rawMax } = keyboardControlRawDomain(context.caps, 'af_level');
-        const span = rawMax - rawMin;
-        if (span > 0) makeRxAudioHandlers().onAfLevelChange(Math.max(0, Math.min(1, current + delta / span)));
+        const nextRaw = Math.max(rawMin, Math.min(rawMax, currentRaw + Math.round(delta)));
+        makeRxAudioHandlers().onAfLevelChange(rawMin + (nextRaw - rawMin) / span);
         return true;
       }
       const direction = keyboardDirection(safeParams.direction);
       if (direction) {
-        makeRxAudioHandlers().onAfLevelChange(Math.max(0, Math.min(1, current + (direction === 'down' ? -0.05 : 0.05))));
+        const step = Math.max(1, Math.round(0.05 * span));
+        const nextRaw = Math.max(rawMin, Math.min(rawMax, currentRaw + (direction === 'down' ? -step : step)));
+        makeRxAudioHandlers().onAfLevelChange(rawMin + (nextRaw - rawMin) / span);
       }
       return true;
     }

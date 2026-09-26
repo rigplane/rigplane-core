@@ -278,7 +278,25 @@
   /** Shared by the three AF bindings. */
   let presentedAfAuthority = $derived(authority(presentation));
   let publishedAfAuthority = $derived(published === null ? null : authority(published));
+  /** MOR-1676 part A (AF): the browser-volume branch of the AF slider keeps
+   *  the normalized 0..1 lattice it has always used — browser volume is a
+   *  different meaning of the same slider, not a radio raw value. */
   const AF_DOMAIN = { min: 0, max: 1, step: 0.01, defaultValue: null, fineStepDivisor: 1 } as const;
+  /** MOR-1676 part A (AF): the radio-AF slider moves on the radio's raw
+   *  integer lattice (one step = one raw unit, step 1), read from the
+   *  published capabilities' `controls.af_level` — the same capability
+   *  fact other controls read their ranges from (`ControlRange`
+   *  `raw_min`/`raw_max`), never a hard-coded 255 in this surface. A radio
+   *  that publishes no `controls.af_level` keeps the normalized lattice. */
+  function radioAfDomain(source: RxAudioAuthorityPublication | null): {
+    min: number; max: number; step: 1; defaultValue: null; fineStepDivisor: 1;
+  } | null {
+    const control = source?.caps?.controls?.af_level;
+    if (control === undefined || 'mapping' in control) return null;
+    const { raw_min: rawMin, raw_max: rawMax } = control;
+    if (!Number.isSafeInteger(rawMin) || !Number.isSafeInteger(rawMax) || rawMax <= rawMin) return null;
+    return { min: rawMin, max: rawMax, step: 1, defaultValue: null, fineStepDivisor: 1 };
+  }
 
   function input(): Readonly<ContinuousScalarInput> {
     const field = presentation.rxAudio?.afLevel;
@@ -302,8 +320,23 @@
       && reading.status === 'known'
       && Number.isFinite(reading.value)
       && onAfLevelChange !== undefined;
+    // MOR-1676 part A (AF): on the radio target the slider moves on the
+    // radio's raw integer lattice (the value in IS the raw value, dispatched
+    // as the int `level`), while the browser-volume target keeps the
+    // normalized 0..1 lattice. The normalized readback (`raw/255`) converts
+    // to the exact raw value (`Math.round(normalized * raw_max)`) — exact
+    // for every raw value, so a step plus its reverse restore the raw value.
+    const isRadioTarget = currentAuthority?.target !== 'browser-volume';
+    const rawDomain = isRadioTarget ? radioAfDomain(published) : null;
+    const domain = rawDomain ?? AF_DOMAIN;
+    const rawReading = rawDomain !== null && reading.status === 'known'
+      ? {
+        status: 'known' as const,
+        value: Math.round(rawDomain.min + reading.value * (rawDomain.max - rawDomain.min)),
+      }
+      : reading;
     const base = {
-      domain: AF_DOMAIN,
+      domain,
       enabled,
       request: (value: number) => onAfLevelChange?.(value),
     } as const;
@@ -316,7 +349,7 @@
     return {
       ...base,
       evidence: 'reading',
-      reading,
+      reading: rawReading,
       ownerKey: key(currentAuthority),
     };
   }
@@ -354,8 +387,19 @@
       && reading.status === 'known'
       && Number.isFinite(reading.value)
       && onReceiverAfLevelChange !== undefined;
+    // MOR-1676 part A (AF): the named-receiver knob moves on the radio's raw
+    // integer lattice, like the active-receiver slider above — the value in
+    // IS the raw value, dispatched as the int `level`.
+    const rawDomain = radioAfDomain(published);
+    const domain = rawDomain ?? AF_DOMAIN;
+    const rawReading = rawDomain !== null && reading.status === 'known'
+      ? {
+        status: 'known' as const,
+        value: Math.round(rawDomain.min + reading.value * (rawDomain.max - rawDomain.min)),
+      }
+      : reading;
     const base = {
-      domain: AF_DOMAIN,
+      domain,
       enabled,
       request: (value: number) => onReceiverAfLevelChange?.(receiver, value),
     } as const;
@@ -364,7 +408,7 @@
       ...base, evidence: 'command-feedback', feedback, command: 'set_af_level',
     };
     return {
-      ...base, evidence: 'reading', reading, ownerKey: key(currentAuthority, 'rx-receiver-af'),
+      ...base, evidence: 'reading', reading: rawReading, ownerKey: key(currentAuthority, 'rx-receiver-af'),
     };
   }
   const receiverAfBindings = {
