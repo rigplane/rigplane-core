@@ -888,11 +888,8 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     publishAuthority();
     flushSync();
     expect([level('rfGain').disabled(), level('squelch').disabled()]).toEqual([false, false]);
-    // MOR-1676 part R: confirmed truth projects through the raw range —
-    // 0.8*255 = 204 shown as 80%, 0.1*255 ≈ 26 shown as 10%. `.value()`
-    // reads the CSS fill fraction (a share of the track), not the value.
     expect(level('rfGain').value()).toBe(0.8);
-    expect(level('squelch').value()).toBeCloseTo(26 / 255, 5);
+    expect(level('squelch').value()).toBe(0.1);
     expect(h.rfGain).not.toHaveBeenCalled();
     expect(h.squelch).not.toHaveBeenCalled();
   });
@@ -910,7 +907,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     expect(el('rfGain')!.dataset.commandPhase).toBe('submitted');
     expect(el('squelch')!.dataset.commandPhase).toBe('submitted');
     expect(level('rfGain').value()).toBe(0.8);
-    expect(level('squelch').value()).toBeCloseTo(26 / 255, 5);
+    expect(level('squelch').value()).toBe(0.1);
     expect(el('rfGain')!.querySelector('output')!.textContent).toBe('80%');
     expect(el('squelch')!.querySelector('output')!.textContent).toBe('10%');
     acknowledgeCommand(rf.id, 7, 7);

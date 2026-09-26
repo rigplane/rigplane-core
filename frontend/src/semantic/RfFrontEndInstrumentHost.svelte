@@ -224,6 +224,31 @@
     const raw = normalizedToRaw(field, reading.value);
     return raw === null ? reading : { status: 'known', value: raw };
   };
+  /** MOR-1676 part R: command-feedback lanes carry normalized 0..1
+   *  `confirmed`/`target`/`requestedTarget` (the `set_rf_gain` /
+   *  `set_squelch` descriptors' own unit — the snapshot contract is
+   *  unchanged). On the raw lattice they project to raw ints with the same
+   *  `Math.round(normalized * raw_max)` rule as the reading; without a
+   *  published range the lane passes through untouched. */
+  function feedbackLaneOf(
+    field: RfFrontEndLevelField,
+    lane: Readonly<{ command: string; feedback: Readonly<CommandScalarFeedback> }>,
+  ): Readonly<{ command: string; feedback: Readonly<CommandScalarFeedback> }> {
+    const raw = rawRangeOf(RF_FRONT_END_RAW_CONTROL_KEY[field]);
+    if (raw === null) return lane;
+    const project = (value: number | null): number | null =>
+      value === null || !Number.isFinite(value) ? value : Math.round(value * raw.rawMax);
+    const feedback = lane.feedback;
+    return {
+      command: lane.command,
+      feedback: {
+        ...feedback,
+        confirmed: project(feedback.confirmed),
+        target: project(feedback.target),
+        requestedTarget: project(feedback.requestedTarget),
+      },
+    };
+  };
   const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
   const currentAuthority = (): RfAuthority | null => published === null ? null : authority(published);
   const presentedAuthority = (): RfAuthority | null => authority(
@@ -256,7 +281,8 @@
       sql: { reading: { status: 'unknown' }, availability: 'unavailable' },
     };
     if (feedback !== undefined) return {
-      ...common, evidence: 'command-feedback', rf: feedback.rf, sql: feedback.sql,
+      ...common, evidence: 'command-feedback',
+      rf: feedbackLaneOf('rfGain', feedback.rf), sql: feedbackLaneOf('squelch', feedback.sql),
       enabled: authorityCurrent() && currentForm === 'combined' && onLevelChange !== undefined,
     };
     const availability = (field: RfFrontEndField<number> | undefined) =>
@@ -283,7 +309,7 @@
       ownerKey: authorityKey(currentAuthority(), field), reading: { status: 'unknown' },
     };
     if (feedback !== undefined) {
-      const lane = feedback[laneFor(field)];
+      const lane = feedbackLaneOf(field, feedback[laneFor(field)]);
       return {
         ...common, evidence: 'command-feedback', command: lane.command, feedback: lane.feedback,
         enabled: authorityCurrent() && currentForm === 'separate'
