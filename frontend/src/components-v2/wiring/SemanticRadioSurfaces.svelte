@@ -2193,8 +2193,9 @@
     appearance: InstrumentVfoAppearance = vfoAppearance, operationControls?: Snippet,
   )}
     {#if view}
+      {@const mountedView = view}
       <VfoSurface
-        viewModel={view}
+        viewModel={mountedView}
         {appearance}
         operationInput={vfoOperationInput ?? undefined}
         {operationControls}
@@ -2205,7 +2206,7 @@
         {receiverInstruments}
         continuitySession={meterContinuitySession}
         {pendingFrequencyHz}
-        disabledForReceiver={(receiver) => !isOperationalStrip(view, receiver)}
+        disabledForReceiver={(receiver) => !isOperationalStrip(mountedView, receiver)}
       />
     {/if}
   {/snippet}
