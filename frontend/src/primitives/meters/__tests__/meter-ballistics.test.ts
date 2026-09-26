@@ -371,6 +371,31 @@ describe('createMeterBallistics idle peak ticker (MOR-2613)', () => {
     expect(meter.view.peakValue).toBe(lower);
     expect(meter.view.smoothedValue).toBe(lower);
   });
+
+  it('starts the hold when the lower sample arrives, not when the peak was last latched', () => {
+    const hold = 1000;
+    const { host, meter } = frameSetup();
+    meter.sync({ sample: VALUE, smoothTarget: VALUE, peakEnabled: true });
+    meter.start();
+    expect(host.activeFrames).toBe(0);
+    expect(meter.view.peakValue).toBe(VALUE);
+
+    host.advance(10 * hold);
+    expect(host.activeFrames).toBe(0);
+
+    const lower = 4;
+    meter.sync({ sample: lower, smoothTarget: lower, peakEnabled: true });
+    const droppedAt = host.now();
+    expect(host.activeFrames).toBe(1);
+
+    host.flushFrame(hold - 1);
+    expect(host.now() - droppedAt).toBeLessThan(hold);
+    expect(meter.view.peakValue).toBe(VALUE);
+
+    host.flushFrame(2);
+    expect(host.now() - droppedAt).toBeGreaterThan(hold);
+    expect(meter.view.peakValue).toBeLessThan(VALUE);
+  });
 });
 
 describe('createFrameStepPeakStrategy projection (MOR-2613)', () => {
