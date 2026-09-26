@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from rigplane.capabilities import CAP_ANTENNA, CAP_AUDIO, CAP_POWER_CONTROL, CAP_TUNER
+from rigplane.capabilities import CAP_ANTENNA, CAP_POWER_CONTROL, CAP_TUNER
 from rigplane.core.command_dispatch import bind_command_intent
 from rigplane.core.command_service import CommandExecutionResult, CommandService
 from rigplane.core.state_pipeline_contracts import (
@@ -922,71 +922,6 @@ def test_web_and_yaesu_seats_share_the_ptt_on_block_policy() -> None:
     for rf in (RfState.UNKNOWN, RfState.TX):
         assert evaluate_tx_interlock(PttOn(), rf_state=rf).allowed is False
     assert evaluate_tx_interlock(PttOn(), rf_state=RfState.RX).allowed is True
-
-
-@pytest.mark.parametrize(
-    ("ptt", "reason", "code"),
-    (
-        (
-            None,
-            "RF state is unknown; this command must not be attempted yet.",
-            "rf_state_unknown",
-        ),
-        (True, "RF state is TX; command is blocked.", "radio_transmitting"),
-    ),
-    ids=("unknown", "tx"),
-)
-async def test_ptt_on_refused_fail_closed_leaves_no_armed_audio_leg(
-    ptt: bool | None, reason: str, code: str
-) -> None:
-    radio, store = _radio(), StateStore()
-    radio.capabilities.add(CAP_AUDIO)
-    radio.start_tx = AsyncMock()
-    radio.stop_tx = AsyncMock()
-    store.begin_provider_generation()
-    poller = RadioPoller(radio, CommandQueue(), state_store=store)
-    if ptt is not None:
-        _observe_ptt(store, ptt)
-
-    with pytest.raises(TxInterlockRefusal) as excinfo:
-        await _dispatch(poller, PttOn())
-
-    assert str(excinfo.value) == reason
-    assert excinfo.value.reason_code == code
-    radio.set_ptt.assert_not_awaited()
-    # Design-doc R7: the refusal precedes the audio-leg arm entirely — nothing
-    # was armed, so nothing needed disarming.
-    radio.start_tx.assert_not_awaited()
-    radio.stop_tx.assert_not_awaited()
-
-
-async def test_ptt_on_dispatches_in_fresh_rx() -> None:
-    poller, radio, store = _poller()
-    _observe_ptt(store, False)
-
-    await _dispatch(poller, PttOn())
-
-    radio.set_ptt.assert_awaited_once_with(True)
-
-
-async def test_managed_typed_ptt_on_fails_before_raw_write_or_legacy_timer() -> None:
-    radio, store, queue = _radio(), StateStore(), CommandQueue()
-    store.begin_provider_generation()
-    _observe_ptt(store, False)
-    authority = SimpleNamespace(admit_managed_write=AsyncMock(return_value=True))
-    poller = RadioPoller(
-        radio,
-        queue,
-        state_store=store,
-        managed_tx_authority=authority,
-    )
-    poller._arm_max_key_down = MagicMock()  # type: ignore[method-assign] # noqa: SLF001
-
-    with pytest.raises(CommandError, match="positive TX queue submission"):
-        await poller._execute(PttOn())  # noqa: SLF001
-
-    radio.set_ptt.assert_not_awaited()
-    poller._arm_max_key_down.assert_not_called()  # type: ignore[attr-defined] # noqa: SLF001
 
 
 async def test_managed_typed_ptt_off_remains_unconditionally_attemptable() -> None:

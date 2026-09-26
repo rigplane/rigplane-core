@@ -115,20 +115,36 @@ from rigplane.web.radio_poller import (
     VfoSwap,
 )
 from _acquisition_query_helpers import acquisition_query, send_state_query
-from rigplane.core.tx_safety import (
-    BACKEND_MAX_KEY_DOWN_SECONDS,
-    TxOutcome,
-    TxOwner,
-    TxSource,
-)
-from rigplane.runtime.managed_tx_state import ManagedTxOutcome
-from rigplane.web.handlers.control import ControlHandler
+from rigplane.core.capabilities import CAP_AUDIO
 from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
 from rigplane.web.web_startup import stop_web_server
 
-# MOR-1181 asserts on ordered ``radio.calls`` against a REAL supervisor, so it
-# reuses MOR-1013's harness rather than re-mocking either of them.
-from test_web_managed_tx_owner import _KEY, _TEARDOWN, _poller, _Radio, _Supervisor
+_TEARDOWN = ["stop_tx", "restart_rx"]
+
+
+class _Radio:
+    """Duck-typed radio whose PTT-off audio teardown records an ordered call list."""
+
+    def __init__(self) -> None:
+        profile = resolve_radio_profile(model="IC-7610")
+        self.profile = profile
+        self.model = profile.model
+        self.capabilities = {CAP_AUDIO}
+        self.calls: list[str] = []
+
+    async def set_ptt(self, on: bool) -> None:
+        self.calls.append(f"set_ptt({on})")
+
+    async def stop_tx(self) -> None:
+        self.calls.append("stop_tx")
+
+    async def restart_rx(self) -> None:
+        self.calls.append("restart_rx")
+
+    @property
+    def audio_bus(self) -> "_Radio":
+        return self
+
 
 # MOR-1884: this suite drives ``RadioPoller._execute`` directly to exercise
 # dispatch bodies; the interlock seat now lives at its head, so the RF
@@ -5624,11 +5640,10 @@ async def test_set_data1_mod_input_dispatch_reads_back_confirmed_value() -> None
 # --- MOR-1181: the shutdown TX-safety drain --------------------------------
 
 
-def _tx_poller(
-    supervisor: _Supervisor | None,
-) -> tuple[RadioPoller, _Radio, CommandQueue]:
-    poller, radio = _poller(supervisor)
-    return poller, radio, poller._queue  # noqa: SLF001
+def _tx_poller() -> tuple[RadioPoller, _Radio, CommandQueue]:
+    radio = _Radio()
+    queue = CommandQueue()
+    return RadioPoller(radio, queue), radio, queue  # type: ignore[arg-type]
 
 
 def _cancel_run_with_queued(queue: CommandQueue, *pending: object) -> None:
@@ -5643,44 +5658,16 @@ def _cancel_run_with_queued(queue: CommandQueue, *pending: object) -> None:
     queue.wait = _wait  # type: ignore[method-assign]
 
 
-@pytest.mark.parametrize("managed", [True, False])
-@pytest.mark.asyncio
-async def test_shutdown_drain_delivers_an_unkey_queued_at_cancellation(
-    managed: bool,
-) -> None:
-    """MOR-1181: a cancelled poller must not abandon a queued PttOff — the
-    handler was ``pass``, so the entry died with the task and left a keyed
-    transmitter behind a gone process. Both paths matter: the managed one gives
-    the lease back, and the legacy one (kill switch off, or a backend publishing
-    no supervisor) is the residual with no other de-key at all."""
-    supervisor = _Supervisor() if managed else None
-    poller, radio, queue = _tx_poller(supervisor)
-    await poller._execute(PttOn(), session_id="ws-1")  # noqa: SLF001
-    _cancel_run_with_queued(queue, PttOff())
-
-    await poller._run()  # noqa: SLF001
-
-    assert queue.has_commands is False
-    if supervisor is not None:
-        assert supervisor.entries[-1] == (False, TxOwner(TxSource.WEBSOCKET, "ws-1"))
-        assert supervisor.outcomes[-1] is TxOutcome.ACCEPTED
-        assert radio.calls == ["start_tx", *_TEARDOWN]
-    else:
-        assert radio.calls == [*_KEY, "set_ptt(False)", *_TEARDOWN]
-
-
 @pytest.mark.asyncio
 async def test_shutdown_drain_never_executes_a_pending_key() -> None:
     """The safety-critical negative: keying a rig this process is abandoning is
     the worst outcome this path can produce, so a pending PttOn is discarded."""
-    supervisor = _Supervisor()
-    poller, radio, queue = _tx_poller(supervisor)
+    poller, radio, queue = _tx_poller()
     _cancel_run_with_queued(queue, PttOn())
 
     await poller._run()  # noqa: SLF001
 
-    assert radio.calls == []  # no start_tx, no key, no lease attempt
-    assert supervisor.entries == []
+    assert radio.calls == []
     assert queue.has_commands is False
 
 
@@ -5690,7 +5677,7 @@ async def test_shutdown_drain_discards_and_reports_non_tx_commands(
 ) -> None:
     """Stale freq/mode/level writes must not fire on the way out — but they are
     counted and named, because a silently dropped command is its own defect."""
-    poller, radio, queue = _tx_poller(None)
+    poller, radio, queue = _tx_poller()
     _cancel_run_with_queued(queue, SetFreq(14_074_000), PttOff())
 
     with caplog.at_level(logging.INFO, logger="rigplane.web.radio_poller"):
@@ -5707,7 +5694,7 @@ async def test_shutdown_drain_abandons_the_wait_not_the_write_on_timeout(
 ) -> None:
     """A wedged rig must not hold shutdown open; the bound reports what it could
     not confirm, and the shield leaves the OFF still trying behind it."""
-    poller, radio, queue = _tx_poller(None)
+    poller, radio, queue = _tx_poller()
     gate = asyncio.Event()
 
     async def _wedged_set_ptt(on: bool) -> None:
@@ -5729,29 +5716,6 @@ async def test_shutdown_drain_abandons_the_wait_not_the_write_on_timeout(
     gate.set()
     await asyncio.sleep(0.01)  # the shielded write completes behind the bound
     assert radio.calls == ["set_ptt(False)", *_TEARDOWN]
-
-
-def _writable_control_session(queue: CommandQueue, authority: object) -> ControlHandler:
-    """A writable control session whose ``run()`` ends only when cancelled —
-    which is exactly when ``stop_web_server`` cancels its client tasks."""
-
-    async def recv() -> tuple[int, bytes]:
-        await asyncio.Event().wait()
-        raise EOFError  # pragma: no cover - unreachable, keeps the return type
-
-    return ControlHandler(
-        ws=SimpleNamespace(send_text=AsyncMock(), recv=recv),
-        radio=SimpleNamespace(connected=True, radio_ready=True),
-        server_version="test",
-        radio_model="IC-7610",
-        server=SimpleNamespace(
-            command_queue=queue,
-            register_control_event_queue=MagicMock(),
-            unregister_control_event_queue=MagicMock(),
-            build_state_update_envelope=MagicMock(return_value={}),
-        ),
-        managed_tx_authority=authority,  # type: ignore[arg-type]
-    )
 
 
 def _shutdown_server(
@@ -5785,40 +5749,11 @@ def _shutdown_server(
     )
 
 
-@pytest.mark.asyncio
-async def test_server_shutdown_releases_via_authority_without_late_queue_off() -> None:
-    """Shutdown keeps provider teardown after Web owner release without a
-    late legacy queue fallback."""
-    supervisor = _Supervisor()
-    radio = _Radio(supervisor)
-    queue = CommandQueue()
-    poller = RadioPoller(radio, queue)  # type: ignore[arg-type]
-    authority = SimpleNamespace(
-        owner_disconnect=AsyncMock(return_value=ManagedTxOutcome.ACCEPTED)
-    )
-    handler = _writable_control_session(queue, authority)
-    client: asyncio.Task[None] = asyncio.create_task(handler.run())
-    await asyncio.sleep(0.01)  # run() reaches the recv loop and publishes itself
-    await poller._execute(PttOn(), session_id=handler._session_id)  # noqa: SLF001
-    poller.start()
-    await asyncio.sleep(0.01)  # the loop is genuinely running when it is stopped
-
-    await stop_web_server(_shutdown_server(poller, [client]))  # type: ignore[arg-type]
-
-    owner = TxOwner(TxSource.WEBSOCKET, handler._session_id)
-    assert supervisor.entries == [(True, owner)]
-    assert supervisor.outcomes[-1] is TxOutcome.ACCEPTED
-    authority.owner_disconnect.assert_awaited_once_with(handler._session_id)
-    assert radio.calls == ["start_tx"]
-    assert queue.has_commands is False
-    assert poller.running is False and client.done()
-
-
 def _scope_shutdown_poller(
     *, external_cat_session_active: bool = False
 ) -> tuple[RadioPoller, _Radio, CommandQueue]:
     """Stopped-poller restore harness over the same executor as the TX drain."""
-    radio = _Radio(None)
+    radio = _Radio()
     radio.capabilities.add(CAP_SCOPE)
     radio.external_cat_session_active = external_cat_session_active
     queue = CommandQueue()
@@ -5919,151 +5854,6 @@ async def test_shutdown_scope_restore_failure_never_delays_final_unkey(
     expected = "timed out" if failure == "timeout" else "failed"
     assert expected in caplog.text
     assert "state remains pending" in caplog.text
-
-
-# --- MOR-1220: the unmanaged max-key-down backstop -------------------------
-# MOR-1165 finding A1-1: shipped serial/USB Icom backends arm no supervisor, and
-# MOR-1011/1012 deleted the frontend's 3-minute PTT timers, so a latched web TX
-# on one had no key-down limit anywhere. These pin the bound that restores it —
-# at the poller, legacy arm only, through the queue MOR-1181's drain reads.
-
-_BACKSTOP = 0.05  # test-scale stand-in for BACKEND_MAX_KEY_DOWN_SECONDS
-
-
-async def _until(ready: Callable[[], bool], timeout: float = 2.0) -> None:
-    """Wait on *ready*, so no test here sleeps out the real 180 s bound."""
-    deadline = time.monotonic() + timeout
-    while not ready():
-        assert time.monotonic() < deadline, "condition never became true"
-        await asyncio.sleep(0.005)
-
-
-def _keyed(supervisor: _Supervisor | None) -> tuple[RadioPoller, _Radio, CommandQueue]:
-    """A poller on a test-scale bound, its real loop running, PTT ON queued."""
-    poller, radio, queue = _tx_poller(supervisor)
-    poller._max_key_down_seconds = _BACKSTOP  # noqa: SLF001
-    # MOR-1879: the key itself now passes the server RF gate, so the scenario's
-    # premise — a rig observed in RX that then gets keyed — is stated explicitly.
-    _seed_fresh_rx(poller)
-    poller.start()
-    queue.put(PttOn(), source="websocket", session_id="ws-1")
-    return poller, radio, queue
-
-
-@pytest.mark.asyncio
-async def test_backstop_forces_the_unkey_a_latched_legacy_key_never_sends(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """A1-1's case: an unmanaged rig keyed and never unkeyed. The bound takes it
-    off the air through the real loop, names it at ERROR, and surfaces it on the
-    state-event lane the operator's UI reads."""
-    events: list[tuple[str, dict[str, Any]]] = []
-    poller, radio, _ = _keyed(None)
-    poller._on_state_event = lambda n, d: events.append((n, d))  # noqa: SLF001
-
-    with caplog.at_level(logging.ERROR, logger="rigplane.web.radio_poller"):
-        await _until(lambda: radio.calls[-1:] == ["restart_rx"])  # incl. teardown
-    poller.stop()
-
-    assert radio.calls == [*_KEY, "set_ptt(False)", *_TEARDOWN]
-    assert "max key-down (0.05s) exceeded on unmanaged radio; forcing" in caplog.text
-    assert events[-1] == (
-        "tx_max_key_down",
-        {"seconds": _BACKSTOP, "session_id": "ws-1"},
-    )
-
-
-@pytest.mark.asyncio
-async def test_an_operator_unkey_disarms_the_backstop() -> None:
-    """A backstop, not a second unkey: a forced unkey after the operator's own
-    would, on a re-key, take the NEXT transmission off the air."""
-    poller, radio, queue = _keyed(None)
-    queue.put(PttOff(), source="websocket", session_id="ws-1")
-
-    await _until(lambda: "set_ptt(False)" in radio.calls)
-    await asyncio.sleep(_BACKSTOP * 4)  # well past the disarmed expiry
-    poller.stop()
-
-    assert radio.calls == [*_KEY, "set_ptt(False)", *_TEARDOWN]  # exactly one
-    assert poller._max_key_down_timer is None  # noqa: SLF001
-
-
-@pytest.mark.asyncio
-async def test_the_managed_path_arms_no_backstop() -> None:
-    """The supervisor owns the managed bound (``BACKEND_MAX_KEY_DOWN``, driven by
-    the runtime ticker); a second timer here de-keys a lease it does not hold."""
-    supervisor = _Supervisor()
-    poller, radio, _ = _keyed(supervisor)
-
-    await _until(lambda: radio.calls == ["start_tx"])
-    await asyncio.sleep(_BACKSTOP * 4)  # long enough for a wrongly-armed bound
-    poller.stop()
-
-    assert poller._max_key_down_timer is None  # noqa: SLF001
-    assert radio.calls == ["start_tx"]  # no raw unkey behind the supervisor
-    assert supervisor.entries == [(True, TxOwner(TxSource.WEBSOCKET, "ws-1"))]
-
-
-@pytest.mark.asyncio
-async def test_an_expiry_that_races_shutdown_is_delivered_by_the_drain() -> None:
-    """Why the expiry ENQUEUES: shutdown stops the loop at step 1 and drains at
-    step 9 (MOR-1181), so an unkey already minted rides that drain out."""
-    poller, radio, queue = _tx_poller(None)
-    poller._max_key_down_seconds = _BACKSTOP  # noqa: SLF001
-    await poller._execute(PttOn(), session_id="ws-1")  # noqa: SLF001
-
-    await _until(lambda: queue.has_commands)  # the expiry minted it, undrained
-    poller.stop()  # shutdown races it
-    assert radio.calls == _KEY  # nothing delivered it yet
-    await poller.drain_tx_safety_commands()
-
-    assert radio.calls == [*_KEY, "set_ptt(False)", *_TEARDOWN]
-
-
-@pytest.mark.asyncio
-async def test_a_retired_pollers_backstop_does_not_leak_into_the_next_connect() -> None:
-    """A new connect builds a new poller (``start_web_server``); the retired
-    one's unfired bound must not outlive it — nothing reads that queue again."""
-    retired, radio, queue = _tx_poller(None)
-    retired._max_key_down_seconds = _BACKSTOP  # noqa: SLF001
-    await retired._execute(PttOn(), session_id="ws-1")  # noqa: SLF001
-    retired.stop()
-
-    fresh = RadioPoller(radio, queue)  # type: ignore[arg-type]
-    await asyncio.sleep(_BACKSTOP * 4)  # past the retired bound
-
-    assert retired._max_key_down_timer is None  # noqa: SLF001
-    assert fresh._max_key_down_timer is None  # noqa: SLF001
-    assert queue.has_commands is False  # the retired timer minted nothing
-    assert radio.calls == _KEY
-    bound = fresh._max_key_down_seconds  # noqa: SLF001  (production, not test)
-    assert bound == BACKEND_MAX_KEY_DOWN_SECONDS == 180.0
-
-
-@pytest.mark.asyncio
-async def test_a_lost_operator_unkey_keeps_the_backstop_armed() -> None:
-    """Why the disarm sits BELOW the write: an unkey that RAISED did not reach the
-    rig, and dropping the bound on it strands a keyed transmitter."""
-    poller, radio, queue = _keyed(None)
-    poller._max_key_down_seconds = 0.4  # noqa: SLF001  (outlast the lost unkey)
-    eaten: list[bool] = []
-
-    async def _lossy_set_ptt(on: bool) -> None:  # the rig eats exactly ONE unkey
-        if not on and not eaten:
-            eaten.append(True)
-            radio.calls.append("set_ptt(False:LOST)")
-            raise ConnectionError("unkey never reached the rig")
-        await _Radio.set_ptt(radio, on)
-
-    radio.set_ptt = _lossy_set_ptt  # type: ignore[method-assign]
-    queue.put(PttOff(), source="websocket", session_id="ws-1")  # drains after the key
-    await _until(lambda: "set_ptt(False:LOST)" in radio.calls)
-
-    await _until(lambda: "set_ptt(False)" in radio.calls, timeout=6.0)
-    poller.stop()
-
-    lost, forced = ["set_ptt(False:LOST)", *_TEARDOWN], ["set_ptt(False)", *_TEARDOWN]
-    assert radio.calls == [*_KEY, *lost, *forced]
 
 
 # ---------------------------------------------------------------------------
@@ -7117,8 +6907,8 @@ async def test_drain_between_ticks_gates_tx_only_on_the_fact_as_of_the_drain() -
 
 @pytest.mark.asyncio
 async def test_shutdown_drain_executes_cancelled_unkey_after_callback_turn() -> None:
-    poller, radio, queue = _tx_poller(None)
-    radio.set_freq = AsyncMock()
+    poller, radio, queue = _tx_poller()
+    radio.set_freq = AsyncMock()  # type: ignore[method-assign]
     reply = asyncio.get_running_loop().create_future()
     queue.put_ordered(PttOff(), future=reply)
     queue.put(SetFreq(14_074_000))

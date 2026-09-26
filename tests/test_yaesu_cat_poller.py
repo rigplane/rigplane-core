@@ -1388,7 +1388,6 @@ async def test_yaesu_immediate_hard_block_families_fail_before_dispatch(
     message: str,
 ) -> None:
     from rigplane.runtime._poller_types import (
-        PttOn,
         ScanStart,
         SendCiv,
         SetAntenna1,
@@ -1404,7 +1403,6 @@ async def test_yaesu_immediate_hard_block_families_fail_before_dispatch(
         "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: 10.5
     )
     commands = (
-        PttOn(),
         SendCiv(command=0x1C),
         ScanStart(),
         SetTunerStatus(1),
@@ -1457,28 +1455,6 @@ async def test_yaesu_emergency_off_commands_bypass_immediate_gate(
     radio.set_ptt.assert_awaited_once_with(False)
     radio.set_powerstat.assert_awaited_once_with(False)
     radio.set_tuner_status.assert_awaited_once_with(0)
-
-
-@pytest.mark.asyncio
-async def test_yaesu_known_rx_preserves_immediate_dispatch(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from rigplane.runtime._poller_types import PttOn, SendCiv
-
-    monkeypatch.setattr(
-        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: 10.5
-    )
-    radio = make_radio()
-    radio.set_ptt = AsyncMock()
-    poller = YaesuCatPoller(radio, callback=lambda _: None)
-    _set_fresh_ptt_observation(poller, active=False)
-
-    await poller._execute_command(PttOn())  # noqa: SLF001
-    radio.set_ptt.assert_awaited_once_with(True)
-    with pytest.raises(
-        NotImplementedError, match="SendCiv unsupported by Yaesu CAT dispatcher"
-    ):
-        await poller._execute_command(SendCiv(command=0x1C))  # noqa: SLF001
 
 
 @pytest.mark.asyncio
@@ -1794,24 +1770,6 @@ async def test_yaesu_descriptor_refusal_occurs_once_at_bound_authority() -> None
 
     authority.admit_managed_write.assert_awaited_once_with(intent)
     radio.set_antenna_1.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_yaesu_managed_typed_ptt_on_fails_before_raw_write() -> None:
-    from rigplane.runtime._poller_types import PttOn
-
-    radio = make_radio()
-    radio.set_ptt = AsyncMock()
-    authority = MagicMock()
-    authority.admit_managed_write = AsyncMock(return_value=True)
-    poller = YaesuCatPoller(radio)
-    poller.bind_managed_tx_authority(authority)
-    _set_fresh_ptt_observation(poller, active=False)
-
-    with pytest.raises(CommandError, match="positive TX queue submission"):
-        await poller._execute_command(PttOn())  # noqa: SLF001
-
-    radio.set_ptt.assert_not_awaited()
 
 
 @pytest.mark.asyncio

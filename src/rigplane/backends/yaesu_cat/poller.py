@@ -36,7 +36,6 @@ from rigplane.core.state_pipeline_contracts import CommandIntent, FieldPath
 from rigplane.core.tx_observation import OBSERVED_PTT_PATH
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
 from rigplane.runtime._poller_types import (
-    PttOn,
     canonicalize_level_command,
     execute_command_queue_entry,
     execute_positive_tx_queue_entry,
@@ -1076,8 +1075,6 @@ class YaesuCatPoller:
         all command types; unsupported commands fail truthfully.
         """
         cmd = canonicalize_level_command(cmd, self._radio)
-        if self._managed_tx_authority is not None and isinstance(cmd, PttOn):
-            raise CommandError("managed PTT ON requires a positive TX queue submission")
         if isinstance(cmd, CommandIntent):
             await execute_command_intent(
                 self._radio,
@@ -1231,8 +1228,6 @@ class YaesuCatPoller:
                 await self._post_write_freq_mode_readback()
 
             # ── PTT ──
-            case PttOn():
-                await radio.set_ptt(True)
             case PttOff():
                 await radio.set_ptt(False)
             case SetPowerstat(on=on):

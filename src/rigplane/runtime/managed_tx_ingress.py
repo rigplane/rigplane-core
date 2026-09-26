@@ -16,7 +16,7 @@ third one.
 **The gate is deliberately one-sided: it NEVER refuses an unkey.** Refusing a
 key costs an operator one denied transmission, which is recoverable and
 visible. Refusing an unkey leaves a transmitter on the air that nobody can take
-off — the same asymmetry ``_refuse_key_from_gone_session`` is built on. Nothing
+off. Nothing
 here is consulted from an unkey path, and nothing here should ever be.
 """
 
