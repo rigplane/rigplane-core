@@ -848,7 +848,9 @@ async def test_watchdog_silent_port_hands_off_at_5s(
         await radio._civ_runtime._civ_data_watchdog_loop()
 
     assert handed_off_at, "silent port must hand off to lifecycle recovery"
-    elapsed = handed_off_at[0] - radio._last_civ_data_received
+    # The 5 s bound is patience measured from recovery start, not from the
+    # last payload: detection itself costs one watchdog timeout.
+    elapsed = handed_off_at[0] - (radio._last_civ_data_received + 2.0)
     assert 5.0 <= elapsed < 6.0, elapsed
     assert any("port silent" in r.message for r in caplog.records)
 
