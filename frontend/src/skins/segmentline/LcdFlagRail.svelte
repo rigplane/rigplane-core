@@ -60,5 +60,13 @@
   .status-flag.unknown { color: var(--ink-soft); }
   .status-flag.unsupported { visibility: hidden; }
   .status-flag[data-state='active'][data-state='active'] { background: rgba(26, 16, 0, 0.06); }
+  /* MOR-2650: a flag carrying a value (`AGC MID`, `PRE 1`, `ATT 0`) keeps
+     its box reserved at the widest label+value it can render. An unread
+     value draws nothing — the bare label stays — and a first reading lights
+     the slot without moving the rail. Digits are tabular. */
+  .status-flag {
+    min-width: 8ch;
+    font-variant-numeric: tabular-nums;
+  }
   :global(.peer-display[data-rf-state='transmitting']) .status-flag.active { color: #7a1a0a; }
 </style>

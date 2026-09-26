@@ -216,6 +216,11 @@
     letter-spacing: 0.2em;
   }
   .orbit-value {
+    display: inline-block;
+    /* MOR-2650: the value slot stays reserved at the widest text any orbit
+       field can render (`DATA-FM-N`, 8ch, tabular). An unread value draws
+       nothing; a first reading lights the slot without moving it. */
+    min-width: 8ch;
     font-size: 20px;
     font-weight: 700;
     letter-spacing: 0.05em;
@@ -259,6 +264,9 @@
     white-space: nowrap;
   }
   .secondary-mode, .secondary-filter {
+    display: inline-block;
+    /* MOR-2650: reserved like the orbit slot above — `DATA-FM-N`, 8ch. */
+    min-width: 8ch;
     color: var(--ink-mid);
     font-size: 10px;
     letter-spacing: 0.1em;
