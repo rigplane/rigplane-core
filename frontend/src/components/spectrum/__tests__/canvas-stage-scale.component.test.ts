@@ -31,22 +31,6 @@ class BoxResizeObserver {
   disconnect(): void {}
 }
 
-let pixelRatio = 2;
-
-/** One resolution query, shared, so a test can prove a pixel-ratio change is
- *  not what recomputed the store. */
-class FixedResolutionQuery {
-  private listener: (() => void) | null = null;
-  matches = false;
-  media = '';
-  addEventListener(_type: string, listener: () => void): void { this.listener = listener; }
-  removeEventListener(): void { this.listener = null; }
-  dispatchEvent(): boolean { return false; }
-  addListener(): void {}
-  removeListener(): void {}
-  onchange: (() => void) | null = null;
-}
-
 beforeEach(() => {
   stageScale.value = 1;
   target = document.createElement('div');
@@ -54,14 +38,13 @@ beforeEach(() => {
   vi.stubGlobal('requestAnimationFrame', () => 1);
   vi.stubGlobal('cancelAnimationFrame', () => {});
   vi.stubGlobal('ResizeObserver', BoxResizeObserver);
-  vi.stubGlobal('matchMedia', () => new FixedResolutionQuery());
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement) {
     return {
       canvas: this, setTransform: () => {}, clearRect: () => {}, fillRect: () => {}, drawImage: () => {},
       createImageData: (w: number) => ({ data: new Uint8ClampedArray(w * 4), width: w, height: 1 }),
     } as unknown as CanvasRenderingContext2D;
   });
-  Object.defineProperty(window, 'devicePixelRatio', { configurable: true, get: () => pixelRatio });
+  Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 2 });
 });
 
 afterEach(async () => {
