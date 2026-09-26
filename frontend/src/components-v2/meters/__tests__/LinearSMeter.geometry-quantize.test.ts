@@ -11,9 +11,9 @@ import { projectSignalMeter, type SignalMeterProjection } from '../smeter-scale'
 import type { SignalMeterFrame } from '../signal-meter-motion.svelte';
 
 // MOR-2613. jsdom never measures the SVG, so the component is on the 0.5-unit
-// fallback grid here. The pixel grid itself is pinned by
-// meter-geometry-grid.test.ts; this file only checks that the rendered
-// attributes follow that fallback.
+// fallback grid here. The pixel grid itself is pinned by the quantizeUserUnits
+// block below; this file only checks that the rendered attributes follow that
+// fallback.
 
 const CAL = [
   { raw: 0, actual: -54, label: 'S0' },
