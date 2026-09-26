@@ -3,6 +3,54 @@
   entry. The component reads only the semantic contract handed to it. Shared
   ANT/TUNE/RIT/XIT facts and DUAL actions belong to slice 2.
 -->
+<script module lang="ts">
+  // MOR-2644 correction 3 (owner rule 2026-09-21: the layout never moves):
+  // every fact reserves the width of its widest lit text, the same way RFG
+  // does (`min-inline-size` in `ch`, `box-sizing: content-box`). Unread,
+  // known and changing values then all occupy the same box. Widest texts
+  // come from what this component can render for that fact: the option
+  // vocabulary the view model carries, ON/OFF for booleans, the offset range
+  // for RIT/XIT. None of these vocabularies reach this component as props
+  // (agcModes, attValues/preValues, antenna count live upstream), so the
+  // table uses each vocabulary's widest possible rendered text instead of a
+  // per-radio width:
+  // - AGC: verbatim capability label, longest in the profiles is `TUNING`
+  //   (verbatim and unbounded per-radio, so this covers the widest known
+  //   one). The dict says which vocabulary is missing: AGC label set
+  //   (agcModes/agcLabels).
+  // - NOTCH: the widest rendered state text `NOTCH MANUAL` (the component
+  //   prints the raw mode uppercased: OFF/AUTO/MANUAL).
+  // - ATT: `ATT 45 dB` — the largest attenuator step across profiles
+  //   (IC-7610 0..45 dB); attValues do not reach this component.
+  // - P.AMP: `P.AMP 2` — the largest preamp level across profiles
+  //   (0/1/2 everywhere shipped); preValues do not reach this component.
+  // - ANT: `ANT 2` — the largest antenna index across profiles
+  //   (IC-7610 has two TX ports); the port count does not reach this
+  //   component.
+  // - BW: `BW 9999 Hz` — the widest filter-width fallback the codebase uses
+  //   when no profile bound is present (`FilterPanel`, `RitXitPanel`).
+  // - RIT/XIT: `RIT OFF −9999 Hz` — minus sign, OFF, and the endpoint of the
+  //   offset range this surface family renders (RitXitScanSurface
+  //   OFFSET_MIN/MAX; the local RIT/XIT panel falls back to the same
+  //   -9999..9999 bounds when no domain is present).
+  export const FACT_SLOT_RESERVATIONS = {
+    bandwidth: 'BW 9999 Hz'.length,
+    agc: 'AGC TUNING'.length,
+    nb: 'NB OFF'.length,
+    nr: 'NR OFF'.length,
+    notch: 'NOTCH MANUAL'.length,
+    attenuator: 'ATT 45 dB'.length,
+    preamp: 'P.AMP 2'.length,
+    'ip-plus': 'IP+ OFF'.length,
+    'digi-sel': 'DIGI-SEL OFF'.length,
+    'rf-gain': 8,
+    antenna: 'ANT 2'.length,
+    atu: 'TUNE TUNING'.length,
+    rit: 'RIT OFF −9999 Hz'.length,
+    xit: 'XIT OFF −9999 Hz'.length,
+  } as const;
+</script>
+
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import LinearSMeter from '../components-v2/meters/LinearSMeter.svelte';
@@ -85,8 +133,21 @@
     return field.reading.status === 'known' ? (field.reading.value ? 'ON' : 'OFF') : '';
   }
 
-  function sharedNumber(field: TxAuxField<number>): string {
-    return field.reading.status === 'known' ? String(field.reading.value) : '';
+  function sharedOffset(offset: TxAuxField<number>): string {
+    return offset.reading.status === 'known' ? String(offset.reading.value) : '';
+  }
+
+  function sharedAggregate(
+    label: 'RIT' | 'XIT', active: TxAuxField<boolean>, offset: TxAuxField<number>,
+  ): string {
+    // MOR-2644 correction 1: the Hz unit belongs to the offset number and
+    // appears only right after a known offset. Both unread → exactly the
+    // label; state known, offset unread → "RIT ON"/"RIT OFF"; both known →
+    // the same text as main today.
+    const state = sharedBoolean(active);
+    const value = sharedOffset(offset);
+    if (value === '') return state === '' ? label : `${label} ${state}`;
+    return state === '' ? `${label} ${value} Hz` : `${label} ${state} ${value} Hz`;
   }
 
   function aggregateState(
@@ -117,7 +178,10 @@
       >BW {numeric(indicator.bandwidthHz)}{indicator.bandwidthHz.reading.status === 'known' ? ' Hz' : ''}</span>
     {/if}
     {#if appearance === 'standard'}
-      <span class="header-badges"><span class="fact">BAR</span><span class="fact">{slotLabel ?? '—'}</span></span>
+      <span class="header-badges"><span class="fact">BAR</span><span
+        class="fact"
+        data-empty={slotLabel == null ? 'true' : undefined}
+      >{slotLabel ?? ''}</span></span>
     {/if}
   </header>
 
@@ -133,8 +197,8 @@
         class="s-meter-unknown"
         data-testid="receiver-s-meter-unknown"
         role="img"
-        aria-label={`${indicator.receiver} S meter unknown`}
-      >S —</div>
+        aria-label={`${indicator.receiver} S meter`}
+      ></div>
     {/if}
   </div>
 
@@ -218,7 +282,7 @@
       >{rfLabel(radioWide.rfState)}</span>
       {#if radioWide.antenna.availability.structural}
         <span class="fact" data-indicator-fact="antenna" data-state={radioWide.antenna.reading.status}
-          >ANT{radioWide.antenna.reading.status === 'known' ? ` ${sharedNumber(radioWide.antenna)}` : ''}</span
+          >ANT{radioWide.antenna.reading.status === 'known' ? ` ${sharedOffset(radioWide.antenna)}` : ''}</span
         >
       {/if}
       {#if radioWide.atu.availability.structural}
@@ -229,17 +293,13 @@
         >
       {/if}
       {#if radioWide.ritActive.availability.structural || radioWide.ritOffset.availability.structural}
-        {@const ritParts = [sharedBoolean(radioWide.ritActive), sharedNumber(radioWide.ritOffset)]
-          .filter((part) => part !== '')}
         <span class="fact" data-indicator-fact="rit" data-state={aggregateState(radioWide.ritActive, radioWide.ritOffset)}
-          >RIT{ritParts.length > 0 ? ` ${ritParts.join(' ')}` : ''} Hz</span
+          >{sharedAggregate('RIT', radioWide.ritActive, radioWide.ritOffset)}</span
         >
       {/if}
       {#if radioWide.xitActive.availability.structural || radioWide.xitOffset.availability.structural}
-        {@const xitParts = [sharedBoolean(radioWide.xitActive), sharedNumber(radioWide.xitOffset)]
-          .filter((part) => part !== '')}
         <span class="fact" data-indicator-fact="xit" data-state={aggregateState(radioWide.xitActive, radioWide.xitOffset)}
-          >XIT{xitParts.length > 0 ? ` ${xitParts.join(' ')}` : ''} Hz</span
+          >{sharedAggregate('XIT', radioWide.xitActive, radioWide.xitOffset)}</span
         >
       {/if}
     </div>
@@ -277,22 +337,56 @@
      neighbouring facts never move when the gain changes between reduced,
      full and unknown. */
   .fact[data-indicator-fact='rf-gain'] { min-inline-size: 8ch; box-sizing: content-box; }
+  /* MOR-2644 correction 3 (owner rule 2026-09-21: the layout never moves):
+     every other fact reserves its widest lit text the same way, so an
+     unread label and its first reading occupy the same box and neighbours
+     never move. Widths mirror FACT_SLOT_RESERVATIONS in the module script
+     (`ch` counts of each fact's widest rendered text); box-sizing matches
+     RFG so the reservation covers text only, outside the shared padding
+     and border. The pin test asserts each reservation against the length of
+     its widest lit text, since jsdom has no layout. */
+  .fact[data-indicator-fact='bandwidth'] { min-inline-size: 10ch; box-sizing: content-box; }
+  .fact[data-indicator-fact='agc'] { min-inline-size: 10ch; box-sizing: content-box; }
+  .fact[data-indicator-fact='nb'] { min-inline-size: 6ch; box-sizing: content-box; }
+  .fact[data-indicator-fact='nr'] { min-inline-size: 6ch; box-sizing: content-box; }
+  .fact[data-indicator-fact='notch'] { min-inline-size: 12ch; box-sizing: content-box; }
+  .fact[data-indicator-fact='attenuator'] { min-inline-size: 9ch; box-sizing: content-box; }
+  .fact[data-indicator-fact='preamp'] { min-inline-size: 7ch; box-sizing: content-box; }
+  .fact[data-indicator-fact='ip-plus'] { min-inline-size: 8ch; box-sizing: content-box; }
+  .fact[data-indicator-fact='digi-sel'] { min-inline-size: 12ch; box-sizing: content-box; }
+  .fact[data-indicator-fact='antenna'] { min-inline-size: 5ch; box-sizing: content-box; }
+  .fact[data-indicator-fact='atu'] { min-inline-size: 11ch; box-sizing: content-box; }
+  .fact[data-indicator-fact='rit'] { min-inline-size: 15ch; box-sizing: content-box; }
+  .fact[data-indicator-fact='xit'] { min-inline-size: 15ch; box-sizing: content-box; }
   /* Empty (a displayed 100%, or unread): the slot stays reserved at the same
      size and 1px geometry, but nothing is drawn — a transparent border and
-     background instead of an empty frame. */
+     background instead of an empty frame. The unknown Standard slot badge
+     uses the same treatment: it keeps its slot at the same size but draws
+     nothing. */
   .fact[data-indicator-fact='rf-gain'][data-empty='true'] {
     border-color: transparent;
     background: transparent;
+  }
+  .header-badges .fact[data-empty='true'] {
+    min-inline-size: 1ch;
+    box-sizing: content-box;
+    border-color: transparent;
+    background: transparent;
+    color: transparent;
   }
   .s-meter { min-width: 0; overflow: hidden; }
   .s-meter-unknown {
     display: grid;
     min-height: 30px;
     place-items: center;
+    min-inline-size: 12ch;
+    box-sizing: content-box;
     border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12));
     color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55));
     font-size: 11px;
   }
+  /* MOR-2644 correction 2: the unread S-meter box keeps its size (the same
+     min-height and border as the shell above) and prints no text. */
 
   .indicator-row[data-indicator-appearance='sdr'], .indicator-row[data-indicator-appearance='standard'] {
     padding: 0; border: 0; background: transparent; border-radius: 0; gap: 6px;

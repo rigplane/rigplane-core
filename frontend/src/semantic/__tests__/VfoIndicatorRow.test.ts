@@ -2,7 +2,7 @@ import { SvelteMap } from 'svelte/reactivity';
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createRawSnippet, flushSync, mount, unmount, type ComponentProps } from 'svelte';
-import VfoIndicatorRow from '../VfoIndicatorRow.svelte';
+import VfoIndicatorRow, { FACT_SLOT_RESERVATIONS } from '../VfoIndicatorRow.svelte';
 import type {
   Availability, RadioWideIndicatorsViewModel,
   ReceiverIndicatorField, ReceiverIndicatorViewModel,
@@ -63,7 +63,13 @@ describe('VfoIndicatorRow', () => {
     const root = render({ indicator: indicator({ sMeter: unknown() }), sMeter });
     expect(root.querySelector('[data-hosted-s-meter]')).toBeNull();
     expect(root.querySelector('[data-testid="receiver-s-meter"] svg')).toBeNull();
-    expect(root.querySelector('[data-testid="receiver-s-meter-unknown"]')?.textContent).toContain('S —');
+    // MOR-2644 correction 2: the unread box keeps its size and prints no
+    // text; its accessible name carries no "unknown".
+    const shell = root.querySelector('[data-testid="receiver-s-meter-unknown"]');
+    expect(shell?.textContent).toBe('');
+    expect(shell?.getAttribute('aria-label')).toBe('MAIN S meter');
+    expect(shell?.textContent).not.toContain('—');
+    expect(shell?.getAttribute('aria-label')).not.toContain('unknown');
   });
 
   it('uses a caller-owned meter for a known reading in the established receiver seat', () => {
@@ -185,6 +191,29 @@ describe('radio-wide singleton indicators (MOR-2309)', () => {
     expect(rf?.textContent).toBe('');
   });
 
+  it('prints the Hz unit only with a known offset (MOR-2644 correction 1)', () => {
+    // Both parts unread → exactly the label. Same for XIT.
+    for (const key of ['rit', 'xit'] as const) {
+      const label = key.toUpperCase();
+      const both = key === 'rit'
+        ? { ritActive: unknown(), ritOffset: unknown() }
+        : { xitActive: unknown(), xitOffset: unknown() };
+      const root = render({ radioWide: { ...shared(), ...both } });
+      const node = root.querySelector(`[data-indicator-fact="${key}"]`);
+      expect(node?.textContent?.trim()).toBe(label);
+      expect(node?.textContent).not.toContain('Hz');
+    }
+    // State known, offset unread → "RIT ON" / "RIT OFF", no Hz.
+    const stateOnly = render({ radioWide: {
+      ...shared(), ritActive: known(false), ritOffset: unknown(),
+    } });
+    expect(stateOnly.querySelector('[data-indicator-fact="rit"]')?.textContent?.trim()).toBe('RIT OFF');
+    // Both known → same text as main today ("RIT OFF 0 Hz").
+    const bothKnown = render({ radioWide: shared() });
+    expect(bothKnown.querySelector('[data-indicator-fact="rit"]')?.textContent).toContain('RIT OFF 0 Hz');
+    expect(bothKnown.querySelector('[data-indicator-fact="xit"]')?.textContent).toContain('XIT ON 0 Hz');
+  });
+
   it('keeps RF unknown quiet while retaining its state and omits unsupported facts', () => {
     const root = render({
       radioWide: {
@@ -196,11 +225,13 @@ describe('radio-wide singleton indicators (MOR-2309)', () => {
     const rf = root.querySelector('[data-indicator-fact="rf-authority"]');
     expect(rf?.getAttribute('data-indicator-rf')).toBe('unknown');
     expect(rf?.textContent).toBe('');
-    // MOR-2644: unread radio-wide facts keep the label with no value text.
-    for (const [fact, label] of [['atu', 'TUNE'], ['rit', 'RIT Hz'], ['xit', 'XIT Hz']] as const) {
-      const node = root.querySelector(`[data-indicator-fact="${fact}"]`);
-      expect(node?.textContent?.trim()).toBe(label);
-      expect(node?.textContent).not.toContain('—');
+    // MOR-2644: unread radio-wide facts keep the label with no value text;
+    // RIT/XIT print no Hz unit without a known offset (correction 1).
+    expect(root.querySelector('[data-indicator-fact="atu"]')?.textContent?.trim()).toBe('TUNE');
+    expect(root.querySelector('[data-indicator-fact="rit"]')?.textContent?.trim()).toBe('RIT');
+    expect(root.querySelector('[data-indicator-fact="xit"]')?.textContent?.trim()).toBe('XIT');
+    for (const fact of ['atu', 'rit', 'xit'] as const) {
+      expect(root.querySelector(`[data-indicator-fact="${fact}"]`)?.textContent).not.toContain('—');
     }
   });
 
@@ -221,8 +252,9 @@ describe('radio-wide singleton indicators (MOR-2309)', () => {
     const rit = root.querySelector('[data-indicator-fact="rit"]');
     const xit = root.querySelector('[data-indicator-fact="xit"]');
     expect(rit?.getAttribute('data-state')).toBe('unknown');
-    expect(rit?.textContent?.trim()).toBe('RIT OFF Hz');
+    expect(rit?.textContent?.trim()).toBe('RIT OFF');
     expect(rit?.textContent).not.toContain('—');
+    expect(rit?.textContent).not.toContain('Hz');
     expect(xit?.getAttribute('data-state')).toBe('unknown');
     expect(xit?.textContent?.trim()).toBe('XIT 0 Hz');
     expect(xit?.textContent).not.toContain('—');
@@ -234,7 +266,12 @@ describe('MOR-2342 addressed meter appearance', () => {
   it.each(['sdr', 'standard'] as const)('never draws unknown as zero in %s', (appearance) => {
     const root = render({ indicator: indicator({ sMeter: unknown() }), appearance });
     expect(root.querySelector('[data-testid="receiver-s-meter"] svg')).toBeNull();
-    expect(root.querySelector('[data-testid="receiver-s-meter-unknown"]')?.textContent).toContain('S —');
+    // MOR-2644 correction 2: the unread box keeps its size and prints no
+    // text; its accessible name carries no "unknown".
+    const box = root.querySelector('[data-testid="receiver-s-meter-unknown"]');
+    expect(box?.textContent).toBe('');
+    expect(box?.getAttribute('aria-label')).toBe('MAIN S meter');
+    expect(box?.getAttribute('aria-label')).not.toContain('unknown');
   });
   it('selects the SDR meter without changing a confirmed zero or receiver identity', () => {
     const root = render({ indicator: indicator(), appearance: 'sdr' });
@@ -243,9 +280,23 @@ describe('MOR-2342 addressed meter appearance', () => {
     expect(root.querySelector('[data-testid="receiver-s-meter-unknown"]')).toBeNull();
   });
   it('renders only the supplied Standard slot label, never MAIN as A', () => {
-    const root = render({ indicator: indicator(), appearance: 'standard' });
+    const root = render({ indicator: indicator(), appearance: 'standard', slotLabel: 'A' });
     expect(root.querySelector('.header-badges')?.textContent).toContain('BAR');
-    expect(root.querySelector('.header-badges')?.textContent).toContain('—');
+    expect(root.querySelector('.header-badges')?.textContent).toContain('A');
+  });
+  it('an unknown Standard slot keeps its badge slot and draws nothing (MOR-2644 correction 2)', () => {
+    const root = render({ indicator: indicator(), appearance: 'standard' });
+    const badges = [...root.querySelectorAll('.header-badges .fact')];
+    expect(badges).toHaveLength(2);
+    const badge = badges[1];
+    expect(badge?.textContent).toBe('');
+    expect(badge?.textContent).not.toContain('—');
+    expect(badge?.getAttribute('data-empty')).toBe('true');
+    // Same treatment as the empty RFG fact: slot reserved, frame transparent.
+    const source = readFileSync('src/semantic/VfoIndicatorRow.svelte', 'utf8');
+    expect(source).toMatch(
+      /\.header-badges \.fact\[data-empty='true'\]\s*\{[^}]*border-color:\s*transparent/,
+    );
   });
   it('bounds the rendered Standard S-meter at the historical row height', () => {
     const root = render({ indicator: indicator(), appearance: 'standard' });
@@ -345,5 +396,21 @@ describe('RF gain display observation', () => {
       /\.fact\[data-indicator-fact='rf-gain'\]\[data-empty='true'\]\s*\{[^}]*border-color:\s*transparent/,
     );
     expect(source).toMatch(/\.fact\[data-indicator-fact='rf-gain'\]\s*\{[^}]*min-inline-size:\s*8ch/);
+  });
+
+  // MOR-2644 correction 3 (owner rule 2026-09-21): every fact reserves the
+  // width of its widest lit text, the same way RFG does — jsdom has no
+  // layout, so the reserved min-inline-size is asserted against the widest
+  // rendered text the component computes (exported for this test).
+  it.each([
+    ['bandwidth', 'BW 9999 Hz'], ['agc', 'AGC TUNING'], ['nb', 'NB OFF'],
+    ['nr', 'NR OFF'], ['notch', 'NOTCH MANUAL'], ['attenuator', 'ATT 45 dB'],
+    ['preamp', 'P.AMP 2'], ['ip-plus', 'IP+ OFF'], ['digi-sel', 'DIGI-SEL OFF'],
+    ['rf-gain', 'RFG 99%'], ['antenna', 'ANT 2'], ['atu', 'TUNE TUNING'],
+    ['rit', 'RIT OFF −9999 Hz'], ['xit', 'XIT OFF −9999 Hz'],
+  ] as const)('fact %s reserves at least its widest lit text', (fact, widest) => {
+    const reserved = FACT_SLOT_RESERVATIONS[fact as keyof typeof FACT_SLOT_RESERVATIONS];
+    expect(reserved, `missing reservation for ${fact}`).toBeDefined();
+    expect(reserved, `${fact}: min-inline-size must cover "${widest}"`).toBeGreaterThanOrEqual(widest.length);
   });
 });
