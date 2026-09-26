@@ -349,11 +349,17 @@ const liveCaps = (withRfFrontEnd: boolean, rfSqlControlModel?: 'separate' | 'com
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
   scopeSource: null, audioFftAvailable: false,
-  // MOR-1676 part R: the tests below pin the raw-lattice seam — the caps
-  // publish the raw range, so the host moves on raw ints and the seam
-  // dispatches them as is.
-  controls: { rf_gain: { raw_min: 0, raw_max: 255 }, squelch: { raw_min: 0, raw_max: 255 } },
   ...(rfSqlControlModel !== undefined ? { rfSqlControlModel } : {}),
+} as unknown as Capabilities);
+
+/** MOR-1676 part R: caps WITH the published raw range — the host moves on
+ *  raw ints and the seam dispatches them as is. The separate-slider tests
+ *  below use these; every other test keeps the legacy caps above. */
+const liveCapsRaw = (
+  withRfFrontEnd: boolean, rfSqlControlModel?: 'separate' | 'combined',
+): Capabilities => ({
+  ...liveCaps(withRfFrontEnd, rfSqlControlModel),
+  controls: { rf_gain: { raw_min: 0, raw_max: 255 }, squelch: { raw_min: 0, raw_max: 255 } },
 } as unknown as Capabilities);
 
 /** MOR-2425 RF-B — same shared external-renderer fixture the DSP/CW-keyer
@@ -447,6 +453,10 @@ function levelDriver(root: ParentNode): LevelDriver {
 
 const level = (id: string) => levelDriver(el(id)!);
 let acceptedState: ServerState;
+
+function resyncCapsStore(): void {
+  expect(setCapabilities(h.caps as Capabilities)).toBe(true);
+}
 
 function publishAuthority(): void {
   const next = {
@@ -601,6 +611,8 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
   // dispatches it as is — no double scaling (a slider value of 140
   // dispatches 140, not 140*255).
   it('routes the RF-gain slider to onRfGainChange as the raw wire int, no double scaling', () => {
+    h.caps = liveCapsRaw(true);
+    resyncCapsStore();
     render();
     level('rfGain').input(140 / 255);
     flushSync();
@@ -609,6 +621,8 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
   });
 
   it('routes the squelch slider to onSquelchChange as the raw wire int, no double scaling', () => {
+    h.caps = liveCapsRaw(true);
+    resyncCapsStore();
     render();
     level('squelch').input(51 / 255);
     flushSync();
@@ -617,6 +631,8 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
   });
 
   it('a slider value of 200 dispatches 200, not 200*255', () => {
+    h.caps = liveCapsRaw(true);
+    resyncCapsStore();
     render();
     level('rfGain').input(200 / 255);
     flushSync();
@@ -629,6 +645,8 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
   it.each([0, 1, 127, 128, 254, 255])(
     'a step up then down from raw %i dispatches R+1 (clamped) then R',
     (raw) => {
+      h.caps = liveCapsRaw(true);
+    resyncCapsStore();
       render();
       const up = Math.min(255, raw + 1);
       level('rfGain').input(up / 255);
@@ -871,9 +889,10 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     flushSync();
     expect([level('rfGain').disabled(), level('squelch').disabled()]).toEqual([false, false]);
     // MOR-1676 part R: confirmed truth projects through the raw range —
-    // 0.8*255 = 204 shown as 80%, 0.1*255 ≈ 26 shown as 10%.
-    expect(level('rfGain').value()).toBe(204);
-    expect(level('squelch').value()).toBe(26);
+    // 0.8*255 = 204 shown as 80%, 0.1*255 ≈ 26 shown as 10%. `.value()`
+    // reads the CSS fill fraction (a share of the track), not the value.
+    expect(level('rfGain').value()).toBe(0.8);
+    expect(level('squelch').value()).toBeCloseTo(26 / 255, 5);
     expect(h.rfGain).not.toHaveBeenCalled();
     expect(h.squelch).not.toHaveBeenCalled();
   });
@@ -890,8 +909,8 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     render();
     expect(el('rfGain')!.dataset.commandPhase).toBe('submitted');
     expect(el('squelch')!.dataset.commandPhase).toBe('submitted');
-    expect(level('rfGain').value()).toBe(204);
-    expect(level('squelch').value()).toBe(26);
+    expect(level('rfGain').value()).toBe(0.8);
+    expect(level('squelch').value()).toBeCloseTo(26 / 255, 5);
     expect(el('rfGain')!.querySelector('output')!.textContent).toBe('80%');
     expect(el('squelch')!.querySelector('output')!.textContent).toBe('10%');
     acknowledgeCommand(rf.id, 7, 7);
@@ -910,6 +929,8 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
   });
 
   it('follows confirmed RF truth and keeps an SQL draft until its lifecycle completes', () => {
+    h.caps = liveCapsRaw(true);
+    resyncCapsStore();
     render();
     const rfInput = level('rfGain');
     const sqlInput = level('squelch');
@@ -947,10 +968,10 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     flushSync();
     // The confirmed reading projects back through the raw range: 204/255
     // reads as raw 204, shown as 80%.
-    expect(level('rfGain').value()).toBe(204);
+    expect(level('rfGain').value()).toBeCloseTo(204 / 255, 5);
     expect(el('rfGain')!.querySelector('output')!.textContent).toBe('80%');
     expect(el('squelch')!.dataset.commandPhase).toBe('awaiting-confirmation');
-    expect(level('squelch').value()).toBe(153);
+    expect(level('squelch').value()).toBe(0.6);
     expect(el('squelch')!.querySelector('output')!.textContent).toBe('60%');
     expect(target.querySelector('[data-control-feedback-status][data-feedback-lane="sql"]')?.textContent)
       .toBe('Awaiting confirmation: 153');
@@ -958,7 +979,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     confirmCommand(sqlCommand.id, 7, 7);
     flushSync();
     expect(el('squelch')!.dataset.commandPhase).toBe('confirmed');
-    expect(level('squelch').value()).toBe(26);
+    expect(level('squelch').value()).toBeCloseTo(26 / 255, 5);
     expect(el('squelch')!.querySelector('output')!.textContent).toBe('10%');
     expect(target.querySelector('[data-control-feedback-status][data-feedback-lane="sql"]')?.textContent)
       .toBe('Confirmed: 0.1');
@@ -1078,6 +1099,8 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
 
 describe('the hosted RF owner survives replaceable presentation layouts', () => {
   it('retains authority while replacing renderers, and cancels detached or revoked drafts', () => {
+    h.caps = liveCapsRaw(true);
+    resyncCapsStore();
     const props = renderHosted();
     const originalSubscribers = [...h.authorityListeners];
     const old = level('rfGain');
@@ -1099,8 +1122,8 @@ describe('the hosted RF owner survives replaceable presentation layouts', () => 
     expect(target.querySelector('[data-rf-layout="independent"]')).not.toBeNull();
     expect(target.querySelectorAll('[data-testid="rf-front-end-rfGain"]')).toHaveLength(1);
     expect([...h.authorityListeners]).toEqual(originalSubscribers);
-    // MOR-1676 part R: 0.8*255 = 204 on the raw lattice.
-    expect(replacement.value()).toBe(204);
+    // MOR-1676 part R: `.value()` reads the CSS fill fraction — 204/255.
+    expect(replacement.value()).toBe(0.8);
 
     old.slider.dispatchEvent(new PointerEvent('pointermove', {
       pointerId: 7, clientX: 230 / 2.55, bubbles: true,
@@ -1128,10 +1151,10 @@ describe('the hosted RF owner survives replaceable presentation layouts', () => 
     for (const listener of h.sessionListeners) listener(h.session);
     publishAuthority();
     flushSync();
-    expect(level('rfGain').value()).toBe(204);
+    expect(level('rfGain').value()).toBe(0.8);
     props.rfFrontEndLayout = 'grouped';
     flushSync();
-    expect(level('rfGain').value()).toBe(204);
+    expect(level('rfGain').value()).toBe(0.8);
     expect([...h.authorityListeners]).toEqual(originalSubscribers);
     unmount(component!);
     component = null;
