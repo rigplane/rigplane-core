@@ -329,8 +329,8 @@ describe('the meters surface mounts only when the view model carries the group',
     // structural gate (more than one VFO) legitimately opens; the single-VFO
     // absence is pinned in `semantic/__tests__/VfoSurface.test.ts`.
     'vfo-ops', 'vfo-split-digest',
-    'rx-tx-surface', 'rx-tx-state', 'rx-tx-rf-mark', 'rx-tx-rf-label',
-    'rx-tx-target', 'rx-tx-key', 'rx-tx-unkey', 'rx-tx-blocked',
+    // MOR-1347: this pin is the zone-less direct mount. That path now keeps
+    // rx-tx last, after rx-audio.
     // MOR-1279 slice 3B: this fixture's radio DOES have an audio chain
     // (`audio` + `dual_rx`), so the rxAudio surface legitimately mounts here.
     // Its own absent-group gate is pinned in
@@ -342,6 +342,8 @@ describe('the meters surface mounts only when the view model carries the group',
     'rx-audio-focus', 'rx-audio-focus-main', 'rx-audio-focus-sub', 'rx-audio-focus-both',
     'rx-audio-focus-value',
     'rx-audio-split', 'rx-audio-split-on', 'rx-audio-split-off', 'rx-audio-split-value',
+    'rx-tx-surface', 'rx-tx-state', 'rx-tx-rf-mark', 'rx-tx-rf-label',
+    'rx-tx-target', 'rx-tx-key', 'rx-tx-unkey', 'rx-tx-blocked',
   ];
   const testids = () => [...target.querySelectorAll<HTMLElement>('[data-testid]')]
     .map((el) => el.dataset.testid!)

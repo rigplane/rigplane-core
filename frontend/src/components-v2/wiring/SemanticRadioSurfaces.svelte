@@ -2193,8 +2193,9 @@
     appearance: InstrumentVfoAppearance = vfoAppearance, operationControls?: Snippet,
   )}
     {#if view}
+      {@const mountedView = view}
       <VfoSurface
-        viewModel={view}
+        viewModel={mountedView}
         {appearance}
         operationInput={vfoOperationInput ?? undefined}
         {operationControls}
@@ -2205,6 +2206,7 @@
         {receiverInstruments}
         continuitySession={meterContinuitySession}
         {pendingFrequencyHz}
+        disabledForReceiver={(receiver) => !isOperationalStrip(mountedView, receiver)}
       />
     {/if}
   {/snippet}
@@ -3079,25 +3081,22 @@
       mounts both (LCD `control-column`, mobile `portrait-deck`) it is what
       reorders within it.
 
-      This branch keeps the pre-MOR-2231 single/default sequence with bare
-      required surfaces when `regions` is unset.
+      This branch has no desktop columns, so mount order is the tab order.
+      MOR-1082: an explicit plan is the order — `singleOrder` already flattens
+      zone declarations, and a zone that mounts both surfaces (mobile
+      `portrait-deck`) may put rxTx first. MOR-1347's rx-tx-last rule applies
+      only where no plan orders these surfaces: the zone-less direct mount.
     -->
     {#each singleOrder as surface (surface)}
-      {#if surface === 'vfo'}
-        {@render vfoSurface()}
-      {:else if surface === 'rxTx'}
-        <!-- Preserve the pre-region compiled anchor topology on this literal path. -->
-        {#if !regions}
+      {#if surface === 'vfo' || (surface === 'rxTx' && surfacePlan() !== null)}
+        {#if surface === 'vfo'}
+          {@render vfoSurface()}
+        {:else}
           {@render rxTxSurface()}
+          {@render txFaultRecovery()}
         {/if}
       {/if}
     {/each}
-    <!-- MOR-1784: `singleOrder` ends in `rxTx` in every shipped layout
-         (`SINGLE_COMPOSITION`, and a plan can only reorder or subtract), so
-         this lands directly behind the fault line instead of at the bottom of
-         the column — while still rendering unconditionally, so a fault raised
-         by any lease source keeps a way out even if `rxTx` is absent. -->
-    {@render txFaultRecovery()}
     <!-- MOR-2231 (step 1, batch 5): the twelve OPTIONAL surfaces take
          `allowBareSurfaces` (see its declaration above) instead of the bare
          default. `vfo`/`rxTx` above keep the default: they are in
@@ -3126,6 +3125,18 @@
       'scopeControls', view?.scopeControls !== undefined, scopeControlsSurface,
       allowBareSurfaces,
     )}
+    {#if surfacePlan() === null}
+      {#each singleOrder as surface (surface)}
+        {#if surface === 'rxTx'}
+          {@render rxTxSurface()}
+        {/if}
+      {/each}
+      <!-- MOR-1347: no plan orders these surfaces, so mount order is the tab
+           order and rx-tx stays last once optional surfaces such as rx-audio
+           have mounted. Fault recovery still follows the key immediately, and
+           still renders when rxTx is absent. -->
+      {@render txFaultRecovery()}
+    {/if}
     {@render txAdjacentAlerts()}
     {/if}
   {/if}

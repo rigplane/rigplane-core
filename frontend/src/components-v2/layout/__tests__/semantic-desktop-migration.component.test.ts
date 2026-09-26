@@ -1301,10 +1301,10 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
       .querySelector('[data-testid="semantic-radio-surfaces"]')!;
     expect([...bare.children].map((el) => el.getAttribute('data-testid')
       ?? el.querySelector('[data-testid$="-surface"]')?.getAttribute('data-testid')).filter(Boolean)).toEqual([
-      'vfo-surface', 'rx-tx-surface', 'tx-aux-surface', 'meters-surface',
+      'vfo-surface', 'tx-aux-surface', 'meters-surface',
       'rx-audio-surface', 'filter-surface', 'dsp-surface', 'rf-front-end-surface',
       'band-surface', 'antenna-surface', 'ritxit-scan-surface', 'cw-keyer-surface',
-      'scope-display-surface', 'scope-controls-surface',
+      'scope-display-surface', 'scope-controls-surface', 'rx-tx-surface',
     ]);
     expect(bare.querySelector('[data-testid="region-content-sentinel"]')).toBeNull();
     expect(bare.querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
@@ -1376,8 +1376,8 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
         skinId === 'desktop-v2' ? 'antenna-control-grid' : 'antenna-surface',
         'ritxit-scan-surface']],
       ['center', ['scope-controls-surface', 'scope-display-surface']],
-      ['right', ['rx-tx-surface', 'rx-audio-surface', 'dsp-surface', 'cw-keyer-surface',
-        ...(skinId === 'desktop-v2' ? [] : ['tx-aux-surface'])]],
+      ['right', ['rx-audio-surface', 'dsp-surface', 'cw-keyer-surface',
+        ...(skinId === 'desktop-v2' ? [] : ['tx-aux-surface']), 'rx-tx-surface']],
     ] as const) {
       for (const surface of surfaces) {
         const selector = `[data-testid="${surface}"]`;

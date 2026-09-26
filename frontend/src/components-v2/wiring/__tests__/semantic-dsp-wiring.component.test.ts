@@ -456,13 +456,15 @@ describe('the dsp surface mounts only when the view model carries the group', ()
     'vfo-indicator-row', 'receiver-s-meter', 'receiver-s-meter-unknown',
     'vfo-shared-indicators',
     'vfo-ops', 'vfo-split-digest',
-    'rx-tx-surface', 'rx-tx-state', 'rx-tx-rf-mark', 'rx-tx-rf-label',
-    'rx-tx-target', 'rx-tx-key', 'rx-tx-unkey', 'rx-tx-blocked',
+    // MOR-1347: this pin is the zone-less direct mount (render() passes no
+    // plan). That path now keeps rx-tx last, after rx-audio.
     'rx-audio-surface', 'rx-audio-monitor', 'rx-audio-monitor-local',
     'rx-audio-monitor-live', 'rx-audio-monitor-mute', 'rx-audio-af', 'rx-audio-af-value',
     'rx-audio-focus', 'rx-audio-focus-main', 'rx-audio-focus-sub', 'rx-audio-focus-both',
-    'rx-audio-focus-value', 'rx-audio-split', 'rx-audio-split-on', 'rx-audio-split-off',
+    'rx-audio-focus-value',     'rx-audio-split', 'rx-audio-split-on', 'rx-audio-split-off',
     'rx-audio-split-value',
+    'rx-tx-surface', 'rx-tx-state', 'rx-tx-rf-mark', 'rx-tx-rf-label',
+    'rx-tx-target', 'rx-tx-key', 'rx-tx-unkey', 'rx-tx-blocked',
   ];
   const testids = () => [...target.querySelectorAll<HTMLElement>('[data-testid]')]
     .map((el) => el.dataset.testid!)
