@@ -105,7 +105,7 @@ function frame(
   };
 }
 
-function mountReactive(smoothedFraction: number, peakFraction: number) {
+async function mountReactive(smoothedFraction: number, peakFraction: number) {
   const projection = projectSignalMeter(0);
   const state = proxy({
     frame: frame(projection, smoothedFraction, peakFraction),
@@ -118,6 +118,8 @@ function mountReactive(smoothedFraction: number, peakFraction: number) {
     props: state as ComponentProps<typeof LinearSMeter>,
   });
   components.push(component);
+  flushSync();
+  await new Promise((resolve) => setTimeout(resolve, 0));
   flushSync();
   FakeResizeObserver.fire();
   flushSync();
@@ -152,16 +154,16 @@ describe('MOR-2613 — segment geometry changes only on a whole device pixel', (
   // attributes. A step of one user unit is two device pixels and must.
   const BASE = 5.2 / 20;
 
-  it('a displayed-value change smaller than one device pixel writes no segment or peak attribute', () => {
-    const { target, step } = mountReactive(BASE, BASE + 0.4);
+  it('a displayed-value change smaller than one device pixel writes no segment or peak attribute', async () => {
+    const { target, step } = await mountReactive(BASE, BASE + 0.4);
     const before = geometry(target);
     expect(before).not.toBe('');
     step(BASE + 0.01 / 20, BASE + 0.4 + 0.01 / 20);
     expect(geometry(target)).toBe(before);
   });
 
-  it('a displayed-value change of one device pixel or more updates the partial width and the peak line', () => {
-    const { target, step } = mountReactive(BASE, BASE + 0.4);
+  it('a displayed-value change of one device pixel or more updates the partial width and the peak line', async () => {
+    const { target, step } = await mountReactive(BASE, BASE + 0.4);
     const before = geometry(target);
     step(BASE + 1 / 20, BASE + 0.4 + 1 / 20);
     expect(geometry(target)).not.toBe(before);
