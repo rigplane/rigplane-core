@@ -1125,10 +1125,9 @@ class RadioPoller:
             await self._civ(command, sub=sub, data=payload)
         return True
 
-    # NOTE (MOR-2484): no local receiver check here. Every arm below calls
-    # the radio method (``radio.set_*`` / ``_r.set_*``), which validates
-    # via ``DualRxRuntimeMixin._require_receiver`` before any wire traffic.
-    # A pre-validation copy would add latency, not protection.
+    # MOR-2484: no local receiver check here. The web path refuses an
+    # unsupported receiver before enqueue
+    # (``web/handlers/control.py`` gates on the runtime seat).
 
     async def _send_one_state_query(
         self,
@@ -2694,7 +2693,7 @@ class RadioPoller:
                 else:
                     raise CommandError(f"unknown VFO selection {vfo!r}")
                 if is_sub:
-                    pass  # MOR-2484: select_receiver below re-validates.
+                    pass  # MOR-2484: select_receiver below refuses SUB on single-RX.
                 current = self._current_active()
                 # NB: local is intentionally named ``target_name`` — the
                 # enclosing ``match`` has earlier branches that bind
@@ -2849,9 +2848,9 @@ class RadioPoller:
                 # ``[state_acquisition.capabilities]`` does declare
                 # ``scope_controls.global.display.receiver``, so the read
                 # would be queued and sent.
-                # MOR-2484: receiver validated by the radio seat —
-                # ScopeRuntimeMixin.set_scope_receiver raises ValueError
-                # for anything but 0/1.
+                # MOR-2484: the enqueue gate in web/handlers/control.py
+                # refuses an unsupported scope receiver via the runtime
+                # seat; this arm only keeps the 0/1 domain guard.
                 if receiver not in (0, 1):
                     raise CommandError(
                         "switch_scope_receiver: receiver must be 0 or 1, "

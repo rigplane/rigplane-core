@@ -34,6 +34,7 @@ from ..monitor_mute import MonitorMuteState, apply_monitor_mute  # noqa: TID251
 from ...profiles import RadioProfile, resolve_radio_profile
 from ...profiles.control_domain import encode_legacy_control, validate_control_raw_value
 from ...runtime._poller_types import SetNarrow
+from ...runtime._dual_rx_runtime import require_receiver_for_profile
 from ...runtime.tx_interlock import RfState, evaluate_tx_interlock
 from ...runtime.managed_tx_state import ManagedTxOutcome
 from ..protocol import (  # noqa: TID251
@@ -282,31 +283,20 @@ def _level_for_power(value: Any, radio: Any) -> int:
     return int(native)
 
 
-def _ensure_receiver_supported(radio: Any, receiver: int) -> None:
+def _refuse_unsupported_receiver(radio: Any, receiver: int, *, operation: str) -> None:
     """Refuse an unsupported receiver before enqueue (MOR-2484).
 
-    Single validation seat: the radio's own ``profile.supports_receiver``.
-    The radio method re-validates at the drain, so this synchronous gate
-    only decides enqueue vs immediate refusal — it adds no new semantics.
+    Thin gate over the single runtime seat
+    (:func:`require_receiver_for_profile`): same check, same
+    ``CommandError`` type and message as the radio backend. This only
+    decides enqueue vs immediate refusal.
     """
     if radio is None:
         return
     profile = getattr(radio, "profile", None)
-    supported = (
-        profile.supports_receiver(receiver)
-        if isinstance(profile, RadioProfile)
-        else False
-    )
-    if supported:
+    if not isinstance(profile, RadioProfile):
         return
-    count = (
-        getattr(profile, "receiver_count", "?")
-        if isinstance(profile, RadioProfile)
-        else "?"
-    )
-    raise ValueError(
-        f"receiver={receiver} is not supported by active profile (receivers={count})"
-    )
+    require_receiver_for_profile(profile, receiver, operation=operation)
 
 
 # Commands whose control a shipped profile may declare a ``quantization =
@@ -2177,7 +2167,7 @@ class ControlHandler:
         if CAP_AF_LEVEL not in radio.capabilities:
             raise RuntimeError("radio does not support this command")
         rx = int(params.get("receiver", 0))
-        _ensure_receiver_supported(self._radio, rx)
+        _refuse_unsupported_receiver(self._radio, rx, operation="get_af_mute")
         on = await radio.get_af_mute(receiver=rx)
         return {"on": on, "receiver": rx}
 
@@ -2438,13 +2428,13 @@ class ControlHandler:
             case "set_freq":
                 freq = int(params["freq"])
                 rx = int(params.get("receiver", 0))
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(self._radio, rx, operation="set_freq")
                 q.put(SetFreq(freq, receiver=rx))
                 return {"freq": freq, "receiver": rx}
             case "set_mode":
                 mode = str(params["mode"])
                 rx = int(params.get("receiver", 0))
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(self._radio, rx, operation="set_mode")
                 # MOR-495: an optional filter (1-3) recalls the destination
                 # mode's remembered filter, mirroring the radio front panel.
                 # Accept either `filter` or `filter_num`; absent → mode-only
@@ -2460,13 +2450,15 @@ class ControlHandler:
                 fil_str = str(params.get("filter", "FIL1"))
                 fil_num = int(fil_str[-1]) if fil_str[-1].isdigit() else 1
                 rx = int(params.get("receiver", 0))
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(self._radio, rx, operation="set_filter")
                 q.put(SetFilter(fil_num, receiver=rx))
                 return {"filter": fil_str, "receiver": rx}
             case "set_filter_width":
                 width = int(params["width"])
                 rx = int(params.get("receiver", 0))
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(
+                    self._radio, rx, operation="set_filter_width"
+                )
                 q.put(SetFilterWidth(width, receiver=rx))
                 return {"width": width, "receiver": rx}
             case "reset_filter_width":
@@ -2482,21 +2474,25 @@ class ControlHandler:
                 self._ensure_capability(
                     CAP_FILTER_WIDTH_RADIO_DEFAULT, "reset_filter_width"
                 )
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(
+                    self._radio, rx, operation="reset_filter_width"
+                )
                 q.put(ResetFilterWidth(receiver=rx))
                 return {"receiver": rx}
             case "set_filter_shape":
                 shape = int(params["shape"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("filter_shape", "set_filter_shape")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(
+                    self._radio, rx, operation="set_filter_shape"
+                )
                 q.put(SetFilterShape(shape, receiver=rx))
                 return {"shape": shape, "receiver": rx}
             case "set_if_shift":
                 offset = int(params["offset"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("if_shift", "set_if_shift")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(self._radio, rx, operation="set_if_shift")
                 q.put(SetIfShift(offset, receiver=rx))
                 return {"offset": offset, "receiver": rx}
             case "set_rit_status":
@@ -2565,7 +2561,7 @@ class ControlHandler:
                 dm = int(params["mode"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("data_mode", "set_data_mode")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(self._radio, rx, operation="set_data_mode")
                 q.put(SetDataMode(dm, receiver=rx))
                 return {"mode": dm, "receiver": rx}
             case _:
@@ -2637,84 +2633,92 @@ class ControlHandler:
                 on = bool(params.get("on", False))
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("nb", "set_nb")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(self._radio, rx, operation="set_nb")
                 q.put(SetNB(on, receiver=rx))
                 return {"on": on, "receiver": rx}
             case "set_nr":
                 on = bool(params.get("on", False))
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("nr", "set_nr")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(self._radio, rx, operation="set_nr")
                 q.put(SetNR(on, receiver=rx))
                 return {"on": on, "receiver": rx}
             case "set_nr_level":
                 level = int(params["level"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("nr", "set_nr_level")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(self._radio, rx, operation="set_nr_level")
                 q.put(SetNRLevel(level, receiver=rx))
                 return {"level": level, "receiver": rx}
             case "set_nb_level":
                 level = int(params["level"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("nb", "set_nb_level")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(self._radio, rx, operation="set_nb_level")
                 q.put(SetNBLevel(level, receiver=rx))
                 return {"level": level, "receiver": rx}
             case "set_nb_depth":
                 level = int(params["level"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("nb", "set_nb_depth")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(self._radio, rx, operation="set_nb_depth")
                 q.put(SetNbDepth(level, receiver=rx))
                 return {"level": level, "receiver": rx}
             case "set_nb_width":
                 level = int(params["level"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("nb", "set_nb_width")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(self._radio, rx, operation="set_nb_width")
                 q.put(SetNbWidth(level, receiver=rx))
                 return {"level": level, "receiver": rx}
             case "set_auto_notch":
                 on = bool(params.get("on", False))
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("notch", "set_auto_notch")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(
+                    self._radio, rx, operation="set_auto_notch"
+                )
                 q.put(SetAutoNotch(on, receiver=rx))
                 return {"on": on, "receiver": rx}
             case "set_manual_notch":
                 on = bool(params.get("on", False))
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("notch", "set_manual_notch")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(
+                    self._radio, rx, operation="set_manual_notch"
+                )
                 q.put(SetManualNotch(on, receiver=rx))
                 return {"on": on, "receiver": rx}
             case "set_narrow":
                 on = bool(params.get("on", False))
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("narrow", "set_narrow")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(self._radio, rx, operation="set_narrow")
                 q.put(SetNarrow(on, receiver=rx))
                 return {"on": on, "receiver": rx}
             case "set_notch_filter":
                 rx = int(params.get("receiver", 0))
                 level = _notch_position_from_param(radio, params)
                 self._ensure_capability("notch", "set_notch_filter")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(
+                    self._radio, rx, operation="set_notch_filter"
+                )
                 q.put(SetNotchFilter(level, receiver=rx))
                 return {"value": level, "receiver": rx}
             case "set_manual_notch_width":
                 value = int(params["value"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("notch", "set_manual_notch_width")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(
+                    self._radio, rx, operation="set_manual_notch_width"
+                )
                 q.put(SetManualNotchWidth(value, receiver=rx))
                 return {"value": value, "receiver": rx}
             case "set_digisel":
                 on = bool(params.get("on", False))
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("digisel", "set_digisel")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(self._radio, rx, operation="set_digisel")
                 q.put(SetDigiSel(on, receiver=rx))
                 return {"on": on, "receiver": rx}
             case "set_digisel_shift":
@@ -2724,61 +2728,67 @@ class ControlHandler:
                 # is 0x14/0x13 and some profiles (IC-705) expose it without
                 # the toggle (MOR-1544).
                 self._ensure_capability("digisel_shift", "set_digisel_shift")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(
+                    self._radio, rx, operation="set_digisel_shift"
+                )
                 q.put(SetDigiselShift(level, receiver=rx))
                 return {"level": level, "receiver": rx}
             case "set_ip_plus" | "set_ipplus":
                 on = bool(params.get("on", False))
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("ip_plus", "set_ip_plus")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(self._radio, rx, operation="set_ip_plus")
                 q.put(SetIpPlus(on, receiver=rx))
                 return {"on": on, "receiver": rx}
             case "set_pbt_inner":
                 level = int(params["value"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("pbt", "set_pbt_inner")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(self._radio, rx, operation="set_pbt_inner")
                 q.put(SetPbtInner(level, receiver=rx))
                 return {"value": level, "receiver": rx}
             case "set_pbt_outer":
                 level = int(params["value"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("pbt", "set_pbt_outer")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(self._radio, rx, operation="set_pbt_outer")
                 q.put(SetPbtOuter(level, receiver=rx))
                 return {"value": level, "receiver": rx}
             case "set_agc_time_constant":
                 value = int(params["value"])
                 rx = int(params.get("receiver", 0))
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(
+                    self._radio, rx, operation="set_agc_time_constant"
+                )
                 q.put(SetAgcTimeConstant(value, receiver=rx))
                 return {"value": value, "receiver": rx}
             case "set_agc":
                 agc_mode = int(params["mode"])
                 rx = int(params.get("receiver", 0))
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(self._radio, rx, operation="set_agc")
                 q.put(SetAgc(agc_mode, receiver=rx))
                 return {"mode": agc_mode, "receiver": rx}
             case "set_apf":
                 apf_mode = int(params["mode"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("apf", "set_apf")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(self._radio, rx, operation="set_apf")
                 q.put(SetApf(apf_mode, receiver=rx))
                 return {"mode": apf_mode, "receiver": rx}
             case "set_audio_peak_filter":
                 on = bool(params.get("on", False))
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("apf", "set_audio_peak_filter")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(
+                    self._radio, rx, operation="set_audio_peak_filter"
+                )
                 q.put(SetAudioPeakFilter(on, receiver=rx))
                 return {"on": on, "receiver": rx}
             case "set_twin_peak":
                 on = bool(params.get("on", False))
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("twin_peak", "set_twin_peak")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(self._radio, rx, operation="set_twin_peak")
                 q.put(SetTwinPeak(on, receiver=rx))
                 return {"on": on, "receiver": rx}
             case _:
@@ -2822,7 +2832,7 @@ class ControlHandler:
             case "set_af_mute":
                 on = bool(params["on"])
                 rx = int(params.get("receiver", 0))
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(self._radio, rx, operation="set_af_mute")
                 q.put(SetAfMute(on, receiver=rx))
                 return {"on": on, "receiver": rx}
             case "set_acc1_mod_level":
@@ -2876,7 +2886,9 @@ class ControlHandler:
             case "switch_scope_receiver":
                 receiver = int(params.get("receiver", 0))
                 self._ensure_capability("scope", "switch_scope_receiver")
-                _ensure_receiver_supported(self._radio, receiver)
+                _refuse_unsupported_receiver(
+                    self._radio, receiver, operation="switch_scope_receiver"
+                )
                 q.put(SwitchScopeReceiver(receiver))
                 return {"receiver": receiver}
             case "set_scope_during_tx":
@@ -2960,7 +2972,7 @@ class ControlHandler:
                 level = int(params["level"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("preamp", "set_preamp")
-                _ensure_receiver_supported(self._radio, rx)
+                _refuse_unsupported_receiver(self._radio, rx, operation="set_preamp")
                 q.put(SetPreamp(level, receiver=rx))
                 return {"level": level, "receiver": rx}
             case "set_antenna_1":

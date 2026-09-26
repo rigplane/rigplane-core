@@ -33,6 +33,7 @@ from rigplane.commands import (
 )
 from rigplane.core.exceptions import CommandError, TimeoutError
 from rigplane.core.types import Mode
+from rigplane.profiles import RadioProfile
 
 # CI-V command byte for VFO select / equal / swap (0x07).
 _CMD_VFO = 0x07
@@ -40,17 +41,29 @@ _CMD_VFO = 0x07
 logger = logging.getLogger(__name__)
 
 
+def require_receiver_for_profile(
+    profile: RadioProfile, receiver: int, *, operation: str
+) -> None:
+    """Refuse ``receiver`` when ``profile`` does not serve it (MOR-2484).
+
+    Single receiver-validation seat shared by the runtime
+    (:meth:`DualRxRuntimeMixin._require_receiver`) and the web enqueue gate:
+    same check, same ``CommandError`` type and message.
+    """
+    if profile.supports_receiver(receiver):
+        return
+    raise CommandError(
+        f"{operation} does not support receiver={receiver} for profile "
+        f"{profile.model} (receivers={profile.receiver_count})"
+    )
+
+
 class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
     """Dual-receiver routing methods for CoreRadio (mixin)."""
 
     def _require_receiver(self, receiver: int, *, operation: str) -> None:
         """Validate receiver index against active profile."""
-        if self._profile.supports_receiver(receiver):
-            return
-        raise CommandError(
-            f"{operation} does not support receiver={receiver} for profile "
-            f"{self._profile.model} (receivers={self._profile.receiver_count})"
-        )
+        require_receiver_for_profile(self._profile, receiver, operation=operation)
 
     def _require_capability(self, capability: str, *, operation: str) -> None:
         """Ensure a profile capability exists before executing operation."""
