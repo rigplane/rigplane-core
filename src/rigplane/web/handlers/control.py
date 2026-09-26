@@ -33,6 +33,7 @@ from ...core.state_store import FreshnessState, StateStore
 from ..monitor_mute import MonitorMuteState, apply_monitor_mute  # noqa: TID251
 from ...profiles import RadioProfile, resolve_radio_profile
 from ...profiles.control_domain import encode_legacy_control, validate_control_raw_value
+from ...runtime._poller_types import SetNarrow
 from ...runtime.tx_interlock import RfState, evaluate_tx_interlock
 from ...runtime.managed_tx_state import ManagedTxOutcome
 from ..protocol import (  # noqa: TID251
@@ -76,7 +77,6 @@ from ..radio_poller import (  # noqa: TID251
     SetIpPlus,
     SetLanModLevel,
     SetManualNotch,
-    SetNarrow,
     SetMicGain,
     SetMode,
     SetMonitor,
