@@ -687,7 +687,7 @@ export interface BandChoice {
  * the declared `freqRanges` (range bounds, not band bounds — the gaps between
  * bands are still tunable). `null` when the radio declares no range at all;
  * never `primitives/frequency/frequency-tuning.ts::adjustFreqByDigit`'s
- * fabricated `0 … 999 MHz` defaults, which is the only bound v2 has.
+ * fabricated `0 … 999 MHz` defaults.
  */
 export interface BandViewModel {
   currentBand: BandField<string>;
