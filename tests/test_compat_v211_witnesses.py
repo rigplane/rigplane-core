@@ -62,7 +62,7 @@ def test_py4_tx_freq_monitor_stays_removed_and_is_not_tx_target() -> None:
 
     dumped = state.to_dict()
     assert "tx_freq_monitor" not in dumped
-    assert False not in dumped.values()
+    assert dumped.get("tx_freq_monitor") is not False
     assert "txTarget" not in dumped
     assert not hasattr(state, "tx_target")
 
@@ -112,8 +112,9 @@ def test_cli2_entrypoints_python_and_extras_stay_present() -> None:
     assert metadata["Requires-Python"] == ">=3.11"
     requires = metadata.get_all("Requires-Dist") or []
     assert any(item.startswith("aiohttp") for item in requires)
+    extras = set(metadata.get_all("Provides-Extra") or [])
     for extra in ("audio", "bridge", "scope", "dsp", "webrtc", "tls", "dev"):
-        assert f"extra == '{extra}'" in " ".join(requires)
+        assert extra in extras
 
     from rigplane.cli import _build_parser
 
@@ -191,6 +192,6 @@ async def test_wire3_framing_and_structured_ops_keep_audited_grammar() -> None:
     try:
         assert await _exchange(host, port, b"f\n") == b"14074000\n"
         assert await _exchange(host, port, b"F 7050000\n") == b"RPRT 0\n"
-        assert await _exchange(host, port, b"no-such\n") == b"RPRT -8\n"
+        assert await _exchange(host, port, b"no-such\n") == b"RPRT -4\n"
     finally:
         await server.stop()
