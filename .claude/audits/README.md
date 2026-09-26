@@ -13,6 +13,29 @@ public repository** — never put session notes, baselines, or anything with
 internal identifiers here; untracked working notes belong in the ignored
 remainder of `.claude/`.
 
+## 2026-09-26 — the day's merged changes, backend and frontend (head `a04f7b1e`)
+
+Two read-only tracts over the changes merged on 2026-09-26, range
+`9a1b90f9..a04f7b1e`. Each report pins revision
+`a04f7b1e51ff012ff1de0d42e876befbd06ead47` and labels its claims as observation
+or inference.
+
+- [2026-09-26-mechanism-audit-backend.md](2026-09-26-mechanism-audit-backend.md)
+  — `src/` (18 files, +554/−83). Three deletions: D1 dead PTT arms in
+  `_enqueue_rc_power`, D2 a production-dead `PttOn` branch, D3 unread
+  `break_in_labels` / `ssb_tx_bw_labels` left undetermined. Four consolidations:
+  F1 a helper written twice, F2 an abandoned queue twin of managed PTT, F3 a
+  notch-only rule beside the generic parser, F4 LAN-session recovery already
+  shared.
+- [2026-09-26-mechanism-audit-frontend.md](2026-09-26-mechanism-audit-frontend.md)
+  — `frontend/src` and `rigs/`. One deletion, D1 dead `domainOf`, and four
+  consolidations: F1 three readers and two formulas for the published raw range,
+  F2 a notch pending scan beside `latestPendingParam`, F3 two hand-copied
+  notch-width renderings, F4 a second toast-suppression gate. Its F1 formula
+  half was refuted after the audit: the backend normalizes RF gain and squelch
+  by a constant 255, so the host's formula matches every shipped profile
+  (MOR-2637).
+
 ## 2026-09-16 — closing audit of the two 2026-09-15 tracts (head `94361667`)
 
 Re-runs the method over the same tract as the two reports below and adjudicates
