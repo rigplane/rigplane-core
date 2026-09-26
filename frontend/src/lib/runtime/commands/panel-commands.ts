@@ -1172,10 +1172,17 @@ export function makePresetHandlers() {
  *  and `1` are the same number, so guessing from `Number.isInteger` would
  *  misread a legacy 100 % as raw 1. The browser-volume branch
  *  (`runtime.rxEnabled`) never reaches here. */
-/** Raw AF level for a known normalized readback against the control's
- *  declared raw domain (`caps.controls.af_level`, MOR-1676 part A) — the
- *  exact inverse of the server's normalized readback (`raw/255`), so every
- *  raw value round-trips. Falls back to the 0-255 domain the CAT write
+/** Raw AF level for a handler input that may already be raw (MOR-1676 part
+ *  A): with `unit === 'raw'` an int dispatches as-is when inside the
+ *  declared domain (the intent carries `level_unit: 'raw'`, stripped before
+ *  `sendCommand`). The legacy normalized float needs no conversion — the
+ *  intent layer tags it `level_unit: 'normalized'` verbatim. Anything else
+ *  fails closed.
+ *
+ *  `rawAfLevel` below converts a normalized readback against the control's
+ *  declared raw domain (`caps.controls.af_level`) — the exact inverse of
+ *  the server's normalized readback (`raw/255`), so every raw value
+ *  round-trips. It falls back to the 0-255 domain the CAT write
  *  (`AG0{level:03d}`) has always assumed when caps declares nothing. */
 function rawAfLevel(caps: Capabilities, normalized: number): number | null {
   if (!isNormalizedLevel(normalized)) return null;
@@ -1187,16 +1194,14 @@ function rawAfLevel(caps: Capabilities, normalized: number): number | null {
 /** Raw AF level for a handler input that may already be raw (MOR-1676 part
  *  A): with `unit === 'raw'` an int dispatches as-is when inside the
  *  declared domain (the intent carries `level_unit: 'raw'`, stripped before
- *  `sendCommand`); otherwise (legacy normalized float) it converts through
- *  `rawAfLevel` and is always sent tagged `level_unit: 'normalized'`.
- *  Anything else fails closed. */
+ *  `sendCommand`). The legacy normalized float needs no conversion — the
+ *  intent layer tags it `level_unit: 'normalized'` verbatim. Anything else
+ *  fails closed. */
 function rawAfLevelFromInput(caps: Capabilities, level: number, unit?: 'raw'): number | null {
-  if (unit === 'raw') {
-    if (!Number.isInteger(level)) return null;
-    const { rawMin, rawMax } = keyboardControlRawDomain(caps, 'af_level');
-    return level >= rawMin && level <= rawMax ? level : null;
-  }
-  return rawAfLevel(caps, level);
+  if (unit !== 'raw') return isNormalizedLevel(level) ? level : null;
+  if (!Number.isInteger(level)) return null;
+  const { rawMin, rawMax } = keyboardControlRawDomain(caps, 'af_level');
+  return level >= rawMin && level <= rawMax ? level : null;
 }
 
 function setReceiverAf(target: 'main' | 'sub', level: number, unit?: 'raw'): boolean {
