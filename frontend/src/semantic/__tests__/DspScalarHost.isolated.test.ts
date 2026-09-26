@@ -397,17 +397,44 @@ describe('manual-notch pending status units (MOR-2635)', () => {
     return r.row('notchFreq')?.querySelector('[data-command-status]')?.textContent ?? '';
   }
 
-  it('FTX-1: pending raw 160 shows 1600 Hz for requested and confirmed alike', () => {
+  it('FTX-1: a decoded pending target shows 1600 Hz for requested and confirmed alike', () => {
     const r = render({
       presentation: 'notch-status',
       scalarPresentation: { form: 'hbar' },
       view: notchView(1600, FTX1_NOTCH_DOMAIN),
-      feedback: pendingNotch(1600, 160),
+      feedback: pendingNotch(1600, 1600),
     });
     const status = notchStatus(r);
     expect(status).toContain('requested 1600');
     expect(status).toContain('confirmed 1600');
-    expect(status).not.toContain('requested 160;');
+    r.dispose();
+  });
+
+  it('FTX-1 overlap: confirmed 160 Hz and requested 1600 Hz stay distinct', () => {
+    const r = render({
+      presentation: 'notch-status',
+      scalarPresentation: { form: 'hbar' },
+      view: notchView(160, FTX1_NOTCH_DOMAIN),
+      feedback: pendingNotch(160, 1600),
+    });
+    const status = notchStatus(r);
+    expect(status).toContain('requested 1600');
+    expect(status).toContain('confirmed 160');
+    expect(status).not.toContain('confirmed 1600');
+    r.dispose();
+  });
+
+  it('raw fallback: a published domain with a raw reading shows both halves raw', () => {
+    const r = render({
+      presentation: 'notch-status',
+      scalarPresentation: { form: 'hbar' },
+      view: notchView(40, FTX1_NOTCH_DOMAIN),
+      feedback: pendingNotch(40, 160),
+    });
+    const status = notchStatus(r);
+    expect(status).toContain('requested 160');
+    expect(status).toContain('confirmed 40');
+    expect(status).not.toContain('1600');
     r.dispose();
   });
 

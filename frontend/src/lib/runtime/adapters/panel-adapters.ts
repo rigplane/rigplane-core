@@ -595,9 +595,17 @@ export function getDspControlFeedback(
               : field === 'manualNotchWidth' ? 'manual-notch-width' : 'agc-time',
     receiver: field === 'nbWidth' || field === 'nbDepth' ? 0 as const : receiver,
   });
-  const feedback = projectControlFeedback(
+  const rawFeedback = projectControlFeedback(
     echoDescriptor, state, commands, scope, epoch, isCommandLifecycleSuperseded,
   );
+  // MOR-2635: the pending target is the raw CAT code the command dispatched.
+  // Decode it through the SAME resolved contract and the SAME source decision
+  // the confirmed reading uses. A reading that fell back to the raw field
+  // (no published domain, or the domain's field unusable) keeps the target raw.
+  const feedback = notchReading?.source === 'manualNotchFreq'
+    ? projectControlFeedbackToDisplay(rawFeedback, (raw) =>
+      resolveControlContract(caps, 'manual_notch_freq').rawToDisplay(raw))
+    : rawFeedback;
   try {
     const view = toRadioViewModel(state, caps);
     if (session.state !== 'connected' || epoch < 0
