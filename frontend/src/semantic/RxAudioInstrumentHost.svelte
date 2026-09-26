@@ -392,20 +392,6 @@
   function receiverAfInput(receiver: AfReceiverKey): Readonly<ContinuousScalarInput> {
     const field = presentation.rxAudio?.receiverAfLevels?.[receiver];
     const currentAuthority = receiverAuthority(publishedAfAuthority, receiver);
-    // MOR-1676 part A (AF): the domain MUST follow the render-time
-    // `presentation.caps` — the publisher delivers caps with the view,
-    // while the `published` snapshot only refreshes on a delivered
-    // publication and may lag one behind. Read it untracked: the domain is
-    // a pure function of the caps, not a subscription — tracking it would
-    // re-lattice the knob on every authority pulse.
-    const caps = untrack(() => presentation.caps);
-    const rawDomain = (() => {
-      const control = caps?.controls?.af_level;
-      if (control === undefined || 'mapping' in control) return null;
-      const { raw_min: rawMin, raw_max: rawMax } = control;
-      if (!Number.isSafeInteger(rawMin) || !Number.isSafeInteger(rawMax) || rawMax <= rawMin) return null;
-      return { min: rawMin, max: rawMax, step: 1, defaultValue: null, fineStepDivisor: 1 };
-    })();
     const reading = field?.reading.status === 'known'
       ? { status: 'known' as const, value: field.reading.value }
       : { status: 'unknown' as const };
@@ -420,7 +406,12 @@
       && onReceiverAfLevelChange !== undefined;
     // MOR-1676 part A (AF): the named-receiver knob moves on the radio's raw
     // integer lattice, like the active-receiver slider above — the value in
-    // IS the raw value, dispatched with the explicit `'raw'` unit.
+    // IS the raw value, dispatched with the explicit `'raw'` unit. The
+    // domain follows the PUBLISHED authority (`published`), the same
+    // snapshot the gate above compares — never the render-time
+    // `presentation` prop, whose caps the publisher may not have delivered
+    // yet.
+    const rawDomain = radioAfDomain(published);
     const domain = rawDomain ?? AF_DOMAIN;
     const rawReading = rawDomain !== null && reading.status === 'known'
       ? {
