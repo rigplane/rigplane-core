@@ -118,6 +118,7 @@ import {
   makeKeyboardHandlers,
   dispatchKeyboardRadioAction,
 } from '../panel-commands';
+import { resetSharedTuningAccumulatorForTests } from '../tuning-accumulator';
 import {
   acknowledgeCommand,
   failCommand,
@@ -1398,6 +1399,63 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     h.sendCommand.mockClear();
     makeVfoHandlers().onMainFreqChange(14_100_000);
     expect(h.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('MOR-1435: legacy band/preset select emits the exact target and clears the hot burst (no stray follow-up frame)', () => {
+    resetSharedTuningAccumulatorForTests();
+    // The two MOR-1435 legacy paths: `makeBandHandlers`' bandless fallback
+    // and `makePresetHandlers`' select. Both must emit the exact target
+    // AND clear a still-hot paced flush from a preceding tuning burst —
+    // a direct `set_freq` dispatch would leave the pending flush armed,
+    // emitting one stray follow-up frame within ≤60 ms of the write.
+    const selectCases: Array<[string, () => void]> = [
+      ['bandless band select', () => { makeBandHandlers().onBandSelect('60m', 5_357_000); }],
+      ['preset select', () => { makePresetHandlers().onPresetSelect(7_074_000, 'CW', 1); }],
+    ];
+    for (const [label, select] of selectCases) {
+      const vfo = makeVfoHandlers();
+      const confirmed = observedFreq();
+      const step = 1_000;
+      // Hot burst: first step sent cold, second accumulates and is paced
+      // (held, not sent) — the flush timer is armed at the moment of select.
+      vfo.onMainFreqChange(confirmed + step);
+      vfo.onMainFreqChange(confirmed + step);
+      expect(h.sendCommand, `${label}: burst precondition`).toHaveBeenCalledTimes(1);
+
+      h.sendCommand.mockClear();
+      resetCommandLifecycle();
+      select();
+
+      expect(exactCalls(), `${label}: exact target`).toEqual(
+        label === 'preset select'
+          ? [['set_freq', { freq: 7_074_000, receiver: 0 }], ['set_mode', { mode: 'CW', filter: 1, receiver: 0 }]]
+          : [['set_freq', { freq: 5_357_000, receiver: 0 }]],
+      );
+
+      // No stray follow-up frame: the pre-select paced flush must never fire.
+      vi.advanceTimersByTime(60);
+      expect(exactCalls(), `${label}: no stray frame`).toHaveLength(
+        label === 'preset select' ? 2 : 1,
+      );
+      resetSharedTuningAccumulatorForTests();
+    }
+  });
+
+  it('MOR-1435: BSR band select cancels a hot burst before set_band (no stray set_freq frame)', () => {
+    resetSharedTuningAccumulatorForTests();
+    const vfo = makeVfoHandlers();
+    const confirmed = observedFreq();
+    vfo.onMainFreqChange(confirmed + 1_000);
+    vfo.onMainFreqChange(confirmed + 1_000);
+    expect(h.sendCommand).toHaveBeenCalledTimes(1);
+
+    h.sendCommand.mockClear();
+    resetCommandLifecycle();
+    makeBandHandlers().onBandSelect('20m', 14_225_000, 5);
+    expect(exactCalls()).toEqual([['set_band', { band: 5 }]]);
+
+    vi.advanceTimersByTime(60);
+    expect(exactCalls()).toHaveLength(1);
   });
 
   it('MOR-1425: a contradictory confirmed frequency mid-burst resets accumulation to the new truth', () => {

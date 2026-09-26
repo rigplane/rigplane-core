@@ -1148,9 +1148,14 @@ export function makeBandHandlers() {
       if (receiver === null || !Number.isSafeInteger(freq)
         || (bsrCode !== undefined && !Number.isSafeInteger(bsrCode))) return;
       if (bsrCode !== undefined) {
+        // MOR-1435: an absolute band write retires any pending paced
+        // flush first — a stray follow-up set_freq would fight the band.
+        tuningAccumulator().cancel(receiver);
         dispatchRadioIntent({ name: 'set_band', params: { band: bsrCode } });
       } else {
-        dispatchRadioIntent({ name: 'set_freq', params: { freq, receiver } });
+        // MOR-1435: the bandless fallback is an ABSOLUTE target — jump
+        // (clears burst state, emits unpaced) instead of a direct write.
+        tuningAccumulator().jump(receiver, freq);
       }
     },
   };
@@ -1164,7 +1169,9 @@ export function makePresetHandlers() {
     if (receiver === null || knownReceiverField('mode') !== receiver
       || !Number.isSafeInteger(freq) || typeof mode !== 'string' || mode.length === 0
       || !Number.isSafeInteger(filter)) return;
-    dispatchRadioIntent({ name: 'set_freq', params: { freq, receiver } });
+    // MOR-1435: an absolute preset target — jump (clears burst state,
+    // emits unpaced) instead of a direct write.
+    tuningAccumulator().jump(receiver, freq);
     dispatchRadioIntent({ name: 'set_mode', params: { mode, filter, receiver } });
   };
   return {
@@ -1339,27 +1346,29 @@ function acceptedTuningTarget(query: AcceptedTargetQuery): boolean {
   });
 }
 
-export function makeVfoHandlers() {
-  // MOR-1425: rapid-tuning-step accumulator, shared module-wide (review
-  // B5) — NOT per-instance: `panel-adapters.ts` holds both a singleton
-  // accessor and fresh per-composition-root calls, and two independently-
-  // tracked accumulators for the same receiver would be blind to each
-  // other's writes. `epoch`/`generation` are the same session/capabilities
-  // reads `dispatchRadioIntent` itself uses (review B4).
-  function tuningAccumulator(): ReturnType<typeof getSharedTuningAccumulator> {
-    return getSharedTuningAccumulator({
-      emit: (receiver, freq) =>
-        dispatchRadioIntent({ name: 'set_freq', params: { freq, receiver: receiver as Receiver } }),
-      epoch: currentControlSessionEpoch,
-      generation: () => {
-        const value = getCapabilities()?.providerGeneration;
-        return typeof value === 'number' ? value : null;
-      },
-      context: currentTuningContext,
-      acceptedTarget: acceptedTuningTarget,
-    });
-  }
+// MOR-1425: rapid-tuning-step accumulator, shared module-wide (review
+// B5) — NOT per-instance: `panel-adapters.ts` holds both a singleton
+// accessor and fresh per-composition-root calls, and two independently-
+// tracked accumulators for the same receiver would be blind to each
+// other's writes. `epoch`/`generation` are the same session/capabilities
+// reads `dispatchRadioIntent` itself uses (review B4).
+// MOR-1435: hoisted to module scope so the band/preset legacy paths can
+// route their absolute writes through the same accumulator.
+function tuningAccumulator(): ReturnType<typeof getSharedTuningAccumulator> {
+  return getSharedTuningAccumulator({
+    emit: (receiver, freq) =>
+      dispatchRadioIntent({ name: 'set_freq', params: { freq, receiver: receiver as Receiver } }),
+    epoch: currentControlSessionEpoch,
+    generation: () => {
+      const value = getCapabilities()?.providerGeneration;
+      return typeof value === 'number' ? value : null;
+    },
+    context: currentTuningContext,
+    acceptedTarget: acceptedTuningTarget,
+  });
+}
 
+export function makeVfoHandlers() {
   return {
     onSwap: () => {
       const context = currentA03cContext();
