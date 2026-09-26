@@ -63,7 +63,12 @@ describe('manual notch width renders profile-derived choices (MOR-1685)', () => 
     const r = render(base(), { notchWidthChoices: [...IC7300_WIDTH_CHOICES] });
     const group = r.width();
     expect(group).not.toBeNull();
+    // No slider for the width: neither inside the choice group nor as a
+    // stray sibling row on the surface (a `dsp-manualNotchWidth` range
+    // input anywhere fails this).
     expect(group!.querySelector('input[type="range"]')).toBeNull();
+    expect(target.querySelectorAll('[data-testid="dsp-manualNotchWidth"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-testid="dsp-manualNotchWidth"] input[type="range"]')).toHaveLength(0);
     const buttons = [...group!.querySelectorAll('button')];
     expect(buttons.map((button) => button.textContent?.trim())).toEqual(['WIDE', 'MID', 'NAR']);
     r.dispose();
