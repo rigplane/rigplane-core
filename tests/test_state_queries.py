@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
-
-_REAL_SLEEP = asyncio.sleep
 from dataclasses import replace
 import logging
 from pathlib import Path
@@ -43,6 +41,8 @@ from _acquisition_query_helpers import (
     query_command,
     query_selector,
 )
+
+_REAL_SLEEP = asyncio.sleep
 
 # The 0x27 read sub-commands the sweep sends, split by whether the frame
 # carries the one-byte Main/Sub scope selector.  Spelled out here rather
