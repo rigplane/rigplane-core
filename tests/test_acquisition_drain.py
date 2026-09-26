@@ -864,10 +864,11 @@ def test_an_answer_that_arrives_during_execute_completes_the_request() -> None:
 
     executor = _EarlyAnswerExecutor(scheduler, pass_now=pass_now)
     reports = _Reports()
+    store = StateStore(freshness_clock=clock)
     drain = AcquisitionDrain(
         scheduler=lambda: scheduler,
         executor=lambda: cast(Any, executor),
-        store=lambda: StateStore(freshness_clock=clock),
+        store=lambda: store,
         in_flight={},
         expired=_never_expired,
         dispatchable=lambda pending: pending,
