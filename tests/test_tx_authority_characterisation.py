@@ -72,7 +72,6 @@ from rigplane.runtime.tx_interlock import (
     classify_tx_interlock,
     evaluate_tx_interlock,
 )
-from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import CommandQueue, RadioPoller
 from rigplane.web.tx_safety_view import build_tx_safety_payload
 
@@ -403,30 +402,14 @@ class TestPin2RawDuringTxIsRefused:
 
 
 class TestPin3TeardownIsBiasedTowardOff:
-    """A writable session teardown always requests PTT OFF (MOR-1013).
+    """The class name stays: the eight-pin ledger cites it.
 
-    The keyer record that used to withhold a foreign session's teardown lived
-    only on the unreachable queue-PTT ON arm and was retired with it (MOR-2563).
-    What remains is the bias: teardown enqueues the unkey. Dropping a
-    transmission is recoverable; a stuck transmitter is not.
+    The method it pinned, ``_release_ptt_on_teardown``, had no production
+    caller at main either (MOR-2563). Session teardown is
+    ``_start_managed_ptt_disconnect``, which sends no unkey when the library
+    entry points build a server with no managed TX authority. That residual is
+    recorded on MOR-2563; this pin no longer asserts a write nothing performs.
     """
-
-    def test_teardown_enqueues_the_unkey(self) -> None:
-        _poller, radio, _store = _web_poller()
-        queue = CommandQueue()
-        server = SimpleNamespace(command_queue=queue)
-        handler = ControlHandler(
-            ws=MagicMock(),
-            radio=radio,
-            server_version="test",
-            radio_model="IC-7300",
-            server=server,
-            session_id="ws-a",
-        )
-
-        handler._release_ptt_on_teardown()
-
-        assert queue.drain() == [PttOff()]
 
 
 # ---------------------------------------------------------------------------
