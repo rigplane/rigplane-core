@@ -471,6 +471,7 @@ describe('v2.11.1 monitor and dual-routing behavior in the Standard composition'
   ] as const)('renders an unread AF level as the literal empty string in %s', (_label, row, key, makeCaps) => {
     h.audio = { muted: false, rxEnabled: false, volume: 42 };
     h.caps = makeCaps();
+    expect(setCapabilities(h.caps as Capabilities)).toBe(true);
     const state = liveState();
     state.fieldStatus = {
       ...state.fieldStatus,
