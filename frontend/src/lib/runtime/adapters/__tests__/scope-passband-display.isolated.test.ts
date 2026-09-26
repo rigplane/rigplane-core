@@ -479,6 +479,54 @@ describe('band-edge tuning continuity (MOR-2367)', () => {
       expect(result.display).toMatchObject({ state: 'stale', translated: true });
       expect(tuple(result)).toMatchObject({ frequencyHz: frequency, widthHz: 2400, shiftHz: 0 });
     });
+  it('recaptures once after a genuine hard retirement while 250ms tuning continues', () => {
+    const input = banded();
+    let result = project(input);
+    expect(result.display.state).toBe('current');
+
+    const rx = input.state!.main!;
+    rx.mode = rx.vfoA!.mode = 'LSB';
+    status(input, 'main.mode', { lastObservedMonotonic: 11 });
+    status(input, 'main.vfoA.mode', { lastObservedMonotonic: 11 });
+    result = project(input, result);
+    expect(result.display).toEqual({ state: 'unknown', reason: 'retired' });
+
+    rx.mode = rx.vfoA!.mode = 'USB';
+    status(input, 'main.mode', { lastObservedMonotonic: 12 });
+    status(input, 'main.vfoA.mode', { lastObservedMonotonic: 12 });
+    receipt(input, 2, { startFreq: 14_024_000, endFreq: 14_124_000 });
+    result = project(input, result);
+    expect(result.display.state).toBe('unknown');
+
+    const retiredFloors = result.floors;
+    expect(retiredFloors).not.toBeNull();
+    let sequence = 2;
+    for (let step = 0; step < 8; step += 1) {
+      const frequency = 14_074_000 + step * 250;
+      tune(input, frequency, 20 + step * 0.25);
+      if (step === 2) status(input, 'main.filterWidth', { lastObservedMonotonic: 25 });
+      if (step === 4) status(input, 'main.pbtInner', { lastObservedMonotonic: 30 });
+      if (step === 6) status(input, 'main.pbtOuter', { lastObservedMonotonic: 35 });
+      receipt(input, ++sequence, { startFreq: frequency - 50_000, endFreq: frequency + 50_000 });
+      result = project(input, result);
+      if (step < 6) {
+        expect(result.display.state).toBe('unknown');
+        expect(result.floors).toEqual(retiredFloors);
+      } else if (step === 6) {
+        expect(result.display).toMatchObject({ state: 'current', tuple: {
+          frequencyHz: frequency, widthHz: 2400, shiftHz: 0,
+        } });
+        expect(result.floors).toBeNull();
+      }
+    }
+    expect(result.display).toMatchObject({ state: 'stale', translated: true, tuple: {
+      frequencyHz: 14_075_750, widthHz: 2400, shiftHz: 0,
+    } });
+    expect(toSpectrumAuthority(input.state, input.caps)).toMatchObject({
+      receiver: 0, mode: 'USB', filter: 'FIL1', filterWidthHz: 2400, ifShiftHz: 0, rule: null,
+    });
+  });
+
   it.each(['mode', 'filter'])('still retires a band-edge crossing when the %s changes', (change) => {
     const input = banded();
     let result = project(input);

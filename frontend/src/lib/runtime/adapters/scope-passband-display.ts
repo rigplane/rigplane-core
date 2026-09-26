@@ -344,7 +344,12 @@ export function projectScopePassbandDisplay(
     && (candidate.stale || candidate.strict || !candidate.frequencyAligned);
   const translating = canTranslate && (changedIdentity || wasTranslated);
   const domainChange = previous.floors !== null && next.domain !== null && previous.floors.domain !== next.domain;
-  const retire = !selectionRecovery && ((((hasTuple && (invalid || changedIdentity)) || changedIdentity)
+  // Dropping a live tuple is a retirement. A frequency step that arrives after
+  // the tuple is already gone is not: the identity contains the frequency, so
+  // treating that step as another retirement both re-arms the geometry floors
+  // and vetoes capture, and recapture then waits for a complete geometry set
+  // newer than the latest step instead of the retirement that dropped the tuple.
+  const retire = !selectionRecovery && ((hasTuple && (invalid || changedIdentity)
     && !translating && !holdingFrequency) || domainChange || recoveryCancelled);
   let floors = previous.floors;
   if (selectionBoundary) {
