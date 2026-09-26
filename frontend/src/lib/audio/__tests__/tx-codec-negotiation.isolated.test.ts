@@ -427,6 +427,63 @@ describe('AudioManager consumes the server TX codec ack', () => {
     expect(died).not.toHaveBeenCalled();
   });
 
+  it('forwards the negotiated TX rate to the PCM16 leg (MOR-1794)', async () => {
+    installMediaGlobals();
+    const { audioManager } = await import('../audio-manager');
+    const sent: ArrayBuffer[] = [];
+    const realSend = WebSocket.prototype.send;
+    expect(await audioManager.startTx()).toBeNull();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+    ws.send = (data: unknown) => {
+      if (data instanceof ArrayBuffer) sent.push(data);
+      else if (
+        typeof data === 'string'
+        || data instanceof Blob
+        || ArrayBuffer.isView(data)
+      ) realSend.call(ws, data);
+    };
+
+    ws.serverText({
+      type: 'audio_tx_format', codec: 'pcm16', opus_decode: false, sample_rate: 8000,
+    });
+
+    const created = vi.mocked(globalThis.AudioContext).mock.results.at(-1)?.value as
+      { createScriptProcessor: ReturnType<typeof vi.fn> } | undefined;
+    const processor = created?.createScriptProcessor.mock.results[0]?.value as
+      { onaudioprocess: (event: unknown) => void };
+    processor.onaudioprocess({
+      inputBuffer: { getChannelData: () => new Float32Array(960).fill(0.5) },
+    });
+
+    expect(sent).toHaveLength(1);
+    const header = new DataView(sent[0]);
+    expect(header.getUint16(4, true)).toBe(8000 / 100);
+    expect(sent[0].byteLength).toBe(AUDIO_HEADER_SIZE + 160 * 2);
+    audioManager.stopTx();
+  });
+
+  it('refuses a negotiated TX rate the contract does not admit (MOR-1794)', async () => {
+    installMediaGlobals();
+    const { audioManager } = await import('../audio-manager');
+    const died = vi.fn();
+    audioManager.onTxAudioDied(died);
+    expect(await audioManager.startTx()).toBeNull();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+    ws.sent = [];
+
+    ws.serverText({
+      type: 'audio_tx_format', codec: 'pcm16', opus_decode: false, sample_rate: 44100,
+    });
+
+    // Same fault path as a PCM leg that will not start: the session ends and
+    // the operator hears why, instead of modulated garbage.
+    expect(audioManager.txEnabled).toBe(false);
+    expect(sentTypes(ws)).toContain('audio_stop');
+    expect(died).toHaveBeenCalledOnce();
+  });
+
   it('leaves the pin alone when the ack names a codec it does not know', async () => {
     installMediaGlobals();
     const { audioManager } = await import('../audio-manager');
@@ -507,6 +564,56 @@ describe('TxMic adopts the codec the server can accept', () => {
     expect(mic.codec).toBe('opus');
     expect(media.encoder.close).not.toHaveBeenCalled();
     expect(media.context.createScriptProcessor).not.toHaveBeenCalled();
+    mic.stop();
+  });
+
+  it('delivers PCM16 at a negotiated rate below 48 kHz (MOR-1794)', async () => {
+    // The radio contract admits 8/16/24 kHz. The server names that rate in
+    // the audio_tx_format ack, but the PCM16 leg used to ignore it and push
+    // unresampled 48 kHz frames — pitch-shifted modulation on the air while
+    // every indicator reported a working transmission.
+    clearMediaGlobals();
+    media = installMediaGlobals({ contextSampleRate: 48000 });
+    const sent = vi.fn();
+    const mic = new TxMic(sent);
+    expect(await mic.start()).toBeNull();
+
+    expect(mic.applyServerCodec('pcm16', 16000)).toEqual({ switched: true, error: null });
+
+    // 960 captured samples are exactly one 20 ms frame at 16 kHz, so exactly
+    // one frame leaves — and it must be 16 kHz, not the 48 kHz it was captured at.
+    media.getProcessor().onaudioprocess({
+      inputBuffer: { getChannelData: () => new Float32Array(960).fill(0.5) },
+    });
+
+    expect(sent).toHaveBeenCalledOnce();
+    const packet = sent.mock.calls[0][0] as ArrayBuffer;
+    const header = new DataView(packet);
+    expect(header.getUint8(1)).toBe(CODEC_PCM16);
+    // Advertised rate must be the rate actually delivered, not the hard 48 kHz.
+    expect(header.getUint16(4, true)).toBe(16000 / 100);
+    expect(packet.byteLength).toBe(AUDIO_HEADER_SIZE + (16000 * 0.02) * 2);
+    const samples = new Int16Array(packet, AUDIO_HEADER_SIZE);
+    expect(samples).toHaveLength(320);
+    // Constant input resamples to that same constant — not to stretched time.
+    expect(samples.every((sample) => Math.abs(sample - 16383) <= 1)).toBe(true);
+    mic.stop();
+  });
+
+  it('refuses the PCM16 fallback when the negotiated rate is not a contract rate (MOR-1794)', async () => {
+    clearMediaGlobals();
+    media = installMediaGlobals({ contextSampleRate: 48000 });
+    const mic = new TxMic(vi.fn());
+    await mic.start();
+
+    const result = mic.applyServerCodec('pcm16', 44100);
+
+    // Honest refusal through the existing fault path, never silent garble.
+    expect(result.switched).toBe(false);
+    expect(result.error).toContain('16000');
+    expect(mic.active).toBe(true);
+    expect(mic.codec).toBe('opus');
+    expect(media.encoder.close).not.toHaveBeenCalled();
     mic.stop();
   });
 
