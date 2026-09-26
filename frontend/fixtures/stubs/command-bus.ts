@@ -59,13 +59,12 @@ function recorders<K extends string>(
  *  the returned object, not the module — but the first captured gesture that
  *  reached one would have thrown inside the harness instead of recording. */
 export function makeVfoHandlers() {
-  return {
-    onVfoSelect: (...args: unknown[]): void => record('vfo.select', args),
-    onSplitToggle: (...args: unknown[]): void => record('vfo.split', args),
-    onDualWatchToggle: (...args: unknown[]): void => record('vfo.dualWatch', args),
-    onMainFreqChange: (...args: unknown[]): void => record('vfo.mainFreq', args),
-    onSubFreqChange: (...args: unknown[]): void => record('vfo.subFreq', args),
-  };
+  return recorders('vfo', [
+    'onSwap', 'onEqual', 'onSplitToggle', 'onMainVfoClick', 'onSubVfoClick', 'onVfoSelect',
+    'onDirectFrequencyChange', 'onMainModeClick', 'onSubModeClick', 'onMainFreqChange',
+    'onSubFreqChange', 'onFreqChange', 'onModeChange', 'onFilterChange', 'onDualWatchToggle',
+    'onTrackingToggle',
+  ] as const);
 }
 
 export function makeVoxHandlers() {
@@ -115,7 +114,9 @@ export function makeAudioRoutingHandlers() {
  *  here instead, since stubbing `command-bus.ts` wholesale means nothing
  *  reaches that real module through this seam anyway. */
 export function makeRxAudioHandlers() {
-  return recorders('rxAudio', ['onMonitorModeChange', 'onAfLevelChange'] as const);
+  return recorders('rxAudio', [
+    'onMonitorModeChange', 'onAfLevelChange', 'onReceiverAfLevelChange',
+  ] as const);
 }
 
 /* ── MOR-1320: the remaining factories, unreached by the fixture-mounted
@@ -131,8 +132,9 @@ export function makeRfFrontEndHandlers() {
 
 export function makeFilterHandlers() {
   return recorders('filter', [
-    'onFilterChange', 'onFilterWidthChange', 'onFilterShapeChange', 'onFilterPresetChange',
-    'onFilterDefaults', 'onIfShiftChange', 'onPbtInnerChange', 'onPbtOuterChange', 'onPbtReset',
+    'onFilterChange', 'onFilterWidthChange', 'onFilterWidthCommit', 'onFilterWidthReset',
+    'onFilterShapeChange', 'onNarrowToggle', 'onFilterPresetChange', 'onFilterDefaults',
+    'onIfShiftChange', 'onPbtInnerChange', 'onPbtOuterChange', 'onPbtReset',
   ] as const);
 }
 
@@ -149,8 +151,8 @@ export function makeRitXitHandlers() {
 export function makeDspHandlers() {
   return recorders('dsp', [
     'onNrModeChange', 'onNrLevelChange', 'onNbToggle', 'onNbLevelChange', 'onNotchModeChange',
-    'onNotchFreqChange', 'onNbDepthChange', 'onNbWidthChange', 'onManualNotchWidthChange',
-    'onAgcTimeChange',
+    'onAutoNotchToggle', 'onNotchFreqChange', 'onNbDepthChange', 'onNbWidthChange',
+    'onManualNotchWidthChange', 'onAgcTimeChange',
   ] as const);
 }
 
@@ -202,4 +204,16 @@ export function makeKeyboardHandlers() {
   return {
     dispatch: (...args: unknown[]): void => record('keyboard.dispatch', args),
   };
+}
+
+export function makeMemoryHandlers() {
+  return {
+    onRecall: (...args: unknown[]): boolean => { record('memory.recall', args); return false; },
+    onStore: (...args: unknown[]): boolean => { record('memory.store', args); return false; },
+    onClear: (...args: unknown[]): boolean => { record('memory.clear', args); return false; },
+  };
+}
+
+export function makeRepeaterHandlers() {
+  return recorders('repeater', ['onToneModeChange', 'onShiftChange', 'onToneFreqChange'] as const);
 }
