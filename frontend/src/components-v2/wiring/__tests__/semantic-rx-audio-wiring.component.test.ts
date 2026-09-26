@@ -1168,9 +1168,11 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
   // integer lattice published by `controls.af_level` (0..255 on the live
   // caps). The MAIN knob reads 0.31 → raw round(0.31 * 255) = 79, one step
   // up is 80; the SUB knob reads 0.77 → raw round(0.77 * 255) = 196, one
-  // step up is 197. The intent carries the explicit `level_unit: 'raw'`,
-  // which the intent layer strips before `sendCommand` — the server never
-  // sees `'raw'`, so the wire params below carry no unit key.
+  // step up is 197. The intent carries the explicit `level_unit: 'raw'`.
+  // NOTE: this wiring test mocks `dispatchRadioIntent` to forward intent
+  // params STRAIGHT to `sendCommand` — no intent layer, no stripping — so
+  // the received frame keeps `level_unit: 'raw'`. On the real wire the
+  // intent layer strips it (see the radio-intents pins).
   it.each([
     ['MAIN', 'sub', 1, 197],
     ['SUB', 'main', 0, 80],
@@ -1181,14 +1183,15 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
       'keydown', { key: 'ArrowRight', bubbles: true, cancelable: true },
     ));
     flushSync();
-    expect(afCalls()).toEqual([{ name: 'set_af_level', level, receiver: index }]);
+    expect(afCalls()).toEqual([{ name: 'set_af_level', level, receiver: index, level_unit: 'raw' }]);
   });
 
   it('keeps a drag on the SUB knob alive across a MAIN-to-SUB selection change', () => {
     // MOR-1676 part A (AF): the drag moves on the raw integer lattice
     // (0..255 on the live caps). clientX 90 of 100 → raw round(90/100 *
-    // 255) = round(229.5) = 230; the intent's `level_unit: 'raw'` is
-    // stripped before `sendCommand`, so the wire params carry no unit key.
+    // 255) = round(229.5) = 230 with the explicit `level_unit: 'raw'`
+    // (kept here — this test's `dispatchRadioIntent` mock forwards intent
+    // params straight to `sendCommand` with no stripping).
     radioAf();
     render();
     const slider = knob('sub')!;
@@ -1205,7 +1208,7 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
     slider.dispatchEvent(new PointerEvent('pointermove', { pointerId: 9, clientX: 90, bubbles: true }));
     slider.dispatchEvent(new PointerEvent('pointerup', { pointerId: 9, bubbles: true }));
     flushSync();
-    expect(afCalls().at(-1)).toEqual({ name: 'set_af_level', level: 230, receiver: 1 });
+    expect(afCalls().at(-1)).toEqual({ name: 'set_af_level', level: 230, receiver: 1, level_unit: 'raw' });
     expect(afCalls().every((params) => (params as { receiver: number }).receiver === 1)).toBe(true);
   });
 
