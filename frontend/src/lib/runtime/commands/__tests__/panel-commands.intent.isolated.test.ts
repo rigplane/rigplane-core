@@ -508,6 +508,24 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(getCommandLifecycles()).toHaveLength(0);
   });
 
+  it('MOR-1676 pinning: documents what the radio-AF path dispatches at the top of the range', () => {
+    // RED-first pinning for MOR-1676 part A (AF): the OWNER decision moves
+    // the radio-AF path to raw-integer dispatch (`set_af_level` with an int
+    // `level`, no `level_unit`), so the server's int branch applies. This
+    // test pins the PRE-CHANGE wire shape: `onAfLevelChange(1)` dispatches
+    // the normalized float `1`, which JSON cannot distinguish from the raw
+    // int `1` (`JSON.stringify(1.0) === "1"`). It FAILS after the change
+    // (integer `255`, untagged) — by design — and is then replaced by the
+    // raw-integer contract tests below.
+    const rxAudio = makeRxAudioHandlers();
+    rxAudio.onAfLevelChange(1);
+
+    expect(exactCalls()).toEqual([
+      ['set_af_level', { level: 1, receiver: 0, level_unit: 'normalized' }],
+    ]);
+    expectIntentTransport();
+  });
+
   it('accepts exact normalized AF endpoints unchanged on radio and browser-local paths', () => {
     const rxAudio = makeRxAudioHandlers();
     rxAudio.onAfLevelChange(0);
