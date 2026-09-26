@@ -275,7 +275,6 @@ export function createMeterBallistics<State>(
     return policy.peakSource === 'sample' ? sample : smoother.value;
   }
 
-  // Read lifecycle lazily: the predicate is evaluated while it is being created.
   const peakAboveCurrent = (): boolean => {
     const projected = channel.project(peakCurrent(), host.now(), lifecycle.reducedMotion);
     return projected !== null && projected > peakCurrent() + 1e-6;
