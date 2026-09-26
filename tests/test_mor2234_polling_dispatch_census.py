@@ -335,81 +335,102 @@ def _make_ftx1_radio() -> MagicMock:
 async def _run_ftx1_poll_cycles(
     *, cycles: int
 ) -> tuple[set[FieldPath], dict[str, int]]:
-    """Drive every Yaesu poll lane; return the published paths."""
+    """Drive every Yaesu poll lane in RX and TX; return published paths + reads.
+
+    Two passes per cycle: receive-only (PTT false), then a TX window (the
+    mock answers PTT true) so the PTT-gated TX-meter lane
+    (``poll_tx_meters``) runs too. The per-read counters assert the mock
+    CAT transport answered every declared read in both windows.
+    """
     from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 
-    radio = _make_ftx1_radio()
-    collected: list[Observation] = []
-    poller = YaesuCatPoller(
-        radio,
-        observation_callback=collected.extend,
-        fast_interval=10.0,
-        medium_interval=10.0,
-        slow_interval=10.0,
-        ema_alpha=1.0,
-    )
     acquired: set[FieldPath] = set()
     reads: dict[str, int] = {}
-    for _ in range(cycles):
-        await poller._poll_medium()  # noqa: SLF001
-        await poller._poll_fast()  # noqa: SLF001
-        await poller._poll_slow()  # noqa: SLF001
-        acquired.update(item.path for item in collected)
-        collected.clear()
-    for name in (
-        "read_freq",
-        "read_mode",
-        "read_transmit_state",
-        "read_s_meter",
-        "read_af_level",
-        "read_rf_gain",
-        "read_squelch",
-        "read_attenuator",
-        "read_preamp",
-        "read_agc",
-        "read_filter_width",
-        "read_if_shift",
-        "read_narrow",
-        "read_nb_level",
-        "read_nr_level",
-        "read_auto_notch",
-        "read_manual_notch",
-        "read_manual_notch_freq",
-        "read_alc_meter",
-        "read_comp_meter",
-        "read_power_meter",
-        "read_swr_meter",
-        "get_vd_meter",
-        "get_id_meter",
-        "read_power",
-        "read_mic_gain",
-        "read_processor",
-        "read_processor_level",
-        "read_vox",
-        "read_split",
-        "read_vfo_select",
-        "read_clarifier",
-        "read_clarifier_freq",
-        "get_tuner_status",
-        "read_lock",
-        "read_keyer_speed",
-        "read_cw_pitch",
-        "read_break_in",
-        "read_break_in_delay",
-        "read_cw_spot",
-        "read_sql_type",
-        "read_ctcss_tone_index",
-        "read_repeater_shift",
-        "get_rx_func",
-        "get_tx_func",
-    ):
-        mock = getattr(radio, name, None)
-        count = mock.await_count if mock is not None else 0
-        reads[name] = count
-        assert count >= cycles, (
-            f"mock CAT transport did not answer {name} every cycle: "
-            f"{count} reads in {cycles} cycles"
+    for ptt in (False, True):
+        radio = _make_ftx1_radio()
+        radio.read_transmit_state = AsyncMock(
+            return_value=TxStateReading(ptt, "rx", "yaesu_poll_response", True)
         )
+        collected: list[Observation] = []
+        poller = YaesuCatPoller(
+            radio,
+            observation_callback=collected.extend,
+            fast_interval=10.0,
+            medium_interval=10.0,
+            slow_interval=10.0,
+            ema_alpha=1.0,
+        )
+        for _ in range(cycles):
+            await poller._poll_medium()  # noqa: SLF001
+            await poller._poll_fast()  # noqa: SLF001
+            await poller._poll_slow()  # noqa: SLF001
+            acquired.update(item.path for item in collected)
+            collected.clear()
+        for name in (
+            "read_freq",
+            "read_mode",
+            "read_transmit_state",
+            "read_s_meter",
+            "read_af_level",
+            "read_rf_gain",
+            "read_squelch",
+            "read_attenuator",
+            "read_preamp",
+            "read_agc",
+            "read_filter_width",
+            "read_if_shift",
+            "read_narrow",
+            "read_nb_level",
+            "read_nr_level",
+            "read_auto_notch",
+            "read_manual_notch",
+            "read_manual_notch_freq",
+            "read_power",
+            "read_mic_gain",
+            "read_processor",
+            "read_processor_level",
+            "read_vox",
+            "read_split",
+            "read_vfo_select",
+            "read_clarifier",
+            "read_clarifier_freq",
+            "get_tuner_status",
+            "read_lock",
+            "read_keyer_speed",
+            "read_cw_pitch",
+            "read_break_in",
+            "read_break_in_delay",
+            "read_cw_spot",
+            "read_sql_type",
+            "read_ctcss_tone_index",
+            "read_repeater_shift",
+            "get_rx_func",
+            "get_tx_func",
+            "get_vd_meter",
+            "get_id_meter",
+        ):
+            mock = getattr(radio, name, None)
+            count = mock.await_count if mock is not None else 0
+            reads[f"{'tx' if ptt else 'rx'}.{name}"] = count
+            assert count >= cycles, (
+                f"mock CAT transport did not answer {name} every cycle "
+                f"({'TX' if ptt else 'RX'} window): "
+                f"{count} reads in {cycles} cycles"
+            )
+        for name in (
+            "read_alc_meter",
+            "read_comp_meter",
+            "read_power_meter",
+            "read_swr_meter",
+        ):
+            mock = getattr(radio, name, None)
+            count = mock.await_count if mock is not None else 0
+            reads[f"{'tx' if ptt else 'rx'}.{name}"] = count
+            if ptt:
+                assert count >= cycles, (
+                    f"mock CAT transport did not answer {name} every cycle "
+                    f"(TX window): {count} reads in {cycles} cycles"
+                )
     return acquired, reads
 
 
@@ -432,10 +453,11 @@ def test_ftx1_every_declared_polling_path_is_polled() -> None:
 
     read, reads = asyncio.run(_run_ftx1_poll_cycles(cycles=2))
 
-    # Availability resolves against an empty snapshot here: the
-    # receive-only session observes freq/mode/PTT fresh, while the
-    # conditional fields' clause sources stay unobserved (None), which the
-    # poller treats as withheld exactly like a contradicted clause.
+    # Availability resolves against the simulated session: the RX window
+    # observes freq/mode/PTT fresh, the TX window covers the tx_only set,
+    # and conditional fields' clause sources that stay unobserved (None)
+    # are treated as withheld exactly like a contradicted clause — the
+    # same rule the poller's own ``_available`` applies.
     store = StateStore()
     availability = resolve_available_when(acquisition, store.snapshot())
     deficit = pollable - read
