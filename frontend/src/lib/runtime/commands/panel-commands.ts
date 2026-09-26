@@ -18,6 +18,7 @@ import {
 import {
   capabilitiesMatchGeneration,
   getCapabilities,
+  getControlRange,
 } from '$lib/stores/capabilities.svelte';
 import { getFieldStatus, isFieldAvailable } from '$lib/state/field-status';
 import { runtime } from '../frontend-runtime';
@@ -1717,10 +1718,16 @@ function keyboardDelta(value: unknown): number | null {
 
 /** A control's declared raw domain (`caps.controls[key].raw_min/raw_max`,
  *  MOR-1577) — falls back to 0/255 only when caps declares nothing for
- *  `key`, matching the hardcoded domain the `direction`-based fallback
- *  below has always assumed. Data-driven per repo doctrine: no other
- *  hardcoded 255 appears in the `delta`-handling path. */
+ *  `key`, matching the hardcoded domain the CAT write path has always
+ *  assumed. Data-driven per repo doctrine: no other hardcoded 255 appears
+ *  in the `delta`-handling path. Read through the capabilities store's
+ *  `getControlRange` (the same reader every other control-range consumer
+ *  uses), never straight off the caps object. */
 function keyboardControlRawDomain(caps: Capabilities, key: string): { rawMin: number; rawMax: number } {
+  const range = getControlRange(key);
+  const rawMin = range?.raw_min;
+  const rawMax = range?.raw_max;
+  if (typeof rawMin === 'number' && typeof rawMax === 'number') return { rawMin, rawMax };
   const ctrl = caps.controls?.[key];
   return {
     rawMin: typeof ctrl?.raw_min === 'number' ? ctrl.raw_min : 0,
