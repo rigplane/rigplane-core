@@ -435,8 +435,9 @@ Additional optional fields:
 
 | Field            | Type   | Required | Description                                      |
 |------------------|--------|----------|--------------------------------------------------|
-| `style`          | string | no       | `"named_slots"` (default) or `"per_mode"`        |
 | `encoding`       | string | no       | `"segmented_bcd_index"` (default, Icom BCD index), `"raw_byte_index"` (raw byte index), or `"table_index"` (Yaesu) |
+| `first_code`     | int    | no       | First wire code carrying a width value (default `0`). Codes below it carry no Hz value (e.g. the FTX-1 code-00 "(Default)"). The loader reads it as `filter_width_first_code` (`rig_loader.py: load_rig`, first_code default 0; `radio_default_code` must sit below it) and Yaesu width lookups index the per-mode table as `code - first_code`. |
+| `radio_default_code` | int | no     | Writeable code returning the width to the radio's own mode-dependent default. Must sit below `first_code`. |
 | `width_min_hz`   | int    | no       | Minimum IF filter width in Hz                    |
 | `width_max_hz`   | int    | no       | Maximum IF filter width in Hz                    |
 

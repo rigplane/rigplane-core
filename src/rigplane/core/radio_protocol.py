@@ -1622,8 +1622,13 @@ class DspControlCapable(Protocol):
         """Set DSP IF filter width in Hz (Hz↔index translation handled by backend)."""
         ...
 
-    async def get_filter_width(self, receiver: int = 0) -> int:
-        """Get DSP IF filter width in Hz (Hz↔index translation handled by backend)."""
+    async def get_filter_width(self, receiver: int = 0) -> int | None:
+        """Get DSP IF filter width in Hz (Hz↔index translation handled by backend).
+
+        ``None`` when the radio's answer carries no Hz value for the current
+        mode (e.g. a Yaesu mode with no width-table row, or an out-of-table
+        code such as the FTX-1 code-00 "(Default)").
+        """
         ...
 
     async def set_nb(self, on: bool, receiver: int = 0) -> None: ...

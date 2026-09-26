@@ -1785,6 +1785,18 @@ async def _check_mode_set(
     )
 
 
+async def _read_filter_width(radio: DspControlCapable) -> int:
+    """Read the filter width for the RMVR cycle, after the None gate above."""
+    width = await radio.get_filter_width(0)
+    assert width is not None
+    return width
+
+
+async def _write_filter_width(radio: DspControlCapable, value: int) -> None:
+    """Write a filter width during the RMVR cycle."""
+    await radio.set_filter_width(value, 0)
+
+
 async def _check_filter_width_set(
     radio: Radio,
     entry: CapabilityDeclarationEntry,
@@ -1796,14 +1808,36 @@ async def _check_filter_width_set(
     if gate is not None:
         return gate
     dsp = cast(DspControlCapable, radio)
+    original, fail = await _guard(
+        dsp.get_filter_width(0), entry, per_check_timeout=per_check_timeout
+    )
+    if fail is not None:
+        return fail
+    if original is None:
+        # FTX-1 in C4FM answers code 00, out of the width table, so the read
+        # carries no Hz value: the RMVR cycle has no original to nudge or
+        # restore from. SKIP with a reason before any write, using the same
+        # ``reason`` evidence shape as the other SKIP paths in this module.
+        return _base_result(
+            entry,
+            CheckStatus.SKIP,
+            evidence={
+                "reason": (
+                    "filter_width.set skipped: get_filter_width returned no "
+                    "width (unreadable for the current mode); not attempting "
+                    "the RMVR cycle"
+                )
+            },
+        )
     return await _read_modify_verify_restore(
         radio,
         entry,
-        read=lambda: dsp.get_filter_width(0),
-        write=lambda value: dsp.set_filter_width(value, 0),
+        read=lambda: _read_filter_width(dsp),
+        write=lambda value: _write_filter_width(dsp, value),
         make_changed=_nudge_filter,
         equal=_filter_width_equal,
         per_check_timeout=per_check_timeout,
+        restorable=lambda v: v is not None,
     )
 
 

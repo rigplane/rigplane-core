@@ -157,6 +157,32 @@ async def test_filter_width_hz_icom_unchanged_high():
 
 
 # ---------------------------------------------------------------------------
+# MOR-2519 — filter_width.set with an unreadable width (None)
+# ---------------------------------------------------------------------------
+
+
+async def test_filter_width_unreadable_skips_before_any_write():
+    """An unreadable width SKIPs with a reason instead of failing.
+
+    FTX-1 in C4FM answers code 00, out of the width table, so
+    ``get_filter_width`` returns ``None``. The RMVR cycle has no original
+    to nudge or restore from, so the check must SKIP with a reason before
+    any write — never FAIL on the ``_nudge_filter`` TypeError and never
+    touch the radio.
+    """
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "FTX-1"
+    radio.capabilities = {"filter_width"}
+    radio.get_filter_width = AsyncMock(return_value=None)
+    radio.set_filter_width = AsyncMock()
+    check = await _run(radio, check_id="filter_width.set", capability="filter_width")
+    assert check.status is CheckStatus.SKIP
+    assert check.evidence["reason"]
+    radio.set_filter_width.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # FIX 2 — notch.set compound (bool, int) vs bool
 # ---------------------------------------------------------------------------
 

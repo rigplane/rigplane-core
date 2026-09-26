@@ -1355,7 +1355,7 @@ async def test_fixed_mode_width_read_and_set_refusal(connected_radio, mode, fixe
     md_answer = f"MD0{_FIXED_MODE_HEX[mode]}"
 
     async def fake_query(cmd: str) -> str:
-        return md_answer if cmd.startswith("MD") else "SH0002"
+        return md_answer if cmd.startswith("MD") else "SH0001"
 
     connected_radio._transport.query = AsyncMock(side_effect=fake_query)
     assert await connected_radio.read_filter_width(0, mode=mode) == fixed_hz
