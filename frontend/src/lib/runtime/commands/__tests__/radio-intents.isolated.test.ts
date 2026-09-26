@@ -94,9 +94,9 @@ describe('typed non-PTT radio intents', () => {
         harness.sendCommand.mockClear().mockReturnValue(accepted);
         expect(api[method](name, params)).toBe(accepted);
         const { level_unit: _intentUnit, ...rest } = params as Record<string, unknown>;
-        const wireParams = name === 'set_af_level' && (params as Record<string, unknown>).level_unit === 'raw'
+        const wireParams = (params as Record<string, unknown>).level_unit === 'raw'
           ? rest
-          : { ...params, ...(name === 'set_af_level' ? { level_unit: 'normalized' } : {}) };
+          : { ...params, level_unit: 'normalized' };
         expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith(name, wireParams, expect.any(String));
         expect(lifecycle.getCommandLifecycles().at(-1)).toMatchObject({ name, params, status: 'pending' });
       }
