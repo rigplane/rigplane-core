@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
 from dataclasses import replace
 import logging
@@ -1124,3 +1125,74 @@ class TestFetchInitialState:
         # the sweep continues past the failure: every query is still attempted
         assert call_count == len(queries)
         assert radio._initial_state_fetched is True
+
+
+# ------------------------------------------------------------------
+# MOR-2602: the startup fetch must not outrun the send gate
+# ------------------------------------------------------------------
+
+_STARTUP_QUERY_COUNT = 94
+_STARTUP_IN_FLIGHT_BOUND = 2
+
+
+class _GatePacedTransport:
+    """Dispatch that sleeps the gate's gap, the way ``_execute_civ_raw`` does."""
+
+    def __init__(self, gap: float) -> None:
+        self._gap = gap
+        self.sent = 0
+        self.peak = 0
+        self._busy = 0
+
+    async def send_tracked(self, _data: bytes) -> None:
+        self._busy += 1
+        self.peak = max(self.peak, self._busy)
+        try:
+            await asyncio.sleep(self._gap)
+            self.sent += 1
+        finally:
+            self._busy -= 1
+
+
+@pytest.mark.asyncio
+async def test_startup_fetch_never_outruns_the_send_gate() -> None:
+    """94 queries against a gate-paced dispatch drop nothing at the cap.
+
+    The in-flight count stays within ``_STARTUP_IN_FLIGHT_BOUND``: the fetch
+    waits for each dispatch, and the gate's own gap is the only pacer.
+    """
+    from rigplane.core.exceptions import BackgroundSendDropped
+    from rigplane.radio import CoreRadio
+
+    gap = 0.035
+    transport = _GatePacedTransport(gap)
+    radio = CoreRadio("192.168.1.100", timeout=2.0, model="IC-7610")
+    assert len(build_state_queries(radio._profile)) >= _STARTUP_QUERY_COUNT
+    radio._civ_transport = transport
+    radio._connected = True
+    radio._civ_min_interval = gap
+    radio._civ_ack_sink_grace = 0.0
+    radio._last_civ_send_monotonic = 0.0
+    radio._civ_runtime.start_worker()
+    seen = {"dropped": 0}
+    send = radio.send_civ
+
+    async def counting_send(*args: object, **kwargs: object) -> object:
+        try:
+            return await send(*args, **kwargs)
+        except BackgroundSendDropped:
+            seen["dropped"] += 1
+
+    radio.send_civ = counting_send
+    try:
+        await radio._fetch_initial_state()
+    finally:
+        await radio._civ_runtime.stop_worker()
+        radio._connected = False
+
+    assert build_state_queries(radio._profile) and (
+        len(build_state_queries(radio._profile)) >= _STARTUP_QUERY_COUNT
+    )
+    assert transport.sent >= _STARTUP_QUERY_COUNT
+    assert seen["dropped"] == 0
+    assert transport.peak <= _STARTUP_IN_FLIGHT_BOUND
