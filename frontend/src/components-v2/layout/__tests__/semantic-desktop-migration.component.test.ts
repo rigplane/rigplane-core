@@ -1291,8 +1291,8 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
         ?? (el.matches('.content-row, [data-testid="region-content-sentinel"]') ? 'content-row' : null),
     ).filter(Boolean)).toEqual([
       'receiver-deck', 'rf-front-end', 'filter', 'band', 'antenna', 'rit-xit-scan',
-      'scope-controls', 'scope-display', 'content-row', 'rx-audio', 'dsp',
-      'cw-keyer', 'tx-aux', 'meters', 'rx-tx',
+      'scope-controls', 'scope-display', 'content-row', 'rx-tx', 'rx-audio', 'dsp',
+      'cw-keyer', 'tx-aux', 'meters',
     ]);
     expect(zoned.querySelectorAll('[data-testid="region-content-sentinel"]').length).toBe(1);
     expect(zoned.querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
@@ -1301,10 +1301,10 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
       .querySelector('[data-testid="semantic-radio-surfaces"]')!;
     expect([...bare.children].map((el) => el.getAttribute('data-testid')
       ?? el.querySelector('[data-testid$="-surface"]')?.getAttribute('data-testid')).filter(Boolean)).toEqual([
-      'vfo-surface', 'tx-aux-surface', 'meters-surface',
+      'vfo-surface', 'rx-tx-surface', 'tx-aux-surface', 'meters-surface',
       'rx-audio-surface', 'filter-surface', 'dsp-surface', 'rf-front-end-surface',
       'band-surface', 'antenna-surface', 'ritxit-scan-surface', 'cw-keyer-surface',
-      'scope-display-surface', 'scope-controls-surface', 'rx-tx-surface',
+      'scope-display-surface', 'scope-controls-surface',
     ]);
     expect(bare.querySelector('[data-testid="region-content-sentinel"]')).toBeNull();
     expect(bare.querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
