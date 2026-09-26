@@ -1301,10 +1301,10 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
       .querySelector('[data-testid="semantic-radio-surfaces"]')!;
     expect([...bare.children].map((el) => el.getAttribute('data-testid')
       ?? el.querySelector('[data-testid$="-surface"]')?.getAttribute('data-testid')).filter(Boolean)).toEqual([
-      'vfo-surface', 'rx-tx-surface', 'tx-aux-surface', 'meters-surface',
+      'vfo-surface', 'tx-aux-surface', 'meters-surface',
       'rx-audio-surface', 'filter-surface', 'dsp-surface', 'rf-front-end-surface',
       'band-surface', 'antenna-surface', 'ritxit-scan-surface', 'cw-keyer-surface',
-      'scope-display-surface', 'scope-controls-surface',
+      'scope-display-surface', 'scope-controls-surface', 'rx-tx-surface',
     ]);
     expect(bare.querySelector('[data-testid="region-content-sentinel"]')).toBeNull();
     expect(bare.querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
