@@ -31,7 +31,7 @@
  * without the overhead of mounting them.
  */
 
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { radio } from '../radio.svelte';
 
 let tuning: typeof import('../tuning.svelte');
@@ -145,5 +145,48 @@ describe('tuning step store — setAutoStep(true) re-enable semantics (MOR-1486)
     tuning.setAutoStep(true); // the new toggle's "re-enable" path
     expect(tuning.isAutoStep()).toBe(true);
     expect(tuning.getTuningStep()).toBe(1_000); // back to AM's default
+  });
+});
+
+/**
+ * MOR-2242 — the companion step sync PUT (`/api/local/v1/rc28/tuning-step`)
+ * is a Pro-only supervisor endpoint that does not exist on a core-only
+ * server. The browser logs a console error for every failed fetch
+ * regardless of how page JS handles the response, so "degrade silently"
+ * requires not firing the request at all: the PUT may only go out when the
+ * local supervisor advertises itself through the
+ * `<meta name="rigplane-local-supervisor">` marker it injects into the
+ * served page.
+ */
+describe('tuning step store — companion PUT is supervisor-gated (MOR-2242)', () => {
+  const SUPERVISOR_META = 'rigplane-local-supervisor';
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockClear();
+    document.querySelector(`meta[name="${SUPERVISOR_META}"]`)?.remove();
+  });
+
+  afterEach(() => {
+    document.querySelector(`meta[name="${SUPERVISOR_META}"]`)?.remove();
+  });
+
+  it('does not PUT the step to /api/local when no local supervisor advertises itself', () => {
+    tuning.setTuningStep(500);
+    expect(tuning.getTuningStep()).toBe(500);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('PUTs the step to the companion only when the supervisor meta tag is present', () => {
+    const meta = document.createElement('meta');
+    meta.name = SUPERVISOR_META;
+    document.head.appendChild(meta);
+
+    tuning.setTuningStep(250);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('/api/local/v1/rc28/tuning-step');
+    expect(init.method).toBe('PUT');
   });
 });
