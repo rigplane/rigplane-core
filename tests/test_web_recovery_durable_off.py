@@ -777,7 +777,7 @@ async def test_operator_disconnect_leaves_no_fresh_field() -> None:
         profile=acquisition,
         source="poll_response",
     )
-    store.apply(adapter.observation(setting, 50))
+    store.apply_current(adapter.observation(setting, 50))
     assert store.snapshot().field(setting).max_age is None
 
     radio.disconnect = AsyncMock()
