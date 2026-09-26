@@ -1127,7 +1127,10 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
     } as ServerState;
     // The mounted wiring reads caps through the real capabilities store
     // (not the `h.caps` seam), so re-seed the store after every swap —
-    // `beforeEach` seeds only the initial `liveCaps`.
+    // `beforeEach` seeds only the initial `liveCaps`. Pass the same caps
+    // object the store holds: the host reads the published
+    // `controls.af_level` raw domain from it.
+    h.caps = liveCaps(AUDIO_TAGS);
     expect(setCapabilities(h.caps as Capabilities)).toBe(true);
   }
   function select(active: 'MAIN' | 'SUB'): void {
