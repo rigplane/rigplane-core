@@ -7,7 +7,8 @@
   } from '../../lib/renderers/waterfall-renderer';
   import { gesture } from '../../lib/gestures/use-gesture';
   import { vibrate } from '../../lib/utils/haptics';
-  import { canvasBackingSize, readAncestorScale, watchDevicePixelRatio, watchStageScale } from '../../lib/canvas/backing-store.svelte';
+  import { canvasBackingSize, watchDevicePixelRatio, watchStageScale } from '../../lib/canvas/backing-store.svelte';
+  import { getStageScale } from '../../primitives/stage/stage-scale';
 
   interface Props {
     options?: WaterfallOptions;
@@ -38,7 +39,7 @@
   });
 
   function applyBackingStore(): void {
-    const backing = canvasBackingSize(cssWidth, cssHeight, window.devicePixelRatio || 1, readAncestorScale(canvas));
+    const backing = canvasBackingSize(cssWidth, cssHeight, window.devicePixelRatio || 1, getStageScale()());
     renderer?.resize(backing.width, backing.height);
   }
 

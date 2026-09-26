@@ -5,7 +5,8 @@
     defaultSpectrumOptions,
     type SpectrumOptions,
   } from '../../lib/renderers/spectrum-renderer';
-  import { canvasBackingSize, readAncestorScale, watchDevicePixelRatio, watchStageScale } from '../../lib/canvas/backing-store.svelte';
+  import { canvasBackingSize, watchDevicePixelRatio, watchStageScale } from '../../lib/canvas/backing-store.svelte';
+  import { getStageScale } from '../../primitives/stage/stage-scale';
   interface Props {
     data: Uint8Array | null;
     options?: SpectrumOptions;
@@ -46,7 +47,7 @@
   }
 
   function applyBackingStore(): void {
-    const backing = canvasBackingSize(cssWidth, cssHeight, window.devicePixelRatio || 1, readAncestorScale(canvas));
+    const backing = canvasBackingSize(cssWidth, cssHeight, window.devicePixelRatio || 1, getStageScale()());
     canvas.width = backing.width;
     canvas.height = backing.height;
     canvas.getContext('2d')?.setTransform(backing.pixelScale, 0, 0, backing.pixelScale, 0, 0);

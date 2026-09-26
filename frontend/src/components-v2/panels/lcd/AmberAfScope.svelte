@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import type { ControlDisplayDomain } from '$lib/radio/filter-controls';
-  import { canvasBackingSize, readAncestorScale, watchDevicePixelRatio, watchStageScale } from '../../../lib/canvas/backing-store.svelte';
+  import { canvasBackingSize, watchDevicePixelRatio, watchStageScale } from '../../../lib/canvas/backing-store.svelte';
+  import { getStageScale } from '../../../primitives/stage/stage-scale';
 
   interface Props {
     /** FFT pixel data from AudioFftScope (0-160 range) */
@@ -404,7 +405,7 @@
   }
 
   function applyBackingStore(cssW: number, cssH: number): void {
-    const backing = canvasBackingSize(cssW, cssH, window.devicePixelRatio || 1, readAncestorScale(canvas));
+    const backing = canvasBackingSize(cssW, cssH, window.devicePixelRatio || 1, getStageScale()());
     canvas.width = backing.width;
     canvas.height = backing.height;
     canvas.getContext('2d')?.setTransform(backing.pixelScale, 0, 0, backing.pixelScale, 0, 0);

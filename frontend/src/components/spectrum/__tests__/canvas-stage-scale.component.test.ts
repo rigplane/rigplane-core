@@ -53,12 +53,8 @@ class HostResizeObserver {
 }
 
 function rectFor(element: HTMLElement): { width: number; height: number } {
-  const box = boxFor(element);
   if (element.classList.contains('scaled-stage-holder')) return { width: hostWidth, height: hostHeight };
-  // A canvas painted under the stage's transform: its layout box is its own
-  // size, its painted box is that size times the stage's current scale.
-  const scale = hostWidth / NATIVE_WIDTH;
-  return { width: box.width * scale, height: box.height * scale };
+  return boxFor(element);
 }
 
 function resizeHost(width: number, height: number): void {
