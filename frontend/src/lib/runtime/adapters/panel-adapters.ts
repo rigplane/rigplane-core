@@ -778,9 +778,10 @@ export function getAfLevelControlFeedback(
   const session = currentControlSession ?? runtime.controlSession;
   const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
   const scopeOnSub = receiver === undefined ? state?.active === 'SUB' : receiver === 'SUB';
+  const scope = { control: 'af-level', receiver: scopeOnSub ? 1 : 0 } as const;
   const feedback = projectControlFeedback(
     AF_LEVEL_COMMAND_DESCRIPTOR, state, commands,
-    { control: 'af-level', receiver: scopeOnSub ? 1 : 0 }, epoch,
+    scope, epoch,
     isCommandLifecycleSuperseded,
   );
   try {

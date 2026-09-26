@@ -258,8 +258,9 @@ const admittedTargetOf = (command: Pick<CommandLifecycle, 'admittedTarget'>): nu
  *
  *  MOR-1676 part A (AF): the unit lives in the intent params, so the scope
  *  accepts both the raw `set_af_level` (`level_unit: 'raw'`) and the legacy
- *  normalized `set_af_level` (`level_unit: 'normalized'`) — one control,
- *  and the server-admitted target is normalized either way. */
+ *  normalized `set_af_level` (`level_unit: 'normalized'`) — one command
+ *  name, one control, and the server-admitted target is normalized either
+ *  way. */
 const afLevelScope = (command: Pick<CommandLifecycle, 'params'>) => {
   const receiver = command.params.receiver;
   const unit = command.params.level_unit;

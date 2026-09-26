@@ -1212,7 +1212,7 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
     slider.dispatchEvent(new PointerEvent('pointerup', { pointerId: 9, bubbles: true }));
     flushSync();
     expect(afCalls().at(-1)).toEqual({ name: 'set_af_level', level: 230, receiver: 1, level_unit: 'raw' });
-    expect(afCalls().every((params) => (params as { receiver: number }).receiver === 1)).toBe(true);
+    expect(afCalls().every((params) => (params as unknown as { receiver: number }).receiver === 1)).toBe(true);
   });
 
   it.each([['MAIN', 'main'], ['SUB', 'sub']] as const)(
