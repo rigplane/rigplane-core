@@ -12,7 +12,10 @@ Harness reused from ``tests/test_acquisition_scheduler.py``: the real
 over a ``FreshnessClock``/``StateStore``, drained through the real
 ``IcomCivAcquisitionExecutor`` (via
 ``tests/_acquisition_query_helpers.py::recording_executor``) against a
-fake transport that answers, tick by tick.
+fake transport that answers, tick by tick. This covers the CI-V
+acquisition profiles (Icom and Xiegu); the Yaesu CAT profile (FTX-1)
+drains no scheduler in production (``AcquisitionScheduler`` is never
+drained on that backend), so it is out of scope here.
 
 The only exemptions are paths whose declared policy withholds them in the
 simulated state, computed from the profile's own policy, never from a
@@ -66,7 +69,10 @@ SLOWEST_CADENCE_RUNS = 2
 
 def _answer(request_paths: tuple[FieldPath, ...], *, store: StateStore) -> ChangeSet:
     """Apply one fake-transport answer per path; return the credit changeset."""
-    revision = store.snapshot().revision
+    snapshot = store.snapshot()
+    revision = snapshot.state_revision
+    freshness_revision = snapshot.freshness_revision
+    observation_seq = snapshot.observation_seq
     for path in request_paths:
         store.apply(
             Observation(
@@ -83,8 +89,8 @@ def _answer(request_paths: tuple[FieldPath, ...], *, store: StateStore) -> Chang
         )
     return ChangeSet(
         revision=revision + 1,
-        freshness_revision=revision + 1,
-        observation_seq=revision + 1,
+        freshness_revision=freshness_revision + 1,
+        observation_seq=observation_seq + 1,
         changes=(),
         timestamp_monotonic=store.snapshot().generated_at_monotonic,
         sources=(
@@ -148,6 +154,7 @@ def _shipped_profiles() -> list[tuple[str, str, Path]]:
         if path.is_file()
         and not path.name.startswith("_")
         and "[state_acquisition]" in path.read_text()
+        and 'provider = "yaesu_cat"' not in path.read_text()
     )
 
 
