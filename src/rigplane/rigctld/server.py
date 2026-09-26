@@ -1240,21 +1240,55 @@ class RigctldServer:
                 for task in tasks:
                     if not task.done():
                         task.cancel()
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+            # The retirement below must survive the cancellation ``stop()``
+            # sends: awaited bare, a cancel landing on the gather inside it
+            # would skip the unconditional socket close and park the
+            # listener's ``wait_closed()`` forever (MOR-1887). Run it as its
+            # own task, shield the wait, and wait it out even when cancelled
+            # — the same handback pattern ``_release_session_tx`` uses.
+            retirement = loop.create_task(
+                self._retire_client_connection(
+                    session_id=session_id,
+                    client_id=client_id,
+                    tasks=tasks,
+                    writer=writer,
+                )
+            )
             try:
-                await self._release_session_tx(session_id)
-            finally:
-                # Unconditional, and nested so no failure above can skip it:
-                # since 3.12 the listener's ``wait_closed()`` returns only once
-                # every accepted connection has gone, so a socket abandoned
-                # here would leave ``stop()`` waiting on it forever (MOR-1014).
-                try:
-                    writer.close()
-                    await writer.wait_closed()
-                except (OSError, asyncio.CancelledError):
-                    pass
-                logger.info("client #%d disconnected", client_id)
+                await asyncio.shield(retirement)
+            except asyncio.CancelledError:
+                await retirement
+                raise
+
+    async def _retire_client_connection(
+        self,
+        *,
+        session_id: str,
+        client_id: int,
+        tasks: tuple[asyncio.Task[None], ...],
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        """Retire one departing client: wait out its replies, then its socket.
+
+        Bounded by the response tasks' own cancellation and the session TX
+        handback, both of which complete on their own; nothing here waits on
+        the peer.
+        """
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await self._release_session_tx(session_id)
+        finally:
+            # Unconditional, and nested so no failure above can skip it:
+            # since 3.12 the listener's ``wait_closed()`` returns only once
+            # every accepted connection has gone, so a socket abandoned
+            # here would leave ``stop()`` waiting on it forever (MOR-1014).
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except (OSError, asyncio.CancelledError):
+                pass
+            logger.info("client #%d disconnected", client_id)
 
     async def _execute_and_retire_client_command(
         self,
