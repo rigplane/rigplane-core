@@ -30,7 +30,7 @@ import {
   validateRadioViewModel, type RadioViewModel, type ReceiverId,
   type ReceiverIndicatorViewModel, type VfoSlot,
 } from '../radio-view-model';
-import { topologyFixtures, withAudioOnlyScope, type TopologyFixtureId } from '../fixtures/topologies';
+import { topologyFixtures, withAudioOnlyScope, withBand, type TopologyFixtureId } from '../fixtures/topologies';
 import { createTuningAccumulator } from '$lib/runtime/commands/tuning-accumulator';
 import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
 import {
@@ -2217,6 +2217,49 @@ describe('per-receiver tuning (MOR-1335) — cross-dispatch is impossible', () =
     const t = mountSurface({ viewModel: topologyFixtures[id], onTuneFrequency: vi.fn() });
     expect(withDigits(t)).toHaveLength(1);
     expect(tileOf(withDigits(t)[0]).dataset.vfoActive).toBe('true');
+  });
+
+  // MOR-1331: the digit widget accepts bounds, but this seam passed none —
+  // stepping past the band's tuneMaxHz still left. With a band pinning
+  // 14.200–14.300 MHz over a 14.250 MHz tile, a +1 MHz wheel step must clamp
+  // to 14.300 MHz; a half-known bound pair (max unknown) keeps the legacy
+  // wide-open clamp.
+  it('clamps a digit step to the band tuneMaxHz at this seam', () => {
+    const base = withBand(topologyFixtures['1/single']);
+    const model = validateRadioViewModel({
+      ...base,
+      vfos: base.vfos.map((vfo) => ({ ...vfo, frequencyHz: 14_250_000 })),
+      band: { ...base.band!, tuneMinHz: 14_200_000, tuneMaxHz: 14_300_000 },
+    });
+    const onTuneFrequency = vi.fn();
+    const t = mountSurface({ viewModel: model, onTuneFrequency });
+    const digits = activeSlot(t).querySelectorAll<HTMLElement>('.digit');
+    const mhzDigit = [...digits].find((digit) => digit.textContent === '4')!;
+    mhzDigit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    mhzDigit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
+    flushSync();
+    expect(onTuneFrequency).toHaveBeenCalledExactlyOnceWith('MAIN', 14_300_000);
+  });
+
+  it('keeps the legacy wide clamp while one band edge is unknown', () => {
+    const base = withBand(topologyFixtures['1/single']);
+    const model = validateRadioViewModel({
+      ...base,
+      vfos: base.vfos.map((vfo) => ({ ...vfo, frequencyHz: 14_250_000 })),
+      band: { ...base.band!, tuneMinHz: 30_000, tuneMaxHz: null },
+    });
+    const onTuneFrequency = vi.fn();
+    const t = mountSurface({ viewModel: model, onTuneFrequency });
+    // Same digit pick as the VfoPanel pin: "14.250.000" renders the 10 MHz
+    // '1' first. Stepping it stays inside the legacy clamp and proves the
+    // half-known band pair engaged nothing.
+    const digits = activeSlot(t).querySelectorAll<HTMLElement>('.digit');
+    const tenMhzDigit = digits[0];
+    expect(tenMhzDigit.textContent).toBe('1');
+    tenMhzDigit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    tenMhzDigit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
+    flushSync();
+    expect(onTuneFrequency).toHaveBeenCalledExactlyOnceWith('MAIN', 14_250_000 + 10_000_000);
   });
 });
 
