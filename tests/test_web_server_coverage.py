@@ -3698,7 +3698,9 @@ async def test_deferred_lifecycle_ack_identity_and_bounded_queue() -> None:
 
 
 @pytest.mark.asyncio
-async def test_link_loss_termination_reason_pins_toast_filter_contract_with_page() -> None:
+async def test_link_loss_termination_reason_pins_toast_filter_contract_with_page() -> (
+    None
+):
     # MOR-2241: pins the contract with frontend/src/components/shared/Toast.svelte —
     # the page suppresses per-command toasts while disconnected only for this
     # exact code/params pair; rewording the server literal silently breaks it.
