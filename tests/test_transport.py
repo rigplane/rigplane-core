@@ -266,6 +266,27 @@ class TestConnectionState:
             }
         ]
 
+    @pytest.mark.asyncio
+    async def test_reconnect_with_no_remote_id_falls_back_to_full_discovery(
+        self,
+    ) -> None:
+        """reconnect() with remote_id == 0 must run a full connect(), discovery
+        included: that fallback is what the watchdog escalation relies on."""
+        t = IcomTransport()
+        t.remote_id = 0
+        t.my_id = 0x0001C352
+        loop = _FakeLoop(("192.168.2.194", 50001))
+        discover = AsyncMock()
+
+        with (
+            patch("rigplane.transport.asyncio.get_running_loop", return_value=loop),
+            patch.object(t, "_discover", new=discover),
+            patch.object(t, "_ready_handshake", new=AsyncMock()),
+        ):
+            await t.reconnect("192.168.2.1", 50001)
+
+        discover.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # Sequence numbers
