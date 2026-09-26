@@ -3332,6 +3332,38 @@ bogus = [0, 1]
         assert getattr(rig, values_attr) is None
 
 
+class TestNotchWidthLabelsComplete:
+    """MOR-1685: a declared ``[notch] width_values`` entry with no label
+    would raise ``KeyError`` inside the capabilities serializer at request
+    time — the loader must fail loud at load time instead. Notch only:
+    the sibling domains keep ``_parse_enumerated_domain`` semantics."""
+
+    def test_notch_rejects_partial_width_labels(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+[notch]
+width_values = [0, 1, 2]
+width_labels = { "0" = "A" }
+""",
+        )
+        with pytest.raises(RigLoadError, match=r"width_labels.*1"):
+            load_rig(p)
+
+    def test_notch_rejects_width_values_without_labels_table(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+[notch]
+width_values = [0, 1, 2]
+""",
+        )
+        with pytest.raises(RigLoadError, match=r"width_labels"):
+            load_rig(p)
+
+
 class TestBreakInDomainDeclaredOrDocumentedAbsent:
     """Every shipped profile must land on one of exactly two sides:
 
