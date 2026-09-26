@@ -1308,21 +1308,29 @@ def test_ic7300_panel_knob_fields_are_polled_at_the_panel_class_cadence() -> Non
 
 
 def test_ic7300_supply_meter_ttls_clear_twice_their_cadence() -> None:
-    """MOR-2425: ``vd``/``id`` are what a CI-V observation is stamped with.
+    """MOR-2425: ``id`` keeps a TTL at least twice its cadence; ``vd`` does not expire.
 
-    Since ``runtime/_civ_rx.py: _observation_max_age`` reads this key, the
-    resolved TTL is the window a supply-rail reading actually gets. These two
-    were the only IC-7300 meters whose TTL sat below twice their cadence.
+    ``id`` carries an explicit ``field_policies`` TTL (2.0 s over a 1.0 s
+    cadence) because it is a TX_WINDOW meter that must retire promptly on
+    dekey. ``vd`` is a class-resolved SETTING with no entry of its own, so
+    since MOR-2615 it stamps ``None`` — no expiry while the link is
+    healthy — and skips the two-interval check (the shared CI-V stamp gate
+    above covers the same exemption).
     """
 
     acquisition = get_radio_profile("IC-7300").state_acquisition
     assert acquisition is not None
 
-    for name in ("vd", "id"):
-        path = FieldPath.global_("meters", name)
-        policy = acquisition.policy_for(path)
-        assert acquisition.capability_for(path).can_poll is True, path
-        assert policy.freshness_ttl_seconds >= 2 * policy.cadence_seconds, path
+    vd = FieldPath.global_("meters", "vd")
+    assert vd not in acquisition.field_policies
+    assert acquisition.capability_for(vd).can_poll is True
+    assert acquisition.policy_for(vd).freshness_ttl_seconds is None
+
+    path = FieldPath.global_("meters", "id")
+    policy = acquisition.policy_for(path)
+    assert acquisition.capability_for(path).can_poll is True, path
+    assert policy.freshness_ttl_seconds is not None
+    assert policy.freshness_ttl_seconds >= 2 * policy.cadence_seconds, path
 
 
 def test_ic7300_on_demand_fields_keep_the_never_ttl() -> None:
