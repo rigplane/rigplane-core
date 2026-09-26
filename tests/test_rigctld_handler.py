@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -5233,6 +5234,63 @@ async def test_set_vfo_no_args_returns_einval(
 ) -> None:
     resp = await dual_rx_handler.execute(set_cmd("set_vfo"))
     assert resp.error == HamlibError.EINVAL
+
+
+@pytest.mark.asyncio
+async def test_set_vfo_dual_rx_rejected_select_answers_erjcted(
+    dual_rx_handler: RigctldHandler,
+    dual_rx_radio: AsyncMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A dual-RX radio that rejects the VFO select answers RPRT -9 (MOR-2621).
+
+    ``CommandError`` from ``select_receiver`` is the radio refusing the
+    select — not an internal failure — so the client must read ERJCTED
+    and no ERROR-level "Internal error" record may be emitted.
+    """
+    dual_rx_radio.select_receiver.side_effect = IcomCommandError(
+        "Radio rejected VFO select SUB"
+    )
+    with caplog.at_level(logging.DEBUG, logger="rigplane.rigctld.handler"):
+        resp = await dual_rx_handler.execute(set_cmd("set_vfo", "VFOB"))
+
+    assert resp.error == HamlibError.ERJCTED
+    assert (
+        format_response(set_cmd("set_vfo", "VFOB"), resp, ClientSession())
+        == b"RPRT -9\n"
+    )
+    assert not any(
+        record.levelno >= logging.ERROR and "Internal error" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_set_vfo_single_rx_rejected_slot_answers_erjcted(
+    single_rx_handler: RigctldHandler,
+    single_rx_radio: AsyncMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A single-RX radio that rejects the VFO slot answers RPRT -9 (MOR-2621).
+
+    Same contract as the dual-RX case, for ``set_vfo_slot``: a
+    ``CommandError`` refusal maps to ERJCTED with no "Internal error" log.
+    """
+    single_rx_radio.set_vfo_slot.side_effect = IcomCommandError(
+        "Radio rejected VFO select B"
+    )
+    with caplog.at_level(logging.DEBUG, logger="rigplane.rigctld.handler"):
+        resp = await single_rx_handler.execute(set_cmd("set_vfo", "VFOB"))
+
+    assert resp.error == HamlibError.ERJCTED
+    assert (
+        format_response(set_cmd("set_vfo", "VFOB"), resp, ClientSession())
+        == b"RPRT -9\n"
+    )
+    assert not any(
+        record.levelno >= logging.ERROR and "Internal error" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 # -- legacy backend fallback (issue #1189) ------------------------------------
