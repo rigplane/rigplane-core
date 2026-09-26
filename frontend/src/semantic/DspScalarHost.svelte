@@ -12,6 +12,7 @@
     type ScalarDomain,
   } from '../primitives/scalar/continuous-scalar.svelte';
   import { rawToPercentDisplay } from '../primitives/scalar/value-control-core';
+  import { resolveControlContract } from '../lib/radio/filter-controls';
   import { NOTCH_WIDTH_LABELS, formatAgcTime } from '../components-v2/panels/dsp-panel-logic';
   import { disabledReasonText } from './disabled-reason';
   import type { NotchWidthChoice } from '../lib/types/capabilities';
@@ -168,6 +169,31 @@
     return field === 'nbLevel' && nbLevelPercent
       ? rawToPercentDisplay(value, 0, nbLevelMax) : String(value);
   }
+  /** MOR-2635: the pending target is the raw CAT code; the confirmed reading
+   *  is already Hz when the radio publishes a domain. Decode through the same
+   *  contract the reading uses (`resolveControlContract` → `rawToDisplay`, the
+   *  path `manualNotchReading` takes). A target already equal to the decoded
+   *  reading is left as-is. No published domain leaves the raw code. */
+  function notchPendingDisplay(field: DspScalarField, target: number | null): number | null {
+    const domain = dsp?.notchFreqDomain;
+    if (field !== 'notchFreq' || target === null || domain == null) return target;
+    const reading = dsp?.notchFreq.reading.status === 'known' ? dsp.notchFreq.reading.value : null;
+    if (target === reading) return target;
+    const steps = (domain.max - domain.min) / domain.step;
+    const display = resolveControlContract(
+      {
+        capabilities: ['notch'], receivers: 1,
+        controls: { manual_notch_freq: {
+          mapping: 'linear', raw_min: 1, raw_max: steps + 1, raw_step: 1, raw_origin: 1,
+          display_min: String(domain.min), display_max: String(domain.max),
+          display_step: String(domain.step), display_origin: String(domain.origin),
+          display_unit: 'Hz', quantization: 'reject', restoration: 'exact',
+        } },
+      } as never,
+      'manual_notch_freq',
+    ).rawToDisplay(target);
+    return display ?? target;
+  }
   function canonical(field: DspScalarField): number | null {
     const current = feedback[field];
     return current.availability === 'available' ? current.confirmed : null;
@@ -175,7 +201,7 @@
   function status(field: DspScalarField): string {
     const current = feedback[field];
     if (current.phase === 'idle') return '';
-    const target = current.target ?? current.requestedTarget;
+    const target = notchPendingDisplay(field, current.target ?? current.requestedTarget);
     const requested = target === null ? '' : `; requested ${formatValue(field, target)}`;
     const confirmed = `; confirmed ${formatValue(field, current.confirmed)}`;
     const error = current.outcome?.error === undefined ? '' : `; ${current.outcome.error}`;

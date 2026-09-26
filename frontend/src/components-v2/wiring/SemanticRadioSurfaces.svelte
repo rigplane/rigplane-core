@@ -1679,8 +1679,9 @@
   let keySpeedFeedback = $derived(getKeySpeedControlFeedback(controlSession));
   /**
    * Command feedback for every hosted DSP settings scalar. `nbLevel`,
-   * `nbWidth`, notch and AGC stay wire-raw; NR level and NB depth use the
-   * adapter's established display projections before reaching the renderer.
+   * `nbWidth`, notch and AGC stay wire-raw here; NR level and NB depth use
+   * the adapter's display projections. The host decodes a pending
+   * manual-notch target itself when the radio publishes a domain (MOR-2635).
    */
   let dspScalarFeedback = $derived({
     nbLevel: getDspControlFeedback('nbLevel'),
