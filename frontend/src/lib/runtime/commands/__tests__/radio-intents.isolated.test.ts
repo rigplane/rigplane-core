@@ -81,11 +81,10 @@ describe('typed non-PTT radio intents', () => {
     const examples = [
       ['set_freq', { freq: 14_074_000, receiver: 0 }],
       ['set_mode', { mode: 'CW', receiver: 1 }],
-      // MOR-1676 part A (AF): the caller states the unit. A unit-less AF
-      // level is normalized (tagged, even for 0 and 1 — `1.0 === 1` in JS,
-      // so the number alone must never decide); `level_unit: 'raw'` states
-      // a raw integer and is stripped before `sendCommand`.
-      ['set_af_level', { level: 1, receiver: 0 }],
+      // MOR-1676 part A (AF): the caller states the unit in the intent
+      // params. A float is always the legacy normalized level (tagged);
+      // `level_unit: 'raw'` states a raw integer (stripped before
+      // `sendCommand`). The number alone never decides (`1.0 === 1`).
       ['set_af_level', { level: 0.5, receiver: 0 }],
       ['set_af_level', { level: 128, receiver: 0, level_unit: 'raw' }],
       ['vfo_swap', {}],
@@ -95,9 +94,9 @@ describe('typed non-PTT radio intents', () => {
         harness.sendCommand.mockClear().mockReturnValue(accepted);
         expect(api[method](name, params)).toBe(accepted);
         const { level_unit: _intentUnit, ...rest } = params as Record<string, unknown>;
-        const wireParams = name === 'set_af_level' && (params as Record<string, unknown>).level_unit !== 'raw'
-          ? { ...params, level_unit: 'normalized' }
-          : rest;
+        const wireParams = name === 'set_af_level' && (params as Record<string, unknown>).level_unit === 'raw'
+          ? rest
+          : { ...params, level_unit: 'normalized' };
         expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith(name, wireParams, expect.any(String));
         expect(lifecycle.getCommandLifecycles().at(-1)).toMatchObject({ name, params, status: 'pending' });
       }
@@ -442,11 +441,11 @@ describe('typed non-PTT radio intents', () => {
   });
 
   it('accepts exact normalized AF boundaries and fractions without weakening integer fields', () => {
-    // MOR-1676 part A (AF): the legacy normalized path is the separate
-    // `set_af_level_normalized` intent — ALWAYS sent tagged `level_unit:
-    // 'normalized'`, whether the value is 0, 1 or a fraction. `1.0 === 1`
-    // in JS, so the number alone must never decide the unit: a normalized
-    // 1.0 sent untagged would reach the server as raw 1 (near silence).
+    // MOR-1676 part A (AF): the legacy normalized path states its unit
+    // (`level_unit: 'normalized'`) and is ALWAYS sent tagged — whether the
+    // value is 0, 1 or a fraction. `1.0 === 1` in JS, so the number alone
+    // must never decide the unit: a normalized 1.0 sent untagged would
+    // reach the server as raw 1 (near silence).
     const levels = [0, 1, 0.5, 50 / 255] as const;
     levels.forEach((level, index) => intents.dispatchRadioIntent({
       id: `af-normalized-${index}`,
@@ -455,7 +454,7 @@ describe('typed non-PTT radio intents', () => {
     }));
 
     levels.forEach((level, index) => expect(harness.sendCommand).toHaveBeenNthCalledWith(
-      index + 1, 'set_af_level_normalized', { level, receiver: 0, level_unit: 'normalized' }, `af-normalized-${index}`,
+      index + 1, 'set_af_level', { level, receiver: 0, level_unit: 'normalized' }, `af-normalized-${index}`,
     ));
     expect(lifecycle.getCommandLifecycles()).toHaveLength(levels.length);
     expect(lifecycle.getCommandLifecycles()).toEqual(expect.arrayContaining(levels.map((_, index) =>
