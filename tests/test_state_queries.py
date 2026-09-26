@@ -1178,7 +1178,7 @@ async def test_startup_fetch_never_outruns_the_send_gate() -> None:
     radio._civ_ack_sink_grace = 0.0
     radio._last_civ_send_monotonic = 0.0
     radio._civ_runtime.start_worker()
-    seen = {"dropped": 0}
+    seen = {"dropped": 0, "errors": []}
     send = radio.send_civ
 
     async def counting_send(*args: object, **kwargs: object) -> object:
@@ -1186,6 +1186,9 @@ async def test_startup_fetch_never_outruns_the_send_gate() -> None:
             return await send(*args, **kwargs)
         except BackgroundSendDropped:
             seen["dropped"] += 1
+        except Exception as exc:
+            seen["errors"].append(f"{type(exc).__name__}: {exc}")
+            raise
 
     radio.send_civ = counting_send
     try:
@@ -1197,6 +1200,7 @@ async def test_startup_fetch_never_outruns_the_send_gate() -> None:
     assert build_state_queries(radio._profile) and (
         len(build_state_queries(radio._profile)) >= _STARTUP_QUERY_COUNT
     )
+    assert not seen["errors"], seen["errors"]
     assert transport.sent >= _STARTUP_QUERY_COUNT
     assert seen["dropped"] == 0
     assert transport.peak <= _STARTUP_IN_FLIGHT_BOUND
