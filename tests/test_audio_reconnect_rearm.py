@@ -22,10 +22,12 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import struct
 
 import pytest
 
-from rigplane.core.transport import IcomTransport
+from rigplane.audio import AudioStream
+from rigplane.core.transport import CONTROL_SIZE, IcomTransport
 from rigplane.runtime._audio_runtime_mixin import AudioRuntimeMixin
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime._control_phase import ControlPhaseRuntime
@@ -310,3 +312,64 @@ async def test_soft_reconnect_recovers_audio(monkeypatch) -> None:
     assert host._audio_transport is not None
     assert host._audio_stream is not None
     assert host.rx_live is True
+
+
+def _audio_data_packet(seq: int) -> bytes:
+    """A non-scope data packet, the shape the radio sends on the audio port."""
+    pkt = bytearray(CONTROL_SIZE + 8)
+    struct.pack_into("<I", pkt, 0, len(pkt))
+    struct.pack_into("<H", pkt, 4, 0x00)
+    struct.pack_into("<H", pkt, 6, seq)
+    return bytes(pkt)
+
+
+class _DiscardHost(AudioRuntimeMixin):
+    """Real ``start_rx`` / ``stop_rx`` over a real transport and stream.
+
+    The connect check and the transport setup are the radio's job; this
+    host already has both, so those seams are skipped.
+    """
+
+    def __init__(self) -> None:
+        self._audio_transport = IcomTransport()
+        self._audio_stream = AudioStream(self._audio_transport)
+        self._opus_rx_user_callback = None
+        self._opus_rx_jitter_depth = 0
+
+    def _check_connected(self) -> None:
+        return None
+
+    async def _ensure_audio_transport(self) -> None:
+        return None
+
+    def _arm_pcm_ingress(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_stopped_rx_discards_audio_and_restart_queues_again() -> None:
+    """An idle audio stream must not queue packets nobody reads.
+
+    After RX stops, incoming data packets are dropped. After RX starts
+    again, the same packets are queued and the loop reads them.
+    """
+    host = _DiscardHost()
+    transport = host._audio_transport
+    assert transport is not None
+
+    await host.start_rx(lambda _pkt: None, jitter_depth=0)
+    await host.stop_rx()
+
+    for seq in range(1, 6):
+        transport._handle_packet(_audio_data_packet(seq))
+    assert transport._packet_queue.empty()
+
+    await host.start_rx(lambda _pkt: None, jitter_depth=0)
+    for seq in range(6, 9):
+        transport._handle_packet(_audio_data_packet(seq))
+
+    queued = []
+    while not transport._packet_queue.empty():
+        queued.append(transport._packet_queue.get_nowait())
+    assert [struct.unpack_from("<H", pkt, 6)[0] for pkt in queued] == [6, 7, 8]
+    await host.stop_rx()
