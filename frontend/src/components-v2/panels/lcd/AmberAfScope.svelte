@@ -2,7 +2,6 @@
   import { onMount, untrack } from 'svelte';
   import type { ControlDisplayDomain } from '$lib/radio/filter-controls';
   import { canvasBackingSize, watchDevicePixelRatio, watchStageScale } from '../../../lib/canvas/backing-store.svelte';
-  import { getStageScale } from '../../../primitives/stage/stage-scale';
 
   interface Props {
     /** FFT pixel data from AudioFftScope (0-160 range) */
@@ -416,7 +415,7 @@
 
   // The stage's transform does not resize this canvas, so nothing else here
   // notices a scale change (MOR-1161).
-  watchStageScale(() => { void backingEpoch; if (canvas) applyBackingStore(cssWidth, cssHeight, getStageScale()()); });
+  watchStageScale(() => { void backingEpoch; if (canvas) applyBackingStore(cssWidth, cssHeight, 1); });
 
   function onVisibilityChange() {
     visible = !document.hidden;
