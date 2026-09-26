@@ -3082,12 +3082,19 @@
       reorders within it.
 
       This branch has no desktop columns, so mount order is the tab order.
-      Optional surfaces mount before rx-tx (MOR-1347): a plan that lists
-      rxTx early must not put the key ahead of rx-audio.
+      MOR-1082: an explicit plan is the order — `singleOrder` already flattens
+      zone declarations, and a zone that mounts both surfaces (mobile
+      `portrait-deck`) may put rxTx first. MOR-1347's rx-tx-last rule applies
+      only where no plan orders these surfaces: the zone-less direct mount.
     -->
     {#each singleOrder as surface (surface)}
-      {#if surface === 'vfo'}
-        {@render vfoSurface()}
+      {#if surface === 'vfo' || (surface === 'rxTx' && surfacePlan() !== null)}
+        {#if surface === 'vfo'}
+          {@render vfoSurface()}
+        {:else}
+          {@render rxTxSurface()}
+          {@render txFaultRecovery()}
+        {/if}
       {/if}
     {/each}
     <!-- MOR-2231 (step 1, batch 5): the twelve OPTIONAL surfaces take
@@ -3118,16 +3125,18 @@
       'scopeControls', view?.scopeControls !== undefined, scopeControlsSurface,
       allowBareSurfaces,
     )}
-    {#each singleOrder as surface (surface)}
-      {#if surface === 'rxTx'}
-        {@render rxTxSurface()}
-      {/if}
-    {/each}
-    <!-- MOR-1347: this branch has no desktop columns, so mount order is the
-         tab order. rx-tx stays last once optional surfaces such as rx-audio
-         have mounted. Fault recovery still follows the key immediately, and
-         still renders when a plan has subtracted rxTx. -->
-    {@render txFaultRecovery()}
+    {#if surfacePlan() === null}
+      {#each singleOrder as surface (surface)}
+        {#if surface === 'rxTx'}
+          {@render rxTxSurface()}
+        {/if}
+      {/each}
+      <!-- MOR-1347: no plan orders these surfaces, so mount order is the tab
+           order and rx-tx stays last once optional surfaces such as rx-audio
+           have mounted. Fault recovery still follows the key immediately, and
+           still renders when rxTx is absent. -->
+      {@render txFaultRecovery()}
+    {/if}
     {@render txAdjacentAlerts()}
     {/if}
   {/if}
