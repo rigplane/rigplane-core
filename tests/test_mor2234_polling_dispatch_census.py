@@ -334,7 +334,6 @@ def _make_ftx1_radio() -> MagicMock:
 
 async def _run_ftx1_poll_cycles(*, cycles: int) -> set[FieldPath]:
     """Drive every Yaesu poll lane; return the published paths."""
-    from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
     from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 
     radio = _make_ftx1_radio()
@@ -354,7 +353,6 @@ async def _run_ftx1_poll_cycles(*, cycles: int) -> set[FieldPath]:
         await poller._poll_slow()  # noqa: SLF001
         read.update(item.path for item in collected)
         collected.clear()
-    assert YaesuObservationAdapter is not None
     return read
 
 
