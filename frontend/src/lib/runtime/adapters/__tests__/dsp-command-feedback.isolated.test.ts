@@ -304,6 +304,48 @@ describe('notch-position confirmed echo follows the value-side source (MOR-1680)
     });
   });
 
+  it('FTX-1: a pending raw 160 decodes to the same 1600 Hz as the reading (MOR-2635)', () => {
+    h.state = state({
+      main: { ...state().main, manualNotchFreq: 160 },
+      fieldStatus: { ...state().fieldStatus, 'main.manualNotchFreq': fresh() },
+    });
+    h.caps = ftx1Caps;
+    h.commands = [command('notchFilter', 160)];
+    expect(getDspControlFeedback('notchFilter', connected)).toMatchObject({
+      availability: 'available', phase: 'submitted',
+      confirmed: 1600, target: 1600, requestedTarget: 1600,
+    });
+  });
+
+  it('FTX-1 overlap: confirmed raw 16 and requested raw 160 stay distinct in Hz (MOR-2635)', () => {
+    h.state = state({
+      main: { ...state().main, manualNotchFreq: 16 },
+      fieldStatus: { ...state().fieldStatus, 'main.manualNotchFreq': fresh() },
+    });
+    h.caps = ftx1Caps;
+    h.commands = [command('notchFilter', 160)];
+    expect(getDspControlFeedback('notchFilter', connected)).toMatchObject({
+      availability: 'available', phase: 'submitted',
+      confirmed: 160, target: 1600, requestedTarget: 1600,
+    });
+  });
+
+  it('FTX-1 raw fallback: a published domain with an unusable reading keeps the target raw (MOR-2635)', () => {
+    h.state = state({
+      main: { ...state().main, notchFilter: 40, manualNotchFreq: 16 },
+      fieldStatus: {
+        ...state().fieldStatus,
+        'main.manualNotchFreq': { ...fresh(), observed: false, availability: 'missing' },
+      },
+    });
+    h.caps = ftx1Caps;
+    h.commands = [command('notchFilter', 160)];
+    expect(getDspControlFeedback('notchFilter', connected)).toMatchObject({
+      availability: 'available', phase: 'submitted',
+      confirmed: 40, target: 160, requestedTarget: 160,
+    });
+  });
+
   it('Icom: no published domain keeps confirmed on the raw notchFilter', () => {
     h.state = state({
       main: { ...state().main, manualNotchFreq: 160 },
