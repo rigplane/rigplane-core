@@ -1620,6 +1620,17 @@ export function getFilterArmed(): ArmedFact<number> {
   return armedFact<number>('set_filter', 'filter', receiver, 'filter');
 }
 
+/** Filter-shape (SHARP/SOFT) armed fact (`set_filter_shape`, param `shape`,
+ *  confirmed field `filterShape`). A DIFFERENT intent from `getFilterArmed`
+ *  above (`set_filter`): a shape change and a filter selection can be in
+ *  flight at the same time and must not be conflated — same separation as
+ *  `getDataModeArmed` from `getModeArmed`. */
+export function getFilterShapeArmed(): ArmedFact<number> {
+  const receiver = activeReceiverOrNull();
+  if (receiver === null) return { armed: false, value: null };
+  return armedFact<number>('set_filter_shape', 'shape', receiver, 'filterShape');
+}
+
 /** Preamp-level armed fact (`set_preamp`). Same underlying primitive as
  *  `getPendingPreampLevel(receiver)` above, `ArmedFact`-shaped. */
 export function getPreampArmed(): ArmedFact<number> {

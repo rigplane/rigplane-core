@@ -15,6 +15,7 @@
   interface ExistingProps {
     view: RadioViewModel | null;
     pendingFilter?: number | null;
+    pendingFilterShape?: number | null;
     pendingDataMode?: number | null;
     pendingModInput?: number | null;
     onModeChange?: (mode: string) => void;
@@ -31,7 +32,7 @@
   type Props = ExistingProps & RendererSelection;
 
   let {
-    view, pendingFilter = null, pendingDataMode = null, pendingModInput = null,
+    view, pendingFilter = null, pendingFilterShape = null, pendingDataMode = null, pendingModInput = null,
     onModeChange, onFilterChange, onFilterShapeChange, onDataModeChange, onModInputChange,
     finiteAppearance, rendererContext, children,
   }: Props = $props();
@@ -39,6 +40,7 @@
   let modeFilter = $derived(view?.modeFilter);
   let filterPassband = $derived(view?.filterPassband);
   const pendingId = $props.id();
+  const pendingFilterShapeId = `${pendingId}-shape`;
   const pendingDataModeId = `${pendingId}-data-mode`;
   const pendingModInputId = `${pendingId}-mod-input`;
   const usable = (field: { availability: { structural: boolean; operational: boolean };
@@ -100,9 +102,9 @@
     requested: requested(pendingFilter), invoke: value => onFilterChange?.(value as number),
   }), { selectionRequiresAvailability: true });
   const shapeSeat = createChoiceRendererSeat<FilterFiniteChoiceValue>(() => ({
-    context: rendererContext ?? null, field: filterPassband?.filterShape, label: 'Filter shape',
+    context: rendererContext ?? null,     field: filterPassband?.filterShape, label: 'Filter shape',
     options: FILTER_SHAPES.map(([value, label]) => ({ value, label })),
-    invoke: value => onFilterShapeChange?.(value as number),
+    requested: requested(pendingFilterShape), invoke: value => onFilterShapeChange?.(value as number),
   }), { selectionRequiresAvailability: true });
   const dataSeat = createChoiceRendererSeat<FilterFiniteChoiceValue>(() => ({
     context: rendererContext ?? null, field: filterPassband?.dataMode, label: 'DATA mode',
@@ -152,10 +154,17 @@
 {#snippet shape()}
   {#if filterPassband?.filterShapeControlStructural}
     {#if finiteAppearance}{@render external(shapeSeat)}{:else}
-      <div class="filter-choice-group" data-testid="filter-shape" data-disabled-reason={reason(filterPassband.filterShape)}>
+      <!-- MOR-1689: same pending affordance the filter() snippet above uses —
+           data-pending on the in-flight choice only, a group announcement
+           while one is in flight, and the confirmed filterShape reading as
+           the sole selection source. -->
+      <div class="filter-choice-group" data-testid="filter-shape" data-disabled-reason={reason(filterPassband.filterShape)}
+        aria-describedby={pendingFilterShape !== null ? pendingFilterShapeId : undefined}>
         {#each FILTER_SHAPES as [value, label] (value)}<button type="button" class="filter-choice"
           data-testid={`filter-shape-${value}`} aria-pressed={shapeBehavior.available && shapeBehavior.isSelected(value)}
-          disabled={!shapeBehavior.available} onclick={() => shapeBehavior.invoke(value)}>{label}</button>{/each}
+          data-pending={pendingFilterShape === value} disabled={!shapeBehavior.available}
+          onclick={() => shapeBehavior.invoke(value)}>{label}</button>{/each}
+        {#if pendingFilterShape !== null}<span id={pendingFilterShapeId} class="sr-only">{t('core.filter.select.pendingAnnouncement')}</span>{/if}
       </div>
     {/if}
   {/if}

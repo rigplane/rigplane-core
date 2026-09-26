@@ -23,6 +23,7 @@
     deriveFilterProps,
     getFilterHandlers,
     getFilterArmed,
+    getFilterShapeArmed,
     getFilterWidthControlFeedback,
     getIfShiftControlFeedback,
     getPbtInnerHzControlFeedback,
@@ -37,6 +38,11 @@
   // pending command is racing toward, never a substitute for the confirmed
   // reading.
   let filterArmed = $derived(getFilterArmed());
+  // MOR-1689: the freshest in-flight `set_filter_shape` target, DISPLAY
+  // ONLY — same doctrine as `filterArmed` above. `filterShape` stays the
+  // sole selection source; armed only marks the SHARP/SOFT button the
+  // pending command is racing toward.
+  let filterShapeArmed = $derived(getFilterShapeArmed());
   let filterWidthFeedback = $derived(getFilterWidthControlFeedback());
   const filterArmedIdBase = $props.id();
 
@@ -737,24 +743,27 @@
         <div class="shape-section">
           <div class="shape-title">Shape</div>
           <div class="shape-buttons">
-            <button
-              type="button"
-              class="shape-button v2-control-button"
-              class:active={filterShape === 0}
-              style="--control-accent:var(--v2-accent-cyan); --control-active-text:var(--v2-text-white)"
-              onclick={() => onFilterShapeChange?.(0)}
-            >
-              SHARP
-            </button>
-            <button
-              type="button"
-              class="shape-button v2-control-button"
-              class:active={filterShape === 1}
-              style="--control-accent:var(--v2-accent-green-bright); --control-active-text:var(--v2-bg-darkest)"
-              onclick={() => onFilterShapeChange?.(1)}
-            >
-              SOFT
-            </button>
+            {#each [{ value: 0, label: 'SHARP' }, { value: 1, label: 'SOFT' }] as shapeChoice}
+              {@const isShapeArmed = filterShapeArmed.armed && filterShapeArmed.value === shapeChoice.value}
+              {@const shapeArmedId = `${filterArmedIdBase}-shape-${shapeChoice.value}`}
+              <button
+                type="button"
+                class="shape-button v2-control-button"
+                class:active={filterShape === shapeChoice.value}
+                style={shapeChoice.value === 0
+                  ? '--control-accent:var(--v2-accent-cyan); --control-active-text:var(--v2-text-white)'
+                  : '--control-accent:var(--v2-accent-green-bright); --control-active-text:var(--v2-bg-darkest)'}
+                data-armed={isShapeArmed ? 'true' : undefined}
+                aria-busy={isShapeArmed}
+                aria-describedby={isShapeArmed ? shapeArmedId : undefined}
+                onclick={() => onFilterShapeChange?.(shapeChoice.value)}
+              >
+                {shapeChoice.label}
+              </button>
+              {#if isShapeArmed}
+                <span id={shapeArmedId} class="sr-only">{t('core.filter.select.pendingAnnouncement')}</span>
+              {/if}
+            {/each}
           </div>
         </div>
       {/if}
