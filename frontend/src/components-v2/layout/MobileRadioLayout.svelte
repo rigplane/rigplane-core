@@ -691,7 +691,10 @@
     <!-- The semantic deck and PTT gesture both use the single App-root managed
          intent facade; the deck adds no transport or authority. -->
     <section class="m-semantic-deck">
-      <SemanticRadioSurfaces />
+      <!-- MOR-1245 — this shell mounts its OWN fixed-position copy below
+           (`.m-mod-input-warning`, both orientations), so the shared
+           wiring's instance suppresses itself: exactly one banner. -->
+      <SemanticRadioSurfaces suppressModInputTxWarning />
     </section>
 
     <!-- Chip-scroll IA nav (#839) -->

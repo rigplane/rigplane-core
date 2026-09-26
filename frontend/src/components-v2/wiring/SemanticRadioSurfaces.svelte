@@ -193,6 +193,11 @@
     scopeControlsInRegionContent?: boolean;
     regionExtras?: Snippet<['left' | 'right']>;
     vfoAppearance?: 'semantic' | 'sdr' | 'standard';
+    /** MOR-1245 — set by a shell that mounts its OWN fixed-position
+     *  `ModInputTxWarning` (MobileRadioLayout, both orientations), so the
+     *  `txAdjacentAlerts` instance suppresses itself and the preflight
+     *  cannot render twice. Default keeps every other composition. */
+    suppressModInputTxWarning?: boolean;
     /** Whether the fallback band key PRINTS its permit sentence. The key's
      *  accessible name and its `data-default-permit` carry that fact either
      *  way — `semantic/BandInstrumentHost.svelte` owns the fact, the face
@@ -222,7 +227,7 @@
    * `zoneOwning()` returns non-null on both faces.
    */
   let {
-    children: hostedChildren, externalPresentation = null, strips = 'single', stripBy = 'receiver', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', bandPermitCaption = true, displayFrameSource, readonlyDisplay,
+    children: hostedChildren, externalPresentation = null, strips = 'single', stripBy = 'receiver', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', suppressModInputTxWarning = false, bandPermitCaption = true, displayFrameSource, readonlyDisplay,
   }: Props = $props();
 
   /**
@@ -2270,7 +2275,12 @@
     capabilities load.
   -->
   {#snippet txAdjacentAlerts()}
-    <ModInputTxWarning />
+    <!-- MOR-1245: one gate covers every render path (dual zone, single
+         regions, single default, and the hostedChildren handoff), so a
+         shell with its own fixed instance turns ALL of them off together. -->
+    {#if !suppressModInputTxWarning}
+      <ModInputTxWarning />
+    {/if}
   {/snippet}
 
   <!--
