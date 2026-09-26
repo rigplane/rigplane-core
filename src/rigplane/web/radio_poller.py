@@ -535,6 +535,7 @@ class RadioPoller:
         state_store: StateStore | None = None,
         acquisition_executor: AcquisitionExecutor | None = None,
         managed_tx_authority: ManagedWriteAdmission | None = None,
+        tx_active_hint: Callable[[], bool] | None = None,
     ) -> None:
         queue = legacy_queue if legacy_queue is not None else command_queue
         self._radio = radio
@@ -542,6 +543,7 @@ class RadioPoller:
         self._state_diagnostics = diagnostics
         self._state_store = state_store or StateStore()
         self._managed_tx_authority = managed_tx_authority
+        self._tx_active_hint = tx_active_hint
         raw_scheduler = getattr(radio, "_acquisition_scheduler", None)
         self._acquisition_scheduler = (
             raw_scheduler if isinstance(raw_scheduler, AcquisitionScheduler) else None
@@ -3806,6 +3808,7 @@ class RadioPoller:
                 report_expiry=self._report_acquisition_expiry,
                 on_forget=self._forget_acquisition_grace,
                 claimant=self,
+                tx_active_hint=self._tx_active_hint,
             )
             self._acquisition_drain = drain
         return drain

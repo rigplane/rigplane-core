@@ -800,9 +800,12 @@ class WebServer:
         self.command_state_store = (
             raw_state_store if isinstance(raw_state_store, StateStore) else StateStore()
         )
+        self._managed_tx_keyed = False
+        self._managed_tx_hint_authority: object | None = None
         self._state_freshness_service = StateFreshnessService(
             store=self.command_state_store,
             on_delta=self._on_state_freshness_delta,
+            tx_active_hint=self.tx_active_hint,
         )
         self._bootstrap_state_acquisition()
         self._publish_single_receiver_topology()
@@ -1101,6 +1104,7 @@ class WebServer:
             scheduler=scheduler,
             on_delta=self._on_state_freshness_delta,
             radio=radio,
+            tx_active_hint=self.tx_active_hint,
         )
         coalescer = MeterObservationCoalescer()
         self._state_freshness_service = freshness_service
@@ -1478,8 +1482,52 @@ class WebServer:
             except asyncio.QueueFull:
                 logger.debug("broadcast_event: queue full, dropping event=%s", name)
 
+    def tx_active_hint(self) -> bool:
+        """Whether managed transmit is keyed, from the last change notification.
+
+        Synchronous and cheap: the authority exposes state only through async
+        ``snapshot()``, so the bool is cached and refreshed from
+        ``_on_managed_tx_changed``. No authority means not keyed.
+        """
+
+        return self._managed_tx_keyed
+
+    def _bind_managed_tx_hint(self, authority: object) -> None:
+        """Register the change listener that keeps ``tx_active_hint`` current."""
+
+        subscribe = getattr(authority, "subscribe_changes", None)
+        if not callable(subscribe):
+            return
+        self._managed_tx_hint_authority = authority
+        unsubscribe = subscribe(self._on_managed_tx_changed)
+        self._managed_tx_change_unsubscribe = unsubscribe
+
+    def _refresh_managed_tx_keyed(self) -> None:
+        authority = self._managed_tx_hint_authority
+        if authority is None:
+            authority = self._managed_tx_authority()
+        if authority is None:
+            self._managed_tx_keyed = False
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._spawn(self._read_managed_tx_keyed(authority))
+
+    async def _read_managed_tx_keyed(self, authority: object) -> None:
+        try:
+            projection = await authority.snapshot()  # type: ignore[attr-defined]
+        except Exception:
+            logger.debug("managed TX hint snapshot failed", exc_info=True)
+            return
+        self._managed_tx_keyed = (
+            projection.state.intent.kind is not ManagedTxIntentKind.RX
+        )
+
     def _on_managed_tx_changed(self) -> None:
         """Queue one coalesced managed-transmit invalidation per control client."""
+        self._refresh_managed_tx_keyed()
         if self._stopping:
             return
         event = {"type": "event", "name": "managed_transmit_changed", "data": {}}
@@ -2961,6 +3009,7 @@ class WebServer:
         self._stopping = True
         unsubscribe = self._managed_tx_change_unsubscribe
         self._managed_tx_change_unsubscribe = None
+        self._managed_tx_hint_authority = None
         if unsubscribe is not None:
             unsubscribe()
         self._unsubscribe_provider_generation()

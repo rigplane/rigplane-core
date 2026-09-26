@@ -533,6 +533,25 @@ async def test_server_gate_stays_open_without_managed_tx() -> None:
     assert await server._bridge_tx_gate_open() is True
 
 
+async def test_managed_key_makes_the_tx_hint_true_without_observed_ptt() -> None:
+    """MOR-2616: the web hint follows managed intent, not observed PTT."""
+
+    managed = _gate_authority()
+    try:
+        server = _gate_server(managed)
+        server._bind_managed_tx_hint(managed)
+        await asyncio.sleep(0)
+        assert server.tx_active_hint() is False
+        await managed.ptt_down("web")
+        await asyncio.sleep(0)
+        assert server.tx_active_hint() is True
+        await managed.ptt_up("web")
+        await asyncio.sleep(0)
+        assert server.tx_active_hint() is False
+    finally:
+        await managed.close()
+
+
 def test_broadcast_emits_nothing_for_an_unchanged_projection() -> None:
     server, queue = _announcing_server()
     _observe_ptt(server, ObservedPtt.OFF)

@@ -312,9 +312,7 @@ async def _start_web_server(
 
     managed_tx_authority = None if managed_tx is None else managed_tx.authority
     if managed_tx_authority is not None:
-        server._managed_tx_change_unsubscribe = managed_tx_authority.subscribe_changes(
-            server._on_managed_tx_changed
-        )
+        server._bind_managed_tx_hint(managed_tx_authority)
     startup_sweep = False
     if server._radio is not None:
         from ..radio_protocol import StateNotifyCapable
@@ -424,6 +422,7 @@ async def _start_web_server(
                 diagnostics=server.state_diagnostics,
                 state_store=server.command_state_store,
                 managed_tx_authority=managed_tx_authority,
+                tx_active_hint=server.tx_active_hint,
             )
             server._radio_poller.start()
             # RadioPoller is the only web branch that builds an
