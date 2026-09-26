@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount, untrack, type Snippet } from 'svelte';
+  import { onDestroy, onMount, type Snippet } from 'svelte';
   import { t } from '$lib/i18n';
   import { LAN_MOD_INPUT_SOURCE } from '$lib/radio/mod-input';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
@@ -392,18 +392,17 @@
   function receiverAfInput(receiver: AfReceiverKey): Readonly<ContinuousScalarInput> {
     const field = presentation.rxAudio?.receiverAfLevels?.[receiver];
     const currentAuthority = receiverAuthority(publishedAfAuthority, receiver);
-    // MOR-1676 part A (AF): the domain MUST NOT track the published caps —
-    // `published` only refreshes on a delivered publication, while the
-    // render-time `presentation` prop carries the caps the publisher has
-    // already handed the view. Read `presentation.caps` (untracked: the
-    // domain is a pure function of it, not a subscription), so the lattice
-    // follows the same caps the reading already sees. The domain is
-    // deliberately NOT part of the authority identity (`ownerKey` +
-    // reading status): a caps-only publication must re-lattice the knob
-    // without cancelling its gesture.
-    const domainCaps = untrack(() => presentation.caps);
+    // MOR-1676 part A (AF): the domain MUST follow the render-time
+    // `presentation.caps` — the publisher delivers caps with the view,
+    // while the `published` snapshot only refreshes on a delivered
+    // publication and may lag one behind. Read it as a plain value: the
+    // domain is a pure function of the caps, not a subscription. The
+    // domain is deliberately NOT part of the authority identity
+    // (`ownerKey` + reading status): a caps-only publication must
+    // re-lattice the knob without cancelling its gesture.
+    const caps = presentation.caps;
     const rawDomain = (() => {
-      const control = domainCaps?.controls?.af_level;
+      const control = caps?.controls?.af_level;
       if (control === undefined || 'mapping' in control) return null;
       const { raw_min: rawMin, raw_max: rawMax } = control;
       if (!Number.isSafeInteger(rawMin) || !Number.isSafeInteger(rawMax) || rawMax <= rawMin) return null;
