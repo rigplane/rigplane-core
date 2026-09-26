@@ -154,12 +154,10 @@
   $effect(() => {
     const element = faceSvgElement;
     if (element === null || typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver((entries) => {
-      const observed = entries.find((entry) => entry.target === element);
-      if (observed) faceWidth = (observed.target as SVGSVGElement).clientWidth;
-    });
+    const read = () => { faceWidth = element.clientWidth; };
+    const observer = new ResizeObserver(read);
     observer.observe(element);
-    faceWidth = element.clientWidth;
+    read();
     return () => observer.disconnect();
   });
   function quantizeUserUnits(value: number): number {

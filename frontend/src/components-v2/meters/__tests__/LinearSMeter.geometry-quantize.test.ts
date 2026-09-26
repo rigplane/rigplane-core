@@ -30,9 +30,8 @@ class FakeResizeObserver {
   unobserve(target: Element): void { FakeResizeObserver.targets.delete(target); }
   disconnect(): void { FakeResizeObserver.targets.clear(); }
   static fire(): void {
-    for (const target of FakeResizeObserver.targets) {
-      FakeResizeObserver.callback?.([{ target }]);
-    }
+    const entries = [...FakeResizeObserver.targets].map((target) => ({ target }));
+    FakeResizeObserver.callback?.(entries);
   }
 }
 
@@ -120,8 +119,6 @@ async function mountReactive(smoothedFraction: number, peakFraction: number) {
   components.push(component);
   flushSync();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  flushSync();
-  FakeResizeObserver.fire();
   flushSync();
   return {
     target,
