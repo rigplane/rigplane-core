@@ -3,6 +3,7 @@
 import argparse
 import io
 import logging
+import signal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -648,6 +649,91 @@ class TestDaemonLogDefaults:
         )
 
         assert log_path is None
+
+
+@pytest.fixture
+def _restore_process_signal_handlers():
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
+        signal.signal(signal.SIGINT, previous_sigint)
+
+
+class TestSigtermShutdown:
+    def test_teardown_ignores_sigterm_and_sigint_before_loop_close(
+        self, _restore_process_signal_handlers
+    ):
+        async def _raise_interrupt(*_args, **_kwargs):
+            raise KeyboardInterrupt
+
+        seen: dict[str, object] = {}
+        real_new_event_loop = __import__("asyncio").new_event_loop
+
+        def _wrap_loop():
+            loop = real_new_event_loop()
+            real_close = loop.close
+
+            def _close():
+                seen["sigterm"] = signal.getsignal(signal.SIGTERM)
+                seen["sigint"] = signal.getsignal(signal.SIGINT)
+                real_close()
+
+            loop.close = _close
+            return loop
+
+        with patch.dict("os.environ", {"ICOM_PID_FILE": "", "ICOM_LOG_FILE": "off"}):
+            with patch("sys.argv", ["rigplane", "--host", "127.0.0.1", "serve"]):
+                with patch("rigplane.cli._run", side_effect=_raise_interrupt):
+                    with patch(
+                        "rigplane.cli.os._exit",
+                        side_effect=lambda code: (_ for _ in ()).throw(
+                            SystemExit(code)
+                        ),
+                    ):
+                        with patch(
+                            "rigplane.cli.asyncio.new_event_loop",
+                            side_effect=_wrap_loop,
+                        ):
+                            with pytest.raises(SystemExit) as exc:
+                                main()
+
+        assert seen["sigterm"] is signal.SIG_IGN
+        assert seen["sigint"] is signal.SIG_IGN
+        assert exc.value.code == 130
+
+    def test_first_sigterm_raises_and_then_ignores_sigterm(
+        self, _restore_process_signal_handlers
+    ):
+        installed: dict[str, object] = {}
+        real_signal = signal.signal
+
+        def _capture(sig, handler):
+            if sig == signal.SIGTERM and handler is not signal.SIG_IGN:
+                installed["handler"] = handler
+            return real_signal(sig, handler)
+
+        with patch.dict("os.environ", {"ICOM_PID_FILE": "", "ICOM_LOG_FILE": "off"}):
+            with patch("sys.argv", ["rigplane", "--host", "127.0.0.1", "serve"]):
+                with patch(
+                    "rigplane.cli._run", new_callable=AsyncMock, return_value=0
+                ):
+                    with patch(
+                        "rigplane.cli.os._exit",
+                        side_effect=lambda code: (_ for _ in ()).throw(
+                            SystemExit(code)
+                        ),
+                    ):
+                        with patch("rigplane.cli.signal.signal", side_effect=_capture):
+                            with pytest.raises(SystemExit):
+                                main()
+
+        handler = installed["handler"]
+        with pytest.raises(KeyboardInterrupt):
+            handler(signal.SIGTERM, None)
+        assert signal.getsignal(signal.SIGTERM) is signal.SIG_IGN
 
 
 class TestPidFile:
