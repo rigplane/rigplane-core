@@ -1045,7 +1045,7 @@ describe('every unread fact renders honestly, never as a v2 default', () => {
   it.each([
     ['twinPeak', 'twin-peak-toggle', 'onTwinPeakToggle', 'TPF'],
     ['reversePaddle', 'reverse-paddle', 'onReversePaddleToggle', 'Reverse paddle'],
-  ] as const)('disables and refuses %s while unobserved', (field, id, handler) => {
+  ] as const)('disables and refuses %s while unobserved', (field, id, handler, _label) => {
     const spy = vi.fn();
     const r = render(
       withCw({ [field]: unread<boolean>(DEGRADED) } as Partial<CwKeyerViewModel>),
