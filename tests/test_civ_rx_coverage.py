@@ -685,7 +685,7 @@ async def test_watchdog_recover_stays_soft_after_payload(
     radio._civ_runtime._soft_recovery_epoch = 7
     radio._civ_transport.queue_response(b"\x00" * (CIV_HEADER_SIZE + 1))
 
-    async def stop_after_batch() -> None:
+    def stop_after_batch() -> None:
         radio._civ_transport = None
 
     with patch.object(
