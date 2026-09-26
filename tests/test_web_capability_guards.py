@@ -841,6 +841,7 @@ class TestReceiverValidationSeat:
                 SimpleNamespace(put=queue.append), radio,
             )
         assert queue == []
+        assert not hasattr(handler, "_ensure_receiver_supported")
 
     def test_dual_receiver_admitted_to_queue(self):
         from rigplane.web.handlers import ControlHandler
