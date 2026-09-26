@@ -1520,9 +1520,17 @@ class AcquisitionScheduler:
             return
         timestamp = self._clock.now() if now is None else now
         previous = self._cadence_state_for(key, request.policy, now=timestamp)
+        # MOR-2614: the first retry of a lost answer goes out on the next
+        # drain pass, not one cadence later. The failed request was dropped
+        # mid-cycle; re-arming next_due a full cadence out would cost
+        # deadline + grace + cadence — longer than fast TTLs. Keep the clock
+        # the lost poll interrupted (clamped to now when already past).
+        next_due = previous.next_due_monotonic
+        if next_due < timestamp:
+            next_due = timestamp
         self._cadence_by_key[key] = _CadenceState(
             current_cadence_seconds=previous.current_cadence_seconds,
-            next_due_monotonic=timestamp + previous.current_cadence_seconds,
+            next_due_monotonic=next_due,
         )
 
     def diagnostics(self) -> dict[str, Any]:

@@ -672,12 +672,13 @@ async def test_ic7300_profile_scheduler_emits_only_passive_exact_wire_reads() ->
 
 @pytest.mark.asyncio
 async def test_scheduler_due_request_timeout_is_terminal_not_resent_each_tick() -> None:
-    # A real (unhealthy-link) timeout drops the request; the retry is paced
-    # by the cadence clock, not re-sent on every tick. MOR-2614: the sent
-    # request expires after one short answer window
-    # (``_ACQUISITION_ANSWER_WINDOW_SECONDS``), so cycles at 100.0 (send),
-    # 100.6 (deadline fires, request drops, next due = 100.6 + 1.0), 100.7
-    # (not yet due — no re-send).
+    # A real (unhealthy-link) timeout drops the request; the retry is
+    # re-queued by the cadence clock, not re-sent inside the same drain
+    # pass. MOR-2614: the sent request expires after one short answer
+    # window (``_ACQUISITION_ANSWER_WINDOW_SECONDS``), so cycles at 100.0
+    # (send), 100.6 (deadline fires, request drops), 100.7 (re-queued
+    # request sent exactly once — the pin is "terminal per drop, paced
+    # by cadence", not "never re-sent").
     radio = _make_radio(active="MAIN")
     path = FieldPath.receiver("main", "meters", "s_meter")
     policy = AcquisitionPolicy(cadence_seconds=1.0, freshness_ttl_seconds=1.0)
@@ -696,10 +697,6 @@ async def test_scheduler_due_request_timeout_is_terminal_not_resent_each_tick() 
         "rigplane.web.radio_poller.time.monotonic", side_effect=lambda: clock["t"]
     ):
         window = _ACQUISITION_ANSWER_WINDOW_SECONDS
-        # 100.0: send. 100.6: deadline fires, request drops, cadence
-        # re-queues on the next due tick. 100.7: the re-queued request is
-        # sent exactly once — the pin is "paced by cadence, terminal per
-        # drop", not "sent exactly once total".
         for cycle_now in (100.0, 100.0 + window + 0.1, 100.0 + window + 0.2):
             clock["t"] = cycle_now
             _tick_cadence(poller, now=cycle_now)
