@@ -264,32 +264,48 @@ describe('v3 package boundaries (MOR-1061)', () => {
 
   it('allows primitives importing themes and sibling primitives', async () => {
     const hits = await restrictedImportHits(
-      `import '../themes/tokens.css';\nimport Icon from './Icon.svelte';`,
+      `import '../components-v2/theme/tokens.css';\nimport Icon from './Icon.svelte';`,
       'src/primitives/Knob.ts',
     );
     expect(hits).toBe(0);
   });
 
   // ── MOR-1238: primitives may consume the real theme path ─────────────
-  // The old `../themes/tokens.css` fixture named a path that does not
-  // exist (`rg themes`, frontend/src: zero hits at RED) while the real
-  // importable `components-v2/theme/*` stayed a lint error. First pin the
-  // REAL path as rejected, then the zone fix flips both assertions.
+  // The real importable theme subtree is components-v2/theme/* (tokens.css,
+  // themes/*, fonts*, theme-switcher.ts); the ban now narrows to every
+  // OTHER components-v2 subtree so the ADR "Themes" row stays importable.
 
-  it('[MOR-1238-RED] rejects primitives importing the real theme-switcher path', async () => {
+  it('rejects primitives importing a non-theme components-v2 path (panels)', async () => {
     const hits = await restrictedImportHits(
-      `import { getAvailableThemes } from '../components-v2/theme/theme-switcher';`,
+      `import VfoPanel from '../components-v2/panels/VfoPanel.svelte';`,
       'src/primitives/Knob.ts',
     );
     expect(hits).toBeGreaterThan(0);
   });
 
-  it('[MOR-1238-RED] allows primitives importing the real theme tokens css', async () => {
+  it('allows primitives importing the real theme tokens css', async () => {
     const hits = await restrictedImportHits(
       `import '../components-v2/theme/tokens.css';`,
       'src/primitives/Knob.ts',
     );
     expect(hits).toBe(0);
+  });
+
+  it('allows the slicer its type-only semantic contract import', async () => {
+    const hits = await restrictedImportHits(
+      `import type { RadioViewModel } from '../../semantic/radio-view-model';\n`
+        + `export type X = RadioViewModel;`,
+      'src/components-v2/wiring/dual-receiver-strips.ts',
+    );
+    expect(hits).toBe(0);
+  });
+
+  it('rejects the slicer value-importing from semantic/', async () => {
+    const hits = await restrictedImportHits(
+      `import { validateRadioViewModel } from '../../semantic/radio-view-model';`,
+      'src/components-v2/wiring/dual-receiver-strips.ts',
+    );
+    expect(hits).toBeGreaterThan(0);
   });
 
   // ── MOR-1237 R1: two latent runtime modules missing from the denylist ─
@@ -302,7 +318,7 @@ describe('v3 package boundaries (MOR-1061)', () => {
     ['semantic', 'src/semantic/VfoDisplay.ts'],
     ['presentation', 'src/presentation/layouts/SpectrumFirst.ts'],
     ['primitives', 'src/primitives/Knob.ts'],
-  ])('[MOR-1237-RED] rejects %s importing tx-controller/browser-dependencies', async (_zone, filePath) => {
+  ])('rejects %s importing tx-controller/browser-dependencies', async (_zone, filePath) => {
     const hits = await restrictedImportHits(
       `import { createManagedBrowserDependencies } from '$lib/runtime/tx-controller/browser-dependencies';`,
       filePath,
@@ -314,11 +330,19 @@ describe('v3 package boundaries (MOR-1061)', () => {
     ['semantic', 'src/semantic/VfoDisplay.ts'],
     ['presentation', 'src/presentation/layouts/SpectrumFirst.ts'],
     ['primitives', 'src/primitives/Knob.ts'],
-  ])('[MOR-1237-RED] rejects %s importing resource-host', async (_zone, filePath) => {
+  ])('rejects %s importing resource-host', async (_zone, filePath) => {
     const hits = await restrictedImportHits(
       `import { PresentationResourceHost } from '$lib/runtime/resource-host';`,
       filePath,
     );
+    expect(hits).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ['semantic', 'src/semantic/VfoDisplay.ts', `import { PresentationResourceHost } from '../lib/runtime/resource-host';`],
+    ['presentation', 'src/presentation/layouts/SpectrumFirst.ts', `import { createManagedBrowserDependencies } from '../../lib/runtime/tx-controller/browser-dependencies';`],
+  ])('rejects %s importing runtime internals via RELATIVE path', async (_zone, filePath, code) => {
+    const hits = await restrictedImportHits(code, filePath);
     expect(hits).toBeGreaterThan(0);
   });
 
@@ -327,7 +351,7 @@ describe('v3 package boundaries (MOR-1061)', () => {
   // it must fail lint. Its only legal import is the type-only contract
   // from semantic/radio-view-model (asserted in the file's own header).
 
-  it('[MOR-1248-RED] rejects the slicer importing runtime internals', async () => {
+  it('rejects the slicer importing runtime internals', async () => {
     const hits = await restrictedImportHits(
       `import { runtime } from '$lib/runtime';`,
       'src/components-v2/wiring/dual-receiver-strips.ts',
@@ -335,7 +359,7 @@ describe('v3 package boundaries (MOR-1061)', () => {
     expect(hits).toBeGreaterThan(0);
   });
 
-  it('[MOR-1248-RED] rejects the slicer importing transport', async () => {
+  it('rejects the slicer importing transport', async () => {
     const hits = await restrictedImportHits(
       `import { sendCommand } from '$lib/transport/ws-client';`,
       'src/components-v2/wiring/dual-receiver-strips.ts',
@@ -459,9 +483,9 @@ describe('v3 package boundaries (MOR-1061)', () => {
     expect(hits).toBeGreaterThan(0);
   });
 
-  it('rejects primitives importing components-v2', async () => {
+  it('rejects primitives importing components-v2 panels (non-theme subtree, alias)', async () => {
     const hits = await restrictedImportHits(
-      `import VfoPanel from '../components-v2/panels/VfoPanel.svelte';`,
+      `import VfoPanel from '$lib/components-v2/panels/VfoPanel.svelte';`,
       'src/primitives/Knob.ts',
     );
     expect(hits).toBeGreaterThan(0);

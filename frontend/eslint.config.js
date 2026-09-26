@@ -55,14 +55,24 @@ const FORBIDDEN_RUNTIME_IMPORTS = {
 };
 
 /**
- * Runtime-internals lockdown (MOR-1061 review cycles 1-2, F1/C1-A/C1-B).
- * The barrel, frontend-runtime, system-controller, scope-controller, and
- * tx-controller/managed-app-host (the sole TX facade — v3 ADR invariant 11) all
- * aggregate transport/audioManager/stores or own exclusive state behind one
- * import, so banning only the individual specifiers (transport, stores,
- * audioManager) is bypassable through them. NOT applied to lib/runtime/**
- * itself — adapters/props keep full access (see "lib/runtime isolation"
- * below).
+ * Runtime-internals lockdown (MOR-1061 review cycles 1-2, F1/C1-A/C1-B;
+ * MOR-1237 adds browser-dependencies + resource-host; app-authority.ts was
+ * retired by MOR-2168 and stays UNNAMED — do not re-add it).
+ * The barrel, frontend-runtime, system-controller, scope-controller,
+ * resource-host, tx-controller/managed-app-host (the sole TX facade — v3
+ * ADR invariant 11), and tx-controller/browser-dependencies (terminal WS
+ * PTT delivery + managed projection) all aggregate transport/audioManager/
+ * stores or own exclusive state behind one import, so banning only the
+ * individual specifiers (transport, stores, audioManager) is bypassable
+ * through them. NOT applied to lib/runtime/** itself — adapters/props keep
+ * full access (see "lib/runtime isolation" below).
+ *
+ * SPECIFIER-FORM LIMIT, OWNED BY REVIEW (MOR-1237 R2): this rule matches the
+ * literal specifier text, so trailing-slash (`$lib/runtime/`), explicit-
+ * extension (`scope-controller.svelte.ts`), and dot-segment
+ * (`tx-controller/../system-controller`) forms evade ANY finite entry list.
+ * Per-form regex growth is whack-a-mole — review owns evasions of this
+ * shape; the entries below pin every CANONICAL form.
  *
  * The relative-path form uses `regex`, not `group`: ESLint's gitignore-style
  * `group` glob matches a bare final segment as a DIRECTORY prefix, so
@@ -82,13 +92,16 @@ const FORBIDDEN_RUNTIME_BARREL = {
     { name: '$lib/runtime/frontend-runtime', message: RUNTIME_INTERNALS_MSG },
     { name: '$lib/runtime/system-controller', message: RUNTIME_INTERNALS_MSG },
     { name: '$lib/runtime/scope-controller.svelte', message: RUNTIME_INTERNALS_MSG },
+    { name: '$lib/runtime/resource-host', message: RUNTIME_INTERNALS_MSG },
     { name: '$lib/runtime/tx-controller/managed-app-host', message: RUNTIME_INTERNALS_MSG },
+    { name: '$lib/runtime/tx-controller/browser-dependencies', message: RUNTIME_INTERNALS_MSG },
   ],
   patterns: [
     {
       regex:
         '(^|/)lib/runtime(/index|/frontend-runtime|/system-controller|' +
-        '/scope-controller\\.svelte|/tx-controller/managed-app-host)?$',
+        '/scope-controller\\.svelte|/resource-host|' +
+        '/tx-controller/managed-app-host|/tx-controller/browser-dependencies)?$',
       message: RUNTIME_INTERNALS_MSG,
     },
   ],
@@ -188,6 +201,15 @@ const FORBIDDEN_COMMANDS_PATTERN = {
 };
 
 /**
+ * Wiring-slicer purity (MOR-1248). dual-receiver-strips.ts is a pure view-model
+ * filter: its only legal import is the semantic contract, type-only.
+ */
+const SLICER_PURITY_MSG =
+  'dual-receiver-strips.ts is a pure view-model filter — no runtime, transport, ' +
+  'audio, stores, commands, or value imports from semantic/. Only `import type` ' +
+  'from semantic/radio-view-model. See MOR-1248.';
+
+/**
  * Presentation lockdown — layouts and design languages (MOR-1061). No
  * transport, stores (incl. raw capabilities), audioManager, runtime
  * internals (F1/C1-A/C1-B), or direct command calls — consume bound
@@ -212,6 +234,13 @@ const FORBIDDEN_PRESENTATION_IMPORTS = {
  * audio, stores. Also forbidden from commands (same reasoning as
  * presentation) and from semantic/components-v2, which depend on
  * primitives, never the reverse.
+ *
+ * MOR-1238: the theme path really lives at components-v2/theme/
+ * (tokens.css, themes/*, fonts*, theme-switcher.ts), so the ban narrows to
+ * every OTHER components-v2 subpath and lets the theme subtree through —
+ * including the renamed themes/ -> theme/ (MOR-10xx) and both alias and
+ * relative spellings. No sibling exception: panels/layout/display/meters/
+ * vfo/controls/wiring stay banned.
  */
 const FORBIDDEN_PRIMITIVES_IMPORTS = {
   paths: [...FORBIDDEN_PANEL_IMPORTS.paths, ...FORBIDDEN_RUNTIME_BARREL.paths],
@@ -226,10 +255,32 @@ const FORBIDDEN_PRIMITIVES_IMPORTS = {
         'stores. Only themes, Svelte, and types. See ADR 2026-04-12 ("Primitives" row).',
     },
     {
-      group: ['**/semantic/**', '**/components-v2/**'],
+      group: ['**/semantic/**'],
       message:
-        'Primitives must not import semantic/ or components-v2/ — both depend on ' +
+        'Primitives must not import semantic/ — semantic depends on ' +
         'primitives, never the reverse. See ADR 2026-04-12 ("Primitives" row).',
+    },
+    {
+      // MOR-1238: ban every components-v2 subtree EXCEPT theme/ (the ADR
+      // "Themes" row). gitignore-style `group` has no inline-negative
+      // alternative, so each non-theme subtree is listed and theme/ is the
+      // documented omission; both alias and relative spellings are covered.
+      group: [
+        '**/components-v2/panels/**',
+        '**/components-v2/layout/**',
+        '**/components-v2/display/**',
+        '**/components-v2/meters/**',
+        '**/components-v2/vfo/**',
+        '**/components-v2/controls/**',
+        '**/components-v2/wiring/**',
+        '**/components-v2/dialogs/**',
+        '**/components-v2/skins/**',
+        '**/components-v2',
+      ],
+      message:
+        'Primitives must not import components-v2/ outside theme/ — components ' +
+        'depend on primitives, never the reverse. Only components-v2/theme/* ' +
+        'is allowed. See ADR 2026-04-12 ("Primitives" row, MOR-1238).',
     },
   ],
 };
@@ -518,6 +569,56 @@ export default [
                 'Adapters may import the view-model CONTRACT type-only (v3 ADR: adapters ' +
                 'emit view models). No value imports from semantic/ — a runtime dependency ' +
                 'on presentation is still invariant-1 forbidden.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  // ── Import boundary: wiring slicer purity (MOR-1248) ──
+  // dual-receiver-strips.ts filters RadioViewModels only (import type from
+  // semantic/radio-view-model is its sole legal import). wiring/ is the seam
+  // that IS allowed to reach the runtime, so no zone covers it — this
+  // file-scoped rule is the purity guard. Allow the semantic CONTRACT
+  // type-only via the typescript-eslint variant (same idiom as the adapters
+  // exception above); any value import from semantic/, and any import from
+  // runtime/transport/audio/stores/commands, stays an error.
+  {
+    files: ['src/components-v2/wiring/dual-receiver-strips.ts'],
+    plugins: { '@typescript-eslint': tsPlugin },
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [{ name: '$lib/runtime', message: SLICER_PURITY_MSG }],
+          patterns: [
+            {
+              group: [
+                '$lib/transport/*',
+                '**/lib/transport/*',
+                '$lib/stores/*',
+                '**/lib/stores/*',
+                '$lib/runtime/*',
+                '**/lib/runtime/*',
+                '$lib/audio/*',
+                '**/lib/audio/*',
+                '$lib/runtime/commands/*',
+                '**/lib/runtime/commands/*',
+              ],
+              message: SLICER_PURITY_MSG,
+            },
+          ],
+        },
+      ],
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['**/semantic/**', '**/semantic'],
+              allowTypeImports: true,
+              message: SLICER_PURITY_MSG,
             },
           ],
         },
