@@ -2920,23 +2920,16 @@ async def test_set_nr_off_sends_level_zero(connected_radio):
     connected_radio._transport.write.assert_called_once_with("RL000;")
 
 
-def _scripted_level_read(answers: list[str]) -> AsyncMock:
-    """A query mock that answers level reads in order, one per call."""
-
-    async def _query(cmd: str) -> str:
-        return answers.pop(0)
-
-    return AsyncMock(side_effect=_query)
-
-
 @pytest.mark.asyncio
 async def test_set_nb_off_then_on_restores_operator_level(connected_radio):
     """MOR-2632: level 3, then off, then on writes ``NL0003;`` on the on
-    step. The live read after off is 0, so the remembered level is used,
-    not the midpoint default 5."""
-    connected_radio._transport.query = _scripted_level_read(["NL0003", "NL0000"])
+    step. Off reads the live level before writing 0 and remembers it; the
+    on step's own read sees 0, so the remembered 3 is written, not the
+    midpoint default 5."""
     connected_radio._transport.write = AsyncMock()
+    connected_radio._transport.query = AsyncMock(return_value="NL0003")
     await connected_radio.set_nb(False)
+    connected_radio._transport.query = AsyncMock(return_value="NL0000")
     await connected_radio.set_nb(True)
     assert connected_radio._transport.write.call_args_list == [
         call("NL0000;"),
@@ -2948,9 +2941,10 @@ async def test_set_nb_off_then_on_restores_operator_level(connected_radio):
 async def test_set_nr_off_then_on_restores_operator_level(connected_radio):
     """MOR-2632: level 3, then off, then on writes ``RL003;`` on the on
     step, not the midpoint default ``RL005;``."""
-    connected_radio._transport.query = _scripted_level_read(["RL003", "RL000"])
     connected_radio._transport.write = AsyncMock()
+    connected_radio._transport.query = AsyncMock(return_value="RL003")
     await connected_radio.set_nr(False)
+    connected_radio._transport.query = AsyncMock(return_value="RL000")
     await connected_radio.set_nr(True)
     assert connected_radio._transport.write.call_args_list == [
         call("RL000;"),
@@ -2962,14 +2956,15 @@ async def test_set_nr_off_then_on_restores_operator_level(connected_radio):
 async def test_set_nb_sub_off_then_on_does_not_use_main_memory(connected_radio):
     """MOR-2632: SUB's off/on cycle writes ``NL1003;``. MAIN's remembered
     level (9) must not leak onto SUB."""
-    connected_radio._transport.query = _scripted_level_read(["NL0009"])
     connected_radio._transport.write = AsyncMock()
+    connected_radio._transport.query = AsyncMock(return_value="NL0009")
     await connected_radio.set_nb(False)
-    connected_radio._transport.query = _scripted_level_read(["NL1003", "NL1000"])
-    connected_radio._transport.write.reset_mock()
+    connected_radio._transport.query = AsyncMock(return_value="NL1003")
     await connected_radio.set_nb(False, receiver=1)
+    connected_radio._transport.query = AsyncMock(return_value="NL1000")
     await connected_radio.set_nb(True, receiver=1)
     assert connected_radio._transport.write.call_args_list == [
+        call("NL0000;"),
         call("NL1000;"),
         call("NL1003;"),
     ]
@@ -2979,8 +2974,8 @@ async def test_set_nb_sub_off_then_on_does_not_use_main_memory(connected_radio):
 async def test_set_nb_on_after_off_from_zero_uses_default(connected_radio):
     """MOR-2632: off from a live level of 0 remembers nothing, so the
     following on still writes the midpoint default 5."""
-    connected_radio._transport.query = _scripted_level_read(["NL0000", "NL0000"])
     connected_radio._transport.write = AsyncMock()
+    connected_radio._transport.query = AsyncMock(return_value="NL0000")
     await connected_radio.set_nb(False)
     await connected_radio.set_nb(True)
     assert connected_radio._transport.write.call_args_list == [
