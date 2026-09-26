@@ -67,13 +67,26 @@ function createHost(initialReduced = false): TestHost {
 
 function createFakeSmoother(initial = 0): MeterSmoother & { set(value: number): void } {
   let current = initial;
+  let target = initial;
+  let pending = false;
   return {
     get value() { return current; },
-    update: vi.fn((value: number) => { current = value; }),
-    reset: vi.fn((value: number) => { current = value; }),
+    get settled() { return !pending && current === target; },
+    update: vi.fn((value: number) => {
+      target = value;
+      current = value;
+      pending = false;
+    }),
+    reset: vi.fn((value: number) => {
+      current = target = value;
+      pending = false;
+    }),
     start: vi.fn(),
     stop: vi.fn(),
-    set: (value) => { current = value; },
+    set: (value) => {
+      current = value;
+      pending = current !== target;
+    },
   };
 }
 
@@ -82,6 +95,7 @@ function createMotionAwareSmoother(host: TestHost): MeterSmoother {
   let target = 0;
   let unsubscribe: (() => void) | undefined;
   return {
+    get settled() { return current === target; },
     get value() { return current; },
     update(value) {
       target = value;
@@ -274,6 +288,86 @@ describe('createMeterBallistics frame-step strategy', () => {
     expect(host.activeFrames).toBe(0);
     meter.stop();
     expect(host.listenerCount).toBe(0);
+  });
+});
+
+describe('createMeterBallistics idle peak ticker (MOR-2613)', () => {
+  const VALUE = 10;
+
+  it('requests no further frame once the smoother has settled and the peak equals the value', () => {
+    const { host, meter } = frameSetup();
+    meter.sync({ sample: VALUE, smoothTarget: VALUE, peakEnabled: true });
+    meter.start();
+    expect(host.activeFrames).toBe(1);
+    host.flushFrame();
+    expect(host.activeFrames).toBe(0);
+    expect(meter.view.peakValue).toBe(VALUE);
+    expect(meter.view.smoothedValue).toBe(VALUE);
+    host.advance(5000);
+    expect(host.activeFrames).toBe(0);
+    expect(meter.view.peakValue).toBe(VALUE);
+  });
+
+  it('wakes on a higher sample, holds for the hold window, decays, and stops again', () => {
+    const { host, meter } = frameSetup();
+    meter.sync({ sample: VALUE, smoothTarget: VALUE, peakEnabled: true });
+    meter.start();
+    host.flushFrame();
+    expect(host.activeFrames).toBe(0);
+
+    const higher = 14;
+    meter.sync({ sample: higher, smoothTarget: higher, peakEnabled: true });
+    expect(host.activeFrames).toBe(1);
+    expect(meter.view.peakValue).toBe(higher);
+    expect(meter.view.peakValue).toBeGreaterThanOrEqual(meter.view.smoothedValue);
+
+    host.advance(1000);
+    host.flushFrame(0);
+    expect(meter.view.peakValue).toBe(higher);
+    expect(meter.view.peakValue).toBeGreaterThanOrEqual(meter.view.smoothedValue);
+
+    host.flushFrame(1);
+    expect(meter.view.peakValue).toBe(higher - 1);
+    expect(meter.view.peakValue).toBeGreaterThanOrEqual(meter.view.smoothedValue);
+
+    let frames = 1;
+    while (host.activeFrames > 0 && frames < 40) {
+      host.flushFrame();
+      frames += 1;
+      expect(meter.view.peakValue).toBeGreaterThanOrEqual(meter.view.smoothedValue);
+    }
+    expect(host.activeFrames).toBe(0);
+    expect(meter.view.peakValue).toBe(higher);
+    expect(meter.view.smoothedValue).toBe(higher);
+  });
+
+  it('holds a peak above a lower sample for the hold window, then decays and stops', () => {
+    const { host, meter } = frameSetup();
+    meter.sync({ sample: VALUE, smoothTarget: VALUE, peakEnabled: true });
+    meter.start();
+    host.flushFrame();
+
+    const lower = 4;
+    meter.sync({ sample: lower, smoothTarget: lower, peakEnabled: true });
+    expect(host.activeFrames).toBe(1);
+    expect(meter.view.peakValue).toBe(VALUE);
+    expect(meter.view.peakValue).toBeGreaterThan(meter.view.smoothedValue);
+
+    host.advance(1000);
+    host.flushFrame(0);
+    expect(meter.view.peakValue).toBe(VALUE);
+    expect(meter.view.peakValue).toBeGreaterThanOrEqual(meter.view.smoothedValue);
+
+    let frames = 0;
+    while (host.activeFrames > 0 && frames < 40) {
+      host.flushFrame();
+      frames += 1;
+      expect(meter.view.peakValue).toBeGreaterThanOrEqual(meter.view.smoothedValue);
+    }
+    expect(frames).toBeGreaterThan(0);
+    expect(host.activeFrames).toBe(0);
+    expect(meter.view.peakValue).toBe(lower);
+    expect(meter.view.smoothedValue).toBe(lower);
   });
 });
 
