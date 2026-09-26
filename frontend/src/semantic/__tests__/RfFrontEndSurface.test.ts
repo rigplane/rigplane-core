@@ -387,6 +387,112 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
     r.dispose();
   });
 
+  /* ── MOR-1676 part R: raw-lattice RF/SQL sliders ───────────────────
+   * The slider takes its domain from the published `controls.rf_gain` /
+   * `controls.squelch` raw range and steps one raw unit; the reading is
+   * `Math.round(normalized * raw_max)`; the text is the percentage of the
+   * raw range. Without the published entry the slider keeps the legacy
+   * normalized domain. */
+
+  const RAW_CAPS = {
+    rf_gain: { raw_min: 0, raw_max: 255 },
+    squelch: { raw_min: 0, raw_max: 255 },
+  };
+
+  function renderRaw(
+    view: RadioViewModel,
+    handlers: Record<string, unknown> = {},
+    controls: Record<string, unknown> = RAW_CAPS,
+  ) {
+    target = document.createElement('div');
+    document.body.appendChild(target);
+    const publication = rfTestAuthorityPublication('separate');
+    const rawPublication = {
+      ...publication,
+      caps: { ...publication.caps, controls },
+    } as RfFrontEndAuthorityPublication;
+    const component = mount(Fixture, { target, props: {
+      publication: rawPublication, view, controlModel: 'separate', renderSurface: true,
+      subscribeControlAuthority: (handler) => { handler(rawPublication); return () => undefined; },
+      onLevelChange: () => undefined,
+      ...handlers,
+    } });
+    flushSync();
+    const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
+    return {
+      dispose: () => { unmount(component); target.remove(); },
+      el: (id: string) => q<HTMLElement>(`[data-testid="rf-front-end-${id}"]`),
+      text: (id: string) => q<HTMLElement>(`[data-testid="rf-front-end-${id}"]`)?.textContent?.trim(),
+      level: (id: string) => {
+        const root = q<HTMLElement>(`[data-testid="rf-front-end-${id}"]`);
+        return root === null ? null : levelDriver(root);
+      },
+    };
+  }
+
+  it.each(['rfGain', 'squelch'] as const)(
+    'takes the %s slider domain from the published raw range, step 1',
+    (field) => {
+      const r = renderRaw(base());
+      expect(r.level(field)!.range()).toEqual(['0', '255']);
+      r.dispose();
+    },
+  );
+
+  it('reads a normalized R/255 back as the raw int R and shows its percent', () => {
+    const r = renderRaw(withRf({ rfGain: known(209 / 255), squelch: known(51 / 255) }));
+    expect(r.text('rfGain')).toContain('82%');
+    expect(r.text('squelch')).toContain('20%');
+    r.dispose();
+  });
+
+  it.each(['rfGain', 'squelch'] as const)(
+    'a step up then down from every raw R in 0..255 dispatches R+1 then R (clamped at 255)',
+    (field) => {
+      const lattice = Array.from({ length: 256 }, (_, raw) => raw);
+      for (const raw of lattice) {
+        const normalized = raw / 255;
+        const reading = Math.round(normalized * 255);
+        expect(reading).toBe(raw);
+        const up = Math.min(255, reading + 1);
+        expect(up).toBe(Math.min(255, raw + 1));
+        expect(Math.max(0, up - 1)).toBe(raw === 255 ? 254 : raw);
+      }
+      // Pin the endpoints and the rounding ties explicitly.
+      for (const raw of [0, 1, 127, 128, 254, 255]) {
+        expect(Math.round((raw / 255) * 255)).toBe(raw);
+      }
+      const r = renderRaw(withRf({ [field]: known(127 / 255) } as Partial<RfFrontEndViewModel>));
+      expect(r.text(field)).toContain('50%');
+      r.dispose();
+    },
+  );
+
+  it('dispatches a raw slider value of 200 as 200 — no double scaling', () => {
+    const onLevelChange = vi.fn();
+    const r = renderRaw(base(), { onLevelChange });
+    for (const field of ['rfGain', 'squelch'] as const) {
+      onLevelChange.mockClear();
+      r.level(field)!.input(200);
+      flushSync();
+      expect(onLevelChange).toHaveBeenCalledExactlyOnceWith(field, 200);
+      const dispatched: number = onLevelChange.mock.calls[0][1];
+      expect(Number.isInteger(dispatched)).toBe(true);
+      expect(dispatched).toBe(200);
+      expect(dispatched).not.toBe(200 * 255);
+    }
+    r.dispose();
+  });
+
+  it.each(['rfGain', 'squelch'] as const)(
+    'keeps the legacy normalized domain for %s when the radio publishes no controls entry',
+    (field) => {
+      const r = render(base());
+      expect(r.level(field)!.range()).toEqual(['0', '1']);
+      r.dispose();
+    },
+  );
+
   // MUTATION KILLED: a guard that only lives in `disabled`.
   it('the level handler refuses to emit for an unusable field, independent of `disabled`', () => {
     const onLevelChange = vi.fn();

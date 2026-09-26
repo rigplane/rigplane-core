@@ -349,6 +349,10 @@ const liveCaps = (withRfFrontEnd: boolean, rfSqlControlModel?: 'separate' | 'com
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
   scopeSource: null, audioFftAvailable: false,
+  // MOR-1676 part R: the tests below pin the raw-lattice seam — the caps
+  // publish the raw range, so the host moves on raw ints and the seam
+  // dispatches them as is.
+  controls: { rf_gain: { raw_min: 0, raw_max: 255 }, squelch: { raw_min: 0, raw_max: 255 } },
   ...(rfSqlControlModel !== undefined ? { rfSqlControlModel } : {}),
 } as unknown as Capabilities);
 
@@ -592,37 +596,50 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
   // anything else — so the wiring must convert on the way through. This was
   // the input-snaps-to-0%-or-100% regression: an unconverted intermediate
   // drag silently failed the real handler's integer guard.
-  // MOR-1447 verifier follow-up: literal expected value, not the same
-  // `Math.round(...)` formula the production seam itself uses — a mutation
-  // that swapped `Math.round` for `Math.trunc`/`Math.floor` would still pass
-  // a formula-mirroring assertion (140.25 truncates to 140 too). 0.55*255 is
-  // pinned as the literal 140.
-  it('routes the RF-gain slider to onRfGainChange, converted to the raw 0-255 wire level', () => {
+  // MOR-1676 part R: with `controls.rf_gain` published the host moves on
+  // the raw lattice, so the slider value IS the raw int and the seam
+  // dispatches it as is — no double scaling (a slider value of 140
+  // dispatches 140, not 140*255).
+  it('routes the RF-gain slider to onRfGainChange as the raw wire int, no double scaling', () => {
     render();
-    level('rfGain').input(0.55);
+    level('rfGain').input(140);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(140);
     for (const other of ALL.filter((s) => s !== h.rfGain)) expect(other).not.toHaveBeenCalled();
   });
 
-  it('routes the squelch slider to onSquelchChange, converted to the raw 0-255 wire level', () => {
+  it('routes the squelch slider to onSquelchChange as the raw wire int, no double scaling', () => {
     render();
-    level('squelch').input(0.2);
+    level('squelch').input(51);
     flushSync();
     expect(h.squelch).toHaveBeenCalledExactlyOnceWith(51);
     for (const other of ALL.filter((s) => s !== h.squelch)) expect(other).not.toHaveBeenCalled();
   });
 
-  // Rounding-rule pin (MOR-1447 leg 1 verifier follow-up item a): 0.5 is the
-  // exact tie case where `Math.round` (128) and a truncating conversion
-  // (127) diverge — 0.5*255 = 127.5. The literal 128 is the ONLY value that
-  // proves `Math.round` specifically, not merely "some" integer conversion.
-  it('rounds a 0.5 drag to the raw wire level 128, not the truncated 127', () => {
+  it('a slider value of 200 dispatches 200, not 200*255', () => {
     render();
-    level('rfGain').input(0.5);
+    level('rfGain').input(200);
     flushSync();
-    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(128);
+    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(200);
+    const dispatched: number = h.rfGain.mock.calls[0][0];
+    expect(Number.isInteger(dispatched)).toBe(true);
+    expect(dispatched).not.toBe(200 * 255);
   });
+
+  it.each([0, 1, 127, 128, 254, 255])(
+    'a step up then down from raw %i dispatches R+1 (clamped) then R',
+    (raw) => {
+      render();
+      const up = Math.min(255, raw + 1);
+      level('rfGain').input(up);
+      flushSync();
+      expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(up);
+      h.rfGain.mockClear();
+      level('rfGain').input(raw === 255 ? 254 : raw);
+      flushSync();
+      expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(raw === 255 ? 254 : raw);
+    },
+  );
 
   // (d): `onDigiSelToggle`/`onIpPlusToggle` take an explicit `on: boolean` —
   // the wiring must pass the FLIPPED value the surface computed, not call
@@ -853,8 +870,10 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     publishAuthority();
     flushSync();
     expect([level('rfGain').disabled(), level('squelch').disabled()]).toEqual([false, false]);
-    expect(level('rfGain').value()).toBe(0.8);
-    expect(level('squelch').value()).toBe(0.1);
+    // MOR-1676 part R: confirmed truth projects through the raw range —
+    // 0.8*255 = 204 shown as 80%, 0.1*255 ≈ 26 shown as 10%.
+    expect(level('rfGain').value()).toBe(204);
+    expect(level('squelch').value()).toBe(26);
     expect(h.rfGain).not.toHaveBeenCalled();
     expect(h.squelch).not.toHaveBeenCalled();
   });
@@ -871,10 +890,10 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     render();
     expect(el('rfGain')!.dataset.commandPhase).toBe('submitted');
     expect(el('squelch')!.dataset.commandPhase).toBe('submitted');
-    expect(level('rfGain').value()).toBe(0.8);
-    expect(level('squelch').value()).toBe(0.1);
-    expect(el('rfGain')!.querySelector('output')!.textContent).toBe('50%');
-    expect(el('squelch')!.querySelector('output')!.textContent).toBe('20%');
+    expect(level('rfGain').value()).toBe(204);
+    expect(level('squelch').value()).toBe(26);
+    expect(el('rfGain')!.querySelector('output')!.textContent).toBe('80%');
+    expect(el('squelch')!.querySelector('output')!.textContent).toBe('10%');
     acknowledgeCommand(rf.id, 7, 7);
     acknowledgeCommand(sql.id, 7, 7);
     flushSync();
@@ -895,7 +914,9 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     const rfInput = level('rfGain');
     const sqlInput = level('squelch');
 
-    rfInput.input(0.7);
+    // MOR-1676 part R: the raw lattice carries absolute values — 179 and
+    // 153 directly, no 0..1 fraction in between.
+    rfInput.input(179);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(179);
     expect(h.sentCommands).toHaveLength(1);
@@ -912,7 +933,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     flushSync();
     expect(el('rfGain')!.dataset.commandPhase).toBe('confirmed');
 
-    sqlInput.input(0.6);
+    sqlInput.input(153);
     flushSync();
     expect(h.squelch).toHaveBeenCalledExactlyOnceWith(153);
     expect(h.sentCommands).toHaveLength(2);
@@ -924,18 +945,20 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     state = observedMainLevels(state, { rfGain: 204 / 255 }, 7);
     acknowledgeSent(sqlCommand);
     flushSync();
-    expect(level('rfGain').value()).toBe(0.8);
+    // The confirmed reading projects back through the raw range: 204/255
+    // reads as raw 204, shown as 80%.
+    expect(level('rfGain').value()).toBe(204);
     expect(el('rfGain')!.querySelector('output')!.textContent).toBe('80%');
     expect(el('squelch')!.dataset.commandPhase).toBe('awaiting-confirmation');
-    expect(level('squelch').value()).toBe(0.6);
+    expect(level('squelch').value()).toBe(153);
     expect(el('squelch')!.querySelector('output')!.textContent).toBe('60%');
     expect(target.querySelector('[data-control-feedback-status][data-feedback-lane="sql"]')?.textContent)
-      .toBe('Awaiting confirmation: 0.6');
+      .toBe('Awaiting confirmation: 153');
 
     confirmCommand(sqlCommand.id, 7, 7);
     flushSync();
     expect(el('squelch')!.dataset.commandPhase).toBe('confirmed');
-    expect(level('squelch').value()).toBe(0.1);
+    expect(level('squelch').value()).toBe(26);
     expect(el('squelch')!.querySelector('output')!.textContent).toBe('10%');
     expect(target.querySelector('[data-control-feedback-status][data-feedback-lane="sql"]')?.textContent)
       .toBe('Confirmed: 0.1');
@@ -946,7 +969,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
   it('routes separate endpoint requests once through the unchanged raw conversion seam', () => {
     render();
     level('rfGain').input(0);
-    level('squelch').input(1);
+    level('squelch').input(255);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(0);
     expect(h.squelch).toHaveBeenCalledExactlyOnceWith(255);
@@ -1063,7 +1086,7 @@ describe('the hosted RF owner survives replaceable presentation layouts', () => 
       setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn(),
     });
     old.slider.dispatchEvent(new PointerEvent('pointerdown', {
-      pointerId: 7, clientX: 70, bubbles: true,
+      pointerId: 7, clientX: 179, bubbles: true,
     }));
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(179);
@@ -1076,16 +1099,17 @@ describe('the hosted RF owner survives replaceable presentation layouts', () => 
     expect(target.querySelector('[data-rf-layout="independent"]')).not.toBeNull();
     expect(target.querySelectorAll('[data-testid="rf-front-end-rfGain"]')).toHaveLength(1);
     expect([...h.authorityListeners]).toEqual(originalSubscribers);
-    expect(replacement.value()).toBe(0.8);
+    // MOR-1676 part R: 0.8*255 = 204 on the raw lattice.
+    expect(replacement.value()).toBe(204);
 
     old.slider.dispatchEvent(new PointerEvent('pointermove', {
-      pointerId: 7, clientX: 90, bubbles: true,
+      pointerId: 7, clientX: 230, bubbles: true,
     }));
     old.slider.dispatchEvent(new PointerEvent('pointerup', { pointerId: 7, bubbles: true }));
     old.slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     expect(h.rfGain).not.toHaveBeenCalled();
 
-    replacement.input(0.55, 8);
+    replacement.input(140, 8);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(140);
     h.rfGain.mockClear();
@@ -1096,7 +1120,7 @@ describe('the hosted RF owner survives replaceable presentation layouts', () => 
     const revoked = level('rfGain');
     expect(revoked.disabled()).toBe(true);
     expect(el('rfGain')!.querySelector('output')!.textContent).toBe('');
-    revoked.input(0.9, 9);
+    revoked.input(230, 9);
     expect(h.rfGain).not.toHaveBeenCalled();
     expect([...h.authorityListeners]).toEqual(originalSubscribers);
 
@@ -1104,10 +1128,10 @@ describe('the hosted RF owner survives replaceable presentation layouts', () => 
     for (const listener of h.sessionListeners) listener(h.session);
     publishAuthority();
     flushSync();
-    expect(level('rfGain').value()).toBe(0.8);
+    expect(level('rfGain').value()).toBe(204);
     props.rfFrontEndLayout = 'grouped';
     flushSync();
-    expect(level('rfGain').value()).toBe(0.8);
+    expect(level('rfGain').value()).toBe(204);
     expect([...h.authorityListeners]).toEqual(originalSubscribers);
     unmount(component!);
     component = null;

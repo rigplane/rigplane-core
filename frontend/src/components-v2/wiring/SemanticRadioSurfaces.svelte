@@ -638,11 +638,26 @@
    * itself renders whichever model this resolves to and stays otherwise
    * capability-blind; there is no vendor/model-name branch anywhere in this
    * file or in the surface.
+   *
+   * MOR-1676 part R: the slider value is already the raw int (the host moves
+   * on the published `controls.rf_gain` / `controls.squelch` raw lattice),
+   * so this seam dispatches it as is — no second scaling. On a radio that
+   * publishes no raw range the host keeps the legacy normalized domain and
+   * this seam converts exactly once, same as MOR-1447's original fix.
    */
   let rfSqlControlModel = $derived(runtime.caps?.rfSqlControlModel ?? 'separate');
+  const rfFrontEndRawControlPublished = (key: 'rf_gain' | 'squelch'): boolean => {
+    const entry = (runtime.caps?.controls as
+      Record<string, { raw_min?: unknown; raw_max?: unknown }> | undefined)?.[key];
+    return typeof entry?.raw_min === 'number' && Number.isSafeInteger(entry.raw_min)
+      && typeof entry?.raw_max === 'number' && Number.isSafeInteger(entry.raw_max)
+      && (entry.raw_max as number) > (entry.raw_min as number);
+  };
   const RF_FRONT_END_LEVEL_INTENT: Record<RfFrontEndLevelField, (value: number) => void> = {
-    rfGain: (value) => rfFrontEndIntents.onRfGainChange(Math.round(value * 255)),
-    squelch: (value) => rfFrontEndIntents.onSquelchChange(Math.round(value * 255)),
+    rfGain: (value) => rfFrontEndIntents.onRfGainChange(
+      rfFrontEndRawControlPublished('rf_gain') ? value : Math.round(value * 255)),
+    squelch: (value) => rfFrontEndIntents.onSquelchChange(
+      rfFrontEndRawControlPublished('squelch') ? value : Math.round(value * 255)),
   };
   /**
    * MOR-1308 (vocabulary slice 8B). The shipped RIT/XIT and scan command

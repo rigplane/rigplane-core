@@ -900,6 +900,18 @@ restoration = "exact"
 range_min = 0
 range_max = 100
 
+# MOR-1676 part R: RF gain and squelch write raw 0-255 CAT levels
+# (``RG0{level:03d};`` / ``SQ0{level:03d};`` below), same shape as IC-7300's
+# blocks. Declared so the v3 sliders take their domain from the published
+# raw range instead of the hard-coded normalized lattice.
+[controls.rf_gain]
+raw_min = 0
+raw_max = 255
+
+[controls.squelch]
+raw_min = 0
+raw_max = 255
+
 [[freq_ranges.ranges]]
 label = "HF"
 start_hz = 100000

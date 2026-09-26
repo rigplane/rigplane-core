@@ -1826,24 +1826,32 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
     case 'adjust_rf_gain': {
       const current = rx?.rfGain;
       if (!keyboardReceiverField(context, 'rfGain') || !isNormalizedLevel(current)) return true;
+      const { rawMin, rawMax } = keyboardControlRawDomain(context.caps, 'rf_gain');
+      if (rawMax <= rawMin) return true;
+      const span = rawMax - rawMin;
+      const step = Math.round(0.05 * span);
       const delta = keyboardDelta(safeParams.delta);
       if (delta !== null) {
         // MOR-1577: `delta` is declared in RAW units against the control's
         // domain (`rf-level-up`/`-down` bindings) and applied directly to
         // the raw current value — `onRfGainChange` already takes a raw
         // integer, so no normalized round-trip is needed here.
-        const { rawMin, rawMax } = keyboardControlRawDomain(context.caps, 'rf_gain');
-        if (rawMax > rawMin) {
-          const currentRaw = rawMin + current * (rawMax - rawMin);
-          const nextRaw = Math.round(Math.max(rawMin, Math.min(rawMax, currentRaw + delta)));
-          makeRfFrontEndHandlers().onRfGainChange(nextRaw);
-        }
+        const currentRaw = rawMin + current * span;
+        const nextRaw = Math.round(Math.max(rawMin, Math.min(rawMax, currentRaw + delta)));
+        makeRfFrontEndHandlers().onRfGainChange(nextRaw);
         return true;
       }
       const direction = keyboardDirection(safeParams.direction);
       if (direction) {
-        const level = Math.max(0, Math.min(1, current + (direction === 'down' ? -0.05 : 0.05)));
-        makeRfFrontEndHandlers().onRfGainChange(Math.round(level * 255));
+        // MOR-1676 part R: step in raw units (symmetric), clamped —
+        // up then down restores the exact raw value. Published `controls`
+        // only ever change the span (`keyboardControlRawDomain` falls back
+        // to 0/255 when the radio publishes nothing); there is no squelch
+        // keyboard action — squelch steps only via its slider.
+        const currentRaw = Math.round(rawMin + current * span);
+        const nextRaw = Math.max(rawMin, Math.min(rawMax,
+          currentRaw + (direction === 'down' ? -step : step)));
+        makeRfFrontEndHandlers().onRfGainChange(nextRaw);
       }
       return true;
     }

@@ -1819,6 +1819,32 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(getCommandLifecycles()).toHaveLength(0);
   });
 
+  it('steps keyboard RF gain in raw units so up then down restores the exact raw value (MOR-1676 part R)', () => {
+    // 128/255 read back, published 0..255 domain: 5% of 255 rounds to 13.
+    (h.state!.main as { rfGain: number }).rfGain = 128 / 255;
+    expect(dispatchKeyboardRadioAction({ action: 'adjust_rf_gain', params: { direction: 'up' } })).toBe(true);
+    expect(exactCalls()).toEqual([['set_rf_gain', { level: 141, receiver: 0 }]]);
+    expectIntentTransport();
+
+    h.sendCommand.mockClear();
+    resetCommandLifecycle();
+    (h.state!.main as { rfGain: number }).rfGain = 141 / 255;
+    expect(dispatchKeyboardRadioAction({ action: 'adjust_rf_gain', params: { direction: 'down' } })).toBe(true);
+    expect(exactCalls()).toEqual([['set_rf_gain', { level: 128, receiver: 0 }]]);
+    expectIntentTransport();
+
+    // Clamp at the top: 255 up stays 255; every dispatched level is an integer.
+    h.sendCommand.mockClear();
+    resetCommandLifecycle();
+    (h.state!.main as { rfGain: number }).rfGain = 1;
+    expect(dispatchKeyboardRadioAction({ action: 'adjust_rf_gain', params: { direction: 'up' } })).toBe(true);
+    expect(exactCalls()).toEqual([['set_rf_gain', { level: 255, receiver: 0 }]]);
+    expectIntentTransport();
+    for (const [, params] of exactCalls()) {
+      expect(Number.isInteger((params as { level: number }).level)).toBe(true);
+    }
+  });
+
   it('clamps only known normalized keyboard AF/RF readings and keeps active runtime AF local', () => {
     (h.state!.main as { afLevel: number; rfGain: number }).afLevel = 0.98;
     (h.state!.main as { afLevel: number; rfGain: number }).rfGain = 0.02;

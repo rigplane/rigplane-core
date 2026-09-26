@@ -10,6 +10,14 @@ export const RF_FRONT_END_LEVELS = [
 ] as const;
 
 export type RfFrontEndLevelField = (typeof RF_FRONT_END_LEVELS)[number][0];
+
+/** Published-`controls` key for each RF/SQL level field, or `null` when the
+ *  radio publishes no raw range for it (MOR-1676 part R). The slider takes
+ *  its domain from that entry (`controls.rf_gain` / `controls.squelch`);
+ *  without it the slider keeps the legacy normalized domain above. */
+export const RF_FRONT_END_RAW_CONTROL_KEY: Readonly<
+  Record<RfFrontEndLevelField, string>
+> = { rfGain: 'rf_gain', squelch: 'squelch' } as const;
 export type RfSqlControlModel = 'separate' | 'combined';
 export type RfFrontEndLevelFeedback = Readonly<
   Pick<CommandFeedbackContinuousPairInput, 'rf' | 'sql'>
