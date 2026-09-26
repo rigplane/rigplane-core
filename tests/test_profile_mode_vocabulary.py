@@ -55,9 +55,7 @@ def _shipped_mode_cases() -> list[object]:
                         reason=f"{model} {label!r} has no Mode member (MOR-1487)",
                     )
                 )
-            cases.append(
-                pytest.param(rig, label, id=f"{model}:{label}", marks=marks)
-            )
+            cases.append(pytest.param(rig, label, id=f"{model}:{label}", marks=marks))
     return cases
 
 
