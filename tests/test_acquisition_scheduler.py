@@ -4905,12 +4905,13 @@ def test_the_non_selected_receiver_polls_one_class_slower(
             request = _pending_request(scheduler, path)
             if expected.freshness_ttl_seconds is None:
                 # MOR-2615: a class-derived SETTING/MENU path stamps no TTL;
-                # the queued request still carries a finite deadline from its
-                # cadence so the drain can time out a lost answer.
+                # the queued request still carries a finite deadline from
+                # its demoted cadence so the drain can time out a lost
+                # answer.
                 assert expected.cadence_seconds is not None
-                assert request.max_age == pytest.approx(expected.cadence_seconds), (
+                assert request.max_age == pytest.approx(_cadence_of(scheduler, path)), (
                     path,
-                    "a TTL-less demoted path keeps its cadence deadline",
+                    "a TTL-less demoted path keeps its demoted-cadence deadline",
                 )
             else:
                 assert request.max_age == pytest.approx(
@@ -4959,7 +4960,7 @@ def test_the_demoted_paths_keep_the_demoted_class_ttl() -> None:
         request = _pending_request(scheduler, path)
         if policy.freshness_ttl_seconds is None:
             seen_ttl_less = True
-            assert request.max_age == pytest.approx(policy.cadence_seconds), path
+            assert request.max_age == pytest.approx(_cadence_of(scheduler, path)), path
             continue
         assert policy.freshness_ttl_seconds >= 2.0 * policy.cadence_seconds
         assert (
