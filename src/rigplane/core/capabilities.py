@@ -24,6 +24,7 @@ __all__ = [
     "CAP_NB",
     "CAP_NR",
     "CAP_NOTCH",
+    "CAP_NARROW",
     "CAP_APF",
     "CAP_TWIN_PEAK",
     "CAP_PBT",
@@ -116,6 +117,9 @@ CAP_RX_ANTENNA = "rx_antenna"
 CAP_NB = "nb"
 CAP_NR = "nr"
 CAP_NOTCH = "notch"
+# Narrow filter on/off (Yaesu CAT ``NA``). Distinct from ``filter_width``:
+# the width command writes the SH code, this one writes NA0/NA1.
+CAP_NARROW = "narrow"
 CAP_APF = "apf"
 CAP_TWIN_PEAK = "twin_peak"
 
@@ -244,6 +248,7 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset(
         CAP_NB,
         CAP_NR,
         CAP_NOTCH,
+        CAP_NARROW,
         CAP_APF,
         CAP_TWIN_PEAK,
         # Filter

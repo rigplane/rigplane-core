@@ -33,6 +33,7 @@ from ...core.state_store import FreshnessState, StateStore
 from ..monitor_mute import MonitorMuteState, apply_monitor_mute  # noqa: TID251
 from ...profiles import RadioProfile, resolve_radio_profile
 from ...profiles.control_domain import encode_legacy_control, validate_control_raw_value
+from ...runtime._poller_types import SetNarrow
 from ...runtime.tx_interlock import RfState, evaluate_tx_interlock
 from ...runtime.managed_tx_state import ManagedTxOutcome
 from ..protocol import (  # noqa: TID251
@@ -537,6 +538,7 @@ class ControlHandler:
             "set_nb_level",
             "set_auto_notch",
             "set_manual_notch",
+            "set_narrow",
             "set_notch_filter",
             "set_digisel",
             "set_ip_plus",
@@ -2804,6 +2806,13 @@ class ControlHandler:
                 self._ensure_capability("notch", "set_manual_notch")
                 self._ensure_receiver_supported(rx)
                 q.put(SetManualNotch(on, receiver=rx))
+                return {"on": on, "receiver": rx}
+            case "set_narrow":
+                on = bool(params.get("on", False))
+                rx = int(params.get("receiver", 0))
+                self._ensure_capability("narrow", "set_narrow")
+                self._ensure_receiver_supported(rx)
+                q.put(SetNarrow(on, receiver=rx))
                 return {"on": on, "receiver": rx}
             case "set_notch_filter":
                 rx = int(params.get("receiver", 0))

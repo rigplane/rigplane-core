@@ -1437,6 +1437,8 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         return FieldPath.receiver(receiver, "operator_toggles", "auto_notch")
     if name == "set_manual_notch":
         return FieldPath.receiver(receiver, "operator_toggles", "manual_notch")
+    if name == "set_narrow":
+        return FieldPath.receiver(receiver, "operator_toggles", "narrow")
     if name == "set_twin_peak":
         return FieldPath.receiver(receiver, "operator_toggles", "twin_peak_filter")
     if name == "set_agc_time_constant":

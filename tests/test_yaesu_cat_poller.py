@@ -3946,6 +3946,7 @@ _RECEIVER_FORWARDING_CASES = [
     ("set_nr_level", "SetNRLevel", {"level": 7}),
     ("set_auto_notch", "SetAutoNotch", {"on": True}),
     ("set_manual_notch", "SetManualNotch", {"on": True}),
+    ("set_narrow", "SetNarrow", {"on": True}),
     ("set_manual_notch_freq", "SetNotchFilter", {"level": 120}),
     ("set_if_shift", "SetIfShift", {"offset": 200}),
     ("set_filter_width", "SetFilterWidth", {"width": 2400}),
