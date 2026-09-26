@@ -18,6 +18,21 @@ let hostHeight = NATIVE_HEIGHT;
  * is what moves `ScaledStage`'s own scale — the test never calls a
  * `ResizeObserver` callback itself.
  */
+/** Box an element would report in a real browser: its own inline size when it
+ *  has one, otherwise the size the host stub gives the stage's holder. */
+function boxFor(element: Element): { width: number; height: number } {
+  const style = element instanceof HTMLElement ? element.style : null;
+  return {
+    width: style?.width ? parseFloat(style.width) : hostWidth,
+    height: style?.height ? parseFloat(style.height) : hostHeight,
+  };
+}
+
+/**
+ * Reports each observed element's OWN box, the way a real `ResizeObserver`
+ * does, and records the stage holder so the test can resize the host. The
+ * test never invokes a callback itself.
+ */
 class HostResizeObserver {
   static holders: { callback: ResizeObserverCallback; target: Element }[] = [];
   private readonly callback: ResizeObserverCallback;
@@ -27,6 +42,8 @@ class HostResizeObserver {
   }
 
   observe(element: Element): void {
+    const box = boxFor(element);
+    this.callback([{ target: element, contentRect: box } as unknown as ResizeObserverEntry], this as unknown as ResizeObserver);
     if (element instanceof HTMLElement && element.classList.contains('scaled-stage-holder')) {
       HostResizeObserver.holders.push({ callback: this.callback, target: element });
     }
@@ -36,8 +53,12 @@ class HostResizeObserver {
 }
 
 function rectFor(element: HTMLElement): { width: number; height: number } {
+  const box = boxFor(element);
   if (element.classList.contains('scaled-stage-holder')) return { width: hostWidth, height: hostHeight };
-  return { width: CSS_WIDTH, height: CSS_HEIGHT };
+  // A canvas painted under the stage's transform: its layout box is its own
+  // size, its painted box is that size times the stage's current scale.
+  const scale = hostWidth / NATIVE_WIDTH;
+  return { width: box.width * scale, height: box.height * scale };
 }
 
 function resizeHost(width: number, height: number): void {
