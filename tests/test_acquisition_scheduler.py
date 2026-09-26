@@ -2504,7 +2504,7 @@ def test_first_terminal_timeout_expedites_retry_second_waits_cadence() -> None:
     freq = FieldPath.active("main", "freq_mode", "freq_hz")
     policy = AcquisitionPolicy(cadence_seconds=2.0, freshness_ttl_seconds=10.0)
     scheduler = AcquisitionScheduler(
-        profile=_profile([freq], default_policy=policy),
+        profile=_profile([freq], field_policies={freq: policy}),
         clock=clock,
     )
 
@@ -2545,7 +2545,7 @@ def test_non_timeout_failure_waits_one_cadence() -> None:
     freq = FieldPath.active("main", "freq_mode", "freq_hz")
     policy = AcquisitionPolicy(cadence_seconds=2.0, freshness_ttl_seconds=10.0)
     scheduler = AcquisitionScheduler(
-        profile=_profile([freq], default_policy=policy),
+        profile=_profile([freq], field_policies={freq: policy}),
         clock=clock,
     )
 
@@ -2571,7 +2571,7 @@ def test_success_resets_consecutive_timeout_streak() -> None:
     freq = FieldPath.active("main", "freq_mode", "freq_hz")
     policy = AcquisitionPolicy(cadence_seconds=2.0, freshness_ttl_seconds=10.0)
     scheduler = AcquisitionScheduler(
-        profile=_profile([freq], default_policy=policy),
+        profile=_profile([freq], field_policies={freq: policy}),
         clock=clock,
     )
 
