@@ -99,13 +99,19 @@ function onHalfUnitGrid(value: number): boolean {
 }
 
 function writtenGeometry(target: HTMLElement): number[] {
-  const values: number[] = [];
-  for (const rect of target.querySelectorAll<SVGRectElement>('[data-meter-fill]')) {
-    values.push(Number(rect.getAttribute('x')), Number(rect.getAttribute('width')));
-  }
+  // Segment x is a fixed grid (it carries the pinned gap), so only the
+  // partial fill width and the peak line move with the reading.
+  const partial = [...target.querySelectorAll<SVGRectElement>('[data-meter-fill]')]
+    .find((rect) => rect.getAttribute('visibility') !== 'hidden'
+      && Number(rect.getAttribute('width')) < Number(
+        target.querySelector('[data-segment="0"]')?.getAttribute('width'),
+      ));
   const peak = target.querySelector('[data-meter-peak]');
-  values.push(Number(peak?.getAttribute('x1')), Number(peak?.getAttribute('x2')));
-  return values;
+  return [
+    partial ? Number(partial.getAttribute('width')) : GEOMETRY_FALLBACK_STEP,
+    Number(peak?.getAttribute('x1')),
+    Number(peak?.getAttribute('x2')),
+  ];
 }
 
 // Two CSS pixels per user unit, so one device pixel is 0.5 user units.
