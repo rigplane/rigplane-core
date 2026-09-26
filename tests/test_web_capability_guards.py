@@ -845,14 +845,16 @@ class TestReceiverValidationSeat:
                 radio,
             )
         assert queue == []
-        # No web copy remains: the gate calls the runtime seat directly,
-        # so neither the ControlHandler method nor a module-level
-        # second implementation may exist.
+        # No web *copy* remains: the gate calls the runtime seat directly,
+        # so the old ControlHandler method and the old poller copy are gone.
+        # The poller's drain-time guard is a one-line call into the same
+        # runtime seat (pinned by test_profiles_routing), not a copy.
         assert not hasattr(ControlHandler, "_ensure_receiver_supported")
-        assert not hasattr(ControlHandler, "_refuse_unsupported_receiver")
         import rigplane.web.handlers.control as control_mod
+        import rigplane.web.radio_poller as poller_mod
 
         assert not hasattr(control_mod, "_ensure_receiver_supported")
+        assert not hasattr(poller_mod.RadioPoller, "_ensure_receiver_supported")
 
     def test_dual_receiver_admitted_to_queue(self):
         from rigplane.web.handlers import ControlHandler

@@ -284,12 +284,30 @@ def _level_for_power(value: Any, radio: Any) -> int:
 
 
 def _refuse_unsupported_receiver(radio: Any, receiver: int, *, operation: str) -> None:
-    """Refuse an unsupported receiver before enqueue (MOR-2484)."""
+    """Refuse an unsupported receiver before enqueue (MOR-2484).
+
+    Thin gate over the single runtime seat
+    (:func:`require_receiver_for_profile`) for profiled radios; the
+    profile-less fallback keeps the pre-MOR-2484 ``ValueError`` contract
+    that ``test_enqueue_command_errors`` pins (a capabilities-only test
+    double admits 0/1 via ``dual_rx``, refuses anything else).
+    """
     if radio is None:
         return
     profile = getattr(radio, "profile", None)
     if not isinstance(profile, RadioProfile):
-        return
+        capabilities = getattr(radio, "capabilities", None)
+        receiver_count = (
+            2
+            if isinstance(capabilities, (set, frozenset)) and "dual_rx" in capabilities
+            else 1
+        )
+        if 0 <= receiver < receiver_count:
+            return
+        raise ValueError(
+            f"receiver={receiver} is not supported by active profile "
+            f"(receivers={receiver_count})"
+        )
     require_receiver_for_profile(profile, receiver, operation=operation)
 
 
