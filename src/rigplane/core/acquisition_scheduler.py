@@ -2380,6 +2380,7 @@ class StateFreshnessService:
         "_radio",
         "_scheduler",
         "_store",
+        "_tx_active_hint",
     )
 
     def __init__(
@@ -2390,6 +2391,7 @@ class StateFreshnessService:
         interval_seconds: float = 0.05,
         on_delta: Callable[[SnapshotDelta], None] | None = None,
         radio: object | None = None,
+        tx_active_hint: Callable[[], bool] | None = None,
     ) -> None:
         _validate_positive(interval_seconds, label="interval_seconds")
         self._store = store
@@ -2397,6 +2399,7 @@ class StateFreshnessService:
         self._radio = radio
         self._interval_seconds = interval_seconds
         self._on_delta = on_delta
+        self._tx_active_hint = tx_active_hint
         # -inf so the first tick always primes immediately, regardless of
         # what monotonic clock value the caller starts at.
         self._next_prime_monotonic = float("-inf")
@@ -2432,12 +2435,26 @@ class StateFreshnessService:
         if scheduler is not None:
             scheduler.due_requests(
                 now=timestamp,
-                tx_active=derive_tx_active(self._store),
+                tx_active=self._tx_active(),
                 observed_active=derive_active_receiver_value(self._store),
             )
         if (delta.freshness or delta.reconciliation_requests) and self._on_delta:
             self._on_delta(delta)
         return delta
+
+    def _tx_active(self) -> bool:
+        """Observed PTT, or a managed-key hint when the radio has not confirmed yet."""
+
+        if derive_tx_active(self._store):
+            return True
+        hint = self._tx_active_hint
+        if hint is None:
+            return False
+        try:
+            return bool(hint())
+        except Exception:
+            logger.debug("tx_active_hint failed", exc_info=True)
+            return False
 
     def _discard_declared_absent(self) -> None:
         """Remove stored fields the profile declares absent in this state.

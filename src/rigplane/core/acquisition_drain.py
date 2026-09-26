@@ -29,6 +29,7 @@ ledger, which is what keeps the web seat's grace clock from outliving them.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Callable, MutableMapping, Sequence
 from typing import Protocol
@@ -41,6 +42,8 @@ from .acquisition_scheduler import (
 )
 from .state_pipeline_contracts import FieldPath
 from .state_store import StateStore
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "AcquisitionDrain",
@@ -144,10 +147,12 @@ class AcquisitionDrain:
         report_expiry: AcquisitionExpiryReport | None = None,
         on_forget: Callable[[str], None] | None = None,
         claimant: object | None = None,
+        tx_active_hint: Callable[[], bool] | None = None,
     ) -> None:
         self._scheduler = scheduler
         self._executor = executor
         self._store = store
+        self._tx_active_hint = tx_active_hint
         self._in_flight = in_flight
         self._expired = expired
         self._dispatchable = dispatchable
@@ -158,6 +163,21 @@ class AcquisitionDrain:
         self._report_expiry = report_expiry
         self._on_forget = on_forget
         self._claimant = self if claimant is None else claimant
+
+    def _tx_active(self, store: StateStore | None) -> bool:
+        """Observed PTT, or a managed-key hint when the radio has not confirmed yet."""
+
+        observed = False if store is None else derive_tx_active(store)
+        if observed:
+            return True
+        hint = self._tx_active_hint
+        if hint is None:
+            return False
+        try:
+            return bool(hint())
+        except Exception:
+            logger.debug("tx_active_hint failed", exc_info=True)
+            return False
 
     def _forget_ledger(self, request_id: str) -> None:
         """Drop one ledger entry and tell the seat it is gone."""
@@ -233,7 +253,7 @@ class AcquisitionDrain:
         # path too. Same ``derive_tx_active`` over the same canonical store as
         # the freshness tick's own cadence call, so the two writers cannot
         # disagree about one store state.
-        scheduler.note_tx_active(False if store is None else derive_tx_active(store))
+        scheduler.note_tx_active(self._tx_active(store))
         # MOR-1533: dispatch must use the tx_active-gated view; crediting an
         # already-sent answer (runtime._civ_rx, driven by the radio's own CI-V
         # pump) uses the unfiltered pending_requests() instead, so an answer
