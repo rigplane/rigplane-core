@@ -10,7 +10,7 @@
  */
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import CanvasStageHarness from './CanvasStageHarness.svelte';
+import CanvasStageHarness, { stageScale } from './CanvasStageHarness.svelte';
 
 const CSS_WIDTH = 200;
 const CSS_HEIGHT = 100;
@@ -32,6 +32,7 @@ class BoxResizeObserver {
 }
 
 beforeEach(() => {
+  stageScale.value = 1;
   target = document.createElement('div');
   document.body.appendChild(target);
   vi.stubGlobal('requestAnimationFrame', () => 1);
@@ -55,7 +56,8 @@ afterEach(async () => {
 });
 
 function mountCanvas(kind: 'spectrum' | 'waterfall', scale: number): void {
-  component = mount(CanvasStageHarness, { target, props: { canvas: kind, scale } });
+  stageScale.value = scale;
+  component = mount(CanvasStageHarness, { target, props: { canvas: kind } });
 }
 
 describe.each([
@@ -70,14 +72,13 @@ describe.each([
     expect(canvas.height).toBe(Math.round(CSS_HEIGHT * 2 * scale));
   });
 
-  it('recomputes the backing store when the published stage scale changes', async () => {
-    const mounted = mount(CanvasStageHarness, { target, props: { canvas: kind, scale: 1 } });
-    component = mounted;
+  it('recomputes the backing store when the published stage scale changes', () => {
+    mountCanvas(kind, 1);
     flushSync();
     const canvas = target.querySelector('canvas')!;
     expect(canvas.width).toBe(CSS_WIDTH * 2);
 
-    mounted.scale = 0.5;
+    stageScale.value = 0.5;
     flushSync();
 
     expect(canvas.width).toBe(CSS_WIDTH);
