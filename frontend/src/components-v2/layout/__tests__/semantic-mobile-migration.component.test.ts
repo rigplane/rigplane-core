@@ -69,9 +69,11 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
 }));
 
 // The now-real TxPanel (MOR-1245, sheet-open one-banner test) pulls two more
-// adapters. Mocked so the real mount never pins the transport/stores modules
-// in the shared (isolate: false) cache — same #771 rationale as the guard
-// adapter above and as TxPanel.isolated.
+// adapters. PARTIAL panel-adapters mock — importOriginal spread keeps the
+// layout's own `bindSemanticSurfaceHandlers`/`getPresetHandlers`/
+// `getKeyboardHandlers` real; only TxPanel's three Tx accessors are faked,
+// so the real mount never pins the transport/stores modules in the shared
+// (isolate: false) cache — same #771 rationale as the guard adapter above.
 const txPanelProps = {
   rfPower: 0.5, micGain: 128, atuActive: false, atuTuning: false,
   voxActive: false, compActive: false, compLevel: 64, monActive: false,
@@ -81,16 +83,20 @@ const txPanelHandlerNames = [
   'onRfPowerChange', 'onMicGainChange', 'onAtuToggle', 'onAtuTune', 'onVoxToggle',
   'onCompToggle', 'onCompLevelChange', 'onMonToggle', 'onMonLevelChange', 'onDriveGainChange',
 ] as const;
-vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
-  deriveTxProps: () => txPanelProps,
-  getTxHandlers: () => Object.fromEntries(txPanelHandlerNames.map((n) => [n, vi.fn()])),
-  getTxAuxControlFeedback: () => ({
-    confirmed: 128, target: null, requestedTarget: null, phase: 'idle', busy: false,
-    availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
-    sessionEpoch: 1, scope: { control: 'mic-gain', receiver: 0 },
-    repeatPolicy: 'latest-target-wins',
-  }),
-}));
+vi.mock('$lib/runtime/adapters/panel-adapters', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/adapters/panel-adapters')>();
+  return {
+    ...actual,
+    deriveTxProps: () => txPanelProps,
+    getTxHandlers: () => Object.fromEntries(txPanelHandlerNames.map((n) => [n, vi.fn()])),
+    getTxAuxControlFeedback: () => ({
+      confirmed: 128, target: null, requestedTarget: null, phase: 'idle', busy: false,
+      availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
+      sessionEpoch: 1, scope: { control: 'mic-gain', receiver: 0 },
+      repeatPolicy: 'latest-target-wins',
+    }),
+  };
+});
 vi.mock('$lib/runtime/adapters/mod-input-auto.svelte', () => ({
   deriveAutoLanModInputProps: () => ({ available: false, enabled: false }),
   setAutoLanModInputEnabled: vi.fn(),
