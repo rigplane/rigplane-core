@@ -319,6 +319,79 @@ class TestDXClusterClient:
             with pytest.raises(asyncio.CancelledError):
                 await task
 
+    async def test_stalled_connect_times_out_into_backoff(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A connect that never completes fails into the reconnect backoff."""
+        import rigplane.web.dx_cluster as dx_cluster_mod
+
+        entered = asyncio.Event()
+        second_attempt = asyncio.Event()
+        never_set = asyncio.Event()
+        attempts = 0
+
+        async def stalled_open_connection(host, port):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                entered.set()
+            else:
+                second_attempt.set()
+            await never_set.wait()
+            raise AssertionError("stalled connect unexpectedly completed")
+
+        monkeypatch.setattr(
+            dx_cluster_mod.asyncio, "open_connection", stalled_open_connection
+        )
+        monkeypatch.setattr(dx_cluster_mod, "_CONNECT_TIMEOUT_SECONDS", 0.05)
+        monkeypatch.setattr(dx_cluster_mod.asyncio, "sleep", AsyncMock())
+
+        client = DXClusterClient("dx.example.com", 7300, "K1ABC", on_spot=MagicMock())
+        task = asyncio.create_task(client.start())
+        started = time.monotonic()
+        try:
+            # wait_for bounds the test itself: without the timeout wrapper
+            # these raise TimeoutError and the test fails instead of hanging.
+            await asyncio.wait_for(entered.wait(), timeout=1.0)
+            await asyncio.wait_for(second_attempt.wait(), timeout=1.0)
+        finally:
+            await client.stop()
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        assert attempts >= 2
+        assert time.monotonic() - started < 1.0
+
+    async def test_cancel_during_pending_connect_propagates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Cancelling start() while the connect is pending is not a retry."""
+        import rigplane.web.dx_cluster as dx_cluster_mod
+
+        entered = asyncio.Event()
+        never_set = asyncio.Event()
+        attempts = 0
+
+        async def stalled_open_connection(host, port):
+            nonlocal attempts
+            attempts += 1
+            entered.set()
+            await never_set.wait()
+            raise AssertionError("stalled connect unexpectedly completed")
+
+        monkeypatch.setattr(
+            dx_cluster_mod.asyncio, "open_connection", stalled_open_connection
+        )
+
+        client = DXClusterClient("dx.example.com", 7300, "K1ABC", on_spot=MagicMock())
+        task = asyncio.create_task(client.start())
+        await asyncio.wait_for(entered.wait(), timeout=1.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert attempts == 1
+
 
 # ---------------------------------------------------------------------------
 # Task 3: SpotBuffer

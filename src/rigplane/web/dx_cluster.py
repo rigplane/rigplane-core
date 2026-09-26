@@ -71,6 +71,8 @@ def parse_spot(line: str) -> DXSpot | None:
 # Task 2: DXClusterClient
 # ---------------------------------------------------------------------------
 
+_CONNECT_TIMEOUT_SECONDS = 10.0
+
 
 class DXClusterClient:
     """Asyncio telnet client for DX cluster servers.
@@ -101,7 +103,10 @@ class DXClusterClient:
         attempt = 0
         while self._running:
             try:
-                reader, writer = await asyncio.open_connection(self._host, self._port)
+                async with asyncio.timeout(_CONNECT_TIMEOUT_SECONDS):
+                    reader, writer = await asyncio.open_connection(
+                        self._host, self._port
+                    )
                 self._writer = writer
                 try:
                     writer.write(f"{self._callsign}\r\n".encode())
