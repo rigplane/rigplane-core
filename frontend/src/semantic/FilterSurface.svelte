@@ -107,6 +107,7 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
   import { t } from '$lib/i18n';
+  import { getLocale } from '$lib/i18n/store.svelte';
   import {
     bindToggleInstrument,
   } from '../primitives/control-instruments/control-instrument-behavior';
@@ -245,37 +246,39 @@
   function formatWidthAnnouncementText(
     feedback: Readonly<CommandScalarFeedback>,
     phase: Readonly<PoliteControlAnnouncement['phase']>,
+    fallback: string,
     error: string | null,
   ): string {
     const target = Number.isFinite(feedback.requestedTarget ?? Number.NaN)
       ? String(feedback.requestedTarget) : '---';
     const confirmed = Number.isFinite(feedback.confirmed ?? Number.NaN)
       ? String(feedback.confirmed) : '---';
+    const english = getLocale() === 'en-US';
     let message: string;
     switch (phase) {
       case 'submitted':
       case 'queued':
       case 'dispatched':
       case 'awaiting-confirmation':
-        message = t('core.filter.width.pendingAnnouncement', { target });
+        message = english ? fallback : t('core.filter.width.pendingAnnouncement', { target });
         break;
       case 'confirmed':
-        message = t('core.filter.width.confirmedAnnouncement', { confirmed });
+        message = english ? fallback : t('core.filter.width.confirmedAnnouncement', { confirmed });
         break;
       case 'failed':
-        message = t('core.filter.width.failedAnnouncement', { target, confirmed });
+        message = english ? fallback : t('core.filter.width.failedAnnouncement', { target, confirmed });
         break;
       case 'timed-out':
-        message = t('core.filter.width.timedOutAnnouncement', { target, confirmed });
+        message = english ? fallback : t('core.filter.width.timedOutAnnouncement', { target, confirmed });
         break;
       case 'cancelled':
-        message = t('core.filter.width.cancelledAnnouncement', { target, confirmed });
+        message = english ? fallback : t('core.filter.width.cancelledAnnouncement', { target, confirmed });
         break;
       case 'superseded':
-        message = t('core.filter.width.supersededAnnouncement', { target, confirmed });
+        message = english ? fallback : t('core.filter.width.supersededAnnouncement', { target, confirmed });
         break;
       default:
-        message = '';
+        message = english ? fallback : '';
     }
     return error === null || message.length === 0 ? message : `${message}: ${error}`;
   }
@@ -291,7 +294,9 @@
     return Object.freeze({
       authorityKey,
       eventKey: JSON.stringify([authorityKey, issued.transitionId]),
-      text: formatWidthAnnouncementText(current.feedback, issued.phase, current.error),
+      text: formatWidthAnnouncementText(
+        current.feedback, issued.phase, current.announcement ?? '', current.error,
+      ),
     });
   }
   let filterWidthAnnouncement: IssuedAnnouncement | null = $state(
