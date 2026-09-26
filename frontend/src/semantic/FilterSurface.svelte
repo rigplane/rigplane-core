@@ -248,8 +248,9 @@
     error: string | null,
   ): string {
     const target = Number.isFinite(feedback.requestedTarget ?? Number.NaN)
-      ? String(feedback.requestedTarget) : '--- Hz';
-    const confirmed = formatExactWidth(feedback.confirmed ?? Number.NaN);
+      ? String(feedback.requestedTarget) : '---';
+    const confirmed = Number.isFinite(feedback.confirmed ?? Number.NaN)
+      ? String(feedback.confirmed) : '---';
     let message: string;
     switch (phase) {
       case 'submitted':
@@ -276,8 +277,7 @@
       default:
         message = '';
     }
-    return error === null || message.length === 0 ? message
-      : `${message.replace(/[.!?]$/, '')}: ${error}`;
+    return error === null || message.length === 0 ? message : `${message}: ${error}`;
   }
   function nextFilterWidthAnnouncement(
     current: Readonly<ContinuousScalarView>,
