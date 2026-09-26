@@ -139,9 +139,10 @@ async function assertMergeParents(github, owner, repo, pull, baseSha, headSha) {
 async function listAttemptJobs(github, owner, repo, runId, runAttempt) { const jobs = [];
   let totalCount = null;
   const iterator = github.paginate.iterator( 'GET /repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt_number}/jobs', {owner, repo, run_id: runId, attempt_number: runAttempt, per_page: 100}, );
-  for await (const response of iterator) { if (!Number.isSafeInteger(response.data.total_count) || !Array.isArray(response.data.jobs)) { throw new ObservationError('invalid_binding', 'legacy quick job metadata is invalid'); }
-    totalCount ??= response.data.total_count;
-    jobs.push(...response.data.jobs);
+  for await (const response of iterator) { const page = response.data; const pageJobs = Array.isArray(page) ? page : page?.jobs;
+    if (!Number.isSafeInteger(page?.total_count) || !Array.isArray(pageJobs)) { throw new ObservationError('invalid_binding', 'legacy quick job metadata is invalid'); }
+    totalCount ??= page.total_count;
+    jobs.push(...pageJobs);
   }
   if (totalCount === null || jobs.length !== totalCount) { throw new ObservationError('invalid_binding', 'legacy quick job topology is incomplete'); }
   return jobs;
