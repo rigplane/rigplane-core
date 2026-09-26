@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount, type Snippet } from 'svelte';
+  import { onDestroy, onMount, untrack, type Snippet } from 'svelte';
   import { t } from '$lib/i18n';
   import { LAN_MOD_INPUT_SOURCE } from '$lib/radio/mod-input';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
@@ -392,6 +392,20 @@
   function receiverAfInput(receiver: AfReceiverKey): Readonly<ContinuousScalarInput> {
     const field = presentation.rxAudio?.receiverAfLevels?.[receiver];
     const currentAuthority = receiverAuthority(publishedAfAuthority, receiver);
+    // MOR-1676 part A (AF): the domain MUST NOT track the published caps —
+    // `published` only refreshes on a delivered publication, while the
+    // render-time `presentation` prop carries the caps the publisher has
+    // already handed the view. Track `presentation.caps` (untracked read:
+    // the domain is a pure function of it, not a subscription), so the
+    // lattice follows the same caps the reading and the gate already see.
+    const domainCaps = untrack(() => presentation.caps);
+    const rawDomain = (() => {
+      const control = domainCaps?.controls?.af_level;
+      if (control === undefined || 'mapping' in control) return null;
+      const { raw_min: rawMin, raw_max: rawMax } = control;
+      if (!Number.isSafeInteger(rawMin) || !Number.isSafeInteger(rawMax) || rawMax <= rawMin) return null;
+      return { min: rawMin, max: rawMax, step: 1, defaultValue: null, fineStepDivisor: 1 };
+    })();
     const reading = field?.reading.status === 'known'
       ? { status: 'known' as const, value: field.reading.value }
       : { status: 'unknown' as const };
@@ -406,8 +420,7 @@
       && onReceiverAfLevelChange !== undefined;
     // MOR-1676 part A (AF): the named-receiver knob moves on the radio's raw
     // integer lattice, like the active-receiver slider above — the value in
-    // IS the raw value, dispatched as the int `level`.
-    const rawDomain = radioAfDomain(published);
+    // IS the raw value, dispatched with the explicit `'raw'` unit.
     const domain = rawDomain ?? AF_DOMAIN;
     const rawReading = rawDomain !== null && reading.status === 'known'
       ? {
