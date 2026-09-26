@@ -19,7 +19,7 @@ from rigplane.radio import (
 )
 from rigplane.audio.route import AudioConfigSource
 from rigplane.profiles import RadioProfile
-from rigplane.runtime._control_phase import ControlPhaseRuntime
+from rigplane.runtime._control_phase import ControlPhaseRuntime, _session_reject_hint
 from rigplane.transport import ConnectionState
 from rigplane.types import AudioCodec
 
@@ -1100,6 +1100,65 @@ class TestConnectSessionRejection:
                 await radio.connect()
 
         assert send_mock.await_count == 1, "No retry for mono codec"
+        assert mt.disconnected is True
+
+
+class TestSessionRejectHint:
+    """MOR-2630: rejection messages must say what the error code means."""
+
+    def test_same_computer_hint(self) -> None:
+        hint = _session_reject_hint(0xFFFFFFFF)
+        assert "from this computer" in hint
+        assert "One RigPlane server per radio" in hint
+
+    def test_other_computer_hint(self) -> None:
+        hint = _session_reject_hint(0xFDFFFFFF)
+        assert "another computer" in hint
+
+    def test_unknown_error_hint_is_generic(self) -> None:
+        hint = _session_reject_hint(0x00000000)
+        assert "this computer" not in hint
+        assert "another computer" not in hint
+
+    @pytest.mark.asyncio
+    async def test_mono_rejection_message_names_same_computer(self) -> None:
+        """Mono rx_codec + 0xFFFFFFFF → the raised message explains the code."""
+        radio = IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610")
+        mt = ConnectMockTransport()
+        radio._ctrl_transport = mt
+
+        async def _reject_status() -> int:
+            radio._last_status_error = 0xFFFFFFFF
+            return 0
+
+        with (
+            patch.object(radio._control_phase, "_status_retry_pause", return_value=0.0),
+            patch.object(
+                radio._control_phase,
+                "_wait_for_packet",
+                new=AsyncMock(return_value=_build_login_response()),
+            ),
+            patch.object(radio._control_phase, "_send_token_ack", new=AsyncMock()),
+            patch.object(
+                radio._control_phase,
+                "_receive_guid",
+                new=AsyncMock(return_value=b"\x00" * 16),
+            ),
+            patch.object(radio._control_phase, "_send_conninfo", new=AsyncMock()),
+            patch.object(
+                radio._control_phase,
+                "_receive_civ_port",
+                new=AsyncMock(side_effect=_reject_status),
+            ),
+        ):
+            with pytest.raises(ConnectionError) as excinfo:
+                await radio.connect()
+
+        message = str(excinfo.value)
+        assert message.startswith("Radio rejected session allocation")
+        assert "from this computer" in message
+        assert "Wait 30-60s" not in message
+
         assert mt.disconnected is True
 
 
