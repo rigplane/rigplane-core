@@ -1146,7 +1146,8 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
       row.querySelector('[role="slider"]')?.getAttribute('aria-valuenow'),
     ]);
   const afCalls = () => vi.mocked(sendCommand).mock.calls
-    .filter(([name]) => name === 'set_af_level' || name === 'set_af_level_normalized').map(([, params]) => params);
+    .filter(([name]) => name === 'set_af_level' || name === 'set_af_level_normalized')
+    .map(([name, params]) => ({ name, ...params }));
   const BOTH = [
     ['rx-audio-af-main', 'AF MAIN', '31%', 'AF MAIN', '0.31'],
     ['rx-audio-af-sub', 'AF SUB', '77%', 'AF SUB', '0.77'],
@@ -1180,7 +1181,7 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
       'keydown', { key: 'ArrowRight', bubbles: true, cancelable: true },
     ));
     flushSync();
-    expect(afCalls()).toEqual([{ level, receiver: index }]);
+    expect(afCalls()).toEqual([{ name: 'set_af_level', level, receiver: index }]);
   });
 
   it('keeps a drag on the SUB knob alive across a MAIN-to-SUB selection change', () => {
@@ -1204,7 +1205,7 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
     slider.dispatchEvent(new PointerEvent('pointermove', { pointerId: 9, clientX: 90, bubbles: true }));
     slider.dispatchEvent(new PointerEvent('pointerup', { pointerId: 9, bubbles: true }));
     flushSync();
-    expect(afCalls().at(-1)).toEqual({ level: 230, receiver: 1 });
+    expect(afCalls().at(-1)).toEqual({ name: 'set_af_level', level: 230, receiver: 1 });
     expect(afCalls().every((params) => (params as { receiver: number }).receiver === 1)).toBe(true);
   });
 
