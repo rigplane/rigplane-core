@@ -16,7 +16,7 @@
   interface Props {
     view: RadioViewModel;
     feedback?: DspScalarFeedback;
-    presentation?: 'grouped' | 'independent' | 'nr';
+    presentation?: 'grouped' | 'independent' | 'nr' | 'compact-notch';
     scalarPresentation?: Readonly<DspScalarPresentation>;
     agcLabels?: Record<string, string>;
     notchWidthChoices?: readonly NotchWidthChoice[];
@@ -66,7 +66,7 @@
   <DspInstrumentHost {view} {agcLabels} {pendingNb} {pendingNr} {pendingNotch} {onToggle}
   {onNotchModeChange} {onAgcModeChange} {...finiteSelection}>
   {#snippet children(finiteHandles: DspFiniteHandles)}
-    <DspScalarHost {view} feedback={scalarFeedback} {nbLevelMax} {nbLevelPercent}
+    <DspScalarHost {view} feedback={scalarFeedback} {nbLevelMax} {nbLevelPercent} {notchWidthChoices}
       {scalarAppearance} {presentationIsCurrent}
       onLevelChange={(field, value) => onLevelChange?.(field, value)}>
       {#snippet children(scalarHandles: DspScalarHandles)}
@@ -87,6 +87,14 @@
           {#if presentation === 'nr'}
             <section data-testid="nr-dsp-scalar">
               {@render scalarHandles.nrLevel(scalarPresentation)}
+            </section>
+          {:else if presentation === 'compact-notch'}
+            <!-- MOR-1685: the compact settings \"notch\" panel calls the
+              scalar host's own `manualNotchWidth` handle directly (the same
+              call `DspSurface`'s `compactLevels` makes), not the surface's
+              native row. -->
+            <section data-testid="compact-notch-width">
+              {@render scalarHandles.manualNotchWidth(scalarPresentation)}
             </section>
           {:else}
             <DspSurface {view} {finiteHandles} scalarHandles={scalarHandles} {notchWidthChoices}
