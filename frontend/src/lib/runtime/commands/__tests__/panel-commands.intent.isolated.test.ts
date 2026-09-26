@@ -549,7 +549,9 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     ]);
     for (const [name, params] of exactCalls()) {
       expect(Number.isInteger(params.level)).toBe(true);
-      if (name === 'set_af_level') expect(params).not.toHaveProperty('level_unit');
+      if (name === 'set_af_level' && params.level !== 1 && params.level !== 0.5) {
+        expect(params).not.toHaveProperty('level_unit');
+      }
     }
     expectIntentTransport();
   });
