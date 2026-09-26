@@ -46,6 +46,11 @@
     rafId = requestAnimationFrame(draw);
   }
 
+  // Bumped when the canvas box or the pixel ratio changes, so the stage-scale
+  // effect below re-runs after either. It is the only reader of the scale:
+  // reading it in the observer too would hide a missing effect read (MOR-1161).
+  let backingEpoch = $state(0);
+
   function applyBackingStore(stageScale: number): void {
     const backing = canvasBackingSize(cssWidth, cssHeight, window.devicePixelRatio || 1, stageScale);
     canvas.width = backing.width;
@@ -70,7 +75,7 @@
 
   // The stage's transform does not resize this canvas, so nothing else here
   // notices a scale change (MOR-1161).
-  watchStageScale(() => { if (mounted) { applyBackingStore(getStageScale()()); scheduleDraw(); } });
+  watchStageScale(() => { void backingEpoch; if (mounted) { applyBackingStore(getStageScale()()); scheduleDraw(); } });
 
   // Renderer options and fallback prop data can change without a stream push.
   $effect(() => {
@@ -94,14 +99,10 @@
       if (!rect) return;
       cssWidth = Math.max(1, Math.floor(rect.width));
       cssHeight = Math.max(1, Math.floor(rect.height));
-      // The scale is read only by the stage-scale effect. Reading it here
-      // too would recompute the store on a scale change even with that
-      // effect's read removed (MOR-1161).
-      applyBackingStore(1);
-      scheduleDraw();
+      backingEpoch += 1;
     });
     ro.observe(canvas);
-    const stopPixelWatch = watchDevicePixelRatio(() => { applyBackingStore(1); scheduleDraw(); });
+    const stopPixelWatch = watchDevicePixelRatio(() => { backingEpoch += 1; });
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);

@@ -105,6 +105,9 @@
     scheduleDraw();
   }
 
+  // See SpectrumCanvas: the stage-scale effect is the only scale reader.
+  let backingEpoch = $state(0);
+
   function applyBackingStore(stageScale: number): void {
     const backing = canvasBackingSize(cssWidth, cssHeight, window.devicePixelRatio || 1, stageScale);
     canvas.width = backing.width;
@@ -114,7 +117,7 @@
 
   // The stage's transform does not resize this canvas, so nothing else here
   // notices a scale change (MOR-1161).
-  watchStageScale(() => { if (mounted) { applyBackingStore(getStageScale()()); scheduleDraw(); } });
+  watchStageScale(() => { void backingEpoch; if (mounted) { applyBackingStore(getStageScale()()); scheduleDraw(); } });
 
   // A control/readout change must repaint even between FFT frames.
   $effect(() => {
@@ -138,13 +141,12 @@
       if (!rect) return;
       cssWidth = Math.max(1, Math.floor(rect.width));
       cssHeight = Math.max(1, Math.floor(rect.height));
-      // The scale is read only by the stage-scale effect (MOR-1161).
-      applyBackingStore(1);
+      backingEpoch += 1;
       rendererState.reset();
       scheduleDraw();
     });
     ro.observe(canvas);
-    const stopPixelWatch = watchDevicePixelRatio(() => applyBackingStore(1));
+    const stopPixelWatch = watchDevicePixelRatio(() => { backingEpoch += 1; });
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);

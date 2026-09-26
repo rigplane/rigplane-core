@@ -404,6 +404,9 @@
     }
   }
 
+  // See SpectrumCanvas: the stage-scale effect is the only scale reader.
+  let backingEpoch = $state(0);
+
   function applyBackingStore(cssW: number, cssH: number, stageScale: number): void {
     const backing = canvasBackingSize(cssW, cssH, window.devicePixelRatio || 1, stageScale);
     canvas.width = backing.width;
@@ -413,7 +416,7 @@
 
   // The stage's transform does not resize this canvas, so nothing else here
   // notices a scale change (MOR-1161).
-  watchStageScale(() => { if (canvas) applyBackingStore(cssWidth, cssHeight, getStageScale()()); });
+  watchStageScale(() => { void backingEpoch; if (canvas) applyBackingStore(cssWidth, cssHeight, getStageScale()()); });
 
   function onVisibilityChange() {
     visible = !document.hidden;
@@ -433,11 +436,10 @@
       if (!rect) return;
       cssWidth = Math.max(1, Math.floor(rect.width));
       cssHeight = Math.max(1, Math.floor(rect.height));
-      // The scale is read only by the stage-scale effect (MOR-1161).
-      applyBackingStore(cssWidth, cssHeight, 1);
+      backingEpoch += 1;
     });
     ro.observe(canvas);
-    const stopPixelWatch = watchDevicePixelRatio(() => applyBackingStore(cssWidth, cssHeight, 1));
+    const stopPixelWatch = watchDevicePixelRatio(() => { backingEpoch += 1; });
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);
