@@ -60,7 +60,8 @@
     getCwPitchControlFeedback, getKeySpeedControlFeedback, getRfSqlControlFeedback,
     getTxAuxControlFeedback, type TxAuxControlFeedbackField,
     getPendingFrequencyHz,
-    getPendingFilterSelection, getPendingNbOn, getPendingNotchMode, getPendingNrOn, getPendingPreampLevel,
+    getPendingFilterSelection, getPendingManualNotchWidth, getPendingNbOn, getPendingNotchMode,
+    getPendingNrOn, getPendingPreampLevel,
     getPendingRepeaterShift, getPendingRepeaterTone, getPendingToneFreq,
     getRepeaterHandlers,
     getSystemHandlers, getDataModeArmed, getModInputArmed,
@@ -1727,6 +1728,7 @@
   let pendingNb = $derived(activeReceiverIndex === null ? null : getPendingNbOn(activeReceiverIndex));
   let pendingNr = $derived(activeReceiverIndex === null ? null : getPendingNrOn(activeReceiverIndex));
   let pendingNotch = $derived(activeReceiverIndex === null ? null : getPendingNotchMode(activeReceiverIndex));
+  let pendingNotchWidth = $derived(activeReceiverIndex === null ? null : getPendingManualNotchWidth(activeReceiverIndex));
 
   function requestKey(): void {
     tx.transmitOn();
@@ -2069,7 +2071,7 @@
   >
   {#snippet children(dspInstruments)}
   <DspScalarHost
-    {view} feedback={dspScalarFeedback} {nbLevelMax} {nbLevelPercent} {notchWidthChoices}
+    {view} feedback={dspScalarFeedback} {nbLevelMax} {nbLevelPercent} {notchWidthChoices} {pendingNotchWidth}
     onLevelChange={(field, value) => DSP_LEVEL_INTENT[field](value)}
     scalarAppearance={externalPresentation?.record.appearances.scalar}
     presentationIsCurrent={externalPresentation?.isCurrent}
@@ -2508,7 +2510,7 @@
     {#if view?.dsp}
       <DspSurface
         {view} finiteHandles={dspInstruments} {finiteLayout}
-        scalarHandles={dspScalars} {scalarLayout} {part} {compactAgcTime} {notchWidthChoices}
+        scalarHandles={dspScalars} {scalarLayout} {part} {compactAgcTime} {notchWidthChoices} {pendingNotchWidth}
         settingsPanel={compactAgcTime ? standardDspSettings : null}
         onSettingsPanelChange={(panel) => standardDspSettings = panel}
         onLevelChange={(field, value) => DSP_LEVEL_INTENT[field](value)}

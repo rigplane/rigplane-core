@@ -1385,6 +1385,15 @@ export function getPendingNotchMode(receiver: 0 | 1): 'off' | 'auto' | 'manual' 
   return null;
 }
 
+/** Freshest unconfirmed `set_manual_notch_width` target for `receiver`, or
+ *  `null`. One strand, one param (`value`), confirmed against
+ *  `manualNotchWidth` — the same decision table the sibling accessors use,
+ *  so confirmation, failure and supersession clear it by the same rule. */
+export function getPendingManualNotchWidth(receiver: 0 | 1): number | null {
+  const value = latestPendingParam('set_manual_notch_width', 'value', receiver, 'manualNotchWidth');
+  return typeof value === 'number' ? value : null;
+}
+
 /** Which of the two notch strands holds the freshest non-terminal record. */
 function freshestNotchStrand(receiver: 0 | 1): 'auto' | 'manual' {
   let autoAt = Number.NEGATIVE_INFINITY;

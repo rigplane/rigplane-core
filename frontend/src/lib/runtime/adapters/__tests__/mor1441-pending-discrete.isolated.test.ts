@@ -44,7 +44,8 @@ vi.mock('$lib/runtime/adapters/radio-view-model-adapter', () => ({
 }));
 
 import {
-  getPendingFilterSelection, getPendingNbOn, getPendingNotchMode, getPendingNrOn, getPendingPreampLevel,
+  getPendingFilterSelection, getPendingManualNotchWidth, getPendingNbOn, getPendingNotchMode,
+  getPendingNrOn, getPendingPreampLevel,
 } from '../panel-adapters';
 
 const cmd = (over: Partial<FakeCommand> = {}): FakeCommand => ({
@@ -293,5 +294,67 @@ describe('getPendingNotchMode (MOR-2236 remainder)', () => {
       fieldStatus: { 'main.autoNotch': { lastObservedMonotonic: 5 } } };
     state.commands = [autoOn({ status: 'acknowledged', ackFieldObservationTimes: { 'main.autoNotch': 4 } })];
     expect(getPendingNotchMode(0)).toBeNull();
+  });
+});
+
+// ── Manual-notch-width pending target (MOR-2634) ───────────────────────────
+//
+// The width choice group dispatches one `set_manual_notch_width` per choice
+// (`makeDspHandlers().onManualNotchWidthChange`, param `value`, confirmed
+// against `manualNotchWidth`). `getPendingManualNotchWidth` is a single-strand
+// read of the SAME lifecycle decision table (`latestPendingParam`) the four
+// accessors above use, so confirmation, failure and supersession clear it by
+// the same rule.
+
+describe('getPendingManualNotchWidth (MOR-2634)', () => {
+  afterEach(() => { runtimeState.state = null; state.commands = []; });
+
+  const width = (over: Partial<FakeCommand> = {}): FakeCommand => ({
+    name: 'set_manual_notch_width', status: 'pending', createdAt: 0,
+    params: { value: 1, receiver: 0 }, ...over,
+  });
+
+  it('returns null when nothing is in flight', () => {
+    expect(getPendingManualNotchWidth(0)).toBeNull();
+  });
+
+  it('reads the pending choice', () => {
+    state.commands = [width()];
+    expect(getPendingManualNotchWidth(0)).toBe(1);
+  });
+
+  it('a newer choice supersedes the older one (latest-target-wins)', () => {
+    state.commands = [width({ createdAt: 1 }), width({ createdAt: 2, params: { value: 2, receiver: 0 } })];
+    expect(getPendingManualNotchWidth(0)).toBe(2);
+  });
+
+  it('a failed/terminal record clears the pending choice', () => {
+    state.commands = [width({ status: 'failed' })];
+    expect(getPendingManualNotchWidth(0)).toBeNull();
+  });
+
+  it('ignores a choice for another receiver', () => {
+    state.commands = [width({ params: { value: 1, receiver: 1 } })];
+    expect(getPendingManualNotchWidth(0)).toBeNull();
+  });
+
+  it('stays pending across an ack until the commanded field is re-observed', () => {
+    runtimeState.state = { main: { manualNotchWidth: 0 }, sub: {},
+      fieldStatus: { 'main.manualNotchWidth': { lastObservedMonotonic: 4 } } };
+    state.commands = [width({
+      status: 'acknowledged',
+      ackFieldObservationTimes: { 'main.manualNotchWidth': 4 },
+    })];
+    expect(getPendingManualNotchWidth(0)).toBe(1);
+  });
+
+  it('clears once the commanded field is re-observed', () => {
+    runtimeState.state = { main: { manualNotchWidth: 0 }, sub: {},
+      fieldStatus: { 'main.manualNotchWidth': { lastObservedMonotonic: 5 } } };
+    state.commands = [width({
+      status: 'acknowledged',
+      ackFieldObservationTimes: { 'main.manualNotchWidth': 4 },
+    })];
+    expect(getPendingManualNotchWidth(0)).toBeNull();
   });
 });

@@ -167,6 +167,9 @@ export function getPendingNrOn(_receiver: 0 | 1): boolean | null {
 export function getPendingNotchMode(_receiver: 0 | 1): 'off' | 'auto' | 'manual' | null {
   return null;
 }
+export function getPendingManualNotchWidth(_receiver: 0 | 1): number | null {
+  return null;
+}
 
 /** MOR-2111 — the repeater panel's three pending accessors, inert like the
  *  accessors above: `null` means nothing pending. */

@@ -148,6 +148,7 @@
 
 <script lang="ts">
   import { HardwareButton } from '$lib/Button';
+  import { t } from '$lib/i18n';
   import { bindChoiceInstrument } from '../primitives/control-instruments/control-instrument-behavior';
   import type { RadioViewModel } from './radio-view-model';
   import type { DspFiniteHandles, DspFiniteLayout, DspSettingsPanel } from './dsp-instruments';
@@ -168,14 +169,17 @@
      * keeps the existing scalar row.
      */
     notchWidthChoices?: readonly NotchWidthChoice[];
+    pendingNotchWidth?: number | null;
     settingsPanel?: DspSettingsPanel | null;
     onSettingsPanelChange?: (panel: DspSettingsPanel | null) => void;
     onLevelChange?: (field: DspLevelField, value: number) => void;
   }
   let {
     view, finiteHandles, finiteLayout, scalarHandles, scalarLayout, part = 'all',
-    compactAgcTime = false, notchWidthChoices, settingsPanel = null, onSettingsPanelChange, onLevelChange,
+    compactAgcTime = false, notchWidthChoices, pendingNotchWidth = null,
+    settingsPanel = null, onSettingsPanelChange, onLevelChange,
   }: Props = $props();
+  const pendingId = $props.id();
 
   /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine). */
   let dsp = $derived(view.dsp);
@@ -183,9 +187,9 @@
    * MOR-1685 — the Manual Notch Width choice binding. Options come from the
    * profile-declared list; the confirmed selection is the `manualNotchWidth`
    * reading. A choice dispatches through the existing scalar intent
-   * (`onLevelChange('manualNotchWidth', value)` → exactly one
-   * `set_manual_notch_width`). Visible pending feedback for the requested
-   * choice is MOR-2634; until then only the confirmed reading is selected.
+    * (`onLevelChange('manualNotchWidth', value)` → exactly one
+    * `set_manual_notch_width`). `pendingNotchWidth` is display-only: the
+    * confirmed reading stays the group's sole selection source.
    */
   let widthChoiceValues = $derived((notchWidthChoices ?? []).map((choice) => choice.value));
   const widthChoiceBehavior = bindChoiceInstrument<number>(() => ({
@@ -243,8 +247,11 @@
 
 {#snippet widthChoices()}
   {#if dsp?.manualNotchWidth.availability.structural}
+    {@const widthPendingId = `${pendingId}-notchWidth`}
     <div class="dsp-level" role="radiogroup" aria-label="Notch width" data-testid="dsp-manualNotchWidth"
       data-field="manualNotchWidth"
+      data-notch-width-status={pendingNotchWidth !== null ? 'pending' : 'confirmed'}
+      aria-describedby={pendingNotchWidth !== null ? widthPendingId : undefined}
       data-disabled-reason={usable(dsp.manualNotchWidth) ? undefined : 'field-not-observed'}>
       <span class="dsp-name">Notch width</span>
       <div class="dsp-choice-row">
@@ -254,10 +261,12 @@
             role="radio"
             aria-checked={widthChoiceBehavior.selected === undefined
               ? undefined : widthChoiceBehavior.isSelected(choice.value)}
+            data-pending={pendingNotchWidth === choice.value}
             disabled={!widthChoiceBehavior.available}
             onclick={() => widthChoiceBehavior.invoke(choice.value)}>{choice.label}</button>
         {/each}
       </div>
+      {#if pendingNotchWidth !== null}<span id={widthPendingId} class="sr-only">{t('core.dsp.notch.pendingAnnouncement')}</span>{/if}
     </div>
   {/if}
 {/snippet}
@@ -362,4 +371,9 @@
      the key must not shift when the value arrives. "6.0s" is the widest
      declared label (`AGC_TIME_LABELS`). */
   .dsp-agc-time-value { display: inline-block; min-width: 4ch; text-align: center; }
+  .dsp-choice[data-pending='true'] { font-style: italic; opacity: 0.75; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
 </style>

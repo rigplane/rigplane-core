@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, type Snippet } from 'svelte';
+  import { t } from '$lib/i18n';
   import type { ScalarAppearance } from '../../component-kit-api/src/index';
   import { ValueControl } from '../components-v2/controls/value-control';
   import type { HBarIssuedStatusPresentation, HBarIssuedStatusSnapshot }
@@ -30,6 +31,7 @@
      * from the list); empty/absent keeps the existing scalar.
      */
     notchWidthChoices?: readonly NotchWidthChoice[];
+    pendingNotchWidth?: number | null;
     onLevelChange?: (field: DspScalarField, value: number) => void;
     scalarAppearance?: ScalarAppearance;
     presentationIsCurrent?: () => boolean;
@@ -37,7 +39,8 @@
   }
 
   let { view, feedback, nbLevelMax = 255, nbLevelPercent = false, notchWidthChoices,
-    onLevelChange, scalarAppearance, presentationIsCurrent, children }: Props = $props();
+    pendingNotchWidth = null, onLevelChange, scalarAppearance, presentationIsCurrent, children }: Props = $props();
+  const pendingId = $props.id();
   let dsp = $derived(view?.dsp);
 
   const LABELS = {
@@ -188,9 +191,9 @@
   /**
    * MOR-1685 — Manual Notch Width as a profile-derived choice group. The
    * confirmed selection is the `manualNotchWidth` reading; a choice calls
-   * the existing `onLevelChange('manualNotchWidth', value)` path. Visible
-   * pending feedback for the requested choice is MOR-2634; until then only
-   * the confirmed reading is selected.
+    * the existing `onLevelChange('manualNotchWidth', value)` path.
+    * `pendingNotchWidth` is display-only: the confirmed reading stays the
+    * group's sole selection source.
    */
   let widthChoiceValues = $derived((notchWidthChoices ?? []).map((choice) => choice.value));
   const widthChoiceBehavior = bindChoiceInstrument<number>(() => ({
@@ -211,9 +214,12 @@
     {@const current = feedback.manualNotchWidth}
     {@const reason = disabledReason('manualNotchWidth')}
     {@const currentStatus = status('manualNotchWidth')}
+    {@const widthPendingId = `${pendingId}-notchWidth`}
     <div class="dsp-scalar" class:dsp-scalar--presented={explicit}
       role="radiogroup" aria-label={label}
       data-testid="dsp-manualNotchWidth" data-scalar-field="manualNotchWidth"
+      data-notch-width-status={pendingNotchWidth !== null ? 'pending' : 'confirmed'}
+      aria-describedby={pendingNotchWidth !== null ? widthPendingId : undefined}
       data-feedback-control={current.scope.control} data-feedback-receiver={current.scope.receiver}
       data-disabled-reason={reason === undefined ? undefined : 'field-not-observed'}
       aria-busy={current.busy} title={reason}>
@@ -225,10 +231,12 @@
           role="radio"
           aria-checked={widthChoiceBehavior.selected === undefined
             ? undefined : widthChoiceBehavior.isSelected(choice.value)}
+          data-pending={pendingNotchWidth === choice.value}
           disabled={!widthChoiceBehavior.available}
           title={reason}
           onclick={() => widthChoiceBehavior.invoke(choice.value)}>{choice.label}</button>
       {/each}
+      {#if pendingNotchWidth !== null}<span id={widthPendingId} class="sr-only">{t('core.dsp.notch.pendingAnnouncement')}</span>{/if}
       {#if currentStatus !== ''}
         <span data-command-status class:command-pending={current.busy}
           class:sr-only={explicit || current.phase === 'unavailable'}>{currentStatus}</span>
@@ -323,5 +331,6 @@
      'NARROW', the widest declared value label). */
   .dsp-scalar > output { min-width: 6ch; font-variant-numeric: tabular-nums; }
   .dsp-scalar :global(.vc-hbar) { width: 100%; min-width: 0; }
+  .dsp-choice[data-pending='true'] { font-style: italic; opacity: 0.75; }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 </style>
