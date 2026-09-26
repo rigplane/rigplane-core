@@ -379,12 +379,12 @@ describe('structural availability decides whether a meter EXISTS', () => {
       const tile = s.tile(field)!;
       expect(tile).not.toBeNull();
       expect(tile.dataset.observed).toBe('false');
-      // The S meter ('signal') has its own vocabulary for an
-      // operationally-unavailable reading and still shows its own '?'
-      // placeholder.
+      // The S meter ('signal') drew its operationally-unavailable
+      // reading as an empty caption — no '?' placeholder anywhere in the
+      // tile (MOR-2649).
       if (field === 'signal') {
         expect(tile.querySelectorAll('svg')).toHaveLength(1);
-        expect(tile.textContent).toContain('?');
+        expect(tile.textContent).not.toContain('?');
         return;
       }
       // R32: every structurally-present bar meter always draws its gauge
