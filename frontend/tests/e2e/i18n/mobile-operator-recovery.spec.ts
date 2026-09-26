@@ -105,7 +105,17 @@ test('saved mobile theme survives cold entry, reload and desktop round trip', as
 async function checkUnkey(page: Page, info: TestInfo, stage: string, landscape: boolean, tab = true) {
   const unkey = page.locator('[data-testid="rx-tx-unkey"], .m-ls-unkey');
   await expect(unkey).toHaveCount(1);
-  await expect(page.getByTestId('semantic-radio-surfaces')).toHaveCount(landscape ? 0 : 1);
+  // MOR-2347's pin: the full semantic deck lives only in portrait; landscape
+  // never mounts one. MOR-2442 keeps that — landscape hosts exactly ONE
+  // SemanticRadioSurfaces in its spectrum slot (`scopeManaged` host), and it
+  // renders no deck surfaces there. Portrait still mounts exactly one.
+  const surfaces = page.getByTestId('semantic-radio-surfaces');
+  await expect(surfaces).toHaveCount(1);
+  if (landscape) {
+    const hosted = page.locator('.m-ls-spectrum [data-testid="semantic-radio-surfaces"]');
+    await expect(hosted).toHaveCount(1);
+    await expect(hosted.getByTestId('rx-tx-surface')).toHaveCount(0);
+  }
   await expect(unkey).toBeEnabled();
   if (tab) {
     // Tab to the existing recovery control without activating any control.
