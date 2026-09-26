@@ -538,11 +538,20 @@ describe('operational availability decides whether a control is USABLE', () => {
     });
   });
 
+  // MOR-2648: an unread value renders an unlit box — empty text, never a
+  // `?` glyph; the box itself stays reserved (see the geometry describe).
   it('never enables the width slider on an unobserved reading', () => {
     const view = withModeFilterField(base(), 'filterWidth', { unknown: true });
     withSurface(view, (s) => {
       expect(s.input('filter-width')!.disabled).toBe(true);
-      expect(s.output('filter-width')!.textContent).toBe('?');
+      expect(s.output('filter-width')!.textContent).toBe('');
+    });
+  });
+
+  it('renders the IF-shift value box empty on an unobserved reading, never a placeholder glyph', () => {
+    const view = withPassbandField(base(), 'ifShift', { unknown: true });
+    withSurface(view, (s) => {
+      expect(s.output('filter-ifShift')!.textContent).toBe('');
     });
   });
 
@@ -1235,7 +1244,9 @@ describe('unknown PBT has no fabricated numeric semantics (MOR-1705)', () => {
       expect(input.disabled).toBe(true);
       expect(s.group(`filter-${field}`)!.dataset.disabledReason).toBe('field-not-observed');
       expect(s.group(`filter-${field}`)!.dataset.presentation).toBe('retained');
-      expect(s.output(`filter-${field}`)!.textContent).not.toBe('?');
+      // MOR-2648: a retained (held) reading is still a reading — its known
+      // value renders exactly as a confirmed one, never a placeholder.
+      expect(s.output(`filter-${field}`)!.textContent).toBe('0');
     });
   });
 });
@@ -1356,10 +1367,10 @@ describe('dataMode renders as a readout', () => {
     });
   });
 
-  it('shows "?" honestly when unobserved, never a fabricated default', () => {
+  it('renders the box empty when unobserved, never a fabricated default or a placeholder glyph', () => {
     const view = withPassbandField(base(), 'dataMode', { unknown: true });
     withSurface(view, (s) => {
-      expect(s.output('filter-data-mode')!.textContent).toBe('?');
+      expect(s.output('filter-data-mode')!.textContent).toBe('');
     });
   });
 
@@ -1509,6 +1520,9 @@ describe('explicit PBT display (MOR-1692)', () => {
     withSurface(current, (s) => {
       const group = s.group('filter-pbtInner')!;
       expect(s.input('filter-pbtInner')).toBeNull(); expect(group.querySelector('[aria-valuenow]')).toBeNull();
+      // MOR-2648: an unmeasured PBT renders an unlit box — empty text,
+      // never the `—` dash. The box itself stays reserved (geometry describe).
+      expect(s.output('filter-pbtInner')!.textContent).toBe('');
       group.dispatchEvent(new Event('input', { bubbles: true })); flushSync(); expect(onChange).not.toHaveBeenCalled();
     }, { onPbtInnerChange: onChange });
   });
@@ -1721,5 +1735,54 @@ describe('NARROW toggle (MOR-2640)', () => {
       expect(onNarrowToggle).toHaveBeenCalledTimes(1);
       expect(onNarrowToggle).toHaveBeenCalledWith();
     }, { onNarrowToggle }, { pendingNarrow: true });
+  });
+});
+
+// ── 11. Reserved value boxes (MOR-2648) ─────────────────────────────────────
+//
+// jsdom does no layout, so the reservation is pinned structurally: the
+// reserving rule itself, checked against the widest text the readouts render
+// today — the same source-text idiom the "no re-derivation" describe above
+// uses. The RfFrontEnd readout treatment (MOR-2527): an unlit `<output>`
+// keeps its reserved box so the first reading cannot move its neighbours.
+describe('unread readouts keep their reserved boxes (MOR-2648)', () => {
+  const withoutComments = (text: string): string => text
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  const surfaceSource = withoutComments(readFileSync('src/semantic/FilterSurface.svelte', 'utf8'));
+  const hostSource = withoutComments(readFileSync('src/semantic/FilterInstrumentHost.svelte', 'utf8'));
+
+  it('reserves the width/IF-shift value box: min-width covers the widest rendered text', () => {
+    const rule = surfaceSource.match(/\.filter-level > output:not\(\.pbt-value\) \{([^}]*)\}/);
+    expect(rule).not.toBeNull();
+    // Widest text the two rows render today: the width fallback max '9999'
+    // (4 chars) and the IF-shift lower bound '-1200' (5 chars).
+    const widest = Math.max('9999'.length, String(FILTER_PASSBAND_LEVELS[0][2]).length);
+    const minWidth = Number(rule![1].match(/min-width: (\d+)ch/)?.[1]);
+    expect(Number.isFinite(minWidth)).toBe(true);
+    expect(minWidth).toBeGreaterThanOrEqual(widest);
+    // Digits are tabular, so a changing value cannot shift its neighbours.
+    expect(rule![1]).toContain('tabular-nums');
+  });
+
+  it('keeps the PBT value box reserved, tabular, and empty while unmeasured', () => {
+    const rule = surfaceSource.match(/\.pbt-value \{([^}]*)\}/);
+    expect(rule).not.toBeNull();
+    // Widest PBT text today: '-1200' (5 chars) — 6ch covers it.
+    expect(rule![1]).toContain('min-width: 6ch');
+    expect(rule![1]).toContain('tabular-nums');
+  });
+
+  it('reserves the DATA-mode value box in the host: min-width covers the rendered digits', () => {
+    const rule = hostSource.match(/\.(?:filter-readout|filter-choice-group) output \{([^}]*)\}/);
+    expect(rule).not.toBeNull();
+    // The DATA-mode output renders String(value) — a small integer code. The
+    // widest today is a single digit ('0'); 4ch covers a multi-digit code
+    // without the box ever depending on the reading.
+    const minWidth = Number(rule![1].match(/min-width: (\d+)ch/)?.[1]);
+    expect(Number.isFinite(minWidth)).toBe(true);
+    expect(minWidth).toBeGreaterThanOrEqual('0'.length);
+    expect(rule![1]).toContain('tabular-nums');
   });
 });
