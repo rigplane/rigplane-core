@@ -602,7 +602,7 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
   // dispatches 140, not 140*255).
   it('routes the RF-gain slider to onRfGainChange as the raw wire int, no double scaling', () => {
     render();
-    level('rfGain').input(140);
+    level('rfGain').input(140 / 255);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(140);
     for (const other of ALL.filter((s) => s !== h.rfGain)) expect(other).not.toHaveBeenCalled();
@@ -610,7 +610,7 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
 
   it('routes the squelch slider to onSquelchChange as the raw wire int, no double scaling', () => {
     render();
-    level('squelch').input(51);
+    level('squelch').input(51 / 255);
     flushSync();
     expect(h.squelch).toHaveBeenCalledExactlyOnceWith(51);
     for (const other of ALL.filter((s) => s !== h.squelch)) expect(other).not.toHaveBeenCalled();
@@ -618,7 +618,7 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
 
   it('a slider value of 200 dispatches 200, not 200*255', () => {
     render();
-    level('rfGain').input(200);
+    level('rfGain').input(200 / 255);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(200);
     const dispatched: number = h.rfGain.mock.calls[0][0];
@@ -631,11 +631,11 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
     (raw) => {
       render();
       const up = Math.min(255, raw + 1);
-      level('rfGain').input(up);
+      level('rfGain').input(up / 255);
       flushSync();
       expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(up);
       h.rfGain.mockClear();
-      level('rfGain').input(raw === 255 ? 254 : raw);
+      level('rfGain').input((raw === 255 ? 254 : raw) / 255);
       flushSync();
       expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(raw === 255 ? 254 : raw);
     },
@@ -916,7 +916,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
 
     // MOR-1676 part R: the raw lattice carries absolute values — 179 and
     // 153 directly, no 0..1 fraction in between.
-    rfInput.input(179);
+    rfInput.input(179 / 255);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(179);
     expect(h.sentCommands).toHaveLength(1);
@@ -933,7 +933,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     flushSync();
     expect(el('rfGain')!.dataset.commandPhase).toBe('confirmed');
 
-    sqlInput.input(153);
+    sqlInput.input(153 / 255);
     flushSync();
     expect(h.squelch).toHaveBeenCalledExactlyOnceWith(153);
     expect(h.sentCommands).toHaveLength(2);
@@ -969,7 +969,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
   it('routes separate endpoint requests once through the unchanged raw conversion seam', () => {
     render();
     level('rfGain').input(0);
-    level('squelch').input(255);
+    level('squelch').input(1);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(0);
     expect(h.squelch).toHaveBeenCalledExactlyOnceWith(255);
@@ -1086,7 +1086,7 @@ describe('the hosted RF owner survives replaceable presentation layouts', () => 
       setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn(),
     });
     old.slider.dispatchEvent(new PointerEvent('pointerdown', {
-      pointerId: 7, clientX: 179, bubbles: true,
+      pointerId: 7, clientX: 179 / 2.55, bubbles: true,
     }));
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(179);
@@ -1103,13 +1103,13 @@ describe('the hosted RF owner survives replaceable presentation layouts', () => 
     expect(replacement.value()).toBe(204);
 
     old.slider.dispatchEvent(new PointerEvent('pointermove', {
-      pointerId: 7, clientX: 230, bubbles: true,
+      pointerId: 7, clientX: 230 / 2.55, bubbles: true,
     }));
     old.slider.dispatchEvent(new PointerEvent('pointerup', { pointerId: 7, bubbles: true }));
     old.slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     expect(h.rfGain).not.toHaveBeenCalled();
 
-    replacement.input(140, 8);
+    replacement.input(140 / 255, 8);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(140);
     h.rfGain.mockClear();
@@ -1120,7 +1120,7 @@ describe('the hosted RF owner survives replaceable presentation layouts', () => 
     const revoked = level('rfGain');
     expect(revoked.disabled()).toBe(true);
     expect(el('rfGain')!.querySelector('output')!.textContent).toBe('');
-    revoked.input(230, 9);
+    revoked.input(230 / 255, 9);
     expect(h.rfGain).not.toHaveBeenCalled();
     expect([...h.authorityListeners]).toEqual(originalSubscribers);
 

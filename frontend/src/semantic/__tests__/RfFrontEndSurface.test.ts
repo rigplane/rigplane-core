@@ -473,7 +473,9 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
     const r = renderRaw(base(), { onLevelChange });
     for (const field of ['rfGain', 'squelch'] as const) {
       onLevelChange.mockClear();
-      r.level(field)!.input(200);
+      // The pointer driver clicks at a normalized track fraction: 200/255
+      // of the 0..255 raw lattice lands on raw 200.
+      r.level(field)!.input(200 / 255);
       flushSync();
       expect(onLevelChange).toHaveBeenCalledExactlyOnceWith(field, 200);
       const dispatched: number = onLevelChange.mock.calls[0][1];
