@@ -118,8 +118,6 @@ async function mountReactive(smoothedFraction: number, peakFraction: number) {
   });
   components.push(component);
   flushSync();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  flushSync();
   return {
     target,
     step(nextSmoothed: number, nextPeak: number) {
