@@ -350,12 +350,23 @@
 }
 /* Fail-closed permit renders as DENIAL, not absence — inert but present, and
    still legible (MOR-977 §1.2.3). A hidden PTT reads as "no TX capability",
-   which is a different fact. */
+   which is a different fact. The idle-qualified twin below is what actually
+   paints blocked-in-idle (MOR-1276): both it and the idle accent match then,
+   and the inert tone must win. Kept BELOW the keyed rules, which outrank both
+   on SPECIFICITY, so the inert treatment never bleeds through a solid TX fill.
+   This unqualified rule is the fallback for a surface whose state row has not
+   rendered yet ([data-session] lives on `.rx-tx-state`, which stays `hidden`
+   while idle): [data-session='idle'] never fails to match in a real page, so
+   this rule never fires there — it exists only for the integer-overflow class
+   of harness that mounts the key without the state row. */
 [data-design-language='fieldline'][data-design-language] .rx-tx-key:disabled {
   color: var(--dl-fieldline-inert);
   border-style: dotted;
   background: none;
   cursor: not-allowed;
+}
+[data-design-language='fieldline'][data-design-language] .rx-tx-surface:has(.rx-tx-state[data-session='idle']) .rx-tx-key:disabled {
+  color: var(--dl-fieldline-inert);
 }
 /* Unkey is never gated, and is the heaviest control on the surface. */
 [data-design-language='fieldline'][data-design-language] .rx-tx-unkey {

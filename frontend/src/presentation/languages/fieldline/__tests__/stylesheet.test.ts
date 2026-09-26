@@ -87,7 +87,11 @@ function matches(selector: string, state: SurfaceState, target: Target): boolean
   if (wants !== target) return false;
   if (wants === 'surface' && !selector.includes('.rx-tx-surface')) return false;
   if (selector.includes(':disabled') && !state.keyDisabled) return false;
-  for (const [, attribute, value] of selector.matchAll(/:has\(\[data-(session|rf)='([^']+)']\)/g)) {
+  // `[data-session]` lives on `.rx-tx-state`, which is `hidden` but PRESENT
+  // while idle — so a `:has(.rx-tx-state[data-session='…'])` guard always sees
+  // it in a real page. The hand-ranker models the same: the guard matches iff
+  // the named session equals this state's.
+  for (const [, attribute, value] of selector.matchAll(/:has\([^)]*\[data-(session|rf)='([^']+)']/g)) {
     if ((attribute === 'session' ? state.session : state.rf) !== value) return false;
   }
   // A rule scoped to a state attribute this selector never names still applies.
@@ -193,6 +197,23 @@ describe('F2 — the TX slab carries state in GEOMETRY, not only in colour (N2)'
     const keyed = RULES.find((r) => r.selector.includes("session='keyed'") && r.selector.includes('.rx-tx-key'))!;
     const inert = RULES.find((r) => r.selector.includes(':disabled') && r.selector.includes('.rx-tx-key'))!;
     expect(keyed.specificity).toBeGreaterThan(inert.specificity);
+  });
+
+  it('blocked-in-idle is INERT, not accent: the disabled treatment beats the idle rule (MOR-1276)', () => {
+    // Both match (idle session + disabled key), so the winner decides whether
+    // the blocked key reads as inert or as an actionable accent control.
+    // Non-vacuous: without the idle-qualified twin the accent wins (the RED
+    // this test was written against).
+    const colliding = RULES.filter(
+      (r) => r.declarations.color !== undefined && matches(r.selector, BLOCKED, 'slab'));
+    expect(colliding.map((r) => r.declarations.color))
+      .toContain('var(--dl-fieldline-rx-tuning)');
+    expect(winner('color', BLOCKED, 'slab')).toBe('var(--dl-fieldline-inert)');
+    const idle = RULES.find((r) => r.selector.includes("session='idle'") && r.selector.includes('.rx-tx-key'))!;
+    const inert = RULES
+      .filter((r) => r.selector.includes(':disabled') && r.selector.includes('.rx-tx-key'))
+      .sort((a, b) => b.specificity - a.specificity || b.order - a.order)[0];
+    expect(inert.specificity).toBeGreaterThan(idle.specificity);
   });
 
   it('the slab is square and full-width in every state — no pill anywhere', () => {
