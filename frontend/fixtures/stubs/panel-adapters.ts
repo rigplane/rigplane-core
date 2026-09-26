@@ -148,7 +148,7 @@ export function getPendingFrequencyHz(_receiver: 0 | 1): number | null {
 /**
  * MOR-1441 leg 2 — same MOR-1271/MOR-1320 lesson as `getPendingFrequencyHz`
  * above, for the discrete-control pending accessors `SemanticRadioSurfaces.
- * svelte` now also imports (filter select, preamp, NB/NR). `null` is the
+ * svelte` now also imports (filter select, preamp, NB/NR, notch mode). `null` is the
  * correct and only honest answer for the same reason: the deterministic
  * offline harness never has a real in-flight command to report.
  */
@@ -162,6 +162,9 @@ export function getPendingNbOn(_receiver: 0 | 1): boolean | null {
   return null;
 }
 export function getPendingNrOn(_receiver: 0 | 1): boolean | null {
+  return null;
+}
+export function getPendingNotchMode(_receiver: 0 | 1): 'off' | 'auto' | 'manual' | null {
   return null;
 }
 
