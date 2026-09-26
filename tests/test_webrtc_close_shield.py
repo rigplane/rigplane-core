@@ -98,5 +98,8 @@ async def test_cancelled_session_close_still_completes_pc_teardown() -> None:
 
     await _cancel_mid_teardown(session.close())
 
-    assert pc.teardown_completed
+    # The shield detaches pc teardown from the cancelled close: it finishes
+    # in the background, so a subsequent pc.close() resolves instead of
+    # hanging on the poisoned internal future.
     await asyncio.wait_for(pc.close(), timeout=2.0)
+    assert pc.teardown_completed
