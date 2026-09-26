@@ -76,11 +76,11 @@ __all__ = ["RigctldServer", "run_rigctld_server"]
 _POLICY_CADENCE_REASON = "policy-cadence"
 _MAX_PENDING_CLIENT_RESPONSES = 64
 
-# MOR-1899 item 3: a post-unkey confirmation is dispatched no later than one
-# drain interval after the unkey — this rest between passes is the only wait
-# on that path, so 50 ms here is the combined-mode dispatch ceiling. Pinned
-# behaviourally by tests/test_rigctld_server.py::
-# TestStateAcquisitionDrainPolicies::test_drain_loop_never_waits_past_the_post_unkey_ceiling.
+# MOR-1899 item 3: the drain loop's rest between passes. In combined mode a
+# post-unkey confirmation queued into the shared scheduler must reach an
+# executor within one rest; pinned behaviourally by
+# tests/test_rigctld_server.py::TestStateAcquisitionDrainPolicies::
+# test_post_unkey_confirmation_is_dispatched_within_the_drain_rest.
 _STATE_ACQUISITION_DRAIN_INTERVAL_SECONDS = 0.05
 
 

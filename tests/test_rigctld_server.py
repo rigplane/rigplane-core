@@ -18,11 +18,12 @@ from collections.abc import AsyncIterator
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
 from serial_stub import SerialMockRadio
+from test_combined_acquisition_drain import _Executor, _Reports, _drain
 from rigplane.core.acquisition_scheduler import (
     AcquisitionExecutionResult,
     AcquisitionPriority,
@@ -58,6 +59,8 @@ from rigplane.rigctld.contract import (
     RigctldConfig,
     RigctldResponse,
 )
+from rigplane.rigctld.handler import RigctldHandler
+from rigplane.rigctld.protocol import parse_line
 from rigplane.rigctld.server import RigctldServer, run_rigctld_server
 from rigplane.web.radio_poller import RadioPoller
 from rigplane.profiles import resolve_radio_profile
@@ -2534,6 +2537,26 @@ class _SilentAcquisitionExecutor:
         )
 
 
+class _SleepGate:
+    """Deterministic simulated clock for a drain loop's ``asyncio.sleep``.
+
+    Every requested delay is published on ``requested`` instead of being
+    slept through; the test driver advances ``now`` by the published value
+    and then releases the sleeper via ``approved``. Nothing ever touches
+    the wall clock (MOR-1899).
+    """
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.requested: asyncio.Queue[float] = asyncio.Queue()
+        self.approved = asyncio.Event()
+
+    async def sleep(self, delay: float = 0) -> None:
+        self.requested.put_nowait(delay)
+        await self.approved.wait()
+        self.approved.clear()
+
+
 class TestStateAcquisitionDrainPolicies:
     """The two collaborators the shared ``AcquisitionDrain`` takes."""
 
@@ -2669,44 +2692,93 @@ class TestStateAcquisitionDrainPolicies:
             )
         assert len(filtered_ids) == len(pending) - len(cadence_only)
 
-    async def test_drain_loop_never_waits_past_the_post_unkey_ceiling(
+    async def test_post_unkey_confirmation_is_dispatched_within_the_drain_rest(
         self, cfg: RigctldConfig
     ) -> None:
         """MOR-1899 item 3: the 50 ms post-unkey dispatch ceiling, pinned.
 
-        A post-unkey confirmation is dispatched no later than one drain
-        interval after the unkey. The loop's rest between passes is the only
-        sleep on that path, so recording the delays it asks ``asyncio.sleep``
-        for pins the ceiling behaviourally: a mutation bumping the interval
-        above 50 ms turns this test red, whatever the constant's name says.
+        Combined mode: the radio already carries the web seat's store,
+        model service and scheduler, so ``_bootstrap_state_acquisition``
+        adopts that scheduler and the web poller's drain is attached over
+        the SAME object. The unkey below goes through the handler's full
+        ``T 0`` route, whose command service queues the PTT re-observation.
+        The simulated gate clock counts the drain loop's rests until an
+        executor takes the request: elapsed must stay within one rest —
+        50 ms. Mutations raising the drain interval or dropping the
+        post-unkey enqueue both turn this red.
         """
 
-        freq = FieldPath.active("main", "freq_mode", "freq_hz")
-        radio = _ProfiledStandaloneRadio(
-            profile=type(
-                "Profile", (), {"state_acquisition": _acquisition_profile(freq)}
-            )()
+        ptt = FieldPath.global_("tx_state", "ptt")
+        store = StateStore()
+        scheduler = AcquisitionScheduler(profile=_acquisition_profile(ptt))
+        model_service = RadioStateModelService(store=store, scheduler=scheduler)
+
+        radio = AsyncMock()
+        radio._state_store = store
+        radio.state_model_service = model_service
+        radio._acquisition_scheduler = scheduler
+        radio.external_cat_session_active = False
+        radio.set_ptt = AsyncMock(return_value=None)
+        radio.rigctld_routing = Mock(
+            return_value=Mock(
+                set_func=AsyncMock(return_value=RigctldResponse()),
+                set_level=AsyncMock(return_value=RigctldResponse()),
+            )
         )
+        radio._send_civ_raw = AsyncMock(return_value=None)
+
         srv = RigctldServer(radio, cfg)
         srv._bootstrap_state_acquisition()
+        assert srv._acquisition_scheduler is scheduler, (
+            "fixture must be combined mode: rigctld adopted the web seat's scheduler"
+        )
+        handler = RigctldHandler(
+            radio,
+            cfg,
+            state_store=store,
+            state_model_service=model_service,
+        )
 
-        delays: list[float] = []
-        real_sleep = asyncio.sleep
+        # The web poller's drain attached over the same scheduler (as
+        # ``RadioPoller`` builds it lazily); either drain may dispatch.
+        entries: list[str] = []
+        _drain(scheduler, store, _Executor("web", entries), _Reports("web"))
+        srv._acquisition_executor = _Executor("rigctld", entries)
 
-        async def recording_sleep(delay: float = 0, *args: Any, **kwargs: Any) -> None:
-            delays.append(delay)
-            await real_sleep(0)
-
-        with patch("asyncio.sleep", recording_sleep):
+        gate = _SleepGate()
+        dispatched_at: list[float] = []
+        with patch("asyncio.sleep", gate.sleep):
             drain_task = asyncio.create_task(srv._run_state_acquisition_drain())
-            while len(delays) < 3 and not drain_task.done():
-                await real_sleep(0)
-            drain_task.cancel()
-            await drain_task  # the loop catches CancelledError and finishes
+            try:
+                # Wait until the drain parks between passes, then unkey:
+                # its NEXT pass dispatches exactly one rest-interval later.
+                delay = await gate.requested.get()
+                queued_at = gate.now
+                response = await handler.execute(parse_line(b"T 0"))
+                assert response.ok
+
+                pending = scheduler.pending_requests()
+                assert len(pending) == 1, (
+                    "the unkey queued nothing — the post-write confirmation "
+                    "enqueue is missing"
+                )
+                assert pending[0].paths == (ptt,)
+                assert any(
+                    reason.startswith("post_write:") for reason in pending[0].reasons
+                ), "the queued request is not a post-write confirmation"
+
+                while not entries:
+                    gate.now += delay
+                    gate.approved.set()
+                    delay = await gate.requested.get()
+                dispatched_at.append(gate.now)
+            finally:
+                drain_task.cancel()
+                await drain_task  # the loop catches CancelledError and finishes
 
         assert drain_task.cancelled() is False, "drain loop died: the pin is vacuous"
-        assert len(delays) >= 3, "fewer than three rest intervals were recorded"
-        assert max(delays) <= 0.05, (
-            f"drain loop rest of {max(delays):.3f} s exceeds the 50 ms "
-            "post-unkey dispatch ceiling"
+        elapsed = dispatched_at[0] - queued_at
+        assert elapsed <= 0.05, (
+            f"post-unkey confirmation dispatched after {elapsed:.3f} s of "
+            "simulated time — above the 50 ms ceiling (the drain loop's rest)"
         )
