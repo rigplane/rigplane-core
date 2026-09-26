@@ -38,11 +38,12 @@ let tuning: typeof import('../tuning.svelte');
 
 beforeAll(async () => {
   // Stub fetch before the module's first evaluation: `tuning.svelte.ts`
-  // fires a `_syncToCompanion` PUT at module top level and on every
-  // `_persistState()` call. A dynamic import inside `beforeAll` (after the
-  // stub is installed) guarantees this runs before that top-level call —
-  // a plain top-of-file static import would NOT, since static imports are
-  // always evaluated before any of this file's own statements.
+  // calls `_syncToCompanion` (supervisor-gated since MOR-2242, but stubbed
+  // here so the advertised-path tests observe the PUT) at module top level
+  // and on every `_persistState()` call. A dynamic import inside `beforeAll`
+  // (after the stub is installed) guarantees this runs before that top-level
+  // call — a plain top-of-file static import would NOT, since static imports
+  // are always evaluated before any of this file's own statements.
   vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true } as Response)));
   tuning = await import('../tuning.svelte');
 });

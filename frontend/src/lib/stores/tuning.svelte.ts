@@ -1,5 +1,6 @@
 // Tuning step store — controls frequency step for all tuning methods
 
+import { localSupervisorAdvertised } from '../local-extensions/manifest';
 import { radio } from './radio.svelte';
 
 /** Available tuning steps in Hz */
@@ -54,6 +55,13 @@ function _persistState(): void {
 
 /** Notify the companion (if present) about the tuning step change. */
 function _syncToCompanion(hz: number): void {
+  // MOR-2242: /api/local is the Pro supervisor surface. Without its
+  // advertisement the request must not fire at all — a core-only server
+  // would answer 405 and the browser logs a console error for every failed
+  // fetch no matter how the rejection is handled.
+  if (!localSupervisorAdvertised()) {
+    return;
+  }
   fetch('/api/local/v1/rc28/tuning-step', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
