@@ -50,6 +50,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.core.tx_target import KnownTxTarget
 from rigplane.profiles import get_radio_profile
 from rigplane.profiles.rig_loader import load_rig
 from _acquisition_query_helpers import recording_executor
@@ -74,10 +75,18 @@ def _answer(request_paths: tuple[FieldPath, ...], *, store: StateStore) -> Chang
     freshness_revision = snapshot.freshness_revision
     observation_seq = snapshot.observation_seq
     for path in request_paths:
+        if path == FieldPath.global_("tx_state", "tx_target"):
+            value: object = KnownTxTarget(
+                receiver="MAIN", slot=None, frequency_hz=7_100_000
+            )
+        elif path.name == "freq_hz":
+            value = 14_074_000
+        else:
+            value = 1
         store.apply(
             Observation(
                 path=path,
-                value=14_074_000 if path.name == "freq_hz" else 1,
+                value=value,
                 source=SourceMetadata(
                     source="poll_response",
                     provider="mor2234_census",
