@@ -203,9 +203,6 @@
       step: RF_FRONT_END_LEVELS[0][4], defaultValue: null, fineStepDivisor: 10,
     };
   }
-  const domainOf = (field: RfFrontEndLevelField): {
-    min: number; max: number; step: number; defaultValue: null; fineStepDivisor: number;
-  } => levelDomain(field);
   const normalizedToRaw = (field: RfFrontEndLevelField, normalized: number): number | null => {
     const raw = rawRangeOf(RF_FRONT_END_RAW_CONTROL_KEY[field]);
     if (raw === null || !Number.isFinite(normalized)) return null;
