@@ -395,9 +395,12 @@
     // MOR-1676 part A (AF): the domain MUST NOT track the published caps —
     // `published` only refreshes on a delivered publication, while the
     // render-time `presentation` prop carries the caps the publisher has
-    // already handed the view. Track `presentation.caps` (untracked read:
-    // the domain is a pure function of it, not a subscription), so the
-    // lattice follows the same caps the reading and the gate already see.
+    // already handed the view. Read `presentation.caps` (untracked: the
+    // domain is a pure function of it, not a subscription), so the lattice
+    // follows the same caps the reading already sees. The domain is
+    // deliberately NOT part of the authority identity (`ownerKey` +
+    // reading status): a caps-only publication must re-lattice the knob
+    // without cancelling its gesture.
     const domainCaps = untrack(() => presentation.caps);
     const rawDomain = (() => {
       const control = domainCaps?.controls?.af_level;
@@ -482,6 +485,13 @@
       lastAuthority = nextAuthority;
       published = next;
     });
+    // `onMount` runs after the first render: `published` is still null
+    // while the bindings above already read it. Seed it from the
+    // render-time `presentation` — the same publication the publisher will
+    // deliver — so the first frame (domain included) already sees it.
+    // A caps-only difference never cancels a gesture: `published` is not
+    // part of the binding's authority identity.
+    published = { ...presentation };
   });
   const finiteSeats = [
     monitorSeat, focusSeat, splitSeat, splitToggleSeat, modInputSeat, setLanSeat,
