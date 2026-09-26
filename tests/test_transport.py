@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 import struct
 from unittest.mock import AsyncMock, patch
 
@@ -721,6 +722,75 @@ class TestPacketQueueOverflow:
         joined = " ".join(rec.getMessage() for rec in warnings)
         assert "queue" in joined.lower()
         assert "overflow" in joined.lower()
+
+    def test_overflow_warnings_are_bounded_and_counts_add_up(
+        self, transport: IcomTransport, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A full undrained queue must not log one warning per eviction.
+
+        The first eviction logs immediately. Later evictions log at most one
+        summary per 5 s, and the counts in those lines cover every eviction.
+        """
+        clock = {"now": 1_000.0}
+
+        def _now() -> float:
+            return clock["now"]
+
+        for seq in range(1, PACKET_QUEUE_MAXSIZE + 1):
+            transport._packet_queue.put_nowait(_build_data_packet(seq=seq))
+
+        # 12 s of continued overflow: first line, then summaries at +5 s and
+        # +10 s. Anything per-packet would be thousands of lines.
+        bursts = (100, 5.0, 100, 5.0, 50)
+        expected_evictions = sum(n for n in bursts if isinstance(n, int))
+        seq = PACKET_QUEUE_MAXSIZE + 1
+
+        with (
+            caplog.at_level(logging.WARNING, logger="rigplane.core.transport"),
+            patch("rigplane.core.transport.time.monotonic", _now),
+        ):
+            for step in bursts:
+                if isinstance(step, float):
+                    clock["now"] += step
+                    continue
+                for _ in range(step):
+                    transport._handle_packet(_build_data_packet(seq=seq))
+                    seq = (seq + 1) & 0xFFFF
+
+        warnings = [
+            rec
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING and "Packet-queue overflow" in rec.message
+        ]
+        # One first-eviction line plus one summary per completed 5 s interval.
+        assert len(warnings) == 3
+        assert "evicting for CI-V control" in warnings[0].message
+
+        reported = 0
+        for rec in warnings:
+            match = re.search(r"evicted (\d+) since last", rec.message)
+            assert match is not None, rec.message
+            reported += int(match.group(1))
+            assert "total=" in rec.message
+        # Evictions after the last summary stay on the counter, not in a line.
+        assert reported + transport._overflow_evicted == expected_evictions
+
+    def test_control_packet_is_queued_while_full(
+        self, transport: IcomTransport
+    ) -> None:
+        """A CI-V control packet still takes a slot when the queue is full."""
+        for seq in range(1, PACKET_QUEUE_MAXSIZE + 1):
+            transport._packet_queue.put_nowait(_build_data_packet(seq=seq))
+
+        control = _build_control(ptype=PacketType.I_AM_HERE, seq=0x1234)
+        with patch("rigplane.core.transport.time.monotonic", return_value=1_000.0):
+            transport._handle_packet(control)
+
+        assert transport._packet_queue.qsize() == PACKET_QUEUE_MAXSIZE
+        queued = []
+        while not transport._packet_queue.empty():
+            queued.append(transport._packet_queue.get_nowait())
+        assert control in queued
 
 
 # ---------------------------------------------------------------------------
