@@ -369,6 +369,15 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
       confirmed: 2400, target: null, phase: 'idle', busy: false, outcome: { phase: status, error },
     });
   });
+  it.each([
+    ['radio-transmitting', "the radio is already transmitting"],
+    ['rf-state-unknown', "the radio's RF state has not been confirmed"],
+    ['unmapped reason', 'unmapped reason'],
+  ] as const)('resolves a %s refusal code to its operator sentence, falling back to the raw text', (error, expected) => {
+    runtimeState.state = state();
+    lifecycle.commands = [command({ status: 'failed', error })];
+    expect(getFilterWidthCommandLifecycle().outcome?.error).toBe(expected);
+  });
   it('captures only finite public-field ACK markers through the real command store seam', async () => {
     vi.useFakeTimers();
     controlSession.epoch = 9;

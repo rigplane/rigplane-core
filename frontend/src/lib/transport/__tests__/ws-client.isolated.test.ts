@@ -578,6 +578,40 @@ describe('WsChannel', () => {
     expect(messages).not.toContainEqual(expect.objectContaining({ type: 'command_lifecycle' }));
   });
 
+  it('maps a TX-interlock refusal onto the semantic blocked reason codes on our failures', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const lifecycle: CommandLifecycleDeliveryEvent[] = [];
+    ch.onCommandLifecycleDelivery((event) => lifecycle.push(event));
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+
+    const ids = ['refused-tx', 'refused-uncertain', 'unmapped', 'undetailed', 'misblocked'] as const;
+    for (const id of ids) {
+      expect(ch.send({ type: 'cmd', name: 'set_freq', id, params: { freq: 1 } })).toBe(true);
+    }
+    const refused = (commandId: string, message: string | null, details: unknown) =>
+      instances[0].simulateMessage(JSON.stringify({
+        type: 'command_lifecycle', commandId, state: 'failed', message, details,
+      }));
+
+    refused('refused-tx', 'TX interlock refusal', { blockedBy: 'tx_interlock', reason: 'radio_transmitting' });
+    refused('refused-uncertain', 'TX interlock refusal', { blockedBy: 'tx_interlock', reason: 'rf_state_unknown' });
+    refused('unmapped', 'TX interlock refusal', { blockedBy: 'tx_interlock', reason: 'not_a_known_code' });
+    refused('undetailed', 'TX interlock refusal', {});
+    refused('misblocked', 'TX interlock refusal', { blockedBy: 'held_queue', reason: 'radio_transmitting' });
+
+    expect(lifecycle).toEqual([
+      { commandId: 'refused-tx', kind: 'failed', originalEpoch: 1, eventEpoch: 1,
+        reason: 'radio-transmitting', error: 'radio-transmitting' },
+      { commandId: 'refused-uncertain', kind: 'failed', originalEpoch: 1, eventEpoch: 1,
+        reason: 'rf-state-unknown', error: 'rf-state-unknown' },
+      { commandId: 'unmapped', kind: 'failed', originalEpoch: 1, eventEpoch: 1, error: 'TX interlock refusal' },
+      { commandId: 'undetailed', kind: 'failed', originalEpoch: 1, eventEpoch: 1, error: 'TX interlock refusal' },
+      { commandId: 'misblocked', kind: 'failed', originalEpoch: 1, eventEpoch: 1, error: 'TX interlock refusal' },
+    ]);
+  });
+
   it('emits only sanitized reconciliation evidence after physical lifecycle truth', async () => {
     const { WsChannel } = await import('../ws-client');
     const ch = new WsChannel();
