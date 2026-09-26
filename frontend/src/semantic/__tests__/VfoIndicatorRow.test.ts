@@ -191,28 +191,32 @@ describe('radio-wide singleton indicators (MOR-2309)', () => {
     expect(rf?.textContent).toBe('');
   });
 
-  it('prints the Hz unit only with a known offset (MOR-2644 correction 1)', () => {
-    // Both parts unread → exactly the label. Same for XIT.
-    for (const key of ['rit', 'xit'] as const) {
-      const label = key.toUpperCase();
-      const root = render({ radioWide: {
-        ...shared(),
-        ritActive: unknown(), ritOffset: unknown(),
-        xitActive: unknown(), xitOffset: unknown(),
-      } });
-      const node = root.querySelector(`[data-indicator-fact="${key}"]`);
-      expect(node?.textContent?.trim()).toBe(label);
-      expect(node?.textContent).not.toContain('Hz');
-    }
-    // State known, offset unread → "RIT ON" / "RIT OFF", no Hz.
-    const stateOnly = render({ radioWide: {
+  // One render per test: repeated mounts accumulate in the same target and
+  // querySelector would return a stale node from an earlier render.
+  it('both parts unread prints exactly the label, no Hz (MOR-2644 correction 1)', () => {
+    const root = render({ radioWide: {
+      ...shared(),
+      ritActive: unknown(), ritOffset: unknown(),
+      xitActive: unknown(), xitOffset: unknown(),
+    } });
+    expect(root.querySelector('[data-indicator-fact="rit"]')?.textContent?.trim()).toBe('RIT');
+    expect(root.querySelector('[data-indicator-fact="xit"]')?.textContent?.trim()).toBe('XIT');
+    expect(root.querySelector('[data-indicator-fact="rit"]')?.textContent).not.toContain('Hz');
+    expect(root.querySelector('[data-indicator-fact="xit"]')?.textContent).not.toContain('Hz');
+  });
+
+  it('state known with unread offset prints state only, no Hz (MOR-2644 correction 1)', () => {
+    const root = render({ radioWide: {
       ...shared(), ritActive: known(false), ritOffset: unknown(),
     } });
-    expect(stateOnly.querySelector('[data-indicator-fact="rit"]')?.textContent?.trim()).toBe('RIT OFF');
-    // Both known → same text as main today ("RIT OFF 0 Hz").
-    const bothKnown = render({ radioWide: shared() });
-    expect(bothKnown.querySelector('[data-indicator-fact="rit"]')?.textContent).toContain('RIT OFF 0 Hz');
-    expect(bothKnown.querySelector('[data-indicator-fact="xit"]')?.textContent).toContain('XIT ON 0 Hz');
+    expect(root.querySelector('[data-indicator-fact="rit"]')?.textContent?.trim()).toBe('RIT OFF');
+    expect(root.querySelector('[data-indicator-fact="rit"]')?.textContent).not.toContain('Hz');
+  });
+
+  it('both known prints the same text as main today (MOR-2644 correction 1)', () => {
+    const root = render({ radioWide: shared() });
+    expect(root.querySelector('[data-indicator-fact="rit"]')?.textContent).toContain('RIT OFF 0 Hz');
+    expect(root.querySelector('[data-indicator-fact="xit"]')?.textContent).toContain('XIT ON 0 Hz');
   });
 
   it('keeps RF unknown quiet while retaining its state and omits unsupported facts', () => {
