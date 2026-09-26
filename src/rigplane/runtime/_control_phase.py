@@ -62,6 +62,23 @@ def _is_address_in_use(exc: OSError) -> bool:
     return exc.errno == errno.EADDRINUSE or "Address already in use" in str(exc)
 
 
+def _session_reject_hint(error: int) -> str:
+    """Operator hint for a refused session allocation (IC-7610 measurements, MOR-2618)."""
+    if error == 0xFFFFFFFF:
+        return (
+            "The radio already has a LAN session from this computer. If another "
+            "RigPlane server or LAN client runs here, stop one of them: on an "
+            "IC-7610 a second login from the same computer makes the radio drop "
+            "the first session about 90 s later (see 'One RigPlane server per "
+            "radio' in docs/guide/cli.md). If nothing else runs here, the radio "
+            "may still hold an earlier session from this computer; a later retry "
+            "can succeed."
+        )
+    if error == 0xFDFFFFFF:
+        return "A client on another computer holds the radio's LAN session."
+    return "The radio may still hold an earlier session; a later retry can succeed."
+
+
 __all__ = [
     "ControlPhaseRuntime",
     "ControlPhaseSessionMechanism",
@@ -297,8 +314,7 @@ class ControlPhaseRuntime:
                                 f"Radio rejected session allocation with both "
                                 f"stereo and mono rx_codec "
                                 f"(final error=0x{error_val:08X}). "
-                                "A previous session may still be active. "
-                                "Wait 30-60s and retry."
+                                f"{_session_reject_hint(error_val)}"
                             )
                         # else: civ_port=0 without 0xFFFFFFFF — session still
                         # warming up after fallback. Fall through to the
@@ -317,8 +333,7 @@ class ControlPhaseRuntime:
                         raise ConnectionError(
                             f"Radio rejected session allocation (civ_port=0, "
                             f"error=0x{h._last_status_error:08X}). "
-                            "A previous session may still be active. "
-                            "Wait 30-60s and retry."
+                            f"{_session_reject_hint(h._last_status_error)}"
                         )
 
                 # Busy-retry loop — runs when:
@@ -326,10 +341,14 @@ class ControlPhaseRuntime:
                 #   (b) mono fallback above produced civ_port=0 without 0xFFFFFFFF.
                 if civ_port == 0:
                     retry_pause = self._status_retry_pause()
+                    status_error = getattr(h, "_last_status_error", 0)
                     logger.warning(
-                        "Status returned civ_port=0 — radio session not ready. "
-                        "Retrying after %.0fs pause (previous session may still be held)...",
+                        "Status returned civ_port=0 (error=0x%08X) — the radio "
+                        "did not allocate a session. Retrying after %.0fs "
+                        "pause. %s",
+                        status_error,
                         retry_pause,
+                        _session_reject_hint(status_error),
                     )
                     for _retry in range(3):
                         await asyncio.sleep(retry_pause)
@@ -353,8 +372,7 @@ class ControlPhaseRuntime:
                         raise ConnectionError(
                             f"Radio rejected session allocation (civ_port=0, "
                             f"error=0x{error_val:08X}) after retries. "
-                            "A previous session may still be active. "
-                            "Wait 30-60s and retry."
+                            f"{_session_reject_hint(error_val)}"
                         )
         except asyncio.TimeoutError:
             logger.debug("No status packet received, using default ports")
