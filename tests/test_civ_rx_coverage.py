@@ -926,17 +926,19 @@ class _WatchdogClock:
 # ---------------------------------------------------------------------------
 
 
-def _arm_notice_recovery(radio: IcomRadio) -> list[str]:
+def _arm_notice_recovery(radio: IcomRadio) -> tuple[list[str], AsyncMock]:
     radio._conn_state = RadioConnectionState.CONNECTED
     radio._civ_recovering = False
     radio._civ_runtime._reconnect_task = None
     order: list[str] = []
+    released = AsyncMock()
 
     async def record_force_cleanup() -> None:
         order.append("force_cleanup")
 
     async def record_release() -> None:
         order.append("release")
+        await released()
 
     radio._force_cleanup_civ = record_force_cleanup
     radio._control_phase.release = record_release
@@ -947,7 +949,7 @@ def _arm_notice_recovery(radio: IcomRadio) -> list[str]:
         order.append(f"remote_id={radio._ctrl_transport.remote_id}")
 
     radio.soft_reconnect = record_soft_reconnect
-    return order
+    return order, released
 
 
 async def test_request_recovery_now_starts_one_full_reconnect(
@@ -956,7 +958,7 @@ async def test_request_recovery_now_starts_one_full_reconnect(
 ) -> None:
     """A free-session notice starts exactly one recovery that releases the
     control session before soft_reconnect and logs the given reason."""
-    order = _arm_notice_recovery(radio)
+    order, _released = _arm_notice_recovery(radio)
     reason = "radio reported the LAN session free (conninfo busy=0)"
 
     with (
@@ -985,7 +987,7 @@ async def test_request_recovery_now_is_a_no_op_when_blocked(
     blocker: str,
 ) -> None:
     """Not CONNECTED, already recovering, or a live recovery task: do nothing."""
-    _arm_notice_recovery(radio)
+    _order, released = _arm_notice_recovery(radio)
     if blocker == "not_connected":
         radio._conn_state = RadioConnectionState.DISCONNECTED
     elif blocker == "recovering":
@@ -998,7 +1000,7 @@ async def test_request_recovery_now_is_a_no_op_when_blocked(
         assert radio._civ_runtime._reconnect_task is (
             None if blocker != "live_task" else live
         )
-        radio._control_phase.release.assert_not_called()
+        released.assert_not_awaited()
     finally:
         if blocker == "live_task":
             live.cancel()
