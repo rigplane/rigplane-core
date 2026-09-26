@@ -42,7 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `notchWidthChoices` as value and label pairs, in the profile's
   order. The IC-7300, IC-7610, IC-705 and IC-9700 publish WIDE, MID
   and NAR; a profile with no notch widths publishes an empty list. A
-  profile that declares a width without a label fails to load.
+  profile that declares a width without a label fails to load. Where
+  that list is published and non-empty, Manual Notch Width is a choice
+  group of those labels instead of a slider, on the native DSP row and
+  the compact scalar path. The lit choice is the confirmed reading. A
+  radio that publishes no list keeps the slider.
 
 ### Changed
 
@@ -175,7 +179,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The notch choice shows the requested mode until the radio confirms
   it (MOR-2236).** AUTO, MANUAL or OFF is marked pending as soon as it
-  is sent, the same way NB and NR already were.
+  is sent, the same way NB and NR already were. The confirmed choice
+  stays lit; the requested one is marked pending.
+
+- **A lost radio link no longer toasts once per in-flight command
+  (MOR-2241).** While the link is not connected, an error notification
+  whose code is `commandExecutionFailed` and whose reason is
+  `provider generation invalidated` is not shown. Other error toasts
+  still appear, including a different reason while disconnected and
+  the same termination after the link is connected again.
+
+- **RF gain and squelch step on the radio's raw lattice (MOR-1676).**
+  Where the profile publishes a raw range, the v3 sliders step one raw
+  unit, and a step and its reverse restore that raw value. The text
+  stays a percentage of the published range. The FTX-1 profile now
+  publishes RF gain and squelch as raw 0–255, the same shape as the
+  IC-7300. A radio that publishes no range keeps the old normalized
+  slider. The state snapshot is still a normalized 0.0–1.0 float.
+  Keyboard RF-gain steps without an explicit delta move by five
+  percent of that raw span, in raw units. Squelch has no keyboard
+  step; it moves only from its slider.
+
+- **The hardware validator skips an unreadable filter width
+  (MOR-2519).** If `get_filter_width` returns no width, the filter-width
+  set check is SKIP with a reason, and no write is attempted. That is
+  the FTX-1 in C4FM, whose code 00 is outside the width table.
+  `get_filter_width` is typed `int | None` for that answer. The profile
+  schema documents `[filters].first_code` and no longer lists a
+  `[filters].style` field the loader does not read.
+
+- **On a Yaesu radio whose NB or NR level is also the switch, off and
+  on restore the operator's level (MOR-2632).** Off reads the live
+  level and, when it is nonzero, remembers it for that receiver, then
+  writes 0. On writes the live level if it is nonzero, otherwise the
+  remembered level, otherwise the existing midpoint default. The memory
+  stays on the radio object. The FTX-1 is this shape: CAT level 000 is
+  OFF. A radio that has its own `set_nb` or `set_nr` write command
+  still uses that command.
 
 ### Documentation
 
