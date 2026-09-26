@@ -1204,6 +1204,19 @@ function rawAfLevelFromInput(caps: Capabilities, level: number, unit?: 'raw'): n
   return level >= rawMin && level <= rawMax ? level : null;
 }
 
+/** Dispatch a radio-AF intent with its unit stated (MOR-1676 part A): the
+ *  raw radio-AF path carries `level_unit: 'raw'` (stripped before
+ *  `sendCommand`), the legacy normalized path `level_unit: 'normalized'`.
+ *  A single literal call site so the completeness ledger
+ *  (`panel-commands-completeness.test.ts`) keeps parsing every AF dispatch.
+ */
+function dispatchAfLevelIntent(level: number, receiver: Receiver, unit: 'raw'): void {
+  dispatchRadioIntent({ name: 'set_af_level', params: { level, receiver, level_unit: unit } });
+}
+function dispatchAfLevelNormalizedIntent(level: number, receiver: Receiver): void {
+  dispatchRadioIntent({ name: 'set_af_level', params: { level, receiver, level_unit: 'normalized' } });
+}
+
 function setReceiverAf(target: 'main' | 'sub', level: number, unit?: 'raw'): boolean {
   const caps = getCapabilities();
   if (caps === null || !hasCapability('af_level')) return false;
@@ -1211,14 +1224,8 @@ function setReceiverAf(target: 'main' | 'sub', level: number, unit?: 'raw'): boo
   if (raw === null) return false;
   const receiver = knownActiveReceiver('afLevel', target === 'sub' ? 'SUB' : 'MAIN');
   if (receiver === null) return false;
-  // MOR-1676 part A (AF): the radio-AF intent states its unit in the intent
-  // params — `level_unit: 'raw'` for the raw path
-  // (`dispatchRadioIntentWithResult` strips the unit before `sendCommand`;
-  // the server never sees `'raw'`), `level_unit: 'normalized'` for the
-  // legacy path.
-  dispatchRadioIntent(unit === 'raw'
-    ? { name: 'set_af_level', params: { level: raw, receiver, level_unit: 'raw' } }
-    : { name: 'set_af_level', params: { level, receiver, level_unit: 'normalized' } });
+  if (unit === 'raw') dispatchAfLevelIntent(raw, receiver, 'raw');
+  else dispatchAfLevelNormalizedIntent(level, receiver);
   return true;
 }
 
@@ -1277,9 +1284,8 @@ export function makeRxAudioHandlers() {
         if (receiver === null) return;
         const raw = rawAfLevelFromInput(caps, level, unit);
         if (raw === null) return;
-        dispatchRadioIntent(unit === 'raw'
-          ? { name: 'set_af_level', params: { level: raw, receiver, level_unit: 'raw' } }
-          : { name: 'set_af_level', params: { level, receiver, level_unit: 'normalized' } });
+        if (unit === 'raw') dispatchAfLevelIntent(raw, receiver, 'raw');
+        else dispatchAfLevelNormalizedIntent(level, receiver);
       }
     },
     /** MOR-2579: the radio AF of the NAMED receiver, whichever is selected. */
@@ -1921,20 +1927,14 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
       const delta = keyboardDelta(safeParams.delta);
       if (delta !== null) {
         const nextRaw = Math.max(rawMin, Math.min(rawMax, currentRaw + Math.round(delta)));
-        dispatchRadioIntent({
-          name: 'set_af_level',
-          params: { level: nextRaw, receiver: context.receiver, level_unit: 'raw' },
-        });
+        dispatchAfLevelIntent(nextRaw, context.receiver, 'raw');
         return true;
       }
       const direction = keyboardDirection(safeParams.direction);
       if (direction) {
         const step = Math.max(1, Math.round(0.05 * span));
         const nextRaw = Math.max(rawMin, Math.min(rawMax, currentRaw + (direction === 'down' ? -step : step)));
-        dispatchRadioIntent({
-          name: 'set_af_level',
-          params: { level: nextRaw, receiver: context.receiver, level_unit: 'raw' },
-        });
+        dispatchAfLevelIntent(nextRaw, context.receiver, 'raw');
       }
       return true;
     }
