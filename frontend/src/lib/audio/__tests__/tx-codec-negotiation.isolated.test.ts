@@ -427,6 +427,59 @@ describe('AudioManager consumes the server TX codec ack', () => {
     expect(died).not.toHaveBeenCalled();
   });
 
+  it('forwards the negotiated TX rate to the PCM16 leg (MOR-1794)', async () => {
+    installMediaGlobals();
+    const { audioManager } = await import('../audio-manager');
+    const sent: ArrayBuffer[] = [];
+    const realSend = WebSocket.prototype.send;
+    expect(await audioManager.startTx()).toBeNull();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+    ws.send = (data: unknown) => {
+      if (data instanceof ArrayBuffer) sent.push(data);
+      else realSend.call(ws, data);
+    };
+
+    ws.serverText({
+      type: 'audio_tx_format', codec: 'pcm16', opus_decode: false, sample_rate: 8000,
+    });
+
+    const created = vi.mocked(globalThis.AudioContext).mock.results.at(-1)?.value as
+      { createScriptProcessor: ReturnType<typeof vi.fn> } | undefined;
+    const processor = created?.createScriptProcessor.mock.results[0]?.value as
+      { onaudioprocess: (event: unknown) => void };
+    processor.onaudioprocess({
+      inputBuffer: { getChannelData: () => new Float32Array(960 * 6).fill(0.5) },
+    });
+
+    expect(sent).toHaveLength(1);
+    const header = new DataView(sent[0]);
+    expect(header.getUint16(4, true)).toBe(8000 / 100);
+    expect(sent[0].byteLength).toBe(AUDIO_HEADER_SIZE + 160 * 2);
+    audioManager.stopTx();
+  });
+
+  it('refuses a negotiated TX rate the contract does not admit (MOR-1794)', async () => {
+    installMediaGlobals();
+    const { audioManager } = await import('../audio-manager');
+    const died = vi.fn();
+    audioManager.onTxAudioDied(died);
+    expect(await audioManager.startTx()).toBeNull();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+    ws.sent = [];
+
+    ws.serverText({
+      type: 'audio_tx_format', codec: 'pcm16', opus_decode: false, sample_rate: 44100,
+    });
+
+    // Same fault path as a PCM leg that will not start: the session ends and
+    // the operator hears why, instead of modulated garbage.
+    expect(audioManager.txEnabled).toBe(false);
+    expect(sentTypes(ws)).toContain('audio_stop');
+    expect(died).toHaveBeenCalledOnce();
+  });
+
   it('leaves the pin alone when the ack names a codec it does not know', async () => {
     installMediaGlobals();
     const { audioManager } = await import('../audio-manager');

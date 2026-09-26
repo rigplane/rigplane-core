@@ -6,7 +6,9 @@
  * contract.
  */
 
-import { buildTxHeader, TX_BITRATE, SAMPLE_RATE, CHANNELS, CODEC_PCM16 } from './constants';
+import {
+  buildTxHeader, TX_BITRATE, SAMPLE_RATE, TX_PCM_SAMPLE_RATES, CHANNELS, CODEC_PCM16,
+} from './constants';
 
 export type TxSendFn = (data: ArrayBuffer) => void;
 type LegacyGetUserMedia = (
@@ -53,6 +55,11 @@ export class TxMic {
   // Sticky: the server told us it cannot decode Opus (MOR-1791). Kept across
   // start/stop so every later PTT opens on PCM16 from the very first frame.
   private pcm16Pinned = false;
+  // Rate the PCM16 leg must deliver, named by the audio_tx_format ack
+  // (MOR-1794). Capture itself stays at SAMPLE_RATE; only the emitted frames
+  // move. Defaults to SAMPLE_RATE, so a server that never names a rate — and
+  // the bench radios that negotiate 48 kHz — keep today's behaviour.
+  private pcm16Rate = SAMPLE_RATE;
 
   constructor(sendFn: TxSendFn, private readonly onCaptureDied?: (reason: string) => void) {
     this.sendFn = sendFn;
@@ -81,16 +88,31 @@ export class TxMic {
    * when the decoder is available the client keeps its own codec choice,
    * exactly as before this negotiation existed.
    *
+   * `sampleRate` is the rate the ack says the radio will play the PCM16 at.
+   * It is remembered even when no capture is running, so the next PTT emits
+   * at it from the first frame. A rate the contract does not admit is refused
+   * here, before any frame leaves: silent wrong-rate delivery is the one
+   * outcome that must stay impossible (MOR-1794).
+   *
    * PCM16 is brought up BEFORE the Opus leg is torn down. A refusal must
    * never kill capture out from under a keyed transmitter, so on failure the
    * running Opus capture is left whole and the error is returned for the
    * caller to act on — it is never swallowed.
    */
-  applyServerCodec(codec: TxCodec): TxCodecSwitch {
+  applyServerCodec(codec: TxCodec, sampleRate: number = SAMPLE_RATE): TxCodecSwitch {
     if (codec === 'opus') {
       this.pcm16Pinned = false;
+      this.pcm16Rate = SAMPLE_RATE;
       return { switched: false, error: null };
     }
+    if (!(TX_PCM_SAMPLE_RATES as readonly number[]).includes(sampleRate)) {
+      const admitted = TX_PCM_SAMPLE_RATES.join(', ');
+      return {
+        switched: false,
+        error: `TX MIC: negotiated sample rate ${sampleRate} Hz is not supported (expected one of ${admitted})`,
+      };
+    }
+    this.pcm16Rate = sampleRate;
     this.pcm16Pinned = true;
     if (!this._active || this.encoder === null) return { switched: false, error: null };
 
@@ -307,9 +329,15 @@ export class TxMic {
       this.pcmPending.push(sample);
     }
 
-    const frameSamples = Math.floor(SAMPLE_RATE * 0.02);
-    while (this.pcmPending.length >= frameSamples) {
-      const frame = this.pcmPending.splice(0, frameSamples);
+    const outRate = this.pcm16Rate;
+    const frameSamples = Math.floor(outRate * 0.02);
+    // Capture arrives at SAMPLE_RATE; the radio plays whatever the ack named.
+    // Consume input in the ratio that yields exactly one output frame, so a
+    // constant tone keeps its pitch instead of being time-stretched.
+    const inSamples = Math.round(frameSamples * SAMPLE_RATE / outRate);
+    while (this.pcmPending.length >= inSamples) {
+      const input = this.pcmPending.splice(0, inSamples);
+      const frame = resampleLinear(input, frameSamples);
       const payload = new Uint8Array(frameSamples * 2);
       const view = new DataView(payload.buffer);
       for (let i = 0; i < frameSamples; i += 1) {
@@ -317,7 +345,7 @@ export class TxMic {
         const pcm = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
         view.setInt16(i * 2, Math.round(pcm), true);
       }
-      const header = buildTxHeader(this.seq++, CODEC_PCM16);
+      const header = buildTxHeader(this.seq++, CODEC_PCM16, outRate);
       const packet = new Uint8Array(header.length + payload.length);
       packet.set(header);
       packet.set(payload, header.length);
@@ -356,4 +384,32 @@ export class TxMic {
       }
     }
   }
+}
+
+/**
+ * Linear resample of one PCM frame.
+ *
+ * Searched frontend/ for an existing resampler before adding this: the only
+ * interpolation in the tree maps an S-meter scale, and the server-side
+ * resample helpers operate on bytes after the frame has already left. Neither
+ * can run on the capture callback, so the PCM16 leg does the minimum here.
+ * Ratios are integer (48 kHz onto 8/16/24/48), so endpoints land on samples.
+ */
+function resampleLinear(input: number[], outLength: number): Float32Array {
+  const out = new Float32Array(outLength);
+  if (outLength === input.length) {
+    out.set(input);
+    return out;
+  }
+  const last = input.length - 1;
+  const scale = last / (outLength - 1);
+  for (let i = 0; i < outLength; i += 1) {
+    const position = i * scale;
+    const index = Math.floor(position);
+    const fraction = position - index;
+    const left = input[index] ?? 0;
+    const right = input[Math.min(index + 1, last)] ?? left;
+    out[i] = left + (right - left) * fraction;
+  }
+  return out;
 }
