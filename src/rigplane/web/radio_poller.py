@@ -2692,8 +2692,6 @@ class RadioPoller:
                     is_sub = False
                 else:
                     raise CommandError(f"unknown VFO selection {vfo!r}")
-                if is_sub:
-                    pass  # MOR-2484: select_receiver below refuses SUB on single-RX.
                 current = self._current_active()
                 # NB: local is intentionally named ``target_name`` — the
                 # enclosing ``match`` has earlier branches that bind

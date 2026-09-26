@@ -284,13 +284,7 @@ def _level_for_power(value: Any, radio: Any) -> int:
 
 
 def _refuse_unsupported_receiver(radio: Any, receiver: int, *, operation: str) -> None:
-    """Refuse an unsupported receiver before enqueue (MOR-2484).
-
-    Thin gate over the single runtime seat
-    (:func:`require_receiver_for_profile`): same check, same
-    ``CommandError`` type and message as the radio backend. This only
-    decides enqueue vs immediate refusal.
-    """
+    """Refuse an unsupported receiver before enqueue (MOR-2484)."""
     if radio is None:
         return
     profile = getattr(radio, "profile", None)

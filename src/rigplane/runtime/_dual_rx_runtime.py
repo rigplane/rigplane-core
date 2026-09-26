@@ -44,12 +44,7 @@ logger = logging.getLogger(__name__)
 def require_receiver_for_profile(
     profile: RadioProfile, receiver: int, *, operation: str
 ) -> None:
-    """Refuse ``receiver`` when ``profile`` does not serve it (MOR-2484).
-
-    Single receiver-validation seat shared by the runtime
-    (:meth:`DualRxRuntimeMixin._require_receiver`) and the web enqueue gate:
-    same check, same ``CommandError`` type and message.
-    """
+    """Refuse ``receiver`` when ``profile`` does not serve it (MOR-2484)."""
     if profile.supports_receiver(receiver):
         return
     raise CommandError(
