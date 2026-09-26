@@ -257,4 +257,35 @@ describe('fallback CwPanel ControlFeedback wiring (MOR-1754)', () => {
     r.input().dispatchEvent(new Event('change', { bubbles: true }));
     expect([r.input().value, handlers.onBreakInDelayChange.mock.calls]).toEqual(['64', []]);
   });
+
+  it('drops the delay draft when provider authority disappears and recovers without a mutation error (MOR-2433)', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    handlers.onBreakInDelayChange.mockClear();
+    const r = render();
+    r.input().value = '111';
+    r.input().dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(r.input().value).toBe('111');
+
+    Object.assign(feedback, { providerGeneration: undefined });
+    flushSync();
+    expect(error.mock.calls.flat().join(' ')).not.toMatch(/state_unsafe_mutation/i);
+    expect([r.input().disabled, r.input().value, r.input().getAttribute('aria-valuetext')])
+      .toEqual([true, '', 'Control unavailable']);
+    r.input().dispatchEvent(new Event('change', { bubbles: true }));
+    expect(handlers.onBreakInDelayChange).not.toHaveBeenCalled();
+
+    Object.assign(feedback, {
+      confirmed: 64, target: null, requestedTarget: null, phase: 'idle', busy: false,
+      availability: 'available', outcome: null, providerGeneration: 4,
+    });
+    flushSync();
+    expect(error.mock.calls.flat().join(' ')).not.toMatch(/state_unsafe_mutation/i);
+    expect([r.input().disabled, r.input().value]).toEqual([false, '64']);
+    r.input().value = '90';
+    r.input().dispatchEvent(new Event('input', { bubbles: true }));
+    r.input().dispatchEvent(new Event('change', { bubbles: true }));
+    expect(handlers.onBreakInDelayChange).toHaveBeenCalledExactlyOnceWith(90);
+    error.mockRestore();
+  });
 });
