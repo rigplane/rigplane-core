@@ -107,7 +107,8 @@ async function checkUnkey(page: Page, info: TestInfo, stage: string, landscape: 
   await expect(unkey).toHaveCount(1);
   // MOR-2347's pin: the full semantic deck lives only in portrait; landscape
   // never mounts one. MOR-2442 keeps that — landscape hosts exactly ONE
-  // SemanticRadioSurfaces in its spectrum slot (`scopeManaged` host), and it
+  // SemanticRadioSurfaces in its spectrum slot (hosted through the `children`
+  // snippet), and it
   // renders no deck surfaces there. Portrait still mounts exactly one.
   const surfaces = page.getByTestId('semantic-radio-surfaces');
   await expect(surfaces).toHaveCount(1);
