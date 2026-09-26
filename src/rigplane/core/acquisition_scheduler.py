@@ -481,6 +481,7 @@ class AcquisitionScheduler:
         "_cadence_by_key",
         "_claims_by_request_id",
         "_class_derived_group_receivers",
+        "_consecutive_timeout_by_key",
         "_deferred",
         "_dispatch_by_request_id",
         "_executing_request_ids",
@@ -513,6 +514,13 @@ class AcquisitionScheduler:
         self._requests_by_key: dict[_AcquisitionRequestKey, AcquisitionRequest] = {}
         self._deferred: dict[_AcquisitionRequestKey, _PendingEnsureFresh] = {}
         self._cadence_by_key: dict[_AcquisitionRequestKey, _CadenceState] = {}
+        # MOR-2614: consecutive terminal ``acquisition_request_timeout``
+        # reports per cadence key. Only the FIRST such timeout of a key keeps
+        # the interrupted cadence clock (the lost answer's expedited retry);
+        # any other failure reason, any success, and every later consecutive
+        # timeout re-arm ``next_due`` one cadence out, so a deterministically
+        # failing query can never be re-dispatched on every drain pass.
+        self._consecutive_timeout_by_key: dict[_AcquisitionRequestKey, int] = {}
         self._claims_by_request_id: dict[str, _AcquisitionClaim] = {}
         # request id -> per-path timestamp of the drain pass that sent it,
         # dropped where the request is removed from ``_requests_by_key``.
@@ -1406,6 +1414,9 @@ class AcquisitionScheduler:
                 del self._requests_by_key[key]
                 self._claims_by_request_id.pop(request.id, None)
                 self._forget_dispatch(request.id)
+        # Any completed acquisition breaks the key's consecutive-timeout run:
+        # the next terminal timeout of this key expedites its retry again.
+        self._consecutive_timeout_by_key.pop(key, None)
 
         declared_cadence = request.policy.cadence_seconds
         if declared_cadence is None:
@@ -1478,6 +1489,15 @@ class AcquisitionScheduler:
         (which is what later decays ``freq_mode``/``tx_state``/``slow_state`` to
         the TTL-bounded backoff ceiling). The caller leaves the request in flight so
         the returning observation can still credit it.
+
+        MOR-2614: the FIRST consecutive terminal ``acquisition_request_timeout``
+        of a key keeps the interrupted cadence clock, so the lost answer's
+        retry goes out on the next drain pass instead of one cadence later
+        (which would cost deadline + grace + cadence — longer than fast
+        TTLs). Every other failure reason, and every later consecutive
+        timeout of the same key, re-arm ``next_due`` one cadence out, so a
+        deterministically failing query is never re-dispatched on every
+        drain pass. Any success resets the key's consecutive count.
         """
 
         failure_reason = reason or "acquisition_failed"
@@ -1520,14 +1540,18 @@ class AcquisitionScheduler:
             return
         timestamp = self._clock.now() if now is None else now
         previous = self._cadence_state_for(key, request.policy, now=timestamp)
-        # MOR-2614: the first retry of a lost answer goes out on the next
-        # drain pass, not one cadence later. The failed request was dropped
-        # mid-cycle; re-arming next_due a full cadence out would cost
-        # deadline + grace + cadence — longer than fast TTLs. Keep the clock
-        # the lost poll interrupted (clamped to now when already past).
-        next_due = previous.next_due_monotonic
-        if next_due < timestamp:
-            next_due = timestamp
+        if failure_reason == "acquisition_request_timeout":
+            consecutive = self._consecutive_timeout_by_key.get(key, 0) + 1
+            self._consecutive_timeout_by_key[key] = consecutive
+        else:
+            consecutive = 0
+            self._consecutive_timeout_by_key.pop(key, None)
+        if consecutive == 1:
+            next_due = previous.next_due_monotonic
+            if next_due < timestamp:
+                next_due = timestamp
+        else:
+            next_due = timestamp + previous.current_cadence_seconds
         self._cadence_by_key[key] = _CadenceState(
             current_cadence_seconds=previous.current_cadence_seconds,
             next_due_monotonic=next_due,

@@ -2496,6 +2496,101 @@ def test_unhealthy_link_timeout_is_counted_and_drops_pending_request() -> None:
     assert scheduler.pending_requests() == ()
 
 
+def test_first_terminal_timeout_expedites_retry_second_waits_cadence() -> None:
+    # MOR-2614: the FIRST consecutive terminal timeout of a key keeps the
+    # interrupted cadence clock (retry on the next drain pass); the SECOND
+    # consecutive timeout of the same key re-arms next_due one cadence out.
+    clock = FreshnessClock(start=500.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    policy = AcquisitionPolicy(cadence_seconds=2.0, freshness_ttl_seconds=10.0)
+    scheduler = AcquisitionScheduler(
+        profile=_profile([freq], default_policy=policy),
+        clock=clock,
+    )
+
+    first = scheduler.due_requests()[0]
+    scheduler.record_acquisition_failure(
+        first,
+        reason="acquisition_request_timeout",
+        now=clock.now(),
+        link_healthy=False,
+    )
+    # Interrupted clock kept: due again immediately.
+    assert scheduler.due_requests()[0].paths == (freq,)
+
+    second = scheduler.pending_requests()[0]
+    scheduler.record_acquisition_failure(
+        second,
+        reason="acquisition_request_timeout",
+        now=clock.now(),
+        link_healthy=False,
+    )
+    # Second consecutive timeout: next due one cadence out, not immediate.
+    assert scheduler.due_requests() == ()
+    clock.advance(1.9)
+    assert scheduler.due_requests() == ()
+    clock.advance(0.1)
+    assert scheduler.due_requests()[0].paths == (freq,)
+
+
+def test_non_timeout_failure_waits_one_cadence() -> None:
+    # MOR-2614 (retry-storm guard): a deterministic failure — an executor
+    # error, a refused query, a dropped send — must NOT be re-dispatched on
+    # the next drain pass. Only a terminal timeout expedites its first
+    # retry; every other reason keeps now + cadence.
+    clock = FreshnessClock(start=600.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    policy = AcquisitionPolicy(cadence_seconds=2.0, freshness_ttl_seconds=10.0)
+    scheduler = AcquisitionScheduler(
+        profile=_profile([freq], default_policy=policy),
+        clock=clock,
+    )
+
+    first = scheduler.due_requests()[0]
+    scheduler.record_acquisition_failure(
+        first,
+        reason="acquisition_executor_error",
+        now=clock.now(),
+    )
+    assert scheduler.due_requests() == ()
+    clock.advance(1.9)
+    assert scheduler.due_requests() == ()
+    clock.advance(0.1)
+    assert scheduler.due_requests()[0].paths == (freq,)
+
+
+def test_success_resets_consecutive_timeout_streak() -> None:
+    # MOR-2614: a completed acquisition breaks the key's consecutive-timeout
+    # run — the next terminal timeout expedites its retry again.
+    clock = FreshnessClock(start=700.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    policy = AcquisitionPolicy(cadence_seconds=2.0, freshness_ttl_seconds=10.0)
+    scheduler = AcquisitionScheduler(
+        profile=_profile([freq], default_policy=policy),
+        clock=clock,
+    )
+
+    first = scheduler.due_requests()[0]
+    scheduler.record_acquisition_failure(
+        first,
+        reason="acquisition_request_timeout",
+        now=clock.now(),
+        link_healthy=False,
+    )
+    retry = scheduler.due_requests()[0]
+    scheduler.record_acquisition_result(retry, _changeset(at=clock.now()))
+    clock.advance(2.0)
+    third = scheduler.due_requests()[0]
+    scheduler.record_acquisition_failure(
+        third,
+        reason="acquisition_request_timeout",
+        now=clock.now(),
+        link_healthy=False,
+    )
+    # Streak was reset by the success: expedited again.
+    assert scheduler.due_requests()[0].paths == (freq,)
+
+
 def test_semantic_change_resets_adaptive_cadence_to_base_policy() -> None:
     clock = FreshnessClock(start=220.0)
     freq = FieldPath.active("main", "freq_mode", "freq_hz")

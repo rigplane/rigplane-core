@@ -272,18 +272,15 @@ _MAX_KEY_DOWN_SECONDS: float = BACKEND_MAX_KEY_DOWN_SECONDS
 #
 # MOR-2614: 6.0 s is the UPPER limit only. On a live link the gate reads
 # healthy ~permanently, so a fixed 6 s window pins a genuinely lost request
-# for deadline + 6 s + one cadence — longer than the TTL of fast classes
-# (METER TTL 2 s on the IC-7610). The effective grace is therefore bounded
-# per request (see ``_healthy_grace_seconds_for``): never longer than what
-# still lets the re-sent answer land before the field goes stale.
+# past the TTL of fast classes. The effective grace is therefore bounded
+# per request (see ``_healthy_grace_seconds_for``).
 _ACQUISITION_HEALTHY_GRACE_SECONDS: float = 6.0
 
-# MOR-2614: bound KEEPING the first answer window short. The poller-to-radio
-# answer window is milliseconds on LAN (``CoreRadio._civ_rtt_estimate`` 9 ms
-# p95, ``_civ_get_timeout`` 2.0 s worst case), so a sent acquisition request
-# expires after one short answer window — never after the whole TTL. Waiting
-# the whole TTL (2 s for METER, 10 s for CONTROL) before even starting the
-# grace is what froze fast fields ~7 s on one lost answer.
+# MOR-2614: the short answer window bounding one radio answer. A sent
+# acquisition request expires one such window after its SEND — unless it
+# carries an explicit ``timeout``, which wins — never after the whole TTL.
+# Waiting the whole TTL before even starting the grace is what kept a lost
+# answer's field stale past its TTL.
 _ACQUISITION_ANSWER_WINDOW_SECONDS: float = 0.5
 
 # MOR-615: per-DATA-group MOD-input source fields (IC-7610 0x1A 05 00
@@ -3523,15 +3520,18 @@ class RadioPoller:
         # answer lands just after enqueue_time + max_age.
         #
         # MOR-2614: a sent request expires one short answer window after its
-        # SEND — ``_ACQUISITION_ANSWER_WINDOW_SECONDS``, not the whole TTL.
-        # The TTL answers "how old may the store observation be"; the expiry
-        # answers "how long may the radio take to answer one query" — LAN
-        # answers land in milliseconds (``CoreRadio._civ_rtt_estimate`` 9 ms
-        # p95), and waiting the whole TTL (2 s for METER, 10 s for CONTROL)
-        # before even starting the grace is what froze fast fields ~7 s on
-        # one lost answer.
+        # SEND — ``_ACQUISITION_ANSWER_WINDOW_SECONDS``, not the whole TTL —
+        # unless the request carries an explicit ``timeout``, which wins.
+        # The TTL bounds the store observation; the expiry bounds one radio
+        # answer. Waiting the whole TTL before even starting the grace is
+        # what kept a lost answer's field stale past its TTL.
         if sent_at > 0.0:
-            return bool(now >= sent_at + _ACQUISITION_ANSWER_WINDOW_SECONDS)
+            window: float = (
+                request.timeout
+                if request.timeout is not None
+                else _ACQUISITION_ANSWER_WINDOW_SECONDS
+            )
+            return bool(now >= sent_at + window)
         return bool(now >= request.deadline_monotonic)
 
     def _civ_link_healthy(self, *, now: float) -> bool:
@@ -3590,21 +3590,28 @@ class RadioPoller:
         policy: the retry is re-queued by the existing real-timeout path
         (drop + ``record_acquisition_failure``), so the drop plus one
         dispatch gap must fit inside ``freshness_ttl_seconds``. The gap is
-        bounded by one cadence — the scheduler re-arms ``next_due`` at most
+        bounded by one cadence — the first terminal timeout of a key keeps
+        its interrupted cadence clock, every later one re-arms ``next_due``
         one cadence out — i.e. ``grace = (ttl - cadence) / 2``, floored at
-        one answer window so a reply racing the deadline by milliseconds
-        still credits (the MOR-874 case), and capped at 6.0 s. The poller
-        itself sends no extra frame. A request with no TTL or no cadence
-        keeps the 6.0 s limit.
+        one answer window so a reply racing the deadline still credits (the
+        MOR-874 case), and capped at 6.0 s. The poller itself sends no extra
+        frame. A request with no TTL or no cadence keeps the 6.0 s limit.
+        The deadline the drain uses is the request's explicit ``timeout``
+        when set, else one answer window.
         """
 
         cadence = request.policy.cadence_seconds
         ttl = request.policy.freshness_ttl_seconds
         if ttl is None or cadence is None:
             return _ACQUISITION_HEALTHY_GRACE_SECONDS
+        deadline: float = (
+            request.timeout
+            if request.timeout is not None
+            else _ACQUISITION_ANSWER_WINDOW_SECONDS
+        )
         bounded: float = (ttl - cadence) / 2.0
-        if bounded < _ACQUISITION_ANSWER_WINDOW_SECONDS:
-            return _ACQUISITION_ANSWER_WINDOW_SECONDS
+        if bounded < deadline:
+            return deadline
         return min(bounded, _ACQUISITION_HEALTHY_GRACE_SECONDS)
 
     def _report_acquisition_expiry(
