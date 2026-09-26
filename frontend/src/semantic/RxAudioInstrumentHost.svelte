@@ -287,10 +287,7 @@
    *  authority publication's capabilities (`controls.af_level`) — the same
    *  capability fact other controls read their ranges from (`ControlRange`
    *  `raw_min`/`raw_max`), never a hard-coded 255 in this surface. A radio
-   *  that publishes no `controls.af_level` keeps the normalized lattice.
-   *  Read off the passed publication (never the capabilities-store
-   *  singleton): the host is authority-driven, and isolated seams do not
-   *  populate the store. */
+   *  that publishes no `controls.af_level` keeps the normalized lattice. */
   function radioAfDomain(source: RxAudioAuthorityPublication | null): {
     min: number; max: number; step: 1; defaultValue: null; fineStepDivisor: 1;
   } | null {
@@ -331,6 +328,10 @@
     // to the exact raw value (`Math.round(normalized * raw_max)`) — exact
     // for every raw value, so a step plus its reverse restore the raw value.
     const isRadioTarget = currentAuthority?.target !== 'browser-volume';
+    // MOR-1676 part A (AF): the domain follows the PUBLISHED authority, not
+    // the render-time presentation — `presentation` is the same publication
+    // the publisher has already delivered, but reading the range off
+    // `published` keeps domain and authority on one snapshot.
     const rawDomain = isRadioTarget ? radioAfDomain(published) : null;
     const domain = rawDomain ?? AF_DOMAIN;
     const rawReading = rawDomain !== null && reading.status === 'known'

@@ -1127,9 +1127,7 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
     } as ServerState;
     // The mounted wiring reads caps through the real capabilities store
     // (not the `h.caps` seam), so re-seed the store after every swap —
-    // `beforeEach` seeds only the initial `liveCaps`. Publish the authority
-    // AFTER the mount (not here): the host subscribes on mount, and only a
-    // post-mount publication reaches its `published` snapshot.
+    // `beforeEach` seeds only the initial `liveCaps`.
     h.caps = liveCaps(AUDIO_TAGS);
     expect(setCapabilities(h.caps as Capabilities)).toBe(true);
   }
@@ -1182,10 +1180,6 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
   ] as const)('with %s selected, a step on the %s knob sets that receiver\'s AF', (active, receiver, index, level) => {
     radioAf(active);
     renderHostedFace('desktop-v2');
-    // The host snapshots the authority publication on mount; republish so
-    // the fresh caps (with `controls.af_level`) reach `published`.
-    publishAuthority();
-    flushSync();
     knob(receiver)!.dispatchEvent(new KeyboardEvent(
       'keydown', { key: 'ArrowRight', bubbles: true, cancelable: true },
     ));
