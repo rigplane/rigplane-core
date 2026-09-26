@@ -140,20 +140,6 @@ Do not spam reconnect requests from frontend automation loops.
 1. Verify behavior in a browser/platform with MediaSession support.
 2. Use on-screen controls as fallback (expected behavior on unsupported browsers).
 
-### Web UI polling appears slower on low battery
-
-**Symptom:** State updates arrive less frequently on mobile devices with low battery.
-
-**Cause:** Frontend intentionally increases `/api/v1/state` polling interval when battery is low and not charging:
-
-- 10–20% -> 2x interval
-- <=10% -> 4x interval
-
-**Fixes / Notes:**
-
-1. Charge device to restore normal polling cadence.
-2. This optimization is skipped automatically on browsers without Battery Status API support.
-
 ### Mobile v2 gestures are not available
 
 **Symptom:** Swipe-to-dismiss bottom sheets and touch-first mobile layout are missing.
