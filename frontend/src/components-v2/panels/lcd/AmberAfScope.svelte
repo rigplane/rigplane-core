@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import type { ControlDisplayDomain } from '$lib/radio/filter-controls';
+  import { canvasBackingSize, readAncestorScale } from '../../../lib/canvas/backing-store';
 
   interface Props {
     /** FFT pixel data from AudioFftScope (0-160 range) */
@@ -107,10 +108,7 @@
       if (w > 1 && h > 1) {
         cssWidth = w;
         cssHeight = h;
-        const dpr = window.devicePixelRatio || 1;
-        canvas.width = Math.round(w * dpr);
-        canvas.height = Math.round(h * dpr);
-        canvas.getContext('2d')?.setTransform(dpr, 0, 0, dpr, 0, 0);
+        applyBackingStore(w, h);
       }
     }
     // Detect how fast the knob is turning
@@ -405,6 +403,13 @@
     }
   }
 
+  function applyBackingStore(cssW: number, cssH: number): void {
+    const backing = canvasBackingSize(cssW, cssH, window.devicePixelRatio || 1, readAncestorScale(canvas));
+    canvas.width = backing.width;
+    canvas.height = backing.height;
+    canvas.getContext('2d')?.setTransform(backing.pixelScale, 0, 0, backing.pixelScale, 0, 0);
+  }
+
   function onVisibilityChange() {
     visible = !document.hidden;
     if (visible && rafId === 0) rafId = requestAnimationFrame(draw);
@@ -423,10 +428,7 @@
       if (!rect) return;
       cssWidth = Math.max(1, Math.floor(rect.width));
       cssHeight = Math.max(1, Math.floor(rect.height));
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = Math.round(cssWidth * dpr);
-      canvas.height = Math.round(cssHeight * dpr);
-      canvas.getContext('2d')?.setTransform(dpr, 0, 0, dpr, 0, 0);
+      applyBackingStore(cssWidth, cssHeight);
     });
     ro.observe(canvas);
 

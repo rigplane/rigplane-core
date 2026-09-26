@@ -7,6 +7,7 @@
   } from '../../lib/renderers/waterfall-renderer';
   import { gesture } from '../../lib/gestures/use-gesture';
   import { vibrate } from '../../lib/utils/haptics';
+  import { canvasBackingSize, readAncestorScale } from '../../lib/canvas/backing-store';
 
   interface Props {
     options?: WaterfallOptions;
@@ -38,9 +39,9 @@
   const waterfallGestures = {
     onTap(x: number, _y: number): void {
       if (!renderer || !onFreqClick) return;
-      const dpr = window.devicePixelRatio || 1;
       const rect = canvas.getBoundingClientRect();
-      const freq = renderer.pixelToFreq((x - rect.left) * dpr);
+      const fraction = rect.width > 0 ? (x - rect.left) / rect.width : 0;
+      const freq = renderer.pixelToFreq(fraction * canvas.width);
       if (freq > 0) {
         vibrate('tap');
         onFreqClick(freq);
@@ -55,10 +56,13 @@
     const ro = new ResizeObserver((entries) => {
       const rect = entries[0]?.contentRect;
       if (!rect) return;
-      const dpr = window.devicePixelRatio || 1;
-      const w = Math.max(1, Math.floor(rect.width * dpr));
-      const h = Math.max(1, Math.floor(rect.height * dpr));
-      renderer?.resize(w, h);
+      const backing = canvasBackingSize(
+        rect.width,
+        rect.height,
+        window.devicePixelRatio || 1,
+        readAncestorScale(canvas),
+      );
+      renderer?.resize(backing.width, backing.height);
     });
     ro.observe(canvas);
 
