@@ -936,6 +936,13 @@ test -f /var/run/rigplane.pid && ps -p $(cat /var/run/rigplane.pid)
 
 If `ICOM_PID_FILE` is unset or empty, no PID file is written. This avoids conflicts when running multiple instances or in tests.
 
+!!! warning "One RigPlane server per radio"
+    Run exactly one RigPlane server per radio. An Icom radio accepts a single LAN remote-control session, so two servers for the same radio take that session from each other. With systemd, enable one unit per radio.
+
+    Two servers produce CI-V data stalls, repeated OpenClose from the watchdog (`civ-data-watchdog: no CI-V data`), the radio's LAN indicator dropping, and `error=0xFFFFFFFF` rejections (`Radio rejected session allocation (civ_port=0, error=0xFFFFFFFF). A previous session may still be active. Wait 30-60s and retry.`).
+
+    Find the duplicate with `systemctl list-units`, then disable one unit.
+
 ## Daemon Logging and Rotation (`web` / `serve`)
 
 `web` and `serve` are long-running commands, so the CLI enables file logging by default
