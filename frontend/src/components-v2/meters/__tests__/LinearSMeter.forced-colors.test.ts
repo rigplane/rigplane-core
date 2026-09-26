@@ -66,10 +66,39 @@ describe('MOR-1250 — computed-style evidence (F4 injection)', () => {
   let component: ReturnType<typeof mount> | undefined;
   let target: HTMLDivElement;
 
+  // jsdom has no ResizeObserver and every layout box is 0, so the vfo
+  // face's track width would be 0 and its fill line never lights — the
+  // same harness the vfo-face tests use (a fake observer plus a
+  // clientWidth override).
+  const FIXTURE_WIDTH = 606;
+  class FakeResizeObserver {
+    private static callback?: (entries: { target: Element }[]) => void;
+    private static targets = new Set<Element>();
+    constructor(callback: (entries: { target: Element }[]) => void) {
+      FakeResizeObserver.callback = callback;
+    }
+    observe(target: Element): void { FakeResizeObserver.targets.add(target); }
+    unobserve(target: Element): void { FakeResizeObserver.targets.delete(target); }
+    disconnect(): void { FakeResizeObserver.targets.clear(); }
+    static fire(): void {
+      const entries = [...FakeResizeObserver.targets].map((target) => ({ target }));
+      FakeResizeObserver.callback?.(entries);
+    }
+  }
+  let originalResizeObserver: unknown;
+  let originalClientWidth: PropertyDescriptor | undefined;
+
   beforeEach(() => {
     styleEl = document.createElement('style');
     styleEl.textContent = FORCED_BODY;
     document.head.appendChild(styleEl);
+    originalResizeObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = FakeResizeObserver as unknown as typeof ResizeObserver;
+    originalClientWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth');
+    Object.defineProperty(Element.prototype, 'clientWidth', {
+      configurable: true,
+      get: () => FIXTURE_WIDTH,
+    });
     setCapabilities({
       ...mockCapabilities,
       meterCalibrations: {
@@ -105,6 +134,10 @@ describe('MOR-1250 — computed-style evidence (F4 injection)', () => {
     if (component) unmount(component);
     target?.remove();
     component = undefined;
+    globalThis.ResizeObserver = originalResizeObserver as typeof ResizeObserver;
+    if (originalClientWidth) {
+      Object.defineProperty(Element.prototype, 'clientWidth', originalClientWidth);
+    }
     vi.unstubAllGlobals();
     clearCapabilities();
   });
@@ -114,6 +147,7 @@ describe('MOR-1250 — computed-style evidence (F4 injection)', () => {
     document.body.appendChild(target);
     component = mount(LinearSMeter, { target, props: props as never });
     flushSync();
+    FakeResizeObserver.fire();
     flushSync();
     return target;
   }
@@ -124,7 +158,7 @@ describe('MOR-1250 — computed-style evidence (F4 injection)', () => {
     getComputedStyle(el).getPropertyValue(prop).toLowerCase();
 
   it('default face: lit segments Highlight, dim GrayText, ink CanvasText', () => {
-    const root = render({ value: 200 });
+    const root = render({ value: 20 });
     const svg = root.querySelector('svg')!;
     expect(cs(svg, 'forced-color-adjust')).toBe('none');
     const lit = [...root.querySelectorAll<SVGRectElement>('[data-meter-fill]')]
@@ -140,7 +174,7 @@ describe('MOR-1250 — computed-style evidence (F4 injection)', () => {
   });
 
   it('vfo face: track GrayText, lit dashes Highlight, reading CanvasText', () => {
-    const root = render({ value: 200, variant: 'vfo' });
+    const root = render({ value: 20, variant: 'vfo' });
     expect(cs(root.querySelector('[data-meter-track]')!, 'stroke')).toBe('graytext');
     const lit = [...root.querySelectorAll<SVGLineElement>('[data-meter-fill]')]
       .find((line) => line.getAttribute('visibility') !== 'hidden');
@@ -150,7 +184,7 @@ describe('MOR-1250 — computed-style evidence (F4 injection)', () => {
   });
 
   it('sdr face: data-lit splits the bar and the forced palette follows it', () => {
-    const root = render({ value: 200, variant: 'sdr-screen' });
+    const root = render({ value: 20, variant: 'sdr-screen' });
     const segs = [...root.querySelectorAll<SVGRectElement>('[data-sdr-segment]')];
     expect(segs).toHaveLength(80);
     const litFlags = segs.map((seg) => seg.dataset.lit);
