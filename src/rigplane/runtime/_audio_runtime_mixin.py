@@ -90,8 +90,7 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self._opus_rx_jitter_depth = jitter_depth
         self._arm_pcm_ingress()
         # Re-enable queueing before the RX loop starts, so the first packet
-        # of the new session is not discarded. Same flag the control
-        # transport sets while it still has a consumer.
+        # of the new session is not discarded.
         audio_transport = getattr(self, "_audio_transport", None)
         if audio_transport is not None:
             audio_transport._discard_data_packets = False
