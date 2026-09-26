@@ -284,10 +284,13 @@ describe('semantic VFO / RX-TX adoption in the mobile shell', () => {
 
   // Kills: adding a second copy of the wiring (one per orientation, or one
   // per chip). Exactly one instance may exist — each is a distinct TX source.
+  // MOR-2442: landscape also mounts ONE, hosting its scope panel through the
+  // managed region.
   it('never mounts a second copy, in either orientation', () => {
     const t = mountMobile();
+    expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
     rotate(true);
-    expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(0);
+    expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
     rotate(false);
     expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
   });

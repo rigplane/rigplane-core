@@ -200,6 +200,16 @@
     bandPermitCaption?: boolean;
     displayFrameSource?: LcdSpectrumSource;
     readonlyDisplay?: Snippet<[RadioViewModel, LcdSpectrumFrame?]>;
+    /**
+     * MOR-2442 — opt-in for a BARE consumer (mobile's self-contained default
+     * composition, where neither `children` nor `regions`/`regionContent` is
+     * in use): compute the managed scope region and expose it through the
+     * bindable `managedScopeRegion` below, so the consumer forwards it to its
+     * own scope panel instead of subscribing a second time.
+     */
+    scopeManaged?: boolean;
+    /** MOR-2442 — the managed region output for the bare `scopeManaged` consumer. */
+    managedScopeRegion?: ManagedScopeRegion | undefined;
   }
   /**
    * MOR-2231 — `regions` routes `vfo`/`rxTx` through the generic `zoned()`
@@ -222,7 +232,7 @@
    * `zoneOwning()` returns non-null on both faces.
    */
   let {
-    children: hostedChildren, externalPresentation = null, strips = 'single', stripBy = 'receiver', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', bandPermitCaption = true, displayFrameSource, readonlyDisplay,
+    children: hostedChildren, externalPresentation = null, strips = 'single', stripBy = 'receiver', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', bandPermitCaption = true, displayFrameSource, readonlyDisplay, scopeManaged = false, managedScopeRegion = $bindable(),
   }: Props = $props();
 
   /**
@@ -1425,7 +1435,7 @@
   );
   let managedScope = $derived(
     scopeFrameSource === 'hardware'
-      && (hostedChildren !== undefined || (regions && regionContent !== undefined)),
+      && (hostedChildren !== undefined || (regions && regionContent !== undefined) || scopeManaged),
   );
   let scopeDemanded = $state(true);
   let scopePresentation = $state.raw<ScopeFramePresentation | null>(null);
@@ -1473,7 +1483,7 @@
     if (!enabled) selectedDisplayFrame = undefined;
     untrack(refreshScopePassband);
   }
-  let managedScopeRegion: ManagedScopeRegion | undefined = $derived.by(() => {
+  let managedScopeRegionValue: ManagedScopeRegion | undefined = $derived.by(() => {
     if (!managedScope) return undefined;
     const resolution = scopePresentation?.resolution;
     const frameMode = scopePresentation?.envelope?.frame.mode;
@@ -1483,6 +1493,10 @@
       ? { frame: resolution.frame, frameMode, acceptedSequence, passband: scopePassband.display } : null;
     return { projection, demanded: scopeDemanded, setDemand: setManagedScopeDemand };
   });
+  // MOR-2442 — the bare `scopeManaged` consumer binds the same region the
+  // hosted/region consumers read through `InstrumentComposition`/snippet
+  // arguments; either way it is exactly one owner of the scope lease.
+  $effect(() => { managedScopeRegion = managedScopeRegionValue; });
   $effect(refreshScopePassband);
 
   let scopeAuthority = $derived.by(() => {
@@ -2965,7 +2979,7 @@
       scopeControls: hostedScopeControls,
       txFaultRecovery,
       modInputTxWarning: txAdjacentAlerts,
-      managedScope: managedScopeRegion,
+      managedScope: managedScopeRegionValue,
     })}
   {:else if strips === 'dual'}
     <!--
@@ -3046,7 +3060,7 @@
       {/if}
       {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBareSurfaces)}
       {#if regionContent}
-        {@render regionContent(scopeControlsInRegionContent ? zonedScopeControls : undefined, managedScopeRegion)}
+        {@render regionContent(scopeControlsInRegionContent ? zonedScopeControls : undefined, managedScopeRegionValue)}
       {/if}
       </div>
       <div class:desktop-controls-right={vfoAppearance !== 'semantic'} class:region-passthrough={vfoAppearance === 'semantic'}>

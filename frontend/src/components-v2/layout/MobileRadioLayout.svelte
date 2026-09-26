@@ -23,6 +23,8 @@
   import type { MeterSource } from '../panels/meter-utils';
   import KeyboardHandler from './KeyboardHandler.svelte';
   import SemanticRadioSurfaces from '../wiring/SemanticRadioSurfaces.svelte';
+  import type { ManagedScopeRegion } from '$lib/runtime/adapters/scope-display-projection';
+  import type { InstrumentComposition } from '../wiring/instrument-composition';
   import MobileChipBar from './mobile-chip-bar.svelte';
   import EssentialsPanel from '../panels/EssentialsPanel.svelte';
   import PttFab from '../controls/PttFab.svelte';
@@ -67,6 +69,11 @@
   let keyboardConfig = $derived(getKeyboardConfig());
   let audioState = $derived(runtime.audio);
   let txCapable = $derived(hasTx());
+
+  // MOR-2442 — the one SemanticRadioSurfaces-managed scope region, bound from
+  // this layout's SRS instance and forwarded to the SpectrumPanel of whichever
+  // orientation is on screen. No second subscriber joins the scope lease.
+  let managedScopeRegion = $state<ManagedScopeRegion | undefined>(undefined);
 
   // ── VFO props ──
   let mainVfo = $derived(toVfoProps(radioState, 'main'));
@@ -532,7 +539,17 @@
        MobileRadioLayout.component.svelte.test.ts. -->
   {#if hasSpectrum()}
     <div class="m-ls-spectrum">
-      <SpectrumPanel hideAutoStepToggle={true} />
+      <!-- MOR-2442: landscape hosts its scope panel through the ONE
+           SemanticRadioSurfaces-managed region, the same contract the
+           portrait mount binds below. -->
+      <SemanticRadioSurfaces>
+        {#snippet children(instruments: InstrumentComposition)}
+          <SpectrumPanel hideAutoStepToggle={true}
+            scopeProjection={instruments.managedScope?.projection}
+            scopeDemanded={instruments.managedScope?.demanded ?? true}
+            onScopeDemandChange={instruments.managedScope?.setDemand} />
+        {/snippet}
+      </SemanticRadioSurfaces>
     </div>
   {/if}
   <div class="m-ls-overlay">
@@ -684,14 +701,17 @@
          MobileRadioLayout.component.svelte.test.ts. -->
     {#if hasSpectrum()}
       <section class="m-spectrum">
-        <SpectrumPanel hideAutoStepToggle={true} />
+        <SpectrumPanel hideAutoStepToggle={true}
+          scopeProjection={managedScopeRegion?.projection}
+          scopeDemanded={managedScopeRegion?.demanded ?? true}
+          onScopeDemandChange={managedScopeRegion?.setDemand} />
       </section>
     {/if}
 
     <!-- The semantic deck and PTT gesture both use the single App-root managed
          intent facade; the deck adds no transport or authority. -->
     <section class="m-semantic-deck">
-      <SemanticRadioSurfaces />
+      <SemanticRadioSurfaces scopeManaged bind:managedScopeRegion={managedScopeRegion} />
     </section>
 
     <!-- Chip-scroll IA nav (#839) -->
@@ -1011,7 +1031,9 @@
     position: relative;
   }
 
-  .m-ls-spectrum > :global(.spectrum-panel) {
+  /* MOR-2442: the landscape slot hosts the panel through SemanticRadioSurfaces'
+     managed region, so a descendant selector fits the intermediate wrapper. */
+  .m-ls-spectrum :global(.spectrum-panel) {
     height: 100% !important;
     border: none !important;
     border-radius: 0 !important;
