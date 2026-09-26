@@ -736,7 +736,7 @@ describe('seven TX/VOX levels consume command feedback', () => {
     expect(r.row(field).title).toBe('Not yet observed');
     expect(describedText(r.input(field))).toBe('Not yet observed');
     expect(r.input(field).getAttribute('aria-valuetext')).toBe(
-      `${label}: unavailable; confirmed`,
+      `${label}; ${label}: unavailable`,
     );
     expect(r.input(field).getAttribute('aria-valuetext')).not.toContain('?');
     expect(r.input(field).getAttribute('aria-valuenow')).toBeNull();
