@@ -611,10 +611,11 @@ def _serialize_notch_width_choices(
 
     Returns ``[{"value": <int>, "label": <str>}, ...]`` in
     ``notch_width_values`` order, ``[]`` when the profile declares no
-    width domain or no labels. The loader (``_parse_enumerated_domain``
-    via ``[notch].width_values``/``width_labels``) guarantees every
-    declared value has a string-keyed label and rejects orphan labels
-    at load time, so every declared value resolves a label here.
+    width domain. The loader (``rig_loader.py: load_rig`` rejects a
+    ``[notch].width_values`` entry with no ``width_labels`` entry at load
+    time, pinned by ``TestNotchWidthLabelsComplete``) guarantees every
+    declared value has a string-keyed label, so every declared value
+    resolves a label here.
     """
     values = profile.notch_width_values
     labels = profile.notch_width_labels

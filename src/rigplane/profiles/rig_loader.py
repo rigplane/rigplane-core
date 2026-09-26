@@ -2528,6 +2528,21 @@ def load_rig(path: Path) -> RigConfig:
         values_key="width_values",
         labels_key="width_labels",
     )
+    # MOR-1685: a declared width value with no label would raise KeyError
+    # inside the capabilities serializer at request time — fail loud here
+    # instead. Notch only; the sibling domains keep
+    # _parse_enumerated_domain semantics.
+    if notch_width_values is not None:
+        missing_notch_width_labels = sorted(
+            str(value)
+            for value in notch_width_values
+            if str(value) not in (notch_width_labels or {})
+        )
+        if missing_notch_width_labels:
+            raise RigLoadError(
+                f"{filename}: [notch].width_labels missing entry for "
+                f"width_values {missing_notch_width_labels}"
+            )
     ssb_tx_bw_values, ssb_tx_bw_labels = _parse_enumerated_domain(
         filename, "[ssb_tx_bw]", data.get("ssb_tx_bw", {})
     )
