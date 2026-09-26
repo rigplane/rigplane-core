@@ -76,6 +76,13 @@ __all__ = ["RigctldServer", "run_rigctld_server"]
 _POLICY_CADENCE_REASON = "policy-cadence"
 _MAX_PENDING_CLIENT_RESPONSES = 64
 
+# MOR-1899 item 3: a post-unkey confirmation is dispatched no later than one
+# drain interval after the unkey — this rest between passes is the only wait
+# on that path, so 50 ms here is the combined-mode dispatch ceiling. Pinned
+# behaviourally by tests/test_rigctld_server.py::
+# TestStateAcquisitionDrainPolicies::test_drain_loop_never_waits_past_the_post_unkey_ceiling.
+_STATE_ACQUISITION_DRAIN_INTERVAL_SECONDS = 0.05
+
 
 class _ManagedPttReady(asyncio.Future[None]):
     def __init__(
@@ -624,7 +631,7 @@ class RigctldServer:
         while True:
             try:
                 await self._drain_state_acquisition_once()
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(_STATE_ACQUISITION_DRAIN_INTERVAL_SECONDS)
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -639,7 +646,7 @@ class RigctldServer:
                     error=str(exc),
                     error_type=type(exc).__name__,
                 )
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(_STATE_ACQUISITION_DRAIN_INTERVAL_SECONDS)
 
     def _record_acquisition_failure(
         self,
