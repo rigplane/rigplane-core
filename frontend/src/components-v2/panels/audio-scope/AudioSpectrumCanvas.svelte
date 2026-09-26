@@ -138,12 +138,13 @@
       if (!rect) return;
       cssWidth = Math.max(1, Math.floor(rect.width));
       cssHeight = Math.max(1, Math.floor(rect.height));
-      applyBackingStore(getStageScale()());
+      // The scale is read only by the stage-scale effect (MOR-1161).
+      applyBackingStore(1);
       rendererState.reset();
       scheduleDraw();
     });
     ro.observe(canvas);
-    const stopPixelWatch = watchDevicePixelRatio(() => applyBackingStore(getStageScale()()));
+    const stopPixelWatch = watchDevicePixelRatio(() => applyBackingStore(1));
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);

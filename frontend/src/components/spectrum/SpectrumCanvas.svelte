@@ -94,11 +94,14 @@
       if (!rect) return;
       cssWidth = Math.max(1, Math.floor(rect.width));
       cssHeight = Math.max(1, Math.floor(rect.height));
-      applyBackingStore(getStageScale()());
+      // The scale is read only by the stage-scale effect. Reading it here
+      // too would recompute the store on a scale change even with that
+      // effect's read removed (MOR-1161).
+      applyBackingStore(1);
       scheduleDraw();
     });
     ro.observe(canvas);
-    const stopPixelWatch = watchDevicePixelRatio(() => { applyBackingStore(getStageScale()()); scheduleDraw(); });
+    const stopPixelWatch = watchDevicePixelRatio(() => { applyBackingStore(1); scheduleDraw(); });
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);

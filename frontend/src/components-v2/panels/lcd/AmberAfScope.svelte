@@ -109,7 +109,7 @@
       if (w > 1 && h > 1) {
         cssWidth = w;
         cssHeight = h;
-        applyBackingStore(w, h, getStageScale()());
+        applyBackingStore(w, h, 1);
       }
     }
     // Detect how fast the knob is turning
@@ -433,10 +433,11 @@
       if (!rect) return;
       cssWidth = Math.max(1, Math.floor(rect.width));
       cssHeight = Math.max(1, Math.floor(rect.height));
-      applyBackingStore(cssWidth, cssHeight, getStageScale()());
+      // The scale is read only by the stage-scale effect (MOR-1161).
+      applyBackingStore(cssWidth, cssHeight, 1);
     });
     ro.observe(canvas);
-    const stopPixelWatch = watchDevicePixelRatio(() => applyBackingStore(cssWidth, cssHeight, getStageScale()()));
+    const stopPixelWatch = watchDevicePixelRatio(() => applyBackingStore(cssWidth, cssHeight, 1));
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);
