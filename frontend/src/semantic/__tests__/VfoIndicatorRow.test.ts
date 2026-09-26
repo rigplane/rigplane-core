@@ -94,6 +94,25 @@ describe('VfoIndicatorRow', () => {
     expect(root.querySelector('[data-indicator-fact="agc"]')?.textContent).toContain('AGC SLOW');
   });
 
+  it('shows a label with no value text for unread facts, never a dash (MOR-2644)', () => {
+    const root = render({ indicator: indicator({
+      bandwidthHz: unknown(), agcMode: unknown(), nbActive: unknown(),
+      nrActive: unknown(), notchMode: unknown(), attenuator: unknown(),
+      preamp: unknown(), ipPlus: unknown(), digiSel: unknown(),
+    }) });
+    for (const [fact, label] of [
+      ['bandwidth', 'BW'], ['agc', 'AGC'], ['nb', 'NB'], ['nr', 'NR'],
+      ['notch', 'NOTCH'], ['attenuator', 'ATT'], ['preamp', 'P.AMP'],
+      ['ip-plus', 'IP+'], ['digi-sel', 'DIGI-SEL'],
+    ] as const) {
+      const node = root.querySelector(`[data-indicator-fact="${fact}"]`);
+      expect(node, `unread ${fact} keeps its element`).not.toBeNull();
+      expect(node?.textContent?.trim()).toBe(label);
+      expect(node?.textContent).not.toContain('—');
+      expect(node?.getAttribute('data-state')).toMatch(/unknown|off/);
+    }
+  });
+
   it('keeps an unavailable structural receiver present, disabled, and explicitly unknown', () => {
     const root = render({ indicator: indicator({
       receiver: 'SUB',
@@ -177,8 +196,11 @@ describe('radio-wide singleton indicators (MOR-2309)', () => {
     const rf = root.querySelector('[data-indicator-fact="rf-authority"]');
     expect(rf?.getAttribute('data-indicator-rf')).toBe('unknown');
     expect(rf?.textContent).toBe('');
-    for (const fact of ['atu', 'rit', 'xit']) {
-      expect(root.querySelector(`[data-indicator-fact="${fact}"]`)?.textContent).toContain('—');
+    // MOR-2644: unread radio-wide facts keep the label with no value text.
+    for (const [fact, label] of [['atu', 'TUNE'], ['rit', 'RIT Hz'], ['xit', 'XIT Hz']] as const) {
+      const node = root.querySelector(`[data-indicator-fact="${fact}"]`);
+      expect(node?.textContent?.trim()).toBe(label);
+      expect(node?.textContent).not.toContain('—');
     }
   });
 
@@ -199,9 +221,11 @@ describe('radio-wide singleton indicators (MOR-2309)', () => {
     const rit = root.querySelector('[data-indicator-fact="rit"]');
     const xit = root.querySelector('[data-indicator-fact="xit"]');
     expect(rit?.getAttribute('data-state')).toBe('unknown');
-    expect(rit?.textContent).toContain('RIT OFF — Hz');
+    expect(rit?.textContent?.trim()).toBe('RIT OFF Hz');
+    expect(rit?.textContent).not.toContain('—');
     expect(xit?.getAttribute('data-state')).toBe('unknown');
-    expect(xit?.textContent).toContain('XIT — 0 Hz');
+    expect(xit?.textContent?.trim()).toBe('XIT 0 Hz');
+    expect(xit?.textContent).not.toContain('—');
   });
 });
 
