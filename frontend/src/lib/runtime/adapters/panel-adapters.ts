@@ -768,7 +768,14 @@ function normalizedUsableObservation(
 }
 
 /** Qualified AF-level command feedback for `receiver` (MOR-2579), or for the
- *  active receiver when none is named. */
+ *  active receiver when none is named.
+ *
+ *  MOR-1676 part A (AF): the radio-AF slider moves on the raw integer
+ *  lattice, so command-feedback evidence here is projected into the same
+ *  raw domain the reading uses — the published `controls.af_level` range,
+ *  like the host. Without the projection a normalized admitted target
+ *  (e.g. 128/255) would fail the slider's own integer lattice and the
+ *  feedback evidence would drop out from under the gesture. */
 export function getAfLevelControlFeedback(
   currentControlSession?: ControlSessionSnapshot,
   receiver?: 'MAIN' | 'SUB',
@@ -779,10 +786,25 @@ export function getAfLevelControlFeedback(
   const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
   const scopeOnSub = receiver === undefined ? state?.active === 'SUB' : receiver === 'SUB';
   const scope = { control: 'af-level', receiver: scopeOnSub ? 1 : 0 } as const;
-  const feedback = projectControlFeedback(
-    AF_LEVEL_COMMAND_DESCRIPTOR, state, commands,
-    scope, epoch,
-    isCommandLifecycleSuperseded,
+  const feedback = projectControlFeedbackToDisplay(
+    projectControlFeedback(
+      AF_LEVEL_COMMAND_DESCRIPTOR, state, commands,
+      scope, epoch,
+      isCommandLifecycleSuperseded,
+    ),
+    (raw) => {
+      // The slider evidence is raw integers on the published domain; the
+      // legacy-normalized lane converts through it, the raw lane is
+      // already there. A null conversion fails this lane closed (never a
+      // fabricated target).
+      const control = caps?.controls?.af_level;
+      if (control === undefined || 'mapping' in control) return raw;
+      const { raw_min: rawMin, raw_max: rawMax } = control;
+      if (!Number.isSafeInteger(rawMin) || !Number.isSafeInteger(rawMax) || rawMax <= rawMin) {
+        return null;
+      }
+      return Math.round(rawMin + raw * (rawMax - rawMin));
+    },
   );
   try {
     const view = toRadioViewModel(state, caps);
