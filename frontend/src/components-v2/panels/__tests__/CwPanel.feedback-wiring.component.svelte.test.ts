@@ -18,7 +18,7 @@ const feedback = $state({
   confirmed: 64, target: null, requestedTarget: null, phase: 'idle', busy: false,
   availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
   sessionEpoch: 1, scope: { control: 'break-in-delay', receiver: 0 },
-  repeatPolicy: 'latest-target-wins',
+  providerGeneration: 3, repeatPolicy: 'latest-target-wins',
 } as ControlFeedback<number>);
 const fresh = () => ({
   storePath: 'fixture', observed: true, freshness: 'fresh' as const,
@@ -76,7 +76,7 @@ afterEach(() => {
   component = null; target?.remove(); setLocale('en-US');
   Object.assign(feedback, { confirmed: 64, target: null, requestedTarget: null, phase: 'idle',
     busy: false, availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
-    sessionEpoch: 1, scope: { control: 'break-in-delay', receiver: 0 } });
+    sessionEpoch: 1, providerGeneration: 3, scope: { control: 'break-in-delay', receiver: 0 } });
   canonical.state = connectedState(); canonical.caps = connectedCaps();
   canonical.session = { state: 'connected', epoch: 1 };
   lifecycle.commands = [];
