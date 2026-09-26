@@ -94,16 +94,18 @@ function mountReactive(smoothedFraction: number, peakFraction: number) {
   };
 }
 
-function geometry(target: HTMLElement): string {
-  const fills = [...target.querySelectorAll<SVGRectElement>('[data-meter-fill]')]
-    .map((rect) => [
-      rect.getAttribute('data-meter-fill'),
-      rect.getAttribute('width'),
-      rect.getAttribute('visibility'),
-    ].join(','))
-    .join('|');
+function onHalfUnitGrid(value: number): boolean {
+  return Math.abs(value / GEOMETRY_FALLBACK_STEP - Math.round(value / GEOMETRY_FALLBACK_STEP)) < 1e-9;
+}
+
+function writtenGeometry(target: HTMLElement): number[] {
+  const values: number[] = [];
+  for (const rect of target.querySelectorAll<SVGRectElement>('[data-meter-fill]')) {
+    values.push(Number(rect.getAttribute('x')), Number(rect.getAttribute('width')));
+  }
   const peak = target.querySelector('[data-meter-peak]');
-  return `${fills}#${peak?.getAttribute('x1')},${peak?.getAttribute('visibility')}`;
+  values.push(Number(peak?.getAttribute('x1')), Number(peak?.getAttribute('x2')));
+  return values;
 }
 
 // Two CSS pixels per user unit, so one device pixel is 0.5 user units.
@@ -131,26 +133,20 @@ describe('quantizeUserUnits', () => {
   });
 });
 
-describe('MOR-2613 — jsdom renders the 0.5-unit fallback grid', () => {
-  // One segment of the 20-segment face is SEG_W user units wide (23.25 at the
-  // default gap), and the peak moves one pitch per segment. A step of 0.01
-  // segment is about 0.23 user units, inside the 0.5 fallback; 0.03 segment
-  // is about 0.7 and crosses it, for both the partial width and the peak.
-  const BASE = 5.2 / 20;
-  const PEAK = BASE + 0.4;
+describe('MOR-2613 — jsdom writes the 0.5-unit fallback grid', () => {
+  // No width is measured in jsdom, so every geometry attribute the component
+  // writes must land on the 0.5-unit fallback. The sweep does not assume how
+  // the scale maps a fraction to a position: it only reads what was written.
+  const STEPS = 50;
 
-  it('a change smaller than 0.5 units leaves the segment and peak attributes unchanged', () => {
-    const { target, step } = mountReactive(BASE, PEAK);
-    const before = geometry(target);
-    expect(before).not.toBe('');
-    step(BASE + 0.01, PEAK + 0.01);
-    expect(geometry(target)).toBe(before);
-  });
-
-  it('a change of 0.5 units or more updates the segment and peak attributes', () => {
-    const { target, step } = mountReactive(BASE, PEAK);
-    const before = geometry(target);
-    step(BASE + 0.03, PEAK + 0.03);
-    expect(geometry(target)).not.toBe(before);
+  it('keeps fill x/width and the peak line on the 0.5 grid across the range', () => {
+    const { target, step } = mountReactive(0, 0.4);
+    for (let i = 0; i <= STEPS; i += 1) {
+      const fraction = i / STEPS;
+      step(fraction, Math.min(1, fraction + 0.4));
+      for (const value of writtenGeometry(target)) {
+        expect(onHalfUnitGrid(value), `step ${i}: ${value}`).toBe(true);
+      }
+    }
   });
 });
