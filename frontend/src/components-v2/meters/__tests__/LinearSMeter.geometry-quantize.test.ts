@@ -132,23 +132,24 @@ describe('quantizeUserUnits', () => {
 });
 
 describe('MOR-2613 — jsdom renders the 0.5-unit fallback grid', () => {
-  // 20 segments. A 0.2-segment step is 0.2 user units of partial width, under
-  // the 0.5 fallback, and 0.2 * pitch of the peak line. A 0.5-segment step
-  // crosses the fallback for both.
+  // 20 segments, so one segment is one user unit of partial width and one
+  // pitch of the peak line. A fifth of a segment stays inside the 0.5-unit
+  // fallback; half a segment lands on the next grid point for both.
   const BASE = 5.2 / 20;
+  const PEAK = BASE + 0.4;
 
   it('a change smaller than 0.5 units leaves the segment and peak attributes unchanged', () => {
-    const { target, step } = mountReactive(BASE, BASE + 0.4);
+    const { target, step } = mountReactive(BASE, PEAK);
     const before = geometry(target);
     expect(before).not.toBe('');
-    step(BASE + 0.2 / 20, BASE + 0.4 + 0.2 / 20);
+    step(BASE + 0.2 / 20, PEAK + 0.2 / 20);
     expect(geometry(target)).toBe(before);
   });
 
   it('a change of 0.5 units or more updates the segment and peak attributes', () => {
-    const { target, step } = mountReactive(BASE, BASE + 0.4);
+    const { target, step } = mountReactive(BASE, PEAK);
     const before = geometry(target);
-    step(BASE + 0.5 / 20, BASE + 0.4 + 0.5 / 20);
+    step(BASE + 0.5 / 20, PEAK + 0.5 / 20);
     expect(geometry(target)).not.toBe(before);
   });
 });
