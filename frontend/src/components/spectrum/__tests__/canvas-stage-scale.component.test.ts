@@ -26,7 +26,7 @@ beforeEach(() => {
   vi.stubGlobal('ResizeObserver', class {
     constructor(callback: ResizeObserverCallback) { observe = callback; }
     observe(element: Element) {
-      observe([{ contentRect: { width: CSS_WIDTH, height: CSS_HEIGHT }, target: element } as ResizeObserverEntry], this as unknown as ResizeObserver);
+      observe([{ contentRect: { width: CSS_WIDTH, height: CSS_HEIGHT }, target: element } as unknown as ResizeObserverEntry], this as unknown as ResizeObserver);
     }
     disconnect() {}
   });
@@ -56,8 +56,14 @@ afterEach(async () => {
 });
 
 function fireResize(): void {
-  observe([{ contentRect: { width: CSS_WIDTH, height: CSS_HEIGHT }, target: target.querySelector('canvas')! } as ResizeObserverEntry], {} as ResizeObserver);
+  observe([{ contentRect: { width: CSS_WIDTH, height: CSS_HEIGHT }, target: target.querySelector('canvas')! } as unknown as ResizeObserverEntry], {} as ResizeObserver);
   flushSync();
+}
+
+function mountCanvas(CanvasComponent: typeof SpectrumCanvas | typeof WaterfallCanvas): void {
+  component = CanvasComponent === SpectrumCanvas
+    ? mount(SpectrumCanvas, { target, props: { data: null } })
+    : mount(WaterfallCanvas, { target, props: {} });
 }
 
 describe.each([
@@ -66,7 +72,7 @@ describe.each([
 ] as const)('%s backing store (MOR-1161)', (_name, CanvasComponent) => {
   it.each([1, 1.5, 2, 3])('matches cssSize x devicePixelRatio x stage scale %s', (scale) => {
     stageScale = scale;
-    component = mount(CanvasComponent, { target, props: {} });
+    mountCanvas(CanvasComponent);
     flushSync();
     const canvas = target.querySelector('canvas')!;
     expect(canvas.width).toBe(Math.round(CSS_WIDTH * 2 * scale));
@@ -74,7 +80,7 @@ describe.each([
   });
 
   it('redraws when the stage scale changes without a layout resize', () => {
-    component = mount(CanvasComponent, { target, props: {} });
+    mountCanvas(CanvasComponent);
     flushSync();
     const canvas = target.querySelector('canvas')!;
     expect(canvas.width).toBe(CSS_WIDTH * 2);
