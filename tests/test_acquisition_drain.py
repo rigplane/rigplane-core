@@ -278,24 +278,27 @@ class TestAcquisitionDrainExpiry:
         """The injected expiry rule is load-bearing, not decoration.
 
         rigctld expires a dispatched request at the earlier of its enqueue
-        deadline and ``sent_at + timeout``; the web poller expires it
-        ``max_age`` (or ``timeout``) seconds after the SEND, and its own
-        comment calls the ``min`` form a false timeout. A request that sat
-        queued past its enqueue deadline and was answered half a second
-        after dispatch separates them.
+        deadline and ``sent_at + timeout``; the web poller expires it one
+        short answer window (``_ACQUISITION_ANSWER_WINDOW_SECONDS``) after
+        the SEND — MOR-2614 — and its own comment calls the ``min`` form a
+        false timeout. A request that sat queued past its enqueue deadline
+        and was answered within the window after dispatch separates them.
         """
+        from rigplane.web.radio_poller import _ACQUISITION_ANSWER_WINDOW_SECONDS
 
         request = _request(deadline=1.0, max_age=1.0, timeout=None)
         rigctld_expired = RigctldServer._acquisition_request_expired  # noqa: SLF001
         web_expired = RadioPoller._acquisition_request_expired  # noqa: SLF001
 
-        assert rigctld_expired(request, sent_at=5.0, now=5.5) is True
-        assert web_expired(cast(Any, None), request, sent_at=5.0, now=5.5) is False
+        inside = 5.0 + _ACQUISITION_ANSWER_WINDOW_SECONDS / 2.0
+        assert rigctld_expired(request, sent_at=5.0, now=inside) is True
+        assert web_expired(cast(Any, None), request, sent_at=5.0, now=inside) is False
 
         # Control: once the send-relative window itself elapses the two rules
         # agree, so the split above is the rule and not the fixture.
-        assert rigctld_expired(request, sent_at=5.0, now=6.5) is True
-        assert web_expired(cast(Any, None), request, sent_at=5.0, now=6.5) is True
+        outside = 5.0 + _ACQUISITION_ANSWER_WINDOW_SECONDS + 0.1
+        assert rigctld_expired(request, sent_at=5.0, now=outside) is True
+        assert web_expired(cast(Any, None), request, sent_at=5.0, now=outside) is True
 
 
 class TestAcquisitionDrainDispatchEligibility:
