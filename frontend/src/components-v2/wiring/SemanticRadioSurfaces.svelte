@@ -1430,8 +1430,11 @@
       finiteAppearance: selectedFiniteAppearance, rendererContext: ritXitFiniteRendererContext,
     });
 
+  // MOR-2442 — a bare consumer passes `scopeManaged` instead of `children`,
+  // so hardware detection must not demand the hosted snippet.
   let scopeFrameSource = $derived(
-    displayFrameSource ?? (hostedChildren !== undefined && getScopeSource() === 'hardware' ? 'hardware' : undefined),
+    displayFrameSource ?? ((hostedChildren !== undefined || scopeManaged)
+      && getScopeSource() === 'hardware' ? 'hardware' : undefined),
   );
   let managedScope = $derived(
     scopeFrameSource === 'hardware'

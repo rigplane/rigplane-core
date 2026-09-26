@@ -443,7 +443,8 @@ describe('orientation change preserves App authority (MOR-1086 doctrine)', () =>
     expect(release).not.toHaveBeenCalled();
 
     rotate(true);
-    expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(0);
+    // MOR-2442: landscape mounts its own ONE instance; still no scope lease.
+    expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
     expect(acquire).not.toHaveBeenCalled();
     expect(release).not.toHaveBeenCalled();
 
