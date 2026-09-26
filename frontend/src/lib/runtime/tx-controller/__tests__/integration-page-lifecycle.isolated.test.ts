@@ -14,7 +14,7 @@ import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-
 // whatever `App.svelte` needs to mount at all in jsdom without pulling in the
 // full `RadioLayoutV2` component tree (audio, scope, every panel) — the exact
 // same substitutions `app-lifecycle.component.test.ts` makes (RadioLayout →
-// stub, LocalExtensionsHost → stub, layout/skins/battery/media-session/i18n →
+// stub, LocalExtensionsHost → stub, layout/skins/media-session/i18n →
 // trivial fakes, `frontend-runtime` → a controllable reactive fake, so the
 // test can force `App.svelte`'s own `$effect` to call `txHost.refreshAuthority()`
 // on demand). `system-controller` is mocked too: its `registerPreDisconnectBarrier`
@@ -61,8 +61,6 @@ const h = vi.hoisted(() => ({
   registerBarrier: vi.fn(),
   bootstrap: vi.fn(),
   bootstrapCleanup: vi.fn(),
-  initBattery: vi.fn(),
-  batteryCleanup: vi.fn(),
   initMedia: vi.fn(),
   destroyMedia: vi.fn(),
   notifyRuntime: () => {},
@@ -111,7 +109,6 @@ vi.mock('../../../../skins/registry', () => ({
 vi.mock('../../../../components-v2/wiring/SemanticRadioSurfaces.svelte', async () => ({
   default: (await import('../../../../components-v2/layout/__tests__/SpectrumPanelStub.svelte')).default,
 }));
-vi.mock('../../../../lib/utils/battery', () => ({ initBatteryMonitor: h.initBattery }));
 vi.mock('../../../../lib/media/media-session', () => ({
   initMediaSession: h.initMedia,
   destroyMediaSession: h.destroyMedia,
@@ -254,8 +251,6 @@ describe('App page-lifecycle TX release — real App.svelte + real app-host + re
     h.stop.mockClear();
     h.restore.mockClear();
     h.registerBarrier.mockReset().mockImplementation(() => () => {});
-    h.initBattery.mockReset().mockResolvedValue(h.batteryCleanup);
-    h.batteryCleanup.mockReset();
     h.initMedia.mockReset();
     h.destroyMedia.mockReset();
     h.runtimeState = { stateRevision: 1 };

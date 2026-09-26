@@ -45,8 +45,6 @@ type CapabilityListener = (caps: unknown | null) => void;
 const h = vi.hoisted(() => ({
   pending: [] as Pending[],
   loadSkin: vi.fn(),
-  initBattery: vi.fn(),
-  batteryCleanup: vi.fn(),
   provide: vi.fn(),
   txHost: undefined as { refreshAuthority: () => void; dispose: () => void } | undefined,
   notifyCaps: () => {},
@@ -185,7 +183,6 @@ vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
   // (presentation-switch-tx.component.test.ts). Inert here.
   provideManagedAppTxHost: h.provide,
 }));
-vi.mock('../lib/utils/battery', () => ({ initBatteryMonitor: h.initBattery }));
 vi.mock('../lib/media/media-session', () => ({
   initMediaSession: vi.fn(),
   destroyMediaSession: vi.fn(),
@@ -423,7 +420,6 @@ describe('MOR-1086 — resource identity across a presentation switch', () => {
     h.loadSkin.mockImplementation(
       (id: SkinId) => new Promise((resolve) => { h.pending.push({ id, resolve }); }),
     );
-    h.initBattery.mockResolvedValue(h.batteryCleanup);
     h.provide.mockImplementation(() => {
       h.txHost = { refreshAuthority: vi.fn(), dispose: vi.fn() };
       return { ...h.txHost, release: vi.fn() };

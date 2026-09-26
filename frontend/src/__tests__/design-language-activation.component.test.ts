@@ -11,7 +11,7 @@
  * real `skins/registry.ts::resolveSkinId`, the real design-language and
  * layout registries — and read `document.documentElement.dataset` the way an
  * operator's browser would. Only the pieces with no bearing on design-language
- * activation (transport bootstrap, TX controller, battery, media session, the
+ * activation (transport bootstrap, TX controller, media session, the
  * App-global host) are stubbed, following the same recipe
  * `lazy-presentation.component.test.ts` already uses for a full `App.svelte`
  * mount. A test asserting `WORKSPACE_DESIGN_LANGUAGE_IDS` merely CONTAINS
@@ -52,7 +52,6 @@ const h = vi.hoisted(() => ({
   loadSkin: vi.fn(),
   plan: vi.fn(),
   bootstrap: vi.fn(),
-  initBattery: vi.fn(),
   provide: vi.fn(),
   txHost: {
     refreshAuthority: vi.fn(),
