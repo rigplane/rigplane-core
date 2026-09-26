@@ -236,11 +236,12 @@ const FORBIDDEN_PRESENTATION_IMPORTS = {
  * primitives, never the reverse.
  *
  * MOR-1238: the theme path really lives at components-v2/theme/
- * (tokens.css, themes/*, fonts*, theme-switcher.ts), so the ban narrows to
- * every OTHER components-v2 subpath and lets the theme subtree through —
- * including the renamed themes/ -> theme/ (MOR-10xx) and both alias and
- * relative spellings. No sibling exception: panels/layout/display/meters/
- * vfo/controls/wiring stay banned.
+ * (tokens.css, themes/*, fonts*, theme-switcher.ts), so the ban covers
+ * every components-v2 path EXCEPT the theme/ subtree — a single `regex`
+ * with a theme negative-lookahead, so unlisted and future sibling subtrees
+ * fail too (a finite `group` list leaves every omitted name legal). Both
+ * alias and relative spellings match; bare `components-v2` itself is
+ * banned, bare `components-v2/theme` stays allowed.
  */
 const FORBIDDEN_PRIMITIVES_IMPORTS = {
   paths: [...FORBIDDEN_PANEL_IMPORTS.paths, ...FORBIDDEN_RUNTIME_BARREL.paths],
@@ -261,25 +262,14 @@ const FORBIDDEN_PRIMITIVES_IMPORTS = {
         'primitives, never the reverse. See ADR 2026-04-12 ("Primitives" row).',
     },
     {
-      // MOR-1238: ban every components-v2 subtree EXCEPT theme/ (the ADR
-      // "Themes" row). gitignore-style `group` has no inline-negative
-      // alternative, so each non-theme subtree is listed and theme/ is the
-      // documented omission; both alias and relative spellings are covered.
-      // NOTE: a bare `**/components-v2` entry is NOT listed — the same
-      // directory-prefix C1-A trap: it would also match theme/ children.
-      // Any NEW components-v2 subtree is unlisted until added here; review
-      // owns that gap.
-      group: [
-        '**/components-v2/panels/**',
-        '**/components-v2/layout/**',
-        '**/components-v2/display/**',
-        '**/components-v2/meters/**',
-        '**/components-v2/vfo/**',
-        '**/components-v2/controls/**',
-        '**/components-v2/wiring/**',
-        '**/components-v2/dialogs/**',
-        '**/components-v2/skins/**',
-      ],
+      // MOR-1238: allow ONLY components-v2/theme/* (the ADR "Themes" row).
+      // A regex with a theme negative-lookahead, because a finite `group`
+      // list leaves every OMITTED sibling subtree legal — the masking Q2
+      // caught: `stray-module` passed while only `panels` was asserted.
+      // NOTE: a bare `group` `**/components-v2` entry is NOT listed — the
+      // same directory-prefix C1-A trap: it would also match theme/
+      // children. The regex covers the bare segment explicitly instead.
+      regex: '(^|/)components-v2(?!/theme(/|$))',
       message:
         'Primitives must not import components-v2/ outside theme/ — components ' +
         'depend on primitives, never the reverse. Only components-v2/theme/* ' +
@@ -583,9 +573,7 @@ export default [
   // dual-receiver-strips.ts filters RadioViewModels only (import type from
   // semantic/radio-view-model is its sole legal import). wiring/ is the seam
   // that IS allowed to reach the runtime, so no zone covers it — this
-  // file-scoped rule is the purity guard. It supersedes (not stacks with)
-  // the primitives zone: `files` blocks later in flat config replace the
-  // `no-restricted-imports` value entirely for this one file.
+  // file-scoped rule is the sole purity guard for this file.
   {
     files: ['src/components-v2/wiring/dual-receiver-strips.ts'],
     plugins: { '@typescript-eslint': tsPlugin },

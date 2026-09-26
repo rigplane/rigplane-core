@@ -272,12 +272,22 @@ describe('v3 package boundaries (MOR-1061)', () => {
 
   // ── MOR-1238: primitives may consume the real theme path ─────────────
   // The real importable theme subtree is components-v2/theme/* (tokens.css,
-  // themes/*, fonts*, theme-switcher.ts); the ban now narrows to every
-  // OTHER components-v2 subtree so the ADR "Themes" row stays importable.
+  // themes/*, fonts*, theme-switcher.ts); the ban covers every OTHER
+  // components-v2 path so the ADR "Themes" row stays importable.
 
   it('rejects primitives importing a non-theme components-v2 path (panels)', async () => {
     const hits = await restrictedImportHits(
       `import VfoPanel from '../components-v2/panels/VfoPanel.svelte';`,
+      'src/primitives/Knob.ts',
+    );
+    expect(hits).toBeGreaterThan(0);
+  });
+
+  it('rejects primitives importing an UNLISTED components-v2 path (no masking)', async () => {
+    // Regression pin for the review mutation: `../components-v2/stray-module`
+    // passed while only `panels` was asserted. Any non-theme subtree fails.
+    const hits = await restrictedImportHits(
+      `import { stray } from '../components-v2/stray-module';`,
       'src/primitives/Knob.ts',
     );
     expect(hits).toBeGreaterThan(0);
@@ -311,8 +321,9 @@ describe('v3 package boundaries (MOR-1061)', () => {
   // ── MOR-1237 R1: two latent runtime modules missing from the denylist ─
   // `tx-controller/browser-dependencies` (terminal WS PTT delivery) and
   // `resource-host` (presentation-resource lifecycles) both exist on disk
-  // and stay importable from the v3 zones today. `app-authority.ts` was
-  // retired (MOR-2168) and must NOT be named — pin that as resolved.
+  // and were importable from the v3 zones until the denylist pinned them
+  // below. `app-authority.ts` was retired (MOR-2168) and must NOT be
+  // named — pin that as resolved.
 
   it.each([
     ['semantic', 'src/semantic/VfoDisplay.ts'],
