@@ -730,7 +730,6 @@ class ControlPhaseRuntime:
                 except Exception:
                     logger.debug("soft_reconnect: audio teardown failed", exc_info=True)
             await self._connect_once()
-            await self._after_reconnect(audio_runtime, audio_snapshot)
             return
 
         h._conn_state = RadioConnectionState.CONNECTING

@@ -1557,12 +1557,6 @@ class CivRuntime:
         self._soft_recovery_epoch = None
         try:
             await self._host._force_cleanup_civ()
-            if escalate:
-                logger.warning(
-                    "civ-data-watchdog: soft reconnect restored no data, "
-                    "escalating to full reconnect"
-                )
-                await self._host._control_phase.release()
             await self._host.soft_reconnect()
             if not escalate:
                 self._soft_recovery_epoch = self._host._civ_epoch
@@ -1697,7 +1691,6 @@ class CivRuntime:
                 packets = self._shed_scope_backlog(packets)
 
                 self._host._last_civ_data_received = time.monotonic()
-                self._soft_recovery_epoch = None
                 self._host._civ_stream_ready = True
                 self._host._civ_recovering = False
 
