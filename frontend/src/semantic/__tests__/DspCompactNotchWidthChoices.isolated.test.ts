@@ -17,6 +17,9 @@ import DspScalarHostFixture from './fixtures/DspScalarHostFixture.svelte';
 const IC7300_WIDTH_CHOICES = [
   { value: 0, label: 'WIDE' }, { value: 1, label: 'MID' }, { value: 2, label: 'NAR' },
 ] as const;
+const OTHER_WIDTH_CHOICES = [
+  { value: 0, label: 'A' }, { value: 5, label: 'B' }, { value: 9, label: 'C' },
+] as const;
 
 const base = (): RadioViewModel => withDsp(topologyFixtures['1/single']);
 
@@ -55,6 +58,21 @@ describe('compact manual notch width renders profile-derived choices (MOR-1685)'
     nar.click();
     flushSync();
     expect(r.onLevelChange).toHaveBeenCalledExactlyOnceWith('manualNotchWidth', 2);
+    r.dispose();
+  });
+
+  it('renders a non-IC-7300 domain verbatim and dispatches its declared raw value', () => {
+    // A literal `["WIDE","MID","NAR"][i]` hard-code in the host passes the
+    // IC-7300 cases above but fails here: labels must come from the list.
+    const r = render(base(), [...OTHER_WIDTH_CHOICES]);
+    const group = r.width();
+    const buttons = [...group!.querySelectorAll('button')];
+    expect(buttons.map((button) => button.textContent?.trim())).toEqual(['A', 'B', 'C']);
+    expect(group!.textContent).not.toMatch(/WIDE|MID|NAR/);
+    const b = buttons.find((button) => button.textContent?.trim() === 'B')!;
+    b.click();
+    flushSync();
+    expect(r.onLevelChange).toHaveBeenCalledExactlyOnceWith('manualNotchWidth', 5);
     r.dispose();
   });
 
