@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+
+_REAL_SLEEP = asyncio.sleep
 from dataclasses import replace
 import logging
 from pathlib import Path
@@ -1143,7 +1145,7 @@ class _RecordingSleep:
 
     async def __call__(self, delay: float) -> None:
         self.calls.append(delay)
-        await asyncio.sleep(0)
+        await _REAL_SLEEP(0)
 
 
 @pytest.mark.asyncio
