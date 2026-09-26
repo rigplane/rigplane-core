@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Literal, Protocol
+from typing import Any, Final, Literal, Protocol
 
 from rigplane.core.exceptions import BackgroundSendDropped
 from rigplane.core.state_acquisition_policy import (
@@ -409,6 +409,17 @@ _CLASS_RANK: dict[AcquisitionClass, int] = {
     klass: rank for rank, klass in enumerate(AcquisitionClass)
 }
 _MIN_RECONCILIATION_MAX_AGE = 1e-9
+#: MOR-1898: liveness budget for a request whose ``max_age`` is the
+#: freshness epsilon (``_MIN_RECONCILIATION_MAX_AGE`` or below) and that
+#: carries no explicit ``timeout``. Such a
+#: ``max_age`` only says "no prior observation may satisfy this" — it is
+#: a freshness threshold, not a deadline. Deriving the liveness deadline
+#: from it made the request born expired: the first drain sent it, the
+#: next tick reported a terminal ``acquisition_request_timeout`` for an
+#: answer that was merely one drain tick away (MOR-1898). One answer
+#: window, matching the web poller's
+#: ``_ACQUISITION_ANSWER_WINDOW_SECONDS``.
+_EPSILON_MAX_AGE_LIVENESS_SECONDS: Final[float] = 0.5
 # MOR-1490 review R2 (Finding 4): cap the number of never-before-queued paths
 # a single prime_unobserved() call will enqueue. Uncapped, a profile carrying
 # ~20 non-polling field_policies overrides would emit ~20 CI-V frames in one
@@ -863,12 +874,28 @@ class AcquisitionScheduler:
         that has already sent them skips. With it, such a merge is issued
         under a new id instead. It is not carried through the external-CAT
         deferral (:class:`_PendingEnsureFresh`).
+
+        MOR-1898: ``max_age`` is a freshness threshold — how old a confirmed
+        StateStore observation may be — never a liveness deadline on its own.
+        This split applies only to the post-write confirmation shape: a
+        ``max_age`` at the freshness epsilon (the "no prior observation may
+        satisfy this" floor used by post-write confirmations, reconciliation
+        fallbacks and the web poller's post-write readback) *without* an
+        explicit ``timeout``. Only that request keeps a real liveness budget —
+        one answer window — instead of expiring the instant it is queued. Every
+        other request keeps the established deadline: ``requested_at +
+        max_age``, with ``timeout`` still carried for the backend executor.
         """
 
         normalized_paths = _normalize_paths(paths)
         _validate_positive(max_age, label="max_age")
         normalized_priority = AcquisitionPriority(str(priority))
         now = self._clock.now()
+        liveness_deadline = (
+            now + _EPSILON_MAX_AGE_LIVENESS_SECONDS
+            if timeout is None and max_age <= _MIN_RECONCILIATION_MAX_AGE
+            else None
+        )
 
         availability = self._availability_for(normalized_paths)
         if availability is not None:
@@ -890,7 +917,11 @@ class AcquisitionScheduler:
                             reasons=(reason,),
                             timeout=timeout,
                             requested_at_monotonic=now,
-                            deadline_monotonic=now + max_age,
+                            deadline_monotonic=(
+                                now + max_age
+                                if liveness_deadline is None
+                                else liveness_deadline
+                            ),
                             external_cat_owner=self._external_cat_owner,
                         ),
                     )
@@ -904,6 +935,7 @@ class AcquisitionScheduler:
                         timeout=timeout,
                         requested_at=now,
                         external_cat_owner=self._external_cat_owner,
+                        deadline_monotonic=liveness_deadline,
                         require_fresh_dispatch=require_fresh_dispatch,
                     )
                 )
@@ -927,6 +959,7 @@ class AcquisitionScheduler:
             timeout=timeout,
             requested_at=now,
             external_cat_owner=None,
+            deadline_monotonic=liveness_deadline,
             require_fresh_dispatch=require_fresh_dispatch,
         )
         if not queued_requests:

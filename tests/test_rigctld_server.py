@@ -2610,6 +2610,68 @@ class TestStateAcquisitionDrainPolicies:
         assert len(timeouts) == 1
         assert "grace_expired" not in timeouts[0].details
 
+    async def test_a_confirmation_answer_a_drain_tick_later_is_not_a_timeout(
+        self, cfg: RigctldConfig
+    ) -> None:
+        """MOR-1898: an epsilon-``max_age`` confirmation is not born expired.
+
+        A post-write confirmation passes the freshness epsilon as
+        ``max_age`` — "no prior observation may satisfy this" — so the
+        enqueue deadline it produced used to land before the request was
+        even dispatched. The first drain still sent it, but the next tick
+        saw the deadline behind it and reported a terminal
+        ``acquisition_request_timeout`` (``link_healthy=False``) for an
+        answer that was merely one drain tick away.
+        """
+
+        freq = FieldPath.active("main", "freq_mode", "freq_hz")
+        radio = _ProfiledStandaloneRadio(
+            profile=type(
+                "Profile", (), {"state_acquisition": _acquisition_profile(freq)}
+            )()
+        )
+        executor = _SilentAcquisitionExecutor()
+        radio._acquisition_executor = executor
+        radio._state_diagnostics = StateDiagnosticsRecorder(enabled=True)
+
+        fake_now = [1000.0]
+        with patch("time.monotonic", side_effect=lambda: fake_now[0]):
+            srv = RigctldServer(radio, cfg)
+            srv._bootstrap_state_acquisition()
+            scheduler = srv._acquisition_scheduler
+            assert scheduler is not None
+
+            # The exact shape CommandService queues after a write: the
+            # epsilon max_age, a dispatch of its own, no explicit timeout.
+            scheduler.ensure_fresh(
+                (freq,),
+                max_age=1e-9,
+                priority=AcquisitionPriority.COMMAND,
+                reason="post_write:set_freq",
+                require_fresh_dispatch=True,
+            )
+            await srv._drain_state_acquisition_once()
+            assert executor.calls, "nothing was dispatched, so nothing can time out"
+            assert srv._acquisition_in_flight != {}
+
+            # One-two drain ticks later (the drain sleeps 0.05 s), well
+            # inside any sane answer window: the request must still be
+            # live, awaiting its answer.
+            fake_now[0] += 0.1
+            await srv._drain_state_acquisition_once()
+
+        assert srv._acquisition_in_flight != {}, (
+            "the confirmation was dropped — its enqueue deadline was the "
+            "freshness epsilon, so it was born expired"
+        )
+        assert scheduler.diagnostics()["failureCountByReason"] == {}, (
+            "an in-window confirmation recorded a failure — the false "
+            "acquisition_request_timeout of MOR-1898"
+        )
+        assert scheduler.pending_requests(), (
+            "the confirmation left the queue — a false timeout re-based it"
+        )
+
     async def test_external_cat_stand_down_selects_on_reasons_not_on_the_request(
         self, cfg: RigctldConfig
     ) -> None:
