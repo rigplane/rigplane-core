@@ -1144,7 +1144,11 @@ describe('control channel singleton', () => {
         params: Record<string, unknown>;
       };
       const params = { ...command.params };
-      if (command.name === 'set_af_level') delete params.level_unit;
+      // MOR-1676 part A (AF): the caller states the unit — a unit-less
+      // level is no longer a valid intent. The documented vectors carry
+      // the unit explicitly, so state `normalized` here (the test deletes
+      // it only to prove the intent layer re-adds exactly these bytes).
+      if (command.name === 'set_af_level') params.level_unit = 'normalized';
       dispatchRadioIntent({ name: command.name, id: command.id, params } as never);
     }
 

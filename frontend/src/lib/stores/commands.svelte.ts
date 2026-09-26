@@ -254,14 +254,23 @@ const admittedTargetOf = (command: Pick<CommandLifecycle, 'admittedTarget'>): nu
   normalizedLevel(command.admittedTarget);
 
 /** AF level confirms only on a fresh post-ack same-field readback exactly
- *  equal to the server-admitted target. */
+ *  equal to the server-admitted target.
+ *
+ *  MOR-1676 part A (AF): the unit lives in the intent params, so the scope
+ *  accepts both the raw `set_af_level` (`level_unit: 'raw'`) and the legacy
+ *  normalized `set_af_level` (`level_unit: 'normalized'`) — one command
+ *  name, one control, and the server-admitted target is normalized either
+ *  way. */
+const afLevelScope = (command: Pick<CommandLifecycle, 'params'>) => {
+  const receiver = command.params.receiver;
+  const unit = command.params.level_unit;
+  if ((receiver !== undefined && receiver !== 0 && receiver !== 1)
+    || (unit !== undefined && unit !== 'raw' && unit !== 'normalized')) return null;
+  return Object.freeze({ control: 'af-level', receiver: receiver === 1 ? 1 : 0 });
+};
 export const AF_LEVEL_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
   intentName: 'set_af_level', repeatPolicy: 'latest-target-wins',
-  scope: (command: Pick<CommandLifecycle, 'params'>) => {
-    const receiver = command.params.receiver;
-    return receiver === undefined || receiver === 0 || receiver === 1
-      ? Object.freeze({ control: 'af-level', receiver: receiver === 1 ? 1 : 0 }) : null;
-  },
+  scope: afLevelScope,
   fieldPath: (scope: ControlFeedbackScope) =>
     scope.receiver === 1 ? 'sub.afLevel' : 'main.afLevel',
   target: admittedTargetOf,

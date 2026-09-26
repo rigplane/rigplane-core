@@ -79,18 +79,25 @@ describe('typed non-PTT radio intents', () => {
     const { createDefaultLocalExtensionHostApi } = await import('$lib/local-extensions/host-api');
     const api = createDefaultLocalExtensionHostApi();
     const examples = [
-      ['set_freq', { freq: 14_074_000, receiver: 0 }],
-      ['set_mode', { mode: 'CW', receiver: 1 }],
-      ['set_af_level', { level: 0.5, receiver: 0 }],
-      ['vfo_swap', {}],
+      ['set_freq', { freq: 14_074_000, receiver: 0 }, { freq: 14_074_000, receiver: 0 }],
+      ['set_mode', { mode: 'CW', receiver: 1 }, { mode: 'CW', receiver: 1 }],
+      // MOR-1676 part A (AF): the caller states the unit in the intent
+      // params. A float is always the legacy normalized level (tagged);
+      // `level_unit: 'raw'` states a raw integer (stripped before
+      // `sendCommand`). The number alone never decides (`1.0 === 1`).
+      // Each entry is [name, intentParams, wireParams]. The host API
+      // passes intent params through `dispatchThroughIntentFacade`, so a
+      // unit-less AF level is malformed there — extensions must state it.
+      ['set_af_level', { level: 0.5, receiver: 0, level_unit: 'normalized' },
+        { level: 0.5, receiver: 0, level_unit: 'normalized' }],
+      ['set_af_level', { level: 128, receiver: 0, level_unit: 'raw' },
+        { level: 128, receiver: 0 }],
+      ['vfo_swap', {}, {}],
     ] as const;
-    for (const [name, params] of examples) {
+    for (const [name, params, wireParams] of examples) {
       for (const accepted of [false, true, false]) {
         harness.sendCommand.mockClear().mockReturnValue(accepted);
         expect(api[method](name, params)).toBe(accepted);
-        const wireParams = name === 'set_af_level'
-          ? { ...params, level_unit: 'normalized' }
-          : params;
         expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith(name, wireParams, expect.any(String));
         expect(lifecycle.getCommandLifecycles().at(-1)).toMatchObject({ name, params, status: 'pending' });
       }
@@ -191,7 +198,7 @@ describe('typed non-PTT radio intents', () => {
   });
 
   it('stores the admitted target from a response-ok delivery', () => {
-    intents.dispatchRadioIntent({ id: 'af-admit', name: 'set_af_level', params: { level: 0.5, receiver: 0 } });
+    intents.dispatchRadioIntent({ id: 'af-admit', name: 'set_af_level', params: { level: 0.5, receiver: 0, level_unit: 'normalized' } });
     harness.delivery?.({
       commandId: 'af-admit', kind: 'response-ok', originalEpoch: 7, eventEpoch: 7,
       admittedLevel: 128 / 255,
@@ -203,7 +210,7 @@ describe('typed non-PTT radio intents', () => {
   });
 
   it('stores the admitted target even when the ack frame arrived first', () => {
-    intents.dispatchRadioIntent({ id: 'af-ack-first', name: 'set_af_level', params: { level: 0.5, receiver: 0 } });
+    intents.dispatchRadioIntent({ id: 'af-ack-first', name: 'set_af_level', params: { level: 0.5, receiver: 0, level_unit: 'normalized' } });
     harness.delivery?.({ commandId: 'af-ack-first', kind: 'ack', originalEpoch: 7, eventEpoch: 7 });
     harness.delivery?.({
       commandId: 'af-ack-first', kind: 'response-ok', originalEpoch: 7, eventEpoch: 7,
@@ -215,7 +222,7 @@ describe('typed non-PTT radio intents', () => {
   });
 
   it('keeps an honest awaiting record when the response carries no admitted level', () => {
-    intents.dispatchRadioIntent({ id: 'af-old', name: 'set_af_level', params: { level: 0.5, receiver: 0 } });
+    intents.dispatchRadioIntent({ id: 'af-old', name: 'set_af_level', params: { level: 0.5, receiver: 0, level_unit: 'normalized' } });
     harness.delivery?.({ commandId: 'af-old', kind: 'response-ok', originalEpoch: 7, eventEpoch: 7 });
     const record = lifecycle.getCommandLifecycle('af-old', 7);
     expect(record).toMatchObject({ status: 'acknowledged' });
@@ -401,7 +408,18 @@ describe('typed non-PTT radio intents', () => {
       { name: 'set_monitor_mute', params: { on: true, receiver: 0 } },
       { name: 'set_af_level', params: { level: -0.01, receiver: 0 } },
       { name: 'set_af_level', params: { level: 1.01, receiver: 0 } },
+      // MOR-1676 part A (AF): the caller states the unit, and only the
+      // stated shape passes. A unit-less level must be normalized 0.0..1.0,
+      // so a unit-less int outside it fails — even `10`, which would be a
+      // valid raw level WITH the unit. A `'raw'` unit takes only an integer
+      // in the published raw range.
       { name: 'set_af_level', params: { level: 10, receiver: 0 } },
+      { name: 'set_af_level', params: { level: 0.5, receiver: 0, level_unit: 'raw' } },
+      { name: 'set_af_level', params: { level: 1.5, receiver: 0, level_unit: 'raw' } },
+      { name: 'set_af_level', params: { level: 256, receiver: 0, level_unit: 'raw' } },
+      { name: 'set_af_level', params: { level: -1, receiver: 0, level_unit: 'raw' } },
+      { name: 'set_af_level', params: { level: 10, receiver: 0, level_unit: 'normalized' } },
+      { name: 'set_af_level', params: { level: 10, receiver: 0, level_unit: 'percent' } },
       { name: 'set_af_level', params: { level: '0.5', receiver: 0 } },
       { name: 'set_af_level', params: { level: 10, receiver: 7 } },
       { name: 'set_af_level', params: { level: 10, receiver: '0' } },
@@ -424,9 +442,16 @@ describe('typed non-PTT radio intents', () => {
   });
 
   it('accepts exact normalized AF boundaries and fractions without weakening integer fields', () => {
-    const levels = [0, 1, 50 / 255] as const;
+    // MOR-1676 part A (AF): the legacy normalized path states its unit
+    // (`level_unit: 'normalized'`) and is ALWAYS sent tagged — whether the
+    // value is 0, 1 or a fraction. `1.0 === 1` in JS, so the number alone
+    // must never decide the unit: a normalized 1.0 sent untagged would
+    // reach the server as raw 1 (near silence).
+    const levels = [0, 1, 0.5, 50 / 255] as const;
     levels.forEach((level, index) => intents.dispatchRadioIntent({
-      id: `af-normalized-${index}`, name: 'set_af_level', params: { level, receiver: 0 },
+      id: `af-normalized-${index}`,
+      name: 'set_af_level',
+      params: { level, receiver: 0, level_unit: 'normalized' },
     }));
 
     levels.forEach((level, index) => expect(harness.sendCommand).toHaveBeenNthCalledWith(
@@ -438,6 +463,28 @@ describe('typed non-PTT radio intents', () => {
     expect(() => intents.dispatchRadioIntent({
       name: 'set_nr_level', params: { level: 0.42, receiver: 0 },
     } as never)).toThrow(TypeError);
+  });
+
+  it('MOR-1676 part A (AF): a raw AF intent states its unit and goes out stripped', () => {
+    // The radio-AF path carries `level_unit: 'raw'` in the intent params; the
+    // intent layer validates the raw integer and STRIPS the unit before
+    // `sendCommand` — the server rejects any `level_unit` other than
+    // `'normalized'`, so a leaked `'raw'` would fail the command.
+    for (const [id, level] of [['af-raw-0', 0], ['af-raw-1', 1], ['af-raw-50', 50], ['af-raw-255', 255]] as const) {
+      intents.dispatchRadioIntent({
+        id, name: 'set_af_level', params: { level, receiver: 0, level_unit: 'raw' },
+      });
+    }
+
+    expect(harness.sendCommand.mock.calls).toEqual([
+      ['set_af_level', { level: 0, receiver: 0 }, 'af-raw-0'],
+      ['set_af_level', { level: 1, receiver: 0 }, 'af-raw-1'],
+      ['set_af_level', { level: 50, receiver: 0 }, 'af-raw-50'],
+      ['set_af_level', { level: 255, receiver: 0 }, 'af-raw-255'],
+    ]);
+    for (const [, wireParams] of harness.sendCommand.mock.calls) {
+      expect(wireParams).not.toHaveProperty('level_unit');
+    }
   });
 
   it('admits tagged normalized RF while preserving untagged finite RF levels', () => {
@@ -485,7 +532,8 @@ describe('typed non-PTT radio intents', () => {
       { name: 'set_monitor_mute', params: { on: true } },
       { name: 'set_nb', params: { on: false, receiver: 0 } },
       { name: 'set_mic_gain', params: { level: 10 } },
-      { name: 'set_af_level', params: { level: 50 / 255, receiver: 1 } },
+      { name: 'set_af_level', params: { level: 50 / 255, receiver: 1, level_unit: 'normalized' } },
+      { name: 'set_af_level', params: { level: 50, receiver: 1, level_unit: 'raw' } },
       { name: 'set_cw_pitch', params: { value: 10 } },
       { name: 'set_pbt_inner', params: { value: 10, receiver: 0 } },
       { name: 'set_data_mode', params: { mode: 1, receiver: 1 } },

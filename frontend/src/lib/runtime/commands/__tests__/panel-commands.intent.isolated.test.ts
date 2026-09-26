@@ -453,6 +453,9 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     // MUTE is one server command, never a client-side AF zero-write; the
     // fixture state carries no `monitorMute.on`, so leaving MUTE restores
     // nothing — a client that never muted must not unmute stale levels.
+    // MOR-1676 part A (AF): the unit-less call is the legacy normalized
+    // float — the separate `set_af_level_normalized` intent, always sent
+    // tagged `level_unit: 'normalized'`.
     expect(exactCalls()).toEqual([
       ['set_monitor_mute', { on: true }],
       ['set_af_level', { level: 0.42, receiver: 0, level_unit: 'normalized' }],
@@ -508,7 +511,99 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(getCommandLifecycles()).toHaveLength(0);
   });
 
-  it('accepts exact normalized AF endpoints unchanged on radio and browser-local paths', () => {
+  it('MOR-1676 part A (AF): the radio-AF path dispatches the raw integer, untagged on the wire', () => {
+    // Owner decision 2026-09-26 (option A): the radio-AF slider steps on
+    // the raw 0..255 lattice, so a step and its reverse restore the exact
+    // raw value; the public API and the state snapshot do not change. The
+    // radio-AF intent states `level_unit: 'raw'`, which the intent layer
+    // STRIPS before `sendCommand` — the wire form is a raw int with NO
+    // `level_unit` key (the server rejects any other unit). This test pins
+    // the radio-AF dispatch at 100 %: the integer 255, untagged.
+    //
+    // The unit is explicit because JS cannot dispatch on JSON type
+    // (`1.0 === 1`): a unit-less call is the legacy normalized float
+    // (v2 panels), converted through the declared raw domain and ALWAYS
+    // sent tagged `level_unit: 'normalized'` — including `1` (100 %) to
+    // 255, which must never go out untagged (the server would read it as
+    // raw 1, near silence).
+    h.caps = {
+      ...h.caps!,
+      controls: {
+        ...(h.caps!.controls as Record<string, unknown>),
+        af_level: { raw_min: 0, raw_max: 255 },
+      },
+    };
+    const rxAudio = makeRxAudioHandlers();
+    rxAudio.onAfLevelChange(255, 'raw');
+    rxAudio.onAfLevelChange(0, 'raw');
+    rxAudio.onAfLevelChange(50, 'raw');
+    rxAudio.onAfLevelChange(1);
+    rxAudio.onAfLevelChange(0.5);
+
+    expect(exactCalls()).toEqual([
+      ['set_af_level', { level: 255, receiver: 0 }],
+      ['set_af_level', { level: 0, receiver: 0 }],
+      ['set_af_level', { level: 50, receiver: 0 }],
+      ['set_af_level', { level: 1, receiver: 0, level_unit: 'normalized' }],
+      ['set_af_level', { level: 0.5, receiver: 0, level_unit: 'normalized' }],
+    ]);
+    for (const [name, params] of exactCalls()) {
+      if (name === 'set_af_level' && params.level !== 1 && params.level !== 0.5) {
+        expect(Number.isInteger(params.level)).toBe(true);
+        expect(params).not.toHaveProperty('level_unit');
+      }
+    }
+    expectIntentTransport();
+  });
+
+  it('MOR-1676 part A (AF): the radio-AF path restores the exact raw value after a reversible keyboard step', () => {
+    // Exhaustive invariant for R in 0..255 (including 0, 1, 127, 128, 254,
+    // 255): normalized reading R/255 → one step up dispatches
+    // min(255, R+13), clamped at the top rail; one step down dispatches
+    // max(0, up-13). Away from the rails (R ≤ 242) up then down restores
+    // the SAME raw value R — the required reversibility. At the top rail
+    // the up-step saturates (243..255 → 255), so the down-step lands on
+    // 242: clamping discards information by definition, and the test pins
+    // that honest saturation instead of claiming restoration there. The
+    // keyboard handler steps by round(0.05 * raw_max) raw units and
+    // dispatches the raw int with the explicit `'raw'` unit.
+    h.caps = {
+      ...h.caps!,
+      controls: {
+        ...(h.caps!.controls as Record<string, unknown>),
+        af_level: { raw_min: 0, raw_max: 255 },
+      },
+    };
+    const step = Math.round(0.05 * 255);
+    for (let raw = 0; raw <= 255; raw += 1) {
+      h.state = state();
+      (h.state!.main as { afLevel: number }).afLevel = raw / 255;
+      h.sendCommand.mockClear();
+      resetCommandLifecycle();
+      expect(dispatchKeyboardRadioAction({ action: 'adjust_af_level', params: { direction: 'up' } })).toBe(true);
+      const up = Math.min(255, raw + step);
+      expect(exactCalls()).toEqual([['set_af_level', { level: up, receiver: 0 }]]);
+      (h.state!.main as { afLevel: number }).afLevel = up / 255;
+      h.sendCommand.mockClear();
+      resetCommandLifecycle();
+      expect(dispatchKeyboardRadioAction({ action: 'adjust_af_level', params: { direction: 'down' } })).toBe(true);
+      expect(exactCalls()).toEqual([['set_af_level', { level: Math.max(0, up - step), receiver: 0 }]]);
+    }
+  });
+
+  it('dispatches normalized AF endpoints tagged on the legacy path and keeps normalized browser-local endpoints', () => {
+    // MOR-1676 part A (AF): unit-less calls are the legacy normalized path
+    // (`set_af_level_normalized`), ALWAYS sent tagged `level_unit:
+    // 'normalized'` — including the 0 and 1 endpoints, which JS cannot
+    // distinguish from raw ints. The browser-volume branch keeps its
+    // normalized behaviour (`setRxVolume`/`setVolume`, no radio command).
+    h.caps = {
+      ...h.caps!,
+      controls: {
+        ...(h.caps!.controls as Record<string, unknown>),
+        af_level: { raw_min: 0, raw_max: 255 },
+      },
+    };
     const rxAudio = makeRxAudioHandlers();
     rxAudio.onAfLevelChange(0);
     rxAudio.onAfLevelChange(1);
@@ -864,6 +959,10 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       ['set_preamp', { level: 1, receiver: 0 }],
       ['set_agc', { mode: 2, receiver: 0 }],
       ['set_nb', { on: true, receiver: 0 }],
+      // MOR-1676 part A (AF): unit-less `0.5` is the legacy normalized path
+      // (`set_af_level_normalized`), always sent tagged — even though caps
+      // here declare no `controls.af_level` (the readback conversion is a
+      // separate concern from the intent name).
       ['set_af_level', { level: 0.5, receiver: 0, level_unit: 'normalized' }],
       ['set_band', { band: 5 }],
       ['set_rit_status', { on: true }],
@@ -1699,7 +1798,10 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       ['set_rit_status', { on: true }],
       ['set_rit_tx_status', { on: false }],
       ['set_rit_frequency', { freq: 0 }],
-      ['set_af_level', { level: 50 / 255 + 0.05, receiver: 0, level_unit: 'normalized' }],
+      // MOR-1676 part A (AF): the `direction` fallback steps by
+      // `round(0.05 * 255) === 13` raw units from the confirmed raw 50, and
+      // dispatches the raw integer untagged.
+      ['set_af_level', { level: 63, receiver: 0 }],
       ['set_rf_gain', { level: Math.round((128 / 255 - 0.05) * 255), receiver: 0 }],
       ['set_monitor', { on: true }], ['set_split', { on: true }],
       ['vfo_swap', {}], ['vfo_equalize', {}],
@@ -1851,7 +1953,9 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(dispatchKeyboardRadioAction({ action: 'adjust_af_level', params: { direction: 'up' } })).toBe(true);
     expect(dispatchKeyboardRadioAction({ action: 'adjust_rf_gain', params: { direction: 'down' } })).toBe(true);
     expect(exactCalls()).toEqual([
-      ['set_af_level', { level: 1, receiver: 0, level_unit: 'normalized' }],
+      // MOR-1676 part A (AF): `0.98` normalized is raw `round(0.98 * 255)`,
+      // clamped at the raw top 255, dispatched as the untagged integer.
+      ['set_af_level', { level: 255, receiver: 0 }],
       ['set_rf_gain', { level: 0, receiver: 0 }],
     ]);
     expectIntentTransport();
@@ -1861,6 +1965,9 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     h.rxEnabled = true;
     (h.state!.main as { afLevel: number }).afLevel = 0.02;
     expect(dispatchKeyboardRadioAction({ action: 'adjust_af_level', params: { direction: 'down' } })).toBe(true);
+    // MOR-1676 part A (AF): the browser-volume branch is unchanged — the
+    // radio target's raw step (`round(0.02 * 255) - 13`, clamped at 0)
+    // converts back through the same lattice to normalized 0.
     expect(h.setRxVolume).toHaveBeenCalledWith(0);
     expect(h.setVolume).toHaveBeenCalledWith(0);
     expect(h.sendCommand).not.toHaveBeenCalled();

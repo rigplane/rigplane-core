@@ -35,7 +35,7 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
-import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
+import { clearCapabilities, getCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 
 
 const h = vi.hoisted(() => ({
@@ -140,8 +140,11 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
     get controlSession() { return { state: 'connected' as const, epoch: 1 }; },
     subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
       h.authoritySubscribers.add(handler);
+      // The host snapshots this publication on subscribe and derives the
+      // knob lattice from it — deliver the CURRENT `h.caps` (the store
+      // holds the same object after `setCapabilities`), not a stale one.
       handler({
-        state: h.state, caps: h.caps, session: { state: 'connected', epoch: 1 },
+        state: h.state, caps: getCapabilities() ?? h.caps, session: { state: 'connected', epoch: 1 },
         rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
       });
       return () => { h.authoritySubscribers.delete(handler); };
@@ -262,6 +265,10 @@ const liveCaps = (tags: readonly string[]): Capabilities => ({
   scopeSource: null, audioFftAvailable: false,
   stateContractVersion: 1,
   providerGeneration: 1,
+  // MOR-1676 part A (AF): the dual-receiver radio publishes the control's
+  // declared raw domain, so the radio-AF knobs move on the raw integer
+  // lattice (one step = one raw unit) instead of the normalized lattice.
+  controls: { af_level: { raw_min: 0, raw_max: 255 } },
 } as unknown as Capabilities);
 
 const AUDIO_TAGS = [
@@ -467,6 +474,7 @@ describe('v2.11.1 monitor and dual-routing behavior in the Standard composition'
   ] as const)('renders an unread AF level as the literal empty string in %s', (_label, row, key, makeCaps) => {
     h.audio = { muted: false, rxEnabled: false, volume: 42 };
     h.caps = makeCaps();
+    expect(setCapabilities(h.caps as Capabilities)).toBe(true);
     const state = liveState();
     state.fieldStatus = {
       ...state.fieldStatus,
@@ -1086,7 +1094,9 @@ describe('the AF control consumes the admitted-target lane (MOR-1687 F2)', () =>
     pushAfState(3, 128 / 255, key);
     expect(getCommandLifecycles()[0]?.status).toBe('confirmed');
     expect(knob(row)!.dataset.commandPhase).toBe('confirmed');
-    expect(Number(knob(row)!.getAttribute('aria-valuenow'))).toBeCloseTo(128 / 255, 10);
+    // MOR-1676 part A (AF): the knob moves on the published raw lattice —
+    // the admitted 128/255 reads as the raw integer 128.
+    expect(Number(knob(row)!.getAttribute('aria-valuenow'))).toBe(128);
   });
 
   it.each(LANES)('%s stays idle without an admitted target and keeps showing the readback', (
@@ -1103,7 +1113,9 @@ describe('the AF control consumes the admitted-target lane (MOR-1687 F2)', () =>
     pushAfState(2, 0.31, key);
     expect(knob(row)!.dataset.commandPhase).toBe('idle');
     expect(getCommandLifecycles()[0]?.status).toBe('acknowledged');
-    expect(Number(knob(row)!.getAttribute('aria-valuenow'))).toBeCloseTo(0.31, 10);
+    // MOR-1676 part A (AF): the knob moves on the published raw lattice —
+    // the 0.31 readback reads as the raw integer round(0.31 * 255) = 79.
+    expect(Number(knob(row)!.getAttribute('aria-valuenow'))).toBe(79);
   });
 });
 
@@ -1120,6 +1132,11 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
       ...state, stateContractVersion: 1, sub: { ...state.sub!, afLevel: 0.77 },
       fieldStatus: { ...state.fieldStatus, 'main.afLevel': observedAt(1), 'sub.afLevel': observedAt(1) },
     } as ServerState;
+    // The mounted wiring reads caps through the real capabilities store
+    // (not the `h.caps` seam), so re-seed the store after every swap —
+    // `beforeEach` seeds only the initial `liveCaps`.
+    h.caps = liveCaps(AUDIO_TAGS);
+    expect(setCapabilities(h.caps as Capabilities)).toBe(true);
   }
   function select(active: 'MAIN' | 'SUB'): void {
     h.state = { ...(h.state as ServerState), active };
@@ -1137,10 +1154,15 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
       row.querySelector('[role="slider"]')?.getAttribute('aria-valuenow'),
     ]);
   const afCalls = () => vi.mocked(sendCommand).mock.calls
-    .filter(([name]) => name === 'set_af_level').map(([, params]) => params);
+    .filter(([name]) => name === 'set_af_level' || name === 'set_af_level_normalized')
+    .map(([name, params]) => ({ name, ...params }));
   const BOTH = [
-    ['rx-audio-af-main', 'AF MAIN', '31%', 'AF MAIN', '0.31'],
-    ['rx-audio-af-sub', 'AF SUB', '77%', 'AF SUB', '0.77'],
+    // MOR-1676 part A (AF): the knobs move on the published raw lattice
+    // (0..255 on the live caps), so the rendered canonical values are raw
+    // integers — round(0.31 * 255) = 79, round(0.77 * 255) = 196 — while
+    // the text readout stays a percentage.
+    ['rx-audio-af-main', 'AF MAIN', '31%', 'AF MAIN', '79'],
+    ['rx-audio-af-sub', 'AF SUB', '77%', 'AF SUB', '196'],
   ];
 
   it.each(['desktop-v2', 'sdr-test'] as const)(
@@ -1154,20 +1176,43 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
     },
   );
 
+  // MOR-1676 part A (AF): on the radio target the knob moves on the raw
+  // integer lattice published by `controls.af_level` (0..255 on the live
+  // caps). The MAIN knob reads 0.31 → raw round(0.31 * 255) = 79, one step
+  // up is 80; the SUB knob reads 0.77 → raw round(0.77 * 255) = 196, one
+  // step up is 197. The intent carries the explicit `level_unit: 'raw'`.
+  // NOTE: this wiring test mocks `dispatchRadioIntent` to forward intent
+  // params STRAIGHT to `sendCommand` — no intent layer, no stripping — so
+  // the received frame keeps `level_unit: 'raw'`. On the real wire the
+  // intent layer strips it (see the radio-intents pins).
   it.each([
-    ['MAIN', 'sub', 1, 0.78],
-    ['SUB', 'main', 0, 0.32],
+    ['MAIN', 'sub', 1, 197],
+    ['SUB', 'main', 0, 80],
   ] as const)('with %s selected, a step on the %s knob sets that receiver\'s AF', (active, receiver, index, level) => {
     radioAf(active);
     renderHostedFace('desktop-v2');
+    // The mounted wiring reads caps through the real capabilities store
+    // (not the `h.caps` seam), so re-seed the store after every swap —
+    // `beforeEach` seeds only the initial `liveCaps`. Publish the authority
+    // AFTER the mount (not here): the host subscribes on mount, and only a
+    // post-mount publication reaches its `published` snapshot. Then assert
+    // the knob sits on the raw lattice before stepping.
+    publishAuthority();
+    flushSync();
+    expect(knob(receiver)!.getAttribute('aria-valuemax')).toBe('255');
     knob(receiver)!.dispatchEvent(new KeyboardEvent(
       'keydown', { key: 'ArrowRight', bubbles: true, cancelable: true },
     ));
     flushSync();
-    expect(afCalls()).toEqual([{ level: expect.closeTo(level, 10), receiver: index }]);
+    expect(afCalls()).toEqual([{ name: 'set_af_level', level, receiver: index, level_unit: 'raw' }]);
   });
 
   it('keeps a drag on the SUB knob alive across a MAIN-to-SUB selection change', () => {
+    // MOR-1676 part A (AF): the drag moves on the raw integer lattice
+    // (0..255 on the live caps). clientX 90 of 100 → raw round(90/100 *
+    // 255) = round(229.5) = 230 with the explicit `level_unit: 'raw'`
+    // (kept here — this test's `dispatchRadioIntent` mock forwards intent
+    // params straight to `sendCommand` with no stripping).
     radioAf();
     render();
     const slider = knob('sub')!;
@@ -1184,8 +1229,8 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
     slider.dispatchEvent(new PointerEvent('pointermove', { pointerId: 9, clientX: 90, bubbles: true }));
     slider.dispatchEvent(new PointerEvent('pointerup', { pointerId: 9, bubbles: true }));
     flushSync();
-    expect(afCalls().at(-1)).toEqual({ level: expect.closeTo(0.9, 10), receiver: 1 });
-    expect(afCalls().every((params) => (params as { receiver: number }).receiver === 1)).toBe(true);
+    expect(afCalls().at(-1)).toEqual({ name: 'set_af_level', level: 230, receiver: 1, level_unit: 'raw' });
+    expect(afCalls().every((params) => (params as unknown as { receiver: number }).receiver === 1)).toBe(true);
   });
 
   it.each([['MAIN', 'main'], ['SUB', 'sub']] as const)(
@@ -1215,11 +1260,13 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
 
   // IC-9700 shape: `sub.afLevel` is observed and available, but the radio
   // admits no SUB AF write, so the server does not serve `af_level_sub`.
+  // The single AF LEVEL row still moves on the published raw lattice
+  // (MOR-1676 part A): round(0.31 * 255) = 79.
   it('draws the one AF LEVEL row without af_level_sub, even with sub.afLevel observed', () => {
     radioAf();
     h.caps = liveCaps(AUDIO_TAGS.filter((tag) => tag !== 'af_level_sub'));
     renderHostedFace('desktop-v2');
-    expect(rows()).toEqual([['rx-audio-af', 'AF LEVEL', '31%', 'AF', '0.31']]);
+    expect(rows()).toEqual([['rx-audio-af', 'AF LEVEL', '31%', 'AF', '79']]);
     expect(el('af-sub')).toBeNull();
   });
 

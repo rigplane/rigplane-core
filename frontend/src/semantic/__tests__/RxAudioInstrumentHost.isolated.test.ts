@@ -69,6 +69,15 @@ function capabilities(receivers = 2, generation = 1, scheme?: VfoScheme): Capabi
   } as Capabilities;
 }
 
+/** MOR-1676 part A (AF): capabilities that publish the control's declared
+ *  raw domain — the radio-AF slider then moves on the raw integer lattice. */
+function capabilitiesWithAfRaw(receivers = 2, generation = 1, scheme?: VfoScheme): Capabilities {
+  return {
+    ...capabilities(receivers, generation, scheme),
+    controls: { af_level: { raw_min: 0, raw_max: 255 } },
+  } as Capabilities;
+}
+
 const observed = () => ({
   observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 1,
 });
@@ -98,15 +107,18 @@ function publication(options: {
   receivers?: number; generation?: number; capsGeneration?: number;
   active?: 'MAIN' | 'SUB'; activeKnown?: boolean; scheme?: VfoScheme;
   session?: Publication['session']['state']; epoch?: number; muted?: boolean; rxEnabled?: boolean;
-  nullState?: boolean;
+  nullState?: boolean; afRaw?: boolean;
 } = {}): Publication {
   const receivers = options.receivers ?? 2;
   const generation = options.generation ?? 1;
+  const caps = options.afRaw
+    ? capabilitiesWithAfRaw(receivers, options.capsGeneration ?? generation, options.scheme)
+    : capabilities(receivers, options.capsGeneration ?? generation, options.scheme);
   return {
     state: options.nullState ? null : state({
       receivers, generation, active: options.active, activeKnown: options.activeKnown,
     }),
-    caps: capabilities(receivers, options.capsGeneration ?? generation, options.scheme),
+    caps,
     session: { state: options.session ?? 'connected', epoch: options.epoch ?? 1 },
     rxAudioTarget: { muted: options.muted ?? false, rxEnabled: options.rxEnabled ?? false },
   };
@@ -358,6 +370,165 @@ describe('RxAudioInstrumentHost per-receiver AF knobs (MOR-2579)', () => {
   });
 });
 
+/* MOR-1676 part A (AF) — the radio-AF slider steps in the radio's own raw
+ * units, so a step and its reverse restore the exact raw value.
+ *
+ * Inside, the radio-AF slider moves on the raw integer lattice published by
+ * `controls.af_level` (one step = one raw unit); on screen it still shows a
+ * percentage; the public API and the state snapshot do not change. The
+ * browser-volume branch keeps its normalized behaviour, and a radio that
+ * publishes no `controls.af_level` keeps today's normalized lattice — every
+ * pre-existing test in this file runs exactly that fallback (their caps
+ * declare no `controls`), so they pin it without a new test. */
+describe('RxAudioInstrumentHost radio-AF raw steps (MOR-1676)', () => {
+  function renderRaw(initialAudio = audio(0.2)) {
+    const initial = publication({ afRaw: true });
+    const publisher = new Publisher(initial);
+    const onAfLevelChange = vi.fn<(value: number) => void>();
+    const props = proxy<Props>({
+      publication: initial, rxAudio: initialAudio,
+      subscribeControlAuthority: publisher.subscribe,
+      layout: 'grouped', onAfLevelChange,
+    });
+    const component = mount(Fixture, { target, props }); components.push(component); flushSync();
+    const slider = () => target.querySelector<RendererNode>('[data-external-scalar-renderer]')!;
+    const setReading = (normalized: number) => {
+      props.rxAudio = audio(normalized); publisher.emit(props.publication); flushSync();
+    };
+    const dispose = () => {
+      unmount(component); components = components.filter((item) => item !== component);
+    };
+    return { onAfLevelChange, slider, setReading, dispose };
+  }
+
+  it('reads the normalized readback as the exact raw value on the raw lattice', () => {
+    const r = renderRaw(audio(1));
+    expect(r.slider().rendererLease.view.canonical).toBe(255);
+    r.setReading(0);
+    expect(r.slider().rendererLease.view.canonical).toBe(0);
+    r.setReading(1 / 255);
+    expect(r.slider().rendererLease.view.canonical).toBe(1);
+    r.setReading(127 / 255);
+    expect(r.slider().rendererLease.view.canonical).toBe(127);
+    r.setReading(128 / 255);
+    expect(r.slider().rendererLease.view.canonical).toBe(128);
+    r.setReading(254 / 255);
+    expect(r.slider().rendererLease.view.canonical).toBe(254);
+    r.dispose();
+  });
+
+  // Each raw value gets a FRESH mount per step in its OWN host element: the
+  // scenario under test is "the radio confirmed R, the operator steps
+  // once" — no accumulated gesture or DOM state carries across scenarios.
+  function renderRawAt(normalized: number) {
+    const host = document.createElement('div');
+    target.appendChild(host);
+    const initial = publication({ afRaw: true });
+    const publisher = new Publisher(initial);
+    const onAfLevelChange = vi.fn<(value: number) => void>();
+    const props = proxy<Props>({
+      publication: initial, rxAudio: audio(normalized),
+      subscribeControlAuthority: publisher.subscribe,
+      layout: 'grouped', onAfLevelChange,
+    });
+    const component = mount(Fixture, { target: host, props });
+    components.push(component);
+    flushSync();
+    const slider = () => host.querySelector<RendererNode>('[data-external-scalar-renderer]')!;
+    const dispose = () => {
+      unmount(component);
+      components = components.filter((item) => item !== component);
+      host.remove();
+    };
+    return { onAfLevelChange, slider, dispose };
+  }
+  // Exhaustive over 0..253 in four per-`it` chunks: each raw value is an
+  // independent "the radio confirmed R, the operator steps once" scenario
+  // with a fresh mount in its own host element. Raw 254/255 ride dedicated
+  // single-mount tests below (the top-of-range pin alongside them).
+  const RAW_CHUNKS = [[0, 63], [64, 127], [128, 191], [192, 253]] as const;
+  it.each(RAW_CHUNKS)('restores the exact raw value after a reversible keyboard step, raw %i..%i', (lo, hi) => {
+    for (let raw = lo; raw <= hi; raw += 1) {
+      const up = Math.min(255, raw + 1);
+      const stepped = renderRawAt(raw / 255);
+      expect(stepped.slider().rendererLease.view.canonical).toBe(raw);
+      expect(stepped.slider().rendererLease.key({ key: 'ArrowRight', fine: false })).toBe(true);
+      expect(stepped.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(up, 'raw');
+      expect(Number.isInteger(stepped.onAfLevelChange.mock.calls[0][0])).toBe(true);
+      stepped.dispose();
+      // The radio confirms the stepped raw value; the reverse step restores.
+      const restored = renderRawAt(up / 255);
+      expect(restored.slider().rendererLease.key({ key: 'ArrowLeft', fine: false })).toBe(true);
+      expect(restored.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(raw, 'raw');
+      restored.dispose();
+    }
+  });
+
+  it.each(RAW_CHUNKS)('restores the exact raw value after a reversible pointer step, raw %i..%i', (lo, hi) => {
+    for (let raw = lo; raw <= hi; raw += 1) {
+      const up = Math.min(255, raw + 1);
+      const stepped = renderRawAt(raw / 255);
+      const lease = stepped.slider().rendererLease;
+      const token = lease.beginPointer();
+      expect(token).not.toBeNull();
+      lease.pointer(token!, up); lease.endPointer(token!);
+      expect(stepped.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(up, 'raw');
+      expect(Number.isInteger(stepped.onAfLevelChange.mock.calls[0][0])).toBe(true);
+      stepped.dispose();
+      const restored = renderRawAt(up / 255);
+      const downLease = restored.slider().rendererLease;
+      const down = downLease.beginPointer();
+      expect(down).not.toBeNull();
+      downLease.pointer(down!, raw);
+      downLease.endPointer(down!);
+      expect(restored.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(raw, 'raw');
+      restored.dispose();
+    }
+  });
+
+  it('dispatches the integer 255 at the top of the range', () => {
+    const r = renderRaw(audio(254 / 255));
+    expect(r.slider().rendererLease.key({ key: 'ArrowRight', fine: false })).toBe(true);
+    expect(r.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(255, 'raw');
+    expect(Number.isInteger(r.onAfLevelChange.mock.calls[0][0])).toBe(true);
+  });
+
+  it('steps 254 to 255 by pointer and restores 254 by pointer', () => {
+    const stepped = renderRaw(audio(254 / 255));
+    const lease = stepped.slider().rendererLease;
+    expect(lease.view.canonical).toBe(254);
+    const token = lease.beginPointer();
+    expect(token).not.toBeNull();
+    lease.pointer(token!, 255); lease.endPointer(token!);
+    expect(stepped.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(255, 'raw');
+    stepped.dispose();
+
+    const restored = renderRaw(audio(1));
+    expect(restored.slider().rendererLease.view.canonical).toBe(255);
+    const downLease = restored.slider().rendererLease;
+    const down = downLease.beginPointer();
+    expect(down).not.toBeNull();
+    downLease.pointer(down!, 254);
+    downLease.endPointer(down!);
+    expect(restored.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(254, 'raw');
+  });
+
+  it('keeps the browser-volume branch on the normalized lattice', () => {
+    const initial = publication({ afRaw: true, rxEnabled: true });
+    const publisher = new Publisher(initial);
+    const onAfLevelChange = vi.fn<(value: number) => void>();
+    const props = proxy<Props>({
+      publication: initial, rxAudio: audio(0.2, true, 'live'),
+      subscribeControlAuthority: publisher.subscribe,
+      layout: 'grouped', onAfLevelChange,
+    });
+    const component = mount(Fixture, { target, props }); components.push(component); flushSync();
+    const lease = target.querySelector<RendererNode>('[data-external-scalar-renderer]')!.rendererLease;
+    expect(lease.key({ key: 'ArrowRight', fine: false })).toBe(true);
+    // Normalized 0.01 lattice, untouched by the raw domain: 0.2 -> 0.21.
+    expect(onAfLevelChange).toHaveBeenCalledExactlyOnceWith(0.21);
+  });
+});
 /* MOR-2524 — the channel-gain handles carry AF LEVEL's own `hardware` flag:
  * the same snippet ternary, so a non-hardware call renders the modern variant. */
 describe('RxAudioInstrumentHost channel-gain appearance (MOR-2524)', () => {

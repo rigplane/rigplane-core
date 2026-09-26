@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount, type Snippet } from 'svelte';
+  import { onDestroy, onMount, untrack, type Snippet } from 'svelte';
   import { t } from '$lib/i18n';
   import { LAN_MOD_INPUT_SOURCE } from '$lib/radio/mod-input';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
@@ -57,10 +57,10 @@
   interface ExistingProps {
     presentation: RxAudioInstrumentPresentation;
     subscribeControlAuthority: SubscribeRxAudioAuthority;
-    onAfLevelChange?: (value: number) => void;
+    onAfLevelChange?: (value: number, unit?: 'raw') => void;
     afLevelFeedback?: Readonly<CommandScalarFeedback>;
     /** MOR-2579: the per-receiver AF knobs (`rxAudio.receiverAfLevels`). */
-    onReceiverAfLevelChange?: (receiver: AfReceiverKey, value: number) => void;
+    onReceiverAfLevelChange?: (receiver: AfReceiverKey, value: number, unit?: 'raw') => void;
     receiverAfLevelFeedback?: Readonly<Record<AfReceiverKey, Readonly<CommandScalarFeedback>>>;
     onMonitorModeChange?: (mode: MonitorMode) => void;
     onFocusChange?: (focus: AudioFocus) => void;
@@ -278,7 +278,43 @@
   /** Shared by the three AF bindings. */
   let presentedAfAuthority = $derived(authority(presentation));
   let publishedAfAuthority = $derived(published === null ? null : authority(published));
+  /** MOR-1676 part A (AF): the browser-volume branch of the AF slider keeps
+   *  the normalized 0..1 lattice it has always used — browser volume is a
+   *  different meaning of the same slider, not a radio raw value. */
   const AF_DOMAIN = { min: 0, max: 1, step: 0.01, defaultValue: null, fineStepDivisor: 1 } as const;
+  /** MOR-1676 part A (AF): the radio-AF slider moves on the radio's raw
+   *  integer lattice (one step = one raw unit, step 1), read from the
+   *  authority publication's capabilities (`controls.af_level`) — the same
+   *  capability fact other controls read their ranges from (`ControlRange`
+   *  `raw_min`/`raw_max`), never a hard-coded 255 in this surface. A radio
+   *  that publishes no `controls.af_level` keeps the normalized lattice. */
+  function radioAfDomain(source: RxAudioAuthorityPublication | null): {
+    min: number; max: number; step: 1; defaultValue: null; fineStepDivisor: 1;
+  } | null {
+    // PREFER the render-time presentation caps: the publisher delivers them
+    // with the view, while the subscription snapshot may lag one publication
+    // behind. FALL BACK to the published snapshot so the domain and the
+    // authority gate stay on one snapshot when they disagree.
+    const control = presentation.caps?.controls?.af_level
+      ?? source?.caps?.controls?.af_level;
+    if (control === undefined || 'mapping' in control) return null;
+    const { raw_min: rawMin, raw_max: rawMax } = control;
+    if (!Number.isSafeInteger(rawMin) || !Number.isSafeInteger(rawMax) || rawMax <= rawMin) return null;
+    return { min: rawMin, max: rawMax, step: 1, defaultValue: null, fineStepDivisor: 1 };
+  }
+
+  /** The domain the named-receiver knob reads: `radioAfDomain`, but off the
+   *  render-time `presentation` caps (see above) without tracking them —
+   *  the lattice must follow delivered caps, never re-pulse on authority. */
+  function receiverAfDomain(): {
+    min: number; max: number; step: 1; defaultValue: null; fineStepDivisor: 1;
+  } | null {
+    const control = untrack(() => presentation.caps)?.controls?.af_level;
+    if (control === undefined || 'mapping' in control) return null;
+    const { raw_min: rawMin, raw_max: rawMax } = control;
+    if (!Number.isSafeInteger(rawMin) || !Number.isSafeInteger(rawMax) || rawMax <= rawMin) return null;
+    return { min: rawMin, max: rawMax, step: 1, defaultValue: null, fineStepDivisor: 1 };
+  }
 
   function input(): Readonly<ContinuousScalarInput> {
     const field = presentation.rxAudio?.afLevel;
@@ -302,10 +338,37 @@
       && reading.status === 'known'
       && Number.isFinite(reading.value)
       && onAfLevelChange !== undefined;
+    // MOR-1676 part A (AF): on the radio target the slider moves on the
+    // radio's raw integer lattice (the value in IS the raw value, dispatched
+    // with the explicit `'raw'` unit), while the browser-volume target keeps
+    // the normalized 0..1 lattice. The normalized readback (`raw/255`)
+    // converts to the exact raw value (`Math.round(normalized * raw_max)`)
+    // — exact for every raw value, so a step plus its reverse restore the
+    // raw value. The domain follows the PUBLISHED authority: `published` is
+    // the snapshot the authority gate above compares, while the render-time
+    // `presentation` prop may carry caps the publisher has not delivered
+    // yet.
+    const isRadioTarget = currentAuthority?.target !== 'browser-volume';
+    const rawDomain = isRadioTarget ? radioAfDomain(published) : null;
+    const domain = rawDomain ?? AF_DOMAIN;
+    const rawReading = rawDomain !== null && reading.status === 'known'
+      ? {
+        status: 'known' as const,
+        value: Math.round(rawDomain.min + reading.value * (rawDomain.max - rawDomain.min)),
+      }
+      : reading;
+    // MOR-1676 part A (AF): the value out carries its meaning explicitly —
+    // the raw integer lattice sends the `'raw'` unit (the intent strips it
+    // before `sendCommand`), the normalized lattice (browser volume, or a
+    // radio that publishes no `controls.af_level`) sends the legacy
+    // unit-less normalized float. The unit is explicit because JS cannot
+    // dispatch on JSON type (`1.0 === 1`): the handler must not guess raw
+    // from `Number.isInteger`.
     const base = {
-      domain: AF_DOMAIN,
+      domain,
       enabled,
-      request: (value: number) => onAfLevelChange?.(value),
+      request: (value: number) => rawDomain !== null
+        ? onAfLevelChange?.(value, 'raw') : onAfLevelChange?.(value),
     } as const;
     if (afLevelFeedback !== undefined) return {
       ...base,
@@ -316,7 +379,7 @@
     return {
       ...base,
       evidence: 'reading',
-      reading,
+      reading: rawReading,
       ownerKey: key(currentAuthority),
     };
   }
@@ -354,17 +417,33 @@
       && reading.status === 'known'
       && Number.isFinite(reading.value)
       && onReceiverAfLevelChange !== undefined;
+    // MOR-1676 part A (AF): the named-receiver knob moves on the radio's raw
+    // integer lattice, like the active-receiver slider above — the value in
+    // IS the raw value, dispatched with the explicit `'raw'` unit. The
+    // domain follows the render-time `presentation` caps (untracked read —
+    // see `receiverAfDomain`): the publisher delivers caps with the view,
+    // while the `published` snapshot only refreshes on a delivered
+    // publication and may lag one behind.
+    const rawDomain = receiverAfDomain();
+    const domain = rawDomain ?? AF_DOMAIN;
+    const rawReading = rawDomain !== null && reading.status === 'known'
+      ? {
+        status: 'known' as const,
+        value: Math.round(rawDomain.min + reading.value * (rawDomain.max - rawDomain.min)),
+      }
+      : reading;
     const base = {
-      domain: AF_DOMAIN,
+      domain,
       enabled,
-      request: (value: number) => onReceiverAfLevelChange?.(receiver, value),
+      request: (value: number) => rawDomain !== null
+        ? onReceiverAfLevelChange?.(receiver, value, 'raw') : onReceiverAfLevelChange?.(receiver, value),
     } as const;
     const feedback = receiverAfLevelFeedback?.[receiver];
     if (feedback !== undefined) return {
       ...base, evidence: 'command-feedback', feedback, command: 'set_af_level',
     };
     return {
-      ...base, evidence: 'reading', reading, ownerKey: key(currentAuthority, 'rx-receiver-af'),
+      ...base, evidence: 'reading', reading: rawReading, ownerKey: key(currentAuthority, 'rx-receiver-af'),
     };
   }
   const receiverAfBindings = {
@@ -407,6 +486,13 @@
       lastAuthority = nextAuthority;
       published = next;
     });
+    // `onMount` runs after the first render: `published` is still null
+    // while the bindings above already read it. Seed it from the
+    // render-time `presentation` — the same publication the publisher will
+    // deliver — so the first frame (domain included) already sees it.
+    // A caps-only difference never cancels a gesture: `published` is not
+    // part of the binding's authority identity.
+    published = { ...presentation };
   });
   const finiteSeats = [
     monitorSeat, focusSeat, splitSeat, splitToggleSeat, modInputSeat, setLanSeat,

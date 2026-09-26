@@ -793,6 +793,10 @@ values = [0, 1, 2]
 "1" = "AMP1"
 "2" = "AMP2"
 
+[controls.af_level]
+raw_min = 0
+raw_max = 255
+
 [controls.attenuator]
 style = "selector"
 
