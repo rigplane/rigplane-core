@@ -1161,8 +1161,8 @@ export function makePresetHandlers() {
 /* ── RX Audio Handlers ───────────────────────────────────────────── */
 
 /** Dispatch a radio-AF intent with its unit stated (MOR-1676 part A): the
- *  raw radio-AF path carries `level_unit: 'raw'` (stripped before
- *  `sendCommand`), the legacy normalized path `level_unit: 'normalized'`.
+ *  raw radio-AF path carries `level_unit: 'raw'` (stripped before dispatch),
+ *  the legacy normalized path `level_unit: 'normalized'`.
  *  A single literal call site so the completeness ledger
  *  (`panel-commands-completeness.test.ts`) keeps parsing every AF dispatch.
  *  Lives beside the AF handlers (below the memory section) so the memory
