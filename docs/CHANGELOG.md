@@ -48,6 +48,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the compact scalar path. The lit choice is the confirmed reading. A
   radio that publishes no list keeps the slider.
 
+- **NARROW can be set from the web API and toggled on the filter
+  surface (MOR-2636, MOR-2640).** The command is `set_narrow` with
+  `{on, receiver}` for MAIN and SUB, gated by the profile's `narrow`
+  capability; the FTX-1 declares it, and a profile that does not
+  refuses the command. On the filter surface a NARROW toggle acts on
+  the active receiver and is drawn only on radios whose capabilities
+  include `narrow`. The toggle's pressed state follows the confirmed
+  reading, and the pending mark shows until readback confirms.
+
 ### Changed
 
 - **Pollable fields take an acquisition class, and the scheduler
@@ -77,6 +86,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   disabled look. On a narrow row, controls hide into More in a fixed
   order and stay reachable there. The More label reads More / Ещё /
   その他.
+
+### Removed
+
+- **The unreachable queue-PTT path is retired; every key goes through
+  the managed TX lane (MOR-2563).** The `docs/api/web.md` no longer
+  documents a `radio_not_ready` error for PTT, because nothing emitted
+  it. Behaviour did not change for any supported entry point.
 
 ### Fixed
 
@@ -181,6 +197,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it (MOR-2236).** AUTO, MANUAL or OFF is marked pending as soon as it
   is sent, the same way NB and NR already were. The confirmed choice
   stays lit; the requested one is marked pending.
+
+- **The FTX-1 manual-notch pending status shows the target and the
+  reading in the same unit (MOR-2635).** While a notch position
+  command is pending, the requested target is decoded through the
+  same contract as the confirmed reading, so both display in Hz.
+  When the reading falls back to the raw field, the target stays raw
+  too.
 
 - **A lost radio link no longer toasts once per in-flight command
   (MOR-2241).** While the link is not connected, an error notification
