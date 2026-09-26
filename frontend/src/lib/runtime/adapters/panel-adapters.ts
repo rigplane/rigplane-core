@@ -1383,6 +1383,15 @@ export function getPendingNrOn(receiver: 0 | 1): boolean | null {
   return typeof value === 'boolean' ? value : null;
 }
 
+/** Freshest unconfirmed `set_narrow` target for `receiver`, or `null`
+ *  (MOR-2640). Same single-strand boolean shape as `getPendingNbOn`/
+ *  `getPendingNrOn` above — the same decision table, so confirmation,
+ *  failure and supersession clear it by the same rule. */
+export function getPendingNarrow(receiver: 0 | 1): boolean | null {
+  const value = latestPendingParam('set_narrow', 'on', receiver, 'narrow');
+  return typeof value === 'boolean' ? value : null;
+}
+
 /**
  * Freshest unconfirmed notch-mode choice for `receiver`, or `null`.
  * Notch mode is written as TWO independent boolean commands (`set_auto_notch`

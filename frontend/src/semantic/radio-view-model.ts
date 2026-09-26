@@ -457,6 +457,13 @@ export interface FilterPassbandViewModel {
   pbtDomain?: ControlDisplayDomain;
   pbtInner: DisplayObservedField<number>;
   pbtOuter: DisplayObservedField<number>;
+  /**
+   * NARROW toggle for the active receiver (MOR-2640): `set_narrow`'s
+   * confirmed readback (`main.narrow`/`sub.narrow`). Structural exactly
+   * when the profile declares the `narrow` capability — a radio without
+   * it shows no control (owner rule, same as the DSP toggles).
+   */
+  narrow: FilterPassbandField<boolean>;
   dataMode: FilterPassbandField<number>;
   readonly dataModeChoices: readonly { readonly value: number; readonly label: string | null }[];
   modInputSource?: FilterPassbandField<number>;
@@ -1979,7 +1986,7 @@ function validateFilterPassband(value: unknown, path: string): FilterPassbandVie
     v,
     [
       'filterShape', 'filterShapeControlStructural', 'ifShift', 'ifShiftControlStructural',
-      'ifShiftDomain', 'pbtDomain', 'pbtInner', 'pbtOuter', 'dataMode', 'dataModeChoices',
+      'ifShiftDomain', 'pbtDomain', 'pbtInner', 'pbtOuter', 'narrow', 'dataMode', 'dataModeChoices',
       'modInputSource', 'modInputChoices',
     ],
     path,
@@ -2002,6 +2009,7 @@ function validateFilterPassband(value: unknown, path: string): FilterPassbandVie
     ...(pbtDomain !== undefined ? { pbtDomain } : {}),
     pbtInner: validateDisplayObservedField(v.pbtInner, `${path}.pbtInner`, num),
     pbtOuter: validateDisplayObservedField(v.pbtOuter, `${path}.pbtOuter`, num),
+    narrow: validateTxAuxField(v.narrow, `${path}.narrow`, bool),
     dataModeChoices: validateDataModeChoices(v.dataModeChoices, `${path}.dataModeChoices`),
     dataMode: validateTxAuxField(v.dataMode, `${path}.dataMode`, num),
     ...(hasModInputSource ? {

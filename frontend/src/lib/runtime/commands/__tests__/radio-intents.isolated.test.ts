@@ -533,8 +533,10 @@ describe('typed non-PTT radio intents', () => {
     // MOR-2538 removes three retired application intents from the prior 93;
     // MOR-2111 PR2 adds the five repeater family intents (90 + 5).
     // MOR-2583 PR2 adds the server-owned monitor MUTE (95 + 1).
-    expect(intents.RADIO_INTENT_NAMES).toHaveLength(96);
-    expect(new Set(intents.RADIO_INTENT_NAMES).size).toBe(96);
+    // MOR-2640 adds the NARROW toggle (96 + 1).
+    expect(intents.RADIO_INTENT_NAMES).toHaveLength(97);
+    expect(new Set(intents.RADIO_INTENT_NAMES).size).toBe(97);
+    expect(intents.RADIO_INTENT_NAMES).toContain('set_narrow');
     expect(intents.RADIO_INTENT_NAMES).toContain('set_monitor_mute');
     expect(intents.RADIO_INTENT_NAMES).toContain('reset_filter_width');
     expect(intents.RADIO_INTENT_NAMES).toContain('set_vfo_freq');

@@ -731,6 +731,9 @@ describe('PBT display observations (MOR-1692)', () => {
     const absent = { reading: { status: 'unknown' }, availability: { structural: false, operational: false } };
     expect({ ...result, pbtInner: strict, pbtOuter: strictOuter }).toEqual({
       filterShape: absent, filterShapeControlStructural: false, ifShiftControlStructural: false, dataMode: absent, dataModeChoices: [],
+      // MOR-2640: this caps fixture declares no `narrow`, so the NARROW
+      // fact is structurally absent like the other undeclared fields.
+      narrow: absent,
       ifShift: { reading: { status: 'known', value: deriveIfShift(hz(150), hz(100)) }, availability: { structural: true, operational: true } },
       pbtDomain: measuredPbtDisplayDomain(2400, PBT_MEASURED_STEP_HZ),
       pbtInner: strict,

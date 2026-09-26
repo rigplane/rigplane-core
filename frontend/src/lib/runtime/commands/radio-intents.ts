@@ -19,7 +19,7 @@ const intentSpecs = [
   // server process and survives a page reload); the page only sends the
   // intent, exactly like the other top-level boolean commands above.
   { names: ['set_monitor_mute'], params: { on: 'boolean' } },
-  { names: ['set_auto_notch', 'set_digisel', 'set_ip_plus', 'set_manual_notch', 'set_nb', 'set_nr', 'set_twin_peak'], params: { on: 'boolean', receiver: 'receiver' } },
+  { names: ['set_auto_notch', 'set_digisel', 'set_ip_plus', 'set_manual_notch', 'set_narrow', 'set_nb', 'set_nr', 'set_twin_peak'], params: { on: 'boolean', receiver: 'receiver' } },
   // MOR-2111 PR2 — the repeater tone family (OFF/TONE/TSQL selector + the
   // CTCSS tone frequency stepper). The receiver rides every command.
   { names: ['set_repeater_tone', 'set_repeater_tsql'], params: { on: 'boolean', receiver: 'receiver' } },

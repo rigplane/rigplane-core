@@ -60,7 +60,7 @@
     getCwPitchControlFeedback, getKeySpeedControlFeedback, getRfSqlControlFeedback,
     getTxAuxControlFeedback, type TxAuxControlFeedbackField,
     getPendingFrequencyHz,
-    getPendingFilterSelection, getPendingManualNotchWidth, getPendingNbOn, getPendingNotchMode,
+    getPendingFilterSelection, getPendingManualNotchWidth, getPendingNarrow, getPendingNbOn, getPendingNotchMode,
     getPendingNrOn, getPendingPreampLevel,
     getPendingRepeaterShift, getPendingRepeaterTone, getPendingToneFreq,
     getRepeaterHandlers,
@@ -1728,6 +1728,12 @@
   });
   let pendingNb = $derived(activeReceiverIndex === null ? null : getPendingNbOn(activeReceiverIndex));
   let pendingNr = $derived(activeReceiverIndex === null ? null : getPendingNrOn(activeReceiverIndex));
+  /** MOR-2640: the NARROW pending target for the ACTIVE receiver — the
+   *  same in-flight marker the DSP toggles read, display-only until the
+   *  readback confirms. `null` while the active receiver is unobserved. */
+  let pendingNarrow = $derived(
+    activeReceiverIndex === null ? null : getPendingNarrow(activeReceiverIndex),
+  );
   let pendingNotch = $derived(activeReceiverIndex === null ? null : getPendingNotchMode(activeReceiverIndex));
   let pendingNotchWidth = $derived(activeReceiverIndex === null ? null : getPendingManualNotchWidth(activeReceiverIndex));
 
@@ -2441,6 +2447,8 @@
         onPbtInnerChange={filterIntents.onPbtInnerChange}
         onPbtOuterChange={filterIntents.onPbtOuterChange}
         onPbtReset={filterIntents.onPbtReset}
+        onNarrowToggle={filterIntents.onNarrowToggle}
+        {pendingNarrow}
       />
     {/if}
   {/snippet}
@@ -2827,6 +2835,8 @@
             onPbtInnerChange={filterIntents.onPbtInnerChange}
             onPbtOuterChange={filterIntents.onPbtOuterChange}
             onPbtReset={filterIntents.onPbtReset}
+            onNarrowToggle={filterIntents.onNarrowToggle}
+            {pendingNarrow}
           />{/if}
         </SemanticControlPanel>
       {/snippet}

@@ -300,6 +300,10 @@ export function withFilterPassband(fixture: RadioViewModel): RadioViewModel {
     ifShiftControlStructural: true,
     pbtInner: known(0),
     pbtOuter: known(0),
+    // MOR-2640: "fully observed" means a radio with a REAL `narrow`
+    // command (e.g. FTX-1) — tests exercising the narrow-less case
+    // override the field's availability explicitly.
+    narrow: known(false),
     dataMode: known(0),
     dataModeChoices: [{ value: 0, label: 'OFF' }, { value: 1, label: 'D1' }],
     modInputSource: known(0),

@@ -108,6 +108,9 @@
   import { onDestroy, untrack } from 'svelte';
   import { t } from '$lib/i18n';
   import {
+    bindToggleInstrument,
+  } from '../primitives/control-instruments/control-instrument-behavior';
+  import {
     createContinuousScalar, nativeRangeContinuousScalarPolicy,
     type CommandScalarFeedback, type ContinuousScalarInput,
     type ContinuousScalarRendererLease, type ContinuousScalarView,
@@ -137,6 +140,16 @@
     onIfShiftChange?: (value: number) => void;
     onPbtInnerChange?: (value: number) => void;
     onPbtOuterChange?: (value: number) => void;
+    /**
+     * MOR-2640: NARROW for the ACTIVE receiver. The confirmed `narrow`
+     * reading stays the pressed state's sole source (never the pending
+     * target — MOR-1441 leg-1 doctrine); `pendingNarrow` is the
+     * display-only in-flight marker. The wiring seam passes the handler
+     * (which owns the zero-argument inversion) and reads the pending
+     * target off the command lifecycle, like the DSP toggles' path.
+     */
+    onNarrowToggle?: () => void;
+    pendingNarrow?: boolean | null;
     /** MOR-2535: the ONE PBT reset dispatch site — the reset button and a
      *  double-click on either PBT row's label/value cell both call this, so
      *  the atomic inner+outer reset (and its gating) stays in the wiring
@@ -147,7 +160,7 @@
     view, handles, finiteLayout, part = 'all', filterWidthFeedback,
     ifShiftFeedback, pbtInnerFeedback, pbtOuterFeedback,
     onFilterWidthChange, onWidthReset, onIfShiftChange, onPbtInnerChange, onPbtOuterChange,
-    onPbtReset,
+    onPbtReset, onNarrowToggle, pendingNarrow = null,
   }: Props = $props();
 
   const pendingFilterId = $props.id();
@@ -274,9 +287,6 @@
     filterWidthLease?.reset();
   }
 
-  /** One guarded entry point for all three passband sliders — each still
-   *  reads and disables on its OWN field's availability (see the file
-   *  header, rule 3), this only routes the already-checked value onward. */
   function changePassband(field: FilterPassbandLevelField, value: number): void {
     if (!filterPassband || !usable(filterPassband[field])) return;
     if (field !== 'ifShift' && !pbtUsable(filterPassband[field])) return;
@@ -284,6 +294,20 @@
     else if (field === 'pbtInner') onPbtInnerChange?.(value);
     else onPbtOuterChange?.(value);
   }
+
+  /** MOR-2640: the NARROW key for the active receiver — the same
+   *  toggle shape `DspInstrumentHost`'s NR/NB keys use
+   *  (`bindToggleInstrument`, `aria-pressed={behavior.confirmed}`): the
+   *  confirmed reading is the pressed state's sole source, so an unread
+   *  reading draws the unlit label with no `aria-pressed` at all (never a
+   *  fabricated "off"), and the pending target never lights the key. The
+   *  handler owns its zero-argument inversion; the binding's next value
+   *  is intentionally not forwarded. */
+  const narrowBehavior = bindToggleInstrument(() => ({
+    field: filterPassband?.narrow,
+    invoke: () => onNarrowToggle?.(),
+  }));
+  const narrowPendingId = `${pendingFilterId}-narrow`;
 
   /** MOR-1681/MOR-2497: a passband row reads its range/step from the
    *  group's published domain when it carries one — `ifShiftDomain` for the
@@ -550,6 +574,24 @@
       {#if !finiteLayout}
         {@render handles.shape()}
       {/if}
+      {#if filterPassband.narrow.availability.structural}
+        <!-- MOR-2640: the NARROW key — a KEY, not a `NAME: value` row
+             (MOR-2527 owner rule, same as `DspInstrumentHost`'s NR/NB keys
+             and the RF front-end's DIGI-SEL/IP+ keys). The label only, lit
+             by the confirmed reading: an unread reading draws the unlit
+             label with no `: ?`/`: on`/`: off` text at all, and the pending
+             target is a display-only marker — it never lights the key. -->
+        <button
+          type="button" class="filter-toggle" data-testid="filter-narrow"
+          data-disabled-reason={usable(filterPassband.narrow) ? undefined : 'field-not-observed'}
+          aria-pressed={narrowBehavior.confirmed}
+          data-pending-status={pendingNarrow !== null ? 'pending' : 'confirmed'}
+          aria-describedby={pendingNarrow !== null ? narrowPendingId : undefined}
+          disabled={!narrowBehavior.available}
+          onclick={() => narrowBehavior.invoke()}
+        >NARROW</button>
+        {#if pendingNarrow !== null}<span id={narrowPendingId} class="sr-only">{t('core.dsp.pendingAnnouncement')}</span>{/if}
+      {/if}
       {#each FILTER_PASSBAND_LEVELS as [field, label, min, max, step] (field)}
         {#if field === 'ifShift' ? filterPassband.ifShiftControlStructural : filterPassband[field].availability.structural}
           {@const limits = passbandLimits(field, min, max, step)}
@@ -624,6 +666,11 @@
   .filter-surface { display: flex; flex-direction: column; gap: 0.25rem; }
   .filter-level { display: flex; align-items: baseline; gap: 0.5rem; }
   .filter-level-name { min-width: 8ch; }
+  /* MOR-2640: the NARROW key's light — the same structural
+     (forced-colors safe) weight the DSP toggles use, on the state
+     attribute itself. */
+  .filter-toggle[aria-pressed='true'] { font-weight: 700; }
+  .filter-toggle[data-pending-status='pending'] { font-style: italic; opacity: 0.75; }
   .pbt-slot { display: inline-flex; align-items: center; width: 8rem; height: 1.5rem; }
   .pbt-slot input { width: 100%; margin-inline: 0; }
   .pbt-unknown { width: 100%; text-align: center; }

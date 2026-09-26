@@ -108,11 +108,13 @@ type Handlers = {
   onIfShiftChange?: (value: number) => void;
   onPbtInnerChange?: (value: number) => void;
   onPbtOuterChange?: (value: number) => void;
+  onNarrowToggle?: () => void;
 };
 
 type PendingProps = {
   pendingFilter?: number | null;
   pendingDataMode?: number | null;
+  pendingNarrow?: boolean | null;
   filterWidthFeedback?: Readonly<CommandScalarFeedback>;
   ifShiftFeedback?: Readonly<CommandScalarFeedback>;
   pbtInnerFeedback?: Readonly<CommandScalarFeedback>;
@@ -126,6 +128,7 @@ function render(view: RadioViewModel, handlers: Handlers = {}, extra: PendingPro
     get presentation() { return extra.presentation; },
     get pendingFilter() { return extra.pendingFilter; },
     get pendingDataMode() { return extra.pendingDataMode; },
+    get pendingNarrow() { return extra.pendingNarrow; },
     get filterWidthFeedback() { return extra.filterWidthFeedback; },
     get ifShiftFeedback() { return extra.ifShiftFeedback; },
     get pbtInnerFeedback() { return extra.pbtInnerFeedback; },
@@ -138,6 +141,7 @@ function render(view: RadioViewModel, handlers: Handlers = {}, extra: PendingPro
     get onIfShiftChange() { return handlers.onIfShiftChange; },
     get onPbtInnerChange() { return handlers.onPbtInnerChange; },
     get onPbtOuterChange() { return handlers.onPbtOuterChange; },
+    get onNarrowToggle() { return handlers.onNarrowToggle; },
   } });
   flushSync();
   const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
@@ -148,6 +152,7 @@ function render(view: RadioViewModel, handlers: Handlers = {}, extra: PendingPro
     button: (testId: string, value: string | number) => q<HTMLButtonElement>(
       `[data-testid="${testId}-${value}"]`,
     ),
+    narrow: () => q<HTMLButtonElement>('[data-testid="filter-narrow"]'),
     input: (testId: string) => q<HTMLInputElement>(`[data-testid="${testId}"] input`),
     output: (testId: string) => q<HTMLElement>(`[data-testid="${testId}"] output`),
   };
@@ -1610,11 +1615,17 @@ function renderNarrowOnly(
   view: RadioViewModel,
   handlers: {
     onNarrowToggle?: () => void;
-    pendingNarrow?: boolean | null;
   } = {},
+  extra: PendingProps = {},
 ) {
   const component = mount(FilterSurface, {
-    target, props: { view, handles: pbtStubHandles, ...handlers },
+    target,
+    props: {
+      view,
+      handles: pbtStubHandles,
+      ...handlers,
+      ...(extra.pendingNarrow !== undefined ? { pendingNarrow: extra.pendingNarrow } : {}),
+    },
   });
   flushSync();
   return {
@@ -1658,7 +1669,7 @@ describe('NARROW toggle (MOR-2640)', () => {
     // stays unlit — reading pending as "on" would be the fabrication
     // MOR-1441 leg 2 forbids.
     const view = withNarrowField(base(), { value: false });
-    const r = renderNarrowOnly(view, { pendingNarrow: true });
+    const r = renderNarrowOnly(view, {}, { pendingNarrow: true });
     const button = r.button()!;
     expect(button.getAttribute('aria-pressed')).toBe('false');
     expect(button.dataset.pendingStatus).toBe('pending');
@@ -1694,5 +1705,21 @@ describe('NARROW toggle (MOR-2640)', () => {
     expect(r.button()!.disabled).toBe(true);
     r.dispose();
     expect(onNarrowToggle).not.toHaveBeenCalled();
+  });
+
+  it('reaches the surface through the host fixture wiring: click dispatches, pending marks', () => {
+    // The same prop path `SemanticRadioSurfaces` uses — the host fixture
+    // forwards `onNarrowToggle`/`pendingNarrow` unchanged, so a dropped or
+    // misnamed prop between wiring and surface fails here.
+    const onNarrowToggle = vi.fn();
+    withSurface(withNarrowField(base(), { value: false }), (s) => {
+      const button = s.narrow()!;
+      expect(button.getAttribute('aria-pressed')).toBe('false');
+      expect(button.dataset.pendingStatus).toBe('pending');
+      button.click();
+      flushSync();
+      expect(onNarrowToggle).toHaveBeenCalledTimes(1);
+      expect(onNarrowToggle).toHaveBeenCalledWith();
+    }, { onNarrowToggle }, { pendingNarrow: true });
   });
 });

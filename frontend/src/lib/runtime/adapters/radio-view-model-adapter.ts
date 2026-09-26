@@ -665,7 +665,8 @@ function deriveFilterPassband(
   const hasIfShiftCap = hasCap(caps, 'if_shift');
   const hasDataModeCap = hasCap(caps, 'data_mode');
   const hasFilterShapeCap = hasCap(caps, 'filter_shape');
-  if (!hasWidth && !hasPbtCap && !hasIfShiftCap && !hasDataModeCap) return undefined;
+  const hasNarrowCap = hasCap(caps, 'narrow');
+  if (!hasWidth && !hasPbtCap && !hasIfShiftCap && !hasDataModeCap && !hasNarrowCap) return undefined;
 
   const onSub = state?.active === 'SUB';
   const rx = onSub ? state?.sub : state?.main;
@@ -844,6 +845,10 @@ function deriveFilterPassband(
       }),
     },
     dataModeChoices,
+    // MOR-2640: NARROW readback for the ACTIVE receiver (`main.narrow`/
+    // `sub.narrow`, `set_narrow`'s confirmed truth). Structural exactly
+    // when the profile declares `narrow` — no capability, no control.
+    narrow: txAuxField(hasNarrowCap, topFieldAvailable(state, `${base}narrow`), boolOrUndef(rx?.narrow)),
     dataMode: txAuxField(hasDataModeCap, dataModeObserved, numOrUndef(dataRx?.dataMode)),
     ...(modInputChoices.length > 0 ? {
       modInputChoices,
