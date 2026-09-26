@@ -15,5 +15,5 @@ export const GEOMETRY_FALLBACK_STEP = 0.5;
  */
 export function quantizeUserUnits(value: number, pixelsPerUserUnit: number): number {
   const step = pixelsPerUserUnit > 0 ? 1 / pixelsPerUserUnit : GEOMETRY_FALLBACK_STEP;
-  return value;
+  return Math.round(value / step) * step;
 }
