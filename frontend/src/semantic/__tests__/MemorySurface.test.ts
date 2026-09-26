@@ -16,7 +16,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
-import MemorySurface, { MAX_MEMORY_CHANNELS, UNKNOWN_TEXT } from '../MemorySurface.svelte';
+import MemorySurface, { MAX_MEMORY_CHANNELS } from '../MemorySurface.svelte';
 import { MEMORY_STORAGE_KEY, type MemoryEntry } from '../memory-channels';
 import type { MemoryPanelProps } from '../../lib/runtime/props/panel-props';
 
@@ -205,7 +205,10 @@ describe('unknown VFO identity (WRONG-VFO GUARD)', () => {
     const r = render(UNKNOWN_IDENTITY);
     const readout = r.target.querySelector('[data-testid="memory-active-vfo"]')!;
     expect(readout.textContent).not.toMatch(/\d/);
-    expect(readout.textContent?.trim()).toBe(`${UNKNOWN_TEXT} ${UNKNOWN_TEXT}`);
+    expect(readout.textContent?.trim()).toBe('');
+    expect(readout.textContent).not.toContain('—');
+    const rule = /\.active-vfo\s*\{([^}]*)\}/.exec(SOURCE)?.[1] ?? '';
+    expect(rule).toMatch(/min-width:\s*14ch/);
     expect(readout.getAttribute('data-observed')).toBe('false');
     r.dispose();
   });

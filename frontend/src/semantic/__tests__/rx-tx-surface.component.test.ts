@@ -483,6 +483,20 @@ describe('unknown TX target', () => {
       expect(t.dataset.slot).toBe(known.slot.kind === 'slotted' ? known.slot.id : known.slot.kind);
     });
   });
+
+  it('prints no dash and no bare unit when the known target has no frequency', () => {
+    const view = topologyFixtures['1/single'];
+    if (view.txTarget.status !== 'known') throw new Error('fixture precondition');
+    const unread = { ...view, txTarget: { ...view.txTarget, frequencyHz: null } };
+    withSurface(unread, IDLE_RX, () => {
+      const t = target.querySelector('[data-testid="rx-tx-target"]') as HTMLElement;
+      expect(t.textContent).not.toContain('—');
+      expect(t.textContent).not.toMatch(/Hz/);
+      expect(t.querySelector('[data-testid="rx-tx-target-frequency"]')?.textContent).toBe('');
+      const rule = /\.rx-tx-target-frequency\s*\{([^}]*)\}/.exec(rxTxSurfaceSource)?.[1] ?? '';
+      expect(rule).toMatch(/min-width:\s*10ch/);
+    });
+  });
 });
 
 // ── 5. Accessibility ───────────────────────────────────────────────────────
