@@ -454,8 +454,10 @@ async def test_watchdog_loop_continues_when_no_data_received(radio: IcomRadio) -
 
 async def test_watchdog_loop_phase1_sends_open_close(radio: IcomRadio) -> None:
     """Phase 1 recovery: sends open_close when idle > timeout (lines 157-175)."""
-    # Set last data received far in the past to trigger recovery
+    # Payload idle, and a send left unanswered: the stall evidence the rule
+    # now requires before OpenClose.
     radio._last_civ_data_received = time.monotonic() - 10.0
+    radio._last_civ_send_monotonic = time.monotonic() - 5.0
 
     open_close_calls: list[bool] = []
 
@@ -483,6 +485,7 @@ async def test_watchdog_loop_phase1_sends_open_close(radio: IcomRadio) -> None:
 async def test_watchdog_loop_data_resumed_resets_recovering(radio: IcomRadio) -> None:
     """When data resumes while recovering, recovering flag is reset (lines 229-232)."""
     radio._last_civ_data_received = time.monotonic() - 10.0
+    radio._last_civ_send_monotonic = time.monotonic() - 5.0
 
     sleep_count = [0]
 
@@ -513,6 +516,7 @@ async def test_watchdog_loop_phase1_open_close_exception_ignored(
 ) -> None:
     """Phase 1: exceptions from _send_open_close are silently ignored (line 177-180)."""
     radio._last_civ_data_received = time.monotonic() - 10.0
+    radio._last_civ_send_monotonic = time.monotonic() - 5.0
 
     async def failing_open_close(*, open_stream: bool) -> None:
         raise OSError("network error")
@@ -547,6 +551,10 @@ async def test_watchdog_loop_phase2_hands_off_to_lifecycle_recovery(
     so the watchdog no longer sleeps a 45 s backoff of its own.
     """
     radio._last_civ_data_received = 0.0
+    # A send left unanswered, so the stall is a stall under the rule. The
+    # count stays put, so the port is silent and the hand-off bound is 5 s;
+    # the clock jumps past either bound, so the hand-off still happens.
+    radio._last_civ_send_monotonic = 100.0
     radio._civ_recovering = False
     radio._force_cleanup_civ = AsyncMock()
     radio.soft_reconnect = AsyncMock()
@@ -677,6 +685,10 @@ async def test_watchdog_patient_openclose_before_escalation(
     persistent OpenClose every 100ms rather than aggressive escalation.
     """
     radio._last_civ_data_received = 0.0
+    # The 60 s patience applies only while the port is alive, so pings keep
+    # advancing and a send stays unanswered.
+    radio._last_civ_send_monotonic = 100.0
+    radio._civ_transport.rx_packet_count = 0
     radio._civ_recovering = False
     radio.soft_reconnect = AsyncMock()
     radio._force_cleanup_civ = AsyncMock()
@@ -688,6 +700,7 @@ async def test_watchdog_patient_openclose_before_escalation(
 
     def _mono() -> float:
         mono_time[0] += 1.0
+        radio._civ_transport.rx_packet_count += 1
         return mono_time[0]
 
     sleep_count = [0]
@@ -710,6 +723,226 @@ async def test_watchdog_patient_openclose_before_escalation(
     radio.soft_reconnect.assert_not_awaited()
     # open_close called repeatedly during the patient period.
     assert oc_mock.await_count >= 10
+
+
+# ---------------------------------------------------------------------------
+# MOR-2623 — a quiet live link is not a stall; unanswered queries or a
+# silent port are, and a silent port gives up in 5 s.
+# ---------------------------------------------------------------------------
+
+
+class _WatchdogClock:
+    """Fake clock the watchdog loop and the test share.
+
+    ``advance`` is what a sleep does: the loop awaits ``asyncio.sleep`` once
+    per tick, and the sleep moves the clock by the delay the loop asked for.
+    """
+
+    def __init__(self, start: float = 1_000.0) -> None:
+        self.now = start
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def advance(self, delay: float) -> None:
+        self.now += delay
+
+
+async def test_watchdog_pings_only_is_not_a_stall(radio: IcomRadio) -> None:
+    """Pings only, nothing sent after the last payload, for > 2 s: no OpenClose
+    and no recovery (MOR-2623 a)."""
+    clock = _WatchdogClock()
+    radio._last_civ_data_received = clock.now
+    radio._last_civ_send_monotonic = clock.now
+    radio._civ_transport.rx_packet_count = 0
+    radio._civ_recovering = False
+
+    async def tick(delay: float) -> None:
+        clock.advance(delay)
+        radio._civ_transport.rx_packet_count += 1
+        if clock.now - radio._last_civ_data_received > 3.0:
+            raise asyncio.CancelledError()
+
+    oc_mock = AsyncMock()
+    with (
+        patch("asyncio.sleep", side_effect=tick),
+        patch("time.monotonic", side_effect=clock.monotonic),
+        patch("rigplane.runtime._civ_rx.time.monotonic", side_effect=clock.monotonic),
+        patch.object(radio, "_send_open_close", new=oc_mock),
+    ):
+        await radio._civ_runtime._civ_data_watchdog_loop()
+
+    oc_mock.assert_not_awaited()
+    assert radio._civ_recovering is False
+
+
+async def test_watchdog_unanswered_send_recovers_while_pings_flow(
+    radio: IcomRadio,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Pings advancing and a send left unanswered for > 2 s: recovery with
+    OpenClose, and the warning names ``queries unanswered`` (MOR-2623 b)."""
+    clock = _WatchdogClock()
+    radio._last_civ_data_received = clock.now
+    radio._last_civ_send_monotonic = clock.now + 0.5
+    radio._civ_transport.rx_packet_count = 0
+    radio._civ_recovering = False
+
+    async def tick(delay: float) -> None:
+        clock.advance(delay)
+        radio._civ_transport.rx_packet_count += 1
+        if clock.now - radio._last_civ_send_monotonic > 3.0:
+            raise asyncio.CancelledError()
+
+    oc_mock = AsyncMock()
+    with (
+        patch("asyncio.sleep", side_effect=tick),
+        patch("time.monotonic", side_effect=clock.monotonic),
+        patch("rigplane.runtime._civ_rx.time.monotonic", side_effect=clock.monotonic),
+        patch.object(radio, "_send_open_close", new=oc_mock),
+        caplog.at_level("WARNING"),
+    ):
+        await radio._civ_runtime._civ_data_watchdog_loop()
+
+    oc_mock.assert_awaited()
+    assert radio._civ_recovering is True
+    assert any("queries unanswered" in r.message for r in caplog.records)
+
+
+async def test_watchdog_silent_port_hands_off_at_5s(
+    radio: IcomRadio,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A port that was healthy and then goes silent hands off to
+    ``_watchdog_recover`` about 5 s after recovery starts, well before 60 s.
+    The warning names ``port silent`` (MOR-2623 c).
+
+    The watchdog only has a silence history from the first tick that saw the
+    transport, so the scenario starts the way production does after connect:
+    one healthy tick (fresh payload, pings advancing), and only then does
+    everything stop.
+    """
+    clock = _WatchdogClock()
+    radio._last_civ_data_received = clock.now
+    radio._last_civ_send_monotonic = clock.now
+    radio._civ_transport.rx_packet_count = 7
+    radio._civ_recovering = False
+    radio._force_cleanup_civ = AsyncMock()
+    radio.soft_reconnect = AsyncMock()
+
+    healthy_ticks = [0]
+    went_silent_at: list[float] = []
+
+    async def tick(delay: float) -> None:
+        clock.advance(delay)
+        if healthy_ticks[0] < 1:
+            healthy_ticks[0] += 1
+            radio._last_civ_data_received = clock.now
+            radio._last_civ_send_monotonic = clock.now
+            radio._civ_transport.rx_packet_count += 1
+            return
+        if not went_silent_at:
+            # One send after the last payload, then nothing: no payload, and
+            # the packet count stays put.
+            radio._last_civ_send_monotonic = clock.now
+            went_silent_at.append(clock.now)
+
+    handed_off_at: list[float] = []
+    real_create_task = asyncio.create_task
+
+    def capture(coro: object, *args: object, **kwargs: object) -> asyncio.Task[object]:
+        handed_off_at.append(clock.now)
+        close = getattr(coro, "close", None)
+        if callable(close):
+            close()
+        return real_create_task(asyncio.sleep(0))
+
+    with (
+        patch("asyncio.sleep", side_effect=tick),
+        patch("time.monotonic", side_effect=clock.monotonic),
+        patch("rigplane.runtime._civ_rx.time.monotonic", side_effect=clock.monotonic),
+        patch("asyncio.create_task", side_effect=capture),
+        patch.object(radio, "_send_open_close", new=AsyncMock()),
+        caplog.at_level("WARNING"),
+    ):
+        await radio._civ_runtime._civ_data_watchdog_loop()
+
+    assert handed_off_at, "silent port must hand off to lifecycle recovery"
+    stall = next(r for r in caplog.records if "requesting data start" in r.message)
+    assert "port silent" in stall.message
+    # The hand-off log names the patience it actually waited, the same way the
+    # phase-2 test reads the clock it drove: about 5 s after recovery starts,
+    # and well before the 60 s live-port deadline.
+    handoff = next(
+        r for r in caplog.records if "handing off to lifecycle recovery" in r.message
+    )
+    assert "OpenClose failed for 5." in handoff.message
+    elapsed = handed_off_at[0] - went_silent_at[0]
+    assert elapsed < 60.0
+
+
+async def test_watchdog_unanswered_live_port_waits_out_60s(radio: IcomRadio) -> None:
+    """Pings advancing and a send unanswered: no hand-off before 60 s
+    (MOR-2623 d)."""
+    clock = _WatchdogClock()
+    radio._last_civ_data_received = clock.now
+    radio._last_civ_send_monotonic = clock.now + 0.5
+    radio._civ_transport.rx_packet_count = 0
+    radio._civ_recovering = False
+    radio.soft_reconnect = AsyncMock()
+
+    async def tick(delay: float) -> None:
+        clock.advance(delay)
+        radio._civ_transport.rx_packet_count += 1
+        if clock.now - radio._last_civ_data_received >= 59.0:
+            raise asyncio.CancelledError()
+
+    with (
+        patch("asyncio.sleep", side_effect=tick),
+        patch("time.monotonic", side_effect=clock.monotonic),
+        patch("rigplane.runtime._civ_rx.time.monotonic", side_effect=clock.monotonic),
+        patch.object(radio, "_send_open_close", new=AsyncMock()),
+    ):
+        await radio._civ_runtime._civ_data_watchdog_loop()
+
+    radio.soft_reconnect.assert_not_awaited()
+    assert radio._civ_runtime._reconnect_task is None
+
+
+async def test_watchdog_transport_swap_rebaselines(radio: IcomRadio) -> None:
+    """A transport object swap re-baselines, so a frozen count on the new
+    object is not read as port silence (MOR-2623 e)."""
+    clock = _WatchdogClock()
+    radio._last_civ_data_received = clock.now
+    radio._last_civ_send_monotonic = clock.now
+    radio._civ_transport.rx_packet_count = 4
+    radio._civ_recovering = False
+
+    swapped = False
+
+    async def tick(delay: float) -> None:
+        nonlocal swapped
+        clock.advance(delay)
+        if not swapped and clock.now - radio._last_civ_data_received > 3.0:
+            fresh = MockTransport()
+            fresh.rx_packet_count = 4
+            radio._civ_transport = fresh
+            swapped = True
+        if clock.now - radio._last_civ_data_received > 6.0:
+            raise asyncio.CancelledError()
+
+    oc_mock = AsyncMock()
+    with (
+        patch("asyncio.sleep", side_effect=tick),
+        patch("time.monotonic", side_effect=clock.monotonic),
+        patch("rigplane.runtime._civ_rx.time.monotonic", side_effect=clock.monotonic),
+        patch.object(radio, "_send_open_close", new=oc_mock),
+    ):
+        await radio._civ_runtime._civ_data_watchdog_loop()
+
+    assert swapped
+    oc_mock.assert_not_awaited()
+    assert radio._civ_recovering is False
 
 
 # ---------------------------------------------------------------------------
