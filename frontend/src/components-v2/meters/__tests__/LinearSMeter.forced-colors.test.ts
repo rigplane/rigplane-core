@@ -6,8 +6,9 @@ import { mockCapabilities } from '../../../../tests/e2e/i18n/fixtures';
 import LinearSMeter from '../LinearSMeter.svelte';
 
 // MOR-1250: forced-colors (Windows High Contrast Mode) does not force SVG
-// presentation attributes, so the S-meter's own palette — the 20 raw-hex
-// ACTIVE_COLORS, the dim/lower hex literals and sdrColor — rendered
+// presentation attributes, so the S-meter's own palette — the 20-entry
+// ACTIVE_COLORS list (three of the entries are CSS custom-property
+// tokens), the dim/lower hex literals and sdrColor — rendered
 // unchanged under it (the MOR-1233 verify probe). This file pins the fix:
 // a component-scoped forced-colors block re-paints every face onto system
 // colours. Author CSS overrides presentation attributes in the cascade, so
@@ -21,11 +22,6 @@ const STYLE = SOURCE.match(/<style>([\s\S]*)<\/style>/)?.[1] ?? '';
 // below cannot drift from the shipped rules.
 const FORCED_MATCH = STYLE.match(/@media \(forced-colors: active\) \{([\s\S]*)\}\s*$/);
 const FORCED_BODY = FORCED_MATCH?.[1] ?? '';
-
-const TOKENS = readFileSync('src/components-v2/theme/tokens.css', 'utf8');
-// First column-0 `}` after the media header is the media block's own
-// closing brace (every inner rule closes indented).
-const TOKENS_FORCED = TOKENS.match(/@media \(forced-colors: active\) \{[\s\S]*?\n\}/)?.[0] ?? '';
 
 // ── Source pins: the palette and its media condition ───────────────────────
 
@@ -44,7 +40,7 @@ describe('MOR-1250 — forced-colors palette (source pins)', () => {
     expect(FORCED_BODY).toMatch(/line\[data-meter-track\][^}]*stroke:\s*GrayText/);
   });
 
-  it('carries the SDR lit state as an attribute, not colour alone (MOR-977)', () => {
+  it('carries the SDR lit state as an attribute, not colour alone', () => {
     // Under forced-colors the palette is overridden, so the SDR face's
     // lit/unlit split — colour-only in sdrColor — must also live in the DOM.
     expect(SOURCE).toMatch(/data-sdr-segment=\{index\}[\s\S]{0,120}data-lit=/);
@@ -197,18 +193,5 @@ describe('MOR-1250 — computed-style evidence (F4 injection)', () => {
     expect(litFlags.slice(firstUnlit)).toEqual(Array<string>(80 - firstUnlit).fill('false'));
     expect(cs(segs[0], 'fill')).toBe('highlight');
     expect(cs(segs[79], 'fill')).toBe('graytext');
-  });
-});
-
-// ── Focus-ring fallback (tokens.css) ─────────────────────────────────────────
-
-describe('MOR-1250 — focus-ring fallback (tokens.css)', () => {
-  it('falls back to a system outline for the range focus ring under forced-colors', () => {
-    // WHCM suppresses author box-shadows, so the range focus ring — a
-    // box-shadow in app.css — disappears entirely; the forced-colors block
-    // in tokens.css adds the system-outline fallback (MOR-1233 verify §6).
-    expect(TOKENS_FORCED).toMatch(
-      /input\[type='range'\]:focus-visible\s*\{\s*outline:\s*2px solid Highlight;?\s*\}/,
-    );
   });
 });

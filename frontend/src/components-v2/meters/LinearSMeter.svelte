@@ -1032,15 +1032,16 @@
 
   /* ── MOR-1250: forced-colors (Windows High Contrast Mode) ──────────────
    * WHCM forces `color`/`background` but not SVG presentation attributes,
-   * so this component's own palette — the 20 raw-hex ACTIVE_COLORS, the
-   * dim/lower hex literals, sdrColor — rendered unchanged under it (the
+    * so this component's own palette — the 20-entry ACTIVE_COLORS list
+    * (three of the entries are CSS custom-property tokens), the dim/lower
+    * hex literals, sdrColor — rendered unchanged under it (the
    * MOR-1233 verify probe). Author CSS overrides presentation attributes
    * in the cascade, so this block re-paints every face onto system
    * colours: lit state Highlight, unlit structure GrayText, ink
    * CanvasText, faces Canvas. `forced-color-adjust: none` pins the meter
-   * to exactly these paints instead of engine-dependent forcing. The
-   * reading also lives in text and aria-labels (MOR-977), so colour is
-   * never the only channel. Pinned by
+    * to exactly these paints instead of engine-dependent forcing. The
+    * reading also lives in text and aria-labels, so colour is
+    * never the only channel. Pinned by
    * __tests__/LinearSMeter.forced-colors.test.ts. */
   @media (forced-colors: active) {
     svg {

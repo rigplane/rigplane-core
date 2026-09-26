@@ -332,13 +332,4 @@
     --v2-border-panel: CanvasText;
     --v2-bg-panel: Canvas;
   }
-
-  /* MOR-1250 (MOR-1233 verify §6): WHCM suppresses author box-shadows,
-   * so the range focus ring — a box-shadow in app.css — disappears
-   * entirely. Fall back to the system outline. Not :root-scoped: the
-   * suppression happens under forced-colors even when a manual theme is
-   * selected. */
-  input[type='range']:focus-visible {
-    outline: 2px solid Highlight;
-  }
 }
