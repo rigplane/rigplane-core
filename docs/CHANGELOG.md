@@ -90,7 +90,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - **The unreachable queue-PTT path is retired; every key goes through
-  the managed TX lane (MOR-2563).** The `docs/api/web.md` no longer
+  the managed TX lane (MOR-2563).** `docs/api/web.md` no longer
   documents a `radio_not_ready` error for PTT, because nothing emitted
   it. Behaviour did not change for any supported entry point.
 
