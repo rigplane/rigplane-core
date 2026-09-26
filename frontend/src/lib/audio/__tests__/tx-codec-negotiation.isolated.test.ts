@@ -449,7 +449,7 @@ describe('AudioManager consumes the server TX codec ack', () => {
     const processor = created?.createScriptProcessor.mock.results[0]?.value as
       { onaudioprocess: (event: unknown) => void };
     processor.onaudioprocess({
-      inputBuffer: { getChannelData: () => new Float32Array(960 * 6).fill(0.5) },
+      inputBuffer: { getChannelData: () => new Float32Array(960).fill(0.5) },
     });
 
     expect(sent).toHaveLength(1);
@@ -576,16 +576,8 @@ describe('TxMic adopts the codec the server can accept', () => {
 
     expect(mic.applyServerCodec('pcm16', 16000)).toEqual({ switched: true, error: null });
 
-    // One 20 ms frame at the capture rate is not yet a 20 ms frame at the
-    // negotiated rate, so nothing may leave until a full output frame exists.
-    media.getProcessor().onaudioprocess({
-      inputBuffer: { getChannelData: () => new Float32Array(960).fill(0.5) },
-    });
-    expect(sent).not.toHaveBeenCalled();
-
-    media.getProcessor().onaudioprocess({
-      inputBuffer: { getChannelData: () => new Float32Array(960).fill(0.5) },
-    });
+    // 960 captured samples are exactly one 20 ms frame at 16 kHz, so exactly
+    // one frame leaves — and it must be 16 kHz, not the 48 kHz it was captured at.
     media.getProcessor().onaudioprocess({
       inputBuffer: { getChannelData: () => new Float32Array(960).fill(0.5) },
     });
