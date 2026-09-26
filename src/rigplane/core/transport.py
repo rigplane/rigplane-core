@@ -206,6 +206,20 @@ class IcomTransport:
         Raises:
             TimeoutError: If the radio does not respond to discovery.
         """
+        # A reused instance opens a new radio session, so it must not carry
+        # the previous session's counters into it.
+        self.send_seq = 0
+        self.ping_seq = 0
+        self.tx_buffer.clear()
+        self._tx_guards.clear()
+        self.rx_last_seq = None
+        self.rx_missing.clear()
+        self.remote_id = 0
+        while True:
+            try:
+                self._packet_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
         self.state = ConnectionState.CONNECTING
         loop = asyncio.get_running_loop()
         if sock is not None:
