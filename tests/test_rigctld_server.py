@@ -2668,3 +2668,45 @@ class TestStateAcquisitionDrainPolicies:
                 "request was swallowed by the external-CAT stand-down"
             )
         assert len(filtered_ids) == len(pending) - len(cadence_only)
+
+    async def test_drain_loop_never_waits_past_the_post_unkey_ceiling(
+        self, cfg: RigctldConfig
+    ) -> None:
+        """MOR-1899 item 3: the 50 ms post-unkey dispatch ceiling, pinned.
+
+        A post-unkey confirmation is dispatched no later than one drain
+        interval after the unkey. The loop's rest between passes is the only
+        sleep on that path, so recording the delays it asks ``asyncio.sleep``
+        for pins the ceiling behaviourally: a mutation bumping the interval
+        above 50 ms turns this test red, whatever the constant's name says.
+        """
+
+        freq = FieldPath.active("main", "freq_mode", "freq_hz")
+        radio = _ProfiledStandaloneRadio(
+            profile=type(
+                "Profile", (), {"state_acquisition": _acquisition_profile(freq)}
+            )()
+        )
+        srv = RigctldServer(radio, cfg)
+        srv._bootstrap_state_acquisition()
+
+        delays: list[float] = []
+        real_sleep = asyncio.sleep
+
+        async def recording_sleep(delay: float = 0, *args: Any, **kwargs: Any) -> None:
+            delays.append(delay)
+            await real_sleep(0)
+
+        with patch("asyncio.sleep", recording_sleep):
+            drain_task = asyncio.create_task(srv._run_state_acquisition_drain())
+            while len(delays) < 3 and not drain_task.done():
+                await real_sleep(0)
+            drain_task.cancel()
+            await drain_task  # the loop catches CancelledError and finishes
+
+        assert drain_task.cancelled() is False, "drain loop died: the pin is vacuous"
+        assert len(delays) >= 3, "fewer than three rest intervals were recorded"
+        assert max(delays) <= 0.05, (
+            f"drain loop rest of {max(delays):.3f} s exceeds the 50 ms "
+            "post-unkey dispatch ceiling"
+        )
