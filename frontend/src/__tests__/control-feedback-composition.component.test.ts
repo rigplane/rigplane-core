@@ -143,9 +143,8 @@ function render(kind: Presentation): void {
 }
 
 function widthControl(): HTMLElement | null {
-  return target.querySelector<HTMLElement>(
-    '[data-testid="filter-width"] input, [data-filter-width-lifecycle] [role="slider"]',
-  );
+  const row = target.querySelector<HTMLElement>('[data-testid="filter-width"]');
+  return row?.querySelector<HTMLElement>('input, [role="slider"]') ?? null;
 }
 
 function snapshot() {
@@ -244,10 +243,11 @@ describe('structural feedback survives locale, forced-colors and reduced-motion 
 
   it('keeps forced-colors and reduced-motion as structural rules beside the phase attribute', () => {
     const source = readFileSync('src/semantic/FilterSurface.svelte', 'utf8');
-    const widthRule = source.slice(source.indexOf('[data-testid="filter-width"]'));
+    const style = source.slice(source.lastIndexOf('<style>'));
+    const widthRule = style.slice(0, style.indexOf('.filter-toggle'));
+    expect(source).toContain('data-command-phase={filterWidthView.phase');
     expect(widthRule).toContain('@media (forced-colors: active)');
     expect(widthRule).toContain('@media (prefers-reduced-motion: reduce)');
-    expect(widthRule).toContain('data-command-phase');
-    expect(widthRule).not.toContain('font-style: italic');
+    expect(widthRule).not.toContain('font-style');
   });
 });
