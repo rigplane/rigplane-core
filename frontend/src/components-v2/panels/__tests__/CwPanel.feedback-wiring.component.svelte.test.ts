@@ -270,8 +270,19 @@ describe('fallback CwPanel ControlFeedback wiring (MOR-1754)', () => {
     Object.assign(feedback, { providerGeneration: undefined });
     flushSync();
     expect(error.mock.calls.flat().join(' ')).not.toMatch(/state_unsafe_mutation/i);
-    expect([r.input().disabled, r.input().value, r.input().getAttribute('aria-valuetext')])
-      .toEqual([true, '', 'Control unavailable']);
+    expect([r.input().disabled, r.input().value]).toEqual([false, '64']);
+    r.input().dispatchEvent(new Event('change', { bubbles: true }));
+    expect(handlers.onBreakInDelayChange).not.toHaveBeenCalled();
+
+    Object.assign(feedback, {
+      confirmed: null, target: null, requestedTarget: null, phase: 'unavailable',
+      busy: false, availability: 'unavailable', outcome: null, providerGeneration: null,
+    });
+    flushSync();
+    expect(error.mock.calls.flat().join(' ')).not.toMatch(/state_unsafe_mutation/i);
+    expect([r.input().disabled, r.input().getAttribute('aria-valuetext'),
+      target.querySelector('[data-testid="cw-break-in-delay-value"]')?.textContent])
+      .toEqual([true, 'Control unavailable', '—']);
     r.input().dispatchEvent(new Event('change', { bubbles: true }));
     expect(handlers.onBreakInDelayChange).not.toHaveBeenCalled();
 

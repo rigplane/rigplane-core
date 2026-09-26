@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import '../controls/control-button.css';
   import { HardwareButton } from '$lib/Button';
   import { ValueControl } from '../controls/value-control';
@@ -91,7 +91,9 @@
     },
     onBreakInDelayChange,
   );
-  let breakInDelayView = $derived(breakInDelayScalar.view);
+  const breakInDelayLease = breakInDelayScalar.attachRenderer();
+  let breakInDelayView = $state(untrack(() => breakInDelayLease.view));
+  $effect.pre(() => { breakInDelayView = breakInDelayLease.view; });
   const delayText = (value: number | null): string =>
     value === null ? '—' : rawToPercentDisplay(value);
   const delayLabel = (): string =>
@@ -138,15 +140,15 @@
         ),
   );
   function updateBreakInDelayDraft(event: Event): void {
-    breakInDelayScalar.input((event.currentTarget as HTMLInputElement).valueAsNumber);
+    breakInDelayLease.input((event.currentTarget as HTMLInputElement).valueAsNumber);
   }
   function commitBreakInDelay(event: Event): void {
     const target = event.currentTarget as HTMLInputElement;
-    const restored = breakInDelayScalar.commit(target.valueAsNumber);
+    const restored = breakInDelayLease.commit(target.valueAsNumber);
     if (restored !== null) target.value = String(restored);
   }
   function cancelBreakInDelay(event?: Event): void {
-    const restored = breakInDelayScalar.cancel();
+    const restored = breakInDelayLease.cancel();
     if (event?.currentTarget instanceof HTMLInputElement) {
       if (restored !== null) event.currentTarget.value = String(restored);
     }
@@ -201,6 +203,7 @@
     }),
   );
   onDestroy(() => {
+    breakInDelayScalar.destroy();
     cwPitchBinding.destroy();
     keySpeedBinding.destroy();
   });
