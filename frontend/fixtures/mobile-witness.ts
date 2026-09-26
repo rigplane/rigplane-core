@@ -35,6 +35,9 @@ import { clearCapabilities, setCapabilities } from '../src/lib/stores/capabiliti
 const params = new URLSearchParams(window.location.search);
 const id = params.get('fixture') ?? 'topology-2-main-sub';
 const fixture = fixtureById(id);
+if (!fixture) {
+  throw new Error(`mobile-witness: unknown fixture '${id}'`);
+}
 
 // Same holder priming as `main.ts`: the stubbed runtime state, the real
 // capabilities singleton (S-meter, quick modes, TX chip gating), the TX
