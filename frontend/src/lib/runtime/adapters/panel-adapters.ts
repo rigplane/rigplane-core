@@ -793,10 +793,10 @@ export function getAfLevelControlFeedback(
       isCommandLifecycleSuperseded,
     ),
     (raw) => {
-      // The slider evidence is raw integers on the published domain; the
-      // legacy-normalized lane converts through it, the raw lane is
-      // already there. A null conversion fails this lane closed (never a
-      // fabricated target).
+      // The slider evidence is raw integers on the published domain; both
+      // the raw and the legacy-normalized lane convert through it (the
+      // server admits the normalized target either way). A null conversion
+      // fails this lane closed (never a fabricated target).
       const control = caps?.controls?.af_level;
       if (control === undefined || 'mapping' in control) return raw;
       const { raw_min: rawMin, raw_max: rawMax } = control;
