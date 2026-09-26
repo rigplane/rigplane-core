@@ -195,6 +195,15 @@ describe('F2 — the TX slab carries state in GEOMETRY, not only in colour (N2)'
     expect(keyed.specificity).toBeGreaterThan(inert.specificity);
   });
 
+  it('blocked-in-idle is INERT, not accent: the disabled treatment beats the idle rule (MOR-1276)', () => {
+    // Both match (idle session + disabled key), so the winner decides whether
+    // the blocked key reads as inert or as an actionable accent control.
+    expect(winner('color', BLOCKED, 'slab')).toBe('var(--dl-fieldline-inert)');
+    const idle = RULES.find((r) => r.selector.includes("session='idle'") && r.selector.includes('.rx-tx-key'))!;
+    const inert = RULES.find((r) => r.selector.includes(':disabled') && r.selector.includes('.rx-tx-key'))!;
+    expect(inert.specificity).toBeGreaterThan(idle.specificity);
+  });
+
   it('the slab is square and full-width in every state — no pill anywhere', () => {
     expect(winner('border-radius', RX, 'slab')).toBe('0');
     expect(winner('border-radius', FAULT, 'slab')).toBe('0');
