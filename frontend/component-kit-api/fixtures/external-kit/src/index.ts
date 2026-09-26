@@ -40,7 +40,7 @@ export const reservedDesignLanguage: DesignLanguageManifest = {
     rx: { idle: '#777777', active: '#00ffff', tuning: '#ffffff' },
     tx: { idle: '#777777', active: '#ff0000', tuning: '#ffffff' },
   },
-  density: { kind: 'clamped', supported: ['comfortable', 'compact'] },
+  density: { kind: 'clamped', supported: ['comfortable', 'compact'], default: 'comfortable' },
   layoutCompatibility: [
     { layoutId: 'fixture-face-a', compatible: true },
     { layoutId: 'fixture-face-b', compatible: true },
