@@ -128,6 +128,18 @@ describe('ModePanel', () => {
     expect(button?.dataset.active).toBe('true');
   });
 
+  it('highlights PSK and PSK-R and sends the hyphen label (MOR-2508)', () => {
+    for (const mode of ['PSK', 'PSK-R', 'CW-R', 'RTTY-R']) {
+      const target = mountPanel({ currentMode: mode });
+      const buttons = Array.from(target.querySelectorAll<HTMLButtonElement>('.mode-grid .v2-control-button'));
+      const lit = buttons.filter((button) => button.dataset.active === 'true');
+      expect(lit.map((button) => button.textContent?.trim())).toEqual([mode]);
+      lit[0]?.click();
+      flushSync();
+      expect(mockHandlers.onModeChange).toHaveBeenCalledWith(mode);
+    }
+  });
+
   // ── MOR-1519: generic armed signal, structural marker on the mode grid ──
   describe('armed signal (MOR-1519)', () => {
     // Review F1: the marker must sit ON the button element itself (rendered

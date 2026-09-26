@@ -650,6 +650,11 @@ export interface ModeProps {
   hasModInput: boolean;
 }
 
+function profileModeLabel(mode: string | null | undefined): string {
+  if (!mode) return '---';
+  return mode.replace(/_/g, '-');
+}
+
 export function toModeProps(
   state: ServerState | null,
   caps: Capabilities | null,
@@ -668,7 +673,10 @@ export function toModeProps(
   const modInputSource = modInputKey === null ? null : state?.[modInputKey] ?? null;
   return {
     // MOR-1409 A11: no fabricated USB stand-in for an unobserved mode.
-    currentMode: rx?.mode ?? '---',
+    // MOR-2508: the mode panel matches buttons by strict equality against the
+    // profile labels (hyphen form). A store that still holds the CI-V enum
+    // token ("PSK_R") must light the same button as "PSK-R".
+    currentMode: profileModeLabel(rx?.mode),
     // MOR-1409 A12 (expanded mandate, adjudication 5245697359, Core #2317):
     // no fabricated 10-mode invented catalog. `modes` is a
     // capability-derived choice set — same convention as `toAgcProps`'
