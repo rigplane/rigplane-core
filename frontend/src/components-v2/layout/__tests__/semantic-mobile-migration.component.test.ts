@@ -339,6 +339,9 @@ describe('spectrum slot with a spectrum-capable radio (MOR-2511)', () => {
 // below does: without it the SRS lease effect can never engage.
 // ---------------------------------------------------------------------------
 describe('managed scope contract on a hardware-scope radio (MOR-2442)', () => {
+  // Resource spies registered during a test are restored HERE so a failing
+  // pin cannot leak its wrapper into neighboring tests.
+  const resourceSpies: { mockRestore(): void }[] = [];
   beforeEach(() => {
     vi.mocked(getScopeSource).mockReturnValue('hardware');
     vi.mocked(getCapabilities).mockReturnValue({
@@ -353,6 +356,7 @@ describe('managed scope contract on a hardware-scope radio (MOR-2442)', () => {
       capabilities: [], freqRanges: [], modes: [], filters: [],
     });
     radio.current = null;
+    for (const spy of resourceSpies.splice(0)) spy.mockRestore();
   });
 
   it.each([['portrait', false], ['landscape', true]] as const)(
@@ -388,6 +392,7 @@ describe('managed scope contract on a hardware-scope radio (MOR-2442)', () => {
       live.delete(lease);
       return realRelease(lease);
     });
+    resourceSpies.push(acquire, release);
 
     const t = mountMobile(); // portrait — the visible instance takes one lease
     expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
@@ -402,9 +407,6 @@ describe('managed scope contract on a hardware-scope radio (MOR-2442)', () => {
     for (const component of components.splice(0)) unmount(component);
     flushSync();
     expect(live.size).toBe(0); // no lease survives unmount
-
-    acquire.mockRestore();
-    release.mockRestore();
   });
 });
 

@@ -1548,7 +1548,7 @@
     return () => {
       if (!active) return;
       active = false;
-      void lease; // PLANTED MUTATION (mini RED): no release — the 1c pin must catch this
+      presentationResources.release(lease);
     };
   });
 
