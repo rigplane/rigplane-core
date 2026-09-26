@@ -484,6 +484,7 @@ class AcquisitionScheduler:
         "_consecutive_timeout_by_key",
         "_deferred",
         "_dispatch_by_request_id",
+        "_execute_started_at",
         "_executing_request_ids",
         "_external_cat_owner",
         "_external_cat_paused",
@@ -531,6 +532,10 @@ class AcquisitionScheduler:
         # confirmation arriving in that window must still get its own
         # dispatch (MOR-2594).
         self._executing_request_ids: set[str] = set()
+        # request id -> drain pass clock at which execute began, so an
+        # answer that arrives before record_dispatch can still be credited
+        # (MOR-2617). Dropped with the execute marker.
+        self._execute_started_at: dict[str, float] = {}
         self._pending_cadence_by_key: dict[
             _AcquisitionRequestKey,
             _PendingCadenceUpdate,
@@ -722,21 +727,29 @@ class AcquisitionScheduler:
         ):
             del self._claims_by_request_id[request_id]
 
-    def note_execute_started(self, request_id: str) -> None:
+    def note_execute_started(
+        self, request_id: str, *, now: float | None = None
+    ) -> None:
         """Mark ``request_id`` as inside its executor until it settles.
 
         The drain calls this before awaiting ``executor.execute`` and calls
         :meth:`note_execute_finished` once the result (or error) is in, so a
         write confirmation arriving while the frame may already be on the
-        wire still gets its own dispatch (MOR-2594).
+        wire still gets its own dispatch (MOR-2594). ``now`` is that pass's
+        clock, the same reading ``record_dispatch`` stores once execute
+        returns; an answer timestamped at or after it may be credited while
+        the send is still in progress (MOR-2617).
         """
 
         self._executing_request_ids.add(request_id)
+        if now is not None:
+            self._execute_started_at[request_id] = now
 
     def note_execute_finished(self, request_id: str) -> None:
         """Clear the marker set by :meth:`note_execute_started`."""
 
         self._executing_request_ids.discard(request_id)
+        self._execute_started_at.pop(request_id, None)
 
     def record_dispatch(
         self,
@@ -764,23 +777,26 @@ class AcquisitionScheduler:
     ) -> bool:
         """Return whether this observation can answer ``request``'s paths.
 
-        False for a request no send has covered, and for one whose covering
-        pass timestamp is later than the observation. ``request.paths`` is the caller's
-        matched subset, so paths of the same request that no send covered do
-        not count.
+        True when a recorded send covered one of ``request.paths`` at or
+        before the observation. Also true, with no dispatch record yet, when
+        execute for this request began at a pass clock at or before the
+        observation. Otherwise false. ``request.paths`` is the caller's
+        matched subset.
         """
 
         dispatched = self._dispatch_by_request_id.get(request.id)
-        if dispatched is None:
-            return False
-        return any(
+        if dispatched is not None and any(
             path in dispatched and dispatched[path] <= observation_timestamp
             for path in request.paths
-        )
+        ):
+            return True
+        started = self._execute_started_at.get(request.id)
+        return started is not None and started <= observation_timestamp
 
     def _forget_dispatch(self, request_id: str) -> None:
         self._dispatch_by_request_id.pop(request_id, None)
         self._executing_request_ids.discard(request_id)
+        self._execute_started_at.pop(request_id, None)
 
     def _in_execute(self, *, request_id: str) -> bool:
         return request_id in self._executing_request_ids
