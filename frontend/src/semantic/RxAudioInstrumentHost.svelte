@@ -327,15 +327,15 @@
       && onAfLevelChange !== undefined;
     // MOR-1676 part A (AF): on the radio target the slider moves on the
     // radio's raw integer lattice (the value in IS the raw value, dispatched
-    // as the int `level`), while the browser-volume target keeps the
-    // normalized 0..1 lattice. The normalized readback (`raw/255`) converts
-    // to the exact raw value (`Math.round(normalized * raw_max)`) — exact
-    // for every raw value, so a step plus its reverse restore the raw value.
+    // with the explicit `'raw'` unit), while the browser-volume target keeps
+    // the normalized 0..1 lattice. The normalized readback (`raw/255`)
+    // converts to the exact raw value (`Math.round(normalized * raw_max)`)
+    // — exact for every raw value, so a step plus its reverse restore the
+    // raw value. The domain follows the PUBLISHED authority: `published` is
+    // the snapshot the authority gate above compares, while the render-time
+    // `presentation` prop may carry caps the publisher has not delivered
+    // yet.
     const isRadioTarget = currentAuthority?.target !== 'browser-volume';
-    // MOR-1676 part A (AF): the domain follows the PUBLISHED authority, not
-    // the render-time presentation — `presentation` is the same publication
-    // the publisher has already delivered, but reading the range off
-    // `published` keeps domain and authority on one snapshot.
     const rawDomain = isRadioTarget ? radioAfDomain(published) : null;
     const domain = rawDomain ?? AF_DOMAIN;
     const rawReading = rawDomain !== null && reading.status === 'known'
