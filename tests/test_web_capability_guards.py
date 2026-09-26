@@ -818,6 +818,46 @@ class TestCommandGuards:
         handler._ensure_capability("dual_rx", "set_dual_watch")
 
 
+class TestReceiverValidationSeat:
+    """Unsupported receivers are refused before enqueue, on the radio's say-so.
+
+    MOR-2484: the receiver check lives in the radio backend, not in a web
+    copy. A single-receiver profile (IC-7300) refuses receiver=1 at enqueue
+    time, so the command is never queued; the dual-receiver IC-7610 admits
+    both receivers.
+    """
+
+    def test_single_receiver_refused_before_enqueue(self):
+        from rigplane.web.handlers import ControlHandler
+
+        radio = _make_radio("IC-7300")
+        handler = ControlHandler.__new__(ControlHandler)
+        handler._radio = radio
+        queue: list[object] = []
+
+        with pytest.raises(ValueError, match="receiver=1"):
+            handler._enqueue_rc_frequency(  # noqa: SLF001
+                "set_freq", {"freq": 14_074_000, "receiver": 1},
+                SimpleNamespace(put=queue.append), radio,
+            )
+        assert queue == []
+
+    def test_dual_receiver_admitted_to_queue(self):
+        from rigplane.web.handlers import ControlHandler
+
+        radio = _make_radio("IC-7610")
+        handler = ControlHandler.__new__(ControlHandler)
+        handler._radio = radio
+        queue: list[object] = []
+
+        result = handler._enqueue_rc_frequency(  # noqa: SLF001
+            "set_freq", {"freq": 14_074_000, "receiver": 1},
+            SimpleNamespace(put=queue.append), radio,
+        )
+        assert result == {"freq": 14_074_000, "receiver": 1}
+        assert len(queue) == 1
+
+
 # ── Profile-declared second receiver (owner ruling, 2026-09-08) ─
 
 
