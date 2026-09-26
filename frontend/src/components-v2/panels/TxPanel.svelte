@@ -28,7 +28,10 @@
   import ModInputTxWarning from './ModInputTxWarning.svelte';
   import ManagedTotControl from '../controls/ManagedTotControl.svelte';
 
-  let { showManagedTotControl = false }: { showManagedTotControl?: boolean } = $props();
+  let {
+    showManagedTotControl = false,
+    suppressModInputTxWarning = false,
+  }: { showManagedTotControl?: boolean; suppressModInputTxWarning?: boolean } = $props();
 
   const handlers = getTxHandlers();
   let p = $derived(deriveTxProps());
@@ -268,8 +271,12 @@
     {#if showManagedTotControl}
       <ManagedTotControl />
     {/if}
-    <!-- MOR-617: warn when TX was keyed with a non-LAN MOD input -->
-    <ModInputTxWarning />
+    <!-- MOR-617: warn when TX was keyed with a non-LAN MOD input.
+         MOR-1245: a host shell with its own fixed-position banner (mobile)
+         suppresses this inline copy, keeping one banner on screen. -->
+    {#if !suppressModInputTxWarning}
+      <ModInputTxWarning />
+    {/if}
 
     <div class="tx-button-grid">
       {#if showTuner}

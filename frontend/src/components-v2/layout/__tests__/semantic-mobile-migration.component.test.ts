@@ -30,12 +30,13 @@ vi.mock('../../../components/spectrum/SpectrumPanel.svelte', async () => {
 });
 vi.mock('../display/FrequencyDisplay.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../meters/LinearSMeter.svelte', () => ({ default: function S() { return {}; } }));
-vi.mock('../controls/CollapsiblePanel.svelte', () => ({ default: function S() { return {}; } }));
-vi.mock('../controls/BottomSheet.svelte', () => ({ default: function S() { return {}; } }));
+// MOR-1245 — CollapsiblePanel, BottomSheet and TxPanel stay REAL here: the
+// one-banner acceptance now includes the TX-settings sheet's TxPanel copy,
+// which only a real mount can prove. TxPanel's runtime inputs are mocked
+// below (panel-adapters, mod-input-auto) — same idiom as TxPanel.isolated.
 vi.mock('../controls/BandSelector.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/FilterPanel.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/RxAudioPanel.svelte', () => ({ default: function S() { return {}; } }));
-vi.mock('../panels/TxPanel.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/DspPanel.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/AgcPanel.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/RfFrontEnd.svelte', () => ({ default: function S() { return {}; } }));
@@ -65,6 +66,34 @@ vi.mock('./vfo-layout-tokens', () => ({
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: vi.fn(() => ({ visible: false, sourceLabel: null })),
   getModInputTxGuardHandlers: vi.fn(() => ({ onSetLan: vi.fn(), onDismiss: vi.fn() })),
+}));
+
+// The now-real TxPanel (MOR-1245, sheet-open one-banner test) pulls two more
+// adapters. Mocked so the real mount never pins the transport/stores modules
+// in the shared (isolate: false) cache — same #771 rationale as the guard
+// adapter above and as TxPanel.isolated.
+const txPanelProps = {
+  rfPower: 0.5, micGain: 128, atuActive: false, atuTuning: false,
+  voxActive: false, compActive: false, compLevel: 64, monActive: false,
+  monLevel: 64, driveGain: 128, hasTx: true, hasTuner: true, hasMonitor: true,
+};
+const txPanelHandlerNames = [
+  'onRfPowerChange', 'onMicGainChange', 'onAtuToggle', 'onAtuTune', 'onVoxToggle',
+  'onCompToggle', 'onCompLevelChange', 'onMonToggle', 'onMonLevelChange', 'onDriveGainChange',
+] as const;
+vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
+  deriveTxProps: () => txPanelProps,
+  getTxHandlers: () => Object.fromEntries(txPanelHandlerNames.map((n) => [n, vi.fn()])),
+  getTxAuxControlFeedback: () => ({
+    confirmed: 128, target: null, requestedTarget: null, phase: 'idle', busy: false,
+    availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
+    sessionEpoch: 1, scope: { control: 'mic-gain', receiver: 0 },
+    repeatPolicy: 'latest-target-wins',
+  }),
+}));
+vi.mock('$lib/runtime/adapters/mod-input-auto.svelte', () => ({
+  deriveAutoLanModInputProps: () => ({ available: false, enabled: false }),
+  setAutoLanModInputEnabled: vi.fn(),
 }));
 
 // A real, fully-populated view model so the semantic surfaces actually RENDER.
@@ -337,6 +366,22 @@ describe('MOR-1245 — one MOD-input TX banner per orientation', () => {
     rotate(true);
     expect(t.querySelectorAll('[data-testid="mod-input-tx-warning"]')).toHaveLength(1);
     expect(t.querySelector('.m-mod-input-warning')).not.toBeNull();
+  });
+
+  // Kills the sheet-open duplicate: the TX-settings sheet mounts the REAL
+  // TxPanel (unmocked here on purpose), whose inline copy renders a second
+  // banner unless the shell suppresses it. The fixed overlay is again the
+  // survivor — the sheet carries none.
+  it('renders exactly one banner with the TX-settings sheet open', () => {
+    const t = mountMobile();
+    t.querySelector<HTMLElement>('[aria-controls="m-chip-panel-tx"]')!.click();
+    flushSync();
+    t.querySelector<HTMLElement>('.m-tx-settings-btn')!.click();
+    flushSync();
+    const banners = t.querySelectorAll('[data-testid="mod-input-tx-warning"]');
+    expect(banners).toHaveLength(1);
+    expect(t.querySelector('.m-mod-input-warning')!.contains(banners[0])).toBe(true);
+    expect(t.querySelector('[data-testid="mod-input-tx-warning"]')!.closest('.m-sheet-content')).toBeNull();
   });
 });
 

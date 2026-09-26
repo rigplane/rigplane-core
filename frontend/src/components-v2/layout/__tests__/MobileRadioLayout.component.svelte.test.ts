@@ -932,7 +932,9 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
   });
 
   it('mounts the managed TOT control only through the TxPanel fallback', () => {
-    expect(mobileLayoutSource).toContain('<TxPanel showManagedTotControl={true} />');
+    // MOR-1245: the sheet's TxPanel also suppresses its inline MOD-input
+    // warning — the shell's fixed overlay is the one banner on mobile.
+    expect(mobileLayoutSource).toContain('<TxPanel showManagedTotControl={true} suppressModInputTxWarning />');
     expect(mobileLayoutSource).not.toContain('import ManagedTotControl');
     expect(mobileLayoutSource).not.toContain('<ManagedTotControl');
   });
