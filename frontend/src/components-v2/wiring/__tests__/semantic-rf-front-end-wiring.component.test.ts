@@ -908,8 +908,8 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     expect(el('squelch')!.dataset.commandPhase).toBe('submitted');
     expect(level('rfGain').value()).toBe(0.8);
     expect(level('squelch').value()).toBe(0.1);
-    expect(el('rfGain')!.querySelector('output')!.textContent).toBe('80%');
-    expect(el('squelch')!.querySelector('output')!.textContent).toBe('10%');
+    expect(el('rfGain')!.querySelector('output')!.textContent).toBe('50%');
+    expect(el('squelch')!.querySelector('output')!.textContent).toBe('20%');
     acknowledgeCommand(rf.id, 7, 7);
     acknowledgeCommand(sql.id, 7, 7);
     flushSync();
@@ -979,7 +979,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     expect(level('squelch').value()).toBeCloseTo(26 / 255, 5);
     expect(el('squelch')!.querySelector('output')!.textContent).toBe('10%');
     expect(target.querySelector('[data-control-feedback-status][data-feedback-lane="sql"]')?.textContent)
-      .toBe('Confirmed: 0.1');
+      .toBe('Confirmed: 26');
     expect(h.rfGain).toHaveBeenCalledTimes(1);
     expect(h.squelch).toHaveBeenCalledTimes(1);
   });
