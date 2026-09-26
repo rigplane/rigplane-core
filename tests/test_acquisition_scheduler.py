@@ -5125,6 +5125,81 @@ def test_an_observation_of_a_demoted_path_carries_the_demoted_ttl_until_the_next
         )
 
 
+def test_freshness_tick_treats_a_true_tx_hint_as_transmit_without_observed_ptt() -> (
+    None
+):
+    """MOR-2616: a managed-key hint makes TX_METER groups due before PTT is observed.
+
+    Observed PTT is absent. The hint is true, so the next tick queues the
+    tx_only group. The hint then returns false and a fresh tick queues nothing.
+    """
+
+    clock = FreshnessClock(start=720.0)
+    swr = FieldPath.global_("meters", "swr")
+    alc = FieldPath.global_("meters", "alc")
+    profile = _profile([swr, alc])
+    hint = {"keyed": True}
+
+    def tx_active_hint() -> bool:
+        return hint["keyed"]
+
+    keyed_store = StateStore(freshness_clock=clock)
+    keyed_scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+    keyed_service = StateFreshnessService(
+        store=keyed_store,
+        scheduler=keyed_scheduler,
+        interval_seconds=1.0,
+        tx_active_hint=tx_active_hint,
+    )
+    keyed_service.tick(now=clock.now())
+    keyed = [
+        request
+        for request in keyed_scheduler.pending_requests()
+        if swr in request.paths or alc in request.paths
+    ]
+    assert keyed, "TX_METER group must be due while the hint is keyed"
+    assert all(request.policy.tx_only for request in keyed)
+
+    hint["keyed"] = False
+    released_store = StateStore(freshness_clock=clock)
+    released_scheduler = AcquisitionScheduler(profile=profile, clock=clock)
+    released_service = StateFreshnessService(
+        store=released_store,
+        scheduler=released_scheduler,
+        interval_seconds=1.0,
+        tx_active_hint=tx_active_hint,
+    )
+    released_service.tick(now=clock.now())
+    assert released_scheduler.pending_requests() == ()
+
+
+def test_freshness_tick_treats_a_raising_tx_hint_as_false(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A hint that raises must not open the TX gate, and is logged at debug."""
+
+    clock = FreshnessClock(start=710.0)
+    swr = FieldPath.global_("meters", "swr")
+    store = StateStore(freshness_clock=clock)
+    scheduler = AcquisitionScheduler(profile=_profile([swr]), clock=clock)
+
+    def tx_active_hint() -> bool:
+        raise RuntimeError("hint unavailable")
+
+    service = StateFreshnessService(
+        store=store,
+        scheduler=scheduler,
+        interval_seconds=1.0,
+        tx_active_hint=tx_active_hint,
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="rigplane.core.acquisition_scheduler"):
+        service.tick(now=clock.now())
+
+    assert scheduler.pending_requests() == ()
+    assert any("tx_active_hint" in record.message for record in caplog.records)
+
+
 def test_civ_rx_stamps_the_demoted_ttl_on_poll_responses() -> None:
     """PR #3643 finding 2: the CI-V poll-response TTL site demotes.
 

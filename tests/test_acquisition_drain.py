@@ -19,9 +19,16 @@ from rigplane.core.acquisition_scheduler import (
     AcquisitionExecutionResult,
     AcquisitionPriority,
     AcquisitionRequest,
+    AcquisitionScheduler,
+    AcquisitionStatus,
 )
-from rigplane.core.state_acquisition_policy import AcquisitionPolicy
+from rigplane.core.state_acquisition_policy import (
+    AcquisitionPolicy,
+    FieldCapability,
+    RadioAcquisitionProfile,
+)
 from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.state_store import FreshnessClock, StateStore
 from rigplane.rigctld.server import RigctldServer
 from rigplane.web.radio_poller import RadioPoller
 
@@ -662,3 +669,101 @@ class TestAcquisitionDrainForgetHook:
             (request.id, "acquisition_request_timeout", frozenset({_FREQ}))
         ]
         assert reports.forgotten == []
+
+
+class _RecordingExecutor:
+    def __init__(self) -> None:
+        self.calls: list[tuple[FieldPath, ...]] = []
+
+    async def execute(
+        self,
+        request: AcquisitionRequest,
+        *,
+        already_sent_paths: frozenset[FieldPath],
+    ) -> AcquisitionExecutionResult:
+        del already_sent_paths
+        self.calls.append(request.paths)
+        return AcquisitionExecutionResult(sent_paths=request.paths)
+
+
+def _queued_tx_meter() -> tuple[AcquisitionScheduler, AcquisitionRequest, StateStore]:
+    clock = FreshnessClock(start=800.0)
+    swr = FieldPath.global_("meters", "swr")
+    store = StateStore(freshness_clock=clock)
+    scheduler = AcquisitionScheduler(
+        profile=RadioAcquisitionProfile(
+            provider="test_provider",
+            capabilities=(FieldCapability(path=swr, polling=True),),
+            field_policies={
+                swr: AcquisitionPolicy(
+                    cadence_seconds=None,
+                    freshness_ttl_seconds=2.0,
+                    tx_only=True,
+                ),
+            },
+        ),
+        clock=clock,
+    )
+    result = scheduler.ensure_fresh(
+        swr,
+        max_age=2.0,
+        priority=AcquisitionPriority.RECONCILIATION,
+        reason="stale",
+    )
+    assert result.status is AcquisitionStatus.QUEUED
+    assert result.request is not None
+    scheduler.note_tx_active(False)
+    return scheduler, result.request, store
+
+
+def _hint_drain(
+    scheduler: AcquisitionScheduler,
+    store: StateStore,
+    executor: _RecordingExecutor,
+    hint: dict[str, bool],
+) -> AcquisitionDrain:
+    reports = _Reports()
+
+    def tx_active_hint() -> bool:
+        return hint["keyed"]
+
+    return AcquisitionDrain(
+        scheduler=lambda: scheduler,
+        executor=lambda: executor,
+        store=lambda: store,
+        in_flight={},
+        expired=_never_expired,
+        dispatchable=lambda pending: pending,
+        report_failure=reports.failure,
+        report_executor_missing=reports.missing,
+        report_executor_error=reports.error,
+        report_sent=reports.sent_report,
+        tx_active_hint=tx_active_hint,
+    )
+
+
+class TestManagedTxHint:
+    async def test_a_true_hint_dispatches_tx_meter_without_observed_ptt(self) -> None:
+        """MOR-2616: the drain ORs the hint with observed PTT before note_tx_active."""
+
+        hint = {"keyed": True}
+        scheduler, request, store = _queued_tx_meter()
+        executor = _RecordingExecutor()
+        drain = _hint_drain(scheduler, store, executor, hint)
+
+        await drain.run_once()
+
+        assert executor.calls == [request.paths]
+        assert request.policy.tx_only
+
+        hint["keyed"] = False
+        released_scheduler, released_request, released_store = _queued_tx_meter()
+        released_executor = _RecordingExecutor()
+        released = _hint_drain(
+            released_scheduler, released_store, released_executor, hint
+        )
+        await released.run_once()
+
+        assert released_executor.calls == []
+        assert released_scheduler.dispatchable_requests() == ()
+        assert released_request.policy.tx_only
