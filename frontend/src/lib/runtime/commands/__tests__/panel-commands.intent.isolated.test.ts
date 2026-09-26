@@ -453,11 +453,12 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     // MUTE is one server command, never a client-side AF zero-write; the
     // fixture state carries no `monitorMute.on`, so leaving MUTE restores
     // nothing — a client that never muted must not unmute stale levels.
-    // MOR-1676 part A (AF): the radio-AF dispatch carries the raw integer
-    // (`round(0.42 * 255) === 107`), untagged — no `level_unit`.
+    // MOR-1676 part A (AF): the unit-less call is the legacy normalized
+    // float — the separate `set_af_level_normalized` intent, always sent
+    // tagged `level_unit: 'normalized'`.
     expect(exactCalls()).toEqual([
       ['set_monitor_mute', { on: true }],
-      ['set_af_level', { level: 107, receiver: 0 }],
+      ['set_af_level_normalized', { level: 0.42, receiver: 0, level_unit: 'normalized' }],
     ]);
     expectIntentTransport();
     expect(h.setMuted).toHaveBeenNthCalledWith(1, true);
@@ -543,12 +544,12 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       ['set_af_level', { level: 255, receiver: 0 }],
       ['set_af_level', { level: 0, receiver: 0 }],
       ['set_af_level', { level: 50, receiver: 0 }],
-      ['set_af_level', { level: 255, receiver: 0 }],
-      ['set_af_level', { level: 128, receiver: 0 }],
+      ['set_af_level_normalized', { level: 1, receiver: 0, level_unit: 'normalized' }],
+      ['set_af_level_normalized', { level: 0.5, receiver: 0, level_unit: 'normalized' }],
     ]);
-    for (const [, params] of exactCalls()) {
+    for (const [name, params] of exactCalls()) {
       expect(Number.isInteger(params.level)).toBe(true);
-      expect(params).not.toHaveProperty('level_unit');
+      if (name === 'set_af_level') expect(params).not.toHaveProperty('level_unit');
     }
     expectIntentTransport();
   });
@@ -588,11 +589,12 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     }
   });
 
-  it('dispatches integer AF endpoints on the radio path and keeps normalized browser-local endpoints', () => {
-    // MOR-1676 part A (AF): the radio target dispatches INTEGERS (untagged)
-    // — unit-less `0`/`1` are the legacy normalized endpoints converting to
-    // raw 0/255 — while the browser-volume branch keeps its normalized
-    // behaviour (`setRxVolume`/`setVolume`, no radio command).
+  it('dispatches normalized AF endpoints tagged on the legacy path and keeps normalized browser-local endpoints', () => {
+    // MOR-1676 part A (AF): unit-less calls are the legacy normalized path
+    // (`set_af_level_normalized`), ALWAYS sent tagged `level_unit:
+    // 'normalized'` — including the 0 and 1 endpoints, which JS cannot
+    // distinguish from raw ints. The browser-volume branch keeps its
+    // normalized behaviour (`setRxVolume`/`setVolume`, no radio command).
     h.caps = {
       ...h.caps!,
       controls: {
@@ -605,8 +607,8 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     rxAudio.onAfLevelChange(1);
 
     expect(exactCalls()).toEqual([
-      ['set_af_level', { level: 0, receiver: 0 }],
-      ['set_af_level', { level: 255, receiver: 0 }],
+      ['set_af_level_normalized', { level: 0, receiver: 0, level_unit: 'normalized' }],
+      ['set_af_level_normalized', { level: 1, receiver: 0, level_unit: 'normalized' }],
     ]);
     expectIntentTransport();
 
@@ -955,10 +957,11 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       ['set_preamp', { level: 1, receiver: 0 }],
       ['set_agc', { mode: 2, receiver: 0 }],
       ['set_nb', { on: true, receiver: 0 }],
-      // MOR-1676 part A (AF): `0.5` normalized converts to the raw integer
-      // `round(0.5 * 255) === 128` (caps here declare no `controls.af_level`,
-      // so the CAT-scale 0-255 fallback applies), dispatched untagged.
-      ['set_af_level', { level: 128, receiver: 0 }],
+      // MOR-1676 part A (AF): unit-less `0.5` is the legacy normalized path
+      // (`set_af_level_normalized`), always sent tagged — even though caps
+      // here declare no `controls.af_level` (the readback conversion is a
+      // separate concern from the intent name).
+      ['set_af_level_normalized', { level: 0.5, receiver: 0, level_unit: 'normalized' }],
       ['set_band', { band: 5 }],
       ['set_rit_status', { on: true }],
     ]);
