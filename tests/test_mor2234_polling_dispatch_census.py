@@ -351,7 +351,7 @@ async def _run_ftx1_poll_cycles(*, cycles: int) -> set[FieldPath]:
         await poller._poll_medium()  # noqa: SLF001
         await poller._poll_fast()  # noqa: SLF001
         await poller._poll_slow()  # noqa: SLF001
-        read.update(item.path for item in collected)
+        read.update(item.path for item in collected if type(item.value) is not bool)
         collected.clear()
     return read
 
