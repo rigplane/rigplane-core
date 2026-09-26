@@ -410,7 +410,8 @@ _CLASS_RANK: dict[AcquisitionClass, int] = {
 }
 _MIN_RECONCILIATION_MAX_AGE = 1e-9
 #: MOR-1898: liveness budget for a request whose ``max_age`` is the
-#: freshness epsilon (``_MIN_RECONCILIATION_MAX_AGE`` or below). Such a
+#: freshness epsilon (``_MIN_RECONCILIATION_MAX_AGE`` or below) and that
+#: carries no explicit ``timeout``. Such a
 #: ``max_age`` only says "no prior observation may satisfy this" — it is
 #: a freshness threshold, not a deadline. Deriving the liveness deadline
 #: from it made the request born expired: the first drain sent it, the
@@ -876,22 +877,25 @@ class AcquisitionScheduler:
 
         MOR-1898: ``max_age`` is a freshness threshold — how old a confirmed
         StateStore observation may be — never a liveness deadline on its own.
-        When the caller passes an explicit ``timeout``, that budget (not
-        ``max_age``) sets the request's liveness deadline; an ``max_age`` at
-        the freshness epsilon (the "no prior observation may satisfy this"
-        floor used by post-write confirmations, reconciliation fallbacks and
-        the web poller's post-write readback) keeps the request live for one
-        answer window instead of expiring the instant it is queued.
+        This split applies only to the post-write confirmation shape: a
+        ``max_age`` at the freshness epsilon (the "no prior observation may
+        satisfy this" floor used by post-write confirmations, reconciliation
+        fallbacks and the web poller's post-write readback) *without* an
+        explicit ``timeout``. Only that request keeps a real liveness budget —
+        one answer window — instead of expiring the instant it is queued. Every
+        other request keeps the established deadline: ``requested_at +
+        max_age``, with ``timeout`` still carried for the backend executor.
         """
 
         normalized_paths = _normalize_paths(paths)
         _validate_positive(max_age, label="max_age")
         normalized_priority = AcquisitionPriority(str(priority))
         now = self._clock.now()
-        liveness_seconds: float | None = timeout
-        if liveness_seconds is None and max_age <= _MIN_RECONCILIATION_MAX_AGE:
-            liveness_seconds = _EPSILON_MAX_AGE_LIVENESS_SECONDS
-        liveness_deadline = None if liveness_seconds is None else now + liveness_seconds
+        liveness_deadline = (
+            now + _EPSILON_MAX_AGE_LIVENESS_SECONDS
+            if timeout is None and max_age <= _MIN_RECONCILIATION_MAX_AGE
+            else None
+        )
 
         availability = self._availability_for(normalized_paths)
         if availability is not None:
