@@ -20,9 +20,8 @@
 
   let canvas: HTMLCanvasElement;
   let renderer: WaterfallRenderer | null = null;
-  // Mirrors `renderer` for the template only. The resize effect must not read
-  // it: assigning it on every scale change would re-run that effect for a
-  // reason other than the scale (MOR-1161).
+  // `renderer` is a plain variable, so the options effect below would not
+  // re-run after mount without reading this flag.
   let rendererReady = $state(false);
   let cssWidth = 0;
   let cssHeight = 0;

@@ -27,19 +27,6 @@ export function canvasBackingSize(
   };
 }
 
-/** Uniform ancestor scale, from painted size over layout size. Non-uniform stretch is ignored. */
-export function readAncestorScale(element: HTMLElement): number {
-  const layoutWidth = element.offsetWidth;
-  const layoutHeight = element.offsetHeight;
-  if (layoutWidth <= 0 || layoutHeight <= 0) return 1;
-  const box = element.getBoundingClientRect();
-  const scaleX = box.width / layoutWidth;
-  const scaleY = box.height / layoutHeight;
-  if (!Number.isFinite(scaleX) || scaleX <= 0) return 1;
-  if (Math.abs(scaleX - scaleY) > 0.01) return 1;
-  return scaleX;
-}
-
 /**
  * Re-runs `apply` whenever the enclosing `ScaledStage` changes its scale.
  *
