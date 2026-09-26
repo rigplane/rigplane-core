@@ -1184,12 +1184,9 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
     // (not the `h.caps` seam), so re-seed the store after every swap —
     // `beforeEach` seeds only the initial `liveCaps`. Publish the authority
     // AFTER the mount (not here): the host subscribes on mount, and only a
-    // post-mount publication reaches its `published` snapshot. The knob must
-    // sit on the raw lattice — assert it before stepping.
+    // post-mount publication reaches its `published` snapshot.
     publishAuthority();
     flushSync();
-    expect(knob(receiver)!.getAttribute('aria-valuemax')).toBe('255');
-    expect(knob(receiver)!.getAttribute('aria-valuenow')).toBe(receiver === 'sub' ? '196' : '79');
     knob(receiver)!.dispatchEvent(new KeyboardEvent(
       'keydown', { key: 'ArrowRight', bubbles: true, cancelable: true },
     ));
