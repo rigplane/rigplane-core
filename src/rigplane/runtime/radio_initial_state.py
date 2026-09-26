@@ -39,7 +39,14 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
     from ._state_queries import build_state_queries, wire_parts_for_query
 
     try:
-        gap = radio._civ_min_interval
+        interval = getattr(radio, "_civ_min_interval", None)
+        gap = (
+            float(interval)
+            if isinstance(interval, (int, float))
+            and not isinstance(interval, bool)
+            and interval > 0
+            else 0.0
+        )
         queries = build_state_queries(radio._profile)
         if not queries:
             radio._initial_state_fetched = True
