@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { renderAudioSpectrum, AudioSpectrumRendererState, type SpectrumState } from './audio-spectrum-renderer';
   import type { ControlDisplayDomain, PbtRange } from '$lib/radio/filter-controls';
-  import { canvasBackingSize, readAncestorScale, watchDevicePixelRatio, watchStageScale } from '../../../lib/canvas/backing-store';
+  import { canvasBackingSize, readAncestorScale, watchDevicePixelRatio, watchStageScale } from '../../../lib/canvas/backing-store.svelte';
 
   interface Props {
     /** FFT pixel data from AudioFftScope (0-160 range) */

@@ -7,7 +7,7 @@
   } from '../../lib/renderers/waterfall-renderer';
   import { gesture } from '../../lib/gestures/use-gesture';
   import { vibrate } from '../../lib/utils/haptics';
-  import { canvasBackingSize, readAncestorScale, watchDevicePixelRatio, watchStageScale } from '../../lib/canvas/backing-store';
+  import { canvasBackingSize, readAncestorScale, watchDevicePixelRatio, watchStageScale } from '../../lib/canvas/backing-store.svelte';
 
   interface Props {
     options?: WaterfallOptions;

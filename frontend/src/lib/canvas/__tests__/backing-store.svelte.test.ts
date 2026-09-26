@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { canvasBackingSize, readAncestorScale, watchDevicePixelRatio } from '../backing-store';
+import { canvasBackingSize, readAncestorScale, watchDevicePixelRatio } from '../backing-store.svelte';
 
 describe('canvasBackingSize', () => {
   it.each([
