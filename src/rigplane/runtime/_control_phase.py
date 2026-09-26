@@ -66,16 +66,19 @@ def _session_reject_hint(error: int) -> str:
     """Operator hint for a refused session allocation (IC-7610 measurements, MOR-2618)."""
     if error == 0xFFFFFFFF:
         return (
-            "The radio already has a LAN session from this computer. If another "
-            "RigPlane server or LAN client runs here, stop one of them: on an "
-            "IC-7610 a second login from the same computer makes the radio drop "
-            "the first session about 90 s later (see 'One RigPlane server per "
-            "radio' in docs/guide/cli.md). If nothing else runs here, the radio "
-            "may still hold an earlier session from this computer; a later retry "
-            "can succeed."
+            "On an IC-7610 this code means the radio already has a LAN session "
+            "from this computer. If another RigPlane server or LAN client runs "
+            "here, stop one of them: a second login from the same computer "
+            "makes the radio drop the first session about 90 s later (see 'One "
+            "RigPlane server per radio' in docs/guide/cli.md). If nothing else "
+            "runs here, the radio may still hold an earlier session from this "
+            "computer; a later retry can succeed."
         )
     if error == 0xFDFFFFFF:
-        return "A client on another computer holds the radio's LAN session."
+        return (
+            "On an IC-7610 this code means a client on another computer holds "
+            "the radio's LAN session."
+        )
     return "The radio may still hold an earlier session; a later retry can succeed."
 
 
