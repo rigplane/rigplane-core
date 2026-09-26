@@ -818,6 +818,73 @@ class TestCommandGuards:
         handler._ensure_capability("dual_rx", "set_dual_watch")
 
 
+class TestReceiverValidationSeat:
+    """Unsupported receivers are refused before enqueue, on the radio's say-so.
+
+    MOR-2484: the web enqueue gate calls the single runtime seat
+    (``require_receiver_for_profile``), not a web copy. A single-receiver
+    profile (IC-7300) refuses receiver=1 at enqueue time with the
+    runtime's ``CommandError`` message, so the command is never queued;
+    the dual-receiver IC-7610 admits both receivers.
+    """
+
+    def test_single_receiver_refused_before_enqueue(self):
+        from rigplane.core.exceptions import CommandError
+        from rigplane.web.handlers import ControlHandler
+
+        radio = _make_radio("IC-7300")
+        handler = ControlHandler.__new__(ControlHandler)
+        handler._radio = radio
+        queue: list[object] = []
+
+        with pytest.raises(CommandError, match="does not support receiver=1"):
+            handler._enqueue_rc_frequency(  # noqa: SLF001
+                "set_freq",
+                {"freq": 14_074_000, "receiver": 1},
+                SimpleNamespace(put=queue.append),
+                radio,
+            )
+        assert queue == []
+        # No web copy remains: the gate calls the runtime seat directly,
+        # so neither the ControlHandler method nor a module-level
+        # second implementation may exist.
+        assert not hasattr(ControlHandler, "_ensure_receiver_supported")
+        assert not hasattr(ControlHandler, "_refuse_unsupported_receiver")
+        import rigplane.web.handlers.control as control_mod
+
+        assert not hasattr(control_mod, "_ensure_receiver_supported")
+
+    def test_dual_receiver_admitted_to_queue(self):
+        from rigplane.web.handlers import ControlHandler
+
+        radio = _make_radio("IC-7610")
+        handler = ControlHandler.__new__(ControlHandler)
+        handler._radio = radio
+        queue: list[object] = []
+
+        result = handler._enqueue_rc_frequency(  # noqa: SLF001
+            "set_freq",
+            {"freq": 14_074_000, "receiver": 1},
+            SimpleNamespace(put=queue.append),
+            radio,
+        )
+        assert result == {"freq": 14_074_000, "receiver": 1}
+        assert len(queue) == 1
+
+    def test_web_gate_matches_runtime_seat_message(self):
+        """The web gate raises the runtime seat's message verbatim."""
+        from rigplane.core.exceptions import CommandError
+        from rigplane.runtime._dual_rx_runtime import require_receiver_for_profile
+        from rigplane.web.handlers.control import _refuse_unsupported_receiver
+
+        radio = _make_radio("IC-7300")
+        with pytest.raises(CommandError) as gate_exc:
+            _refuse_unsupported_receiver(radio, 1, operation="set_freq")
+        with pytest.raises(CommandError) as seat_exc:
+            require_receiver_for_profile(radio.profile, 1, operation="set_freq")
+        assert str(gate_exc.value) == str(seat_exc.value)
+
+
 # ── Profile-declared second receiver (owner ruling, 2026-09-08) ─
 
 

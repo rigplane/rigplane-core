@@ -1125,13 +1125,9 @@ class RadioPoller:
             await self._civ(command, sub=sub, data=payload)
         return True
 
-    def _ensure_receiver_supported(self, receiver: int, *, operation: str) -> None:
-        if self._profile.supports_receiver(receiver):
-            return
-        raise CommandError(
-            f"{operation} does not support receiver={receiver} for profile "
-            f"{self._profile.model} (receivers={self._profile.receiver_count})"
-        )
+    # MOR-2484: no local receiver check here. The web path refuses an
+    # unsupported receiver before enqueue
+    # (``web/handlers/control.py`` gates on the runtime seat).
 
     async def _send_one_state_query(
         self,
@@ -2156,7 +2152,6 @@ class RadioPoller:
                 # so readback cannot retire an in-flight lifecycle entry.
                 return observation
             case SetFreq(freq=freq, receiver=rx):
-                self._ensure_receiver_supported(rx, operation="set_freq")
                 current = self._current_active()
                 if rx != 0:
                     # CoreRadio.set_freq already owns the cmd29-vs-VFO-switch
@@ -2203,7 +2198,6 @@ class RadioPoller:
                 if self._on_state_event:
                     self._on_state_event("freq_changed", {"freq": freq, "receiver": rx})
             case SetMode(mode=mode, filter_width=fw, receiver=rx):
-                self._ensure_receiver_supported(rx, operation="set_mode")
                 if CAP_FILTER_WIDTH in self._caps:
                     self._state_store.discard(
                         (FieldPath.active(str(rx), "freq_mode", "filter_width"),)
@@ -2248,10 +2242,8 @@ class RadioPoller:
                     self._on_state_event("mode_changed", {"mode": mode, "receiver": rx})
             case SetFilter(filter_num=fn, receiver=rx):
                 if CAP_FILTER_WIDTH in self._caps:
-                    self._ensure_receiver_supported(rx, operation="set_filter")
                     await radio.set_filter(fn, receiver=rx)
             case SetFilterWidth(width=width, receiver=rx):
-                self._ensure_receiver_supported(rx, operation="set_filter_width")
                 if not 50 <= width <= 10000:
                     raise CommandError(
                         f"set_filter_width value must be 50-10000 Hz, got {width}"
@@ -2269,7 +2261,6 @@ class RadioPoller:
                 # profile declares a writeable radio-default code; the
                 # protocol check keeps a tag-without-backend combination a
                 # loud CommandError instead of an AttributeError.
-                self._ensure_receiver_supported(rx, operation="reset_filter_width")
                 if CAP_FILTER_WIDTH_RADIO_DEFAULT not in self._caps:
                     raise CommandError(
                         "reset_filter_width is not supported by this backend"
@@ -2280,7 +2271,6 @@ class RadioPoller:
                     )
                 await radio.reset_filter_width(receiver=rx)
             case SetFilterShape(shape=shape, receiver=rx):
-                self._ensure_receiver_supported(rx, operation="set_filter_shape")
                 if CAP_FILTER_SHAPE not in self._caps:
                     raise CommandError(
                         "set_filter_shape is not supported by this backend"
@@ -2337,31 +2327,26 @@ class RadioPoller:
                 if CAP_POWER_CONTROL in self._caps:
                     await radio.set_rf_power(level)
             case SetNB(on=on, receiver=rx):
-                self._ensure_receiver_supported(rx, operation="set_nb")
                 if CAP_NB in self._caps:
                     await radio.set_nb(on, receiver=rx)
                 if self._on_state_event:
                     self._on_state_event("nb_changed", {"on": on, "receiver": rx})
             case SetNR(on=on, receiver=rx):
-                self._ensure_receiver_supported(rx, operation="set_nr")
                 if CAP_NR in self._caps:
                     await radio.set_nr(on, receiver=rx)
                 if self._on_state_event:
                     self._on_state_event("nr_changed", {"on": on, "receiver": rx})
             case SetDigiSel(on=on, receiver=rx):
                 if CAP_DIGISEL in self._caps:
-                    self._ensure_receiver_supported(rx, operation="set_digisel")
                     await radio.set_digisel(on, receiver=rx)
                 if self._on_state_event:
                     self._on_state_event("digisel_changed", {"on": on, "receiver": rx})
             case SetIpPlus(on=on, receiver=rx):
                 if CAP_IP_PLUS in self._caps:
-                    self._ensure_receiver_supported(rx, operation="set_ipplus")
                     await radio.set_ip_plus(on, receiver=rx)
                 if self._on_state_event:
                     self._on_state_event("ipplus_changed", {"on": on, "receiver": rx})
             case SetAttenuator(db=db, receiver=rx):
-                self._ensure_receiver_supported(rx, operation="set_attenuator")
                 if CAP_ATTENUATOR in self._caps:
                     await radio.set_attenuator_level(db, receiver=rx)
                 if self._on_state_event:
@@ -2369,7 +2354,6 @@ class RadioPoller:
                         "attenuator_changed", {"db": db, "receiver": rx}
                     )
             case SetPreamp(level=level, receiver=rx):
-                self._ensure_receiver_supported(rx, operation="set_preamp")
                 if CAP_PREAMP in self._caps:
                     await radio.set_preamp(level, receiver=rx)
                 if self._on_state_event:
@@ -2445,7 +2429,6 @@ class RadioPoller:
                 if self._radio_state:
                     self._radio_state.break_in = mode
             case SetApf(mode=mode, receiver=rx):
-                self._ensure_receiver_supported(rx, operation="set_apf")
                 await _r.set_audio_peak_filter(mode, receiver=rx)
                 if self._radio_state:
                     target = (
@@ -2453,7 +2436,6 @@ class RadioPoller:
                     )
                     target.apf_type_level = mode
             case SetTwinPeak(on=on, receiver=rx):
-                self._ensure_receiver_supported(rx, operation="set_twin_peak")
                 await _r.set_twin_peak_filter(on, receiver=rx)
                 if self._radio_state:
                     target = (
@@ -2515,7 +2497,6 @@ class RadioPoller:
                     provider_generation=provider_generation,
                 )
             case SetDataMode(mode=mode, receiver=rx):
-                self._ensure_receiver_supported(rx, operation="set_data_mode")
                 if not 0 <= mode <= 3:
                     raise CommandError(f"set_data_mode mode must be 0-3, got {mode}")
                 await radio.set_data_mode(mode, receiver=rx)
@@ -2539,7 +2520,6 @@ class RadioPoller:
                     self._radio_state.dial_lock = on
             case SetAgc(mode=mode, receiver=rx):
                 if CAP_AGC in self._caps:
-                    self._ensure_receiver_supported(rx, operation="set_agc")
                     await radio.set_agc(mode, receiver=rx)
                     agc_sent = True
                 else:
@@ -2669,9 +2649,6 @@ class RadioPoller:
                 if slot is not None:
                     active_name = self._current_active().upper()
                     receiver = 1 if active_name == "SUB" else 0
-                    self._ensure_receiver_supported(
-                        receiver, operation="select_vfo_slot"
-                    )
                     if self._profile.vfo_readback == "selected_unselected":
                         await self._select_and_bind_vfo_slot(
                             slot,
@@ -2716,7 +2693,7 @@ class RadioPoller:
                 else:
                     raise CommandError(f"unknown VFO selection {vfo!r}")
                 if is_sub:
-                    self._ensure_receiver_supported(1, operation="select_vfo")
+                    pass  # MOR-2484: select_receiver below refuses SUB on single-RX.
                 current = self._current_active()
                 # NB: local is intentionally named ``target_name`` — the
                 # enclosing ``match`` has earlier branches that bind
@@ -2871,10 +2848,14 @@ class RadioPoller:
                 # ``[state_acquisition.capabilities]`` does declare
                 # ``scope_controls.global.display.receiver``, so the read
                 # would be queued and sent.
-                self._ensure_receiver_supported(
-                    receiver,
-                    operation="switch_scope_receiver",
-                )
+                # MOR-2484: the enqueue gate in web/handlers/control.py
+                # refuses an unsupported scope receiver via the runtime
+                # seat; this arm only keeps the 0/1 domain guard.
+                if receiver not in (0, 1):
+                    raise CommandError(
+                        "switch_scope_receiver: receiver must be 0 or 1, "
+                        f"got {receiver}"
+                    )
                 sent = await self._send_cmd("set_scope_main_sub", bytes([receiver]))
                 if sent:
                     if self._radio_state:
@@ -3062,7 +3043,6 @@ class RadioPoller:
                 if self._radio_state:
                     self._radio_state.ssb_tx_bandwidth = value
             case SetManualNotchWidth(value=value, receiver=rx):
-                self._ensure_receiver_supported(rx, operation="set_manual_notch_width")
                 if CAP_NOTCH in self._caps:
                     await radio.set_manual_notch_width(value, receiver=rx)
             case SetBreakInDelay(level=level):
@@ -3086,7 +3066,6 @@ class RadioPoller:
                 if self._radio_state:
                     self._radio_state.vox_delay = level
             case SetNbDepth(level=level, receiver=rx):
-                self._ensure_receiver_supported(rx, operation="set_nb_depth")
                 if CAP_NB in self._caps:
                     # NB depth is a GLOBAL menu item (0x1A 05 02 90), not
                     # per-receiver: the setter takes no ``receiver`` argument.
@@ -3113,7 +3092,6 @@ class RadioPoller:
                             provider_generation=provider_generation,
                         )
             case SetNbWidth(level=level, receiver=rx):
-                self._ensure_receiver_supported(rx, operation="set_nb_width")
                 if CAP_NB in self._caps:
                     # NB width is a GLOBAL menu item (0x1A 05 02 91), not
                     # per-receiver: the setter takes no ``receiver`` argument.
@@ -3212,11 +3190,9 @@ class RadioPoller:
                         provider_generation=provider_generation,
                     )
             case SetAudioPeakFilter(on=on, receiver=rx):
-                self._ensure_receiver_supported(rx, operation="set_audio_peak_filter")
                 if CAP_APF in self._caps:
                     await radio.set_audio_peak_filter(int(on), receiver=rx)
             case SetDigiselShift(level=level, receiver=rx):
-                self._ensure_receiver_supported(rx, operation="set_digisel_shift")
                 # Distinct capability from CAP_DIGISEL (0x16/0x4E toggle):
                 # DIGI-SEL Shift is 0x14/0x13 and IC-705 exposes it without
                 # the toggle (MOR-1544).

@@ -2475,7 +2475,7 @@ async def test_execute_event_emitting_commands_and_vfo_paths() -> None:
     await poller._execute(SwitchScopeReceiver(1))  # noqa: SLF001
     radio.enable_scope.assert_awaited_once_with(policy="fast")
     radio.restore_scope_session_state.assert_awaited_once_with((False, False))
-    with pytest.raises(CommandError, match="receiver=2"):
+    with pytest.raises(CommandError, match="receiver must be 0 or 1, got 2"):
         await poller._execute(SwitchScopeReceiver(2))  # noqa: SLF001
 
 
