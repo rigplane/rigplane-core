@@ -4527,6 +4527,28 @@ def test_tick_discards_every_ic7610_transmit_meter_on_dekey() -> None:
     assert [rekeyed.field(path).value for path in _TX_METERS] == [2.0] * 4
 
 
+def test_an_answer_during_execute_may_be_credited_from_the_pass_clock() -> None:
+    """MOR-2617: early paths of a multi-path send answer before record_dispatch."""
+
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = AcquisitionScheduler(profile=_profile([freq]))
+    result = scheduler.ensure_fresh(
+        freq, max_age=5.0, priority="user", reason="post_write_readback"
+    )
+    assert result.request is not None
+    request_id = result.request.id
+
+    scheduler.note_execute_started(request_id, now=10.0)
+    assert scheduler.may_credit(result.request, observation_timestamp=10.05) is True
+    assert scheduler.may_credit(result.request, observation_timestamp=9.9) is False
+
+    scheduler.note_execute_finished(request_id)
+    assert scheduler.may_credit(result.request, observation_timestamp=10.05) is False
+
+    scheduler.note_execute_started(request_id)
+    assert scheduler.may_credit(result.request, observation_timestamp=10.05) is False
+
+
 def test_a_never_dispatched_request_may_not_be_credited() -> None:
     freq = FieldPath.active("main", "freq_mode", "freq_hz")
     scheduler = AcquisitionScheduler(profile=_profile([freq]))

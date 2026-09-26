@@ -317,12 +317,12 @@ class AcquisitionDrain:
                     )
                 continue
 
-            # MOR-2594: the id is in execute from here until the result (or
-            # error) settles below, so a write confirmation arriving while
-            # the frame may already be on the wire still gets its own
-            # dispatch. ``record_dispatch`` alone cannot cover that window:
-            # it only runs after ``execute`` returns.
-            scheduler.note_execute_started(request.id)
+            # MOR-2594 / MOR-2617: the id is in execute from here until the
+            # result (or error) settles below. ``record_dispatch`` only runs
+            # after ``execute`` returns, so the pass clock is stored now: a
+            # write confirmation still gets its own dispatch, and a read
+            # answer that beats the last send can still be credited.
+            scheduler.note_execute_started(request.id, now=now)
             try:
                 result = await executor.execute(
                     request,

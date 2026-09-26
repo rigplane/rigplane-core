@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
+from dataclasses import replace
 from typing import Any, cast
 
 import pytest
@@ -27,7 +28,12 @@ from rigplane.core.state_acquisition_policy import (
     FieldCapability,
     RadioAcquisitionProfile,
 )
-from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.state_pipeline_contracts import (
+    ChangeSet,
+    FieldChange,
+    FieldPath,
+    SourceMetadata,
+)
 from rigplane.core.state_store import FreshnessClock, StateStore
 from rigplane.rigctld.server import RigctldServer
 from rigplane.web.radio_poller import RadioPoller
@@ -79,7 +85,9 @@ class _StubScheduler:
         self.dispatches: list[tuple[str, tuple[FieldPath, ...], float]] = []
         self.executing: list[str] = []
 
-    def note_execute_started(self, request_id: str) -> None:
+    def note_execute_started(
+        self, request_id: str, *, now: float | None = None
+    ) -> None:
         self.executing.append(request_id)
 
     def note_execute_finished(self, request_id: str) -> None:
@@ -767,3 +775,127 @@ class TestManagedTxHint:
         assert released_executor.calls == []
         assert released_scheduler.dispatchable_requests() == ()
         assert released_request.policy.tx_only
+
+
+_TX_METER_NAMES = ("alc", "comp", "power", "swr")
+
+
+def _tx_meter_changeset(path: FieldPath, *, at: float) -> ChangeSet:
+    return ChangeSet(
+        revision=1,
+        freshness_revision=1,
+        observation_seq=1,
+        changes=(FieldChange(path=path, previous=None, current=1.0),),
+        timestamp_monotonic=at,
+        sources=(
+            SourceMetadata(
+                source="command_response",
+                provider="icom_civ",
+                transport="civ",
+            ),
+        ),
+        observed_paths=(path,),
+    )
+
+
+class _EarlyAnswerExecutor:
+    """Delivers answers for every path but the last while execute is still running."""
+
+    def __init__(self, scheduler: AcquisitionScheduler, *, pass_now: float) -> None:
+        self._scheduler = scheduler
+        self._pass_now = pass_now
+        self.credited: list[str] = []
+
+    async def execute(
+        self,
+        request: AcquisitionRequest,
+        *,
+        already_sent_paths: frozenset[FieldPath],
+    ) -> AcquisitionExecutionResult:
+        del already_sent_paths
+        observed_at = self._pass_now + 0.01
+        for path in request.paths[:-1]:
+            pending = next(
+                (
+                    item
+                    for item in self._scheduler.pending_requests()
+                    if item.id == request.id and path in item.paths
+                ),
+                None,
+            )
+            assert pending is not None
+            matched = replace(pending, paths=(path,))
+            if self._scheduler.may_credit(matched, observation_timestamp=observed_at):
+                self._scheduler.record_acquisition_result(
+                    matched,
+                    _tx_meter_changeset(path, at=observed_at),
+                )
+                self.credited.append(path.name)
+        return AcquisitionExecutionResult(sent_paths=request.paths)
+
+
+def test_an_answer_that_arrives_during_execute_completes_the_request() -> None:
+    """MOR-2617: early TX-meter answers must not leave the key pending until expiry."""
+
+    clock = FreshnessClock(start=100.0)
+    paths = tuple(FieldPath.global_("meters", name) for name in _TX_METER_NAMES)
+    policy = AcquisitionPolicy(
+        cadence_seconds=0.25,
+        freshness_ttl_seconds=2.0,
+        tx_only=True,
+    )
+    scheduler = AcquisitionScheduler(
+        profile=RadioAcquisitionProfile(
+            provider="test_provider",
+            capabilities=tuple(
+                FieldCapability(path=path, polling=True, stream_like=True)
+                for path in paths
+            ),
+            field_policies={path: policy for path in paths},
+        ),
+        clock=clock,
+    )
+    queued = scheduler.due_requests(now=clock.now(), tx_active=True)
+    assert len(queued) == 1
+    request = queued[0]
+    assert request.paths == paths
+
+    executor = _EarlyAnswerExecutor(scheduler, pass_now=clock.now())
+    reports = _Reports()
+    drain = AcquisitionDrain(
+        scheduler=lambda: scheduler,
+        executor=lambda: cast(Any, executor),
+        store=lambda: StateStore(freshness_clock=clock),
+        in_flight={},
+        expired=_never_expired,
+        dispatchable=lambda pending: pending,
+        report_failure=reports.failure,
+        report_executor_missing=reports.missing,
+        report_executor_error=reports.error,
+        report_sent=reports.sent_report,
+        tx_active_hint=lambda: True,
+    )
+
+    asyncio.run(drain.run_once())
+
+    last = paths[-1]
+    pending_last = next(
+        (
+            item
+            for item in scheduler.pending_requests()
+            if item.id == request.id and last in item.paths
+        ),
+        None,
+    )
+    assert pending_last is not None
+    scheduler.record_acquisition_result(
+        replace(pending_last, paths=(last,)),
+        _tx_meter_changeset(last, at=clock.now() + 0.02),
+    )
+
+    assert scheduler.pending_requests() == ()
+    assert executor.credited == [path.name for path in paths[:-1]]
+    again = scheduler.due_requests(now=clock.now() + 0.25, tx_active=True)
+    assert len(again) == 1
+    assert again[0].id != request.id
+    assert again[0].paths == paths
