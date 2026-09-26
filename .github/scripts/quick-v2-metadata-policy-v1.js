@@ -247,4 +247,4 @@ async function assess({github, context, liveBaseSha}) { assertSha(liveBaseSha, '
   if (context.eventName === 'workflow_run') { return assessWorkflowRun({github, context, liveBaseSha}); }
   return assessment({kind: 'unknown', code: 'ignored_event'});
 }
-module.exports = { CONTROL_PATHS, LEGACY_WORKFLOW, OBSERVATION_CONTEXT, OBSERVER_PATH, REPOSITORY, assess, assertControlsUnchanged, assertJobTopologyUnchanged, assertRunPublicationSnapshot, assertUniqueCurrentPullMatchesRun, bindPull, bindRunPullRequest, evaluateJobTopology, getTreeEntry, jobTopologySnapshot, rebindForPublication, relevantLifecycle, stableAssessment, };
+module.exports = { CONTROL_PATHS, LEGACY_WORKFLOW, OBSERVATION_CONTEXT, OBSERVER_PATH, REPOSITORY, assess, assertControlsUnchanged, assertJobTopologyUnchanged, assertRunPublicationSnapshot, assertUniqueCurrentPullMatchesRun, bindPull, bindRunPullRequest, evaluateJobTopology, getTreeEntry, jobTopologySnapshot, listAttemptJobs, rebindForPublication, relevantLifecycle, stableAssessment, };
