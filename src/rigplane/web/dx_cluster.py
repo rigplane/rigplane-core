@@ -103,10 +103,7 @@ class DXClusterClient:
         attempt = 0
         while self._running:
             try:
-                async with asyncio.timeout(_CONNECT_TIMEOUT_SECONDS):
-                    reader, writer = await asyncio.open_connection(
-                        self._host, self._port
-                    )
+                reader, writer = await asyncio.open_connection(self._host, self._port)
                 self._writer = writer
                 try:
                     writer.write(f"{self._callsign}\r\n".encode())
