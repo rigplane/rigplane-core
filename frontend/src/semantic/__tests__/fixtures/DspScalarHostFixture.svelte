@@ -3,6 +3,7 @@
   import type { FiniteControlAppearance, FiniteRendererContext }
     from '../../../primitives/control-instruments/control-instrument-renderer.svelte';
   import type { CommandScalarFeedback } from '../../../primitives/scalar/continuous-scalar.svelte';
+  import type { NotchWidthChoice } from '../../../lib/types/capabilities';
   import DspInstrumentHost from '../../DspInstrumentHost.svelte';
   import DspScalarHost from '../../DspScalarHost.svelte';
   import DspSurface, { type DspLevelField } from '../../DspSurface.svelte';
@@ -18,6 +19,7 @@
     presentation?: 'grouped' | 'independent' | 'nr';
     scalarPresentation?: Readonly<DspScalarPresentation>;
     agcLabels?: Record<string, string>;
+    notchWidthChoices?: readonly NotchWidthChoice[];
     nbLevelMax?: number;
     nbLevelPercent?: boolean;
     scalarAppearance?: ScalarAppearance;
@@ -32,7 +34,7 @@
     onAgcModeChange?: (mode: number) => void;
   }
   let { view, feedback, presentation = 'grouped', scalarPresentation,
-    agcLabels = {}, nbLevelMax = 255, nbLevelPercent = false,
+    agcLabels = {}, notchWidthChoices, nbLevelMax = 255, nbLevelPercent = false,
     scalarAppearance, presentationIsCurrent,
     pendingNb = null, pendingNr = null, finiteAppearance, rendererContext = null,
     onToggle, onLevelChange, onNotchModeChange, onAgcModeChange }: Props = $props();
@@ -86,7 +88,7 @@
               {@render scalarHandles.nrLevel(scalarPresentation)}
             </section>
           {:else}
-            <DspSurface {view} {finiteHandles} scalarHandles={scalarHandles}
+            <DspSurface {view} {finiteHandles} scalarHandles={scalarHandles} {notchWidthChoices}
               finiteLayout={presentation === 'independent' ? independentFinite : undefined}
               scalarLayout={presentation === 'independent' ? independentScalars : undefined}
               onLevelChange={(field, value) => onLevelChange?.(field, value)} />
