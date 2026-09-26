@@ -24,6 +24,7 @@
     presentationIsCurrent?: () => boolean;
     pendingNb?: boolean | null;
     pendingNr?: boolean | null;
+    pendingNotch?: DspNotchMode | null;
     finiteAppearance?: FiniteControlAppearance<DspFiniteChoiceValue>;
     rendererContext?: FiniteRendererContext | null;
     onToggle?: (field: DspToggleField, next: boolean) => void;
@@ -34,7 +35,7 @@
   let { view, feedback, presentation = 'grouped', scalarPresentation,
     agcLabels = {}, nbLevelMax = 255, nbLevelPercent = false,
     scalarAppearance, presentationIsCurrent,
-    pendingNb = null, pendingNr = null, finiteAppearance, rendererContext = null,
+    pendingNb = null, pendingNr = null, pendingNotch = null, finiteAppearance, rendererContext = null,
     onToggle, onLevelChange, onNotchModeChange, onAgcModeChange }: Props = $props();
   let finiteSelection = $derived(finiteAppearance === undefined
     ? {} : { finiteAppearance, rendererContext });
@@ -60,7 +61,7 @@
   }));
 </script>
 
-<DspInstrumentHost {view} {agcLabels} {pendingNb} {pendingNr} {onToggle}
+<DspInstrumentHost {view} {agcLabels} {pendingNb} {pendingNr} {pendingNotch} {onToggle}
   {onNotchModeChange} {onAgcModeChange} {...finiteSelection}>
   {#snippet children(finiteHandles: DspFiniteHandles)}
     <DspScalarHost {view} feedback={scalarFeedback} {nbLevelMax} {nbLevelPercent}

@@ -60,7 +60,7 @@
     getCwPitchControlFeedback, getKeySpeedControlFeedback, getRfSqlControlFeedback,
     getTxAuxControlFeedback, type TxAuxControlFeedbackField,
     getPendingFrequencyHz,
-    getPendingFilterSelection, getPendingNbOn, getPendingNrOn, getPendingPreampLevel,
+    getPendingFilterSelection, getPendingNbOn, getPendingNotchMode, getPendingNrOn, getPendingPreampLevel,
     getPendingRepeaterShift, getPendingRepeaterTone, getPendingToneFreq,
     getRepeaterHandlers,
     getSystemHandlers, getDataModeArmed, getModInputArmed,
@@ -1703,6 +1703,7 @@
   });
   let pendingNb = $derived(activeReceiverIndex === null ? null : getPendingNbOn(activeReceiverIndex));
   let pendingNr = $derived(activeReceiverIndex === null ? null : getPendingNrOn(activeReceiverIndex));
+  let pendingNotch = $derived(activeReceiverIndex === null ? null : getPendingNotchMode(activeReceiverIndex));
 
   function requestKey(): void {
     tx.transmitOn();
@@ -2036,7 +2037,7 @@
   >
   {#snippet children(cwKeyerInstruments)}
   <DspInstrumentHost
-    {...dspFiniteRendererSelection} {view} {agcLabels} {pendingNb} {pendingNr}
+    {...dspFiniteRendererSelection} {view} {agcLabels} {pendingNb} {pendingNr} {pendingNotch}
     onToggle={(field, next) => DSP_TOGGLE_INTENT[field](next)}
     onNotchModeChange={dspIntents.onNotchModeChange}
     onAgcModeChange={agcIntents.onAgcModeChange}

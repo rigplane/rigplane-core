@@ -44,7 +44,7 @@ vi.mock('$lib/runtime/adapters/radio-view-model-adapter', () => ({
 }));
 
 import {
-  getPendingFilterSelection, getPendingNbOn, getPendingNrOn, getPendingPreampLevel,
+  getPendingFilterSelection, getPendingNbOn, getPendingNotchMode, getPendingNrOn, getPendingPreampLevel,
 } from '../panel-adapters';
 
 const cmd = (over: Partial<FakeCommand> = {}): FakeCommand => ({
@@ -209,5 +209,89 @@ describe.each(CASES)('$label (MOR-1441 leg 2, MOR-1488)', (
       cmd({ name: intentName, createdAt: 5, params: { [paramKey]: otherValue, receiver: 0 } }),
     ];
     expect(accessor(0)).toBe(otherValue);
+  });
+});
+
+// ── Notch-mode pending target (MOR-2236 remainder) ─────────────────────────
+//
+// The v3 notch choice group dispatches one command per choice ("auto" →
+// `set_auto_notch on`, "manual" → `set_manual_notch on`, "off" → BOTH off in
+// that order, MOR-1541). `getPendingNotchMode` folds the two in-flight
+// boolean strands into the single requested choice the group shows pending —
+// over the SAME lifecycle decision table (`latestPendingParam`) the four
+// accessors above use, so confirmation, failure and supersession clear it by
+// the same rule.
+
+describe('getPendingNotchMode (MOR-2236 remainder)', () => {
+  afterEach(() => { runtimeState.state = null; state.commands = []; });
+
+  const autoOn = (over: Partial<FakeCommand> = {}): FakeCommand => ({
+    name: 'set_auto_notch', status: 'pending', createdAt: 0,
+    params: { on: true, receiver: 0 }, ...over,
+  });
+  const manualOn = (over: Partial<FakeCommand> = {}): FakeCommand => ({
+    name: 'set_manual_notch', status: 'pending', createdAt: 0,
+    params: { on: true, receiver: 0 }, ...over,
+  });
+  const autoOff = (over: Partial<FakeCommand> = {}): FakeCommand => ({
+    name: 'set_auto_notch', status: 'pending', createdAt: 0,
+    params: { on: false, receiver: 0 }, ...over,
+  });
+  const manualOff = (over: Partial<FakeCommand> = {}): FakeCommand => ({
+    name: 'set_manual_notch', status: 'pending', createdAt: 0,
+    params: { on: false, receiver: 0 }, ...over,
+  });
+
+  it('returns null when nothing is in flight', () => {
+    expect(getPendingNotchMode(0)).toBeNull();
+  });
+
+  it('reads an auto-on strand as the auto choice', () => {
+    state.commands = [autoOn()];
+    expect(getPendingNotchMode(0)).toBe('auto');
+  });
+
+  it('reads a manual-on strand as the manual choice', () => {
+    state.commands = [manualOn()];
+    expect(getPendingNotchMode(0)).toBe('manual');
+  });
+
+  it('reads the off PAIR (both strands off) as the off choice', () => {
+    state.commands = [autoOff(), manualOff({ createdAt: 1 })];
+    expect(getPendingNotchMode(0)).toBe('off');
+  });
+
+  it('a half-arrived off pair (one strand only) is not yet the off choice', () => {
+    state.commands = [autoOff()];
+    expect(getPendingNotchMode(0)).toBeNull();
+  });
+
+  it('a newer strand supersedes the older choice (latest-target-wins)', () => {
+    state.commands = [autoOn({ createdAt: 1 }), manualOn({ createdAt: 2 })];
+    expect(getPendingNotchMode(0)).toBe('manual');
+  });
+
+  it('ignores strands for another receiver', () => {
+    state.commands = [autoOn({ params: { on: true, receiver: 1 } })];
+    expect(getPendingNotchMode(0)).toBeNull();
+  });
+
+  it('ignores terminal strands', () => {
+    state.commands = [autoOn({ status: 'failed' })];
+    expect(getPendingNotchMode(0)).toBeNull();
+  });
+
+  it('stays pending across an ack until the commanded field is re-observed', () => {
+    runtimeState.state = { main: { autoNotch: false, manualNotch: false }, sub: {},
+      fieldStatus: { 'main.autoNotch': { lastObservedMonotonic: 4 } } };
+    state.commands = [autoOn({ status: 'acknowledged', ackFieldObservationTimes: { 'main.autoNotch': 4 } })];
+    expect(getPendingNotchMode(0)).toBe('auto');
+  });
+
+  it('clears once the commanded field is re-observed', () => {
+    runtimeState.state = { main: { autoNotch: false, manualNotch: false }, sub: {},
+      fieldStatus: { 'main.autoNotch': { lastObservedMonotonic: 5 } } };
+    state.commands = [autoOn({ status: 'acknowledged', ackFieldObservationTimes: { 'main.autoNotch': 4 } })];
+    expect(getPendingNotchMode(0)).toBeNull();
   });
 });
