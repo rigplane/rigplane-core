@@ -207,17 +207,29 @@ export function dispatchRadioIntentWithResult(intent: RadioIntent): RadioIntentD
   // is one wire command either way; the documented normalized contract
   // (`docs/api/command-catalog.md`, the ws-client byte vectors) is unchanged.
   // A normalized 1.0 must never go out untagged: the server would read it
-  // as raw 1, near silence. The raw unit is STRIPPED before `sendCommand`
-  // because the server rejects any `level_unit` other than `'normalized'`.
+  // as raw 1, near silence. A raw intent whose `level_unit` is MISSING (a
+  // caller that computed the raw int itself, e.g. the keyboard fan-out)
+  // still goes out untagged — `sendCommand` is the last writer, and the
+  // server reads an untagged int as raw. The raw unit is STRIPPED before
+  // `sendCommand` because the server rejects any `level_unit` other than
+  // `'normalized'`.
   const wireParams = (() => {
     const base = params as Record<string, unknown>;
     if (specsByName.get(name)?.some((spec) => spec.level === 'normalized')) {
       return { ...base, level_unit: 'normalized' };
     }
     if (name === 'set_af_level') {
+      // A raw intent states `level_unit: 'raw'` and goes out stripped. A
+      // caller that computed the raw int itself and states no unit (the
+      // keyboard fan-out) also goes out untagged — the server reads an
+      // untagged int as raw, which is exactly this path's meaning.
       if (base.level_unit === 'raw') {
         const { level_unit: _stripped, ...untagged } = base;
         return untagged;
+      }
+      if (base.level_unit === undefined
+        && typeof base.level === 'number' && Number.isInteger(base.level)) {
+        return base;
       }
       return { ...base, level_unit: 'normalized' };
     }
