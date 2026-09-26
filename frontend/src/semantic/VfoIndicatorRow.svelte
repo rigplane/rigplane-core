@@ -33,8 +33,11 @@
       : state === 'uncertain' ? 'TX?'
         : '';
 
+  // MOR-2644: an unread fact shows its label dimmed with no value text —
+  // never a dash placeholder. A fact the radio does not have is not drawn
+  // at all (the {#if} guards below). The subdued data-state paint stays.
   function numeric(field: ReceiverIndicatorField<number>): string {
-    return field.reading.status === 'known' ? String(field.reading.value) : '—';
+    return field.reading.status === 'known' ? String(field.reading.value) : '';
   }
 
   /** The RF gain the display shows, independent of provenance: the observed
@@ -66,7 +69,7 @@
   }
 
   function agc(field: ReceiverIndicatorViewModel['agcMode']): string {
-    return field.reading.status === 'known' ? String(field.reading.value) : '—';
+    return field.reading.status === 'known' ? String(field.reading.value) : '';
   }
 
   function booleanState(field: ReceiverIndicatorField<boolean>): 'on' | 'off' | 'unknown' {
@@ -75,15 +78,15 @@
 
   function booleanLabel(field: ReceiverIndicatorField<boolean>): string {
     const state = booleanState(field);
-    return state === 'unknown' ? '—' : state.toUpperCase();
+    return state === 'unknown' ? '' : state.toUpperCase();
   }
 
   function sharedBoolean(field: TxAuxField<boolean>): string {
-    return field.reading.status === 'known' ? (field.reading.value ? 'ON' : 'OFF') : '—';
+    return field.reading.status === 'known' ? (field.reading.value ? 'ON' : 'OFF') : '';
   }
 
   function sharedNumber(field: TxAuxField<number>): string {
-    return field.reading.status === 'known' ? String(field.reading.value) : '—';
+    return field.reading.status === 'known' ? String(field.reading.value) : '';
   }
 
   function aggregateState(
@@ -139,44 +142,46 @@
 
   <div class="facts" aria-label={`${indicator.receiver} receiver facts`}>
     {#if indicator.agcMode.availability.structural}
-      <span class="fact" data-indicator-fact="agc" data-state={indicator.agcMode.reading.status}>
-        AGC {agc(indicator.agcMode)}
-      </span>
+      <span class="fact" data-indicator-fact="agc" data-state={indicator.agcMode.reading.status}
+        >AGC{indicator.agcMode.reading.status === 'known' ? ` ${agc(indicator.agcMode)}` : ''}</span
+      >
     {/if}
     {#if indicator.nbActive.availability.structural}
-      <span class="fact" data-indicator-fact="nb" data-state={booleanState(indicator.nbActive)}>
-        NB {booleanLabel(indicator.nbActive)}
-      </span>
+      <span class="fact" data-indicator-fact="nb" data-state={booleanState(indicator.nbActive)}
+        >NB{indicator.nbActive.reading.status === 'known' ? ` ${booleanLabel(indicator.nbActive)}` : ''}</span
+      >
     {/if}
     {#if indicator.nrActive.availability.structural}
-      <span class="fact" data-indicator-fact="nr" data-state={booleanState(indicator.nrActive)}>
-        NR {booleanLabel(indicator.nrActive)}
-      </span>
+      <span class="fact" data-indicator-fact="nr" data-state={booleanState(indicator.nrActive)}
+        >NR{indicator.nrActive.reading.status === 'known' ? ` ${booleanLabel(indicator.nrActive)}` : ''}</span
+      >
     {/if}
     {#if indicator.notchMode.availability.structural}
-      <span class="fact" data-indicator-fact="notch" data-state={indicator.notchMode.reading.status}>
-        NOTCH {indicator.notchMode.reading.status === 'known' ? indicator.notchMode.reading.value.toUpperCase() : '—'}
-      </span>
+      <span class="fact" data-indicator-fact="notch" data-state={indicator.notchMode.reading.status}
+        >NOTCH{indicator.notchMode.reading.status === 'known'
+          ? ` ${indicator.notchMode.reading.value.toUpperCase()}`
+          : ''}</span
+      >
     {/if}
     {#if indicator.attenuator.availability.structural}
-      <span class="fact" data-indicator-fact="attenuator" data-state={indicator.attenuator.reading.status}>
-        ATT {numeric(indicator.attenuator)}{indicator.attenuator.reading.status === 'known' ? ' dB' : ''}
-      </span>
+      <span class="fact" data-indicator-fact="attenuator" data-state={indicator.attenuator.reading.status}
+        >ATT{indicator.attenuator.reading.status === 'known' ? ` ${numeric(indicator.attenuator)} dB` : ''}</span
+      >
     {/if}
     {#if indicator.preamp.availability.structural}
-      <span class="fact" data-indicator-fact="preamp" data-state={indicator.preamp.reading.status}>
-        P.AMP {numeric(indicator.preamp)}
-      </span>
+      <span class="fact" data-indicator-fact="preamp" data-state={indicator.preamp.reading.status}
+        >P.AMP{indicator.preamp.reading.status === 'known' ? ` ${numeric(indicator.preamp)}` : ''}</span
+      >
     {/if}
     {#if indicator.ipPlus.availability.structural}
-      <span class="fact" data-indicator-fact="ip-plus" data-state={booleanState(indicator.ipPlus)}>
-        IP+ {booleanLabel(indicator.ipPlus)}
-      </span>
+      <span class="fact" data-indicator-fact="ip-plus" data-state={booleanState(indicator.ipPlus)}
+        >IP+{indicator.ipPlus.reading.status === 'known' ? ` ${booleanLabel(indicator.ipPlus)}` : ''}</span
+      >
     {/if}
     {#if indicator.digiSel.availability.structural}
-      <span class="fact" data-indicator-fact="digi-sel" data-state={booleanState(indicator.digiSel)}>
-        DIGI-SEL {booleanLabel(indicator.digiSel)}
-      </span>
+      <span class="fact" data-indicator-fact="digi-sel" data-state={booleanState(indicator.digiSel)}
+        >DIGI-SEL{indicator.digiSel.reading.status === 'known' ? ` ${booleanLabel(indicator.digiSel)}` : ''}</span
+      >
     {/if}
     {#if indicator.rfGain.availability.structural && indicator.rfGain.display?.state !== 'unsupported'}
       {@const gainText = rfGainText(indicator.rfGain)}
@@ -212,24 +217,30 @@
         data-indicator-rf={radioWide.rfState}
       >{rfLabel(radioWide.rfState)}</span>
       {#if radioWide.antenna.availability.structural}
-        <span class="fact" data-indicator-fact="antenna" data-state={radioWide.antenna.reading.status}>
-          ANT {sharedNumber(radioWide.antenna)}
-        </span>
+        <span class="fact" data-indicator-fact="antenna" data-state={radioWide.antenna.reading.status}
+          >ANT{radioWide.antenna.reading.status === 'known' ? ` ${sharedNumber(radioWide.antenna)}` : ''}</span
+        >
       {/if}
       {#if radioWide.atu.availability.structural}
-        <span class="fact" data-indicator-fact="atu" data-state={radioWide.atu.reading.status}>
-          TUNE {radioWide.atu.reading.status === 'known' ? radioWide.atu.reading.value.toUpperCase() : '—'}
-        </span>
+        <span class="fact" data-indicator-fact="atu" data-state={radioWide.atu.reading.status}
+          >TUNE{radioWide.atu.reading.status === 'known'
+            ? ` ${radioWide.atu.reading.value.toUpperCase()}`
+            : ''}</span
+        >
       {/if}
       {#if radioWide.ritActive.availability.structural || radioWide.ritOffset.availability.structural}
-        <span class="fact" data-indicator-fact="rit" data-state={aggregateState(radioWide.ritActive, radioWide.ritOffset)}>
-          RIT {sharedBoolean(radioWide.ritActive)} {sharedNumber(radioWide.ritOffset)} Hz
-        </span>
+        {@const ritParts = [sharedBoolean(radioWide.ritActive), sharedNumber(radioWide.ritOffset)]
+          .filter((part) => part !== '')}
+        <span class="fact" data-indicator-fact="rit" data-state={aggregateState(radioWide.ritActive, radioWide.ritOffset)}
+          >RIT{ritParts.length > 0 ? ` ${ritParts.join(' ')}` : ''} Hz</span
+        >
       {/if}
       {#if radioWide.xitActive.availability.structural || radioWide.xitOffset.availability.structural}
-        <span class="fact" data-indicator-fact="xit" data-state={aggregateState(radioWide.xitActive, radioWide.xitOffset)}>
-          XIT {sharedBoolean(radioWide.xitActive)} {sharedNumber(radioWide.xitOffset)} Hz
-        </span>
+        {@const xitParts = [sharedBoolean(radioWide.xitActive), sharedNumber(radioWide.xitOffset)]
+          .filter((part) => part !== '')}
+        <span class="fact" data-indicator-fact="xit" data-state={aggregateState(radioWide.xitActive, radioWide.xitOffset)}
+          >XIT{xitParts.length > 0 ? ` ${xitParts.join(' ')}` : ''} Hz</span
+        >
       {/if}
     </div>
   </section>
