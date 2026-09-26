@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { renderAudioSpectrum, AudioSpectrumRendererState, type SpectrumState } from './audio-spectrum-renderer';
   import type { ControlDisplayDomain, PbtRange } from '$lib/radio/filter-controls';
-  import { canvasBackingSize, readAncestorScale, watchDevicePixelRatio } from '../../../lib/canvas/backing-store';
+  import { canvasBackingSize, readAncestorScale, watchDevicePixelRatio, watchStageScale } from '../../../lib/canvas/backing-store';
 
   interface Props {
     /** FFT pixel data from AudioFftScope (0-160 range) */
@@ -110,6 +110,10 @@
     canvas.height = backing.height;
     canvas.getContext('2d')?.setTransform(backing.pixelScale, 0, 0, backing.pixelScale, 0, 0);
   }
+
+  // The stage's transform does not resize this canvas, so nothing else here
+  // notices a scale change (MOR-1161).
+  watchStageScale(() => { if (mounted) { applyBackingStore(); scheduleDraw(); } });
 
   // A control/readout change must repaint even between FFT frames.
   $effect(() => {

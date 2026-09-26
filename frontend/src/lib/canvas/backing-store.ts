@@ -1,3 +1,5 @@
+import { getStageScale } from '../../primitives/stage/stage-scale';
+
 /** Backing store for a canvas inside a CSS-scaled stage (MOR-1161). */
 
 export interface CanvasBackingSize {
@@ -36,6 +38,21 @@ export function readAncestorScale(element: HTMLElement): number {
   if (!Number.isFinite(scaleX) || scaleX <= 0) return 1;
   if (Math.abs(scaleX - scaleY) > 0.01) return 1;
   return scaleX;
+}
+
+/**
+ * Re-runs `apply` whenever the enclosing `ScaledStage` changes its scale.
+ *
+ * `transform: scale()` does not resize the canvas's own box, so the canvas's
+ * `ResizeObserver` never fires for it — without this the backing store stays
+ * at the scale from mount and the stage resamples it. Outside a stage
+ * `getStageScale()` returns 1 and `apply` runs once. The read of the scale
+ * is what subscribes the effect; drop it and a scale change stops redrawing.
+ */
+export function watchStageScale(apply: () => void): void {
+  $effect(() => {
+    apply();
+  });
 }
 
 /** Calls `onChange` when the window pixel ratio changes. Returns the unsubscribe. */

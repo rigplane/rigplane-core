@@ -7,7 +7,7 @@
   } from '../../lib/renderers/waterfall-renderer';
   import { gesture } from '../../lib/gestures/use-gesture';
   import { vibrate } from '../../lib/utils/haptics';
-  import { canvasBackingSize, readAncestorScale, watchDevicePixelRatio } from '../../lib/canvas/backing-store';
+  import { canvasBackingSize, readAncestorScale, watchDevicePixelRatio, watchStageScale } from '../../lib/canvas/backing-store';
 
   interface Props {
     options?: WaterfallOptions;
@@ -19,6 +19,8 @@
 
   let canvas: HTMLCanvasElement;
   let renderer = $state<WaterfallRenderer | null>(null);
+  let cssWidth = 0;
+  let cssHeight = 0;
 
   function directPush(pixels: Uint8Array, frameOptions?: WaterfallOptions): void {
     if (document.hidden) return;
@@ -34,6 +36,16 @@
       renderer.updateOptions(options);
     }
   });
+
+  function applyBackingStore(): void {
+    const backing = canvasBackingSize(cssWidth, cssHeight, window.devicePixelRatio || 1, readAncestorScale(canvas));
+    renderer?.resize(backing.width, backing.height);
+  }
+
+  // The stage's transform does not resize this canvas, so nothing else here
+  // notices a scale change (MOR-1161). `renderer` is read so the effect
+  // re-runs once `onMount` has constructed it.
+  watchStageScale(() => { if (renderer) applyBackingStore(); });
 
   // Tap-to-tune only — drag-to-pan handled by SpectrumPanel (parent).
   const waterfallGestures = {
@@ -52,13 +64,6 @@
   onMount(() => {
     renderer = new WaterfallRenderer(canvas, options);
     onRegisterPush?.(directPush);
-
-    let cssWidth = 0;
-    let cssHeight = 0;
-    function applyBackingStore(): void {
-      const backing = canvasBackingSize(cssWidth, cssHeight, window.devicePixelRatio || 1, readAncestorScale(canvas));
-      renderer?.resize(backing.width, backing.height);
-    }
 
     const ro = new ResizeObserver((entries) => {
       const rect = entries[0]?.contentRect;

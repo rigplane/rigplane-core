@@ -5,7 +5,7 @@
     defaultSpectrumOptions,
     type SpectrumOptions,
   } from '../../lib/renderers/spectrum-renderer';
-  import { canvasBackingSize, readAncestorScale, watchDevicePixelRatio } from '../../lib/canvas/backing-store';
+  import { canvasBackingSize, readAncestorScale, watchDevicePixelRatio, watchStageScale } from '../../lib/canvas/backing-store';
   interface Props {
     data: Uint8Array | null;
     options?: SpectrumOptions;
@@ -66,6 +66,10 @@
     visible = !document.hidden;
     scheduleDraw();
   }
+
+  // The stage's transform does not resize this canvas, so nothing else here
+  // notices a scale change (MOR-1161).
+  watchStageScale(() => { if (mounted) { applyBackingStore(); scheduleDraw(); } });
 
   // Renderer options and fallback prop data can change without a stream push.
   $effect(() => {

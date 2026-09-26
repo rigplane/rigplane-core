@@ -1,35 +1,66 @@
 /** MOR-1161: backing store is cssSize * devicePixelRatio * stageScale, redrawn on either change. */
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import SpectrumCanvas from '../SpectrumCanvas.svelte';
-import WaterfallCanvas from '../WaterfallCanvas.svelte';
+import CanvasStageHarness from './CanvasStageHarness.svelte';
 
 const CSS_WIDTH = 200;
 const CSS_HEIGHT = 100;
+const NATIVE_WIDTH = 400;
+const NATIVE_HEIGHT = 200;
 
 let target: HTMLDivElement;
-let observe: ResizeObserverCallback;
 let component: ReturnType<typeof mount> | undefined;
-let stageScale = 1;
+let hostWidth = NATIVE_WIDTH;
+let hostHeight = NATIVE_HEIGHT;
 
-function paintedSize(element: HTMLElement): { width: number; height: number } {
-  if (element instanceof HTMLCanvasElement) return { width: CSS_WIDTH * stageScale, height: CSS_HEIGHT * stageScale };
+/**
+ * jsdom has no layout, so the stage's holder reports this box. Resizing it
+ * is what moves `ScaledStage`'s own scale — the test never calls a
+ * `ResizeObserver` callback itself.
+ */
+class HostResizeObserver {
+  static holders: { callback: ResizeObserverCallback; target: Element }[] = [];
+  private readonly callback: ResizeObserverCallback;
+
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+  }
+
+  observe(element: Element): void {
+    if (element instanceof HTMLElement && element.classList.contains('scaled-stage-holder')) {
+      HostResizeObserver.holders.push({ callback: this.callback, target: element });
+    }
+  }
+
+  disconnect(): void {}
+}
+
+function rectFor(element: HTMLElement): { width: number; height: number } {
+  if (element.classList.contains('scaled-stage-holder')) return { width: hostWidth, height: hostHeight };
   return { width: CSS_WIDTH, height: CSS_HEIGHT };
 }
 
+function resizeHost(width: number, height: number): void {
+  hostWidth = width;
+  hostHeight = height;
+  for (const holder of HostResizeObserver.holders) {
+    holder.callback(
+      [{ target: holder.target, contentRect: { width, height } } as unknown as ResizeObserverEntry],
+      {} as ResizeObserver,
+    );
+  }
+  flushSync();
+}
+
 beforeEach(() => {
-  stageScale = 1;
+  hostWidth = NATIVE_WIDTH;
+  hostHeight = NATIVE_HEIGHT;
+  HostResizeObserver.holders = [];
   target = document.createElement('div');
   document.body.appendChild(target);
   vi.stubGlobal('requestAnimationFrame', () => 1);
   vi.stubGlobal('cancelAnimationFrame', () => {});
-  vi.stubGlobal('ResizeObserver', class {
-    constructor(callback: ResizeObserverCallback) { observe = callback; }
-    observe(element: Element) {
-      observe([{ contentRect: { width: CSS_WIDTH, height: CSS_HEIGHT }, target: element } as unknown as ResizeObserverEntry], this as unknown as ResizeObserver);
-    }
-    disconnect() {}
-  });
+  vi.stubGlobal('ResizeObserver', HostResizeObserver);
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement) {
     return {
       canvas: this, setTransform: () => {}, clearRect: () => {}, fillRect: () => {}, drawImage: () => {},
@@ -37,11 +68,11 @@ beforeEach(() => {
     } as unknown as CanvasRenderingContext2D;
   });
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
-    const box = paintedSize(this);
+    const box = rectFor(this);
     return { ...box, left: 0, top: 0, right: box.width, bottom: box.height, x: 0, y: 0, toJSON() { return this; } } as DOMRect;
   });
-  Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get: () => CSS_WIDTH });
-  Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get: () => CSS_HEIGHT });
+  Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get() { return rectFor(this as HTMLElement).width; } });
+  Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get() { return rectFor(this as HTMLElement).height; } });
   Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 2 });
 });
 
@@ -55,38 +86,37 @@ afterEach(async () => {
   Reflect.deleteProperty(HTMLElement.prototype, 'offsetHeight');
 });
 
-function fireResize(): void {
-  observe([{ contentRect: { width: CSS_WIDTH, height: CSS_HEIGHT }, target: target.querySelector('canvas')! } as unknown as ResizeObserverEntry], {} as ResizeObserver);
-  flushSync();
-}
-
-function mountCanvas(CanvasComponent: typeof SpectrumCanvas | typeof WaterfallCanvas): void {
-  component = CanvasComponent === SpectrumCanvas
-    ? mount(SpectrumCanvas, { target, props: { data: null } })
-    : mount(WaterfallCanvas, { target, props: {} });
+function mountInStage(canvas: 'spectrum' | 'waterfall'): void {
+  component = mount(CanvasStageHarness, { target, props: { canvas, nativeW: NATIVE_WIDTH, nativeH: NATIVE_HEIGHT } });
 }
 
 describe.each([
-  ['SpectrumCanvas', SpectrumCanvas],
-  ['WaterfallCanvas', WaterfallCanvas],
-] as const)('%s backing store (MOR-1161)', (_name, CanvasComponent) => {
-  it.each([1, 1.5, 2, 3])('matches cssSize x devicePixelRatio x stage scale %s', (scale) => {
-    stageScale = scale;
-    mountCanvas(CanvasComponent);
+  ['SpectrumCanvas', 'spectrum'],
+  ['WaterfallCanvas', 'waterfall'],
+] as const)('%s backing store (MOR-1161)', (_name, canvas) => {
+  // `ScaledStage` caps its scale at 1, so a canvas only ever sees a scale at
+  // or below its authored size. 1, 0.5, 1/3 and 2/3 cover the ticket's x1,
+  // x2 and x3 device-pixel ratios plus the fractional case.
+  it.each([1, 0.5, 1 / 3, 2 / 3])('matches cssSize x devicePixelRatio x stage scale %s', (scale) => {
+    hostWidth = NATIVE_WIDTH * scale;
+    hostHeight = NATIVE_HEIGHT * scale;
+    mountInStage(canvas);
     flushSync();
     const canvas = target.querySelector('canvas')!;
     expect(canvas.width).toBe(Math.round(CSS_WIDTH * 2 * scale));
     expect(canvas.height).toBe(Math.round(CSS_HEIGHT * 2 * scale));
   });
 
-  it('redraws when the stage scale changes without a layout resize', () => {
-    mountCanvas(CanvasComponent);
+  it('recomputes the backing store when the stage scale changes', () => {
+    mountInStage(canvas);
     flushSync();
     const canvas = target.querySelector('canvas')!;
     expect(canvas.width).toBe(CSS_WIDTH * 2);
-    stageScale = 2;
-    fireResize();
-    expect(canvas.width).toBe(CSS_WIDTH * 4);
-    expect(canvas.height).toBe(CSS_HEIGHT * 4);
+
+    // Half the host: the stage's own measurement drops its scale to 0.5.
+    resizeHost(NATIVE_WIDTH / 2, NATIVE_HEIGHT / 2);
+
+    expect(canvas.width).toBe(CSS_WIDTH);
+    expect(canvas.height).toBe(CSS_HEIGHT / 2);
   });
 });

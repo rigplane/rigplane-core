@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import type { ControlDisplayDomain } from '$lib/radio/filter-controls';
-  import { canvasBackingSize, readAncestorScale, watchDevicePixelRatio } from '../../../lib/canvas/backing-store';
+  import { canvasBackingSize, readAncestorScale, watchDevicePixelRatio, watchStageScale } from '../../../lib/canvas/backing-store';
 
   interface Props {
     /** FFT pixel data from AudioFftScope (0-160 range) */
@@ -409,6 +409,10 @@
     canvas.height = backing.height;
     canvas.getContext('2d')?.setTransform(backing.pixelScale, 0, 0, backing.pixelScale, 0, 0);
   }
+
+  // The stage's transform does not resize this canvas, so nothing else here
+  // notices a scale change (MOR-1161).
+  watchStageScale(() => { if (canvas) applyBackingStore(cssWidth, cssHeight); });
 
   function onVisibilityChange() {
     visible = !document.hidden;
