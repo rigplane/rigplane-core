@@ -901,7 +901,7 @@ describe('desktop-v2 declares a real rx-audio zone; the cockpit does not (MOR-13
 
   it('keeps rx-tx last in tab order once rx-audio has loaded (MOR-1347)', () => {
     h.caps = liveCaps(AUDIO_TAGS);
-    render({ strips: 'single' }, planFor(desktopV2Layout, {}));
+    render({ strips: 'single' });
     const seq = [...target.querySelectorAll<HTMLElement>(
       'button, input, select, a[href], [tabindex]',
     )];

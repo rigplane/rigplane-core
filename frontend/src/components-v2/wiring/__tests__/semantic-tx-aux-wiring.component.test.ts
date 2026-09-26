@@ -932,8 +932,8 @@ describe('the txAux surface mounts only when the view model carries the group', 
     // structural gate (more than one VFO) legitimately opens; the single-VFO
     // absence is pinned in `semantic/__tests__/VfoSurface.test.ts`.
     'vfo-ops', 'vfo-split-digest',
-    'rx-tx-surface', 'rx-tx-state', 'rx-tx-rf-mark', 'rx-tx-rf-label',
-    'rx-tx-target', 'rx-tx-key', 'rx-tx-unkey', 'rx-tx-blocked',
+    // MOR-1347: this pin is the zone-less direct mount. That path now keeps
+    // rx-tx last, after rx-audio.
     // MOR-1279 slice 3B: this fixture's radio DOES have an audio chain
     // (`audio` + `dual_rx`), so the rxAudio surface legitimately mounts here.
     // Its own absent-group gate is pinned in
@@ -945,6 +945,8 @@ describe('the txAux surface mounts only when the view model carries the group', 
     'rx-audio-focus', 'rx-audio-focus-main', 'rx-audio-focus-sub', 'rx-audio-focus-both',
     'rx-audio-focus-value',
     'rx-audio-split', 'rx-audio-split-on', 'rx-audio-split-off', 'rx-audio-split-value',
+    'rx-tx-surface', 'rx-tx-state', 'rx-tx-rf-mark', 'rx-tx-rf-label',
+    'rx-tx-target', 'rx-tx-key', 'rx-tx-unkey', 'rx-tx-blocked',
   ];
 
   const testids = () => [...target.querySelectorAll<HTMLElement>('[data-testid]')]
@@ -995,10 +997,11 @@ describe('the txAux surface mounts only when the view model carries the group', 
     // MOR-2509: this fixture's caps declare neither split nor dual_watch,
     // so the capability gates render no SPLIT/DW keys and no fact-toggle
     // container at all in the default path.
-    + 'div div section div span div div button button p span span section p span span '
+    + 'div div section div span div div button button '
+    // MOR-1347: zone-less direct mount keeps rx-tx last, after rx-audio.
     // MOR-2438: the idle READY session span is absent; the hidden status row
     // retains only its RF mark/label contract and occupies no layout space.
-    + 'p div button button ul section div button button button label span div div div div div div '
+    + 'section div button button button label span div div div div div div p div button button ul '
     + 'output div button button button output div button button output';
 
   it.each(['single', 'dual'] as const)('renders no txAux surface at all without the group (%s)', (strips) => {
