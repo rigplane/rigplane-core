@@ -93,10 +93,7 @@
       scheduleDraw();
     });
     ro.observe(canvas);
-    const stopPixelWatch = watchDevicePixelRatio(() => {
-      applyBackingStore();
-      scheduleDraw();
-    });
+    const stopPixelWatch = watchDevicePixelRatio(() => { applyBackingStore(); scheduleDraw(); });
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);

@@ -41,17 +41,12 @@ export function readAncestorScale(element: HTMLElement): number {
 /** Calls `onChange` when the window pixel ratio changes. Returns the unsubscribe. */
 export function watchDevicePixelRatio(onChange: () => void): () => void {
   if (typeof window.matchMedia !== 'function') return () => {};
-  const ratio = () => {
-    const own = Object.getOwnPropertyDescriptor(window, 'devicePixelRatio');
-    const value = typeof own?.get === 'function' ? own.get.call(window) : own?.value ?? window.devicePixelRatio;
-    return typeof value === 'number' && value > 0 ? value : 1;
-  };
-  let query = window.matchMedia(`(resolution: ${ratio()}dppx)`);
+  let query = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
   const onMediaChange = () => {
     query.removeEventListener('change', onMediaChange);
-    query = window.matchMedia(`(resolution: ${ratio()}dppx)`);
-    query.addEventListener('change', onMediaChange);
     onChange();
+    query = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+    query.addEventListener('change', onMediaChange);
   };
   query.addEventListener('change', onMediaChange);
   return () => query.removeEventListener('change', onMediaChange);

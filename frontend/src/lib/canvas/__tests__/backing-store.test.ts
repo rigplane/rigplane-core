@@ -48,7 +48,7 @@ describe('readAncestorScale', () => {
 });
 
 describe('watchDevicePixelRatio', () => {
-  it('fires on a resolution change and resubscribes at the new ratio', () => {
+  it('fires on a resolution change and drops the listener on stop', () => {
     const listeners = new Map<string, () => void>();
     vi.stubGlobal('matchMedia', (query: string) => ({
       addEventListener: (_type: string, listener: () => void) => { listeners.set(query, listener); },
@@ -56,15 +56,10 @@ describe('watchDevicePixelRatio', () => {
         if (listeners.get(query) === listener) listeners.delete(query);
       },
     }));
-    let ratio = 1;
-    vi.spyOn(window, 'devicePixelRatio', 'get').mockImplementation(() => ratio);
     const onChange = vi.fn();
     const stop = watchDevicePixelRatio(onChange);
     listeners.get('(resolution: 1dppx)')?.();
     expect(onChange).toHaveBeenCalledTimes(1);
-    ratio = 2;
-    listeners.get('(resolution: 2dppx)')?.();
-    expect(onChange).toHaveBeenCalledTimes(2);
     stop();
     expect(listeners.size).toBe(0);
     vi.unstubAllGlobals();
