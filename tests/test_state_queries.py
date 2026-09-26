@@ -277,8 +277,7 @@ async def _send_through_initial(
     radio = _RecordingCivRadio()
     radio._profile = SimpleNamespace(has_lan=True)
     radio.capabilities = set()
-    radio._INITIAL_STATE_GAP_SERIAL = 0.0
-    radio._INITIAL_STATE_GAP_LAN = 0.0
+    radio._civ_min_interval = 0.0
     radio._initial_state_fetched = False
     radio.radio_state = SimpleNamespace(
         scope_controls=SimpleNamespace(receiver=scope_receiver),
@@ -1166,9 +1165,7 @@ async def test_startup_fetch_paces_on_the_gate_interval() -> None:
     assert len(queries) >= _STARTUP_QUERY_COUNT
     radio._civ_min_interval = gap
     sleep = _RecordingSleep()
-    with patch(
-        "rigplane.runtime.radio_initial_state.asyncio.sleep", new=sleep
-    ):
+    with patch("rigplane.runtime.radio_initial_state.asyncio.sleep", new=sleep):
         await radio._fetch_initial_state()
 
     assert len(sleep.calls) == len(queries)

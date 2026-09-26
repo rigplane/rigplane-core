@@ -44,7 +44,7 @@ _SHUTDOWN_SCOPE_RESTORE_TIMEOUT_S = 1.0
 _MANAGED_TX_FALLBACK_ADVANCED_ATTR = "_production_managed_tx_fallback_advanced"
 
 #: Poll spacing for the startup gate on a radio that declares no
-#: ``_INITIAL_STATE_GAP_*`` of its own.
+#: ``_civ_min_interval`` of its own.
 _STARTUP_GATE_POLL_SECONDS = 0.05
 _STARTUP_GATE_LOG_INTERVAL_SECONDS = 5.0
 _STARTUP_GATE_STALL_WARNING_SECONDS = 60.0
@@ -142,15 +142,14 @@ def _observed_paths(
 
 
 def _startup_gap_seconds(radio: object) -> float:
-    """Return the per-query gap ``runtime.radio_initial_state`` uses."""
+    """Return the per-query gap ``runtime.radio_initial_state`` uses.
 
-    profile = getattr(radio, "_profile", None)
-    attribute = (
-        "_INITIAL_STATE_GAP_LAN"
-        if getattr(profile, "has_lan", False)
-        else "_INITIAL_STATE_GAP_SERIAL"
-    )
-    gap = getattr(radio, attribute, None)
+    That gap is the radio's own CI-V send interval, the same value the
+    runtime send gate paces on. A radio with no positive interval keeps the
+    fixed poll fallback.
+    """
+
+    gap = getattr(radio, "_civ_min_interval", None)
     if isinstance(gap, (int, float)) and not isinstance(gap, bool) and gap > 0:
         return float(gap)
     return _STARTUP_GATE_POLL_SECONDS

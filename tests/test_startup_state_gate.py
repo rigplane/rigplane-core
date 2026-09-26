@@ -280,13 +280,13 @@ _PACING_GAP = 0.125  # exact in binary, so the asserted instants are exact
 
 def _pacing_server(scheduler: AcquisitionScheduler) -> WebServer:
     radio = _CivRadio(scheduler)
-    radio._INITIAL_STATE_GAP_SERIAL = _PACING_GAP
+    radio._civ_min_interval = _PACING_GAP
     return WebServer(radio, _gated_config())
 
 
 @pytest.mark.asyncio
 async def test_startup_sweep_queues_one_path_per_gap() -> None:
-    """One prime per ``_INITIAL_STATE_GAP_SERIAL``, not a whole-profile burst."""
+    """One prime per ``_civ_min_interval``, not a whole-profile burst."""
 
     clock = _GateClock(stop_at=10 * _PACING_GAP)
     scheduler = _PacingScheduler(_sweep_profile(8), clock)
@@ -500,7 +500,7 @@ class _CivRadio:
     def __init__(self, scheduler: _RecordingScheduler) -> None:
         self.radio_state = RadioState()
         self._acquisition_scheduler = scheduler
-        self._INITIAL_STATE_GAP_SERIAL = 0.005
+        self._civ_min_interval = 0.005
 
     def supports_command(self, _command: str) -> bool:
         return False
@@ -753,7 +753,7 @@ class _MalformedSubMeterRadio:
             profile=_dual_meter_profile()
         )
         self._poll_warned_fields: set[str] = set()
-        self._INITIAL_STATE_GAP_SERIAL = 0.005
+        self._civ_min_interval = 0.005
         self.read_s_meter = AsyncMock(side_effect=self._answer_s_meter)
 
     @staticmethod

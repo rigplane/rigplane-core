@@ -39,12 +39,7 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
     from ._state_queries import build_state_queries, wire_parts_for_query
 
     try:
-        is_serial = not radio._profile.has_lan
-        gap = (
-            radio._INITIAL_STATE_GAP_SERIAL
-            if is_serial
-            else radio._INITIAL_STATE_GAP_LAN
-        )
+        gap = radio._civ_min_interval
         queries = build_state_queries(radio._profile)
         if not queries:
             radio._initial_state_fetched = True

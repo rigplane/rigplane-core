@@ -1683,9 +1683,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
     _initial_state_fetched: bool = False
 
-    _INITIAL_STATE_GAP_LAN: float = 0.012
-    _INITIAL_STATE_GAP_SERIAL: float = 0.050
-
     async def _fetch_initial_state(self) -> None:
         """Fetch full radio state once to populate RadioState (delegates)."""
         await _initial_state.fetch_initial_state(self)
