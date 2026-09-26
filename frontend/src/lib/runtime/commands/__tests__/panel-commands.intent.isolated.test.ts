@@ -1413,6 +1413,9 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       ['preset select', () => { makePresetHandlers().onPresetSelect(7_074_000, 'CW', 1); }],
     ];
     for (const [label, select] of selectCases) {
+      resetSharedTuningAccumulatorForTests();
+      h.sendCommand.mockClear();
+      resetCommandLifecycle();
       const vfo = makeVfoHandlers();
       const confirmed = observedFreq();
       const step = 1_000;
@@ -1437,7 +1440,6 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       expect(exactCalls(), `${label}: no stray frame`).toHaveLength(
         label === 'preset select' ? 2 : 1,
       );
-      resetSharedTuningAccumulatorForTests();
     }
   });
 
