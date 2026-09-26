@@ -30,8 +30,9 @@ class FakeResizeObserver {
   unobserve(target: Element): void { FakeResizeObserver.targets.delete(target); }
   disconnect(): void { FakeResizeObserver.targets.clear(); }
   static fire(): void {
-    const entries = [...FakeResizeObserver.targets].map((target) => ({ target }));
-    FakeResizeObserver.callback?.(entries);
+    for (const target of FakeResizeObserver.targets) {
+      FakeResizeObserver.callback?.([{ target }]);
+    }
   }
 }
 

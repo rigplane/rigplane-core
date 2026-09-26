@@ -154,7 +154,10 @@
   $effect(() => {
     const element = faceSvgElement;
     if (element === null || typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(() => { faceWidth = element.clientWidth; });
+    const observer = new ResizeObserver((entries) => {
+      const observed = entries.find((entry) => entry.target === element);
+      if (observed) faceWidth = (observed.target as SVGSVGElement).clientWidth;
+    });
     observer.observe(element);
     faceWidth = element.clientWidth;
     return () => observer.disconnect();
