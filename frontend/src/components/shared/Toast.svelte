@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { fly } from 'svelte/transition';
   import { onMessage } from '../../lib/transport/ws-client';
+  import { getRadioLinkState } from '$lib/stores/connection.svelte';
   import { makeCommandId } from '../../lib/types/protocol';
   import { t, messageFromReasonCode, type MessageParams } from '$lib/i18n';
 
@@ -88,6 +89,23 @@
     return toast.message;
   }
 
+  /**
+   * MOR-2241: the server terminates every in-flight command when the radio
+   * link drops (`server.py: _on_provider_generation` → "provider generation
+   * invalidated", one notification per command via `_on_command_lifecycle_event`
+   * with `code: 'commandExecutionFailed'`). While the link is not connected
+   * those failures are CAUSED BY the link loss, and the StatusBar link chip
+   * (`getRadioLinkState()`) is the persistent disconnected indicator — a
+   * per-command toast for each one is a flood, not information. Recognised by
+   * the structured reason, never by message text.
+   */
+  const LINK_LOSS_TERMINATION_REASON = 'provider generation invalidated';
+
+  function isLinkLossTermination(code?: string, params?: MessageParams): boolean {
+    if (code !== 'commandExecutionFailed' || !params) return false;
+    return params['reason'] === LINK_LOSS_TERMINATION_REASON;
+  }
+
   onMount(() => {
     return onMessage((msg) => {
       if (msg.type === 'notification') {
@@ -97,6 +115,13 @@
           msg.params && typeof msg.params === 'object'
             ? (msg.params as MessageParams)
             : undefined;
+        if (
+          lvl === 'error'
+          && isLinkLossTermination(code, params)
+          && getRadioLinkState() !== 'connected'
+        ) {
+          return;
+        }
         addToast(
           lvl as 'info' | 'warning' | 'error',
           (msg.message as string) ?? '',
