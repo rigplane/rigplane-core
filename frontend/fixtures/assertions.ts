@@ -582,6 +582,26 @@ export function runAssertions(
     check('disabled-key-exposes-its-reason-accessibly', description.length > 0,
       `aria-describedby="${describedBy}" resolves to "${description}"`);
   }
+  // MOR-1350 — the same doctrine for `TxAuxSurface`'s TUNE control, the
+  // surface's own authority actuator: a disabled TUNE must carry an
+  // `aria-describedby` that resolves to non-empty reason text a screen
+  // reader can actually read — the id alone, a dangling target, or an
+  // empty-text span all fail. The control-level wiring is
+  // `TxAuxFiniteHost.svelte`'s title/aria-describedby pair (pinned in
+  // `TxAuxSurface.test.ts`, MOR-1422/MOR-1481); this check extends that
+  // pin to the browser evidence build, which before MOR-1355 had no txAux
+  // fixture to run it against.
+  const tuneButton = q<HTMLButtonElement>('[data-testid="tx-aux-atu-tune"]');
+  if (tuneButton?.disabled) {
+    const describedBy = tuneButton.getAttribute('aria-describedby');
+    const description = describedBy
+      ? describedBy.split(/\s+/)
+        .map((id) => document.getElementById(id)?.textContent?.trim() ?? '')
+        .join(' ').trim()
+      : '';
+    check('disabled-tune-exposes-its-reason-accessibly', description.length > 0,
+      `aria-describedby="${describedBy}" resolves to "${description}"`);
+  }
 
   // ── TX readout words (text AND shape, never colour alone) ──────────────
   const rf = q('[data-testid="rx-tx-rf-label"]')?.textContent?.trim() ?? null;
