@@ -353,7 +353,12 @@ describe('managed scope contract on a hardware-scope radio (MOR-2442)', () => {
   afterEach(() => {
     vi.mocked(getScopeSource).mockReturnValue(null);
     vi.mocked(getCapabilities).mockReturnValue({
-      capabilities: [], freqRanges: [], modes: [], filters: [],
+      model: '', scope: false, audio: false, tx: false,
+      capabilities: [], receivers: 1, vfoScheme: 'single',
+      freqRanges: [], modes: [], filters: [],
+      audioConfig: { sampleRate: 48000, channels: 1, codecs: [] },
+      webrtc: { available: false, enabled: false },
+      txBands: null,
     });
     radio.current = null;
     for (const spy of resourceSpies.splice(0)) spy.mockRestore();
