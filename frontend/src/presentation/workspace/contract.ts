@@ -40,11 +40,13 @@ const LAYOUT_MANIFEST_ID: Readonly<Record<WorkspaceLayoutId, string | null>> = {
  */
 export const WORKSPACE_DESIGN_LANGUAGE_IDS = ['studioline', 'fieldline', 'segmentline'] as const;
 export type WorkspaceDesignLanguageId = (typeof WORKSPACE_DESIGN_LANGUAGE_IDS)[number];
-/** Decision 4: each language's `DensityClamp.supported`; index 0 is that language's default. */
-export const WORKSPACE_DENSITY_CLAMP: Readonly<Record<WorkspaceDesignLanguageId, readonly DensityLevel[]>> = {
-  studioline: ['comfortable', 'compact', 'dense'],
-  fieldline: ['comfortable', 'compact'],
-  segmentline: ['comfortable', 'compact'],
+/** Decision 4: each language's `DensityClamp`; `default` is the explicit fallback pinned from the manifest (MOR-1288), not the retired index-0 convention. */
+export const WORKSPACE_DENSITY_CLAMP: Readonly<
+  Record<WorkspaceDesignLanguageId, { readonly supported: readonly DensityLevel[]; readonly default: DensityLevel }>
+> = {
+  studioline: { supported: ['comfortable', 'compact', 'dense'], default: 'comfortable' },
+  fieldline: { supported: ['comfortable', 'compact'], default: 'comfortable' },
+  segmentline: { supported: ['comfortable', 'compact'], default: 'comfortable' },
 };
 
 /** Decision 3: the flat 21-id theme list, allow-list validated ON READ. */
@@ -144,12 +146,12 @@ export function workspaceLayoutManifestId(id: WorkspaceLayoutId): string | null 
 /** Decision 4 resolution point: the override is honoured only inside the ACTIVE language's clamp. */
 function pickDensity(value: unknown, language: WorkspaceDesignLanguageId, out: WorkspaceRejection[]): DensityLevel {
   const clamp = WORKSPACE_DENSITY_CLAMP[language];
-  if (typeof value === 'string' && (clamp as readonly string[]).includes(value)) return value as DensityLevel;
+  if (typeof value === 'string' && (clamp.supported as readonly string[]).includes(value)) return value as DensityLevel;
   if (value !== undefined) {
-    const known = (WORKSPACE_DENSITY_CLAMP.studioline as readonly string[]).includes(value as string);
+    const known = (WORKSPACE_DENSITY_CLAMP.studioline.supported as readonly string[]).includes(value as string);
     out.push({ field: 'density', reason: known ? 'out-of-clamp' : 'unknown-id' });
   }
-  return clamp[0];
+  return clamp.default;
 }
 
 function pickZoneMap(value: unknown, field: string, out: WorkspaceRejection[]): ZoneSurfaceMap {

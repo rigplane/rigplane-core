@@ -108,7 +108,7 @@ describe('segmentline token set implements the MOR-2148 amber-LCD grammar', () =
   });
 
   it('clamps out "dense": the outlined cells collide with the 7px meter pitch', () => {
-    expect(segmentline.density).toEqual({ kind: 'clamped', supported: ['comfortable', 'compact'] });
+    expect(segmentline.density).toEqual({ kind: 'clamped', supported: ['comfortable', 'compact'], default: 'comfortable' });
   });
 
   it('declares all production segmentline layouts compatible — desktop-v2 stays explicitly incompatible', () => {

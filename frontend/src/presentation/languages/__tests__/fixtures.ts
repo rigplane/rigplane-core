@@ -16,7 +16,7 @@ export function validManifest(overrides: Partial<DesignLanguageManifest> = {}): 
       rx: { idle: 'var(--dl-rx-idle)', active: 'var(--dl-rx-active)', tuning: 'var(--dl-rx-tuning)' },
       tx: { idle: 'var(--dl-tx-idle)', active: 'var(--dl-tx-active)', tuning: 'var(--dl-tx-tuning)' },
     },
-    density: { kind: 'clamped', supported: ['comfortable', 'compact', 'dense'] },
+    density: { kind: 'clamped', supported: ['comfortable', 'compact', 'dense'], default: 'comfortable' },
     layoutCompatibility: [],
     renderers: {},
     ...overrides,

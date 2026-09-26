@@ -93,11 +93,20 @@ export interface DesignLanguageTokens {
   readonly tx: StateFeedbackTokens;
 }
 
-/** Density is workspace-owned with a per-language clamp (MOR-1072 review note). */
+/**
+ * Density is workspace-owned with a per-language clamp (MOR-1072 review note).
+ * A `clamped` manifest names its fallback explicitly in `default` (MOR-1288) —
+ * the index-0-of-`supported` convention is retired. `validateManifest` pins
+ * `default` to a member of `supported`.
+ */
 export type DensityLevel = 'comfortable' | 'compact' | 'dense';
 export type DensityClamp =
   | { readonly kind: 'not-applicable' }
-  | { readonly kind: 'clamped'; readonly supported: readonly DensityLevel[] };
+  | {
+      readonly kind: 'clamped';
+      readonly supported: readonly DensityLevel[];
+      readonly default: DensityLevel;
+    };
 
 /** Layout compatibility is a manifest declaration, not a capability check. */
 export interface LayoutCompatibilityDeclaration { readonly layoutId: string; readonly compatible: boolean; readonly reason?: string }
@@ -194,6 +203,8 @@ export function validateManifest(manifest: DesignLanguageManifest): void {
   const problem =
     (!isValidLanguageId(id) && `Design-language id "${id}" fails naming policy: kebab-case, no vendor/geographic marker.`) ||
     (missing.length > 0 && `Design language "${id}" is missing required token group(s): ${missing.join(', ')}.`) ||
+    (manifest.density.kind === 'clamped' && !manifest.density.supported.includes(manifest.density.default) &&
+      `Design language "${id}" declares a density default outside its supported list.`) ||
     (!manifest.tokens.focusRing && `Design language "${id}" must declare a non-empty focusRing token (MOR-1232).`) ||
     (manifest.tokens.typography.fontVariantNumeric !== 'tabular-nums' &&
       `Design language "${id}" must declare tabular figures (font-variant-numeric: tabular-nums).`) ||

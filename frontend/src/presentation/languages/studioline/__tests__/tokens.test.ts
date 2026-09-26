@@ -123,7 +123,7 @@ describe('studioline token set implements the MOR-977 §2.3 grammar', () => {
   });
 
   it('holds all three density steps and declares the cockpit compatible (MOR-977 §4.2)', () => {
-    expect(studioline.density).toEqual({ kind: 'clamped', supported: ['comfortable', 'compact', 'dense'] });
+    expect(studioline.density).toEqual({ kind: 'clamped', supported: ['comfortable', 'compact', 'dense'], default: 'comfortable' });
     expect(studioline.layoutCompatibility).toContainEqual(
       expect.objectContaining({ layoutId: 'dual-receiver-cockpit', compatible: true }),
     );

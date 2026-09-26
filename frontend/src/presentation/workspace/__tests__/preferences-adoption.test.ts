@@ -92,11 +92,22 @@ describe('MOR-1082 — density resolves against the ACTIVE design language', () 
   };
 
   it('clamps an out-of-clamp override down to the active language default', () => {
-    expect(fieldline.density).toEqual({ kind: 'clamped', supported: ['comfortable', 'compact'] });
+    expect(fieldline.density).toEqual({ kind: 'clamped', supported: ['comfortable', 'compact'], default: 'comfortable' });
     expect(densityActivation(fieldline, 'desktop-v2', 'dense')).toBe('comfortable');
     expect(densityActivation(fieldline, 'desktop-v2', 'compact')).toBe('compact');
     expect(densityActivation(activeFieldline, 'dual-receiver-cockpit', 'dense')).toBe('comfortable');
     expect(densityActivation(activeFieldline, 'dual-receiver-cockpit', 'compact')).toBe('compact');
+  });
+
+  // MOR-1288: the fallback is the manifest's DECLARED `default`, never the
+  // `supported` list's index 0 — identical for shipped languages only because
+  // they happen to keep the default first.
+  it('reads the clamp fallback from the declared `default`, never from `supported[0]`', () => {
+    const reordered: DesignLanguageManifest = {
+      ...studioline,
+      density: { kind: 'clamped', supported: ['compact', 'comfortable'], default: 'comfortable' },
+    };
+    expect(densityActivation(reordered, 'desktop-v2', 'dense')).toBe('comfortable');
   });
 
   it('clamps against the ACTIVE language even when the stored one allows the value', () => {
