@@ -90,12 +90,12 @@ describe('manual notch width renders profile-derived choices (MOR-1685)', () => 
 
   it('the confirmed reading selects the matching choice; pending is not shown as confirmed', () => {
     const r = render(withWidthReading(base(), 2), { notchWidthChoices: [...IC7300_WIDTH_CHOICES] });
-    const pressed = (label: string) => [...r.width()!.querySelectorAll('button')]
+    const checked = (label: string) => [...r.width()!.querySelectorAll('button')]
       .find((button) => button.textContent?.trim() === label)!
-      .getAttribute('aria-pressed');
-    expect(pressed('NAR')).toBe('true');
-    expect(pressed('WIDE')).toBe('false');
-    expect(pressed('MID')).toBe('false');
+      .getAttribute('aria-checked');
+    expect(checked('NAR')).toBe('true');
+    expect(checked('WIDE')).toBe('false');
+    expect(checked('MID')).toBe('false');
     r.dispose();
   });
 

@@ -47,6 +47,7 @@
 -->
 <script module lang="ts">
   import type { DspField, DspViewModel } from './radio-view-model';
+  import type { NotchWidthChoice } from '../lib/types/capabilities';
   import { NOTCH_WIDTH_LABELS, formatAgcTime } from '../components-v2/panels/dsp-panel-logic';
   export { DSP_TOGGLES, type DspToggleField } from './dsp-instruments';
 
@@ -147,6 +148,7 @@
 
 <script lang="ts">
   import { HardwareButton } from '$lib/Button';
+  import { bindChoiceInstrument } from '../primitives/control-instruments/control-instrument-behavior';
   import type { RadioViewModel } from './radio-view-model';
   import type { DspFiniteHandles, DspFiniteLayout, DspSettingsPanel } from './dsp-instruments';
   import type { DspScalarHandles, DspScalarLayout, DspScalarPresentation } from './dsp-scalars';
@@ -159,17 +161,39 @@
     scalarLayout?: DspScalarLayout;
     part?: DspSurfacePart;
     compactAgcTime?: boolean;
+    /**
+     * MOR-1685 — profile-declared Manual Notch Width choices, read off
+     * `runtime.caps` at the wiring seam (`SemanticRadioSurfaces.svelte`).
+     * A non-empty list renders the width as a choice group; empty/absent
+     * keeps the existing scalar row.
+     */
+    notchWidthChoices?: readonly NotchWidthChoice[];
     settingsPanel?: DspSettingsPanel | null;
     onSettingsPanelChange?: (panel: DspSettingsPanel | null) => void;
     onLevelChange?: (field: DspLevelField, value: number) => void;
   }
   let {
     view, finiteHandles, finiteLayout, scalarHandles, scalarLayout, part = 'all',
-    compactAgcTime = false, settingsPanel = null, onSettingsPanelChange, onLevelChange,
+    compactAgcTime = false, notchWidthChoices, settingsPanel = null, onSettingsPanelChange, onLevelChange,
   }: Props = $props();
 
   /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine). */
   let dsp = $derived(view.dsp);
+  /**
+   * MOR-1685 — the Manual Notch Width choice binding. Options come from the
+   * profile-declared list; the confirmed selection is the `manualNotchWidth`
+   * reading. A choice dispatches through the existing scalar intent
+   * (`onLevelChange('manualNotchWidth', value)` → exactly one
+   * `set_manual_notch_width`). Pending is command-bus truth the surface
+   * stays blind to: the notch-mode seat's `notchSeat` pattern renders the
+   * confirmed reading only, never a requested-but-unconfirmed choice.
+   */
+  let widthChoiceValues = $derived((notchWidthChoices ?? []).map((choice) => choice.value));
+  const widthChoiceBehavior = bindChoiceInstrument<number>(() => ({
+    field: dsp?.manualNotchWidth,
+    choices: widthChoiceValues,
+    invoke: (value) => level('manualNotchWidth', value),
+  }));
 
   function level(field: DspLevelField, value: number): void {
     if (!dsp) return;
@@ -201,16 +225,41 @@
   notch: NotchPresentation | null,
 )}
   {#if dsp}
-    <label class="dsp-level" data-testid={`dsp-${field}`} data-field={field}
-      data-disabled-reason={nr ? (nr.usable ? undefined : 'field-not-observed') : reasonOf(dsp[field])}>
-      <span class="dsp-name">{label}</span>
-      <input type="range" min={nr?.min ?? notch?.min ?? min} max={nr?.max ?? notch?.max ?? max}
-        step={nr?.step ?? notch?.step ?? step}
-        value={nr?.value ?? numberOf(dsp[field], notch?.min ?? min)}
-        disabled={nr ? !nr.usable : !usable(dsp[field])}
-        oninput={(event) => level(field, event.currentTarget.valueAsNumber)} />
-      <output>{nr?.text ?? fmt(dsp[field], format)}</output>
-    </label>
+    {#if field === 'manualNotchWidth' && (notchWidthChoices?.length ?? 0) > 0}
+      {@render widthChoices()}
+    {:else}
+      <label class="dsp-level" data-testid={`dsp-${field}`} data-field={field}
+        data-disabled-reason={nr ? (nr.usable ? undefined : 'field-not-observed') : reasonOf(dsp[field])}>
+        <span class="dsp-name">{label}</span>
+        <input type="range" min={nr?.min ?? notch?.min ?? min} max={nr?.max ?? notch?.max ?? max}
+          step={nr?.step ?? notch?.step ?? step}
+          value={nr?.value ?? numberOf(dsp[field], notch?.min ?? min)}
+          disabled={nr ? !nr.usable : !usable(dsp[field])}
+          oninput={(event) => level(field, event.currentTarget.valueAsNumber)} />
+        <output>{nr?.text ?? fmt(dsp[field], format)}</output>
+      </label>
+    {/if}
+  {/if}
+{/snippet}
+
+{#snippet widthChoices()}
+  {#if dsp?.manualNotchWidth.availability.structural}
+    <div class="dsp-level" role="radiogroup" aria-label="Notch width" data-testid="dsp-manualNotchWidth"
+      data-field="manualNotchWidth"
+      data-disabled-reason={usable(dsp.manualNotchWidth) ? undefined : 'field-not-observed'}>
+      <span class="dsp-name">Notch width</span>
+      <div class="dsp-choice-row">
+        {#each notchWidthChoices ?? [] as choice (choice.value)}
+          <button type="button" class="dsp-choice"
+            data-testid={`dsp-manualNotchWidth-${choice.value}`}
+            role="radio"
+            aria-checked={widthChoiceBehavior.selected === undefined
+              ? undefined : widthChoiceBehavior.isSelected(choice.value)}
+            disabled={!widthChoiceBehavior.available}
+            onclick={() => widthChoiceBehavior.invoke(choice.value)}>{choice.label}</button>
+        {/each}
+      </div>
+    </div>
   {/if}
 {/snippet}
 

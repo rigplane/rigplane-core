@@ -668,6 +668,14 @@
   let filterWidthRadioDefault = $derived(hasCapability('filter_width_radio_default'));
   let scanTypeValues = $derived(runtime.caps?.scanTypeValues);
   let scanResumeValues = $derived(runtime.caps?.scanResumeValues);
+  /**
+   * MOR-1685 — profile-declared Manual Notch Width choices, read off
+   * `runtime.caps` at this same seam and handed to the DSP surface as a
+   * plain prop (`scanTypeValues` above is the precedent). `DspSurface` stays
+   * capability-blind: a non-empty list renders the choice group, an empty
+   * or absent list keeps the existing scalar.
+   */
+  let notchWidthChoices = $derived(runtime.caps?.notchWidthChoices);
   /** MOR-1731: consume the shared validated tri-state boundary. `undefined`
    * keeps legacy servers compatible; `null` is the adapter's fail-closed
    * result for present-but-unusable metadata. */
@@ -2045,7 +2053,7 @@
   >
   {#snippet children(dspInstruments)}
   <DspScalarHost
-    {view} feedback={dspScalarFeedback} {nbLevelMax} {nbLevelPercent}
+    {view} feedback={dspScalarFeedback} {nbLevelMax} {nbLevelPercent} {notchWidthChoices}
     onLevelChange={(field, value) => DSP_LEVEL_INTENT[field](value)}
     scalarAppearance={externalPresentation?.record.appearances.scalar}
     presentationIsCurrent={externalPresentation?.isCurrent}
@@ -2484,7 +2492,7 @@
     {#if view?.dsp}
       <DspSurface
         {view} finiteHandles={dspInstruments} {finiteLayout}
-        scalarHandles={dspScalars} {scalarLayout} {part} {compactAgcTime}
+        scalarHandles={dspScalars} {scalarLayout} {part} {compactAgcTime} {notchWidthChoices}
         settingsPanel={compactAgcTime ? standardDspSettings : null}
         onSettingsPanelChange={(panel) => standardDspSettings = panel}
         onLevelChange={(field, value) => DSP_LEVEL_INTENT[field](value)}

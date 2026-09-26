@@ -62,7 +62,7 @@
   }));
 </script>
 
-<DspInstrumentHost {view} {agcLabels} {pendingNb} {pendingNr} {onToggle}
+  <DspInstrumentHost {view} {agcLabels} {pendingNb} {pendingNr} {onToggle}
   {onNotchModeChange} {onAgcModeChange} {...finiteSelection}>
   {#snippet children(finiteHandles: DspFiniteHandles)}
     <DspScalarHost {view} feedback={scalarFeedback} {nbLevelMax} {nbLevelPercent}
