@@ -2516,6 +2516,7 @@ def test_first_terminal_timeout_expedites_retry_second_waits_cadence() -> None:
         link_healthy=False,
     )
     # Interrupted clock kept: due again immediately.
+    assert scheduler.pending_requests() == ()
     assert scheduler.due_requests(now=clock.now())[0].paths == (freq,)
 
     second = scheduler.pending_requests()[0]
@@ -2526,6 +2527,8 @@ def test_first_terminal_timeout_expedites_retry_second_waits_cadence() -> None:
         link_healthy=False,
     )
     # Second consecutive timeout: next due one cadence out, not immediate.
+    # The failed request is dropped; nothing is due until the clock runs.
+    assert scheduler.pending_requests() == ()
     assert scheduler.due_requests(now=clock.now()) == ()
     clock.advance(1.9)
     assert scheduler.due_requests(now=clock.now()) == ()
@@ -2552,6 +2555,8 @@ def test_non_timeout_failure_waits_one_cadence() -> None:
         reason="acquisition_executor_error",
         now=clock.now(),
     )
+    # The failed request is dropped; nothing is due until the clock runs.
+    assert scheduler.pending_requests() == ()
     assert scheduler.due_requests(now=clock.now()) == ()
     clock.advance(1.9)
     assert scheduler.due_requests(now=clock.now()) == ()
