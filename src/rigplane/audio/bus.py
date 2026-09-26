@@ -268,6 +268,8 @@ class AudioSubscription:
             raise StopAsyncIteration
         try:
             return await asyncio.wait_for(self._queue.get(), timeout=1.0)
+        except asyncio.CancelledError:
+            raise StopAsyncIteration
         except asyncio.TimeoutError:
             if not self._active:
                 raise StopAsyncIteration
