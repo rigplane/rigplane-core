@@ -728,9 +728,12 @@ class TestSigtermShutdown:
                             with pytest.raises(SystemExit):
                                 main()
 
-        handler = installed["handler"]
+        # Install the captured handler the way main() does, then deliver
+        # SIGTERM through the process so the handler's own signal.signal
+        # call is the one the kernel will see on a second SIGTERM.
+        signal.signal(signal.SIGTERM, installed["handler"])
         with pytest.raises(KeyboardInterrupt):
-            handler(signal.SIGTERM, None)
+            signal.raise_signal(signal.SIGTERM)
         assert signal.getsignal(signal.SIGTERM) is signal.SIG_IGN
 
 
