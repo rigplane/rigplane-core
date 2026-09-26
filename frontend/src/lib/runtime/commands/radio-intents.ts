@@ -6,6 +6,13 @@ import { getControlSession, onCommandDelivery, onControlSessionTransition, sendC
 type FieldKind = 'boolean' | 'integer' | 'normalized' | 'normalized-unit' | 'number' | 'raw-af-level' | 'raw-af-level-unit' | 'receiver' | 'string' | 'vfo' | 'vfo-slot';
 type FieldSpec = FieldKind | `${FieldKind}?`;
 type IntentSpec = { names: readonly string[]; params: Readonly<Record<string, FieldSpec>> };
+type AfIntentSpec = {
+  names: readonly ['set_af_level'];
+  params: { level: 'raw-af-level'; receiver: 'receiver'; level_unit: 'raw-af-level-unit' };
+} | {
+  names: readonly ['set_af_level_normalized'];
+  params: { level: 'normalized'; receiver: 'receiver' };
+};
 
 const intentSpecs = [
   { names: ['cw_auto_tune', 'memory_write', 'scan_stop', 'vfo_equalize', 'vfo_swap'], params: {} },
@@ -76,7 +83,7 @@ const intentSpecs = [
   { names: ['set_scope_vbw'], params: { narrow: 'boolean' } },
   { names: ['switch_scope_receiver'], params: { receiver: 'receiver' } },
   { names: ['set_vfo'], params: { vfo: 'vfo' } },
-] as const satisfies readonly IntentSpec[];
+] as const satisfies readonly (IntentSpec | AfIntentSpec)[];
 
 type Spec = (typeof intentSpecs)[number];
 type KindValue<K extends FieldKind> = K extends 'boolean' ? boolean : K extends 'normalized-unit' ? 'normalized' : K extends 'raw-af-level-unit' ? 'raw' : K extends 'receiver' ? 0 | 1
