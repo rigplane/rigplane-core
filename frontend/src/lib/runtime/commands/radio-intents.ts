@@ -104,7 +104,9 @@ export type RadioIntent = IntentFromSpec<Spec>;
 export type RadioIntentName = RadioIntent['name'];
 
 const specEntries = intentSpecs.flatMap(({ names, params }) => names.map((name) => [name, params] as const));
-export const RADIO_INTENT_NAMES = Object.freeze(specEntries.map(([name]) => name)) as readonly RadioIntentName[];
+export const RADIO_INTENT_NAMES = Object.freeze(
+  [...new Set(specEntries.map(([name]) => name))],
+) as readonly RadioIntentName[];
 const specsByName = new Map<string, ReadonlyArray<Readonly<Record<string, FieldSpec>>>>();
 for (const [name, params] of specEntries) {
   const list = specsByName.get(name);
