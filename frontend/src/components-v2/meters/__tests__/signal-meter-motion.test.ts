@@ -23,7 +23,7 @@ const SESSION_2 = { controlSessionEpoch: 2 } as const satisfies MeterContinuityS
 
 function projection(
   motionFraction: number | null,
-  primaryText = motionFraction === null ? 'S ?' : 'S5',
+  primaryText = motionFraction === null ? '' : 'S5',
   scaleMode: SignalMeterProjection['scaleMode'] = motionFraction === null ? 'none' : 's',
 ): SignalMeterProjection {
   return {

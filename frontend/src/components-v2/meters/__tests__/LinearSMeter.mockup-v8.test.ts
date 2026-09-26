@@ -334,7 +334,7 @@ describe('MOR-2509 R2-2 — mock-up v8 S-meter geometry', () => {
     expect(svg.getAttribute('aria-label')).toBe('S meter S7');
     expect(svg.getAttribute('aria-label')).not.toMatch(/dBm/);
     const unknown = mountMeter(withPo(null));
-    expect(unknown.getAttribute('aria-label')).toBe('S meter reading unknown');
+    expect(unknown.getAttribute('aria-label')).toBe('S meter');
     expect(unknown.textContent).not.toContain('?');
   });
 

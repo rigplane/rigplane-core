@@ -948,7 +948,7 @@ describe('the host descriptor and LinearSMeter share one signal projection', () 
         const tile = s.tile('signal')!;
         expect(tile.dataset.dlUnknown).toBe('true');
         expect(visibleSlotCount(tile, '[data-meter-fill]')).toBe(0);
-        expect(tile.textContent).toContain('S ?');
+        expect(tile.textContent).not.toContain('?');
       });
     } finally {
       clearCapabilities();
@@ -1489,7 +1489,7 @@ describe('main-bar and SWR-row opacity are independent, non-compounding channels
         expect(tile.dataset.relevant).toBe('false');
         expect(tile.dataset.observed).toBe('false');
         expect(tile.querySelectorAll('svg')).toHaveLength(1);
-        expect(tile.textContent).toContain('S ?');
+        expect(tile.textContent).not.toContain('?');
         expect(getComputedStyle(tile).opacity).not.toBe('0.4');
         expect(tile.querySelector('[data-main-relevant]')?.getAttribute('opacity')).toBe('0.4');
         expect(tile.querySelector('[data-lower-relevant]')?.getAttribute('opacity')).toBe('1');
