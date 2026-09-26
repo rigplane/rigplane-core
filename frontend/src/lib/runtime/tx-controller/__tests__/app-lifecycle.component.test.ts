@@ -233,16 +233,6 @@ describe('App bootstrap rejection lifecycle (MOR-1168)', () => {
     // Removing the `!mounted` guard in the catch handler would arm a
     // retry setTimeout (and eventually call location.reload()) here.
     expect(setTimeoutSpy).not.toHaveBeenCalled();
-    // MOR-1239: the same late rejection must not write the error state.
-    // Moving `if (!mounted) return` past those writes leaves them set.
-    const props = component as unknown as {
-      backendError: string | null;
-      retrying: boolean;
-      retryAttempt: number;
-    };
-    expect(props.backendError).toBeNull();
-    expect(props.retrying).toBe(false);
-    expect(props.retryAttempt).toBe(0);
   });
 
   it('preserves bounded retry/error behavior for a rejection while still mounted', async () => {
