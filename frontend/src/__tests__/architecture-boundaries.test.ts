@@ -270,7 +270,79 @@ describe('v3 package boundaries (MOR-1061)', () => {
     expect(hits).toBe(0);
   });
 
-  // ── Review cycle 2, C1-A: group-as-directory false positive ────────────
+  // ── MOR-1238: primitives may consume the real theme path ─────────────
+  // The old `../themes/tokens.css` fixture named a path that does not
+  // exist (`rg themes`, frontend/src: zero hits at RED) while the real
+  // importable `components-v2/theme/*` stayed a lint error. First pin the
+  // REAL path as rejected, then the zone fix flips both assertions.
+
+  it('[MOR-1238-RED] rejects primitives importing the real theme-switcher path', async () => {
+    const hits = await restrictedImportHits(
+      `import { getAvailableThemes } from '../components-v2/theme/theme-switcher';`,
+      'src/primitives/Knob.ts',
+    );
+    expect(hits).toBeGreaterThan(0);
+  });
+
+  it('[MOR-1238-RED] allows primitives importing the real theme tokens css', async () => {
+    const hits = await restrictedImportHits(
+      `import '../components-v2/theme/tokens.css';`,
+      'src/primitives/Knob.ts',
+    );
+    expect(hits).toBe(0);
+  });
+
+  // ── MOR-1237 R1: two latent runtime modules missing from the denylist ─
+  // `tx-controller/browser-dependencies` (terminal WS PTT delivery) and
+  // `resource-host` (presentation-resource lifecycles) both exist on disk
+  // and stay importable from the v3 zones today. `app-authority.ts` was
+  // retired (MOR-2168) and must NOT be named — pin that as resolved.
+
+  it.each([
+    ['semantic', 'src/semantic/VfoDisplay.ts'],
+    ['presentation', 'src/presentation/layouts/SpectrumFirst.ts'],
+    ['primitives', 'src/primitives/Knob.ts'],
+  ])('[MOR-1237-RED] rejects %s importing tx-controller/browser-dependencies', async (_zone, filePath) => {
+    const hits = await restrictedImportHits(
+      `import { createManagedBrowserDependencies } from '$lib/runtime/tx-controller/browser-dependencies';`,
+      filePath,
+    );
+    expect(hits).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ['semantic', 'src/semantic/VfoDisplay.ts'],
+    ['presentation', 'src/presentation/layouts/SpectrumFirst.ts'],
+    ['primitives', 'src/primitives/Knob.ts'],
+  ])('[MOR-1237-RED] rejects %s importing resource-host', async (_zone, filePath) => {
+    const hits = await restrictedImportHits(
+      `import { PresentationResourceHost } from '$lib/runtime/resource-host';`,
+      filePath,
+    );
+    expect(hits).toBeGreaterThan(0);
+  });
+
+  // ── MOR-1248: dual-receiver-strips slicer stays import-pure ───────────
+  // The slicer filters view models only; a runtime or transport import in
+  // it must fail lint. Its only legal import is the type-only contract
+  // from semantic/radio-view-model (asserted in the file's own header).
+
+  it('[MOR-1248-RED] rejects the slicer importing runtime internals', async () => {
+    const hits = await restrictedImportHits(
+      `import { runtime } from '$lib/runtime';`,
+      'src/components-v2/wiring/dual-receiver-strips.ts',
+    );
+    expect(hits).toBeGreaterThan(0);
+  });
+
+  it('[MOR-1248-RED] rejects the slicer importing transport', async () => {
+    const hits = await restrictedImportHits(
+      `import { sendCommand } from '$lib/transport/ws-client';`,
+      'src/components-v2/wiring/dual-receiver-strips.ts',
+    );
+    expect(hits).toBeGreaterThan(0);
+  });
+
   // The gitignore-style `group` glob for the runtime-barrel ban matched a
   // bare final segment as a DIRECTORY prefix, so it also caught the
   // sanctioned lib/runtime/adapters/* and lib/runtime/props/* paths. Fixed
