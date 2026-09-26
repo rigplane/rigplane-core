@@ -79,12 +79,16 @@ describe('compact manual notch width renders profile-derived choices (MOR-1685)'
     r.dispose();
   });
 
-  it('renders the existing scalar when choices are absent or empty', () => {
+  it('renders the existing scalar host row when choices are absent or empty', () => {
     for (const notchWidthChoices of [undefined, []] as const) {
       const r = render(base(), notchWidthChoices);
       expect(r.section()).not.toBeNull();
+      // The scalar host's own row (data-scalar-field), not the choice
+      // group: no choice buttons at all. `ValueControl` renders through
+      // its appearance renderer, never a bare range input, so the
+      // absence of buttons is the fallback pin here.
       expect(r.width()).not.toBeNull();
-      expect(r.width()!.querySelector('input[type="range"]')).not.toBeNull();
+      expect(r.width()!.querySelectorAll('button')).toHaveLength(0);
       r.dispose();
       target.innerHTML = '';
     }
