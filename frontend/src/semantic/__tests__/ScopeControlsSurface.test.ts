@@ -794,4 +794,32 @@ describe('external finite appearance', () => {
     expect(group.querySelector('[aria-checked="true"]')).toBeNull();
     unmount(component);
   });
+
+  // MOR-2653: the finite-appearance REF output is EMPTY in a reserved box
+  // when unread — never a placeholder dash — and renders the verbatim value
+  // when known, exactly as the native row's REF already does.
+  it('renders an unread finite REF value as an empty reserved box, never a placeholder', () => {
+    const component = mount(ScopeControlsSurface, { target, props: {
+      view: withSc({ refDb: unread() }), finiteAppearance: appearance,
+      rendererContext: createFiniteRendererContext(),
+    } });
+    flushSync();
+    const value = target.querySelector('[data-testid="scope-ref-value"]')!;
+    expect(value.textContent).toBe('');
+    expect(value.textContent).not.toContain('—');
+    expect(value.classList.contains('scope-finite-value')).toBe(true);
+    unmount(component);
+  });
+
+  it('renders a known finite REF value verbatim in the same reserved box', () => {
+    const component = mount(ScopeControlsSurface, { target, props: {
+      view: withSc({ refDb: known(-30) }), finiteAppearance: appearance,
+      rendererContext: createFiniteRendererContext(),
+    } });
+    flushSync();
+    const value = target.querySelector('[data-testid="scope-ref-value"]')!;
+    expect(value.textContent).toBe('-30');
+    expect(value.classList.contains('scope-finite-value')).toBe(true);
+    unmount(component);
+  });
 });

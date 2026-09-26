@@ -466,6 +466,40 @@ describe('scan: per-field ever-reported gate (partial reporter, no capability ta
   });
 });
 
+/* ── MOR-2653: unread scan readouts are EMPTY reserved slots, never
+   placeholder dashes; known values render exactly as before ── */
+
+describe('scan readouts render honestly (MOR-2653)', () => {
+  it('renders every unread scan readout as an empty reserved slot, never a placeholder', () => {
+    const r = render(withSc({
+      scanning: unreadScan<boolean>(), scanType: unreadScan<number>(), scanResumeMode: unreadScan<number>(),
+    }));
+    for (const id of ['scan-status', 'scan-type-value', 'scan-resume-value']) {
+      expect(r.el(id)!.textContent?.trim()).toBe('');
+      expect(r.el(id)!.textContent).not.toContain('—');
+      expect(r.el(id)!.classList.contains('scan-readout')).toBe(true);
+    }
+    r.dispose();
+  });
+
+  it('renders known scan values exactly as before — verbatim wire values', () => {
+    const r = render(withSc({
+      scanning: knownScan(true), scanType: knownScan(0x23), scanResumeMode: knownScan(0xd3),
+    }));
+    expect(r.el('scan-status')!.textContent?.trim()).toBe('true');
+    expect(r.el('scan-type-value')!.textContent?.trim()).toBe('35');
+    expect(r.el('scan-resume-value')!.textContent?.trim()).toBe('211');
+    r.dispose();
+  });
+
+  // Structural geometry pin (jsdom has no layout): the reserved box is the
+  // `scan-readout` rule, and 5ch covers the widest text these readouts can
+  // render ('false'; the type/resume wire values are at most three digits).
+  it('reserves each scan readout slot at 5ch so a first reading cannot move the layout', () => {
+    expect(SOURCE).toMatch(/\.scan-readout\s*\{[^}]*min-width:\s*5ch/);
+  });
+});
+
 function unreadScan<T>(availability: Availability = ON): ScanField<T> {
   return { reading: { status: 'unknown' }, availability };
 }

@@ -365,7 +365,8 @@ describe('CwKeyerInstrumentHost', () => {
     });
     flushSync();
     expect(slider().getAttribute('aria-disabled')).toBe('true');
-    expect(r.row('keyerSpeed').querySelector('.vc-value')?.textContent).toBe('—');
+    expect(r.row('keyerSpeed').querySelector('.vc-value')?.textContent).toBe('');
+    expect(r.row('keyerSpeed').querySelector('.vc-value')?.textContent).not.toContain('—');
 
     r.props.keySpeedFeedback = undefined;
     flushSync();
@@ -383,7 +384,8 @@ describe('CwKeyerInstrumentHost', () => {
       } },
     };
     flushSync();
-    expect(r.row('keyerSpeed').querySelector('.vc-value')?.textContent).toBe('—');
+    expect(r.row('keyerSpeed').querySelector('.vc-value')?.textContent).toBe('');
+    expect(r.row('keyerSpeed').querySelector('.vc-value')?.textContent).not.toContain('—');
     expect(slider().getAttribute('aria-disabled')).toBe('true');
     expect(r.row('keyerSpeed').dataset.observed).toBe('false');
     currentLease('keyerSpeed').nativeInput(31);
@@ -476,5 +478,14 @@ describe('CwKeyerInstrumentHost', () => {
     expect(hostSource.match(/createRenderedNativeRangeContinuousScalarPolicy\(\)/g)).toHaveLength(1);
     expect(hostSource.match(/createContinuousScalar\(/g)).toHaveLength(1);
     expect(hostSource).not.toMatch(/form[\s\S]{0,80}(?:Policy|policy)/);
+  });
+
+  // MOR-2653: an unread continuous value renders EMPTY, never a placeholder,
+  // and its slot keeps a reserved width — 6ch covers the widest rendered
+  // value ('48 WPM', '900 Hz') so a first reading cannot move the layout.
+  it('reserves the value slot width for unread and known values alike', () => {
+    const hostSource = readFileSync('src/semantic/CwKeyerInstrumentHost.svelte', 'utf8');
+    expect(hostSource).toMatch(/:global\(\.vc-value\)\s*\{[^}]*min-width:\s*6ch/);
+    expect(hostSource).not.toMatch(/formatValue[\s\S]{0,200}'—'/);
   });
 });
