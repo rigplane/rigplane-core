@@ -291,8 +291,12 @@
   function radioAfDomain(source: RxAudioAuthorityPublication | null): {
     min: number; max: number; step: 1; defaultValue: null; fineStepDivisor: 1;
   } | null {
-    const caps = source?.caps;
-    const control = caps?.controls?.af_level;
+    // PREFER the render-time presentation caps: the publisher delivers them
+    // with the view, while the subscription snapshot may lag one publication
+    // behind. FALL BACK to the published snapshot so the domain and the
+    // authority gate stay on one snapshot when they disagree.
+    const control = presentation.caps?.controls?.af_level
+      ?? source?.caps?.controls?.af_level;
     if (control === undefined || 'mapping' in control) return null;
     const { raw_min: rawMin, raw_max: rawMax } = control;
     if (!Number.isSafeInteger(rawMin) || !Number.isSafeInteger(rawMax) || rawMax <= rawMin) return null;
