@@ -284,14 +284,18 @@
   const AF_DOMAIN = { min: 0, max: 1, step: 0.01, defaultValue: null, fineStepDivisor: 1 } as const;
   /** MOR-1676 part A (AF): the radio-AF slider moves on the radio's raw
    *  integer lattice (one step = one raw unit, step 1), read from the
-   *  published capabilities' `controls.af_level` — the same capability
-   *  fact other controls read their ranges from (`ControlRange`
+   *  authority publication's capabilities (`controls.af_level`) — the same
+   *  capability fact other controls read their ranges from (`ControlRange`
    *  `raw_min`/`raw_max`), never a hard-coded 255 in this surface. A radio
-   *  that publishes no `controls.af_level` keeps the normalized lattice. */
+   *  that publishes no `controls.af_level` keeps the normalized lattice.
+   *  Read off the passed publication (never the capabilities-store
+   *  singleton): the host is authority-driven, and isolated seams do not
+   *  populate the store. */
   function radioAfDomain(source: RxAudioAuthorityPublication | null): {
     min: number; max: number; step: 1; defaultValue: null; fineStepDivisor: 1;
   } | null {
-    const control = source?.caps?.controls?.af_level;
+    const caps = source?.caps;
+    const control = caps?.controls?.af_level;
     if (control === undefined || 'mapping' in control) return null;
     const { raw_min: rawMin, raw_max: rawMax } = control;
     if (!Number.isSafeInteger(rawMin) || !Number.isSafeInteger(rawMax) || rawMax <= rawMin) return null;

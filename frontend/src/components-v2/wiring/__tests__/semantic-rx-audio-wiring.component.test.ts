@@ -1126,12 +1126,14 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
       fieldStatus: { ...state.fieldStatus, 'main.afLevel': observedAt(1), 'sub.afLevel': observedAt(1) },
     } as ServerState;
     // The mounted wiring reads caps through the real capabilities store
-    // (not the `h.caps` seam), so re-seed the store after every swap —
-    // `beforeEach` seeds only the initial `liveCaps`. Pass the same caps
-    // object the store holds: the host reads the published
-    // `controls.af_level` raw domain from it.
+    // AND the authority publication (not the `h.caps` seam alone), so
+    // re-seed the store after every swap — `beforeEach` seeds only the
+    // initial `liveCaps` — and republish the authority so subscribers see
+    // the same caps object the store holds.
     h.caps = liveCaps(AUDIO_TAGS);
     expect(setCapabilities(h.caps as Capabilities)).toBe(true);
+    publishAuthority();
+    flushSync();
   }
   function select(active: 'MAIN' | 'SUB'): void {
     h.state = { ...(h.state as ServerState), active };
