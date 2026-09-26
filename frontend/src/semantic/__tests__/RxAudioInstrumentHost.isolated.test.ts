@@ -442,10 +442,11 @@ describe('RxAudioInstrumentHost radio-AF raw steps (MOR-1676)', () => {
     };
     return { onAfLevelChange, slider, dispose };
   }
-  // Exhaustive over 0..255 in four per-`it` chunks: each raw value is an
+  // Exhaustive over 0..253 in four per-`it` chunks: each raw value is an
   // independent "the radio confirmed R, the operator steps once" scenario
-  // with a fresh mount in its own host element.
-  const RAW_CHUNKS = [[0, 63], [64, 127], [128, 191], [192, 255]] as const;
+  // with a fresh mount in its own host element. Raw 254/255 ride dedicated
+  // single-mount tests below (the top-of-range pin alongside them).
+  const RAW_CHUNKS = [[0, 63], [64, 127], [128, 191], [192, 253]] as const;
   it.each(RAW_CHUNKS)('restores the exact raw value after a reversible keyboard step, raw %i..%i', (lo, hi) => {
     for (let raw = lo; raw <= hi; raw += 1) {
       const up = Math.min(255, raw + 1);
@@ -490,6 +491,25 @@ describe('RxAudioInstrumentHost radio-AF raw steps (MOR-1676)', () => {
     expect(r.slider().rendererLease.key({ key: 'ArrowRight', fine: false })).toBe(true);
     expect(r.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(255, 'raw');
     expect(Number.isInteger(r.onAfLevelChange.mock.calls[0][0])).toBe(true);
+  });
+
+  it('steps 254 to 255 by pointer and restores 254 by pointer', () => {
+    const stepped = renderRaw(audio(254 / 255));
+    const lease = stepped.slider().rendererLease;
+    expect(lease.view.canonical).toBe(254);
+    const token = lease.beginPointer();
+    expect(token).not.toBeNull();
+    lease.pointer(token!, 255); lease.endPointer(token!);
+    expect(stepped.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(255, 'raw');
+
+    const restored = renderRaw(audio(1));
+    expect(restored.slider().rendererLease.view.canonical).toBe(255);
+    const downLease = restored.slider().rendererLease;
+    const down = downLease.beginPointer();
+    expect(down).not.toBeNull();
+    downLease.pointer(down!, 254);
+    downLease.endPointer(down!);
+    expect(restored.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(254, 'raw');
   });
 
   it('keeps the browser-volume branch on the normalized lattice', () => {
