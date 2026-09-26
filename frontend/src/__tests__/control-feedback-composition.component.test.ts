@@ -211,6 +211,7 @@ describe('one Filter Width lifecycle is equivalent on desktop, narrow mobile and
       render(kind);
       const control = widthControl();
       expect(control, kind).not.toBeNull();
+      control!.focus();
       h.commands.mockClear();
       control!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
       flushSync();
