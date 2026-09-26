@@ -4,6 +4,7 @@
   import { ValueControl } from '../components-v2/controls/value-control';
   import type { HBarIssuedStatusPresentation, HBarIssuedStatusSnapshot }
     from '../components-v2/controls/value-control/skin';
+  import { bindChoiceInstrument } from '../primitives/control-instruments/control-instrument-behavior';
   import {
     createContinuousScalar,
     createRenderedNativeRangeContinuousScalarPolicy,
@@ -13,6 +14,7 @@
   import { rawToPercentDisplay } from '../primitives/scalar/value-control-core';
   import { NOTCH_WIDTH_LABELS, formatAgcTime } from '../components-v2/panels/dsp-panel-logic';
   import { disabledReasonText } from './disabled-reason';
+  import type { NotchWidthChoice } from '../lib/types/capabilities';
   import type { DspField, RadioViewModel } from './radio-view-model';
   import { DSP_SCALAR_FIELDS, type DspScalarFeedback, type DspScalarField,
     type DspScalarHandles, type DspScalarPresentation } from './dsp-scalars';
@@ -22,13 +24,19 @@
     feedback: DspScalarFeedback;
     nbLevelMax?: number;
     nbLevelPercent?: boolean;
+    /**
+     * MOR-1685 — profile-declared Manual Notch Width choices. A non-empty
+     * list renders `manualNotchWidth` as a choice group (labels and values
+     * from the list); empty/absent keeps the existing scalar.
+     */
+    notchWidthChoices?: readonly NotchWidthChoice[];
     onLevelChange?: (field: DspScalarField, value: number) => void;
     scalarAppearance?: ScalarAppearance;
     presentationIsCurrent?: () => boolean;
     children: Snippet<[DspScalarHandles]>;
   }
 
-  let { view, feedback, nbLevelMax = 255, nbLevelPercent = false,
+  let { view, feedback, nbLevelMax = 255, nbLevelPercent = false, notchWidthChoices,
     onLevelChange, scalarAppearance, presentationIsCurrent, children }: Props = $props();
   let dsp = $derived(view?.dsp);
 
@@ -177,10 +185,57 @@
     return enabled(field) ? undefined : disabledReasonText({ structural: true, operational: false });
   }
 
+  /**
+   * MOR-1685 — Manual Notch Width as a profile-derived choice group. The
+   * confirmed selection is the `manualNotchWidth` reading; a choice calls
+   * the existing `onLevelChange('manualNotchWidth', value)` path. Visible
+   * pending feedback for the requested choice is MOR-2634; until then only
+   * the confirmed reading is selected.
+   */
+  let widthChoiceValues = $derived((notchWidthChoices ?? []).map((choice) => choice.value));
+  const widthChoiceBehavior = bindChoiceInstrument<number>(() => ({
+    field: dsp?.manualNotchWidth,
+    choices: widthChoiceValues,
+    invoke: (value) => { if (enabled('manualNotchWidth')) onLevelChange?.('manualNotchWidth', value); },
+  }));
+
   onDestroy(() => {
     for (const binding of Object.values(bindings)) binding.destroy();
   });
 </script>
+
+{#snippet widthChoices(presentation?: Readonly<DspScalarPresentation>)}
+  {#if dsp?.manualNotchWidth.availability.structural}
+    {@const explicit = presentation !== undefined}
+    {@const label = LABELS.manualNotchWidth}
+    {@const current = feedback.manualNotchWidth}
+    {@const reason = disabledReason('manualNotchWidth')}
+    {@const currentStatus = status('manualNotchWidth')}
+    <div class="dsp-scalar" class:dsp-scalar--presented={explicit}
+      role="radiogroup" aria-label={label}
+      data-testid="dsp-manualNotchWidth" data-scalar-field="manualNotchWidth"
+      data-feedback-control={current.scope.control} data-feedback-receiver={current.scope.receiver}
+      data-disabled-reason={reason === undefined ? undefined : 'field-not-observed'}
+      aria-busy={current.busy} title={reason}>
+      <span class="dsp-scalar-name" class:sr-only={explicit}
+        aria-hidden={explicit ? 'true' : undefined}>{label}</span>
+      {#each notchWidthChoices ?? [] as choice (choice.value)}
+        <button type="button" class="dsp-choice"
+          data-testid={`dsp-manualNotchWidth-${choice.value}`}
+          role="radio"
+          aria-checked={widthChoiceBehavior.selected === undefined
+            ? undefined : widthChoiceBehavior.isSelected(choice.value)}
+          disabled={!widthChoiceBehavior.available}
+          title={reason}
+          onclick={() => widthChoiceBehavior.invoke(choice.value)}>{choice.label}</button>
+      {/each}
+      {#if currentStatus !== ''}
+        <span data-command-status class:command-pending={current.busy}
+          class:sr-only={explicit || current.phase === 'unavailable'}>{currentStatus}</span>
+      {/if}
+    </div>
+  {/if}
+{/snippet}
 
 {#snippet scalar(field: DspScalarField, presentation?: Readonly<DspScalarPresentation>)}
   {#if dsp?.[field].availability.structural}
@@ -236,7 +291,11 @@
   {@render scalar('notchFreq', presentation)}
 {/snippet}
 {#snippet manualNotchWidth(presentation?: Readonly<DspScalarPresentation>)}
-  {@render scalar('manualNotchWidth', presentation)}
+  {#if (notchWidthChoices?.length ?? 0) > 0}
+    {@render widthChoices(presentation)}
+  {:else}
+    {@render scalar('manualNotchWidth', presentation)}
+  {/if}
 {/snippet}
 {#snippet agcTimeConstant(presentation?: Readonly<DspScalarPresentation>)}
   {@render scalar('agcTimeConstant', presentation)}

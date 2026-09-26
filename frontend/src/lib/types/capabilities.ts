@@ -181,6 +181,13 @@ export interface DataModeInput {
   label: string;
 }
 
+/** One profile-declared Manual Notch Width choice (MOR-1685): a raw wire
+ *  value with its display label, in the profile's own value order. */
+export interface NotchWidthChoice {
+  value: number;
+  label: string;
+}
+
 export interface Capabilities {
   [extension: string]: unknown;
   model: string;
@@ -212,6 +219,10 @@ export interface Capabilities {
   agcLabels?: Record<string, string>;  // AGC mode labels (e.g. {"1":"FAST","2":"MID","3":"SLOW"})
   scanTypeValues?: number[];    // Profile-declared scan start types
   scanResumeValues?: number[];  // Profile-declared scan resume modes
+  /** Profile-declared Manual Notch Width choices (MOR-1685), in value
+   *  order — present with the profile's choices, `[]` when the radio
+   *  declares none, absent on older servers (scalar fallback). */
+  notchWidthChoices?: NotchWidthChoice[];
   /** RF/SQL control model (MOR-1447 leg 2): "separate" (default, two
    *  independent controls) or "combined" (Icom-style single RF/SQL knob).
    *  Absent on older servers — treat as "separate". */
@@ -477,6 +488,27 @@ function normalizeControls(value: unknown): Readonly<Record<string, ControlRange
   return changed ? Object.freeze(normalized) as Readonly<Record<string, ControlRange | ControlDomain>> : null;
 }
 
+function isNotchWidthChoice(value: unknown): value is NotchWidthChoice {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const entry = value as Record<string, unknown>;
+  return typeof entry.value === 'number' && Number.isInteger(entry.value)
+    && Number.isSafeInteger(entry.value) && typeof entry.label === 'string';
+}
+
+/** MOR-1685: normalise the optional profile-declared notch-width choice
+ *  list in place — drop malformed entries (non-integer value or non-string
+ *  label), keep the profile's own value order. A present-but-non-array
+ *  field throws; a malformed entry is a caps blemish, not a payload
+ *  rejection. */
+function normalizeNotchWidthChoices(raw: Record<string, unknown>): void {
+  if (!Object.prototype.hasOwnProperty.call(raw, 'notchWidthChoices')) return;
+  const value = raw.notchWidthChoices;
+  if (!Array.isArray(value)) invalid('$.notchWidthChoices', 'an array');
+  const choices = value.filter(isNotchWidthChoice)
+    .map((entry) => Object.freeze({ value: entry.value, label: entry.label }));
+  raw.notchWidthChoices = Object.freeze(choices);
+}
+
 export function validateCapabilities(value: unknown): Capabilities {
   const raw = requireRecord(value, '$');
 
@@ -495,6 +527,7 @@ export function validateCapabilities(value: unknown): Capabilities {
       raw[field].forEach((entry, index) => requireInteger(entry, `$.${field}[${index}]`));
     }
   }
+  normalizeNotchWidthChoices(raw);
 
   const txAudioFields = [
     'audioTx',

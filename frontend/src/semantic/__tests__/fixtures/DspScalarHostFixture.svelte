@@ -3,6 +3,7 @@
   import type { FiniteControlAppearance, FiniteRendererContext }
     from '../../../primitives/control-instruments/control-instrument-renderer.svelte';
   import type { CommandScalarFeedback } from '../../../primitives/scalar/continuous-scalar.svelte';
+  import type { NotchWidthChoice } from '../../../lib/types/capabilities';
   import DspInstrumentHost from '../../DspInstrumentHost.svelte';
   import DspScalarHost from '../../DspScalarHost.svelte';
   import DspSurface, { type DspLevelField } from '../../DspSurface.svelte';
@@ -15,9 +16,10 @@
   interface Props {
     view: RadioViewModel;
     feedback?: DspScalarFeedback;
-    presentation?: 'grouped' | 'independent' | 'nr';
+    presentation?: 'grouped' | 'independent' | 'nr' | 'compact-notch';
     scalarPresentation?: Readonly<DspScalarPresentation>;
     agcLabels?: Record<string, string>;
+    notchWidthChoices?: readonly NotchWidthChoice[];
     nbLevelMax?: number;
     nbLevelPercent?: boolean;
     scalarAppearance?: ScalarAppearance;
@@ -33,7 +35,7 @@
     onAgcModeChange?: (mode: number) => void;
   }
   let { view, feedback, presentation = 'grouped', scalarPresentation,
-    agcLabels = {}, nbLevelMax = 255, nbLevelPercent = false,
+    agcLabels = {}, notchWidthChoices, nbLevelMax = 255, nbLevelPercent = false,
     scalarAppearance, presentationIsCurrent,
     pendingNb = null, pendingNr = null, pendingNotch = null, finiteAppearance, rendererContext = null,
     onToggle, onLevelChange, onNotchModeChange, onAgcModeChange }: Props = $props();
@@ -61,10 +63,10 @@
   }));
 </script>
 
-<DspInstrumentHost {view} {agcLabels} {pendingNb} {pendingNr} {pendingNotch} {onToggle}
+  <DspInstrumentHost {view} {agcLabels} {pendingNb} {pendingNr} {pendingNotch} {onToggle}
   {onNotchModeChange} {onAgcModeChange} {...finiteSelection}>
   {#snippet children(finiteHandles: DspFiniteHandles)}
-    <DspScalarHost {view} feedback={scalarFeedback} {nbLevelMax} {nbLevelPercent}
+    <DspScalarHost {view} feedback={scalarFeedback} {nbLevelMax} {nbLevelPercent} {notchWidthChoices}
       {scalarAppearance} {presentationIsCurrent}
       onLevelChange={(field, value) => onLevelChange?.(field, value)}>
       {#snippet children(scalarHandles: DspScalarHandles)}
@@ -86,8 +88,16 @@
             <section data-testid="nr-dsp-scalar">
               {@render scalarHandles.nrLevel(scalarPresentation)}
             </section>
+          {:else if presentation === 'compact-notch'}
+            <!-- MOR-1685: the compact settings \"notch\" panel calls the
+              scalar host's own `manualNotchWidth` handle directly (the same
+              call `DspSurface`'s `compactLevels` makes), not the surface's
+              native row. -->
+            <section data-testid="compact-notch-width">
+              {@render scalarHandles.manualNotchWidth(scalarPresentation)}
+            </section>
           {:else}
-            <DspSurface {view} {finiteHandles} scalarHandles={scalarHandles}
+            <DspSurface {view} {finiteHandles} scalarHandles={scalarHandles} {notchWidthChoices}
               finiteLayout={presentation === 'independent' ? independentFinite : undefined}
               scalarLayout={presentation === 'independent' ? independentScalars : undefined}
               onLevelChange={(field, value) => onLevelChange?.(field, value)} />

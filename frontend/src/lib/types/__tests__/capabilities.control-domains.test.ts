@@ -64,6 +64,28 @@ function parse(control: Record<string, unknown>): ControlDomain {
   });
   return result.controls?.test as ControlDomain;
 }
+describe('manual notch width choices (MOR-1685)', () => {
+  const widths = [{ value: 0, label: 'WIDE' }, { value: 1, label: 'MID' }, { value: 2, label: 'NAR' }];
+  it('passes valid choices through and leaves legacy payloads without the field unchanged', () => {
+    const parsed = validateCapabilities({ ...baseCapabilities, notchWidthChoices: widths });
+    expect(parsed.notchWidthChoices).toEqual(widths);
+    expect(validateCapabilities(baseCapabilities)).toBe(baseCapabilities);
+  });
+  it('drops malformed entries instead of throwing', () => {
+    const parsed = validateCapabilities({
+      ...baseCapabilities,
+      notchWidthChoices: [
+        { value: 0, label: 'WIDE' }, { value: 1.5, label: 'HALF' },
+        { value: 2, label: 7 }, { value: '3', label: 'NAR' }, { label: 'MISSING' },
+      ],
+    });
+    expect(parsed.notchWidthChoices).toEqual([{ value: 0, label: 'WIDE' }]);
+  });
+  it('normalises a missing field to an empty choice list', () => {
+    expect(validateCapabilities({ ...baseCapabilities, notchWidthChoices: [] }).notchWidthChoices)
+      .toEqual([]);
+  });
+});
 describe('normalized control capability domains', () => {
   it('validates optional per-profile MOD input choices and rejects malformed domains', () => {
     const choices = [{ value: 0, label: 'MIC' }, { value: 3, label: 'USB' }];
