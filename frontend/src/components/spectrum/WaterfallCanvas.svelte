@@ -39,14 +39,14 @@
   });
 
   function applyBackingStore(): void {
+    if (!renderer) return;
     const backing = canvasBackingSize(cssWidth, cssHeight, window.devicePixelRatio || 1, getStageScale()());
-    renderer?.resize(backing.width, backing.height);
+    renderer.resize(backing.width, backing.height);
   }
 
   // The stage's transform does not resize this canvas, so nothing else here
-  // notices a scale change (MOR-1161). `renderer` is read so the effect
-  // re-runs once `onMount` has constructed it.
-  watchStageScale(() => { if (renderer) applyBackingStore(); });
+  // notices a scale change (MOR-1161).
+  watchStageScale(applyBackingStore);
 
   // Tap-to-tune only — drag-to-pan handled by SpectrumPanel (parent).
   const waterfallGestures = {

@@ -51,7 +51,6 @@ export function readAncestorScale(element: HTMLElement): number {
  */
 export function watchStageScale(apply: () => void): void {
   $effect(() => {
-    getStageScale()();
     apply();
   });
 }
