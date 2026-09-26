@@ -1163,13 +1163,15 @@ export function makePresetHandlers() {
 /** The radio AF of the NAMED receiver, whichever is selected; `true` when sent.
  *
  *  MOR-1676 part A (AF): `unit` names the wire meaning explicitly. `'raw'`
- *  is the v3 radio-AF path — an int raw level dispatched untagged, so a
- *  step plus its reverse restore the exact raw value. Omitted `unit` is
- *  the legacy normalized float (v2 panels), converted through the
- *  control's declared raw domain. The distinction is explicit because JS
- *  cannot dispatch on JSON type: `1.0` and `1` are the same number, so
- *  guessing from `Number.isInteger` would misread a legacy 100 % as raw
- *  1. The browser-volume branch (`runtime.rxEnabled`) never reaches here. */
+ *  is the v3 radio-AF path — an int raw level dispatched with the explicit
+ *  `level_unit: 'raw'` (stripped before `sendCommand`), so a step plus its
+ *  reverse restore the exact raw value. Omitted `unit` is the legacy
+ *  normalized float (v2 panels), converted through the control's declared
+ *  raw domain and always sent tagged `level_unit: 'normalized'`. The
+ *  distinction is explicit because JS cannot dispatch on JSON type: `1.0`
+ *  and `1` are the same number, so guessing from `Number.isInteger` would
+ *  misread a legacy 100 % as raw 1. The browser-volume branch
+ *  (`runtime.rxEnabled`) never reaches here. */
 /** Raw AF level for a known normalized readback against the control's
  *  declared raw domain (`caps.controls.af_level`, MOR-1676 part A) — the
  *  exact inverse of the server's normalized readback (`raw/255`), so every
@@ -1184,8 +1186,10 @@ function rawAfLevel(caps: Capabilities, normalized: number): number | null {
 
 /** Raw AF level for a handler input that may already be raw (MOR-1676 part
  *  A): with `unit === 'raw'` an int dispatches as-is when inside the
- *  declared domain; otherwise (legacy normalized float) it converts
- *  through `rawAfLevel`. Anything else fails closed. */
+ *  declared domain (the intent carries `level_unit: 'raw'`, stripped before
+ *  `sendCommand`); otherwise (legacy normalized float) it converts through
+ *  `rawAfLevel` and is always sent tagged `level_unit: 'normalized'`.
+ *  Anything else fails closed. */
 function rawAfLevelFromInput(caps: Capabilities, level: number, unit?: 'raw'): number | null {
   if (unit === 'raw') {
     if (!Number.isInteger(level)) return null;
@@ -1202,7 +1206,15 @@ function setReceiverAf(target: 'main' | 'sub', level: number, unit?: 'raw'): boo
   if (raw === null) return false;
   const receiver = knownActiveReceiver('afLevel', target === 'sub' ? 'SUB' : 'MAIN');
   if (receiver === null) return false;
-  dispatchRadioIntent({ name: 'set_af_level', params: { level: raw, receiver } });
+  // MOR-1676 part A (AF): the radio-AF intent states its unit explicitly —
+  // `level_unit: 'raw'` for the raw path. `dispatchRadioIntentWithResult`
+  // strips the unit before `sendCommand`; the server never sees `'raw'`.
+  dispatchRadioIntent({
+    name: 'set_af_level',
+    params: unit === 'raw'
+      ? { level: raw, receiver, level_unit: 'raw' }
+      : { level: raw, receiver },
+  });
   return true;
 }
 
@@ -1247,18 +1259,26 @@ export function makeRxAudioHandlers() {
         runtime.setVolume(Math.round(level * 100));
       } else {
         // MOR-1676 part A (AF): `unit === 'raw'` is the v3 radio-AF path —
-        // the raw int dispatches untagged, so the server's int branch
-        // applies and a step plus its reverse restore the exact raw value.
-        // Omitted `unit` is the legacy normalized float (v2 panels),
-        // converted through the control's declared raw domain. The meaning
-        // is explicit because JS cannot dispatch on JSON type (`1.0 === 1`).
+        // the raw int dispatches with the explicit `level_unit: 'raw'`,
+        // which `dispatchRadioIntentWithResult` strips before `sendCommand`
+        // (the server never sees `'raw'`), so a step plus its reverse
+        // restore the exact raw value. Omitted `unit` is the legacy
+        // normalized float (v2 panels), converted through the control's
+        // declared raw domain and always sent tagged `level_unit:
+        // 'normalized'` — including 0 and 1, which JS cannot distinguish
+        // from raw ints (`1.0 === 1`), so the number alone never decides.
         const caps = getCapabilities();
         if (caps === null || !hasCapability('af_level')) return;
         const receiver = knownReceiverField('afLevel');
         if (receiver === null) return;
         const raw = rawAfLevelFromInput(caps, level, unit);
         if (raw === null) return;
-        dispatchRadioIntent({ name: 'set_af_level', params: { level: raw, receiver } });
+        dispatchRadioIntent({
+          name: 'set_af_level',
+          params: unit === 'raw'
+            ? { level: raw, receiver, level_unit: 'raw' }
+            : { level: raw, receiver },
+        });
       }
     },
     /** MOR-2579: the radio AF of the NAMED receiver, whichever is selected. */

@@ -336,11 +336,12 @@
       }
       : reading;
     // MOR-1676 part A (AF): the value out carries its meaning explicitly —
-    // the raw integer lattice sends the `'raw'` unit (dispatched untagged),
-    // the normalized lattice (browser volume, or a radio that publishes no
-    // `controls.af_level`) sends the legacy unit-less normalized float.
-    // The unit is explicit because JS cannot dispatch on JSON type
-    // (`1.0 === 1`): the handler must not guess raw from `Number.isInteger`.
+    // the raw integer lattice sends the `'raw'` unit (the intent strips it
+    // before `sendCommand`), the normalized lattice (browser volume, or a
+    // radio that publishes no `controls.af_level`) sends the legacy
+    // unit-less normalized float. The unit is explicit because JS cannot
+    // dispatch on JSON type (`1.0 === 1`): the handler must not guess raw
+    // from `Number.isInteger`.
     const base = {
       domain,
       enabled,

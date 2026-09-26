@@ -3,7 +3,7 @@ import { makeCommandId } from '$lib/types/protocol';
 import * as controlTransport from '$lib/transport/ws-client';
 import { getControlSession, onCommandDelivery, onControlSessionTransition, sendCommand } from '$lib/transport/ws-client';
 
-type FieldKind = 'boolean' | 'integer' | 'normalized' | 'normalized-or-raw-level' | 'normalized-unit' | 'number' | 'receiver' | 'string' | 'vfo' | 'vfo-slot';
+type FieldKind = 'boolean' | 'integer' | 'normalized' | 'normalized-or-raw-af-level' | 'normalized-unit' | 'number' | 'raw-af-level-unit' | 'receiver' | 'string' | 'vfo' | 'vfo-slot';
 type FieldSpec = FieldKind | `${FieldKind}?`;
 type IntentSpec = { names: readonly string[]; params: Readonly<Record<string, FieldSpec>> };
 
@@ -30,12 +30,15 @@ const intentSpecs = [
     'set_monitor_gain', 'set_nb_depth', 'set_nb_width', 'set_vox_delay', 'set_vox_gain',
   ], params: { level: 'integer' } },
   // MOR-1676 part A (AF): the radio-AF path dispatches a RAW integer
-  // 0-255 (`set_af_level` with an int `level`, untagged), so the server's
-  // int branch applies and a step plus its reverse restore the exact raw
-  // value. Browser volume keeps its own normalized call (it never reaches
-  // this intent). `'normalized-or-raw-level'` therefore accepts an int raw
-  // level and still tags a float normalized level with `level_unit`.
-  { names: ['set_af_level'], params: { level: 'normalized-or-raw-level', receiver: 'receiver' } },
+  // 0-255 with an explicit `level_unit: 'raw'` in the intent params, so a
+  // step plus its reverse restore the exact raw value. Browser volume keeps
+  // its own normalized call (it never reaches this intent). The caller
+  // states the unit; the number never decides it (JS cannot dispatch on
+  // JSON type: `1.0 === 1`, so a normalized 1.0 read as raw would be near
+  // silence). `dispatchRadioIntentWithResult` strips the `'raw'` unit before
+  // `sendCommand` — the server rejects any `level_unit` other than
+  // `'normalized'`.
+  { names: ['set_af_level'], params: { level: 'normalized-or-raw-af-level', receiver: 'receiver', level_unit: 'raw-af-level-unit?' } },
   { names: ['set_rf_power'], params: { level: 'number', level_unit: 'normalized-unit?' } },
   { names: ['set_nb_level', 'set_nr_level', 'set_preamp', 'set_rf_gain', 'set_squelch'], params: { level: 'integer', receiver: 'receiver' } },
   { names: ['set_cw_pitch', 'set_tuner_status'], params: { value: 'integer' } },
@@ -73,7 +76,7 @@ const intentSpecs = [
 ] as const satisfies readonly IntentSpec[];
 
 type Spec = (typeof intentSpecs)[number];
-type KindValue<K extends FieldKind> = K extends 'boolean' ? boolean : K extends 'normalized-unit' ? 'normalized' : K extends 'receiver' ? 0 | 1
+type KindValue<K extends FieldKind> = K extends 'boolean' ? boolean : K extends 'normalized-unit' ? 'normalized' : K extends 'raw-af-level-unit' ? 'raw' : K extends 'receiver' ? 0 | 1
   : K extends 'string' ? string : K extends 'vfo-slot' ? 'A' | 'B'
     : K extends 'vfo' ? 'A' | 'B' | 'MAIN' | 'SUB' : number;
 type RequiredKeys<S extends Readonly<Record<string, FieldSpec>>> = {
@@ -100,13 +103,15 @@ export function isNormalizedLevel(value: unknown): value is number {
 function matchesValue(kind: FieldKind, value: unknown): boolean {
   if (kind === 'integer') return typeof value === 'number' && Number.isSafeInteger(value);
   if (kind === 'normalized') return isNormalizedLevel(value);
-  // MOR-1676 part A (AF): an int is a raw 0-255 level (the radio-AF path),
-  // a float is a normalized 0.0-1.0 level — dispatch on JSON type, exactly
-  // like the server's `_af_level_from_param`.
-  if (kind === 'normalized-or-raw-level') {
-    if (typeof value !== 'number' || !Number.isFinite(value)) return false;
-    return Number.isInteger(value) ? value >= 0 && value <= 255 : value >= 0 && value <= 1;
+  // MOR-1676 part A (AF): the unit comes from the caller (`level_unit`),
+  // never from the number — `1.0 === 1` in JS, so guessing raw from
+  // `Number.isInteger` would misread a normalized full scale as raw 1.
+  // A raw level is an integer in the published raw range (0..255 today).
+  if (kind === 'normalized-or-raw-af-level') {
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0
+      && (Number.isInteger(value) ? value <= 255 : value <= 1);
   }
+  if (kind === 'raw-af-level-unit') return value === 'raw';
   if (kind === 'normalized-unit') return value === 'normalized';
   if (kind === 'number') return typeof value === 'number' && Number.isFinite(value);
   if (kind === 'boolean') return typeof value === 'boolean';
@@ -175,22 +180,41 @@ export function dispatchRadioIntentWithResult(intent: RadioIntent): RadioIntentD
     || !matchesParams(specsByName.get(name)!, paramsRecord)
     || (name === 'set_rf_power' && paramsRecord.level_unit === 'normalized'
       && !isNormalizedLevel(paramsRecord.level))
+    // MOR-1676 part A (AF): the unit decides the level's shape — a raw unit
+    // takes only an integer in the published raw range, a missing unit only
+    // a normalized 0.0..1.0 level. The number alone never decides.
+    || (name === 'set_af_level' && paramsRecord.level_unit === 'raw'
+      && !(typeof paramsRecord.level === 'number' && Number.isInteger(paramsRecord.level)
+        && paramsRecord.level >= 0 && paramsRecord.level <= 255))
+    || (name === 'set_af_level' && paramsRecord.level_unit === undefined
+      && !isNormalizedLevel(paramsRecord.level))
     || (candidate.id !== undefined && (typeof candidate.id !== 'string' || candidate.id.length === 0))) {
     throw new TypeError('Invalid radio intent envelope');
   }
   const id = (candidate.id as string | undefined) ?? makeCommandId();
   const originalEpoch = getControlSession().epoch;
   const lifecycle = beginCommand({ id, name, params: params as Record<string, unknown>, originalEpoch });
-  // MOR-1676 part A (AF): tag a float normalized AF level, never a raw int —
-  // a `level_unit: 'normalized'` tag forces the server to read the value as
-  // normalized 0.0..1.0 (an out-of-range tagged value is rejected), so an
-  // int must never be tagged.
-  const afLevel = name === 'set_af_level'
-    ? (params as Record<string, unknown>).level : undefined;
-  const wireParams = specsByName.get(name)?.level === 'normalized'
-      || (name === 'set_af_level' && typeof afLevel === 'number' && !Number.isInteger(afLevel))
-    ? { ...(params as Record<string, unknown>), level_unit: 'normalized' }
-    : params as Record<string, unknown>;
+  // MOR-1676 part A (AF): the caller states the unit in the intent params.
+  // No `level_unit` means normalized 0.0..1.0 — always sent tagged
+  // `level_unit: 'normalized'`, whether the value is 0, 1 or a fraction
+  // (a normalized 1.0 must never go out untagged: the server would read it
+  // as raw 1, near silence). `level_unit: 'raw'` means a raw integer in the
+  // published raw range; the unit is STRIPPED before `sendCommand` because
+  // the server rejects any `level_unit` other than `'normalized'`.
+  const wireParams = (() => {
+    const base = params as Record<string, unknown>;
+    if (specsByName.get(name)?.level === 'normalized') {
+      return { ...base, level_unit: 'normalized' };
+    }
+    if (name === 'set_af_level') {
+      if (base.level_unit === 'raw') {
+        const { level_unit: _stripped, ...untagged } = base;
+        return untagged;
+      }
+      return { ...base, level_unit: 'normalized' };
+    }
+    return base;
+  })();
   const transportAccepted = sendCommand(name, wireParams, id);
   return { lifecycle, transportAccepted };
 }

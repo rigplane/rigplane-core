@@ -1154,9 +1154,17 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
     },
   );
 
+  // MOR-1676 part A (AF): on the radio target the knob moves on the raw
+  // integer lattice published by `controls.af_level` (0..255 on the live
+  // caps — the caps below declare no `controls`, so the CAT-scale 0-255
+  // fallback the write path has always assumed applies). The MAIN knob
+  // reads 0.31 → raw round(0.31 * 255) = 79, one step up is 80; the SUB
+  // knob reads 0.77 → raw round(0.77 * 255) = 196, one step up is 197. The
+  // intent carries the explicit `level_unit: 'raw'` (stripped before
+  // `sendCommand`, so the wire params below carry no unit key).
   it.each([
-    ['MAIN', 'sub', 1, 0.78],
-    ['SUB', 'main', 0, 0.32],
+    ['MAIN', 'sub', 1, 197],
+    ['SUB', 'main', 0, 80],
   ] as const)('with %s selected, a step on the %s knob sets that receiver\'s AF', (active, receiver, index, level) => {
     radioAf(active);
     renderHostedFace('desktop-v2');
@@ -1164,10 +1172,14 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
       'keydown', { key: 'ArrowRight', bubbles: true, cancelable: true },
     ));
     flushSync();
-    expect(afCalls()).toEqual([{ level: expect.closeTo(level, 10), receiver: index }]);
+    expect(afCalls()).toEqual([{ level, receiver, level_unit: 'raw' }]);
   });
 
   it('keeps a drag on the SUB knob alive across a MAIN-to-SUB selection change', () => {
+    // MOR-1676 part A (AF): the drag moves on the raw integer lattice
+    // (0..255 fallback — the caps below declare no `controls.af_level`).
+    // clientX 90 of 100 → raw round(90/100 * 255) = round(229.5) = 230,
+    // dispatched with the explicit `level_unit: 'raw'`.
     radioAf();
     render();
     const slider = knob('sub')!;
@@ -1184,7 +1196,7 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
     slider.dispatchEvent(new PointerEvent('pointermove', { pointerId: 9, clientX: 90, bubbles: true }));
     slider.dispatchEvent(new PointerEvent('pointerup', { pointerId: 9, bubbles: true }));
     flushSync();
-    expect(afCalls().at(-1)).toEqual({ level: expect.closeTo(0.9, 10), receiver: 1 });
+    expect(afCalls().at(-1)).toEqual({ level: 230, receiver: 1, level_unit: 'raw' });
     expect(afCalls().every((params) => (params as { receiver: number }).receiver === 1)).toBe(true);
   });
 

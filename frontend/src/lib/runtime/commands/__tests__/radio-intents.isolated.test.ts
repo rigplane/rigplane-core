@@ -81,22 +81,23 @@ describe('typed non-PTT radio intents', () => {
     const examples = [
       ['set_freq', { freq: 14_074_000, receiver: 0 }],
       ['set_mode', { mode: 'CW', receiver: 1 }],
-      // MOR-1676 part A (AF): the radio-AF path dispatches the raw INTEGER
-      // (untagged) — the host API still accepts the normalized float too and
-      // tags it, exactly like the server's `_af_level_from_param` dispatch
-      // on JSON type.
-      ['set_af_level', { level: 128, receiver: 0 }],
+      // MOR-1676 part A (AF): the caller states the unit. A unit-less AF
+      // level is normalized (tagged, even for 0 and 1 — `1.0 === 1` in JS,
+      // so the number alone must never decide); `level_unit: 'raw'` states
+      // a raw integer and is stripped before `sendCommand`.
+      ['set_af_level', { level: 1, receiver: 0 }],
       ['set_af_level', { level: 0.5, receiver: 0 }],
+      ['set_af_level', { level: 128, receiver: 0, level_unit: 'raw' }],
       ['vfo_swap', {}],
     ] as const;
     for (const [name, params] of examples) {
       for (const accepted of [false, true, false]) {
         harness.sendCommand.mockClear().mockReturnValue(accepted);
         expect(api[method](name, params)).toBe(accepted);
-        const level = (params as Record<string, unknown>).level;
-        const wireParams = name === 'set_af_level' && typeof level === 'number' && !Number.isInteger(level)
+        const { level_unit: _intentUnit, ...rest } = params as Record<string, unknown>;
+        const wireParams = name === 'set_af_level' && (params as Record<string, unknown>).level_unit !== 'raw'
           ? { ...params, level_unit: 'normalized' }
-          : params;
+          : rest;
         expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith(name, wireParams, expect.any(String));
         expect(lifecycle.getCommandLifecycles().at(-1)).toMatchObject({ name, params, status: 'pending' });
       }
@@ -407,11 +408,14 @@ describe('typed non-PTT radio intents', () => {
       { name: 'set_monitor_mute', params: { on: true, receiver: 0 } },
       { name: 'set_af_level', params: { level: -0.01, receiver: 0 } },
       { name: 'set_af_level', params: { level: 1.01, receiver: 0 } },
-      // MOR-1676 part A (AF): an int is a raw 0-255 level — `10` the int is
-      // raw 10 (valid), while the float `10` was never valid normalized
-      // input. Out-of-domain raw ints still fail closed.
-      { name: 'set_af_level', params: { level: 256, receiver: 0 } },
-      { name: 'set_af_level', params: { level: -1, receiver: 0 } },
+      // MOR-1676 part A (AF): the caller states the unit. A unit-less level
+      // must be normalized 0.0..1.0, so a unit-less int outside it fails —
+      // even `10`, which would be a valid raw level WITH the unit.
+      { name: 'set_af_level', params: { level: 10, receiver: 0 } },
+      { name: 'set_af_level', params: { level: 256, receiver: 0, level_unit: 'raw' } },
+      { name: 'set_af_level', params: { level: -1, receiver: 0, level_unit: 'raw' } },
+      { name: 'set_af_level', params: { level: 1.5, receiver: 0, level_unit: 'raw' } },
+      { name: 'set_af_level', params: { level: 10, receiver: 0, level_unit: 'normalized' } },
       { name: 'set_af_level', params: { level: '0.5', receiver: 0 } },
       { name: 'set_af_level', params: { level: 10, receiver: 7 } },
       { name: 'set_af_level', params: { level: 10, receiver: '0' } },
@@ -434,11 +438,12 @@ describe('typed non-PTT radio intents', () => {
   });
 
   it('accepts exact normalized AF boundaries and fractions without weakening integer fields', () => {
-    // MOR-1676 part A (AF): only NON-INTEGER floats are normalized levels
-    // and carry the tag. `0` and `1` are integers, so they are raw levels
-    // and go untagged (see the raw-integer test below) — JS cannot
-    // distinguish `1.0` from `1`, so the intent layer must not guess.
-    const levels = [0.5, 50 / 255] as const;
+    // MOR-1676 part A (AF): a unit-less AF level is normalized 0.0..1.0 and
+    // is ALWAYS sent tagged `level_unit: 'normalized'` — whether the value
+    // is 0, 1 or a fraction. `1.0 === 1` in JS, so the number alone must
+    // never decide the unit: a normalized 1.0 sent untagged would reach the
+    // server as raw 1 (near silence).
+    const levels = [0, 1, 0.5, 50 / 255] as const;
     levels.forEach((level, index) => intents.dispatchRadioIntent({
       id: `af-normalized-${index}`, name: 'set_af_level', params: { level, receiver: 0 },
     }));
@@ -454,20 +459,26 @@ describe('typed non-PTT radio intents', () => {
     } as never)).toThrow(TypeError);
   });
 
-  it('MOR-1676 part A (AF): dispatches raw-integer AF levels untagged', () => {
-    // The radio-AF path sends raw ints; the intent layer must pass them
-    // through WITHOUT `level_unit: 'normalized'` (the server rejects an int
-    // tagged `normalized`: `_consume_normalized_level_unit` requires a
-    // 0.0-1.0 number once the tag is present).
-    for (const [id, level] of [['af-raw-0', 0], ['af-raw-50', 50], ['af-raw-255', 255]] as const) {
-      intents.dispatchRadioIntent({ id, name: 'set_af_level', params: { level, receiver: 0 } });
+  it('MOR-1676 part A (AF): a raw AF intent states its unit and goes out stripped', () => {
+    // The radio-AF path carries `level_unit: 'raw'` in the intent params; the
+    // intent layer validates the raw integer and STRIPS the unit before
+    // `sendCommand` — the server rejects any `level_unit` other than
+    // `'normalized'`, so a leaked `'raw'` would fail the command.
+    for (const [id, level] of [['af-raw-0', 0], ['af-raw-1', 1], ['af-raw-50', 50], ['af-raw-255', 255]] as const) {
+      intents.dispatchRadioIntent({
+        id, name: 'set_af_level', params: { level, receiver: 0, level_unit: 'raw' },
+      });
     }
 
     expect(harness.sendCommand.mock.calls).toEqual([
       ['set_af_level', { level: 0, receiver: 0 }, 'af-raw-0'],
+      ['set_af_level', { level: 1, receiver: 0 }, 'af-raw-1'],
       ['set_af_level', { level: 50, receiver: 0 }, 'af-raw-50'],
       ['set_af_level', { level: 255, receiver: 0 }, 'af-raw-255'],
     ]);
+    for (const [, wireParams] of harness.sendCommand.mock.calls) {
+      expect(wireParams).not.toHaveProperty('level_unit');
+    }
   });
 
   it('admits tagged normalized RF while preserving untagged finite RF levels', () => {

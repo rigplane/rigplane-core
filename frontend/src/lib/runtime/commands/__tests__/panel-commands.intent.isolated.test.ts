@@ -510,18 +510,21 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(getCommandLifecycles()).toHaveLength(0);
   });
 
-  it('MOR-1676 part A (AF): the radio-AF path dispatches the raw integer, untagged', () => {
+  it('MOR-1676 part A (AF): the radio-AF path dispatches the raw integer, untagged on the wire', () => {
     // Owner decision 2026-09-26 (option A): the radio-AF slider steps on
     // the raw 0..255 lattice, so a step and its reverse restore the exact
     // raw value; the public API and the state snapshot do not change. The
-    // wire form for the radio-AF path is a raw int without the tag, which
-    // the server already accepts (its int branch). This test pins the
-    // radio-AF dispatch at 100 %: the integer 255, untagged.
+    // radio-AF intent states `level_unit: 'raw'`, which the intent layer
+    // STRIPS before `sendCommand` — the wire form is a raw int with NO
+    // `level_unit` key (the server rejects any other unit). This test pins
+    // the radio-AF dispatch at 100 %: the integer 255, untagged.
     //
-    // The `'raw'` unit is explicit because JS cannot dispatch on JSON type
+    // The unit is explicit because JS cannot dispatch on JSON type
     // (`1.0 === 1`): a unit-less call is the legacy normalized float
-    // (v2 panels), converted through the declared raw domain — including
-    // `1` (100 %) to 255. A `'raw'` call dispatches the int as-is.
+    // (v2 panels), converted through the declared raw domain and ALWAYS
+    // sent tagged `level_unit: 'normalized'` — including `1` (100 %) to
+    // 255, which must never go out untagged (the server would read it as
+    // raw 1, near silence).
     h.caps = {
       ...h.caps!,
       controls: {
