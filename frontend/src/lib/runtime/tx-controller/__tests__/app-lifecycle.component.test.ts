@@ -233,6 +233,11 @@ describe('App bootstrap rejection lifecycle (MOR-1168)', () => {
     // Removing the `!mounted` guard in the catch handler would arm a
     // retry setTimeout (and eventually call location.reload()) here.
     expect(setTimeoutSpy).not.toHaveBeenCalled();
+    // MOR-1239: the guard must sit before the catch's $state writes, not
+    // only before the timer. A detached root must not receive the error UI
+    // those writes would paint.
+    expect(document.querySelector('.error-overlay')).toBeNull();
+    expect(document.body.textContent ?? '').not.toContain('core.app.backendError');
   });
 
   it('preserves bounded retry/error behavior for a rejection while still mounted', async () => {
