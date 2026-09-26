@@ -44,6 +44,9 @@ DISCOVERY_TIMEOUT = 1.0  # seconds per attempt
 BUFSIZE = 500
 MAX_MISSING = 50
 PACKET_QUEUE_MAXSIZE = 4096
+# Non-scope overflow must not log once per packet. The first eviction logs
+# immediately; while evictions continue, at most one summary per interval.
+_OVERFLOW_LOG_INTERVAL = 5.0
 
 
 class ConnectionState(StrEnum):
@@ -141,6 +144,10 @@ class IcomTransport:
         # Optional fast-path callback for scope data — bypasses packet queue
         self._scope_fast_path: Callable[[bytes], None] | None = None
         self._scope_dropped: int = 0  # scope packets dropped under queue pressure
+        # Non-scope evictions since the last overflow warning, and when that
+        # warning was logged. Zero means no warning has been logged yet.
+        self._overflow_evicted: int = 0
+        self._overflow_logged_at: float = 0.0
         # When True, data packets (ptype=0x00) are silently discarded instead
         # of being queued.  Used for the control transport after connection
         # setup completes — the radio keeps sending periodic status packets on
@@ -696,19 +703,11 @@ class IcomTransport:
             if dropped is not None and len(dropped) >= HEADER_SIZE:
                 dropped_seq = struct.unpack_from("<H", dropped, 6)[0]
 
-            logger.warning(
-                (
-                    "Packet-queue overflow: evicting for CI-V control "
-                    "(dropped_seq=%s, new_seq=0x%04X, ptype=0x%04X, "
-                    "sender_id=0x%08X, queue_size=%d, maxsize=%d, rx_count=%d)"
-                ),
-                (f"0x{dropped_seq:04X}" if isinstance(dropped_seq, int) else "n/a"),
-                seq,
-                ptype,
-                sender_id,
-                self._packet_queue.qsize(),
-                self._packet_queue.maxsize,
-                self.rx_packet_count,
+            self._note_overflow(
+                dropped_seq=dropped_seq,
+                seq=seq,
+                ptype=ptype,
+                sender_id=sender_id,
             )
 
         try:
@@ -730,16 +729,57 @@ class IcomTransport:
             if is_scope:
                 self._scope_dropped += 1
                 return
-            logger.warning(
-                (
-                    "Packet-queue overflow (second-chance): dropping newest packet "
-                    "(seq=0x%04X, ptype=0x%04X, sender_id=0x%08X, maxsize=%d)"
-                ),
-                seq,
-                ptype,
-                sender_id,
-                self._packet_queue.maxsize,
+            self._note_overflow(
+                dropped_seq=None,
+                seq=seq,
+                ptype=ptype,
+                sender_id=sender_id,
+                second_chance=True,
             )
+
+    def _note_overflow(
+        self,
+        *,
+        dropped_seq: int | None,
+        seq: int,
+        ptype: int,
+        sender_id: int,
+        second_chance: bool = False,
+    ) -> None:
+        """Count a non-scope eviction and log at most once per interval.
+
+        The first eviction logs immediately. While evictions continue, later
+        lines are summaries: how many were evicted since the previous line,
+        and the running total. Eviction itself is unchanged.
+        """
+        self._overflow_evicted += 1
+        now = time.monotonic()
+        first = self._overflow_logged_at == 0.0
+        if not first and now - self._overflow_logged_at < _OVERFLOW_LOG_INTERVAL:
+            return
+        since_last = 1 if first else self._overflow_evicted
+        kind = "second-chance" if second_chance else "evicting for CI-V control"
+        seq_text = f"0x{dropped_seq:04X}" if isinstance(dropped_seq, int) else "n/a"
+        logger.warning(
+            (
+                "Packet-queue overflow: %s "
+                "(dropped_seq=%s, new_seq=0x%04X, ptype=0x%04X, "
+                "sender_id=0x%08X, queue_size=%d, maxsize=%d, rx_count=%d, "
+                "evicted %d since last, total=%d)"
+            ),
+            kind,
+            seq_text,
+            seq,
+            ptype,
+            sender_id,
+            self._packet_queue.qsize(),
+            self._packet_queue.maxsize,
+            self.rx_packet_count,
+            since_last,
+            self._overflow_evicted,
+        )
+        self._overflow_logged_at = now
+        self._overflow_evicted = 0
 
     # Dispatch table: ptype → handler returning True if consumed.
     # Falls through to ``_handle_data_packet`` when no entry matches or a
