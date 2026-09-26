@@ -472,18 +472,17 @@ export function projectSignalMeter(
     ? uniformScaleMarksFor(projectionCalibration) : [];
 
   if (value === null) {
-    const legacy = domain === undefined;
-    const primaryText = legacy || scaleMode === 's' ? 'S ?' : '?';
-    const secondaryText = legacy ? ''
-      : scaleMode === 'raw' ? 'uncalibrated'
-        : scaleMode === 'none' && domain?.kind === 'engineering' ? 'scale unavailable'
-          : scaleMode === 'none' ? 'unit unknown' : '';
+    // No reading yet: an unread meter is an empty bar with no caption —
+    // never a '?', a dash, or an invented zero (owner rulings MOR-2520,
+    // repeated in MOR-2649). The accessible name is the bare meter name
+    // with no placeholder word; the calibrated / raw / engineering scale
+    // distinctions are known-value facts and stay in the branches below.
     return {
       scaleMode,
       motionFraction: null,
-      primaryText,
-      secondaryText,
-      accessibleDescription: `S meter reading unknown${secondaryText ? `, ${secondaryText}` : ''}`,
+      primaryText: '',
+      secondaryText: '',
+      accessibleDescription: 'S meter',
       crossoverFraction,
       uniformScaleKnots,
       uniformScaleMarks,

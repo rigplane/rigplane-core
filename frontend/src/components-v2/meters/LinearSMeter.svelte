@@ -603,7 +603,7 @@
       {/each}
       <text x="412" y="31" text-anchor="end" fill="var(--v2-text-primary, #DFFCF5)"
         font-family="Roboto Mono, monospace" font-size="12" font-weight="700">{displaySUnit}</text>
-      {#if signalProjection.scaleMode === 'raw'}
+      {#if signalProjection.scaleMode === 'raw' && signalProjection.motionFraction !== null}
         <text x="412" y="46" text-anchor="end" fill="var(--v2-text-secondary, #A0B4C8)" font-size="10">uncalibrated</text>
       {/if}
     </g>
