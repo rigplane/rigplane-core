@@ -717,9 +717,7 @@ class TestSigtermShutdown:
 
         with patch.dict("os.environ", {"ICOM_PID_FILE": "", "ICOM_LOG_FILE": "off"}):
             with patch("sys.argv", ["rigplane", "--host", "127.0.0.1", "serve"]):
-                with patch(
-                    "rigplane.cli._run", new_callable=AsyncMock, return_value=0
-                ):
+                with patch("rigplane.cli._run", new_callable=AsyncMock, return_value=0):
                     with patch(
                         "rigplane.cli.os._exit",
                         side_effect=lambda code: (_ for _ in ()).throw(

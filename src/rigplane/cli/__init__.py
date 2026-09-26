@@ -4273,6 +4273,7 @@ def main() -> None:
         # This is the SIGTERM graceful-close path (design 2.6 / Hole 3): the
         # process does not hard-exit before the token-remove has gone out.
         def _sigterm_handler(signum: int, frame: Any) -> None:
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
             raise KeyboardInterrupt()
 
         signal.signal(signal.SIGTERM, _sigterm_handler)
@@ -4296,6 +4297,8 @@ def main() -> None:
             except KeyboardInterrupt:
                 exit_code = 130
             finally:
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                signal.signal(signal.SIGINT, signal.SIG_IGN)
                 # Cancel remaining tasks
                 for task in asyncio.all_tasks(loop):
                     task.cancel()
