@@ -1094,7 +1094,9 @@ describe('the AF control consumes the admitted-target lane (MOR-1687 F2)', () =>
     pushAfState(3, 128 / 255, key);
     expect(getCommandLifecycles()[0]?.status).toBe('confirmed');
     expect(knob(row)!.dataset.commandPhase).toBe('confirmed');
-    expect(Number(knob(row)!.getAttribute('aria-valuenow'))).toBeCloseTo(128 / 255, 10);
+    // MOR-1676 part A (AF): the knob moves on the published raw lattice —
+    // the admitted 128/255 reads as the raw integer 128.
+    expect(Number(knob(row)!.getAttribute('aria-valuenow'))).toBe(128);
   });
 
   it.each(LANES)('%s stays idle without an admitted target and keeps showing the readback', (
@@ -1111,7 +1113,9 @@ describe('the AF control consumes the admitted-target lane (MOR-1687 F2)', () =>
     pushAfState(2, 0.31, key);
     expect(knob(row)!.dataset.commandPhase).toBe('idle');
     expect(getCommandLifecycles()[0]?.status).toBe('acknowledged');
-    expect(Number(knob(row)!.getAttribute('aria-valuenow'))).toBeCloseTo(0.31, 10);
+    // MOR-1676 part A (AF): the knob moves on the published raw lattice —
+    // the 0.31 readback reads as the raw integer round(0.31 * 255) = 79.
+    expect(Number(knob(row)!.getAttribute('aria-valuenow'))).toBe(79);
   });
 });
 
@@ -1153,8 +1157,12 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
     .filter(([name]) => name === 'set_af_level' || name === 'set_af_level_normalized')
     .map(([name, params]) => ({ name, ...params }));
   const BOTH = [
-    ['rx-audio-af-main', 'AF MAIN', '31%', 'AF MAIN', '0.31'],
-    ['rx-audio-af-sub', 'AF SUB', '77%', 'AF SUB', '0.77'],
+    // MOR-1676 part A (AF): the knobs move on the published raw lattice
+    // (0..255 on the live caps), so the rendered canonical values are raw
+    // integers — round(0.31 * 255) = 79, round(0.77 * 255) = 196 — while
+    // the text readout stays a percentage.
+    ['rx-audio-af-main', 'AF MAIN', '31%', 'AF MAIN', '79'],
+    ['rx-audio-af-sub', 'AF SUB', '77%', 'AF SUB', '196'],
   ];
 
   it.each(['desktop-v2', 'sdr-test'] as const)(
@@ -1252,11 +1260,13 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
 
   // IC-9700 shape: `sub.afLevel` is observed and available, but the radio
   // admits no SUB AF write, so the server does not serve `af_level_sub`.
+  // The single AF LEVEL row still moves on the published raw lattice
+  // (MOR-1676 part A): round(0.31 * 255) = 79.
   it('draws the one AF LEVEL row without af_level_sub, even with sub.afLevel observed', () => {
     radioAf();
     h.caps = liveCaps(AUDIO_TAGS.filter((tag) => tag !== 'af_level_sub'));
     renderHostedFace('desktop-v2');
-    expect(rows()).toEqual([['rx-audio-af', 'AF LEVEL', '31%', 'AF', '0.31']]);
+    expect(rows()).toEqual([['rx-audio-af', 'AF LEVEL', '31%', 'AF', '79']]);
     expect(el('af-sub')).toBeNull();
   });
 
