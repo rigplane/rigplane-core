@@ -956,7 +956,7 @@ describe('VFO selection intent', () => {
   // not inject a Svelte <style>, so the component's own tile rules are
   // applied as a sheet and the difference is read from computed style.
   it('marks the active tile by border style, not colour alone (MOR-1260)', () => {
-    const source = readFileSync(new URL('../VfoSurface.svelte', import.meta.url), 'utf8');
+    const source = readFileSync('src/semantic/VfoSurface.svelte', 'utf8');
     const styleBlock = source.slice(source.indexOf('<style>') + '<style>'.length, source.indexOf('</style>'));
     const style = document.createElement('style');
     style.textContent = styleBlock.replace(/\/\*[\s\S]*?\*\//g, '');
