@@ -71,7 +71,8 @@
     ['breakInDelay', 'Break-in delay', 0, 255, 1, ''],
   ] as const;
   export type CwLevelField = (typeof CW_LEVELS)[number][0];
-  /** The ONE rendering of "not measured". Never 'OFF', never 0. */
+  /** MOR-2653 holdover: only the RX-mode line still renders this; every
+   *  `textOf` readout below renders EMPTY in its reserved slot when unread. */
   export const UNKNOWN_TEXT = '—';
   /** Break-in as the operator must read it. `unknown` is NOT 'off' (rule 5). */
   export type BreakInPosture = 'off' | 'armed' | 'unknown';
@@ -114,9 +115,10 @@
   /** Usable ⇔ the radio HAS it, it is readable NOW, and it was actually read. */
   export const usable = (f: CwKeyerField<unknown>): boolean =>
     f.availability.structural && f.availability.operational && f.reading.status === 'known';
-  /** Honest text: an unread fact reads as unknown, never as a v2 default. */
+  /** Honest text (MOR-2653): an unread fact reads as EMPTY in its reserved
+   *  slot — never a placeholder dash and never a v2 default. */
   export const textOf = (f: CwKeyerField<unknown>): string =>
-    f.reading.status !== 'known' ? UNKNOWN_TEXT
+    f.reading.status !== 'known' ? ''
       : typeof f.reading.value === 'boolean' ? (f.reading.value ? 'on' : 'off')
         : String(f.reading.value);
   /** Rule 5: only a positively-read `'off'` is `'off'`. */
@@ -458,9 +460,10 @@
             />
             {#if hasBreakInDelayFeedback}
             <output
+              class="cw-keyer-readout"
               data-testid="cw-keyer-breakInDelay-value"
               data-command-phase={breakInDelayView.feedback.phase}
-            >{breakInDelayView.displayed === null ? UNKNOWN_TEXT : breakInDelayView.displayed}
+            >{breakInDelayView.displayed === null ? '' : breakInDelayView.displayed}
               <span class:command-pending={breakInDelayBusy}>{breakInDelayPhaseLabel}</span>
             </output>
             {#if breakInDelayView.announcement !== null}
@@ -470,7 +473,7 @@
               >{breakInDelayView.announcement}</span>
             {/if}
             {:else}
-              <output data-testid="cw-keyer-breakInDelay-value">{textOf(f)} {unit}</output>
+              <output class="cw-keyer-readout" data-testid="cw-keyer-breakInDelay-value">{textOf(f)} {unit}</output>
             {/if}
           {/if}
         </label>
@@ -483,7 +486,7 @@
         aria-pressed={pressedOf(cw.reversePaddle)}
         disabled={!reversePaddleToggle.available}
         onclick={() => reversePaddleToggle.invoke()}
-      >Reverse paddle: {textOf(cw.reversePaddle)}</button>
+      >Reverse paddle</button>
     {/if}
     {/snippet}
 
@@ -494,7 +497,7 @@
         {#if view.txAux}
           <p class="cw-keyer-row" data-testid="cw-keyer-sidetone"
             data-observed={usable(view.txAux.monitorLevel)}>
-            Sidetone level: {textOf(view.txAux.monitorLevel)}
+            Sidetone level: <output class="cw-keyer-readout">{textOf(view.txAux.monitorLevel)}</output>
           </p>
         {/if}
       </div>
@@ -533,7 +536,7 @@
               >APF {label}</button>
             {/each}
           {/if}
-          <output class:sr-only={standard} data-testid="cw-keyer-apf-value">{textOf(cw.apf)}</output>
+          <output class="cw-keyer-readout" class:sr-only={standard} data-testid="cw-keyer-apf-value">{textOf(cw.apf)}</output>
         </div>
         {#if mutexed('apf')}
           <p class="cw-keyer-sentence" class:sr-only={standard}>
@@ -553,7 +556,7 @@
             aria-describedby={mutexed('twinPeak') ? 'cw-keyer-twin-peak-reason' : undefined}
             disabled={!twinPeakToggle.available}
             onclick={() => twinPeakToggle.invoke()}
-          >{standard ? 'TPF' : `TPF: ${textOf(cw.twinPeak)}`}</button>
+          >TPF</button>
         </div>
         {#if mutexed('twinPeak')}
           <!-- Rule 4: RTTY is named, so a permanently-disabled control in a
@@ -579,7 +582,7 @@
            never duplicated as a second fact and never given a second control —
            the one control lives in `TxAuxSurface`. Readout only. -->
       <p class="cw-keyer-row" data-testid="cw-keyer-sidetone" data-observed={usable(view.txAux.monitorLevel)}>
-        Sidetone level: {textOf(view.txAux.monitorLevel)}
+        Sidetone level: <output class="cw-keyer-readout">{textOf(view.txAux.monitorLevel)}</output>
       </p>
     {/if}
 
@@ -602,6 +605,16 @@
   .cw-keyer-sentence { margin: 0; }
   .cw-keyer-level { display: flex; align-items: baseline; gap: 0.5rem; }
   .cw-keyer-name { min-width: 12ch; }
+  /* MOR-2653: reserved width in EVERY state — an unread value renders EMPTY
+     in its slot, never a placeholder, and the slot's box never changes size
+     when a first reading arrives. 3ch covers the widest rendered value of
+     every readout using the slot (break-in delay 255, sidetone monitor level
+     0–255, APF ordinal). Digits are tabular. */
+  .cw-keyer-readout {
+    display: inline-block;
+    min-width: 3ch;
+    font-variant-numeric: tabular-nums;
+  }
   .cw-keyer-choice[aria-checked='true'], .cw-keyer-toggle[aria-pressed='true'] { font-weight: 700; }
   .cw-keyer-surface.standard {
     display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px;

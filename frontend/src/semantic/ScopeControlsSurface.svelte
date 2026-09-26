@@ -99,8 +99,10 @@
     f.availability.structural && f.availability.operational && f.reading.status === 'known';
   export const numberOf = (f: ScopeControlsField<number>, fallback: number): number =>
     f.reading.status === 'known' ? f.reading.value : fallback;
+  /** MOR-2653: an unread REF value renders EMPTY in its reserved slot —
+   *  never a placeholder dash. */
   export const textOf = (f: ScopeControlsField<unknown>): string =>
-    f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
+    f.reading.status === 'known' ? String(f.reading.value) : '';
   /** The observed value, or `undefined` when unread — drives a flat key's
    *  `lit` (`undefined` → `null` → drawn unlit with its label, no value). */
   const valueOf = <T>(f: ScopeControlsField<T> | undefined): T | undefined =>
@@ -337,7 +339,7 @@
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('refDb', -5, 'scope reference')} renderer={finiteAppearance.action}
           />{/key}{/key}
-          <output data-testid="scope-ref-value">{textOf(sc.refDb)}</output>
+          <output class="scope-finite-value" data-testid="scope-ref-value">{textOf(sc.refDb)}</output>
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('refDb', 5, 'scope reference')} renderer={finiteAppearance.action}
           />{/key}{/key}
@@ -615,6 +617,18 @@
     letter-spacing: 0.05em;
     white-space: nowrap;
     color: var(--dl-vfo-unlit-text, var(--v2-text-muted, #5a6875));
+  }
+
+  /* MOR-2653: the finite-appearance REF slot keeps its width unread → known.
+     4ch covers the widest rendered value ('-30'); an unread value renders
+     EMPTY, never a placeholder. Digits are tabular. */
+  .scope-finite-value {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    min-width: 4ch;
+    font-variant-numeric: tabular-nums;
   }
 
   .scope-step-key {

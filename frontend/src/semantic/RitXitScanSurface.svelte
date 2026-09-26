@@ -101,8 +101,11 @@
 
   export const usable = (f: RitXitField<unknown> | ScanField<unknown>): boolean =>
     f.availability.structural && f.availability.operational && f.reading.status === 'known';
+  /** MOR-2653: an unread scan readout renders EMPTY in its reserved slot —
+   *  never a placeholder dash. (The RIT/XIT offset outputs below are a
+   *  separate census item and keep their current rendering.) */
   export const textOf = (f: RitXitField<unknown> | ScanField<unknown>): string =>
-    f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
+    f.reading.status === 'known' ? String(f.reading.value) : '';
   const isOn = (f: RitXitField<boolean>): boolean => f.reading.status === 'known' && f.reading.value === true;
   const signedOffset = (f: RitXitField<number>): string => {
     if (f.reading.status !== 'known' || !Number.isFinite(f.reading.value)) return UNKNOWN_TEXT;
@@ -275,7 +278,7 @@
       <div class="row" data-testid="scan">
         {#if sc.scanning.availability.structural}
           <span class="row-label">SCAN</span>
-          {#if part === 'all'}<span data-testid="scan-status" data-observed={usable(sc.scanning)}>{textOf(sc.scanning)}</span>{/if}
+          {#if part === 'all'}<span class="scan-readout" data-testid="scan-status" data-observed={usable(sc.scanning)}>{textOf(sc.scanning)}</span>{/if}
           <button
             type="button" data-testid="scan-toggle" aria-pressed={pressedOf(sc.scanning)}
             disabled={!scanToggle.available || (!scanningOn && availableScanTypes.length === 0)}
@@ -307,11 +310,11 @@
           {/if}
         {/if}
         {#if part === 'all' && sc.scanType.availability.structural}
-          <output data-testid="scan-type-value">{textOf(sc.scanType)}</output>
+          <output class="scan-readout" data-testid="scan-type-value">{textOf(sc.scanType)}</output>
         {/if}
         {#if sc.scanResumeMode.availability.structural}
           {#if part === 'all'}
-          <output data-testid="scan-resume-value">{textOf(sc.scanResumeMode)}</output>
+          <output class="scan-readout" data-testid="scan-resume-value">{textOf(sc.scanResumeMode)}</output>
           {/if}
           {#if scanCapable && availableResumeModes.length > 0}
             <div class="scan-choice-group" data-testid="scan-resume-group">
@@ -361,6 +364,15 @@
   .scan-type-buttons { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .scan-resume-buttons { grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); }
   .row-label { font: inherit; }
+  /* MOR-2653: reserved width in EVERY state — an unread scan readout renders
+     EMPTY in its slot, never a placeholder, and the slot's box never changes
+     size when a first reading arrives. 5ch covers the widest rendered value
+     ('false'; the type/resume wire values are at most three digits). */
+  .scan-readout {
+    display: inline-block;
+    min-width: 5ch;
+    font-variant-numeric: tabular-nums;
+  }
   [aria-pressed='true'] { font-weight: 700; }
   [data-observed='false'] { font-style: italic; }
   button:disabled, input:disabled { cursor: not-allowed; }
