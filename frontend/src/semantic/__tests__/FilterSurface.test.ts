@@ -1597,3 +1597,102 @@ describe('PBT reset (MOR-2425 restore)', () => {
     r.dispose();
   });
 });
+
+// ── NARROW toggle (MOR-2640) ────────────────────────────────────────────
+//
+// The filter family's NARROW key for the ACTIVE receiver: drawn only when
+// the connected radio declares the `narrow` capability, an unlit button
+// while the reading is unknown (never a fabricated "off"), confirmed
+// truth as the pressed state, the pending target display-only until the
+// readback confirms. Same toggle doctrine as `DspInstrumentHost`'s NR/NB
+// keys (`aria-pressed={behavior.confirmed}`, MOR-2527).
+function renderNarrowOnly(
+  view: RadioViewModel,
+  handlers: {
+    onNarrowToggle?: () => void;
+    pendingNarrow?: boolean | null;
+  } = {},
+) {
+  const component = mount(FilterSurface, {
+    target, props: { view, handles: pbtStubHandles, ...handlers },
+  });
+  flushSync();
+  return {
+    dispose: () => unmount(component),
+    button: () => target.querySelector<HTMLButtonElement>('[data-testid="filter-narrow"]'),
+  };
+}
+
+function withNarrowField(
+  view: RadioViewModel,
+  over: { availability?: Availability; unknown?: boolean; value?: boolean },
+): RadioViewModel {
+  const group = view.filterPassband!;
+  const current = group.narrow as { reading: unknown; availability: Availability };
+  return {
+    ...view,
+    filterPassband: {
+      ...group,
+      narrow: {
+        reading: over.unknown ? { status: 'unknown' }
+          : over.value !== undefined ? { status: 'known', value: over.value }
+          : current.reading,
+        availability: over.availability ?? current.availability,
+      },
+    } as FilterPassbandViewModel,
+  };
+}
+
+describe('NARROW toggle (MOR-2640)', () => {
+  it('is absent when narrow is structurally absent (no narrow capability)', () => {
+    const view = withNarrowField(base(), {
+      availability: { structural: false, operational: false },
+    });
+    const r = renderNarrowOnly(view);
+    expect(r.button()).toBeNull();
+    r.dispose();
+  });
+
+  it('renders the confirmed reading, not the pending target, as the pressed state', () => {
+    // Confirmed off, requested on: until the readback confirms, the key
+    // stays unlit — reading pending as "on" would be the fabrication
+    // MOR-1441 leg 2 forbids.
+    const view = withNarrowField(base(), { value: false });
+    const r = renderNarrowOnly(view, { pendingNarrow: true });
+    const button = r.button()!;
+    expect(button.getAttribute('aria-pressed')).toBe('false');
+    expect(button.dataset.pendingStatus).toBe('pending');
+    r.dispose();
+  });
+
+  it('an unread reading is an unlit button: no aria-pressed, no placeholder text', () => {
+    const view = withNarrowField(base(), { unknown: true });
+    const r = renderNarrowOnly(view);
+    const button = r.button()!;
+    expect(button).not.toBeNull();
+    expect(button.hasAttribute('aria-pressed')).toBe(false);
+    expect(button.textContent).toBe('NARROW');
+    r.dispose();
+  });
+
+  it('click calls onNarrowToggle exactly once', () => {
+    const onNarrowToggle = vi.fn();
+    const r = renderNarrowOnly(withNarrowField(base(), { value: true }), { onNarrowToggle });
+    r.button()!.click();
+    flushSync();
+    expect(onNarrowToggle).toHaveBeenCalledTimes(1);
+    expect(onNarrowToggle).toHaveBeenCalledWith();
+    r.dispose();
+  });
+
+  it('a disabled (unusable) key refuses the click at the handler gate', () => {
+    const onNarrowToggle = vi.fn();
+    const view = withNarrowField(base(), {
+      availability: { structural: true, operational: false },
+    });
+    const r = renderNarrowOnly(view, { onNarrowToggle });
+    expect(r.button()!.disabled).toBe(true);
+    r.dispose();
+    expect(onNarrowToggle).not.toHaveBeenCalled();
+  });
+});
