@@ -501,6 +501,7 @@ describe('RxAudioInstrumentHost radio-AF raw steps (MOR-1676)', () => {
     expect(token).not.toBeNull();
     lease.pointer(token!, 255); lease.endPointer(token!);
     expect(stepped.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(255, 'raw');
+    stepped.dispose();
 
     const restored = renderRaw(audio(1));
     expect(restored.slider().rendererLease.view.canonical).toBe(255);
