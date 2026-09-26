@@ -107,7 +107,7 @@ function liveCaps(): Capabilities {
       // adapter marks MAIN's preamp receiver-lacks-control and the control
       // under test goes disabled.
       'preamp_main',
-      'nb', 'nr',
+      'nb', 'nr', 'notch',
     ],
     preValues: [0, 1, 2], attValues: [0, 6, 12, 18],
     receivers: 1, vfoScheme: 'single',
@@ -124,6 +124,7 @@ function liveState(): ServerState {
     'active', 'split', 'dualWatch', 'txTarget',
     'main.freqHz', 'main.mode', 'main.filter', 'main.activeSlot',
     'main.nb', 'main.nr', 'main.filterWidth', 'main.preamp',
+    'main.autoNotch', 'main.manualNotch',
   ];
   return {
     stateContractVersion: 1,
@@ -135,7 +136,7 @@ function liveState(): ServerState {
     main: {
       freqHz: 14250000, mode: 'USB', filter: 1, dataMode: 0, sMeter: 20,
       att: 0, preamp: 0, nb: false, nr: false, afLevel: 100, rfGain: 255, squelch: 0,
-      activeSlot: 'A', filterWidth: 2400,
+      activeSlot: 'A', filterWidth: 2400, autoNotch: false, manualNotch: false,
     },
     connection: { rigConnected: true, radioReady: true, controlConnected: true },
     fieldStatus: Object.fromEntries(paths.map((p) => [p, fresh])),
@@ -400,6 +401,40 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
 
     expect(q('[data-testid="dsp-nrActive"]')!.dataset.pendingStatus).toBe('pending');
     expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('confirmed');
+  });
+
+  it('marks the clicked notch choice pending while its command is in flight, the other choices untouched (DspSurface)', () => {
+    render();
+    expect(q('[data-testid="dsp-notchMode"]')!.dataset.notchStatus).toBe('confirmed');
+
+    q<HTMLButtonElement>('[data-testid="dsp-notchMode-auto"]')!.click();
+    flushSync();
+
+    expect(q('[data-testid="dsp-notchMode"]')!.dataset.notchStatus).toBe('pending');
+    expect(q('[data-testid="dsp-notchMode-auto"]')!.dataset.pending).toBe('true');
+    // The choices NOT targeted must not also read pending — same swap-kill
+    // discipline as the NB/NR tests above.
+    expect(q('[data-testid="dsp-notchMode-off"]')!.dataset.pending).toBe('false');
+    expect(q('[data-testid="dsp-notchMode-manual"]')!.dataset.pending).toBe('false');
+    // Confirmed reading stays the selection source: still off.
+    expect(q('[data-testid="dsp-notchMode-off"]')!.getAttribute('aria-pressed')).toBe('true');
+    expect(q('[data-testid="dsp-notchMode-auto"]')!.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('marks off pending after the MOR-1541 pair (both strands off) is in flight (DspSurface)', () => {
+    render();
+    q<HTMLButtonElement>('[data-testid="dsp-notchMode-auto"]')!.click();
+    flushSync();
+    q<HTMLButtonElement>('[data-testid="dsp-notchMode-off"]')!.click();
+    flushSync();
+
+    expect(q('[data-testid="dsp-notchMode"]')!.dataset.notchStatus).toBe('pending');
+    expect(q('[data-testid="dsp-notchMode-off"]')!.dataset.pending).toBe('true');
+    expect(q('[data-testid="dsp-notchMode-auto"]')!.dataset.pending).toBe('false');
+    const offCommands = getCommandLifecycles().filter((command) =>
+      (command.name === 'set_auto_notch' || command.name === 'set_manual_notch')
+      && command.params.on === false);
+    expect(offCommands).toHaveLength(2);
   });
 
   // Leg 1 parity (MOR-1441's original `pendingFrequencyHz`) — same wiring
