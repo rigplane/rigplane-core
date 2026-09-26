@@ -654,10 +654,13 @@ async def test_watchdog_recover_escalates_when_soft_reconnect_restored_no_data(
 
     async def record_release() -> None:
         order.append("release")
+        radio._ctrl_transport._udp_transport = None
 
     radio._force_cleanup_civ = record_force_cleanup
     radio._control_phase.release = record_release
+    radio._civ_transport = MockTransport()
     radio._ctrl_transport.remote_id = 0xEF167A45
+    radio._ctrl_transport._udp_transport = object()
     seen: dict[str, int] = {}
 
     async def record_soft_reconnect() -> None:
