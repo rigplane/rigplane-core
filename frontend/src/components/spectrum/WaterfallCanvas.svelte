@@ -19,7 +19,11 @@
   let { options = defaultWaterfallOptions, onFreqClick, onRegisterPush }: Props = $props();
 
   let canvas: HTMLCanvasElement;
-  let renderer = $state<WaterfallRenderer | null>(null);
+  let renderer: WaterfallRenderer | null = null;
+  // Mirrors `renderer` for the template only. The resize effect must not read
+  // it: assigning it on every scale change would re-run that effect for a
+  // reason other than the scale (MOR-1161).
+  let rendererReady = $state(false);
   let cssWidth = 0;
   let cssHeight = 0;
 
@@ -33,7 +37,7 @@
   }
 
   $effect(() => {
-    if (renderer && options) {
+    if (rendererReady && renderer && options) {
       renderer.updateOptions(options);
     }
   });
@@ -64,6 +68,7 @@
 
   onMount(() => {
     renderer = new WaterfallRenderer(canvas, options);
+    rendererReady = true;
     onRegisterPush?.(directPush);
 
     const ro = new ResizeObserver((entries) => {
@@ -81,6 +86,7 @@
       ro.disconnect();
       renderer?.destroy();
       renderer = null;
+      rendererReady = false;
     };
   });
 </script>
