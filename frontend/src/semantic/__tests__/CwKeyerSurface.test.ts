@@ -1063,7 +1063,7 @@ describe('every unread fact renders honestly, never as a v2 default', () => {
   // label only, lit by `aria-pressed`; an unread reading draws the unlit
   // label with no `NAME: value` text and no pressed state at all.
   it.each([
-    ['twinPeak', 'twin-peak-toggle', 'TPF'],
+    ['twinPeak', 'twin-peak-toggle', 'onTwinPeakToggle', 'TPF'],
     ['reversePaddle', 'reverse-paddle', 'onReversePaddleToggle', 'Reverse paddle'],
   ] as const)('renders %s as a KEY — the label only, never "NAME: value"', (field, id, _handler, label) => {
     for (const [value, pressed] of [[true, 'true'], [false, 'false']] as const) {
