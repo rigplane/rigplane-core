@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { canvasBackingSize, watchDevicePixelRatio } from '../backing-store.svelte';
 
 describe('canvasBackingSize', () => {
@@ -20,6 +20,10 @@ describe('canvasBackingSize', () => {
   });
 });
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe('watchDevicePixelRatio', () => {
   it('fires on a resolution change and drops the listener on stop', () => {
     const listeners = new Map<string, () => void>();
@@ -35,6 +39,5 @@ describe('watchDevicePixelRatio', () => {
     expect(onChange).toHaveBeenCalledTimes(1);
     stop();
     expect(listeners.size).toBe(0);
-    vi.unstubAllGlobals();
   });
 });

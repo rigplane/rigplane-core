@@ -60,9 +60,13 @@
   const waterfallGestures = {
     onTap(x: number, _y: number): void {
       if (!renderer || !onFreqClick) return;
+      // Map the tap in CSS pixels, then into the backing store by the pixel
+      // ratio only. The stage scale enlarges the store and the painted rect by
+      // the same factor, so it cancels; folding the store width in here would
+      // move the tuned frequency (MOR-1161).
       const rect = canvas.getBoundingClientRect();
-      const fraction = rect.width > 0 ? (x - rect.left) / rect.width : 0;
-      const freq = renderer.pixelToFreq(fraction * canvas.width);
+      const dpr = window.devicePixelRatio || 1;
+      const freq = renderer.pixelToFreq((x - rect.left) * dpr);
       if (freq > 0) {
         vibrate('tap');
         onFreqClick(freq);
