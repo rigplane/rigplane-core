@@ -16,7 +16,7 @@
   interface Props {
     view: RadioViewModel;
     feedback?: DspScalarFeedback;
-    presentation?: 'grouped' | 'independent' | 'nr' | 'compact-notch';
+    presentation?: 'grouped' | 'independent' | 'nr' | 'compact-notch' | 'notch-status';
     scalarPresentation?: Readonly<DspScalarPresentation>;
     agcLabels?: Record<string, string>;
     notchWidthChoices?: readonly NotchWidthChoice[];
@@ -95,6 +95,12 @@
               native row. -->
             <section data-testid="compact-notch-width">
               {@render scalarHandles.manualNotchWidth(scalarPresentation)}
+            </section>
+          {:else if presentation === 'notch-status'}
+            <!-- MOR-2635: the host's own notch handle, so status() renders.
+              The grouped surface draws a native slider and never calls it. -->
+            <section data-testid="notch-status">
+              {@render scalarHandles.notchFreq(scalarPresentation)}
             </section>
           {:else}
             <DspSurface {view} {finiteHandles} scalarHandles={scalarHandles} {notchWidthChoices}

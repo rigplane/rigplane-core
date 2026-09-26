@@ -71,7 +71,7 @@ const view = (): RadioViewModel => withDsp(topologyFixtures['1/single']);
 
 type RendererNode = HTMLButtonElement & { readonly rendererLease: ContinuousScalarRendererLease };
 type Props = {
-  view: RadioViewModel; feedback: DspScalarFeedback; presentation: 'grouped' | 'independent' | 'nr';
+  view: RadioViewModel; feedback: DspScalarFeedback;   presentation: 'grouped' | 'independent' | 'nr' | 'notch-status';
   scalarPresentation?: Readonly<DspScalarPresentation>; nbLevelMax?: number;
   nbLevelPercent?: boolean; onLevelChange?: (field: DspScalarField, value: number) => void;
   scalarAppearance?: Skin; presentationIsCurrent?: () => boolean;
@@ -399,6 +399,8 @@ describe('manual-notch pending status units (MOR-2635)', () => {
 
   it('FTX-1: pending raw 160 shows 1600 Hz for requested and confirmed alike', () => {
     const r = render({
+      presentation: 'notch-status',
+      scalarPresentation: { form: 'hbar' },
       view: notchView(1600, FTX1_NOTCH_DOMAIN),
       feedback: pendingNotch(1600, 160),
     });
@@ -411,6 +413,8 @@ describe('manual-notch pending status units (MOR-2635)', () => {
 
   it('IC-family: no published domain keeps requested and confirmed raw', () => {
     const r = render({
+      presentation: 'notch-status',
+      scalarPresentation: { form: 'hbar' },
       view: notchView(128),
       feedback: pendingNotch(128, 160),
     });
