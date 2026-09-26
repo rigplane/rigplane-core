@@ -2508,7 +2508,7 @@ def test_first_terminal_timeout_expedites_retry_second_waits_cadence() -> None:
         clock=clock,
     )
 
-    first = scheduler.due_requests()[0]
+    first = scheduler.due_requests(now=clock.now())[0]
     scheduler.record_acquisition_failure(
         first,
         reason="acquisition_request_timeout",
@@ -2516,7 +2516,7 @@ def test_first_terminal_timeout_expedites_retry_second_waits_cadence() -> None:
         link_healthy=False,
     )
     # Interrupted clock kept: due again immediately.
-    assert scheduler.due_requests()[0].paths == (freq,)
+    assert scheduler.due_requests(now=clock.now())[0].paths == (freq,)
 
     second = scheduler.pending_requests()[0]
     scheduler.record_acquisition_failure(
@@ -2526,11 +2526,11 @@ def test_first_terminal_timeout_expedites_retry_second_waits_cadence() -> None:
         link_healthy=False,
     )
     # Second consecutive timeout: next due one cadence out, not immediate.
-    assert scheduler.due_requests() == ()
+    assert scheduler.due_requests(now=clock.now()) == ()
     clock.advance(1.9)
-    assert scheduler.due_requests() == ()
+    assert scheduler.due_requests(now=clock.now()) == ()
     clock.advance(0.1)
-    assert scheduler.due_requests()[0].paths == (freq,)
+    assert scheduler.due_requests(now=clock.now())[0].paths == (freq,)
 
 
 def test_non_timeout_failure_waits_one_cadence() -> None:
@@ -2546,17 +2546,17 @@ def test_non_timeout_failure_waits_one_cadence() -> None:
         clock=clock,
     )
 
-    first = scheduler.due_requests()[0]
+    first = scheduler.due_requests(now=clock.now())[0]
     scheduler.record_acquisition_failure(
         first,
         reason="acquisition_executor_error",
         now=clock.now(),
     )
-    assert scheduler.due_requests() == ()
+    assert scheduler.due_requests(now=clock.now()) == ()
     clock.advance(1.9)
-    assert scheduler.due_requests() == ()
+    assert scheduler.due_requests(now=clock.now()) == ()
     clock.advance(0.1)
-    assert scheduler.due_requests()[0].paths == (freq,)
+    assert scheduler.due_requests(now=clock.now())[0].paths == (freq,)
 
 
 def test_success_resets_consecutive_timeout_streak() -> None:
@@ -2570,17 +2570,17 @@ def test_success_resets_consecutive_timeout_streak() -> None:
         clock=clock,
     )
 
-    first = scheduler.due_requests()[0]
+    first = scheduler.due_requests(now=clock.now())[0]
     scheduler.record_acquisition_failure(
         first,
         reason="acquisition_request_timeout",
         now=clock.now(),
         link_healthy=False,
     )
-    retry = scheduler.due_requests()[0]
+    retry = scheduler.due_requests(now=clock.now())[0]
     scheduler.record_acquisition_result(retry, _changeset(at=clock.now()))
     clock.advance(2.0)
-    third = scheduler.due_requests()[0]
+    third = scheduler.due_requests(now=clock.now())[0]
     scheduler.record_acquisition_failure(
         third,
         reason="acquisition_request_timeout",
@@ -2588,7 +2588,7 @@ def test_success_resets_consecutive_timeout_streak() -> None:
         link_healthy=False,
     )
     # Streak was reset by the success: expedited again.
-    assert scheduler.due_requests()[0].paths == (freq,)
+    assert scheduler.due_requests(now=clock.now())[0].paths == (freq,)
 
 
 def test_semantic_change_resets_adaptive_cadence_to_base_policy() -> None:
