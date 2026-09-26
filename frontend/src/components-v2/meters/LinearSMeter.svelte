@@ -26,6 +26,7 @@
     type SignalScaleMark,
     type SignalMeterProjection,
   } from './smeter-scale';
+  import { quantizeUserUnits } from './meter-geometry-grid';
 
   interface CommonLinearMeterProps {
     mainPresent?: boolean;
@@ -144,11 +145,9 @@
   const SEG_W = $derived((BAR_WIDTH - (SEG_COUNT - 1) * SEG_GAP) / SEG_COUNT);
   // MOR-2613: the default face stretches viewBox "0 0 600 …" to the rendered
   // width, so a sub-pixel reading change rewrites x/width every frame and
-  // forces layout. Geometry that moves continuously is snapped to whole
-  // device pixels of the measured width. Before the first measure (and in
-  // jsdom, which has no ResizeObserver) the fallback grid is 0.5 user units.
+  // forces layout. The ratio is CSS pixels per user unit; unknown (0) selects
+  // the 0.5-unit fallback inside quantizeUserUnits.
   const FACE_VIEWBOX_W = 600;
-  const GEOMETRY_FALLBACK_STEP = 0.5;
   let faceWidth = $state(0);
   let faceSvgElement = $state.raw<SVGSVGElement | null>(null);
   // Same hand-rolled observer the VFO face uses (around the vfoWidth measure).
@@ -161,10 +160,7 @@
     read();
     return () => observer.disconnect();
   });
-  function quantizeUserUnits(value: number): number {
-    const step = faceWidth > 0 ? FACE_VIEWBOX_W / faceWidth : GEOMETRY_FALLBACK_STEP;
-    return Math.round(value / step) * step;
-  }
+  const pixelsPerUserUnit = $derived(faceWidth > 0 ? faceWidth / FACE_VIEWBOX_W : 0);
 
   const READOUT_CX = $derived(BAR_X + BAR_WIDTH + 54);
 
@@ -352,7 +348,7 @@
   let peakSegs = $derived((meterFrame.peakFraction ?? 0) * SEG_COUNT);
   // Peak X position for the vertical indicator line, snapped to a whole
   // device pixel of the rendered face (MOR-2613).
-  let peakX = $derived(quantizeUserUnits(BAR_X + peakSegs * (SEG_W + SEG_GAP)));
+  let peakX = $derived(quantizeUserUnits(BAR_X + peakSegs * (SEG_W + SEG_GAP), pixelsPerUserUnit));
   // Only show peak line if it's meaningfully ahead of current bar
   let showPeak = $derived(
     signalProjection.scaleMode !== 'none' && signalProjection.motionFraction !== null
@@ -392,7 +388,7 @@
   }
   function segWidth(i: number, full: number, frac: number): number {
     // Full segments are a fixed grid; only the partial tail moves every frame.
-    return i === full ? Math.max(1, quantizeUserUnits(SEG_W * frac)) : SEG_W;
+    return i === full ? Math.max(1, quantizeUserUnits(SEG_W * frac, pixelsPerUserUnit)) : SEG_W;
   }
 
   // v2.11.1 SDR SVG geometry; the current calibrated scale still owns positions.

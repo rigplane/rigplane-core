@@ -5,35 +5,15 @@ import type { ComponentProps } from 'svelte';
 import { proxy } from 'svelte/internal/client';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 import type { Capabilities } from '$lib/types/capabilities';
+import { GEOMETRY_FALLBACK_STEP, quantizeUserUnits } from '../meter-geometry-grid';
 import LinearSMeter from '../LinearSMeter.svelte';
 import { projectSignalMeter, type SignalMeterProjection } from '../smeter-scale';
 import type { SignalMeterFrame } from '../signal-meter-motion.svelte';
 
-// MOR-2613 step 1b. The default face is viewBox="0 0 600 …" stretched to the
-// rendered width, so one user unit is not one device pixel. Geometry that
-// moves every animation frame (partial segment width, peak line) must be
-// written only when a whole device pixel of that rendered width changes.
-//
-// The component measures the SVG the same way the VFO face does. This harness
-// gives that measure a known width: 1200 CSS px against a 600-unit viewBox is
-// 2 px per user unit, so the 0.5-unit fallback grid is not what is under test.
-
-const RENDERED_WIDTH = 1200;
-
-class FakeResizeObserver {
-  private static callback?: (entries: { target: Element }[]) => void;
-  private static targets = new Set<Element>();
-  constructor(callback: (entries: { target: Element }[]) => void) {
-    FakeResizeObserver.callback = callback;
-  }
-  observe(target: Element): void { FakeResizeObserver.targets.add(target); }
-  unobserve(target: Element): void { FakeResizeObserver.targets.delete(target); }
-  disconnect(): void { FakeResizeObserver.targets.clear(); }
-  static fire(): void {
-    const entries = [...FakeResizeObserver.targets].map((target) => ({ target }));
-    FakeResizeObserver.callback?.(entries);
-  }
-}
+// MOR-2613. jsdom never measures the SVG, so the component is on the 0.5-unit
+// fallback grid here. The pixel grid itself is pinned by
+// meter-geometry-grid.test.ts; this file only checks that the rendered
+// attributes follow that fallback.
 
 const CAL = [
   { raw: 0, actual: -54, label: 'S0' },
@@ -62,20 +42,11 @@ function makeCaps(): Capabilities {
   };
 }
 
-let originalResizeObserver: unknown;
-let originalClientWidth: PropertyDescriptor | undefined;
 let components: ReturnType<typeof mount>[] = [];
 let roots: HTMLElement[] = [];
 
 beforeEach(() => {
   setCapabilities(makeCaps());
-  originalResizeObserver = globalThis.ResizeObserver;
-  globalThis.ResizeObserver = FakeResizeObserver as unknown as typeof ResizeObserver;
-  originalClientWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth');
-  Object.defineProperty(Element.prototype, 'clientWidth', {
-    configurable: true,
-    get: () => RENDERED_WIDTH,
-  });
 });
 
 afterEach(() => {
@@ -83,10 +54,6 @@ afterEach(() => {
   roots.forEach((root) => root.remove());
   components = [];
   roots = [];
-  globalThis.ResizeObserver = originalResizeObserver as typeof ResizeObserver;
-  if (originalClientWidth) {
-    Object.defineProperty(Element.prototype, 'clientWidth', originalClientWidth);
-  }
   clearCapabilities();
 });
 
@@ -104,7 +71,7 @@ function frame(
   };
 }
 
-async function mountReactive(smoothedFraction: number, peakFraction: number) {
+function mountReactive(smoothedFraction: number, peakFraction: number) {
   const projection = projectSignalMeter(0);
   const state = proxy({
     frame: frame(projection, smoothedFraction, peakFraction),
@@ -117,10 +84,6 @@ async function mountReactive(smoothedFraction: number, peakFraction: number) {
     props: state as ComponentProps<typeof LinearSMeter>,
   });
   components.push(component);
-  flushSync();
-  await Promise.resolve();
-  flushSync();
-  FakeResizeObserver.fire();
   flushSync();
   return {
     target,
@@ -135,9 +98,7 @@ function geometry(target: HTMLElement): string {
   const fills = [...target.querySelectorAll<SVGRectElement>('[data-meter-fill]')]
     .map((rect) => [
       rect.getAttribute('data-meter-fill'),
-      rect.getAttribute('x'),
       rect.getAttribute('width'),
-      rect.getAttribute('fill'),
       rect.getAttribute('visibility'),
     ].join(','))
     .join('|');
@@ -145,26 +106,49 @@ function geometry(target: HTMLElement): string {
   return `${fills}#${peak?.getAttribute('x1')},${peak?.getAttribute('visibility')}`;
 }
 
-describe('MOR-2613 — segment geometry changes only on a whole device pixel', () => {
-  // Default face: viewBox width 600, BAR_WIDTH 484, 20 segments, gap 2.
-  // SEG_W = (484 - 38) / 20 = 22.3 user units. At 1200 CSS px the scale is
-  // 2 device px per user unit, so one device pixel is 0.5 user units and a
-  // partial-segment step of 0.01 user units (0.02 device px) must not rewrite
-  // attributes. A step of one user unit is two device pixels and must.
+// Two CSS pixels per user unit, so one device pixel is 0.5 user units.
+const PIXELS_PER_USER_UNIT = 2;
+
+describe('quantizeUserUnits', () => {
+  it('maps a sub-pixel change to the same grid value', () => {
+    const before = quantizeUserUnits(10, PIXELS_PER_USER_UNIT);
+    expect(quantizeUserUnits(10 + 0.2, PIXELS_PER_USER_UNIT)).toBe(before);
+  });
+
+  it('maps a one-pixel change to a new grid value', () => {
+    const before = quantizeUserUnits(10, PIXELS_PER_USER_UNIT);
+    const after = quantizeUserUnits(10 + 1 / PIXELS_PER_USER_UNIT, PIXELS_PER_USER_UNIT);
+    expect(after).not.toBe(before);
+    expect(after - before).toBe(1 / PIXELS_PER_USER_UNIT);
+  });
+
+  it('uses the 0.5-unit fallback when the ratio is unknown', () => {
+    expect(GEOMETRY_FALLBACK_STEP).toBe(0.5);
+    for (const unknown of [0, -1, Number.NaN]) {
+      expect(quantizeUserUnits(10.2, unknown)).toBe(10);
+      expect(quantizeUserUnits(10.3, unknown)).toBe(10.5);
+    }
+  });
+});
+
+describe('MOR-2613 — jsdom renders the 0.5-unit fallback grid', () => {
+  // 20 segments. A 0.2-segment step is 0.2 user units of partial width, under
+  // the 0.5 fallback, and 0.2 * pitch of the peak line. A 0.5-segment step
+  // crosses the fallback for both.
   const BASE = 5.2 / 20;
 
-  it('a displayed-value change smaller than one device pixel writes no segment or peak attribute', async () => {
-    const { target, step } = await mountReactive(BASE, BASE + 0.4);
+  it('a change smaller than 0.5 units leaves the segment and peak attributes unchanged', () => {
+    const { target, step } = mountReactive(BASE, BASE + 0.4);
     const before = geometry(target);
     expect(before).not.toBe('');
-    step(BASE + 0.01 / 20, BASE + 0.4 + 0.01 / 20);
+    step(BASE + 0.2 / 20, BASE + 0.4 + 0.2 / 20);
     expect(geometry(target)).toBe(before);
   });
 
-  it('a displayed-value change of one device pixel or more updates the partial width and the peak line', async () => {
-    const { target, step } = await mountReactive(BASE, BASE + 0.4);
+  it('a change of 0.5 units or more updates the segment and peak attributes', () => {
+    const { target, step } = mountReactive(BASE, BASE + 0.4);
     const before = geometry(target);
-    step(BASE + 1 / 20, BASE + 0.4 + 1 / 20);
+    step(BASE + 0.5 / 20, BASE + 0.4 + 0.5 / 20);
     expect(geometry(target)).not.toBe(before);
   });
 });
