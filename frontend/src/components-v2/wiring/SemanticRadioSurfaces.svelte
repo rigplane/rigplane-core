@@ -64,7 +64,7 @@
     getPendingNrOn, getPendingPreampLevel,
     getPendingRepeaterShift, getPendingRepeaterTone, getPendingToneFreq,
     getRepeaterHandlers,
-    getSystemHandlers, getDataModeArmed, getModInputArmed,
+    getSystemHandlers, getDataModeArmed, getModInputArmed, getFilterShapeArmed,
     deriveMemoryPanelProps, getMemoryHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
   import { toRitXitProps } from '$lib/runtime/props/panel-props';
@@ -1704,6 +1704,12 @@
   ) as unknown as TxAuxLevelFeedback);
   let dataModeArmed = $derived(getDataModeArmed());
   let pendingDataMode = $derived(dataModeArmed.armed ? dataModeArmed.value : null);
+  // MOR-1689: Filter Shape's own pending target (set_filter_shape), fed to
+  // FilterInstrumentHost the same way pendingDataMode above is — the
+  // desktop-v2 shape buttons live there, not in the settings-modal
+  // FilterPanel.
+  let filterShapeArmed = $derived(getFilterShapeArmed());
+  let pendingFilterShape = $derived(filterShapeArmed.armed ? filterShapeArmed.value : null);
   let modInputArmed = $derived(getModInputArmed());
   let pendingModInput = $derived(modInputArmed.armed ? modInputArmed.value : null);
   let pendingPreamp = $derived(
@@ -2020,7 +2026,7 @@
   {#snippet children(rfFrontEndInstruments)}
   {#snippet vfoInstrumentComposition(vfoOperations: VfoOperationHandles)}
   <FilterInstrumentHost
-    {...filterFiniteRendererSelection} {view} {pendingFilter} {pendingDataMode} {pendingModInput}
+    {...filterFiniteRendererSelection} {view} {pendingFilter} {pendingFilterShape} {pendingDataMode} {pendingModInput}
     onModeChange={filterIntents.onModeChange}
     onFilterChange={filterIntents.onFilterChange}
     onFilterShapeChange={filterIntents.onFilterShapeChange}

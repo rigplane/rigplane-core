@@ -1337,10 +1337,12 @@ describe('filter shape visibility (MOR-1503)', () => {
  * dispatch `set_filter_shape` and wait for the poll to confirm; until then
  * the requested target must carry the same structural markers the FIL
  * buttons (MOR-1536) and DspPanel's notch choices (MOR-1672) already use:
- * `data-armed` (visual channel via `control-button-armed.css`) plus
- * `aria-busy` and an `aria-describedby` `.sr-only` announcement on the
- * actual `<button>`. The confirmed `class:active` reading stays the sole
- * selection source — pending never presents the target as confirmed.
+ * `data-armed` plus `aria-busy` and an `aria-describedby` `.sr-only`
+ * announcement on the actual `<button>`. `data-armed` is a structural
+ * marker here — these raw buttons do not load `control-button-armed.css`
+ * (only `ControlButton.svelte` imports it), so it paints nothing on its
+ * own. The confirmed `class:active` reading stays the sole selection
+ * source — pending never presents the target as confirmed.
  */
 describe('filter shape pending feedback (MOR-1689)', () => {
   const shapeButton = (label: string): HTMLButtonElement | undefined =>
