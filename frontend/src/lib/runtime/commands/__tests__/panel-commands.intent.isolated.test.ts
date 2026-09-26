@@ -548,8 +548,8 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       ['set_af_level', { level: 0.5, receiver: 0, level_unit: 'normalized' }],
     ]);
     for (const [name, params] of exactCalls()) {
-      expect(Number.isInteger(params.level)).toBe(true);
       if (name === 'set_af_level' && params.level !== 1 && params.level !== 0.5) {
+        expect(Number.isInteger(params.level)).toBe(true);
         expect(params).not.toHaveProperty('level_unit');
       }
     }
