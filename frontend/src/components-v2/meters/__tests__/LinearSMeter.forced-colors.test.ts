@@ -75,8 +75,14 @@ describe('MOR-1250 — computed-style evidence (F4 injection)', () => {
       meterCalibrations: {
         s_meter: [
           { raw: 0, actual: -54, label: 'S0' },
+          { raw: 26, actual: -48, label: 'S1' },
+          { raw: 52, actual: -36, label: 'S3' },
+          { raw: 78, actual: -24, label: 'S5' },
+          { raw: 103, actual: -12, label: 'S7' },
           { raw: 130, actual: 0, label: 'S9' },
-          { raw: 241, actual: 60, label: 'S9+60' },
+          { raw: 165, actual: 10, label: 'S9+10' },
+          { raw: 200, actual: 20, label: 'S9+20' },
+          { raw: 240, actual: 40, label: 'S9+40' },
         ],
       },
     });
@@ -112,7 +118,10 @@ describe('MOR-1250 — computed-style evidence (F4 injection)', () => {
     return target;
   }
 
-  const cs = (el: Element, prop: string): string => getComputedStyle(el).getPropertyValue(prop);
+  // cssstyle normalises stored property values to lower case, so every
+  // computed colour keyword reads back lower-cased ('highlight').
+  const cs = (el: Element, prop: string): string =>
+    getComputedStyle(el).getPropertyValue(prop).toLowerCase();
 
   it('default face: lit segments Highlight, dim GrayText, ink CanvasText', () => {
     const root = render({ value: 200 });
@@ -124,20 +133,20 @@ describe('MOR-1250 — computed-style evidence (F4 injection)', () => {
     // Cascade override: the raw palette is still in the presentation
     // attribute, but the forced-colors CSS paint wins.
     expect(lit.getAttribute('fill')).toMatch(/^#|^var\(/);
-    expect(cs(lit, 'fill')).toBe('Highlight');
-    expect(cs(root.querySelector('[data-segment="0"]')!, 'fill')).toBe('GrayText');
-    expect(cs(root.querySelector('svg text')!, 'fill')).toBe('CanvasText');
-    expect(cs(root.querySelector('svg line')!, 'stroke')).toBe('CanvasText');
+    expect(cs(lit, 'fill')).toBe('highlight');
+    expect(cs(root.querySelector('[data-segment="0"]')!, 'fill')).toBe('graytext');
+    expect(cs(root.querySelector('svg text')!, 'fill')).toBe('canvastext');
+    expect(cs(root.querySelector('svg line')!, 'stroke')).toBe('canvastext');
   });
 
   it('vfo face: track GrayText, lit dashes Highlight, reading CanvasText', () => {
     const root = render({ value: 200, variant: 'vfo' });
-    expect(cs(root.querySelector('[data-meter-track]')!, 'stroke')).toBe('GrayText');
+    expect(cs(root.querySelector('[data-meter-track]')!, 'stroke')).toBe('graytext');
     const lit = [...root.querySelectorAll<SVGLineElement>('[data-meter-fill]')]
       .find((line) => line.getAttribute('visibility') !== 'hidden');
     expect(lit).toBeDefined();
-    expect(cs(lit!, 'stroke')).toBe('Highlight');
-    expect(cs(root.querySelector('[data-meter-reading]')!, 'fill')).toBe('CanvasText');
+    expect(cs(lit!, 'stroke')).toBe('highlight');
+    expect(cs(root.querySelector('[data-meter-reading]')!, 'fill')).toBe('canvastext');
   });
 
   it('sdr face: data-lit splits the bar and the forced palette follows it', () => {
@@ -152,8 +161,8 @@ describe('MOR-1250 — computed-style evidence (F4 injection)', () => {
     expect(firstUnlit).toBeGreaterThan(0);
     expect(litFlags.slice(0, firstUnlit)).toEqual(Array<string>(firstUnlit).fill('true'));
     expect(litFlags.slice(firstUnlit)).toEqual(Array<string>(80 - firstUnlit).fill('false'));
-    expect(cs(segs[0], 'fill')).toBe('Highlight');
-    expect(cs(segs[79], 'fill')).toBe('GrayText');
+    expect(cs(segs[0], 'fill')).toBe('highlight');
+    expect(cs(segs[79], 'fill')).toBe('graytext');
   });
 });
 
