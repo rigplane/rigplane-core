@@ -283,7 +283,7 @@ export function createMeterBallistics<State>(
   const lifecycle = createTickerLifecycle(
     host,
     policy.ticker,
-    () => peakEnabled && (!smoother.settled || peakAboveCurrent()),
+    () => peakEnabled,
     {
     onTick(now) {
       projectionNow = now;
