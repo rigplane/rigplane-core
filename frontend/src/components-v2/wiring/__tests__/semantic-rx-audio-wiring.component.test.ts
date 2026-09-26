@@ -898,6 +898,21 @@ describe('desktop-v2 declares a real rx-audio zone; the cockpit does not (MOR-13
     render({ strips: 'single' }, planFor(desktopV2Layout, {}));
     expect(q('[data-testid="rx-audio-surface"]')!.closest('[data-zone-id="rx-audio"]')).not.toBeNull();
   });
+
+  it('keeps rx-tx last in tab order once rx-audio has loaded (MOR-1347)', () => {
+    h.caps = liveCaps(AUDIO_TAGS);
+    render({ strips: 'single' }, planFor(desktopV2Layout, {}));
+    const seq = [...target.querySelectorAll<HTMLElement>(
+      'button, input, select, a[href], [tabindex]',
+    )];
+    const lastAudio = seq.reduce(
+      (last, el, i) => (el.closest('[data-testid="rx-audio-surface"]') ? i : last), -1,
+    );
+    const firstKey = seq.findIndex((el) => el.dataset.testid === 'rx-tx-key');
+    expect(lastAudio).toBeGreaterThanOrEqual(0);
+    expect(firstKey).toBeGreaterThan(lastAudio);
+    expect(seq.at(-1)?.dataset.testid).toBe('rx-tx-unkey');
+  });
 });
 
 /**
@@ -1262,5 +1277,23 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
     pickMonitor('local', false);
     expect(muteCalls()).toEqual([]);
     expect(afCalls()).toEqual([]);
+  });
+});
+
+describe('single composition operational disable (MOR-1342)', () => {
+  it('disables the unavailable receiver select and leaves the available one enabled', () => {
+    h.caps = liveCaps(AUDIO_TAGS.filter((tag) => tag !== 'dual_rx'));
+    render({ strips: 'single' });
+    const sub = target.querySelector<HTMLButtonElement>(
+      '[data-vfo-receiver="SUB"] [data-vfo-select]',
+    );
+    const main = target.querySelector<HTMLButtonElement>(
+      '[data-vfo-receiver="MAIN"] [data-vfo-select]',
+    );
+    expect(sub).not.toBeNull();
+    expect(main).not.toBeNull();
+    expect(sub!.disabled).toBe(true);
+    expect(main!.disabled).toBe(false);
+    expect(sub!.title).toBe("This receiver is not available right now, so it can't be selected.");
   });
 });
