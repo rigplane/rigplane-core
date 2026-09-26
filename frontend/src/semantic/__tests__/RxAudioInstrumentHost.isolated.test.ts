@@ -422,13 +422,13 @@ describe('RxAudioInstrumentHost radio-AF raw steps (MOR-1676)', () => {
       expect(lease.view.canonical).toBe(raw);
       expect(lease.key({ key: 'ArrowRight', fine: false })).toBe(true);
       const up = Math.min(255, raw + 1);
-      expect(r.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(up);
+      expect(r.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(up, 'raw');
       expect(Number.isInteger(r.onAfLevelChange.mock.calls[0][0])).toBe(true);
       // The radio confirms the stepped raw value; the reverse step restores.
       r.setReading(up / 255);
       r.onAfLevelChange.mockClear();
       expect(r.slider().rendererLease.key({ key: 'ArrowLeft', fine: false })).toBe(true);
-      expect(r.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(raw);
+      expect(r.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(raw, 'raw');
     }
   });
 
@@ -442,7 +442,7 @@ describe('RxAudioInstrumentHost radio-AF raw steps (MOR-1676)', () => {
       expect(token).not.toBeNull();
       const up = Math.min(255, raw + 1);
       lease.pointer(token!, up); lease.endPointer(token!);
-      expect(r.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(up);
+      expect(r.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(up, 'raw');
       expect(Number.isInteger(r.onAfLevelChange.mock.calls[0][0])).toBe(true);
       r.setReading(up / 255);
       r.onAfLevelChange.mockClear();
@@ -450,14 +450,14 @@ describe('RxAudioInstrumentHost radio-AF raw steps (MOR-1676)', () => {
       expect(down).not.toBeNull();
       r.slider().rendererLease.pointer(down!, raw);
       r.slider().rendererLease.endPointer(down!);
-      expect(r.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(raw);
+      expect(r.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(raw, 'raw');
     }
   });
 
   it('dispatches the integer 255 at the top of the range', () => {
     const r = renderRaw(audio(254 / 255));
     expect(r.slider().rendererLease.key({ key: 'ArrowRight', fine: false })).toBe(true);
-    expect(r.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(255);
+    expect(r.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(255, 'raw');
     expect(Number.isInteger(r.onAfLevelChange.mock.calls[0][0])).toBe(true);
   });
 

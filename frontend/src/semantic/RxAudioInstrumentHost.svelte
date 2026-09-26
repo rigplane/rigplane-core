@@ -57,10 +57,10 @@
   interface ExistingProps {
     presentation: RxAudioInstrumentPresentation;
     subscribeControlAuthority: SubscribeRxAudioAuthority;
-    onAfLevelChange?: (value: number) => void;
+    onAfLevelChange?: (value: number, unit?: 'raw') => void;
     afLevelFeedback?: Readonly<CommandScalarFeedback>;
     /** MOR-2579: the per-receiver AF knobs (`rxAudio.receiverAfLevels`). */
-    onReceiverAfLevelChange?: (receiver: AfReceiverKey, value: number) => void;
+    onReceiverAfLevelChange?: (receiver: AfReceiverKey, value: number, unit?: 'raw') => void;
     receiverAfLevelFeedback?: Readonly<Record<AfReceiverKey, Readonly<CommandScalarFeedback>>>;
     onMonitorModeChange?: (mode: MonitorMode) => void;
     onFocusChange?: (focus: AudioFocus) => void;
@@ -335,10 +335,17 @@
         value: Math.round(rawDomain.min + reading.value * (rawDomain.max - rawDomain.min)),
       }
       : reading;
+    // MOR-1676 part A (AF): the value out carries its meaning explicitly —
+    // the raw integer lattice sends the `'raw'` unit (dispatched untagged),
+    // the normalized lattice (browser volume, or a radio that publishes no
+    // `controls.af_level`) sends the legacy unit-less normalized float.
+    // The unit is explicit because JS cannot dispatch on JSON type
+    // (`1.0 === 1`): the handler must not guess raw from `Number.isInteger`.
     const base = {
       domain,
       enabled,
-      request: (value: number) => onAfLevelChange?.(value),
+      request: (value: number) => rawDomain !== null
+        ? onAfLevelChange?.(value, 'raw') : onAfLevelChange?.(value),
     } as const;
     if (afLevelFeedback !== undefined) return {
       ...base,
@@ -401,7 +408,8 @@
     const base = {
       domain,
       enabled,
-      request: (value: number) => onReceiverAfLevelChange?.(receiver, value),
+      request: (value: number) => rawDomain !== null
+        ? onReceiverAfLevelChange?.(receiver, value, 'raw') : onReceiverAfLevelChange?.(receiver, value),
     } as const;
     const feedback = receiverAfLevelFeedback?.[receiver];
     if (feedback !== undefined) return {

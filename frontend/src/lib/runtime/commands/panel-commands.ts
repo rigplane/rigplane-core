@@ -1162,11 +1162,14 @@ export function makePresetHandlers() {
 
 /** The radio AF of the NAMED receiver, whichever is selected; `true` when sent.
  *
- *  MOR-1676 part A (AF): dispatch on JSON type, like `onAfLevelChange` —
- *  an int is the raw level (the v3 named-receiver knob sends raw ints),
- *  a float is the legacy normalized level and converts through the
- *  control's declared raw domain. The browser-volume branch
- *  (`runtime.rxEnabled`) never reaches here. */
+ *  MOR-1676 part A (AF): `unit` names the wire meaning explicitly. `'raw'`
+ *  is the v3 radio-AF path — an int raw level dispatched untagged, so a
+ *  step plus its reverse restore the exact raw value. Omitted `unit` is
+ *  the legacy normalized float (v2 panels), converted through the
+ *  control's declared raw domain. The distinction is explicit because JS
+ *  cannot dispatch on JSON type: `1.0` and `1` are the same number, so
+ *  guessing from `Number.isInteger` would misread a legacy 100 % as raw
+ *  1. The browser-volume branch (`runtime.rxEnabled`) never reaches here. */
 /** Raw AF level for a known normalized readback against the control's
  *  declared raw domain (`caps.controls.af_level`, MOR-1676 part A) — the
  *  exact inverse of the server's normalized readback (`raw/255`), so every
@@ -1180,20 +1183,22 @@ function rawAfLevel(caps: Capabilities, normalized: number): number | null {
 }
 
 /** Raw AF level for a handler input that may already be raw (MOR-1676 part
- *  A): an int dispatches as-is when inside the declared domain; a float
- *  converts through `rawAfLevel`. Anything else fails closed. */
-function rawAfLevelFromInput(caps: Capabilities, level: number): number | null {
-  if (Number.isInteger(level)) {
+ *  A): with `unit === 'raw'` an int dispatches as-is when inside the
+ *  declared domain; otherwise (legacy normalized float) it converts
+ *  through `rawAfLevel`. Anything else fails closed. */
+function rawAfLevelFromInput(caps: Capabilities, level: number, unit?: 'raw'): number | null {
+  if (unit === 'raw') {
+    if (!Number.isInteger(level)) return null;
     const { rawMin, rawMax } = keyboardControlRawDomain(caps, 'af_level');
     return level >= rawMin && level <= rawMax ? level : null;
   }
   return rawAfLevel(caps, level);
 }
 
-function setReceiverAf(target: 'main' | 'sub', level: number): boolean {
+function setReceiverAf(target: 'main' | 'sub', level: number, unit?: 'raw'): boolean {
   const caps = getCapabilities();
   if (caps === null || !hasCapability('af_level')) return false;
-  const raw = rawAfLevelFromInput(caps, level);
+  const raw = rawAfLevelFromInput(caps, level, unit);
   if (raw === null) return false;
   const receiver = knownActiveReceiver('afLevel', target === 'sub' ? 'SUB' : 'MAIN');
   if (receiver === null) return false;
@@ -1231,34 +1236,34 @@ export function makeRxAudioHandlers() {
         unmuteServerMonitor();
       }
     },
-    onAfLevelChange: (level: number) => {
+    onAfLevelChange: (level: number, unit?: 'raw') => {
       if (runtime.rxEnabled) {
         // The browser-volume branch keeps its normalized behaviour — a
         // different meaning of the same slider, never a radio raw value.
-        if (!isNormalizedLevel(level)) return;
+        // A `'raw'` unit never originates here (the host sends raw only on
+        // the radio target), so it fails closed rather than guessing.
+        if (unit === 'raw' || !isNormalizedLevel(level)) return;
         runtime.setRxVolume(level);
         runtime.setVolume(Math.round(level * 100));
       } else {
-        // MOR-1676 part A (AF): dispatch on JSON type, exactly like the
-        // server's `_af_level_from_param` — an int is the raw level and is
-        // dispatched untagged (a step plus its reverse restore the exact
-        // raw value); a float is the legacy normalized level (the v2 panels
-        // and the keyboard fallback still send floats) and converts through
-        // the control's declared raw domain. No float for the radio target
-        // originates on the v3 radio-AF path itself — the host sends raw
-        // ints there (see `RxAudioInstrumentHost.svelte`).
+        // MOR-1676 part A (AF): `unit === 'raw'` is the v3 radio-AF path —
+        // the raw int dispatches untagged, so the server's int branch
+        // applies and a step plus its reverse restore the exact raw value.
+        // Omitted `unit` is the legacy normalized float (v2 panels),
+        // converted through the control's declared raw domain. The meaning
+        // is explicit because JS cannot dispatch on JSON type (`1.0 === 1`).
         const caps = getCapabilities();
         if (caps === null || !hasCapability('af_level')) return;
         const receiver = knownReceiverField('afLevel');
         if (receiver === null) return;
-        const raw = rawAfLevelFromInput(caps, level);
+        const raw = rawAfLevelFromInput(caps, level, unit);
         if (raw === null) return;
         dispatchRadioIntent({ name: 'set_af_level', params: { level: raw, receiver } });
       }
     },
     /** MOR-2579: the radio AF of the NAMED receiver, whichever is selected. */
-    onReceiverAfLevelChange: (target: 'main' | 'sub', level: number) => {
-      setReceiverAf(target, level);
+    onReceiverAfLevelChange: (target: 'main' | 'sub', level: number, unit?: 'raw') => {
+      setReceiverAf(target, level, unit);
     },
   };
 }
@@ -1851,13 +1856,37 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
     case 'adjust_af_level': {
       const current = rx?.afLevel;
       if (!keyboardReceiverField(context, 'afLevel') || !isNormalizedLevel(current)) return true;
-      // MOR-1676 part A (AF): the keyboard handler steps in RAW units
-      // against the control's declared domain and dispatches the raw int
-      // (untagged `set_af_level`), symmetric up/down and clamped — never a
-      // normalized float, so a step plus its reverse restore the exact raw
-      // value. The delta bindings (`af-level-up`/`-down`, `{ delta: ±5 }`)
-      // already arrive in raw units; the `direction` fallback steps by
-      // `round(0.05 * span)` raw units.
+      if (runtime.rxEnabled) {
+        // The browser-volume branch keeps its legacy normalized behaviour
+        // verbatim (MOR-1577 `delta`-in-raw-units conversion, `direction`
+        // ±0.05 fallback) — a different meaning of the same slider.
+        const delta = keyboardDelta(safeParams.delta);
+        if (delta !== null) {
+          // MOR-1577: `delta` is declared in RAW units against the control's
+          // domain (`af-level-up`/`-down` bindings), converted here to the
+          // handler's normalized 0-1 wire shape — same shape `direction`
+          // already produced, just scaled from the declared domain instead
+          // of a hardcoded 5%.
+          const { rawMin, rawMax } = keyboardControlRawDomain(context.caps, 'af_level');
+          const span = rawMax - rawMin;
+          if (span > 0) makeRxAudioHandlers().onAfLevelChange(Math.max(0, Math.min(1, current + delta / span)));
+          return true;
+        }
+        const direction = keyboardDirection(safeParams.direction);
+        if (direction) {
+          makeRxAudioHandlers().onAfLevelChange(Math.max(0, Math.min(1, current + (direction === 'down' ? -0.05 : 0.05))));
+        }
+        return true;
+      }
+      // MOR-1676 part A (AF): the radio target steps in RAW units against
+      // the control's declared domain and dispatches the raw int with the
+      // explicit `'raw'` unit — symmetric up/down and clamped, so a step
+      // plus its reverse restore the exact raw value. The unit is explicit
+      // because JS cannot dispatch on JSON type (`1.0 === 1`): the handler
+      // must not guess raw from `Number.isInteger`. The `delta` bindings
+      // (`af-level-up`/`-down`, `{ delta: ±5 }`) already arrive in raw
+      // units; the `direction` fallback steps by `round(0.05 * span)` raw
+      // units.
       const { rawMin, rawMax } = keyboardControlRawDomain(context.caps, 'af_level');
       if (rawMax <= rawMin) return true;
       const span = rawMax - rawMin;
@@ -1865,14 +1894,14 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
       const delta = keyboardDelta(safeParams.delta);
       if (delta !== null) {
         const nextRaw = Math.max(rawMin, Math.min(rawMax, currentRaw + Math.round(delta)));
-        makeRxAudioHandlers().onAfLevelChange(rawMin + (nextRaw - rawMin) / span);
+        makeRxAudioHandlers().onAfLevelChange(nextRaw, 'raw');
         return true;
       }
       const direction = keyboardDirection(safeParams.direction);
       if (direction) {
         const step = Math.max(1, Math.round(0.05 * span));
         const nextRaw = Math.max(rawMin, Math.min(rawMax, currentRaw + (direction === 'down' ? -step : step)));
-        makeRxAudioHandlers().onAfLevelChange(rawMin + (nextRaw - rawMin) / span);
+        makeRxAudioHandlers().onAfLevelChange(nextRaw, 'raw');
       }
       return true;
     }

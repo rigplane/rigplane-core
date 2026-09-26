@@ -517,6 +517,11 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     // wire form for the radio-AF path is a raw int without the tag, which
     // the server already accepts (its int branch). This test pins the
     // radio-AF dispatch at 100 %: the integer 255, untagged.
+    //
+    // The `'raw'` unit is explicit because JS cannot dispatch on JSON type
+    // (`1.0 === 1`): a unit-less call is the legacy normalized float
+    // (v2 panels), converted through the declared raw domain — including
+    // `1` (100 %) to 255. A `'raw'` call dispatches the int as-is.
     h.caps = {
       ...h.caps!,
       controls: {
@@ -525,14 +530,18 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       },
     };
     const rxAudio = makeRxAudioHandlers();
+    rxAudio.onAfLevelChange(255, 'raw');
+    rxAudio.onAfLevelChange(0, 'raw');
+    rxAudio.onAfLevelChange(50, 'raw');
     rxAudio.onAfLevelChange(1);
-    rxAudio.onAfLevelChange(0);
-    rxAudio.onAfLevelChange(50 / 255);
+    rxAudio.onAfLevelChange(0.5);
 
     expect(exactCalls()).toEqual([
       ['set_af_level', { level: 255, receiver: 0 }],
       ['set_af_level', { level: 0, receiver: 0 }],
       ['set_af_level', { level: 50, receiver: 0 }],
+      ['set_af_level', { level: 255, receiver: 0 }],
+      ['set_af_level', { level: 128, receiver: 0 }],
     ]);
     for (const [, params] of exactCalls()) {
       expect(Number.isInteger(params.level)).toBe(true);
@@ -571,9 +580,10 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     }
   });
 
-  it('dispatches raw-integer AF endpoints on the radio path and keeps normalized browser-local endpoints', () => {
-    // MOR-1676 part A (AF): the radio target dispatches the raw INTEGER
-    // (untagged), while the browser-volume branch keeps its normalized
+  it('dispatches integer AF endpoints on the radio path and keeps normalized browser-local endpoints', () => {
+    // MOR-1676 part A (AF): the radio target dispatches INTEGERS (untagged)
+    // — unit-less `0`/`1` are the legacy normalized endpoints converting to
+    // raw 0/255 — while the browser-volume branch keeps its normalized
     // behaviour (`setRxVolume`/`setVolume`, no radio command).
     h.caps = {
       ...h.caps!,
