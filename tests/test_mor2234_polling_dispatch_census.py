@@ -80,7 +80,7 @@ def _answer(request_paths: tuple[FieldPath, ...], *, store: StateStore) -> Chang
                 value=14_074_000 if path.name == "freq_hz" else 1,
                 source=SourceMetadata(
                     source="poll_response",
-                    provider="mor2234-census",
+                    provider="mor2234_census",
                     transport="fake",
                 ),
                 timestamp_monotonic=store.snapshot().generated_at_monotonic,
@@ -96,7 +96,7 @@ def _answer(request_paths: tuple[FieldPath, ...], *, store: StateStore) -> Chang
         sources=(
             SourceMetadata(
                 source="poll_response",
-                provider="mor2234-census",
+                provider="mor2234_census",
                 transport="fake",
             ),
         ),
