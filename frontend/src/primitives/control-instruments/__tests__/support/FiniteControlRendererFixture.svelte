@@ -55,7 +55,8 @@
   {:else if 'confirmed' in view}
     <button
       type="button" aria-pressed={view.confirmed} disabled={!view.available}
-      aria-label={view.accessibleLabel ?? view.label} data-testid={`external-${view.label}`}
+      aria-label={view.accessibleLabel ?? view.label} title={view.title}
+      data-testid={`external-${view.label}`}
       onclick={() => invoke()}
     >{view.label}</button>
   {:else}
