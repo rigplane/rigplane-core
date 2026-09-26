@@ -112,7 +112,6 @@ function liveCaps(): Capabilities {
     notchWidthChoices: [
       { value: 0, label: 'WIDE' }, { value: 1, label: 'MID' }, { value: 2, label: 'NAR' },
     ],
-    ],
     preValues: [0, 1, 2], attValues: [0, 6, 12, 18],
     receivers: 1, vfoScheme: 'single',
     freqRanges: [], modes: ['USB', 'LSB'], filters: ['FIL1', 'FIL2', 'FIL3'],
