@@ -28,7 +28,7 @@ import {
   makeKeyboardHandlers, makeSystemHandlers, makeRepeaterHandlers,
 } from '../commands/panel-commands';
 import { toRadioViewModel } from './radio-view-model-adapter';
-import { blockedReasonLabel } from '../../../semantic/rx-tx-surface';
+import { blockedReasonLabel } from '$lib/i18n/blocked-reasons';
 import {
   getManagedAppTxController, type ManagedAppTxController,
 } from '../tx-controller/managed-app-host';
