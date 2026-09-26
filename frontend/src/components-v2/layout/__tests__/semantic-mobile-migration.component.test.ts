@@ -30,12 +30,13 @@ vi.mock('../../../components/spectrum/SpectrumPanel.svelte', async () => {
 });
 vi.mock('../display/FrequencyDisplay.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../meters/LinearSMeter.svelte', () => ({ default: function S() { return {}; } }));
-vi.mock('../controls/CollapsiblePanel.svelte', () => ({ default: function S() { return {}; } }));
-vi.mock('../controls/BottomSheet.svelte', () => ({ default: function S() { return {}; } }));
+// MOR-1245 — CollapsiblePanel, BottomSheet and TxPanel stay REAL here: the
+// one-banner acceptance now includes the TX-settings sheet's TxPanel copy,
+// which only a real mount can prove. TxPanel's runtime inputs are mocked
+// below (panel-adapters, mod-input-auto) — same idiom as TxPanel.isolated.
 vi.mock('../controls/BandSelector.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/FilterPanel.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/RxAudioPanel.svelte', () => ({ default: function S() { return {}; } }));
-vi.mock('../panels/TxPanel.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/DspPanel.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/AgcPanel.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/RfFrontEnd.svelte', () => ({ default: function S() { return {}; } }));
@@ -65,6 +66,40 @@ vi.mock('./vfo-layout-tokens', () => ({
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: vi.fn(() => ({ visible: false, sourceLabel: null })),
   getModInputTxGuardHandlers: vi.fn(() => ({ onSetLan: vi.fn(), onDismiss: vi.fn() })),
+}));
+
+// The now-real TxPanel (MOR-1245, sheet-open one-banner test) pulls two more
+// adapters. PARTIAL panel-adapters mock — importOriginal spread keeps the
+// layout's own `bindSemanticSurfaceHandlers`/`getPresetHandlers`/
+// `getKeyboardHandlers` real; only TxPanel's three Tx accessors are faked,
+// so the real mount never pins the transport/stores modules in the shared
+// (isolate: false) cache — same #771 rationale as the guard adapter above.
+const txPanelProps = {
+  rfPower: 0.5, micGain: 128, atuActive: false, atuTuning: false,
+  voxActive: false, compActive: false, compLevel: 64, monActive: false,
+  monLevel: 64, driveGain: 128, hasTx: true, hasTuner: true, hasMonitor: true,
+};
+const txPanelHandlerNames = [
+  'onRfPowerChange', 'onMicGainChange', 'onAtuToggle', 'onAtuTune', 'onVoxToggle',
+  'onCompToggle', 'onCompLevelChange', 'onMonToggle', 'onMonLevelChange', 'onDriveGainChange',
+] as const;
+vi.mock('$lib/runtime/adapters/panel-adapters', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/adapters/panel-adapters')>();
+  return {
+    ...actual,
+    deriveTxProps: () => txPanelProps,
+    getTxHandlers: () => Object.fromEntries(txPanelHandlerNames.map((n) => [n, vi.fn()])),
+    getTxAuxControlFeedback: () => ({
+      confirmed: 128, target: null, requestedTarget: null, phase: 'idle', busy: false,
+      availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
+      sessionEpoch: 1, scope: { control: 'mic-gain', receiver: 0 },
+      repeatPolicy: 'latest-target-wins',
+    }),
+  };
+});
+vi.mock('$lib/runtime/adapters/mod-input-auto.svelte', () => ({
+  deriveAutoLanModInputProps: () => ({ available: false, enabled: false }),
+  setAutoLanModInputEnabled: vi.fn(),
 }));
 
 // A real, fully-populated view model so the semantic surfaces actually RENDER.
@@ -155,6 +190,7 @@ import MobileRadioLayout from '../MobileRadioLayout.svelte';
 import mobileLayoutSource from '../MobileRadioLayout.svelte?raw';
 import mobileSkinSource from '../../../skins/mobile/MobileSkin.svelte?raw';
 import { hasTx } from '$lib/stores/capabilities.svelte';
+import { deriveModInputTxGuardProps } from '$lib/runtime/adapters/mod-input-tx-guard.svelte';
 
 const RX: ManagedTxState = Object.freeze({
   phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
@@ -300,6 +336,58 @@ describe('semantic VFO / RX-TX adoption in the mobile shell', () => {
     // No mobile-local RX/TX or VFO surface reimplementation.
     expect(mobileLayoutSource).not.toContain('RxTxSurface');
     expect(mobileLayoutSource).not.toContain('VfoSurface');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1c. MOR-1245 — the MOD-input TX preflight banner renders exactly once per
+//     orientation. The portrait deck mounts the shared wiring (whose copy
+//     exists since MOR-1065 slice c) beside the shell's fixed overlay, which
+//     without a suppression prop means two banners, one trigger.
+// ---------------------------------------------------------------------------
+describe('MOR-1245 — one MOD-input TX banner per orientation', () => {
+  beforeEach(() => {
+    vi.mocked(deriveModInputTxGuardProps).mockReturnValue({ visible: true, sourceLabel: 'MIC' });
+  });
+  afterEach(() => {
+    vi.mocked(deriveModInputTxGuardProps).mockReturnValue({ visible: false, sourceLabel: null });
+  });
+
+  // Kills the MOR-1094 duplicate: the shell's fixed overlay and the shared
+  // wiring's `txAdjacentAlerts` both mounting in portrait. The FIXED
+  // instance is the survivor — an operator cannot scroll past it while
+  // keying (MOR-1094's reason for keeping it outside the scroll deck).
+  it('renders exactly one banner in portrait, and it is the fixed overlay one', () => {
+    const t = mountMobile();
+    const banners = t.querySelectorAll('[data-testid="mod-input-tx-warning"]');
+    expect(banners).toHaveLength(1);
+    expect(t.querySelector('.m-mod-input-warning')!.contains(banners[0])).toBe(true);
+  });
+
+  // Kills the suppression leaking into landscape: the semantic deck unmounts
+  // there (`rotate(true)` → zero `semantic-radio-surfaces` per 1 above), so
+  // the fixed overlay is the ONLY possible instance and must keep rendering.
+  it('renders exactly one banner in landscape', () => {
+    const t = mountMobile();
+    rotate(true);
+    expect(t.querySelectorAll('[data-testid="mod-input-tx-warning"]')).toHaveLength(1);
+    expect(t.querySelector('.m-mod-input-warning')).not.toBeNull();
+  });
+
+  // Kills the sheet-open duplicate: the TX-settings sheet mounts the REAL
+  // TxPanel (unmocked here on purpose), whose inline copy renders a second
+  // banner unless the shell suppresses it. The fixed overlay is again the
+  // survivor — the sheet carries none.
+  it('renders exactly one banner with the TX-settings sheet open', () => {
+    const t = mountMobile();
+    t.querySelector<HTMLElement>('[aria-controls="m-chip-panel-tx"]')!.click();
+    flushSync();
+    t.querySelector<HTMLElement>('.m-tx-settings-btn')!.click();
+    flushSync();
+    const banners = t.querySelectorAll('[data-testid="mod-input-tx-warning"]');
+    expect(banners).toHaveLength(1);
+    expect(t.querySelector('.m-mod-input-warning')!.contains(banners[0])).toBe(true);
+    expect(t.querySelector('[data-testid="mod-input-tx-warning"]')!.closest('.m-sheet-content')).toBeNull();
   });
 });
 
