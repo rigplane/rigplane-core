@@ -18,7 +18,6 @@ import {
 import {
   capabilitiesMatchGeneration,
   getCapabilities,
-  getControlRange,
 } from '$lib/stores/capabilities.svelte';
 import { getFieldStatus, isFieldAvailable } from '$lib/state/field-status';
 import { runtime } from '../frontend-runtime';
@@ -1720,26 +1719,19 @@ function keyboardDelta(value: unknown): number | null {
  *  MOR-1577) — falls back to 0/255 only when caps declares nothing for
  *  `key`, matching the hardcoded domain the CAT write path has always
  *  assumed. Data-driven per repo doctrine: no other hardcoded 255 appears
- *  in the `delta`-handling path. Read through the capabilities store's
- *  `getControlRange` — the same reader `filter-controls.ts` uses — with a
- *  direct caps read only when the store is unavailable (test seams that
- *  mock `getCapabilities` but not the store reader). */
+ *  in the `delta`-handling path. Read straight off the passed caps — the
+ *  capabilities store's `getControlRange` reads a module singleton that
+ *  isolated test seams do not populate, so it cannot serve panel handlers
+ *  (see `filter-controls.ts`, whose store read is safe only because filter
+ *  panels populate the store first). */
 function keyboardControlRawDomain(caps: Capabilities, key: string): { rawMin: number; rawMax: number } {
-  const readRange = (range: { raw_min?: unknown; raw_max?: unknown } | null): { rawMin: number; rawMax: number } | null => {
-    if (range === null) return null;
-    const { raw_min: rawMin, raw_max: rawMax } = range;
-    return typeof rawMin === 'number' && typeof rawMax === 'number' ? { rawMin, rawMax } : null;
+  const ctrl = caps.controls?.[key];
+  const rawMin = (ctrl as { raw_min?: unknown } | undefined)?.raw_min;
+  const rawMax = (ctrl as { raw_max?: unknown } | undefined)?.raw_max;
+  return {
+    rawMin: typeof rawMin === 'number' ? rawMin : 0,
+    rawMax: typeof rawMax === 'number' ? rawMax : 255,
   };
-  try {
-    const fromStore = readRange(getControlRange(key));
-    if (fromStore !== null) return fromStore;
-  } catch {
-    // Capabilities store unavailable — fall through to the direct read.
-  }
-  const declared = readRange(
-    (caps.controls?.[key] ?? null) as { raw_min?: unknown; raw_max?: unknown } | null,
-  );
-  return declared ?? { rawMin: 0, rawMax: 255 };
 }
 
 function keyboardScopeField(context: KeyboardContext, field: string): unknown | null {
