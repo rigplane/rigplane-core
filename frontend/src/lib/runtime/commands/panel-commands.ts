@@ -1208,12 +1208,13 @@ function setReceiverAf(target: 'main' | 'sub', level: number, unit?: 'raw'): boo
   const receiver = knownActiveReceiver('afLevel', target === 'sub' ? 'SUB' : 'MAIN');
   if (receiver === null) return false;
   // MOR-1676 part A (AF): the radio-AF intent states its unit in the intent
-  // NAME — `set_af_level` for the raw path (`dispatchRadioIntentWithResult`
-  // strips the unit before `sendCommand`; the server never sees `'raw'`),
-  // `set_af_level_normalized` for the legacy normalized path.
+  // params — `level_unit: 'raw'` for the raw path
+  // (`dispatchRadioIntentWithResult` strips the unit before `sendCommand`;
+  // the server never sees `'raw'`), `level_unit: 'normalized'` for the
+  // legacy path.
   dispatchRadioIntent(unit === 'raw'
     ? { name: 'set_af_level', params: { level: raw, receiver, level_unit: 'raw' } }
-    : { name: 'set_af_level_normalized', params: { level: raw, receiver } });
+    : { name: 'set_af_level', params: { level, receiver, level_unit: 'normalized' } });
   return true;
 }
 
@@ -1262,11 +1263,10 @@ export function makeRxAudioHandlers() {
         // `level_unit: 'raw'`, which `dispatchRadioIntentWithResult` strips
         // before `sendCommand` (the server never sees `'raw'`), so a step
         // plus its reverse restore the exact raw value. Omitted `unit` is
-        // the legacy normalized float (v2 panels), converted through the
-        // control's declared raw domain and dispatched as
-        // `set_af_level_normalized`, always sent tagged `level_unit:
-        // 'normalized'` — including 0 and 1, which JS cannot distinguish
-        // from raw ints (`1.0 === 1`), so the number alone never decides.
+        // the legacy normalized float (v2 panels), dispatched as
+        // `set_af_level` with `level_unit: 'normalized'`, always tagged —
+        // including 0 and 1, which JS cannot distinguish from raw ints
+        // (`1.0 === 1`), so the number alone never decides.
         const caps = getCapabilities();
         if (caps === null || !hasCapability('af_level')) return;
         const receiver = knownReceiverField('afLevel');
@@ -1275,7 +1275,7 @@ export function makeRxAudioHandlers() {
         if (raw === null) return;
         dispatchRadioIntent(unit === 'raw'
           ? { name: 'set_af_level', params: { level: raw, receiver, level_unit: 'raw' } }
-          : { name: 'set_af_level_normalized', params: { level: raw, receiver } });
+          : { name: 'set_af_level', params: { level, receiver, level_unit: 'normalized' } });
       }
     },
     /** MOR-2579: the radio AF of the NAMED receiver, whichever is selected. */

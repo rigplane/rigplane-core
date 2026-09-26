@@ -198,7 +198,7 @@ describe('typed non-PTT radio intents', () => {
   });
 
   it('stores the admitted target from a response-ok delivery', () => {
-    intents.dispatchRadioIntent({ id: 'af-admit', name: 'set_af_level_normalized', params: { level: 0.5, receiver: 0 } });
+    intents.dispatchRadioIntent({ id: 'af-admit', name: 'set_af_level', params: { level: 0.5, receiver: 0, level_unit: 'normalized' } });
     harness.delivery?.({
       commandId: 'af-admit', kind: 'response-ok', originalEpoch: 7, eventEpoch: 7,
       admittedLevel: 128 / 255,
@@ -210,7 +210,7 @@ describe('typed non-PTT radio intents', () => {
   });
 
   it('stores the admitted target even when the ack frame arrived first', () => {
-    intents.dispatchRadioIntent({ id: 'af-ack-first', name: 'set_af_level_normalized', params: { level: 0.5, receiver: 0 } });
+    intents.dispatchRadioIntent({ id: 'af-ack-first', name: 'set_af_level', params: { level: 0.5, receiver: 0, level_unit: 'normalized' } });
     harness.delivery?.({ commandId: 'af-ack-first', kind: 'ack', originalEpoch: 7, eventEpoch: 7 });
     harness.delivery?.({
       commandId: 'af-ack-first', kind: 'response-ok', originalEpoch: 7, eventEpoch: 7,
@@ -222,7 +222,7 @@ describe('typed non-PTT radio intents', () => {
   });
 
   it('keeps an honest awaiting record when the response carries no admitted level', () => {
-    intents.dispatchRadioIntent({ id: 'af-old', name: 'set_af_level_normalized', params: { level: 0.5, receiver: 0 } });
+    intents.dispatchRadioIntent({ id: 'af-old', name: 'set_af_level', params: { level: 0.5, receiver: 0, level_unit: 'normalized' } });
     harness.delivery?.({ commandId: 'af-old', kind: 'response-ok', originalEpoch: 7, eventEpoch: 7 });
     const record = lifecycle.getCommandLifecycle('af-old', 7);
     expect(record).toMatchObject({ status: 'acknowledged' });
@@ -426,7 +426,7 @@ describe('typed non-PTT radio intents', () => {
       { name: 'set_af_level', params: { level: Number.NaN, receiver: 0 } },
       { name: 'set_af_level', params: { level: Number.POSITIVE_INFINITY, receiver: 0 } },
       { name: 'set_af_level', params: { level: 0.5, receiver: 0, unexpected: true } },
-      { name: 'set_af_level_normalized', params: { level: 0.5, receiver: 0 }, unexpected: true },
+      { name: 'set_af_level', params: { level: 0.5, receiver: 0 }, unexpected: true },
       { name: 'set_vfo', params: { vfo: 'VFOA' } },
       { name: 'set_mode', params: { mode: 'USB', receiver: 0, unexpected: true } },
       { name: 'vfo_swap', params: { unexpected: true } },
@@ -449,7 +449,9 @@ describe('typed non-PTT radio intents', () => {
     // 1.0 sent untagged would reach the server as raw 1 (near silence).
     const levels = [0, 1, 0.5, 50 / 255] as const;
     levels.forEach((level, index) => intents.dispatchRadioIntent({
-      id: `af-normalized-${index}`, name: 'set_af_level_normalized', params: { level, receiver: 0 },
+      id: `af-normalized-${index}`,
+      name: 'set_af_level',
+      params: { level, receiver: 0, level_unit: 'normalized' },
     }));
 
     levels.forEach((level, index) => expect(harness.sendCommand).toHaveBeenNthCalledWith(
@@ -457,7 +459,7 @@ describe('typed non-PTT radio intents', () => {
     ));
     expect(lifecycle.getCommandLifecycles()).toHaveLength(levels.length);
     expect(lifecycle.getCommandLifecycles()).toEqual(expect.arrayContaining(levels.map((_, index) =>
-      expect.objectContaining({ id: `af-normalized-${index}`, name: 'set_af_level_normalized', status: 'pending' }))));
+      expect.objectContaining({ id: `af-normalized-${index}`, name: 'set_af_level', status: 'pending' }))));
     expect(() => intents.dispatchRadioIntent({
       name: 'set_nr_level', params: { level: 0.42, receiver: 0 },
     } as never)).toThrow(TypeError);
@@ -530,7 +532,7 @@ describe('typed non-PTT radio intents', () => {
       { name: 'set_monitor_mute', params: { on: true } },
       { name: 'set_nb', params: { on: false, receiver: 0 } },
       { name: 'set_mic_gain', params: { level: 10 } },
-      { name: 'set_af_level_normalized', params: { level: 50 / 255, receiver: 1 } },
+      { name: 'set_af_level', params: { level: 50 / 255, receiver: 1, level_unit: 'normalized' } },
       { name: 'set_af_level', params: { level: 50, receiver: 1, level_unit: 'raw' } },
       { name: 'set_cw_pitch', params: { value: 10 } },
       { name: 'set_pbt_inner', params: { value: 10, receiver: 0 } },

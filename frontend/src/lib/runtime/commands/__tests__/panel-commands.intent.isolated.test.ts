@@ -458,7 +458,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     // tagged `level_unit: 'normalized'`.
     expect(exactCalls()).toEqual([
       ['set_monitor_mute', { on: true }],
-      ['set_af_level_normalized', { level: 0.42, receiver: 0, level_unit: 'normalized' }],
+      ['set_af_level', { level: 0.42, receiver: 0, level_unit: 'normalized' }],
     ]);
     expectIntentTransport();
     expect(h.setMuted).toHaveBeenNthCalledWith(1, true);
@@ -544,8 +544,8 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       ['set_af_level', { level: 255, receiver: 0 }],
       ['set_af_level', { level: 0, receiver: 0 }],
       ['set_af_level', { level: 50, receiver: 0 }],
-      ['set_af_level_normalized', { level: 1, receiver: 0, level_unit: 'normalized' }],
-      ['set_af_level_normalized', { level: 0.5, receiver: 0, level_unit: 'normalized' }],
+      ['set_af_level', { level: 1, receiver: 0, level_unit: 'normalized' }],
+      ['set_af_level', { level: 0.5, receiver: 0, level_unit: 'normalized' }],
     ]);
     for (const [name, params] of exactCalls()) {
       expect(Number.isInteger(params.level)).toBe(true);
@@ -607,8 +607,8 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     rxAudio.onAfLevelChange(1);
 
     expect(exactCalls()).toEqual([
-      ['set_af_level_normalized', { level: 0, receiver: 0, level_unit: 'normalized' }],
-      ['set_af_level_normalized', { level: 1, receiver: 0, level_unit: 'normalized' }],
+      ['set_af_level', { level: 0, receiver: 0, level_unit: 'normalized' }],
+      ['set_af_level', { level: 1, receiver: 0, level_unit: 'normalized' }],
     ]);
     expectIntentTransport();
 
@@ -961,7 +961,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       // (`set_af_level_normalized`), always sent tagged — even though caps
       // here declare no `controls.af_level` (the readback conversion is a
       // separate concern from the intent name).
-      ['set_af_level_normalized', { level: 0.5, receiver: 0, level_unit: 'normalized' }],
+      ['set_af_level', { level: 0.5, receiver: 0, level_unit: 'normalized' }],
       ['set_band', { band: 5 }],
       ['set_rit_status', { on: true }],
     ]);

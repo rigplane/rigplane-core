@@ -254,31 +254,28 @@ const admittedTargetOf = (command: Pick<CommandLifecycle, 'admittedTarget'>): nu
   normalizedLevel(command.admittedTarget);
 
 /** AF level confirms only on a fresh post-ack same-field readback exactly
- *  equal to the server-admitted target. */
-const afLevelDescriptorBase = {
-  scope: (command: Pick<CommandLifecycle, 'params'>) => {
-    const receiver = command.params.receiver;
-    return receiver === undefined || receiver === 0 || receiver === 1
-      ? Object.freeze({ control: 'af-level', receiver: receiver === 1 ? 1 : 0 }) : null;
-  },
+ *  equal to the server-admitted target.
+ *
+ *  MOR-1676 part A (AF): the unit lives in the intent params, so the scope
+ *  accepts both the raw `set_af_level` (`level_unit: 'raw'`) and the legacy
+ *  normalized `set_af_level` (`level_unit: 'normalized'`) — one control,
+ *  and the server-admitted target is normalized either way. */
+const afLevelScope = (command: Pick<CommandLifecycle, 'params'>) => {
+  const receiver = command.params.receiver;
+  const unit = command.params.level_unit;
+  if ((receiver !== undefined && receiver !== 0 && receiver !== 1)
+    || (unit !== undefined && unit !== 'raw' && unit !== 'normalized')) return null;
+  return Object.freeze({ control: 'af-level', receiver: receiver === 1 ? 1 : 0 });
+};
+export const AF_LEVEL_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
+  intentName: 'set_af_level', repeatPolicy: 'latest-target-wins',
+  scope: afLevelScope,
   fieldPath: (scope: ControlFeedbackScope) =>
     scope.receiver === 1 ? 'sub.afLevel' : 'main.afLevel',
   target: admittedTargetOf,
   confirmed: (state: ServerState, scope: ControlFeedbackScope) => normalizedLevel(
     finiteNumber((scope.receiver === 1 ? state.sub : state.main)?.afLevel)),
   matches: (confirmed: number, target: number) => confirmed === target,
-} as const;
-export const AF_LEVEL_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
-  intentName: 'set_af_level', repeatPolicy: 'latest-target-wins',
-  ...afLevelDescriptorBase,
-});
-/** MOR-1676 part A (AF): the raw radio-AF intent shares the normalized
- *  intent's scope, field path, target, and confirmation — the unit lives in
- *  the intent name, and the server-admitted target is normalized either
- *  way. */
-export const AF_LEVEL_NORMALIZED_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
-  intentName: 'set_af_level_normalized', repeatPolicy: 'latest-target-wins',
-  ...afLevelDescriptorBase,
 });
 
 /** RF power confirms only against the server-admitted target. */
@@ -485,7 +482,6 @@ export const STATE_BACKED_COMMAND_DESCRIPTORS: ReadonlyMap<RadioIntentName, Stat
     [RF_GAIN_COMMAND_DESCRIPTOR.intentName, RF_GAIN_COMMAND_DESCRIPTOR],
     [SQUELCH_COMMAND_DESCRIPTOR.intentName, SQUELCH_COMMAND_DESCRIPTOR],
     [AF_LEVEL_COMMAND_DESCRIPTOR.intentName, AF_LEVEL_COMMAND_DESCRIPTOR],
-    [AF_LEVEL_NORMALIZED_COMMAND_DESCRIPTOR.intentName, AF_LEVEL_NORMALIZED_COMMAND_DESCRIPTOR],
     [RF_POWER_COMMAND_DESCRIPTOR.intentName, RF_POWER_COMMAND_DESCRIPTOR],
     [CW_PITCH_COMMAND_DESCRIPTOR.intentName, CW_PITCH_COMMAND_DESCRIPTOR],
     [KEY_SPEED_COMMAND_DESCRIPTOR.intentName, KEY_SPEED_COMMAND_DESCRIPTOR],

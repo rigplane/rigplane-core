@@ -10,8 +10,8 @@ type AfIntentSpec = {
   names: readonly ['set_af_level'];
   params: { level: 'raw-af-level'; receiver: 'receiver'; level_unit: 'raw-af-level-unit' };
 } | {
-  names: readonly ['set_af_level_normalized'];
-  params: { level: 'normalized'; receiver: 'receiver' };
+  names: readonly ['set_af_level'];
+  params: { level: 'normalized'; receiver: 'receiver'; level_unit: 'normalized-unit' };
 };
 
 const intentSpecs = [
@@ -39,7 +39,8 @@ const intentSpecs = [
   // MOR-1676 part A (AF): the radio-AF path dispatches a RAW integer
   // 0-255 with an explicit `level_unit: 'raw'` in the intent params, so a
   // step plus its reverse restore the exact raw value; a unit-less AF level
-  // is the legacy normalized 0.0..1.0 float (v2 panels, extensions).
+  // is the legacy normalized 0.0..1.0 float (v2 panels, extensions), always
+  // sent tagged `level_unit: 'normalized'`.
   // Browser volume keeps its own normalized call (it never reaches this
   // intent). The caller states the unit; the number never decides it (JS
   // cannot dispatch on JSON type: `1.0 === 1`, so a normalized 1.0 read as
@@ -48,7 +49,7 @@ const intentSpecs = [
   // `sendCommand` — the server rejects any `level_unit` other than
   // `'normalized'`.
   { names: ['set_af_level'], params: { level: 'raw-af-level', receiver: 'receiver', level_unit: 'raw-af-level-unit' } },
-  { names: ['set_af_level_normalized'], params: { level: 'normalized', receiver: 'receiver' } },
+  { names: ['set_af_level'], params: { level: 'normalized', receiver: 'receiver', level_unit: 'normalized-unit' } },
   { names: ['set_rf_power'], params: { level: 'number', level_unit: 'normalized-unit?' } },
   { names: ['set_nb_level', 'set_nr_level', 'set_preamp', 'set_rf_gain', 'set_squelch'], params: { level: 'integer', receiver: 'receiver' } },
   { names: ['set_cw_pitch', 'set_tuner_status'], params: { value: 'integer' } },
@@ -195,14 +196,14 @@ export function dispatchRadioIntentWithResult(intent: RadioIntent): RadioIntentD
   const id = (candidate.id as string | undefined) ?? makeCommandId();
   const originalEpoch = getControlSession().epoch;
   const lifecycle = beginCommand({ id, name, params: params as Record<string, unknown>, originalEpoch });
-  // MOR-1676 part A (AF): the caller states the unit in the intent NAME,
-  // never in a value the number could decide. `set_af_level` is the raw
-  // integer path (a normalized 1.0 must never go out untagged: the server
-  // would read it as raw 1, near silence); `set_af_level_normalized` is the
-  // legacy normalized 0.0..1.0 path, always sent tagged `level_unit:
-  // 'normalized'`, whether the value is 0, 1 or a fraction. The raw unit is
-  // STRIPPED before `sendCommand` because the server rejects any
-  // `level_unit` other than `'normalized'`.
+  // MOR-1676 part A (AF): the caller states the unit in the intent params —
+  // `level_unit: 'raw'` for the raw path, `level_unit: 'normalized'` for
+  // the legacy path — never in a value the number could decide. `set_af_level`
+  // is one wire command either way; the documented normalized contract
+  // (`docs/api/command-catalog.md`, the ws-client byte vectors) is unchanged.
+  // A normalized 1.0 must never go out untagged: the server would read it
+  // as raw 1, near silence. The raw unit is STRIPPED before `sendCommand`
+  // because the server rejects any `level_unit` other than `'normalized'`.
   const wireParams = (() => {
     const base = params as Record<string, unknown>;
     if (specsByName.get(name)?.level === 'normalized') {
