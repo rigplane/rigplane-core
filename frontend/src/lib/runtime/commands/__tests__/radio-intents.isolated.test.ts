@@ -96,7 +96,7 @@ describe('typed non-PTT radio intents', () => {
         const { level_unit: _intentUnit, ...rest } = params as Record<string, unknown>;
         const wireParams = name === 'set_af_level' && (params as Record<string, unknown>).level_unit === 'raw'
           ? rest
-          : { ...params, level_unit: 'normalized' };
+          : { ...params, ...(name === 'set_af_level' ? { level_unit: 'normalized' } : {}) };
         expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith(name, wireParams, expect.any(String));
         expect(lifecycle.getCommandLifecycles().at(-1)).toMatchObject({ name, params, status: 'pending' });
       }
