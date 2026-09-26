@@ -230,6 +230,13 @@ class YaesuCatRadio:
         # unsupported field warns once and then demotes repeats to DEBUG.
         self._poll_warned_fields: set[str] = set()
 
+        # MOR-2632: the last nonzero NB/NR level seen per receiver, remembered
+        # when turning the function off. Lives only on this object: a radio
+        # whose level command doubles as the on/off switch reports 0 once off,
+        # so the next on has nothing else to restore the operator's level from.
+        self._remembered_nb_level: dict[int, int] = {}
+        self._remembered_nr_level: dict[int, int] = {}
+
         # Compile response parsers once at init time (keyed by command name).
         # Commands with unsupported placeholders (e.g. {vfo}, {band}) are skipped.
         self._parsers: dict[str, CatCommandParser] = {}
@@ -637,43 +644,61 @@ class YaesuCatRadio:
     async def set_nb(self, on: bool, receiver: int = 0) -> None:
         """Enable or disable the noise blanker.
 
-        For radios with ``level_is_toggle`` (e.g. FTX-1), translates to
-        ``set_nb_level(0)`` for off and ``set_nb_level(level)`` for on,
-        where *level* is the receiver's live level read via ``NL`` — kept
-        when nonzero, midpoint default otherwise — not the legacy
-        ``self._state`` mirror, which the observation pipeline never writes
-        (MOR-2518).  No-op if neither ``set_nb`` nor ``set_nb_level`` is
-        defined.
+        A radio with a ``set_nb`` write command gets that command. A radio
+        whose level command doubles as the switch (FTX-1: ``NL`` level 000
+        is OFF) is handled from the live level read via ``NL``. Off reads
+        that level first and, when it is nonzero, remembers it for this
+        receiver, then writes 0. On writes the live level when it is
+        nonzero, otherwise the level remembered for this receiver, otherwise
+        the midpoint default. The memory lives only on this radio object.
+        No-op when the profile defines neither command.
         """
         if self._has_write_command("set_nb"):
             await self._write("set_nb", state="1" if on else "0")
         elif self._has_write_command("set_nb_level"):
+            current = await self.read_nb_level(receiver)
             if on:
-                current = await self.read_nb_level(receiver)
-                level = current if current > 0 else self._default_nb_level()
+                level = (
+                    current
+                    if current > 0
+                    else self._remembered_nb_level.get(
+                        receiver, self._default_nb_level()
+                    )
+                )
                 await self.set_nb_level(level, receiver=receiver)
             else:
+                if current > 0:
+                    self._remembered_nb_level[receiver] = current
                 await self.set_nb_level(0, receiver=receiver)
 
     async def set_nr(self, on: bool, receiver: int = 0) -> None:
         """Enable or disable noise reduction.
 
-        For radios with ``level_is_toggle`` (e.g. FTX-1), translates to
-        ``set_nr_level(0)`` for off and ``set_nr_level(level)`` for on,
-        where *level* is the receiver's live level read via ``RL`` — kept
-        when nonzero, midpoint default otherwise — not the legacy
-        ``self._state`` mirror, which the observation pipeline never writes
-        (MOR-2518).  No-op if neither ``set_nr`` nor ``set_nr_level`` is
-        defined.
+        A radio with a ``set_nr`` write command gets that command. A radio
+        whose level command doubles as the switch (FTX-1: ``RL`` level 000
+        is OFF) is handled from the live level read via ``RL``. Off reads
+        that level first and, when it is nonzero, remembers it for this
+        receiver, then writes 0. On writes the live level when it is
+        nonzero, otherwise the level remembered for this receiver, otherwise
+        the midpoint default. The memory lives only on this radio object.
+        No-op when the profile defines neither command.
         """
         if self._has_write_command("set_nr"):
             await self._write("set_nr", state="1" if on else "0")
         elif self._has_write_command("set_nr_level"):
+            current = await self.read_nr_level(receiver)
             if on:
-                current = await self.read_nr_level(receiver)
-                level = current if current > 0 else self._default_nr_level()
+                level = (
+                    current
+                    if current > 0
+                    else self._remembered_nr_level.get(
+                        receiver, self._default_nr_level()
+                    )
+                )
                 await self.set_nr_level(level, receiver=receiver)
             else:
+                if current > 0:
+                    self._remembered_nr_level[receiver] = current
                 await self.set_nr_level(0, receiver=receiver)
 
     async def set_dual_watch(self, on: bool) -> None:
