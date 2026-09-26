@@ -3221,10 +3221,12 @@ async def test_ftx1_web_receiver_selection_writes_once_and_waits_for_vs_readback
         )
         dispatched_at = asyncio.get_running_loop().time()
         await poller._drain_commands()  # noqa: SLF001
+        drained_at = asyncio.get_running_loop().time()
     [latest] = service.readback_expectations(
         source="websocket", session_id="ws-ftx1", command_id="latest"
     )
-    assert 1.9 < latest.expires_at_monotonic - dispatched_at <= 2.01
+    assert 1.9 < latest.expires_at_monotonic - dispatched_at
+    assert latest.expires_at_monotonic - drained_at <= 2.01
     observed = ProviderObservationAdapter(
         radio.profile.state_acquisition,
         source="yaesu_poll_response",
