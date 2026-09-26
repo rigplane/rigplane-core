@@ -72,6 +72,7 @@ from rigplane.core.state_store import FreshnessState
 from rigplane.profiles.control_domain import decode_legacy_control
 from rigplane.scope import ScopeFrame
 from rigplane.core.types import CivFrame, Mode, bcd_decode
+from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime._state_queries import tx_target_max_age
 from rigplane.runtime.meter_cal import interpolate_meter
 
@@ -1515,10 +1516,12 @@ class CivRuntime:
                             "handing off to lifecycle recovery",
                             elapsed_recovery,
                         )
-                        self._reconnect_task = asyncio.create_task(
-                            self._watchdog_recover(),
-                            name="civ-watchdog-recover",
-                        )
+                        live = self._reconnect_task
+                        if live is None or live.done():
+                            self._reconnect_task = asyncio.create_task(
+                                self._watchdog_recover(),
+                                name="civ-watchdog-recover",
+                            )
                         return
                 else:
                     if recovering:
@@ -1529,7 +1532,28 @@ class CivRuntime:
         except asyncio.CancelledError:
             pass
 
-    async def _watchdog_recover(self) -> None:
+    def request_recovery_now(self, reason: str) -> None:
+        """Start the detached recovery now, unless one is already under way.
+
+        A radio "session free" notice calls this from the datagram callback.
+        It is a no-op unless the session is CONNECTED, no recovery is already
+        flagged, and no recovery task is still running.
+        """
+        if self._host._conn_state != RadioConnectionState.CONNECTED:
+            return
+        if self._host._civ_recovering:
+            return
+        live = self._reconnect_task
+        if live is not None and not live.done():
+            return
+        self._reconnect_task = asyncio.create_task(
+            self._watchdog_recover(full_reconnect_reason=reason),
+            name="civ-watchdog-recover",
+        )
+
+    async def _watchdog_recover(
+        self, *, full_reconnect_reason: str | None = None
+    ) -> None:
         """Detached recovery handoff: force_cleanup → lifecycle soft_reconnect.
 
         Runs outside the watchdog loop so the lifecycle's RECOVERING backoff
@@ -1550,7 +1574,7 @@ class CivRuntime:
         successful lifecycle exhaustion → CLOSING, where there is nothing left
         to watch.
         """
-        escalate = (
+        escalate = full_reconnect_reason is not None or (
             self._soft_recovery_epoch is not None
             and self._soft_recovery_epoch == self._host._civ_epoch
         )
@@ -1558,10 +1582,16 @@ class CivRuntime:
         try:
             await self._host._force_cleanup_civ()
             if escalate:
-                logger.warning(
-                    "civ-data-watchdog: soft reconnect restored no data, "
-                    "escalating to full reconnect"
-                )
+                if full_reconnect_reason is not None:
+                    logger.warning(
+                        "civ-data-watchdog: %s, escalating to full reconnect",
+                        full_reconnect_reason,
+                    )
+                else:
+                    logger.warning(
+                        "civ-data-watchdog: soft reconnect restored no data, "
+                        "escalating to full reconnect"
+                    )
                 await self._host._control_phase.release()
                 # remote_id == 0 makes IcomTransport.reconnect fall back to a
                 # full connect() with discovery.
