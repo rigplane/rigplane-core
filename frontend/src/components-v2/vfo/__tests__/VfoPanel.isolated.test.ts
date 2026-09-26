@@ -641,18 +641,17 @@ describe('explicit presentation contract', () => {
   it('keeps the legacy wide clamp while one band edge is unknown', () => {
     const onFreqChange = vi.fn();
     const t = mountPanel({
-      ...explicit, freq: 998_999_000, tuneMinHz: 30_000, tuneMaxHz: null, onFreqChange,
+      ...explicit, freq: 14_250_000, tuneMinHz: 30_000, tuneMaxHz: null, onFreqChange,
     });
-    // 998.999.000 renders as "998.999.000" but the leading '9' (100 MHz place)
-    // is trimmed as a leading zero of the 9-digit pad, so the first rendered
-    // digit is the 10 MHz '9'. Step it: +10 MHz stays inside the legacy clamp
-    // and proves the band edge did not engage.
+    // 14.250.000 renders as "14.250.000": the first digit is the 10 MHz '1'.
+    // Stepping it stays inside the legacy clamp and proves the band edge did
+    // not engage (a clamped read would pin to tuneMaxHz=null, i.e. nothing).
     const digits = t.querySelectorAll<HTMLElement>('.digit');
     const tenMhzDigit = digits[0];
-    expect(tenMhzDigit.textContent).toBe('9');
+    expect(tenMhzDigit.textContent).toBe('1');
     tenMhzDigit.click();
     tenMhzDigit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
-    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(998_999_000 + 10_000_000);
+    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_250_000 + 10_000_000);
   });
 
   it('contains no capability, runtime, or store imports', () => {

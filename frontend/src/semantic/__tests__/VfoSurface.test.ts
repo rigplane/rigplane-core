@@ -2245,21 +2245,21 @@ describe('per-receiver tuning (MOR-1335) — cross-dispatch is impossible', () =
     const base = withBand(topologyFixtures['1/single']);
     const model = validateRadioViewModel({
       ...base,
-      vfos: base.vfos.map((vfo) => ({ ...vfo, frequencyHz: 998_999_000 })),
+      vfos: base.vfos.map((vfo) => ({ ...vfo, frequencyHz: 14_250_000 })),
       band: { ...base.band!, tuneMinHz: 30_000, tuneMaxHz: null },
     });
     const onTuneFrequency = vi.fn();
     const t = mountSurface({ viewModel: model, onTuneFrequency });
-    // Same digit pick as the VfoPanel pin: the leading '9' (100 MHz) is
-    // trimmed, so the first rendered digit is the 10 MHz '9'. Stepping it
-    // stays inside the legacy clamp and proves the band edge did not engage.
+    // Same digit pick as the VfoPanel pin: "14.250.000" renders the 10 MHz
+    // '1' first. Stepping it stays inside the legacy clamp and proves the
+    // half-known band pair engaged nothing.
     const digits = activeSlot(t).querySelectorAll<HTMLElement>('.digit');
     const tenMhzDigit = digits[0];
-    expect(tenMhzDigit.textContent).toBe('9');
+    expect(tenMhzDigit.textContent).toBe('1');
     tenMhzDigit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     tenMhzDigit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
     flushSync();
-    expect(onTuneFrequency).toHaveBeenCalledExactlyOnceWith('MAIN', 998_999_000 + 10_000_000);
+    expect(onTuneFrequency).toHaveBeenCalledExactlyOnceWith('MAIN', 14_250_000 + 10_000_000);
   });
 });
 
