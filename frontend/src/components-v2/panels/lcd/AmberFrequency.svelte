@@ -8,8 +8,11 @@
 
   let formatted = $derived(formatFreq(freqHz));
 
+  // MOR-2654 (owner rule, 2026-09-26): an unread frequency is UNLIT
+  // digits, never dash placeholders. The ghost all-8s layer behind keeps
+  // the slot geometry, so the first reading cannot move anything.
   function formatFreq(hz: number): { mhz: string; khz: string; hertz: string } {
-    if (hz <= 0) return { mhz: '--', khz: '---', hertz: '---' };
+    if (hz <= 0) return { mhz: '', khz: '', hertz: '' };
     const mhz = Math.floor(hz / 1_000_000);
     const khz = Math.floor((hz % 1_000_000) / 1_000);
     const hertz = Math.floor(hz % 1_000);

@@ -134,19 +134,23 @@ describe('AmberFrequency', () => {
     unmount(component);
   });
 
-  it('handles zero frequency gracefully (shows dashes)', () => {
+  it('handles zero frequency gracefully (unlit digits, MOR-2654)', () => {
     const component = mount(AmberFrequency, { target, props: { freqHz: 0 } });
     const active = target.querySelector('.freq-active')!;
-    expect(active.querySelector('.seg-mhz')!.textContent).toBe('--');
-    expect(active.querySelector('.seg-khz')!.textContent).toBe('---');
-    expect(active.querySelector('.seg-hz')!.textContent).toBe('---');
+    // MOR-2654 (owner rule, 2026-09-26): unread is unlit — empty digit
+    // slots over the ghost all-8s layer — never dash placeholders.
+    expect(active.querySelector('.seg-mhz')!.textContent).toBe('');
+    expect(active.querySelector('.seg-khz')!.textContent).toBe('');
+    expect(active.querySelector('.seg-hz')!.textContent).toBe('');
+    expect(active.textContent).not.toContain('-');
     unmount(component);
   });
 
-  it('handles negative frequency as zero (shows dashes)', () => {
+  it('handles negative frequency as zero (unlit digits, MOR-2654)', () => {
     const component = mount(AmberFrequency, { target, props: { freqHz: -100 } });
     const active = target.querySelector('.freq-active')!;
-    expect(active.querySelector('.seg-mhz')!.textContent).toBe('--');
+    expect(active.querySelector('.seg-mhz')!.textContent).toBe('');
+    expect(active.textContent).not.toContain('-');
     unmount(component);
   });
 

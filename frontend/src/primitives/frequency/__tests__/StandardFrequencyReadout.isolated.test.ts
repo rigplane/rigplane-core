@@ -138,8 +138,14 @@ describe('StandardFrequencyReadout', () => {
 
   it('renders the presentation-specific unknown text', () => {
     const unknown = projectFrequencyReadout({ confirmedHz: null });
+    // MOR-2654 (owner rule, 2026-09-26): unread is unlit — the interactive
+    // readout keeps its focusable slot with a no-break space; the passive
+    // readout keeps its three reserved digit slots with separator dots only.
     expect(mountReadout({ model: unknown, presentation: 'interactive' }).textContent?.trim()).toBe('');
-    expect(mountReadout({ model: unknown, presentation: 'passive' }).textContent?.replace(/\s/g, '')).toBe('--.---.---');
+    const passive = mountReadout({ model: unknown, presentation: 'passive' });
+    expect(passive.textContent?.replace(/\s/g, '')).toBe('..');
+    expect(passive.textContent).not.toContain('-');
+    expect(passive.querySelectorAll('.digits')).toHaveLength(3);
   });
 });
 

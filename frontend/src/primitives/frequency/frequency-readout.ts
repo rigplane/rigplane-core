@@ -60,7 +60,10 @@ export function projectFrequencyReadout(input: FrequencyReadoutInput): Frequency
           khz: groups.khz.map((digit) => digit.char).join(''),
           hz: groups.hz.map((digit) => digit.char).join(''),
         }
-      : { mhz: '--', khz: '---', hz: '---' },
+      // MOR-2654 (owner rule, 2026-09-26): an unread frequency is UNLIT
+      // digits — empty strings in the reserved tabular slots — never dash
+      // placeholders, never the literal "NaN" substring.
+      : { mhz: '', khz: '', hz: '' },
     pendingAnnouncement: input.pendingAnnouncement,
   };
 }
