@@ -86,21 +86,21 @@ afterEach(async () => {
   Reflect.deleteProperty(HTMLElement.prototype, 'offsetHeight');
 });
 
-function mountInStage(canvas: 'spectrum' | 'waterfall'): void {
-  component = mount(CanvasStageHarness, { target, props: { canvas, nativeW: NATIVE_WIDTH, nativeH: NATIVE_HEIGHT } });
+function mountInStage(kind: 'spectrum' | 'waterfall'): void {
+  component = mount(CanvasStageHarness, { target, props: { canvas: kind, nativeW: NATIVE_WIDTH, nativeH: NATIVE_HEIGHT } });
 }
 
 describe.each([
   ['SpectrumCanvas', 'spectrum'],
   ['WaterfallCanvas', 'waterfall'],
-] as const)('%s backing store (MOR-1161)', (_name, canvas) => {
+] as const)('%s backing store (MOR-1161)', (_name, kind) => {
   // `ScaledStage` caps its scale at 1, so a canvas only ever sees a scale at
   // or below its authored size. 1, 0.5, 1/3 and 2/3 cover the ticket's x1,
   // x2 and x3 device-pixel ratios plus the fractional case.
   it.each([1, 0.5, 1 / 3, 2 / 3])('matches cssSize x devicePixelRatio x stage scale %s', (scale) => {
     hostWidth = NATIVE_WIDTH * scale;
     hostHeight = NATIVE_HEIGHT * scale;
-    mountInStage(canvas);
+    mountInStage(kind);
     flushSync();
     const canvas = target.querySelector('canvas')!;
     expect(canvas.width).toBe(Math.round(CSS_WIDTH * 2 * scale));
@@ -108,7 +108,7 @@ describe.each([
   });
 
   it('recomputes the backing store when the stage scale changes', () => {
-    mountInStage(canvas);
+    mountInStage(kind);
     flushSync();
     const canvas = target.querySelector('canvas')!;
     expect(canvas.width).toBe(CSS_WIDTH * 2);
