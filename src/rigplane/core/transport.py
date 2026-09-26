@@ -35,6 +35,7 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 CONTROL_SIZE = 0x10
+CONNINFO_NOTICE_SIZE = 0x90
 PING_SIZE = 0x15
 PING_PERIOD = 0.5  # seconds
 IDLE_PERIOD = 0.1
@@ -155,6 +156,10 @@ class IcomTransport:
         # Without this flag the queue fills up in ~27 minutes (4096 / ~2.5 pkt/s)
         # causing a cascade of eviction warnings and watchdog reconnects.
         self._discard_data_packets: bool = False
+        # Optional callback for a 0x90 conninfo notice (ptype 0x00). Runs
+        # before the discard branch so a "radio free" notice can start
+        # recovery while every other data packet is still dropped.
+        self._conninfo_notice_callback: Callable[[bytes], None] | None = None
 
     @property
     def queue_pressure(self) -> float:
@@ -663,6 +668,17 @@ class IcomTransport:
         # Track sequence for data packets
         if ptype == 0x00 and seq != 0:
             self._record_rx_seq(seq)
+
+        # A conninfo notice is routed before the discard branch: after setup
+        # the control queue has no consumer, but a "radio free" notice is the
+        # signal to recover.
+        if (
+            ptype == 0x00
+            and len(data) == CONNINFO_NOTICE_SIZE
+            and self._conninfo_notice_callback is not None
+        ):
+            self._conninfo_notice_callback(data)
+            return
 
         # Discard data packets when queue consumer is absent (control transport
         # after setup).  Pings and retransmits are already handled above.

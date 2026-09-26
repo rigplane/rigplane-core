@@ -136,8 +136,11 @@ class ControlPhaseRuntime:
         h._last_status_error = 0
         h._last_status_disconnected = False
         h._last_auth_error = 0
-        # Re-enable queue during setup — we need status packets from radio
+        # Re-enable queue during setup — we need status packets from radio.
+        # The notice callback stays clear so _receive_guid still reads the
+        # first 0x90 from the queue.
         h._ctrl_transport._discard_data_packets = False
+        h._ctrl_transport._conninfo_notice_callback = None
         local_bind_host = self._resolve_local_bind_host()
         h._local_bind_host = local_bind_host
 
@@ -431,8 +434,11 @@ class ControlPhaseRuntime:
         h._conn_state = RadioConnectionState.CONNECTED
         h._ctrl_transport.state = ConnectionState.CONNECTED
         # Control transport queue has no consumer after setup — discard
-        # incoming data packets to prevent unbounded queue growth.
+        # incoming data packets to prevent unbounded queue growth. A 0x90
+        # conninfo notice is the exception: it reports whether the radio
+        # still holds our session.
         h._ctrl_transport._discard_data_packets = True
+        h._ctrl_transport._conninfo_notice_callback = self._on_conninfo_notice
         self._start_token_renewal()
         if h._auto_reconnect:
             self._start_watchdog()
@@ -909,6 +915,25 @@ class ControlPhaseRuntime:
         struct.pack_into(">H", pkt, 0x24, 0x0798)
         await h._ctrl_transport.send_tracked(bytes(pkt))
         logger.debug("Token ack sent (token=0x%08X)", h._token)
+
+    def _on_conninfo_notice(self, data: bytes) -> None:
+        """A 0x90 notice on the control port. busy=0 means the radio dropped us.
+
+        Runs inside the datagram callback, so it only reads the flag and asks
+        the CI-V runtime to recover. busy=1 is our own connect or another
+        client logging in from our address; those leave the session alone.
+        """
+        busy = struct.unpack_from("<I", data, 0x60)[0]
+        if busy != 0:
+            logger.debug("conninfo notice busy=%d, session left alone", busy)
+            return
+        logger.warning(
+            "conninfo notice: radio reported the LAN session free (busy=0), "
+            "requesting recovery now"
+        )
+        self._host._civ_runtime.request_recovery_now(
+            "radio reported the LAN session free (conninfo busy=0)"
+        )
 
     async def _receive_guid(self) -> bytes | None:
         await asyncio.sleep(0.3)
