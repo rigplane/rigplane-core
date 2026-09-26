@@ -507,6 +507,53 @@ describe('TUNE carries its own disabled reason (MOR-1481)', () => {
   });
 });
 
+// ── 4b-bis. MOR-1350 — the surface itself describes the blocked reasons ─────
+
+describe('the surface exposes TUNE\'s blocked reasons to assistive tech (MOR-1350)', () => {
+  /** Resolves EVERY aria-describedby target of the section and returns the
+   *  concatenated text — the id alone would only prove wiring, not that a
+   *  screen reader has something to actually read. */
+  function describedText(el: HTMLElement): string | null {
+    const ids = el.getAttribute('aria-describedby')?.split(' ').filter(Boolean) ?? [];
+    if (ids.length === 0) return null;
+    return ids.map((id) => target.querySelector(`#${id}`)?.textContent ?? '').join(' ');
+  }
+
+  // The surface-level half of the DisabledReason doctrine: TUNE's own button
+  // carries its reason (section 4b, MOR-1481); the surface section itself
+  // must describe the same block to a screen reader landing on the group —
+  // mirroring `RxTxSurface`'s aria-describedby pattern — instead of leaving
+  // the reasons reachable only as visible `<li data-reason>` list items.
+  it('describes the section with the joined blocked reasons while a TX-authority block applies', () => {
+    const view = base();
+    const tx = snap({ fault: 'on-timeout' });
+    const expected = visibleTuneReasons(view, tx)
+      .map((code) => blockedLabel(code)).join('; ');
+    expect(expected.length).toBeGreaterThan(0);
+    withSurface(view, tx, (s) => {
+      expect(describedText(s.root()!)).toBe(expected);
+    });
+  });
+
+  it('carries no aria-describedby on the section while TUNE is not blocked', () => {
+    withSurface(base(), snap(), (s) => {
+      expect(s.root()!.hasAttribute('aria-describedby')).toBe(false);
+    });
+  });
+
+  // MUTATION KILLED: describing the surface from reasons whose visible list
+  // never rendered — the description must follow the same structural gate
+  // the blocked list follows, or it announces a TUNE the radio cannot have.
+  it('carries no aria-describedby when the ATU is structurally absent, even while a block applies', () => {
+    const view = withField(base(), 'atu', { availability: { structural: false, operational: false } });
+    const tx = snap({ fault: 'on-timeout' });
+    expect(keyBlockedReasons(view, tx).length).toBeGreaterThan(0);
+    withSurface(view, tx, (s) => {
+      expect(s.root()!.hasAttribute('aria-describedby')).toBe(false);
+    });
+  });
+});
+
 // ── 4b. MOR-2231 — the shared control-button vocabulary ────────────────────
 //
 // Pins on CLASSES and `data-*` attributes only. Every gate, handler and aria
