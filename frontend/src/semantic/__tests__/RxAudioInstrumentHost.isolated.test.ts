@@ -417,20 +417,42 @@ describe('RxAudioInstrumentHost radio-AF raw steps (MOR-1676)', () => {
     r.dispose();
   });
 
-  // Each raw value gets a FRESH mount per step: the scenario under test is
-  // "the radio confirmed R, the operator steps once" — no accumulated
-  // gesture state carries across scenarios.
+  // Each raw value gets a FRESH mount per step in its OWN host element: the
+  // scenario under test is "the radio confirmed R, the operator steps
+  // once" — no accumulated gesture or DOM state carries across scenarios.
+  function renderRawAt(normalized: number) {
+    const host = document.createElement('div');
+    target.appendChild(host);
+    const initial = publication({ afRaw: true });
+    const publisher = new Publisher(initial);
+    const onAfLevelChange = vi.fn<(value: number) => void>();
+    const props = proxy<Props>({
+      publication: initial, rxAudio: audio(normalized),
+      subscribeControlAuthority: publisher.subscribe,
+      layout: 'grouped', onAfLevelChange,
+    });
+    const component = mount(Fixture, { target: host, props });
+    components.push(component);
+    flushSync();
+    const slider = () => host.querySelector<RendererNode>('[data-external-scalar-renderer]')!;
+    const dispose = () => {
+      unmount(component);
+      components = components.filter((item) => item !== component);
+      host.remove();
+    };
+    return { onAfLevelChange, slider, dispose };
+  }
   it('restores the exact raw value after a reversible keyboard step, for every raw value', () => {
     for (let raw = 0; raw <= 255; raw += 1) {
       const up = Math.min(255, raw + 1);
-      const stepped = renderRaw(audio(raw / 255));
+      const stepped = renderRawAt(raw / 255);
       expect(stepped.slider().rendererLease.view.canonical).toBe(raw);
       expect(stepped.slider().rendererLease.key({ key: 'ArrowRight', fine: false })).toBe(true);
       expect(stepped.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(up, 'raw');
       expect(Number.isInteger(stepped.onAfLevelChange.mock.calls[0][0])).toBe(true);
       stepped.dispose();
       // The radio confirms the stepped raw value; the reverse step restores.
-      const restored = renderRaw(audio(up / 255));
+      const restored = renderRawAt(up / 255);
       expect(restored.slider().rendererLease.key({ key: 'ArrowLeft', fine: false })).toBe(true);
       expect(restored.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(raw, 'raw');
       restored.dispose();
@@ -440,7 +462,7 @@ describe('RxAudioInstrumentHost radio-AF raw steps (MOR-1676)', () => {
   it('restores the exact raw value after a reversible pointer step, for every raw value', () => {
     for (let raw = 0; raw <= 255; raw += 1) {
       const up = Math.min(255, raw + 1);
-      const stepped = renderRaw(audio(raw / 255));
+      const stepped = renderRawAt(raw / 255);
       const lease = stepped.slider().rendererLease;
       const token = lease.beginPointer();
       expect(token).not.toBeNull();
@@ -448,7 +470,7 @@ describe('RxAudioInstrumentHost radio-AF raw steps (MOR-1676)', () => {
       expect(stepped.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(up, 'raw');
       expect(Number.isInteger(stepped.onAfLevelChange.mock.calls[0][0])).toBe(true);
       stepped.dispose();
-      const restored = renderRaw(audio(up / 255));
+      const restored = renderRawAt(up / 255);
       const downLease = restored.slider().rendererLease;
       const down = downLease.beginPointer();
       expect(down).not.toBeNull();
