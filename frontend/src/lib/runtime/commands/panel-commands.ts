@@ -1180,7 +1180,7 @@ function dispatchAfLevelNormalizedIntent(level: number, receiver: Receiver): voi
  *
  *  MOR-1676 part A (AF): `unit` names the wire meaning explicitly. `'raw'`
  *  is the v3 radio-AF path — an int raw level dispatched with the explicit
- *  `level_unit: 'raw'` (stripped before `sendCommand`), so a step plus its
+ *  `level_unit: 'raw'` (stripped before dispatch), so a step plus its
  *  reverse restore the exact raw value. Omitted `unit` is the legacy
  *  normalized float (v2 panels), converted through the control's declared
  *  raw domain and always sent tagged `level_unit: 'normalized'`. The
@@ -1191,7 +1191,7 @@ function dispatchAfLevelNormalizedIntent(level: number, receiver: Receiver): voi
 /** Raw AF level for a handler input that may already be raw (MOR-1676 part
  *  A): with `unit === 'raw'` an int dispatches as-is when inside the
  *  declared domain (the intent carries `level_unit: 'raw'`, stripped before
- *  `sendCommand`). The legacy normalized float needs no conversion — the
+ *  `dispatch`). The legacy normalized float needs no conversion — the
  *  intent layer tags it `level_unit: 'normalized'` verbatim. Anything else
  *  fails closed.
  *
@@ -1210,7 +1210,7 @@ function rawAfLevel(caps: Capabilities, normalized: number): number | null {
 /** Raw AF level for a handler input that may already be raw (MOR-1676 part
  *  A): with `unit === 'raw'` an int dispatches as-is when inside the
  *  declared domain (the intent carries `level_unit: 'raw'`, stripped before
- *  `sendCommand`). The legacy normalized float needs no conversion — the
+ *  `dispatch`). The legacy normalized float needs no conversion — the
  *  intent layer tags it `level_unit: 'normalized'` verbatim. Anything else
  *  fails closed. */
 function rawAfLevelFromInput(caps: Capabilities, level: number, unit?: 'raw'): number | null {
@@ -1275,7 +1275,7 @@ export function makeRxAudioHandlers() {
         // MOR-1676 part A (AF): `unit === 'raw'` is the v3 radio-AF path —
         // the raw int dispatches as `set_af_level` with the explicit
         // `level_unit: 'raw'`, which `dispatchRadioIntentWithResult` strips
-        // before `sendCommand` (the server never sees `'raw'`), so a step
+        // before dispatch (the server never sees `'raw'`), so a step
         // plus its reverse restore the exact raw value. Omitted `unit` is
         // the legacy normalized float (v2 panels), dispatched as
         // `set_af_level` with `level_unit: 'normalized'`, always tagged —
