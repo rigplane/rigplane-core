@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount, type Snippet } from 'svelte';
+  import { onDestroy, onMount, untrack, type Snippet } from 'svelte';
   import { t } from '$lib/i18n';
   import { LAN_MOD_INPUT_SOURCE } from '$lib/radio/mod-input';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
@@ -395,12 +395,10 @@
     // MOR-1676 part A (AF): the domain MUST follow the render-time
     // `presentation.caps` — the publisher delivers caps with the view,
     // while the `published` snapshot only refreshes on a delivered
-    // publication and may lag one behind. Read it as a plain value: the
-    // domain is a pure function of the caps, not a subscription. The
-    // domain is deliberately NOT part of the authority identity
-    // (`ownerKey` + reading status): a caps-only publication must
-    // re-lattice the knob without cancelling its gesture.
-    const caps = presentation.caps;
+    // publication and may lag one behind. Read it untracked: the domain is
+    // a pure function of the caps, not a subscription — tracking it would
+    // re-lattice the knob on every authority pulse.
+    const caps = untrack(() => presentation.caps);
     const rawDomain = (() => {
       const control = caps?.controls?.af_level;
       if (control === undefined || 'mapping' in control) return null;
