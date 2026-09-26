@@ -683,20 +683,17 @@ async def test_watchdog_recover_stays_soft_after_payload(
     recovery is soft-only."""
     radio._civ_epoch = 7
     radio._civ_runtime._soft_recovery_epoch = 7
-    delivered = asyncio.Event()
+    radio._civ_transport.queue_response(b"\x00" * 16)
 
-    async def one_packet(timeout: float = 5.0) -> bytes:
-        delivered.set()
-        raise asyncio.CancelledError()
+    async def stop_after_batch() -> None:
+        radio._civ_transport = None
 
-    radio._civ_transport.receive_packet = one_packet
-
-    with pytest.raises(asyncio.CancelledError):
+    with patch.object(
+        radio._civ_runtime, "_cleanup_stale_civ_waiters", side_effect=stop_after_batch
+    ):
         await radio._civ_runtime._civ_rx_loop(
             source_generation=7, store_provider_generation=0
         )
-
-    assert delivered.is_set()
 
     assert radio._civ_runtime._soft_recovery_epoch is None
 
