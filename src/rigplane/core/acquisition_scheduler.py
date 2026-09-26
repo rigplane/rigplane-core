@@ -1848,8 +1848,14 @@ class AcquisitionScheduler:
                 cadence, self._fitted_cadence_seconds(key, key.policy.cadence_seconds)
             )
             ttl = acquisition_policy_for_class(target).freshness_ttl_seconds
-            assert ttl is not None
-            envelopes[key] = (cadence, max(ttl, key.policy.cadence_seconds))
+            if ttl is None:
+                # MOR-2615: a demoted path whose target class does not
+                # expire by time (SETTING demotes to MENU) stamps None —
+                # the store never ages it; the request keeps a finite
+                # deadline from its cadence (see due_requests).
+                envelopes[key] = (cadence, key.policy.cadence_seconds)
+            else:
+                envelopes[key] = (cadence, max(ttl, key.policy.cadence_seconds))
         return envelopes
 
     def _poll_cadence_groups(

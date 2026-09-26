@@ -963,7 +963,10 @@ def test_acquisition_class_table_is_the_owner_approved_literal() -> None:
     MOR-2574): the owner-ruling tests must not take their limits from the
     production constants they guard, or raising a constant would stay
     green. Rows are (nominal, ceiling, polled_in, held_at_ceiling_in_tx);
-    the literal order is the rank order, high -> low.
+    the literal order is the rank order, high -> low. MOR-2615 adds the
+    second literal below: SETTING and MENU no longer expire by time while
+    the link is healthy, so their TTL is None; every other class keeps
+    ``max(2 x ceiling, ceiling + 0.7)``.
     """
 
     expected: dict[AcquisitionClass, tuple[float, float, AcquisitionPhase, bool]] = {
@@ -976,6 +979,7 @@ def test_acquisition_class_table_is_the_owner_approved_literal() -> None:
         AcquisitionClass.SETTING: (10.0, 30.0, AcquisitionPhase.BOTH, True),
         AcquisitionClass.MENU: (30.0, 60.0, AcquisitionPhase.BOTH, True),
     }
+    expected_no_expiry = frozenset({AcquisitionClass.SETTING, AcquisitionClass.MENU})
 
     assert tuple(ACQUISITION_CLASS_TABLE) == tuple(expected)
     # The enum docstring says definition order is the ranking, and the fit
@@ -988,7 +992,13 @@ def test_acquisition_class_table_is_the_owner_approved_literal() -> None:
         assert policy.ceiling_cadence_seconds == ceiling, klass
         assert policy.polled_in is polled_in, klass
         assert policy.held_at_ceiling_in_tx is held, klass
-        assert policy.freshness_ttl_seconds == max(2.0 * ceiling, ceiling + 0.7), klass
+        assert policy.expires_by_time is (klass not in expected_no_expiry), klass
+        if klass in expected_no_expiry:
+            assert policy.freshness_ttl_seconds is None, klass
+        else:
+            assert policy.freshness_ttl_seconds == max(2.0 * ceiling, ceiling + 0.7), (
+                klass
+            )
 
 
 def test_fit_to_budget_stretches_the_lowest_class_first_within_ceilings() -> None:
@@ -1229,9 +1239,12 @@ def test_civ_observation_stamp_is_the_policy_ttl_on_every_pollable_path() -> Non
     poll landing between polls can never already read stale (the B1
     defect: nb/nr and vd went stale before their next poll at the class
     cadence while the stamp still came from the rig-blind fallback table).
-    Explicit entries keep exactly their declared TTL: the pre-existing
-    under-2x declared pairs (MOR-2574's own finding, 23 on IC-7610 and 4
-    on IC-7300) are the step 4-5 profile cleanup, not this gate.
+    MOR-2615: SETTING and MENU classes stamp ``None`` instead — no expiry
+    while the link is healthy — so class-resolved paths with a ``None``
+    stamp skip the two-interval check. Explicit entries keep exactly
+    their declared TTL: the pre-existing under-2x declared pairs
+    (MOR-2574's own finding, 23 on IC-7610 and 4 on IC-7300) are the step
+    4-5 profile cleanup, not this gate.
     """
 
     failures: list[str] = []
@@ -1257,8 +1270,13 @@ def test_civ_observation_stamp_is_the_policy_ttl_on_every_pollable_path() -> Non
                 )
             if path in acquisition.field_policies:
                 continue
+            if stamped is None:
+                # MOR-2615: a class-resolved SETTING/MENU path never expires
+                # by time; only an explicit field_policies TTL would stamp
+                # a finite value here, and those paths continued above.
+                continue
             cadence = policy.cadence_seconds
-            if stamped is None or cadence is None or stamped < 2 * cadence:
+            if cadence is None or stamped < 2 * cadence:
                 failures.append(
                     f"{model}: {path} (class-resolved) stamps {stamped}s for a "
                     f"{cadence}s cadence: under two intervals"
@@ -2409,6 +2427,100 @@ def test_id_meter_is_gated_on_ptt_like_the_other_tx_meters(model: str) -> None:
     assert id_policy.tx_only is True
     assert id_policy.available_when == (clause,)
     assert power_policy.available_when == (clause,)
+
+
+# --- MOR-2615: SETTING and MENU do not expire while the link is healthy ---
+
+
+def test_setting_field_stays_fresh_past_its_old_ttl_while_control_expires() -> None:
+    """MOR-2615: a SETTING observation never ages out; a CONTROL one still does.
+
+    Both fields are observed once through ``ProviderObservationAdapter``
+    (the stamp path the backends share). 120 s later — twice the SETTING
+    class's old 60 s TTL — the CONTROL field (TTL 10 s) has gone STALE
+    while the SETTING field is still FRESH with ``max_age=None``. The
+    CONTROL expiry proves the decay mechanism itself still runs.
+    """
+
+    observed_at = 1_000.0
+    adapter = ProviderObservationAdapter(
+        profile=RadioAcquisitionProfile(
+            provider="test_provider",
+            capabilities=(
+                FieldCapability(
+                    path=FieldPath.global_("operator_controls", "mic_gain"),
+                    polling=True,
+                ),
+                FieldCapability(
+                    path=FieldPath.global_("operator_controls", "power_level"),
+                    polling=True,
+                ),
+            ),
+        ),
+        source="poll_response",
+        clock=lambda: observed_at,
+    )
+    setting = FieldPath.global_("operator_controls", "mic_gain")
+    control = FieldPath.global_("operator_controls", "power_level")
+    assert acquisition_class_for_path(setting) is AcquisitionClass.SETTING
+    assert acquisition_class_for_path(control) is AcquisitionClass.CONTROL
+
+    store = StateStore()
+    setting_observation = adapter.observation(setting, 50)
+    control_observation = adapter.observation(control, 80)
+    assert setting_observation.max_age is None
+    assert control_observation.max_age == pytest.approx(10.0)
+    store.apply(setting_observation)
+    store.apply(control_observation)
+    service = StateFreshnessService(store=store)
+
+    delta = service.tick(now=observed_at + 120.0)
+
+    stale_paths = {
+        request.path
+        for request in delta.reconciliation_requests
+        if request.reason == "stale"
+    }
+    assert control in stale_paths
+    assert setting not in stale_paths
+    freshness = {field.path: field.freshness for field in store.snapshot().fields}
+    assert freshness[control] is FreshnessState.STALE
+    assert freshness[setting] is FreshnessState.FRESH
+    assert store.snapshot().field(setting).max_age is None
+
+
+def test_provider_generation_advance_removes_the_setting_field() -> None:
+    """MOR-2615: the TTL-less SETTING field dies only with the provider epoch.
+
+    ``begin_provider_generation`` clears the store, so a link loss, session
+    change, or operator disconnect removes the field instead of leaving it
+    FRESH forever.
+    """
+
+    observed_at = 2_000.0
+    adapter = ProviderObservationAdapter(
+        profile=RadioAcquisitionProfile(
+            provider="test_provider",
+            capabilities=(
+                FieldCapability(
+                    path=FieldPath.global_("operator_controls", "mic_gain"),
+                    polling=True,
+                ),
+            ),
+        ),
+        source="poll_response",
+        clock=lambda: observed_at,
+    )
+    setting = FieldPath.global_("operator_controls", "mic_gain")
+
+    store = StateStore()
+    store.apply(adapter.observation(setting, 50))
+    assert store.snapshot().field(setting).freshness is FreshnessState.FRESH
+
+    store.begin_provider_generation()
+
+    with pytest.raises(KeyError):
+        store.snapshot().field(setting)
 
 
 # --- MOR-2599: the non-selected receiver polls one class slower --------------
