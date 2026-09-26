@@ -12,6 +12,7 @@ import asyncio
 from collections.abc import Iterable
 from dataclasses import replace
 from typing import Any, cast
+from unittest.mock import patch
 
 import pytest
 
@@ -837,7 +838,8 @@ class _EarlyAnswerExecutor:
 def test_an_answer_that_arrives_during_execute_completes_the_request() -> None:
     """MOR-2617: early TX-meter answers must not leave the key pending until expiry."""
 
-    clock = FreshnessClock(start=100.0)
+    pass_now = 100.0
+    clock = FreshnessClock(start=pass_now)
     paths = tuple(FieldPath.global_("meters", name) for name in _TX_METER_NAMES)
     policy = AcquisitionPolicy(
         cadence_seconds=0.25,
@@ -855,12 +857,12 @@ def test_an_answer_that_arrives_during_execute_completes_the_request() -> None:
         ),
         clock=clock,
     )
-    queued = scheduler.due_requests(now=clock.now(), tx_active=True)
+    queued = scheduler.due_requests(now=pass_now, tx_active=True)
     assert len(queued) == 1
     request = queued[0]
     assert request.paths == paths
 
-    executor = _EarlyAnswerExecutor(scheduler, pass_now=clock.now())
+    executor = _EarlyAnswerExecutor(scheduler, pass_now=pass_now)
     reports = _Reports()
     drain = AcquisitionDrain(
         scheduler=lambda: scheduler,
@@ -876,7 +878,8 @@ def test_an_answer_that_arrives_during_execute_completes_the_request() -> None:
         tx_active_hint=lambda: True,
     )
 
-    asyncio.run(drain.run_once())
+    with patch("rigplane.core.acquisition_drain.time.monotonic", return_value=pass_now):
+        asyncio.run(drain.run_once())
 
     last = paths[-1]
     pending_last = next(
@@ -890,12 +893,12 @@ def test_an_answer_that_arrives_during_execute_completes_the_request() -> None:
     assert pending_last is not None
     scheduler.record_acquisition_result(
         replace(pending_last, paths=(last,)),
-        _tx_meter_changeset(last, at=clock.now() + 0.02),
+        _tx_meter_changeset(last, at=pass_now + 0.02),
     )
 
     assert scheduler.pending_requests() == ()
     assert executor.credited == [path.name for path in paths[:-1]]
-    again = scheduler.due_requests(now=clock.now() + 0.25, tx_active=True)
+    again = scheduler.due_requests(now=pass_now + 0.25, tx_active=True)
     assert len(again) == 1
     assert again[0].id != request.id
     assert again[0].paths == paths
