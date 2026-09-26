@@ -655,12 +655,16 @@ async def test_watchdog_recover_escalates_when_soft_reconnect_restored_no_data(
     async def record_release() -> None:
         order.append("release")
 
-    async def record_soft_reconnect() -> None:
-        order.append("soft_reconnect")
-
     radio._force_cleanup_civ = record_force_cleanup
     radio._control_phase.release = record_release
-    radio.soft_reconnect = record_soft_reconnect
+    ctrl = MagicMock()
+    ctrl.remote_id = 0xEF167A45
+    radio._ctrl_transport = ctrl
+    seen: dict[str, int] = {}
+
+    async def record_soft_reconnect() -> None:
+        order.append("soft_reconnect")
+        seen["remote_id"] = radio._ctrl_transport.remote_id
 
     with (
         patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()),
@@ -669,6 +673,7 @@ async def test_watchdog_recover_escalates_when_soft_reconnect_restored_no_data(
         await radio._civ_runtime._watchdog_recover()
 
     assert order == ["force_cleanup", "release", "soft_reconnect"]
+    assert seen["remote_id"] == 0
     assert any(
         "soft reconnect restored no data, escalating to full reconnect" in r.message
         for r in caplog.records
@@ -700,12 +705,20 @@ async def test_watchdog_recover_stays_soft_after_payload(
     released = AsyncMock()
     radio._control_phase.release = released
     radio._force_cleanup_civ = AsyncMock()
-    radio.soft_reconnect = AsyncMock()
+    ctrl = MagicMock()
+    ctrl.remote_id = 0xEF167A45
+    radio._ctrl_transport = ctrl
+    seen: dict[str, int] = {}
+
+    async def record_soft_reconnect() -> None:
+        seen["remote_id"] = radio._ctrl_transport.remote_id
+
+    radio.soft_reconnect = record_soft_reconnect
     with patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()):
         await radio._civ_runtime._watchdog_recover()
 
     released.assert_not_awaited()
-    radio.soft_reconnect.assert_awaited_once()
+    assert seen["remote_id"] == 0xEF167A45
 
 
 async def test_watchdog_recover_does_not_escalate_twice(

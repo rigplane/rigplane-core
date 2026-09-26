@@ -178,6 +178,42 @@ class TestConnectionState:
         ]
 
     @pytest.mark.asyncio
+    async def test_connect_starts_a_fresh_session_on_a_reused_transport(self) -> None:
+        """A second connect() opens a new radio session, so it must not carry
+        the previous session's counters, guards or queued packets into it."""
+        t = IcomTransport()
+        t.send_seq = 41
+        t.ping_seq = 17
+        t.tx_buffer[9] = b"stale"
+        t._tx_guards[9] = lambda: True
+        t.rx_last_seq = 8
+        t.rx_missing[7] = 2
+        t.remote_id = 0xEF167A45
+        t._packet_queue.put_nowait(b"stale-packet")
+        loop = _FakeLoop(("192.168.2.194", 50002))
+
+        seen: dict[str, object] = {}
+
+        async def record_discovery() -> None:
+            seen["remote_id"] = t.remote_id
+            seen["queue_empty"] = t._packet_queue.empty()
+
+        with (
+            patch("rigplane.transport.asyncio.get_running_loop", return_value=loop),
+            patch.object(t, "_discover", new=AsyncMock(side_effect=record_discovery)),
+            patch.object(t, "_ready_handshake", new=AsyncMock()),
+        ):
+            await t.connect("192.168.2.1", 50001)
+
+        assert seen == {"remote_id": 0, "queue_empty": True}
+        assert t.send_seq == 0
+        assert t.ping_seq == 0
+        assert t.tx_buffer == {}
+        assert t._tx_guards == {}
+        assert t.rx_last_seq is None
+        assert t.rx_missing == {}
+
+    @pytest.mark.asyncio
     async def test_connect_with_prebound_socket(self) -> None:
         """When sock= is provided, the socket is connected and passed through."""
         import socket as _socket
