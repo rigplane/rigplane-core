@@ -334,8 +334,8 @@ def _make_ftx1_radio() -> MagicMock:
 
 async def _run_ftx1_poll_cycles(
     *, cycles: int
-) -> tuple[set[FieldPath], dict[str, int]]:
-    """Drive every Yaesu poll lane in RX and TX; return published paths + reads.
+) -> tuple[set[FieldPath], dict[str, int], list[Observation]]:
+    """Drive every Yaesu poll lane in RX and TX; return paths, reads, all obs.
 
     Two passes per cycle: receive-only (PTT false), then a TX window (the
     mock answers PTT true) so the PTT-gated TX-meter lane
@@ -346,6 +346,7 @@ async def _run_ftx1_poll_cycles(
 
     acquired: set[FieldPath] = set()
     reads: dict[str, int] = {}
+    published: list[Observation] = []
     for ptt in (False, True):
         radio = _make_ftx1_radio()
         radio.read_transmit_state = AsyncMock(
@@ -365,6 +366,7 @@ async def _run_ftx1_poll_cycles(
             await poller._poll_fast()  # noqa: SLF001
             await poller._poll_slow()  # noqa: SLF001
             acquired.update(item.path for item in collected)
+            published.extend(collected)
             collected.clear()
         # Medium/slow-lane reads answer in both windows; the fast lane
         # switches by PTT (S-meter in RX, TX meters in TX).
@@ -429,7 +431,7 @@ async def _run_ftx1_poll_cycles(
                 f"({'TX' if ptt else 'RX'} window): "
                 f"{count} reads in {cycles} cycles"
             )
-    return acquired, reads
+    return acquired, reads, published
 
 
 def test_ftx1_every_declared_polling_path_is_polled() -> None:
@@ -449,18 +451,22 @@ def test_ftx1_every_declared_polling_path_is_polled() -> None:
         path for path in pollable if acquisition.policy_for(path).tx_only
     }
 
-    read, reads = asyncio.run(_run_ftx1_poll_cycles(cycles=2))
+    read, reads, published = asyncio.run(_run_ftx1_poll_cycles(cycles=2))
 
-    # Availability resolves against the simulated session: the RX window
-    # observes freq/mode/PTT fresh, the TX window covers the tx_only set,
-    # and conditional fields' clause sources that stay unobserved (None)
-    # are treated as withheld exactly like a contradicted clause — the
-    # same rule the poller's own ``_available`` applies.
+    # Availability resolves against a store fed with what the poller
+    # actually published during the session — the same shape as the CI-V
+    # leg (which credits every dispatched request via ``_answer``). An
+    # unconditional pollable path that was never published is missing,
+    # never exempt: ``resolve_available_when`` omits unconditional paths,
+    # so only a contradicted clause (``is False``) exempts, exactly like
+    # the CI-V leg. ``None`` (clause source unobserved) never exempts.
     store = StateStore()
+    for item in published:
+        store.apply(item)
     availability = resolve_available_when(acquisition, store.snapshot())
     deficit = pollable - read
     available_when_exempt = {
-        path for path in deficit if availability.get(path) is not True
+        path for path in deficit if availability.get(path) is False
     }
     tx_only_exempt = {
         path
