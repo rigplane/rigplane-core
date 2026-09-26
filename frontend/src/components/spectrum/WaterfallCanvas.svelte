@@ -42,6 +42,11 @@
     }
   });
 
+  // Bumped by the resize observer and the pixel-ratio watcher. The
+  // stage-scale effect below reads it, so it re-runs after either of them
+  // and is the only place the stage scale is read (MOR-1161).
+  let backingEpoch = $state(0);
+
   function applyBackingStore(stageScale: number): void {
     if (!renderer) return;
     const backing = canvasBackingSize(cssWidth, cssHeight, window.devicePixelRatio || 1, stageScale);
@@ -50,7 +55,7 @@
 
   // The stage's transform does not resize this canvas, so nothing else here
   // notices a scale change (MOR-1161).
-  watchStageScale(() => applyBackingStore(getStageScale()()));
+  watchStageScale(() => { void backingEpoch; applyBackingStore(getStageScale()()); });
 
   // Tap-to-tune only — drag-to-pan handled by SpectrumPanel (parent).
   const waterfallGestures = {
@@ -79,10 +84,10 @@
       // The scale is read only by the stage-scale effect below. Reading it
       // here too would recompute the store on a scale change even with that
       // effect removed (MOR-1161).
-      applyBackingStore(1);
+      backingEpoch += 1;
     });
     ro.observe(canvas);
-    const stopPixelWatch = watchDevicePixelRatio(() => applyBackingStore(1));
+    const stopPixelWatch = watchDevicePixelRatio(() => { backingEpoch += 1; });
 
     return () => {
       stopPixelWatch();
