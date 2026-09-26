@@ -5,6 +5,8 @@
     defaultSpectrumOptions,
     type SpectrumOptions,
   } from '../../lib/renderers/spectrum-renderer';
+  import { canvasBackingSize, watchDevicePixelRatio, watchStageScale } from '../../lib/canvas/backing-store.svelte';
+  import { getStageScale } from '../../primitives/stage/stage-scale';
   interface Props {
     data: Uint8Array | null;
     options?: SpectrumOptions;
@@ -44,6 +46,13 @@
     rafId = requestAnimationFrame(draw);
   }
 
+  function applyBackingStore(stageScale: number): void {
+    const backing = canvasBackingSize(cssWidth, cssHeight, window.devicePixelRatio || 1, stageScale);
+    canvas.width = backing.width;
+    canvas.height = backing.height;
+    canvas.getContext('2d')?.setTransform(backing.pixelScale, 0, 0, backing.pixelScale, 0, 0);
+  }
+
   function draw(): void {
     rafId = 0;
     if (!visible) return; // restarted by visibilitychange
@@ -58,6 +67,10 @@
     visible = !document.hidden;
     scheduleDraw();
   }
+
+  // The stage's transform does not resize this canvas, so nothing else here
+  // notices a scale change (MOR-1161).
+  watchStageScale(() => { if (mounted) { applyBackingStore(getStageScale()()); scheduleDraw(); } });
 
   // Renderer options and fallback prop data can change without a stream push.
   $effect(() => {
@@ -81,17 +94,15 @@
       if (!rect) return;
       cssWidth = Math.max(1, Math.floor(rect.width));
       cssHeight = Math.max(1, Math.floor(rect.height));
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = Math.round(cssWidth * dpr);
-      canvas.height = Math.round(cssHeight * dpr);
-      const ctx = canvas.getContext('2d');
-      ctx?.setTransform(dpr, 0, 0, dpr, 0, 0);
+      applyBackingStore(getStageScale()());
       scheduleDraw();
     });
     ro.observe(canvas);
+    const stopPixelWatch = watchDevicePixelRatio(() => { applyBackingStore(getStageScale()()); scheduleDraw(); });
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);
+      stopPixelWatch();
       ro.disconnect();
       cancelAnimationFrame(rafId);
       rafId = 0;

@@ -7,6 +7,8 @@
   } from '../../lib/renderers/waterfall-renderer';
   import { gesture } from '../../lib/gestures/use-gesture';
   import { vibrate } from '../../lib/utils/haptics';
+  import { canvasBackingSize, watchDevicePixelRatio, watchStageScale } from '../../lib/canvas/backing-store.svelte';
+  import { getStageScale } from '../../primitives/stage/stage-scale';
 
   interface Props {
     options?: WaterfallOptions;
@@ -17,7 +19,13 @@
   let { options = defaultWaterfallOptions, onFreqClick, onRegisterPush }: Props = $props();
 
   let canvas: HTMLCanvasElement;
-  let renderer = $state<WaterfallRenderer | null>(null);
+  let renderer: WaterfallRenderer | null = null;
+  // Mirrors `renderer` for the template only. The resize effect must not read
+  // it: assigning it on every scale change would re-run that effect for a
+  // reason other than the scale (MOR-1161).
+  let rendererReady = $state(false);
+  let cssWidth = 0;
+  let cssHeight = 0;
 
   function directPush(pixels: Uint8Array, frameOptions?: WaterfallOptions): void {
     if (document.hidden) return;
@@ -29,18 +37,28 @@
   }
 
   $effect(() => {
-    if (renderer && options) {
+    if (rendererReady && renderer && options) {
       renderer.updateOptions(options);
     }
   });
+
+  function applyBackingStore(stageScale: number): void {
+    if (!renderer) return;
+    const backing = canvasBackingSize(cssWidth, cssHeight, window.devicePixelRatio || 1, stageScale);
+    renderer.resize(backing.width, backing.height);
+  }
+
+  // The stage's transform does not resize this canvas, so nothing else here
+  // notices a scale change (MOR-1161).
+  watchStageScale(() => applyBackingStore(getStageScale()()));
 
   // Tap-to-tune only — drag-to-pan handled by SpectrumPanel (parent).
   const waterfallGestures = {
     onTap(x: number, _y: number): void {
       if (!renderer || !onFreqClick) return;
-      const dpr = window.devicePixelRatio || 1;
       const rect = canvas.getBoundingClientRect();
-      const freq = renderer.pixelToFreq((x - rect.left) * dpr);
+      const fraction = rect.width > 0 ? (x - rect.left) / rect.width : 0;
+      const freq = renderer.pixelToFreq(fraction * canvas.width);
       if (freq > 0) {
         vibrate('tap');
         onFreqClick(freq);
@@ -50,22 +68,25 @@
 
   onMount(() => {
     renderer = new WaterfallRenderer(canvas, options);
+    rendererReady = true;
     onRegisterPush?.(directPush);
 
     const ro = new ResizeObserver((entries) => {
       const rect = entries[0]?.contentRect;
       if (!rect) return;
-      const dpr = window.devicePixelRatio || 1;
-      const w = Math.max(1, Math.floor(rect.width * dpr));
-      const h = Math.max(1, Math.floor(rect.height * dpr));
-      renderer?.resize(w, h);
+      cssWidth = rect.width;
+      cssHeight = rect.height;
+      applyBackingStore(getStageScale()());
     });
     ro.observe(canvas);
+    const stopPixelWatch = watchDevicePixelRatio(() => applyBackingStore(getStageScale()()));
 
     return () => {
+      stopPixelWatch();
       ro.disconnect();
       renderer?.destroy();
       renderer = null;
+      rendererReady = false;
     };
   });
 </script>

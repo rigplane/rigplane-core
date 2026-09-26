@@ -2,6 +2,8 @@
   import { onMount } from 'svelte';
   import { renderAudioSpectrum, AudioSpectrumRendererState, type SpectrumState } from './audio-spectrum-renderer';
   import type { ControlDisplayDomain, PbtRange } from '$lib/radio/filter-controls';
+  import { canvasBackingSize, watchDevicePixelRatio, watchStageScale } from '../../../lib/canvas/backing-store.svelte';
+  import { getStageScale } from '../../../primitives/stage/stage-scale';
 
   interface Props {
     /** FFT pixel data from AudioFftScope (0-160 range) */
@@ -103,6 +105,17 @@
     scheduleDraw();
   }
 
+  function applyBackingStore(stageScale: number): void {
+    const backing = canvasBackingSize(cssWidth, cssHeight, window.devicePixelRatio || 1, stageScale);
+    canvas.width = backing.width;
+    canvas.height = backing.height;
+    canvas.getContext('2d')?.setTransform(backing.pixelScale, 0, 0, backing.pixelScale, 0, 0);
+  }
+
+  // The stage's transform does not resize this canvas, so nothing else here
+  // notices a scale change (MOR-1161).
+  watchStageScale(() => { if (mounted) { applyBackingStore(getStageScale()()); scheduleDraw(); } });
+
   // A control/readout change must repaint even between FFT frames.
   $effect(() => {
     data; bandwidth; filterWidth; filterWidthMax; ifShift; pbtInner; pbtOuter;
@@ -125,17 +138,16 @@
       if (!rect) return;
       cssWidth = Math.max(1, Math.floor(rect.width));
       cssHeight = Math.max(1, Math.floor(rect.height));
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = Math.round(cssWidth * dpr);
-      canvas.height = Math.round(cssHeight * dpr);
-      canvas.getContext('2d')?.setTransform(dpr, 0, 0, dpr, 0, 0);
+      applyBackingStore(getStageScale()());
       rendererState.reset();
       scheduleDraw();
     });
     ro.observe(canvas);
+    const stopPixelWatch = watchDevicePixelRatio(() => applyBackingStore(getStageScale()()));
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);
+      stopPixelWatch();
       ro.disconnect();
       cancelAnimationFrame(rafId);
       rafId = 0;

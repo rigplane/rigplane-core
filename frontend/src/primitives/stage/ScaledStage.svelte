@@ -38,7 +38,7 @@
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte';
-  import { computeStageCenterOffset, computeStageScale, type StageBox } from './stage-scale';
+  import { computeStageCenterOffset, computeStageScale, provideStageScale, type StageBox } from './stage-scale';
 
   interface Props {
     /** Native (authored) width of the stage content, in CSS pixels. */
@@ -73,6 +73,11 @@
 
   let holder: HTMLDivElement | undefined = $state();
   let scale = $state(1);
+
+  // Descendants (canvas instruments) read this to size their backing store.
+  // A getter, not the number: the reader's effect must re-run when `scale`
+  // changes, which a captured value would not do (MOR-1161).
+  provideStageScale(() => scale);
   let offsetX = $state(0);
   let offsetY = $state(0);
 
