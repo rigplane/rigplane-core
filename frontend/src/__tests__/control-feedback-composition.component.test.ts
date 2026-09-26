@@ -20,7 +20,7 @@ import type { SkinId } from '../skins/registry';
 const h = vi.hoisted(() => ({
   session: { state: 'connected', epoch: 1 },
   listeners: new Set<(next: { state: string; epoch: number }) => void>(),
-  commands: vi.fn(() => true),
+  commands: vi.fn<(name: string, params?: Record<string, unknown>, id?: string) => boolean>(() => true),
   txController: null as ManagedAppTxController | null,
 }));
 vi.mock('$lib/transport/ws-client', async (importOriginal) => {
@@ -218,7 +218,7 @@ describe('one Filter Width lifecycle is equivalent on desktop, narrow mobile and
       control!.dispatchEvent(new Event('input', { bubbles: true }));
       vi.advanceTimersByTime(200);
       flushSync();
-      dispatched.push(h.commands.mock.calls.map((call) => [call[0], call[1]]));
+      dispatched.push(h.commands.mock.calls.map(([name, params]) => [name, params]));
       unmount(component!);
       component = null;
       document.body.innerHTML = '';
