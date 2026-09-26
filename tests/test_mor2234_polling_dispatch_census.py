@@ -332,7 +332,9 @@ def _make_ftx1_radio() -> MagicMock:
     return radio
 
 
-async def _run_ftx1_poll_cycles(*, cycles: int) -> set[FieldPath]:
+async def _run_ftx1_poll_cycles(
+    *, cycles: int
+) -> tuple[set[FieldPath], dict[str, int]]:
     """Drive every Yaesu poll lane; return the published paths."""
     from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 
@@ -346,19 +348,69 @@ async def _run_ftx1_poll_cycles(*, cycles: int) -> set[FieldPath]:
         slow_interval=10.0,
         ema_alpha=1.0,
     )
-    read: set[FieldPath] = set()
+    acquired: set[FieldPath] = set()
+    reads: dict[str, int] = {}
     for _ in range(cycles):
         await poller._poll_medium()  # noqa: SLF001
         await poller._poll_fast()  # noqa: SLF001
         await poller._poll_slow()  # noqa: SLF001
-        read.update(item.path for item in collected)
+        acquired.update(item.path for item in collected)
         collected.clear()
-    read_reads = radio.read_mic_gain.await_count
-    assert read_reads >= cycles, (
-        f"mock CAT transport did not answer mic_gain every cycle: "
-        f"{read_reads} reads in {cycles} cycles"
-    )
-    return read
+    for name in (
+        "read_freq",
+        "read_mode",
+        "read_transmit_state",
+        "read_s_meter",
+        "read_af_level",
+        "read_rf_gain",
+        "read_squelch",
+        "read_attenuator",
+        "read_preamp",
+        "read_agc",
+        "read_filter_width",
+        "read_if_shift",
+        "read_narrow",
+        "read_nb_level",
+        "read_nr_level",
+        "read_auto_notch",
+        "read_manual_notch",
+        "read_manual_notch_freq",
+        "read_alc_meter",
+        "read_comp_meter",
+        "read_power_meter",
+        "read_swr_meter",
+        "get_vd_meter",
+        "get_id_meter",
+        "read_power",
+        "read_mic_gain",
+        "read_processor",
+        "read_processor_level",
+        "read_vox",
+        "read_split",
+        "read_vfo_select",
+        "read_clarifier",
+        "read_clarifier_freq",
+        "get_tuner_status",
+        "read_lock",
+        "read_keyer_speed",
+        "read_cw_pitch",
+        "read_break_in",
+        "read_break_in_delay",
+        "read_cw_spot",
+        "read_sql_type",
+        "read_ctcss_tone_index",
+        "read_repeater_shift",
+        "get_rx_func",
+        "get_tx_func",
+    ):
+        mock = getattr(radio, name, None)
+        count = mock.await_count if mock is not None else 0
+        reads[name] = count
+        assert count >= cycles, (
+            f"mock CAT transport did not answer {name} every cycle: "
+            f"{count} reads in {cycles} cycles"
+        )
+    return acquired, reads
 
 
 def test_ftx1_every_declared_polling_path_is_polled() -> None:
@@ -378,7 +430,7 @@ def test_ftx1_every_declared_polling_path_is_polled() -> None:
         path for path in pollable if acquisition.policy_for(path).tx_only
     }
 
-    read = asyncio.run(_run_ftx1_poll_cycles(cycles=2))
+    read, reads = asyncio.run(_run_ftx1_poll_cycles(cycles=2))
 
     # Availability resolves against an empty snapshot here: the
     # receive-only session observes freq/mode/PTT fresh, while the
@@ -406,5 +458,6 @@ def test_ftx1_every_declared_polling_path_is_polled() -> None:
         f"FTX-1: {len(missing)}/{len(pollable)} declared polling paths never "
         f"read in 2 full poll cycles: {sorted(str(p) for p in missing)}; "
         f"read={len(read)}, exempt={len(exempt)} "
-        f"({'; '.join(exempt_lines) if exempt_lines else 'none'})"
+        f"({'; '.join(exempt_lines) if exempt_lines else 'none'}); "
+        f"mock reads/cycle: {reads}"
     )
