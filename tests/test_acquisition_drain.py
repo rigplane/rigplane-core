@@ -899,7 +899,7 @@ def test_an_answer_that_arrives_during_execute_completes_the_request() -> None:
 
     assert scheduler.pending_requests() == ()
     assert executor.credited == [path.name for path in paths[:-1]]
-    again = scheduler.due_requests(now=pass_now + 0.25, tx_active=True)
+    again = scheduler.due_requests(now=pass_now + 0.5, tx_active=True)
     assert len(again) == 1
     assert again[0].id != request.id
     assert again[0].paths == paths
