@@ -87,7 +87,8 @@ describe('manual notch width choices (MOR-1685)', () => {
   });
 });
 describe('normalized control capability domains', () => {
-  it('validates optional per-profile MOD input choices and rejects malformed domains', () => {    const choices = [{ value: 0, label: 'MIC' }, { value: 3, label: 'USB' }];
+  it('validates optional per-profile MOD input choices and rejects malformed domains', () => {
+    const choices = [{ value: 0, label: 'MIC' }, { value: 3, label: 'USB' }];
     expect(validateCapabilities({ ...baseCapabilities, dataModeInputs: choices }).dataModeInputs)
       .toBe(choices);
     expect(validateCapabilities(baseCapabilities)).toBe(baseCapabilities);

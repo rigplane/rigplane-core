@@ -188,9 +188,9 @@
   /**
    * MOR-1685 — Manual Notch Width as a profile-derived choice group. The
    * confirmed selection is the `manualNotchWidth` reading; a choice calls
-   * the existing `onLevelChange('manualNotchWidth', value)` path. Pending is
-   * command-bus truth this host stays blind to: only the confirmed reading
-   * is ever shown as selected (the notch-mode seat's pattern).
+   * the existing `onLevelChange('manualNotchWidth', value)` path. Visible
+   * pending feedback for the requested choice is MOR-2634; until then only
+   * the confirmed reading is selected.
    */
   let widthChoiceValues = $derived((notchWidthChoices ?? []).map((choice) => choice.value));
   const widthChoiceBehavior = bindChoiceInstrument<number>(() => ({

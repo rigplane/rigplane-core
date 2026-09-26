@@ -184,9 +184,8 @@
    * profile-declared list; the confirmed selection is the `manualNotchWidth`
    * reading. A choice dispatches through the existing scalar intent
    * (`onLevelChange('manualNotchWidth', value)` → exactly one
-   * `set_manual_notch_width`). Pending is command-bus truth the surface
-   * stays blind to: the notch-mode seat's `notchSeat` pattern renders the
-   * confirmed reading only, never a requested-but-unconfirmed choice.
+   * `set_manual_notch_width`). Visible pending feedback for the requested
+   * choice is MOR-2634; until then only the confirmed reading is selected.
    */
   let widthChoiceValues = $derived((notchWidthChoices ?? []).map((choice) => choice.value));
   const widthChoiceBehavior = bindChoiceInstrument<number>(() => ({

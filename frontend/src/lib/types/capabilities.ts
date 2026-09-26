@@ -497,8 +497,9 @@ function isNotchWidthChoice(value: unknown): value is NotchWidthChoice {
 
 /** MOR-1685: normalise the optional profile-declared notch-width choice
  *  list in place — drop malformed entries (non-integer value or non-string
- *  label), keep the profile's own value order. Never throws: a malformed
- *  entry is a caps blemish, not a payload rejection. */
+ *  label), keep the profile's own value order. A present-but-non-array
+ *  field throws; a malformed entry is a caps blemish, not a payload
+ *  rejection. */
 function normalizeNotchWidthChoices(raw: Record<string, unknown>): void {
   if (!Object.prototype.hasOwnProperty.call(raw, 'notchWidthChoices')) return;
   const value = raw.notchWidthChoices;
