@@ -1528,9 +1528,11 @@
     font-size: 9px;
     color: var(--v2-text-dim, #888);
     white-space: nowrap;
-    /* MOR-2658: same reservation as power — `7ch` covers `SWR 99.9`. */
+    /* MOR-2658: same reservation as power — `8ch` covers `SWR 25.5`,
+       the widest text the slot can hold: swrMeter is raw 0-255
+       (radio_state.py), rendered as `(swr / 10).toFixed(1)`. */
     display: inline-block;
-    min-width: 7ch;
+    min-width: 8ch;
     text-align: center;
     font-variant-numeric: tabular-nums;
   }
