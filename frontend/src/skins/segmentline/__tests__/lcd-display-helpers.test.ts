@@ -156,6 +156,19 @@ it.each([
   expect(telemetryText(field)).toBe(text);
 });
 
+// MOR-2705 part 2: an accessible name never carries a status word. An
+// unsupported item is not drawn, so it has no accessible name; an unread
+// one names only what it is — its label. Red on the old 'Unsupported' /
+// 'No reading' renderers.
+it('names an unsupported or unread telemetry item by its label only', () => {
+  expect(telemetryDescription('PWR', { state: 'unknown', relevant: true })).toBe('PWR');
+  expect(telemetryDescription('PWR', { state: 'unsupported', relevant: false })).toBe('PWR');
+  expect(telemetryDescription('PWR', {
+    state: 'known', value: 207, relevant: true,
+    txDisplay: { supported: false },
+  })).toBe('PWR');
+});
+
 for (const relevance of ['idle', 'relevant', 'indeterminate'] as const)
   for (const observation of [{ state: 'current', value: 12.345 }, { state: 'current', value: 0 },
     { state: 'stale', value: 87.654 }, { state: 'unknown', reason: 'not-observed' }] as const) {
@@ -174,6 +187,8 @@ for (const relevance of ['idle', 'relevant', 'indeterminate'] as const)
       if (relevance === 'idle') expect(description).toContain('Not measuring in receive');
       if (relevance === 'indeterminate') expect(description).toContain('RF relevance indeterminate');
       if (relevance !== 'idle' && observation.state === 'stale') expect(description).toContain('Stale observation');
-      if (relevance !== 'idle' && observation.state === 'unknown') expect(description).toContain('No reading');
+      // MOR-2705 part 2: an unread observation names only the label — no
+      // 'No reading' status word in the accessible name.
+      if (relevance !== 'idle' && observation.state === 'unknown') expect(description).toBe('PWR');
     });
   }

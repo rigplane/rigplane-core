@@ -716,6 +716,18 @@ describe('MOD-input readiness is stated, and a mismatch is never a dead end', ()
     },
   );
 
+  // Kills (MOR-2705 part 2): the readiness badge printing 'n/a' for a state
+  // that means "this check does not apply here". The badge span renders in
+  // every state (LAN / the mismatch sentence), so it is a RESERVED empty
+  // slot, not a removed slot — same shape as `unknown`.
+  it('renders a not-applicable readiness as an empty reserved slot, never "n/a"', () => {
+    const r = render(withRx({ modInputReadiness: { status: 'not-applicable' } }));
+    expect(r.text('mod-readiness')).toBe('');
+    expect(r.el('mod-input')!.textContent).not.toMatch(/n\/a/i);
+    expect(r.el('mod-input')!.dataset.readiness).toBe('not-applicable');
+    r.dispose();
+  });
+
   // Kills: a label map that drifts from the contract union.
   it('has a label for every readiness the contract can state', () => {
     expect(Object.keys(READINESS_LABEL).sort())
