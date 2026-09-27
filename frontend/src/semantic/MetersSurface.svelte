@@ -2,7 +2,6 @@
   import type { MeterField } from './radio-view-model';
   import type { SignalMeterProjection } from '../components-v2/meters/smeter-scale';
   import { renderSlot } from './design-language-renderers';
-  import { observationValue } from '../primitives/reading-text';
   import type { LowerScaleDescriptor } from '../components-v2/meters/LinearSMeter.svelte';
   import type { StationLevelMeterFrame } from './StationMeterInstrumentHost.svelte';
 
@@ -46,14 +45,14 @@
       valueFraction: frame.motion.smoothedFraction,
       fault: projection.fault,
       relevant: projection.relevant,
-      // MOR-2688 S4a: the read/unread half of this guard is the display
-      // observation rule (`observationValue` on `evidence`: current or
-      // stale → the value, anything else → nothing — `projection.state`
-      // mirrors exactly that); the ratio-scale mode is a presentation
-      // choice, not a read/unread one, and stays here.
-      stateText: !projection.ratioScale && observationValue(projection.evidence) !== null
-        ? projection.displayText : projection.stateText,
-      accessibleDescription: projection.accessibleDescription ?? 'SWR: Not observed',
+      // MOR-2688 S4d: `projectLevelMeter` runs with `txObserved = true`,
+      // so `stateText` is '' in every state and `displayText` is the
+      // formatted value or '' — the read/unread test collapses to the
+      // ratio-scale choice, which stays a local presentation decision.
+      // The projector names an unread meter by its label, so
+      // `accessibleDescription` always exists for SWR here.
+      stateText: projection.ratioScale ? projection.stateText : projection.displayText,
+      accessibleDescription: projection.accessibleDescription ?? projection.label,
     };
   }
 

@@ -15,8 +15,7 @@
       That fact is the LIVE-frequency permit (MOR-1294 verify F1: the adapter
       evaluates `getFrequencyPermit(observedFreqHz, caps.txBands)`), already
       collapsed fail-closed. This file re-derives nothing: it holds no band
-      plan, no `txBands`, no permit function, and its whole import list is the
-      fact contract.
+      plan, no `txBands`, no permit function.
 
   (2) `BandChoice.defaultHzTxPermit` IS A POINT SAMPLE, AND IS LABELLED AS
       ONE. It answers "may I key at THIS band's default frequency", never "may
@@ -55,6 +54,7 @@
   import { t } from '$lib/i18n';
   import type { BandField, DisabledReasonCode, RadioViewModel } from './radio-view-model';
   import type { BandControlLayout, BandInstrumentHandles } from './band-instruments';
+  import { usable } from '../primitives/control-instruments/control-instrument-behavior';
   export {
     defaultPermitLabel, interpretFrequencyEntry, mhz,
   } from './band-instruments';
@@ -107,9 +107,7 @@
   export const activeReceiverUnconfirmedReason = (): string =>
     t('core.band.tx.reason.receiverUnconfirmed');
 
-  export const usable = (f: BandField<unknown>): boolean =>
-    f.availability.structural && f.availability.operational && f.reading.status === 'known';
-   /** MOR-2652: an unread current band prints nothing — an unlit slot. The
+  /** MOR-2652: an unread current band prints nothing — an unlit slot. The
     *  denial reasons below are sentences, never a value standing in for a
     *  reading (MOR-2684 removed the old `UNKNOWN_TEXT` dash). */
    export const textOf = (f: BandField<unknown>): string =>

@@ -114,7 +114,7 @@ describe('the RX-audio surface owns no audio lifetime (MOR-972 P0 / MOR-1058)', 
   /** The whole static import closure of the file, allow-listed. Kills: adding
    *  ANY import that could reach transport or the audio manager — including
    *  through a relative specifier, which a `$lib/...` regex would miss. */
-  it('imports only facts, the level formatter, the unread-display rule and the RxAudioInstrumentHost handle contract', () => {
+  it('imports only facts, the field gate, the level formatter, the unread-display rule and the RxAudioInstrumentHost handle contract', () => {
     const specifiers = [...CODE.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
     // MOR-2688 S3: `../primitives/reading-text` joined the closure — it carries
@@ -122,7 +122,13 @@ describe('the RX-audio surface owns no audio lifetime (MOR-972 P0 / MOR-1058)', 
     // cannot reach transport or the audio manager any more than the fact
     // contract can. `reading-text.test.ts`'s `has no runtime import` case pins
     // that premise one level down, like `pressed-of`'s own purity pin.
+    // MOR-2704 G3: `../primitives/control-instruments/control-instrument-behavior`
+    // joined the closure — the field gate `usable` (MOR-2704), in place of
+    // this file's former local copy. It has NO runtime import of its own,
+    // so it cannot reach the audio manager or the
+    // transport any more than the fact contract can.
     expect([...new Set(specifiers)].sort()).toEqual([
+      '../primitives/control-instruments/control-instrument-behavior',
       '../primitives/reading-text', './format-level', './radio-view-model',
       './rx-audio-instruments',
     ]);
@@ -325,6 +331,18 @@ describe('every unread fact renders honestly, never as the v2 default', () => {
     expect(r.text('af-value')).toBe('');
     expect(r.text('af-value')).not.toMatch(/[—–?]|UNKNOWN|N\/A|\d/);
     expect(r.el('af')!.dataset.observed).toBe('false');
+    r.dispose();
+  });
+
+  // MOR-2704 G3: the imported gate keeps the read-but-NOT-operational
+  // refusal — the case the local copy handled, now pinned against the
+  // shared `usable` (a mutation that drops its `operational` check dies
+  // here). `readingText` follows the reading status alone, so the known
+  // level keeps rendering.
+  it('marks a KNOWN-but-not-operational AF level unobserved while its value keeps rendering', () => {
+    const r = render(withRx({ afLevel: known<number>(0.42, DEGRADED) }));
+    expect(r.el('af')!.dataset.observed).toBe('false');
+    expect(r.text('af-value')).toBe('42%');
     r.dispose();
   });
 

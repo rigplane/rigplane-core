@@ -115,9 +115,6 @@
     twinPeak: 'twin-peak filter is an RTTY control — works only in RTTY / RTTY-R',
   } as const;
 
-  /** Usable ⇔ the radio HAS it, it is readable NOW, and it was actually read. */
-  export const usable = (f: CwKeyerField<unknown>): boolean =>
-    f.availability.structural && f.availability.operational && f.reading.status === 'known';
   /** Honest text (MOR-2653): an unread fact reads as EMPTY in its reserved
    *  slot — never a placeholder dash and never a v2 default. MOR-2688 S3: the
    *  ONE unread predicate lives in `readingText`; the on/off boolean wording
@@ -141,6 +138,7 @@
   import {
     bindChoiceInstrument,
     bindToggleInstrument,
+    usable,
   } from '../primitives/control-instruments/control-instrument-behavior';
   import type { CwKeyerInstrumentHandles } from './CwKeyerInstrumentHost.svelte';
   import type { RadioViewModel } from './radio-view-model';

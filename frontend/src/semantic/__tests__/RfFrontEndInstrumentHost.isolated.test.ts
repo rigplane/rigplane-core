@@ -626,6 +626,22 @@ describe('RfFrontEndInstrumentHost finite handles (MOR-2425 RF-B)', () => {
     },
   );
 
+  // MOR-2704 G4: a read (known) but not operational toggle field refuses its
+  // action through the one exported `usable` gate and keeps `data-observed`
+  // false. Red under a mutation of `usable` that drops the `operational`
+  // check.
+  it('refuses the action for a read-but-not-operational toggle field and keeps data-observed false (MOR-2704 G4)', () => {
+    const onToggle = vi.fn();
+    const view = rfAvailability(finiteBase(), 'ipPlus', { structural: true, operational: false });
+    const r = renderFinite(view, { onToggle });
+    const control = r.el('ipPlus')!;
+    expect(control.hasAttribute('disabled')).toBe(true);
+    expect(control.dataset.observed).toBe('false');
+    control.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+    expect(onToggle).not.toHaveBeenCalled();
+  });
+
   it('keeps the preamp mutex from the host directly: disabled, with the explanation, on top of a usable field', () => {
     const view: RadioViewModel = {
       ...finiteBase(),

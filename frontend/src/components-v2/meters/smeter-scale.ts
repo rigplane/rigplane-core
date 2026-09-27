@@ -9,8 +9,13 @@
  *
  * A radio whose profile has not declared a curve is UNCALIBRATED:
  * `isSmeterCalibrated()` is false, and no S-unit or dBm text is drawn
- * (MOR-2705 part 4a) — the bar still moves on the raw fraction, but a
- * number would be borrowed from a curve the radio does not have.
+ * (MOR-2705 part 4a, MOR-2720) — the bar or needle still moves on the raw
+ * fraction, but a number would be borrowed from a curve the radio does
+ * not have. This holds for every S-meter: the projections here
+ * (`projectSignalMeter`), `LinearSMeter`, the phone layout, `AmberSmeter`,
+ * the dock panels (MOR-2705 part 4a), the segmentline LCD S-meter and the
+ * dual-SDR needle meter, which draw no S-unit/dBm text, no S label, no
+ * S9 line and no scale marks without a calibration (MOR-2720).
  * Mirrors the backend's own `(value, calibrated)` convention
  * (`runtime/meter_cal.py interpolate_meter`) on the display side.
  */

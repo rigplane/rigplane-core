@@ -1460,6 +1460,66 @@ describe('the SWR shared lower-scale row (MOR-2250, PR 2 of 2)', () => {
   });
 });
 
+// ── 12b. MOR-2688 S4d — the SWR lower scale's literal text and name ──────
+//
+// Red under a mutation of the dispatched line
+// `stateText: projection.ratioScale ? projection.stateText : projection.displayText`
+// (e.g. restoring the read/unread conjunct, or dropping the fallback label).
+describe('the SWR lower scale literal text (MOR-2688 S4d)', () => {
+  it('shows the read digits on a non-ratio domain, and bare label while unread', () => {
+    // raw domain → no ratio scale: the digit readout is the only text after
+    // the group label. `withField` cannot carry `domain`, so the unread
+    // fixture rewrites only the reading.
+    let view = withRaw(base('transmitting'), 'swr', 120);
+    view = withMeterDomain(view, 'swr', { kind: 'raw' });
+    withSurface(view, (s) => {
+      expect(s.signalSvg()!.querySelector('[data-lower-relevant]')!.textContent).toBe('SWR120 raw');
+    });
+    view = {
+      ...view,
+      meters: {
+        ...view.meters!,
+        swr: { ...view.meters!.swr, reading: { status: 'unknown' } },
+      } as MetersViewModel,
+    };
+    withSurface(view, (s) => {
+      expect(s.signalSvg()!.querySelector('[data-lower-relevant]')!.textContent).toBe('SWR');
+    });
+  });
+
+  it(
+    'keeps the tick row and its accessible name identical between read and unread on a ratio domain',
+    () => {
+      setCapabilities(makeFaultCaps());
+      try {
+        let view = withMeterDomain(
+          withRaw(base('transmitting'), 'swr', 1.9), 'swr', { kind: 'engineering', unit: 'ratio' });
+        const groupOf = (s: ReturnType<typeof render>) =>
+          s.signalSvg()!.querySelector('[data-lower-relevant]')!;
+        withSurface(view, (s) => {
+          const group = groupOf(s);
+          expect(group.textContent).toBe('SWR11.522.53∞');
+          expect(group.getAttribute('aria-label')).toBe('SWR: 1.9');
+        });
+        view = {
+          ...view,
+          meters: {
+            ...view.meters!,
+            swr: { ...view.meters!.swr, reading: { status: 'unknown' } },
+          } as MetersViewModel,
+        };
+        withSurface(view, (s) => {
+          const group = groupOf(s);
+          expect(group.textContent).toBe('SWR11.522.53∞');
+          expect(group.getAttribute('aria-label')).toBe('SWR');
+        });
+      } finally {
+        clearCapabilities();
+      }
+    },
+  );
+});
+
 // ── 13. Fix cycle: SWR's own relevance dims its row, not the S-meter tile ──
 //
 // Replaces the pin the verifier found deleted without a replacement: before

@@ -226,6 +226,30 @@ describe('TxAuxScalarHost independent composition', () => {
     r.dispose();
   });
 
+  // MOR-2704 G4: a read (known) but not operational field refuses its action
+  // through the one exported `usable` gate and keeps the old disabled reason.
+  // Red under a mutation of `usable` that drops the `operational` check.
+  it('refuses the action for a read-but-not-operational field and keeps its disabled reason (MOR-2704 G4)', () => {
+    const r = render();
+    r.props.view = {
+      ...r.props.view,
+      txAux: {
+        ...r.props.view.txAux!,
+        micGain: {
+          reading: { status: 'known', value: 128 },
+          availability: { structural: true, operational: false },
+        },
+      },
+    };
+    flushSync();
+    expect(r.row('micGain').dataset.disabledReason).toBe('field-not-observed');
+    const micBinding = scalarCapture.bindings[1]!;
+    const lease = currentLease(micBinding);
+    expect(lease.key({ key: 'ArrowRight', fine: false })).toBe(false);
+    expect(r.onLevelChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
   it.each([
     ['hbar', 'knob', 'hbar'],
     ['knob', 'hbar', 'knob'],

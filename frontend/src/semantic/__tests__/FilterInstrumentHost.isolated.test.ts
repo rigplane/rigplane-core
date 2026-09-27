@@ -218,4 +218,20 @@ describe('FilterInstrumentHost finite ownership', () => {
       expect(target.querySelector(`[data-testid="external-${label}"] [aria-checked="true"]`)).not.toBeNull();
     unmount(component);
   });
+
+  // MOR-2704 G2: the imported `usable` gate — a field read but not
+  // operational refuses the action, and the disabled-reason and status
+  // attributes keep their old outputs (the mutation mini pins this red
+  // when the gate's `operational` check is dropped).
+  it('refuses a read-but-not-operational field and keeps its reason and status outputs', () => {
+    const view = reading(base(), 'filterPassband', 'modInputSource', { status: 'known', value: 0 }, false);
+    const props = proxy({ view, presentation: 'standard' as const, onModInputChange: vi.fn() });
+    const component = mount(FilterInstrumentHostFixture, { target, props }); flushSync();
+    const label = target.querySelector('[data-testid="standard-mod-input"]')!;
+    const select = target.querySelector<HTMLSelectElement>('[data-testid="mod-input-select"]')!;
+    expect(label.getAttribute('data-disabled-reason')).toBe('field-not-observed');
+    expect(label.getAttribute('data-mod-input-status')).toBe('retained');
+    expect(select.disabled).toBe(true);
+    unmount(component);
+  });
 });

@@ -5,7 +5,7 @@
   import { ValueControl } from '../components-v2/controls/value-control';
   import type { HBarIssuedStatusPresentation, HBarIssuedStatusSnapshot }
     from '../components-v2/controls/value-control/skin';
-  import { bindChoiceInstrument } from '../primitives/control-instruments/control-instrument-behavior';
+  import { bindChoiceInstrument, usable } from '../primitives/control-instruments/control-instrument-behavior';
   import {
     createContinuousScalar,
     createRenderedNativeRangeContinuousScalarPolicy,
@@ -17,7 +17,7 @@
   import { disabledReasonText } from './disabled-reason';
   import { finiteValue, valueText } from '../primitives/reading-text';
   import type { NotchWidthChoice } from '../lib/types/capabilities';
-  import type { DspField, RadioViewModel } from './radio-view-model';
+  import type { RadioViewModel } from './radio-view-model';
   import { DSP_SCALAR_FIELDS, type DspScalarFeedback, type DspScalarField,
     type DspScalarHandles, type DspScalarPresentation } from './dsp-scalars';
 
@@ -56,9 +56,6 @@
   const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
   const safeInteger = (value: unknown): value is number =>
     typeof value === 'number' && Number.isSafeInteger(value);
-  const usable = (field: DspField<unknown> | undefined): boolean => field !== undefined
-    && field.availability.structural && field.availability.operational
-    && field.reading.status === 'known';
 
   function domain(field: DspScalarField): Readonly<{ domain: ScalarDomain; valid: boolean }> {
     if (field === 'nrLevel') {

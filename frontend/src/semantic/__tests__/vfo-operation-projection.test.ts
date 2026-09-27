@@ -323,4 +323,22 @@ describe('radioFunctions projection (MOR-2509 bridge)', () => {
     });
     expect(projected.radioFunctions.dialLock.availability).toMatchObject({ structural: false });
   });
+
+  // MOR-2704 G6: the function-operation gate is the shared `usable` — a
+  // field that is read (known reading) but not operational is reported not
+  // operational and never dispatches.
+  it('a read but not operational vox is not operational and does not dispatch', () => {
+    const spies = functionSpies();
+    const projected = projectVfoOperations(input({
+      radioFunctions: functionsInput({ vox: structuralOnlyField(true), tuner: undefined, dialLock: undefined }, spies),
+    }));
+    expect(projected.radioFunctions.vox).toMatchObject({
+      availability: { structural: true, operational: false },
+      reading: { status: 'known', value: true },
+    });
+    invokeVfoOperation(() => input({
+      radioFunctions: functionsInput({ vox: structuralOnlyField(true), tuner: undefined, dialLock: undefined }, spies),
+    }), { kind: 'toggle-vox' });
+    expect(spies.onToggleVox).not.toHaveBeenCalled();
+  });
 });

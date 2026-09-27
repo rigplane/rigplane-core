@@ -276,6 +276,17 @@ describe('DualSdrFace', () => {
     }
   });
 
+  // MOR-2704 G6: the pre-amp gate is the shared `usable` — a field that is
+  // read (known reading) but not operational must stay inert.
+  it('keeps PRE disabled for a preamp that is read but not operational', async () => {
+    const candidate = view(1, [0, 1, 2]);
+    (candidate.rfFrontEnd!.preamp as { availability: { structural: boolean; operational: boolean } }).availability = { structural: true, operational: false };
+    const onPreChange = vi.fn(); const target = document.createElement('div');
+    mount(DualSdrFace, { target, props: { view: candidate, scopeSource: { subscribe: () => () => {} }, onPreChange } }); await tick();
+    const pre = target.querySelector<HTMLButtonElement>('[data-control="pre"]')!;
+    expect(pre.disabled).toBe(true); pre.click(); expect(onPreChange).not.toHaveBeenCalled();
+  });
+
   it('uses the shared smoother lifecycle for receiver meter transitions and teardown', async () => {
     const target = document.createElement('div');
     const component = createClassComponent({ component: DualSdrFace, target, props: { view: view(), scopeSource: { subscribe: () => () => {} } } });

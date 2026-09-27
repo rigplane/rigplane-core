@@ -38,7 +38,7 @@
     HBarIssuedStatusPresentation,
     HBarIssuedStatusSnapshot,
   } from '../components-v2/controls/value-control/skin';
-  import { bindChoiceInstrument, bindToggleInstrument } from '../primitives/control-instruments/control-instrument-behavior';
+  import { bindChoiceInstrument, bindToggleInstrument, usable } from '../primitives/control-instruments/control-instrument-behavior';
   import ControlInstrumentRendererHost from '../primitives/control-instruments/ControlInstrumentRendererHost.svelte';
   import {
     createChoiceRendererSeat, createToggleRendererSeat,
@@ -122,10 +122,6 @@
 
   const safeGeneration = (value: unknown): value is number =>
     typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-  const usable = (field: RfFrontEndField<unknown> | undefined): boolean =>
-    field?.availability.structural === true
-    && field.availability.operational
-    && field.reading.status === 'known';
   function formOf(view: RadioViewModel, requested: RfSqlControlModel): RfSqlControlModel {
     return requested === 'combined'
       && view.rfFrontEnd?.rfGain.availability.structural === true

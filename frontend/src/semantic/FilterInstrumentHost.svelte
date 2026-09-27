@@ -2,7 +2,7 @@
   import { onDestroy, type Snippet } from 'svelte';
   import { HardwareButton } from '$lib/Button';
   import { t } from '$lib/i18n';
-  import { bindChoiceInstrument } from '../primitives/control-instruments/control-instrument-behavior';
+  import { bindChoiceInstrument, usable } from '../primitives/control-instruments/control-instrument-behavior';
   import ControlInstrumentRendererHost from '../primitives/control-instruments/ControlInstrumentRendererHost.svelte';
   import {
     createChoiceRendererSeat, type FiniteControlAppearance, type FiniteRendererContext,
@@ -44,10 +44,6 @@
   const pendingFilterShapeId = `${pendingId}-shape`;
   const pendingDataModeId = `${pendingId}-data-mode`;
   const pendingModInputId = `${pendingId}-mod-input`;
-  const usable = (field: { availability: { structural: boolean; operational: boolean };
-    reading: { status: string } } | undefined): boolean => field !== undefined
-      && field.availability.structural && field.availability.operational
-      && field.reading.status === 'known';
   const reason = (field: Parameters<typeof usable>[0]) =>
     usable(field) ? undefined : 'field-not-observed';
   const requested = <T,>(target: T | null) => target === null

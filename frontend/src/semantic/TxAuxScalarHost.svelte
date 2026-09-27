@@ -6,6 +6,7 @@
     HBarIssuedStatusPresentation,
     HBarIssuedStatusSnapshot,
   } from '../components-v2/controls/value-control/skin';
+  import { usable } from '../primitives/control-instruments/control-instrument-behavior';
   import {
     createContinuousScalar,
     createHBarContinuousScalarPolicy,
@@ -51,8 +52,6 @@
   };
   const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
   const row = (field: TxAuxLevelField) => TX_AUX_LEVELS.find(([candidate]) => candidate === field)!;
-  const usable = (field: TxAuxField<unknown>): boolean => field.availability.structural
-    && field.availability.operational && field.reading.status === 'known';
   const reasonText = (field: TxAuxField<unknown>): string | undefined =>
     (!field.availability.structural
       ? disabledReasonText(field.availability)

@@ -113,19 +113,24 @@ function typeFrequency(input: HTMLInputElement, value: string): void {
 describe('the band surface derives nothing (7B carry-forward 1)', () => {
   // Kills: importing the permit function, the band plan, capabilities or the
   // command bus — any of which would let a second permit derivation exist.
-  // MOR-1448: `$lib/i18n` joined the fact contract as the ONE permitted
-  // import beyond `./radio-view-model` — pure operator-wording lookup
-  // (`t()`), never a second fact derivation. See the two tests below for
-  // the narrowed guard this replaces.
-  it('imports only facts, i18n wording and Band instrument types', () => {
+  // MOR-1448: `$lib/i18n` joined the fact contract — pure
+  // operator-wording lookup (`t()`), never a second fact derivation. See
+  // the two tests below for the narrowed guard this replaces.
+  it('imports only facts, the field gate, i18n wording and Band instrument types', () => {
     // MOR-1448 review F6: quote-agnostic — a double-quoted import must be
     // caught exactly like a single-quoted one, not slip past a single-quote
     // -only pattern.
     const specifiers = [...CODE.matchAll(/from\s+['"]([^'"]+)['"]/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
+    // MOR-2704 G3: `../primitives/control-instruments/control-instrument-behavior`
+    // joined the closure — the field gate `usable` (MOR-2704), in place of
+    // this file's former local copy. It has NO runtime import of its own,
+    // so it cannot reach the TX controller, the
+    // transport or the permit utility any more than the fact contract can.
     expect([...new Set(specifiers)]).toEqual([
       '$lib/i18n', './radio-view-model',
       './band-instruments',
+      '../primitives/control-instruments/control-instrument-behavior',
     ]);
     expect(CODE).toContain('BandInstrumentHandles');
   });
@@ -173,6 +178,29 @@ describe('the band surface derives nothing (7B carry-forward 1)', () => {
 });
 
 /* ── (a) the band-scoped TX answer is the LIVE fact ─────────────── */
+
+/* ── MOR-2704 G3: the imported gate keeps the read-but-NOT-operational
+   refusal — the case the local copy handled, now pinned against the
+   shared `usable` (a mutation that drops its `operational` check dies
+   here). ── */
+describe('MOR-2704 G3: a KNOWN current band under operational:false fails closed', () => {
+  const READ_NOT_OPERATIONAL = { structural: true, operational: false } as const;
+
+  it('marks the band row unobserved while the known value keeps rendering', () => {
+    const r = render(withB({
+      currentBand: {
+        reading: { status: 'known' as const, value: '20m' },
+        availability: READ_NOT_OPERATIONAL,
+      },
+    }));
+    expect(r.el('current')!.dataset.observed).toBe('false');
+    // Behaviour-identical (MOR-2704): `textOf` follows the reading status
+    // alone, so the known value keeps rendering.
+    expect(r.text('current-value')).toBe('20m');
+    r.dispose();
+  });
+});
+
 
 describe('currentBandTx is the live-frequency answer (carry-forwards 1 + 2)', () => {
   // THE F1/F3 REGRESSION PIN. The current band's own default-frequency permit

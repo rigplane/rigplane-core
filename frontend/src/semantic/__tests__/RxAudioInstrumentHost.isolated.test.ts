@@ -279,6 +279,43 @@ describe('RxAudioInstrumentHost', () => {
     lease.pointer(token, 0.8); lease.endPointer(token);
     expect(r.onAfLevelChange).not.toHaveBeenCalled();
   });
+
+  // MOR-2704 G2: the imported `usable` feeds both the AF row's `data-observed`
+  // (the script-level copy used to) and the AF `enabled` expression (the two
+  // inline copies used to). A field that is read but NOT operational must keep
+  // the action refused and `data-observed` at 'false' — red under a mutation
+  // dropping the gate's `operational` check (run in the throwaway mini).
+  it('refuses the AF action while its field is read but not operational, keeping data-observed at false', () => {
+    const publisher = new Publisher(publication({ rxEnabled: true }));
+    const onAfLevelChange = vi.fn<(value: number) => void>();
+    const base = withRxAudio(topologyFixtures['1/single']);
+    const view = {
+      ...base,
+      rxAudio: {
+        ...base.rxAudio!,
+        afLevel: {
+          reading: { status: 'known', value: 0.42 },
+          availability: { structural: true, operational: false },
+        },
+      },
+    } as RadioViewModel;
+    const component = mount(Fixture, { target, props: {
+      view, publication: publisher.current,
+      subscribeControlAuthority: publisher.subscribe,
+      layout: 'grouped', onAfLevelChange,
+    } });
+    components.push(component); flushSync();
+    expect(
+      target.querySelector('[data-testid="rx-audio-af"]')!.getAttribute('data-observed'),
+    ).toBe('false');
+    const lease = target.querySelector<RendererNode>(
+      '[data-external-scalar-renderer]',
+    )!.rendererLease;
+    expect(lease.view.editable).toBe(false);
+    lease.key({ key: 'ArrowRight', fine: false });
+    lease.nativeInput(0.5);
+    expect(onAfLevelChange).not.toHaveBeenCalled();
+  });
 });
 
 /* MOR-2579 — each per-receiver AF knob's authority names its own receiver:
