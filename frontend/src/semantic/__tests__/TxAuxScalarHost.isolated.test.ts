@@ -204,6 +204,28 @@ describe('TxAuxScalarHost independent composition', () => {
     r.dispose();
   });
 
+  // MOR-2688 S4b: `formatValue`'s NaN/null/Infinity guard now enters
+  // through `finiteValue`. A reading-based field (rfPower) renders its
+  // exact text, and a known NaN reading renders `''` — red under a
+  // `finiteValue` mutation that accepts a marker value.
+  it('renders a read value exactly and a known NaN reading as EMPTY (MOR-2688 S4b)', () => {
+    const r = render();
+    expect(r.row('rfPower').querySelector('[data-canonical-value]')?.textContent).toBe('80%');
+    r.props.view = {
+      ...r.props.view,
+      txAux: {
+        ...r.props.view.txAux!,
+        rfPower: {
+          reading: { status: 'known', value: Number.NaN },
+          availability: { structural: true, operational: true },
+        },
+      },
+    };
+    flushSync();
+    expect(r.row('rfPower').querySelector('[data-canonical-value]')?.textContent).toBe('');
+    r.dispose();
+  });
+
   it.each([
     ['hbar', 'knob', 'hbar'],
     ['knob', 'hbar', 'knob'],

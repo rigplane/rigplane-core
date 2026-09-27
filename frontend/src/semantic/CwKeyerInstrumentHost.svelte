@@ -39,6 +39,7 @@
     type CommandScalarFeedback,
     type ContinuousScalarInput,
   } from '../primitives/scalar/continuous-scalar.svelte';
+  import { finiteValue, valueText } from '../primitives/reading-text';
   import type { CwKeyerField, RadioViewModel } from './radio-view-model';
 
   interface Props {
@@ -70,10 +71,11 @@
     current?.availability.structural === true
     && current.availability.operational
     && current.reading.status === 'known';
+  // MOR-2688 S4b: the NaN/null guard enters through `finiteValue`; the
+  // unit format is kept exactly.
   const formatValue = (field: CwContinuousField, value: number | null): string => {
-    if (value === null || !Number.isFinite(value)) return '';
     const [, , , , , unit] = row(field);
-    return `${value} ${unit}`;
+    return valueText(finiteValue(value), (v) => `${v} ${unit}`);
   };
   /** MOR-2706: each value slot's reserved width derives from the field's
    *  effective domain — the widest text the readout can print is the domain

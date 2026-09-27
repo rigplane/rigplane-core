@@ -58,7 +58,7 @@
     type ContinuousScalarView,
   } from '../primitives/scalar/continuous-scalar.svelte';
   import { formatKnownLevel } from './format-level';
-  import { readingText } from '../primitives/reading-text';
+  import { readingText, valueText } from '../primitives/reading-text';
   import type { RadioViewModel, RfFrontEndField, DisabledReason, DisabledReasonCode } from './radio-view-model';
   import {
     DISABLED_REASON_LABEL,
@@ -399,15 +399,15 @@
     ? 'compatibility-reading'
     : presentation.rfSqlFeedback === null ? 'authority-unresolved' : 'command-feedback';
   /** MOR-2527: an unread level renders NO value text — an unlit slot, never
-   *  a `?` stand-in. The heading labels stay, and each `<output>` keeps its
+   *  a `?` stand-in; the NaN/`null` text rule now comes from the core
+   *  `valueText` (`primitives/reading-text`), applying `rawToPercent` to
+   *  read values. The heading labels stay, and each `<output>` keeps its
    *  box reserved (`display: inline-block; min-width: 4ch` on
    *  `.rf-front-end-reading output` below — the widest value is `100%`), so
    *  the SQL label cannot move when a value arrives.
    *  MOR-1676 part R: on the raw lattice the value is already the raw int —
    *  the text is the percentage of the published raw range, same unit as
    *  today's normalized path. */
-  const valueText = (field: RfFrontEndLevelField, value: number | null): string => value === null
-    ? '' : rawToPercent(field, value);
   function pairLaneValue(view: Readonly<ContinuousPairView>, lane: DualParamLane): number | null {
     const laneView = view.lanes[lane];
     return view.draft?.[lane]
@@ -543,8 +543,8 @@
     aria-busy={view.busy}
   >
     <div class="rf-front-end-heading">
-      <span class="rf-front-end-reading">RF <output data-testid="rf-front-end-rf-sql-rf-value">{valueText('rfGain', pairLaneValue(view, 'rf'))}</output></span>
-      <span class="rf-front-end-reading">SQL <output data-testid="rf-front-end-rf-sql-sql-value">{valueText('squelch', pairLaneValue(view, 'sql'))}</output></span>
+      <span class="rf-front-end-reading">RF <output data-testid="rf-front-end-rf-sql-rf-value">{valueText(pairLaneValue(view, 'rf'), (v) => rawToPercent('rfGain', v))}</output></span>
+      <span class="rf-front-end-reading">SQL <output data-testid="rf-front-end-rf-sql-sql-value">{valueText(pairLaneValue(view, 'sql'), (v) => rawToPercent('squelch', v))}</output></span>
     </div>
     <div class="rf-front-end-slider">
       {#key rendererEpoch}
@@ -577,7 +577,7 @@
       aria-busy={view.busy}
     >
       <div class="rf-front-end-heading">
-        <span class="rf-front-end-reading">{label} <output>{valueText(field, scalarValue(view))}</output></span>
+        <span class="rf-front-end-reading">{label} <output>{valueText(scalarValue(view), (v) => rawToPercent(field, v))}</output></span>
       </div>
       <div class="rf-front-end-slider">
         {#key rendererEpoch}
@@ -586,7 +586,7 @@
             binding={binding} {label} renderer="hbar" showLabel={false} showValue={false} compact={true}
             variant={hardware ? 'hardware-illuminated' : 'modern'}
             accentColor={hardware ? 'var(--v2-accent-cyan-alt)' : 'var(--v2-accent-cyan)'}
-            displayFn={(value) => valueText(field, value)} issuedStatusPresentation={scalarIssuedStatuses[field]}
+            displayFn={(value) => valueText(value, (v) => rawToPercent(field, v))} issuedStatusPresentation={scalarIssuedStatuses[field]}
           />
         {/key}
       </div>

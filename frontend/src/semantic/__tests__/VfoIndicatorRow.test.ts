@@ -72,6 +72,19 @@ describe('VfoIndicatorRow', () => {
     expect(shell?.getAttribute('aria-label')).not.toContain('unknown');
   });
 
+  // MOR-2688 S4b: the known + finite check enters through
+  // `finiteValue(readingValue(...))`. A known NaN reading takes the unread
+  // shell — red under a `finiteValue` mutation that accepts a marker
+  // value.
+  it('renders the unread shell for a known NaN S-meter reading (MOR-2688 S4b)', () => {
+    const root = render({ indicator: indicator({ sMeter: known(Number.NaN) }) });
+    expect(root.querySelector('[data-testid="receiver-s-meter"] svg')).toBeNull();
+    const shell = root.querySelector('[data-testid="receiver-s-meter-unknown"]');
+    expect(shell).not.toBeNull();
+    expect(shell?.textContent).toBe('');
+    expect(shell?.getAttribute('aria-label')).toBe('MAIN S meter');
+  });
+
   it('uses a caller-owned meter for a known reading in the established receiver seat', () => {
     const sMeter = createRawSnippet(() => ({
       render: () => '<span data-hosted-s-meter>host meter</span>',

@@ -64,7 +64,7 @@
   import { formatKnownLevel, levelFormatsBelowMax } from './format-level';
   import { RF_FRONT_END_LEVELS } from './rf-front-end-instruments';
   import { rfUnconfirmedLabel } from './rx-tx-surface';
-  import { observationValue, readingText, readingValue } from '../primitives/reading-text';
+  import { finiteValue, observationValue, readingText, readingValue } from '../primitives/reading-text';
   import type {
     DisplayObservedField, RadioWideIndicatorsViewModel, ReceiverIndicatorField,
     ReceiverIndicatorViewModel, TxAuxField,
@@ -201,11 +201,12 @@
   </header>
 
   <div class="s-meter" data-testid="receiver-s-meter" data-receiver={indicator.receiver}>
-    {#if indicator.sMeter.reading.status === 'known' && Number.isFinite(indicator.sMeter.reading.value)}
+    {@const sMeterValue = finiteValue(readingValue(indicator.sMeter))}
+    {#if sMeterValue !== null}
       {#if sMeter}
         {@render sMeter()}
       {:else}
-        <LinearSMeter value={indicator.sMeter.reading.value} compact label={appearance === 'standard' ? slotLabel : undefined} variant={appearance === 'sdr' ? 'sdr-screen' : 'vfo-wide'} source={indicator.sMeter.source} session={continuitySession} />
+        <LinearSMeter value={sMeterValue} compact label={appearance === 'standard' ? slotLabel : undefined} variant={appearance === 'sdr' ? 'sdr-screen' : 'vfo-wide'} source={indicator.sMeter.source} session={continuitySession} />
       {/if}
     {:else}
       <div

@@ -18,6 +18,8 @@
  *   → the value).
  * - `observationValue` — the `display.state` vocabulary (current or stale
  *   → the value, anything else → nothing).
+ * - `finiteValue` — the legacy NaN/null/Infinity marker vocabulary (a
+ *   finite number → the number, NaN/±Infinity/null/undefined → nothing).
  *
  * A read-but-falsy value (`0`, `false`, `''`) still renders;
  * `readingText`'s formatter defaults to `String`.
@@ -73,4 +75,12 @@ export function observationValue<T>(
   return observation.state === 'current' || observation.state === 'stale'
     ? observation.value ?? null
     : null;
+}
+
+/**
+ * Vocabulary 3 — the legacy NaN/null/Infinity marker: a finite number →
+ * the number; NaN, ±Infinity, null and undefined → nothing.
+ */
+export function finiteValue(value: number | null | undefined): number | null {
+  return value !== null && value !== undefined && Number.isFinite(value) ? value : null;
 }

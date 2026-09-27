@@ -16,6 +16,7 @@
   } from '../primitives/scalar/continuous-scalar.svelte';
   import { rawToPercentDisplay } from '../primitives/scalar/value-control-core';
   import { disabledReasonText } from './disabled-reason';
+  import { finiteValue, valueText } from '../primitives/reading-text';
   import type { RadioViewModel, TxAuxField } from './radio-view-model';
   import {
     TX_AUX_FEEDBACK_LEVELS,
@@ -59,10 +60,14 @@
   // MOR-2647: an unread value renders no text. Every consumer of this —
   // the readout, the canonical output, aria-valuetext and the feedback
   // status — inherits the empty string, so none of them can print `?`.
+  // MOR-2688 S4b: the NaN/null guard enters through `finiteValue`; the row
+  // format is kept exactly.
   const formatValue = (field: TxAuxLevelField, value: number | null): string => {
-    if (value === null || !Number.isFinite(value)) return '';
     const [, , min, max, , format] = row(field);
-    return (format ?? ((raw: number) => rawToPercentDisplay(raw, min, max)))(value);
+    return valueText(
+      finiteValue(value),
+      format ?? ((raw: number) => rawToPercentDisplay(raw, min, max)),
+    );
   };
 
   function request(field: TxAuxLevelField, value: number): void {
@@ -206,10 +211,10 @@
     {@const currentStatus = status(field)}
     {@const currentFeedback = feedbackOf(field)}
     {@const disabledReason = reason(field)}
-    {@const valueText = formatValue(field, canonical(field))}
+    {@const canonicalText = formatValue(field, canonical(field))}
     {@const accessibility = {
       description: disabledReason ?? null,
-      valueText: `${label}${valueText === '' ? '' : `: ${valueText}`}${currentStatus === '' ? '' : `; ${currentStatus}`}`,
+      valueText: `${label}${canonicalText === '' ? '' : `: ${canonicalText}`}${currentStatus === '' ? '' : `; ${currentStatus}`}`,
     }}
     <div
       class="tx-aux-level"

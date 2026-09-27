@@ -211,6 +211,19 @@ describe('two-scalar DSP family host', () => {
     r.dispose();
   });
 
+  // MOR-2688 S4b: `formatValue`'s NaN/null/Infinity guard now enters
+  // through `finiteValue`. A read value renders its exact text, and a
+  // confirmed NaN renders `''` — red under a `finiteValue` mutation that
+  // accepts a marker value.
+  it('renders a read value exactly and a confirmed NaN as EMPTY (MOR-2688 S4b)', () => {
+    const r = render();
+    expect(r.row('nbLevel')?.querySelector('[data-canonical-value]')?.textContent).toBe('64');
+    r.props.feedback = feedback({ nbLevel: commandFeedback('nbLevel', { confirmed: Number.NaN }) });
+    flushSync();
+    expect(r.row('nbLevel')?.querySelector('[data-canonical-value]')?.textContent).toBe('');
+    r.dispose();
+  });
+
   it('keeps a null NR domain unknown, disabled, and command-inert', () => {
     const current = view();
     const r = render({
