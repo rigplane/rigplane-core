@@ -275,13 +275,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "unknown" or invented defaults, on screen or in accessible names
   (MOR-2644, MOR-2647–MOR-2655, MOR-2657–MOR-2659, MOR-2667, MOR-2668,
   MOR-2673, MOR-2674, MOR-2682, MOR-2683, MOR-2690–MOR-2692).** An
-  unread reading is an empty, unlit slot whose width is reserved from
-  the profile's own catalogs, so nothing moves when the first reading
-  arrives. Empty memory channels render an empty row instead of
-  "-- empty --"; an antenna's blocked reason sits on the disabled
-  control's title rather than visible text; and an unread compressor,
-  monitor-gain or filter value is no longer replaced by a number or
-  by the first choice's label.
+  unread reading is an empty, unlit slot reserved for the widest text
+  the slot can show, sized from the profile's own mode and filter
+  lists where the text depends on the radio, so nothing moves when
+  the first reading arrives. Empty memory channels render an empty
+  row instead of "-- empty --"; an antenna's blocked reason sits on
+  the disabled control's title rather than visible text; and an
+  unread compressor, monitor-gain or filter value is no longer
+  replaced by a number or by the first choice's label.
 
 - **The uncertain TX state reads "TX" with a hollow lamp (MOR-2671).**
   Confirmed and unconfirmed states now differ by shape — filled versus
@@ -361,9 +362,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **PSK and PSK-R modes light on the mode panel (MOR-2508).** The
   store's enum token is mapped to the profile's label before the
-  strict comparison, so PSK-R no longer stays dark. A guard over the
-  shipped rig profiles pins each declared mode label to what the
-  radio's mode vocabulary can express.
+  strict comparison, so PSK-R no longer stays dark.
 
 - **Hardware validation reads each control's band from the rig
   profile (MOR-2476).** The hard-coded ranges survive only as an
