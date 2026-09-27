@@ -339,13 +339,13 @@ describe('DualSdrFace', () => {
       vfos: [vfo('MAIN', true), vfo('SUB', false)],
       modeFilter: {
         activeFilterConfiguration: null,
-        currentMode: { status: 'unknown' },
+        currentMode: unknown(),
         modeChoices: ['LSB', 'DATA-FM-N'],
-        currentFilter: { status: 'unknown' },
+        currentFilter: unknown(),
         filterChoices: ['FIL2', 'WIDE-F3'],
-        filterWidth: { status: 'unknown' },
-        filterWidthMin: { status: 'unknown' },
-        filterWidthMax: { status: 'unknown' },
+        filterWidth: unknown(),
+        filterWidthMin: unknown(),
+        filterWidthMax: unknown(),
       },
     } as unknown as RadioViewModel;
   }
