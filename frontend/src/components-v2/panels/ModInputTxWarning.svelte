@@ -20,7 +20,9 @@
 {#if p.visible}
   <div class="mod-input-tx-warning" role="alert" data-testid="mod-input-tx-warning">
     <span class="warning-text">
-      {t('core.txGuard.modInputNotLan', { source: p.sourceLabel ?? '?' })}
+      {p.sourceLabel === null
+        ? t('core.txGuard.modInputNotLanUnknown')
+        : t('core.txGuard.modInputNotLan', { source: p.sourceLabel })}
     </span>
     <div class="warning-actions">
       <button

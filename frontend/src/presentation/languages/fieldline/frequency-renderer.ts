@@ -23,7 +23,8 @@ export const GROUP_GAP_PX = 6;
 export const DIGIT_SIZE_PX = 46;
 /** Slab digits are set slightly tight; a mono face already advances uniformly. */
 export const DIGIT_TRACKING = '-0.01em';
-const UNKNOWN_TEXT = '—';
+/** An unread frequency is unlit: no text at all in the reserved digit slots. */
+const UNKNOWN_TEXT = '';
 const GROUP_NAMES = ['mhz', 'khz', 'hz'] as const;
 
 export type FrequencyGroupName = (typeof GROUP_NAMES)[number];

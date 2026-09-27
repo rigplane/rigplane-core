@@ -48,6 +48,10 @@ const mockHandlers = {
 // default unarmed here, this file's tests are not about that behavior
 // (covered by `mor1536-armed-adoption.isolated.test.ts`).
 const unarmed = { armed: false, value: null };
+// MOR-1689: filter-shape's own armed fact — a DIFFERENT intent
+// (`set_filter_shape`) than filter selection's `set_filter` above, same
+// shape as `unarmed` (parity with ModePanel's DATA-mode armed mock).
+const shapeArmed: { armed: boolean; value: number | null } = { armed: false, value: null };
 const widthLifecycle = {
   confirmed: 2400,
   target: null as number | null,
@@ -138,6 +142,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   },
   getFilterHandlers: () => mockHandlers,
   getFilterArmed: () => unarmed,
+  getFilterShapeArmed: () => shapeArmed,
   getFilterWidthControlFeedback: () => feedbackOverride.get('value') ?? feedbackFromLifecycle(),
   getPbtInnerHzControlFeedback: () => passbandOverride.get('inner')
     ?? passbandFeedback('pbt-inner', mockProps.pbtInner ?? 0),
@@ -214,6 +219,8 @@ function mountPanel(overrides?: Partial<typeof mockProps>) {
 
 beforeEach(() => {
   components = [];
+  shapeArmed.armed = false;
+  shapeArmed.value = null;
   setLocale('en-US');
   setMockProps({
     currentMode: 'USB',
@@ -1322,6 +1329,74 @@ describe('filter shape visibility (MOR-1503)', () => {
     const buttons = Array.from(document.querySelectorAll('button')).map((el) => el.textContent?.trim());
     expect(buttons).toContain('SHARP');
     expect(buttons).toContain('SOFT');
+  });
+});
+
+/**
+ * MOR-1689 — filter-shape pending feedback (SHARP/SOFT). The shape buttons
+ * dispatch `set_filter_shape` and wait for the poll to confirm; until then
+ * the requested target must carry the same structural markers the FIL
+ * buttons (MOR-1536) and DspPanel's notch choices (MOR-1672) already use:
+ * `data-armed` plus `aria-busy` and an `aria-describedby` `.sr-only`
+ * announcement on the actual `<button>`. `data-armed` is a structural
+ * marker here — these raw buttons do not load `control-button-armed.css`
+ * (only `ControlButton.svelte` imports it), so it paints nothing on its
+ * own. The confirmed `class:active` reading stays the sole selection
+ * source — pending never presents the target as confirmed.
+ */
+describe('filter shape pending feedback (MOR-1689)', () => {
+  const shapeButton = (label: string): HTMLButtonElement | undefined =>
+    Array.from(document.querySelectorAll<HTMLButtonElement>('.shape-section .shape-button'))
+      .find((el) => el.textContent?.trim() === label);
+
+  it('marks only the armed target with data-armed while set_filter_shape is in flight', () => {
+    shapeArmed.armed = true;
+    shapeArmed.value = 1;
+    const t = mountPanel();
+    (t.querySelector('.settings-button') as HTMLButtonElement).click();
+    flushSync();
+
+    expect(shapeButton('SHARP')?.dataset.armed).toBeUndefined();
+    expect(shapeButton('SOFT')?.dataset.armed).toBe('true');
+  });
+
+  it('carries aria-busy and an aria-describedby sr-only announcement on the armed target only', () => {
+    shapeArmed.armed = true;
+    shapeArmed.value = 1;
+    const t = mountPanel();
+    (t.querySelector('.settings-button') as HTMLButtonElement).click();
+    flushSync();
+
+    const soft = shapeButton('SOFT')!;
+    expect(soft.getAttribute('aria-busy')).toBe('true');
+    const describedBy = soft.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    const announcement = describedBy ? document.getElementById(describedBy) : null;
+    expect(announcement?.classList.contains('sr-only')).toBe(true);
+
+    expect(shapeButton('SHARP')!.getAttribute('aria-busy')).toBe('false');
+    expect(shapeButton('SHARP')!.getAttribute('aria-describedby')).toBeNull();
+  });
+
+  it('never presents the armed target as confirmed: active tracks filterShape only', () => {
+    shapeArmed.armed = true;
+    shapeArmed.value = 1;
+    const t = mountPanel({ filterShape: 0 });
+    (t.querySelector('.settings-button') as HTMLButtonElement).click();
+    flushSync();
+
+    expect(shapeButton('SHARP')!.classList.contains('active')).toBe(true);
+    expect(shapeButton('SOFT')!.classList.contains('active')).toBe(false);
+    expect(shapeButton('SOFT')!.dataset.armed).toBe('true');
+  });
+
+  it('marks no shape button when nothing is armed', () => {
+    const t = mountPanel();
+    (t.querySelector('.settings-button') as HTMLButtonElement).click();
+    flushSync();
+
+    expect(document.querySelectorAll('.shape-section .shape-button[data-armed]')).toHaveLength(0);
+    expect(document.querySelectorAll('.shape-section .shape-button[aria-busy="true"]')).toHaveLength(0);
   });
 });
 

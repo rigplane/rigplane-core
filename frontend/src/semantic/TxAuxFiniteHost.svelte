@@ -15,10 +15,11 @@
       ? disabledReasonText(field.availability)
       : usable(field) ? undefined : disabledReasonText({ structural: true, operational: false });
 
-  const textOf = (field: TxAuxField<unknown>): string =>
-    field.reading.status !== 'known' ? '?'
-      : typeof field.reading.value === 'boolean' ? (field.reading.value ? 'on' : 'off')
-        : String(field.reading.value);
+  // MOR-2647: a key carries no value text. The only reading that still
+  // needs words is ATU `tuning`, and that lives in the title, not the label.
+  const tuningTitle = (field: TxAuxField<unknown>): string | undefined =>
+    field.reading.status === 'known' && field.reading.value === 'tuning'
+      ? 'ATU: tuning' : undefined;
 
   let sequence = 0;
 </script>
@@ -81,16 +82,15 @@
 
   function toggleInput(field: TxAuxToggleField, label: string): ToggleRendererInput {
     const source = sourceField(field);
-    const text = source ? textOf(source) : '?';
     const reason = source ? reasonTextOf(source) : undefined;
+    const tuning = source ? tuningTitle(source) : undefined;
     return {
       context: rendererContext ?? null,
       field: booleanField(field),
       label,
-      accessibleLabel: `${label}: ${text}`,
-      ...(reason === undefined
-        ? field === 'atu' && text === 'tuning' ? { title: 'ATU: tuning' } : {}
-        : { title: reason }),
+      accessibleLabel: label,
+      ...(reason !== undefined ? { title: reason }
+        : tuning !== undefined ? { title: tuning } : {}),
       invoke: () => onToggle?.(field),
     };
   }
@@ -146,10 +146,10 @@
         data-testid={`tx-aux-${field}`} data-field={field}
         data-surface="hardware" data-indicator-style="dot" data-indicator-color="cyan"
         data-active={behavior.confirmed} data-disabled-reason={reasonOf(source)}
-        title={reasonTextOf(source)} aria-label={`${label}: ${textOf(source)}`}
+        title={reasonTextOf(source) ?? tuningTitle(source)} aria-label={label}
         aria-describedby={reasonIdOf(field)} aria-pressed={behavior.confirmed}
         disabled={!behavior.available} onclick={() => behavior.invoke()}
-      >{label}: {textOf(source)}</button>
+      >{label}</button>
       {#if reasonTextOf(source) !== undefined}
         <span id={reasonIdOf(field)} class="sr-only">{reasonTextOf(source)}</span>
       {/if}
@@ -192,6 +192,10 @@
 
 <style>
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+  /* MOR-2647: the key shows its label only, so its box is reserved at the
+     widest label (`ATU`, 3ch). A first reading lights the key; it never
+     grows it. */
+  .tx-aux-toggle { min-width: 3ch; font-variant-numeric: tabular-nums; }
   .tx-aux-toggle[aria-pressed='true'] { font-weight: 700; }
   .tx-aux-toggle:disabled, .tx-aux-tune:disabled { cursor: not-allowed; }
 </style>

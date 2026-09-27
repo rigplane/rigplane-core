@@ -2252,6 +2252,55 @@ class TestGracefulShutdown:
 
         assert srv._server is None
 
+    async def test_stop_during_client_teardown_still_closes_socket(
+        self,
+        mock_radio: MagicMock,
+        cfg: RigctldConfig,
+        proto: MagicMock,
+        handler: MagicMock,
+    ) -> None:
+        """MOR-1887: stop() cancelling a client mid-teardown strands nothing.
+
+        The client handler's ``finally`` gathers its cancelled response tasks
+        before the unconditional socket close. A ``stop()`` cancellation
+        landing on that gather used to skip the close entirely: the abandoned
+        transport kept ``Server.wait_closed()`` pending forever, which under
+        ``-n auto`` surfaced as a dead xdist worker ("node down") around
+        ``test_max_clients_rejected``. The teardown must be waited out even
+        when the cancellation arrives mid-teardown.
+        """
+
+        async def slow_to_cancel(cmd: RigctldCommand) -> RigctldResponse:
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                # The cancel takes a detour, so the handler's teardown
+                # gather is still pending when stop() cancels the handler.
+                await asyncio.sleep(0.1)
+                raise
+            return _FREQ_RESP  # pragma: no cover
+
+        handler.execute = slow_to_cancel
+        srv = RigctldServer(mock_radio, cfg, _protocol=proto, _handler=handler)
+        await srv.start()
+
+        r, w = await _connect(srv)
+        w.write(b"f\n")
+        await w.drain()
+        await asyncio.sleep(0.05)  # the response task is inside execute()
+
+        # EOF: the handler breaks out of its read loop and enters its
+        # teardown gather while the response task is still unwinding.
+        w.close()
+        await asyncio.sleep(0.05)
+
+        # Cancels the handler mid-teardown; before MOR-1887 this hung forever
+        # inside Server.wait_closed().
+        await asyncio.wait_for(srv.stop(), timeout=5.0)
+
+        assert srv._server is None
+        await _close(w)
+
 
 # ---------------------------------------------------------------------------
 # Abrupt disconnect

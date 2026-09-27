@@ -8,7 +8,9 @@
   } from './rx-tx-surface';
 
   export const ANTENNA_PORTS = [1, 2] as const;
-  export const UNKNOWN_TEXT = '—';
+  /** MOR-2652: an unread reading prints nothing — an unlit slot, never a dash.
+   *  Kept exported because `AntennaSurface.svelte` re-exports the name. */
+  export const UNKNOWN_TEXT = '';
 
   const RF_MUST_BE_IDLE: readonly KeyBlockedReason[] = [
     'tx-busy', 'radio-transmitting', 'rf-state-unknown',
@@ -162,7 +164,7 @@
               aria-checked={lease.view?.selected === port} aria-describedby={layout.blockedId}
               disabled={!lease.view?.available} onclick={() => lease.invoke(port)}>ANT {port}</button>
           {/each}
-          <output class:sr-only={compact} data-testid="antenna-port-value">{textOf(ant.txAntenna)}</output>
+          <output class="antenna-value" class:sr-only={compact} data-testid="antenna-port-value">{textOf(ant.txAntenna)}</output>
         </div>
       {/if}
     {/key}{/key}
@@ -180,7 +182,7 @@
           <button type="button" class="antenna-choice" data-testid="antenna-rx-toggle"
             aria-pressed={lease.view?.confirmed} aria-describedby={layout.blockedId}
             disabled={!lease.view?.available} onclick={() => lease.invoke()}>
-            {compact ? 'RX ANT' : `RX-ANT: ${textOf(ant.rxAnt)}`}</button>
+            {compact ? 'RX ANT' : `RX-ANT:${textOf(ant.rxAnt) ? ` ${textOf(ant.rxAnt)}` : ''}`}</button>
           {#if compact}<output class="sr-only" data-testid="antenna-rx-value">{textOf(ant.rxAnt)}</output>{/if}
         </div>
       {/if}
@@ -191,6 +193,7 @@
 
 <style>
   .antenna-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; }
+  .antenna-value { display: inline-block; min-width: 1ch; font-variant-numeric: tabular-nums; }
   .antenna-choice[aria-checked='true'], .antenna-choice[aria-pressed='true'] { font-weight: 700; }
   [data-observed='false'] { font-style: italic; }
   button:disabled { cursor: not-allowed; }

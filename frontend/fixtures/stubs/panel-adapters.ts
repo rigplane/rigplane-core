@@ -205,6 +205,10 @@ export function getModInputArmed(): { armed: false; value: null } {
   return { armed: false, value: null };
 }
 
+export function getFilterShapeArmed(): { armed: false; value: null } {
+  return { armed: false, value: null };
+}
+
 /**
  * MOR-2425 — `SemanticRadioSurfaces.svelte` now also imports
  * `deriveMemoryPanelProps`/`getMemoryHandlers` unconditionally (same

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
 // @ts-expect-error -- Svelte does not publish types for its test-only effect harness.
 import { effect_root } from 'svelte/internal/client';
@@ -138,8 +139,45 @@ describe('StandardFrequencyReadout', () => {
 
   it('renders the presentation-specific unknown text', () => {
     const unknown = projectFrequencyReadout({ confirmedHz: null });
+    // MOR-2654 (owner rule, 2026-09-26): unread is unlit — the interactive
+    // readout keeps its focusable slot with a no-break space; the passive
+    // readout keeps its three reserved digit slots with invisible digits
+    // (no glyph drawn) and separator dots only.
     expect(mountReadout({ model: unknown, presentation: 'interactive' }).textContent?.trim()).toBe('');
-    expect(mountReadout({ model: unknown, presentation: 'passive' }).textContent?.replace(/\s/g, '')).toBe('--.---.---');
+    const passive = mountReadout({ model: unknown, presentation: 'passive' });
+    expect(passive.querySelectorAll('.digits')).toHaveLength(3);
+    expect(passive.textContent).not.toContain('-');
+    // Geometry: each slot reserves the widest content the known path can
+    // render (MHz 1-3 digits, kHz/Hz always 3) via an invisible `.unlit`
+    // span — visibility keeps the box, draws no glyph. The visible text is
+    // dots only, so the operator sees no placeholder.
+    for (const slot of passive.querySelectorAll('.digits')) {
+      expect(slot.querySelector('.unlit')!.textContent).toBe('888');
+    }
+    const known = mountReadout({
+      // Widest MHz group the known path renders (3 digits, e.g. 148 MHz).
+      model: projectFrequencyReadout({ confirmedHz: 148_000_000 }),
+      presentation: 'passive',
+    });
+    const passiveWidths = [...passive.querySelectorAll('.digits')].map(
+      (slot) => slot.querySelector('.unlit')!.textContent!.length,
+    );
+    const knownWidths = [...known.querySelectorAll('.digits')].map(
+      (slot) => (slot.textContent ?? '').length,
+    );
+    expect(passiveWidths).toEqual(knownWidths);
+    // The reservation draws no glyph: every `.unlit` span carries the
+    // component's hiding class, and the component's own `<style>` hides
+    // that class (static pin — jsdom never applies scoped styles, so
+    // getComputedStyle cannot see it; the pattern follows
+    // PeerSplitLayout.component.test.ts). The operator sees dots only.
+    const source = readFileSync(
+      'src/primitives/frequency/StandardFrequencyReadout.svelte', 'utf8',
+    );
+    const css = (source.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '').replace(
+      /\/\*[\s\S]*?\*\//g, '',
+    );
+    expect(css).toMatch(/\.unlit\s*\{\s*visibility\s*:\s*hidden/);
   });
 });
 

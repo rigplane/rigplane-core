@@ -103,12 +103,15 @@ describe('leading MHz zeros shift off, matching splitFrequencyToDigits()', () =>
 });
 
 describe('an unobserved frequency stays unobserved', () => {
-  it('renders a null frequency as an explicit unknown, never as 0 Hz', () => {
+  it('renders a null frequency as unlit, never as 0 Hz, never a dash', () => {
     const r = render({ frequencyHz: null });
     expect(r.unknown).toBe(true);
     expect(r.groups).toEqual([]);
-    expect(r.text).toBe('—');
+    // MOR-2654 (owner rule, 2026-09-26): unlit digits in reserved slots.
+    expect(r.text).toBe('');
     expect(r.text).not.toMatch(/0/);
+    expect(r.text).not.toContain('—');
+    expect(r.text).not.toContain('-');
   });
 
   it('renders a missing frequency field the same way — absence is not zero', () => {

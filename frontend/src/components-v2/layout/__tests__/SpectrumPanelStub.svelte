@@ -18,9 +18,17 @@
     hideAutoStepToggle = false,
     scopeControls,
     scopeStatusIndicator,
+    scopeProjection,
+    scopeDemanded,
+    onScopeDemandChange,
   }: {
     hideScopeControls?: boolean; hideAutoStepToggle?: boolean; scopeControls?: Snippet;
     scopeStatusIndicator?: Snippet;
+    // MOR-2442 — the managed projection/demand props, recorded the way the
+    // contract fields above are, so layout tests prove who gets the
+    // SemanticRadioSurfaces region without mounting the real panel.
+    scopeProjection?: unknown; scopeDemanded?: boolean;
+    onScopeDemandChange?: unknown;
   } = $props();
 </script>
 
@@ -29,6 +37,9 @@
   data-hide-scope-controls={hideScopeControls}
   data-hide-auto-step-toggle={hideAutoStepToggle}
   data-has-scope-controls={scopeControls !== undefined}
+  data-managed-scope={scopeProjection !== undefined}
+  data-scope-demanded={scopeDemanded ?? 'undefined'}
+  data-has-scope-demand-handler={onScopeDemandChange !== undefined}
 >
   Spectrum Stub
   {#if scopeControls}{@render scopeControls()}{/if}

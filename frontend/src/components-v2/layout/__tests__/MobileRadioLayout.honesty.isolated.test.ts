@@ -116,6 +116,7 @@ vi.mock('$lib/audio/audio-manager', () => ({
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   hasTx: vi.fn(() => true), hasDualReceiver: vi.fn(() => false), hasAnyScope: vi.fn(() => false),
   hasSpectrum: vi.fn(() => false), getCapabilities: vi.fn(() => null),
+  getScopeSource: vi.fn(() => null),
   subscribeCapabilities: vi.fn((handler: (caps: null) => void) => {
     handler(null);
     return () => {};

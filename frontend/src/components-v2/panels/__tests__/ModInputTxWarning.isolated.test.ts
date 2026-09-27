@@ -57,6 +57,17 @@ describe('ModInputTxWarning', () => {
     expect(el.querySelector('[data-testid="mod-input-tx-warning"]')).toBeNull();
   });
 
+  it('shows the warning without a source placeholder when the source is unread', () => {
+    const el = mountWarning({ visible: true, sourceLabel: null });
+    const text =
+      el.querySelector('[data-testid="mod-input-tx-warning"] .warning-text')?.textContent ?? '';
+    expect(text).toBe(
+      'MOD input is not LAN — your voice from the web will not be transmitted (TX).',
+    );
+    expect(text).not.toMatch(/\?|UNKNOWN|unknown|N\/A/);
+    expect(text).not.toMatch(/MOD input is [—–-]/);
+  });
+
   it('shows the warning with the offending source label when armed', () => {
     const el = mountWarning({ visible: true, sourceLabel: 'MIC' });
     const banner = el.querySelector('[data-testid="mod-input-tx-warning"]');

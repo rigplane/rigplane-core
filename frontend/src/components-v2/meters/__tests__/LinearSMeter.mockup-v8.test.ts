@@ -334,8 +334,14 @@ describe('MOR-2509 R2-2 — mock-up v8 S-meter geometry', () => {
     expect(svg.getAttribute('aria-label')).toBe('S meter S7');
     expect(svg.getAttribute('aria-label')).not.toMatch(/dBm/);
     const unknown = mountMeter(withPo(null));
-    expect(unknown.getAttribute('aria-label')).toBe('S meter reading unknown');
+    expect(unknown.getAttribute('aria-label')).toBe('S meter');
     expect(unknown.textContent).not.toContain('?');
+    // MOR-2649 reserved-slot pin: the unread reading cell is the SAME
+    // permanent node at the SAME reserved x (width − the 48px cell) with
+    // empty ink. Red if a null value moves or drops the caption slot.
+    const slot = unknown.querySelector('[data-meter-reading]')!;
+    expect(slot.textContent).toBe('');
+    expect(Number(slot.getAttribute('x'))).toBe(READOUT_X);
   });
 
   it('never changes the SVG size with the reading', () => {

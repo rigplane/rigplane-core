@@ -56,8 +56,11 @@
     (!field.availability.structural
       ? disabledReasonText(field.availability)
       : usable(field) ? undefined : disabledReasonText({ structural: true, operational: false }));
+  // MOR-2647: an unread value renders no text. Every consumer of this —
+  // the readout, the canonical output, aria-valuetext and the feedback
+  // status — inherits the empty string, so none of them can print `?`.
   const formatValue = (field: TxAuxLevelField, value: number | null): string => {
-    if (value === null || !Number.isFinite(value)) return '?';
+    if (value === null || !Number.isFinite(value)) return '';
     const [, , min, max, , format] = row(field);
     return (format ?? ((raw: number) => rawToPercentDisplay(raw, min, max)))(value);
   };
@@ -170,8 +173,10 @@
     if (feedback.phase === 'idle') return '';
     const [, label] = row(field);
     const target = feedback.target ?? feedback.requestedTarget;
-    const requested = target === null ? '' : `; requested ${formatValue(field, target)}`;
-    const confirmed = `; confirmed ${formatValue(field, feedback.confirmed)}`;
+    const requestedText = formatValue(field, target);
+    const confirmedText = formatValue(field, feedback.confirmed);
+    const requested = requestedText === '' ? '' : `; requested ${requestedText}`;
+    const confirmed = confirmedText === '' ? '' : `; confirmed ${confirmedText}`;
     const error = feedback.outcome?.error === undefined ? '' : `; ${feedback.outcome.error}`;
     return `${label}: ${feedback.phase.replaceAll('-', ' ')}${requested}${confirmed}${error}`;
   }
@@ -201,9 +206,10 @@
     {@const currentStatus = status(field)}
     {@const currentFeedback = feedbackOf(field)}
     {@const disabledReason = reason(field)}
+    {@const valueText = formatValue(field, canonical(field))}
     {@const accessibility = {
       description: disabledReason ?? null,
-      valueText: `${label}: ${formatValue(field, canonical(field))}${currentStatus === '' ? '' : `; ${currentStatus}`}`,
+      valueText: `${label}${valueText === '' ? '' : `: ${valueText}`}${currentStatus === '' ? '' : `; ${currentStatus}`}`,
     }}
     <div
       class="tx-aux-level"
@@ -310,6 +316,10 @@
   .tx-aux-level { display: grid; grid-template-columns: 10ch 8rem auto; align-items: center; gap: 0.5rem; }
   .tx-aux-level--presented { display: flex; width: 100%; min-width: 0; max-width: 100%; }
   .tx-aux-name { white-space: nowrap; }
+  /* MOR-2647: the value box stays reserved. `4ch` covers the widest
+     rendered text (`100%`), and `inline-block` is what makes the min-width
+     apply to the inline <output>, so a first reading cannot shift the row. */
+  .tx-aux-level > output { display: inline-block; min-width: 4ch; font-variant-numeric: tabular-nums; }
   .tx-aux-level :global(.vc-hbar) { width: 100%; min-width: 0; }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 </style>

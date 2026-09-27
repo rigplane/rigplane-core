@@ -76,6 +76,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   getSystemHandlers: () => ({}),
   getDataModeArmed: () => ({ armed: false, value: null }),
   getModInputArmed: () => ({ armed: false, value: null }),
+  getFilterShapeArmed: () => ({ armed: false, value: null }),
   getBreakInDelayControlFeedback: () => null,
   getFilterWidthControlFeedback: h.filterWidthFeedback,
   // MOR-1687 part 1 — `SemanticRadioSurfaces.svelte` imports the passband

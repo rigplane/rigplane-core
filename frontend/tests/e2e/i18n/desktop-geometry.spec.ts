@@ -975,6 +975,11 @@ for (const layout of ['standard', 'sdr-test', 'lcd-scope', 'lcd-cockpit']) {
           return false;
         }).map(e => e.textContent));
         expect.soft(clippedDigits, 'every frequency group survives clipping ancestors').toEqual([]);
+        // MOR-2654: the ghost all-8s layer is a constant row (8888.888.888),
+        // independent of the reading — the unread slot is exactly as wide as
+        // any known one, so the first reading cannot move anything.
+        const ghostText = await page.locator('.lcd-frame .freq-ghost').first().textContent();
+        expect.soft(ghostText?.replace(/\s/g, ''), 'LCD ghost row keeps its constant slot count').toBe('8888.888.888');
         await page.locator('.lcd-layout .content-right').evaluate(e => { e.scrollTop = e.scrollHeight; });
       } else {
         const center = await page.locator('.desktop-controls-center .content-row').boundingBox();
@@ -1027,6 +1032,23 @@ for (const known of [true, false]) {
     expect(errors).toEqual([]);
   });
 }
+
+// MOR-2649: an unread S-meter is an empty bar with no caption — the removed
+// '?' placeholder ink cannot change the meter's box. The wrapper div would
+// hide an inner change, so this measures the meter's OWN SVG element between
+// an unknown (unread) and a known (read) fixture: width AND height must be
+// identical, so a first reading cannot move the layout.
+test('standard 1440 receiver S-meter keeps its box between unread and read', async ({ page }) => {
+  const meterBox = async (known: boolean) => {
+    await boot(page, 'standard', 1440, known, 'studioline', false, 'topology-1-single');
+    return page.locator('[data-testid="receiver-s-meter"] svg')
+      .evaluate(element => element.getBoundingClientRect().toJSON());
+  };
+  const knownBox = await meterBox(true);
+  const unknownBox = await meterBox(false);
+  expect(unknownBox.width).toBe(knownBox.width);
+  expect(unknownBox.height).toBe(knownBox.height);
+});
 
 // MOR-2425/R41: the freshness cue is gone, so the claim is now the stronger
 // one it used to approximate — the instrument's geometry does not move at all

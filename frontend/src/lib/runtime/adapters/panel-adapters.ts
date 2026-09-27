@@ -28,6 +28,7 @@ import {
   makeKeyboardHandlers, makeSystemHandlers, makeRepeaterHandlers,
 } from '../commands/panel-commands';
 import { toRadioViewModel } from './radio-view-model-adapter';
+import { blockedReasonLabel } from '$lib/i18n/blocked-reasons';
 import {
   getManagedAppTxController, type ManagedAppTxController,
 } from '../tx-controller/managed-app-host';
@@ -397,8 +398,14 @@ export function projectControlFeedback<T>(
     : latest.dispatchedEventEpoch !== undefined ? 'dispatched' : 'submitted';
   const outcomePhase: ControlFeedbackOutcome = latest.terminalOutcome === 'superseded'
     ? 'superseded' : latest.status as ControlFeedbackOutcome;
+  // MOR-1890: a TX-interlock refusal stores its reason as the kebab-case
+  // semantic code (ws-client mapped it on the wire); resolve that code to
+  // the operator-legible sentence here, at the one outcome-build point, so
+  // every renderer (scalar renderers, per-panel issued-status formatters,
+  // polite announcements) reads the SAME text. Unrecognised text — a raw
+  // server message — falls back verbatim, sliced as before.
   const error = terminal && typeof latest.error === 'string' && latest.error.length > 0
-    ? latest.error.slice(0, 256) : undefined;
+    ? (blockedReasonLabel(latest.error) ?? latest.error.slice(0, 256)) : undefined;
   const transitionId = phase === 'dispatched'
     ? JSON.stringify([latest.originalEpoch, latest.id, phase, latest.dispatchedEventEpoch])
     : phase === 'queued'
@@ -1618,6 +1625,17 @@ export function getFilterArmed(): ArmedFact<number> {
   const receiver = activeReceiverOrNull();
   if (receiver === null) return { armed: false, value: null };
   return armedFact<number>('set_filter', 'filter', receiver, 'filter');
+}
+
+/** Filter-shape (SHARP/SOFT) armed fact (`set_filter_shape`, param `shape`,
+ *  confirmed field `filterShape`). A DIFFERENT intent from `getFilterArmed`
+ *  above (`set_filter`): a shape change and a filter selection can be in
+ *  flight at the same time and must not be conflated — same separation as
+ *  `getDataModeArmed` from `getModeArmed`. */
+export function getFilterShapeArmed(): ArmedFact<number> {
+  const receiver = activeReceiverOrNull();
+  if (receiver === null) return { armed: false, value: null };
+  return armedFact<number>('set_filter_shape', 'shape', receiver, 'filterShape');
 }
 
 /** Preamp-level armed fact (`set_preamp`). Same underlying primitive as

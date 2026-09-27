@@ -122,6 +122,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   deriveFilterProps: () => mockFilterProps,
   getFilterHandlers: () => mockFilterHandlers,
   getFilterArmed: () => mockFilterArmed,
+  getFilterShapeArmed: () => ({ armed: false, value: null }),
   getFilterWidthCommandLifecycle: () => mockFilterWidthLifecycle,
   getFilterWidthControlFeedback: () => mockFilterWidthFeedback,
   getPbtInnerHzControlFeedback: () => mockPassbandUnavailableFeedback,

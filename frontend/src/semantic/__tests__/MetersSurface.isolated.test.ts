@@ -379,12 +379,12 @@ describe('structural availability decides whether a meter EXISTS', () => {
       const tile = s.tile(field)!;
       expect(tile).not.toBeNull();
       expect(tile.dataset.observed).toBe('false');
-      // The S meter ('signal') has its own vocabulary for an
-      // operationally-unavailable reading and still shows its own '?'
-      // placeholder.
+      // The S meter ('signal') draws its operationally-unavailable
+      // reading as an EMPTY caption — the exact-literal pin of MOR-2649,
+      // not a weakened 'no question mark' assertion.
       if (field === 'signal') {
         expect(tile.querySelectorAll('svg')).toHaveLength(1);
-        expect(tile.textContent).toContain('?');
+        expect(tile.querySelector('[data-meter-reading]')?.textContent).toBe('');
         return;
       }
       // R32: every structurally-present bar meter always draws its gauge
@@ -948,7 +948,8 @@ describe('the host descriptor and LinearSMeter share one signal projection', () 
         const tile = s.tile('signal')!;
         expect(tile.dataset.dlUnknown).toBe('true');
         expect(visibleSlotCount(tile, '[data-meter-fill]')).toBe(0);
-        expect(tile.textContent).toContain('S ?');
+        // MOR-2649: the unread readout is exact-empty ink, never 'S ?'.
+        expect(tile.querySelector('[data-meter-reading]')?.textContent).toBe('');
       });
     } finally {
       clearCapabilities();
@@ -1489,7 +1490,8 @@ describe('main-bar and SWR-row opacity are independent, non-compounding channels
         expect(tile.dataset.relevant).toBe('false');
         expect(tile.dataset.observed).toBe('false');
         expect(tile.querySelectorAll('svg')).toHaveLength(1);
-        expect(tile.textContent).toContain('S ?');
+        // MOR-2649: the unread readout is exact-empty ink, never 'S ?'.
+        expect(tile.querySelector('[data-meter-reading]')?.textContent).toBe('');
         expect(getComputedStyle(tile).opacity).not.toBe('0.4');
         expect(tile.querySelector('[data-main-relevant]')?.getAttribute('opacity')).toBe('0.4');
         expect(tile.querySelector('[data-lower-relevant]')?.getAttribute('opacity')).toBe('1');
