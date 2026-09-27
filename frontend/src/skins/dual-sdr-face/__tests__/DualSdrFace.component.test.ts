@@ -184,6 +184,18 @@ describe('DualSdrFace', () => {
     for (const name of ['hold', 'main-sub', 'dual', 'mode', 'edge', 'att', 'ip', 'agc', 'vox', 'comp', 'ant', 'menu1', 'cent-fix', 'expd-set']) expect(target.querySelector<HTMLButtonElement>(`[data-control="${name}"]`)?.disabled).toBe(true);
   });
 
+  // MOR-2688 S3 literal pins: the P.AMP value and the scope MODE status go
+  // through `readingText` — the MODE site's own formatter prefixes 'MODE ',
+  // so under a `format → String` mutation it prints '0', never 'MODE 0'.
+  it('renders the known P.AMP value and the literal MODE … status', async () => {
+    const target = document.createElement('div');
+    const component = mount(DualSdrFace, { target, props: { view: view(1, [0, 1, 2], false, []), scopeSource: { subscribe: () => () => {} } } });
+    await tick();
+    expect(target.querySelector<HTMLButtonElement>('[data-control="pre"]')?.textContent).toBe('P.AMP1');
+    expect(target.querySelector<HTMLElement>('.status')?.textContent).toBe('SPECTRUM SCOPE · MODE 0');
+    unmount(component);
+  });
+
   // MOR-2692 literal pins — no dash/question/placeholder-word token survives
   // anywhere in the rendered subtree of an all-unread face (the same token
   // rule the whole-page guard applies, run here without a browser).
