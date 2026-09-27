@@ -193,133 +193,9 @@ vi.mock('$lib/stores/tuning.svelte', () => ({
 
 import RadioLayout from './fixtures/HostedRadioLayoutFixture.svelte';
 import App from '../../../App.svelte';
-import { extractVfoState, extractMeterState, hasLiveAudioFromState } from '../layout-utils';
+import { hasLiveAudioFromState } from '../layout-utils';
 import { isValidServerState, radio } from '$lib/stores/radio.svelte';
 import { resolveSkinId, type SkinId } from '../../../skins/registry';
-
-// ---------------------------------------------------------------------------
-// extractVfoState
-// ---------------------------------------------------------------------------
-
-describe('extractVfoState', () => {
-  it('returns defaults when radioState is null', () => {
-    const result = extractVfoState(null, 'main');
-    expect(result.receiver).toBe('main');
-    expect(result.freq).toBe(14074000);
-    expect(result.mode).toBe('USB');
-    expect(result.filter).toBe('FIL1');
-    expect(result.sValue).toBe(0);
-    expect(result.badges).toEqual({});
-    expect(result.rit).toBeUndefined();
-  });
-
-  it('returns defaults when radioState is empty object', () => {
-    const result = extractVfoState({}, 'sub');
-    expect(result.receiver).toBe('sub');
-    expect(result.freq).toBe(14074000);
-    expect(result.mode).toBe('USB');
-  });
-
-  it('returns main vfo data from radioState', () => {
-    const state = {
-      main: { freq: 7074000, mode: 'LSB', filter: 'FIL2', sValue: 100, badges: { nr: true } },
-      activeReceiver: 'main',
-    };
-    const result = extractVfoState(state, 'main');
-    expect(result.freq).toBe(7074000);
-    expect(result.mode).toBe('LSB');
-    expect(result.filter).toBe('FIL2');
-    expect(result.sValue).toBe(100);
-    expect(result.badges).toEqual({ nr: true });
-    expect(result.isActive).toBe(true);
-  });
-
-  it('returns sub vfo data from radioState', () => {
-    const state = {
-      sub: { freq: 3573000, mode: 'LSB', filter: 'FIL1', sValue: 50, badges: {} },
-      activeReceiver: 'main',
-    };
-    const result = extractVfoState(state, 'sub');
-    expect(result.freq).toBe(3573000);
-    expect(result.receiver).toBe('sub');
-    expect(result.isActive).toBe(false);
-  });
-
-  it('isActive true when activeReceiver matches receiver', () => {
-    const state = { activeReceiver: 'sub', sub: {} };
-    const result = extractVfoState(state, 'sub');
-    expect(result.isActive).toBe(true);
-  });
-
-  it('isActive false when activeReceiver does not match receiver', () => {
-    const state = { activeReceiver: 'main', sub: {} };
-    const result = extractVfoState(state, 'sub');
-    expect(result.isActive).toBe(false);
-  });
-
-  it('defaults activeReceiver to main when missing', () => {
-    const state = { main: { freq: 14200000 } };
-    const mainResult = extractVfoState(state, 'main');
-    const subResult = extractVfoState(state, 'sub');
-    expect(mainResult.isActive).toBe(true);
-    expect(subResult.isActive).toBe(false);
-  });
-
-  it('passes rit object when present', () => {
-    const state = {
-      main: { rit: { active: true, offset: 120 } },
-      activeReceiver: 'main',
-    };
-    const result = extractVfoState(state, 'main');
-    expect(result.rit).toEqual({ active: true, offset: 120 });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// extractMeterState
-// ---------------------------------------------------------------------------
-
-describe('extractMeterState', () => {
-  it('returns defaults when radioState is null', () => {
-    const result = extractMeterState(null);
-    expect(result.sValue).toBe(0);
-    expect(result.rfPower).toBe(0);
-    expect(result.swr).toBe(0);
-    expect(result.alc).toBe(0);
-    expect(result.txActive).toBe(false);
-    expect(result).not.toHaveProperty('meterSource');
-  });
-
-  it('extracts sValue from radioState.main', () => {
-    const result = extractMeterState({ main: { sValue: 180 } });
-    expect(result.sValue).toBe(180);
-  });
-
-  it('extracts tx values from top-level meter fields', () => {
-    const result = extractMeterState({ powerMeter: 200, swrMeter: 30, alcMeter: 64 });
-    expect(result.rfPower).toBe(200);
-    expect(result.swr).toBe(30);
-    expect(result.alc).toBe(64);
-  });
-
-  it('falls back to legacy tx sub-object', () => {
-    const result = extractMeterState({ tx: { rfPower: 200, swr: 30, alc: 64 } });
-    expect(result.rfPower).toBe(200);
-    expect(result.swr).toBe(30);
-    expect(result.alc).toBe(64);
-  });
-
-  it('extracts txActive without projecting local presentation state', () => {
-    const result = extractMeterState({ txActive: true, meterSource: 'SWR' });
-    expect(result.txActive).toBe(true);
-    expect(result).not.toHaveProperty('meterSource');
-  });
-
-  it('extracts txActive from ptt field', () => {
-    const result = extractMeterState({ ptt: true });
-    expect(result.txActive).toBe(true);
-  });
-});
 
 // ---------------------------------------------------------------------------
 // hasLiveAudioFromState
@@ -344,44 +220,6 @@ describe('hasLiveAudioFromState', () => {
 
   it('returns false when capabilities key is missing', () => {
     expect(hasLiveAudioFromState({ other: true })).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// extractMeterState — sMeter fallback path
-// ---------------------------------------------------------------------------
-
-describe('extractMeterState sMeter fallback', () => {
-  it('prefers sValue over sMeter', () => {
-    const result = extractMeterState({ main: { sValue: 100, sMeter: 50 } });
-    expect(result.sValue).toBe(100);
-  });
-
-  it('falls back to sMeter when sValue is missing', () => {
-    const result = extractMeterState({ main: { sMeter: 75 } });
-    expect(result.sValue).toBe(75);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// extractVfoState — partial nested objects
-// ---------------------------------------------------------------------------
-
-describe('extractVfoState partial data', () => {
-  it('handles partial vfo data with some fields missing', () => {
-    const state = { main: { freq: 7000000 }, activeReceiver: 'main' };
-    const result = extractVfoState(state, 'main');
-    expect(result.freq).toBe(7000000);
-    expect(result.mode).toBe('USB');
-    expect(result.filter).toBe('FIL1');
-    expect(result.sValue).toBe(0);
-    expect(result.badges).toEqual({});
-  });
-
-  it('returns undefined rit when vfo has no rit', () => {
-    const state = { main: { freq: 14074000 } };
-    const result = extractVfoState(state, 'main');
-    expect(result.rit).toBeUndefined();
   });
 });
 
@@ -584,9 +422,9 @@ describe('RadioLayout structure', () => {
   });
 
   // MOR-1313: `desktop-v2` resolves through its layout manifest now, so the
-  // receiver deck hosts the semantic surfaces. The LEGACY deck is what an
-  // undeclared layout gets — see `UNDECLARED` below and the full suppression
-  // matrix in `semantic-desktop-migration.component.test.ts`.
+  // receiver deck hosts the semantic surfaces. An undeclared layout gets an
+  // EMPTY deck since MOR-2728 — see `UNDECLARED` below and the full
+  // suppression matrix in `semantic-desktop-migration.component.test.ts`.
   it('wraps desktop-v2 in one host outside its receiver deck', () => {
     const t = mountLayout();
     const host = t.querySelector('[data-testid="semantic-radio-surfaces"]');
@@ -597,9 +435,13 @@ describe('RadioLayout structure', () => {
     expect(t.querySelector('.vfo-header')).toBeNull();
   });
 
-  it('renders .vfo-header inside .receiver-deck for an undeclared layout', () => {
+  // MOR-2728: the undeclared-layout branch and its legacy `<VfoHeader>` are
+  // deleted — an undeclared id renders an empty receiver deck, never a
+  // resurrected legacy twin.
+  it('renders an empty receiver deck, with no legacy .vfo-header, for an undeclared layout', () => {
     const t = mountLayout(UNDECLARED);
-    expect(t.querySelector('.receiver-deck .vfo-header')).not.toBeNull();
+    expect(t.querySelector('.receiver-deck')).not.toBeNull();
+    expect(t.querySelector('.receiver-deck .vfo-header')).toBeNull();
   });
 
   // MOR-2425 C-R3: `getWsConnected` is mocked false for this whole file, so
@@ -875,8 +717,7 @@ describe('App presentation selection', () => {
 // MOR-1341: `desktop-v2` (this file's `mountLayout()` default) now suppresses
 // `.bottom-dock` via its `meters` zone declaration. MOR-1346 gave `sdr-test`
 // one too, so `UNDECLARED` is now the layout that exercises the dock's OWN
-// behaviour — same move as `VfoHeader dual receiver` below, which tests the
-// legacy deck the same way.
+// behaviour.
 describe('Bottom dock MetersDockPanel', () => {
   it('renders the unified meters dock panel inside .bottom-dock', () => {
     const t = mountLayout(UNDECLARED);
@@ -919,24 +760,10 @@ describe('meters dock TX chrome follows the App TX authority (MOR-1235)', () => 
   });
 });
 
-// MOR-1313: the legacy VFO header lives on the undeclared branch now.
-describe('VfoHeader dual receiver', () => {
-  it('renders only one .panel in vfo-header when hasDualReceiver is false', () => {
-    vi.mocked(hasDualReceiver).mockReturnValue(false);
-    const t = mountLayout(UNDECLARED);
-    const vfoHeader = t.querySelector('.receiver-deck .vfo-header');
-    const panels = vfoHeader?.querySelectorAll('.panel');
-    expect(panels?.length).toBe(1);
-  });
-
-  it('renders two .panel elements in vfo-header when hasDualReceiver is true', () => {
-    vi.mocked(hasDualReceiver).mockReturnValue(true);
-    const t = mountLayout(UNDECLARED);
-    const vfoHeader = t.querySelector('.receiver-deck .vfo-header');
-    const panels = vfoHeader?.querySelectorAll('.panel');
-    expect(panels?.length).toBe(2);
-  });
-});
+// MOR-2728: the legacy `VfoHeader` deck and its undeclared-layout branch are
+// deleted; `semantic-desktop-migration.component.test.ts` and
+// `RadioLayout.command-bus-migration.isolated.test.ts` pin the deck renders
+// no legacy twin.
 
 describe('RadioLayout with radioState', () => {
   const sampleState = {

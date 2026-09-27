@@ -1237,6 +1237,50 @@ def _filter_shapes_startup_required(
 
 
 @pytest.mark.asyncio
+async def test_ic7610_opens_while_the_radio_refuses_mains_filter_shape_read() -> None:
+    """MOR-2733: every initial read is answered except MAIN's filter shape.
+
+    The startup gate still completes, and MAIN's filter shape stays unread.
+    """
+
+    radio = IcomRadio("192.168.1.100", model="IC-7610")
+    server = WebServer(radio, _gated_config())
+    scheduler = _acquisition_scheduler(server)
+    assert scheduler is not None
+    # The generation advance runtime/_control_phase.py makes on connect.
+    radio._civ_runtime.advance_generation("connect")
+    wire = _Ic7610Wire(
+        radio,
+        {
+            _MAIN_FILTER_SHAPE_READ: _BARE_NG,
+            _SUB_FILTER_SHAPE_READ: _SUB_FILTER_SHAPE_ANSWER,
+        },
+    )
+    radio.send_civ = wire.send_civ  # type: ignore[method-assign]
+    radio._INITIAL_STATE_GAP_LAN = radio._INITIAL_STATE_GAP_SERIAL = 0.0
+
+    await fetch_initial_state(radio)
+
+    # Not vacuous: the initial fetch sent both filter-shape reads.
+    assert {_MAIN_FILTER_SHAPE_READ, _SUB_FILTER_SHAPE_READ} <= set(wire.sent)
+    clock = _GateClock(stop_at=10.0)
+    with _fake_gate_clock(clock):
+        try:
+            await _await_initial_state_acquisition(server, sweep=False)
+        except _GateWindowClosed:
+            outstanding = scheduler.unobserved_startup_paths(
+                _observed_paths(server, scheduler)
+            )
+            pytest.fail(
+                f"startup still waiting after {clock.now:.0f}s on {outstanding}"
+            )
+
+    assert MAIN_FILTER_SHAPE not in _observed_paths(server, scheduler)
+    sub_shape = FieldPath.receiver("1", "operator_controls", "filter_shape")
+    assert server.command_state_store.snapshot().field(sub_shape).value == 0
+
+
+@pytest.mark.asyncio
 async def test_ic7610_opens_by_the_deadline_while_refusing_mains_filter_shape_read(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

@@ -81,8 +81,7 @@ src/
 │   │   └── value-control/          # ValueControl + renderers
 │   ├── layout/
 │   │   ├── RadioLayout.svelte      # Main grid layout
-│   │   ├── LeftSidebar.svelte      # Collapsible control panels
-│   │   └── VfoHeader.svelte        # VFO header with badges
+│   │   └── LeftSidebar.svelte      # Collapsible control panels
 │   ├── vfo/
 │   │   └── VfoPanel.svelte         # Individual VFO receiver display
 │   ├── panels/                     # DspPanel, TxPanel, CwPanel, …

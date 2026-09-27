@@ -25,9 +25,10 @@
  * honest" to "keep it at zero": any NEW forward-declared manifest must extend
  * the literal by hand and be argued for on its own ticket.
  */
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import type { LayoutManifest } from '../contract';
+import { getLayout } from '../contract';
 import { isLayoutManifest } from './manifest-guard';
 // Barrel-only — the M7 lesson, restated on every family in this directory:
 // importing a manifest module directly fires `registerLayout` from this file
@@ -199,5 +200,44 @@ describe('forward-declared vs DOM-backed manifest inventory (verify.md N2)', () 
     expect(shellResolvesThroughManifest).toBe(true);
     expect(sharedShellMounts({ ...desktopV2Layout, zones: [{ id: 'rx-tx', surfaces: ['rxTx'] }] }))
       .toBe(false);
+  });
+});
+
+describe('every skin mounting RadioLayout declares vfo (MOR-2728)', () => {
+  // MOR-2728 deleted RadioLayout's undeclared-layout `{:else}` branch and
+  // `VfoHeader.svelte` with it: a layout whose manifest declares no `vfo`
+  // zone now renders an EMPTY receiver deck. This pin walks every skin
+  // source under `src/skins` dynamically, so a NEW skin mounting
+  // `<RadioLayout>` whose manifest does not declare `vfo` fails here
+  // loudly instead of silently shipping an empty deck.
+  const mounting: Array<{ file: string; skinId: string }> = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith('.svelte')) {
+        for (const match of readFileSync(full, 'utf8').matchAll(
+          /<RadioLayout\s+skinId=["']([^"']+)["']/g,
+        )) {
+          mounting.push({ file: full, skinId: match[1]! });
+        }
+      }
+    }
+  };
+  walk('src/skins');
+
+  // Kills: the walk itself going blind (every regex or path rotting at
+  // once) — the two known RadioLayout mounts must keep it non-empty.
+  it('finds the shells that mount RadioLayout', () => {
+    expect(mounting.length).toBeGreaterThan(0);
+  });
+
+  it.each(mounting)('%s mounts a layout whose manifest declares vfo', ({ file, skinId }) => {
+    const manifest = getLayout(skinId);
+    expect(manifest, `${file}: no layout manifest registered for "${skinId}"`).toBeDefined();
+    expect(
+      manifest!.zones.some((zone) => zone.surfaces.includes('vfo')),
+      `${file}: layout "${skinId}" declares no vfo zone — RadioLayout would render an empty receiver deck for it (MOR-2728)`,
+    ).toBe(true);
   });
 });

@@ -97,7 +97,12 @@
   // radio declares one (props state the domain, never a fallback); `null`
   // keeps this panel's raw 0-255 constants.
   let notchFreqDomain = $derived(p.notchFreqDomain ?? null);
-  let manualNotchWidth = $derived(p.manualNotchWidth ?? 0);
+  // MOR-2735: the width is what was read (`finiteValue` in `toDspProps`) or
+  // nothing — an unread width lights NO choice, never a made-up WIDE.
+  let manualNotchWidth = $derived(p.manualNotchWidth ?? null);
+  // MOR-2735: the #3811 per-receiver tag decision — a radio whose profile
+  // declares no width field draws no group at all.
+  let hasManualNotchWidth = $derived(p.hasManualNotchWidth ?? false);
   let agcTimeConstant = $derived(p.agcTimeConstant ?? 0);
   const onNrModeChange = handlers.onNrModeChange;
   const onNrLevelChange = handlers.onNrLevelChange;
@@ -614,11 +619,13 @@
         issuedStatusPresentation={notchPositionStatus}
         variant="hardware-illuminated"
       />
-      <div class="dsp-modal-block dsp-mode-grid">
-        <HardwareButton active={manualNotchWidth === 0} indicator="edge-left" color="cyan" onclick={() => onManualNotchWidthChange(0)}>WIDE</HardwareButton>
-        <HardwareButton active={manualNotchWidth === 1} indicator="edge-left" color="cyan" onclick={() => onManualNotchWidthChange(1)}>MID</HardwareButton>
-        <HardwareButton active={manualNotchWidth === 2} indicator="edge-left" color="cyan" onclick={() => onManualNotchWidthChange(2)}>NAR</HardwareButton>
-      </div>
+      {#if hasManualNotchWidth}
+        <div class="dsp-modal-block dsp-mode-grid">
+          <HardwareButton active={manualNotchWidth === 0} indicator="edge-left" color="cyan" onclick={() => onManualNotchWidthChange(0)}>WIDE</HardwareButton>
+          <HardwareButton active={manualNotchWidth === 1} indicator="edge-left" color="cyan" onclick={() => onManualNotchWidthChange(1)}>MID</HardwareButton>
+          <HardwareButton active={manualNotchWidth === 2} indicator="edge-left" color="cyan" onclick={() => onManualNotchWidthChange(2)}>NAR</HardwareButton>
+        </div>
+      {/if}
     {/if}
   </div>
 {/if}

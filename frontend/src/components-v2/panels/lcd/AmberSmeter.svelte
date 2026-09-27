@@ -12,11 +12,12 @@
     isSmeterCalibrated,
   } from '../../meters/smeter-scale';
   import { formatPowerWatts, formatSwr, formatAlc, formatCompDb } from '../meter-utils';
+  import { finiteValue, valueText } from '../../../primitives/reading-text';
 
   type MeterSource = 'S' | 'PO' | 'SWR' | 'ALC' | 'COMP';
 
   interface Props {
-    value: number;      // calibrated dB relative to S9
+    value: number | null;      // calibrated dB relative to S9; null = unread, draws nothing
     txActive?: boolean;
     source?: MeterSource;
   }
@@ -61,15 +62,22 @@
   // bar fill only; sReadout/ticks stay on the raw value. Seed the smoother
   // with the current computed segment count so the first synchronous render
   // matches the raw target (no flash to 0 on mount).
-  function computeSegs(raw: number): number {
+  // MOR-2740: unread (null/NaN/±Infinity) lights no segment. `finiteValue`
+  // is the one unread rule — `calibratedToRaw(NaN)` would fall through to
+  // full-scale and `calibratedToRaw(null)` to S9, so the guard sits here,
+  // never in the converters.
+  let readValue = $derived(finiteValue(value));
+
+  function computeSegs(raw: number | null): number {
+    if (raw === null) return 0;
     const scaled = calibratedToRaw(raw);
     return Math.min(SEGMENTS, Math.max(0, (scaled / scaleMaxRaw) * SEGMENTS));
   }
 
   // svelte-ignore state_referenced_locally — intentional one-shot seed read
-  const smoother = createSmoother(0.05, 0.15, computeSegs(value));
+  const smoother = createSmoother(0.05, 0.15, computeSegs(finiteValue(value)));
   $effect(() => {
-    smoother.update(computeSegs(value));
+    smoother.update(computeSegs(readValue));
   });
   onMount(() => {
     smoother.start();
@@ -93,12 +101,12 @@
   // (shared with the desktop meters) instead of crude raw/255 maps, so the
   // LCD agrees with the rest of the UI (MOR-483 part 2).
   let sReadout = $derived.by(() => {
-    if (source === 'S') return { label: calibratedToSUnit(value), sub: formatDbm(calibratedToDbm(value)) };
-    if (source === 'PO') return { label: 'PO', sub: formatPowerWatts(value) };
-    if (source === 'SWR') return { label: 'SWR', sub: formatSwr(value) };
-    if (source === 'ALC') return { label: 'ALC', sub: formatAlc(value) };
-    if (source === 'COMP') return { label: 'COMP', sub: formatCompDb(value) };
-    return { label: calibratedToSUnit(value), sub: formatDbm(calibratedToDbm(value)) };
+    if (source === 'S') return { label: valueText(readValue, (v) => calibratedToSUnit(v)), sub: valueText(readValue, (v) => formatDbm(calibratedToDbm(v))) };
+    if (source === 'PO') return { label: valueText(readValue, () => 'PO'), sub: valueText(readValue, (v) => formatPowerWatts(v)) };
+    if (source === 'SWR') return { label: valueText(readValue, () => 'SWR'), sub: valueText(readValue, (v) => formatSwr(v)) };
+    if (source === 'ALC') return { label: valueText(readValue, () => 'ALC'), sub: valueText(readValue, (v) => formatAlc(v)) };
+    if (source === 'COMP') return { label: valueText(readValue, () => 'COMP'), sub: valueText(readValue, (v) => formatCompDb(v)) };
+    return { label: valueText(readValue, (v) => calibratedToSUnit(v)), sub: valueText(readValue, (v) => formatDbm(calibratedToDbm(v))) };
   });
 </script>
 
@@ -144,7 +152,7 @@
        reservation keeps the bar from narrowing when the source flips);
        only its S-source contents are empty on an uncalibrated radio. -->
   <div class="meter-readout">
-    {#if !sContentsHidden}
+    {#if !sContentsHidden && readValue !== null}
       <span class="readout-s">{sReadout.label}</span>
       <span class="readout-dbm">{sReadout.sub}</span>
     {/if}

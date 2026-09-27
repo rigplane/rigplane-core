@@ -2668,13 +2668,33 @@ describe('center panorama motion (MOR-2464)', () => {
     });
 
     it('prefers the paced-unsent burst target over the older emitted pending value', async () => {
-      const { target } = mountPanorama(panoramaProjection());
-      setPendingFrequency(0, 14_051_000);
-      setTuningBurstFrequency(0, 14_052_000);
-      flushSync();
-      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(2_000));
-      expect(recordedShifts().some((v) => v > 0 && v < 2_000)).toBe(true);
-      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+      // MOR-2743: the intermediate shift exists only inside the real 0–100 ms
+      // PANORAMA_SETTLE_MS band, and the rAF frame that renders it can miss
+      // that band on a loaded runner (quick run 36340105991 lost it once).
+      // Same treatment as the MOR-2714 pin above the file: drive the
+      // panorama clock from a stubbed performance.now stepped per tick, so
+      // the intermediate and the settled value are both deterministic.
+      let panoramaNow = 0;
+      const advancePanorama = async (ms: number): Promise<void> => {
+        panoramaNow += ms;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      };
+      vi.stubGlobal('performance', { now: () => panoramaNow });
+      try {
+        const { target } = mountPanorama(panoramaProjection());
+        setPendingFrequency(0, 14_051_000);
+        setTuningBurstFrequency(0, 14_052_000);
+        flushSync();
+        // 40 ms into the 100 ms settle band — the deterministic intermediate.
+        await advancePanorama(40);
+        await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 2_000)).toBe(true));
+        // Past the band: the viewport settles on the paced-unsent target.
+        await advancePanorama(100);
+        await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(2_000));
+        expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+      } finally {
+        vi.unstubAllGlobals();
+      }
     });
 
     it('retargets a rapid burst reversal while observations stay stale', async () => {

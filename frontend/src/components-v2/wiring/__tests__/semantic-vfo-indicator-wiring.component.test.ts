@@ -30,6 +30,8 @@ const group = new Proxy({}, { get: () => h.noop });
 vi.mock('../../../component-kits/activation', () => ({
   getSelectedFrequencyReadout: () => selectedFrequency.current,
   getSelectedMeterAppearance: () => undefined,
+  // The RIT/XIT offset is a ValueControl (MOR-2524), which reads this.
+  getSelectedScalarAppearance: () => undefined,
 }));
 
 vi.mock('$lib/runtime', () => ({

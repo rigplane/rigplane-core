@@ -42,6 +42,10 @@ const runtimeState = vi.hoisted(() => ({
   radioListeners: new Set<(state: ServerState | null) => void>(),
   notify: () => {},
 }));
+// MOR-2735: the notch-width tests route `deriveDspProps` through the REAL
+// `toDspProps(runtime.state, runtime.caps)` instead of the mockProps bag, so
+// the per-receiver tag decision is exercised end to end.
+const runtimeDsp = vi.hoisted(() => ({ useReal: false }));
 const mockProjection = vi.hoisted(() => ({ notify: () => {} }));
 
 vi.mock('$lib/runtime/frontend-runtime', async () => {
@@ -72,6 +76,7 @@ vi.mock('$lib/stores/radio.svelte', () => ({
 
 vi.mock('$lib/runtime/adapters/panel-adapters', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$lib/runtime/adapters/panel-adapters')>();
+  const { toDspProps } = await import('$lib/runtime/props/panel-props');
   const { createSubscriber } = await import('svelte/reactivity');
   let update = () => {};
   const subscribe = createSubscriber((notify) => { update = notify; return () => {}; });
@@ -80,7 +85,9 @@ vi.mock('$lib/runtime/adapters/panel-adapters', async (importOriginal) => {
     ...actual,
     deriveDspProps: () => {
       subscribe();
-      return { ...mockProps };
+      return runtimeDsp.useReal
+        ? toDspProps(runtimeState.state, runtimeState.caps)
+        : { ...mockProps };
     },
     getDspHandlers: () => mockHandlers,
   };
@@ -169,6 +176,7 @@ function openLongPressModal(t: HTMLElement, buttonPrefix: string): void {
 beforeEach(() => {
   resetCommandLifecycle();
   components = [];
+  runtimeDsp.useReal = false;
   Object.assign(mockProps, {
     nrMode: 0, nrLevel: 5, nbActive: false, nbLevel: 128,
     notchMode: 'off', notchFreq: 1000, nbDepth: 0, nbWidth: 0,
@@ -195,6 +203,7 @@ beforeEach(() => {
 afterEach(() => {
   components.forEach((c) => unmount(c));
   resetCommandLifecycle();
+  runtimeDsp.useReal = false;
   runtimeState.state = null;
   runtimeState.caps = null;
   runtimeState.session = { state: 'disconnected', epoch: -1 };
@@ -299,6 +308,80 @@ describe('DspPanel NB modal depth/width gating (MOR-502)', () => {
     expect(modal?.textContent).not.toContain('NB Depth');
     expect(modal?.textContent).not.toContain('NB Width');
     expect(modal?.textContent).toContain('NB Level');
+  });
+});
+
+/**
+ * MOR-2735: the legacy panel's manual-notch width group follows the same
+ * per-receiver `manual_notch_width` tag decision the v3 view model adopted
+ * in #3811 (MOR-2726) — a radio without the field draws no group at all —
+ * and an unread width lights NO choice (the store's null reading through
+ * `finiteValue`), never a made-up WIDE.
+ */
+describe('DspPanel notch width: none drawn without the field, none lit unread (MOR-2735)', () => {
+  function manualNotchState(width: number | null): ServerState {
+    const state = qualifiedState();
+    const main = state.main as unknown as Record<string, unknown>;
+    main.manualNotch = true;
+    main.manualNotchWidth = width;
+    return state;
+  }
+
+  function notchWidthCaps(withWidthTag: boolean): Capabilities {
+    const caps = qualifiedCaps();
+    caps.capabilities = withWidthTag
+      ? [...caps.capabilities, 'manual_notch_width']
+      : caps.capabilities;
+    return caps;
+  }
+
+  function mountReal(width: number | null, withWidthTag: boolean): HTMLElement {
+    runtimeDsp.useReal = true;
+    runtimeState.state = manualNotchState(width);
+    runtimeState.caps = notchWidthCaps(withWidthTag);
+    runtimeState.notify();
+    const t = document.createElement('div');
+    document.body.appendChild(t);
+    const component = mount(DspPanel, { target: t });
+    flushSync();
+    components.push(component);
+    return t;
+  }
+
+  function openNotchModal(t: HTMLElement): HTMLElement {
+    openLongPressModal(t, 'NOTCH');
+    return t.querySelector<HTMLElement>('[aria-label="Notch filter settings"]')!;
+  }
+
+  function widthButtons(modal: HTMLElement): HTMLButtonElement[] {
+    return Array.from(modal.querySelectorAll<HTMLButtonElement>('button'))
+      .filter((button) => ['WIDE', 'MID', 'NAR'].includes(button.textContent?.trim() ?? ''));
+  }
+
+  it('draws no width group on a radio whose profile declares no width field (FTX-1)', () => {
+    const t = mountReal(null, false);
+    const modal = openNotchModal(t);
+    expect(modal.querySelector('[aria-label="Notch Position"]')).not.toBeNull();
+    expect(widthButtons(modal)).toHaveLength(0);
+    expect(modal.textContent).not.toContain('WIDE');
+    expect(modal.textContent).not.toContain('MID');
+    expect(modal.textContent).not.toContain('NAR');
+  });
+
+  it('renders the WIDE / MID / NAR group with no choice lit while the width is unread (IC-7300)', () => {
+    const t = mountReal(null, true);
+    const modal = openNotchModal(t);
+    const buttons = widthButtons(modal);
+    expect(buttons.map((button) => button.textContent?.trim())).toEqual(['WIDE', 'MID', 'NAR']);
+    expect(buttons.filter((button) => button.dataset.active === 'true')).toHaveLength(0);
+    expect(buttons.every((button) => button.getAttribute('aria-pressed') === null)).toBe(true);
+  });
+
+  it('lights exactly MID when the MID width is read (IC-7300)', () => {
+    const t = mountReal(1, true);
+    const modal = openNotchModal(t);
+    const lit = widthButtons(modal).filter((button) => button.dataset.active === 'true');
+    expect(lit.map((button) => button.textContent?.trim())).toEqual(['MID']);
   });
 });
 

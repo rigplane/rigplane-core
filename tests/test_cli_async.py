@@ -980,6 +980,13 @@ cli.main()
 '''
 
 
+# Machine-speed budget, not a behaviour bound: a child interpreter start
+# plus the CLI import on a saturated CI runner took over 60 s once (quick
+# run 36339733417, attempt 2, MOR-2743) — the ordering under test is the
+# signal→unkey sequence, not the runner's speed.
+_SIGNAL_CHILD_BUDGET_S = 120
+
+
 def _signal_a_real_ptt_hold(
     tmp_path, signum: signal.Signals, widen: float | None = None
 ) -> tuple[int, list[str], list[str]]:
@@ -1007,7 +1014,7 @@ def _signal_a_real_ptt_hold(
                 return "armed" in journal.read_text()
             return "Ctrl-C" in err_path.read_text()
 
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + _SIGNAL_CHILD_BUDGET_S
         while not _reached():
             assert proc.poll() is None and time.monotonic() < deadline, (
                 f"child never reached the hold: {err_path.read_text()}"
@@ -1017,7 +1024,7 @@ def _signal_a_real_ptt_hold(
         # PYTHONUNBUFFERED above is load bearing: ``main()`` ends in
         # ``os._exit``, which flushes no stdio, so a piped stdout is lost
         # without it. Pre-existing and not specific to ``ptt``.
-        out, _ = proc.communicate(timeout=60)
+        out, _ = proc.communicate(timeout=_SIGNAL_CHILD_BUDGET_S)
     return proc.returncode, out.splitlines(), journal.read_text().split()
 
 

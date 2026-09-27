@@ -2,9 +2,9 @@
   Semantic RIT/XIT + scan surface (MOR-1308, vocabulary slice 8B).
 
   Presentation only. Renders the MOR-1295 (slice 8A) `ritXit` and `scan` fact
-  groups and emits control intents as callbacks. Holds no state, consults no
-  controller, keys nothing (v3 ADR invariant 11 — same discipline as every
-  other semantic surface in this directory).
+  groups and emits control intents as callbacks. Consults no controller,
+  keys nothing (v3 ADR invariant 11 — same discipline as every other
+  semantic surface in this directory).
 
   O1 (MOR-1295 verify report, binding on this ticket). `ritOffset`/`xitOffset`
   are TWO CONTRACT FIELDS backed by ONE raw register (`ritFreq`), mirroring
@@ -110,10 +110,16 @@
 </script>
 
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
   import { exactDecimalNumber } from '$lib/types/exact-decimal';
   import type { ControlDomain } from '$lib/types/capabilities';
+  import { ValueControl } from '../components-v2/controls/value-control';
   import { bindToggleInstrument } from '../primitives/control-instruments/control-instrument-behavior';
+  import {
+    createBipolarContinuousScalarPolicy, createContinuousScalar,
+    type ContinuousScalarInput, type ContinuousScalarPolicy,
+  } from '../primitives/scalar/continuous-scalar.svelte';
   import type {
     RitXitScanInstrumentHandles, RitXitScanInstrumentLayout,
   } from './RitXitScanInstrumentHost.svelte';
@@ -214,36 +220,53 @@
     }
     if (xitLeads) onXitOffsetChange?.(raw); else onRitOffsetChange?.(raw);
   }
-  function offsetKeydown(event: KeyboardEvent): void {
-    if (!canAdjustOffset || decodedOffset === null) return;
-    const min = ritDomain?.raw_min ?? OFFSET_MIN;
-    const max = ritDomain?.raw_max ?? OFFSET_MAX;
-    let next: number;
-    switch (event.key) {
-      case 'ArrowRight': case 'ArrowUp': next = Math.min(decodedOffset.value + 50, max); break;
-      case 'ArrowLeft': case 'ArrowDown': next = Math.max(decodedOffset.value - 50, min); break;
-      case 'Home': next = min; break;
-      case 'End': next = max; break;
-      default: return;
-    }
-    event.preventDefault();
-    changeOffset(next);
+
+  /** MOR-2524/MOR-2727: the offset is the shared bipolar fader. Its policy
+   *  steps an arrow by `keyboardStep` on a lattice centred on `defaultValue`
+   *  (`bipolarKeyboardStep`), so from the origin one press and its reverse
+   *  give one step and the origin again — also without a profile domain,
+   *  where the pointer counts 50 Hz steps from OFFSET_MIN and zero is off
+   *  that lattice (MOR-1677). Arrows dispatch at once, with no debounce.
+   *  `reset` refuses: a double-click on the track sends no reset, CLEAR
+   *  resets the offset. */
+  const offsetPolicy: Readonly<ContinuousScalarPolicy> = Object.freeze({
+    ...createBipolarContinuousScalarPolicy({ debounceMs: 0 }),
+    reset: () => null,
+  });
+  function offsetInput(): Readonly<ContinuousScalarInput> {
+    const step = ritDomain?.raw_step ?? OFFSET_STEP;
+    return {
+      evidence: 'reading',
+      reading: decodedOffset === null
+        ? { status: 'unknown' } : { status: 'known', value: decodedOffset.value },
+      ownerKey: 'ritxit-offset',
+      enabled: canAdjustOffset,
+      request: changeOffset,
+      domain: {
+        min: ritDomain?.raw_min ?? OFFSET_MIN,
+        max: ritDomain?.raw_max ?? OFFSET_MAX,
+        step, keyboardStep: step, fineStepDivisor: 1,
+        defaultValue: ritDomain?.raw_origin ?? 0,
+      },
+    };
   }
+  const offsetBinding = createContinuousScalar(offsetInput, offsetPolicy);
+  onDestroy(() => offsetBinding.destroy());
+  /** The Standard face mounts this surface as part 'rit-xit'
+   *  (`RadioLayout.svelte: standardServicePanels`); only that part draws
+   *  the fader look, every other part the `modern` one. */
+  let fader = $derived(part === 'rit-xit');
 </script>
 
 {#snippet offsetSlot()}
   <label class="offset" data-testid="ritxit-offset"
     data-observed={offset !== undefined && usable(offset)}>
     <span>Offset</span>
-    <input
-      type="range"
-      min={ritDomain?.raw_min ?? OFFSET_MIN}
-      max={ritDomain?.raw_max ?? OFFSET_MAX}
-      step={ritDomain?.raw_step ?? OFFSET_STEP}
-      value={decodedOffset?.value ?? ritDomain?.raw_origin ?? 0}
-      disabled={!canAdjustOffset}
-      onkeydown={offsetKeydown}
-      oninput={(event) => changeOffset(event.currentTarget.valueAsNumber)}
+    <ValueControl
+      binding={offsetBinding} label="Offset" renderer="bipolar"
+      showLabel={false} showValue={false} compact={true}
+      variant={fader ? 'hardware-illuminated' : 'modern'}
+      accentColor={fader ? 'var(--v2-accent-cyan-alt)' : 'var(--v2-accent-cyan)'}
     />
     <output data-testid="ritxit-offset-value">{decodedOffset?.text ?? ''}</output>
   </label>
@@ -349,7 +372,10 @@
   .ritxit-clear-row { display: flex; justify-content: flex-end; width: 100%; }
   .ritxit-scan-surface[data-part='rit-xit'] .row { flex-direction: column; align-items: stretch; }
   .ritxit-scan-surface[data-part='rit-xit'] .offset { width: 100%; }
-  .ritxit-scan-surface[data-part='rit-xit'] .offset input { flex: 1; min-width: 0; }
+  /* The fader takes the row's free width; where `semantic-controls.css`
+     (desktop-v2 skin) lays `.offset` out as a two-column grid, it takes a
+     whole row of that grid. */
+  .offset :global(.vc-bipolar) { flex: 1; min-width: 0; grid-column: 1 / -1; }
   .ritxit-scan-surface[data-part='rit-xit'] .ritxit-mode-row :global(button) {
     width: 60px; min-width: 60px; flex: 0 0 60px;
   }
@@ -378,5 +404,5 @@
   }
   [aria-pressed='true'] { font-weight: 700; }
   [data-observed='false'] { font-style: italic; }
-  button:disabled, input:disabled { cursor: not-allowed; }
+  button:disabled { cursor: not-allowed; }
 </style>

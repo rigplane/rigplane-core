@@ -57,6 +57,11 @@ const RADIO_AUTHORITY_RULES = new Set([
   'radio-authority/recurring-control',
 ]);
 
+// Every test in the authority describe spins a fresh ESLint proc; under a
+// loaded CI runner that exceeded vitest's default 5 s testTimeout
+// (MOR-2743). The budget is a machine-speed ceiling sized to CI.
+const ARCH_LINT_TIMEOUT_MS = 120_000;
+
 async function authorityRuleIds(code: string, filePath: string): Promise<string[]> {
   const eslint = new ESLint({ cwd: FRONTEND_ROOT });
   const [result] = await eslint.lintText(code, { filePath });
@@ -694,7 +699,7 @@ describe('radio authority boundary (MOR-1406)', () => {
     );
     expect(facade).toContain('radio-authority/structural-boundary');
     expect(consumer).toEqual([]);
-  });
+  }, ARCH_LINT_TIMEOUT_MS);
 
   it('rejects the first hop of a two-file wildcard transport facade', async () => {
     const facade = await authorityRuleIds(
@@ -707,7 +712,7 @@ describe('radio authority boundary (MOR-1406)', () => {
     );
     expect(facade).toContain('radio-authority/structural-boundary');
     expect(consumer).toEqual([]);
-  });
+  }, ARCH_LINT_TIMEOUT_MS);
 
   it.each([
     {
@@ -839,7 +844,7 @@ describe('radio authority boundary (MOR-1406)', () => {
   ])('rejects $name with the exact bounded rule', async ({ rule, path: filePath, code }) => {
     const ids = await authorityRuleIds(code, filePath);
     expect(ids).toContain(rule);
-  });
+  }, ARCH_LINT_TIMEOUT_MS);
 
   it.each([
     {
@@ -919,5 +924,5 @@ describe('radio authority boundary (MOR-1406)', () => {
     },
   ])('allows $name outside the authority boundary', async ({ path: filePath, code }) => {
     expect(await authorityRuleIds(code, filePath)).toEqual([]);
-  });
+  }, ARCH_LINT_TIMEOUT_MS);
 });
