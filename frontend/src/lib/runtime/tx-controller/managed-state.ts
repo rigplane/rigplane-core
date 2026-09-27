@@ -16,18 +16,6 @@ export interface ManagedTxState {
   configuredSeconds: number | null;
   remainingMs: number | null;
   lastOperation: 'ptt_on' | 'transmit_on' | 'force_receive' | null;
-  /**
-   * MOR-1795 — TX-fault obligation flags, OPTIONAL and never projected from
-   * the server document today (`projectManagedTx` leaves them `undefined`),
-   * so the live fault-recovery UI keeps its server-owns-recovery wording.
-   * They mirror the reducer's own guard inputs (`txFaultObligation` in
-   * `model.ts`), and the capture harness carries them to reach the
-   * dismissable/refused branches the live snapshot cannot express yet.
-   */
-  pendingOff?: object | null;
-  modRestorePending?: boolean;
-  mayOwnKey?: boolean;
-  cleanupGuard?: object | null;
 }
 
 const UNKNOWN: ManagedTxState = Object.freeze({
@@ -41,8 +29,7 @@ const UNKNOWN: ManagedTxState = Object.freeze({
 const MANAGED_TX_FIELDS = Object.keys({
   phase: true, intent: true, radioTx: true, txRisk: true, fault: true, faultDetail: true,
   fresh: true, releaseRequired: true, configuredSeconds: true, remainingMs: true,
-  lastOperation: true, pendingOff: true, modRestorePending: true, mayOwnKey: true,
-  cleanupGuard: true,
+  lastOperation: true,
 } satisfies Record<keyof ManagedTxState, true>) as ReadonlyArray<keyof ManagedTxState>;
 
 export function sameManagedTxState(a: ManagedTxState, b: ManagedTxState): boolean {

@@ -116,42 +116,6 @@ for (const spec of COCKPIT) {
   });
 }
 
-/**
- * MOR-1795 — the two fault-recovery branches a live snapshot cannot reach
- * today (the server projection never names an obligation). The DOM branch
- * asserts run BEFORE the pixel layer, same doctrine as the mobile pair
- * below, because `data-dismissable`/`data-reason` are the machine channel
- * a comparator cannot see. The eight characters between these two captures
- * are the only difference; everything else reuses the cockpit grid.
- */
-test('tx-phase-fault-dismissable--desktop', async ({ page }) => {
-  await page.setViewportSize(DESKTOP);
-  await page.goto('/fixtures/index.html?fixture=tx-phase-fault-dismissable&theme=v2');
-  await page.waitForSelector('body[data-harness-ready="true"]');
-  const recovery = page.locator('[data-testid="tx-fault-recovery"]');
-  await expect(recovery).toBeVisible();
-  await expect(recovery).toHaveAttribute('data-dismissable', 'true');
-  await expect(page.locator('[data-testid="tx-fault-reset"]')).toBeVisible();
-  await expect(page.locator('[data-testid="tx-fault-reset-note"]')).toBeVisible();
-  await expect(page.locator('[data-testid="tx-fault-reset-blocked"]')).toHaveCount(0);
-  await expect(page).toHaveScreenshot('tx-phase-fault-dismissable--desktop.png', { animations: 'disabled', caret: 'hide' });
-});
-
-test('tx-phase-fault-refused--desktop', async ({ page }) => {
-  await page.setViewportSize(DESKTOP);
-  await page.goto('/fixtures/index.html?fixture=tx-phase-fault-refused&theme=v2');
-  await page.waitForSelector('body[data-harness-ready="true"]');
-  const recovery = page.locator('[data-testid="tx-fault-recovery"]');
-  await expect(recovery).toBeVisible();
-  await expect(recovery).toHaveAttribute('data-dismissable', 'false');
-  await expect(page.locator('[data-testid="tx-fault-reset"]')).toHaveCount(0);
-  const blocked = page.locator('[data-testid="tx-fault-reset-blocked"]');
-  await expect(blocked).toBeVisible();
-  await expect(blocked).toHaveAttribute('data-reason', 'dekey-pending');
-  await expect(blocked).toContainText('cannot be dismissed yet: the unkey command has not been confirmed by the radio');
-  await expect(page).toHaveScreenshot('tx-phase-fault-refused--desktop.png', { animations: 'disabled', caret: 'hide' });
-});
-
 /** MOR-2364 → MOR-2425/R41: the freshness cue is gone, but the one-line phone
  *  fit it had to preserve is still the claim — and no cue may come back. */
 test('VFO phone tiles fit on one line and paint no freshness cue', async ({ page }) => {

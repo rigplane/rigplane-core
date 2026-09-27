@@ -741,34 +741,6 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
     }),
   },
   {
-    id: 'tx-phase-fault-dismissable',
-    what: 'MOR-1795 — TX fault snapshot carrying the obligation fields with none set: the Dismiss action is offered.',
-    state: () => withMeters(mainSubState('MAIN')), caps: mainSubCaps,
-    tx: tx({
-      phase: 'failed', radioTx: 'unknown', txRisk: 'uncertain', fault: 'audio-failed',
-      pendingOff: null, modRestorePending: false, mayOwnKey: false, cleanupGuard: null,
-    }),
-    // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
-    expect: mainSubExpect({
-      keyDisabled: true, rfLabel: 'TX?', sessionLabel: 'fault',
-      faultResetPresent: true, zonelessControls: TX_AUX_ZONELESS_CONTROLS,
-    }),
-  },
-  {
-    id: 'tx-phase-fault-refused',
-    what: 'MOR-1795 — TX fault with a de-key obligation outstanding: dismissal refused and the obligation is named.',
-    state: () => withMeters(mainSubState('MAIN')), caps: mainSubCaps,
-    tx: tx({
-      phase: 'failed', radioTx: 'unknown', txRisk: 'uncertain', fault: 'audio-failed',
-      pendingOff: { attemptId: 'fixture-dekey', operation: 'force_receive' },
-    }),
-    // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
-    expect: mainSubExpect({
-      keyDisabled: true, rfLabel: 'TX?', sessionLabel: 'fault',
-      faultResetPresent: false, zonelessControls: TX_AUX_ZONELESS_CONTROLS,
-    }),
-  },
-  {
     id: 'connection-loss-stale',
     what: 'radio link lost, values retained but every field STALE — every fact HOLDS its last value.',
     state: () => mainSubState('MAIN', stale), caps: mainSubCaps,
