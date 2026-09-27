@@ -50,7 +50,7 @@
   // count reaches zero.
   import {
     toVfoProps, toVfoOpsProps, toMeterProps,
-    toRfFrontEndProps, toModeProps, toFilterProps, toAgcProps, toRitXitProps,
+    toModeProps, toFilterProps, toAgcProps, toRitXitProps,
     toBandSelectorProps, toRxAudioProps, toDspProps, toTxProps, toCwProps, toAntennaProps, toScanProps,
   } from '$lib/runtime/props/panel-props';
   import {
@@ -91,7 +91,6 @@
   // would re-introduce exactly the fabricated truth this gate removes.
   let rxAudio = $derived(toRxAudioProps(radioState, caps, audioState, runtime.connectionAudio));
   let tx = $derived(toTxProps(radioState, caps));
-  let rfFrontEnd = $derived(toRfFrontEndProps(radioState, caps));
   let agc = $derived(toAgcProps(radioState, caps));
   let ritXit = $derived(toRitXitProps(radioState, caps));
   let dsp = $derived(toDspProps(radioState, caps));
@@ -506,17 +505,18 @@
   // "S NaN" / "NaN dBm" — the same defect class that BLOCKED PR #2363.
   // These are their ONLY production consumers, so per the single-consumer
   // test the guards live here and `mobile-layout-logic.ts` stays untouched.
-  // Placeholders follow the established '---' segment convention.
+  // MOR-2675: an unread value renders EMPTY in its reserved slot (the
+  // reservation lives in the styles below) — never a dash run.
   function formatSValueDisplay(actual: number): string {
-    return Number.isFinite(actual) ? formatSValue(actual) : '---';
+    return Number.isFinite(actual) ? formatSValue(actual) : '';
   }
   function formatDbmDisplay(actual: number): string {
-    return Number.isFinite(actual) ? formatDbm(actual) : '--- dBm';
+    return Number.isFinite(actual) ? formatDbm(actual) : '';
   }
   // RIT/XIT share one offset field; an active RIT whose offset has never been
   // reported must not render "+NaN".
   function formatOffsetDisplay(hz: number): string {
-    return Number.isFinite(hz) ? `${hz >= 0 ? '+' : ''}${hz}` : '---';
+    return Number.isFinite(hz) ? `${hz >= 0 ? '+' : ''}${hz}` : '';
   }
   // MOR-2658: the power sheet slider shares TxPanel's unread contract —
   // an unread level renders EMPTY in its reserved slot, never "NaN%"
@@ -1145,13 +1145,34 @@
     font-size: 13px;
     font-weight: 700;
     color: #4ade80;
+    /* MOR-2675: one width in every state — 6ch covers the widest text
+       formatSValue renders over the raw sMeter domain (0–255): 'S9+60' on
+       the widest shipped calibration ladder (an uncalibrated rig tops out
+       at '255'); tabular digits keep a changing reading from shifting the
+       overlay row. */
+    display: inline-block;
+    min-width: 6ch;
+    font-variant-numeric: tabular-nums;
   }
+
+  /* The MOR-2657 zero-width strut keeps the empty unread box's line-box
+     metrics in this baseline-aligned flex row. */
+  .m-ls-smeter:empty::before { content: '\200b'; }
 
   .m-ls-dbm {
     font-family: 'Roboto Mono', monospace;
     font-size: 10px;
     color: #9ca3af;
+    /* MOR-2675: same reservation — 13ch covers the widest text formatDbm
+       renders over the sMeter domain: the honest 'uncalibrated' label of a
+       rig with no s_meter table (a calibrated rig's widest is '−13 dBm',
+       7ch). */
+    display: inline-block;
+    min-width: 13ch;
+    font-variant-numeric: tabular-nums;
   }
+
+  .m-ls-dbm:empty::before { content: '\200b'; }
 
   .m-ls-controls {
     display: flex;
@@ -1396,6 +1417,13 @@
     padding: 0 4px;
     border: 1px solid rgba(250, 204, 21, 0.35);
     border-radius: 3px;
+    /* MOR-2675: one width in every state — 9ch covers the widest text the
+       badge prints, 'RIT +9999' / 'XIT -9999' (the shared ±9999 Hz RIT
+       domain), so the empty unread offset cannot shift the meta row. */
+    display: inline-block;
+    min-width: 9ch;
+    box-sizing: content-box;
+    font-variant-numeric: tabular-nums;
   }
 
   /* ── S-meter bar (full width, below VFO) ── */
@@ -1521,8 +1549,10 @@
     color: var(--v2-text-dim, #888);
     white-space: nowrap;
     /* MOR-2658: same reservation as power — `8ch` covers `SWR 25.5`,
-       the widest text the slot can hold: swrMeter is raw 0-255
-       (radio_state.py), rendered as `(swr / 10).toFixed(1)`. */
+       the widest text the slot can hold: swrMeter is raw 0–255
+       (`src/rigplane/backends/yaesu_cat/radio.py` `get_swr_meter`; the
+       wire field is `swrMeter` in `src/rigplane/web/state_schema.py`),
+       rendered as `(swr / 10).toFixed(1)`. */
     display: inline-block;
     min-width: 8ch;
     text-align: center;
