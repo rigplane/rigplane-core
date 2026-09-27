@@ -1064,12 +1064,18 @@ function deriveRfFrontEnd(
 function widestFilterWidthHz(caps: Capabilities): number {
   let widest = caps.filterWidthMax ?? 9999;
   for (const config of Object.values(caps.filterConfig ?? {})) {
+    // A malformed per-mode entry (the adapter's own tests feed `null` and
+    // non-finite tables straight in) contributes no width — the same
+    // witholding `resolveFilterModeConfig` applies to the active mode.
+    if (config === null || typeof config !== 'object') continue;
     const modeMax = config.maxHz
       ?? (config.table?.length ? config.table[config.table.length - 1] : undefined)
       ?? (config.segments
         ? Math.max(...config.segments.map((segment) => segment.hzMax))
         : undefined);
-    if (modeMax !== undefined && modeMax > widest) widest = modeMax;
+    if (modeMax !== undefined && Number.isFinite(modeMax) && modeMax > widest) {
+      widest = modeMax;
+    }
   }
   return widest;
 }

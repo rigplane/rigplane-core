@@ -528,7 +528,9 @@ describe('CwKeyerInstrumentHost', () => {
   // value ('48 WPM', '900 Hz') so a first reading cannot move the layout.
   it('reserves the value slot width for unread and known values alike', () => {
     const hostSource = readFileSync('src/semantic/CwKeyerInstrumentHost.svelte', 'utf8');
-    expect(hostSource).toMatch(/:global\(\.vc-value\)\s*\{[^}]*min-width:\s*6ch/);
+    // MOR-2706: the reservation derives from the field's effective domain via
+    // the per-level `--cw-value-min-width` custom property; 6ch is the floor.
+    expect(hostSource).toMatch(/:global\(\.vc-value\)\s*\{[^}]*min-width:\s*var\(--cw-value-min-width, 6ch\)/);
     expect(hostSource).not.toMatch(/formatValue[\s\S]{0,200}'—'/);
   });
 });
