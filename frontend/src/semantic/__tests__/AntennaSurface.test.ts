@@ -310,7 +310,7 @@ describe('antenna switching is gated while the transmitter is not provably idle'
   // MOR-2691: the reason moved from the removed visible list to the disabled
   // controls' own `title` — a catalog sentence with no "unknown" and no "?".
   it.each([
-    ['transmitting', TRANSMITTING, 'the radio is already transmitting'],
+    ['transmitting', TRANSMITTING, 'a TX session is already in progress; the radio is already transmitting'],
     ['RF-state unconfirmed', RF_UNKNOWN, 'Waiting for the transmitter to confirm it is off'],
   ] as const)('states the blocked reason as a title sentence (%s)', (_label, tx, sentence) => {
     const r = render(base(), tx);
