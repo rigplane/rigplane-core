@@ -159,10 +159,12 @@
     ...(hasCap('compressor') && tx.compAvailable ? [{
       id: 'proc' as const,
       // MOR-2683: a known compressor state with an unread level keeps the
-      // bare key — `Number.isFinite` guards toTxProps' NaN sentinel. The
+      // bare key — the availability gate keeps a missing reading's level
+      // off, and `Number.isFinite` guards toTxProps' NaN sentinel. The
       // chip reserves 8ch (`reserveSlot` → AmberIndStrip) — the widest text
       // it prints is `PROC 255`.
-      label: tx.compActive && Number.isFinite(tx.compLevel) ? `PROC ${tx.compLevel}` : 'PROC',
+      label: tx.compActive && tx.compLevelAvailable && Number.isFinite(tx.compLevel)
+        ? `PROC ${tx.compLevel}` : 'PROC',
       active: tx.compActive,
       reserveSlot: 8,
     }] : []),

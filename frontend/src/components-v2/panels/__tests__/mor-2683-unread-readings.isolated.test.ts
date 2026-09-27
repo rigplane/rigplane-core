@@ -27,7 +27,7 @@ import type { ServerState } from '$lib/types/state';
 import { setLocale } from '$lib/i18n';
 import { toTxProps } from '$lib/runtime/props/panel-props';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
-import type { CommandScalarFeedback } from '../../primitives/scalar/continuous-scalar.svelte';
+import type { CommandScalarFeedback } from '../../../primitives/scalar/continuous-scalar.svelte';
 
 // ── TxPanel seam (mirrors TxPanel.isolated.test.ts) ─────────────────────────
 const txProps = vi.hoisted(() => ({ value: null as any }));
@@ -209,7 +209,7 @@ function amberIndicator(target: HTMLElement, label: string): HTMLElement | undef
 }
 
 function mountFilterPanel(currentFilter: number | null) {
-  filterProps.value = { ...filterProps.value, currentFilter };
+  filterProps.value = { ...filterProps.value, currentFilter } as any;
   const target = document.createElement('div');
   document.body.appendChild(target);
   components.push(mount(FilterPanel, { target }));
