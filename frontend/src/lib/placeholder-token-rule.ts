@@ -43,7 +43,7 @@ export interface FindPlaceholderTokensOptions {
   readonly isTitle?: boolean;
 }
 
-const DASH_PLACEHOLDER = /^\s*[-–—]+(\s+[A-Za-zµ%]+)?(\s*[-–—]+)?\s*$/;
+const DASH_PLACEHOLDER = /^\s*[-–—]+(\s*[A-Za-zµ%]+\s*)?\s*[-–—]*\s*$/;
 const QUESTION_TOKEN = /^\?[.,;:!?]*$/;
 const PLACEHOLDER_WORDS: ReadonlySet<string> = new Set([
   'unknown', 'n/a', 'nan', 'null', 'undefined',
