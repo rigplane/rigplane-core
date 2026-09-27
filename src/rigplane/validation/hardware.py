@@ -1180,34 +1180,43 @@ def _tolerant_equal(tol: int) -> Callable[[int, int], bool]:
     return _eq
 
 
-# Below this value a filter-width readback is a discrete table index (0-23 on
-# the FTX-1), not a width in Hz. The smallest realistic Hz width is 50 (Icom
-# ``filter_width_min``), so the threshold cleanly separates the two encodings.
-_FILTER_WIDTH_INDEX_MAX = 30
+# MOR-2476 — the encoding comes from ``filter_width_encoding``; this is the
+# interim for a radio with NO profile (cf. ``_PROFILELESS_LEVEL_RANGE``):
+# below it a readback is a table index (0-23 on the FTX-1), never Hz (the
+# smallest realistic Hz width is 50, Icom ``filter_width_min``).
+_PROFILELESS_FILTER_WIDTH_INDEX_MAX = 30
 
 
-def _nudge_filter(width: int) -> int:
-    """Mutate a filter width to a DIFFERENT value the radio will accept.
+def _nudge_filter_index(width: int) -> int:
+    """Mutate a table-index width to a DIFFERENT in-range index.
 
-    Two encodings share this check:
-
-    * Discrete *table index* (FTX-1, ``width <= 30``, valid range 0-23): pick a
-      different in-range index by stepping toward the middle of the range. The
-      old ``width + 200`` produced an out-of-range index (e.g. 19 -> 219) that
-      the radio silently ignored, so the check falsely reported "did not react".
-    * Width in *Hz* (Icom, ``width > 30``): keep the historical ±200 Hz nudge.
+    Steps ±5 toward 0 (wrap up near the floor); the old +200 produced an
+    out-of-range index the radio ignored ("did not react").
     """
-    if width <= _FILTER_WIDTH_INDEX_MAX:
-        # Table index: a small in-range delta toward 0 (wrap up near the floor).
-        return width - 5 if width >= 5 else width + 5
+    return width - 5 if width >= 5 else width + 5
+
+
+def _nudge_filter_hz(width: int) -> int:
+    """Mutate an Hz width to a DIFFERENT value: the historical ±200 Hz nudge."""
     return width + 200 if width <= 2600 else width - 200
 
 
-# MOR-671 — IF-shift offset is signed Hz with a symmetric settable band of
-# roughly +/-1200 Hz on the FTX-1. The RMVR mutation must stay inside that band
-# so the written test value is always restorable and never out of range.
-_IF_SHIFT_LIMIT_HZ = 1200
-_IF_SHIFT_NUDGE_HZ = 200
+def _nudge_filter(width: int) -> int:
+    """Mutate a filter width to a DIFFERENT value (profile-less interim).
+
+    Picks the index vs Hz arm by value; a profiled radio branches on its
+    declared encoding instead (see ``_check_filter_width_set``).
+    """
+    if width <= _PROFILELESS_FILTER_WIDTH_INDEX_MAX:
+        return _nudge_filter_index(width)
+    return _nudge_filter_hz(width)
+
+
+# MOR-671 / MOR-2476 — the band comes from ``[controls.if_shift]``; this is
+# the interim for a radio with NO profile (cf. ``_PROFILELESS_LEVEL_RANGE``):
+# the FTX-1's symmetric +/-1200 Hz band, always restorable, never OOR.
+_PROFILELESS_IF_SHIFT_LIMIT_HZ = 1200
+_PROFILELESS_IF_SHIFT_NUDGE_HZ = 200
 
 
 # MOR-679 / MOR-2476 — CW pitch is a sidetone frequency in Hz whose band
@@ -1292,6 +1301,9 @@ _LEVEL_RANGE_CANDIDATE_KEYS: dict[str, tuple[str, ...]] = {
     "comp_level.set": ("compressor_level", "compressor", "comp"),
     "nr_level.set": ("nr_level", "nr"),
     "nb_level.set": ("nb_level", "nb"),
+    # MOR-2476 — the nb.set/nr.set level fallback resolves the same bands.
+    "nb.set": ("nb_level", "nb"),
+    "nr.set": ("nr_level", "nr"),
     "squelch.set": ("squelch",),
 }
 
@@ -1385,27 +1397,46 @@ def _range_aware_level_nudge(lo: int, hi: int) -> Callable[[int], int]:
     return _nudge
 
 
+_IF_SHIFT_CONTROL_KEY = "if_shift"
+
+
+def _resolve_if_shift_band(
+    radio: Radio,
+) -> tuple[Decimal, Decimal, Decimal | None] | None:
+    """The ``[controls.if_shift]`` band, or ``None`` when undeclared.
+
+    Mirrors ``_resolve_cw_pitch_band`` (profile-less radios yield ``None``).
+    """
+    profile = getattr(radio, "profile", None)
+    controls = getattr(profile, "controls", None)
+    if not isinstance(controls, dict):
+        return None
+    return control_display_band(controls, _IF_SHIFT_CONTROL_KEY)
+
+
 def _nudge_if_shift(offset: int) -> int:
     """Mutate an IF-shift offset to a DIFFERENT in-range value.
 
-    Nudge by +200 Hz, but if that would exceed the +1200 Hz ceiling, step the
-    other way (-200 Hz) instead. The original is assumed in-band (|offset| <=
-    1200), so the result is always within +/-1200 Hz and always differs from
-    the original. NEVER writes out of range.
+    Profile-less interim: nudge by +200 Hz, but if that would exceed the
+    +1200 Hz ceiling, step the other way (-200 Hz) instead. The original is
+    assumed in-band (|offset| <= 1200), so the result is always within
+    +/-1200 Hz and always differs from the original. NEVER writes out of
+    range.
     """
-    if int(offset) + _IF_SHIFT_NUDGE_HZ <= _IF_SHIFT_LIMIT_HZ:
-        return int(offset) + _IF_SHIFT_NUDGE_HZ
-    return int(offset) - _IF_SHIFT_NUDGE_HZ
+    if int(offset) + _PROFILELESS_IF_SHIFT_NUDGE_HZ <= _PROFILELESS_IF_SHIFT_LIMIT_HZ:
+        return int(offset) + _PROFILELESS_IF_SHIFT_NUDGE_HZ
+    return int(offset) - _PROFILELESS_IF_SHIFT_NUDGE_HZ
 
 
 def _filter_width_equal(a: int, b: int) -> bool:
-    """Encoding-aware filter-width comparator.
+    """Encoding-aware filter-width comparator (profile-less interim).
 
     A table index (FTX-1) reads back exactly, so require an exact match; an Hz
     width (Icom) may be quantized by the radio, so allow a 50 Hz tolerance.
     Both operands are small (index) only when neither exceeds the index ceiling.
     """
-    if int(a) <= _FILTER_WIDTH_INDEX_MAX and int(b) <= _FILTER_WIDTH_INDEX_MAX:
+    ceiling = _PROFILELESS_FILTER_WIDTH_INDEX_MAX
+    if int(a) <= ceiling and int(b) <= ceiling:
         return int(a) == int(b)
     return abs(int(a) - int(b)) <= 50
 
@@ -1829,13 +1860,29 @@ async def _check_filter_width_set(
                 )
             },
         )
+    # MOR-2476 — the index vs Hz branch comes from the profile's declared
+    # ``filter_width_encoding``; a radio with no profile keeps the legacy
+    # value heuristic (see ``_nudge_filter``).
+    make_changed: Callable[[int], int]
+    width_equal: Callable[[int, int], bool]
+    profile = getattr(radio, "profile", None)
+    if profile is None:
+        make_changed = _nudge_filter
+        width_equal = _filter_width_equal
+    elif getattr(profile, "filter_width_encoding", None) == "table_index":
+        make_changed = _nudge_filter_index
+        width_equal = _default_equal
+    else:
+        make_changed = _nudge_filter_hz
+        # The registry ``filter_width.set`` tolerance for Hz widths.
+        width_equal = _tolerant_equal(50)
     return await _read_modify_verify_restore(
         radio,
         entry,
         read=lambda: _read_filter_width(dsp),
         write=lambda value: _write_filter_width(dsp, value),
-        make_changed=_nudge_filter,
-        equal=_filter_width_equal,
+        make_changed=make_changed,
+        equal=width_equal,
         per_check_timeout=per_check_timeout,
         restorable=lambda v: v is not None,
     )
@@ -2151,9 +2198,10 @@ async def _check_notch_set(
     )
 
 
-# A representative "on" level used when toggling a level-encoded NB/NR control
-# whose original value is 0 (off). Within range for both NB (0-10) and NR (0-15).
-_NB_NR_TEST_LEVEL = 5
+# MOR-2476 — the "on" probe comes from the profile band; this is the interim
+# for a radio with NO profile (cf. ``_PROFILELESS_LEVEL_RANGE``): in range
+# for both NB (0-10) and NR (0-15).
+_PROFILELESS_NB_NR_TEST_LEVEL = 5
 
 
 async def _check_blanker_reduction_set(
@@ -2186,12 +2234,28 @@ async def _check_blanker_reduction_set(
     level_read = getattr(radio, f"get_{name}_level", None)
     level_write = getattr(radio, f"set_{name}_level", None)
     if callable(level_read) and callable(level_write):
+        # MOR-2476 — probe an "on" level inside the profile-declared band; a
+        # profiled radio declaring no band SKIPs instead of assuming one.
+        band = _resolve_level_range(radio, entry.check_id)
+        if band is None:
+            return _base_result(
+                entry,
+                CheckStatus.SKIP,
+                evidence={"reason": _no_declared_range_reason(entry.check_id)},
+            )
+        lo, hi = band
+        if getattr(radio, "profile", None) is None:
+            on_level = _PROFILELESS_NB_NR_TEST_LEVEL
+        else:
+            # Mid-band probe (this arm only runs when the original is 0);
+            # yields the historical 5 for the FTX-1 0-10 band.
+            on_level = min(hi, lo + max(1, (hi - lo) // 2))
         return await _read_modify_verify_restore(
             radio,
             entry,
             read=lambda: cast(Awaitable[int], level_read()),
             write=cast(Callable[[int], Awaitable[None]], level_write),
-            make_changed=lambda v: 0 if v > 0 else _NB_NR_TEST_LEVEL,
+            make_changed=lambda v: 0 if v > 0 else on_level,
             per_check_timeout=per_check_timeout,
             extra_evidence={"readback_via": f"get_{name}_level"},
         )
@@ -2760,7 +2824,9 @@ _VALUE_RULE_FNS: dict[str, Callable[[Any], Any]] = {
     # Reference level in dB on the radio's 0.5 dB grid: hop between two
     # exact grid values so the readback comparison can stay exact.
     ValueRule.SCOPE_REF_DB: lambda r: 5.0 if float(r) != 5.0 else 0.0,
-    # MOR-671 — IF-shift: nudge +/-200 Hz, clamped to +/-1200 (never OOR).
+    # MOR-671 / MOR-2476 — IF-shift profile-less interim: nudge +/-200 Hz,
+    # clamped to +/-1200 (never OOR). A profiled radio overrides this in
+    # ``_check_from_spec`` with its declared ``[controls.if_shift]`` band.
     ValueRule.SHIFT_HZ: _nudge_if_shift,
     # MOR-671 — contour on/off: flip 0 <-> 1 (off <-> a valid on level).
     ValueRule.CONTOUR_FLIP: lambda v: 1 if int(v) == 0 else 0,
@@ -2971,6 +3037,25 @@ async def _check_from_spec(
             cw_lo, cw_hi, cw_step = cw_band
             make_changed = _cw_pitch_nudge(cw_lo, cw_hi, cw_step)
             restorable = lambda value: cw_lo <= value <= cw_hi  # noqa: E731
+        elif spec.value_rule == ValueRule.SHIFT_HZ:
+            # MOR-2476 — the band comes from ``[controls.if_shift]``; no
+            # declared band SKIPs, and a profile-less radio keeps the
+            # interim ``_nudge_if_shift`` from ``_VALUE_RULE_FNS``.
+            shift_band = _resolve_if_shift_band(radio)
+            if shift_band is not None:
+                lo, hi = int(shift_band[0]), int(shift_band[1])
+                make_changed = _range_aware_level_nudge(lo, hi)
+                restorable = lambda value: lo <= int(value) <= hi  # noqa: E731
+            elif getattr(radio, "profile", None) is not None:
+                return _base_result(
+                    entry,
+                    CheckStatus.SKIP,
+                    evidence={
+                        "reason": _no_declared_range_reason(
+                            entry.check_id, control=_IF_SHIFT_CONTROL_KEY
+                        )
+                    },
+                )
         elif make_changed is None:
             return _base_result(
                 entry,

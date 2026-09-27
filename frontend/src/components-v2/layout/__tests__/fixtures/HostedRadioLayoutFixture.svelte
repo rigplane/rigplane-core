@@ -42,7 +42,7 @@
     txPort: empty, rxAnt: empty,
   } satisfies AntennaInstrumentHandles;
   const antennaLayout = {
-    blockedId: 'fixture-antenna-blocked', blocked: [],
+    blockedTitle: undefined,
   } satisfies AntennaInstrumentLayout;
   const ritXitInstruments = {
     rit: empty, xit: empty, clear: empty,
