@@ -129,10 +129,11 @@
     font-size: 10px;
     color: var(--v2-text-disabled);
     transition: color 150ms ease;
-    /* MOR-2667: the offset box stays reserved in every state — 9ch covers
-       the widest formatOffsetKHz text ('+9.99 kHz'); tabular digits keep a
-       changing value from shifting the row. */
-    min-inline-size: 9ch;
+    /* MOR-2667: the offset box stays reserved in every state — 10ch covers
+       the widest formatOffsetKHz text over the panel's fallback domain
+       (±9999 Hz → '±10.00 kHz'); tabular digits keep a changing value
+       from shifting the row. */
+    min-inline-size: 10ch;
     font-variant-numeric: tabular-nums;
   }
 

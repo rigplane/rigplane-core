@@ -378,9 +378,13 @@ describe('RitXitPanel — offset box geometry (MOR-2667)', () => {
   it('keeps the offset box reserved and tabular while unread', () => {
     const rule = panelSource.match(/\.offset \{([^}]*)\}/);
     expect(rule).not.toBeNull();
-    // Widest text formatOffsetKHz renders today: '+9.99 kHz' /
-    // '−9.99 kHz' (9 chars) — 9ch covers both.
-    expect(rule![1]).toContain('min-inline-size: 9ch');
+    // The reservation is sized from the formatter, not a guess: the widest
+    // text over the panel's fallback domain (±9999 Hz) is
+    // formatOffsetKHz(9999) — '−10.00 kHz' — and the CSS reserves that
+    // many ch.
+    const widest = formatOffsetKHz(9999);
+    expect(widest).toBe('+10.00 kHz');
+    expect(rule![1]).toContain(`min-inline-size: ${widest.length}ch`);
     expect(rule![1]).toContain('tabular-nums');
   });
 });

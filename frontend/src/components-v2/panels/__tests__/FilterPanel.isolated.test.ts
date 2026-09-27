@@ -1572,7 +1572,7 @@ describe('FilterPanel — no placeholder for unread widths and offsets (MOR-2667
       .find((body) => body.includes('min-inline-size'));
     expect(rule).toBeDefined();
     // Widest text formatWidthDisplay renders today: '999 Hz' and '9.9kHz'
-    // (6 chars) — 7ch covers both with margin.
+    // (7 chars) — 7ch covers both.
     expect(rule!).toContain('min-inline-size: 7ch');
     expect(rule!).toContain('tabular-nums');
     expect(panelSource).toMatch(/\.modal-fixed-value:empty::before \{ content: '\\200b'; \}/);
