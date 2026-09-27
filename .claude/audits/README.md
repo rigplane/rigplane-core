@@ -13,6 +13,37 @@ public repository** — never put session notes, baselines, or anything with
 internal identifiers here; untracked working notes belong in the ignored
 remainder of `.claude/`.
 
+## 2026-09-27 — three changes merged on the night of 2026-09-26 (head `f9b599e9`)
+
+Two read-only tracts over #3743, #3744 and #3741. Each report pins revision
+`f9b599e90249e19bfb8234f1722f8d9effa9029e` and labels its claims as observation
+or inference.
+
+- [2026-09-27-mechanism-audit-control-domain-vectors.md](2026-09-27-mechanism-audit-control-domain-vectors.md)
+  — #3743 (MOR-2477), the Python/TypeScript control-domain vectors. No
+  deletions and no consolidations. The commit is the vector pin the 2026-09-15
+  control-conversion audit ordered. The generator reuses the profile loader. The
+  two control-domain fixtures answer different questions: shape versus
+  computed results.
+- [2026-09-27-mechanism-audit-unread-readouts.md](2026-09-27-mechanism-audit-unread-readouts.md)
+  — #3744 (MOR-2651) and #3741 (MOR-2658), the unread readouts.
+  - Five deletions, filed as MOR-2685 (D3 folded into MOR-2675):
+    - D1 `extractMeterState`;
+    - D2 `toTxProps` `micGain`/`driveGain`;
+    - D3 an unread `rfFrontEnd` derived;
+    - D4 `getRedlineRaw`/`getScaleMarks`;
+    - D5 the unreachable non-dB S-meter arm.
+  - Four consolidation findings:
+    - F1 the "unread → empty" rule written about 15 times, with a diverged
+      `'—'`/`'---'` subset still on screen (MOR-2684, MOR-2675, MOR-2673);
+    - F2 two byte-identical RF-power guards;
+    - F3 two fabricated defaults that reach the screen, "MON 50%" and
+      "PROC 0" (MOR-2683);
+    - F4 the reserved-slot CSS convention.
+
+    The shared primitive for F1/F2/F4 is MOR-2688, after the whole-page guard
+    lands.
+
 ## 2026-09-26 — the day's merged changes, backend and frontend (head `a04f7b1e`)
 
 Two read-only tracts over the changes merged on 2026-09-26, range
