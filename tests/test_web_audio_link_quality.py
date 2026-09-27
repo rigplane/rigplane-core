@@ -146,6 +146,16 @@ class TestQueueDropCounter:
 
         await _inject(bus, count=4)  # nobody drains → 2 fill + 2 evictions
 
+        # MOR-2743: the relay task fans the injected frames out on this same
+        # loop, but under CI load its scheduling trailed the old fixed 0.1 s
+        # sleep once (quick run 36339733417 attempt 1: 0 drops counted). Await
+        # the eviction itself — loop-yield until both evictions are counted —
+        # instead of a wall-clock delay.
+        for _ in range(2000):
+            snapshot = broadcaster.client_link_quality(handler._frame_queue)
+            if snapshot["ws_queue_drops"] == 2 and handler._frame_queue.qsize() == 2:
+                break
+            await asyncio.sleep(0)
         snapshot = broadcaster.client_link_quality(handler._frame_queue)
         assert snapshot["ws_queue_drops"] == 2
         # Eviction kept the stream flowing: queue still holds newest frames.
