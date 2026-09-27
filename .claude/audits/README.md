@@ -13,6 +13,27 @@ public repository** — never put session notes, baselines, or anything with
 internal identifiers here; untracked working notes belong in the ignored
 remainder of `.claude/`.
 
+## 2026-09-27 — MOR-2688 slices S3–S4c, and the MOR-2704 design audit
+
+Four more slice audits for MOR-2688 (its design audit and the S1–S2 audits are
+in the section below), and the design audit for MOR-2704: one fail-closed gate,
+`usable`, for whether the operator may act on a control. Each report pins the
+revision it audited and labels its claims as observation or inference.
+
+- [2026-09-27-mechanism-audit-mor2688-s3.md](2026-09-27-mechanism-audit-mor2688-s3.md)
+  — #3766 (S3) at `41f05141`: the closure-pinned surfaces use `readingText`.
+- [2026-09-27-mechanism-audit-mor2688-s4a.md](2026-09-27-mechanism-audit-mor2688-s4a.md)
+  — #3776 (S4a) at `88430fe2`: one value-or-nothing rule and its entry points.
+- [2026-09-27-mechanism-audit-mor2688-s4b.md](2026-09-27-mechanism-audit-mor2688-s4b.md)
+  — #3780 (S4b) at `de35a9b6`: the finite-number entry point and the scalar
+  hosts.
+- [2026-09-27-mechanism-audit-mor2688-s4c.md](2026-09-27-mechanism-audit-mor2688-s4c.md)
+  — #3790 (S4c) at `b9784393`: the observation rule is typed and takes its
+  fallback.
+- [2026-09-27-mechanism-audit-mor2704-design.md](2026-09-27-mechanism-audit-mor2704-design.md)
+  — the MOR-2704 design audit at `523e2174`. Its PR plan (Q6) is G0–G6 and
+  T1–T2.
+
 ## 2026-09-27 — MOR-2688, one unread-display rule (design audit and slices S1–S2)
 
 One design audit and two slice audits for MOR-2688: drawing code receives a
