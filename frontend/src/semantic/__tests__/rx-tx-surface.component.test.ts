@@ -484,6 +484,18 @@ describe('unknown TX target', () => {
     });
   });
 
+  it('MOR-2711: keeps the space between the known frequency and its unit in one text node', () => {
+    // Kill-mutation: put the unit's leading space back at the edge of an
+    // `{#if}` block (Svelte's compiler strips a block fragment's leading
+    // whitespace, `clean_nodes`), which glued the unit onto the number.
+    // Pinned as a literal string, spaces included, against the jsdom DOM.
+    withSurface(topologyFixtures['2/main_sub'], IDLE_RX, () => {
+      const t = target.querySelector('[data-testid="rx-tx-target"]') as HTMLElement;
+      expect(t.textContent?.trim()).toBe('TX target: MAIN unslotted · 14250000 Hz');
+      expect(t.textContent).not.toContain('14250000Hz');
+    });
+  });
+
   it('prints no dash and no bare unit when the known target has no frequency', () => {
     const view = topologyFixtures['1/single'];
     if (view.txTarget.status !== 'known') throw new Error('fixture precondition');
