@@ -271,7 +271,7 @@ describe('RxAudioInstrumentHost admitted-target AF feedback seam (MOR-1687 F2)',
     expect(CODE).toMatch(/afLevelFeedback\?: Readonly<CommandScalarFeedback>/);
     expect(CODE).toMatch(/if \(afLevelFeedback !== undefined\) return/);
     expect(CODE).toMatch(/command: 'set_af_level'/);
-    expect(CODE).toMatch(/feedback: afLevelFeedback/);
+    expect(CODE).toMatch(/feedback: scale\.feedback\(afLevelFeedback\)/);
     expect(CODE).toMatch(/evidence: 'reading'/);
     expect(CODE).toMatch(/ownerKey: key\(currentAuthority\)/);
   });

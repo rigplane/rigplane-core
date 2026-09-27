@@ -282,6 +282,9 @@ const baseCaps = (): Capabilities => ({
     // without them the adapter gates SUB (and MAIN) att/preamp off and the
     // rendering no longer matches the approved baselines.
     'attenuator_main', 'preamp_main', 'attenuator_sub', 'preamp_sub',
+    // MOR-2726: the same shape declares the notch-width field on both
+    // receivers, so the real server serves both notch-width tags too.
+    'manual_notch_width', 'manual_notch_width_sub',
     'antenna', 'rx_antenna', 'nb', 'nr', 'notch', 'apf', 'twin_peak', 'pbt',
     'filter_width', 'filter_shape', 'split', 'ssb_tx_bw', 'cw', 'break_in', 'rit', 'xit',
     'meters', 'data_mode', 'mod_input_routing', 'agc', 'power_control', 'dial_lock',

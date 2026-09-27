@@ -3,6 +3,7 @@
   import AppGlobalHost from './AppGlobalHost.svelte';
   import LocalExtensionsHost from './lib/local-extensions/LocalExtensionsHost.svelte';
   import { initMediaSession, destroyMediaSession } from './lib/media/media-session';
+  import { claimPreloadErrorReload, clearPreloadErrorReload } from './lib/preload-error-reload';
   import { presentationResources, runtime } from './lib/runtime/frontend-runtime';
   import type { AppResource, ResourceLease } from '$lib/runtime/resource-demand';
   import { systemController } from '$lib/runtime/system-controller';
@@ -178,7 +179,10 @@
   );
   let loaderGeneration = 0;
   let requestedPresentationId: PresentationId | null = null;
-  /** Cleared by App teardown; a resolution that lands afterwards is inert. */
+  /**
+   * Cleared by App teardown and by a preload-error reload; a resolution that
+   * lands afterwards is inert.
+   */
   let presentationActive = true;
 
   $effect(() => {
@@ -223,6 +227,7 @@
           : { id: record.id, layoutId: record.id, component: loaded as SelfContainedPresentation, hostMode: 'self-contained' };
       }
       presentationFailed = false;
+      clearPreloadErrorReload();
       await tick();
     } catch (err) {
       // A stale or post-teardown failure is inert: only the newest request
@@ -324,6 +329,16 @@
       windowHeight = window.innerHeight;
     };
     window.addEventListener('resize', handleResize);
+    // MOR-2680: a failed asset preload before any layout has mounted reloads
+    // the page when the guard allows it.
+    const handlePreloadError = (event: Event) => {
+      if (!claimPreloadErrorReload(Date.now(), presentation !== null)) return;
+      event.preventDefault();
+      // While the page reloads, no load may mount or clear the guard's record.
+      presentationActive = false;
+      location.reload();
+    };
+    window.addEventListener('vite:preloadError', handlePreloadError);
 
     (async () => {
       try {
@@ -359,6 +374,7 @@
       cleanupBootstrap?.();
       if (retryTimer) clearTimeout(retryTimer);
       window.removeEventListener('resize', handleResize);
+      window.removeEventListener('vite:preloadError', handlePreloadError);
     };
   });
 </script>

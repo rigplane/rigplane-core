@@ -108,7 +108,7 @@ function caps(
     scope: false,
     audio: false,
     tx: false,
-    capabilities: ['nr', 'nb', 'notch', 'agc', 'agc_time_constant'],
+    capabilities: ['nr', 'nb', 'notch', 'manual_notch_width', 'agc', 'agc_time_constant'],
     receivers: 1,
     vfoScheme: 'single',
     freqRanges: [],

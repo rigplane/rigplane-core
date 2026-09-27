@@ -108,6 +108,9 @@ function liveCaps(): Capabilities {
       // under test goes disabled.
       'preamp_main',
       'nb', 'nr', 'notch',
+      // MOR-2726: served for the polled MAIN notch-width field the IC-7300
+      // declares; without it the notch-width group under test is not drawn.
+      'manual_notch_width',
     ],
     notchWidthChoices: [
       { value: 0, label: 'WIDE' }, { value: 1, label: 'MID' }, { value: 2, label: 'NAR' },

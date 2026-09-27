@@ -272,13 +272,53 @@
   let presentedAfAuthority = $derived(authority(presentation));
   let publishedAfAuthority = $derived(published === null ? null : authority(published));
   const AF_DOMAIN = { min: 0, max: 1, step: 0.01, defaultValue: null, fineStepDivisor: 1 } as const;
+  /** MOR-1676: on a radio-AF target whose caps publish `controls.af_level`,
+   *  the slider moves on that raw range, one raw unit per step. A normalized
+   *  reading or feedback value `v` shows as `Math.round(v * raw_max)`, and a
+   *  raw request `r` leaves as `r / raw_max`, so the AF callbacks keep their
+   *  0..1 unit. The browser volume, and a radio publishing no range, keep
+   *  `AF_DOMAIN`. */
+  function afScale(target: AfTarget | undefined): Readonly<{
+    domain: ScalarDomain;
+    show: (value: number) => number;
+    send: (value: number) => number;
+    feedback: (feedback: Readonly<CommandScalarFeedback>) => Readonly<CommandScalarFeedback>;
+  }> {
+    const entry = (presentation.caps?.controls as
+      Record<string, { raw_min?: unknown; raw_max?: unknown }> | undefined)?.af_level;
+    const rawMin = entry?.raw_min;
+    const rawMax = entry?.raw_max;
+    if (target === undefined || target === 'browser-volume'
+      || typeof rawMin !== 'number' || !Number.isSafeInteger(rawMin)
+      || typeof rawMax !== 'number' || !Number.isSafeInteger(rawMax) || rawMax <= rawMin) {
+      return {
+        domain: AF_DOMAIN, show: (value) => value, send: (value) => value,
+        feedback: (feedback) => feedback,
+      };
+    }
+    const show = (value: number): number =>
+      Number.isFinite(value) ? Math.round(value * rawMax) : value;
+    const project = (value: number | null): number | null => value === null ? null : show(value);
+    return {
+      domain: { min: rawMin, max: rawMax, step: 1, defaultValue: null, fineStepDivisor: 1 },
+      show,
+      send: (raw) => raw / rawMax,
+      feedback: (feedback) => ({
+        ...feedback,
+        confirmed: project(feedback.confirmed),
+        target: project(feedback.target),
+        requestedTarget: project(feedback.requestedTarget),
+      }),
+    };
+  }
 
   function input(): Readonly<ContinuousScalarInput> {
     const field = presentation.rxAudio?.afLevel;
     const currentAuthority = publishedAfAuthority;
     const presentedAuthority = presentedAfAuthority;
+    const scale = afScale(currentAuthority?.target);
     const reading = field?.reading.status === 'known'
-      ? { status: 'known' as const, value: field.reading.value }
+      ? { status: 'known' as const, value: scale.show(field.reading.value) }
       : { status: 'unknown' as const };
     const targetKnown = currentAuthority?.target === 'browser-volume'
       || currentAuthority?.target === 'radio-af:MAIN'
@@ -294,14 +334,14 @@
       && Number.isFinite(field.reading.value)
       && onAfLevelChange !== undefined;
     const base = {
-      domain: AF_DOMAIN,
+      domain: scale.domain,
       enabled,
-      request: (value: number) => onAfLevelChange?.(value),
+      request: (value: number) => onAfLevelChange?.(scale.send(value)),
     } as const;
     if (afLevelFeedback !== undefined) return {
       ...base,
       evidence: 'command-feedback',
-      feedback: afLevelFeedback,
+      feedback: scale.feedback(afLevelFeedback),
       command: 'set_af_level',
     };
     return {
@@ -333,8 +373,9 @@
   function receiverAfInput(receiver: AfReceiverKey): Readonly<ContinuousScalarInput> {
     const field = presentation.rxAudio?.receiverAfLevels?.[receiver];
     const currentAuthority = receiverAuthority(publishedAfAuthority, receiver);
+    const scale = afScale(currentAuthority?.target);
     const reading = field?.reading.status === 'known'
-      ? { status: 'known' as const, value: field.reading.value }
+      ? { status: 'known' as const, value: scale.show(field.reading.value) }
       : { status: 'unknown' as const };
     const enabled = same(currentAuthority, receiverAuthority(presentedAfAuthority, receiver))
       && currentAuthority?.target !== 'browser-volume'
@@ -344,13 +385,14 @@
       && Number.isFinite(field.reading.value)
       && onReceiverAfLevelChange !== undefined;
     const base = {
-      domain: AF_DOMAIN,
+      domain: scale.domain,
       enabled,
-      request: (value: number) => onReceiverAfLevelChange?.(receiver, value),
+      request: (value: number) => onReceiverAfLevelChange?.(receiver, scale.send(value)),
     } as const;
     const feedback = receiverAfLevelFeedback?.[receiver];
     if (feedback !== undefined) return {
-      ...base, evidence: 'command-feedback', feedback, command: 'set_af_level',
+      ...base, evidence: 'command-feedback', feedback: scale.feedback(feedback),
+      command: 'set_af_level',
     };
     return {
       ...base, evidence: 'reading', reading, ownerKey: key(currentAuthority, 'rx-receiver-af'),

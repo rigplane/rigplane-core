@@ -31,6 +31,7 @@
   import ModInputTxWarning from '../panels/ModInputTxWarning.svelte';
   import { ValueControl } from '../controls/value-control';
   import { normalizedPercentDisplay } from '../../primitives/scalar/value-control-core';
+  import { finiteValue, valueText } from '../../primitives/reading-text';
   import {
     Settings, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
     Sliders, Radio as RadioIcon,
@@ -509,22 +510,22 @@
   // MOR-2675: an unread value renders EMPTY in its reserved slot (the
   // reservation lives in the styles below) — never a dash run.
   function formatSValueDisplay(actual: number): string {
-    return Number.isFinite(actual) ? formatSValue(actual) : '';
+    return valueText(finiteValue(actual), formatSValue);
   }
   function formatDbmDisplay(actual: number): string {
-    return Number.isFinite(actual) ? formatDbm(actual) : '';
+    return valueText(finiteValue(actual), formatDbm);
   }
   // RIT/XIT share one offset field; an active RIT whose offset has never been
   // reported must not render "+NaN".
   function formatOffsetDisplay(hz: number): string {
-    return Number.isFinite(hz) ? `${hz >= 0 ? '+' : ''}${hz}` : '';
+    return valueText(finiteValue(hz), (value) => `${value >= 0 ? '+' : ''}${value}`);
   }
   // MOR-2658: the power sheet slider shares TxPanel's unread contract —
   // an unread level renders EMPTY in its reserved slot, never "NaN%"
   // (`normalizedPercentDisplay` has no non-finite branch). `toTxProps`
   // reports Number.NaN when the rig never sent `powerLevel`.
   function formatRfPowerDisplay(level: number): string {
-    return Number.isFinite(level) ? normalizedPercentDisplay(level) : '';
+    return valueText(finiteValue(level), normalizedPercentDisplay);
   }
   // The TX dock meter takes raw numbers and formats all four rows itself
   // (`formatPowerWatts`/`formatSwr`/`formatAlc` each render "NaN"-class
@@ -533,7 +534,8 @@
   // worse than no reading at all — so the row is withheld until the meters
   // are actually observed, which is one poll away.
   let txMetersObserved = $derived(
-    Number.isFinite(meter.rfPower) && Number.isFinite(meter.swr) && Number.isFinite(meter.alc)
+    finiteValue(meter.rfPower) !== null && finiteValue(meter.swr) !== null
+      && finiteValue(meter.alc) !== null
   );
 </script>
 
@@ -806,14 +808,14 @@
                  `toTxProps` reports NaN, and `formatPower(NaN)` is "NaNW" —
                  so finiteness decides with it. -->
             <button type="button" class="m-tx-info" disabled={!tx.rfPowerAvailable} onclick={() => (powerModalOpen = true)}>
-              <span class="m-tx-power-value">{tx.rfPowerAvailable && Number.isFinite(tx.rfPower) ? formatPower(tx.rfPower) : ''}</span>
+              <span class="m-tx-power-value">{valueText(tx.rfPowerAvailable ? finiteValue(tx.rfPower) : null, formatPower)}</span>
               {#if managedTxRf === 'on'}
                 <!-- MOR-2658: an unread SWR renders EMPTY in the reserved
                      `.m-tx-swr-value` slot — never a '—', and never the
                      `SWR` word without its number. toMeterProps reports
                      Number.NaN for an unobserved meter, so NaN (not 0) is
                      absence: a real reading of 0 renders `SWR 0.0`. -->
-                <span class="m-tx-swr-value">{Number.isFinite(meter.swr) ? `SWR ${(meter.swr / 10).toFixed(1)}` : ''}</span>
+                <span class="m-tx-swr-value">{valueText(finiteValue(meter.swr), (swr) => `SWR ${(swr / 10).toFixed(1)}`)}</span>
               {/if}
             </button>
 

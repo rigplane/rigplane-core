@@ -213,6 +213,57 @@ describe('dsp per-field structural gates (MOR-1290)', () => {
     expect(view.dsp!.agcTimeConstant.reading).toEqual({ status: 'known', value: 5 });
   });
 
+  // MOR-2726: `notch` alone is not proof of a notch-width control. The FTX-1
+  // keeps `notch` for its manual notch on/off and position but declares no
+  // width field, so the server serves it no `manual_notch_width` tag.
+  it('manualNotchWidth is structurally absent when the receiver is not declared, even with the notch capability (FTX-1 shape)', () => {
+    const undeclared: FieldStatus = {
+      storePath: 'x', observed: false, freshness: 'unknown', availability: 'undeclared',
+    };
+    const view = model(bareState({
+      fieldStatus: { ...bareState().fieldStatus, 'main.manualNotchWidth': undeclared },
+    }), caps({ capabilities: ['notch'], notchWidthChoices: [] }));
+    expect(view.dsp!.notchMode.availability.structural).toBe(true);
+    expect(view.dsp!.notchFreq.availability.structural).toBe(true);
+    expect(view.dsp!.manualNotchWidth.availability).toEqual({ structural: false, operational: false });
+    expect(view.dsp!.manualNotchWidth.reading).toEqual({ status: 'unknown' });
+  });
+
+  it('manualNotchWidth stays structural when the receiver is declared (tag served), and reports the reading once observed', () => {
+    const view = model(bareState({
+      main: { ...bareState().main, manualNotchWidth: 2 },
+      fieldStatus: { ...bareState().fieldStatus, 'main.manualNotchWidth': fresh },
+    }), caps({ capabilities: ['notch', 'manual_notch_width'] }));
+    expect(view.dsp!.manualNotchWidth.availability).toEqual({ structural: true, operational: true });
+    expect(view.dsp!.manualNotchWidth.reading).toEqual({ status: 'known', value: 2 });
+  });
+
+  it('manualNotchWidth is structurally absent for an observed SUB when only MAIN is declared', () => {
+    const dual = caps({
+      receivers: 2, vfoScheme: 'main_sub', capabilities: ['dual_rx', 'notch', 'manual_notch_width'],
+    });
+    const view = model(bareState({
+      active: 'SUB',
+      sub: { ...bareState().sub, manualNotchWidth: 1 },
+      fieldStatus: { ...bareState().fieldStatus, 'sub.manualNotchWidth': fresh },
+    }), dual);
+    expect(view.dsp!.manualNotchWidth.availability).toEqual({ structural: false, operational: false });
+    expect(view.dsp!.manualNotchWidth.reading).toEqual({ status: 'unknown' });
+  });
+
+  it('manualNotchWidth draws for a declared SUB once the tag is served', () => {
+    const dual = caps({
+      receivers: 2, vfoScheme: 'main_sub', capabilities: ['dual_rx', 'notch', 'manual_notch_width_sub'],
+    });
+    const view = model(bareState({
+      active: 'SUB',
+      sub: { ...bareState().sub, manualNotchWidth: 1 },
+      fieldStatus: { ...bareState().fieldStatus, 'sub.manualNotchWidth': fresh },
+    }), dual);
+    expect(view.dsp!.manualNotchWidth.availability).toEqual({ structural: true, operational: true });
+    expect(view.dsp!.manualNotchWidth.reading).toEqual({ status: 'known', value: 1 });
+  });
+
   it('follows the SUB receiver once it is the active one', () => {
     const view = model(bareState({
       active: 'SUB',
@@ -514,7 +565,7 @@ describe('dsp honesty gate — no notchMode derivation from a half-observed inpu
  */
 describe('dsp honesty gate — absent raw values on numeric fields never fabricate (MOR-1290 F2, mutant H3)', () => {
   const allCaps = caps({
-    capabilities: ['nr', 'nb', 'notch', 'agc'],
+    capabilities: ['nr', 'nb', 'notch', 'manual_notch_width', 'agc'],
     controls: { nb_depth: { raw_min: 0, raw_max: 9, raw_center: 0, display_min: 1, display_max: 10 } },
   });
 
