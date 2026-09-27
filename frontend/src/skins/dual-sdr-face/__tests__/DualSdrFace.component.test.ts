@@ -230,7 +230,7 @@ describe('DualSdrFace', () => {
   // MOR-2692 geometry pin (PR-review fix): the frequency slot keeps its box
   // in the UNREAD state too — an empty output must not let the grid row
   // collapse. One-line height plus a width derived from the fixture's
-  // tuning envelope ('30,000,000' → 9ch), not from a radio constant.
+  // tuning envelope ('30,000,000' → 10ch), not from a radio constant.
   it('reserves one frequency slot size in the unread state', async () => {
     const target = document.createElement('div');
     const component = mount(DualSdrFace, { target, props: { view: modeFilterView(), scopeSource: { subscribe: () => () => {} } } });
@@ -239,7 +239,7 @@ describe('DualSdrFace', () => {
       const frequency = target.querySelector<HTMLElement>(`[data-receiver-cluster="${clusterId}"] [data-frequency]`);
       expect(frequency?.textContent).toBe('');
       expect(frequency?.style.minHeight).toBe('1em');
-      expect(frequency?.style.minWidth).toBe('9ch');
+      expect(frequency?.style.minWidth).toBe('10ch');
     }
     unmount(component);
   });
