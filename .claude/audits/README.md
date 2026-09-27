@@ -13,6 +13,27 @@ public repository** — never put session notes, baselines, or anything with
 internal identifiers here; untracked working notes belong in the ignored
 remainder of `.claude/`.
 
+## 2026-09-27 — MOR-2688, one unread-display rule (design audit and slices S1–S3)
+
+One design audit and three slice audits for MOR-2688: drawing code receives a
+value or nothing, and the "unread → empty text" rule lives in one primitive,
+`frontend/src/primitives/reading-text.ts`. Each report pins the revision it
+audited and labels its claims as observation or inference.
+
+- [2026-09-27-mechanism-audit-mor2688-design.md](2026-09-27-mechanism-audit-mor2688-design.md)
+  — the design audit at `8018f8ec`. It chose the owner layer (`primitives/`),
+  planned the slices S1–S8 (Q6) and listed the risks R1–R8 (Q7). R1, predicate
+  drift, is the rule `reading-text.ts` cites: the predicate stays exactly
+  `reading.status === 'known'`.
+- [2026-09-27-mechanism-audit-mor2688-s1.md](2026-09-27-mechanism-audit-mor2688-s1.md)
+  — #3761 (S1) at `6eac5b53`: the primitive and the filter and scope surfaces.
+- [2026-09-27-mechanism-audit-mor2688-s2.md](2026-09-27-mechanism-audit-mor2688-s2.md)
+  — #3763 (S2) at `8cff8d60`: six more surfaces.
+- [2026-09-27-mechanism-audit-mor2688-s3.md](2026-09-27-mechanism-audit-mor2688-s3.md)
+  — #3766 (S3) at `41f05141`: RxAudioSurface, CwKeyerSurface,
+  AntennaInstrumentHost and the dual-SDR face, with the two import allow-lists
+  that name the primitive. No code defect; four text fixes in the PR.
+
 ## 2026-09-27 — three changes merged on the night of 2026-09-26 (head `f9b599e9`)
 
 Two read-only tracts over #3743, #3744 and #3741. Each report pins revision
