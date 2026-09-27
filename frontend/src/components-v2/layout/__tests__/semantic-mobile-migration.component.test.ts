@@ -192,9 +192,11 @@ vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
 import MobileRadioLayout from '../MobileRadioLayout.svelte';
 import mobileLayoutSource from '../MobileRadioLayout.svelte?raw';
 import mobileSkinSource from '../../../skins/mobile/MobileSkin.svelte?raw';
-import { hasTx, getScopeSource, getCapabilities } from '$lib/stores/capabilities.svelte';
+import { hasTx, getScopeSource, getCapabilities, hasDualReceiver } from '$lib/stores/capabilities.svelte';
 import { radio } from '$lib/stores/radio.svelte';
 import { deriveModInputTxGuardProps } from '$lib/runtime/adapters/mod-input-tx-guard.svelte';
+import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
+import { topologyFixtures } from '../../../semantic/fixtures/topologies';
 
 const RX: ManagedTxState = Object.freeze({
   phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
@@ -343,6 +345,55 @@ describe('semantic VFO / RX-TX adoption in the mobile shell', () => {
     // No mobile-local RX/TX or VFO surface reimplementation.
     expect(mobileLayoutSource).not.toContain('RxTxSurface');
     expect(mobileLayoutSource).not.toContain('VfoSurface');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1b. MOR-2662 (owner ruling 2026-09-26): the phone shows only ONE VFO —
+//     the active receiver's active slot — in both orientations. The
+//     presentation option the shell passes does it; the desktop path and the
+//     shared surface's default stay byte-identical.
+// ---------------------------------------------------------------------------
+describe('MOR-2662 — the phone shows only the active VFO', () => {
+  afterEach(() => {
+    vi.mocked(toRadioViewModel).mockReturnValue(topologyFixtures['1/single']);
+  });
+
+  // Kills: the deck still drawing BOTH VFO tiles below the header.
+  it('portrait renders exactly one VFO tile — the active receiver\'s active slot', () => {
+    vi.mocked(toRadioViewModel).mockReturnValue(topologyFixtures['2/main_sub']);
+    const t = mountMobile();
+    const tiles = t.querySelectorAll('[data-vfo-tile]');
+    expect(tiles).toHaveLength(1);
+    expect(tiles[0].getAttribute('data-vfo-receiver')).toBe('MAIN');
+    expect(tiles[0].getAttribute('data-vfo-active')).toBe('true');
+    expect(tiles[0].getAttribute('data-vfo-active-slot')).toBe('true');
+  });
+
+  // The single-receiver A/B shape: the active SLOT's tile alone survives.
+  it('portrait renders the active slot only on a slotted A/B radio', () => {
+    vi.mocked(toRadioViewModel).mockReturnValue(topologyFixtures['1/ab']);
+    const t = mountMobile();
+    const tiles = t.querySelectorAll('[data-vfo-tile]');
+    expect(tiles).toHaveLength(1);
+    expect(tiles[0].getAttribute('data-vfo-slot')).toBe('A');
+    expect(tiles[0].getAttribute('data-vfo-active')).toBe('true');
+  });
+
+  // Kills: the landscape overlay re-adding a second VFO surface.
+  it('landscape renders no VFO tiles — the strip shows the active frequency alone', () => {
+    vi.mocked(toRadioViewModel).mockReturnValue(topologyFixtures['2/main_sub']);
+    rotate(true);
+    const t = mountMobile();
+    expect(t.querySelectorAll('[data-vfo-tile]')).toHaveLength(0);
+    expect(t.querySelector('.m-ls-vfo')).not.toBeNull();
+  });
+
+  // Kills: a future edit dropping the option and silently restoring two
+  // tiles. The one-tile phone is a presentation OPTION the shell passes,
+  // never a fork of the shared surface.
+  it('passes the one-tile presentation option to the shared wiring', () => {
+    expect(mobileLayoutSource).toContain('vfoTiles="active"');
   });
 });
 

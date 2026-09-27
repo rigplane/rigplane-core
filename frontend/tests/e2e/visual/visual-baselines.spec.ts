@@ -117,10 +117,13 @@ for (const spec of COCKPIT) {
 }
 
 /** MOR-2364 → MOR-2425/R41: the freshness cue is gone, but the one-line phone
- *  fit it had to preserve is still the claim — and no cue may come back. */
+ *  fit it had to preserve is still the claim — and no cue may come back.
+ *  MOR-2662 (owner ruling 2026-09-26): the phone shows only ONE VFO — the
+ *  active one — so this now pins the mobile layout's own deck (the
+ *  `mobile-witness` harness), one tile, still on one line. */
 test('VFO phone tiles fit on one line and paint no freshness cue', async ({ page }) => {
   await page.setViewportSize(PHONE);
-  await page.goto('/fixtures/index.html?fixture=topology-2-main-sub&theme=v2');
+  await page.goto('/fixtures/mobile-witness.html?fixture=topology-2-main-sub', { waitUntil: 'load' });
   await page.waitForSelector('body[data-harness-ready="true"]');
   await page.evaluate(() => document.fonts.ready);
   const result = await page.evaluate(() => {
@@ -133,9 +136,60 @@ test('VFO phone tiles fit on one line and paint no freshness cue', async ({ page
     return { lines, tiles: tiles.length,
       cues: document.querySelectorAll('[data-vfo-stale-cue]').length };
   });
-  expect(result.tiles).toBe(2);
+  expect(result.tiles).toBe(1);
   expect(result.cues).toBe(0);
   expect(result.lines.every((count) => count === 1)).toBe(true);
+});
+
+/** MOR-2662 — switching the active VFO swaps the ONE tile's content inside
+ *  the same reserved geometry. Real browser layout (jsdom cannot measure), so
+ *  the surface is mounted directly the way the "TX lower state clearance"
+ *  tests above mount a meter. No unread-vs-read width pin here: the
+ *  interactive frequency readout's own unread reservation is a single
+ *  no-break space on main (MOR-2654 left the interactive branch there), so
+ *  that comparison belongs to the readout's own lane, not this one. */
+test('phone one-tile VFO keeps its box across a VFO switch (MOR-2662)', async ({ page }) => {
+  await page.setViewportSize(PHONE);
+  await page.goto('/fixtures/mobile-witness.html?fixture=topology-2-main-sub', { waitUntil: 'load' });
+  await page.waitForSelector('body[data-harness-ready="true"]');
+  await page.evaluate(() => document.fonts.ready);
+  const geometry = await page.evaluate(async () => {
+    const { mount, flushSync, unmount } = await import('/@id/svelte');
+    const { default: VfoSurface } = await import('/src/semantic/VfoSurface.svelte');
+    const { topologyFixtures } = await import('/src/semantic/fixtures/topologies');
+    const activeOn = (id: 'A' | 'B') => topologyFixtures['1/ab'].vfos.map((vfo) => ({
+      ...vfo, frequencyHz: id === 'A' ? 7100000 : 7150000,
+      isActive: vfo.slot.kind === 'slotted' && vfo.slot.id === id,
+      isActiveSlot: vfo.slot.kind === 'slotted' && vfo.slot.id === id,
+    }));
+    const readA = { ...topologyFixtures['1/ab'], vfos: activeOn('A') };
+    const readB = { ...topologyFixtures['1/ab'], vfos: activeOn('B') };
+    const measure = (model: typeof readA) => {
+      const target = document.createElement('div');
+      target.style.width = '360px';
+      document.body.append(target);
+      const component = mount(VfoSurface, {
+        target,
+        props: { viewModel: model, vfoTiles: 'active', onTuneFrequency: () => {} },
+      });
+      flushSync();
+      const tile = target.querySelector<HTMLElement>('[data-vfo-tile]')!;
+      const box = tile.getBoundingClientRect();
+      const digits = tile.querySelectorAll('.digit').length;
+      const text = tile.querySelector('[data-vfo-freq]')?.textContent ?? '';
+      unmount(component);
+      target.remove();
+      return { width: box.width, height: box.height, digits, text };
+    };
+    return { a: measure(readA), b: measure(readB) };
+  });
+  // Exactly one tile in every state, each measured above.
+  expect(geometry.a.digits).toBeGreaterThan(0);
+  expect(geometry.b.digits).toBe(geometry.a.digits);
+  // A→B switch: same box, different content — swapped in place, no size change.
+  expect(geometry.b.width).toBe(geometry.a.width);
+  expect(geometry.b.height).toBe(geometry.a.height);
+  expect(geometry.b.text).not.toBe(geometry.a.text);
 });
 
 /**

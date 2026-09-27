@@ -727,8 +727,9 @@ describe('mobile header follows the active receiver (MOR-2511)', () => {
     const t = mountMobile();
     expect(t.querySelector('.m-vfo-freq')?.textContent).toBe('14200400');
     expect(t.querySelector('.m-vfo-mode')?.textContent).toBe('USB');
-    expect(t.querySelector('.m-vfo-sub')?.textContent).toBe('14.074');
-    expect(t.querySelector('.m-vfo-sub')?.getAttribute('title')).toBe('MAIN');
+    // MOR-2662 (owner ruling 2026-09-26): the phone shows only ONE VFO — the
+    // active one — so the other receiver's frequency is gone from the header.
+    expect(t.querySelector('.m-vfo-sub')).toBeNull();
     expect(t.querySelector('.m-smeter-bar')?.textContent).toBe('7');
     rotate(true);
     expect(t.querySelector('[data-testid="freq-echo"]')?.textContent).toBe('14200400');
@@ -739,9 +740,8 @@ describe('mobile header follows the active receiver (MOR-2511)', () => {
     const t = mountMobile();
     expect(t.querySelector('.m-vfo-freq')?.textContent).toBe('14074000');
     expect(t.querySelector('.m-vfo-mode')?.textContent).toBe('USB');
-    const sub = t.querySelector('.m-vfo-sub');
-    expect(sub?.textContent).toBe('14.200');
-    expect(sub?.getAttribute('title')).toBe('SUB');
+    // MOR-2662: same ruling, the mirrored direction — no SUB frequency either.
+    expect(t.querySelector('.m-vfo-sub')).toBeNull();
     expect(t.querySelector('.m-smeter-bar')?.textContent).toBe('3');
   });
 
