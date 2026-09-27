@@ -48,7 +48,7 @@ function mountReactive(props: Record<string, unknown>) {
 // Asserting on NodeList length (not `querySelector(...) + toBeNull()`) sidesteps
 // a Svelte dev-mode "rune used outside .svelte" red herring vitest's
 // failure-message pretty-printer trips when it inspects a live mounted node —
-// the same convention `LinearSMeter.reduced-motion.svelte.test.ts` documents.
+// the same convention `LinearSMeter.reduced-motion.svelte.isolated.test.ts` documents.
 function markerCount(t: HTMLElement): number {
   return t.querySelectorAll('[data-testid="bar-gauge-peak-marker"]').length;
 }

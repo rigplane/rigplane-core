@@ -111,7 +111,7 @@ for (const spec of COCKPIT) {
     // segment between regeneration runs that changed nothing. Under
     // `prefers-reduced-motion: reduce` the meters snap to the settled value
     // at mount and schedule no frame (the reduced-motion contract pinned in
-    // `LinearSMeter.reduced-motion.isolated.test.ts`), so every capture is
+    // `LinearSMeter.reduced-motion.svelte.isolated.test.ts`), so every capture is
     // pixel-stable. The live app keeps its animation: this is the capture
     // harness only.
     await page.emulateMedia({ reducedMotion: 'reduce' });

@@ -207,7 +207,7 @@ describe('LinearSMeter display prop', () => {
   describe('segmentCount: 1 samples the color ramp by fill fraction, not by index', () => {
     // Extends the module-level 2-knot CAL with a real over-S9 anchor so a
     // "high" reading can land at the ramp's actual top, not just partway up
-    // it — same S9+60 anchor style as `LinearSMeter.test.ts`'s own 3-knot
+    // it — same S9+60 anchor style as `LinearSMeter.isolated.test.ts`'s own 3-knot
     // table (raw 241, actual 60).
     const CAL_WITH_OVER_S9 = [
       { raw: 0, actual: -54, label: 'S0' },
@@ -284,7 +284,7 @@ describe('LinearSMeter display prop', () => {
   describe('MOR-2250: the language decides fill tone; the crossover index it switches at is unaffected by which tones are supplied', () => {
     // Same anchor table this codebase already uses elsewhere for exactly
     // this purpose (frontend/fixtures/catalog.ts:246-250; matches
-    // LinearSMeter.test.ts's IC7300_S_METER_CAL) — reused, not invented.
+    // LinearSMeter.isolated.test.ts's IC7300_S_METER_CAL) — reused, not invented.
     const IC7300_CAL = [
       { raw: 0, actual: -54, label: 'S0' },
       { raw: 120, actual: 0, label: 'S9' },
