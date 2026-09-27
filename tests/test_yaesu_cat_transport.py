@@ -424,6 +424,30 @@ class TestYaesuCatTransport:
         with pytest.raises(CatTimeoutError, match="Read timeout"):
             await transport.readline()
 
+    async def test_query_timeout_names_the_unanswered_command(
+        self, mock_serial_connection: Any
+    ) -> None:
+        """A timed-out query carries the command the radio never answered.
+
+        MOR-2757: the Yaesu observation adapter counts unanswered reads of
+        safety-critical paths and names the command in the declared-command
+        defect that ends startup — the command reaches it through this
+        attribute, the way ``CatCommandRejected`` already carries its own.
+        """
+        reader = FakeStreamReader([])  # No responses = timeout
+        writer = FakeStreamWriter()
+        mock_serial_connection.open_serial_connection = AsyncMock(
+            return_value=(reader, writer)
+        )
+
+        transport = YaesuCatTransport(device="/dev/test", timeout=0.1)
+        await transport.connect()
+
+        with pytest.raises(CatTimeoutError) as caught:
+            await transport.query("FT;")
+
+        assert caught.value.command == "FT;"
+
     async def test_readline_without_connect_raises(self) -> None:
         """readline() raises if not connected."""
         transport = YaesuCatTransport(device="/dev/test")

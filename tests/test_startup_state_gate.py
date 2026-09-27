@@ -938,6 +938,238 @@ async def test_gate_still_refuses_a_refusal_the_radio_repeats() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# MOR-2757: an unanswered safety-critical read on the Yaesu CAT path
+# ---------------------------------------------------------------------------
+
+
+def _yaesu_critical_profile() -> RadioAcquisitionProfile:
+    """The four safety-critical paths a fake FTX-1 must answer to open."""
+
+    from rigplane.backends.yaesu_cat.observations import (
+        _MAIN_FREQ,
+        _MAIN_MODE,
+        _PTT,
+        _TX_TARGET,
+    )
+
+    return RadioAcquisitionProfile(
+        provider="yaesu_cat",
+        capabilities=(
+            FieldCapability(path=_MAIN_FREQ, polling=True),
+            FieldCapability(path=_MAIN_MODE, polling=True),
+            FieldCapability(path=_PTT, polling=True),
+            FieldCapability(path=_TX_TARGET, polling=True),
+        ),
+        field_policies={
+            path: AcquisitionPolicy(cadence_seconds=1.0, freshness_ttl_seconds=15.0)
+            for path in (_MAIN_FREQ, _MAIN_MODE, _PTT, _TX_TARGET)
+        },
+    )
+
+
+class _YaesuCriticalPoller:
+    """Drives the real Yaesu adapter's medium lane, like ``YaesuCatPoller``.
+
+    One cycle reads every critical field; a cycle-level failure (a
+    transport timeout re-raised by the adapter) is retried on the next
+    interval — what ``YaesuCatPoller._run_poll_cycle`` does with it.
+    """
+
+    def __init__(
+        self,
+        callback: Callable[[Sequence[Observation]], None],
+        radio: "_Ftx1CriticalRadio",
+    ) -> None:
+        self._callback = callback
+        self._radio = radio
+        self._stopped = asyncio.Event()
+
+    async def start(self) -> None:
+        from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
+
+        while not self._stopped.is_set():
+            adapter = YaesuObservationAdapter(
+                self._radio,  # type: ignore[arg-type]
+                profile=self._radio._acquisition_scheduler._profile,  # type: ignore[attr-defined]
+            )
+            try:
+                observations = await adapter.poll_medium()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "fake FTX-1 medium poll cycle failed", exc_info=True
+                )
+            else:
+                self._callback(observations)
+            await asyncio.sleep(0.001)
+
+    async def stop(self) -> None:
+        self._stopped.set()
+        await asyncio.sleep(0)
+
+    def bind_provider_generation(self, *, capture: object, advance: object) -> None:
+        return None
+
+    def bind_managed_tx_authority(self, _authority: object) -> None:
+        return None
+
+
+class _Ftx1CriticalRadio:
+    """A fake FTX-1 on the Yaesu observation (``sweep=False``) path.
+
+    Answers every safety-critical read except the one ``never_answers``
+    command, which raises the transport's unanswered-read timeout — what
+    ``YaesuCatTransport.query`` raises on a radio that stays silent
+    (MOR-2757).
+    """
+
+    backend_id = "yaesu_cat"
+    # Unresolvable model: WebServer must keep the scheduler this fake
+    # attaches, not bootstrap its own.
+    model = "FAKE-FTX1"
+    capabilities = {"tx"}
+    connected = control_connected = radio_ready = True
+
+    def __init__(self, *, never_answers: str | None = None) -> None:
+        self.radio_state = RadioState()
+        self._state_store = StateStore()
+        self._acquisition_scheduler = AcquisitionScheduler(
+            profile=_yaesu_critical_profile()
+        )
+        self._poll_warned_fields: set[str] = set()
+        self._critical_read_timeouts: dict[FieldPath, int] = {}
+        self._INITIAL_STATE_GAP_SERIAL = 0.005
+        self._never_answers = never_answers
+        self.tx_func_reads = 0
+
+    @property
+    def profile(self) -> SimpleNamespace:
+        # What ``YaesuObservationAdapter.from_radio`` reads: the radio
+        # profile's state-acquisition block.
+        return SimpleNamespace(state_acquisition=_yaesu_critical_profile())
+
+    @property
+    def state_store(self) -> StateStore:
+        return self._state_store
+
+    async def read_freq(self, receiver: int = 0) -> int:
+        return 14_074_000
+
+    async def read_mode(self, receiver: int = 0) -> tuple[str, int | None]:
+        return "USB", None
+
+    async def read_transmit_state(self) -> object:
+        from rigplane.core.tx_observation import TxStateReading
+
+        return TxStateReading(
+            value=False,
+            verified_readback=True,
+            source="yaesu_poll_response",
+            attributed="rx",
+        )
+
+    async def get_tx_func(self) -> int:
+        from rigplane.backends.yaesu_cat.transport import CatTimeoutError
+
+        self.tx_func_reads += 1
+        if self._never_answers == "FT;":
+            raise CatTimeoutError(
+                "Read timeout (0.1s) waiting for ';' terminator", command="FT;"
+            )
+        return 0
+
+    def supports_command(self, _command: str) -> bool:
+        return False
+
+    def create_observation_poller(
+        self, *, callback: Callable[[Sequence[Observation]], None], **_kwargs: object
+    ) -> object:
+        return _YaesuCriticalPoller(callback, self)
+
+    # -- what ``cli/__init__.py: _run`` needs before it reaches the gate ----
+
+    async def __aenter__(self) -> "_Ftx1CriticalRadio":
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    async def actuate(
+        self, _token: object, _operation: object, *, is_current: Callable[[], bool]
+    ) -> object:
+        from rigplane.runtime.managed_tx_state import ActuationResult
+
+        return ActuationResult.ACCEPTED if is_current() else ActuationResult.REJECTED
+
+    async def set_ptt(self, _on: bool) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_yaesu_unanswered_critical_read_fails_startup_after_three_attempts() -> (
+    None
+):
+    """MOR-2757 (a): a fake FTX-1 that never answers ``FT;`` ends startup.
+
+    The ``FT;`` read is the TX target's own read. Three medium cycles with
+    no answer reach the owner's attempt limit (MOR-2749, 2026-09-27), and
+    the same declared-command defect record a refused read leaves on the
+    scheduler refuses the bind — naming the field and the command. Before
+    MOR-2757 nothing counted these reads, so the gate waited forever.
+    """
+    radio = _Ftx1CriticalRadio(never_answers="FT;")
+    server = WebServer(radio, _gated_config())
+    scheduler = radio._acquisition_scheduler
+    binds: list[str] = []
+
+    async def _bind(*_args: object, **_kwargs: object) -> _FakeAsyncServer:
+        binds.append("bind")
+        return _FakeAsyncServer()
+
+    with patch("rigplane.web.web_startup.asyncio.start_server", new=_bind):
+        with pytest.raises(RuntimeError) as caught:
+            await asyncio.wait_for(server.start(), timeout=10.0)
+        await server.stop()
+
+    assert binds == []
+    message = str(caught.value)
+    assert message.startswith("web startup aborted: ")
+    assert message.endswith("Refusing to start a half-working server.")
+    assert "global.tx_state.tx_target" in message
+    assert "FT;" in message
+    assert scheduler.startup_defect is not None
+    assert radio.tx_func_reads == 3, "the defect must come after 3 attempts, not sooner"
+
+
+@pytest.mark.asyncio
+async def test_yaesu_gate_is_unchanged_when_the_fake_answers_everything() -> None:
+    """MOR-2757 (b): a fake FTX-1 that answers everything opens as before.
+
+    The same radio with ``FT;`` answering: no count ever reaches the
+    limit, no defect is recorded, and the listener binds once every
+    critical path is observed — the pre-MOR-2757 behaviour.
+    """
+    radio = _Ftx1CriticalRadio()
+    server = WebServer(radio, _gated_config())
+    scheduler = radio._acquisition_scheduler
+    binds: list[str] = []
+
+    async def _bind(*_args: object, **_kwargs: object) -> _FakeAsyncServer:
+        binds.append("bind")
+        return _FakeAsyncServer()
+
+    with patch("rigplane.web.web_startup.asyncio.start_server", new=_bind):
+        await asyncio.wait_for(server.start(), timeout=10.0)
+        await server.stop()
+
+    assert binds == ["bind"]
+    assert scheduler.startup_defect is None
+    assert scheduler.unobserved_startup_paths(_observed_paths(server, scheduler)) == ()
+    assert radio.tx_func_reads >= 1
+
+
 @pytest.mark.asyncio
 async def test_cli_web_exits_one_and_prints_the_defect(
     capsys: pytest.CaptureFixture[str],
