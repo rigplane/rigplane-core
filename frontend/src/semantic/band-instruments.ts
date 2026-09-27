@@ -19,7 +19,7 @@ const DEFAULT_PERMIT_STATUS_KEY: Record<'allowed' | 'denied', string> = {
 
 /** MOR-2684: every status word the permit caption can render across the
  *  bundled catalogs — en-US, ru-RU, and ja-JP each define the pair (MOR-2717
- *  translated the ja-JP pair, so its wider CJK words join the measurement).
+ *  translated the ja-JP pair).
  *  The caption's status slot is reserved at the widest of these, MEASURED
  *  in the caption's own font: the caption inherits the ambient font, which
  *  is not monospace, so a `ch` reservation would not be exact. Pinned
