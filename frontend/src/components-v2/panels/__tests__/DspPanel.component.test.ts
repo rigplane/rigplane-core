@@ -321,8 +321,9 @@ describe('DspPanel NB modal depth/width gating (MOR-502)', () => {
 describe('DspPanel notch width: none drawn without the field, none lit unread (MOR-2735)', () => {
   function manualNotchState(width: number | null): ServerState {
     const state = qualifiedState();
-    (state.main as Record<string, unknown>).manualNotch = true;
-    (state.main as Record<string, unknown>).manualNotchWidth = width;
+    const main = state.main as unknown as Record<string, unknown>;
+    main.manualNotch = true;
+    main.manualNotchWidth = width;
     return state;
   }
 
