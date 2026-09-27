@@ -520,6 +520,13 @@
   function formatOffsetDisplay(hz: number): string {
     return Number.isFinite(hz) ? `${hz >= 0 ? '+' : ''}${hz}` : '---';
   }
+  // MOR-2658: the power sheet slider shares TxPanel's unread contract —
+  // an unread level renders EMPTY in its reserved slot, never "NaN%"
+  // (`normalizedPercentDisplay` has no non-finite branch). `toTxProps`
+  // reports Number.NaN when the rig never sent `powerLevel`.
+  function formatRfPowerDisplay(level: number): string {
+    return Number.isFinite(level) ? normalizedPercentDisplay(level) : '';
+  }
   // The TX dock meter takes raw numbers and formats all four rows itself
   // (`formatPowerWatts`/`formatSwr`/`formatAlc` each render "NaN"-class
   // strings). It is not an owner of this gate, and there is no honest finite
@@ -788,11 +795,13 @@
             <!-- Power readout (tap → power modal) -->
             <!-- MOR-2658: an unread power renders EMPTY in the reserved
                  `.m-tx-power-value` slot below — never a '—' placeholder.
-                 `rfPowerAvailable` gates the modal tap; `formatPower` needs
-                 a finite level, and toTxProps falls back to 0.5 for an
-                 unobserved rig, so availability (not finiteness) decides. -->
+                 `rfPowerAvailable` gates the modal tap, but availability
+                 alone cannot decide the text: a rig with no fieldStatus
+                 entry reads as available (legacy no-entry fallback) while
+                 `toTxProps` reports NaN, and `formatPower(NaN)` is "NaNW" —
+                 so finiteness decides with it. -->
             <button type="button" class="m-tx-info" disabled={!tx.rfPowerAvailable} onclick={() => (powerModalOpen = true)}>
-              <span class="m-tx-power-value">{tx.rfPowerAvailable ? formatPower(tx.rfPower) : ''}</span>
+              <span class="m-tx-power-value">{tx.rfPowerAvailable && Number.isFinite(tx.rfPower) ? formatPower(tx.rfPower) : ''}</span>
               {#if managedTxRf === 'on'}
                 <!-- MOR-2658: an unread SWR renders EMPTY in the reserved
                      `.m-tx-swr-value` slot — never a '—', and never the
@@ -965,7 +974,7 @@
             max={1}
             step={0.01}
             renderer="hbar"
-            displayFn={normalizedPercentDisplay}
+            displayFn={formatRfPowerDisplay}
             accentColor="var(--v2-accent-red)"
             onChange={txHandlers.onRfPowerChange}
             variant="hardware-illuminated"

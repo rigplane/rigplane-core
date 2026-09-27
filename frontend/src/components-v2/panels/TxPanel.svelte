@@ -79,10 +79,10 @@
   const rawTxLevelDisplay = (value: number): string =>
     Number.isFinite(value) ? rawToPercentDisplay(value) : '';
   // MOR-2658: a non-finite RF power renders EMPTY in its reserved slot —
-  // never the literal `NaN%`. `toTxProps` feeds a non-finite `rfPower`
-  // when the rig never reported `powerLevel` (missing/absent, or the
-  // `?? 0.5` fallback's own input is non-finite); this point-of-rendering
-  // guard is the fix, `toTxProps` is deliberately untouched in this PR.
+  // never the literal `NaN%`. `toTxProps` reports `Number.NaN` when the
+  // rig never reported `powerLevel` (missing/absent → `?? Number.NaN`,
+  // the deferred A12 rfPower fix); this guard renders that sentinel as
+  // the empty slot, and the raw binding claims no slider position for it.
   const rfPowerDisplay = (value: number): string =>
     Number.isFinite(value) ? normalizedPercentDisplay(value) : '';
   const txLevelPolicy = () => createHBarContinuousScalarPolicy({
