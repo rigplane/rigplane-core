@@ -237,6 +237,7 @@
 
     <!-- Inactive (dim) -->
     <rect
+      data-gauge-dim={i}
       {x} y={TRACK_Y + 1}
       width={SEG_W} height={TRACK_H - 2}
       fill={dimColor(zone.color)}
@@ -279,5 +280,51 @@
 <style>
   svg {
     display: block;
+  }
+
+  /* ── MOR-1250: forced-colors (Windows High Contrast Mode) ──────────────
+   * WHCM forces `color`/`background` but not SVG presentation attributes,
+   * so this component's own palette — DEFAULT_ZONES raw hexes, dimColor()
+   * blends, and the v2 token fills — rendered unchanged under it. Same
+   * mechanism as LinearSMeter.svelte / #3717: author CSS overrides
+   * presentation attributes in the cascade, so this block re-paints every
+   * face onto system colours — lit state Highlight, unlit structure
+   * GrayText, ink CanvasText, faces Canvas. `forced-color-adjust: none`
+   * pins the gauge to exactly these paints instead of engine-dependent
+   * forcing. The reading also lives in text and aria-labels, and the
+   * dim/lit split is in the DOM as `data-gauge-dim` / `visibility`, so
+   * colour is never the only channel. Pinned by
+   * __tests__/BarGauge.forced-colors.test.ts. */
+  @media (forced-colors: active) {
+    svg {
+      forced-color-adjust: none;
+    }
+    text {
+      fill: CanvasText;
+    }
+    /* Container and track backgrounds: canvas with a text-colour outline. */
+    rect:not([data-gauge-track]):not([data-gauge-dim]):not([data-gauge-fill]):not([data-testid]) {
+      fill: Canvas;
+      stroke: CanvasText;
+    }
+    rect[data-gauge-track] {
+      fill: Canvas;
+      stroke: CanvasText;
+    }
+    /* Unlit structure: the dim segment under every slot. */
+    rect[data-gauge-dim] {
+      fill: GrayText;
+    }
+    /* The reading: lit fills (hidden ones stay hidden via visibility) and
+       the peak-hold marker. */
+    rect[data-gauge-fill],
+    rect[data-testid='bar-gauge-peak-marker'] {
+      fill: Highlight;
+    }
+    /* Fault outline (data-fault) is already a non-colour channel; paint it
+       as the system highlight so it stays distinct from a calm frame. */
+    svg[data-fault='true'] rect:not([data-gauge-track]):not([data-gauge-dim]):not([data-gauge-fill]):not([data-testid]) {
+      stroke: Highlight;
+    }
   }
 </style>
