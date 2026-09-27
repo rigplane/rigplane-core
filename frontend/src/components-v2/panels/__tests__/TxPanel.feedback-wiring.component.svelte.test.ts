@@ -392,4 +392,3 @@ describe('TxPanel unread TX level value display (MOR-2658)', () => {
     expect(text).not.toMatch(/unknown/i);
   });
 });
-});
