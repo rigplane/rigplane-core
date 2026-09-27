@@ -437,4 +437,28 @@ describe('MobileRadioLayout unread TX power and SWR (MOR-2658)', () => {
     expect(mobileLayoutSource).toMatch(/\.m-tx-power-value \{[^}]*min-width:/);
     expect(mobileLayoutSource).toMatch(/\.m-tx-swr-value \{[^}]*min-width:/);
   });
+
+  // Kills: an SWR slot narrower than its widest text. swrMeter is raw
+  // 0-255 (radio_state.py), so the slot's `(swr / 10).toFixed(1)` maxes
+  // out at "SWR 25.5" (8 chars) — the reservation must cover exactly that
+  // (MOR-2658).
+  it('sizes the SWR slot to its widest text', () => {
+    const widest = `SWR ${(255 / 10).toFixed(1)}`;
+    expect(widest).toBe('SWR 25.5');
+    const reserved = mobileLayoutSource.match(/\.m-tx-swr-value \{[^}]*min-width: (\d+)ch;/)?.[1];
+    expect(reserved).toBe(String(widest.length));
+  });
+
+  // Kills: a widest-text claim the slot never actually renders — a rig
+  // reporting the raw maximum must show that exact text while transmitting.
+  it('renders the widest SWR text the slot can hold', () => {
+    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
+    radioStore.current = {
+      active: 'MAIN', main: CONNECTED_RX, ptt: true,
+      powerMeter: 255, swrMeter: 255, alcMeter: 40,
+    };
+    const root = mountLayout();
+    openTxChip(root);
+    expect(root.querySelector('.m-tx-swr-value')?.textContent).toBe('SWR 25.5');
+  });
 });
