@@ -1428,7 +1428,7 @@ class TestAckSinkRobustness:
         """
         runtime = radio._civ_runtime
         radio._civ_min_interval = 0.0
-        # Long enough that no wait inside this test can end on the clock.
+        # Only the read's answer, not the grace, may release the write.
         radio._civ_ack_sink_grace = 10.0
         read = bytes.fromhex("FEFE98E029001656FD")
         refusal = parse_civ_frame(bytes.fromhex("FEFEE098FAFD"))

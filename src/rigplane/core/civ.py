@@ -178,8 +178,8 @@ class CivRequestTracker:
     ) -> asyncio.Future[CivFrame] | int:
         """Register a pending request that expects an ACK/NAK.
 
-        ``response_key`` is read for a sink only (``wait=False``): a data
-        response matching it retires the sink as an ACK/NAK would.
+        ``response_key`` is read for a sink (``wait=False``) only; ``resolve``
+        says when a data response retires that sink.
 
         Returns:
             - Future when ``wait=True`` (caller awaits ACK/NAK)
