@@ -22,6 +22,7 @@
   import { levelFormatsBelowMax } from '../../../semantic/format-level';
   import { RF_FRONT_END_LEVELS } from '../../../semantic/rf-front-end-instruments';
   import { formatOffsetKHz } from '../rit-utils';
+  import { finiteValue } from '../../../primitives/reading-text';
 
   const handlers = getAmberCockpitHandlers();
   const vfoHandlers = getVfoHandlers();
@@ -123,7 +124,7 @@
 
   // ── LCD-specific derivations (no adapter equivalent) ──
   let rx = $derived(radioState?.active === 'SUB' ? radioState?.sub : radioState?.main);
-  let subSValue = $derived(radioState?.sub?.sMeter ?? 0);
+  let subSValue = $derived(finiteValue(radioState?.sub?.sMeter));
 
   type MeterSource = 'S' | 'PO' | 'SWR' | 'ALC' | 'COMP';
   const METER_SOURCES: MeterSource[] = ['S', 'PO', 'SWR', 'ALC', 'COMP'];
@@ -146,7 +147,7 @@
       case 'SWR': return meter.swr;
       case 'ALC': return meter.alc;
       case 'COMP': return meter.comp;
-      default: return rx?.sMeter ?? 0;  // active receiver, not always main
+      default: return finiteValue(rx?.sMeter);  // active receiver, not always main
     }
   });
 
@@ -356,7 +357,7 @@
   let mainMode = $derived(radioState?.main?.mode ?? '');
   let mainFilter = $derived(radioState?.main?.filter ?? '');
   let mainBand = $derived(freqToBand(mainFreqHz));
-  let mainSMeter = $derived(radioState?.main?.sMeter ?? 0);
+  let mainSMeter = $derived(finiteValue(radioState?.main?.sMeter));
 
   let subVfoFreqHz = $derived(radioState?.sub?.freqHz ?? 0);
   let subVfoMode = $derived(radioState?.sub?.mode ?? '');

@@ -15,6 +15,7 @@
   import { isFieldAvailable } from '$lib/state/field-status';
   import { levelFormatsBelowMax } from '../../../semantic/format-level';
   import { RF_FRONT_END_LEVELS } from '../../../semantic/rf-front-end-instruments';
+  import { finiteValue } from '../../../primitives/reading-text';
 
   // Band lookup by frequency (LCD-specific, mirrors AmberCockpit)
   const BANDS: [string, number, number][] = [
@@ -328,7 +329,7 @@
     </div>
 
     <div class="lcd-meter-row" style:grid-area="meter">
-      <AmberSmeter value={rx?.sMeter ?? -54} source="S" />
+      <AmberSmeter value={finiteValue(rx?.sMeter)} source="S" />
     </div>
 
     <!-- ═══ Scope: dominant AfScope ═══ -->
