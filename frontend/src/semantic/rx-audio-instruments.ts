@@ -44,10 +44,12 @@ export const SPLIT_CHOICES = [[true, 'on'], [false, 'off']] as const;
 /** MOR-1384 — audio-link loss without an inferred retry state. */
 export const LINK_LOST_TEXT = 'live audio link lost';
 /** Readiness words. `mismatch` names the consequence, not just the state.
- *  MOR-2527: an `unknown` readiness renders NO text — an unlit slot, never
- *  a `—` placeholder. */
+ *  MOR-2527/MOR-2705: an `unknown` or `not-applicable` readiness renders NO
+ *  text — an unlit slot, never a `—`/`n/a` placeholder. The badge span
+ *  renders in every state (LAN / the mismatch sentence), so the empty slot
+ *  is a RESERVED slot, not a removed one. */
 export const READINESS_LABEL: Record<ModInputReadiness['status'], string> = {
-  'not-applicable': 'n/a', ready: 'LAN', unknown: '',
+  'not-applicable': '', ready: 'LAN', unknown: '',
   mismatch: 'not LAN — web voice TX would modulate from the wrong source',
 };
 

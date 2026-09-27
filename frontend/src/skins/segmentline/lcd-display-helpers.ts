@@ -67,13 +67,22 @@ export function telemetryText(field: DisplayTelemetry): string {
 
 export function telemetryDescription(label: string, field: DisplayTelemetry): string {
   const tx = field.txDisplay;
-  if (!tx) return `${label}: ${field.state === 'known' ? telemetryText(field)
-    : field.state === 'unsupported' ? 'Unsupported' : t('core.meter.state.noReading')}`;
-  if (!tx.supported) return `${label}: Unsupported`;
+  // MOR-2705 part 2: an accessible name names only what it is — the label.
+  // An unsupported item is not drawn, so it has no accessible name; an
+  // unread one is the label with no status word (never 'Unsupported' or
+  // 'No reading'). The localized `idle` word and the `stale`/`current`
+  // readings survive.
+  if (!tx) {
+    if (field.state === 'known') return `${label}: ${telemetryText(field)}`;
+    return label;
+  }
+  if (!tx.supported) return label;
   if (tx.relevance === 'idle') return `${label}: ${t('core.meter.state.idle')}`;
+  if (tx.observation.state !== 'stale' && tx.observation.state !== 'current') return label;
   const cue = tx.relevance === 'indeterminate' ? 'RF relevance indeterminate. ' : '';
-  return `${label}: ${cue}${tx.observation.state === 'stale' ? 'Stale observation'
-    : tx.observation.state === 'current' ? `Current observation: ${Number(tx.observation.value.toFixed(2))}` : t('core.meter.state.noReading')}`;
+  return tx.observation.state === 'stale'
+    ? `${label}: ${cue}Stale observation`
+    : `${label}: ${cue}Current observation: ${Number(tx.observation.value.toFixed(2))}`;
 }
 
 function envelope(
