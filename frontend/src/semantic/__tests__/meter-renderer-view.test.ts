@@ -56,7 +56,7 @@ function levelFrame(
       relevant: true, observed: true, state: 'current',
       domain: { kind: 'engineering', unit: key === 'swr' ? 'ratio' : 'w' },
       motionFraction: 0.25, scale: null, displayText: '50W', stateText: '',
-      accessibleDescription: 'Po: Current observation. 50W', fault: false,
+      accessibleDescription: 'Po: 50W', fault: false,
       showPeak: true, gauge: true,
       ...(key === 'swr' ? { ratioScale: true } : {}),
       ...projection,
@@ -261,7 +261,7 @@ describe('toLevelMeterRendererView', () => {
     const view = toLevelMeterRendererView(levelFrame('power', {
       evidence: { state: 'stale', value: 170 }, observed: false, state: 'stale',
       domain: { kind: 'raw' }, motionFraction: null, displayText: 'STALE',
-      stateText: 'STALE', accessibleDescription: 'Po: Stale observation', showPeak: false,
+      stateText: 'STALE', accessibleDescription: 'Po: 170 raw', showPeak: false,
     }, { smoothedFraction: 0.8, peakFraction: 0.9 }));
 
     expect(view).toMatchObject({

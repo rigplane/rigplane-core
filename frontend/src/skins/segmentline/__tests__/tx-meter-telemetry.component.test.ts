@@ -52,8 +52,11 @@ for (const [index, Component] of variants.entries()) describe(names[index], () =
             expect(el!.textContent?.trim()).toBe(`${label} ${expected}`.trim());
             const description = el!.getAttribute('aria-label') ?? '';
             expect(description).toContain(label);
-            expect(description).not.toMatch(/87.65/);
-            if (idle) expect(description).toContain('Not measuring in receive');
+            // The raw untruncated reading (87.654) never reaches the name;
+            // the formatted value does, for current and stale alike.
+            expect(description).not.toContain('87.654');
+            // MOR-2705 part 4b: idle names only the label.
+            if (idle) expect(description).toBe(label);
             // MOR-2705 part 2 (coordinator ruling): no status word in an
             // accessible name — neither 'No reading' nor the 'RF relevance
             // indeterminate' cue ("indeterminate" means "unknown").
@@ -61,8 +64,10 @@ for (const [index, Component] of variants.entries()) describe(names[index], () =
             expect(description).not.toContain('indeterminate');
             // An unknown observation names only the label, the same as unread.
             if (!idle && observation.state === 'unknown') expect(description).toBe(label);
-            if (!idle && observation.state === 'stale') expect(description).toContain('Stale observation');
-            if (!idle && observation.state === 'current') expect(description).toContain('12.35');
+            // MOR-2705 part 4b: current and stale name the value alike —
+            // no 'Stale observation', no 'Current observation' status word.
+            if (!idle && observation.state === 'stale') expect(description).toBe(`${label}: 87.65`);
+            if (!idle && observation.state === 'current') expect(description).toBe(`${label}: 12.35`);
           }
           expect(root.querySelectorAll('button,input,select,textarea')).toHaveLength(0);
         } finally { unmount(component); root.remove(); }

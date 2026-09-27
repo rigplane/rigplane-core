@@ -226,9 +226,6 @@
   "core.vfo.state.on": "on",
   "core.vfo.state.off": "off",
 
-  "core.meter.state.idle": "не измеряется на приём",
-  "core.meter.state.noReading": "нет показаний",
-
   "core.vfo.ops.equalize": "Уравнять VFO",
   "core.vfo.ops.swap": "Поменять VFO местами",
   "core.vfo.splitDigest.rx": "RX {frequency}",

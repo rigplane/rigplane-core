@@ -156,10 +156,12 @@ it.each([
   expect(telemetryText(field)).toBe(text);
 });
 
-// MOR-2705 part 2: an accessible name never carries a status word. An
-// unsupported item is not drawn, so it has no accessible name; an unread
-// one names only what it is — its label: no 'Unsupported', no 'No
-// reading', and no 'RF relevance indeterminate' cue either.
+// MOR-2705 parts 2 and 4b: an accessible name never carries a status
+// word. An unsupported item is not drawn, so it has no accessible name; an
+// unread one names only what it is — its label: no 'Unsupported', no 'No
+// reading', and no 'RF relevance indeterminate' cue either. A read item
+// names `<label>: <value>`, current and stale alike; idle names only the
+// label (MOR-2688: an instrument without data sits at rest).
 it('names an unsupported or unread telemetry item by its label only', () => {
   expect(telemetryDescription('PWR', { state: 'unknown', relevant: true })).toBe('PWR');
   expect(telemetryDescription('PWR', { state: 'unsupported', relevant: false })).toBe('PWR');
@@ -183,9 +185,13 @@ for (const relevance of ['idle', 'relevant', 'indeterminate'] as const)
       expect(text).toBe(relevance === 'idle' ? '' : observation.state === 'unknown' ? ''
         : `${Number(observation.value.toFixed(2))}`);
       expect(description).toContain('PWR');
-      expect(description).not.toMatch(/207|87.65/);
-      if (relevance === 'idle') expect(description).toContain('Not measuring in receive');
-      if (relevance !== 'idle' && observation.state === 'stale') expect(description).toContain('Stale observation');
+      // The outer legacy value (207) never reaches the name; the TX
+      // observation's own value does, for current and stale alike.
+      expect(description).not.toContain('207');
+      // MOR-2705 part 4b: current and stale name the value alike; idle and
+      // unknown name only the label.
+      if (relevance === 'idle') expect(description).toBe('PWR');
+      if (relevance !== 'idle' && observation.state === 'stale') expect(description).toBe(`PWR: ${text}`);
       // MOR-2705 part 2 (coordinator ruling): no status word in an
       // accessible name — neither 'No reading' nor the 'RF relevance
       // indeterminate' cue ("indeterminate" means "unknown").
@@ -193,5 +199,6 @@ for (const relevance of ['idle', 'relevant', 'indeterminate'] as const)
       expect(description).not.toContain('indeterminate');
       // An unknown observation names only the label, the same as unread.
       if (relevance !== 'idle' && observation.state === 'unknown') expect(description).toBe('PWR');
+      if (relevance !== 'idle' && observation.state === 'current') expect(description).toBe(`PWR: ${text}`);
     });
   }

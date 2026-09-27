@@ -655,7 +655,9 @@ describe('motion and forced-colors mechanisms are reused, not forked', () => {
     const view = withField(base('transmitting'), 'alc', { unknown: true });
     withSurface(view, (s) => {
       expect(s.tile('alc')!.textContent).not.toMatch(/\?/);
-      expect(s.tile('alc')!.querySelector('svg')?.getAttribute('aria-label')).toContain('No reading');
+      // MOR-2705 part 4b: no status word in the accessible name — the
+      // unread meter names only its label.
+      expect(s.tile('alc')!.querySelector('svg')?.getAttribute('aria-label')).toBe('ALC');
       expect(s.tile('alc')!.dataset.observed).toBe('false');
       expect(s.rfLabel()).toBe(RF_LABEL.transmitting);
     });
@@ -1638,6 +1640,9 @@ describe('main-bar and SWR-row opacity are independent, non-compounding channels
 });
 
 const TX_KEYS = ['power', 'alc', 'swr'] as const;
+// MOR-2705 part 4b: a read meter names `<label>: <value>` (current and
+// stale alike); idle, unknown and indeterminate name only the label.
+const TX_LABEL: Record<(typeof TX_KEYS)[number], string> = { power: 'Po', alc: 'ALC', swr: 'SWR' };
 describe('persistent TX instruments', () => {
   for (const structural of [false, true]) for (const rf of RF_STATES)
     for (const relevant of [false, true]) for (const state of ['current', 'stale', 'unknown'] as const) {
@@ -1650,7 +1655,6 @@ describe('persistent TX instruments', () => {
         };
         withSurface(view, () => {
           const idle = rf === 'receiving' && !relevant;
-          const indeterminate = !idle && !(rf === 'transmitting' && relevant);
           for (const key of TX_KEYS) {
             const el = target.querySelector(key === 'swr' ? '[data-lower-relevant]' : `[data-meter="${key}"] svg`);
             expect(!!el).toBe(structural);
@@ -1662,7 +1666,7 @@ describe('persistent TX instruments', () => {
             // states, and neither shows a placeholder text token.
             if (idle) {
               expect(text).not.toMatch(/IDLE|170/);
-              expect(description).toContain('Not measuring in receive');
+              expect(description).toBe(TX_LABEL[key]);
               expect(description).not.toMatch(/170|\?/);
               expect(visibleSlotCount(el, key === 'swr' ? '[data-lower-fill]' : '[data-gauge-fill]')).toBe(0);
               expect(el.getAttribute('data-fault')).not.toBe('true');
@@ -1680,7 +1684,10 @@ describe('persistent TX instruments', () => {
               // power/alc only.
               if (key !== 'swr') expect(text).toContain('170');
               expect(visibleSlotCount(el, key === 'swr' ? '[data-lower-fill]' : '[data-gauge-fill]')).toBeGreaterThan(0);
-              if (indeterminate) expect(description).toContain('RF relevance indeterminate');
+              // MOR-2705 part 4b: current, stale and indeterminate-relevance
+              // readings all name the value — no 'Observed', no 'RF
+              // relevance indeterminate' status word.
+              expect(description).toBe(`${TX_LABEL[key]}: 170 raw`);
             }
           }
         });
@@ -1749,7 +1756,7 @@ it('uses current display calibration while preserving VD/ID/COMP through RX idle
       flushSync();
       expect(target.querySelector('[data-meter="power"]')?.textContent).not.toContain('IDLE');
       expect(target.querySelector('[data-meter="power"] svg')?.getAttribute('aria-label'))
-        .toContain('Not measuring in receive');
+        .toBe('Po');
       expect(['drainVoltage', 'drainCurrent', 'compression'].map((key) =>
         target.querySelector(`[data-meter="${key}"]`)!.outerHTML)).toEqual(other);
     } finally { unmount(component); }
@@ -1766,7 +1773,7 @@ it('a current calibrated zero remains a measurement, distinct from RX idle', () 
     withSurface(view, (s) => {
       expect(s.tile('power')?.textContent).toContain('0W');
       expect(s.tile('power')?.textContent).not.toContain('IDLE');
-      expect(s.tile('power')?.querySelector('svg')?.getAttribute('aria-label')).toContain('Observed. 0W');
+      expect(s.tile('power')?.querySelector('svg')?.getAttribute('aria-label')).toBe('Po: 0W');
     });
   } finally { clearCapabilities(); }
 });
