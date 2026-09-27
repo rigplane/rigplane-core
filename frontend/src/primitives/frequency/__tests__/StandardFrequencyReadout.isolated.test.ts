@@ -154,7 +154,8 @@ describe('StandardFrequencyReadout', () => {
       expect(slot.querySelector('.unlit')!.textContent).toBe('888');
     }
     const known = mountReadout({
-      model: projectFrequencyReadout({ confirmedHz: 0 }),
+      // Widest MHz group the known path renders (3 digits, e.g. 148 MHz).
+      model: projectFrequencyReadout({ confirmedHz: 148_000_000 }),
       presentation: 'passive',
     });
     const passiveWidths = [...passive.querySelectorAll('.digits')].map(
