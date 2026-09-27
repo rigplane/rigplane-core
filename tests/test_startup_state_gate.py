@@ -1219,20 +1219,29 @@ def _filter_shapes_startup_required(
 ) -> AcquisitionScheduler:
     """Rebuild the IC-7610 profile with #3815's lines reverted in-test.
 
-    Both filter-shape capabilities come back ``startup_required`` with
-    MOR-2748's ``available_when`` declarations cleared too, so the test pins
-    the deadline rule on the pre-#3815/pre-#3828 profile shape and stays
-    correct after those profile changes merged.
+    Both filter-shape capabilities come back ``startup_required``, and the
+    two filter-shape entries in ``field_policies`` drop their MOR-2748
+    ``available_when`` clauses — the availability declaration lives on the
+    ``AcquisitionPolicy``, not the ``FieldCapability``. The test pins the
+    deadline rule on the pre-#3815/pre-#3828 profile shape and stays correct
+    after those changes merged.
     """
 
+    filter_shapes = {MAIN_FILTER_SHAPE, SUB_FILTER_SHAPE}
     flipped = replace(
         scheduler._profile,
         capabilities=tuple(
-            replace(capability, startup_required=True, available_when=())
-            if capability.path in {MAIN_FILTER_SHAPE, SUB_FILTER_SHAPE}
+            replace(capability, startup_required=True)
+            if capability.path in filter_shapes
             else capability
             for capability in scheduler._profile.capabilities
         ),
+        field_policies={
+            path: replace(policy, available_when=())
+            if path in filter_shapes
+            else policy
+            for path, policy in scheduler._profile.field_policies.items()
+        },
     )
     return AcquisitionScheduler(profile=flipped)
 
