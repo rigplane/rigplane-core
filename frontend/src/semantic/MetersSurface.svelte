@@ -99,22 +99,52 @@
   }
   let { handles }: Props = $props();
 
-  /** MOR-2521: the S caption's value and secondary `min-width`s, in `ch`:
-   *  the glyph count of the widest S-unit and dBm text the mounted
-   *  profile's calibration knots print. Undefined when uncalibrated. */
-  const signalCaptionMinWidth = $derived.by(() => {
-    let sUnit = 0;
-    let dbm = 0;
+  /** MOR-2521: the S-unit and dBm texts the mounted profile's calibration
+   *  knots print; none when uncalibrated. The S caption reserves the widest
+   *  of each, measured in its own font, as the `min-width` of its value and
+   *  dBm spans. */
+  const signalCaptionTexts = $derived.by(() => {
+    const value: string[] = [];
+    const secondary: string[] = [];
     if (isSmeterCalibrated()) {
       for (const point of getCalibrationPoints()) {
-        sUnit = Math.max(sUnit, calibratedToSUnit(point.actual).length);
-        dbm = Math.max(dbm, formatDbm(calibratedToDbm(point.actual)).length);
+        value.push(calibratedToSUnit(point.actual));
+        secondary.push(formatDbm(calibratedToDbm(point.actual)));
       }
     }
-    return {
-      value: sUnit > 0 ? `${sUnit}ch` : undefined,
-      secondary: dbm > 0 ? `${dbm}ch` : undefined,
+    return { value, secondary };
+  });
+  let valueMeasure: HTMLSpanElement | undefined = $state();
+  let secondaryMeasure: HTMLSpanElement | undefined = $state();
+  let signalCaptionMinWidth = $state<{ value?: string; secondary?: string }>({});
+
+  /** The widest of `texts` set in `node`, which is left empty. */
+  function widestWidth(node: HTMLElement, texts: readonly string[]): string | undefined {
+    if (texts.length === 0) return undefined;
+    const widest = Math.max(...texts.map((text) => {
+      node.textContent = text;
+      return node.getBoundingClientRect().width;
+    }));
+    node.textContent = '';
+    return `${Math.ceil(widest)}px`;
+  }
+
+  $effect(() => {
+    const { value, secondary } = signalCaptionTexts;
+    const valueNode = valueMeasure;
+    const secondaryNode = secondaryMeasure;
+    if (!valueNode || !secondaryNode) return;
+    const measure = () => {
+      signalCaptionMinWidth = {
+        value: widestWidth(valueNode, value),
+        secondary: widestWidth(secondaryNode, secondary),
+      };
     };
+    measure();
+    // Measured again once the document's fonts have loaded.
+    let live = true;
+    void document.fonts?.ready.then(() => { if (live) measure(); });
+    return () => { live = false; };
   });
 </script>
 
@@ -187,10 +217,12 @@
               <span class="meter-native-label">S</span>
               <span class="meter-native-value" style:min-width={signalCaptionMinWidth.value}
               >{signalProjection?.primaryText ?? ''}</span>
-              {#if signalCaptionMinWidth.secondary}
+              {#if signalCaptionTexts.secondary.length > 0}
                 <span class="meter-native-secondary" style:min-width={signalCaptionMinWidth.secondary}
                 >{signalProjection?.secondaryText ?? ''}</span>
               {/if}
+              <span class="meter-native-value meter-native-measure" bind:this={valueMeasure}></span>
+              <span class="meter-native-secondary meter-native-measure" bind:this={secondaryMeasure}></span>
             </div>
           {/if}
           {#if swrFrame && visibleSwr}
@@ -231,6 +263,7 @@
   .meters-rf { display: flex; align-items: baseline; gap: 0.4ch; margin: 0; font-weight: 700; }
   .meter-tile { display: block; }
   .meter-native-caption { display: none; }
+  .meter-native-measure { position: absolute; visibility: hidden; pointer-events: none; white-space: nowrap; }
   .meter-tile[data-relevant='false']:not([data-meter='signal']):not([data-meter='swr']) {
     opacity: 0.4;
   }

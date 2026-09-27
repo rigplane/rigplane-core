@@ -1085,59 +1085,73 @@ describe('MOR-2521 — the S caption reserves the widest text the calibration pr
   const spans = (s: ReturnType<typeof render>) => {
     const caption = s.tile('signal')!.querySelector('.meter-native-caption')!;
     return {
-      value: caption.querySelector<HTMLElement>('.meter-native-value')!,
-      secondary: caption.querySelector<HTMLElement>('.meter-native-secondary'),
+      value: caption.querySelector<HTMLElement>('.meter-native-value:not(.meter-native-measure)')!,
+      secondary: caption.querySelector<HTMLElement>('.meter-native-secondary:not(.meter-native-measure)'),
+      measures: [...caption.querySelectorAll<HTMLElement>('.meter-native-measure')],
     };
   };
 
-  it('keeps one min-width for an unread meter, S0 and S9+20', () => {
-    // Prints at most 'S9+40' (5 glyphs) and '−127 dBm' (8 glyphs).
+  // jsdom lays nothing out, so every element here measures 10px per
+  // character: a reservation reads back as the widest candidate's length.
+  beforeEach(() => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      const width = (this.textContent ?? '').length * 10;
+      return {
+        x: 0, y: 0, top: 0, left: 0, right: width, bottom: 0, width, height: 0, toJSON: () => ({}),
+      } as DOMRect;
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    clearCapabilities();
+  });
+
+  function calibrate(table: { raw: number; actual: number; label: string }[]): void {
     const caps = makeFaultCaps();
-    caps.meterCalibrations!.s_meter = [
+    caps.meterCalibrations!.s_meter = table;
+    setCapabilities(caps);
+  }
+
+  it('keeps one min-width for an unread meter, S0 and S9+20', () => {
+    // Prints at most 'S9+40' (5 characters) and '−127 dBm' (8).
+    calibrate([
       { raw: 0, actual: -54, label: 'S0' },
       { raw: 130, actual: 0, label: 'S9' },
       { raw: 240, actual: 40, label: 'S9+40' },
-    ];
-    setCapabilities(caps);
-    try {
-      const cases = [
-        [withField(base(), 'signal', { unknown: true }), '', ''],
-        [withSignalDomain(withRaw(base(), 'signal', -54), DB), 'S0', '\u2212127 dBm'],
-        [withSignalDomain(withRaw(base(), 'signal', 20), DB), 'S9+20', '\u221253 dBm'],
-      ] as const;
-      for (const [view, value, secondary] of cases) {
-        withSurface(view, (s) => {
-          const { value: valueSpan, secondary: secondarySpan } = spans(s);
-          expect(valueSpan.textContent).toBe(value);
-          expect(valueSpan.style.minWidth).toBe('5ch');
-          expect(secondarySpan?.textContent).toBe(secondary);
-          expect(secondarySpan?.style.minWidth).toBe('8ch');
-        });
-      }
-    } finally {
-      clearCapabilities();
+    ]);
+    const cases = [
+      [withField(base(), 'signal', { unknown: true }), '', ''],
+      [withSignalDomain(withRaw(base(), 'signal', -54), DB), 'S0', '\u2212127 dBm'],
+      [withSignalDomain(withRaw(base(), 'signal', 20), DB), 'S9+20', '\u221253 dBm'],
+    ] as const;
+    for (const [view, value, secondary] of cases) {
+      withSurface(view, (s) => {
+        const { value: valueSpan, secondary: secondarySpan, measures } = spans(s);
+        expect(valueSpan.textContent).toBe(value);
+        expect(valueSpan.style.minWidth).toBe('50px');
+        expect(secondarySpan?.textContent).toBe(secondary);
+        expect(secondarySpan?.style.minWidth).toBe('80px');
+        // The measure nodes are left empty: no stray text in the caption.
+        expect(measures.map((node) => node.textContent)).toEqual(['', '']);
+      });
     }
   });
 
   it('sizes the reservation from the mounted table, not from a constant', () => {
-    // Prints at most 'S9' (2 glyphs) and '−97 dBm' (7 glyphs).
-    const caps = makeFaultCaps();
-    caps.meterCalibrations!.s_meter = [
+    // Prints at most 'S9' (2 characters) and '−97 dBm' (7).
+    calibrate([
       { raw: 0, actual: -24, label: 'S5' },
       { raw: 120, actual: 0, label: 'S9' },
-    ];
-    setCapabilities(caps);
-    try {
-      withSurface(withSignalDomain(withRaw(base(), 'signal', -24), DB), (s) => {
-        const { value: valueSpan, secondary: secondarySpan } = spans(s);
-        expect(valueSpan.textContent).toBe('S5');
-        expect(valueSpan.style.minWidth).toBe('2ch');
-        expect(secondarySpan?.textContent).toBe('\u221297 dBm');
-        expect(secondarySpan?.style.minWidth).toBe('7ch');
-      });
-    } finally {
-      clearCapabilities();
-    }
+    ]);
+    withSurface(withSignalDomain(withRaw(base(), 'signal', -24), DB), (s) => {
+      const { value: valueSpan, secondary: secondarySpan } = spans(s);
+      expect(valueSpan.textContent).toBe('S5');
+      expect(valueSpan.style.minWidth).toBe('20px');
+      expect(secondarySpan?.textContent).toBe('\u221297 dBm');
+      expect(secondarySpan?.style.minWidth).toBe('70px');
+    });
   });
 
   it('reserves nothing and draws no secondary span without a calibration table', () => {
