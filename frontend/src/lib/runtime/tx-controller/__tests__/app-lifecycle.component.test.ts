@@ -19,6 +19,9 @@ const h = vi.hoisted(() => ({
     dispose: ReturnType<typeof vi.fn>;
   } | undefined,
   inFlight: null as Promise<void> | null,
+  // MOR-1239: the i18n `t` mock routes through this spy so the catch
+  // handler's error-UI translation request is observable from tests.
+  t: vi.fn((key: string) => key),
 }));
 vi.mock('../../../../components-v2/layout/RadioLayout.svelte', async () => {
   const stub = await import('../../../../components-v2/layout/__tests__/SpectrumPanelStub.svelte');
@@ -62,7 +65,7 @@ vi.mock('../../../../lib/runtime/frontend-runtime', async () => {
   };
 });
 vi.mock('$lib/runtime/system-controller', () => ({ systemController: { registerPreDisconnectBarrier: h.registerBarrier } }));
-vi.mock('$lib/i18n', () => ({ t: (key: string) => key }));
+vi.mock('$lib/i18n', () => ({ t: h.t }));
 vi.mock('../managed-app-host', () => ({ provideManagedAppTxHost: h.provide }));
 // The App-global status host (MOR-1059) is stubbed here: these tests own the
 // TX controller lifecycle, and the host has its own focused suite.
@@ -81,6 +84,7 @@ function mountApp() {
 }
 beforeEach(() => {
   vi.clearAllMocks();
+  h.t.mockImplementation((key: string) => key);
   h.order.length = 0;
   h.barrier = undefined;
   h.host = undefined;
@@ -228,6 +232,17 @@ describe('App bootstrap rejection lifecycle (MOR-1168)', () => {
     // Removing the `!mounted` guard in the catch handler would arm a
     // retry setTimeout (and eventually call location.reload()) here.
     expect(setTimeoutSpy).not.toHaveBeenCalled();
+
+    // MOR-1239: pin the guard's *position*, not just the timer arm. The
+    // guard must sit above the catch handler's `$state` writes: moved
+    // below `backendError = t('core.app.backendError', ...)`, the handler
+    // still requests the error-UI translation after unmount — and a
+    // detached root must receive no error UI. Svelte renders a write to a
+    // destroyed root's state inertly, so the DOM stays clean either way;
+    // the translation request is the observable half of the state write,
+    // pinned here alongside the rendered symptom.
+    expect(h.t).not.toHaveBeenCalledWith('core.app.backendError', expect.anything());
+    expect(document.body.textContent).not.toContain('core.app.backendError');
   });
 
   it('preserves bounded retry/error behavior for a rejection while still mounted', async () => {
