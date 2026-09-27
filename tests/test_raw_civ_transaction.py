@@ -183,7 +183,7 @@ async def test_raw_civ_transaction_data_nak_is_deterministic_failure_result(
 
 
 @pytest.mark.parametrize(
-    ("command", "sub", "data", "request", "reply", "status"),
+    ("command", "sub", "data", "sent", "reply", "status"),
     [
         (0x16, 0x56, b"", "FEFE98E01656FD", "FEFEE098FAFD", "nak"),
         (0x29, None, b"\x00\x16\x56", "FEFE98E029001656FD", "FEFEE098FAFD", "nak"),
@@ -204,7 +204,7 @@ async def test_raw_civ_transaction_settles_the_ic7610_filter_shape_exchange(
     command: int,
     sub: int | None,
     data: bytes,
-    request: str,
+    sent: str,
     reply: str,
     status: str,
 ) -> None:
@@ -219,7 +219,7 @@ async def test_raw_civ_transaction_settles_the_ic7610_filter_shape_exchange(
         command, sub=sub, data=data, expect="data", timeout=0.2
     )
 
-    assert transport.sent_packets[-1].endswith(bytes.fromhex(request))
+    assert transport.sent_packets[-1].endswith(bytes.fromhex(sent))
     assert result.status == status
     assert result.frame_bytes == bytes.fromhex(reply)
 
