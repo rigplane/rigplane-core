@@ -131,10 +131,13 @@ def test_ftx1_scalar_domains_are_exact_loader_published_capabilities() -> None:
         # MOR-1676 part R: raw 0-255 CAT levels for the v3 RF/SQL raw lattice.
         "rf_gain",
         "squelch",
+        # MOR-1676: the raw 0-255 AF level for the v3 AF raw lattice.
+        "af_level",
         *_DOMAINS,
     }
     assert first.controls["rf_gain"] == {"raw_min": 0, "raw_max": 255}
     assert first.controls["squelch"] == {"raw_min": 0, "raw_max": 255}
+    assert first.controls["af_level"] == {"raw_min": 0, "raw_max": 255}
     assert {name: first.controls[name] for name in _DOMAINS} == _DOMAINS
     assert json.loads(json.dumps(first.controls, allow_nan=False)) == first.controls
     assert all(
