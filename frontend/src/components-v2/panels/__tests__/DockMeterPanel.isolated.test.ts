@@ -185,6 +185,29 @@ describe('DockMeterPanel uncalibrated S row (MOR-2705 part 4a)', () => {
   });
 });
 
+describe('DockMeterPanel unread S row (MOR-2730)', () => {
+  // The phone's TX chip passes `toVfoProps(...).sValue`, which is NaN while
+  // the S-meter is unread.
+  const txProps: ComponentProps<typeof DockMeterPanel> = {
+    ...baseProps, rfPower: 50, swr: 1.5, alc: 0.5, txActive: true, meterSource: 'S',
+  };
+
+  it('draws no S reading and no S fill while the S-meter is unread', () => {
+    const t = mountPanel({ ...txProps, sValue: Number.NaN });
+    const row = t.querySelectorAll('.dock-row')[0];
+    expect(row.querySelector('.dock-row-label')?.textContent).toBe('S');
+    expect(row.querySelector('.dock-row-value')?.textContent).toBe('');
+    expect(fillPctForLabel(t, 'S')).toBe(0);
+    expect(t.querySelector('.status-tag.source')?.textContent).toBe('S ');
+  });
+
+  it('still draws a read S9 (0 dB relative to S9) as S9', () => {
+    const t = mountPanel({ ...txProps, sValue: 0 });
+    expect(t.querySelectorAll('.dock-row')[0].querySelector('.dock-row-value')?.textContent).toBe('S9');
+    expect(t.querySelector('.status-tag.source')?.textContent).toBe('S S9');
+  });
+});
+
 describe('DockMeterPanel uncalibrated TX rows (MOR-2722 part B)', () => {
   // A profile with no TX meter calibration tables at all (X6200 class):
   // every TX row keeps its moving bar but draws no digit and no 'raw'
