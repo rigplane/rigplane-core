@@ -103,6 +103,9 @@ interface BootOptions {
    *  not carry — without it no `.spectrum-slot` renders and there is no
    *  hosted row at all (round-2 finding 2). */
   patch?: (state: ServerState, caps: Capabilities) => void;
+  /** MOR-2674: fail the managed-transmit fetch so the status-bar TOT
+   *  trigger sees a stale (unread) snapshot. */
+  staleTot?: boolean;
   /** QA-only skin `?layout=flagship-probe` selects
    *  (`lib/stores/qa-cockpit-override.ts`). It is not a `CanonicalLayoutMode`,
    *  so the workspace `layout` this helper writes cannot carry it. */
@@ -190,6 +193,11 @@ async function boot(page: Page, layout: string, width: number, known: boolean, l
   }, { state, layout, language, theme, locale });
   await page.route('**/api/**', route => {
     const name = new URL(route.request().url()).pathname.split('/').pop();
+    if (name === 'managed-transmit' && options.staleTot) {
+      // MOR-2674: a failed refresh invalidates the TOT snapshot — the
+      // trigger must stay unread (unlit), never a dash run.
+      return route.fulfill({ status: 500, json: { error: 'stale-tot' } });
+    }
     const body = name === 'state' ? state : name === 'capabilities' ? caps : name === 'info' ? mockInfo
       : name === 'managed-transmit' ? { schemaVersion: 1, sampledAt: new Date().toISOString(),
         managedTransmit: { status: 'available', intent: { kind: options.txState === 'tx' ? 'transmit' : 'rx' }, releaseRequired: false,
@@ -1038,6 +1046,20 @@ for (const known of [true, false]) {
 // hide an inner change, so this measures the meter's OWN SVG element between
 // an unknown (unread) and a known (read) fixture: width AND height must be
 // identical, so a first reading cannot move the layout.
+// MOR-2674: an unread (stale) TOT stays unlit, and its hidden sizer holds
+// the trigger at the same width as any known value — the first reading
+// cannot move the status bar.
+test('standard 1440 status-bar TOT trigger keeps its box between unread and read', async ({ page }) => {
+  const triggerWidth = async (staleTot: boolean) => {
+    await boot(page, 'standard', 1440, true, 'studioline', false, 'topology-1-single', { staleTot });
+    return page.locator('[data-testid="managed-tot-trigger"]')
+      .evaluate(element => element.getBoundingClientRect().width);
+  };
+  const knownWidth = await triggerWidth(false);
+  const unknownWidth = await triggerWidth(true);
+  expect(unknownWidth).toBe(knownWidth);
+});
+
 test('standard 1440 receiver S-meter keeps its box between unread and read', async ({ page }) => {
   const meterBox = async (known: boolean) => {
     await boot(page, 'standard', 1440, known, 'studioline', false, 'topology-1-single');
