@@ -346,13 +346,17 @@
     return vfo.receiver;
   }
 
-  // Owner ruling 2026-09-21: the plaque's width does not depend on its text
-  // or its state. The plaque font is proportional in studioline (system
-  // sans), so `ch` is not the glyph width. The box is measured once, off
-  // screen, in the plaque's own font, at the widest text roleLabel can
-  // emit. Those strings are English in every locale (roleLabel does not
+  // Owner ruling 2026-09-21, narrowed 2026-09-27: ONE width for the plaque in
+  // every state, measured once off screen in the plaque's own font at the
+  // widest SLOTTED text roleLabel can emit. Normal operation (unread →
+  // slotted, A↔B) never changes the plaque's width, and the phone one-line
+  // test stays green. The relative texts are deliberately NOT measured:
+  // 'Unselected VFO' (14c) cannot fit one phone line at 375px even at the
+  // slotted width, so it overflows this reservation exactly as it does on
+  // main — its compact label is a separate product decision (follow-up
+  // ticket). Those strings are English in every locale (roleLabel does not
   // call t()); the three catalogs were checked and add no wider role text.
-  const ROLE_TEXTS = ['MAIN', 'SUB', 'MAIN A', 'MAIN B', 'SUB A', 'SUB B', 'Selected VFO', 'Unselected VFO'];
+  const ROLE_TEXTS = ['MAIN', 'SUB', 'MAIN A', 'MAIN B', 'SUB A', 'SUB B'];
   let roleMeasure: HTMLSpanElement | undefined = $state();
   let roleWidth = $state('0px');
   $effect(() => {
@@ -375,11 +379,11 @@
    * WORKSPACE DEFAULT, see `DEFAULT_WORKSPACE.designLanguage`) the language's
    * own thin-space-grouped text: two mismatched formats on the same slot,
    * flipping between them as the design-language activation effect raced this
-   * surface's own render. `null` still renders the honest placeholder, never
-   * a differently-formatted number.
+   * surface's own render. `null` renders nothing (MOR-2655): an unread value
+   * is an empty, unlit box, never a dash or a differently-formatted number.
    */
   function formatFrequency(hz: number | null): string {
-    if (hz === null) return '—';
+    if (hz === null) return '';
     const { mhz, khz, hz: hzGroup } = groupDigitsForDisplay(splitFrequencyToDigits(hz));
     return [mhz, khz, hzGroup].map((group) => group.map((d) => d.char).join('')).join('.');
   }
@@ -502,9 +506,10 @@
    * on facts. RX is the ACTIVE VFO (what the operator is listening to); TX comes
    * from the radio-wide `txTarget`, which carries its OWN frequency and is the
    * same derivation the App TX authority uses — so the digest can never disagree
-   * with the per-tile TX-target badge. Either side reads `null` — rendered `—`
-   * by `formatFrequency` — when its fact is unobserved; neither is ever defaulted
-   * to the other's value, which is precisely what a split digest must not do.
+   * with the per-tile TX-target badge. Either side reads `null` — rendered
+   * empty by `formatFrequency` since MOR-2655 (no dash either) — when its fact
+   * is unobserved; neither is ever defaulted to the other's value, which is
+   * precisely what a split digest must not do.
    *
    * MOR-1482 disclosure: this digest has always called the SAME
    * `formatFrequency` the tile readout uses (no design-language involvement
@@ -841,10 +846,13 @@
               a future hero-scale mount (not this tile) is the intended
               consumer.
             -->
-            {formatFrequency(displayHz)}
+            <span
+              class="vfo-freq-text"
+              class:vfo-freq-unlit={displayHz === null}
+            >{formatFrequency(displayHz)}</span>
           {/if}
         </span>
-        <span class="vfo-mode">{displayMode ?? '—'}{displayFilter ? ` / ${displayFilter}` : ''}</span>
+        <span class="vfo-mode" class:vfo-mode-unlit={displayMode === null}>{displayMode ?? ''}{displayFilter ? ` / ${displayFilter}` : ''}</span>
         {#if vfo.isTxTarget}
           <span class="vfo-badge" data-vfo-tx-badge>{t('core.vfo.txTarget.label')}</span>
         {/if}
@@ -1162,6 +1170,15 @@
   .vfo-role { color: var(--v2-text-secondary, rgba(255, 255, 255, 0.8)); min-width: var(--vfo-role-width); white-space: nowrap; }
   .vfo-role-measure { position: absolute; visibility: hidden; pointer-events: none; white-space: nowrap; }
   .vfo-role-unlit { color: var(--dl-vfo-unlit-text, var(--v2-text-muted, #5a6875)); }
+  /* MOR-2655 — an unread frequency/mode draws nothing in a reserved box. The
+     reservation is in `ch` (the tile font is monospace), sized from the
+     widest text the slot can render across the shipped rigs: the frequency
+     fallback tops out at IC-9700's 1_300_000_000 → '1300.000.000' (12ch);
+     the mode spans at FTX-1's longest [modes].list label 'DATA-FM-N' plus
+     the longest FILn filter (9 + ' / ' + 4 = 16ch). */
+  .vfo-freq-unlit, .vfo-mode-unlit { display: inline-block; }
+  .vfo-freq-unlit { min-width: 12ch; }
+  .vfo-mode-unlit { min-width: 16ch; }
   [data-vfo-appearance='semantic'] .vfo-tile { position: relative; }
   .vfo-badge { padding: 1px 4px; border-radius: 3px; font-size: 10px; color: var(--v2-accent-red, #ff2020); border: 1px solid var(--v2-accent-red, #ff2020); }
   .vfo-select { border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12)); border-radius: 4px; background: transparent; color: inherit; cursor: pointer; padding: 3px 6px; }
