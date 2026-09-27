@@ -962,7 +962,7 @@
         </CollapsiblePanel>
 
         <CollapsiblePanel title="WORKSPACE" panelId="desktop-workspace">
-          <WorkspaceSettingsPanel />
+          <WorkspaceSettingsPanel {skinId} />
           <WorkspaceImportExport />
         </CollapsiblePanel>
 

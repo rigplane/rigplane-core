@@ -19,7 +19,7 @@ import { SEMANTIC_SURFACE_NAMES, type SemanticSurfaceName } from '../layouts/con
 import type { DensityLevel } from '../languages/contract';
 import { CANONICAL_LAYOUT_MODES, LEGACY_LAYOUT_ALIASES } from '../layout-mode';
 
-export const WORKSPACE_SCHEMA_VERSION = 1;
+export const WORKSPACE_SCHEMA_VERSION = 2;
 /** MOR-1076: an app up to 2 minors older must still READ a newer object. */
 export const WORKSPACE_FORWARD_READ_WINDOW = 2;
 
@@ -49,6 +49,41 @@ export const WORKSPACE_DENSITY_CLAMP: Readonly<
   segmentline: { supported: ['comfortable', 'compact'], default: 'comfortable' },
 };
 
+/**
+ * MOR-2218 slice 2 (owner ruling 2026-09-02): the stored language preference
+ * is PER SKIN — the languages a skin's `layoutCompatibility` declarations
+ * accept plus its default; a skin with no declared language has no key.
+ * Pinned literals for the same reason as `WORKSPACE_ZONE_IDS` (the
+ * declarations barrels are import side effects this zone must not fire);
+ * `__tests__/contract.test.ts` syncs the pin against the live manifests.
+ * The schema is v2: the retired global `designLanguage` is DROPPED, never
+ * migrated.
+ */
+export const WORKSPACE_SKIN_DESIGN_LANGUAGES: Readonly<
+  Record<string, { readonly supported: readonly WorkspaceDesignLanguageId[]; readonly default: WorkspaceDesignLanguageId }>
+> = {
+  'desktop-v2': { supported: ['studioline', 'fieldline'], default: 'studioline' },
+  'dual-receiver-cockpit': { supported: ['studioline'], default: 'studioline' },
+  'panadapter-first': { supported: ['segmentline'], default: 'segmentline' },
+  'peer-split': { supported: ['segmentline'], default: 'segmentline' },
+  'unified-instrument': { supported: ['segmentline'], default: 'segmentline' },
+};
+export type WorkspaceDesignLanguageSkin = keyof typeof WORKSPACE_SKIN_DESIGN_LANGUAGES;
+export type WorkspaceDesignLanguageBySkin = Readonly<
+  Partial<Record<WorkspaceDesignLanguageSkin, WorkspaceDesignLanguageId>>
+>;
+
+/** The stored language for a resolved skin, or its declared default — the
+ *  one lookup the activation effect and the settings panel share. */
+export function workspaceDesignLanguageForSkin(
+  bySkin: WorkspaceDesignLanguageBySkin,
+  skin: string,
+): WorkspaceDesignLanguageId | undefined {
+  const declared = WORKSPACE_SKIN_DESIGN_LANGUAGES[skin];
+  if (declared === undefined) return undefined;
+  return bySkin[skin as WorkspaceDesignLanguageSkin] ?? declared.default;
+}
+
 /** Decision 3: the flat 21-id theme list, allow-list validated ON READ. */
 export const WORKSPACE_THEME_IDS = [
   'default', 'dracula', 'nord', 'catppuccin-mocha', 'solarized-dark', 'gruvbox-dark', 'tokyo-night',
@@ -75,7 +110,8 @@ export interface WorkspaceV1 {
   /** Kept as read, so a forward-read object is written back un-downgraded. */
   readonly version: number;
   readonly layout: WorkspaceLayoutId;
-  readonly designLanguage: WorkspaceDesignLanguageId;
+  /** MOR-2218: one language preference per skin that declares languages. */
+  readonly designLanguageBySkin: WorkspaceDesignLanguageBySkin;
   readonly theme: WorkspaceThemeId;
   readonly density: DensityLevel;
   /** Decision 5: ids of the surfaces that are VISIBLE in a zone (allow-list). */
@@ -88,7 +124,7 @@ export interface WorkspaceV1 {
 }
 
 export const DEFAULT_WORKSPACE: WorkspaceV1 = {
-  version: WORKSPACE_SCHEMA_VERSION, layout: 'auto', designLanguage: 'studioline', theme: 'default',
+  version: WORKSPACE_SCHEMA_VERSION, layout: 'auto', designLanguageBySkin: {}, theme: 'default',
   density: 'comfortable', visibleSurfaces: {}, zoneOrder: {}, pinnedCommands: [],
 };
 
@@ -143,15 +179,43 @@ export function workspaceLayoutManifestId(id: WorkspaceLayoutId): string | null 
   return LAYOUT_MANIFEST_ID[id];
 }
 
-/** Decision 4 resolution point: the override is honoured only inside the ACTIVE language's clamp. */
-function pickDensity(value: unknown, language: WorkspaceDesignLanguageId, out: WorkspaceRejection[]): DensityLevel {
-  const clamp = WORKSPACE_DENSITY_CLAMP[language];
+/** Decision 4 + MOR-2218: no single active language at validation time, so
+ * validation checks the id against the union clamp only; the per-language
+ * clamp is `densityActivation`'s, on screen (MOR-977 §4.4 stays a fact). */
+function pickDensity(value: unknown, out: WorkspaceRejection[]): DensityLevel {
+  const clamp = WORKSPACE_DENSITY_CLAMP.studioline;
   if (typeof value === 'string' && (clamp.supported as readonly string[]).includes(value)) return value as DensityLevel;
   if (value !== undefined) {
     const known = (WORKSPACE_DENSITY_CLAMP.studioline.supported as readonly string[]).includes(value as string);
     out.push({ field: 'density', reason: known ? 'out-of-clamp' : 'unknown-id' });
   }
   return clamp.default;
+}
+
+/** MOR-2218: per-skin read — an undeclared value clamps to THAT skin's default;
+ *  an unknown skin key is dropped: no declared language, no key. */
+function pickDesignLanguageBySkin(value: unknown, out: WorkspaceRejection[]): WorkspaceDesignLanguageBySkin {
+  const result: Partial<Record<WorkspaceDesignLanguageSkin, WorkspaceDesignLanguageId>> = {};
+  if (value === undefined) return result;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    out.push({ field: 'designLanguageBySkin', reason: 'malformed' });
+    return result;
+  }
+  for (const [skin, language] of Object.entries(value)) {
+    const declared = WORKSPACE_SKIN_DESIGN_LANGUAGES[skin];
+    if (declared === undefined) {
+      out.push({ field: `designLanguageBySkin.${skin}`, reason: 'unknown-id' });
+      continue;
+    }
+    if (typeof language === 'string' && (declared.supported as readonly string[]).includes(language)) {
+      result[skin as WorkspaceDesignLanguageSkin] = language as WorkspaceDesignLanguageId;
+      continue;
+    }
+    const known = typeof language === 'string' && (WORKSPACE_DESIGN_LANGUAGE_IDS as readonly string[]).includes(language);
+    out.push({ field: `designLanguageBySkin.${skin}`, reason: known ? 'out-of-clamp' : 'unknown-id' });
+    result[skin as WorkspaceDesignLanguageSkin] = declared.default;
+  }
+  return result;
 }
 
 function pickZoneMap(value: unknown, field: string, out: WorkspaceRejection[]): ZoneSurfaceMap {
@@ -204,7 +268,9 @@ export type WorkspaceReadResult =
   | (WorkspaceResultBase & { readonly outcome: 'version-discarded'; readonly discardedVersion: unknown })
   | (WorkspaceResultBase & { readonly outcome: 'reset' });
 
-const KNOWN_FIELDS: readonly string[] = ['version', 'layout', 'designLanguage', 'theme', 'density', 'visibleSurfaces', 'zoneOrder', 'pinnedCommands'];
+/** v1's retired `designLanguage` is listed so it is DROPPED, not migrated
+ *  and not preserved into storage (owner ruling: drop-not-migrate). */
+const KNOWN_FIELDS: readonly string[] = ['version', 'layout', 'designLanguageBySkin', 'designLanguage', 'theme', 'density', 'visibleSurfaces', 'zoneOrder', 'pinnedCommands'];
 
 function reset(field: string): WorkspaceReadResult {
   return { outcome: 'reset', workspace: DEFAULT_WORKSPACE, preserved: {}, rejections: [{ field, reason: 'malformed' }] };
@@ -224,7 +290,7 @@ export function readWorkspace(input: unknown): WorkspaceReadResult {
   const rejections: WorkspaceRejection[] = [];
   const layout = normalizeWorkspaceLayoutId(raw.layout);
   if (raw.layout !== undefined && raw.layout !== 'auto' && layout === 'auto') rejections.push({ field: 'layout', reason: 'unknown-id' });
-  const designLanguage = pickId(raw.designLanguage, WORKSPACE_DESIGN_LANGUAGE_IDS, 'studioline', 'designLanguage', rejections);
+  const designLanguageBySkin = pickDesignLanguageBySkin(raw.designLanguageBySkin, rejections);
 
   const preserved: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(raw)) {
@@ -235,9 +301,9 @@ export function readWorkspace(input: unknown): WorkspaceReadResult {
   }
 
   const workspace: WorkspaceV1 = {
-    version, layout, designLanguage,
+    version, layout, designLanguageBySkin,
     theme: pickId(raw.theme, WORKSPACE_THEME_IDS, 'default', 'theme', rejections),
-    density: pickDensity(raw.density, designLanguage, rejections),
+    density: pickDensity(raw.density, rejections),
     visibleSurfaces: pickZoneMap(raw.visibleSurfaces, 'visibleSurfaces', rejections),
     zoneOrder: pickZoneMap(raw.zoneOrder, 'zoneOrder', rejections),
     pinnedCommands: pickCommands(raw.pinnedCommands, rejections),

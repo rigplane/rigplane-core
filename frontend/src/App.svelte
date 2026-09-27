@@ -32,6 +32,7 @@
   // surface plan reads `zones` and `requiredSemanticSurfaces`, nothing else.
   import './presentation/layouts/declarations';
   import { designLanguageActivation } from './presentation/workspace/activation';
+  import { workspaceDesignLanguageForSkin } from './presentation/workspace/contract';
   import {
     densityActivation, provideSurfacePlan, resolveSurfacePlan,
   } from './presentation/workspace/resolution';
@@ -117,18 +118,15 @@
       delete document.documentElement.dataset.density;
       return;
     }
-    const stored = getDesignLanguage(getWorkspace().designLanguage);
+    // MOR-2218: the stored preference is per skin — this skin's entry or its default.
+    const stored = getDesignLanguage(workspaceDesignLanguageForSkin(getWorkspace().designLanguageBySkin, layoutId));
     let language = stored;
     let activated = designLanguageActivation(stored, layoutId);
     if (activated === null) {
-      // The stored preference cannot activate on the resolved skin
-      // (e.g. `segmentline` off `peer-split`, or the default `studioline` ON
-      // `peer-split`, which no v2 skin's default ever declared compatible).
-      // Falls back to the FIRST registered language whose `layoutCompatibility`
-      // declares this skin, in `presentation/languages/declarations.ts`
-      // registration order (studioline, fieldline, segmentline). The STORED
-      // preference itself is untouched here — only this render's activation
-      // falls back, so leaving `peer-split` restores it without a re-choice.
+      // A hand-edited or forward-read object can still pair this skin with a
+      // language its own declarations refuse. Falls back to the FIRST
+      // registered language whose `layoutCompatibility` declares this skin;
+      // the STORED entry itself is untouched, so it survives for its own skin.
       for (const id of listDesignLanguageIds()) {
         const candidate = getDesignLanguage(id);
         const candidateActivated = designLanguageActivation(candidate, layoutId);
