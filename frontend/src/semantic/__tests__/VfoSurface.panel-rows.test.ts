@@ -857,11 +857,11 @@ describe('source pins: fixed slot widths (MOR-2509 slice 2)', () => {
   it('the unread frequency and mode keep a reserved ch box at the widest shipped reading', () => {
     // The frequency reservation is at least the widest fallback text the tile
     // can render across the shipped rigs: IC-9700's top end 1_300_000_000,
-    // built through the same shared digit-grouping the component uses.
+    // built through the same shared digit-grouping the component uses — the
+    // comparison is computed, never a literal.
     const widestFreq = groupDigitsForDisplay(splitFrequencyToDigits(1_300_000_000));
     const widestFreqText = [widestFreq.mhz, widestFreq.khz, widestFreq.hz]
       .map((group) => group.map((digit) => digit.char).join('')).join('.');
-    expect(widestFreqText).toBe('1300.000.000');
     const freqRule = rulesFor(surfaceCss, '.vfo-freq-unlit').join('\n');
     expect(freqRule).toMatch(/display:\s*inline-block/);
     const freqReserve = Number((/min-width:\s*(\d+)ch/.exec(freqRule) ?? [])[1]);

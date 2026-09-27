@@ -366,6 +366,9 @@
       node.textContent = text;
       return node.getBoundingClientRect().width;
     }));
+    // The measure node is aria-hidden and must stay empty (DualReceiverCockpit
+    // pins a degraded view with no stray receiver string in textContent).
+    node.textContent = '';
     roleWidth = `${Math.ceil(widest)}px`;
   });
 
