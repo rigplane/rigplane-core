@@ -388,7 +388,6 @@ describe('MOR-1474 — the default-permit label resolves each status through its
   it.each([
     ['allowed', 'core.band.tx.defaultPermit.status.allowed'],
     ['denied', 'core.band.tx.defaultPermit.status.denied'],
-    ['unknown', 'core.band.tx.defaultPermit.status.unknown'],
   ] as const)('status %s maps to catalog key %s', (status, key) => {
     const choice: BandChoice = {
       name: '20m', startHz: 14000000, endHz: 14350000, defaultHz: 14074000, bsrCode: 4,
@@ -401,6 +400,23 @@ describe('MOR-1474 — the default-permit label resolves each status through its
     expect(defaultPermitLabel(choice)).toBe(
       t('core.band.tx.defaultPermit.label', { frequency: mhz(choice.defaultHz), status: t(key) }),
     );
+  });
+
+  // MOR-2655: an unread permit is not a value. The old pin mapped `unknown`
+  // through `core.band.tx.defaultPermit.status.unknown` ("unknown") and drew
+  // "TX at 14.074 MHz: unknown". The slot stays; the status word does not.
+  it('status unknown names the frequency and draws no status word', () => {
+    const choice: BandChoice = {
+      name: '20m', startHz: 14000000, endHz: 14350000, defaultHz: 14074000, bsrCode: 4,
+      defaultHzTxPermit: { status: 'unknown', reason: 'ranges-unconfigured' },
+    };
+    expect(defaultPermitLabel(choice)).toBe(
+      t('core.band.tx.defaultPermit.unread', { frequency: mhz(choice.defaultHz) }),
+    );
+    expect(t('core.band.tx.defaultPermit.unread', { frequency: '14.074 MHz' }))
+      .toBe('TX at 14.074 MHz:');
+    expect(defaultPermitLabel(choice)).not.toMatch(/unknown/i);
+    expect(defaultPermitLabel(choice)).not.toContain('—');
   });
 });
 

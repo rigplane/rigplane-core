@@ -990,7 +990,10 @@ describe('the txAux surface mounts only when the view model carries the group', 
   // MOR-2467: tile region contracted to TWO unslotted receiver-level tiles —
   // MAIN (active, TX target: digit control, no select button) then SUB
   // (unslotted active-slot: its own digit control plus the one select button).
-  const DEFAULT_PATH_OUTLINE = 'div p div div span span div span span span span span span span span span span span span span div '
+  // MOR-2655: the surface now opens with the off-screen role measure span and
+  // the active-receiver paragraph wrapped around its own value span — the
+  // reserved unread slot shape, exactly two extra span elements.
+  const DEFAULT_PATH_OUTLINE = 'div span p span div div span span div span span span span span span span span span span span span span div '
     + 'span span div span span span span span span span span span span span button div section header strong div div div section header strong div '
     // MOR-2509: this fixture's caps declare neither split nor dual_watch,
     // so the capability gates render no SPLIT/DW keys and no fact-toggle
