@@ -737,10 +737,13 @@ describe('MOR-2150 — the nine remaining optional surfaces mount only when a zo
    *  exercises it. Starts from the real declared zones (`defaultPlan()`) and
    *  adds one synthetic zone per surface. */
   function nineZonesPlan(): SurfacePlan {
-    return new Map([
-      ...defaultPlan(),
-      ...NINE.map(([surface, , zoneId]) => [zoneId, [surface]] as const),
-    ]);
+    // MOR-1337: the plan now separates DECLARED from VISIBLE — spread each
+    // half of the real plan, then add one synthetic zone per surface.
+    const extra = new Map(NINE.map(([surface, , zoneId]) => [zoneId, [surface]] as const));
+    return {
+      declared: new Map([...defaultPlan().declared, ...extra]),
+      visible: new Map([...defaultPlan().visible, ...extra]),
+    };
   }
 
   it('renders each one wrapped in its own zone once a plan declares it', () => {

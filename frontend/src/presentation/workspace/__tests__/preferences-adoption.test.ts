@@ -45,7 +45,12 @@ function workspace(fields: Record<string, unknown>): WorkspaceV1 {
   return readWorkspace({ version: 1, ...fields }).workspace;
 }
 
+/** The post-subtraction map, for the pre-MOR-1337 asserts below. */
 function plan(manifest: LayoutManifest, fields: Record<string, unknown> = {}) {
+  return resolveSurfacePlan(manifest, workspace(fields)).visible;
+}
+/** Both halves — declaration and visibility — for the MOR-1337 asserts. */
+function resolvePlan(manifest: LayoutManifest, fields: Record<string, unknown> = {}) {
   return resolveSurfacePlan(manifest, workspace(fields));
 }
 
@@ -270,11 +275,50 @@ describe('MOR-1082 — the surface plan starts from what the manifest declares',
     expect(read.rejections.map((r) => r.reason)).toEqual(
       expect.arrayContaining(['unknown-id', 'malformed']),
     );
-    expect([...resolveSurfacePlan(dualReceiverCockpitLayout, read.workspace)]).toEqual([
+    expect([...resolvePlan(dualReceiverCockpitLayout, read.workspace).visible]).toEqual([
       ['primary-vfo', ['vfo']], ['secondary-vfo', ['vfo']], ['global', ['vfo']], ['rx-tx', ['rxTx']],
       // MOR-1336 (S4): the cockpit now declares a tx-aux zone too.
       ['tx-aux', ['txAux']],
     ]);
+  });
+});
+
+// ── 2b. MOR-1337: declaration (layout-owned) and visibility (workspace-owned)
+//        are separate halves of the plan ────────────────────────────────────
+
+describe('MOR-1337 — the plan separates declaration from visibility', () => {
+  it('keeps the declaration verbatim while visibility reflects the subtraction', () => {
+    // The ticket's named probe: `tx-aux` is an OPTIONAL zoned surface. The
+    // workspace empties the zone; `declared` still knows what the layout wrote
+    // and `visible` is empty — the distinction the pre-1337 map could not
+    // hold.
+    const resolved = resolvePlan(dualReceiverCockpitLayout, { visibleSurfaces: { 'tx-aux': [] } });
+    expect(resolved.declared.get('tx-aux')).toEqual(['txAux']);
+    expect(resolved.visible.get('tx-aux')).toEqual([]);
+    // …and the untouched zones carry both halves identically.
+    expect(resolved.declared.get('rx-tx')).toEqual(['rxTx']);
+    expect(resolved.visible.get('rx-tx')).toEqual(['rxTx']);
+  });
+
+  it('shares the zone key set between the halves, for every layout family', () => {
+    for (const manifest of [mobileLayout, lcdCockpitLayout, desktopV2Layout, dualReceiverCockpitLayout, sdrTestLayout]) {
+      const resolved = resolvePlan(manifest, {});
+      expect([...resolved.declared.keys()]).toEqual([...resolved.visible.keys()]);
+      expect([...resolved.declared.keys()]).toEqual(manifest.zones.map((zone) => zone.id));
+    }
+  });
+
+  it('keeps the required-surface backfill in visibility — declaration never changes', () => {
+    // Hiding the only zone that mounts a required surface is refused through
+    // VISIBILITY (the force-restore lands there); `declared` stays exactly
+    // what the manifest wrote, before and after the refusal.
+    const stripped = resolvePlan(dualReceiverCockpitLayout, { visibleSurfaces: { 'rx-tx': [] } });
+    expect(stripped.visible.get('rx-tx')).toEqual(['rxTx']);
+    expect(stripped.declared.get('rx-tx')).toEqual(['rxTx']);
+    // An unsubtracted optional surface is identical in both halves too.
+    const untouched = resolvePlan(dualReceiverCockpitLayout, {});
+    expect(untouched.declared.get('tx-aux')).toEqual(['txAux']);
+    expect(untouched.visible.get('tx-aux')).toEqual(['txAux']);
   });
 });
 
@@ -323,7 +367,8 @@ describe('MOR-1082 — the single-composition order comes from the same plan', (
     // Belt and braces for the unkey path: whatever a future manifest or a
     // stored preference does, the single composition cannot resolve to a
     // vertical with no surfaces at all.
-    expect(compositionSurfaces(new Map(), FALLBACK)).toEqual(['vfo', 'rxTx']);
+    expect(compositionSurfaces({ declared: new Map(), visible: new Map() }, FALLBACK))
+      .toEqual(['vfo', 'rxTx']);
   });
 });
 

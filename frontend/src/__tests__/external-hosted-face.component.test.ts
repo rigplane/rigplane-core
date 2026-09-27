@@ -253,10 +253,15 @@ function occurrence(
   result = Object.freeze({ ...loaded, isCurrent: () => current.value === result });
   return result;
 }
-const fullPlan = () => new Map([['receiver-zone', ['vfo']], ['tx-zone', ['txAux']],
-  ['meters-zone', ['meters']]]) as SurfacePlan;
+/** MOR-1337: a synthetic plan wraps one map into both halves — declaration
+ *  and visibility coincide here, mirroring what a resolve gives for
+ *  unsubtracted surfaces. */
+const asPlan = (map: Map<string, readonly string[]>): SurfacePlan =>
+  ({ declared: map, visible: map } as SurfacePlan);
+const fullPlan = () => asPlan(new Map([['receiver-zone', ['vfo']], ['tx-zone', ['txAux']],
+  ['meters-zone', ['meters']]]));
 const planWithoutMeters = () =>
-  new Map([['receiver-zone', ['vfo']], ['tx-zone', ['txAux']]]) as SurfacePlan;
+  asPlan(new Map([['receiver-zone', ['vfo']], ['tx-zone', ['txAux']]]));
 /** Explicit station observations exercise the hosted reading path. */
 const STATION_METERS = ['powerMeter', 'swrMeter', 'alcMeter', 'compMeter', 'vdMeter', 'idMeter'] as const;
 function stationState(): ServerState {
@@ -424,11 +429,11 @@ describe('external hosted face chain', () => {
     const owners = [...h.frequencyOwners, ...h.meterOwners, ...h.scalarOwners, ...h.finiteSeats];
     expect(Array.from(target.querySelectorAll<HTMLElement>('[data-fixture-signal]'),
       (meter) => meter.dataset.value)).toEqual(['20', '-12', '20']);
-    plan.set(new Map([['tx-zone', ['txAux']]]) as SurfacePlan); flushSync();
+    plan.set(asPlan(new Map([['tx-zone', ['txAux']]]))); flushSync();
     expect(target.querySelector('[data-family="receiver"]')).toBeNull();
     expect(target.querySelector('[data-family="vfoOperations"]')).toBeNull();
     expect(target.querySelector('[data-family="txAux"]')).not.toBeNull();
-    plan.set(new Map([['receiver-zone', ['vfo']]]) as SurfacePlan); flushSync();
+    plan.set(asPlan(new Map([['receiver-zone', ['vfo']]]))); flushSync();
     expect(target.querySelector('[data-family="txAux"]')).toBeNull();
     expect(target.querySelector('[data-family="receiver"]')).not.toBeNull();
     expect(target.querySelector('[data-external-face="a"]')).toBe(face);

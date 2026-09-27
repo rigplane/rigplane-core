@@ -277,28 +277,38 @@
    */
   let allowBareSurfaces = $derived((!regions && hostedChildren === undefined) || surfacePlan() === null);
   /**
-   * MOR-1336 (v3-rework S4) — the DECLARED zone that mounts `surface`, or
-   * `null` when no zone does.
+   * MOR-1336 (v3-rework S4) / MOR-1337 — the DECLARED zone that mounts
+   * `surface`, or `null` when no zone does.
    *
    * This is the whole zone-ownership mechanism, and it is GENERIC: any
    * `SEMANTIC_SURFACE_NAMES` member a layout declares mounts through the one
    * `zoned` path below, so the next declarable surface needs no new code and
    * `txAux` is not a third hardcoded special case beside `vfo`/`rxTx`.
    *
-   * It reads the SURFACE PLAN, never a manifest — this file stays manifest-blind
-   * (the MOR-1068 cycle). That works because `resolveSurfacePlan` keys its map
-   * by `manifest.zones`, so the plan's KEY SET is exactly the active layout's
-   * declared-zone set. App already computes it; this only consults it.
-   *
-   * A `null` result renders bare only when the caller permits that fallback.
-   * The ordered SDR caller below rejects it for a resolved plan, so workspace
-   * subtraction removes both zone and body; a no-plan mount keeps the body.
+   * It reads the plan's DECLARED map, never a manifest — this file stays
+   * manifest-blind (the MOR-1068 cycle; `resolveSurfacePlan` keys both maps
+   * by `manifest.zones`). A workspace subtraction cannot therefore remove a
+   * surface's zone ownership: `zoned()` consults VISIBILITY separately and
+   * renders nothing for a declared-and-hidden surface.
    */
   function zoneOwning(surface: SemanticSurfaceName): string | null {
     const plan = surfacePlan();
     if (plan === null) return null;
-    for (const [zoneId, surfaces] of plan) if (surfaces.includes(surface)) return zoneId;
+    for (const [zoneId, surfaces] of plan.declared) if (surfaces.includes(surface)) return zoneId;
     return null;
+  }
+  /**
+   * Whether the surface survived the workspace: still present in SOME zone's
+   * visible set. The admission predicates below consult this — same answer
+   * the pre-MOR-1337 post-subtraction `zoneOwning()` gave, without keying
+   * visibility on declaration. No plan answers "unchanged", like
+   * `zoneShowsSurface`.
+   */
+  function visibleInPlan(surface: SemanticSurfaceName): boolean {
+    const plan = surfacePlan();
+    if (plan === null) return true;
+    for (const surfaces of plan.visible.values()) if (surfaces.includes(surface)) return true;
+    return false;
   }
   /** The dual composition's per-receiver strips, after the workspace. Filtering
    *  the `{#each}` SOURCE rather than wrapping its body keeps ONE place that
@@ -2346,6 +2356,10 @@
     nothing", still through this one path and the same `zoneOwning()` lookup —
     not a second mount mechanism, a different answer to "and if nobody owns
     it?".
+
+    MOR-1337 — DECLARED answers placement (`zoneOwning`), VISIBILITY answers
+    presence (`zoneShowsSurface`). A surface the workspace subtracted renders
+    nothing — no bare fallback — while declaration still knows its zone.
   -->
   {#snippet presented(surface: SemanticSurfaceName, body: Snippet, chrome?: PanelChrome)}
     {#if vfoAppearance === 'semantic' && hostedChildren === undefined}{@render body()}
@@ -2359,7 +2373,9 @@
     {#if present}
       {@const zoneId = zoneOwning(surface)}
       {#if zoneId !== null}
-        <div class="surface-zone" data-zone-id={zoneId}>{#if frame}{@render presented(surface, body, chrome)}{:else}{@render body()}{/if}</div>
+        {#if zoneShows(zoneId, surface)}
+          <div class="surface-zone" data-zone-id={zoneId}>{#if frame}{@render presented(surface, body, chrome)}{:else}{@render body()}{/if}</div>
+        {/if}
       {:else if allowBare}{#if frame}{@render presented(surface, body, chrome)}{:else}{@render body()}{/if}{/if}
     {/if}
   {/snippet}
@@ -2959,10 +2975,13 @@
         {txAuxScalars}
         {stationMeters}
         meterAppearance={externalPresentation.record.appearances.meter}
-        receiverAdmitted={surfacePlan() !== null && zoneOwning('vfo') !== null}
-        vfoOperationsAdmitted={surfacePlan() !== null && zoneOwning('vfo') !== null}
-        txAuxAdmitted={surfacePlan() !== null && zoneOwning('txAux') !== null}
-        stationMetersAdmitted={surfacePlan() !== null && zoneOwning('meters') !== null}
+        <!-- MOR-1337 — admission consults VISIBILITY (a workspace-hidden
+             surface stays un-admitted), never the declaration-only
+             `zoneOwning`, same answer the pre-separation lookup gave. -->
+        receiverAdmitted={surfacePlan() !== null && visibleInPlan('vfo')}
+        vfoOperationsAdmitted={surfacePlan() !== null && visibleInPlan('vfo')}
+        txAuxAdmitted={surfacePlan() !== null && visibleInPlan('txAux')}
+        stationMetersAdmitted={surfacePlan() !== null && visibleInPlan('meters')}
       />
     {/key}
   {:else if hostedChildren}

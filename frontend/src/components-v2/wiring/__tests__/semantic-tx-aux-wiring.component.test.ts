@@ -252,6 +252,7 @@ import {
   desktopV2Layout, dualReceiverCockpitLayout, mobileLayout, sdrTestLayout,
 } from '../../../presentation/layouts/declarations';
 import { readWorkspace } from '../../../presentation/workspace/contract';
+import type { SemanticSurfaceName } from '../../../presentation/layouts/contract';
 import {
   resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan,
 } from '../../../presentation/workspace/resolution';
@@ -1429,6 +1430,21 @@ describe('MOR-1082 — the semantic vertical consults the resolved surface plan'
     expect(q('[data-testid="rx-tx-unkey"]')).not.toBeNull();
   });
 
+  it('hides a zoned OPTIONAL surface outright — no bare fallback', () => {
+    // MOR-1337: with declaration separated from visibility, the workspace's
+    // subtraction of an optional zoned surface no longer degrades to the
+    // bare (unzoned) render — the surface mounts nothing at all. MUTATION
+    // KILLED: reading zone ownership off DECLARATION without gating the
+    // body on VISIBILITY — the surface would render zoned despite the hide.
+    render({ strips: 'dual' }, planFor(dualReceiverCockpitLayout, {
+      visibleSurfaces: { 'tx-aux': [] },
+    }));
+
+    expect(q('[data-testid="tx-aux-surface"]')).toBeNull();
+    expect(q('[data-zone-id="tx-aux"]')).toBeNull();
+    expect(target.innerHTML).not.toContain('tx-aux');
+  });
+
   it('cannot force-show a surface whose view-model group is absent', () => {
     // The S0 self-gate outranks the workspace. This radio's MOR-1244 evidence
     // gate declined `txAux`; a workspace that names it everywhere it could be
@@ -1505,7 +1521,9 @@ describe('MOR-1336 — the zone-mount mechanism generalizes beyond txAux', () =>
     h.caps = liveCaps(false);
     // MUTATION KILLED: a mechanism secretly keyed on the literal 'tx-aux' id
     // or on `SEMANTIC_SURFACE_NAMES` order rather than the plan's own keys.
-    const plan: SurfacePlan = new Map([['synthetic-meters-zone', ['meters']]]);
+    const synthetic = new Map<string, readonly SemanticSurfaceName[]>(
+      [['synthetic-meters-zone', ['meters']]]);
+    const plan: SurfacePlan = { declared: synthetic, visible: synthetic };
     render({ strips: 'dual' }, plan);
 
     const zone = q('[data-zone-id="synthetic-meters-zone"]');

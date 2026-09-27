@@ -65,7 +65,24 @@ export function densityActivation(
 }
 
 /** Zone id → the ordered surfaces that may mount there, after the workspace. */
-export type SurfacePlan = ReadonlyMap<string, readonly SemanticSurfaceName[]>;
+type ZoneSurfaces = ReadonlyMap<string, readonly SemanticSurfaceName[]>;
+
+/**
+ * MOR-1337 — the plan carries DECLARATION and VISIBILITY as distinct states,
+ * so "declared by the layout, hidden by the workspace" is expressible.
+ *
+ *   DECLARED is layout-owned: what each zone declares, verbatim from the
+ *   manifest. Placement answers (which zone owns a surface) read this, so a
+ *   workspace subtraction cannot remove a surface's zone ownership.
+ *
+ *   VISIBLE is workspace-owned: the declared sets after the subtraction the
+ *   workspace made, with `requiredSemanticSurfaces` force-restored. Render
+ *   gates read this — a declared-and-hidden surface mounts nothing.
+ */
+export interface SurfacePlan {
+  readonly declared: ZoneSurfaces;
+  readonly visible: ZoneSurfaces;
+}
 
 /** `WorkspaceV1`'s zone maps are keyed by the `WorkspaceZoneId` union while a
  *  manifest zone id is an open `string`; this is the one place the two id
@@ -115,7 +132,10 @@ export function resolveSurfacePlan(manifest: LayoutManifest, workspace: Workspac
   const mounted = new Set(first.flat());
   const uncovered = manifest.requiredSemanticSurfaces.filter((surface) => !mounted.has(surface));
   const resolved = uncovered.length === 0 ? first : build(new Set(uncovered));
-  return new Map(manifest.zones.map((zone, index) => [zone.id, resolved[index]]));
+  return {
+    declared: new Map(manifest.zones.map((zone) => [zone.id, zone.surfaces])),
+    visible: new Map(manifest.zones.map((zone, index) => [zone.id, resolved[index]])),
+  };
 }
 
 /**
@@ -132,7 +152,7 @@ export function compositionSurfaces(
 ): readonly SemanticSurfaceName[] {
   if (plan === null) return fallback;
   const composed: SemanticSurfaceName[] = [];
-  for (const surfaces of plan.values()) {
+  for (const surfaces of plan.visible.values()) {
     for (const surface of surfaces) if (!composed.includes(surface)) composed.push(surface);
   }
   return composed.length === 0 ? fallback : composed;
@@ -168,6 +188,6 @@ export function zoneShowsSurface(
   zoneId: string,
   surface: SemanticSurfaceName,
 ): boolean {
-  const zone = plan?.get(zoneId);
+  const zone = plan?.visible.get(zoneId);
   return zone === undefined || zone.includes(surface);
 }
