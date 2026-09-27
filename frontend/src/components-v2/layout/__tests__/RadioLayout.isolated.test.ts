@@ -422,9 +422,9 @@ describe('RadioLayout structure', () => {
   });
 
   // MOR-1313: `desktop-v2` resolves through its layout manifest now, so the
-  // receiver deck hosts the semantic surfaces. The LEGACY deck is what an
-  // undeclared layout gets — see `UNDECLARED` below and the full suppression
-  // matrix in `semantic-desktop-migration.component.test.ts`.
+  // receiver deck hosts the semantic surfaces. An undeclared layout gets an
+  // EMPTY deck since MOR-2728 — see `UNDECLARED` below and the full
+  // suppression matrix in `semantic-desktop-migration.component.test.ts`.
   it('wraps desktop-v2 in one host outside its receiver deck', () => {
     const t = mountLayout();
     const host = t.querySelector('[data-testid="semantic-radio-surfaces"]');
@@ -435,9 +435,13 @@ describe('RadioLayout structure', () => {
     expect(t.querySelector('.vfo-header')).toBeNull();
   });
 
-  it('renders .vfo-header inside .receiver-deck for an undeclared layout', () => {
+  // MOR-2728: the undeclared-layout branch and its legacy `<VfoHeader>` are
+  // deleted — an undeclared id renders an empty receiver deck, never a
+  // resurrected legacy twin.
+  it('renders an empty receiver deck, with no legacy .vfo-header, for an undeclared layout', () => {
     const t = mountLayout(UNDECLARED);
-    expect(t.querySelector('.receiver-deck .vfo-header')).not.toBeNull();
+    expect(t.querySelector('.receiver-deck')).not.toBeNull();
+    expect(t.querySelector('.receiver-deck .vfo-header')).toBeNull();
   });
 
   // MOR-2425 C-R3: `getWsConnected` is mocked false for this whole file, so

@@ -112,7 +112,7 @@ describe('panel structure', () => {
   });
 
   it('renders the VFO label SUB for receiver=sub', () => {
-    const t = mountPanel({ ...baseProps, receiver: 'sub' });
+    const t = mountPanel({ ...baseProps, receiver: 'sub', receiverLabel: 'SUB', slotTag: 'B' });
     expect(t.querySelector('.vfo-label')?.textContent?.trim()).toBe('SUB');
   });
 
