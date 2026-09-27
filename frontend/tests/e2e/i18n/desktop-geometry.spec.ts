@@ -155,8 +155,10 @@ async function boot(page: Page, layout: string, width: number, known: boolean, l
   const locale = options.locale ?? (width === 900 ? 'ru-RU' : 'en-US');
   await page.setViewportSize({ width, height });
   await page.addInitScript(({ state, layout, language, theme, locale }) => {
-    localStorage.setItem('rigplane:workspace', JSON.stringify({ version: 1, layout,
-      designLanguage: language, theme }));
+    // MOR-2218: activation seeds use the v2 per-skin map; a v1 global
+    // `designLanguage` is dropped on read, never migrated.
+    localStorage.setItem('rigplane:workspace', JSON.stringify({ version: 2, layout,
+      designLanguageBySkin: { 'desktop-v2': language }, theme }));
     localStorage.setItem('rigplane.i18n.locale', locale);
     const commands: unknown[] = [];
     Object.assign(window, { geometryCommands: commands });
@@ -350,7 +352,7 @@ async function standardGeometry(page: Page) {
     const rfAuthorityFailures = [...receiver.querySelectorAll<HTMLElement>('[data-indicator-fact="rf-authority"]')]
       .flatMap(element => {
         const state = element.dataset.indicatorRf;
-        const expected = state === 'transmitting' ? 'TX' : state === 'uncertain' ? 'TX?'
+        const expected = state === 'transmitting' || state === 'uncertain' ? 'TX'
           : state === 'receiving' || state === 'unknown' ? '' : null;
         const owner = element.getBoundingClientRect();
         const actual = element.textContent?.trim() ?? '';
@@ -1487,3 +1489,29 @@ test.describe('MOR-2545 PR3: the hosted scope row hides by band and never overla
     });
   }
 });
+
+// MOR-2673: the unread mode is an empty reserved slot, so the amber LCD
+// mode box keeps one width in every state — a real browser width comparison
+// between the unread and the read mount (jsdom has no layout; the component
+// suites pin the reserving rule and the caps-less first frame structurally
+// instead). The state contract carries an unread mode as `null`
+// (`stringOrNull`, radio.svelte.ts) — deleting the key would fail
+// `isValidServerState`, drop the full envelope, and leave the app without
+// capabilities at all.
+for (const layout of ['lcd-cockpit', 'lcd-scope'] as const) {
+  test(`${layout} keeps one mode-box width between unread and read (MOR-2673)`, async ({ page }) => {
+    await boot(page, layout, 1440, true);
+    const readBox = await page.locator('.lcd-frame .vfo-mode-box').first().boundingBox();
+    expect(readBox, `${layout} renders a mode box`).not.toBeNull();
+
+    await boot(page, layout, 1440, true, 'studioline', false, undefined, {
+      patch: (state) => {
+        (state.main as { mode?: string | null }).mode = null;
+      },
+    });
+    const unreadBox = await page.locator('.lcd-frame .vfo-mode-box').first().boundingBox();
+    expect(unreadBox, `${layout} keeps the mode box for an unread mode`).not.toBeNull();
+    expect(unreadBox!.width, `${layout} mode box width does not move when the mode arrives`)
+      .toBeCloseTo(readBox!.width, 1);
+  });
+}

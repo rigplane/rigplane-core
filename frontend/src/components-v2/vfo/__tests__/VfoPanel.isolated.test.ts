@@ -669,3 +669,50 @@ describe('explicit presentation contract', () => {
     expect(call).not.toMatch(/frequency=|sMeter=|meterSource|continuitySession/);
   });
 });
+
+describe('unread mode/filter sentinel renders as an unlit legend (MOR-2673)', () => {
+  // `toVfoProps` now reports `''` for an unread mode/filter (MOR-2673). The
+  // panel maps it exactly like its pre-existing `null` treatment: the unlit
+  // MODE/FIL legend — an empty LCD segment with the slot kept — never a dash
+  // run and never a lit chip.
+  const unreadProps = {
+    receiver: 'main' as const,
+    receiverLabel: 'MAIN',
+    slotTag: 'A',
+    freq: 14_074_000,
+    displayHz: 14_074_000,
+    mode: '',
+    filter: '',
+    sValue: 0,
+    isActive: true,
+    sections: emptySections,
+    onModeClick: () => {},
+  } satisfies ComponentProps<typeof VfoPanel>;
+
+  it('renders the unlit MODE/FIL legends for the empty-string sentinel, like null', () => {
+    for (const mode of ['', null] as const) {
+      const chip = mountPanel({ ...unreadProps, mode }).querySelector('[data-chip="mode"]');
+      expect(chip?.textContent?.trim()).toBe('MODE');
+      expect(chip?.getAttribute('data-lit')).toBe('false');
+    }
+    for (const filter of ['', null] as const) {
+      const chip = mountPanel({ ...unreadProps, filter }).querySelector('[data-chip="filter"]');
+      expect(chip?.textContent?.trim()).toBe('FIL');
+      expect(chip?.getAttribute('data-lit')).toBe('false');
+    }
+  });
+
+  it('keeps the change-mode title free of the sentinel for an unread mode', () => {
+    const title = mountPanel(unreadProps).querySelector('.mode-badge-wrapper')?.getAttribute('title');
+    expect(title).toBe('Change mode');
+    expect(title).not.toContain('---');
+  });
+
+  it('still renders a real mode lit, with its reading in the title', () => {
+    const t = mountPanel({ ...unreadProps, mode: 'USB', filter: 'FIL1' });
+    const chip = t.querySelector('[data-chip="mode"]');
+    expect(chip?.textContent?.trim()).toBe('USB');
+    expect(chip?.getAttribute('data-lit')).toBe('true');
+    expect(t.querySelector('.mode-badge-wrapper')?.getAttribute('title')).toBe('Change mode (current: USB)');
+  });
+});

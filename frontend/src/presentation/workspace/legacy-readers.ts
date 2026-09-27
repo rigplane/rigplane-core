@@ -27,7 +27,7 @@
  * current store stays the owner. See the MOR-1078 build report for the full
  * per-key reasoning and the resulting MIGRATE-set size mismatch.
  */
-import { readWorkspace, type WorkspaceReadResult } from './contract';
+import { WORKSPACE_SCHEMA_VERSION, readWorkspace, type WorkspaceReadResult } from './contract';
 
 /** Terminal routing outcome for one legacy key, per the MOR-1076 evidence table. */
 export type LegacyKeyDisposition = 'migrate' | 'retain-outside' | 'retire' | 'forbidden';
@@ -115,9 +115,10 @@ export function snapshotLegacyStorage(storage: Pick<Storage, 'getItem'>): Legacy
   return snapshot;
 }
 
-/** Pure: snapshot in, a `WorkspaceV1`-shaped candidate input out. Never touches storage. */
+/** Pure: snapshot in, a `WorkspaceV1`-shaped candidate input out. The version
+ *  follows the live schema (MOR-2218): legacy keys carry no language choice. */
 export function buildWorkspaceInput(snapshot: LegacyStorageSnapshot): Record<string, unknown> {
-  const input: Record<string, unknown> = { version: 1 };
+  const input: Record<string, unknown> = { version: WORKSPACE_SCHEMA_VERSION };
   const theme = THEME_SOURCE_KEYS.map((k) => snapshot[k]).find((v) => v !== null && v !== undefined);
   if (theme !== undefined) input.theme = theme;
   const layout = snapshot[LAYOUT_SOURCE_KEY];

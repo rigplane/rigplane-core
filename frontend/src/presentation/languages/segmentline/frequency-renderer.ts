@@ -42,12 +42,7 @@
  * INPUT. The renderer's one production call site is `semantic/VfoSurface.
  * svelte`'s `frequencyDisplay()`, which calls exactly
  * `renderSlot('frequencyDisplay', { frequencyHz: vfo.frequencyHz })` — one
- * named field. `presentation/languages/projection.ts`'s `vfo0FrequencyHz` is
- * a real field NAME (it appears in that module's own output shape and its
- * tests), but `projectRadioViewModel` has no production call site at all —
- * it is called only from its own test file — so no caller ever hands this
- * renderer a `vfo0FrequencyHz` field. Reading it here would be a fallback
- * parameter nobody passes.
+ * named field.
  */
 import type { DesignLanguageTokens, RendererViewModel } from '../contract';
 

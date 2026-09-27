@@ -22,6 +22,7 @@
     type ContinuousScalarPolicy,
     type ScalarDomain,
   } from '../primitives/scalar/continuous-scalar.svelte';
+  import { readingText } from '../primitives/reading-text';
   import type { AudioFocus, MonitorMode, RxAudioField } from './radio-view-model';
   import {
     FOCUS_CHOICES, LINK_LOST_TEXT, MONITOR_MODES, READINESS_LABEL, SPLIT_CHOICES,
@@ -49,10 +50,9 @@
    *  NEVER carries text, known or not: its lit key already states on/off,
    *  and the boolean would only echo as raw `true`/`false` (round-2
    *  coordinator ruling). */
-  const unlitTextOf = (f: RxAudioField<unknown>): string =>
-    f.reading.status === 'known' ? String(f.reading.value) : '';
+  const unlitTextOf = (f: RxAudioField<unknown>): string => readingText(f);
   const afPercent = (f: RxAudioField<number>): string =>
-    f.reading.status === 'known' ? `${Math.round(f.reading.value * 100)}%` : '';
+    readingText(f, (v) => `${Math.round(v * 100)}%`);
 
   interface ExistingProps {
     presentation: RxAudioInstrumentPresentation;

@@ -22,7 +22,8 @@ import {
   type WorkspaceStorage,
 } from './repository';
 import type {
-  WorkspaceDesignLanguageId, WorkspaceLayoutId, WorkspaceReadResult, WorkspaceRejection,
+  WorkspaceDesignLanguageId, WorkspaceDesignLanguageSkin,
+  WorkspaceLayoutId, WorkspaceReadResult, WorkspaceRejection,
   WorkspaceThemeId, WorkspaceV1, WorkspaceZoneId,
 } from './contract';
 import type { SemanticSurfaceName } from '../layouts/contract';
@@ -208,8 +209,13 @@ export function setLayout(layout: WorkspaceLayoutId): void {
   update({ layout });
 }
 
-export function setDesignLanguage(designLanguage: WorkspaceDesignLanguageId): void {
-  update({ designLanguage });
+/** MOR-2218 slice 2: per skin — the resolved skin is the composition root's
+ * fact, so a parameter, never store state. */
+export function setDesignLanguage(
+  skin: WorkspaceDesignLanguageSkin,
+  designLanguage: WorkspaceDesignLanguageId,
+): void {
+  update({ designLanguageBySkin: { ...current.workspace.designLanguageBySkin, [skin]: designLanguage } });
 }
 
 /**

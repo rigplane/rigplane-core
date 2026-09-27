@@ -76,6 +76,7 @@
 <script module lang="ts">
   import type { RitXitField, ScanField } from './radio-view-model';
   import { pressedOf } from './pressed-of';
+  import { readingText } from '../primitives/reading-text';
 
   /** O2 — v2's own legacy `RitXitPanel` bounds, verbatim. */
   export const OFFSET_MIN = -9999;
@@ -100,17 +101,13 @@
 
   export const usable = (f: RitXitField<unknown> | ScanField<unknown>): boolean =>
     f.availability.structural && f.availability.operational && f.reading.status === 'known';
+  const isOn = (f: RitXitField<boolean>): boolean => f.reading.status === 'known' && f.reading.value === true;
   /** MOR-2653: every readout renders EMPTY in its reserved slot when
    *  unread — never a placeholder dash, and never a unit without its
-   *  number. */
-  export const textOf = (f: RitXitField<unknown> | ScanField<unknown>): string =>
-    f.reading.status === 'known' ? String(f.reading.value) : '';
-  const isOn = (f: RitXitField<boolean>): boolean => f.reading.status === 'known' && f.reading.value === true;
-  const signedOffset = (f: RitXitField<number>): string => {
-    if (f.reading.status !== 'known' || !Number.isFinite(f.reading.value)) return '';
-    const value = f.reading.value;
-    return `${value > 0 ? '+' : ''}${value} Hz`;
-  };
+   *  number. MOR-2688: the empty-display rule is `readingText`'s predicate,
+   *  `reading.status === 'known'`; the finite guard stays in the formatter. */
+  const signedOffset = (f: RitXitField<number>): string =>
+    readingText(f, (v) => Number.isFinite(v) ? `${v > 0 ? '+' : ''}${v} Hz` : '');
 </script>
 
 <script lang="ts">
@@ -277,7 +274,7 @@
       <div class="row" data-testid="scan">
         {#if sc.scanning.availability.structural}
           <span class="row-label">SCAN</span>
-          {#if part === 'all'}<span class="scan-readout" data-testid="scan-status" data-observed={usable(sc.scanning)}>{textOf(sc.scanning)}</span>{/if}
+          {#if part === 'all'}<span class="scan-readout" data-testid="scan-status" data-observed={usable(sc.scanning)}>{readingText(sc.scanning)}</span>{/if}
           <button
             type="button" data-testid="scan-toggle" aria-pressed={pressedOf(sc.scanning)}
             disabled={!scanToggle.available || (!scanningOn && availableScanTypes.length === 0)}
@@ -309,11 +306,11 @@
           {/if}
         {/if}
         {#if part === 'all' && sc.scanType.availability.structural}
-          <output class="scan-readout" data-testid="scan-type-value">{textOf(sc.scanType)}</output>
+          <output class="scan-readout" data-testid="scan-type-value">{readingText(sc.scanType)}</output>
         {/if}
         {#if sc.scanResumeMode.availability.structural}
           {#if part === 'all'}
-          <output class="scan-readout" data-testid="scan-resume-value">{textOf(sc.scanResumeMode)}</output>
+          <output class="scan-readout" data-testid="scan-resume-value">{readingText(sc.scanResumeMode)}</output>
           {/if}
           {#if scanCapable && availableResumeModes.length > 0}
             <div class="scan-choice-group" data-testid="scan-resume-group">

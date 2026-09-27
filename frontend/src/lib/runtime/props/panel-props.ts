@@ -118,11 +118,12 @@ export function toVfoProps(
       // unobserved VFO stays unknown. `freq`/`mode`/`filter` keep their
       // `number`/`string` contract, so the sentinel is a value that can
       // never be mistaken for a real reading (`NaN` never equals a real
-      // frequency; `'---'` never equals a real mode/filter label — see
-      // `toVfoControlProps`'s pre-existing use of the same convention).
+      // frequency; `''` never equals a real mode/filter label, which are all
+      // non-empty — MOR-2673). The empty string is the drawn form of an
+      // unlit LCD segment: renderers draw it as nothing in a reserved slot.
       freq: Number.NaN,
-      mode: '---',
-      filter: '---',
+      mode: '',
+      filter: '',
       sValue: 0,
       isActive: receiver === 'main',
       badges: {},
@@ -134,8 +135,8 @@ export function toVfoProps(
     return {
       receiver,
       freq: Number.NaN,
-      mode: '---',
-      filter: '---',
+      mode: '',
+      filter: '',
       sValue: 0,
       isActive: receiver === 'main',
       badges: {},
@@ -179,7 +180,7 @@ export function toVfoProps(
   return {
     receiver,
     freq: rx.freqHz ?? Number.NaN,
-    mode: rx.mode ?? '---',
+    mode: rx.mode ?? '',
     filter: filterLabel,
     sValue: rx.sMeter ?? 0,
     isActive,
@@ -460,7 +461,7 @@ export function toFilterProps(
     // to add the consumer-boundary guard (`formatWidthDisplay`'s
     // `Number.isFinite` check), so the fabricated default can now be
     // removed here. See its `toAudioSpectrumProps` twin below.
-    currentMode: rx?.mode ?? '---',
+    currentMode: rx?.mode ?? '',
     currentFilter: rx?.filter ?? 1,
     filterShape: rx?.filterShape ?? 0,
     // MOR-1503: whether the radio has a REAL filter_shape command of its
@@ -651,7 +652,8 @@ export interface ModeProps {
 }
 
 function profileModeLabel(mode: string | null | undefined): string {
-  if (!mode) return '---';
+  // MOR-2673: the unread sentinel is the empty string — never a real label.
+  if (!mode) return '';
   return mode.replace(/_/g, '-');
 }
 
@@ -1255,13 +1257,13 @@ export function toMemoryPanelProps(
   const rx = state ? activeRx(state) : null;
   const receiverKey = state?.active === 'SUB' ? 'sub' : 'main';
   // MOR-1409 A12: no fabricated 0 Hz / empty-string stand-ins for an
-  // unobserved active receiver. Same `NaN`/`'---'` non-fabricating-sentinel
+  // unobserved active receiver. Same `NaN`/`''` non-fabricating-sentinel
   // convention `toVfoProps`/`toFilterProps` already use for the same
   // field shapes — `MemoryPanel.svelte`'s "store VFO → channel" action only
   // reads these on an explicit user click, never during initial render.
   return {
     activeFreqHz: rx?.freqHz ?? Number.NaN,
-    activeMode: rx?.mode ?? '---',
+    activeMode: rx?.mode ?? '',
     vfoIdentityKnown: !relativeVfoIdentityUnknown(state, caps, receiverKey),
   };
 }
@@ -1301,7 +1303,9 @@ export function toVfoControlProps(
   caps: Capabilities | null,
 ): VfoControlProps {
   const rx = state ? activeRx(state) : null;
-  const mode = rx?.mode ?? '---';
+  // MOR-2673: `''` is the unread sentinel — it never equals 'CW'/'CW-R',
+  // so an unobserved mode can never light the CW-only controls.
+  const mode = rx?.mode ?? '';
   return {
     mode,
     isCwMode: mode === 'CW' || mode === 'CW-R',

@@ -73,7 +73,7 @@ const RAIL_TABLE: Record<TxFeedbackRail, { thickness: 1 | 2 | 3; label: string |
   keyed: { thickness: 3, label: 'TX' },
   releasing: { thickness: 2, label: 'UNKEYING' },
   failed: { thickness: 3, label: 'TX FAULT' },
-  doubt: { thickness: 3, label: 'TX?' },
+  doubt: { thickness: 3, label: 'TX' },
 };
 
 export function renderStateFeedback(

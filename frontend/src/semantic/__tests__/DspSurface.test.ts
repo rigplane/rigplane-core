@@ -99,6 +99,7 @@ type Props = Handlers & {
   agcLabels?: Record<string, string>; nbLevelMax?: number; nbLevelPercent?: boolean;
   pendingNb?: boolean | null; pendingNr?: boolean | null;
   pendingNotch?: DspNotchMode | null;
+  compactAgcTime?: boolean;
 };
 
 function render(view: RadioViewModel, props: Props = {}) {
@@ -776,5 +777,48 @@ describe('this surface stays presentation-only', () => {
   // host's own floor lives beside it (see DspScalarHost.isolated.test.ts).
   it('keeps the native level value slot width floor in the surface CSS', () => {
     expect(source).toMatch(/\.dsp-level > output \{[^}]*min-width: 6ch/);
+  });
+});
+
+/* ── 9. MOR-2688 S2: literal pins for the migrated `fmt`/AGC-T formatter
+ *  sites (default- and row-formatter branches of `readingText`) ────────── */
+describe('fmt formatter contract (MOR-2688)', () => {
+  it.each([
+    ['nbDepth', '5'], ['notchFreq', '0'], ['agcTimeConstant', '0.1'],
+  ] as const)('native level %s renders the literal output %s', (field, expected) => {
+    const r = render(base());
+    expect(r.control(field)!.querySelector('output')?.textContent).toBe(expected);
+    r.dispose();
+  });
+
+  // The pin value must sit inside `NOTCH_WIDTH_LABELS`' keys (0–2): the
+  // fixture's fallback value 10 renders '10' under the formatter AND under
+  // `String`, so a format→`String` mutation would stay green. Value 2 maps
+  // to 'NARROW' under the formatter, '2' under `String` — the mutation goes
+  // red (verified on the mini, noted in the PR body).
+  it('manualNotchWidth renders the label the row formatter maps', () => {
+    const view = base();
+    const labelled = {
+      ...view,
+      dsp: {
+        ...view.dsp!,
+        manualNotchWidth: {
+          ...view.dsp!.manualNotchWidth,
+          reading: { status: 'known' as const, value: 2 },
+        },
+      } as DspViewModel,
+    };
+    const r = render(labelled);
+    expect(r.control('manualNotchWidth')!.querySelector('output')?.textContent).toBe('NARROW');
+    r.dispose();
+  });
+
+  // Literal pin for the compact AGC-T span — under a format→`String`
+  // mutation '0.1s' becomes '0s' (verified on the mini, noted in the PR
+  // body).
+  it('compact AGC-T span renders the literal formatted time', () => {
+    const r = render(base(), { compactAgcTime: true });
+    expect(r.root()!.querySelector('.dsp-agc-time-value')?.textContent).toBe('0.1s');
+    r.dispose();
   });
 });

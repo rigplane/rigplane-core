@@ -4,6 +4,7 @@ import { createClassComponent } from 'svelte/legacy';
 import type { RadioViewModel } from '../../../semantic/radio-view-model';
 import type { ReceiverIndicatorViewModel } from '../../../semantic/radio-view-model';
 import type { ScopeFrame } from '../../../lib/runtime/adapters/scope-adapter';
+import { findPlaceholderTokens } from '../../../lib/placeholder-token-rule';
 
 const meter = vi.hoisted(() => ({
   instances: [] as Array<{ value: number; update: ReturnType<typeof vi.fn>; start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }>,
@@ -47,6 +48,39 @@ const receiverIndicators = (main = 11, mainBandwidth = 2_400, sub = 22, subBandw
   { receiver: 'SUB', availability: { structural: true, operational: true }, sMeter: known(sub), bandwidthHz: known(subBandwidth), agcMode: unknown(), nbActive: unknown(), nrActive: unknown(), notchMode: unknown(), attenuator: unknown(), preamp: unknown(), rfGain: unknown(), digiSel: unknown(), ipPlus: unknown() },
 ];
 
+// MOR-2692 geometry fixture: mirrors the merged `view()` helper but carries
+// a real `modeFilter` group so the badge slots mount at all, plus a `band`
+// tuning envelope for the frequency-slot reservation. The vfos are
+// deliberate no-readings (null frequency/mode/filter), i.e. the fixture's
+// unread window. Choice labels include the FTX-1-scale outliers
+// ('DATA-FM-N', 'WIDE-F3') so the reserved width is a profile-data pin, not
+// a constant.
+function modeFilterView(): RadioViewModel {
+  const base = view();
+  return {
+    ...base,
+    vfos: base.vfos.map((vfo) => ({ ...vfo, frequencyHz: null, mode: null, filter: null, display: undefined })),
+    modeFilter: {
+      activeFilterConfiguration: null,
+      currentMode: unknown(),
+      modeChoices: ['LSB', 'DATA-FM-N'],
+      currentFilter: unknown(),
+      filterChoices: ['FIL2', 'WIDE-F3'],
+      filterWidth: unknown(),
+      filterWidthMin: unknown(),
+      filterWidthMax: unknown(),
+    },
+    band: {
+      currentBand: { status: 'unknown' },
+      receiverBands: { main: { status: 'unknown' }, sub: { status: 'unknown' } },
+      bandChoices: [],
+      currentBandTx: 'denied',
+      tuneMinHz: null,
+      tuneMaxHz: 30_000_000,
+    },
+  } as unknown as RadioViewModel;
+}
+
 function view(preamp = 1, preValues = [0, 1, 2], mutex = false, indicators: ReceiverIndicatorViewModel[] = receiverIndicators()): RadioViewModel {
   const result = {
     topologyId: '2/main_sub', vfoScheme: 'main_sub', activeReceiver: { status: 'known', receiver: 'MAIN' },
@@ -88,7 +122,8 @@ describe('DualSdrFace', () => {
     expect(target.querySelector('[data-receiver-cluster="1"] [data-scope-state]')?.getAttribute('data-scope-state')).toBe('frame');
     listener?.({ receiver: 9, mode: 0, startFreq: 9, endFreq: 9, pixels: new Uint8Array([9]) });
     await tick();
-    expect(target.querySelector('[data-receiver-cluster="1"] .axis')?.textContent).toContain('3 — 4');
+    // MOR-2692: the axis separator is ' · ' — never a dash.
+    expect(target.querySelector('[data-receiver-cluster="1"] .axis')?.textContent).toContain('3 · 4');
     unmount(component);
     expect(unsubscribe).toHaveBeenCalledOnce();
   });
@@ -128,22 +163,85 @@ describe('DualSdrFace', () => {
     const target = document.createElement('div');
     const component = mount(DualSdrFace, { target, props: { view: view(1, [0, 1, 2], false, receiverIndicators(11, 2_400, 22, 3_100)), scopeSource: { subscribe: () => () => {} } } });
     await tick();
-    expect(target.querySelector('[data-receiver-cluster="0"] [data-bandwidth]')?.textContent).toContain('2400');
-    expect(target.querySelector('[data-receiver-cluster="1"] [data-bandwidth]')?.textContent).toContain('3100');
+    expect(target.querySelector('[data-receiver-cluster="0"] [data-bandwidth]')?.textContent).toContain('2.4k');
+    expect(target.querySelector('[data-receiver-cluster="1"] [data-bandwidth]')?.textContent).toContain('3.1k');
     expect(meter.instances.map((instance) => instance.update.mock.calls[0]?.[0])).toEqual([11, 22]);
     unmount(component);
   });
 
+  // MOR-2692: unread is an empty reserved slot — the old pin expected the
+  // literal '—' fallback; its replacement pins the closed form (no '—'
+  // anywhere) plus the reserved geometry below.
   it('keeps unknown receiver display unasserted and enables only backed PRE', async () => {
     const onPreChange = vi.fn();
     const target = document.createElement('div');
     mount(DualSdrFace, { target, props: { view: view(1, [0, 1, 2], false, []), scopeSource: { subscribe: () => () => {} }, onPreChange } });
     await tick();
-    expect(target.querySelector('[data-receiver-cluster="1"] [data-frequency]')?.textContent).toContain('—');
+    expect(target.querySelector('[data-receiver-cluster="1"] [data-frequency]')?.textContent).toBe('');
     expect(target.querySelector('[data-receiver-cluster="1"] [data-needle]')).toBeNull();
     const pre = target.querySelector<HTMLButtonElement>('[data-control="pre"]')!;
     expect(pre.disabled).toBe(false); await pre.click(); await tick(); expect(onPreChange).toHaveBeenCalledWith(2);
     for (const name of ['hold', 'main-sub', 'dual', 'mode', 'edge', 'att', 'ip', 'agc', 'vox', 'comp', 'ant', 'menu1', 'cent-fix', 'expd-set']) expect(target.querySelector<HTMLButtonElement>(`[data-control="${name}"]`)?.disabled).toBe(true);
+  });
+
+  // MOR-2692 literal pins — no dash/question/placeholder-word token survives
+  // anywhere in the rendered subtree of an all-unread face (the same token
+  // rule the whole-page guard applies, run here without a browser).
+  it('renders no placeholder token on the all-unread view', async () => {
+    const target = document.createElement('div');
+    const component = mount(DualSdrFace, { target, props: { view: view(), scopeSource: { subscribe: () => () => {} } } });
+    await tick();
+    const hits: string[] = [];
+    const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      for (const hit of findPlaceholderTokens(n.nodeValue ?? '')) {
+        hits.push(`${(n.parentElement?.tagName ?? '?').toLowerCase()}:${JSON.stringify(hit.token)}`);
+      }
+    }
+    unmount(component);
+    expect(hits).toEqual([]);
+  });
+
+  // MOR-2692 geometry pin: the mode/filter badge slots keep ONE reserved
+  // width — derived from the mounted profile's choice sets (here: the
+  // fixture's longest label 'DATA-FM-N' at 9ch) — in BOTH the unread state
+  // (empty text) and a known state, so a first reading lights the slot
+  // without moving its neighbours.
+  it('reserves one badge width from the mounted profile choices in any state', async () => {
+    const fixtureView = modeFilterView();
+    const target = document.createElement('div');
+    const component = mount(DualSdrFace, { target, props: { view: fixtureView, scopeSource: { subscribe: () => () => {} } } });
+    await tick();
+    // unread empty state — the literal literal pin: the longest mode label
+    // on the fixture's choice set is 'DATA-FM-N' (9ch); filters top out at
+    // 'WIDE-F3' (7ch).
+    for (const clusterId of ['0', '1']) {
+      for (const item of ['mode', 'filter'] as const) {
+        const badge = target.querySelector<HTMLElement>(`[data-receiver-cluster="${clusterId}"] [data-badge="${item}"]`);
+        expect(badge?.textContent).toBe('');
+        expect(badge?.style.minWidth).toBe(item === 'mode' ? '9ch' : '7ch');
+      }
+    }
+    unmount(component);
+    target.remove();
+    // known state — 'LSB' lights the still-reserved 'WIDE-F3' slot.
+  });
+
+  // MOR-2692 geometry pin (PR-review fix): the frequency slot keeps its box
+  // in the UNREAD state too — an empty output must not let the grid row
+  // collapse. One-line height plus a width derived from the fixture's
+  // tuning envelope ('30,000,000' → 10ch), not from a radio constant.
+  it('reserves one frequency slot size in the unread state', async () => {
+    const target = document.createElement('div');
+    const component = mount(DualSdrFace, { target, props: { view: modeFilterView(), scopeSource: { subscribe: () => () => {} } } });
+    await tick();
+    for (const clusterId of ['0', '1']) {
+      const frequency = target.querySelector<HTMLElement>(`[data-receiver-cluster="${clusterId}"] [data-frequency]`);
+      expect(frequency?.textContent).toBe('');
+      expect(frequency?.style.minHeight).toBe('1em');
+      expect(frequency?.style.minWidth).toBe('10ch');
+    }
+    unmount(component);
   });
 
   it.each([

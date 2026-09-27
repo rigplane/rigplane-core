@@ -79,7 +79,7 @@
 <script lang="ts">
   import LinearSMeter from '../components-v2/meters/LinearSMeter.svelte';
   import MeterRendererSeat from '../component-kits/MeterRendererSeat.svelte';
-  import { RF_LABEL, RF_MARK } from './rx-tx-surface';
+  import { RF_LABEL, RF_MARK, rfUnconfirmedLabel } from './rx-tx-surface';
   import StationMeterBarPlacement from './StationMeterBarPlacement.svelte';
   import type {
     StationMeterInstrumentHandles, StationSignalMeterFrame,
@@ -143,7 +143,7 @@
   >
     <p class="meters-rf" data-testid="meters-rf">
       <span data-testid="meters-rf-mark" aria-hidden="true">{RF_MARK[rfState]}</span>
-      <span data-testid="meters-rf-label">{RF_LABEL[rfState]}</span>
+      <span data-testid="meters-rf-label" aria-label={rfUnconfirmedLabel(rfState) ?? undefined}>{RF_LABEL[rfState]}</span>
     </p>
 
     {#if signalFrame !== null && (visibleSignal || visibleSwr)}

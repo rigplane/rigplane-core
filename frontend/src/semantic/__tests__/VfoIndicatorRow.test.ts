@@ -240,11 +240,36 @@ describe('radio-wide singleton indicators (MOR-2309)', () => {
     }
   });
 
+  // MOR-2671: both states read `TX` — the unconfirmed one is hollow (dashed
+  // outline) and names itself unconfirmed in its accessible label, never a `?`.
   it.each([
-    ['transmitting', 'TX'], ['uncertain', 'TX?'],
+    ['transmitting', 'TX'], ['uncertain', 'TX'],
   ] as const)('keeps %s RF authority visible as %s', (rfState, label) => {
     const root = render({ radioWide: { ...shared(), rfState } });
     expect(root.querySelector('[data-indicator-fact="rf-authority"]')?.textContent).toBe(label);
+  });
+
+  it('distinguishes the unconfirmed RF lamp by shape and accessible name, never by a `?`', () => {
+    const confirmed = render({ radioWide: { ...shared(), rfState: 'transmitting' } });
+    const confirmedLamp = confirmed.querySelector('[data-indicator-fact="rf-authority"]');
+    expect(confirmedLamp?.classList.contains('tx')).toBe(true);
+    expect(confirmedLamp?.hasAttribute('aria-label')).toBe(false);
+
+    // Second render: unmount the first, otherwise querySelector in the shared
+    // target returns the stale confirmed lamp from the first mount.
+    if (component) unmount(component);
+    component = null;
+    const doubt = render({ radioWide: { ...shared(), rfState: 'uncertain' } });
+    const doubtLamp = doubt.querySelector('[data-indicator-fact="rf-authority"]');
+    expect(doubtLamp?.classList.contains('tx')).toBe(false);
+    expect(doubtLamp?.getAttribute('data-indicator-rf')).toBe('uncertain');
+    // The accessible sentence, verbatim from the en-US catalog, with no `?`.
+    expect(doubtLamp?.getAttribute('aria-label')).toBe('Transmit not confirmed');
+  });
+
+  it('renders the unconfirmed lamp hollow — the dashed-outline rule its attribute selects', () => {
+    const source = readFileSync('src/semantic/VfoIndicatorRow.svelte', 'utf8');
+    expect(source).toMatch(/\.rf-lamp\[data-indicator-rf='uncertain'\]\s*\{[^}]*border-style:\s*dashed/);
   });
 
   it('marks RIT/XIT aggregate state unknown when either constituent is unknown', () => {

@@ -1,6 +1,7 @@
 <script lang="ts">
-  import type { RadioViewModel } from '../../semantic/radio-view-model';
+  import type { RadioViewModel, DisplayObservation } from '../../semantic/radio-view-model';
   import type { ScopeFrame } from '../../lib/runtime/adapters/scope-adapter';
+  import { formatBandwidth } from '../segmentline/lcd-display-helpers';
   import ReceiverNeedleSMeter from './ReceiverNeedleSMeter.svelte';
   import ReceiverScopeWaterfall from './ReceiverScopeWaterfall.svelte';
   interface Props { view: RadioViewModel; receiver: 0 | 1; frame: ScopeFrame | null; }
@@ -8,22 +9,94 @@
   let receiverId = $derived(receiver === 0 ? 'MAIN' : 'SUB');
   let vfo = $derived(view.vfos.find((item) => item.receiver === receiverId));
   let indicator = $derived(view.receiverIndicators?.find((item) => item.receiver === receiverId));
-  let meter = $derived(indicator?.sMeter.reading.status === 'known' ? indicator.sMeter.reading.value : null);
-  let bandwidth = $derived(indicator?.bandwidthHz.reading.status === 'known' ? indicator.bandwidthHz.reading.value : null);
-  let frequency = $derived(vfo?.frequencyHz === null || vfo?.frequencyHz === undefined ? '—' : vfo.frequencyHz.toLocaleString('en-US'));
+  let meterValue = $derived(indicator?.sMeter.reading.status === 'known' ? indicator.sMeter.reading.value : null);
+  let bwRaw = $derived(indicator?.bandwidthHz.reading.status === 'known' ? indicator.bandwidthHz.reading.value : null);
+
+  // The text treatment (MOR-2692, same shape as the segmentline wave's
+  // `stateText`, reused rather than duplicated): current/stale → the value,
+  // anything else → '' (empty unlit slot). Unreadable falls back to the
+  // plain legacy value when the typed `display` observation is absent.
+  function obsText<T extends string | number>(display: DisplayObservation<T> | undefined, legacy: T | null | undefined): string {
+    if (display !== undefined) {
+      return display.state === 'current' || display.state === 'stale' ? String(display.value) : '';
+    }
+    return legacy !== null && legacy !== undefined ? String(legacy) : '';
+  }
+  function obsState<T>(display: DisplayObservation<T> | undefined, legacy: T | null | undefined): 'current' | 'unknown' {
+    if (display !== undefined) return display.state === 'current' || display.state === 'stale' ? 'current' : 'unknown';
+    return legacy !== null && legacy !== undefined ? 'current' : 'unknown';
+  }
+  let modeText = $derived(obsText(vfo?.display?.mode, vfo?.mode));
+  let filterText = $derived(obsText(vfo?.display?.filter, vfo?.filter));
+  let frequencyText = $derived.by(() => {
+    const display = vfo?.display?.frequencyHz;
+    if (display !== undefined) {
+      return display.state === 'current' || display.state === 'stale'
+        ? display.value.toLocaleString('en-US') : '';
+    }
+    return vfo?.frequencyHz !== null && vfo?.frequencyHz !== undefined
+      ? vfo.frequencyHz.toLocaleString('en-US') : '';
+  });
+
+  // Reserved widths come from the mounted profile's choice sets — the
+  // owner's rule: no radio-specific values hardcoded in components. A badge
+  // exists only while the group that feeds it declares choices; otherwise
+  // the function is not drawn. 'BW' reserves over the known max width plus
+  // the filter-choice labels.
+  let modeBadge = $derived.by(() => {
+    const choices = view.modeFilter?.modeChoices ?? [];
+    return choices.length > 0 ? { ch: Math.max(...choices.map((m) => m.length)) } : null;
+  });
+  let filterBadge = $derived.by(() => {
+    const choices = view.modeFilter?.filterChoices ?? [];
+    return choices.length > 0 ? { ch: Math.max(...choices.map((f) => f.length)) } : null;
+  });
+  let bandwidthCh = $derived.by(() => {
+    const widths: number[] = [];
+    if (view.modeFilter) {
+      if (view.modeFilter.filterWidthMax.reading.status === 'known') {
+        widths.push(formatBandwidth({ state: 'known', value: view.modeFilter.filterWidthMax.reading.value }).length);
+      }
+      for (const label of view.modeFilter.filterChoices) { widths.push(label.length); }
+    }
+    if (bwRaw !== null) { widths.push(formatBandwidth({ state: 'known', value: bwRaw }).length); }
+    return 2 + Math.max(...widths, 0);
+  });
+  // The frequency slot keeps a one-line-tall, data-wide box in EVERY state:
+  // empty text must not collapse the grid row (review of PR #3760). The
+  // width derivation runs over the profile's tuning envelope plus the
+  // receiver's own readings — no radio constants in the component.
+  let frequencyCh = $derived.by(() => {
+    const values: number[] = [];
+    const tuneMax = view.band?.tuneMaxHz;
+    if (tuneMax !== null && tuneMax !== undefined) { values.push(tuneMax); }
+    if (vfo?.frequencyHz !== null && vfo?.frequencyHz !== undefined) { values.push(vfo.frequencyHz); }
+    const display = vfo?.display?.frequencyHz;
+    if (display !== undefined && (display.state === 'current' || display.state === 'stale')) { values.push(display.value); }
+    if (values.length === 0) { return 0; }
+    return Math.max(...values).toLocaleString('en-US').length;
+  });
 </script>
 
 <section class="cluster" data-receiver-cluster={receiver} aria-label={`${receiverId} receiver`}>
-  <header><b>{receiverId}</b><span>VFO</span><span>{vfo?.mode ?? '—'}</span><span>{vfo?.filter ?? '—'}</span><span data-bandwidth>BW {bandwidth ?? '—'}</span><span>SFT —</span></header>
-  <ReceiverNeedleSMeter value={meter} />
-  <output class="frequency" data-frequency>{frequency}</output>
-  <div class="secondary">{vfo?.label ?? '—'} · {vfo?.mode ?? '—'} · {vfo?.filter ?? '—'}</div>
+  <header><b>{receiverId}</b><span>VFO</span>
+    {#if modeBadge}
+      <span data-badge="mode" data-state={obsState(vfo?.display?.mode, vfo?.mode)} style:min-width={`${modeBadge.ch}ch`}>{modeText}</span>
+    {/if}
+    {#if filterBadge}
+      <span data-badge="filter" data-state={obsState(vfo?.display?.filter, vfo?.filter)} style:min-width={`${filterBadge.ch}ch`}>{filterText}</span>
+    {/if}
+    <span class="bw" data-bandwidth style:min-width={`${bandwidthCh}ch`}>BW {bwRaw === null ? '' : formatBandwidth({ state: 'known', value: bwRaw })}</span>
+  </header>
+  <ReceiverNeedleSMeter value={meterValue} />
+  <output class="frequency" data-frequency data-state={obsState(vfo?.display?.frequencyHz, vfo?.frequencyHz)} style:min-height="1em" style:min-width={`${frequencyCh}ch`}>{frequencyText}</output>
+  <div class="secondary">{vfo?.label ?? ''} · {modeText} · {filterText}</div>
   <ReceiverScopeWaterfall {frame} />
 </section>
 
 <style>
   .cluster { min-width: 0; display: grid; grid-template-rows: auto auto auto auto 1fr; gap: 5px; padding: 9px; border: 1px solid #687479; background: #020606; color: #edf3f2; }
-  header { display: flex; gap: 8px; align-items: center; font: 13px ui-monospace, monospace; } header b { color: #f4c35a; } header span { border: 1px solid #879397; padding: 2px 6px; }
+  header { display: flex; gap: 8px; align-items: center; font: 13px ui-monospace, monospace; white-space: nowrap; } header b { color: #f4c35a; } header span { border: 1px solid #879397; padding: 2px 6px; }
   .frequency { color: #f7f8f5; font: clamp(28px, 4vw, 70px)/.95 ui-monospace, monospace; letter-spacing: -.08em; text-align: center; }
   .secondary { text-align: center; color: #afbdbe; font: 12px ui-monospace, monospace; }
 </style>

@@ -35,6 +35,7 @@
   import { t } from '$lib/i18n';
   import { formatToneHz, type RepeaterPending } from '$lib/radio/repeater-transitions';
   import { bindChoiceInstrument } from '../primitives/control-instruments/control-instrument-behavior';
+  import { readingText } from '../primitives/reading-text';
   import type { RepeaterShift, RepeaterToneMode } from './radio-view-model';
 
   interface Props {
@@ -115,7 +116,7 @@
         <output class="repeater-step-value" data-testid="repeater-tone-freq-value"
           data-pending={rxPending?.toneFreq === true}
           aria-describedby={rxPending?.toneFreq ? `${pendingId}-freq` : undefined}
-        >{rx.toneFreq.reading.status === 'known' ? formatToneHz(rx.toneFreq.reading.value) : ''}</output>
+        >{readingText(rx.toneFreq, formatToneHz)}</output>
         <button type="button" class="repeater-step-key scope-step-key" aria-label="Increase CTCSS tone"
           data-testid="repeater-tone-freq-up" disabled={!stepAvailable} onclick={() => step(1)}>&#8250;</button>
         {#if rxPending?.toneFreq}<span id={`${pendingId}-freq`} class="sr-only">{t('core.repeater.pendingAnnouncement')}</span>{/if}

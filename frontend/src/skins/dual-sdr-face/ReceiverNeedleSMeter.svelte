@@ -18,10 +18,10 @@
     <path d="M27 88 A97 97 0 0 1 213 88" class="meter-arc faint" />
     <text x="22" y="100">S</text><text x="109" y="21">9</text><text x="188" y="45">+40</text>
   {/if}
+  <!-- MOR-2692: an unread/unavailable meter draws nothing — no '—' glyph,
+       the LCD segment is unlit. -->
   {#if angle !== null}
     <line data-needle data-reduced-motion={prefersReducedMotion()} x1="120" y1="88" x2="120" y2="27" transform={`rotate(${angle} 120 88)`} class="needle" />
-  {:else}
-    <text data-meter-unknown x="120" y="70" text-anchor="middle">—</text>
   {/if}
 </svg>
 

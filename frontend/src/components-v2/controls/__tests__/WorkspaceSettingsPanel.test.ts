@@ -14,8 +14,9 @@ import WorkspaceSettingsPanel from '../WorkspaceSettingsPanel.svelte';
 import {
   getWorkspace, initWorkspaceStore, setDesignLanguage, setLayout, setPinnedCommands, setTheme,
 } from '../../../presentation/workspace/store.svelte';
+import type { SkinId } from '../../../skins/registry';
 import {
-  DEFAULT_WORKSPACE, WORKSPACE_DESIGN_LANGUAGE_IDS, WORKSPACE_LAYOUT_IDS, WORKSPACE_THEME_IDS,
+  DEFAULT_WORKSPACE, WORKSPACE_LAYOUT_IDS, WORKSPACE_SKIN_DESIGN_LANGUAGES, WORKSPACE_THEME_IDS,
 } from '../../../presentation/workspace/contract';
 import enUS from '$lib/i18n/locales/en-US.json' with { type: 'json' };
 
@@ -31,10 +32,10 @@ class FakeStorage {
 
 let storage: FakeStorage;
 
-function setup() {
+function setup(skinId?: SkinId) {
   const target = document.createElement('div');
   document.body.appendChild(target);
-  const component = mount(WorkspaceSettingsPanel, { target });
+  const component = mount(WorkspaceSettingsPanel, { target, props: skinId === undefined ? {} : { skinId } });
   flushSync();
   return { target, component };
 }
@@ -57,11 +58,19 @@ describe('WorkspaceSettingsPanel (MOR-1080)', () => {
     unmount(component);
   });
 
-  it('enumerates exactly the registered design-language ids, in order', () => {
-    const { target, component } = setup();
-    const sel = target.querySelector('[data-testid="workspace-language-select"]') as HTMLSelectElement;
-    expect(Array.from(sel.options).map((o) => o.value)).toEqual([...WORKSPACE_DESIGN_LANGUAGE_IDS]);
-    unmount(component);
+  it('MOR-2218: enumerates only the current skin declared languages (variant B)', () => {
+    for (const [skinId, expected] of [
+      ['desktop-v2', WORKSPACE_SKIN_DESIGN_LANGUAGES['desktop-v2'].supported],
+      ['peer-split', ['segmentline']],
+    ] as const) {
+      const { target, component } = setup(skinId);
+      const sel = target.querySelector('[data-testid="workspace-language-select"]') as HTMLSelectElement;
+      expect(Array.from(sel.options).map((o) => o.value)).toEqual([...expected]);
+      unmount(component);
+    }
+    const none = setup('lcd-cockpit'); // no declared language: no select
+    expect(none.target.querySelector('[data-testid="workspace-language-select"]')).toBeNull();
+    unmount(none.component);
   });
 
   it('enumerates exactly the registered theme ids, in order', () => {
@@ -73,7 +82,7 @@ describe('WorkspaceSettingsPanel (MOR-1080)', () => {
 
   it('reflects the current workspace values in each select', () => {
     setLayout('lcd-scope');
-    setDesignLanguage('fieldline');
+    setDesignLanguage('desktop-v2', 'fieldline');
     setTheme('nord', true);
 
     const { target, component } = setup();
@@ -174,7 +183,7 @@ describe('WorkspaceSettingsPanel (MOR-1080)', () => {
   });
 
   it('a repaired notice is shown as a status region and can be dismissed without resetting anything', async () => {
-    storage.map.set('rigplane:workspace', JSON.stringify({ version: 1, theme: 'no-such-theme' }));
+    storage.map.set('rigplane:workspace', JSON.stringify({ version: 2, theme: 'no-such-theme' }));
     initWorkspaceStore(storage);
     const { target, component } = setup();
 

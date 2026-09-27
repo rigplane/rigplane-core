@@ -59,6 +59,8 @@
   import type { MeterContinuitySession } from '../primitives/meters/meter-ballistics.svelte';
   import { formatKnownLevel, levelFormatsBelowMax } from './format-level';
   import { RF_FRONT_END_LEVELS } from './rf-front-end-instruments';
+  import { rfUnconfirmedLabel } from './rx-tx-surface';
+  import { readingText } from '../primitives/reading-text';
   import type {
     DisplayObservedField, RadioWideIndicatorsViewModel, ReceiverIndicatorField,
     ReceiverIndicatorViewModel, TxAuxField,
@@ -78,16 +80,32 @@
     indicator, radioWide, appearance = 'semantic', children, slotLabel, continuitySession, sMeter,
   }: Props = $props();
 
+  /** MOR-2671: uncertain reads `TX` as well — the distinction from confirmed TX is the
+   *  hollow dashed outline (`[data-indicator-rf='uncertain']` below) plus the unconfirmed
+   *  accessible sentence, never a `?` in the text. */
   const rfLabel = (state: RadioWideIndicatorsViewModel['rfState']): string =>
-    state === 'transmitting' ? 'TX'
-      : state === 'uncertain' ? 'TX?'
-        : '';
+    state === 'transmitting' || state === 'uncertain' ? 'TX' : '';
 
   // MOR-2644: an unread fact shows its label dimmed with no value text —
   // never a dash placeholder. A fact the radio does not have is not drawn
   // at all (the {#if} guards below). The subdued data-state paint stays.
-  function numeric(field: ReceiverIndicatorField<number>): string {
-    return field.reading.status === 'known' ? String(field.reading.value) : '';
+  function booleanState(field: ReceiverIndicatorField<boolean>): 'on' | 'off' | 'unknown' {
+    return field.reading.status === 'known' ? (field.reading.value ? 'on' : 'off') : 'unknown';
+  }
+
+  // MOR-2688: the empty-display rule is `readingText`'s predicate,
+  // `reading.status === 'known'`; boolean sites pass their own ON/OFF
+  // formatter so the text on screen stays identical.
+  /** Leading-space ON/OFF text for the per-receiver boolean facts (NB, NR,
+   *  IP+, DIGI-SEL). */
+  function booleanLabel(field: ReceiverIndicatorField<boolean>): string {
+    return readingText(field, (v) => ` ${v ? 'ON' : 'OFF'}`);
+  }
+
+  /** ON/OFF text for the radio-wide boolean facts the RIT/XIT aggregate
+   *  composes. */
+  function sharedBoolean(field: TxAuxField<boolean>): string {
+    return readingText(field, (v) => (v ? 'ON' : 'OFF'));
   }
 
   /** The RF gain the display shows, independent of provenance: the observed
@@ -118,27 +136,6 @@
       : '';
   }
 
-  function agc(field: ReceiverIndicatorViewModel['agcMode']): string {
-    return field.reading.status === 'known' ? String(field.reading.value) : '';
-  }
-
-  function booleanState(field: ReceiverIndicatorField<boolean>): 'on' | 'off' | 'unknown' {
-    return field.reading.status === 'known' ? (field.reading.value ? 'on' : 'off') : 'unknown';
-  }
-
-  function booleanLabel(field: ReceiverIndicatorField<boolean>): string {
-    const state = booleanState(field);
-    return state === 'unknown' ? '' : state.toUpperCase();
-  }
-
-  function sharedBoolean(field: TxAuxField<boolean>): string {
-    return field.reading.status === 'known' ? (field.reading.value ? 'ON' : 'OFF') : '';
-  }
-
-  function sharedOffset(offset: TxAuxField<number>): string {
-    return offset.reading.status === 'known' ? String(offset.reading.value) : '';
-  }
-
   function sharedAggregate(
     label: 'RIT' | 'XIT', active: TxAuxField<boolean>, offset: TxAuxField<number>,
   ): string {
@@ -147,7 +144,7 @@
     // label; state known, offset unread → "RIT ON"/"RIT OFF"; both known →
     // the same text as main today.
     const state = sharedBoolean(active);
-    const value = sharedOffset(offset);
+    const value = readingText(offset);
     if (value === '') return state === '' ? label : `${label} ${state}`;
     return state === '' ? `${label} ${value} Hz` : `${label} ${state} ${value} Hz`;
   }
@@ -178,7 +175,7 @@
         data-indicator-fact="bandwidth"
         data-state={indicator.bandwidthHz.reading.status}
         style:min-inline-size={`${FACT_SLOT_RESERVATIONS.bandwidth}ch`}
-      >BW {numeric(indicator.bandwidthHz)}{indicator.bandwidthHz.reading.status === 'known' ? ' Hz' : ''}</span>
+      >BW {readingText(indicator.bandwidthHz, (v) => `${String(v)} Hz`)}</span>
     {/if}
     {#if appearance === 'standard'}
       <span class="header-badges"><span class="fact">BAR</span><span
@@ -211,51 +208,49 @@
     {#if indicator.agcMode.availability.structural}
       <span class="fact" data-indicator-fact="agc" data-state={indicator.agcMode.reading.status}
         style:min-inline-size={`${FACT_SLOT_RESERVATIONS.agc}ch`}
-        >AGC{indicator.agcMode.reading.status === 'known' ? ` ${agc(indicator.agcMode)}` : ''}</span
+        >AGC{readingText(indicator.agcMode, (v) => ` ${String(v)}`)}</span
       >
     {/if}
     {#if indicator.nbActive.availability.structural}
       <span class="fact" data-indicator-fact="nb" data-state={booleanState(indicator.nbActive)}
         style:min-inline-size={`${FACT_SLOT_RESERVATIONS.nb}ch`}
-        >NB{indicator.nbActive.reading.status === 'known' ? ` ${booleanLabel(indicator.nbActive)}` : ''}</span
+        >NB{booleanLabel(indicator.nbActive)}</span
       >
     {/if}
     {#if indicator.nrActive.availability.structural}
       <span class="fact" data-indicator-fact="nr" data-state={booleanState(indicator.nrActive)}
         style:min-inline-size={`${FACT_SLOT_RESERVATIONS.nr}ch`}
-        >NR{indicator.nrActive.reading.status === 'known' ? ` ${booleanLabel(indicator.nrActive)}` : ''}</span
+        >NR{booleanLabel(indicator.nrActive)}</span
       >
     {/if}
     {#if indicator.notchMode.availability.structural}
       <span class="fact" data-indicator-fact="notch" data-state={indicator.notchMode.reading.status}
         style:min-inline-size={`${FACT_SLOT_RESERVATIONS.notch}ch`}
-        >NOTCH{indicator.notchMode.reading.status === 'known'
-          ? ` ${indicator.notchMode.reading.value.toUpperCase()}`
-          : ''}</span
+        >NOTCH{readingText(indicator.notchMode, (v) => ` ${String(v).toUpperCase()}`)}</span
       >
     {/if}
     {#if indicator.attenuator.availability.structural}
       <span class="fact" data-indicator-fact="attenuator" data-state={indicator.attenuator.reading.status}
         style:min-inline-size={`${FACT_SLOT_RESERVATIONS.attenuator}ch`}
-        >ATT{indicator.attenuator.reading.status === 'known' ? ` ${numeric(indicator.attenuator)} dB` : ''}</span
+        >ATT{readingText(indicator.attenuator, (v) => ` ${String(v)} dB`)}</span
       >
     {/if}
     {#if indicator.preamp.availability.structural}
       <span class="fact" data-indicator-fact="preamp" data-state={indicator.preamp.reading.status}
         style:min-inline-size={`${FACT_SLOT_RESERVATIONS.preamp}ch`}
-        >P.AMP{indicator.preamp.reading.status === 'known' ? ` ${numeric(indicator.preamp)}` : ''}</span
+        >P.AMP{readingText(indicator.preamp, (v) => ` ${String(v)}`)}</span
       >
     {/if}
     {#if indicator.ipPlus.availability.structural}
       <span class="fact" data-indicator-fact="ip-plus" data-state={booleanState(indicator.ipPlus)}
         style:min-inline-size={`${FACT_SLOT_RESERVATIONS['ip-plus']}ch`}
-        >IP+{indicator.ipPlus.reading.status === 'known' ? ` ${booleanLabel(indicator.ipPlus)}` : ''}</span
+        >IP+{booleanLabel(indicator.ipPlus)}</span
       >
     {/if}
     {#if indicator.digiSel.availability.structural}
       <span class="fact" data-indicator-fact="digi-sel" data-state={booleanState(indicator.digiSel)}
         style:min-inline-size={`${FACT_SLOT_RESERVATIONS['digi-sel']}ch`}
-        >DIGI-SEL{indicator.digiSel.reading.status === 'known' ? ` ${booleanLabel(indicator.digiSel)}` : ''}</span
+        >DIGI-SEL{booleanLabel(indicator.digiSel)}</span
       >
     {/if}
     {#if indicator.rfGain.availability.structural && indicator.rfGain.display?.state !== 'unsupported'}
@@ -291,19 +286,18 @@
         class="rf-lamp"
         data-indicator-fact="rf-authority"
         data-indicator-rf={radioWide.rfState}
+        aria-label={rfUnconfirmedLabel(radioWide.rfState) ?? undefined}
       >{rfLabel(radioWide.rfState)}</span>
       {#if radioWide.antenna.availability.structural}
         <span class="fact" data-indicator-fact="antenna" data-state={radioWide.antenna.reading.status}
           style:min-inline-size={`${FACT_SLOT_RESERVATIONS.antenna}ch`}
-          >ANT{radioWide.antenna.reading.status === 'known' ? ` ${sharedOffset(radioWide.antenna)}` : ''}</span
+          >ANT{readingText(radioWide.antenna, (v) => ` ${String(v)}`)}</span
         >
       {/if}
       {#if radioWide.atu.availability.structural}
         <span class="fact" data-indicator-fact="atu" data-state={radioWide.atu.reading.status}
           style:min-inline-size={`${FACT_SLOT_RESERVATIONS.atu}ch`}
-          >TUNE{radioWide.atu.reading.status === 'known'
-            ? ` ${radioWide.atu.reading.value.toUpperCase()}`
-            : ''}</span
+          >TUNE{readingText(radioWide.atu, (v) => ` ${String(v).toUpperCase()}`)}</span
         >
       {/if}
       {#if radioWide.ritActive.availability.structural || radioWide.ritOffset.availability.structural}
@@ -345,6 +339,9 @@
   }
   .rf-lamp { min-inline-size: 3ch; box-sizing: content-box; }
   .rf-lamp.tx { color: var(--v2-accent-red, #ff4545); border-color: currentColor; }
+  /* MOR-2671: the unconfirmed lamp is hollow — a dashed outline where confirmed
+     TX is solid. Geometry, not colour, so the distinction survives forced-colors. */
+  .rf-lamp[data-indicator-rf='uncertain'] { border-style: dashed; }
   .fact[data-state='on'], .fact[data-state='known'] { color: var(--v2-text-primary, #e8e8e8); }
   .fact[data-state='off'], .fact[data-state='unknown'] { color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55)); }
   /* Owner ruling 2026-09-23: the RFG fact keeps its slot whether or not it

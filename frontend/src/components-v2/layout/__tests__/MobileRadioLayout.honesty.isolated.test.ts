@@ -258,10 +258,11 @@ describe('MobileRadioLayout honest-projection rendering (MOR-1409 A13a)', () => 
 
   // Kills: restoring `toVfoProps`' fabricated 'USB' / 'FIL1' stand-ins by
   // re-pointing the VFO projection at the stale state-adapter twin.
-  it('shows placeholder mode and filter labels, not fabricated USB / FIL1', () => {
+  // MOR-2673: the unread sentinel is the empty string — never a dash run.
+  it('shows empty mode and filter labels, not fabricated USB / FIL1', () => {
     const root = mountLayout();
-    expect(root.querySelector('.m-vfo-mode')?.textContent).toBe('---');
-    expect(root.querySelector('.m-vfo-filter')?.textContent).toBe('---');
+    expect(root.querySelector('.m-vfo-mode')?.textContent).toBe('');
+    expect(root.querySelector('.m-vfo-filter')?.textContent).toBe('');
   });
 
   // Kills: any guard that leaks "NaN" through a different portrait boundary —

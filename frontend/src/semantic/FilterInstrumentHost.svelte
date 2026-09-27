@@ -10,6 +10,7 @@
   import {
     FILTER_SHAPES, type FilterFiniteChoiceValue, type FilterInstrumentHandles,
   } from './filter-instruments';
+  import { readingText } from '../primitives/reading-text';
   import type { RadioViewModel } from './radio-view-model';
 
   interface ExistingProps {
@@ -49,10 +50,6 @@
       && field.reading.status === 'known';
   const reason = (field: Parameters<typeof usable>[0]) =>
     usable(field) ? undefined : 'field-not-observed';
-  // MOR-2648: an unread value renders an unlit box — empty text, never a
-  // `?` glyph; the box itself stays reserved (the style rule below).
-  const textOf = (field: { reading: { status: 'known'; value: unknown } | { status: 'unknown' } }) =>
-    field.reading.status === 'known' ? String(field.reading.value) : '';
   const requested = <T,>(target: T | null) => target === null
     ? undefined : { kind: 'requested-target' as const, target };
 
@@ -179,7 +176,7 @@
         data-data-mode-status={pendingDataMode !== null ? 'pending' : usable(filterPassband.dataMode) ? 'confirmed' : filterPassband.dataMode.reading.status === 'known' ? 'retained' : 'unknown'}
         aria-describedby={pendingDataMode !== null ? pendingDataModeId : undefined}>
         <span class="filter-level-name">{filterPassband.dataModeChoices.length > 1 ? t('core.mobile.sheet.dataMode') : 'DATA'}</span>
-        <output>{textOf(filterPassband.dataMode)}</output>
+        <output>{readingText(filterPassband.dataMode)}</output>
         {#if filterPassband.dataModeChoices.length > 1}
           {#each filterPassband.dataModeChoices as choice (choice.value)}<button type="button" class="filter-choice"
             data-testid={`filter-data-mode-${choice.value}`} aria-pressed={dataBehavior.available && dataBehavior.isSelected(choice.value)}
