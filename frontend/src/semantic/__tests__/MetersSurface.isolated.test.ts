@@ -1471,7 +1471,7 @@ describe('the SWR lower scale literal text (MOR-2688 S4d)', () => {
     let view = withRaw(base('transmitting'), 'swr', 120);
     view = withMeterDomain(view, 'swr', { kind: 'raw' });
     withSurface(view, (s) => {
-      expect(s.signalSvg()!.querySelector('[data-lower-relevant]')!.textContent).toBe('SWR120');
+      expect(s.signalSvg()!.querySelector('[data-lower-relevant]')!.textContent).toBe('SWR120 raw');
     });
     view = withField(view, 'swr', { unknown: true });
     withSurface(view, (s) => {
