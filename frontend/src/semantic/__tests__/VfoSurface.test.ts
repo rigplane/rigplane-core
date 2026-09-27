@@ -641,14 +641,13 @@ it('shows a distinct role per VFO across single/dual and slotted/unslotted schem
 it('reserves the role plaque at the widest role text in every state', () => {
   const source = readFileSync('src/semantic/VfoSurface.svelte', 'utf8');
   const fn = source.slice(source.indexOf('function roleLabel'), source.indexOf('const ROLE_TEXTS'));
-  const body = fn.slice(fn.indexOf('{'), fn.indexOf('}') + 1);
-  const emitted = [...body.matchAll(/'([^']+)'/g)].map((match) => match[1]);
+  const emitted = [...fn.matchAll(/return '[^']+'|return `[^`]+`/g)].map((match) => match[0]);
+  expect(emitted).toEqual(["return 'Selected VFO'", "return 'Unselected VFO'", 'return vfo.receiver']);
   const listedMatch = /const ROLE_TEXTS = \[([^\]]+)\]/.exec(source);
   const listed = [...(listedMatch?.[1] ?? '').matchAll(/'([^']+)'/g)].map((text) => text[1]);
-  expect(emitted).toEqual(['Selected VFO', 'Unselected VFO']);
-  expect(listed).toEqual(expect.arrayContaining([
-    'MAIN', 'SUB', 'MAIN A', 'MAIN B', 'SUB A', 'SUB B', ...emitted,
-  ]));
+  expect(listed).toEqual([
+    'MAIN', 'SUB', 'MAIN A', 'MAIN B', 'SUB A', 'SUB B', 'Selected VFO', 'Unselected VFO',
+  ]);
   for (const catalog of [enUS, jaJP, ruRU]) {
     expect(Object.values(catalog).join('\n')).not.toMatch(/Selected VFO|Unselected VFO|MAIN [AB]/);
   }
