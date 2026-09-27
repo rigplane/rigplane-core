@@ -1411,8 +1411,12 @@ describe('RF gain additive display observation', () => {
       delete indicator.sMeter.source;
       delete indicator.sMeter.domain;
     }
+    // MOR-2706: `bandwidthMaxHz` joins the structural extras the digest
+    // drops — it is a capability echo fixed when caps load, not a strict
+    // model member the digest guards (same class as `display`).
     const strictJson = JSON.stringify(legacyView, (key, value) => [
       'display', 'activeFilterConfiguration', 'dataModeChoices', 'modInputSource', 'modInputChoices',
+      'bandwidthMaxHz',
     ].includes(key) ? undefined : value);
     const digest = createHash('sha256').update(strictJson).digest('hex');
     // MOR-2425/R40+R41: ONE digest for both freshness values. Read off this

@@ -48,15 +48,15 @@
 
   Two-level availability (MOR-977/1256): `structural: false` renders NOTHING;
   `structural: true, operational: false` renders present-and-unobserved. An
-  unread fact renders `UNKNOWN_TEXT`, never a fabricated 14.074 MHz.
+  unread fact renders nothing — an empty slot (MOR-2684), never a fabricated
+  14.074 MHz and never a dash.
 -->
 <script module lang="ts">
   import { t } from '$lib/i18n';
   import type { BandField, DisabledReasonCode, RadioViewModel } from './radio-view-model';
   import type { BandControlLayout, BandInstrumentHandles } from './band-instruments';
-  import { UNKNOWN_TEXT } from './band-instruments';
   export {
-    defaultPermitLabel, interpretFrequencyEntry, mhz, UNKNOWN_TEXT,
+    defaultPermitLabel, interpretFrequencyEntry, mhz,
   } from './band-instruments';
 
   /** The `disabledReasons` codes that can EXPLAIN a TX denial, in the order
@@ -82,9 +82,15 @@
    *  `REASON_KEY[code]` to an inherited FUNCTION rather than undefined and
    *  hand `t()` a non-string key instead of failing closed. `hasOwn` makes
    *  "unrecognised code" mean exactly "no OWN entry", so it reliably falls
-   *  through to `UNKNOWN_TEXT` rather than surfacing garbage. */
+   *  through to no visible text (MOR-2684: empty, never a dash) rather than
+   *  surfacing garbage. The reason ELEMENT carries `unnamedReason()` as its
+   *  accessible name whenever the visible text is empty. */
   export const reasonLabel = (code: DisabledReasonCode | string): string =>
-    Object.hasOwn(REASON_KEY, code) ? t(REASON_KEY[code]) : UNKNOWN_TEXT;
+    Object.hasOwn(REASON_KEY, code) ? t(REASON_KEY[code]) : '';
+  /** MOR-2684: the denial's accessible name when no reason can be named —
+   *  an unrecognised code, or no code at all. The visible text stays empty;
+   *  this plain catalog sentence is what a screen reader hears. */
+  export const unnamedReason = (): string => t('core.band.tx.reason.unnamed');
   /** The denial's words when no code explains it: `txPermit` says the TX
    *  TARGET may key, so what is missing is the band-scoped resolution itself
    *  (unobserved live frequency, or a frequency in no band of the plan). */
@@ -104,8 +110,8 @@
   export const usable = (f: BandField<unknown>): boolean =>
     f.availability.structural && f.availability.operational && f.reading.status === 'known';
    /** MOR-2652: an unread current band prints nothing — an unlit slot. The
-    *  denial reasons below keep `UNKNOWN_TEXT` from `band-instruments`: those
-    *  are sentences, not a value standing in for a reading. */
+    *  denial reasons below are sentences, never a value standing in for a
+    *  reading (MOR-2684 removed the old `UNKNOWN_TEXT` dash). */
    export const textOf = (f: BandField<unknown>): string =>
      f.reading.status === 'known' ? String(f.reading.value) : '';
   export const isCurrent = (f: BandField<string>, name: string): boolean =>
@@ -139,7 +145,7 @@
       (c) => view.disabledReasons.some((r) => r.code === c && r.field === 'txPermit'),
     );
     if (hit !== undefined) return reasonLabel(hit);
-    if (view.txPermit.status !== 'allowed') return UNKNOWN_TEXT;
+    if (view.txPermit.status !== 'allowed') return '';
     if (view.activeReceiver.status === 'unknown') return activeReceiverUnconfirmedReason();
     return unresolvedReason();
   }
@@ -163,7 +169,12 @@
     const key = view.txPermit.status === 'denied'
       ? 'core.band.tx.caveat.denied'
       : 'core.band.tx.caveat.unknown';
-    return t(key, { reason: txDeniedReason(view) });
+    // MOR-2684: a caveat is a whole sentence, not a slot — an empty reason
+    // would leave a dangling ': '. When no reason can be named, the caveat
+    // says so with the same plain sentence the reason element's accessible
+    // name carries.
+    const reason = txDeniedReason(view);
+    return t(key, { reason: reason === '' ? unnamedReason() : reason });
   }
 </script>
 
@@ -197,7 +208,15 @@
       <span class="band-name">TX HERE</span>
       <output data-testid="band-tx-value">{band.currentBandTx}</output>
       {#if band.currentBandTx === 'denied'}
-        <span data-testid="band-tx-reason">{txDeniedReason(view)}</span>
+        <!-- MOR-2684: a denial whose reason cannot be named draws NO visible
+             text — never a dash — and carries the plain `unnamedReason()`
+             sentence as its accessible name, so a screen reader still
+             hears an honest explanation. -->
+        {@const txReason = txDeniedReason(view)}
+        <span
+          data-testid="band-tx-reason"
+          {...(txReason === '' ? { 'aria-label': unnamedReason() } : {})}
+        >{txReason}</span>
       {:else if view.txPermit.status !== 'allowed'}
         <!-- Fix-round F1: `band.currentBandTx` answers "may I key at the
              ACTIVE RECEIVER's frequency" — it can say `allowed` while the

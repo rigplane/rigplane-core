@@ -658,10 +658,14 @@ it('shows a distinct role per VFO across single/dual and slotted/unslotted schem
   expect(roles).toEqual(['MAIN', 'SUB']);
 });
 
-it('reserves the role plaque at the widest SLOTTED role text in every state', () => {
+it('reserves the role plaque at the widest role text in every state', () => {
   const source = readFileSync('src/semantic/VfoSurface.svelte', 'utf8');
   const fn = source.slice(source.indexOf('function roleLabel'), source.indexOf('const ROLE_TEXTS'));
-  expect(fn).toContain("slot.role === 'selected' ? 'Selected VFO' : 'Unselected VFO'");
+  // MOR-2656: the relative kind goes through t() — no English literal may
+  // remain there; the slotted and unslotted returns are unchanged.
+  expect(fn).toContain("slot.role === 'selected' ? t(ACTIVE_ROLE_KEY) : ''");
+  expect(fn).not.toContain("'Selected VFO'");
+  expect(fn).not.toContain("'Unselected VFO'");
   const emitted = [...fn.matchAll(/return (?:`[^`]+`|vfo\.receiver)/g)].map((match) => match[0]);
   expect(emitted).toEqual([
     'return `${vfo.receiver} ${slot.id}`',
@@ -669,25 +673,31 @@ it('reserves the role plaque at the widest SLOTTED role text in every state', ()
     'return vfo.receiver',
   ]);
   const listedMatch = /const ROLE_TEXTS = \[([^\]]+)\]/.exec(source);
-  const listed = [...(listedMatch?.[1] ?? '').matchAll(/'([^']+)'/g)].map((text) => text[1]);
-  // The reservation covers the slotted forms and the unread bare name. The
-  // relative forms are deliberately NOT reserved: 'Unselected VFO' (14c)
-  // cannot fit one phone line at 375px even at the slotted width — it
-  // already wraps on main — and its compact label is a separate product
-  // decision (follow-up ticket).
-  expect(listed).toEqual(['MAIN', 'SUB', 'MAIN A', 'MAIN B', 'SUB A', 'SUB B']);
+  const listedLiterals = [...(listedMatch?.[1] ?? '').matchAll(/'([^']+)'/g)].map((text) => text[1]);
+  // The catalog-built active words join the reservation via a catalog
+  // spread, not literals pasted into the source.
+  expect(listedMatch?.[1]).toContain('...ACTIVE_ROLE_CATALOGS');
+  const activeTexts = [enUS, jaJP, ruRU]
+    .map((catalog) => catalog['core.vfo.role.active'])
+    .filter((value): value is string => typeof value === 'string');
+  const listed = [...listedLiterals, ...activeTexts];
+  // The reservation covers the slotted forms, the unread bare name, and
+  // every catalog's active word — including the WIDEST one, built from the
+  // catalogs, not remembered as a literal.
+  expect(listedLiterals).toEqual(['MAIN', 'SUB', 'MAIN A', 'MAIN B', 'SUB A', 'SUB B']);
   expect(listed).not.toContain('Selected VFO');
   expect(listed).not.toContain('Unselected VFO');
-  // The reservation is at least the widest slotted text across the three
-  // locales, built from the catalog strings, not a literal: today the
-  // catalogs carry no role or slot string, so the listed English forms win;
-  // any localized role string in a catalog joins the comparison and must be
-  // covered by the reservation.
+  for (const text of activeTexts) expect(listed).toContain(text);
+  const widestActive = activeTexts.reduce((best, text) => (text.length > best.length ? text : best), '');
+  expect(listed).toContain(widestActive);
+  // The widest of ALL role texts across the three locales, built from the
+  // catalog strings, must be in the list — any localized role string joins
+  // the comparison and must be covered by the reservation.
   const widest = [enUS, jaJP, ruRU]
     .flatMap((catalog) => Object.values(catalog))
     .concat(listed)
     .filter((value): value is string => typeof value === 'string')
-    .filter((text) => /MAIN [AB]|SUB [AB]/.test(text))
+    .filter((text) => /MAIN [AB]|SUB [AB]|ACTIVE|АКТИВЕН|使用中/.test(text))
     .reduce((best, text) => (text.length > best.length ? text : best), '');
   expect(listed).toContain(widest);
   for (const catalog of [enUS, jaJP, ruRU]) {
@@ -712,6 +722,61 @@ it('reserves the role plaque at the widest SLOTTED role text in every state', ()
   }
 });
 
+// ── MOR-2656: the ACTIVE role word through the catalogs ───────────────────
+//
+// Owner ruling 2026-09-26: on a radio that reports only "selected /
+// unselected" (the `relative` slot kind) the active tile shows the ONE
+// localized active word, and the other tile has no role word at all — an
+// empty reserved plaque. No English literal remains in `roleLabel`. The
+// pins below are LITERAL strings per locale (proved by a locale mutation,
+// not by t(key) against itself), and the inactive tile pins ''.
+
+describe('MOR-2656 — the active VFO tile says ACTIVE, the other tile has no role word', () => {
+  const base = topologyFixtures['1/ab'];
+  const relativeModel: RadioViewModel = validateRadioViewModel({
+    ...base,
+    vfos: [
+      {
+        ...base.vfos[0], slot: { kind: 'relative', role: 'selected' },
+        label: 'Selected VFO', isActive: true, isActiveSlot: true,
+      },
+      {
+        ...base.vfos[1], slot: { kind: 'relative', role: 'unselected' },
+        label: 'Unselected VFO', isActive: false, isActiveSlot: false,
+      },
+    ],
+  });
+
+  const mountedRole = (model: RadioViewModel, slotRole: string) =>
+    mountSurface({ viewModel: model }).querySelector(`[data-vfo-slot="${slotRole}"] .vfo-role`)!;
+
+  it('literal: the active tile says ACTIVE (en-US), the inactive tile renders nothing', () => {
+    expect(mountedRole(relativeModel, 'selected').textContent).toBe('ACTIVE');
+    expect(mountedRole(relativeModel, 'unselected').textContent).toBe('');
+  });
+
+  it.each([
+    ['ru-RU', 'АКТИВЕН'],
+    ['ja-JP', '使用中'],
+  ] as const)('literal under %s: the active tile says %s', (locale, word) => {
+    setLocale(locale);
+    try {
+      expect(mountedRole(relativeModel, 'selected').textContent).toBe(word);
+      // The other tile still has no role word in the reserved plaque.
+      expect(mountedRole(relativeModel, 'unselected').textContent).toBe('');
+    } finally {
+      _resetLocale();
+    }
+  });
+
+  it('slotted and unslotted roles are unchanged by the relative treatment', () => {
+    const ab = mountSurface({ viewModel: topologyFixtures['1/ab'] });
+    expect([...ab.querySelectorAll('.vfo-role')].map((el) => el.textContent)).toEqual(['MAIN A', 'MAIN B']);
+    const dual = mountSurface({ viewModel: topologyFixtures['2/main_sub'] });
+    expect([...dual.querySelectorAll('.vfo-role')].map((el) => el.textContent)).toEqual(['MAIN', 'SUB']);
+  });
+});
+//
 // ── MOR-1482: one stable frequency format + role text shown exactly once ───
 //
 // Live-observed bug: the unselected-VFO tile's frequency readout flipped
@@ -764,9 +829,10 @@ describe('MOR-1482: unselected-tile frequency format is stable and dot-grouped',
 
   it('the tile role text appears exactly once, visually — the duplicate label span is hidden, not deleted', () => {
     // Mirrors the ADAPTER's real output for a 'relative' slot scheme
-    // (`radio-view-model-adapter.ts`), where `label` is set to the SAME
-    // string `roleLabel()` computes ('Selected VFO' / 'Unselected VFO') —
-    // the actual live-observed duplication, not a fixture artifact.
+    // (`radio-view-model-adapter.ts`): since MOR-2656 the adapter's own
+    // identity string ('Selected VFO') and `roleLabel()`'s catalog word
+    // ('ACTIVE') deliberately DIFFER — the visible role word is localized,
+    // the accessible copy keeps the radio-reported identity.
     const base = topologyFixtures['1/ab'];
     const model: RadioViewModel = validateRadioViewModel({
       ...base,
@@ -786,14 +852,13 @@ describe('MOR-1482: unselected-tile frequency format is stable and dot-grouped',
 
     const role = selected.querySelector('.vfo-role')!;
     const label = selected.querySelector<HTMLElement>('[data-vfo-label]')!;
-    // Both carry the SAME text — the duplication the ticket reports.
-    expect(role.textContent).toBe('Selected VFO');
+    // The role text is the one VISIBLE copy — the catalog's active word.
+    expect(role.textContent).toBe('ACTIVE');
     expect(role.getAttribute('style')).toContain('min-width: var(--vfo-role-width)');
+    // ...and the label span carries the adapter's identity string, present
+    // for tests/assistive tech but hidden from sight.
     expect(label.textContent).toBe('Selected VFO');
-    // The role text is the one VISIBLE copy...
     expect(role.className).not.toMatch(/sr-only/);
-    // ...and the label span is present for tests/assistive tech but hidden
-    // from sight, not a second painted copy of the same words.
     expect(label.className).toMatch(/sr-only/);
   });
 });
@@ -981,8 +1046,11 @@ describe('VFO selection intent', () => {
     const target = mountSurface({ viewModel: model, onSelectVfo });
     const selected = target.querySelector<HTMLElement>('[data-vfo-slot="selected"]')!;
     const unselected = target.querySelector<HTMLElement>('[data-vfo-slot="unselected"]')!;
-    expect(selected.textContent).toContain('Selected VFO');
-    expect(unselected.textContent).toContain('Unselected VFO');
+    // MOR-2656: the visible role word is the catalog's ACTIVE; the inactive
+    // tile has no role word. The sr-only label keeps the adapter's identity.
+    expect(selected.querySelector('.vfo-role')!.textContent).toBe('ACTIVE');
+    expect(unselected.querySelector('.vfo-role')!.textContent).toBe('');
+    expect(selected.querySelector('[data-vfo-label]')!.textContent).toBe('Selected VFO');
     expect(target.querySelector('[data-vfo-active="true"]')).toBe(selected);
 
     const a = target.querySelector<HTMLButtonElement>('[data-vfo-select-absolute="A"]')!;

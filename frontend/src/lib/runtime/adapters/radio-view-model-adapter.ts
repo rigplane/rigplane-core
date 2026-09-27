@@ -1051,6 +1051,35 @@ function deriveRfFrontEnd(
  * retained observation — `sMeterRetained` below admits `current` or `stale`.
  * Global absent-key semantics remain unchanged.
  */
+/**
+ * MOR-2706: the widest filter-width value ANY mode of the mounted profile
+ * can print — the ceiling the semantic BW fact's slot reservation derives
+ * from (`ReceiverIndicatorViewModel.bandwidthMaxHz`). Each mode
+ * contributes its `maxHz`, its table's last step, or its widest segment
+ * endpoint, whichever it has; the profile-wide `filterWidthMax` (the 9999
+ * codebase default when the profile declares none) is the floor. The same
+ * per-mode vocabulary `panel-props.ts`'s `filterWidthMax` fallback reads,
+ * taken across every mode instead of the active one only.
+ */
+function widestFilterWidthHz(caps: Capabilities): number {
+  let widest = caps.filterWidthMax ?? 9999;
+  for (const config of Object.values(caps.filterConfig ?? {})) {
+    // A malformed per-mode entry (the adapter's own tests feed `null` and
+    // non-finite tables straight in) contributes no width — the same
+    // witholding `resolveFilterModeConfig` applies to the active mode.
+    if (config === null || typeof config !== 'object') continue;
+    const modeMax = config.maxHz
+      ?? (config.table?.length ? config.table[config.table.length - 1] : undefined)
+      ?? (config.segments
+        ? Math.max(...config.segments.map((segment) => segment.hzMax))
+        : undefined);
+    if (modeMax !== undefined && Number.isFinite(modeMax) && modeMax > widest) {
+      widest = modeMax;
+    }
+  }
+  return widest;
+}
+
 function deriveReceiverIndicators(
   state: ServerState | null,
   caps: Capabilities,
@@ -1139,6 +1168,9 @@ function deriveReceiverIndicators(
           : null,
       },
       bandwidthHz: strictField(hasWidth, 'filterWidth', numOrUndef(rx?.filterWidth)),
+      // MOR-2706: the structural ceiling the BW fact's slot reservation
+      // derives from — fixed when the capabilities load, never a reading.
+      ...(hasWidth ? { bandwidthMaxHz: widestFilterWidthHz(caps) } : {}),
       agcMode: strictField(hasAgc, 'agc', agcMode),
       nbActive: strictField(hasNb, 'nb', boolOrUndef(rx?.nb)),
       nrActive: strictField(hasNr, 'nr', boolOrUndef(rx?.nr)),

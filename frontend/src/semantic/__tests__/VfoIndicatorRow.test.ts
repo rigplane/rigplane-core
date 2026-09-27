@@ -462,4 +462,39 @@ describe('RF gain display observation', () => {
         .toBe(`${FACT_SLOT_RESERVATIONS[fact as keyof typeof FACT_SLOT_RESERVATIONS]}ch`);
     }
   });
+
+  // MOR-2706: the BW fact's reservation derives from the mounted profile's
+  // widest filter-width value (`bandwidthMaxHz`, a structural fact the
+  // adapter emits from the capabilities — IC-7300 AM max_hz 10000, FTX-1
+  // FM table 16000), with the 9999-fallback constant as the floor. A
+  // reading never changes it.
+  describe('BW slot reservation derives from the profile (MOR-2706)', () => {
+    const bwReservation = (overrides: Partial<ReceiverIndicatorViewModel>): string => {
+      render({ indicator: indicator(overrides) });
+      return target.querySelector<HTMLElement>('[data-indicator-fact="bandwidth"]')!
+        .style.minInlineSize;
+    };
+
+    it('reserves the BW slot for the widest Icom filter width (AM 10000 → BW 10000 Hz = 11ch)', () => {
+      expect(bwReservation({ bandwidthMaxHz: 10000 })).toBe('11ch');
+      expect('BW 10000 Hz'.length).toBeLessThanOrEqual(11);
+    });
+
+    it('reserves the BW slot for the widest FTX-1 filter width (FM 16000 → BW 16000 Hz = 11ch)', () => {
+      expect(bwReservation({ bandwidthMaxHz: 16000 })).toBe('11ch');
+      expect('BW 16000 Hz'.length).toBeLessThanOrEqual(11);
+    });
+
+    it('keeps the 9999-fallback floor when the profile publishes no wider width', () => {
+      expect(bwReservation({ bandwidthMaxHz: 3600 }))
+        .toBe(`${FACT_SLOT_RESERVATIONS.bandwidth}ch`);
+    });
+
+    it('keeps the BW reservation unchanged when a reading arrives (MOR-2706)', () => {
+      const unread = bwReservation({ bandwidthMaxHz: 10000, bandwidthHz: unknown() });
+      const read = bwReservation({ bandwidthMaxHz: 10000, bandwidthHz: known(10000) });
+      expect(read).toBe(unread);
+      expect(read).toBe('11ch');
+    });
+  });
 });

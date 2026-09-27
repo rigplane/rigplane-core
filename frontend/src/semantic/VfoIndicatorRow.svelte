@@ -29,8 +29,12 @@
   // - ANT: `ANT 2` — the largest antenna index across profiles
   //   (IC-7610 has two TX ports); the port count does not reach this
   //   component.
-  // - BW: `BW 9999 Hz` — the widest filter-width fallback the codebase uses
-  //   when no profile bound is present (`FilterPanel`, `RitXitPanel`).
+  // - BW: `BW 9999 Hz` — the codebase-wide filter-width fallback
+  //   (`FilterPanel`, `RitXitPanel`). MOR-2706: this constant is the FLOOR;
+  //   the rendered reservation derives from the mounted profile's widest
+  //   filter-width value (`bandwidthMaxHz`), so an Icom AM width max of
+  //   10000 reserves `BW 10000 Hz` (11ch) and an FTX-1 FM table of 16000
+  //   reserves `BW 16000 Hz` (11ch).
   // - RIT/XIT: `RIT OFF −9999 Hz` — minus sign, OFF, and the endpoint of the
   //   offset range this surface family renders (RitXitScanSurface
   //   OFFSET_MIN/MAX; the local RIT/XIT panel falls back to the same
@@ -136,6 +140,17 @@
       : '';
   }
 
+  /** MOR-2706: the BW fact's reserved width derives from the mounted
+   *  profile's widest filter-width value (`bandwidthMaxHz`, a structural
+   *  fact fixed when the capabilities load — never a reading), with the
+   *  9999-fallback constant as the floor. A reading never changes it. */
+  let bandwidthReservationCh = $derived.by(() => {
+    const widest = indicator?.bandwidthMaxHz;
+    return widest === undefined
+      ? FACT_SLOT_RESERVATIONS.bandwidth
+      : Math.max(FACT_SLOT_RESERVATIONS.bandwidth, `BW ${widest} Hz`.length);
+  });
+
   function sharedAggregate(
     label: 'RIT' | 'XIT', active: TxAuxField<boolean>, offset: TxAuxField<number>,
   ): string {
@@ -174,7 +189,7 @@
         class="fact"
         data-indicator-fact="bandwidth"
         data-state={indicator.bandwidthHz.reading.status}
-        style:min-inline-size={`${FACT_SLOT_RESERVATIONS.bandwidth}ch`}
+        style:min-inline-size={`${bandwidthReservationCh}ch`}
       >BW {readingText(indicator.bandwidthHz, (v) => `${String(v)} Hz`)}</span>
     {/if}
     {#if appearance === 'standard'}

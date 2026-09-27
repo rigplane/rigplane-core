@@ -38,6 +38,9 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { t } from '$lib/i18n';
+  import enUS from '$lib/i18n/locales/en-US.json' with { type: 'json' };
+  import jaJP from '$lib/i18n/locales/ja-JP.json' with { type: 'json' };
+  import ruRU from '$lib/i18n/locales/ru-RU.json' with { type: 'json' };
   import FrequencyDisplayInteractive from '../primitives/frequency/FrequencyDisplayInteractive.svelte';
   import LinearSMeter from '../components-v2/meters/LinearSMeter.svelte';
   import type { SignalMeterFrame } from '../components-v2/meters/signal-meter-motion.svelte';
@@ -346,27 +349,41 @@
     return slot.kind;
   }
 
+  /**
+   * MOR-2656 — every catalog's active-role word, BUILT from the catalogs
+   * (never a literal), so a translation that grows longer than the shipped
+   * three lands in the measurement the day it ships. The reservation below
+   * must cover the widest of them.
+   */
+  const ACTIVE_ROLE_KEY = 'core.vfo.role.active';
+  const ACTIVE_ROLE_CATALOGS: readonly Record<string, unknown>[] = [enUS, jaJP, ruRU];
+
   function roleLabel(vfo: VfoViewModel): string {
     const { slot } = vfo;
     if (slot.kind === 'slotted') return `${vfo.receiver} ${slot.id}`;
+    // MOR-2656 (owner ruling 2026-09-26): on a radio that reports only
+    // "selected / unselected" (the `relative` kind) the active tile shows the
+    // ONE localized active word through the catalogs; the other tile has no
+    // role word at all, only the empty reserved plaque. No English literal.
     if (slot.kind === 'relative') {
-      return slot.role === 'selected' ? 'Selected VFO' : 'Unselected VFO';
+      return slot.role === 'selected' ? t(ACTIVE_ROLE_KEY) : '';
     }
     if (slot.kind === 'unknown') return vfo.receiver;
     return vfo.receiver;
   }
 
-  // Owner ruling 2026-09-21, narrowed 2026-09-27: ONE width for the plaque in
-  // every state, measured once off screen in the plaque's own font at the
-  // widest SLOTTED text roleLabel can emit. Normal operation (unread →
-  // slotted, A↔B) never changes the plaque's width, and the phone one-line
-  // test stays green. The relative texts are deliberately NOT measured:
-  // 'Unselected VFO' (14c) cannot fit one phone line at 375px even at the
-  // slotted width, so it overflows this reservation exactly as it does on
-  // main — its compact label is a separate product decision (follow-up
-  // ticket). Those strings are English in every locale (roleLabel does not
-  // call t()); the three catalogs were checked and add no wider role text.
-  const ROLE_TEXTS = ['MAIN', 'SUB', 'MAIN A', 'MAIN B', 'SUB A', 'SUB B'];
+  // Owner ruling 2026-09-21, narrowed 2026-09-27 (MOR-2656): ONE width for
+  // the plaque in every state, measured once off screen in the plaque's own
+  // font (MOR-2655) at the widest text roleLabel can emit — the SLOTTED
+  // forms, the unread bare receiver name, and the active-role word from
+  // EVERY shipped catalog, so a locale switch can no more move the layout
+  // than a first reading can. The inactive relative tile renders '' inside
+  // the same reserved plaque; that is the "no role word" half of the
+  // ruling, not a missing reservation.
+  const ROLE_TEXTS = [
+    'MAIN', 'SUB', 'MAIN A', 'MAIN B', 'SUB A', 'SUB B',
+    ...ACTIVE_ROLE_CATALOGS.map((catalog) => String(catalog[ACTIVE_ROLE_KEY] ?? '')).filter(Boolean),
+  ];
   let roleMeasure: HTMLSpanElement | undefined = $state();
   let roleWidth = $state('0px');
   $effect(() => {

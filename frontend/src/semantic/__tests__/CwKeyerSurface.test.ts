@@ -205,10 +205,65 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
     };
     const r = render(view, { standard: true });
     expect(r.el('rx-mode')!.querySelector('output')!.textContent?.trim()).toBe('');
-    // Structural geometry pin (jsdom has no layout): 5ch covers the widest
-    // mode name, so the slot's box never changes when a first read arrives.
+    // Structural geometry pin (jsdom has no layout): the stylesheet's 5ch is
+    // the FLOOR of the RX-mode reservation; the reservation itself derives
+    // inline from the mounted profile's mode catalog (MOR-2706 tests below).
     expect(SOURCE).toMatch(/\.cw-mode-line output\s*\{[^}]*min-width:\s*5ch/);
     r.dispose();
+  });
+
+  // MOR-2706: the RX-mode slot's reserved width derives from the mounted
+  // profile's own mode catalog (`modeFilter.modeChoices`) — the #3751 LCD
+  // mode-box treatment, never a raised constant. The catalogs are the
+  // shipped `rigs/ftx1.toml` [modes].list and `rigs/ic7300.toml` mode list.
+  const FTX1_MODE_CHOICES = [
+    'LSB', 'USB', 'CW-U', 'FM', 'AM', 'RTTY-L', 'CW-L', 'DATA-L', 'RTTY-U',
+    'DATA-FM', 'FM-N', 'DATA-U', 'AM-N', 'PSK', 'DATA-FM-N', 'C4FM-DN', 'C4FM-VW',
+  ] as const;
+  const IC7300_MODE_CHOICES = [
+    'USB', 'LSB', 'CW', 'CW-R', 'AM', 'FM', 'RTTY', 'RTTY-R',
+  ] as const;
+  const withModeChoices = (modes: readonly string[]): RadioViewModel => {
+    const observed = withModeFilter(base());
+    return {
+      ...observed,
+      modeFilter: { ...observed.modeFilter!, modeChoices: modes },
+    };
+  };
+  const rxModeReservation = (view: RadioViewModel): string => {
+    const r = render(view, { standard: true });
+    const width = r.el('rx-mode')!.querySelector('output')!.style.minWidth;
+    r.dispose();
+    return width;
+  };
+
+  it('reserves the RX-mode slot for the widest FTX-1 mode label (DATA-FM-N = 9ch)', () => {
+    expect(rxModeReservation(withModeChoices(FTX1_MODE_CHOICES))).toBe('9ch');
+    expect('DATA-FM-N'.length).toBeLessThanOrEqual(9);
+  });
+
+  it('reserves the RX-mode slot for the widest Icom mode label (RTTY-R = 6ch)', () => {
+    expect(rxModeReservation(withModeChoices(IC7300_MODE_CHOICES))).toBe('6ch');
+    expect('RTTY-R'.length).toBeLessThanOrEqual(6);
+  });
+
+  it('keeps the RX-mode reservation unchanged when a reading arrives (MOR-2706)', () => {
+    const withCurrentMode = (status: 'unknown' | 'known'): RadioViewModel => {
+      const observed = withModeChoices(FTX1_MODE_CHOICES);
+      return {
+        ...observed,
+        modeFilter: {
+          ...observed.modeFilter!,
+          currentMode: status === 'known'
+            ? known('DATA-FM-N')
+            : { reading: { status: 'unknown' }, availability: ON },
+        },
+      };
+    };
+    const unread = rxModeReservation(withCurrentMode('unknown'));
+    const read = rxModeReservation(withCurrentMode('known'));
+    expect(read).toBe(unread);
+    expect(read).toBe('9ch');
   });
 
   it('imports only the allow-listed fact, presentation and numeric dependencies', () => {
