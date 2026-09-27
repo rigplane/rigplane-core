@@ -78,9 +78,15 @@ vi.mock('../lib/transport/ws-client', () => ({
 }));
 vi.mock('$lib/i18n', () => ({
   // Interpolate {detail} like the real catalog so failure-text tests
-  // can assert content, not just the key.
+  // can assert content, not just the key. MOR-2671: resolve the RF-risk
+  // sentence the same way, so the accessible-name pins assert the real
+  // catalog string, and empty param calls keep returning the key.
   t: (key: string, params?: Record<string, string>) =>
-    params?.detail !== undefined ? `${key}: ${params.detail}` : key,
+    params?.detail !== undefined
+      ? `${key}: ${params.detail}`
+      : key === 'core.rxTx.rf.unconfirmed'
+        ? 'Transmit not confirmed'
+        : key,
   messageFromReasonCode: (code: string) => code,
 }));
 vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
