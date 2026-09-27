@@ -351,10 +351,20 @@ describe('MobileRadioLayout unread TX power and SWR (MOR-2658)', () => {
     flushSync();
   }
 
-  // Kills: the '—' fallback on the phone TX power readout. A radio that has
-  // not reported powerLevel shows an empty reserved box, not a dash.
-  it('renders an unread TX power as an empty reserved slot, never a dash', () => {
-    radioStore.current = { active: 'MAIN', main: CONNECTED_RX };
+  // Kills: the '—' fallback on the phone TX power readout. A radio whose
+  // powerLevel field is structurally unavailable shows an empty reserved
+  // box, not a dash.
+  // NOTE: a connected radio with NO fieldStatus entry reads as available
+  // (the legacy no-entry fallback in field-status.ts) with toTxProps'
+  // documented batch-B 0.5 stand-in (an explicit A12 non-fix, pinned in
+  // panel-props.no-fabricated-defaults.test.ts) — the template cannot tell
+  // that 0.5 from a reading, so only the unavailable branch is pinned here.
+  it('renders a structurally-unavailable TX power as an empty reserved slot, never a dash', () => {
+    radioStore.current = {
+      active: 'MAIN',
+      main: CONNECTED_RX,
+      fieldStatus: { powerLevel: { observed: false, freshness: 'missing', availability: 'unavailable' } },
+    };
     const root = mountLayout();
     openTxChip(root);
     const power = root.querySelector('.m-tx-power-value')!;
