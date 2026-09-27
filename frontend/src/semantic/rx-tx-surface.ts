@@ -147,9 +147,7 @@ export const targetUnknownMessage = (reason: TxTargetUnknownReason): string =>
 /**
  * MOR-1792: the `not-eligible` refusal's per-leg codes — moved to
  * `rx-tx-codes.ts` (MOR-2718) so the page guard's scan can import them;
- * re-exported here to keep this module's surface unchanged. Member parity
- * with the reducer's own `TxIneligibility` is pinned in
- * `__tests__/rx-tx-authority-parity.test.ts`.
+ * re-exported here to keep this module's surface unchanged.
  */
 export { FAULT_REASON_CODES } from './rx-tx-codes';
 export type TxIneligibilityReason = (typeof FAULT_REASON_CODES)[number];

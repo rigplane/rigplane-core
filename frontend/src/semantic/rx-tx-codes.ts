@@ -16,7 +16,7 @@ export type KeyBlockedReasonCode = (typeof KEY_BLOCKED_REASON_CODES)[number];
 /**
  * MOR-1792: the `not-eligible` refusal's per-leg codes. Re-exported by
  * `rx-tx-surface.ts`, which keeps the ADR-invariant seam (no TX reducer
- * import) and the member-parity pin in `__tests__/rx-tx-authority-parity.test.ts`.
+ * import).
  */
 export const FAULT_REASON_CODES = [
   'cat-ptt-unavailable', 'browser-tx-audio-unavailable', 'control-not-live',
