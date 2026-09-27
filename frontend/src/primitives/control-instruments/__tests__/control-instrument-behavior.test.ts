@@ -1,10 +1,12 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import {
   bindAbsoluteChoiceInstrument, bindActionInstrument, bindChoiceInstrument, bindToggleInstrument,
+  usable,
   type AvailabilityActionInput, type InstrumentAvailability, type InstrumentField,
 } from '../control-instrument-behavior';
 
-const usable = <T>(value: T): InstrumentField<T> => ({
+const usableField = <T>(value: T): InstrumentField<T> => ({
   availability: { structural: true, operational: true }, reading: { status: 'known', value },
 });
 const unavailable = <T>(value: T): InstrumentField<T> => ({
@@ -199,5 +201,45 @@ describe('control-instrument behavior bindings', () => {
 
     expect(present.feedback).toBe(feedback);
     expect(absent.feedback).toBeUndefined();
+  });
+});
+
+describe('usable — the field-level admission gate', () => {
+  it('admits only a field that exists and is fully available with a known reading', () => {
+    expect(usable(undefined)).toBe(false);
+    expect(usable({
+      availability: { structural: false, operational: true },
+      reading: { status: 'known', value: 1 },
+    })).toBe(false);
+    expect(usable({
+      availability: { structural: true, operational: false },
+      reading: { status: 'known', value: 1 },
+    })).toBe(false);
+    expect(usable(unknown<number>())).toBe(false);
+    expect(usable(usableField(1))).toBe(true);
+  });
+
+  it('has no finiteness test: a known NaN reading is usable', () => {
+    expect(usable(usableField(Number.NaN))).toBe(true);
+  });
+
+  it('narrows the reading to the known reading for admitted fields', () => {
+    const field: InstrumentField<number> | undefined = usableField(2);
+    if (usable(field)) expect(field.reading.value).toBe(2);
+    else throw new Error('a fully available known field must be usable');
+  });
+
+  /** The "no runtime import" pin, modelled on `reading-text.test.ts` and
+   *  `pressed-of.test.ts`: semantic surfaces receive whole field objects and
+   *  must never gain a runtime edge through this module. Type-only imports
+   *  stay allowed. */
+  it('has no runtime import', () => {
+    const source = readFileSync(
+      'src/primitives/control-instruments/control-instrument-behavior.ts',
+      'utf8',
+    );
+    const statements = [...source.matchAll(/^import\b[^;]*;/gm)].map((m) => m[0]);
+    for (const statement of statements) expect(statement.startsWith('import type ')).toBe(true);
+    for (const forbidden of ['import(', 'require(']) expect(source).not.toContain(forbidden);
   });
 });

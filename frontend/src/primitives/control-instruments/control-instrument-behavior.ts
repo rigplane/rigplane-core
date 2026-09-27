@@ -52,13 +52,28 @@ export interface AbsoluteChoiceInput<T, Feedback> {
   readonly feedback?: Feedback;
 }
 
+/**
+ * Field-level "may this control act?" gate: the field exists, is structurally
+ * and operationally available, and carries a known reading. Accepts
+ * `undefined` and narrows `field.reading` to the known reading.
+ *
+ * Internal to the kit: the shipped component-kit-api declarations must not
+ * expose it. Semantic surfaces migrate onto it one by one (MOR-2704 G1–G6).
+ *
+ * @internal
+ */
+export const usable = <T>(
+  field: InstrumentField<T> | undefined,
+): field is InstrumentField<T> & {
+  readonly reading: Readonly<{ status: 'known'; value: T }>;
+} => field !== undefined
+  && field.availability.structural
+  && field.availability.operational
+  && field.reading.status === 'known';
+
 const canInvoke = <T>(input: BindingInput<T, unknown>): input is BindingInput<T, unknown> & {
   readonly field: InstrumentField<T> & { readonly reading: Readonly<{ status: 'known'; value: T }> };
-} => input.blocked !== true
-  && input.field !== undefined
-  && input.field.availability.structural
-  && input.field.availability.operational
-  && input.field.reading.status === 'known';
+} => input.blocked !== true && usable(input.field);
 
 const canInvokeAction = <T>(
   input: ActionInput<T, unknown> | AvailabilityActionInput<unknown>,
