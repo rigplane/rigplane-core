@@ -778,7 +778,7 @@
         ? viewModel.activeReceiver.receiver
         : 'unknown'}
     >
-      {t('core.vfo.activeReceiver.label')}<span class="active-receiver-value">{viewModel.activeReceiver.status === 'known' ? ` ${viewModel.activeReceiver.receiver}` : ''}</span>
+      {t('core.vfo.activeReceiver.label')}<span class="active-receiver-value">{viewModel.activeReceiver.status === 'known' ? viewModel.activeReceiver.receiver : ''}</span>
     </p>
   {/if}
   {/snippet}
@@ -884,7 +884,7 @@
             {formatFrequency(displayHz)}
           {/if}
         </span>
-        <span class="vfo-mode" class:vfo-mode-unlit={displayMode === null}>{displayMode ?? ''}{displayFilter ? ` / ${displayFilter}` : ''}</span>
+        <span class="vfo-mode" class:vfo-mode-unlit={displayMode === null}>{`${displayMode ?? ''}${displayFilter ? ` / ${displayFilter}` : ''}`}</span>
         {#if vfo.isTxTarget}
           <span class="vfo-badge" data-vfo-tx-badge>{t('core.vfo.txTarget.label')}</span>
         {/if}

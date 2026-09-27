@@ -812,9 +812,20 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
     expect(el?.getAttribute('data-active-receiver')).not.toBe('MAIN');
     // MOR-2655: unread is the unlit label in a reserved slot, never the word
     // "unknown" as a value. The old pin was `toContain('unknown')`.
-    expect(el?.textContent?.trim()).toBe(t('core.vfo.activeReceiver.label'));
+    expect(el?.textContent?.trim()).toBe(t('core.vfo.activeReceiver.label').trim());
     expect(el?.textContent).not.toMatch(/unknown/i);
     expect(el?.getAttribute('aria-label') ?? '').not.toMatch(/unknown/i);
+  });
+
+  it('known activeReceiver renders "Active receiver: MAIN" with the space, and the value alone sits in its span', () => {
+    // MOR-2655 follow-up: the known-state line lost its colon-plus-space in
+    // the regenerated captures (rendered "Active receiver:MAIN"). The space
+    // now lives inside the catalog string so no compile/runtime/pipeline
+    // layer can trim it, and the value span carries the bare receiver id.
+    const target = mountSurface({ viewModel: topologyFixtures['2/main_sub'] });
+    const el = target.querySelector('[data-testid="vfo-active-receiver"]');
+    expect(el?.textContent).toBe('Active receiver: MAIN');
+    expect(el?.querySelector('.active-receiver-value')?.textContent).toBe('MAIN');
   });
 
   it('unknown activeReceiver checks neither operation segment through the real group', () => {

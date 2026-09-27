@@ -425,7 +425,7 @@
           <AmberFrequency freqHz={mainFreqHz} size="large" />
         </div>
         <div class="vfo-badges">
-          <span class="vfo-mode-box">{mainMode}{mainFilter ? ` ${mainFilter}` : ''}</span>
+          <span class="vfo-mode-box">{`${mainMode}${mainFilter ? ` ${mainFilter}` : ''}`}</span>
           {#if mainBand}
             <span class="vfo-band-box">{mainBand}</span>
           {/if}
@@ -469,7 +469,7 @@
           </div>
           <div class="vfo-badges">
             {#if subVfoMode}
-              <span class="vfo-mode-box">{subVfoMode}{subVfoFilter ? ` ${subVfoFilter}` : ''}</span>
+              <span class="vfo-mode-box">{`${subVfoMode}${subVfoFilter ? ` ${subVfoFilter}` : ''}`}</span>
             {/if}
             {#if subVfoBand}
               <span class="vfo-band-box">{subVfoBand}</span>

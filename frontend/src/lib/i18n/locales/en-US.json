@@ -215,7 +215,7 @@
   "core.vfo.groupLabel": "VFOs",
   "core.vfo.receiverGroupLabel": "Receiver {receiver}",
   "core.vfo.radioWideGroupLabel": "Radio-wide controls",
-  "core.vfo.activeReceiver.label": "Active receiver:",
+  "core.vfo.activeReceiver.label": "Active receiver: ",
   "core.vfo.selectAction": "Select {label}",
   "core.vfo.txTarget.label": "TX target",
   "core.vfo.freq.pendingAnnouncement": "Pending, not yet confirmed",

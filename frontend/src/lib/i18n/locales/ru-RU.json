@@ -195,7 +195,7 @@
   "core.vfo.groupLabel": "VFO",
   "core.vfo.receiverGroupLabel": "Приёмник {receiver}",
   "core.vfo.radioWideGroupLabel": "Общие органы управления",
-  "core.vfo.activeReceiver.label": "Активный приёмник:",
+  "core.vfo.activeReceiver.label": "Активный приёмник: ",
   "core.vfo.selectAction": "Выбрать {label}",
   "core.vfo.txTarget.label": "TX target",
   "core.vfo.freq.pendingAnnouncement": "В ожидании, ещё не подтверждено",
