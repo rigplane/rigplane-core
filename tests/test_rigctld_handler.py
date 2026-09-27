@@ -4896,8 +4896,12 @@ class _FakeProfile:
     """Minimal stand-in for ``rigplane.profiles.RadioProfile`` for tests."""
 
     def __init__(self, *, receiver_count: int, vfo_scheme: str) -> None:
+        self.model = "IC-7300" if receiver_count == 1 else "IC-7610"
         self.receiver_count = receiver_count
         self.vfo_scheme = vfo_scheme
+
+    def supports_receiver(self, receiver: int) -> bool:
+        return 0 <= receiver < self.receiver_count
 
 
 @pytest.fixture
@@ -5720,6 +5724,32 @@ class TestPerVfoRoutingFreq:
         )
         assert resp.error == HamlibError.EVFO
         single_rx_radio.set_mode.assert_not_awaited()
+
+    def test_single_rx_vfob_refusal_uses_runtime_seat_mor2484(
+        self, single_rx_handler: RigctldHandler
+    ) -> None:
+        """MOR-2484: the VFOB refusal goes through the runtime seat
+        (``require_receiver_for_profile``), so the protocol-local
+        ``ValueError`` carries the seat's receiver message verbatim —
+        the same meaning as the web enqueue gate's refusal (pinned in
+        ``tests/test_web_capability_guards.py::TestReceiverValidationSeat``);
+        the rigctld caller keeps mapping it to ``EVFO``."""
+        from rigplane.core.exceptions import CommandError
+        from rigplane.runtime._dual_rx_runtime import require_receiver_for_profile
+
+        profile = single_rx_handler._radio.profile  # noqa: SLF001
+        with pytest.raises(CommandError) as seat_exc:
+            require_receiver_for_profile(profile, 1, operation="rigctld vfo routing")
+        with pytest.raises(ValueError) as local_exc:
+            single_rx_handler._resolve_target_vfo("VFOB")  # noqa: SLF001
+        assert str(local_exc.value) == str(seat_exc.value)
+
+    def test_dual_rx_vfob_admitted_through_runtime_seat_mor2484(
+        self, dual_rx_handler: RigctldHandler
+    ) -> None:
+        """MOR-2484: a dual-RX profile admits VFOB — the seat returns
+        and the protocol-local parsing resolves to the SUB target."""
+        assert dual_rx_handler._resolve_target_vfo("VFOB") == "VFOB"  # noqa: SLF001
 
     @pytest.mark.asyncio
     async def test_dual_rx_get_freq_unknown_vfo_arg_returns_evfo(
