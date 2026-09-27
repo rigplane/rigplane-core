@@ -81,9 +81,12 @@ def validate_control_raw_value(
 
     Returns the domain's ``(raw_min, raw_max, raw_step, raw_origin)`` when
     *value* is an integer inside ``[raw_min, raw_max]`` and on the
-    ``raw_origin + k * raw_step`` lattice. Raises ``ValueError`` naming the
-    control, its allowed range and its step otherwise, and when *controls*
-    publishes no normalized scalar domain for *control*.
+    ``raw_origin + k * raw_step`` lattice. Only the four raw keys are
+    consulted, and they must be plain integers — ``bool`` is rejected even
+    though it subclasses ``int`` — so any entry publishing a normalized raw
+    axis validates, whatever else it carries. Raises ``ValueError`` naming
+    the control, its allowed range and its step otherwise, and when
+    *controls* publishes no normalized scalar domain for *control*.
     """
     entry = controls.get(control) if controls is not None else None
     required = ("raw_min", "raw_max", "raw_step", "raw_origin")
@@ -606,10 +609,12 @@ def snap_control_domain(domain: Mapping[str, object], display: str) -> str | Non
 
     Snaps *display* onto the domain's display lattice with
     ``nearest_ties_up`` regardless of its published quantization,
-    reusing :func:`quantize_control_domain`. Returns ``None`` when the
-    domain is invalid or *display* is not a canonical decimal string;
-    raises ``ValueError`` naming the display range when *display* is
-    canonical but outside ``[display_min, display_max]``.
+    reusing :func:`quantize_control_domain`: any value between two lattice
+    points snaps to the nearer one, and an exact half-step tie snaps to
+    the upper point. Returns ``None`` when the domain is invalid or
+    *display* is not a canonical decimal string; raises ``ValueError``
+    naming the display range when *display* is canonical but outside
+    ``[display_min, display_max]``.
     """
     if not isinstance(domain, Mapping):
         return None
