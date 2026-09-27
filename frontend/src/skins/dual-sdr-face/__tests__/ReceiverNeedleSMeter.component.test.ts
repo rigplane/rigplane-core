@@ -1,17 +1,34 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { flushSync, mount, unmount } from 'svelte';
+import { flushSync, unmount } from 'svelte';
+import { createClassComponent } from 'svelte/legacy';
 import type { Capabilities } from '$lib/types/capabilities';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 import { calibratedToSegments } from '../../../components-v2/meters/smeter-scale';
 
-// The REAL smoother is reactive ($state), but animates through rAF. Under
-// reduced motion its `update` snaps `value` to the target synchronously, so
-// the derived needle angle recomputes in the same flush — the position pin
-// below reads a settled needle without waiting for animation frames.
-vi.mock('$lib/utils/smoothing.svelte', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/utils/smoothing.svelte')>();
-  return { ...actual, prefersReducedMotion: vi.fn(() => true) };
+const smoothing = vi.hoisted(() => {
+  const instances: Array<{ update: ReturnType<typeof vi.fn>; start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }> = [];
+  const createSmoother = vi.fn((_attack: number, _release: number) => {
+    let value = 0;
+    const instance = {
+      update: vi.fn((next: number) => { value = next; }),
+      start: vi.fn(),
+      stop: vi.fn(),
+    };
+    instances.push(instance);
+    return {
+      get value() { return value; },
+      update: instance.update,
+      start: instance.start,
+      stop: instance.stop,
+    };
+  });
+  return { createSmoother, instances };
 });
+
+vi.mock('$lib/utils/smoothing.svelte', () => ({
+  createSmoother: smoothing.createSmoother,
+  prefersReducedMotion: vi.fn(() => false),
+}));
 
 import ReceiverNeedleSMeter from '../ReceiverNeedleSMeter.svelte';
 
@@ -30,20 +47,36 @@ const CALIBRATED_CAPS = {
   },
 } as unknown as Capabilities;
 
-let component: ReturnType<typeof mount> | null = null;
+let destroy: (() => void) | null = null;
 
 afterEach(() => {
-  if (component) unmount(component);
-  component = null;
+  destroy?.();
+  destroy = null;
   document.body.innerHTML = '';
+  smoothing.createSmoother.mockClear();
+  smoothing.instances.length = 0;
   clearCapabilities();
 });
 
-function render(value: number | null): HTMLElement {
+// The mocked smoother's value is a plain closure, not a Svelte signal, so a
+// derived angle only recomputes when a reactive input (the `value` prop)
+// changes. Deliver the reading, retract it once (the effect has already
+// driven the smoother target), then deliver it again — the second delivery
+// recomputes the angle from the settled smoother value.
+function renderReading(value: number): HTMLElement {
   const target = document.createElement('div');
   document.body.appendChild(target);
-  component = mount(ReceiverNeedleSMeter, { target, props: { value } });
+  const instance = createClassComponent({
+    component: ReceiverNeedleSMeter,
+    target,
+    props: { value: null },
+  });
   flushSync();
+  for (const next of [value, null, value]) {
+    instance.$set({ value: next });
+    flushSync();
+  }
+  destroy = () => instance.$destroy();
   return target;
 }
 
@@ -54,16 +87,16 @@ function render(value: number | null): HTMLElement {
 describe('ReceiverNeedleSMeter uncalibrated profile (MOR-2720)', () => {
   it('moves the needle with the raw fraction, with no scale marks and no status word', () => {
     clearCapabilities();
-    const target = render(53);
+    const target = renderReading(53);
 
     expect(target.querySelector('svg')?.getAttribute('aria-label')).toBe('S meter');
     // The geometry needs no calibration curve: raw 53 maps raw-proportionally
     // to (53 / 127.5) * 11 ≈ 4.572549019607844 segments, and the needle
     // rotates on that fraction like the bars do.
-    const segments = calibratedToSegments(53);
-    expect(segments).toBeCloseTo(4.572549019607844, 12);
+    expect(calibratedToSegments(53)).toBeCloseTo(4.572549019607844, 12);
+    expect(smoothing.instances[0]?.update).toHaveBeenCalledWith(4.572549019607844);
     expect(target.querySelector('[data-needle]')?.getAttribute('transform'))
-      .toBe(`rotate(${-62 + (segments / 20) * 124} 120 88)`);
+      .toBe(`rotate(${-62 + (4.572549019607844 / 20) * 124} 120 88)`);
     // No S scale marks — but the arc track stays, like the bar track.
     expect(target.querySelectorAll('svg text')).toHaveLength(0);
     expect(target.querySelectorAll('.meter-arc')).toHaveLength(2);
@@ -71,11 +104,13 @@ describe('ReceiverNeedleSMeter uncalibrated profile (MOR-2720)', () => {
 
   it('keeps the S scale marks and the moving needle on a calibrated profile', () => {
     setCapabilities(CALIBRATED_CAPS);
-    const target = render(0);
+    const target = renderReading(0);
 
     expect(target.querySelector('svg')?.getAttribute('aria-label')).toBe('S meter');
     // 0 dB rel S9 is the S9 anchor: raw 130 → 11 segments → angle 6.2°.
-    expect(target.querySelector('[data-needle]')?.getAttribute('transform')).toBe('rotate(6.2 120 88)');
+    expect(smoothing.instances[0]?.update).toHaveBeenCalledWith(11);
+    expect(target.querySelector('[data-needle]')?.getAttribute('transform'))
+      .toBe(`rotate(${-62 + (11 / 20) * 124} 120 88)`);
     expect([...target.querySelectorAll('svg text')].map((text) => text.textContent))
       .toEqual(['S', '9', '+40']);
   });
