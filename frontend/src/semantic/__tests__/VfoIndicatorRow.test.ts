@@ -277,6 +277,12 @@ describe('MOR-2342 addressed meter appearance', () => {
     expect(box?.textContent).toBe('');
     expect(box?.getAttribute('aria-label')).toBe('MAIN S meter');
     expect(box?.getAttribute('aria-label')).not.toContain('unknown');
+    // MOR-2644: the unread box keeps the main outer height (30px incl.
+    // border). With content-box, min-height would cover content only and
+    // the 1px borders would push the box to 32px.
+    const source = readFileSync('src/semantic/VfoIndicatorRow.svelte', 'utf8');
+    expect(source).toMatch(/\.s-meter-unknown\s*\{[^}]*min-height:\s*30px[^}]*box-sizing:\s*border-box/);
+    expect(source).not.toMatch(/\.s-meter-unknown\s*\{[^}]*box-sizing:\s*content-box/);
   });
   it('selects the SDR meter without changing a confirmed zero or receiver identity', () => {
     const root = render({ indicator: indicator(), appearance: 'sdr' });

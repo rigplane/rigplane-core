@@ -382,13 +382,16 @@
     min-height: 30px;
     place-items: center;
     min-inline-size: 12ch;
-    box-sizing: content-box;
+    box-sizing: border-box;
     border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12));
     color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55));
     font-size: 11px;
   }
-  /* MOR-2644 correction 2: the unread S-meter box keeps its size (the same
-     min-height and border as the shell above) and prints no text. */
+  /* MOR-2644 correction 2: the unread S-meter box keeps its main outer
+     height (30px including the 1px border) and prints no text. The width
+     reservation (min-inline-size) holds the inline size only; the global
+     border-box model holds the block size, so the 1px top and bottom
+     borders stay inside the 30px min-height. */
 
   .indicator-row[data-indicator-appearance='sdr'], .indicator-row[data-indicator-appearance='standard'] {
     padding: 0; border: 0; background: transparent; border-radius: 0; gap: 6px;
