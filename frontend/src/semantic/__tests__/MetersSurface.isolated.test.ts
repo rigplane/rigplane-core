@@ -1395,7 +1395,7 @@ describe('station level meters honor explicit sample domains (MOR-2425)', () => 
       flushSync();
       const lowerText = () => target.querySelector('[data-lower-relevant]')?.textContent ?? '';
       const currentText = lowerText();
-      expect(currentText).toContain('120');
+      expect(currentText).not.toMatch(/120|raw/);
 
       props.view = {
         ...props.view,
@@ -1894,7 +1894,9 @@ describe('MOR-2540: TX-only meters keep their slots unlit on RX', () => {
       flushSync();
       expect(tile()).toBe(unlitNode);
       expect(boxOf()).toEqual(unlitBox);
-      expect(tile().textContent).toContain('100');
+      // MOR-2722 part B: a raw power reading (no table) keeps the same box
+      // with no digit and no 'raw' word.
+      expect(tile().textContent).not.toMatch(/100|raw/);
     } finally { unmount(component); }
   });
 
