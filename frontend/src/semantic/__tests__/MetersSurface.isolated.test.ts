@@ -1640,8 +1640,8 @@ describe('main-bar and SWR-row opacity are independent, non-compounding channels
 });
 
 const TX_KEYS = ['power', 'alc', 'swr'] as const;
-// MOR-2705 part 4b: a read meter names `<label>: <value>` (current and
-// stale alike); idle, unknown and indeterminate name only the label.
+// MOR-2705 part 4b: a read meter names `<label>: <value>` (current, stale
+// and indeterminate alike); idle and unknown name only the label.
 const TX_LABEL: Record<(typeof TX_KEYS)[number], string> = { power: 'Po', alc: 'ALC', swr: 'SWR' };
 describe('persistent TX instruments', () => {
   for (const structural of [false, true]) for (const rf of RF_STATES)
@@ -1673,6 +1673,7 @@ describe('persistent TX instruments', () => {
             } else if (state === 'unknown') {
               expect(text).not.toMatch(/IDLE|170|\?/);
               expect(description).not.toContain('170');
+              expect(description).toBe(TX_LABEL[key]);
               expect(visibleSlotCount(el, key === 'swr' ? '[data-lower-fill]' : '[data-gauge-fill]')).toBe(0);
               expect(el.getAttribute('data-fault')).not.toBe('true');
             } else {

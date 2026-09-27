@@ -165,8 +165,8 @@ describe('projectBarMeters', () => {
     });
   });
 
-  // MOR-2705 part 4b: current and stale name the value alike; idle, unknown
-  // and indeterminate name only the label — no status word, ever.
+  // MOR-2705 part 4b: current, stale and indeterminate name the value
+  // alike; idle and unknown name only the label — no status word, ever.
   it('keeps stale, unknown, idle, and indeterminate TX observations distinct (R29/R32: stale keeps its value; idle/unknown are an empty scale)', () => {
     const view = base();
     setDisplay(view, 'power', { state: 'stale', value: 170 });

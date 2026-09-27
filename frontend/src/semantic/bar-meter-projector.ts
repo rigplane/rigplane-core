@@ -120,10 +120,10 @@ export function projectTxMeterPresentation(
   readonly text: string;
 } {
   const projected = projectTxMeterDisplay(field, rfState);
-  // MOR-2705 part 4b: the accessible name is composed by the caller from
-  // the label and, when a value is read, the formatted value. No status
-  // word ('Not observed', 'Observed', 'No reading', 'Not measuring in
-  // receive', 'RF relevance indeterminate') stands in for a value here.
+  // MOR-2705 part 4b: this projection no longer carries a `description`
+  // field. No status word ('Not observed', 'Observed', 'No reading', 'Not
+  // measuring in receive', 'RF relevance indeterminate') stands in for a
+  // value here.
   if (!projected.supported) {
     return { state: 'unsupported', evidence: { state: 'unsupported' }, value: null, text: '' };
   }
@@ -184,9 +184,9 @@ function projectLevelMeter<Key extends LevelMeterKey>(
     displayText,
     stateText,
     // MOR-2705 part 4b: the accessible name carries the label and, when a
-    // value is read, the value — current and stale read the same (R29/R32).
-    // Unread, unknown, indeterminate and idle name nothing beyond the
-    // label; no status word stands in for a value.
+    // value is read and its unit is known (a non-empty format), the value —
+    // current and stale read the same (R29/R32). Unread, unknown and idle
+    // name nothing beyond the label; no status word stands in for a value.
     accessibleDescription: tx
       ? (isObserved && formatted !== '' ? `${label}: ${formatted}` : label)
       : undefined,

@@ -47,8 +47,7 @@ export function meterFill(field: DisplayValue<number>): number {
 
 // MOR-2425 (R29/R32): a stale reading keeps its digits, same as a current
 // one; only "never observed" and "idle" (not measuring in RX) collapse to
-// an empty scale — no `?`/`STALE`/`IDLE` placeholder token. The accessible
-// description below still names those two states, localized.
+// an empty scale — no `?`/`STALE`/`IDLE` placeholder token.
 // MOR-2540 (owner ruling 2026-09-22): no `?` anywhere else either — the
 // unsupported cases and the former ' ?' indeterminate-relevance cue are
 // gone; an indeterminate reading keeps its digits, nothing more.
@@ -69,8 +68,8 @@ export function telemetryDescription(label: string, field: DisplayTelemetry): st
   // MOR-2705 parts 2 and 4b: an accessible name names what it is (the
   // label) and, when a value is read, the value — current and stale read
   // the same (R29/R32). An unsupported item is not drawn, so it has no
-  // accessible name; unread, unknown, indeterminate and idle name nothing
-  // beyond the label. No status word ('Unsupported', 'No reading', 'Not
+  // accessible name; unread, unknown and idle name nothing beyond the
+  // label. No status word ('Unsupported', 'No reading', 'Not
   // measuring in receive', 'Stale observation', 'Current observation',
   // 'RF relevance indeterminate') stands in for a value.
   if (!tx) {
