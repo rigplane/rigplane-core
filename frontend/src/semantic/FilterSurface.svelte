@@ -85,9 +85,6 @@
     f.availability.structural && f.availability.operational && f.reading.status === 'known';
   const reasonOf = (f: TxAuxField<unknown>): 'field-not-observed' | undefined =>
     usable(f) ? undefined : 'field-not-observed';
-  // MOR-2648: an unread value renders an unlit box — empty text, never a
-   // `?` glyph; the box itself stays reserved (the style rules below).
-   // MOR-2688: the unread-display predicate lives in `primitives/reading-text`.
   const presentationOf = (f: TxAuxField<unknown>): 'confirmed' | 'retained' | 'unknown' =>
     usable(f) ? 'confirmed' : f.reading.status === 'known' ? 'retained' : 'unknown';
   const pbtDisplay = (f: DisplayObservedField<number>) => f.display ?? (

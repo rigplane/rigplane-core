@@ -104,9 +104,6 @@
    *  argument was unreachable on every one of them (`0` is defensive only). */
   export const numberOf = (f: ScopeControlsField<number>): number =>
     f.reading.status === 'known' ? f.reading.value : 0;
-  /** MOR-2653: an unread REF value renders EMPTY in its reserved slot —
-   *  never a placeholder dash. MOR-2688: the predicate lives in
-   *  `primitives/reading-text`; template call sites use `readingText`. */
   /** The observed value, or `undefined` when unread — drives a flat key's
    *  `lit` (`undefined` → `null` → drawn unlit with its label, no value). */
   const valueOf = <T>(f: ScopeControlsField<T> | undefined): T | undefined =>

@@ -50,9 +50,6 @@
       && field.reading.status === 'known';
   const reason = (field: Parameters<typeof usable>[0]) =>
     usable(field) ? undefined : 'field-not-observed';
-  // MOR-2648: an unread value renders an unlit box — empty text, never a
-  // `?` glyph; the box itself stays reserved (the style rule below).
-  // MOR-2688: the unread-display predicate lives in `primitives/reading-text`.
   const requested = <T,>(target: T | null) => target === null
     ? undefined : { kind: 'requested-target' as const, target };
 
