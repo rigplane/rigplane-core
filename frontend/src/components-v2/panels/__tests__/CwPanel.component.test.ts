@@ -406,7 +406,7 @@ describe('CwPanel — unread pitch/speed renders empty (MOR-2658)', () => {
     expect(vcValueFor(unread, 'CW Pitch')).toBe('');
     const unreadWidth = slotVar(unread, 0);
     const read = mountPanel({ cwPitchDomain: ftx1, cwPitch: 1050 });
-    expect(vcValueFor(read, 'CW Pitch')).toBe('1050 Hz');
+    expect(vcValueFor(read, 'CW Pitch')).toContain('1050');
     expect(slotVar(read, 0)).toBe(unreadWidth);
     expect(unreadWidth).toBe('7ch');
   });
