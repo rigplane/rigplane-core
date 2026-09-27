@@ -124,7 +124,7 @@ export function toVfoProps(
       freq: Number.NaN,
       mode: '',
       filter: '',
-      sValue: 0,
+      sValue: Number.NaN,
       isActive: receiver === 'main',
       badges: {},
     };
@@ -137,7 +137,7 @@ export function toVfoProps(
       freq: Number.NaN,
       mode: '',
       filter: '',
-      sValue: 0,
+      sValue: Number.NaN,
       isActive: receiver === 'main',
       badges: {},
     };
@@ -186,7 +186,7 @@ export function toVfoProps(
     freq: rx.freqHz ?? Number.NaN,
     mode: rx.mode ?? '',
     filter: filterLabel,
-    sValue: rx.sMeter ?? 0,
+    sValue: rx.sMeter ?? Number.NaN,
     isActive,
     badges,
     rit: state.ritOn
