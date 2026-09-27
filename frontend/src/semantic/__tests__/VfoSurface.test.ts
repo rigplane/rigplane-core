@@ -658,16 +658,24 @@ it('reserves the role plaque at the widest role text in every state', () => {
   }
   const widest = listed.reduce((best, text) => text.length > best.length ? text : best, '');
   expect(widest).toBe('Unselected VFO');
-    expect(source).toMatch(/roleWidth = `\$\{Math\.ceil\(widest\)\}px`/);
-    expect(source).toMatch(/style:--vfo-role-width=\{roleWidth\}/);
-    expect(source).toMatch(/style:min-width="var\(--vfo-role-width\)"/);
-    for (const id of ['1/ab', '2/main_sub'] as const) {
-      const target = mountSurface({ viewModel: topologyFixtures[id] });
-      for (const role of target.querySelectorAll('.vfo-role:not(.vfo-role-measure)')) {
-        expect(role.getAttribute('style')).toContain('min-width: var(--vfo-role-width)');
-      }
-    }
-  });
+  expect(source).toMatch(/roleWidth = `\$\{Math\.ceil\(widest\)\}px`/);
+  expect(source).toMatch(/style:--vfo-role-width=\{roleWidth\}/);
+  const known = mountSurface({ viewModel: topologyFixtures['1/ab'] });
+  const slotted = known.querySelector('[data-vfo-slot="A"] .vfo-role')!;
+  expect(slotted.textContent).toBe('MAIN A');
+  expect(slotted.getAttribute('style')).toBe('min-width: var(--vfo-role-width);');
+  const unread = mountSurface({ viewModel: validateRadioViewModel({
+    ...topologyFixtures['1/ab'],
+    vfos: topologyFixtures['1/ab'].vfos.map((vfo) => ({ ...vfo, slot: { kind: 'unknown' as const } })),
+  }) });
+  const unslotted = mountSurface({ viewModel: topologyFixtures['2/main_sub'] });
+  for (const role of [
+    ...unread.querySelectorAll('.vfo-role'),
+    ...unslotted.querySelectorAll('.vfo-role'),
+  ]) {
+    expect(role.getAttribute('style')).toBe('min-width: var(--vfo-role-width);');
+  }
+});
 
 // ── MOR-1482: one stable frequency format + role text shown exactly once ───
 //
