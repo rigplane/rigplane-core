@@ -145,6 +145,14 @@ function openTxSettings(container: HTMLElement) {
   flushSync();
 }
 
+function rfPowerValue(container: HTMLElement): string {
+  const header = Array.from(container.querySelectorAll('.vc-header')).find(
+    (h) => h.querySelector('.vc-label')?.textContent === 'RF Power',
+  );
+  if (!header) throw new Error('ValueControl labeled "RF Power" not found');
+  return header.querySelector('.vc-value')?.textContent ?? '';
+}
+
 beforeEach(() => {
   components = [];
   tx = new ManagedAppTxHarness();
@@ -221,6 +229,21 @@ describe('panel structure', () => {
     openTxSettings(t);
     const labels = Array.from(t.querySelectorAll('.vc-label'));
     expect(labels.some((el) => el.textContent === 'Mic Gain')).toBe(true);
+  });
+
+  it('renders a known RF Power exactly as before', () => {
+    const t = mountPanel({ rfPower: 0.5 });
+    openTxSettings(t);
+    expect(rfPowerValue(t)).toBe('50%');
+  });
+
+  it('renders a non-finite RF Power as an empty slot, never NaN', () => {
+    const t = mountPanel({ rfPower: Number.NaN });
+    openTxSettings(t);
+    const value = rfPowerValue(t);
+    expect(value).toBe('');
+    expect(value).not.toContain('NaN');
+    expect(value).not.toMatch(/-{2,}/);
   });
 
   it('preserves the level order and illuminated orange presentation', () => {

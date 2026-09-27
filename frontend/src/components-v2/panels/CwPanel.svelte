@@ -161,13 +161,16 @@
     cancelBreakInDelay(event);
   }
 
-  // MOR-1409 A12: keep the established placeholder when canonical feedback
-  // is unavailable, and preserve the exact finite-value/unit rendering.
+  // MOR-2658: an unread value renders EMPTY in its reserved slot — never
+  // the '--- Hz' / '--- WPM' family, and never a unit without its number.
+  // An empty slot fabricates nothing, so MOR-1409 A12 is satisfied by
+  // empty, not by dashes. The renderers call these with Number.NaN for an
+  // unread value; finite values render exactly as before.
   function formatCwPitchDisplay(hz: number): string {
-    return Number.isFinite(hz) ? `${hz} Hz` : '--- Hz';
+    return Number.isFinite(hz) ? `${hz} Hz` : '';
   }
   function formatKeySpeedDisplay(wpm: number): string {
-    return Number.isFinite(wpm) ? `${wpm} WPM` : '--- WPM';
+    return Number.isFinite(wpm) ? `${wpm} WPM` : '';
   }
   let cwPitchFeedback = $derived(getCwPitchControlFeedback());
   let keySpeedFeedback = $derived(getKeySpeedControlFeedback());
@@ -219,28 +222,35 @@
       <span class="cw-mode-value">{currentMode}</span>
     </div>
 
-    <ValueControl
-      {...feedbackIntegratedControl}
-      label="CW Pitch"
-      binding={cwPitchBinding}
-      unit="Hz"
-      renderer="hbar"
-      accentColor="var(--v2-accent-cyan)"
-      variant="hardware-illuminated"
-      displayFn={formatCwPitchDisplay}
-    />
+    <!-- MOR-2658: each value keeps its own reserved slot (`6ch` covers
+         `900 Hz`, the widest pitch/speed text) so a first reading cannot
+         shift the row. -->
+    <div class="cw-value-slot">
+      <ValueControl
+        {...feedbackIntegratedControl}
+        label="CW Pitch"
+        binding={cwPitchBinding}
+        unit="Hz"
+        renderer="hbar"
+        accentColor="var(--v2-accent-cyan)"
+        variant="hardware-illuminated"
+        displayFn={formatCwPitchDisplay}
+      />
+    </div>
 
-    <ValueControl
-      {...feedbackIntegratedControl}
-      label="Key Speed"
-      binding={keySpeedBinding}
-      unit="WPM"
-      renderer="discrete"
-      tickStyle="notch"
-      accentColor="var(--v2-accent-orange)"
-      variant="hardware-illuminated"
-      displayFn={formatKeySpeedDisplay}
-    />
+    <div class="cw-value-slot">
+      <ValueControl
+        {...feedbackIntegratedControl}
+        label="Key Speed"
+        binding={keySpeedBinding}
+        unit="WPM"
+        renderer="discrete"
+        tickStyle="notch"
+        accentColor="var(--v2-accent-orange)"
+        variant="hardware-illuminated"
+        displayFn={formatKeySpeedDisplay}
+      />
+    </div>
 
     <div class="toggle-row">
       {#if showBreakIn}
@@ -358,6 +368,16 @@
   .break-in-delay-header {
     display: flex;
     justify-content: space-between;
+  }
+
+  /* MOR-2658: the pitch/speed value box stays reserved for unread AND
+     each known value — `6ch` covers the widest text (`900 Hz`), and
+     `inline-block` is what makes the min-width apply to the renderer's
+     inline value span, so a first reading cannot shift the row. */
+  .cw-value-slot :global(.vc-value) {
+    display: inline-block;
+    min-width: 6ch;
+    font-variant-numeric: tabular-nums;
   }
 
   /* MOR-2658: the delay value box stays reserved for unread AND each known

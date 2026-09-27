@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ControlFeedback } from '$lib/runtime/adapters/panel-adapters';
@@ -331,36 +332,40 @@ function vcValueFor(t: HTMLElement, label: string): string {
 }
 
 /**
- * A12 (MOR-1409, Core #2317, coordinator adjudication comment 5246487510)
- * — unavailable command feedback must preserve the established
- * '---'-family placeholder rather than leak a non-finite value. The local
- * formatters also preserve the exact finite-value/unit rendering.
+ * MOR-2658 — an unread pitch/speed renders EMPTY in its reserved slot:
+ * never the '--- Hz' / '--- WPM' family, and never a unit without its
+ * number. An empty slot fabricates nothing, so MOR-1409 A12 is satisfied
+ * by empty, not by dashes. The HBar/Discrete renderers call the panel's
+ * displayFn with Number.NaN for an unread value. Finite values render
+ * exactly as before.
  */
-describe('CwPanel — no "NaN" leak for unobserved pitch/speed (MOR-1409 A12)', () => {
-  it('does not render a "NaN" substring for CW Pitch when cwPitch is non-finite', () => {
+describe('CwPanel — unread pitch/speed renders empty (MOR-2658)', () => {
+  it('renders an empty CW Pitch slot for a non-finite pitch, never dashes or NaN', () => {
     const t = mountPanel({ cwPitch: Number.NaN });
-    expect(vcValueFor(t, 'CW Pitch')).not.toMatch(/NaN/);
+    const value = vcValueFor(t, 'CW Pitch');
+    expect(value).toBe('');
+    expect(value).not.toContain('NaN');
+    expect(value).not.toMatch(/-{2,}/);
   });
 
-  it('renders the established "---"-family placeholder for a non-finite CW Pitch', () => {
-    const t = mountPanel({ cwPitch: Number.NaN });
-    expect(vcValueFor(t, 'CW Pitch')).toBe('---\u00a0Hz');
-  });
-
-  it('does not render a "NaN" substring for Key Speed when keySpeed is non-finite', () => {
+  it('renders an empty Key Speed slot for a non-finite speed, never dashes or NaN', () => {
     const t = mountPanel({ keySpeed: Number.NaN });
-    expect(vcValueFor(t, 'Key Speed')).not.toMatch(/NaN/);
-  });
-
-  it('renders the established "---"-family placeholder for a non-finite Key Speed', () => {
-    const t = mountPanel({ keySpeed: Number.NaN });
-    expect(vcValueFor(t, 'Key Speed')).toBe('---\u00a0WPM');
+    const value = vcValueFor(t, 'Key Speed');
+    expect(value).toBe('');
+    expect(value).not.toContain('NaN');
+    expect(value).not.toMatch(/-{2,}/);
   });
 
   it('still renders the real formatted values for finite pitch/speed', () => {
     const t = mountPanel({ cwPitch: 700, keySpeed: 25 });
-    expect(vcValueFor(t, 'CW Pitch')).toBe('700\u00a0Hz');
-    expect(vcValueFor(t, 'Key Speed')).toBe('25\u00a0WPM');
+    expect(vcValueFor(t, 'CW Pitch')).toBe('700 Hz');
+    expect(vcValueFor(t, 'Key Speed')).toBe('25 WPM');
+  });
+
+  it('reserves the pitch/speed value slots structurally for unread and known alike', () => {
+    const source = readFileSync('src/components-v2/panels/CwPanel.svelte', 'utf8');
+    const rule = source.match(/\.cw-value-slot :global\(\.vc-value\) \{([^}]*)\}/)?.[1] ?? '';
+    expect(rule, 'the pitch/speed values keep a reserved box').toContain('min-width: 6ch');
   });
 });
 

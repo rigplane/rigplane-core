@@ -78,6 +78,13 @@
   // this with Number.NaN for an unread value.
   const rawTxLevelDisplay = (value: number): string =>
     Number.isFinite(value) ? rawToPercentDisplay(value) : '';
+  // MOR-2658: a non-finite RF power renders EMPTY in its reserved slot —
+  // never the literal `NaN%`. `toTxProps` feeds a non-finite `rfPower`
+  // when the rig never reported `powerLevel` (missing/absent, or the
+  // `?? 0.5` fallback's own input is non-finite); this point-of-rendering
+  // guard is the fix, `toTxProps` is deliberately untouched in this PR.
+  const rfPowerDisplay = (value: number): string =>
+    Number.isFinite(value) ? normalizedPercentDisplay(value) : '';
   const txLevelPolicy = () => createHBarContinuousScalarPolicy({
     preview: 'optimistic', debounceMs: 50, describeTarget: rawToPercentDisplay,
   });
@@ -339,9 +346,11 @@
       <button class="modal-close" onclick={() => (settingsOpen = false)}>✕</button>
     </div>
     <div class="modal-body">
-      <ValueControl label="RF Power" value={rfPower} min={0} max={1} step={0.01}
-        renderer="hbar" displayFn={normalizedPercentDisplay} accentColor="var(--v2-accent-red)"
-        onChange={onRfPowerChange} variant="hardware-illuminated" disabled={!rfPowerAvailable} />
+      <div class="tx-level-slot">
+        <ValueControl label="RF Power" value={rfPower} min={0} max={1} step={0.01}
+          renderer="hbar" displayFn={rfPowerDisplay} accentColor="var(--v2-accent-red)"
+          onChange={onRfPowerChange} variant="hardware-illuminated" disabled={!rfPowerAvailable} />
+      </div>
       <!-- MOR-2658: each level value keeps its own reserved slot (`4ch`
            covers `100%`) so a first reading cannot shift the row. -->
       <div class="tx-level-slot">
