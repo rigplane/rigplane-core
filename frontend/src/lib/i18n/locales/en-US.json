@@ -238,6 +238,7 @@
   "core.filter.passband.timedOutAnnouncement": "{control} {target} timed out; confirmed value remains {confirmed}.",
   "core.filter.passband.cancelledAnnouncement": "{control} request for {target} was cancelled; confirmed value remains {confirmed}.",
   "core.filter.passband.supersededAnnouncement": "{control} request for {target} was superseded; confirmed value remains {confirmed}.",
+  "core.filter.unit.hz": "Hz",
   "core.rfFrontEnd.preamp.pendingAnnouncement": "Pending, not yet confirmed",
   "core.dsp.pendingAnnouncement": "Pending, not yet confirmed",
   "core.repeater.pendingAnnouncement": "Pending, not yet confirmed",
@@ -332,4 +333,3 @@
   "glossary.squelch": "squelch",
   "glossary.bandPlan": "band plan"
 }
-  "core.filter.unit.hz": "Hz",

@@ -294,6 +294,7 @@
   "core.filter.passband.timedOutAnnouncement": "{control} {target} はタイムアウトしました。確認済みの値は {confirmed} のままです。",
   "core.filter.passband.cancelledAnnouncement": "{control} の {target} の要求は取り消されました。確認済みの値は {confirmed} のままです。",
   "core.filter.passband.supersededAnnouncement": "{control} の {target} の要求は置き換えられました。確認済みの値は {confirmed} のままです。",
+  "core.filter.unit.hz": "Hz",
   "core.rfFrontEnd.preamp.pendingAnnouncement": "保留中、まだ確認されていません",
   "core.dsp.pendingAnnouncement": "保留中、まだ確認されていません",
   "core.repeater.pendingAnnouncement": "保留中、まだ確認されていません",
@@ -332,4 +333,3 @@
   "core.rxTx.blocked.rfStateUnknown": "無線機の RF 状態はまだ確認されていません",
   "core.spectrum.more": "その他"
 }
-  "core.filter.unit.hz": "Hz",
