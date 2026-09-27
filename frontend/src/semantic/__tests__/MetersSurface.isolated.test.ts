@@ -1243,11 +1243,12 @@ describe('station level meters honor explicit sample domains (MOR-2425)', () => 
       view = withRaw(view, 'swr', 120);
       view = withMeterDomain(view, 'swr', { kind: 'raw' });
       withSurface(view, (s) => {
-        expect(s.tile('alc')!.textContent).toContain('255 raw');
+        expect(s.tile('alc')!.textContent).not.toContain('raw');
+        expect(s.tile('alc')!.textContent).not.toContain('255');
         expect(s.tile('alc')!.dataset.fault).toBe('false');
         expect(s.tile('alc')!.querySelector('[data-testid="bar-gauge-peak-marker"]')).toBeNull();
         expect(s.signalSvg()!.getAttribute('data-lower-fault')).toBe('false');
-        expect(s.signalSvg()!.textContent).toContain('120 raw');
+        expect(s.signalSvg()!.textContent).not.toContain('raw');
         expect(s.signalSvg()!.querySelectorAll('[data-lower-tick-mark]')).toHaveLength(0);
         expect(s.lowerFillCount()).toBeGreaterThan(0);
       });
@@ -1686,17 +1687,17 @@ describe('persistent TX instruments', () => {
               expect(el.getAttribute('data-fault')).not.toBe('true');
             } else {
               // current or stale (R29): the retained value renders
-              // identically either way. This fixture leaves the SWR
-              // `domain` unset, which `hasSwrRatioScale` treats as a ratio
-              // scale (ticks, not raw digits) — see the non-ratio SWR test
-              // above for the digit case — so the digit check here is
-              // power/alc only.
-              if (key !== 'swr') expect(text).toContain('170');
+              // identically either way. MOR-2722 part B: this fixture is
+              // uncalibrated, so a retained raw reading keeps its moving
+              // fill but draws no digit and no 'raw' word.
+              expect(text).not.toMatch(/170|raw/);
               expect(visibleSlotCount(el, key === 'swr' ? '[data-lower-fill]' : '[data-gauge-fill]')).toBeGreaterThan(0);
-              // MOR-2705 part 4b: current, stale and indeterminate-relevance
-              // readings all name the value — no 'Observed', no 'RF
-              // relevance indeterminate' status word.
-              expect(description).toBe(`${TX_LABEL[key]}: 170 raw`);
+              // MOR-2705 part 4b + MOR-2722 part B: current, stale and
+              // indeterminate-relevance readings all name the value — but
+              // with no honest value text the accessible name is the label
+              // alone; no 'Observed', no 'RF relevance indeterminate'
+              // status word.
+              expect(description).toBe(TX_LABEL[key]);
             }
           }
         });

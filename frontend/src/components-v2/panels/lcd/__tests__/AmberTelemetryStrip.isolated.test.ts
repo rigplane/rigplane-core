@@ -142,7 +142,7 @@ describe('AmberTelemetryStrip', () => {
     // Reserved-slot pin (AmberIndStrip MOR-2546 precedent: readFileSync of the
     // component + a regex on its `<style>`, #3591): the value box must keep
     // its width in the unread state so the first reading cannot move the
-    // layout. 7ch covers the widest text today ("255 raw" / "13.8+ V").
+    // layout. 7ch covers the widest text today ("13.8+ V").
     it('reserves the tile-value box for the widest text it can show', () => {
       const stripSource = readFileSync(
         path.resolve(process.cwd(), 'src/components-v2/panels/lcd/AmberTelemetryStrip.svelte'),
