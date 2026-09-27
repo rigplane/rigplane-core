@@ -32,7 +32,5 @@
 {"face": "mobile", "state": "mobile--all-unsupported", "locator": "[data-testid=\"vfo-list\"] <span> text", "token": "dash-run", "ticket": "MOR-2655", "example": "—"},
 {"face": "reference-twins", "state": "connection-loss-state-null--reference", "locator": "[data-testid=\"vfo-active-receiver\"] <p> text", "token": "placeholder-word", "ticket": "MOR-2655", "example": "Active receiver: unknown"},
 {"face": "reference-twins", "state": "connection-loss-state-null--reference", "locator": "[data-testid=\"vfo-list\"] <span> text", "token": "dash-run", "ticket": "MOR-2655", "example": "—"},
-{"face": "reference-twins", "state": "reference-twins--all-unsupported", "locator": "[data-testid=\"vfo-list\"] <span> text", "token": "dash-run", "ticket": "MOR-2655", "example": "—"},
-{"face": "mobile", "state": "mobile--all-unread", "locator": "[no-testid] <span> text", "token": "dash-run", "ticket": "MOR-2675", "example": "---"},
-{"face": "mobile", "state": "mobile--all-unsupported", "locator": "[no-testid] <span> text", "token": "dash-run", "ticket": "MOR-2675", "example": "---"}
+{"face": "reference-twins", "state": "reference-twins--all-unsupported", "locator": "[data-testid=\"vfo-list\"] <span> text", "token": "dash-run", "ticket": "MOR-2655", "example": "—"}
 ]
