@@ -113,14 +113,15 @@ vi.mock('../../../components/spectrum/SpectrumPanel.svelte', async () => {
   return { default: stub.default };
 });
 
+import type { ComponentProps } from 'svelte';
 import RadioLayout from '../RadioLayout.svelte';
 
 let components: ReturnType<typeof mount>[] = [];
 
-function mountWithCleanup(component: typeof RadioLayout, props: Record<string, unknown> = {}) {
+function mountWithCleanup(props: Record<string, unknown> = {}) {
   const target = document.createElement('div');
   document.body.appendChild(target);
-  const instance = mount(component, { target, props });
+  const instance = mount(RadioLayout, { target, props: props as ComponentProps<typeof RadioLayout> });
   flushSync();
   components.push(instance);
   return target;
@@ -175,7 +176,7 @@ describe('RadioLayout top-row profile switching', () => {
   it('promotes the top row to wide profile when the deck width crosses the threshold', () => {
     vi.stubGlobal('ResizeObserver', ResizeObserverStub);
 
-    const target = mountWithCleanup(RadioLayout, UNDECLARED);
+    const target = mountWithCleanup(UNDECLARED);
     const receiverDeck = target.querySelector('.receiver-deck');
 
     expect(receiverDeck?.getAttribute('style')).toContain('--vfo-frequency-size: 22px');
@@ -189,7 +190,7 @@ describe('RadioLayout top-row profile switching', () => {
     const previousUrl = window.location.href;
     window.history.replaceState({}, '', '/?vfoScale=1.05&vfoFreqScale=0.9');
 
-    const target = mountWithCleanup(RadioLayout, UNDECLARED);
+    const target = mountWithCleanup(UNDECLARED);
     const receiverDeck = target.querySelector('.receiver-deck');
 
     expect(receiverDeck?.getAttribute('style')).toContain('--vfo-ops-badge-height: 22.05px');
