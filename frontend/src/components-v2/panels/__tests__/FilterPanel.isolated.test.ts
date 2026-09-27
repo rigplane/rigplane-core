@@ -1565,12 +1565,16 @@ describe('FilterPanel — no placeholder for unread widths and offsets (MOR-2667
   });
 
   it('keeps the fixed-width modal value box reserved, tabular, and strutted while unread', () => {
-    const rule = panelSource.match(/\.modal-fixed-value \{([^}]*)\}/);
-    expect(rule).not.toBeNull();
+    // `.modal-fixed-value` also ends two grouped selectors — match the one
+    // rule that carries the reservation, not the first occurrence.
+    const rules = panelSource.match(/\.modal-fixed-value \{[^}]*\}/g) ?? [];
+    const rule = rules.map((body) => body.replace(/^\.modal-fixed-value \{/, '').replace(/\}$/, ''))
+      .find((body) => body.includes('min-inline-size'));
+    expect(rule).toBeDefined();
     // Widest text formatWidthDisplay renders today: '999 Hz' and '9.9kHz'
     // (6 chars) — 7ch covers both with margin.
-    expect(rule![1]).toContain('min-inline-size: 7ch');
-    expect(rule![1]).toContain('tabular-nums');
+    expect(rule!).toContain('min-inline-size: 7ch');
+    expect(rule!).toContain('tabular-nums');
     expect(panelSource).toMatch(/\.modal-fixed-value:empty::before \{ content: '\\200b'; \}/);
   });
 });
