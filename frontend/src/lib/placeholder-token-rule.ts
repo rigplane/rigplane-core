@@ -4,7 +4,7 @@
  * its only callers are this module's vitest suite and the Playwright page
  * scan (`tests/e2e/placeholder-guard/page-scan.spec.ts`). It lives under
  * `src/lib/` solely because vitest's `fast` project includes only
- * `src/**/*.test.ts` (`vite.config.ts`); no production module imports it, so
+ * `src/**\/*.test.ts` (`vite.config.ts`); no production module imports it, so
  * there is no behaviour change to the app.
  *
  * The rule (MOR-2677, "Token rule"):
