@@ -694,13 +694,13 @@ describe('AGC choice group', () => {
       ?.textContent?.trim()).toBe('AGC AUTO');
   });
 
-  it('renders no receiver indicator value for an unprojectable readback code', () => {
+  it('renders only the receiver indicator label for an unprojectable readback code', () => {
     h.caps = ftxAgcCaps();
     h.state = stateWithAgc(9);
     render();
 
     const indicator = q('[data-indicator-receiver="MAIN"] [data-indicator-fact="agc"]');
-    expect(indicator?.textContent?.trim()).toBe('AGC —');
+    expect(indicator?.textContent?.trim()).toBe('AGC');
     expect(indicator?.textContent).not.toContain('9');
   });
 

@@ -73,7 +73,7 @@
   ));
   let ticks = $derived(tickCount > 0 ? generateTickPositions(cx, cy, radius + 2, radius + 6, tickCount, arcAngle) : []);
   let displayVal = $derived(renderedValue === null
-    ? unknownDisplay ?? (displayFn ? displayFn(Number.NaN) : '—')
+    ? unknownDisplay ?? (displayFn ? displayFn(Number.NaN) : '')
     : displayFn ? displayFn(renderedValue) : String(renderedValue) + (unit || ''));
   let renderPresentation = $derived(projectScalarRenderPresentation(view, legacy));
 
@@ -171,7 +171,9 @@
   .pro-ctr { position: relative; width: var(--pro-size); height: var(--pro-size); cursor: grab; touch-action: none; }
   .pro-ctr:active { cursor: grabbing; }
   .pro-svg { display: block; }
-  .pro-val { position: absolute; bottom: -2px; left: 50%; transform: translateX(-50%); color: #e0f0ff; font-size: 10px; font-weight: 500; white-space: nowrap; }
+  /* MOR-2657: unread renders '' in a box reserved for the widest default
+   * readout, so the first reading cannot resize it. */
+  .pro-val { position: absolute; bottom: -2px; left: 50%; transform: translateX(-50%); color: #e0f0ff; font-size: 10px; font-weight: 500; white-space: nowrap; min-width: 4ch; font-variant-numeric: tabular-nums; text-align: center; }
   .compact .pro-val { font-size: 9px; bottom: 0; }
   .pro-ticks { display: flex; justify-content: space-between; width: 100%; padding: 0 2px; }
   .pro-tick { color: #4a5a68; font-size: 8px; }
