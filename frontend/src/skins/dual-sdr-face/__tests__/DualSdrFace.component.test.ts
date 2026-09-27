@@ -236,7 +236,6 @@ describe('DualSdrFace', () => {
     }
     unmount(component);
     target.remove();
-    // known state — 'LSB' lights the still-reserved 'WIDE-F3' slot.
   });
 
   // MOR-2692 geometry pin (PR-review fix): the frequency slot keeps its box
@@ -299,6 +298,117 @@ describe('DualSdrFace', () => {
     expect(meter.reduced).toHaveBeenCalled();
     expect(target.querySelector('[data-receiver-cluster="0"] [data-needle]')?.getAttribute('data-reduced-motion')).toBe('true');
     unmount(component);
+  });
+
+  // MOR-2688 S4c cluster pins: `observationFixture` puts a vfo display
+  // observation into every state the entry point must separate. A
+  // `modeFilter` group is declared so the badge slots mount at all.
+  function observationFixture(kind?: 'absent' | 'observed' | 'unknown'): RadioViewModel {
+    const displayFor = (kind: 'absent' | 'observed' | 'unknown' | undefined) => {
+      if (kind === 'observed') {
+        return {
+          mode: { state: 'stale' as const, value: 'USB' },
+          filter: { state: 'current' as const, value: 'FIL1' },
+          frequencyHz: { state: 'stale' as const, value: 7_100_250 },
+        };
+      }
+      if (kind === 'unknown') {
+        return {
+          mode: { state: 'unknown' as const, reason: 'no-projection' },
+          filter: { state: 'unknown' as const, reason: 'no-projection' },
+          frequencyHz: { state: 'unknown' as const, reason: 'no-projection' },
+        };
+      }
+      return undefined;
+    };
+    const vfo = (receiver: 'MAIN' | 'SUB', legacy: boolean) => ({
+      receiver,
+      slot: { kind: 'unslotted' },
+      label: receiver,
+      frequencyHz: legacy ? 7_070_000 : null,
+      mode: legacy ? 'LSB' : null,
+      filter: legacy ? 'FIL2' : null,
+      display: displayFor(kind),
+      isActive: receiver === 'MAIN',
+      isActiveSlot: true,
+      isTxTarget: false,
+    });
+    const base = view();
+    return {
+      ...base,
+      vfos: [vfo('MAIN', true), vfo('SUB', false)],
+      modeFilter: {
+        activeFilterConfiguration: null,
+        currentMode: { status: 'unknown' },
+        modeChoices: ['LSB', 'DATA-FM-N'],
+        currentFilter: { status: 'unknown' },
+        filterChoices: ['FIL2', 'WIDE-F3'],
+        filterWidth: { status: 'unknown' },
+        filterWidthMin: { status: 'unknown' },
+        filterWidthMax: { status: 'unknown' },
+      },
+    } as unknown as RadioViewModel;
+  }
+  describe('ReceiverInstrumentCluster display observation pins (MOR-2688 S4c)', () => {
+    it('an absent observation shows the legacy value and asserts current', async () => {
+      const target = document.createElement('div');
+      const component = mount(DualSdrFace, { target, props: { view: observationFixture('absent'), scopeSource: { subscribe: () => () => {} } } });
+      await tick();
+      for (const [badge, text] of [['mode', 'LSB'], ['filter', 'FIL2']] as const) {
+        const node = target.querySelector<HTMLElement>(`[data-receiver-cluster="0"] [data-badge="${badge}"]`);
+        expect(node?.textContent).toBe(text);
+        expect(node?.getAttribute('data-state')).toBe('current');
+      }
+      const frequency = target.querySelector<HTMLElement>('[data-receiver-cluster="0"] [data-frequency]');
+      expect(frequency?.textContent).toBe('7,070,000');
+      expect(frequency?.getAttribute('data-state')).toBe('current');
+      unmount(component);
+    });
+
+    it('a current or stale observation shows the observed value and asserts current', async () => {
+      const target = document.createElement('div');
+      const component = mount(DualSdrFace, { target, props: { view: observationFixture('observed'), scopeSource: { subscribe: () => () => {} } } });
+      await tick();
+      for (const [badge, text] of [['mode', 'USB'], ['filter', 'FIL1']] as const) {
+        const node = target.querySelector<HTMLElement>(`[data-receiver-cluster="0"] [data-badge="${badge}"]`);
+        expect(node?.textContent).toBe(text);
+        expect(node?.getAttribute('data-state')).toBe('current');
+      }
+      const frequency = target.querySelector<HTMLElement>('[data-receiver-cluster="0"] [data-frequency]');
+      expect(frequency?.textContent).toBe('7,100,250');
+      expect(frequency?.getAttribute('data-state')).toBe('current');
+      unmount(component);
+    });
+
+    it('a present unknown observation shows nothing — the legacy value never fires', async () => {
+      const target = document.createElement('div');
+      const component = mount(DualSdrFace, { target, props: { view: observationFixture('unknown'), scopeSource: { subscribe: () => () => {} } } });
+      await tick();
+      for (const badge of ['mode', 'filter'] as const) {
+        const node = target.querySelector<HTMLElement>(`[data-receiver-cluster="0"] [data-badge="${badge}"]`);
+        expect(node?.textContent).toBe('');
+        expect(node?.getAttribute('data-state')).toBe('unknown');
+      }
+      const frequency = target.querySelector<HTMLElement>('[data-receiver-cluster="0"] [data-frequency]');
+      expect(frequency?.textContent).toBe('');
+      expect(frequency?.getAttribute('data-state')).toBe('unknown');
+      unmount(component);
+    });
+
+    // frequencyCh / bandwidthCh: the reserved widths while a value is
+    // present — from the legacy/absent path (7,070,000 → 9ch) and the
+    // widest of the fixture's filter choices 'WIDE-F3'/BW '2.4k' (9ch).
+    it('reserves the frequency and bandwidth widths with literal ch pins', async () => {
+      const target = document.createElement('div');
+      const component = mount(DualSdrFace, { target, props: { view: observationFixture('absent'), scopeSource: { subscribe: () => () => {} } } });
+      await tick();
+      const frequency = target.querySelector<HTMLElement>('[data-receiver-cluster="0"] [data-frequency]');
+      expect(frequency?.style.minWidth).toBe('9ch');
+      const bandwidth = target.querySelector<HTMLElement>('[data-receiver-cluster="0"] [data-bandwidth]');
+      expect(bandwidth?.textContent).toBe('BW 2.4k');
+      expect(bandwidth?.style.minWidth).toBe('9ch');
+      unmount(component);
+    });
   });
 
   it('replaces the scope source reactively and cleans each subscription once', async () => {

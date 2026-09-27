@@ -30,7 +30,7 @@ describe('ValueObservation ties to the real types (MOR-2688 S4c)', () => {
   it("the segmentline vocabulary DisplayValue (state: 'known') is NOT a ValueObservation", () => {
     const displayValue: DisplayValue<number> = { state: 'known', value: 3.5 };
     // @ts-expect-error — 'known' resolves to nothing in the observation
-    // rule; a silent pass would go dark (audit F2). Compile-time pin only.
+    // rule; a silent pass would go dark. Compile-time pin only.
     const wrong: ValueObservation<number> = displayValue;
     void wrong;
     expect(displayValue.state).toBe('known');

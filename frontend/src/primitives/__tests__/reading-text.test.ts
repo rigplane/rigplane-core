@@ -91,7 +91,7 @@ describe.each(TABLE)('the shared unread table (MOR-2688 S4a/S4c): $name', (row) 
       ? { state: row.stale ? 'stale' : 'current', value: row.value }
       : 'carryValue' in row
         // an impossible shape on purpose: the pin must survive the entry
-        // point widening to "value on any state" (audit Q4)
+        // point widening to "value on any state"
         ? ({ state: 'unknown', value: row.value } as unknown as ValueObservation<typeof row.value>)
         : { state: 'unknown' };
 

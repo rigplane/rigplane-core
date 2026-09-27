@@ -17,9 +17,9 @@
  * - `readingValue` — the `{reading}` status vocabulary (`status === 'known'`
  *   → the value).
  * - `observationValue` — the `display.state` vocabulary (current or stale
- *   → the value, anything else → nothing). S4c: an ABSENT observation
- *   returns the caller's other source (`absent`); a present observation
- *   never does (coordinator decision on the audit's D2).
+  *   → the value, anything else → nothing). S4c: an ABSENT observation
+  *   returns the caller's other source (`absent`); a present observation
+  *   never does (coordinator decision).
  * - `finiteValue` — a finite number in, the number out; NaN, ±Infinity,
  *   null and undefined in, nothing out.
  *
