@@ -588,7 +588,7 @@ describe('explicit presentation contract', () => {
     const known = mountPanel(explicit);
     expect(known.querySelector('svg')?.getAttribute('aria-label') ?? '').not.toContain('?');
     const unknown = mountPanel({ ...explicit, sValue: null, meterOperational: false });
-    expect(unknown.querySelector('[data-testid="receiver-s-meter"]')?.getAttribute('aria-label')).toContain('S meter unknown');
+    expect(unknown.querySelector('[data-testid="receiver-s-meter"]')?.getAttribute('aria-label')).toBe('MAIN S meter');
     const absent = mountPanel({ ...explicit, meterPresent: false });
     expect(absent.querySelector('[data-testid="receiver-s-meter"]')).toBeNull();
   });

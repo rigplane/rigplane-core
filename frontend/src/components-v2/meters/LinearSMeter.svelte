@@ -567,12 +567,12 @@
   const vfoScaleMarks = $derived(thinUniformScaleMarksForWidth(
     signalProjection.uniformScaleMarks, vfoTrackW, vfoScaleLabelWidth,
   ));
-  // The v8 face reads one line — the S-unit — so the CALIBRATED case alone
+  // The v8 face reads one line — the S-unit — so a KNOWN calibrated reading
   // drops its second field (the dBm) from the projection's accessible name.
-  // Every other wording ('raw, uncalibrated', the value itself with
-  // 'unit unknown'/'scale unavailable' on unprojectable domains, the
-  // reading-unknown fallback) is a fact the projection states honestly and
-  // stays verbatim — pinned by ReceiverInstrumentHost.isolated.test.ts.
+  // Every other projection wording ('raw, uncalibrated', the value itself with
+  // 'unit unknown'/'scale unavailable' on unprojectable domains) stays
+  // verbatim — pinned by ReceiverInstrumentHost.isolated.test.ts. An unread
+  // meter takes the projection's bare 'S meter' name (MOR-2649).
   const vfoAccessibleLabel = $derived.by(() => {
     if (signalProjection.scaleMode === 's' && signalProjection.motionFraction !== null) {
       return `S meter ${displaySUnit}`;
@@ -985,6 +985,7 @@
 
   <!-- Value readout: dBm aligned to bar center, S-unit above it -->
   <text
+    data-meter-reading
     x={READOUT_CX}
     y={TRACK_Y - (compact ? 2 : 3)}
     font-family="'Roboto Mono', monospace"

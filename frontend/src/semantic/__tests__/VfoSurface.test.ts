@@ -2607,7 +2607,7 @@ describe('MOR-2342 historical instrument presentations', () => {
         reading: { status: 'unknown' }, availability: { structural: true, operational: false },
       } }] }, appearance: 'standard',
     });
-    expect(unknown.querySelector('[data-testid="receiver-s-meter"]')?.getAttribute('aria-label')).toContain('unknown');
+    expect(unknown.querySelector('[data-testid="receiver-s-meter"]')?.getAttribute('aria-label')).toBe('MAIN S meter');
 
     const absent = mountSurface({
       viewModel: { ...base, receiverIndicators: [{ ...indicator, sMeter: {

@@ -1029,13 +1029,14 @@ for (const known of [true, false]) {
 }
 
 // MOR-2649: an unread S-meter is an empty bar with no caption — the removed
-// '?' placeholder ink cannot change the meter's box. Compare the receiver
-// meter element's bounding box between an unknown (unread) and a known (read)
-// fixture: same width and height, so a first reading cannot move the layout.
+// '?' placeholder ink cannot change the meter's box. The wrapper div would
+// hide an inner change, so this measures the meter's OWN SVG element between
+// an unknown (unread) and a known (read) fixture: width AND height must be
+// identical, so a first reading cannot move the layout.
 test('standard 1440 receiver S-meter keeps its box between unread and read', async ({ page }) => {
   const meterBox = async (known: boolean) => {
     await boot(page, 'standard', 1440, known, 'studioline', false, 'topology-1-single');
-    return page.locator('[data-testid="receiver-s-meter"]')
+    return page.locator('[data-testid="receiver-s-meter"] svg')
       .evaluate(element => element.getBoundingClientRect().toJSON());
   };
   const knownBox = await meterBox(true);

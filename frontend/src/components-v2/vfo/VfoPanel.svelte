@@ -328,7 +328,7 @@
       {:else if meterPresent}
         <div data-testid="receiver-s-meter" data-receiver={receiver}
           data-operational={meterOperational === undefined ? undefined : String(meterOperational)}
-          aria-label={sValue === null ? `${receiverLabel} S meter unknown` : undefined}>
+          aria-label={sValue === null ? `${receiverLabel} S meter` : undefined}>
           <LinearSMeter value={typeof sValue === 'number' && Number.isFinite(sValue) ? sValue : null} compact label={slotTag} variant={meterVariant} source={meterSource} session={continuitySession} />
         </div>
       {/if}

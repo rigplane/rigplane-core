@@ -201,7 +201,7 @@ it.each([true, false])('retains a lower descriptor without inventing a main read
   expect(target.textContent).toContain('IDLE');
   expect(target.textContent).not.toMatch(/dBm|uncalibrated/);
   expect(target.querySelectorAll('[data-main-relevant]')).toHaveLength(mainPresent ? 2 : 0);
-  if (mainPresent) expect(target.textContent).not.toContain('?');
+  if (mainPresent) expect(target.querySelector('[data-meter-reading]')?.textContent).toBe('');
 });
 
 it('null clears normal-motion main fill and peak without remounting the lower scale', () => {
