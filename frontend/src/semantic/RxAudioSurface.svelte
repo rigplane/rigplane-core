@@ -39,14 +39,12 @@
   import type { RxAudioField } from './radio-view-model';
   import { formatKnownLevel } from './format-level';
   import { readingText } from '../primitives/reading-text';
+  import { usable } from '../primitives/control-instruments/control-instrument-behavior';
 
   export {
     FOCUS_CHOICES, LINK_LOST_TEXT, MONITOR_MODES, READINESS_LABEL, SPLIT_CHOICES,
   } from './rx-audio-instruments';
 
-  /** Usable ⇔ the radio HAS it, it is readable NOW, and it was actually read. */
-  export const usable = (f: RxAudioField<unknown>): boolean =>
-    f.availability.structural && f.availability.operational && f.reading.status === 'known';
   /** MOR-2527: an unread AF level renders no value text — an unlit slot,
    *  never a `—` placeholder. MOR-2688 S3: the ONE unread-display rule lives
    *  in `readingText`; the 0..1 level formatter stays this surface's own. */

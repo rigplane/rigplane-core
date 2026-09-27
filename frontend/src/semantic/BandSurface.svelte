@@ -55,6 +55,7 @@
   import { t } from '$lib/i18n';
   import type { BandField, DisabledReasonCode, RadioViewModel } from './radio-view-model';
   import type { BandControlLayout, BandInstrumentHandles } from './band-instruments';
+  import { usable } from '../primitives/control-instruments/control-instrument-behavior';
   export {
     defaultPermitLabel, interpretFrequencyEntry, mhz,
   } from './band-instruments';
@@ -107,9 +108,7 @@
   export const activeReceiverUnconfirmedReason = (): string =>
     t('core.band.tx.reason.receiverUnconfirmed');
 
-  export const usable = (f: BandField<unknown>): boolean =>
-    f.availability.structural && f.availability.operational && f.reading.status === 'known';
-   /** MOR-2652: an unread current band prints nothing — an unlit slot. The
+  /** MOR-2652: an unread current band prints nothing — an unlit slot. The
     *  denial reasons below are sentences, never a value standing in for a
     *  reading (MOR-2684 removed the old `UNKNOWN_TEXT` dash). */
    export const textOf = (f: BandField<unknown>): string =>

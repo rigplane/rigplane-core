@@ -834,6 +834,30 @@ describe('break-in obeys the ONE txPermit and fails closed', () => {
     r.dispose();
   });
 
+  // MOR-2704 G3: the imported gate keeps the read-but-NOT-operational
+  // refusal — the case the local copy handled, now pinned against the
+  // shared `usable` (a mutation that drops its `operational` check dies
+  // here). The permit is allowed, so ONLY the gate refuses. `textOf`
+  // follows the reading status alone, so the known delay keeps rendering
+  // — the value-text predicate is T1's separate decision, not this
+  // migration's.
+  it('disables and refuses break-in while its reading is known but not operational', () => {
+    const onBreakInMode = vi.fn();
+    const r = render(withCw({
+      breakIn: known<BreakInMode>('semi', DEGRADED),
+      breakInDelay: known(30, DEGRADED),
+    }), { onBreakInMode });
+    for (const [label] of BREAK_IN_CHOICES) {
+      expect(r.el(`break-in-${label}`)!.hasAttribute('disabled')).toBe(true);
+      press(r.el(`break-in-${label}`)!);
+    }
+    flushSync();
+    expect(onBreakInMode).not.toHaveBeenCalled();
+    expect(r.el('breakInDelay')!.dataset.observed).toBe('false');
+    expect(r.text('breakInDelay-value')).toBe('30');
+    r.dispose();
+  });
+
   it.each(BREAK_IN_CHOICES)('emits the absolute %s intent when permitted', (label, mode) => {
     const onBreakInMode = vi.fn();
     const r = render(base(), { onBreakInMode });
