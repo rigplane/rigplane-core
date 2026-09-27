@@ -44,11 +44,12 @@
       APF's with CW named. Presenting the block as plain "CW" would leave the
       operator a permanently-disabled control with no explanation.
 
-  (5) UNKNOWN IS RENDERED AS UNKNOWN. `formatBreakIn` in v2 falls back to 'OFF'
-      for an unrecognised mode; slice 9A degrades it to `unknown` instead,
-      because an unreadable break-in state must never present as "the key is
-      safe". `breakInPosture` therefore groups `unknown` WITH `armed`, never
-      with `off`.
+  (5) UNKNOWN IS RENDERED AS EMPTY, NOT AS A SENTENCE (MOR-2690). An
+      unreadable break-in state must never present as "the key is safe", so
+      `breakInPosture` still groups `unknown` WITH `armed`, never with `off`:
+      the keys stay BARE (no `aria-pressed`) and the posture line renders
+      EMPTY in its reserved slot. The owner ordered the unknown sentence
+      removed: "если нет у радио, не вижу причины оставлять на вебе".
 -->
 <script module lang="ts">
   import { t } from '$lib/i18n';
@@ -59,7 +60,9 @@
   /** Break-in as THREE ABSOLUTE choices, `[label, wire mode]`. Absolute, not a
    *  toggle: a toggle computed from an unread reading arms a guess, and here
    *  the guess would be about the transmitter. The wire ints are v2's own
-   *  (`cw-panel-logic.ts`'s `BREAK_IN_LABELS`), consumed not reinvented. */
+   *  (`cw-panel-logic.ts`'s `BREAK_IN_LABELS`), consumed not reinvented.
+   *  MOR-2690: the rendered controls are KEYs — `aria-pressed` appears only
+   *  on a KNOWN reading, so an unread key claims no state at all. */
   export const BREAK_IN_CHOICES = [['off', 0], ['semi', 1], ['full', 2]] as const;
   /** APF as two ABSOLUTE choices over its ordinal, `[label, on]`. */
   export const APF_CHOICES = [['off', false], ['on', true]] as const;
@@ -71,12 +74,14 @@
     ['breakInDelay', 'Break-in delay', 0, 255, 1, ''],
   ] as const;
   export type CwLevelField = (typeof CW_LEVELS)[number][0];
-  /** Break-in as the operator must read it. `unknown` is NOT 'off' (rule 5). */
+  /** Break-in as the operator must read it. `unknown` is NOT 'off' (rule 5).
+   *  MOR-2690: the unknown SENTENCE is gone — an unread break-in renders
+   *  EMPTY in its reserved line, never the word unknown and never 'off'. */
   export type BreakInPosture = 'off' | 'armed' | 'unknown';
   export const POSTURE_LABEL: Record<BreakInPosture, string> = {
     off: 'break-in off — the key does not transmit',
     armed: 'break-in ARMED — the key transmits',
-    unknown: 'break-in state unknown — assume the key transmits',
+    unknown: '',
   };
   /**
    * MOR-1474: why break-in is blocked, in the permit's own vocabulary (rule
@@ -394,14 +399,21 @@
         data-posture={breakInPosture(cw.breakIn)}
         data-permitted={permitAllowed}
       >
-        <div class="cw-keyer-row" role="radiogroup" aria-label="Break-in">
+        <div class="cw-keyer-row" role="group" aria-label="Break-in">
           {#each (standard ? BREAK_IN_CHOICES.filter(([label]) => label !== 'off') : BREAK_IN_CHOICES) as [label, mode] (mode)}
+            <!-- MOR-2690: a KEY, not a radio. `role="radio"` REQUIRES
+                 `aria-checked`, and on an unread reading a missing or `false`
+                 value reads as OFF — a claim about a reading the radio never
+                 reported. `aria-pressed` appears only when the state is
+                 KNOWN; the gate below is untouched (rule 2). -->
             <button
-              type="button" role="radio" class="cw-keyer-choice"
+              type="button" class="cw-keyer-choice"
               data-testid={`cw-keyer-break-in-${label}`}
-              aria-checked={cw.breakIn.reading.status === 'known'
-                && cw.breakIn.reading.value === label}
-              aria-describedby={`${breakInPostureId}${!permitAllowed && breakInReason ? ` ${breakInReasonId}` : ''}`}
+              aria-pressed={cw.breakIn.reading.status === 'known'
+                ? cw.breakIn.reading.value === label : undefined}
+              aria-describedby={breakInPosture(cw.breakIn) === 'unknown'
+                ? (!permitAllowed && breakInReason ? breakInReasonId : undefined)
+                : `${breakInPostureId}${!permitAllowed && breakInReason ? ` ${breakInReasonId}` : ''}`}
               disabled={!usable(cw.breakIn) || !permitAllowed}
               onclick={() => standard && mode !== 0 ? toggleBreakIn(label as 'semi' | 'full', mode) : setBreakIn(mode)}
             >{standard ? label.toUpperCase() : label}</button>
@@ -411,8 +423,11 @@
              "armed but not permitted" reads differently from "off and not
              permitted" — the operator's radio can still key from its own
              paddle while this UI refuses to change the setting. It is a
-             SENTENCE, so it gets its own line below the keys and may wrap. -->
-        <p id={breakInPostureId} class="cw-keyer-sentence" class:sr-only={standard}>
+             SENTENCE, so it gets its own line below the keys and may wrap.
+             MOR-2690: an UNREAD posture renders EMPTY on that reserved line —
+             the line keeps its box (nothing moves when the reading arrives),
+             and an empty line is referenced by no `aria-describedby`. -->
+        <p id={breakInPostureId} class="cw-keyer-sentence cw-keyer-posture-line" class:sr-only={standard}>
           <output data-testid="cw-keyer-posture">{POSTURE_LABEL[breakInPosture(cw.breakIn)]}</output>
         </p>
         {#if !permitAllowed && breakInReason}
@@ -613,7 +628,12 @@
     min-width: 3ch;
     font-variant-numeric: tabular-nums;
   }
-  .cw-keyer-choice[aria-checked='true'], .cw-keyer-toggle[aria-pressed='true'] { font-weight: 700; }
+  .cw-keyer-choice[aria-checked='true'], .cw-keyer-choice[aria-pressed='true'],
+  .cw-keyer-toggle[aria-pressed='true'] { font-weight: 700; }
+  /* MOR-2690: the posture sentence's line keeps its box in EVERY state — an
+     unread posture renders EMPTY, and the first reading must not move the
+     layout. 1lh reserves exactly the one line the widest sentence needs. */
+  .cw-keyer-posture-line:not(.sr-only) { min-height: 1lh; }
   .cw-keyer-surface.standard {
     display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px;
   }
