@@ -33,7 +33,7 @@ const IC7300_LIKE_CAL = [
 ];
 
 // Seeded into the real capabilities store, not vi.mock'd, for the same
-// module-cache race reason `LinearSMeter.test.ts` documents (fast pool,
+// module-cache race reason `LinearSMeter.isolated.test.ts` documents (formerly the fast pool,
 // isolate: false).
 function makeCaps(cal: typeof IC7610_LIKE_CAL): Capabilities {
   return {

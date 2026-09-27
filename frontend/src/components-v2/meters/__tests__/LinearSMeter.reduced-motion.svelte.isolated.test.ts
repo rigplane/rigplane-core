@@ -22,11 +22,17 @@ const IC7610_LIKE_CAL = [
   { raw: 240, actual: 40, label: 'S9+40' },
 ];
 
-// The curve is seeded into the REAL capabilities store, not vi.mock'd: this
-// file runs in the `fast` pool (`isolate: false`), where a module-scope mock
-// races the shared module cache — a sibling file can leave `smeter-scale.ts`
-// bound to a different module instance than the one the mock applies to.
-// Seeding real store state is deterministic under any cache order.
+// The curve is seeded into the REAL capabilities store, not vi.mock'd, and
+// this file runs in the `isolated` project (`*.isolated.test.ts`, the
+// MOR-1272 pool-membership convention): it mounts real components with live
+// requestAnimationFrame loops, spies on `window.requestAnimationFrame`, and
+// replaces `window.matchMedia`, so in the shared `fast` pool
+// (`isolate: false`) a sibling file's leftover module state or pending frame
+// timers reddened it with no production change (MOR-2710: one full-suite
+// run failed "schedules no animation frame on mount…" with rafSpy called
+// 180 times, then passed 10/10 in isolation on the same head). A fresh
+// module registry and globals per file make the run order-independent by
+// construction.
 import type { Capabilities } from '$lib/types/capabilities';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 
