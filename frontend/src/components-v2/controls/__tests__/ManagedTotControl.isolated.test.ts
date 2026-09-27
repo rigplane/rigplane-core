@@ -125,7 +125,9 @@ describe('managed TOT control', () => {
     const wideLive = current.querySelector('.tot-live')!.textContent!.trim();
     expect(wideLive).toBe('LIMIT 12345s');
     expect(wideLive.length).toBeGreaterThan(widest);
-    expect(current.querySelector('[data-testid="managed-tot-countdown"]')?.textContent).toContain('43s');
+    // The REMAINING span is a sibling of the value readout, so 'target'
+    // scope is required — a wider legal value must never overlap it.
+    expect(target.querySelector('[data-testid="managed-tot-countdown"]')?.textContent).toContain('43s');
     // Static pins: the reservation is a minimum (min-inline-size) on the
     // live element itself, exactly the derived width; no absolute
     // positioning anywhere on it. (jsdom never applies scoped styles —
