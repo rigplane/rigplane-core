@@ -746,12 +746,14 @@ async def test_explicit_disconnect_connect_uses_the_same_new_epoch_policy() -> N
     assert radio.refetches == 1
 
 
-async def test_operator_disconnect_leaves_no_fresh_field() -> None:
+async def test_operator_disconnect_leaves_no_fresh_radio_field() -> None:
     """MOR-2615: the real disconnect handler invalidates the shared store.
 
     A SETTING field observed once through the class policy carries no TTL,
     so without the disconnect-time generation advance it would read FRESH
-    forever after. The handler must leave no FRESH field behind.
+    forever after. The handler must leave no field the radio reported behind;
+    the single-receiver topology fact is re-published after the advance
+    (MOR-2784).
     """
     from unittest.mock import AsyncMock, MagicMock
 
@@ -785,7 +787,9 @@ async def test_operator_disconnect_leaves_no_fresh_field() -> None:
     await server._handle_radio_control("/api/v1/radio/disconnect", writer)
     radio.disconnect.assert_awaited_once()
 
-    assert list(store.snapshot().fields) == []
+    assert {str(field.path): field.value for field in store.snapshot().fields} == {
+        "global.slow_state.active": "MAIN"
+    }
     assert StateFreshnessService(store=store).tick().freshness == ()
 
 
