@@ -44,7 +44,6 @@ for (const [index, Component] of variants.entries()) describe(names[index], () =
             }
             expect(el).toBeDefined();
             const idle = rf === 'receiving' && !relevant;
-            const indeterminate = !idle && !(rf === 'transmitting' && relevant);
             // MOR-2425 (R29/R32): stale shows its own digits, same as current;
             // idle and never-observed are an empty scale — no text token.
             // MOR-2540: the ' ?' indeterminate cue is gone as well.
@@ -55,9 +54,14 @@ for (const [index, Component] of variants.entries()) describe(names[index], () =
             expect(description).toContain(label);
             expect(description).not.toMatch(/87.65/);
             if (idle) expect(description).toContain('Not measuring in receive');
-            if (indeterminate) expect(description).toContain('RF relevance indeterminate');
+            // MOR-2705 part 2 (coordinator ruling): no status word in an
+            // accessible name — neither 'No reading' nor the 'RF relevance
+            // indeterminate' cue ("indeterminate" means "unknown").
+            expect(description).not.toContain('No reading');
+            expect(description).not.toContain('indeterminate');
+            // An unknown observation names only the label, the same as unread.
+            if (!idle && observation.state === 'unknown') expect(description).toBe(label);
             if (!idle && observation.state === 'stale') expect(description).toContain('Stale observation');
-            if (!idle && observation.state === 'unknown') expect(description).toContain('No reading');
             if (!idle && observation.state === 'current') expect(description).toContain('12.35');
           }
           expect(root.querySelectorAll('button,input,select,textarea')).toHaveLength(0);

@@ -67,13 +67,26 @@ export function telemetryText(field: DisplayTelemetry): string {
 
 export function telemetryDescription(label: string, field: DisplayTelemetry): string {
   const tx = field.txDisplay;
-  if (!tx) return `${label}: ${field.state === 'known' ? telemetryText(field)
-    : field.state === 'unsupported' ? 'Unsupported' : t('core.meter.state.noReading')}`;
-  if (!tx.supported) return `${label}: Unsupported`;
+  // MOR-2705 part 2: an accessible name names only what it is — the label.
+  // An unsupported item is not drawn, so it has no accessible name; an
+  // unread one is the label with no status word (never 'Unsupported' or
+  // 'No reading'). The localized `idle` word and the `stale`/`current`
+  // readings survive.
+  if (!tx) {
+    if (field.state === 'known') return `${label}: ${telemetryText(field)}`;
+    return label;
+  }
+  if (!tx.supported) return label;
   if (tx.relevance === 'idle') return `${label}: ${t('core.meter.state.idle')}`;
-  const cue = tx.relevance === 'indeterminate' ? 'RF relevance indeterminate. ' : '';
-  return `${label}: ${cue}${tx.observation.state === 'stale' ? 'Stale observation'
-    : tx.observation.state === 'current' ? `Current observation: ${Number(tx.observation.value.toFixed(2))}` : t('core.meter.state.noReading')}`;
+  // MOR-2705 part 2 (coordinator ruling): the 'RF relevance indeterminate'
+  // cue is gone too — "indeterminate" means "unknown", a status word never
+  // stands in for a value, and a reason sentence may live only in the
+  // title of a disabled control, which this is not. An unknown observation
+  // names only the label, the same as unread.
+  if (tx.observation.state !== 'stale' && tx.observation.state !== 'current') return label;
+  return tx.observation.state === 'stale'
+    ? `${label}: Stale observation`
+    : `${label}: Current observation: ${Number(tx.observation.value.toFixed(2))}`;
 }
 
 function envelope(

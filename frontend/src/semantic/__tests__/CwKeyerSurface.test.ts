@@ -305,6 +305,22 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
     expect(textOf(unreadField)).toBe('');
   });
 
+  // Kills (MOR-2705 part 2): the feedback-less (raw) break-in delay readout
+  // printing the unit with no value (the '#3746 for offsets and widths'
+  // treatment). Untrimmed `textContent` pins the exact text: an unread delay
+  // renders NOTHING (not even a stray space), a known delay renders the
+  // value, and the unit suffix appears only with a value.
+  it('renders the raw break-in delay readout as value-with-unit or nothing', () => {
+    const knownRaw = render(base());
+    expect(knownRaw.el('breakInDelay-value')!.textContent).toBe('64');
+    knownRaw.dispose();
+    const unreadRaw = render(withCw({ breakInDelay: unread(ON) }));
+    const el = unreadRaw.el('breakInDelay-value')!;
+    expect(el.textContent).toBe('');
+    expect(el.textContent).not.toContain(' ms');
+    unreadRaw.dispose();
+  });
+
   it('uses current-input bindings for APF, Twin Peak and reverse paddle', () => {
     expect(CODE).toContain('const apfChoice = bindChoiceInstrument');
     expect(CODE).toContain('const twinPeakToggle = bindToggleInstrument');

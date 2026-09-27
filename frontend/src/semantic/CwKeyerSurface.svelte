@@ -502,7 +502,15 @@
               >{breakInDelayView.announcement}</span>
             {/if}
             {:else}
-              <output class="cw-keyer-readout" data-testid="cw-keyer-breakInDelay-value">{textOf(f)} {unit}</output>
+              <!-- MOR-2705 part 2: the unit suffix renders only WITH a value
+                   — the same treatment #3746 (MOR-2667) gave the offsets and
+                   widths. An unread value shows neither number nor unit in
+                   the `.cw-keyer-readout` slot reserved by its 3ch rule. -->
+              {@const rawDelayText = textOf(f)}
+              <output
+                class="cw-keyer-readout"
+                data-testid="cw-keyer-breakInDelay-value"
+              >{rawDelayText}{rawDelayText !== '' && unit !== '' ? ` ${unit}` : ''}</output>
             {/if}
           {/if}
         </label>
