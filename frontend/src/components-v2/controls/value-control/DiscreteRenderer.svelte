@@ -464,12 +464,15 @@
     color: var(--vc-text-value, var(--v2-text-bright));
     font-family: 'Roboto Mono', monospace;
     min-width: 8ch;
-    /* The box also keeps its height when unread, so an empty value cannot
-     * shrink the header line and shift the rows below. */
-    min-height: 1.4em;
     font-variant-numeric: tabular-nums;
     text-align: right;
   }
+
+  /* An unread value is empty ink, but the box keeps the exact line-box
+   * metrics of a known value (`align-items: baseline` in the header would
+   * otherwise re-seat the label when the box collapses), so the first
+   * reading cannot shift anything. */
+  .vc-value:empty::before { content: '\200b'; }
 
   .sr-only {
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;

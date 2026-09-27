@@ -2102,6 +2102,9 @@ describe('unread default renders no placeholder (MOR-2657)', () => {
       expect(Number.isFinite(minWidth), name).toBe(true);
       expect(minWidth, name).toBeGreaterThanOrEqual(widest);
       expect(rule![1], name).toContain('tabular-nums');
+      // The empty box keeps the line-box metrics of a known value, so the
+      // baseline-aligned header cannot re-seat the label when it arrives.
+      expect(sourceOf(name), name).toMatch(/\.vc-value:empty::before \{ content: '\\200b'; \}/);
     }
   });
 

@@ -513,5 +513,7 @@ describe('MOR-2657: unread lanes render unlit, never a dash', () => {
     expect(minWidth).toBeGreaterThanOrEqual('100%'.length);
     expect(rule![1]).toContain('tabular-nums');
     expect(rule![1]).toContain('inline-block');
+    // The empty number keeps the line-box metrics of a known number.
+    expect(source).toMatch(/\.vc-num:empty::before \{ content: '\\200b'; \}/);
   });
 });

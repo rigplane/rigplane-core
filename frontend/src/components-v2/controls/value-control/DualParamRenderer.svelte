@@ -321,6 +321,10 @@
     text-align: center;
   }
 
+  /* An unread number is empty ink, but the box keeps the exact line-box
+   * metrics of a known number, so the first reading cannot shift the row. */
+  .vc-num:empty::before { content: '\200b'; }
+
   .disabled {
     opacity: 0.4;
     pointer-events: none;
