@@ -169,12 +169,11 @@
 
   function displayFrequency(record: VfoViewModel | null): number | null {
     if (record === null) return null;
-    const display = record.display?.frequencyHz;
-    // MOR-2688 S4a: the display.state vocabulary (current/stale → the
-    // value, anything else → nothing) is `observationValue`'s rule; the
-    // legacy `frequencyHz` fallback for a record without an observation
-    // is unchanged.
-    return display === undefined ? record.frequencyHz : observationValue(display);
+    // MOR-2688 S4c: the display.state vocabulary (current/stale → the
+    // value, anything else → nothing) is `observationValue`'s rule, now
+    // taking the legacy `frequencyHz` fallback as its ABSENT argument; the
+    // fallback for a record without an observation is unchanged.
+    return observationValue(record.display?.frequencyHz, record.frequencyHz);
   }
 
   function frequencyDisabled(model: RadioViewModel | null, receiver: ReceiverId): boolean {

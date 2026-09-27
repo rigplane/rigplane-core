@@ -71,9 +71,17 @@ const TABLE = [
     name: 'a value on a not-value state is nothing — the state decides, never the value',
     value: 3600, read: false, stale: false, absent: false, carryValue: true,
   },
+  {
+    name: 'an absent source returns the caller fallback (MOR-2688 S4c)',
+    value: 'USB', read: false, stale: false, absent: true, fallback: 'strict-source',
+  },
+  {
+    name: 'a present unknown with a fallback never falls back (MOR-2688 S4c)',
+    value: 3600, read: false, stale: false, absent: false, fallback: 'strict-source',
+  },
 ] as const;
 
-describe.each(TABLE)('the shared unread table (MOR-2688 S4a): $name', (row) => {
+describe.each(TABLE)('the shared unread table (MOR-2688 S4a/S4c): $name', (row) => {
   const expectedText = row.read ? mark(row.value) : '';
   const expectedValue = row.read ? row.value : null;
   const field = row.read ? known(row.value) : unread<typeof row.value>();
@@ -103,6 +111,12 @@ describe.each(TABLE)('the shared unread table (MOR-2688 S4a): $name', (row) => {
     expect(observationValue(undefined)).toBe(null);
     expect(observationValue({ state: 'unsupported' })).toBe(null);
     expect(observationValue({ state: 'unknown' })).toBe(null);
+    // S4c: an absent observation returns the caller's other source
+    // (`absent`); a present observation never falls back. Red under a
+    // mutation of `observationValue` that ignores `absent`.
+    const fallback = 'fallback' in row ? row.fallback : null;
+    const withFallback = row.absent ? fallback : expectedValue;
+    expect(observationValue(observation, fallback)).toBe(withFallback);
   });
 });
 

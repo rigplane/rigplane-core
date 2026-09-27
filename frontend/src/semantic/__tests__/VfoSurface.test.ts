@@ -3125,3 +3125,59 @@ describe('MOR-2662 — the one-tile presentation (vfoTiles="active")', () => {
     expect(tiles[0].getAttribute('data-vfo-receiver')).toBe('MAIN');
   });
 });
+
+
+// ── MOR-2688 S4c — the migrated VfoSurface chips keep their treatment ───────
+//
+// `standardPanelSections`'s `{reading}` value-or-null lines (frontToggle,
+// dspToggle, notch, offsetChip) now enter through `readingValue`, and the
+// RFG strict fallback enters through `observationValue(display, fallback)`.
+// Literal pins; red under a mutation that drops the reading, and under one
+// of `observationValue` that ignores the ABSENT argument (a no-display
+// reading would go dark).
+describe('MOR-2688 S4c — the Standard chips read through the entry points', () => {
+  it('pins the front/dsp/notch chip text and lit state for both receivers', () => {
+    const root = mountSurface({ viewModel: withReceiverIndicators('2/main_sub'), appearance: 'standard' });
+    const panels = {
+      MAIN: root.querySelector('[data-receiver-instrument="MAIN"]')!,
+      SUB: root.querySelector('[data-receiver-instrument="SUB"]')!,
+    };
+    const chip = (panel: HTMLElement, key: string) =>
+      panel.querySelector<HTMLElement>(`[data-chip="${key}"]`!)!;
+
+    // receiverIndicator fixture: MAIN ipPlus known true, digiSel known
+    // false, nbActive false, nrActive true, notchMode 'off'; SUB mirrors.
+    expect(chip(panels.MAIN, 'ip-plus').textContent).toBe('IP+');
+    expect(chip(panels.MAIN, 'ip-plus').getAttribute('data-lit')).toBe('true');
+    expect(chip(panels.MAIN, 'digi-sel').textContent).toBe('DIGI-SEL');
+    expect(chip(panels.MAIN, 'digi-sel').getAttribute('data-lit')).toBe('false');
+    expect(chip(panels.MAIN, 'nb').textContent).toBe('NB');
+    expect(chip(panels.MAIN, 'nb').getAttribute('data-lit')).toBe('false');
+    expect(chip(panels.MAIN, 'nr').textContent).toBe('NR');
+    expect(chip(panels.MAIN, 'nr').getAttribute('data-lit')).toBe('true');
+    expect(chip(panels.MAIN, 'notch').textContent).toBe('NOTCH');
+    expect(chip(panels.MAIN, 'notch').getAttribute('data-lit')).toBe('false');
+
+    expect(chip(panels.SUB, 'ip-plus').getAttribute('data-lit')).toBe('false');
+    expect(chip(panels.SUB, 'digi-sel').getAttribute('data-lit')).toBe('true');
+    expect(chip(panels.SUB, 'nb').getAttribute('data-lit')).toBe('true');
+    expect(chip(panels.SUB, 'nr').getAttribute('data-lit')).toBe('false');
+    expect(chip(panels.SUB, 'notch').textContent).toBe('NOTCH A');
+    expect(chip(panels.SUB, 'notch').getAttribute('data-lit')).toBe('true');
+  });
+
+  it('pins the RFG ABSENT fallback: no display observation → the strict reading decides', () => {
+    const root = mountSurface({ viewModel: withReceiverIndicators('2/main_sub'), appearance: 'standard' });
+    const sub = root.querySelector('[data-receiver-instrument="SUB"]')!;
+    const subRfg = sub.querySelector<HTMLElement>('[data-indicator-fact="rfg"]')!;
+    // SUB rfGain is a known 0.75 with NO `display` — an absent observation
+    // must return the strict reading, never nothing.
+    expect(subRfg.textContent).toBe('RFG 75%');
+    expect(subRfg.getAttribute('data-lit')).toBe('true');
+    // MAIN rfGain is a known 0: the chip keeps its reserved slot, unlit.
+    const main = root.querySelector('[data-receiver-instrument="MAIN"]')!;
+    const mainRfg = main.querySelector<HTMLElement>('[data-indicator-fact="rfg"]')!;
+    expect(mainRfg.textContent).toBe('');
+    expect(mainRfg.getAttribute('data-lit')).toBe('false');
+  });
+});

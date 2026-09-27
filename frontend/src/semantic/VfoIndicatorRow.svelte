@@ -114,12 +114,11 @@
 
   /** The RF gain the display shows, independent of provenance: the observed
    *  display value when one exists, otherwise the strict reading. MOR-2688
-   *  S4a: both vocabularies enter through `primitives/reading-text`
-   *  (`observationValue`, `readingValue`); the predicate is unchanged. */
+   *  S4c: the absence fallback is the strict reading, passed INTO
+   *  `observationValue` (`primitives/reading-text.ts`); the predicate is
+   *  unchanged. */
   function rfGainShown(field: DisplayObservedField<number>): number | null {
-    return field.display !== undefined
-      ? observationValue(field.display)
-      : readingValue(field);
+    return observationValue(field.display, readingValue(field));
   }
 
   /**

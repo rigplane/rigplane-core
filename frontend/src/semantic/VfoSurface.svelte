@@ -60,6 +60,7 @@
   import type { ReceiverInstrumentHandles } from './ReceiverInstrumentHost.svelte';
   import { splitFrequencyToDigits, groupDigitsForDisplay } from '../primitives/frequency/frequency-tuning';
   import { renderSlot } from './design-language-renderers';
+  import { observationValue, readingValue } from '../primitives/reading-text';
   import type { MeterContinuitySession } from '../primitives/meters/meter-ballistics.svelte';
   import type {
     BooleanFact, DisplayObservation, DspField, TxAuxField,
@@ -438,12 +439,7 @@
    * out-of-the-box tile text on the live bench.
    */
   function frequencyDisplay(vfo: VfoViewModel): ReturnType<typeof renderSlot> {
-    return renderSlot('frequencyDisplay', { frequencyHz: displayValue(vfo.display?.frequencyHz, vfo.frequencyHz) });
-  }
-
-  function displayValue<T>(display: DisplayObservation<T> | undefined, strict: T | null): T | null {
-    if (display === undefined) return strict;
-    return display.state === 'current' || display.state === 'stale' ? display.value : null;
+    return renderSlot('frequencyDisplay', { frequencyHz: observationValue(vfo.display?.frequencyHz, vfo.frequencyHz) });
   }
 
   /**
@@ -452,6 +448,8 @@
    * (the panel keeps the slot and draws no chip). Both carriers of
    * "unsupported" — the observation's own state and the modeFilter group's
    * structural flag — collapse into the one undefined answer here.
+   * MOR-2688 S4c: the value-or-strict rule is `observationValue` (
+   * `primitives/reading-text.ts`).
    */
   function displayModeOrFilter(
     vfo: VfoViewModel | undefined,
@@ -462,7 +460,7 @@
     if (vfo === undefined) return null;
     if (observation?.state === 'unsupported') return undefined;
     if (structural !== undefined && !structural.availability.structural) return undefined;
-    return displayValue(observation, strict);
+    return observationValue(observation, strict);
   }
 
   function hasDigitReadout(vfo: VfoViewModel): boolean {
@@ -692,7 +690,7 @@
       levelLamp('att', 'ATT', indicator.attenuator);
       const frontToggle = (key: string, field: ReceiverIndicatorViewModel['ipPlus']) => {
         if (!field.availability.structural) return;
-        const value = field.reading.status === 'known' ? field.reading.value : null;
+        const value = readingValue(field);
         sections.annunciators.push({
           key, group: 'front', family: 'red',
           text: key === 'ip-plus' ? 'IP+' : 'DIGI-SEL', lit: value === true,
@@ -701,10 +699,7 @@
       frontToggle('ip-plus', indicator.ipPlus);
       frontToggle('digi-sel', indicator.digiSel);
       if (indicator.rfGain.availability.structural && indicator.rfGain.display?.state !== 'unsupported') {
-        const shown = displayValue(
-          indicator.rfGain.display,
-          indicator.rfGain.reading.status === 'known' ? indicator.rfGain.reading.value : null,
-        );
+        const shown = observationValue(indicator.rfGain.display, readingValue(indicator.rfGain));
         // Owner ruling 2026-09-23: RFG appears only while RF gain is REDUCED.
         // Coordinator decision, same day: "reduced" is what the operator
         // reads — the formatted percentage, the rounding `formatKnownLevel`
@@ -735,7 +730,7 @@
         level: DspField<number> | undefined,
       ) => {
         if (!field.availability.structural) return;
-        const value = field.reading.status === 'known' ? field.reading.value : null;
+        const value = readingValue(field);
         sections.dsp.push({
           key, text: value === true ? `${key.toUpperCase()}${levelSuffix(level)}` : key.toUpperCase(),
           lit: value === true,
@@ -744,7 +739,7 @@
       dspToggle('nb', indicator.nbActive, viewModel.dsp?.nbLevel);
       dspToggle('nr', indicator.nrActive, viewModel.dsp?.nrLevel);
       if (indicator.notchMode.availability.structural) {
-        const value = indicator.notchMode.reading.status === 'known' ? indicator.notchMode.reading.value : null;
+        const value = readingValue(indicator.notchMode);
         const text = value === 'auto' ? 'NOTCH A' : value === 'manual' ? 'NOTCH M' : 'NOTCH';
         sections.dsp.push({ key: 'notch', text, lit: value === 'auto' || value === 'manual' });
       }
@@ -756,8 +751,8 @@
         const activeField = key === 'rit' ? wide.ritActive : wide.xitActive;
         const offsetField = key === 'rit' ? wide.ritOffset : wide.xitOffset;
         if (!activeField.availability.structural && !offsetField.availability.structural) return;
-        const active = activeField.reading.status === 'known' ? activeField.reading.value : null;
-        const offset = offsetField.reading.status === 'known' ? offsetField.reading.value : null;
+        const active = readingValue(activeField);
+        const offset = readingValue(offsetField);
         const lit = active === true && offset !== null;
         sections.under[key] = {
           key,
@@ -806,9 +801,9 @@
       {@const selectDisabled = selectable && (vfo.slot.kind === 'unknown' || disabled)}
       {@const freq = frequencyDisplay(vfo)}
       {@const pendingHz = pendingFrequencyHz?.[vfo.receiver] ?? null}
-      {@const displayHz = displayValue(vfo.display?.frequencyHz, vfo.frequencyHz)}
-      {@const displayMode = displayValue(vfo.display?.mode, vfo.mode)}
-      {@const displayFilter = displayValue(vfo.display?.filter, vfo.filter)}
+      {@const displayHz = observationValue(vfo.display?.frequencyHz, vfo.frequencyHz)}
+      {@const displayMode = observationValue(vfo.display?.mode, vfo.mode)}
+      {@const displayFilter = observationValue(vfo.display?.filter, vfo.filter)}
       {#snippet hostedFrequency()}
         {#if vfo.receiver === 'MAIN'}
           {@render receiverInstruments!.mainFrequency({ compact: appearance === 'semantic', vfoFreqHook: false })}
@@ -1079,7 +1074,7 @@
           ? [{
               key: String(index), receiver: choice.receiver === 'SUB' ? 'sub' as const : 'main' as const,
               slot: slotKey(choice.slot), label: roleLabel(choice),
-              frequencyText: formatFrequency(displayValue(choice.display?.frequencyHz, choice.frequencyHz)),
+              frequencyText: formatFrequency(observationValue(choice.display?.frequencyHz, choice.frequencyHz)),
               active: choice.isActive, activeSlot: choice.isActiveSlot, txTarget: choice.isTxTarget,
               disabled: disabled || choice.slot.kind === 'unknown' || choice.slot.kind === 'relative',
               reason: choice.slot.kind === 'relative' ? identityOnlyReasonText() : selectReasonText(choice),
@@ -1103,7 +1098,7 @@
             ? hostedFrequency : undefined}
           freq={dominant?.frequencyHz ?? null}
           displayHz={(receiverInstruments === undefined || (fixed !== undefined && !fixed.isActiveSlot)) && dominant
-            ? displayValue(dominant.display?.frequencyHz, dominant.frequencyHz) : undefined}
+            ? observationValue(dominant.display?.frequencyHz, dominant.frequencyHz) : undefined}
           pendingDisplayHz={receiverInstruments === undefined && dominant
             ? pendingFrequencyHz?.[receiver] ?? null : undefined}
           frequencyState={dominant?.display?.frequencyHz.state ?? (dominant?.frequencyHz == null ? 'unknown' : 'current')}

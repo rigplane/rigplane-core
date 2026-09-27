@@ -17,7 +17,9 @@
  * - `readingValue` — the `{reading}` status vocabulary (`status === 'known'`
  *   → the value).
  * - `observationValue` — the `display.state` vocabulary (current or stale
- *   → the value, anything else → nothing).
+ *   → the value, anything else → nothing). S4c: an ABSENT observation
+ *   returns the caller's other source (`absent`); a present observation
+ *   never does (coordinator decision on the audit's D2).
  * - `finiteValue` — a finite number in, the number out; NaN, ±Infinity,
  *   null and undefined in, nothing out.
  *
@@ -58,20 +60,31 @@ export function readingText<T>(
 }
 
 /**
- * Vocabulary 2 — the display observation, as a structural type:
- * `DisplayObservation<T>` is owned by `semantic/`, which `primitives/`
- * may not import, so a structural shape lives here. Current or stale
- * carries a value; anything else (unknown, unsupported) is nothing.
+ * Vocabulary 2 — the display observation, as the literal union of the two
+ * real types it stands for: `DisplayObservation<T>` (
+ * `semantic/radio-view-model.ts` — current/stale with a value, unknown,
+ * unsupported) and `LevelMeterEvidence` (
+ * `semantic/bar-meter-projector.ts` — current/stale with a value,
+ * unsupported, idle, unknown). `primitives/` may not import `semantic/`,
+ * so the union is RESTATED here; the type check in
+ * `semantic/__tests__/reading-text-type-tie.test.ts` ties it back: a
+ * renamed state, or segmentline's `DisplayValue` (`state: 'known'`),
+ * fails to compile there instead of silently becoming nothing.
  */
-export type ValueObservation<T> = Readonly<{
-  readonly state: string;
-  readonly value?: T;
-}>;
+export type ValueObservation<T> =
+  | Readonly<{ state: 'current' | 'stale'; value: T }>
+  | Readonly<{ state: 'unknown' | 'unsupported' | 'idle' }>;
 
+/**
+ * The value of a current or stale observation, the caller's other source
+ * (`absent`) when there is no observation in this model at all, and
+ * nothing otherwise. A present observation never falls back.
+ */
 export function observationValue<T>(
   observation: ValueObservation<T> | undefined,
+  absent: T | null = null,
 ): T | null {
-  if (observation === undefined) return null;
+  if (observation === undefined) return absent;
   return observation.state === 'current' || observation.state === 'stale'
     ? observation.value ?? null
     : null;
