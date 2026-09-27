@@ -275,8 +275,14 @@
           {#if mainBand}
             <span class="vfo-band-box">{mainBand}</span>
           {/if}
-          <!-- MOR-2673: inline min-width derived from the profile's mode catalog -->
-          <span class="vfo-mode-box" style:min-width={modeBoxMinWidth}>{mainMode}</span>
+          <!-- MOR-2673: inline min-width derived from the profile's mode
+               catalog. The App mounts this skin before the capabilities
+               fetch lands, so the box is not drawn at all until the catalog
+               is known — it appears once, with its reservation, and never
+               changes width when a reading arrives. -->
+          {#if modeBoxMinWidth}
+            <span class="vfo-mode-box" style:min-width={modeBoxMinWidth}>{mainMode}</span>
+          {/if}
           {#if mainFilterWidthLabel}
             <span class="vfo-filter-box">{mainFilterWidthLabel}</span>
           {/if}
@@ -294,7 +300,9 @@
             {#if subBand}
               <span class="vfo-band-box vfo-band-box-sub">{subBand}</span>
             {/if}
-            <span class="vfo-mode-box vfo-mode-box-sub" style:min-width={modeBoxMinWidth}>{subMode}</span>
+            {#if modeBoxMinWidth}
+              <span class="vfo-mode-box vfo-mode-box-sub" style:min-width={modeBoxMinWidth}>{subMode}</span>
+            {/if}
           </div>
         </div>
       {/if}

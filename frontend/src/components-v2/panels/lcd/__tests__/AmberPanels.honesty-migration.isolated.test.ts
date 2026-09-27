@@ -505,16 +505,34 @@ describe('Amber unread mode / RIT sentinel (MOR-2673)', () => {
     return readFileSync('src/components-v2/panels/lcd/AmberScope.svelte', 'utf8');
   }
 
+  it('AmberCockpit draws no mode box at all until the profile catalog is known', () => {
+    // The App mounts the skin before the capabilities fetch lands
+    // (App.svelte resolves the presentation without waiting for
+    // runtime.bootstrap), so a caps-less mount is a real first frame.
+    // The box appears once, with its reservation — never hugs its padding
+    // and then jumps when the catalog arrives (MOR-2673).
+    for (const caps of [amberCaps, null]) {
+      const state = {
+        active: 'MAIN',
+        main: baseReceiver({ mode: undefined }),
+        fieldStatus: {},
+      } as unknown as ServerState;
+      const target = mountCockpit(state, false, caps);
+      expect(target.querySelector('.vfo-mode-box')).toBeNull();
+    }
+  });
+
   it('AmberCockpit renders an unread main mode as an empty reserved slot, never a dash run', () => {
     const state = {
       active: 'MAIN',
       main: baseReceiver({ mode: undefined, filter: undefined }),
       fieldStatus: {},
     } as unknown as ServerState;
-    const target = mountCockpit(state);
+    const target = mountCockpit(state, false, ic7300Caps);
     const box = target.querySelector('.vfo-mode-box');
     expect(box).not.toBeNull();
     expect(box?.textContent).toBe('');
+    expect(reservedCh(box)).toBeGreaterThanOrEqual(8);
     expect(target.textContent ?? '').not.toContain('---');
   });
 
@@ -523,7 +541,7 @@ describe('Amber unread mode / RIT sentinel (MOR-2673)', () => {
       active: 'MAIN',
       main: baseReceiver(),
       fieldStatus: {},
-    } as unknown as ServerState);
+    } as unknown as ServerState, false, ic7300Caps);
     expect(target.querySelector('.vfo-mode-box')?.textContent).toBe('USB 1');
   });
 
@@ -565,6 +583,20 @@ describe('Amber unread mode / RIT sentinel (MOR-2673)', () => {
     expect(mountCockpit(state).querySelector('.rit-value')?.textContent).toBe('+0.25 kHz');
   });
 
+  it('AmberScope draws no mode box at all until the profile catalog is known', () => {
+    // Same first-frame rule as the cockpit: caps-less caps (or a catalog
+    // without modes) draws no box — it appears once, with its reservation.
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver(),
+      fieldStatus: {},
+    } as unknown as ServerState;
+    for (const caps of [amberCaps, null]) {
+      const target = mountScope(state, false, caps, true);
+      expect(target.querySelector('.vfo-mode-box')).toBeNull();
+    }
+  });
+
   it('AmberScope renders unread main and sub modes as empty reserved slots, never a dash run', () => {
     const state = {
       active: 'MAIN',
@@ -572,10 +604,13 @@ describe('Amber unread mode / RIT sentinel (MOR-2673)', () => {
       sub: baseReceiver({ mode: undefined }),
       fieldStatus: {},
     } as unknown as ServerState;
-    const target = mountScope(state, false, amberCaps, true);
+    const target = mountScope(state, false, ic7300Caps, true);
     const boxes = [...target.querySelectorAll('.vfo-mode-box')];
     expect(boxes).toHaveLength(2);
-    for (const box of boxes) expect(box.textContent).toBe('');
+    for (const box of boxes) {
+      expect(box.textContent).toBe('');
+      expect(reservedCh(box)).toBeGreaterThanOrEqual(6);
+    }
     expect(target.textContent ?? '').not.toContain('---');
   });
 
@@ -586,7 +621,7 @@ describe('Amber unread mode / RIT sentinel (MOR-2673)', () => {
       sub: baseReceiver({ mode: 'CW-R' }),
       fieldStatus: {},
     } as unknown as ServerState;
-    const target = mountScope(state, false, amberCaps, true);
+    const target = mountScope(state, false, ic7300Caps, true);
     const boxes = [...target.querySelectorAll('.vfo-mode-box')];
     expect(boxes.map((box) => box.textContent)).toEqual(['USB', 'CW-R']);
     // MOR-2673 review F1: no radio-specific width constant in the CSS —

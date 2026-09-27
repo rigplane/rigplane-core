@@ -444,8 +444,15 @@
           <AmberFrequency freqHz={mainFreqHz} size="large" />
         </div>
         <div class="vfo-badges">
-          <!-- MOR-2673: inline min-width derived from the profile's catalogs -->
-          <span class="vfo-mode-box" style:min-width={modeBoxMinWidth}>{mainMode}{mainFilter ? ` ${mainFilter}` : ''}</span>
+          <!-- MOR-2673: inline min-width derived from the profile's catalogs.
+               The App mounts this skin before the capabilities fetch lands
+               (App.svelte resolves the presentation without waiting for
+               runtime.bootstrap), so the box is not drawn at all until the
+               mode catalog is known — it appears once, with its reservation,
+               and then never changes width when a reading arrives. -->
+          {#if modeBoxMinWidth}
+            <span class="vfo-mode-box" style:min-width={modeBoxMinWidth}>{mainMode}{mainFilter ? ` ${mainFilter}` : ''}</span>
+          {/if}
           {#if mainBand}
             <span class="vfo-band-box">{mainBand}</span>
           {/if}
@@ -488,7 +495,7 @@
             <AmberFrequency freqHz={subVfoFreqHz} size="large" />
           </div>
           <div class="vfo-badges">
-            {#if subVfoMode}
+            {#if subVfoMode && modeBoxMinWidth}
               <span class="vfo-mode-box" style:min-width={modeBoxMinWidth}>{subVfoMode}{subVfoFilter ? ` ${subVfoFilter}` : ''}</span>
             {/if}
             {#if subVfoBand}

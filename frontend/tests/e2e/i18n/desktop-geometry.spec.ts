@@ -1491,18 +1491,32 @@ test.describe('MOR-2545 PR3: the hosted scope row hides by band and never overla
 // MOR-2673: the unread mode is an empty reserved slot, so the amber LCD
 // mode box keeps one width in every state — a real browser width comparison
 // between the unread and the read mount (jsdom has no layout; the component
-// suites pin the reserving rule structurally instead).
+// suites pin the reserving rule structurally instead). The App mounts the
+// skin before the capabilities fetch lands, so the box is not drawn at all
+// until the profile's mode catalog is known; once drawn, its reservation is
+// fixed for the session and never moves when a reading arrives.
 for (const layout of ['lcd-cockpit', 'lcd-scope'] as const) {
   test(`${layout} keeps one mode-box width between unread and read (MOR-2673)`, async ({ page }) => {
+    // The boot fixture's caps carry no mode catalog: the first frame draws
+    // no mode box at all (structure appears once, like any gated element).
     await boot(page, layout, 1440, true);
-    const readBox = await page.locator('.lcd-frame .vfo-mode-box').first().boundingBox();
-    expect(readBox, `${layout} renders a mode box`).not.toBeNull();
+    await expect(page.locator('.lcd-frame .vfo-mode-box').first(),
+      `${layout} draws no mode box before the mode catalog is known`).toHaveCount(0);
 
-    await boot(page, layout, 1440, true, 'studioline', false, undefined, {
-      patch: (state) => {
-        delete (state.main as { mode?: string }).mode;
+    // A catalog-carrying capabilities payload: the box appears with its
+    // reservation, and an unread mode renders the same reserved width.
+    const withCatalog = (unread: boolean) => ({
+      patch: (state: ServerState, caps: Capabilities) => {
+        caps.modes = ['LSB', 'USB', 'CW', 'CW-R', 'AM', 'FM', 'RTTY', 'RTTY-R', 'DATA-FM-N'];
+        caps.filters = ['FIL1', 'FIL2', 'FIL3'];
+        if (unread) delete (state.main as { mode?: string }).mode;
       },
     });
+    await boot(page, layout, 1440, true, 'studioline', false, undefined, withCatalog(false));
+    const readBox = await page.locator('.lcd-frame .vfo-mode-box').first().boundingBox();
+    expect(readBox, `${layout} renders a mode box once the catalog is known`).not.toBeNull();
+
+    await boot(page, layout, 1440, true, 'studioline', false, undefined, withCatalog(true));
     const unreadBox = await page.locator('.lcd-frame .vfo-mode-box').first().boundingBox();
     expect(unreadBox, `${layout} keeps the mode box for an unread mode`).not.toBeNull();
     expect(unreadBox!.width, `${layout} mode box width does not move when the mode arrives`)
