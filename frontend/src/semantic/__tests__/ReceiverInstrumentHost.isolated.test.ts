@@ -574,7 +574,19 @@ describe('ReceiverInstrumentHost', () => {
   // display leaves the digits unlit — never a fallback to an invented
   // value. Red under a mutation of `observationValue` that drops current
   // or stale.
-  it('shows the observed frequency through a stale display observation, and unlit digits for a not-observed one', () => {
+  it('shows the observed frequency through a current or stale display observation, and unlit digits for a not-observed one', () => {
+    const current = publication();
+    const currentStatuses = current.state!.fieldStatus!;
+    currentStatuses['main.freqHz'] = {
+      ...currentStatuses['main.freqHz']!, freshness: 'fresh',
+    };
+    const currentRoot = mountFixture(new Publisher(current));
+    const currentReadout = currentRoot.querySelector<HTMLElement>(
+      '[data-frequency-owner="MAIN"] [data-alternate-frequency-readout]',
+    )!;
+    expect(currentReadout.dataset.source).toBe('display');
+    expect(currentReadout.textContent).toBe('14250000');
+
     const stale = publication();
     const staleStatuses = stale.state!.fieldStatus!;
     staleStatuses['main.freqHz'] = {

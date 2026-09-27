@@ -13,25 +13,14 @@
  *
  * MOR-2688 (slice S4a) — one core rule, `valueText`: a value or nothing
  * in, text out (`''` for nothing). Each unread vocabulary enters through
- * its own entry point, which yields value-or-nothing; only this module
- * knows how a vocabulary maps to nothing:
+ * its own entry point, which yields value-or-nothing:
  * - `readingValue` — the `{reading}` status vocabulary (`status === 'known'`
- *   → the value). Call sites: `readingText` itself,
- *   `ReceiverInstrumentCluster: bwRaw` and `meterValue`, and
- *   `VfoIndicatorRow: rfGainShown` (its no-observation fallback).
+ *   → the value).
  * - `observationValue` — the `display.state` vocabulary (current or stale
- *   → the value, anything else → nothing). Call sites:
- *   `VfoIndicatorRow: rfGainShown`, `ReceiverInstrumentHost:
- *   displayFrequency`, `MetersSurface: swrLowerScale`.
- * The third vocabulary — the legacy NaN/null marker on a plain number —
- * has no entry point yet: every drawing site that reads it (the three
- * scalar hosts' `formatValue`s, `meter-renderer-view.ts`,
- * `FilterSurface: numberOf`, the legacy panel guards) is S4b/S5 scope,
- * and an entry point without a caller would be an orphan. It lands in S4b
- * with its first callers.
+ *   → the value, anything else → nothing).
  *
- * The formatter parameter defaults to `String`; a read-but-falsy value
- * (`0`, `false`, `''`) still renders.
+ * A read-but-falsy value (`0`, `false`, `''`) still renders;
+ * `readingText`'s formatter defaults to `String`.
  *
  * Purity: this module imports TYPES ONLY (`InstrumentReading` from the
  * behaviour contract it shares the shape with, type-only). The pin lives
@@ -42,7 +31,7 @@ import type { InstrumentReading } from './control-instruments/control-instrument
 /** The ONE core rule: a value or nothing → text; `''` for nothing. */
 export function valueText<T>(
   value: T | null | undefined,
-  format: (value: T) => string = String,
+  format: (value: T) => string,
 ): string {
   return value === null || value === undefined ? '' : format(value);
 }
@@ -69,8 +58,8 @@ export function readingText<T>(
 /**
  * Vocabulary 2 — the display observation, as a structural type:
  * `DisplayObservation<T>` is owned by `semantic/`, which `primitives/`
- * may not import, so the shape is restated here. Current or stale carries a
- * value; anything else (unknown, unsupported, idle) is nothing.
+ * may not import, so a structural shape lives here. Current or stale
+ * carries a value; anything else (unknown, unsupported) is nothing.
  */
 export type ValueObservation<T> = Readonly<{
   readonly state: string;

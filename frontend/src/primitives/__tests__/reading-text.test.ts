@@ -66,6 +66,10 @@ const TABLE = [
   { name: 'NaN — the vocabulary decides, never the value', value: Number.NaN, read: true, stale: false, absent: false },
   { name: 'a stale observation keeps its value', value: 3600, read: true, stale: true, absent: false },
   { name: 'an absent source is nothing', value: 'USB', read: false, stale: false, absent: true },
+  {
+    name: 'a value on a not-value state is nothing — the state decides, never the value',
+    value: 3600, read: false, stale: false, absent: false, carryValue: true,
+  },
 ] as const;
 
 describe.each(TABLE)('the shared unread table (MOR-2688 S4a): $name', (row) => {
@@ -76,7 +80,9 @@ describe.each(TABLE)('the shared unread table (MOR-2688 S4a): $name', (row) => {
     ? undefined
     : row.read
       ? { state: row.stale ? 'stale' : 'current', value: row.value }
-      : { state: 'unknown' };
+      : 'carryValue' in row
+        ? { state: 'unknown', value: row.value }
+        : { state: 'unknown' };
 
   it('valueText: value or nothing → text, "" for nothing', () => {
     expect(valueText(row.read ? row.value : null, mark)).toBe(expectedText);
