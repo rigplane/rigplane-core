@@ -3,6 +3,7 @@
   import type { ScopeFrame } from '../../lib/runtime/adapters/scope-adapter';
   import ReceiverInstrumentCluster from './ReceiverInstrumentCluster.svelte';
   import { readingText } from '../../primitives/reading-text';
+  import { usable } from '../../primitives/control-instruments/control-instrument-behavior';
   export interface ScopeFrameSource {
     subscribe(listener: (frame: ScopeFrame) => void): () => void;
     subscribeHealth?(listener: (live: boolean) => void): () => void;
@@ -26,7 +27,7 @@
   });
   let pre = $derived(view.rfFrontEnd?.preamp);
   let preBlocked = $derived(view.disabledReasons.some((reason) => reason.field === 'rfFrontEnd.preamp'));
-  let preEnabled = $derived(pre?.availability.structural === true && pre.availability.operational === true && pre.reading.status === 'known' && !preBlocked && onPreChange !== undefined);
+  let preEnabled = $derived(usable(pre) && !preBlocked && onPreChange !== undefined);
   let preNext = $derived.by(() => {
     if (!preEnabled || !pre || pre.reading.status !== 'known') return null;
     const current = pre.reading.value;

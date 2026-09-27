@@ -6,6 +6,7 @@ import type {
   ReceiverId,
   TxAuxField,
 } from './radio-view-model';
+import { usable } from '../primitives/control-instruments/control-instrument-behavior';
 export type VfoOperationReceiver = Extract<ReceiverId, 'MAIN' | 'SUB'>;
 export type VfoOperationIntent =
   | Readonly<{ kind: 'select-receiver'; receiver: VfoOperationReceiver }>
@@ -151,8 +152,7 @@ export function projectVfoOperations(
     return {
       availability: availability(
         structural,
-        structural && field!.availability.operational
-          && field!.reading.status === 'known' && callback !== undefined,
+        usable(field) && callback !== undefined,
         undefined,
       ),
       reading: field === undefined ? { status: 'unknown' } : field.reading,
