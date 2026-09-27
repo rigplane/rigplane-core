@@ -365,12 +365,50 @@ describe('CwPanel — unread pitch/speed renders empty (MOR-2658)', () => {
   it('reserves the pitch/speed value slots structurally for unread and known alike', () => {
     const source = readFileSync('src/components-v2/panels/CwPanel.svelte', 'utf8');
     const rule = source.match(/\.cw-value-slot :global\(\.vc-value\) \{([^}]*)\}/)?.[1] ?? '';
-    expect(rule, 'the pitch/speed values keep a reserved box').toContain('min-width: 6ch');
+    // MOR-2706: the reservation derives from the mounted profile's control
+    // domain via the per-slot `--cw-value-min-width` inline custom property;
+    // 6ch is the floor for a radio that publishes no domain.
+    expect(rule, 'the pitch/speed values keep a reserved box')
+      .toContain('min-width: var(--cw-value-min-width, 6ch)');
     // An empty inline-block collapses to zero height and, baseline-aligned,
     // pulls the row up (caught by the visual run) — the slot must keep one
     // line and stay out of the header's baseline alignment.
     expect(rule, 'an empty slot keeps its line height').toContain('min-height: 1lh');
     expect(rule, 'an empty slot leaves baseline alignment').toContain('align-self: center');
+  });
+
+  // MOR-2706: each value slot's reserved width derives from the profile's
+  // published control domain — the widest text the readout can print is the
+  // domain max in its own unit (FTX-1 cw_pitch 300..1050 → '1050 Hz' = 7ch;
+  // the legacy fallback 300..900 → '900 Hz' = 6ch; key speed 6..48 →
+  // '48 WPM' = 6ch), never a raised constant.
+  const slotVar = (t: HTMLElement, index: number): string =>
+    t.querySelectorAll<HTMLElement>('.cw-value-slot')[index]!
+      .style.getPropertyValue('--cw-value-min-width');
+
+  it('reserves the pitch slot for the FTX-1 cw_pitch max (1050 Hz = 7ch)', () => {
+    const t = mountPanel({ cwPitchDomain: { min: 300, max: 1050, step: 10, origin: 300 } });
+    expect(slotVar(t, 0)).toBe('7ch');
+    expect('1050 Hz'.length).toBeLessThanOrEqual(7);
+  });
+
+  it('reserves the pitch slot for the Icom legacy max (900 Hz = 6ch) and the speed slot (48 WPM = 6ch)', () => {
+    const t = mountPanel({ cwPitchDomain: null });
+    expect(slotVar(t, 0)).toBe('6ch');
+    expect('900 Hz'.length).toBeLessThanOrEqual(6);
+    expect(slotVar(t, 1)).toBe('6ch');
+    expect('48 WPM'.length).toBeLessThanOrEqual(6);
+  });
+
+  it('keeps the pitch reservation unchanged when a reading arrives (MOR-2706)', () => {
+    const ftx1 = { min: 300, max: 1050, step: 10, origin: 300 } as const;
+    const unread = mountPanel({ cwPitchDomain: ftx1, cwPitch: Number.NaN });
+    expect(vcValueFor(unread, 'CW Pitch')).toBe('');
+    const unreadWidth = slotVar(unread, 0);
+    const read = mountPanel({ cwPitchDomain: ftx1, cwPitch: 1050 });
+    expect(vcValueFor(read, 'CW Pitch')).toBe('1050 Hz');
+    expect(slotVar(read, 0)).toBe(unreadWidth);
+    expect(unreadWidth).toBe('7ch');
   });
 });
 

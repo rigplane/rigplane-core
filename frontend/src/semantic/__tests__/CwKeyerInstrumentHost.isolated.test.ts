@@ -265,6 +265,49 @@ describe('CwKeyerInstrumentHost', () => {
     r.dispose();
   });
 
+  // MOR-2706: each value slot's reserved width derives from the field's
+  // effective domain — the widest text the readout can print is the domain
+  // max in the field's own unit, never a raised constant. The CSS rule's 6ch
+  // is the floor (`var(--cw-value-min-width, 6ch)`).
+  const reservedCh = (r: ReturnType<typeof render>, field: CwContinuousField): string =>
+    r.row(field).style.getPropertyValue('--cw-value-min-width');
+
+  it('reserves the pitch slot for the FTX-1 domain max (1050 Hz = 7ch)', () => {
+    const r = render({ view: withPitchDomain({ min: 300, max: 1050, step: 10, origin: 300 }) });
+    expect(reservedCh(r, 'pitchHz')).toBe('7ch');
+    expect('1050 Hz'.length).toBeLessThanOrEqual(7);
+    r.dispose();
+  });
+
+  it('reserves the pitch slot for the Icom legacy domain max (900 Hz = 6ch)', () => {
+    const r = render();
+    expect(reservedCh(r, 'pitchHz')).toBe('6ch');
+    expect('900 Hz'.length).toBeLessThanOrEqual(6);
+    expect(reservedCh(r, 'keyerSpeed')).toBe('6ch');
+    expect('48 WPM'.length).toBeLessThanOrEqual(6);
+    r.dispose();
+  });
+
+  it('keeps the pitch reservation unchanged when a reading arrives (MOR-2706)', () => {
+    const ftx1Domain = { min: 300, max: 1050, step: 10, origin: 300 } as const;
+    const withPitchReading = (value: number | null): RadioViewModel => ({
+      ...withPitchDomain(ftx1Domain),
+      cwKeyer: {
+        ...withPitchDomain(ftx1Domain).cwKeyer!,
+        pitchHz: {
+          reading: value === null ? { status: 'unknown' } : { status: 'known', value },
+          availability: { structural: true, operational: true },
+        },
+      },
+    });
+    const unread = render({ view: withPitchReading(null) });
+    expect(reservedCh(unread, 'pitchHz')).toBe('7ch');
+    unread.dispose();
+    const read = render({ view: withPitchReading(1050) });
+    expect(reservedCh(read, 'pitchHz')).toBe('7ch');
+    read.dispose();
+  });
+
   // MOR-2475 F1: the key-speed scalar takes the same profile-domain
   // substitution as the pitch scalar — the view model's `keySpeedDomain`
   // replaces the row constant's limits when the profile publishes one.
