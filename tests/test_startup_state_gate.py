@@ -291,9 +291,7 @@ def _critical_wait_profile() -> RadioAcquisitionProfile:
     path = FieldPath.global_("tx_state", "ptt")
     return RadioAcquisitionProfile(
         provider="test_provider",
-        capabilities=(
-            FieldCapability(path=path, polling=True),
-        ),
+        capabilities=(FieldCapability(path=path, polling=True),),
         field_policies={
             path: AcquisitionPolicy(cadence_seconds=1.0, freshness_ttl_seconds=15.0),
         },
@@ -1329,9 +1327,7 @@ def _shipped_startup_profiles() -> list[pytest.param]:
     return params
 
 
-@pytest.mark.parametrize(
-    ("model", "acquisition"), _shipped_startup_profiles()
-)
+@pytest.mark.parametrize(("model", "acquisition"), _shipped_startup_profiles())
 @pytest.mark.asyncio
 async def test_shipped_profile_opens_by_the_deadline_with_every_non_critical_path_unanswered(
     model: str,
