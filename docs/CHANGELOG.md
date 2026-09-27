@@ -57,6 +57,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   include `narrow`. The toggle's pressed state follows the confirmed
   reading, and the pending mark shows until readback confirms.
 
+- **Filter Shape SHARP/SOFT choices show pending feedback
+  (MOR-1689).** The clicked choice is marked pending while
+  `set_filter_shape` is in flight, and the selection moves only after
+  the confirming readback of the shape.
+
 ### Changed
 
 - **Pollable fields take an acquisition class, and the scheduler
@@ -86,6 +91,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   disabled look. On a narrow row, controls hide into More in a fixed
   order and stay reachable there. The More label reads More / Ещё /
   その他.
+
+- **The phone shows only the active VFO (MOR-2662).** One tile in the
+  portrait deck, and the other VFO's frequency is no longer drawn in
+  the sticky header; the receiver pills, swap, equalize and the A/B
+  selectors stay outside the tile. Before any receiver reports an
+  active slot, the startup view keeps one unlit tile instead of
+  inventing an active receiver.
+
+- **The design-language choice is stored per skin (MOR-2218).** The
+  workspace payload moves to schema version 2 with a
+  `designLanguageBySkin` map; the retired global value is dropped on
+  read, not migrated, so each skin starts at its declared default.
+  The settings panel offers only the current skin's declared
+  languages, and a skin with none shows no design-language select.
+
+- **On a core-only server the web UI stops calling /api/local
+  (MOR-2242).** The local-extension manifest and the tuning-step
+  mirror run only when the station supervisor advertises itself with
+  a `<meta name="rigplane-local-supervisor">` tag; the core tuning
+  step keeps working through /api/v1. The CSP carries the hash of the
+  inline service-worker cleanup and allows `media-src 'self' data:`.
+
+- **Filter Width gives the same feedback in every mount
+  (MOR-1703).** Desktop, narrow mobile and a workspace-selected
+  filter mount share one lifecycle — phase, busy and confirmed ARIA —
+  for the same command.
 
 ### Removed
 
@@ -239,6 +270,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stays on the radio object. The FTX-1 is this shape: CAT level 000 is
   OFF. A radio that has its own `set_nb` or `set_nr` write command
   still uses that command.
+
+- **Values the radio has not reported no longer draw "?", dashes,
+  "unknown" or invented defaults, on screen or in accessible names
+  (MOR-2644, MOR-2647–MOR-2655, MOR-2657–MOR-2659, MOR-2667, MOR-2668,
+  MOR-2673, MOR-2674, MOR-2682, MOR-2683, MOR-2690–MOR-2692).** An
+  unread reading is an empty, unlit slot whose width is reserved from
+  the profile's own catalogs, so nothing moves when the first reading
+  arrives. Empty memory channels render an empty row instead of
+  "-- empty --"; an antenna's blocked reason sits on the disabled
+  control's title rather than visible text; and an unread compressor,
+  monitor-gain or filter value is no longer replaced by a number or
+  by the first choice's label.
+
+- **The uncertain TX state reads "TX" with a hollow lamp (MOR-2671).**
+  Confirmed and unconfirmed states now differ by shape — filled versus
+  hollow or dashed outline — which survives forced-colors mode; the
+  accessible name says "transmit not confirmed" in words.
+
+- **A control refused while the radio is transmitting names why
+  (MOR-1890).** The refusal reason the server already delivers to the
+  command's issuer now reaches the operator: the aria-live status
+  attached to the touched control names the catalog reason — the
+  radio is transmitting, or its RF state is unknown — instead of the
+  raw English wire message.
+
+- **A TX key blocked while idle renders inert (MOR-1276).** In
+  studioline and fieldline it no longer paints the idle accent
+  colour; visual treatment only, no TX path changes.
+
+- **The active VFO tile and the unavailable channel strip carry
+  non-colour state (MOR-1260).** The active tile gets a double inner
+  outline that survives forced-colors with no geometry change; an
+  operationally unavailable strip now shows its reason as visible
+  text, and its active bar is pinned to CanvasText under
+  forced-colors.
+
+- **The linear S-meter honours forced-colors mode (MOR-1250).** Its
+  SVG segments use system colours instead of the fixed palette, and
+  the lit/unlit split is carried in the DOM as a data attribute, with
+  the reading also in text and aria-labels.
+
+- **Screen readers hear less noise and better reasons (MOR-1283,
+  MOR-1350).** The decorative RF mark in the meters surface is
+  aria-hidden, and the TX-aux surface points its aria-describedby at
+  the joined TUNE blocked reasons.
+
+- **Per-digit VFO tuning clamps to the band's declared edges
+  (MOR-1331).** Wheel and key steps stop at the mounted profile's
+  `tuneMinHz`/`tuneMaxHz`; when an edge is unknown the old wide
+  limit keeps applying. A +1 MHz step at 14.250 MHz on a
+  14.200–14.300 MHz band lands on 14.300, not outside it.
+
+- **The mobile MOD-input TX banner shows exactly once (MOR-1245).**
+  Portrait no longer renders it twice, and the open TX-settings
+  sheet no longer duplicates the fixed overlay copy.
+
+- **Canvas displays inside a CSS-scaled stage stay sharp and repaint
+  on window resizes (MOR-1161).** Backing stores are sized by CSS
+  size × devicePixelRatio × stage scale, so the stage no longer
+  resamples a devicePixelRatio-only bitmap and a resize redraws it.
+
+- **The legacy mobile CW panel no longer throws
+  state_unsafe_mutation when provider authority is lost (MOR-2433).**
+  Its break-in delay view is reconciled through one renderer lease
+  and an effect, as the desktop keyer does.
+
+- **A corrupt stored workspace object falls back to legacy migration
+  (MOR-1300).** A stored read that yields a reset no longer
+  short-circuits the legacy migration when its sentinel is absent.
+
+- **PCM16 TX audio follows the negotiated sample rate (MOR-1794).**
+  When the server admits a PCM16 TX codec at 8, 16, 24 or 48 kHz,
+  each 20 ms capture frame is resampled to that rate and carries it
+  in the frame header; a malformed or unsupported admitted rate is
+  refused through the existing TX fault path, and an absent rate
+  keeps 48 kHz.
+
+- **Post-write confirmations are not born expired (MOR-1898).** The
+  rigctld drain can no longer drop a confirmation built with an
+  epsilon freshness budget before sending it; such requests now get
+  a liveness budget of one answer window, so a false acquisition
+  timeout can no longer re-base the cadence clock.
+
+- **A legacy band or preset selection can no longer be moved by a
+  stray tuning frame (MOR-1435).** The bandless band fallback,
+  preset select and the BSR path now go through the tuning
+  accumulator, which clears any pending burst before the chosen
+  target is sent.
+
+- **PSK and PSK-R modes light on the mode panel (MOR-2508).** The
+  store's enum token is mapped to the profile's label before the
+  strict comparison, so PSK-R no longer stays dark. A guard over the
+  shipped rig profiles pins each declared mode label to what the
+  radio's mode vocabulary can express.
+
+- **Hardware validation reads each control's band from the rig
+  profile (MOR-2476).** The hard-coded ranges survive only as an
+  interim for a radio with no profile; a profiled radio that declares
+  no band skips that check honestly instead of assuming one.
+
+- **The scope display recaptures the passband after a hard retirement
+  while tuning continues (MOR-2440).** Retirement now requires a
+  live tuple, so the display recaptures once a complete
+  post-retirement geometry set exists, without the operator having
+  to stop tuning.
 
 ### Documentation
 
