@@ -78,7 +78,10 @@ export function telemetryDescription(label: string, field: DisplayTelemetry): st
   }
   if (!tx.supported) return label;
   if (tx.relevance === 'idle') return `${label}: ${t('core.meter.state.idle')}`;
-  if (tx.observation.state !== 'stale' && tx.observation.state !== 'current') return label;
+  // An unread observation names only the label; the relevance cue (a
+  // relevance modifier, not a status word) still applies for indeterminate.
+  if (tx.observation.state !== 'stale' && tx.observation.state !== 'current')
+    return tx.relevance === 'indeterminate' ? `${label}: RF relevance indeterminate.` : label;
   const cue = tx.relevance === 'indeterminate' ? 'RF relevance indeterminate. ' : '';
   return tx.observation.state === 'stale'
     ? `${label}: ${cue}Stale observation`

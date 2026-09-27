@@ -188,7 +188,11 @@ for (const relevance of ['idle', 'relevant', 'indeterminate'] as const)
       if (relevance === 'indeterminate') expect(description).toContain('RF relevance indeterminate');
       if (relevance !== 'idle' && observation.state === 'stale') expect(description).toContain('Stale observation');
       // MOR-2705 part 2: an unread observation names only the label — no
-      // 'No reading' status word in the accessible name.
-      if (relevance !== 'idle' && observation.state === 'unknown') expect(description).toBe('PWR');
+      // 'No reading' status word in the accessible name. The relevance cue
+      // (a modifier, not a status word) still applies when indeterminate.
+      if (relevance !== 'idle' && observation.state === 'unknown') {
+        expect(description).not.toContain('No reading');
+        expect(description).toBe(relevance === 'relevant' ? 'PWR' : 'PWR: RF relevance indeterminate.');
+      }
     });
   }
