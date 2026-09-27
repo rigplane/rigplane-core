@@ -401,10 +401,13 @@ describe('MOR-2509 R2-2 — the mock-up v8 numeral rule', () => {
     setCapabilities(makeCaps(SPARSE_PLUS_CAL));
     const svg = mountMeter(withPo());
     const labels = [...svg.querySelectorAll('[data-scale-label]')];
-    // The sparse S0/S9/S9+60 table brackets every odd S-unit and the +60
-    // rung (MOR-2790) — the same shape as the IC-7300 profile's table.
+    // The sparse S0/S9/S9+60 table brackets every odd S-unit (MOR-2790), and
+    // its single S9+60 knot brackets +20/+40/+60 as well — the same shape as
+    // the IC-7300 profile's table, so the same eight-numeral ladder as the
+    // dense pin; the 548px track is far too wide for the +NN thinning.
+    // Red if the single +60 knot stops bracketing the lower +dB rungs.
     expect(labels.map((label) => label.textContent))
-      .toEqual(['1', '3', '5', '7', '9', '+60']);
+      .toEqual(['1', '3', '5', '7', '9', '+20', '+40', '+60']);
   });
 
   it('keeps every 140px FTX-1 label at least its rendered width plus the fixed gap apart', () => {
