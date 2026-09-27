@@ -4,6 +4,11 @@
  * initial render only (no clicks), against the token rule
  * (`src/lib/placeholder-token-rule.ts`) and the `offenders.json` ratchet.
  *
+ * MOR-2716 — a second check over the same records: visible text and
+ * accessible names must not contain an internal identifier
+ * (`src/semantic/internal-identifier-rule.ts`), with the vocabulary built
+ * at run time from the view-model's own constant tables.
+ *
  * What is read per page, per MOR-2677:
  *
  *  - every text node's own trimmed content — this also covers `<option>`
@@ -23,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
 import { HARNESS_REACH } from '../../../fixtures/catalog';
 import { findPlaceholderTokens } from '../../../src/lib/placeholder-token-rule';
+import { findInternalIdentifiers } from '../../../src/semantic/internal-identifier-rule';
 
 const LANGUAGES = [null, 'studioline', 'fieldline', 'segmentline'] as const;
 
@@ -165,6 +171,23 @@ for (const face of HARNESS_REACH) {
             problems.push(
               `unlisted offender ${key} — text ${JSON.stringify(record.text)} `
               + `(token ${JSON.stringify(token.token)}) at ${url}`,
+            );
+          }
+        }
+        for (const identifier of findInternalIdentifiers(record.text)) {
+          const key = entryKey(face.face, cell.state, record.locator, identifier.kind);
+          if (!observed.has(key)) {
+            observed.add(key);
+            dump.push({
+              face: face.face, state: cell.state,
+              locator: record.locator, token: identifier.kind, ticket: 'TODO',
+              example: `${identifier.token} in ${JSON.stringify(record.text)}`,
+            });
+          }
+          if (!OFFENDERS.some((o) => entryKey(o.face, o.state, o.locator, o.token) === key)) {
+            problems.push(
+              `unlisted offender ${key} — identifier ${JSON.stringify(identifier.token)} `
+              + `in text ${JSON.stringify(record.text)} at ${url}`,
             );
           }
         }

@@ -31,6 +31,14 @@ export type VfoSlotId = 'A' | 'B';
  * (`ab`, `main_sub`) whose slot could not be observed — MOR-988 §3.2/§4:
  * missing/stale never synthesizes `A`.
  */
+/**
+ * The `kind` discriminants of `VfoSlot` as the run-time list the page
+ * guard's identifier vocabulary reads (MOR-2716) — one source of truth:
+ * the `kind` values below stay in lockstep with this array.
+ */
+export const VFO_SLOT_KINDS = ['slotted', 'relative', 'unslotted', 'unknown'] as const;
+export type VfoSlotKind = (typeof VFO_SLOT_KINDS)[number];
+
 export type VfoSlot =
   | { kind: 'slotted'; id: VfoSlotId }
   | { kind: 'relative'; role: 'selected' | 'unselected' }
@@ -100,30 +108,47 @@ export interface VfoViewModel {
   isTxTarget: boolean;
 }
 
+/**
+ * The `status: 'unknown'` reason codes of `TxTargetViewModel` as the
+ * run-time list the page guard's identifier vocabulary reads (MOR-2716) —
+ * one source of truth: the `reason` union below is derived from this array.
+ */
+export const TX_TARGET_UNKNOWN_REASONS = [
+  'not-observed', 'stale', 'unsupported', 'contradiction',
+] as const;
+export type TxTargetUnknownReason = (typeof TX_TARGET_UNKNOWN_REASONS)[number];
+
 export type TxTargetViewModel =
   | { status: 'known'; receiver: ReceiverId; slot: VfoSlot; frequencyHz: number | null }
-  | { status: 'unknown'; reason: 'not-observed' | 'stale' | 'unsupported' | 'contradiction' };
+  | { status: 'unknown'; reason: TxTargetUnknownReason };
 
 export interface ScopeAvailabilityViewModel {
   hardwareScope: Availability;
   audioFftScope: Availability;
 }
 
-export type DisabledReasonCode =
-  | 'capability-unavailable'
-  | 'field-not-observed'
-  | 'tx-target-unknown'
-  | 'out-of-band'
+/**
+ * The disabled-reason codes the parser accepts, as the run-time list the
+ * page guard's identifier vocabulary reads (MOR-2716) — one source of
+ * truth: the `DisabledReasonCode` union is derived from this array.
+ */
+export const DISABLED_REASON_CODES = [
+  'capability-unavailable',
+  'field-not-observed',
+  'tx-target-unknown',
+  'out-of-band',
   /** MOR-1293: a hardware mutex with another control's CURRENT state
    *  disables this one (e.g. PREAMP while DIGI-SEL is on/unknown, MOR-479).
    *  Distinct from `capability-unavailable` (the control doesn't exist) and
    *  `field-not-observed` (this control's OWN reading is unobserved) —
    *  here the control itself is fine, a PEER control's state disables it. */
-  | 'mutually-exclusive-control'
+  'mutually-exclusive-control',
   /** MOR-2511 B2: the active receiver's profile does not declare this control
    *  (e.g. SUB.att/preamp on FTX-1). The control is structurally absent for
    *  this receiver regardless of the radio-wide capability. */
-  | 'receiver-lacks-control';
+  'receiver-lacks-control',
+] as const;
+export type DisabledReasonCode = (typeof DISABLED_REASON_CODES)[number];
 
 export interface DisabledReason {
   field: string;
@@ -1346,10 +1371,6 @@ export interface RadioViewModel {
 const RECEIVER_IDS: readonly ReceiverId[] = ['MAIN', 'SUB'];
 const SLOT_IDS: readonly VfoSlotId[] = ['A', 'B'];
 const VFO_SCHEMES: readonly VfoScheme[] = ['single', 'ab', 'ab_shared', 'main_sub'];
-const DISABLED_REASON_CODES: readonly DisabledReasonCode[] = [
-  'capability-unavailable', 'field-not-observed', 'tx-target-unknown', 'out-of-band',
-  'mutually-exclusive-control', 'receiver-lacks-control',
-];
 
 function oneOf<T>(value: unknown, allowed: readonly T[], path: string): T {
   if (!allowed.includes(value as T)) invalid(path, allowed.join(' | '));
