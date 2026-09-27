@@ -167,7 +167,7 @@
     // `.modal-fixed-value` rule below), never a placeholder.
     return valueText(finiteValue(hz), (value) => {
       const formatted = formatFilterWidth(value);
-      return formatted.includes('k') ? `${formatted}Hz` : `${formatted} Hz`;
+      return formatted.includes('k') ? `${formatted}Hz` : `${formatted} ${t('core.filter.unit.hz')}`;
     });
   }
 
@@ -179,7 +179,7 @@
         const kilohertz = value / 1000;
         return `${Number.isInteger(kilohertz) ? kilohertz : kilohertz.toFixed(1)}kHz`;
       }
-      return `${value} Hz`;
+      return `${value} ${t('core.filter.unit.hz')}`;
     });
   }
 
@@ -287,7 +287,7 @@
   let pbtInnerFeedback = $derived(getPbtInnerHzControlFeedback());
   let pbtOuterFeedback = $derived(getPbtOuterHzControlFeedback());
   const passbandPolicy = createBipolarContinuousScalarPolicy({
-    debounceMs: 50, describeTarget: (value) => `${value} Hz`,
+    debounceMs: 50, describeTarget: (value) => `${value} ${t('core.filter.unit.hz')}`,
   });
   function passbandPendingTarget(feedback: Readonly<CommandScalarFeedback>): number | null {
     return feedback.busy && feedback.target !== null ? feedback.target : null;
@@ -444,7 +444,7 @@
     // value the message needs is unread, the announcement is skipped
     // entirely (same doctrine as FilterSurface's MOR-2648 passband
     // formatter).
-    const hzText = (value: number): string => `${value} Hz`;
+    const hzText = (value: number): string => `${value} ${t('core.filter.unit.hz')}`;
     const target = valueText(finiteValue(feedback.requestedTarget), hzText);
     const confirmed = valueText(finiteValue(feedback.confirmed), hzText);
     let message: string;

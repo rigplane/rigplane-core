@@ -332,3 +332,4 @@
   "core.rxTx.blocked.rfStateUnknown": "無線機の RF 状態はまだ確認されていません",
   "core.spectrum.more": "その他"
 }
+  "core.filter.unit.hz": "Hz",
