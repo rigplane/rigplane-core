@@ -1153,7 +1153,7 @@ class WebServer:
             return
         if profile.receiver_count != 1:
             return
-        self.command_state_store.apply(
+        self.command_state_store.apply_current(
             Observation(
                 path=FieldPath.global_("slow_state", "active"),
                 value="MAIN",
@@ -2142,6 +2142,8 @@ class WebServer:
         self.command_service.terminate_active_commands(
             "provider generation invalidated", source="websocket"
         )
+        # The advance cleared every entry, this structural fact included.
+        self._publish_single_receiver_topology()
 
     def _build_radio_health(self) -> dict[str, Any]:
         """Build radio health and advance the health revision on transitions."""
