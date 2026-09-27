@@ -728,7 +728,7 @@
 </script>
 
 <div class="vfo-surface" role="group" aria-label={groupLabel ?? t('core.vfo.groupLabel')} data-testid="vfo-surface" data-vfo-appearance={appearance} style:--vfo-role-width={roleWidth}>
-  <span class="vfo-role vfo-role-measure" bind:this={roleMeasure} aria-hidden="true"></span>
+  <span class="vfo-role-measure" bind:this={roleMeasure} aria-hidden="true"></span>
   {#snippet activeReceiverStatus()}
   {#if showRadioWideFacts && hasDualReceiver}
     <p
@@ -1158,7 +1158,8 @@
   .receiver-indicators { display: grid; gap: 6px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
   .vfo-tile { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12)); border-radius: 4px; background: var(--v2-bg-panel, rgba(255, 255, 255, 0.03)); }
   .vfo-tile.is-active { border-color: var(--v2-accent-cyan, #00d4ff); }
-  .vfo-role { font-weight: 700; color: var(--v2-text-secondary, rgba(255, 255, 255, 0.8)); font-variant-numeric: tabular-nums; min-width: var(--vfo-role-width); white-space: nowrap; }
+  .vfo-role, .vfo-role-measure { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .vfo-role { color: var(--v2-text-secondary, rgba(255, 255, 255, 0.8)); min-width: var(--vfo-role-width); white-space: nowrap; }
   .vfo-role-measure { position: absolute; visibility: hidden; pointer-events: none; white-space: nowrap; }
   .vfo-role-unlit { color: var(--dl-vfo-unlit-text, var(--v2-text-muted, #5a6875)); }
   [data-vfo-appearance='semantic'] .vfo-tile { position: relative; }

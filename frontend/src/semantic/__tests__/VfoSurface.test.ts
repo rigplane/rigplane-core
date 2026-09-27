@@ -642,8 +642,8 @@ it('reserves the role plaque at the widest role text in every state', () => {
   const source = readFileSync('src/semantic/VfoSurface.svelte', 'utf8');
   const body = source.slice(source.indexOf('function roleLabel'), source.indexOf('const ROLE_TEXTS'));
   const emitted = [...body.matchAll(/'([^']+)'/g)].map((match) => match[1]);
-  const listed = [...source.matchAll(/const ROLE_TEXTS = \[([^\]]+)\]/)].flatMap((match) =>
-    [...match[1].matchAll(/'([^']+)'/g)].map((text) => text[1]));
+  const listedMatch = /const ROLE_TEXTS = \[([^\]]+)\]/.exec(source);
+  const listed = [...(listedMatch?.[1] ?? '').matchAll(/'([^']+)'/g)].map((text) => text[1]);
   expect(emitted).toEqual(['Selected VFO', 'Unselected VFO']);
   expect(listed).toEqual(expect.arrayContaining([
     'MAIN', 'SUB', 'MAIN A', 'MAIN B', 'SUB A', 'SUB B', ...emitted,
