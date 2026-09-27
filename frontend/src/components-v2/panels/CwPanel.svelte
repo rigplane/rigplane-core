@@ -94,8 +94,10 @@
   const breakInDelayLease = breakInDelayScalar.attachRenderer();
   let breakInDelayView = $state(untrack(() => breakInDelayLease.view));
   $effect.pre(() => { breakInDelayView = breakInDelayLease.view; });
+  // MOR-2658: unread is an empty reserved slot — never the '—' placeholder,
+  // and never a '%' without its number.
   const delayText = (value: number | null): string =>
-    value === null ? '—' : rawToPercentDisplay(value);
+    value === null ? '' : rawToPercentDisplay(value);
   const delayLabel = (): string =>
     getLocale() === 'ru-RU' ? 'Задержка break-in' : 'Break-in Delay';
   const DELAY_PHASE_COPY: Record<'en' | 'ru', Record<PresentationPhase, string>> = {
@@ -265,8 +267,10 @@
       <label class="break-in-delay-control" data-testid="cw-break-in-delay-control">
         <span class="break-in-delay-header">
           <span>{delayLabel()}</span>
+          <!-- MOR-2658: an unread delay renders EMPTY in the reserved output
+               slot below — never a '—' placeholder. -->
           <output data-testid="cw-break-in-delay-value">
-            {breakInDelayView.editable ? delayText(breakInDelayView.displayed) : '—'}
+            {breakInDelayView.editable ? delayText(breakInDelayView.displayed) : ''}
           </output>
         </span>
         <input
@@ -354,6 +358,17 @@
   .break-in-delay-header {
     display: flex;
     justify-content: space-between;
+  }
+
+  /* MOR-2658: the delay value box stays reserved for unread AND each known
+     value — `4ch` covers the widest text (`100%`), and `inline-block` is
+     what makes the min-width apply to the inline <output>, so a first
+     reading cannot shift the row. */
+  .break-in-delay-header output {
+    display: inline-block;
+    min-width: 4ch;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
   }
 
   .break-in-delay-control input { width: 100%; accent-color: var(--v2-accent-cyan); }

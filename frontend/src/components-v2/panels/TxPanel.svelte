@@ -73,8 +73,11 @@
   let driveGainFeedback = $derived(getTxAuxControlFeedback('driveGain'));
   let compLevelFeedback = $derived(getTxAuxControlFeedback('compressorLevel'));
   let monLevelFeedback = $derived(getTxAuxControlFeedback('monitorGain'));
+  // MOR-2658: unread is an empty reserved slot — never the '—' placeholder,
+  // and never a '%' without its number. The renderer (HBarRenderer) calls
+  // this with Number.NaN for an unread value.
   const rawTxLevelDisplay = (value: number): string =>
-    Number.isFinite(value) ? rawToPercentDisplay(value) : '—';
+    Number.isFinite(value) ? rawToPercentDisplay(value) : '';
   const txLevelPolicy = () => createHBarContinuousScalarPolicy({
     preview: 'optimistic', debounceMs: 50, describeTarget: rawToPercentDisplay,
   });
@@ -339,22 +342,32 @@
       <ValueControl label="RF Power" value={rfPower} min={0} max={1} step={0.01}
         renderer="hbar" displayFn={normalizedPercentDisplay} accentColor="var(--v2-accent-red)"
         onChange={onRfPowerChange} variant="hardware-illuminated" disabled={!rfPowerAvailable} />
-      <ValueControl {...feedbackIntegratedControl} label="Mic Gain" binding={micGainBinding}
-        renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
-        issuedStatusPresentation={micGainStatus} variant="hardware-illuminated" />
-      {#if compActive}
-        <ValueControl {...feedbackIntegratedControl} label="Comp Level" binding={compLevelBinding}
+      <!-- MOR-2658: each level value keeps its own reserved slot (`4ch`
+           covers `100%`) so a first reading cannot shift the row. -->
+      <div class="tx-level-slot">
+        <ValueControl {...feedbackIntegratedControl} label="Mic Gain" binding={micGainBinding}
           renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
-          issuedStatusPresentation={compLevelStatus} variant="hardware-illuminated" />
+          issuedStatusPresentation={micGainStatus} variant="hardware-illuminated" />
+      </div>
+      {#if compActive}
+        <div class="tx-level-slot">
+          <ValueControl {...feedbackIntegratedControl} label="Comp Level" binding={compLevelBinding}
+            renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
+            issuedStatusPresentation={compLevelStatus} variant="hardware-illuminated" />
+        </div>
       {/if}
       {#if showMon && monActive}
-        <ValueControl {...feedbackIntegratedControl} label="Mon Level" binding={monLevelBinding}
-          renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
-          issuedStatusPresentation={monLevelStatus} variant="hardware-illuminated" />
+        <div class="tx-level-slot">
+          <ValueControl {...feedbackIntegratedControl} label="Mon Level" binding={monLevelBinding}
+            renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
+            issuedStatusPresentation={monLevelStatus} variant="hardware-illuminated" />
+        </div>
       {/if}
-      <ValueControl {...feedbackIntegratedControl} label="Drive Gain" binding={driveGainBinding}
-        renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
-        issuedStatusPresentation={driveGainStatus} variant="hardware-illuminated" />
+      <div class="tx-level-slot">
+        <ValueControl {...feedbackIntegratedControl} label="Drive Gain" binding={driveGainBinding}
+          renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
+          issuedStatusPresentation={driveGainStatus} variant="hardware-illuminated" />
+      </div>
       {#if autoLan.available}
         <!-- MOR-618: opt-in auto LAN MOD-input for web TX (default OFF) -->
         <div class="auto-lan-section">
@@ -509,6 +522,16 @@
     flex-direction: column;
     gap: 10px;
     padding: 10px;
+  }
+
+  /* MOR-2658: the level value box stays reserved for unread AND each known
+     value — `4ch` covers the widest text (`100%`), and `inline-block` is
+     what makes the min-width apply to the renderer's inline value span, so
+     a first reading cannot shift the row. */
+  .tx-level-slot :global(.vc-value) {
+    display: inline-block;
+    min-width: 4ch;
+    font-variant-numeric: tabular-nums;
   }
 
   .auto-lan-section {

@@ -786,10 +786,20 @@
         <CollapsiblePanel title="TX" panelId="m-tx" collapsible={false}>
           <div class="m-tx-compact">
             <!-- Power readout (tap → power modal) -->
+            <!-- MOR-2658: an unread power renders EMPTY in the reserved
+                 `.m-tx-power-value` slot below — never a '—' placeholder.
+                 `rfPowerAvailable` gates the modal tap; `formatPower` needs
+                 a finite level, and toTxProps falls back to 0.5 for an
+                 unobserved rig, so availability (not finiteness) decides. -->
             <button type="button" class="m-tx-info" disabled={!tx.rfPowerAvailable} onclick={() => (powerModalOpen = true)}>
-              <span class="m-tx-power-value">{tx.rfPowerAvailable ? formatPower(tx.rfPower) : '—'}</span>
+              <span class="m-tx-power-value">{tx.rfPowerAvailable ? formatPower(tx.rfPower) : ''}</span>
               {#if managedTxRf === 'on'}
-                <span class="m-tx-swr-value">SWR {meter.swr > 0 ? (meter.swr / 10).toFixed(1) : '—'}</span>
+                <!-- MOR-2658: an unread SWR renders EMPTY in the reserved
+                     `.m-tx-swr-value` slot — never a '—', and never the
+                     `SWR` word without its number. toMeterProps reports
+                     Number.NaN for an unobserved meter, so NaN (not 0) is
+                     absence: a real reading of 0 renders `SWR 0.0`. -->
+                <span class="m-tx-swr-value">{Number.isFinite(meter.swr) ? `SWR ${(meter.swr / 10).toFixed(1)}` : ''}</span>
               {/if}
             </button>
 
@@ -1495,6 +1505,13 @@
     color: var(--v2-text-primary, #ddd);
     letter-spacing: 0.02em;
     white-space: nowrap;
+    /* MOR-2658: the power box stays reserved for unread AND each known
+       value — `5ch` covers the widest text (`100W`), tabular digits keep
+       every width identical, so a first reading cannot shift the row. */
+    display: inline-block;
+    min-width: 5ch;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
   }
 
   .m-tx-swr-value {
@@ -1502,6 +1519,11 @@
     font-size: 9px;
     color: var(--v2-text-dim, #888);
     white-space: nowrap;
+    /* MOR-2658: same reservation as power — `7ch` covers `SWR 99.9`. */
+    display: inline-block;
+    min-width: 7ch;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
   }
 
   .m-atu-btn {
