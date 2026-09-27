@@ -641,8 +641,14 @@ it('shows a distinct role per VFO across single/dual and slotted/unslotted schem
 it('reserves the role plaque at the widest role text in every state', () => {
   const source = readFileSync('src/semantic/VfoSurface.svelte', 'utf8');
   const fn = source.slice(source.indexOf('function roleLabel'), source.indexOf('const ROLE_TEXTS'));
-  const emitted = [...fn.matchAll(/return '[^']+'|return `[^`]+`/g)].map((match) => match[0]);
-  expect(emitted).toEqual(["return 'Selected VFO'", "return 'Unselected VFO'", 'return vfo.receiver']);
+  const emitted = [...fn.matchAll(/return (?:'[^']+'|`[^`]+`|vfo\.receiver)/g)].map((match) => match[0]);
+  expect(emitted).toEqual([
+    'return `${vfo.receiver} ${slot.id}`',
+    "return 'Selected VFO'",
+    "return 'Unselected VFO'",
+    'return vfo.receiver',
+    'return vfo.receiver',
+  ]);
   const listedMatch = /const ROLE_TEXTS = \[([^\]]+)\]/.exec(source);
   const listed = [...(listedMatch?.[1] ?? '').matchAll(/'([^']+)'/g)].map((text) => text[1]);
   expect(listed).toEqual([
