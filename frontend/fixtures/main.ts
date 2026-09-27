@@ -50,6 +50,7 @@ import {
 import { clearCapabilities, setCapabilities } from '../src/lib/stores/capabilities.svelte';
 import { fixtureById, type Fixture } from './catalog';
 import { DEFAULT_AUDIO_RUNTIME, harness, IDLE_TX } from './harness-state';
+import { applyDesignLanguage } from './languages';
 
 const params = new URLSearchParams(window.location.search);
 const id = params.get('fixture') ?? 'topology-2-main-sub';
@@ -92,30 +93,13 @@ if ((params.get('theme') ?? 'v2') === 'v2') {
 // no activation path in the app yet (routing one in is cutover work,
 // MOR-1048/MOR-1263). This param is the only opt-in, so the harness can capture
 // each language over the same fixtures the unstyled baselines use.
-const LANGUAGE_STYLESHEETS: Record<string, () => Promise<unknown>> = {
-  studioline: () => import('../src/presentation/languages/studioline/studioline.css'),
-  fieldline: () => import('../src/presentation/languages/fieldline/fieldline.css'),
-  segmentline: () => import('../src/presentation/languages/segmentline/segmentline.css'),
-};
-/**
- * MOR-2153 — `peer-split` is segmentline's OWN skin: with no language
- * activated it renders as unstyled markup (no amber glass, no bezel colour,
- * no cell/readout treatment), which defeats the point of looking at it. The
- * explicit `&language=` param still wins when given (e.g. to inspect the
- * bare DOM), matching how every other fixture already lets the query
- * string override any default.
- */
-const language = params.get('language') ?? (fixture.layout === 'peer-split' ? 'segmentline' : null);
-if (language) {
-  const load = LANGUAGE_STYLESHEETS[language];
-  if (!load) throw new Error(`MOR-1074 harness: unknown design language "${language}"`);
-  await load();
-  document.documentElement.dataset.designLanguage = language;
-  // Light is an explicit opt-in, never an OS-preference flip: the app's own
-  // light/dark is a manual `[data-theme]` choice, so language and surface have
-  // to be switched by the same deliberate act.
-  if (params.get('mode') === 'light') document.documentElement.dataset.languageMode = 'light';
-}
+// MOR-2153 — `peer-split` is segmentline's OWN skin: with no language
+// activated it renders as unstyled markup, so it defaults to segmentline; the
+// explicit `&language=` param still wins when given (e.g. to inspect the
+// bare DOM), matching how every other fixture already lets the query string
+// override any default. MOR-2676 moved the table itself to `languages.ts`
+// (the witness pages share it now).
+await applyDesignLanguage(params, fixture.layout === 'peer-split' ? 'segmentline' : null);
 
 harness.state = fixture.state();
 harness.caps = fixture.caps();
@@ -285,7 +269,20 @@ window.__harness = {
         detail: 'peer-split fixtures carry no behavior-assertion pipeline yet (MOR-2153) — this '
           + 'confirms the harness mounted, not that the composition is correct.',
       }]
-      : lcdFixtureAssertions(fixture.lcd!)),
+      // MOR-2676: the harness-reach state-axis fixtures (all-unread /
+      // all-unsupported) carry neither an `expect` pipeline nor `lcd`
+      // metadata — they exist so a page LOADS over the real adapters, and
+      // the guard (MOR-2677) reads rendered output itself. Same honest
+      // marker as peer-split above instead of passing `runAssertions` a
+      // shape it was never written to check (or crashing on `fixture.lcd!`
+      // — these fixtures have none).
+      : fixture.lcd
+        ? lcdFixtureAssertions(fixture.lcd)
+        : [{
+          name: 'fixture-mounted-no-assertion-pipeline', ok: true,
+          detail: 'this fixture carries no behavior-assertion pipeline (MOR-2676) — this '
+            + 'confirms the harness mounted, not that the composition is correct.',
+        ]),
   tokens: tokenSnapshot,
   // `styleProbe` takes its root explicitly (it cannot infer one) and
   // peer-split fixtures never call `runAssertions` — see `assert` above.
