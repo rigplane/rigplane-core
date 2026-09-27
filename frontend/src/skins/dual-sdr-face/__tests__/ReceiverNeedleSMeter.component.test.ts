@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { flushSync, unmount } from 'svelte';
+import { flushSync } from 'svelte';
+import type { ComponentProps } from 'svelte';
 import { createClassComponent } from 'svelte/legacy';
 import type { Capabilities } from '$lib/types/capabilities';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
@@ -69,7 +70,7 @@ function renderReading(value: number): HTMLElement {
   const instance = createClassComponent({
     component: ReceiverNeedleSMeter,
     target,
-    props: { value: null },
+    props: { value: null } as ComponentProps<typeof ReceiverNeedleSMeter>,
   });
   flushSync();
   for (const next of [value, null, value]) {
