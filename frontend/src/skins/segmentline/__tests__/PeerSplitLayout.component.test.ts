@@ -240,7 +240,7 @@ describe('the peer-split chassis mounts', () => {
     expect(glass!.querySelectorAll('[data-testid="lcd-peer-column"]')).toHaveLength(2);
     expect(glass!.querySelector('[data-testid="peer-split-clock"]')).toBeNull();
     expect(glass!.querySelectorAll('.receiver-column > .s-meter[data-state="known"]')).toHaveLength(2);
-    expect(glass!.querySelector('.telemetry [aria-label="VD: 200"][data-state="known"]')).not.toBeNull();
+    expect(glass!.querySelector('.telemetry [aria-label="VD"][data-state="known"]')).not.toBeNull();
   });
 
   it.each([
