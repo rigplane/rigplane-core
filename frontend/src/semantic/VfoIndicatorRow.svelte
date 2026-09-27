@@ -89,13 +89,13 @@
   // MOR-2644: an unread fact shows its label dimmed with no value text —
   // never a dash placeholder. A fact the radio does not have is not drawn
   // at all (the {#if} guards below). The subdued data-state paint stays.
-  // MOR-2688: the empty-display rule is `readingText`'s predicate,
-  // `reading.status === 'known'`; boolean sites pass their own ON/OFF
-  // formatter so the text on screen stays identical.
   function booleanState(field: ReceiverIndicatorField<boolean>): 'on' | 'off' | 'unknown' {
     return field.reading.status === 'known' ? (field.reading.value ? 'on' : 'off') : 'unknown';
   }
 
+  // MOR-2688: the empty-display rule is `readingText`'s predicate,
+  // `reading.status === 'known'`; boolean sites pass their own ON/OFF
+  // formatter so the text on screen stays identical.
   /** Leading-space ON/OFF text for the per-receiver boolean facts (NB, NR,
    *  IP+, DIGI-SEL). */
   function booleanLabel(field: ReceiverIndicatorField<boolean>): string {

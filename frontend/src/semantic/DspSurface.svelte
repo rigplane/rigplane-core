@@ -79,12 +79,12 @@
     f.reading.status === 'known' ? f.reading.value : fallback;
   /** MOR-2527: an unread level renders NO value text — an unlit slot with
    *  its reserved width, never a `?` stand-in. MOR-2688: the empty-display
-   *  rule is `readingText`'s predicate; the `on`/`off` boolean rendering and
-   *  the row formatter stay in the formatter, so the text is identical. */
+   *  rule is `readingText`'s predicate; the row formatter stays in the
+   *  formatter, so the text is identical. (`fmt`'s only call site is the
+   *  `nativeLevel` output over `DSP_LEVELS`, every field a `DspField<number>`
+   *  — no boolean value can reach it.) */
   const fmt = (f: DspField<unknown>, format?: (v: number) => string): string =>
-    readingText(f, (v) =>
-      typeof v === 'boolean' ? (v ? 'on' : 'off')
-        : format ? format(v as number) : String(v));
+    readingText(f, (v) => (format ? format(v as number) : String(v)));
 
   type NrDomain = NonNullable<DspViewModel['nrLevelProjection']>['domain'];
   type NrPresentation = Readonly<{
