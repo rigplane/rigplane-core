@@ -490,18 +490,11 @@ describe('MOR-2684 — the permit caption keeps one width across its states', ()
     const readCatalog = (locale: string): Record<string, string> =>
       JSON.parse(readFileSync(`src/lib/i18n/locales/${locale}.json`, 'utf8'));
     const words = new Set<string>();
-    for (const locale of ['en-US', 'ru-RU']) {
+    for (const locale of ['en-US', 'ru-RU', 'ja-JP']) {
       for (const [key, value] of Object.entries(readCatalog(locale))) {
         if (key.startsWith('core.band.tx.defaultPermit.status.')) words.add(value);
       }
     }
-    // ja-JP defines no `defaultPermit.status.*` keys — its known captions
-    // resolve through the en-US fallback, so the English pair already
-    // covers it.
-    expect(
-      Object.keys(readCatalog('ja-JP')).filter(key =>
-        key.startsWith('core.band.tx.defaultPermit.status.')),
-    ).toEqual([]);
     for (const word of words) expect(PERMIT_STATUS_TEXTS).toContain(word);
     expect(new Set(PERMIT_STATUS_TEXTS).size).toBe(PERMIT_STATUS_TEXTS.length);
   });

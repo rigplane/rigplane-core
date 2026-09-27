@@ -18,15 +18,15 @@ const DEFAULT_PERMIT_STATUS_KEY: Record<'allowed' | 'denied', string> = {
 };
 
 /** MOR-2684: every status word the permit caption can render across the
- *  bundled catalogs — en-US and ru-RU each define the pair; ja-JP defines
- *  no `defaultPermit.status.*` keys and resolves its known captions through
- *  the en-US fallback, so the English pair covers it. The caption's status
- *  slot is reserved at the widest of these, MEASURED in the caption's own
- *  font: the caption inherits the ambient font, which is not monospace, so
- *  a `ch` reservation would not be exact. Pinned against catalog drift by
- *  the MOR-2684 coverage test in `BandSurface.test.ts`. */
+ *  bundled catalogs — en-US, ru-RU, and ja-JP each define the pair (MOR-2717
+ *  translated the ja-JP pair, so its wider CJK words join the measurement).
+ *  The caption's status slot is reserved at the widest of these, MEASURED
+ *  in the caption's own font: the caption inherits the ambient font, which
+ *  is not monospace, so a `ch` reservation would not be exact. Pinned
+ *  against catalog drift by the MOR-2684 coverage test in
+ *  `BandSurface.test.ts`. */
 export const PERMIT_STATUS_TEXTS: readonly string[] = [
-  'allowed', 'denied', 'разрешён', 'запрещён',
+  'allowed', 'denied', 'разрешён', 'запрещён', '許可', '禁止',
 ];
 
 export const defaultPermitLabel = (choice: BandChoice): string => {
