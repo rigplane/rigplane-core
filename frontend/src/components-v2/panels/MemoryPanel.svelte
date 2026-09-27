@@ -219,7 +219,14 @@
             {/if}
           </div>
         {:else}
-          <span class="ch-empty-label">-- empty --</span>
+          <!-- MOR-2682: an unpopulated channel is an empty row, never a
+               dash-framed label — a real radio's memory list shows an empty
+               channel as an empty row. The cells mirror the populated row,
+               so the row keeps its height and the list cannot move when the
+               channel fills. -->
+          <span class="ch-freq"></span>
+          <span class="ch-mode"></span>
+          <span class="ch-name"></span>
           <div class="ch-actions">
             <button
               type="button"
@@ -399,8 +406,13 @@
     border: none;
     font-family: 'Roboto Mono', monospace;
     padding: 0;
-    cursor: pointer;
     text-align: left;
+  }
+
+  /* MOR-2682: only the rename button takes a pointer — the empty name slot
+     in an unpopulated row is a span with nothing to click. */
+  button.ch-name {
+    cursor: pointer;
   }
 
   .ch-name:hover {
@@ -419,14 +431,6 @@
     color: var(--v2-text-primary, #eee);
     font-family: 'Roboto Mono', monospace;
     font-size: 10px;
-  }
-
-
-  .ch-empty-label {
-    color: var(--v2-text-dim, #555);
-    font-size: 10px;
-    font-style: italic;
-    flex: 1;
   }
 
   .ch-actions {
