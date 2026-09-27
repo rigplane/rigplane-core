@@ -1140,7 +1140,10 @@ async def test_yaesu_unanswered_critical_read_fails_startup_after_three_attempts
     assert "global.tx_state.tx_target" in message
     assert "FT;" in message
     assert scheduler.startup_defect is not None
-    assert radio.tx_func_reads == 3, "the defect must come after 3 attempts, not sooner"
+    # >= 3 pins "not sooner": an abort on the first attempt would stop the
+    # reads at 1. The poller keeps cycling until the gate's next poll sees
+    # the defect, so a 4th read can land first — that is fine.
+    assert radio.tx_func_reads >= 3
 
 
 @pytest.mark.asyncio
