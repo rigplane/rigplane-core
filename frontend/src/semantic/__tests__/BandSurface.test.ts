@@ -452,11 +452,11 @@ describe('MOR-2684 — the permit caption keeps one width across its states', ()
   // status slot. Red on the old code: the caption was the bare unread
   // sentence with no slot (and no trailing separator space).
   it('renders the unread caption with an empty reserved status slot, never a dash', () => {
-    const view = withB({
-      bandChoices: [
-        { ...view20m(view), defaultHzTxPermit: { status: 'unknown', reason: 'ranges-unconfigured' } },
-      ],
-    });
+    const unreadChoice = {
+      ...view20m(base()),
+      defaultHzTxPermit: { status: 'unknown' as const, reason: 'ranges-unconfigured' as const },
+    };
+    const view = withB({ bandChoices: [unreadChoice] });
     const r = render(view);
     expect(r.el('choice-permit-20m')!.textContent).toBe('TX at 14.195 MHz: ');
     expect(r.el('choice-permit-20m')!.textContent?.trim()).toBe('TX at 14.195 MHz:');
