@@ -3335,8 +3335,7 @@ bogus = [0, 1]
 class TestNotchWidthLabelsComplete:
     """MOR-1685: a declared ``[notch] width_values`` entry with no label
     would raise ``KeyError`` inside the capabilities serializer at request
-    time — the loader must fail loud at load time instead. Notch only:
-    the sibling domains keep ``_parse_enumerated_domain`` semantics."""
+    time — the loader must fail loud at load time instead."""
 
     def test_notch_rejects_partial_width_labels(self, tmp_path):
         p = _write_toml(
@@ -3364,6 +3363,36 @@ width_values = [0, 1, 2]
             load_rig(p)
 
 
+class TestBreakInLabelsComplete:
+    """MOR-2729: the capabilities payload publishes every ``[break_in]``
+    value with its label, so a value with no label fails the load."""
+
+    def test_break_in_rejects_partial_labels(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+[break_in]
+values = [0, 1, 2]
+labels = { "0" = "A" }
+""",
+        )
+        with pytest.raises(RigLoadError, match=r"\[break_in\]\.labels.*'1', '2'"):
+            load_rig(p)
+
+    def test_break_in_rejects_values_without_labels_table(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+[break_in]
+values = [0, 1]
+""",
+        )
+        with pytest.raises(RigLoadError, match=r"\[break_in\]\.labels"):
+            load_rig(p)
+
+
 class TestBreakInDomainDeclaredOrDocumentedAbsent:
     """Every shipped profile must land on one of exactly two sides:
 
@@ -3373,10 +3402,6 @@ class TestBreakInDomainDeclaredOrDocumentedAbsent:
         of which declares the capability without a domain for its own
         reason (not an oversight):
 
-        - ``ftx1``: Yaesu CAT break-in is boolean on/off, not an enumerated
-          OFF/SEMI/FULL register — ``YaesuCatRadio.set_break_in`` collapses
-          any non-OFF value to ON by design (issue #1100), no TOML domain
-          needed.
         - ``x6100``/``x6200``: advertise the capability but the backend's
           break-in opcode (0x16 0x47, IC-7610's CW BK-IN register) is not
           confirmed in either radio's documented CI-V table
@@ -3385,7 +3410,7 @@ class TestBreakInDomainDeclaredOrDocumentedAbsent:
           a value domain — ``CoreRadio.set_break_in`` fails loud instead.
     """
 
-    _NO_DOMAIN_BY_DESIGN = frozenset({"ftx1", "x6100", "x6200"})
+    _NO_DOMAIN_BY_DESIGN = frozenset({"x6100", "x6200"})
 
     @pytest.mark.parametrize("toml_path", _SHIPPED_RIG_TOMLS, ids=lambda p: p.stem)
     def test_break_in_capability_and_domain_agree(self, toml_path):
@@ -3424,8 +3449,14 @@ class TestBreakInDomainDeclaredOrDocumentedAbsent:
                 "2": "FULL",
             }, name
 
+    def test_ftx1_declares_off_on(self):
+        """MOR-2729: the FTX-1 CAT ``BI`` command takes 0 (OFF) and 1 (ON)."""
+        rig = load_rig(RIGS_DIR / "ftx1.toml")
+        assert rig.break_in_modes == (0, 1)
+        assert rig.break_in_labels == {"0": "OFF", "1": "ON"}
+
     def test_documented_exceptions_declare_capability_without_domain(self):
-        for name in ("ftx1", "x6100", "x6200"):
+        for name in ("x6100", "x6200"):
             rig = load_rig(RIGS_DIR / f"{name}.toml")
             assert "break_in" in rig.capabilities, name
             assert rig.break_in_modes is None, name

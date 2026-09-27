@@ -1846,12 +1846,24 @@ async def test_set_break_in_accepts_break_in_mode(connected_radio):
 
 
 @pytest.mark.asyncio
-async def test_set_break_in_full_maps_to_on(connected_radio):
-    from rigplane.types import BreakInMode
-
+async def test_set_break_in_refuses_full_and_writes_nothing(connected_radio):
+    """MOR-2729: FULL (2) is outside the FTX-1 ``[break_in]`` domain (0, 1)."""
     connected_radio._transport.write = AsyncMock()
-    await connected_radio.set_break_in(BreakInMode.FULL)
-    connected_radio._transport.write.assert_called_once_with("BI1;")
+    with pytest.raises(CommandError, match=r"Break-in mode must be one of \[0, 1\]"):
+        await connected_radio.set_break_in(BreakInMode.FULL)
+    connected_radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_set_break_in_refuses_without_a_declared_domain(config):
+    """MOR-2729: a profile with no ``[break_in]`` domain writes nothing."""
+    stripped = replace(config, break_in_modes=None, break_in_labels=None)
+    radio = YaesuCatRadio("/dev/null", profile=stripped)
+    radio._transport._connected = True
+    radio._transport.write = AsyncMock()
+    with pytest.raises(CommandError, match=r"Break-in mode must be one of \[\]"):
+        await radio.set_break_in(BreakInMode.OFF)
+    radio._transport.write.assert_not_called()
 
 
 @pytest.mark.asyncio

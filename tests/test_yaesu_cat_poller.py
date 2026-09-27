@@ -3860,6 +3860,21 @@ async def test_execute_command_set_apf_off_dispatches_to_radio() -> None:
     radio.set_audio_peak_filter.assert_awaited_once_with(0, receiver=0)
 
 
+@pytest.mark.asyncio
+async def test_execute_command_set_break_in_passes_the_mode_unchanged() -> None:
+    """MOR-2729: SetBreakIn(2) reaches radio.set_break_in as 2, not as the
+    bool ``True`` (== 1), so the radio's domain check sees the FULL request."""
+    from rigplane.runtime._poller_types import SetBreakIn
+
+    radio = make_radio()
+    radio.set_break_in = AsyncMock()
+    poller = YaesuCatPoller(radio, callback=lambda s: None, fast_interval=10.0)
+
+    await poller._execute_command(SetBreakIn(2))
+
+    radio.set_break_in.assert_awaited_once_with(2)
+
+
 # ---------------------------------------------------------------------------
 # Command dispatch — SetPower unit-tag (#1168)
 # ---------------------------------------------------------------------------
