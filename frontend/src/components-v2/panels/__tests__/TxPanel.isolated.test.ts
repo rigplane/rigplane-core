@@ -246,6 +246,17 @@ describe('panel structure', () => {
     expect(value).not.toMatch(/-{2,}/);
   });
 
+  it('keeps the RF Power value in its reserved level slot', () => {
+    const t = mountPanel({ rfPower: 0.5 });
+    openTxSettings(t);
+    const header = Array.from(t.querySelectorAll('.vc-header')).find(
+      (h) => h.querySelector('.vc-label')?.textContent === 'RF Power',
+    );
+    expect(header?.closest('.tx-level-slot')).not.toBeNull();
+    const rule = txPanelSource.match(/\.tx-level-slot :global\(\.vc-value\) \{([^}]*)\}/)?.[1] ?? '';
+    expect(rule, 'the RF Power value keeps a reserved box').toContain('min-width:');
+  });
+
   it('preserves the level order and illuminated orange presentation', () => {
     const t = mountPanel({ compActive: true, monActive: true });
     openTxSettings(t);

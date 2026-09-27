@@ -373,10 +373,14 @@
   /* MOR-2658: the pitch/speed value box stays reserved for unread AND
      each known value — `6ch` covers the widest text (`900 Hz`), and
      `inline-block` is what makes the min-width apply to the renderer's
-     inline value span, so a first reading cannot shift the row. */
+     inline value span, so a first reading cannot shift the row.
+     `min-height: 1lh` keeps the box one text line tall when EMPTY — an
+     empty inline-block otherwise collapses to zero height and pulls the
+     rows below up (caught by the visual run on this change). */
   .cw-value-slot :global(.vc-value) {
     display: inline-block;
     min-width: 6ch;
+    min-height: 1lh;
     font-variant-numeric: tabular-nums;
   }
 
