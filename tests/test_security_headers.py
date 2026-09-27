@@ -8,8 +8,6 @@ and Content-Security-Policy.
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
 import pathlib
 import re
 from unittest.mock import AsyncMock, MagicMock
@@ -173,30 +171,43 @@ class TestSecurityHeaders:
         _, headers, _ = await _http_get(host, port, "/api/v1/state")
         return headers.get("content-security-policy", "")
 
-    async def test_csp_carries_hash_of_inline_sw_cleanup_script(
-        self, sec_server: WebServer
-    ) -> None:
-        """MOR-2242 — script-src must carry the exact hash of index.html's inline
-        service-worker-cleanup script.
+    async def test_index_html_has_no_inline_script(self) -> None:
+        """MOR-2242 residual — index.html must not carry an inline <script>.
 
-        Without a ``script-src`` directive the ``default-src 'self'`` policy
-        blocks the inline script, so the stale-service-worker cleanup never
-        runs in production. The hash must match the script byte-for-byte:
-        this test recomputes it from ``frontend/index.html`` so any edit to
-        the inline script that forgets the CSP update fails here first.
+        The browser hashes the exact bytes between the <script> tags of the
+        page the server actually serves, so a CSP hash pinned in the source
+        drifts whenever the computed byte range differs from the served one:
+        the PR #3718 hash covered ``body + b"\\n"`` while the page carried
+        ``b"\\n" + body + b"\\n    "`` — same script, different hash, and
+        the cleanup was silently blocked. The cleanup now runs from the
+        bundle (frontend/src/lib/unregister-stale-service-workers.ts), so
+        the CSP needs no inline allowance; this pin keeps a future inline
+        script from being reintroduced and silently blocked.
         """
         index_html = (
             pathlib.Path(__file__).resolve().parents[1] / "frontend" / "index.html"
-        ).read_bytes()
-        match = re.search(rb"<script>\n(.*?)\n    </script>", index_html, re.S)
-        assert match is not None, "inline SW cleanup script not found in index.html"
-        digest = base64.b64encode(
-            hashlib.sha256(match.group(1) + b"\n").digest()
-        ).decode("ascii")
-        csp = await self._csp(sec_server)
-        assert f"'sha256-{digest}'" in csp, (
-            "script-src must carry the current hash of index.html's inline script"
+        ).read_text()
+        inline = re.findall(r"<script(?![^>]*\bsrc=)[^>]*>", index_html)
+        assert not inline, (
+            "inline <script> in frontend/index.html is blocked by the CSP "
+            f"on the built page: {inline}"
         )
+
+    async def test_csp_script_src_has_no_inline_allowance(
+        self, sec_server: WebServer
+    ) -> None:
+        """MOR-2242 residual — script-src must not carry an inline hash.
+
+        An inline-script hash cannot be pinned reliably against the built
+        page (see test_index_html_has_no_inline_script), so the policy
+        relies on 'self' alone.
+        """
+        csp = await self._csp(sec_server)
+        script_src = next(
+            (part for part in csp.split(";") if "script-src" in part), ""
+        )
+        assert "'self'" in script_src
+        assert "sha256-" not in csp
 
     async def test_csp_allows_data_media(self, sec_server: WebServer) -> None:
         """MOR-2242 — media-src must allow data: for the no-sleep video.
