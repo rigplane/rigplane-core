@@ -279,7 +279,7 @@ def test_ic7610_serial_receive_explicit_demand_under_the_budget_does_not_stretch
     """IC-7610 over USB, receive: 40 q/s leaves the classes at their start.
 
     Explicit demand is under the 30 q/s limit, and so is the whole window
-    at nominal cadences (25.9 q/s), so nothing stretches and the window
+    at nominal cadences (26.1 q/s), so nothing stretches and the window
     stays under the 40 q/s transport budget.
     """
 
@@ -293,7 +293,9 @@ def test_ic7610_serial_receive_explicit_demand_under_the_budget_does_not_stretch
     for path, (cadence, start, _ceiling) in class_derived.items():
         assert cadence == pytest.approx(start), path
     demand = sum(1.0 / cadence for cadence in cadences.values())
-    assert demand == pytest.approx(25.9)
+    # MOR-2748: the two filter_shape reads went 10 s -> 5 s, +2*(1/5-1/10)
+    # = +0.2 q/s.
+    assert demand == pytest.approx(26.1)
     assert demand < ACQUISITION_BUDGET_MARGIN * _SERIAL_BUDGET_HZ
 
 
