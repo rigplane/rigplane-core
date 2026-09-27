@@ -161,8 +161,10 @@ describe('cwKeyer per-field derivation (MOR-1296)', () => {
       } as Partial<ServerState>);
       const cw = model(state, fullCaps).cwKeyer!;
       expect(cw.breakIn.reading).toEqual({ status: 'known', value: mode });
+      const realBreakIn = toCwProps(state, fullCaps).breakIn;
+      if (typeof realBreakIn !== 'number') throw new Error('toCwProps must produce a numeric breakIn for this fixture');
       expect(cw.breakIn.reading.status === 'known' && cw.breakIn.reading.value !== 'off')
-        .toBe(isBreakInActive(toCwProps(state, fullCaps).breakIn));
+        .toBe(isBreakInActive(realBreakIn));
     },
   );
 

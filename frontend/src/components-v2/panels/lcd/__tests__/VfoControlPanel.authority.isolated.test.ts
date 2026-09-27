@@ -263,6 +263,7 @@ describe('VfoControlPanel authority boundary', () => {
       mountPanel();
       const ftx1 = target.querySelector('.lcd-btn-bk') as HTMLElement;
       expect(sizerTexts(ftx1).sort()).toEqual(['BK', 'BK-OFF', 'BK-ON']);
+      if (component == null) throw new Error('component must be mounted before unmount');
       unmount(component);
       component = undefined;
       props.vfo.breakInChoices = [
@@ -281,6 +282,7 @@ describe('VfoControlPanel authority boundary', () => {
       props.vfo.breakInMode = null;
       mountPanel();
       expect(accessibleText(target.querySelector('.lcd-btn-bk') as Element)).toBe('BK');
+      if (component == null) throw new Error('component must be mounted before unmount');
       unmount(component);
       component = undefined;
       props.vfo.breakInMode = 2;
