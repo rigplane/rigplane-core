@@ -1,9 +1,8 @@
 """MOR-2476: profile bands drive filter/if-shift/nb-nr validation steps.
 
-The hard-coded control ranges in ``rigplane.validation.hardware`` must come
-from the rig profile: filter_width.set branches on ``filter_width_encoding``,
-if_shift.set nudges inside ``[controls.if_shift]``, and the nb/nr level
-fallback probes an "on" level inside the declared band (SKIP when none).
+filter_width.set branches on ``filter_width_encoding``, if_shift.set nudges
+inside ``[controls.if_shift]``, and the nb/nr level fallback probes an "on"
+level inside the declared band (SKIP when none).
 """
 
 from __future__ import annotations
@@ -92,9 +91,7 @@ async def test_if_shift_nudge_comes_from_profile_band():
 
 async def test_if_shift_profile_without_band_skips():
     """Profiled radio with no if_shift band SKIPs; nothing is written."""
-    radio = _FakeRadio(capabilities={"if_shift"}, controls={}).add_op(
-        "get_if_shift", "set_if_shift", start=0, band=(-1200, 1200)
-    )
+    radio = _FakeRadio(capabilities={"if_shift"}, controls={}).add_op("get_if_shift", "set_if_shift", start=0, band=(-1200, 1200))
     check = await _run(radio, check_id="if_shift.set", capability="if_shift")
     assert check.status is CheckStatus.SKIP
     assert "no declared range" in check.evidence["reason"]
@@ -138,9 +135,7 @@ async def test_nb_nr_on_level_comes_from_profile_band():
 
 async def test_nb_level_profile_without_band_skips():
     """Profiled radio with no NB band SKIPs the level fallback; no writes."""
-    radio = _FakeRadio(capabilities={"nb"}, controls={}).add_op(
-        "get_nb_level", "set_nb_level", start=0, band=(0, 10)
-    )
+    radio = _FakeRadio(capabilities={"nb"}, controls={}).add_op("get_nb_level", "set_nb_level", start=0, band=(0, 10))
     check = await _run(radio, check_id="nb.set", capability="nb")
     assert check.status is CheckStatus.SKIP
     assert "no declared range" in check.evidence["reason"]

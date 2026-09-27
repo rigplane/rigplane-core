@@ -1400,9 +1400,7 @@ def _range_aware_level_nudge(lo: int, hi: int) -> Callable[[int], int]:
 _IF_SHIFT_CONTROL_KEY = "if_shift"
 
 
-def _resolve_if_shift_band(
-    radio: Radio,
-) -> tuple[Decimal, Decimal, Decimal | None] | None:
+def _resolve_if_shift_band(radio: Radio) -> tuple[Decimal, Decimal, Decimal | None] | None:
     """The ``[controls.if_shift]`` band, or ``None`` when undeclared.
 
     Mirrors ``_resolve_cw_pitch_band`` (profile-less radios yield ``None``).
@@ -3051,9 +3049,7 @@ async def _check_from_spec(
                     entry,
                     CheckStatus.SKIP,
                     evidence={
-                        "reason": _no_declared_range_reason(
-                            entry.check_id, control=_IF_SHIFT_CONTROL_KEY
-                        )
+                        "reason": _no_declared_range_reason(entry.check_id, control=_IF_SHIFT_CONTROL_KEY)
                     },
                 )
         elif make_changed is None:
