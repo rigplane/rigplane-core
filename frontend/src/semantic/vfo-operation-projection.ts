@@ -152,7 +152,7 @@ export function projectVfoOperations(
     return {
       availability: availability(
         structural,
-        usable(field) && callback !== undefined,
+        usable<AtuStatus | boolean>(field) && callback !== undefined,
         undefined,
       ),
       reading: field === undefined ? { status: 'unknown' } : field.reading,
