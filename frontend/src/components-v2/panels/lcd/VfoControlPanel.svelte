@@ -65,20 +65,26 @@
   {/if}
   <!-- MOR-2729: the break-in key cycles to the NEXT published value from
        the current one; `[]` (X6100, X6200) renders no key at all — the
-       FTX-1 fix for the stuck-ON cycle. While break-in is unread (null) the
-       key is disabled and unlit with an empty label — no fabricated
-       "current" value, no guessed NEXT command. Once read it cycles. -->
+       FTX-1 fix for the stuck-ON cycle. The key KEEPS ITS NAME ("BK") in
+       every state: while break-in is unread (null) it is disabled and
+       unlit, displaying exactly "BK", and once read it shows
+       `BK-<published label>` — the operator always sees which function
+       the key controls. The name is the visible text; a separate
+       aria-label would only duplicate it. -->
   {#if p.isCwMode && p.hasCw && p.hasBreakIn && p.breakInChoices.length > 0}
     {@const choices = p.breakInChoices}
     {@const current = p.breakInMode}
     {@const next = current === null
       ? null
       : choices[(choices.findIndex((c) => c.value === current) + 1) % choices.length]}
+    {@const label = current === null
+      ? 'BK'
+      : `BK-${choices.find((c) => c.value === current)?.label ?? ''}`}
     <button
-      class="lcd-btn" class:active={current !== null && current > 0}
+      class="lcd-btn lcd-btn-bk" class:active={current !== null && current > 0}
       disabled={current === null}
       onclick={() => { if (next !== null) cwHandlers.onBreakInModeChange(next.value); }}
-    >{current === null ? '' : (choices.find((c) => c.value === current)?.label ?? '')}</button>
+    >{label}</button>
   {/if}
 </div>
 
@@ -117,5 +123,11 @@
   .lcd-btn.active {
     color: var(--v2-text);
     border-color: var(--v2-accent, var(--v2-border));
+  }
+  /* MOR-2729: reserve the widest BK text ("BK-SEMI"/"BK-FULL", 7ch) so
+     the layout never moves when the first reading arrives. */
+  .lcd-btn-bk {
+    min-width: 7ch;
+    text-align: center;
   }
 </style>

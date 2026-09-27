@@ -926,7 +926,6 @@ export type CwKeyerField<T> = TxAuxField<T>;
  * immediately. That difference is deliberate and is the whole point of the
  * type: an unreadable break-in state must never present as "the key is
  * safe".
- * unreadable break-in state must never present as "the key is safe".
  */
 export type BreakInMode = 'off' | 'semi' | 'full';
 
