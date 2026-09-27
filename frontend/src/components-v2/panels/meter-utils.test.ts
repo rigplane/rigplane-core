@@ -280,21 +280,21 @@ describe('explicit meter domains override capability metadata (MOR-2425)', () =>
     expect(compLevel(15, raw)).toBeCloseTo(15 / 255);
   });
 
-  it('retains known numeric evidence for an unknown unit without geometry or faults', () => {
+  it('renders an unknown unit as no text — like an unread reading — without geometry or faults', () => {
     expect(hasSwrRatioScale(unknown)).toBe(false);
-    expect(formatPowerWatts(50, unknown)).toBe('50 unit unknown');
+    expect(formatPowerWatts(50, unknown)).toBe('');
     expect(normalizePower(50, unknown)).toBeNull();
-    expect(formatSwr(3, unknown)).toBe('3 unit unknown');
+    expect(formatSwr(3, unknown)).toBe('');
     expect(swrLevel(3, unknown)).toBeNull();
     expect(isSwrFault(3, unknown)).toBe(false);
-    expect(formatAlc(0.95, unknown)).toBe('0.95 unit unknown');
+    expect(formatAlc(0.95, unknown)).toBe('');
     expect(alcLevel(0.95, unknown)).toBeNull();
     expect(isAlcFault(0.95, unknown)).toBe(false);
-    expect(formatVolts(13.8, unknown)).toBe('13.8 unit unknown');
+    expect(formatVolts(13.8, unknown)).toBe('');
     expect(vdLevel(13.8, unknown)).toBeNull();
-    expect(formatAmps(10, unknown)).toBe('10 unit unknown');
+    expect(formatAmps(10, unknown)).toBe('');
     expect(idLevel(10, unknown)).toBeNull();
-    expect(formatCompDb(15, unknown)).toBe('15 unit unknown');
+    expect(formatCompDb(15, unknown)).toBe('');
     expect(compLevel(15, unknown)).toBeNull();
   });
 

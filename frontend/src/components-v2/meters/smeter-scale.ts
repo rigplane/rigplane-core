@@ -471,12 +471,15 @@ export function projectSignalMeter(
   const uniformScaleMarks = scaleMode === 's'
     ? uniformScaleMarksFor(projectionCalibration) : [];
 
-  if (value === null) {
-    // No reading yet: an unread meter is an empty bar with no caption —
+  if (value === null || domain?.kind === 'unknown') {
+    // No usable reading: an unread meter is an empty bar with no caption —
     // never a '?', a dash, or an invented zero (owner rulings MOR-2520,
-    // repeated in MOR-2649). The accessible name is the bare meter name
-    // with no placeholder word; the calibrated / raw / engineering scale
-    // distinctions are known-value facts and stay in the branches below.
+    // repeated in MOR-2649). A known reading whose unit is unknown funnels
+    // here too (MOR-2651): the tile's label already implies a unit, so a
+    // bare number would invent one — for the operator it is no reading.
+    // The accessible name is the bare meter name with no placeholder word;
+    // the calibrated / raw / engineering scale distinctions are known-value
+    // facts and stay in the branches below.
     return {
       scaleMode,
       motionFraction: null,
@@ -508,6 +511,8 @@ export function projectSignalMeter(
   }
 
   if (scaleMode === 'none') {
+    // Unknown domains funnel into the unread branch above; only engineering
+    // domains reach this branch (MOR-2651 leaves them untouched).
     const engineeringDb = domain?.kind === 'engineering' && domain.unit === 'db';
     const signedValue = `${value < 0 ? '\u2212' : value > 0 ? '+' : ''}${Math.abs(value)}`;
     const valueText = engineeringDb

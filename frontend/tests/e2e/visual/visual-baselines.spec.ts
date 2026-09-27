@@ -145,8 +145,8 @@ test('VFO phone tiles fit on one line and paint no freshness cue', async ({ page
  * seams, at the two viewports the ticket's acceptance names (375x812,
  * 812x375). Both captures assert the non-pixel contract before the pixel
  * layer, which a comparator cannot see: the full-width landscape surface
- * and the formatted AF level (never the raw normalized float from the
- * bench).
+ * and the unread AF level (empty in its reserved box, never the raw
+ * normalized float from the bench).
  */
 test('mobile-portrait--phone', async ({ page }) => {
   await page.setViewportSize(PHONE);
@@ -158,7 +158,10 @@ test('mobile-portrait--phone', async ({ page }) => {
   const essentials = page.locator('.m-essentials');
   await expect(essentials).toContainText('AF Level');
   const afText = await essentials.innerText();
-  expect(afText).toMatch(/--- %|\d+(\.\d+)?%/);
+  // MOR-2668: the fixture never reports an AF level, so the readout is
+  // unread — empty text in its reserved box (`textContent`, which unlike
+  // `innerText` does not pick up the `:empty::before` line-box strut).
+  expect(await essentials.locator('.vc-value').textContent()).toBe('');
   expect(afText).not.toContain('NaN');
   // The bench defect class: a bare normalised float on the AF slider.
   expect(afText).not.toMatch(/\d\.\d{6,}/);

@@ -526,7 +526,7 @@ describe('ReceiverInstrumentHost', () => {
     expect(svg().querySelector('[data-meter-peak]')?.getAttribute('visibility')).toBe('hidden');
 
     publisher.emit(publication({ mainS: 53, meterQuality: [] })); flushSync();
-    expect(svg().getAttribute('aria-label')).toContain('unit unknown');
+    expect(svg().getAttribute('aria-label')).toBe('S meter');
     expect(svg().querySelectorAll('[data-scale-label]')).toHaveLength(0);
     expect(svg().querySelector('[data-meter-peak]')?.getAttribute('visibility')).toBe('hidden');
     const unprojectableTrack = svg().querySelector('[data-meter-track]')!;

@@ -252,7 +252,8 @@ describe('RfFrontEnd RF/SQL feedback bindings', () => {
     flushSync();
     expect(slider(target)).toBe(rfOnly);
     expect(rfOnly.getAttribute('aria-disabled')).toBe('true');
-    expect(target.querySelector('.vc-value')?.textContent).toBe('—');
+    // MOR-2658: unread is an empty reserved slot — never the '—' placeholder.
+    expect(target.querySelector('.vc-value')?.textContent).toBe('');
 
     feedbackState.set('value', {
       rf: { command: 'set_rf_gain', feedback: feedback('rf-gain', 0.8, {
@@ -270,5 +271,30 @@ describe('RfFrontEnd RF/SQL feedback bindings', () => {
     expect(mockHandlers.onRfGainChange).not.toHaveBeenCalled();
     expect(mockHandlers.onSquelchChange).not.toHaveBeenCalled();
     vi.useRealTimers();
+  });
+});
+
+// ── Unread RF gain (MOR-2658) ──────────────────────────────────────────────
+// An unread value renders EMPTY in its reserved slot — never '—', and never
+// a '%' without its number. A known value renders exactly as before.
+describe('RfFrontEnd unread RF gain value display (MOR-2658)', () => {
+  function slider(target: HTMLElement): HTMLElement {
+    return target.querySelector('[role="slider"]') as HTMLElement;
+  }
+
+  it('renders a known RF gain exactly as before', () => {
+    const target = mountPanel({ showRfGain: true, showSquelch: false });
+    expect(slider(target).getAttribute('aria-valuenow')).toBe('0.5');
+    expect(target.querySelector('.vc-value')?.textContent).toBe('50%');
+  });
+
+  it('renders an unread RF gain as an empty slot, never a dash or percent-alone', () => {
+    feedbackState.set('value', null);
+    const target = mountPanel({ showRfGain: true, showSquelch: false });
+    expect(slider(target).getAttribute('aria-disabled')).toBe('true');
+    expect(target.querySelector('.vc-value')?.textContent).toBe('');
+    const text = target.textContent ?? '';
+    expect(text).not.toContain('—');
+    expect(text.replace('RF Gain', '')).not.toContain('%');
   });
 });

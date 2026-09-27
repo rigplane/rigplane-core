@@ -1,0 +1,100 @@
+{
+  "domains": [
+    {
+      "rig": "yaesu_ftx1",
+      "control": "cw_pitch",
+      "domain": {"display_max":"1050","display_min":"300","display_origin":"300","display_step":"10","display_unit":"Hz","mapping":"identity","quantization":"reject","raw_max":1050,"raw_min":300,"raw_origin":300,"raw_step":10,"restoration":"exact"},
+      "decode": [[300,"300"],[490,"490"],[680,"680"],[860,"860"],[1050,"1050"]],
+      "encode": [["300",300],["490",490],["680",680],["860",860],["1050",1050],["305",null],["1060",null]],
+      "quantize": [["nearest_ties_down","305","300"],["nearest_ties_down","302.5","300"],["nearest_ties_up","305","310"],["nearest_ties_up","302.5","300"],["floor","305","300"],["floor","302.5","300"],["ceil","305","310"],["ceil","302.5","310"],["reject","305",null],["reject","302.5",null],["reject","300","300"]]
+    },
+    {
+      "rig": "yaesu_ftx1",
+      "control": "if_shift",
+      "domain": {"display_max":"1200","display_min":"-1200","display_origin":"0","display_step":"20","display_unit":"Hz","mapping":"identity","quantization":"reject","raw_max":1200,"raw_min":-1200,"raw_origin":0,"raw_step":20,"restoration":"exact"},
+      "decode": [[-1200,"-1200"],[-600,"-600"],[0,"0"],[600,"600"],[1200,"1200"]],
+      "encode": [["-1200",-1200],["-600",-600],["0",0],["600",600],["1200",1200],["10",null],["1220",null]],
+      "quantize": [["nearest_ties_down","10","0"],["nearest_ties_down","5","0"],["nearest_ties_up","10","20"],["nearest_ties_up","5","0"],["floor","10","0"],["floor","5","0"],["ceil","10","20"],["ceil","5","20"],["reject","10",null],["reject","5",null],["reject","0","0"]]
+    },
+    {
+      "rig": "yaesu_ftx1",
+      "control": "manual_notch_freq",
+      "domain": {"display_max":"3200","display_min":"10","display_origin":"10","display_step":"10","display_unit":"Hz","mapping":"linear","quantization":"reject","raw_max":320,"raw_min":1,"raw_origin":1,"raw_step":1,"restoration":"exact"},
+      "decode": [[1,"10"],[81,"810"],[161,"1610"],[240,"2400"],[320,"3200"]],
+      "encode": [["10",1],["810",81],["1610",161],["2400",240],["3200",320],["15",null],["3210",null]],
+      "quantize": [["nearest_ties_down","15","10"],["nearest_ties_down","12.5","10"],["nearest_ties_up","15","20"],["nearest_ties_up","12.5","10"],["floor","15","10"],["floor","12.5","10"],["ceil","15","20"],["ceil","12.5","20"],["reject","15",null],["reject","12.5",null],["reject","10","10"]]
+    },
+    {
+      "rig": "yaesu_ftx1",
+      "control": "nb_level",
+      "domain": {"display_max":"10","display_min":"0","display_origin":"0","display_step":"1","display_unit":"level","mapping":"identity","quantization":"reject","raw_max":10,"raw_min":0,"raw_origin":0,"raw_step":1,"restoration":"exact"},
+      "decode": [[0,"0"],[2,"2"],[5,"5"],[8,"8"],[10,"10"]],
+      "encode": [["0",0],["2",2],["5",5],["8",8],["10",10],["0.5",null],["11",null]],
+      "quantize": [["nearest_ties_down","0.5","0"],["nearest_ties_down","0.25","0"],["nearest_ties_up","0.5","1"],["nearest_ties_up","0.25","0"],["floor","0.5","0"],["floor","0.25","0"],["ceil","0.5","1"],["ceil","0.25","1"],["reject","0.5",null],["reject","0.25",null],["reject","0","0"]]
+    },
+    {
+      "rig": "yaesu_ftx1",
+      "control": "nr_level",
+      "domain": {"display_max":"10","display_min":"0","display_origin":"0","display_step":"1","display_unit":"level","mapping":"identity","quantization":"reject","raw_max":10,"raw_min":0,"raw_origin":0,"raw_step":1,"restoration":"exact"},
+      "decode": [[0,"0"],[2,"2"],[5,"5"],[8,"8"],[10,"10"]],
+      "encode": [["0",0],["2",2],["5",5],["8",8],["10",10],["0.5",null],["11",null]],
+      "quantize": [["nearest_ties_down","0.5","0"],["nearest_ties_down","0.25","0"],["nearest_ties_up","0.5","1"],["nearest_ties_up","0.25","0"],["floor","0.5","0"],["floor","0.25","0"],["ceil","0.5","1"],["ceil","0.25","1"],["reject","0.5",null],["reject","0.25",null],["reject","0","0"]]
+    },
+    {
+      "rig": "yaesu_ftx1",
+      "control": "rit",
+      "domain": {"display_max":"9999","display_min":"-9999","display_origin":"0","display_step":"1","display_unit":"Hz","mapping":"identity","quantization":"reject","raw_max":9999,"raw_min":-9999,"raw_origin":0,"raw_step":1,"restoration":"exact"},
+      "decode": [[-9999,"-9999"],[-4999,"-4999"],[0,"0"],[4999,"4999"],[9999,"9999"]],
+      "encode": [["-9999",-9999],["-4999",-4999],["0",0],["4999",4999],["9999",9999],["0.5",null],["10000",null]],
+      "quantize": [["nearest_ties_down","0.5","0"],["nearest_ties_down","0.25","0"],["nearest_ties_up","0.5","1"],["nearest_ties_up","0.25","0"],["floor","0.5","0"],["floor","0.25","0"],["ceil","0.5","1"],["ceil","0.25","1"],["reject","0.5",null],["reject","0.25",null],["reject","0","0"]]
+    },
+    {
+      "rig": "icom_ic705",
+      "control": "rit",
+      "domain": {"display_max":"9999","display_min":"-9999","display_origin":"0","display_step":"1","display_unit":"Hz","mapping":"identity","quantization":"reject","raw_max":9999,"raw_min":-9999,"raw_origin":0,"raw_step":1,"restoration":"exact"},
+      "decode": [[-9999,"-9999"],[-4999,"-4999"],[0,"0"],[4999,"4999"],[9999,"9999"]],
+      "encode": [["-9999",-9999],["-4999",-4999],["0",0],["4999",4999],["9999",9999],["0.5",null],["10000",null]],
+      "quantize": [["nearest_ties_down","0.5","0"],["nearest_ties_down","0.25","0"],["nearest_ties_up","0.5","1"],["nearest_ties_up","0.25","0"],["floor","0.5","0"],["floor","0.25","0"],["ceil","0.5","1"],["ceil","0.25","1"],["reject","0.5",null],["reject","0.25",null],["reject","0","0"]]
+    },
+    {
+      "rig": "icom_ic7300",
+      "control": "rit",
+      "domain": {"display_max":"9999","display_min":"-9999","display_origin":"0","display_step":"1","display_unit":"Hz","mapping":"identity","quantization":"reject","raw_max":9999,"raw_min":-9999,"raw_origin":0,"raw_step":1,"restoration":"exact"},
+      "decode": [[-9999,"-9999"],[-4999,"-4999"],[0,"0"],[4999,"4999"],[9999,"9999"]],
+      "encode": [["-9999",-9999],["-4999",-4999],["0",0],["4999",4999],["9999",9999],["0.5",null],["10000",null]],
+      "quantize": [["nearest_ties_down","0.5","0"],["nearest_ties_down","0.25","0"],["nearest_ties_up","0.5","1"],["nearest_ties_up","0.25","0"],["floor","0.5","0"],["floor","0.25","0"],["ceil","0.5","1"],["ceil","0.25","1"],["reject","0.5",null],["reject","0.25",null],["reject","0","0"]]
+    },
+    {
+      "rig": "icom_ic7610",
+      "control": "rit",
+      "domain": {"display_max":"9999","display_min":"-9999","display_origin":"0","display_step":"1","display_unit":"Hz","mapping":"identity","quantization":"reject","raw_max":9999,"raw_min":-9999,"raw_origin":0,"raw_step":1,"restoration":"exact"},
+      "decode": [[-9999,"-9999"],[-4999,"-4999"],[0,"0"],[4999,"4999"],[9999,"9999"]],
+      "encode": [["-9999",-9999],["-4999",-4999],["0",0],["4999",4999],["9999",9999],["0.5",null],["10000",null]],
+      "quantize": [["nearest_ties_down","0.5","0"],["nearest_ties_down","0.25","0"],["nearest_ties_up","0.5","1"],["nearest_ties_up","0.25","0"],["floor","0.5","0"],["floor","0.25","0"],["ceil","0.5","1"],["ceil","0.25","1"],["reject","0.5",null],["reject","0.25",null],["reject","0","0"]]
+    },
+    {
+      "rig": "icom_ic9700",
+      "control": "rit",
+      "domain": {"display_max":"999","display_min":"-999","display_origin":"0","display_step":"1","display_unit":"Hz","mapping":"identity","quantization":"reject","raw_max":999,"raw_min":-999,"raw_origin":0,"raw_step":1,"restoration":"exact"},
+      "decode": [[-999,"-999"],[-499,"-499"],[0,"0"],[499,"499"],[999,"999"]],
+      "encode": [["-999",-999],["-499",-499],["0",0],["499",499],["999",999],["0.5",null],["1000",null]],
+      "quantize": [["nearest_ties_down","0.5","0"],["nearest_ties_down","0.25","0"],["nearest_ties_up","0.5","1"],["nearest_ties_up","0.25","0"],["floor","0.5","0"],["floor","0.25","0"],["ceil","0.5","1"],["ceil","0.25","1"],["reject","0.5",null],["reject","0.25",null],["reject","0","0"]]
+    },
+    {
+      "rig": "xiegu_x6100",
+      "control": "rit",
+      "domain": {"display_max":"9999","display_min":"-9999","display_origin":"0","display_step":"1","display_unit":"Hz","mapping":"identity","quantization":"reject","raw_max":9999,"raw_min":-9999,"raw_origin":0,"raw_step":1,"restoration":"exact"},
+      "decode": [[-9999,"-9999"],[-4999,"-4999"],[0,"0"],[4999,"4999"],[9999,"9999"]],
+      "encode": [["-9999",-9999],["-4999",-4999],["0",0],["4999",4999],["9999",9999],["0.5",null],["10000",null]],
+      "quantize": [["nearest_ties_down","0.5","0"],["nearest_ties_down","0.25","0"],["nearest_ties_up","0.5","1"],["nearest_ties_up","0.25","0"],["floor","0.5","0"],["floor","0.25","0"],["ceil","0.5","1"],["ceil","0.25","1"],["reject","0.5",null],["reject","0.25",null],["reject","0","0"]]
+    },
+    {
+      "rig": "xiegu_x6200",
+      "control": "rit",
+      "domain": {"display_max":"9999","display_min":"-9999","display_origin":"0","display_step":"1","display_unit":"Hz","mapping":"identity","quantization":"reject","raw_max":9999,"raw_min":-9999,"raw_origin":0,"raw_step":1,"restoration":"exact"},
+      "decode": [[-9999,"-9999"],[-4999,"-4999"],[0,"0"],[4999,"4999"],[9999,"9999"]],
+      "encode": [["-9999",-9999],["-4999",-4999],["0",0],["4999",4999],["9999",9999],["0.5",null],["10000",null]],
+      "quantize": [["nearest_ties_down","0.5","0"],["nearest_ties_down","0.25","0"],["nearest_ties_up","0.5","1"],["nearest_ties_up","0.25","0"],["floor","0.5","0"],["floor","0.25","0"],["ceil","0.5","1"],["ceil","0.25","1"],["reject","0.5",null],["reject","0.25",null],["reject","0","0"]]
+    }
+  ]
+}
