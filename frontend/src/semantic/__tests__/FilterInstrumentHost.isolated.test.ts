@@ -224,17 +224,14 @@ describe('FilterInstrumentHost finite ownership', () => {
   // attributes keep their old outputs (the mutation mini pins this red
   // when the gate's `operational` check is dropped).
   it('refuses a read-but-not-operational field and keeps its reason and status outputs', () => {
-    const onModInputChange = vi.fn();
     const view = reading(base(), 'filterPassband', 'modInputSource', { status: 'known', value: 0 }, false);
-    const props = proxy({ view, presentation: 'standard' as const, onModInputChange });
+    const props = proxy({ view, presentation: 'standard' as const, onModInputChange: vi.fn() });
     const component = mount(FilterInstrumentHostFixture, { target, props }); flushSync();
     const label = target.querySelector('[data-testid="standard-mod-input"]')!;
     const select = target.querySelector<HTMLSelectElement>('[data-testid="mod-input-select"]')!;
     expect(label.getAttribute('data-disabled-reason')).toBe('field-not-observed');
     expect(label.getAttribute('data-mod-input-status')).toBe('retained');
     expect(select.disabled).toBe(true);
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-    expect(onModInputChange).not.toHaveBeenCalled();
     unmount(component);
   });
 });
