@@ -90,6 +90,15 @@
   let displayRf = $derived(view === null ? null : percent(laneValue(view.lanes.rf), view));
   let displaySql = $derived(view === null ? null : percent(laneValue(view.lanes.sql), view));
   let absDeviation = $derived(Math.abs(thumbPct - 50) / 50);
+  // MOR-2657: an unread lane renders '' (unlit LCD segment), and the
+  // accessible text drops the unread lane instead of naming a placeholder.
+  let dualValueText = $derived.by(() => {
+    if (displayRf === null && displaySql === null) return undefined;
+    const parts: string[] = [];
+    if (displayRf !== null) parts.push(`RF ${displayRf}%`);
+    if (displaySql !== null) parts.push(`squelch ${displaySql}%`);
+    return parts.join(', ');
+  });
   let fillRatio = $derived(absDeviation);
   let rfFillWidth = $derived(Math.max(0, 50 - thumbPct));
   let sqlFillWidth = $derived(Math.max(0, thumbPct - 50));
@@ -191,8 +200,8 @@
 >
   {#if showValues}
     <div class="vc-header">
-      <span class="vc-label-rf">{rfLabel}<span class="vc-num">{displayRf === null ? '—' : `${displayRf}%`}</span></span>
-      <span class="vc-label-sql"><span class="vc-num">{displaySql === null ? '—' : `${displaySql}%`}</span>{sqlLabel}</span>
+      <span class="vc-label-rf">{rfLabel}<span class="vc-num">{displayRf === null ? '' : `${displayRf}%`}</span></span>
+      <span class="vc-label-sql"><span class="vc-num">{displaySql === null ? '' : `${displaySql}%`}</span>{sqlLabel}</span>
     </div>
   {/if}
 
@@ -205,7 +214,7 @@
     aria-valuemin={0}
     aria-valuemax={100}
     aria-valuenow={ariaNow}
-    aria-valuetext="RF {displayRf === null ? '—' : `${displayRf}%`}, squelch {displaySql === null ? '—' : `${displaySql}%`}"
+    aria-valuetext={dualValueText}
     aria-disabled={!view.editable}
     aria-busy={view.busy}
     data-rf-command-phase={rfLane?.phase ?? undefined}
@@ -300,11 +309,21 @@
   }
 
   .vc-num {
+    display: inline-block;
     margin: 0 4px;
     color: var(--vc-illum-value-color, var(--vc-text-value, var(--v2-text-bright)));
     font-family: 'Roboto Mono', monospace;
     font-weight: 600;
+    /* MOR-2657: unread renders '' in a box reserved for the widest readout
+     * ('100%'), so the first reading cannot resize it or move the labels. */
+    min-width: 4ch;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
   }
+
+  /* An unread number is empty ink, but the box keeps the exact line-box
+   * metrics of a known number, so the first reading cannot shift the row. */
+  .vc-num:empty::before { content: '\200b'; }
 
   .disabled {
     opacity: 0.4;
