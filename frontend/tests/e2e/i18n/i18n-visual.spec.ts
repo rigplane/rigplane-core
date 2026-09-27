@@ -482,21 +482,21 @@ const PRODUCTION_LANGUAGE_CASES: readonly ProductionLanguageCase[] = [
   },
   {
     label: 'persisted StudioLine × light',
-    workspace: { version: 1, designLanguage: 'studioline', theme: 'github-light' },
+    workspace: { version: 2, designLanguageBySkin: { 'desktop-v2': 'studioline' }, theme: 'github-light' },
     language: 'studioline',
     mode: 'light',
     expected: { surface: '#faf7f2', text: '#14181a', vfoBorderTop: '0px', vfoNumeralWeight: '800' },
   },
   {
     label: 'persisted FieldLine × dark',
-    workspace: { version: 1, designLanguage: 'fieldline', theme: 'nord' },
+    workspace: { version: 2, designLanguageBySkin: { 'desktop-v2': 'fieldline' }, theme: 'nord' },
     language: 'fieldline',
     mode: 'dark',
     expected: { surface: '#0a0a0a', text: '#f2f5f7', vfoBorderTop: '3px', vfoNumeralWeight: '700' },
   },
   {
     label: 'persisted FieldLine × light',
-    workspace: { version: 1, designLanguage: 'fieldline', theme: 'github-light' },
+    workspace: { version: 2, designLanguageBySkin: { 'desktop-v2': 'fieldline' }, theme: 'github-light' },
     language: 'fieldline',
     mode: 'light',
     expected: { surface: '#ffffff', text: '#000000', vfoBorderTop: '3px', vfoNumeralWeight: '700' },
@@ -648,6 +648,17 @@ test.describe('MOR-1400 production design-language contract', () => {
   test('invalid persisted presentation repairs to scoped StudioLine dark', async ({ page }) => {
     await preparePage(page, 'en-US', VIEWPORTS[0], {
       workspace: { version: 1, designLanguage: 'unknown', theme: 'unknown' },
+    });
+    await gotoApp(page, 'en-US');
+    await waitForAppShell(page);
+    await assertProductionLanguageCss(page, PRODUCTION_LANGUAGE_CASES[0]);
+  });
+
+  test('v1 global designLanguage is dropped, not migrated', async ({ page }) => {
+    await preparePage(page, 'en-US', VIEWPORTS[0], {
+      // MOR-2218 owner ruling: a v1 global value is dropped, so a stored
+      // non-default language renders the desktop-v2 default (StudioLine).
+      workspace: { version: 1, designLanguage: 'fieldline', theme: 'nord' },
     });
     await gotoApp(page, 'en-US');
     await waitForAppShell(page);

@@ -155,8 +155,10 @@ async function boot(page: Page, layout: string, width: number, known: boolean, l
   const locale = options.locale ?? (width === 900 ? 'ru-RU' : 'en-US');
   await page.setViewportSize({ width, height });
   await page.addInitScript(({ state, layout, language, theme, locale }) => {
-    localStorage.setItem('rigplane:workspace', JSON.stringify({ version: 1, layout,
-      designLanguage: language, theme }));
+    // MOR-2218: activation seeds use the v2 per-skin map; a v1 global
+    // `designLanguage` is dropped on read, never migrated.
+    localStorage.setItem('rigplane:workspace', JSON.stringify({ version: 2, layout,
+      designLanguageBySkin: { 'desktop-v2': language }, theme }));
     localStorage.setItem('rigplane.i18n.locale', locale);
     const commands: unknown[] = [];
     Object.assign(window, { geometryCommands: commands });
