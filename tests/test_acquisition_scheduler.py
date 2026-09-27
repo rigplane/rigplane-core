@@ -4349,10 +4349,15 @@ def test_due_requests_skips_a_group_whose_paths_are_all_unavailable() -> None:
 
 
 def test_due_requests_dispatches_a_group_while_one_path_is_available() -> None:
-    """The whole group dispatches when at least one path holds (MOR-2748)."""
+    """The whole group dispatches when at least one path holds (MOR-2748).
 
-    main_shape = FieldPath.receiver("main", "operator_controls", "filter_shape")
-    sub_shape = FieldPath.receiver("sub", "operator_controls", "filter_shape")
+    Two same-receiver operator-controls fields share the group key, so one
+    resolved ``False`` path does not withhold the group; the gate fires only
+    when EVERY path resolves ``False``.
+    """
+
+    shape = FieldPath.receiver("main", "operator_controls", "filter_shape")
+    notch = FieldPath.receiver("main", "operator_controls", "manual_notch_width")
     mode = FieldPath.active("main", "freq_mode", "mode")
     # identical policy values for both paths -> one cadence group
     policy = AcquisitionPolicy(
@@ -4361,16 +4366,16 @@ def test_due_requests_dispatches_a_group_while_one_path_is_available() -> None:
         )
     )
     profile = _profile(
-        (mode, main_shape, sub_shape),
-        field_policies={main_shape: policy, sub_shape: policy},
+        (mode, shape, notch),
+        field_policies={shape: policy, notch: policy},
     )
     scheduler = AcquisitionScheduler(profile=profile, clock=FreshnessClock(start=100.0))
-    mixed = {main_shape: False, sub_shape: True}
+    mixed = {shape: False, notch: True}
 
     requests = scheduler.due_requests(availability=mixed)
 
     dispatched = {path for request in requests for path in request.paths}
-    assert {main_shape, sub_shape} <= dispatched
+    assert {shape, notch} <= dispatched
 
 
 _IC7610_MAIN_SHAPE = FieldPath.receiver("main", "operator_controls", "filter_shape")
