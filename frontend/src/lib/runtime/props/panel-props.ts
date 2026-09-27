@@ -26,7 +26,7 @@ import {
 import type { NrLevelProjection, ControlDisplayDomain, PbtRange } from '$lib/radio/filter-controls';
 import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
 import { isFieldAvailable, isFieldRead } from '$lib/state/field-status';
-import { finiteValue } from '$lib/primitives/reading-text';
+import { finiteValue } from '../../../primitives/reading-text';
 import { modInputStateKey } from '$lib/radio/mod-input';
 
 /* ── Private helpers ─────────────────────────────────────────── */
