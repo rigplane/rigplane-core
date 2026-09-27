@@ -1,7 +1,7 @@
 import type { WsCommand, WsIncoming } from '../types/protocol';
 import { makeCommandId } from '../types/protocol';
 import { refusalBlockedReason, type KeyBlockedReason } from '../../semantic/rx-tx-surface';
-import { isLiveRadioAvailable, setWsConnected, markStateUpdated, setReconnecting, setRadioStatus } from '../stores/connection.svelte';
+import { isLiveRadioAvailable, setWsConnected, markStateUpdated, setReconnecting, setRadioStatus, setRxSilent } from '../stores/connection.svelte';
 import { isValidServerState, matchesCurrentCapabilityTopology, resetRadioState, setRadioState } from '../stores/radio.svelte';
 import { capabilitiesMatchGeneration, clearCapabilities, setCapabilities } from '../stores/capabilities.svelte';
 import { fetchCapabilities } from './http-client';
@@ -1056,6 +1056,11 @@ _ctrl.onMessage((msg) => {
     if (ev.name === 'connection_status') {
       const state = ev.data?.state;
       if (typeof state === 'string') setRadioStatus(state);
+    }
+    // MOR-2792: digital-silence flag rides the existing audio_session event.
+    if (ev.name === 'audio_session') {
+      const silent = ev.data?.rxSilent;
+      if (typeof silent === 'boolean') setRxSilent(silent);
     }
   }
   // Companion-injected state (RC-28 tuning step, etc.)

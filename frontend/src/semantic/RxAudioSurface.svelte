@@ -40,6 +40,7 @@
   import { formatKnownLevel } from './format-level';
   import { readingText } from '../primitives/reading-text';
   import { usable } from '../primitives/control-instruments/control-instrument-behavior';
+  import { t } from '$lib/i18n';
 
   export {
     FOCUS_CHOICES, LINK_LOST_TEXT, MONITOR_MODES, READINESS_LABEL, SPLIT_CHOICES,
@@ -82,6 +83,10 @@
 
 {#if rx}
   <section class="rx-audio-surface" data-testid="rx-audio-surface" aria-label="Receive audio">
+    <!-- MOR-2792: one plain line while the server reports digital silence. -->
+    {#if rx.rxSilent}
+      <p class="rx-audio-silence" data-testid="rx-audio-silence">{t('core.overlay.rxSilence')}</p>
+    {/if}
     <!-- Monitor-mode radiogroup and the paired link-lost annotation
          (MOR-1384) are one `RxAudioInstrumentHost` handle: the annotation
          must never separate from the control it explains. When `finiteLayout`
@@ -125,6 +130,7 @@
   /* Structure only — a design language owns colour and must never become the
      sole state channel (MOR-977, forced-colors). Nothing here animates. */
   .rx-audio-surface { display: flex; flex-direction: column; gap: 0.25rem; }
+  .rx-audio-silence { margin: 0; }
   .rx-audio-level { display: flex; align-items: baseline; gap: 0.5rem; }
   .rx-audio-name { min-width: 4ch; }
   /* MOR-2527: the AF readout slot keeps its width ("42%".."100%") while the

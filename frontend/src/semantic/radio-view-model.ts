@@ -351,6 +351,9 @@ export interface RxAudioViewModel {
   modInputSource: RxAudioField<number>;
   readonly modInputChoices?: readonly { readonly value: number; readonly label: string }[];
   modInputReadiness: ModInputReadiness;
+  /** MOR-2792: the server's RX capture is delivering only digital silence
+   *  (bit-exact zeros). Cleared as soon as a non-zero frame arrives. */
+  rxSilent: boolean;
 }
 
 /**
@@ -1898,7 +1901,7 @@ function validateRxAudio(value: unknown, path: string): RxAudioViewModel {
   const v = record(value, path);
   exactKeys(v, [
     'monitorMode', 'liveAudio', 'afLevel', 'receiverAfLevels', 'routingFocus', 'routingSplit',
-    'modInputSource', 'modInputChoices', 'modInputReadiness',
+    'modInputSource', 'modInputChoices', 'modInputReadiness', 'rxSilent',
   ], path);
   const afLevels = v.receiverAfLevels === undefined
     ? undefined : record(v.receiverAfLevels, `${path}.receiverAfLevels`);
@@ -1922,6 +1925,7 @@ function validateRxAudio(value: unknown, path: string): RxAudioViewModel {
       modInputChoices: validateModInputChoices(v.modInputChoices, `${path}.modInputChoices`),
     }),
     modInputReadiness: validateModInputReadiness(v.modInputReadiness, `${path}.modInputReadiness`),
+    rxSilent: v.rxSilent === true,
   };
 }
 

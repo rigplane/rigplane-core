@@ -662,13 +662,16 @@ def _supports_audio(radio: "Radio | None") -> bool:
     return "audio" in runtime_capabilities(radio)
 
 
-def _audio_session_event_json(event: AudioSessionEvent) -> dict[str, Any]:
+def _audio_session_event_json(
+    event: AudioSessionEvent, *, rx_silent: bool = False
+) -> dict[str, Any]:
     """JSON shape shared by the runtime payload and the WS event (MOR-581)."""
     return {
         "state": event.state.value,
         "reason": event.reason,
         "leg": event.leg,
         "timestamp": event.timestamp,
+        "rxSilent": rx_silent,
     }
 
 
@@ -2886,7 +2889,11 @@ class WebServer:
             self._watched_audio_session = None
 
     def _on_audio_session_event(self, event: "AudioSessionEvent") -> None:
-        self.broadcast_event("audio_session", _audio_session_event_json(event))
+        session = self._watched_audio_session
+        rx_silent = bool(getattr(session, "rx_silent", False)) if session else False
+        self.broadcast_event(
+            "audio_session", _audio_session_event_json(event, rx_silent=rx_silent)
+        )
 
     def _attach_reconnect_status_listener(self) -> None:
         """Forward radio reconnect-status updates to control WS clients and
@@ -3538,7 +3545,10 @@ class WebServer:
         return {
             "enabled": True,
             "state": session.state.value,
-            "lastEvent": None if event is None else _audio_session_event_json(event),
+            "lastEvent": None if event is None else _audio_session_event_json(
+                event, rx_silent=bool(getattr(session, "rx_silent", False))
+            ),
+            "rxSilent": bool(getattr(session, "rx_silent", False)),
         }
 
     def _runtime_connection_payload(self) -> dict[str, Any]:

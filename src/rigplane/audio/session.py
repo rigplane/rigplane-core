@@ -253,6 +253,7 @@ class AudioSession:
         self._recovering_from: AudioSessionState | None = None
         self._listeners: list[Callable[[AudioSessionEvent], None]] = []
         self._last_event: AudioSessionEvent | None = None
+        self._rx_silent_reported = False
 
     @property
     def state(self) -> AudioSessionState:
@@ -275,6 +276,26 @@ class AudioSession:
     def last_event(self) -> AudioSessionEvent | None:
         """Most recent liveness event, or None (MOR-581)."""
         return self._last_event
+
+    @property
+    def rx_silent(self) -> bool:
+        """True while the RX capture path reports only digital silence
+        (bit-exact zeros for the watchdog window — MOR-2792).
+
+        Delegates to the transport/driver's own silence flag when present
+        (``UsbAudioDriver.rx_silent``); LAN transports with no such detector
+        report False.
+        """
+        radio = self._radio
+        for candidate in (
+            radio,
+            getattr(radio, "_serial_audio_driver", None),
+            getattr(radio, "_audio_driver", None),
+        ):
+            flag = getattr(candidate, "rx_silent", None)
+            if flag is not None:
+                return bool(flag)
+        return False
 
     @property
     def stats(self) -> dict[str, Any]:
@@ -769,3 +790,9 @@ class AudioSession:
                 self._state = self._desired()
                 logger.info("audio-session: RX frames resumed — %s", self._state.value)
                 self._emit("rx_resumed")
+        # MOR-2792: surface digital-silence edges on the same loop (the USB
+        # driver's frame watchdog owns detection; this only publishes edges).
+        silent = self.rx_silent
+        if silent != self._rx_silent_reported:
+            self._rx_silent_reported = silent
+            self._emit("rx_digital_silence" if silent else "rx_audio_signal")

@@ -1873,6 +1873,8 @@ export interface RxAudioSnapshot {
   volume: number;
   /** Audio-WS link health (`runtime.connectionAudio`). */
   connected: boolean;
+  /** MOR-2792: server RX capture is bit-exact digital silence. */
+  rxSilent?: boolean;
   routing?: { focus?: AudioFocus; splitStereo?: boolean } | null;
 }
 
@@ -1962,6 +1964,7 @@ function deriveRxAudio(
     modInputSource: txAuxField(hasModInput, source !== undefined, source),
     modInputChoices,
     modInputReadiness: facts.modInputReadiness,
+    rxSilent: audio.rxSilent === true,
   };
 }
 

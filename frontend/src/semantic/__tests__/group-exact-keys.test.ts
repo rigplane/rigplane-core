@@ -28,7 +28,7 @@ const FROZEN: Record<string, readonly string[]> = {
   ],
   validateRxAudio: [
     'monitorMode', 'liveAudio', 'afLevel', 'receiverAfLevels', 'routingFocus', 'routingSplit',
-    'modInputSource', 'modInputChoices', 'modInputReadiness',
+    'modInputSource', 'modInputChoices', 'modInputReadiness', 'rxSilent',
   ],
   validateModeFilter: [
     'currentMode', 'modeChoices', 'currentFilter', 'filterChoices', 'filterWidth',

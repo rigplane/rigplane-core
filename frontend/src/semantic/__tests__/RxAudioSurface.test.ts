@@ -128,6 +128,7 @@ describe('the RX-audio surface owns no audio lifetime (MOR-972 P0 / MOR-1058)', 
     // so it cannot reach the audio manager or the
     // transport any more than the fact contract can.
     expect([...new Set(specifiers)].sort()).toEqual([
+      '$lib/i18n',
       '../primitives/control-instruments/control-instrument-behavior',
       '../primitives/reading-text', './format-level', './radio-view-model',
       './rx-audio-instruments',

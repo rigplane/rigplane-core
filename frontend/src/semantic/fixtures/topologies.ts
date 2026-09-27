@@ -248,6 +248,7 @@ export function withRxAudio(
       { value: 4, label: 'MIC+USB' }, { value: 5, label: 'LAN' },
     ],
     modInputReadiness: readiness,
+    rxSilent: false,
   };
   return { ...fixture, rxAudio };
 }

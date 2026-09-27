@@ -130,6 +130,7 @@
   "core.overlay.poweredOff.failedPowerOn": "電源を入れられませんでした: {detail}",
   "core.overlay.scopeDisconnected": "スコープが切断されました — 再接続中…",
   "core.overlay.audioLinkLost": "音声リンクが切断されました — 再接続中…",
+  "core.overlay.rxSilence": "ラジオからの音声がありません: サーバーはデジタル無音のみを受信しています。macOS では、サーバーを起動するプログラムにマイクの使用を許可するか、ラジオの USB オーディオ出力を確認してください。",
 
   "core.diagnostics.sendReport.title": "診断レポートを送信",
   "core.diagnostics.sendReport.confirm": "レポートを送信",

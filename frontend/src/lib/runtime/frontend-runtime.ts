@@ -18,10 +18,12 @@ import {
   isConnected,
   getWsConnected,
   isAudioConnected,
+  isRxSilent,
   isStale,
   isReconnecting,
   getRadioStatus,
   getRadioPowerOn,
+  setRxSilent,
 } from '$lib/stores/connection.svelte';
 import {
   getAudioState,
@@ -32,7 +34,7 @@ import {
   toggleMute,
 } from '$lib/stores/audio.svelte';
 import * as transport from '$lib/transport/ws-client';
-import { fetchInfo } from '$lib/transport/http-client';
+import { fetchInfo, getAuthHeaders } from '$lib/transport/http-client';
 import { audioManager } from '$lib/audio/audio-manager';
 import { makeAudioRoutingHandlers } from './commands/panel-commands';
 import { clearLegacyPendingModInputRestore } from './adapters/mod-input-auto.svelte';
@@ -214,6 +216,8 @@ class FrontendRuntime {
 
   get connectionWs(): boolean { return getWsConnected(); }
   get connectionAudio(): boolean { return isAudioConnected(); }
+  /** MOR-2792: server RX capture is digital silence. */
+  get rxSilent(): boolean { return isRxSilent(); }
   get connectionStale(): boolean { return isStale(); }
   get connectionReconnecting(): boolean { return isReconnecting(); }
   get radioStatus(): string { return getRadioStatus(); }
@@ -361,6 +365,18 @@ class FrontendRuntime {
   private async _doBootstrap(signal?: AbortSignal): Promise<() => void> {
     await fetchInfo(signal);
     signal?.throwIfAborted();
+    // MOR-2792: seed digital-silence from the existing runtime payload;
+    // later edges arrive on the existing `audio_session` WS event.
+    try {
+      const res = await fetch('/api/v1/runtime', { headers: getAuthHeaders(), signal });
+      if (res.ok) {
+        const data = await res.json() as { audioSession?: { rxSilent?: unknown } };
+        const silent = data?.audioSession?.rxSilent;
+        if (typeof silent === 'boolean') setRxSilent(silent);
+      }
+    } catch {
+      // Diagnostics-only seed — never block bootstrap.
+    }
 
     // A new App instance re-arms the runtime: `_ended` is latched by the
     // previous instance's cleanup and would otherwise fail every facade

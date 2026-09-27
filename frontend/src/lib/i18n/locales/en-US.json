@@ -106,6 +106,7 @@
   "core.overlay.poweredOff.failedPowerOn": "Failed to power on: {detail}",
   "core.overlay.scopeDisconnected": "Scope disconnected — reconnecting…",
   "core.overlay.audioLinkLost": "Audio link lost — reconnecting…",
+  "core.overlay.rxSilence": "No audio from the radio: the server receives only digital silence. On macOS, give Microphone permission to the program that starts the server, or check the radio's USB audio output.",
 
   "core.diagnostics.sendReport.title": "Send Diagnostic Report",
   "core.diagnostics.sendReport.confirm": "Send Report",

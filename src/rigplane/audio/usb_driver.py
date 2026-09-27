@@ -666,10 +666,19 @@ class UsbAudioDriver:
         # copies before the session calls start_tx, so the callback must
         # live here for the handoff to keep frames flowing.
         self._rx_callback: Callable[[bytes], None] | None = None
+        # MOR-2792: readable silent-now flag owned by ``_silence_watchdog``.
+        self._rx_silent = False
         self._usb_audio_contract = UsbAudioContract()
 
         self._rx_lock = asyncio.Lock()
         self._tx_lock = asyncio.Lock()
+
+    @property
+    def rx_silent(self) -> bool:
+        """True while RX capture has delivered only bit-exact zeros for the
+        watchdog window (see ``_SILENCE_WARN_SECONDS``). Cleared by the next
+        non-zero frame."""
+        return self._rx_silent
 
     @property
     def rx_running(self) -> bool:
@@ -948,12 +957,14 @@ class UsbAudioDriver:
         """
         threshold = max(1, -(-(_SILENCE_WARN_SECONDS * 1000) // max(1, frame_ms)))
         state = {"silent_frames": 0, "warned": False}
+        self._rx_silent = False
 
         def _watchdog(frame: bytes) -> None:
             if _is_silent_frame(frame):
                 state["silent_frames"] += 1
                 if state["silent_frames"] == threshold and not state["warned"]:
                     state["warned"] = True
+                    self._rx_silent = True
                     logger.warning(
                         "usb-audio: RX capture has delivered only digital "
                         "silence for ~%ds — the input may lack OS capture "
@@ -967,6 +978,7 @@ class UsbAudioDriver:
                     logger.info("RX audio signal detected")
                 state["silent_frames"] = 0
                 state["warned"] = False
+                self._rx_silent = False
             callback(frame)
 
         return _watchdog
