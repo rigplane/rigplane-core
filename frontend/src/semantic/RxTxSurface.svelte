@@ -17,6 +17,7 @@
   import {
     RF_LABEL, RF_MARK, SESSION_LABEL, blockedLabel, faultMessage, keyBlockedReasons, nextSurfaceId,
     rfState, rfUnconfirmedLabel, targetUnknownMessage, txDisabledReasons, txSessionState,
+    viewBlockedLabel,
     type RfState, type TxAuthoritySnapshot,
   } from './rx-tx-surface';
 
@@ -50,9 +51,12 @@
   let blocked = $derived(keyBlockedReasons(view, tx));
   let visibleBlocked = $derived(blocked.filter((code) => code !== 'rf-state-unknown'));
   let viewBlocked = $derived(txDisabledReasons(view));
+  // MOR-2705: the accessible description is made of the same catalog
+  // sentences as the visible list — a raw `field: code` pair never reaches
+  // the operator, here or on screen.
   let blockedDescription = $derived([
     ...blocked.map((code) => blockedLabel(code)),
-    ...viewBlocked.map((item) => `${item.field}: ${item.code}`),
+    ...viewBlocked.map((item) => viewBlockedLabel(item)),
   ].join('; '));
   // Canonical server state may refuse a new ON before the request reaches
   // admission. Keep that fail-closed affordance separate from view-model
@@ -66,9 +70,22 @@
   );
   let known = $derived(view.txTarget.status === 'known');
   let receiver = $derived(view.txTarget.status === 'known' ? view.txTarget.receiver : undefined);
-  let slot = $derived(view.txTarget.status === 'known'
-    ? (view.txTarget.slot.kind === 'slotted' ? view.txTarget.slot.id : view.txTarget.slot.kind)
+  /**
+   * MOR-2705: only a SLOTTED target names its slot (`A`/`B`). `unslotted`
+   * and `relative` are internal slot-kind words and never reach the
+   * operator — the one-space separator before the middle dot lives in the
+   * template's own literal text node, so a radio without slots reads
+   * `TX target: MAIN · 14195000 Hz` and a slotted radio reads
+   * `TX target: MAIN A · 7100000 Hz`. The `data-slot` machine attribute
+   * mirrors this and goes absent for the internal kinds.
+   */
+  let slot = $derived(view.txTarget.status === 'known' && view.txTarget.slot.kind === 'slotted'
+    ? view.txTarget.slot.id
     : undefined);
+  /** The slot word including its leading space, '' plain — evaluated inside
+   *  the expression so the Svelte compiler's block-edge whitespace rule
+   *  (MOR-2711) cannot strip it. */
+  let slotText = $derived(slot === undefined ? '' : ` ${slot}`);
   let frequencyHz = $derived(view.txTarget.status === 'known' ? view.txTarget.frequencyHz : null);
   let reason = $derived(view.txTarget.status === 'unknown' ? view.txTarget.reason : undefined);
   /** MOR-1474: the operator-legible unknown-target line, assembled through
@@ -123,7 +140,7 @@
   {#if known}
     <p class:sr-only={standard} data-testid="rx-tx-target" data-target="known"
       data-receiver={receiver} data-slot={slot}>
-      TX target: {receiver} {slot} · {frequencyHz !== null ? `${frequencyHz}\u00A0Hz` : ''}
+      TX target: {receiver}{slotText} · {frequencyHz !== null ? `${frequencyHz}\u00A0Hz` : ''}
     </p>
   {:else}
     <p class:sr-only={standard} data-testid="rx-tx-target" data-target="unknown" data-reason={reason}>
@@ -157,7 +174,7 @@
   <ul class="rx-tx-blocked" class:sr-only={standard} data-testid="rx-tx-blocked">
     {#each visibleBlocked as code (code)}<li data-reason={code}>{blockedLabel(code)}</li>{/each}
     {#each viewBlocked as item (item.field + item.code)}
-      <li data-reason={item.code} data-field={item.field}>{item.field}: {item.code}</li>
+      <li data-reason={item.code} data-field={item.field}>{viewBlockedLabel(item)}</li>
     {/each}
   </ul>
 </section>
