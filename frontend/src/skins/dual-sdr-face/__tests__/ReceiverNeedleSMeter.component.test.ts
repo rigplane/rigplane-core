@@ -4,7 +4,7 @@ import type { Capabilities } from '$lib/types/capabilities';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 
 const smoothing = vi.hoisted(() => {
-  const instances: Array<{ value: number; update: ReturnType<typeof vi.fn>; start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }> = [];
+  const instances: Array<{ update: ReturnType<typeof vi.fn>; start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }> = [];
   const createSmoother = vi.fn((_attack: number, _release: number) => {
     let value = 0;
     const instance = {
