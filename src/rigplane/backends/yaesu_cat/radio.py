@@ -51,7 +51,7 @@ if TYPE_CHECKING:
     from ...audio.session import AudioSession
     from ...audio.usb_driver import UsbAudioDriver
     from ...audio_bus import AudioBus
-    from ...core.state_pipeline_contracts import Observation
+    from ...core.state_pipeline_contracts import FieldPath, Observation
     from ...profiles import RadioProfile
     from ...profiles.rig_loader import RigConfig
     from ...types import BandStackRegister, MemoryChannel
@@ -229,6 +229,13 @@ class YaesuCatRadio:
         # adapter is rebuilt every cycle, the radio is not), so a permanently
         # unsupported field warns once and then demotes repeats to DEBUG.
         self._poll_warned_fields: set[str] = set()
+
+        # MOR-2757: consecutive unanswered reads per safety-critical path,
+        # kept by the observation adapter (rebuilt every poll cycle) across
+        # cycles — the same "state lives on the radio" idiom as
+        # ``_poll_warned_fields`` above. On the 3rd unanswered read the
+        # adapter records the declared-command defect that ends startup.
+        self._critical_read_timeouts: dict[FieldPath, int] = {}
 
         # MOR-2632: the last nonzero NB/NR level seen per receiver, remembered
         # when turning the function off. Lives only on this object: a radio

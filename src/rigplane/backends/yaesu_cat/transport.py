@@ -73,7 +73,16 @@ class CatTransportError(Exception):
 
 
 class CatTimeoutError(CatTransportError):
-    """Raised when read operation times out."""
+    """Raised when read operation times out.
+
+    ``command`` is the CAT command the radio never answered, verbatim
+    (``CatCommandRejected``'s own ``command`` idiom), for callers that
+    count unanswered reads (MOR-2757) rather than only logging them.
+    """
+
+    def __init__(self, message: str, *, command: str = "") -> None:
+        super().__init__(message)
+        self.command = command
 
 
 class CatCommandRejected(CatTransportError):
@@ -455,7 +464,12 @@ class YaesuCatTransport:
                 timeout = self._timeout
 
             for _attempt in range(_QUERY_MAX_ATTEMPTS):
-                response = await self.readline(timeout=timeout)
+                try:
+                    response = await self.readline(timeout=timeout)
+                except CatTimeoutError as exc:
+                    # Silence after *command* — name it, so a caller counting
+                    # unanswered reads (MOR-2757) can name it back.
+                    raise CatTimeoutError(str(exc), command=command) from exc
 
                 # ── ?; = command rejected ──
                 if response == "?":
