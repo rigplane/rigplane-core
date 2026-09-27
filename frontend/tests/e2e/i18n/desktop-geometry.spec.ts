@@ -1079,10 +1079,14 @@ test('standard 1440 receiver S-meter keeps its box between unread and read', asy
 // inherits the ambient, non-monospace font, so `ch` is not exact), and this
 // comparison proves the caption's rendered width is identical between an
 // unread, an allowed and a denied permit for the same band key: the first
-// reading cannot move the band row.
-test('standard 1440 band-choice permit caption keeps one width between unread, allowed and denied', async ({ page }) => {
+// reading cannot move the band row. Mounted on the sdr-test face: its
+// desktop-controls-left column renders the band surface's own fallback key
+// row (the printed `<small>` captions), while desktop-v2's standard left
+// column routes the same authority through `BandSelector`'s compact keys,
+// which print no caption.
+test('sdr-test 1440 band-choice permit caption keeps one width between unread, allowed and denied', async ({ page }) => {
   const captionWidths = async (patch?: (state: ServerState, caps: Capabilities) => void) => {
-    await boot(page, 'standard', 1440, true, 'studioline', false, 'topology-1-single', { patch });
+    await boot(page, 'sdr-test', 1440, true, 'studioline', false, 'topology-1-single', { patch });
     const captions = page.locator('[data-testid^="band-choice-permit-"]');
     await expect(captions.first()).toBeVisible();
     return captions.evaluateAll(nodes => Object.fromEntries(nodes.map(node => [
