@@ -37,5 +37,4 @@
 <style>
   .scope { min-height: 150px; position: relative; background: repeating-linear-gradient(0deg, #05090b 0 18px, #1f3539 19px 20px), repeating-linear-gradient(90deg, transparent 0 46px, #1f3539 47px 48px); border: 2px solid #657277; }
   canvas { display: block; width: 100%; height: 150px; }.axis { color: #c5d0d0; font: 11px ui-monospace, monospace; text-align: center; }
-  output { position: absolute; z-index: 1; inset: 0; display: grid; place-items: center; color: #9ba8ab; font: 13px ui-monospace, monospace; background: #05090bd9; }
 </style>
