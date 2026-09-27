@@ -2964,13 +2964,21 @@ async def test_slow_poll_continues_after_partial_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fast_polls_more_than_slow() -> None:
-    """Fast loop should fire at least 3× more often than slow."""
+async def test_fast_polls_more_than_slow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fast loop should fire at least 3× more often than slow.
+
+    Wall-clock cadence ratios flake on a loaded CI runner (MOR-2804), so
+    the poll loops run against a virtual clock, as MOR-1887/MOR-2743 did
+    for other timing families: ``asyncio.sleep`` inside the poller module
+    parks each loop on a future with a virtual deadline, and this test
+    advances the virtual clock only through those deadlines. Machine speed
+    cannot change the counts.
+    """
     radio = make_radio()
     fast_count = 0
     slow_count = 0
-
-    _original_fast = radio.get_s_meter
 
     async def count_fast(receiver: int = 0) -> int:
         nonlocal fast_count
@@ -2993,9 +3001,37 @@ async def test_fast_polls_more_than_slow() -> None:
         medium_interval=10.0,
         slow_interval=0.1,
     )
+
+    virtual_now = 0.0
+    window = 0.25
+    waiters: dict[asyncio.Future[None], float] = {}
+    real_sleep = asyncio.sleep
+
+    async def virtual_sleep(delay: float) -> None:
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        waiters[future] = virtual_now + delay
+        await future
+
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.asyncio.sleep", virtual_sleep
+    )
+
     await poller.start()
-    await asyncio.sleep(0.25)
-    await poller.stop()
+    try:
+        for _ in range(1000):
+            if virtual_now >= window:
+                break
+            if waiters:
+                virtual_now = max(virtual_now, min(waiters.values()))
+                for future, deadline in list(waiters.items()):
+                    if deadline <= virtual_now and not future.done():
+                        future.set_result(None)
+                        del waiters[future]
+            # Let the loops finish a poll cycle and park on the next sleep.
+            for _ in range(10):
+                await real_sleep(0)
+    finally:
+        await poller.stop()
 
     assert fast_count > 0
     assert slow_count > 0
