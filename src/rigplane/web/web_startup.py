@@ -66,9 +66,15 @@ _STARTUP_GATE_REPRIME_SECONDS = 1.0
 #: not safety-critical stops blocking the gate this many seconds after the
 #: initial fetch; its control stays unread (dimmed) and polling continues.
 _STARTUP_GATE_NON_CRITICAL_DEADLINE_SECONDS = 10.0
-#: MOR-2749: a safety-critical path unanswered after this many attempts —
-#: the initial fetch plus two failed re-reads — fails startup through the
-#: scheduler's declared-command defect record.
+#: MOR-2749: a safety-critical path whose request group reaches this many
+#: failed reads — the initial fetch plus consecutive answer-window timeouts
+#: recorded by the scheduler's consecutive-timeout accounting — fails
+#: startup through the scheduler's declared-command defect record. The
+#: timeouts are recorded only where the web poller reports answer-window
+#: timeouts (the ``sweep=True`` branch, the Icom ``RadioPoller``); on the
+#: ``sweep=False`` branches (Yaesu CAT, rigctld client, legacy
+#: ``StatePollable``) an unanswered critical path still waits — that gap
+#: is MOR-2757.
 _STARTUP_GATE_CRITICAL_ATTEMPTS = 3
 
 
@@ -237,8 +243,9 @@ def _record_critical_startup_defect(
         command=_startup_path_command(server, path),
         frame="",
         detail=(
-            f"safety-critical path with no answer after "
-            f"{_STARTUP_GATE_CRITICAL_ATTEMPTS} attempts"
+            f"safety-critical path still unanswered after "
+            f"{_STARTUP_GATE_CRITICAL_ATTEMPTS} failed reads of its "
+            f"request group"
         ),
     )
     scheduler.record_startup_defect(defect)
@@ -260,12 +267,17 @@ async def _await_initial_state_acquisition(
       stops blocking :data:`_STARTUP_GATE_NON_CRITICAL_DEADLINE_SECONDS`
       after the initial fetch — one WARNING names the paths, their
       controls stay unread (dimmed), and polling continues; and
-    * a safety-critical path unanswered after
-      :data:`_STARTUP_GATE_CRITICAL_ATTEMPTS` attempts (the initial fetch
-      plus failed re-reads, counted by the scheduler's consecutive-timeout
-      accounting) fails startup with an error naming the field and the
-      command, through the same :class:`DeclaredCommandDefect` record a
-      backend leaves on the scheduler.
+    * a safety-critical path whose request group reaches
+      :data:`_STARTUP_GATE_CRITICAL_ATTEMPTS` failed reads (the initial
+      fetch plus consecutive answer-window timeouts recorded by the
+      scheduler's consecutive-timeout accounting) fails startup with an
+      error naming the field and the command, through the same
+      :class:`DeclaredCommandDefect` record a backend leaves on the
+      scheduler. The timeouts are recorded only where the web poller
+      reports answer-window timeouts — the ``sweep=True`` branch, the
+      Icom ``RadioPoller``; on the ``sweep=False`` branches (Yaesu CAT,
+      rigctld client, legacy ``StatePollable``) an unanswered critical
+      path still waits — that gap is MOR-2757.
 
     Before that decision there was no serve-anyway timeout: every declared,
     non-``tx_only`` path held the listener open forever.

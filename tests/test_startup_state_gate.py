@@ -1427,7 +1427,7 @@ async def test_never_answered_critical_path_fails_startup_after_three_attempts()
     assert message.endswith("Refusing to start a half-working server.")
     assert "global.tx_state.ptt" in message
     assert "1C 00" in message
-    assert "no answer after 3 attempts" in message
+    assert "still unanswered after 3 failed reads of its request group" in message
     assert scheduler.startup_defect is not None
 
 
