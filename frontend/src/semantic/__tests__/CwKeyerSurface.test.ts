@@ -751,11 +751,32 @@ describe('break-in obeys the ONE txPermit and fails closed', () => {
     r.dispose();
   });
 
-  it.each(BREAK_IN_CHOICES)('checks exactly the observed break-in mode %s', (label) => {
+  // MOR-2690: the choices are KEYs, not radios — `aria-pressed` appears only
+  // on a KNOWN reading, and `aria-checked` is gone entirely: a radio REQUIRES
+  // `aria-checked`, and on an unread key a missing or `false` one reads as
+  // OFF about a reading the radio never reported.
+  it.each(BREAK_IN_CHOICES)('lights exactly the observed break-in key %s', (label) => {
     const r = render(withCw({ breakIn: known<BreakInMode>(label) }));
     for (const [other] of BREAK_IN_CHOICES) {
-      expect(r.el(`break-in-${other}`)!.getAttribute('aria-checked')).toBe(String(other === label));
+      expect(r.el(`break-in-${other}`)!.getAttribute('aria-pressed')).toBe(String(other === label));
+      expect(r.el(`break-in-${other}`)!.hasAttribute('aria-checked')).toBe(false);
     }
+    r.dispose();
+  });
+
+  // MOR-2690: an UNREAD break-in key is BARE — no `aria-pressed`, no
+  // `aria-checked`, no radio role — and no wording claims a state.
+  it('leaves every break-in key bare while the reading is unread', () => {
+    const r = render(withCw({ breakIn: unread<BreakInMode>(DEGRADED) }));
+    for (const [label] of BREAK_IN_CHOICES) {
+      const key = r.el(`break-in-${label}`)!;
+      expect(key.hasAttribute('aria-pressed')).toBe(false);
+      expect(key.hasAttribute('aria-checked')).toBe(false);
+      expect(key.getAttribute('role')).toBeNull();
+      expect(key.textContent).toBe(label);
+    }
+    expect(r.el('break-in')!.querySelector('[role="radiogroup"]')).toBeNull();
+    expect(r.el('break-in')!.querySelector('[role="group"]')).not.toBeNull();
     r.dispose();
   });
 });
@@ -778,20 +799,64 @@ describe('break-in POSTURE distinguishes armed from off, and unknown from both',
   });
 
   // Kills: v2's `formatBreakIn` fallback to 'OFF'. An unreadable keyer must
-  // never present as "the key is safe".
+  // never present as "the key is safe". MOR-2690: it presents as an EMPTY
+  // reserved line and BARE keys, never as 'off' and never the word unknown.
   it('reads an UNOBSERVED break-in as unknown, never as off', () => {
     expect(breakInPosture(unread<BreakInMode>(DEGRADED))).toBe('unknown');
     const r = render(withCw({ breakIn: unread<BreakInMode>(DEGRADED) }));
     expect(r.el('break-in')!.dataset.posture).toBe('unknown');
-    expect(r.text('posture')).toBe(POSTURE_LABEL.unknown);
+    expect(r.text('posture')).toBe('');
     expect(r.text('posture')).not.toContain('off');
+    expect(r.text('posture')).not.toContain('unknown');
     r.dispose();
   });
 
   // Kills: a posture whose only channel is an attribute (forced-colors,
   // MOR-977), and a wording that does not say what the key will DO.
-  it.each(['off', 'armed', 'unknown'] as const)('says in TEXT what %s means for the key', (p) => {
+  it.each(['off', 'armed'] as const)('says in TEXT what %s means for the key', (p) => {
     expect(POSTURE_LABEL[p]).toMatch(/key/);
+  });
+
+  // MOR-2690: the unknown SENTENCE is gone — the owner ordered it removed
+  // ("если нет у радио, не вижу причины оставлять на вебе"), so an unread
+  // break-in renders EMPTY in its reserved line, never a sentence.
+  it('renders the unknown posture as an EMPTY reserved line, not a sentence', () => {
+    expect(POSTURE_LABEL.unknown).toBe('');
+    const r = render(withCw({ breakIn: unread<BreakInMode>(DEGRADED) }));
+    expect(r.text('posture')).toBe('');
+    r.dispose();
+  });
+
+  // MOR-2690: the removed sentence is gone from `aria-describedby` too — an
+  // empty reserved line describes nothing, while a KNOWN posture still does.
+  it('describes the keys with the posture only while it is a known sentence', () => {
+    const bare = render(withCw({ breakIn: unread<BreakInMode>(DEGRADED) }));
+    for (const [label] of BREAK_IN_CHOICES) {
+      expect(bare.el(`break-in-${label}`)!.getAttribute('aria-describedby')).toBeNull();
+    }
+    bare.dispose();
+    const armed = render(withCw({ breakIn: known<BreakInMode>('semi') }));
+    for (const [label] of BREAK_IN_CHOICES) {
+      expect(armed.el(`break-in-${label}`)!.getAttribute('aria-describedby'))
+        .toContain('-posture');
+    }
+    armed.dispose();
+  });
+
+  // MOR-2690: the posture line keeps its box in EVERY state — the `<p>`
+  // exists unread and known, and the stylesheet reserves its height for the
+  // widest sentence, so a first reading cannot move the layout.
+  it('keeps the posture line reserved in every state', () => {
+    const sheet = /<style>([\s\S]*?)<\/style>/.exec(CODE)![1];
+    expect(sheet).toContain('.cw-keyer-posture-line:not(.sr-only) { min-height: 1lh; }');
+    for (const f of [
+      unread<BreakInMode>(DEGRADED), known<BreakInMode>('off'), known<BreakInMode>('full'),
+    ]) {
+      const r = render(withCw({ breakIn: f }));
+      expect(target.querySelector('[data-testid="cw-keyer-posture"]')
+        ?.closest('p.cw-keyer-posture-line')).not.toBeNull();
+      r.dispose();
+    }
   });
 
   // Kills: the posture sentence back inside the keys' row, where a sentence
@@ -799,12 +864,12 @@ describe('break-in POSTURE distinguishes armed from off, and unknown from both',
   it('gives the posture sentence its own line under the break-in keys', () => {
     const r = render(base());
     const keys = target.querySelector<HTMLElement>(
-      '[data-testid="cw-keyer-break-in"] [role="radiogroup"]',
+      '[data-testid="cw-keyer-break-in"] [role="group"]',
     )!;
     const posture = target.querySelector<HTMLElement>('[data-testid="cw-keyer-posture"]')!;
     expect(keys.querySelectorAll('button')).toHaveLength(BREAK_IN_CHOICES.length);
     expect(keys.contains(posture)).toBe(false);
-    expect(posture.closest('[role="radiogroup"]')).toBeNull();
+    expect(posture.closest('[role="group"]')).toBeNull();
     expect(keys.compareDocumentPosition(posture) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     r.dispose();
   });
