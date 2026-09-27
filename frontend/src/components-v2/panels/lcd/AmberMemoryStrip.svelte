@@ -111,8 +111,7 @@
   .qsy-placeholder {
     font-size: 10px;
     color: rgba(26, 16, 0, calc(var(--lcd-alpha-active) * 0.4));
-    /* MOR-2659: the empty placeholder keeps a reserved, unlit slot so the
-       first QSY chip cannot move the layout. */
+    /* MOR-2659: the empty placeholder reserves the empty state's slot. */
     min-inline-size: 6ch;
     box-sizing: content-box;
   }
