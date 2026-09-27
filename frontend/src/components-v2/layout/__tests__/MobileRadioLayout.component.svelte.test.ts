@@ -387,6 +387,21 @@ describe('MobileRadioLayout structure', () => {
     expect(indicator.style.background).toContain('#facc15');
   });
 
+  // MOR-2705: an unread TX state carries NO title — never the placeholder
+  // word 'TX status unknown'. Known states keep their catalog titles.
+  it('carries no title while the TX state is unknown (MOR-2705)', () => {
+    tx.emitStale();
+    const indicator = mountMobile().querySelector<HTMLElement>('.m-tx-indicator')!;
+    expect(indicator.dataset.rf).toBe('unknown');
+    expect(indicator.getAttribute('title')).toBeNull();
+  });
+
+  it('keeps its catalog title for a known TX state (MOR-2705)', () => {
+    const indicator = mountMobile().querySelector<HTMLElement>('.m-tx-indicator')!;
+    expect(indicator.dataset.rf).toBe('off');
+    expect(indicator.getAttribute('title')).toBe('TX allowed');
+  });
+
   it('renders settings button', () => {
     expect(mountMobile().querySelector('.m-settings-btn')).not.toBeNull();
   });

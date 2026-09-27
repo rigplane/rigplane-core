@@ -135,6 +135,11 @@ vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
 import MobileRadioLayout from '../MobileRadioLayout.svelte';
 import mobileLayoutSource from '../MobileRadioLayout.svelte?raw';
 import { getSmeterCalibration } from '$lib/stores/capabilities.svelte';
+import {
+  calibratedToDbm as calibratedToDbmPure,
+  formatDbm as formatDbmPure,
+  type SmeterCalibrationPoint,
+} from '../../../primitives/meters/s-meter-scale';
 
 const LAYOUT_DIR = 'src/components-v2/layout/';
 
@@ -279,13 +284,13 @@ describe('MobileRadioLayout honest-projection rendering (MOR-1409 A13a)', () => 
 
   // Kills: a reservation narrower than the widest text the formatter
   // renders over the sMeter wire domain (raw int 0–255). The widest text is
-  // derived by RUNNING the formatter at the domain top under the widest
-  // calibration ladder this test mocks below — not read off one radio's
-  // constants — and the reservation must
-  // cover exactly that text. A known value renders exactly as today.
+  // derived by RUNNING formatDbm(calibratedToDbm) over that whole domain
+  // against the widest shipped calibration ladder — not read off one
+  // radio's constants — and the reservation must cover exactly that text
+  // (MOR-2705, the #3768 method).
   it('renders the widest S-unit and dBm texts the landscape readouts can hold', () => {
     setViewport(844, 390);
-    const widestShippedLadder = [
+    const widestShippedLadder: readonly SmeterCalibrationPoint[] = [
       { raw: 0, actual: -54, label: 'S0' },
       { raw: 120, actual: 0, label: 'S9' },
       { raw: 255, actual: 60, label: 'S9+60' },
@@ -302,26 +307,35 @@ describe('MobileRadioLayout honest-projection rendering (MOR-1409 A13a)', () => 
         /\.m-ls-smeter \{[^}]*min-width: (\d+)ch;/,
       )?.[1];
       expect(reservedS).toBe(String('S9+60'.length));
+      // MOR-2705: the dBm slot's widest text no longer includes the
+      // 'uncalibrated' word — the formatter renders nothing for an
+      // uncomputable dBm. The widest REAL text is derived below by running
+      // the formatter over the whole raw 0–255 domain on this ladder.
+      let widestDbm = '';
+      for (let raw = 0; raw <= 255; raw += 1) {
+        const text = formatDbmPure(calibratedToDbmPure(raw, widestShippedLadder));
+        if (text.length > widestDbm.length) widestDbm = text;
+      }
+      expect(widestDbm).toBe('−127 dBm');
       const reservedDbm = mobileLayoutSource.match(
         /\.m-ls-dbm \{[^}]*min-width: (\d+)ch;/,
       )?.[1];
-      // The dBm slot's widest text is the honest 'uncalibrated' label a rig
-      // with no s_meter table prints (longer than the calibrated '−13 dBm').
-      expect(reservedDbm).toBe(String('uncalibrated'.length));
+      expect(reservedDbm).toBe(String(widestDbm.length));
     } finally {
       vi.mocked(getSmeterCalibration).mockReturnValue(null);
     }
   });
 
-  // Kills: a known uncalibrated reading rendered as anything but the honest
-  // raw-scale / 'uncalibrated' labels — and doubles as the dBm slot's
-  // widest-text pin ('uncalibrated', 13ch, reserved above).
-  it('renders a known uncalibrated reading exactly as before', () => {
+  // Kills: printing the 'uncalibrated' word where no dBm is computable —
+  // per profile THAT is fixed when capabilities load, so the slot simply
+  // stays empty and nothing moves (MOR-2705). The S-unit text keeps its raw
+  // reading.
+  it('renders no dBm readout at all on an uncalibrated radio (MOR-2705)', () => {
     setViewport(844, 390);
     radioStore.current = { active: 'MAIN', main: { ...CONNECTED_RX, sMeter: 255 } };
     const root = mountLayout();
     expect(root.querySelector('.m-ls-smeter')?.textContent).toBe('255');
-    expect(root.querySelector('.m-ls-dbm')?.textContent).toBe('uncalibrated');
+    expect(root.querySelector('.m-ls-dbm')?.textContent).toBe('');
   });
 
   // Geometry: jsdom has no layout, so the reservations are pinned

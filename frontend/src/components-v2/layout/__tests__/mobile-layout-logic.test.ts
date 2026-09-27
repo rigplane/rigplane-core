@@ -179,14 +179,15 @@ describe('formatDbm (calibrated radio)', () => {
   });
 });
 
-describe('formatDbm (uncalibrated radio)', () => {
+describe('formatDbm (no dBm computable)', () => {
   beforeEach(() => {
     setCapabilities(makeCaps({ model: 'X6200' }));
   });
 
-  // Kills: fabricating a physical dBm figure from a raw byte with no curve.
-  it('renders the explicit uncalibrated label', () => {
-    expect(formatDbm(200)).toBe('uncalibrated');
+  // Kills: printing a placeholder word where a dBm cannot be computed — the
+  // readout renders NOTHING, fixed per profile so nothing moves (MOR-2705).
+  it('renders nothing when no dBm can be computed', () => {
+    expect(formatDbm(200)).toBe('');
   });
 });
 
