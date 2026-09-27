@@ -143,11 +143,10 @@ describe('CenterstageDisplay', () => {
 
     expect(hero.getAttribute('data-receiver')).toBe('unknown');
     expect(hero.getAttribute('data-state')).toBe('unknown');
-    // NOTE (MOR-2650): the '—.———.———' frequency glyph is outside this
-    // ticket's census (stateText/formatBandwidth/formatOffset) — frequency
-    // has its own cell renderer and its own ticket. This line only asserts
-    // the hero does not borrow MAIN's digits.
+    // MOR-2650: the unread hero frequency is unlit digit cells — never the
+    // old '—.———.———' glyph and never MAIN's digits.
     expect(hero.textContent).not.toContain('14.250.000');
+    expect(hero.textContent).not.toMatch(/—|–|-/);
     expect(target.querySelector('[data-testid="centerstage-secondary"]')?.textContent).toContain('14.195.500');
     expect(target.querySelector('[data-testid="centerstage-meter"]')?.getAttribute('data-state')).toBe('unknown');
     expect(target.querySelector('[data-testid="lcd-af-fft"]')?.getAttribute('data-fft-mode')).toBe('safe-empty');
