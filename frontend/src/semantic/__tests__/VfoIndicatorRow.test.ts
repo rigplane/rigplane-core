@@ -397,7 +397,7 @@ describe('RF gain display observation', () => {
 
   it('an empty RFG fact draws no visible frame while keeping the reserved slot', () => {
     render({ indicator: indicator({ rfGain: known(1) }) });
-    const node = target.querySelector('[data-indicator-fact="rf-gain"]')!;
+    const node = target.querySelector<HTMLElement>('[data-indicator-fact="rf-gain"]')!;
     expect(node.textContent).toBe('');
     expect(node.getAttribute('data-empty')).toBe('true');
     // The CSS the attribute keys on: the frame goes transparent while the
@@ -431,7 +431,7 @@ describe('RF gain display observation', () => {
   it('renders every fact reservation inline from FACT_SLOT_RESERVATIONS', () => {
     render({ indicator: indicator(), radioWide: shared() });
     for (const fact of Object.keys(FACT_SLOT_RESERVATIONS)) {
-      const node = target.querySelector<HTMLElement>(`[data-indicator-fact="${fact}"]`);
+      const node = target.querySelector<HTMLElement>(`[data-indicator-fact="${fact}"]`)!;
       expect(node, `${fact} must render to carry its reservation`).not.toBeNull();
       expect(node.style.minInlineSize, `${fact}: inline reservation must equal the constant`)
         .toBe(`${FACT_SLOT_RESERVATIONS[fact as keyof typeof FACT_SLOT_RESERVATIONS]}ch`);
