@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
 // @ts-expect-error -- Svelte does not publish types for its test-only effect harness.
 import { effect_root } from 'svelte/internal/client';
@@ -165,12 +166,18 @@ describe('StandardFrequencyReadout', () => {
       (slot) => (slot.textContent ?? '').length,
     );
     expect(passiveWidths).toEqual(knownWidths);
-    // The reservation draws no glyph: every `.unlit` span is hidden by
-    // the component's own rule, so the operator sees separator dots only.
-    for (const slot of passive.querySelectorAll('.digits')) {
-      const unlit = slot.querySelector<HTMLElement>('.unlit')!;
-      expect(getComputedStyle(unlit).visibility).toBe('hidden');
-    }
+    // The reservation draws no glyph: every `.unlit` span carries the
+    // component's hiding class, and the component's own `<style>` hides
+    // that class (static pin — jsdom never applies scoped styles, so
+    // getComputedStyle cannot see it; the pattern follows
+    // PeerSplitLayout.component.test.ts). The operator sees dots only.
+    const source = readFileSync(
+      'src/primitives/frequency/StandardFrequencyReadout.svelte', 'utf8',
+    );
+    const css = (source.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '').replace(
+      /\/\*[\s\S]*?\*\//g, '',
+    );
+    expect(css).toMatch(/\.unlit\s*\{\s*visibility\s*:\s*hidden/);
   });
 });
 
