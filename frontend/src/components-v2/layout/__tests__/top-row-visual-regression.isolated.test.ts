@@ -113,82 +113,18 @@ vi.mock('../../../components/spectrum/SpectrumPanel.svelte', async () => {
   return { default: stub.default };
 });
 
-import VfoHeader from '../VfoHeader.svelte';
 import RadioLayout from '../RadioLayout.svelte';
-import { vfoLayoutStyleVars } from '../vfo-layout-tokens';
 
 let components: ReturnType<typeof mount>[] = [];
 
-function mountWithCleanup(component: typeof VfoHeader | typeof RadioLayout, props: Record<string, unknown> = {}) {
+function mountWithCleanup(component: typeof RadioLayout, props: Record<string, unknown> = {}) {
   const target = document.createElement('div');
   document.body.appendChild(target);
-  const instance = mount(component as never, { target, props });
+  const instance = mount(component, { target, props });
   flushSync();
   components.push(instance);
   return target;
 }
-
-function normalizeWhitespace(value: string): string {
-  return value.replace(/\s+/g, ' ').trim();
-}
-
-function topRowSnapshot(target: HTMLElement) {
-  const root = target.querySelector('.vfo-header');
-  if (!root) {
-    throw new Error('vfo-header not found');
-  }
-
-  const panels = Array.from(root.querySelectorAll('.panel')).map((panel) => ({
-    profile: panel.getAttribute('data-layout-profile'),
-    label: panel.querySelector('.vfo-label')?.textContent?.trim(),
-    meterVariant: panel.querySelector('svg')?.getAttribute('data-variant'),
-    frequency: normalizeWhitespace(panel.querySelector('.freq')?.textContent ?? ''),
-    mode: panel.querySelector('.mode-badge')?.textContent?.trim(),
-    filter: panel.querySelector('.filter-badge')?.textContent?.trim(),
-  }));
-
-  const ops = Array.from(root.querySelectorAll('.vfo-ops .bridge-button')).map((button) => ({
-    label: button.textContent?.trim(),
-    active: button.getAttribute('data-active'),
-    color: button.getAttribute('data-color'),
-  }));
-
-  const splitStatus = {
-    title: root.querySelector('.split-status-title')?.textContent?.trim(),
-    row: normalizeWhitespace(root.querySelector('.split-status-row')?.textContent ?? ''),
-  };
-
-  return {
-    wrapperStyle: target.getAttribute('style'),
-    panels,
-    ops,
-    splitStatus,
-  };
-}
-
-const vfoProps = {
-  mainVfo: {
-    receiver: 'main' as const,
-    freq: 14214000,
-    mode: 'USB',
-    filter: 'FIL1',
-    sValue: 132,
-    isActive: true,
-    badges: { digisel: 'DIGI-SEL', anf: 'ANF' },
-  },
-  subVfo: {
-    receiver: 'sub' as const,
-    freq: 7170000,
-    mode: 'LSB',
-    filter: 'FIL1',
-    sValue: 78,
-    isActive: false,
-    badges: { digisel: 'DIGI-SEL' },
-  },
-  splitActive: true,
-  dualWatchActive: false,
-  txVfo: 'main' as const,
-};
 
 class ResizeObserverStub {
   callback: ResizeObserverCallback;
@@ -221,139 +157,13 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('VfoHeader visual regression', () => {
-  it('matches the baseline top-row snapshot', () => {
-    const target = document.createElement('div');
-    target.setAttribute('style', vfoLayoutStyleVars('baseline'));
-    document.body.appendChild(target);
-    const instance = mount(VfoHeader, {
-      target,
-      props: { ...vfoProps, layoutProfile: 'baseline' },
-    });
-    flushSync();
-    components.push(instance);
-
-    expect(topRowSnapshot(target)).toMatchInlineSnapshot(`
-      {
-        "ops": [
-          {
-            "active": "false",
-            "color": "muted",
-            "label": "M→S",
-          },
-          {
-            "active": "true",
-            "color": "cyan",
-            "label": "SPLIT",
-          },
-          {
-            "active": "false",
-            "color": "green",
-            "label": "DW",
-          },
-          {
-            "active": "false",
-            "color": "muted",
-            "label": "M⇄S",
-          },
-        ],
-        "panels": [
-          {
-            "filter": undefined,
-            "frequency": "14 . 214 . 000",
-            "label": "MAIN",
-            "meterVariant": "vfo",
-            "mode": undefined,
-            "profile": "baseline",
-          },
-          {
-            "filter": undefined,
-            "frequency": "7 . 170 . 000",
-            "label": "SUB",
-            "meterVariant": "vfo",
-            "mode": undefined,
-            "profile": "baseline",
-          },
-        ],
-        "splitStatus": {
-          "row": "RX 7.170 TX 14.214",
-          "title": "SPLIT",
-        },
-        "wrapperStyle": "--vfo-bridge-width: 132px; --vfo-bridge-pad-x: 4px; --vfo-header-badge-height: 12px; --vfo-badge-inset-y: 3px; --vfo-header-group-gap: 5px; --vfo-header-badge-gap: 3px; --vfo-control-strip-gap: 4px; --vfo-panel-pad-x: 10px; --vfo-panel-meter-pad-x: 8px; --vfo-panel-body-pad-x: 10px; --vfo-panel-body-pad-bottom: 0px; --vfo-panel-body-gap: 4px; --vfo-display-row-gap: 12px; --vfo-frequency-size: 22px; --vfo-frequency-letter-spacing: 0.025em; --vfo-ops-gap: 4px; --vfo-ops-padding-y: 4px; --vfo-ops-stack-gap: 4px; --vfo-ops-secondary-margin-top: 0px; --vfo-ops-secondary-padding-top: 4px; --vfo-ops-badge-width: 62px; --vfo-ops-badge-height: 21px; --vfo-ops-badge-padding-x: 8px; --vfo-ops-badge-radius: 4px; --vfo-ops-badge-font-size: 10px; --vfo-header-badge-padding-x: 5px; --vfo-control-badge-padding-x: 6px; --vfo-panel-badge-radius: 3px; --vfo-control-badge-height: 16px; --vfo-control-badge-min-height: 16px; --vfo-control-badge-font-size: 7px",
-      }
-    `);
-  });
-
-  it('matches the wide top-row snapshot', () => {
-    const target = document.createElement('div');
-    target.setAttribute('style', vfoLayoutStyleVars('wide'));
-    document.body.appendChild(target);
-    const instance = mount(VfoHeader, {
-      target,
-      props: { ...vfoProps, layoutProfile: 'wide' },
-    });
-    flushSync();
-    components.push(instance);
-
-    expect(topRowSnapshot(target)).toMatchInlineSnapshot(`
-      {
-        "ops": [
-          {
-            "active": "false",
-            "color": "muted",
-            "label": "M→S",
-          },
-          {
-            "active": "true",
-            "color": "cyan",
-            "label": "SPLIT",
-          },
-          {
-            "active": "false",
-            "color": "green",
-            "label": "DW",
-          },
-          {
-            "active": "false",
-            "color": "muted",
-            "label": "M⇄S",
-          },
-        ],
-        "panels": [
-          {
-            "filter": undefined,
-            "frequency": "14 . 214 . 000",
-            "label": "MAIN",
-            "meterVariant": "vfo-wide",
-            "mode": undefined,
-            "profile": "wide",
-          },
-          {
-            "filter": undefined,
-            "frequency": "7 . 170 . 000",
-            "label": "SUB",
-            "meterVariant": "vfo-wide",
-            "mode": undefined,
-            "profile": "wide",
-          },
-        ],
-        "splitStatus": {
-          "row": "RX 7.170 TX 14.214",
-          "title": "SPLIT",
-        },
-        "wrapperStyle": "--vfo-bridge-width: 132px; --vfo-bridge-pad-x: 5px; --vfo-header-badge-height: 12px; --vfo-badge-inset-y: 3px; --vfo-header-group-gap: 5px; --vfo-header-badge-gap: 3px; --vfo-control-strip-gap: 4px; --vfo-panel-pad-x: 10px; --vfo-panel-meter-pad-x: 8px; --vfo-panel-body-pad-x: 10px; --vfo-panel-body-pad-bottom: 0px; --vfo-panel-body-gap: 4px; --vfo-display-row-gap: 12px; --vfo-frequency-size: 22px; --vfo-frequency-letter-spacing: 0.025em; --vfo-ops-gap: 4px; --vfo-ops-padding-y: 4px; --vfo-ops-stack-gap: 4px; --vfo-ops-secondary-margin-top: 0px; --vfo-ops-secondary-padding-top: 5px; --vfo-ops-badge-width: 64px; --vfo-ops-badge-height: 21px; --vfo-ops-badge-padding-x: 8px; --vfo-ops-badge-radius: 4px; --vfo-ops-badge-font-size: 10px; --vfo-header-badge-padding-x: 5px; --vfo-control-badge-padding-x: 6px; --vfo-panel-badge-radius: 3px; --vfo-control-badge-height: 16px; --vfo-control-badge-min-height: 16px; --vfo-control-badge-font-size: 7px",
-      }
-    `);
-  });
-});
-
 describe('RadioLayout top-row profile switching', () => {
-  // MOR-1313: the legacy top row (VfoHeader + its shared scale tokens) renders
-  // for a layout whose manifest declares no `vfo` zone. `desktop-v2` — this
-  // component's default skinId — resolves through its manifest now and hosts
-  // the semantic surfaces instead, so the subject of these two pins is the
-  // undeclared branch. The deck's style vars are chrome and are written either
-  // way; the `.vfo-main-panel` profile below only exists on the legacy branch.
+  // MOR-2728: the legacy VfoHeader top row and its undeclared-layout branch
+  // are deleted. What stays pinned here is the deck's own scale chrome —
+  // `resolveVfoLayoutProfile`/`vfoLayoutStyleVars` applied to the
+  // `.receiver-deck` section — written regardless of which deck renders
+  // inside it, so an undeclared id still exercises the width threshold and
+  // the manual URL overrides.
   const UNDECLARED = { skinId: 'no-such-layout' };
 
   beforeEach(() => {
@@ -367,13 +177,10 @@ describe('RadioLayout top-row profile switching', () => {
 
     const target = mountWithCleanup(RadioLayout, UNDECLARED);
     const receiverDeck = target.querySelector('.receiver-deck');
-    const mainPanel = target.querySelector('.vfo-main-panel .panel');
 
     expect(receiverDeck?.getAttribute('style')).toContain('--vfo-frequency-size: 22px');
     expect(receiverDeck?.getAttribute('style')).toContain('--vfo-badge-inset-y: 3px');
     expect(receiverDeck?.getAttribute('style')).toContain('--vfo-control-strip-gap: 4px');
-    expect(mainPanel?.getAttribute('data-layout-profile')).toBe('wide');
-    expect(mainPanel?.querySelector('svg')?.getAttribute('data-variant')).toBe('vfo-wide');
   });
 
   it('applies manual URL overrides to the shared top-row scale', () => {

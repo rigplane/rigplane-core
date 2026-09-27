@@ -414,13 +414,11 @@ export function isDigitKey(key: string): boolean {
  * MOR-1480 (verifier F1, CONFIRMED): the guard originally required an
  * ANCESTOR `[data-vfo-tile]` to supply `data-vfo-active` — a shape only
  * `VfoSurface.svelte` produces. That gap was first attributed to the
- * desktop-v2 HEADER display (`VfoHeader.svelte` -> `VfoPanel.svelte`), which
- * was WRONG: `VfoHeader` renders on NO shipping skin (`RadioLayout.svelte:83`
- * `semanticDeck = declared.has('vfo')` is true for every registered manifest;
- * the legacy else-branch at `RadioLayout.svelte:293-296` is pinned dead by
- * `semantic-desktop-migration.component.test.ts`, "drops the legacy twin").
- * Reading the matched `[data-vfo-freq]` element's OWN `data-vfo-active` first
- * — falling back to the ancestor tile's only when absent — is kept purely as
+ * desktop-v2 header display (`VfoHeader.svelte` -> `VfoPanel.svelte`), which
+ * was WRONG: `VfoHeader` rendered on NO shipping skin (deleted outright in
+ * MOR-2728 together with its undeclared-layout branch). Reading the matched
+ * `[data-vfo-freq]` element's OWN `data-vfo-active` first — falling back to
+ * the ancestor tile's only when absent — is kept purely as
  * DEFENSE-IN-DEPTH so any future non-semantic mount is self-sufficient; NO
  * current mount depends on it (`VfoSurface.svelte` opts out with
  * `vfoFreqHook={false}`). The bench-observed uncommanded `set_band` + BSR
@@ -436,10 +434,9 @@ export function isDigitKey(key: string): boolean {
  * display commit to the WRONG VFO — reopening the MOR-1322 B1 / MOR-1335 G4
  * cross-dispatch class. `data-vfo-active` (own or ancestor-tile) is the same
  * fact `hasTunableFrequency`'s sibling `tuneFrequency` guard reads and the
- * same fact `VfoPanel`'s/`VfoHeader`'s callers pass into
- * `FrequencyDisplayInteractive`'s `active` prop (`extractVfoState`'s
- * `isActive: activeReceiver === receiver`) — one source of truth, never a
- * second derivation.
+ * same fact `VfoPanel`'s callers pass into
+ * `FrequencyDisplayInteractive`'s `active` prop — one source of truth, never
+ * a second derivation.
  *
  * MOR-1480 owner ruling A: `KeyboardHandler.svelte`'s caller no longer treats
  * a `false` return here as "let the digit fall through to `resolveAction()`"

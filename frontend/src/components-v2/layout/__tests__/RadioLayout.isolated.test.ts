@@ -713,8 +713,7 @@ describe('App presentation selection', () => {
 // MOR-1341: `desktop-v2` (this file's `mountLayout()` default) now suppresses
 // `.bottom-dock` via its `meters` zone declaration. MOR-1346 gave `sdr-test`
 // one too, so `UNDECLARED` is now the layout that exercises the dock's OWN
-// behaviour — same move as `VfoHeader dual receiver` below, which tests the
-// legacy deck the same way.
+// behaviour.
 describe('Bottom dock MetersDockPanel', () => {
   it('renders the unified meters dock panel inside .bottom-dock', () => {
     const t = mountLayout(UNDECLARED);
@@ -757,24 +756,10 @@ describe('meters dock TX chrome follows the App TX authority (MOR-1235)', () => 
   });
 });
 
-// MOR-1313: the legacy VFO header lives on the undeclared branch now.
-describe('VfoHeader dual receiver', () => {
-  it('renders only one .panel in vfo-header when hasDualReceiver is false', () => {
-    vi.mocked(hasDualReceiver).mockReturnValue(false);
-    const t = mountLayout(UNDECLARED);
-    const vfoHeader = t.querySelector('.receiver-deck .vfo-header');
-    const panels = vfoHeader?.querySelectorAll('.panel');
-    expect(panels?.length).toBe(1);
-  });
-
-  it('renders two .panel elements in vfo-header when hasDualReceiver is true', () => {
-    vi.mocked(hasDualReceiver).mockReturnValue(true);
-    const t = mountLayout(UNDECLARED);
-    const vfoHeader = t.querySelector('.receiver-deck .vfo-header');
-    const panels = vfoHeader?.querySelectorAll('.panel');
-    expect(panels?.length).toBe(2);
-  });
-});
+// MOR-2728: the legacy `VfoHeader` deck and its undeclared-layout branch are
+// deleted; `semantic-desktop-migration.component.test.ts` and
+// `RadioLayout.command-bus-migration.isolated.test.ts` pin the deck renders
+// no legacy twin.
 
 describe('RadioLayout with radioState', () => {
   const sampleState = {

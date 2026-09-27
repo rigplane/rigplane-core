@@ -3,86 +3,7 @@ import { readFileSync } from 'node:fs';
 import { createRawSnippet, mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
 import VfoPanel from '../VfoPanel.svelte';
-import LegacyVfoPanelAdapter from '../LegacyVfoPanelAdapter.svelte';
-import { formatBadges, formatRitOffset } from '../vfo-utils';
-
-// ---------------------------------------------------------------------------
-// formatBadges
-// ---------------------------------------------------------------------------
-
-describe('formatBadges', () => {
-  beforeEach(() => {
-    // Mock getComputedStyle to return badge colors from CSS custom properties
-    const mockGetPropertyValue = vi.fn((prop: string) => {
-      const badgeColors: Record<string, string> = {
-        '--v2-badge-atu-color': 'green',
-        '--v2-badge-notch-color': 'orange',
-        '--v2-badge-nr-color': 'cyan',
-        '--v2-badge-pre-color': 'cyan',
-        '--v2-badge-nb-color': 'cyan',
-        '--v2-badge-default-color': 'cyan',
-        '--v2-receiver-main-accent': 'cyan',
-        '--v2-receiver-sub-accent': 'white',
-      };
-      return badgeColors[prop] || '';
-    });
-
-    globalThis.getComputedStyle = vi.fn(() => ({
-      getPropertyValue: mockGetPropertyValue,
-    })) as any;
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-  it('returns empty array for empty input', () => {
-    expect(formatBadges({})).toEqual([]);
-  });
-
-  it('boolean true → label = uppercased key, active = true', () => {
-    const result = formatBadges({ nr: true });
-    expect(result).toEqual([{ label: 'NR', active: true, color: 'cyan' }]);
-  });
-
-  it('boolean false → label = uppercased key, active = false', () => {
-    const result = formatBadges({ nb: false });
-    expect(result).toEqual([{ label: 'NB', active: false, color: 'cyan' }]);
-  });
-
-  it('string value → label = value itself, active = true', () => {
-    const result = formatBadges({ pre: 'P1' });
-    expect(result).toEqual([{ label: 'P1', active: true, color: 'cyan' }]);
-  });
-
-  it('notch string value uses orange color', () => {
-    const result = formatBadges({ notch: 'AUTO' });
-    expect(result[0].color).toBe('orange');
-  });
-
-  it('atu key uses green color', () => {
-    const result = formatBadges({ atu: true });
-    expect(result[0].color).toBe('green');
-  });
-
-  it('handles mixed badges record', () => {
-    const result = formatBadges({ atu: true, pre: 'P1', nr: true, nb: false, notch: 'AUTO' });
-    expect(result).toHaveLength(5);
-    expect(result.find((b) => b.label === 'ATU')?.active).toBe(true);
-    expect(result.find((b) => b.label === 'P1')?.active).toBe(true);
-    expect(result.find((b) => b.label === 'NB')?.active).toBe(false);
-    expect(result.find((b) => b.label === 'AUTO')?.active).toBe(true);
-  });
-
-  it('unknown key defaults to cyan color', () => {
-    const result = formatBadges({ foo: true });
-    expect(result[0].color).toBe('cyan');
-  });
-
-  it('unknown key falls back to the SUB receiver accent when no badge token exists', () => {
-    const result = formatBadges({ foo: true }, 'sub');
-    expect(result[0].color).toBe('white');
-  });
-});
+import { formatRitOffset } from '../vfo-utils';
 
 // ---------------------------------------------------------------------------
 // formatRitOffset
@@ -131,24 +52,14 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   getSmeterRedline: vi.fn(() => null),
 }));
 
-import { getCapabilities, getSmeterCalibration, receiverLabel } from '$lib/stores/capabilities.svelte';
+import { getSmeterCalibration, receiverLabel } from '$lib/stores/capabilities.svelte';
 
 let components: ReturnType<typeof mount>[] = [];
 
-function mountPanel(props: ComponentProps<typeof VfoPanel> | ComponentProps<typeof LegacyVfoPanelAdapter>) {
+function mountPanel(props: ComponentProps<typeof VfoPanel>) {
   const t = document.createElement('div');
   document.body.appendChild(t);
-  const Component = 'receiverLabel' in props ? VfoPanel : LegacyVfoPanelAdapter;
-  const component = mount(Component as typeof VfoPanel, { target: t, props: props as ComponentProps<typeof VfoPanel> });
-  flushSync();
-  components.push(component);
-  return t;
-}
-
-function mountLegacyPanel(props: ComponentProps<typeof LegacyVfoPanelAdapter>) {
-  const t = document.createElement('div');
-  document.body.appendChild(t);
-  const component = mount(LegacyVfoPanelAdapter, { target: t, props });
+  const component = mount(VfoPanel, { target: t, props });
   flushSync();
   components.push(component);
   return t;
@@ -164,16 +75,26 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-const baseProps: ComponentProps<typeof LegacyVfoPanelAdapter> = {
+const bandSections = {
+  tray: { band: { key: 'band', text: '20M', lit: true } },
+  annunciators: [],
+  dsp: [],
+  under: {},
+  tx: { lit: false, state: 'unknown' },
+} satisfies ComponentProps<typeof VfoPanel>['sections'];
+
+const baseProps: ComponentProps<typeof VfoPanel> = {
   receiver: 'main',
+  receiverLabel: 'MAIN',
+  slotTag: 'A',
   freq: 14074000,
+  displayHz: 14074000,
   mode: 'USB',
   filter: '2.4k',
   sValue: 100,
   isActive: true,
-  badges: {},
+  sections: bandSections,
   onModeClick: vi.fn(),
-  onVfoClick: vi.fn(),
 };
 
 const emptySections = {
@@ -235,7 +156,7 @@ describe('panel structure', () => {
     expect(text).not.toContain('uncalibrated');
   });
 
-  it('renders the active band tab from capabilities', () => {
+  it('renders the tray band chip from its sections', () => {
     const t = mountPanel(baseProps);
     expect(t.querySelector('[data-tray-tab="band"]')?.textContent?.trim()).toBe('20M');
   });
@@ -247,7 +168,7 @@ describe('panel structure', () => {
     expect(names.length).toBe(1);
   });
 
-  it('renders the fixed rows even when badges are empty', () => {
+  it('renders the fixed rows even when sections are empty', () => {
     const t = mountPanel(baseProps);
     expect(t.querySelector('[data-vfo-row="tray"]')).not.toBeNull();
     expect(t.querySelector('[data-vfo-row="receiver"]')).not.toBeNull();
@@ -337,14 +258,19 @@ describe('active/inactive state', () => {
 });
 
 describe('RIT display', () => {
-  it('keeps the under row without a RIT chip when rit is undefined', () => {
-    const t = mountPanel(baseProps);
+  const ritSections = (rit: { text: string; lit: boolean }) => ({
+    ...bandSections,
+    under: { rit: { key: 'rit', ...rit } },
+  });
+
+  it('keeps the under row without a RIT chip when sections.under is empty', () => {
+    const t = mountPanel({ ...baseProps, sections: { ...bandSections, under: {} } });
     expect(t.querySelector('[data-chip="rit"]')).toBeNull();
     expect(t.querySelector('[data-vfo-row="under"]')).not.toBeNull();
   });
 
-  it('renders the RIT chip unlit in place when rit.active=false', () => {
-    const t = mountPanel({ ...baseProps, rit: { active: false, offset: 120 } });
+  it('renders the RIT chip unlit in place when lit=false', () => {
+    const t = mountPanel({ ...baseProps, sections: ritSections({ text: 'RIT', lit: false }) });
     const rit = t.querySelector('[data-chip="rit"]');
     expect(rit).not.toBeNull();
     expect(rit?.getAttribute('data-lit')).toBe('false');
@@ -352,101 +278,23 @@ describe('RIT display', () => {
   });
 
   it('renders the RIT chip lit with its signed Hz offset when active', () => {
-    const t = mountPanel({ ...baseProps, rit: { active: true, offset: 120 } });
+    const t = mountPanel({ ...baseProps, sections: ritSections({ text: 'RIT +120', lit: true }) });
     expect(t.querySelector('[data-chip="rit"]')?.textContent?.trim()).toBe('RIT +120');
     expect(t.querySelector('[data-chip="rit"]')?.getAttribute('data-lit')).toBe('true');
   });
 
-  it('shows negative RIT offset in Hz correctly', () => {
-    const t = mountPanel({ ...baseProps, rit: { active: true, offset: -250 } });
+  it('shows a negative RIT offset in Hz correctly', () => {
+    const t = mountPanel({ ...baseProps, sections: ritSections({ text: 'RIT −250', lit: true }) });
     expect(t.querySelector('[data-chip="rit"]')?.textContent?.trim()).toBe('RIT −250');
   });
 });
 
-describe('badge rendering', () => {
-  it('does not render lamp or DSP chips when badges is empty', () => {
-    const t = mountPanel(baseProps);
-    expect(t.querySelectorAll('.lamp').length).toBe(0);
-    expect(t.querySelectorAll('[data-vfo-row="dsp"]').length).toBe(0);
-  });
-
-  it('renders DSP chips when badges has nb/nr/notch entries', () => {
-    const t = mountPanel({ ...baseProps, badges: { nr: true } });
-    expect(t.querySelector('[data-vfo-row="dsp"]')).not.toBeNull();
-    expect(t.querySelector('[data-chip="nr"]')?.getAttribute('data-lit')).toBe('true');
-  });
-
-  it('renders ATU lamp when atu=true in badges', () => {
-    const t = mountPanel({ ...baseProps, badges: { atu: true } });
-    expect(t.querySelector('.lamp')?.textContent?.trim()).toBe('ATU');
-    expect(t.querySelector('.lamp')?.getAttribute('data-lit')).toBe('true');
-  });
-
-  it('renders NB chip as unlit when nb=false', () => {
-    const t = mountPanel({ ...baseProps, badges: { nb: false } });
-    const badge = t.querySelector('[data-chip="nb"]');
-    expect(badge).not.toBeNull();
-    expect(badge?.getAttribute('data-lit')).toBe('false');
-  });
-
-  it('renders string badge value as lamp text (pre="P1")', () => {
-    const t = mountPanel({ ...baseProps, badges: { pre: 'P1' } });
-    expect(t.querySelector('.lamp')?.textContent?.trim()).toBe('P1');
-  });
-
-  it('carries a legacy badge colour NAME through to the badge token', () => {
-    // The suite's getComputedStyle mock maps --v2-badge-atu-color to 'green'.
-    const t = mountPanel({ ...baseProps, badges: { atu: true } });
-    const lamp = t.querySelector<HTMLElement>('.lamp');
-    expect(lamp?.getAttribute('style')).toContain('--vfo-lamp-color: var(--v2-badge-green-text)');
-  });
-
-  it('carries a resolved colour LITERAL through unchanged (custom themes)', () => {
-    const mockGetPropertyValue = vi.fn((prop: string) =>
-      prop === '--v2-badge-sub-digi-sel-color' ? '#00D4FF' : '');
-    globalThis.getComputedStyle = vi.fn(() => ({ getPropertyValue: mockGetPropertyValue })) as any;
-    const t = mountPanel({ ...baseProps, receiver: 'sub', badges: { 'digi-sel': true } });
-    const lamp = t.querySelector<HTMLElement>('.lamp');
-    expect(lamp?.getAttribute('style')).toContain('--vfo-lamp-color: #00D4FF');
-  });
-});
-
 describe('callbacks', () => {
-  it('does not call onVfoClick when panel is clicked (panel-wide activation removed)', () => {
-    const onVfoClick = vi.fn();
-    const t = mountPanel({ ...baseProps, onVfoClick });
-    t.querySelector<HTMLElement>('.panel')?.click();
-    expect(onVfoClick).not.toHaveBeenCalled();
-  });
-
   it('calls onModeClick when mode badge is clicked', () => {
     const onModeClick = vi.fn();
     const t = mountPanel({ ...baseProps, onModeClick });
     t.querySelector<HTMLElement>('.mode-badge-wrapper')?.click();
     expect(onModeClick).toHaveBeenCalledOnce();
-  });
-});
-
-describe('receiverLabel integration', () => {
-  it('uses receiverLabel("MAIN") for receiver=main', () => {
-    mountLegacyPanel({ ...baseProps, receiver: 'main' });
-    expect(vi.mocked(receiverLabel)).toHaveBeenCalledWith('MAIN');
-  });
-
-  it('uses receiverLabel("SUB") for receiver=sub', () => {
-    mountLegacyPanel({ ...baseProps, receiver: 'sub' });
-    expect(vi.mocked(receiverLabel)).toHaveBeenCalledWith('SUB');
-  });
-
-  it('renders the receiver label in the header', () => {
-    vi.mocked(receiverLabel).mockReturnValue('MAIN');
-    const t = mountLegacyPanel({ ...baseProps, receiver: 'main' });
-    expect(t.querySelector('.vfo-label')?.textContent?.trim()).toBe('MAIN');
-  });
-
-  it('reads band ranges through getCapabilities()', () => {
-    mountLegacyPanel(baseProps);
-    expect(vi.mocked(getCapabilities)).toHaveBeenCalled();
   });
 });
 
@@ -690,14 +538,11 @@ describe('explicit presentation contract', () => {
     expect(source).not.toMatch(/stores\/|runtime\/|capabilities/);
   });
 
-  it('keeps local meter context on the legacy fallback and omits new owners from the adapter', () => {
+  it('keeps local meter context on the meter fallback', () => {
     const panel = readFileSync('src/components-v2/vfo/VfoPanel.svelte', 'utf8');
     const meter = panel.match(/<LinearSMeter([\s\S]*?)\/>/)?.[1] ?? '';
     expect(meter).toMatch(/source=\{meterSource\}/);
     expect(meter).toMatch(/session=\{continuitySession\}/);
-    const legacy = readFileSync('src/components-v2/vfo/LegacyVfoPanelAdapter.svelte', 'utf8');
-    const call = legacy.match(/<VfoPanel([\s\S]*?)\/>/)?.[1] ?? '';
-    expect(call).not.toMatch(/frequency=|sMeter=|meterSource|continuitySession/);
   });
 });
 

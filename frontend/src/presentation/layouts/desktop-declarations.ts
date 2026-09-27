@@ -146,14 +146,12 @@ export const desktopV2Layout: LayoutManifest = {
   displayName: 'Desktop',
   zones: DESKTOP_V2_ZONES,
   /**
-   * All four canonical classes. `VfoHeader` branches on `hasDualReceiver()`
-   * (`components-v2/layout/VfoHeader.svelte`) between `DualVfoDisplay` (2
-   * receivers) and a single-receiver `VfoPanel`, with `VfoOps` — the A/B
-   * swap/equal controls — always mounted regardless, and TX is
-   * receiver-count-agnostic. This is the flagship, already-shipped v2 skin
-   * every real Icom radio uses today (`resolveSkinId`'s default `auto`
-   * destination when any scope is available) — read off `VfoHeader.svelte`,
-   * not assumed.
+   * All four canonical classes: the semantic receiver deck composes
+   * `VfoSurface` per receiver, with the VFO operations group always mounted
+   * regardless, and TX is receiver-count-agnostic. This is the flagship,
+   * already-shipped v2 skin every real Icom radio uses today
+   * (`resolveSkinId`'s default `auto` destination when any scope is
+   * available).
    */
   compatibleTopologies: ['1/single', '1/ab', '2/ab_shared', '2/main_sub'],
   requiredSemanticSurfaces: ['vfo', 'rxTx'],
