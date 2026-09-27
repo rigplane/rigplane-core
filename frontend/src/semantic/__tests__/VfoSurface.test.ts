@@ -686,6 +686,7 @@ it('reserves the role plaque at the widest SLOTTED role text in every state', ()
   const widest = [enUS, jaJP, ruRU]
     .flatMap((catalog) => Object.values(catalog))
     .concat(listed)
+    .filter((value): value is string => typeof value === 'string')
     .filter((text) => /MAIN [AB]|SUB [AB]/.test(text))
     .reduce((best, text) => (text.length > best.length ? text : best), '');
   expect(listed).toContain(widest);
