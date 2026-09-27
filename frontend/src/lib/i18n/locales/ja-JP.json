@@ -319,6 +319,7 @@
   "glossary.bandPlan": "バンドプラン",
 
   "core.cwKeyer.breakIn.blocked": "TX 不許可: {reason}",
+  "core.cwKeyer.breakIn.label": "ブレークイン",
 
   "core.cwKeyer.breakInDelay.valueText.unavailable": "ブレークイン遅延は利用できません",
   "core.cwKeyer.breakInDelay.valueText.draft": "下書き {draft}; 最終確定 {confirmed}",

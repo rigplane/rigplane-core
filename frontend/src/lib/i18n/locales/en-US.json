@@ -273,6 +273,7 @@
   "core.band.entry.reason.boundsUnknown": "tuning limits unknown — entry cannot be validated",
 
   "core.cwKeyer.breakIn.blocked": "TX not permitted: {reason}",
+  "core.cwKeyer.breakIn.label": "Break-in",
 
   "core.cwKeyer.breakInDelay.valueText.unavailable": "Break-in delay unavailable",
   "core.cwKeyer.breakInDelay.valueText.draft": "Draft {draft}; last confirmed {confirmed}",

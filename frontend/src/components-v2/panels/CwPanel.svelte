@@ -5,7 +5,7 @@
   import { ValueControl } from '../controls/value-control';
   import { clamp, rawToPercentDisplay, snapToStep } from '../../primitives/scalar/value-control-core';
   import { finiteValue, valueText } from '../../primitives/reading-text';
-  import { getLocale } from '$lib/i18n';
+  import { getLocale, t } from '$lib/i18n';
   import type { PresentationPhase } from '../../primitives/control-feedback/control-feedback-presentation';
   import { createCommittedScalar } from '../../primitives/scalar/committed-scalar.svelte';
   import {
@@ -269,6 +269,11 @@
            published choices (`breakInChoices` off `deriveCwProps`, empty on
            X6100/X6200 ⇒ no key at all), never the v2 hard-coded trio. -->
       {#if showBreakIn}
+        <!-- MOR-2797: the same visible row label the Standard face's
+             break-in row has — the bare OFF / ON choice labels read as
+             "something is on", not as break-in. -->
+        <span class="toggle-row-label" data-testid="cw-break-in-label"
+        >{t('core.cwKeyer.breakIn.label')}</span>
         {#each p.breakInChoices as choice (choice.value)}
           <HardwareButton
             indicator="edge-left" active={breakIn === choice.value}
@@ -374,6 +379,18 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+
+  /* MOR-2797: the break-in buttons' visible row label, styled like the
+     panel's own RX-mode label — upper-case comes from the stylesheet, so
+     the catalog text stays per-locale. */
+  .toggle-row-label {
+    color: var(--v2-text-subdued);
+    font-family: 'Roboto Mono', monospace;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
 
   .break-in-delay-control {

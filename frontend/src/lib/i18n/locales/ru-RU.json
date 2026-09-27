@@ -272,6 +272,7 @@
   "core.band.entry.reason.boundsUnknown": "границы настройки неизвестны — ввод нельзя проверить",
 
   "core.cwKeyer.breakIn.blocked": "TX не разрешён: {reason}",
+  "core.cwKeyer.breakIn.label": "Брейк-ин",
 
   "core.cwKeyer.breakInDelay.valueText.unavailable": "Задержка break-in недоступна",
   "core.cwKeyer.breakInDelay.valueText.draft": "Черновик {draft}; последнее подтверждённое {confirmed}",
