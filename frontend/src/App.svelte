@@ -119,7 +119,8 @@
       return;
     }
     // MOR-2218: the stored preference is per skin — this skin's entry or its default.
-    const stored = getDesignLanguage(workspaceDesignLanguageForSkin(getWorkspace().designLanguageBySkin, layoutId));
+    const storedId = workspaceDesignLanguageForSkin(getWorkspace().designLanguageBySkin, layoutId);
+    const stored = storedId === undefined ? undefined : getDesignLanguage(storedId);
     let language = stored;
     let activated = designLanguageActivation(stored, layoutId);
     if (activated === null) {
