@@ -2626,8 +2626,10 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     const cw = t.querySelector('[data-panel-id="semantic-cw"]')!;
     expect(cw.querySelector('[data-testid="cw-keyer-posture"]')?.closest('p')
       ?.classList.contains('sr-only')).toBe(true);
-    expect(cw.querySelector('[data-testid="cw-keyer-break-in-semi"]')?.getAttribute('aria-describedby'))
-      .toContain('-posture');
+    // MOR-2690: the break-in reading is unread in this mount, so the keys
+    // are bare — the removed unknown sentence is not described-by anything.
+    expect(cw.querySelector('[data-testid="cw-keyer-break-in-semi"]')
+      ?.getAttribute('aria-describedby') ?? '').not.toContain('-posture');
   });
 
   it.each([

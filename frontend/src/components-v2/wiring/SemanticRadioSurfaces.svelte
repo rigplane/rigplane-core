@@ -2140,6 +2140,7 @@
             `receiver` path `slotPosition` is undefined and the attribute is
             absent, which is what keeps the shipped decks unchanged.
           -->
+          {@const operational = isOperationalStrip(view, receiverId)}
           <div
             class="channel-strip"
             data-testid={`channel-strip-${key}`}
@@ -2147,8 +2148,13 @@
             data-strip-receiver={receiverId}
             data-strip-slot={slotPosition}
             data-strip-active={active}
-            data-strip-operational={isOperationalStrip(view, receiverId)}
+            data-strip-operational={operational}
           >
+            {#if !operational}
+              <p class="strip-unavailable" data-strip-unavailable-reason>
+                {t('core.vfo.select.receiverUnavailableReason')}
+              </p>
+            {/if}
             <!--
               `selectionPoolSize`: the slice below holds this receiver's VFOs
               only, but the operator can still choose across the WHOLE radio —
@@ -2182,7 +2188,7 @@
               onSelectVfo={selectVfo}
               onTuneFrequency={tuneFrequency}
               onOpenFrequencyEntry={frequencyEntrySupported ? openFrequencyEntry : undefined}
-              disabled={!isOperationalStrip(view, receiverId)}
+              disabled={!operational}
               indicatorReceiver={receiverId}
               suppressIdentitySelectors={stripBy === 'slot'}
               {receiverInstruments}
@@ -3271,5 +3277,15 @@
   .channel-strip[data-strip-active='true'] {
     border-left: 2px solid var(--v2-accent-cyan, #00d4ff);
     padding-left: 6px;
+  }
+
+  /* MOR-1260: the bar is a shape, so forced-colors cannot flatten it. */
+  @media (forced-colors: active) {
+    .channel-strip[data-strip-active='true'] { border-left-color: CanvasText; }
+  }
+
+  .strip-unavailable {
+    margin: 0 0 4px;
+    font-size: 11px;
   }
 </style>

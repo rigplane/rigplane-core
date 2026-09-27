@@ -31,6 +31,7 @@ import MobileRadioLayout from '../src/components-v2/layout/MobileRadioLayout.sve
 import { fixtureById } from './catalog';
 import { DEFAULT_AUDIO_RUNTIME, harness, IDLE_TX } from './harness-state';
 import { clearCapabilities, setCapabilities } from '../src/lib/stores/capabilities.svelte';
+import { applyDesignLanguage } from './languages';
 
 const params = new URLSearchParams(window.location.search);
 const id = params.get('fixture') ?? 'topology-2-main-sub';
@@ -60,6 +61,11 @@ harness.presentationAcquires = [];
 if ((params.get('theme') ?? 'v2') === 'v2') {
   await import('../src/components-v2/theme/index');
 }
+
+// MOR-2676: the design-language overlay is part of the smoke test's face ×
+// state × language matrix, so this page takes the same `?language=`/
+// `?mode=light` contract the catalog entries already have.
+await applyDesignLanguage(params);
 
 mount(MobileRadioLayout, { target: document.getElementById('app')! });
 flushSync();

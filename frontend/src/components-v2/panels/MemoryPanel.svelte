@@ -154,7 +154,11 @@
 
         {#if entry}
           <span class="ch-freq">{formatFrequencyString(entry.freq)}</span>
-          <span class="ch-mode">{entry.mode || '---'}</span>
+          <!-- MOR-2668: an empty mode is truly empty, not unread — the
+               catalog is local-only (the IC-7610 cannot report memory over
+               CI-V), so '' means never stored. It renders as an empty cell
+               in the reserved slot, the `MemorySurface.svelte` shape. -->
+          <span class="ch-mode">{entry.mode}</span>
 
           {#if editingName === ch}
             <input
@@ -172,7 +176,7 @@
               title="Click to edit name"
               onclick={() => startEditName(ch)}
             >
-              {entry.name || '---'}
+              {entry.name}
             </button>
           {/if}
 

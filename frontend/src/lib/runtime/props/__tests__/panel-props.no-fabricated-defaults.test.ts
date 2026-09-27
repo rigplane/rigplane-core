@@ -109,6 +109,11 @@ describe('panel-props.ts batch-A/batch-B functions carry no fabricated-default l
     ['toAudioSpectrumProps', 'filterWidth: rx?.filterWidth ?? 2400,'],
     ['toMemoryPanelProps', 'activeFreqHz: rx?.freqHz ?? 0,'],
     ["toMemoryPanelProps", "activeMode: rx?.mode ?? '',"],
+    // MOR-2658: finishes the deferred A12 toTxProps fix for rfPower —
+    // moved here from `stillPresentOutOfScope` below (TxPanel.svelte and
+    // MobileRadioLayout.svelte now guard the NaN sentinel at their
+    // consumer boundaries, the guards A12 could not add).
+    ['toTxProps', 'rfPower: state?.powerLevel ?? 0.5,'],
   ];
 
   it.each(forbidden)('%s does not contain %j', (fn, literal) => {
@@ -148,15 +153,15 @@ describe('panel-props.ts batch-A/batch-B functions carry no fabricated-default l
     ['toRitXitProps', 'xitActive: state?.ritTx ?? false,'],
     ['toCwProps', 'twinPeak: rx?.twinPeakFilter ?? false,'],
     ['toScanProps', 'scanning: state?.scanning ?? false,'],
-    // toTxProps' entire batch-B family — see the explicit non-fix
-    // rationale in panel-props.test.ts's "toTxProps — explicit non-fix"
-    // describe block: TxPanel.svelte's settings-modal ValueControl calls
-    // use an unguarded displayFn that would render "NaN%" for a non-finite
-    // input, and TxPanel.svelte is not one of A12's four granted
-    // production files. Deferred whole, not partially (numeric vs.
-    // boolean), to keep the family's honesty guarantee internally
-    // consistent for a future gate to finish.
-    ['toTxProps', 'rfPower: state?.powerLevel ?? 0.5,'],
+    // toTxProps' batch-B family except rfPower — see the explicit
+    // non-fix rationale in panel-props.test.ts's "toTxProps — explicit
+    // non-fix" describe block: at A12 TxPanel.svelte's settings-modal
+    // ValueControl calls used an unguarded displayFn that would render
+    // "NaN%" for a non-finite input, and TxPanel.svelte was not one of
+    // A12's four granted production files. A12 deferred the family whole,
+    // not partially, for a future gate to finish; MOR-2658 finished
+    // rfPower (forbidden above) once the consumer-boundary guards
+    // landed. The rows below stay deferred.
     ['toTxProps', 'micGain: state?.micGain ?? 128,'],
     ['toTxProps', 'monLevel: state?.monitorGain ?? 128,'],
     ['toTxProps', 'driveGain: state?.driveGain ?? 128,'],

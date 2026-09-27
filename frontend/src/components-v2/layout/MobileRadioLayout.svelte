@@ -518,6 +518,13 @@
   function formatOffsetDisplay(hz: number): string {
     return Number.isFinite(hz) ? `${hz >= 0 ? '+' : ''}${hz}` : '---';
   }
+  // MOR-2658: the power sheet slider shares TxPanel's unread contract —
+  // an unread level renders EMPTY in its reserved slot, never "NaN%"
+  // (`normalizedPercentDisplay` has no non-finite branch). `toTxProps`
+  // reports Number.NaN when the rig never sent `powerLevel`.
+  function formatRfPowerDisplay(level: number): string {
+    return Number.isFinite(level) ? normalizedPercentDisplay(level) : '';
+  }
   // The TX dock meter takes raw numbers and formats all four rows itself
   // (`formatPowerWatts`/`formatSwr`/`formatAlc` each render "NaN"-class
   // strings). It is not an owner of this gate, and there is no honest finite
@@ -781,10 +788,22 @@
         <CollapsiblePanel title="TX" panelId="m-tx" collapsible={false}>
           <div class="m-tx-compact">
             <!-- Power readout (tap → power modal) -->
+            <!-- MOR-2658: an unread power renders EMPTY in the reserved
+                 `.m-tx-power-value` slot below — never a '—' placeholder.
+                 `rfPowerAvailable` gates the modal tap, but availability
+                 alone cannot decide the text: a rig with no fieldStatus
+                 entry reads as available (legacy no-entry fallback) while
+                 `toTxProps` reports NaN, and `formatPower(NaN)` is "NaNW" —
+                 so finiteness decides with it. -->
             <button type="button" class="m-tx-info" disabled={!tx.rfPowerAvailable} onclick={() => (powerModalOpen = true)}>
-              <span class="m-tx-power-value">{tx.rfPowerAvailable ? formatPower(tx.rfPower) : '—'}</span>
+              <span class="m-tx-power-value">{tx.rfPowerAvailable && Number.isFinite(tx.rfPower) ? formatPower(tx.rfPower) : ''}</span>
               {#if managedTxRf === 'on'}
-                <span class="m-tx-swr-value">SWR {meter.swr > 0 ? (meter.swr / 10).toFixed(1) : '—'}</span>
+                <!-- MOR-2658: an unread SWR renders EMPTY in the reserved
+                     `.m-tx-swr-value` slot — never a '—', and never the
+                     `SWR` word without its number. toMeterProps reports
+                     Number.NaN for an unobserved meter, so NaN (not 0) is
+                     absence: a real reading of 0 renders `SWR 0.0`. -->
+                <span class="m-tx-swr-value">{Number.isFinite(meter.swr) ? `SWR ${(meter.swr / 10).toFixed(1)}` : ''}</span>
               {/if}
             </button>
 
@@ -950,7 +969,7 @@
             max={1}
             step={0.01}
             renderer="hbar"
-            displayFn={normalizedPercentDisplay}
+            displayFn={formatRfPowerDisplay}
             accentColor="var(--v2-accent-red)"
             onChange={txHandlers.onRfPowerChange}
             variant="hardware-illuminated"
@@ -1474,6 +1493,13 @@
     color: var(--v2-text-primary, #ddd);
     letter-spacing: 0.02em;
     white-space: nowrap;
+    /* MOR-2658: the power box stays reserved for unread AND each known
+       value — `5ch` covers the widest text (`100W`), tabular digits keep
+       every width identical, so a first reading cannot shift the row. */
+    display: inline-block;
+    min-width: 5ch;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
   }
 
   .m-tx-swr-value {
@@ -1481,6 +1507,13 @@
     font-size: 9px;
     color: var(--v2-text-dim, #888);
     white-space: nowrap;
+    /* MOR-2658: same reservation as power — `8ch` covers `SWR 25.5`,
+       the widest text the slot can hold: swrMeter is raw 0-255
+       (radio_state.py), rendered as `(swr / 10).toFixed(1)`. */
+    display: inline-block;
+    min-width: 8ch;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
   }
 
   .m-atu-btn {

@@ -243,7 +243,10 @@
     ]);
   }
   function formatExactWidth(value: number): string {
-    return Number.isFinite(value) ? `${value} Hz` : '--- Hz';
+    // MOR-2667: an unread value renders empty — never a `'--- Hz'`
+    // placeholder (the only caller passes a finite canonical reading; the
+    // empty guard keeps the placeholder family out of the file).
+    return Number.isFinite(value) ? `${value} Hz` : '';
   }
   function formatWidthAnnouncementText(
     feedback: Readonly<CommandScalarFeedback>,

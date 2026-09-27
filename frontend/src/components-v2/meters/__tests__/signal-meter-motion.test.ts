@@ -190,7 +190,7 @@ describe('createSignalMeterMotion', () => {
     const binding = createSignalMeterMotion({ projection: raw, present: true });
     expect(binding.frame.projection.primaryText).toBe('raw 103');
 
-    const unknown = projection(null, '103, unit unknown', 'none');
+    const unknown = projection(null, '', 'none');
     binding.sync({ projection: unknown, present: true });
     expect(binding.frame.projection).toBe(unknown);
     expect(binding.frame.smoothedFraction).toBe(0);

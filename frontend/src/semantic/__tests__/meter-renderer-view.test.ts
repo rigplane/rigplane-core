@@ -139,10 +139,9 @@ describe('toSignalMeterRendererView', () => {
       expect(view.evidence).toEqual({ state: 'current', value: 12, domain: { kind: 'unknown' } });
       expect(view).toMatchObject({
         scaleMode: 'none', displayedFraction: null, peakFraction: null,
-        crossoverFraction: null, marks: [], ticks: [], primaryText: '12',
-        secondaryText: 'unit unknown',
+        crossoverFraction: null, marks: [], ticks: [], primaryText: '',
+        secondaryText: '', accessibleDescription: 'S meter',
       });
-      expect(`${view.primaryText} ${view.secondaryText}`).not.toMatch(/dBm|rel S9|uncalibrated/);
     });
 
   it('keeps qualified dB-relative-to-S9 evidence when calibrated geometry is unavailable', () => {

@@ -194,7 +194,7 @@ function projectLevelMeter<Key extends LevelMeterKey>(
     displayText,
     stateText,
     accessibleDescription: tx
-      ? `${label}: ${tx.description}${isObserved ? `. ${formatted}` : ''}`
+      ? `${label}: ${tx.description}${isObserved && formatted !== '' ? `. ${formatted}` : ''}`
       : undefined,
     fault: isObserved && field.relevant
       && (FAULT_CHECKS[key]?.(value, field.domain) ?? false),
