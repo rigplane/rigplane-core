@@ -575,8 +575,9 @@ describe('ReceiverInstrumentHost', () => {
   // `observationValue` that drops current or stale.
   it('shows the observed frequency through a stale display observation, and unlit digits for a not-observed one', () => {
     const stale = publication();
-    stale.state.fieldStatus['main.vfoA.freqHz'] = {
-      ...stale.state.fieldStatus['main.vfoA.freqHz']!, freshness: 'stale',
+    const staleStatuses = stale.state!.fieldStatus!;
+    staleStatuses['main.vfoA.freqHz'] = {
+      ...staleStatuses['main.vfoA.freqHz']!, freshness: 'stale',
     };
     const root = mountFixture(new Publisher(stale));
     const readout = root.querySelector<HTMLElement>(
@@ -586,8 +587,9 @@ describe('ReceiverInstrumentHost', () => {
     expect(readout.textContent).toBe('14250000');
 
     const notObserved = publication();
-    notObserved.state.fieldStatus['main.vfoA.freqHz'] = {
-      ...notObserved.state.fieldStatus['main.vfoA.freqHz']!, observed: false,
+    const unobservedStatuses = notObserved.state!.fieldStatus!;
+    unobservedStatuses['main.vfoA.freqHz'] = {
+      ...unobservedStatuses['main.vfoA.freqHz']!, observed: false,
     };
     const otherRoot = mountFixture(new Publisher(notObserved));
     const otherReadout = otherRoot.querySelector<HTMLElement>(
