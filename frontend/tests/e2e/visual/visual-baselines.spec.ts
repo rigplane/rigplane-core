@@ -111,9 +111,8 @@ for (const spec of COCKPIT) {
     // segment between regeneration runs that changed nothing. Under
     // `prefers-reduced-motion: reduce` the meters snap to the settled value
     // at mount and schedule no frame (the reduced-motion contract pinned in
-    // `LinearSMeter.reduced-motion.svelte.isolated.test.ts`), so every capture is
-    // pixel-stable. The live app keeps its animation: this is the capture
-    // harness only.
+    // `LinearSMeter.reduced-motion.svelte.isolated.test.ts`). The live app
+    // keeps its animation: this is the capture harness only.
     await page.emulateMedia({ reducedMotion: 'reduce' });
     // Before `goto`: the clock is installed into the page's init scripts, so
     // it has to be in place before any of the page's own script reads `Date`.
@@ -318,9 +317,16 @@ test('phone one-tile VFO keeps its box across a VFO switch (MOR-2662)', async ({
  * normalized float from the bench).
  */
 test('mobile-portrait--phone', async ({ page }) => {
+  // MOR-2713: without this the compact S-meter was still growing after
+  // harness-ready (for about 250 ms in run 36333915699), and captures of one
+  // commit ended its lit bar at two different pixels. Same emulation and pin
+  // as the COCKPIT loop above (MOR-2710).
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize(PHONE);
   await page.goto('/fixtures/mobile-witness.html?fixture=topology-2-main-sub', { waitUntil: 'load' });
   await page.waitForSelector('body[data-harness-ready="true"]');
+  expect(await page.evaluate(() =>
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches)).toBe(true);
   await page.evaluate(() => document.fonts.ready);
   const layout = page.locator('.m-layout');
   await expect(layout).toBeVisible();

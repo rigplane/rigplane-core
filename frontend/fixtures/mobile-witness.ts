@@ -67,6 +67,9 @@ if ((params.get('theme') ?? 'v2') === 'v2') {
 // `?mode=light` contract the catalog entries already have.
 await applyDesignLanguage(params);
 
+// MOR-2713: the same font settle as `main.ts`, before the mount.
+await Promise.all(Array.from(document.fonts, (face) => face.load()));
+
 mount(MobileRadioLayout, { target: document.getElementById('app')! });
 flushSync();
 document.body.dataset.harnessReady = 'true';

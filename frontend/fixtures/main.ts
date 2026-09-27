@@ -101,6 +101,13 @@ if ((params.get('theme') ?? 'v2') === 'v2') {
 // (the witness pages share it now).
 await applyDesignLanguage(params, fixture.layout === 'peer-split' ? 'segmentline' : null);
 
+// MOR-2713: every declared font face loads before anything mounts. With the
+// cyrillic subset of Roboto Mono loaded and the latin one still loading, the
+// cockpit's `10ch` facts computed to 50px instead of 60px (run 36335162640),
+// and in some loads they still computed 50px after every subset had loaded
+// (run 36333915699). Pinned by `tests/e2e/visual/capture-settle.spec.ts`.
+await Promise.all(Array.from(document.fonts, (face) => face.load()));
+
 harness.state = fixture.state();
 harness.caps = fixture.caps();
 // MOR-1451: `harness.caps` above feeds the STUBBED `runtime.caps` seam only
