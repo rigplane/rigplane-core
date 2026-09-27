@@ -1045,7 +1045,8 @@ class TestSubReceiverAfLevelTag:
 
 class TestReceiverDeclaredControlTags:
     """``attenuator_main``/``preamp_main``/``attenuator_sub``/``preamp_sub``/
-    ``agc_time_constant``/``agc_time_constant_sub`` are served only for
+    ``agc_time_constant``/``agc_time_constant_sub``/``manual_notch_width``/
+    ``manual_notch_width_sub`` are served only for
     receivers whose fields the profile itself declares (MOR-2588), following
     the ``af_level_sub`` serving pattern (MOR-2579) with the profile's
     declared acquisition paths as the fact. ``supports_command`` admission is
@@ -1069,11 +1070,18 @@ class TestReceiverDeclaredControlTags:
                     "preamp_sub",
                     "agc_time_constant",
                     "agc_time_constant_sub",
+                    "manual_notch_width",
+                    "manual_notch_width_sub",
                 },
             ),
             (
                 "ic7300",
-                {"attenuator_main", "preamp_main", "agc_time_constant"},
+                {
+                    "attenuator_main",
+                    "preamp_main",
+                    "agc_time_constant",
+                    "manual_notch_width",
+                },
             ),
             ("ic9700", {"attenuator_main", "preamp_main"}),
             ("ic705", {"attenuator_main", "preamp_main"}),
@@ -1110,6 +1118,22 @@ class TestReceiverDeclaredControlTags:
             assert radio.profile.supports_command("set_agc_time_constant")
             assert "agc_time_constant" not in projected_receiver_control_tags(radio)
 
+    def test_width_values_and_commands_alone_do_not_project_the_notch_width_tag(
+        self,
+    ):
+        """MOR-2726: IC-9700 and IC-705 declare ``set_manual_notch_width``
+        and ``[notch] width_values`` without declaring the polled field."""
+        from rigplane.rig_loader import load_rig
+        from rigplane.runtime.radio import CoreRadio
+        from rigplane.web.runtime_helpers import projected_receiver_control_tags
+
+        for rig in ("ic9700", "ic705"):
+            config = load_rig(_RIGS_DIR / f"{rig}.toml")
+            radio = CoreRadio("127.0.0.1", profile=config.to_profile())
+            assert radio.profile.supports_command("set_manual_notch_width")
+            assert radio.profile.notch_width_values
+            assert "manual_notch_width" not in projected_receiver_control_tags(radio)
+
     @pytest.mark.asyncio
     async def test_info_and_capabilities_serve_the_declared_tags(self):
         from rigplane.core.state_pipeline_contracts import FieldPath
@@ -1123,6 +1147,8 @@ class TestReceiverDeclaredControlTags:
                 "preamp_sub",
                 "agc_time_constant",
                 "agc_time_constant_sub",
+                "manual_notch_width",
+                "manual_notch_width_sub",
             }
         )
         undeclared = {
@@ -1132,6 +1158,8 @@ class TestReceiverDeclaredControlTags:
             FieldPath.parse("receiver.sub.operator_controls.preamp"),
             FieldPath.parse("receiver.main.operator_controls.agc_time_constant"),
             FieldPath.parse("receiver.sub.operator_controls.agc_time_constant"),
+            FieldPath.parse("receiver.main.operator_controls.manual_notch_width"),
+            FieldPath.parse("receiver.sub.operator_controls.manual_notch_width"),
         }
         stripped = _make_radio("IC-7610")
         acquisition = stripped.profile.state_acquisition

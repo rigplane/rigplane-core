@@ -863,12 +863,14 @@ function deriveFilterPassband(
  * — family enumeration is explicit and CLOSED (filter shape / IF-shift / PBT
  * are family 4, `deriveFilterPassband` above; never duplicated here).
  *
- * Evidence gate (N3): each field's structural gate mirrors `toDspProps`'/
- * `toAgcProps`' OWN gate verbatim — `hasCap(caps, 'nr'|'nb'|'notch'|'agc')`,
- * or (for `nbDepth`/`nbWidth`) the presence of a `controls.nb_depth` range,
- * exactly `toDspProps`' own `hasNbDepth`/`hasNbWidth` (`hasNbWidth` borrows
- * `hasNbDepth`'s signal verbatim, same as that function does). The group
- * itself emits only when at least one of these signals is positive.
+ * Evidence gate (N3): each field's structural gate is its capability,
+ * `hasCap(caps, 'nr'|'nb'|'notch'|'agc')`, or (for `nbDepth`/`nbWidth`) the
+ * presence of a `controls.nb_depth` range, the signal `toDspProps`' own
+ * `hasNbDepth`/`hasNbWidth` read (`hasNbWidth` borrows `hasNbDepth`'s signal
+ * verbatim, same as that function does). `manualNotchWidth` and
+ * `agcTimeConstant` also need their receiver's declared-field tag (below).
+ * The group itself emits only when at least one of those four capabilities
+ * or the range is present.
  */
 function deriveDsp(
   state: ServerState | null, caps: Capabilities | null,
@@ -949,8 +951,12 @@ function deriveDsp(
     // per-receiver rationale — same pattern as manualNotchWidth below.
     notchFreq: txAuxField(hasNotchCap, notchFreqObserved, notchFreqValue),
     ...(notchFreqDomain !== null ? { notchFreqDomain } : {}),
+    // MOR-2726: `notch` alone is not proof of a notch-width control — the
+    // FTX-1 has a manual notch but no width. Same declared-field gate as
+    // `agcTimeConstant` below.
     manualNotchWidth: txAuxField(
-      hasNotchCap, topFieldAvailable(state, `${base}manualNotchWidth`), numOrUndef(rx?.manualNotchWidth),
+      hasNotchCap && hasCap(caps, onSub ? 'manual_notch_width_sub' : 'manual_notch_width'),
+      topFieldAvailable(state, `${base}manualNotchWidth`), numOrUndef(rx?.manualNotchWidth),
     ),
     agcMode: {
       ...txAuxField(hasAgcCap, agcReadable, agcProjection.mode),

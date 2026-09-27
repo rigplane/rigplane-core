@@ -697,6 +697,14 @@ _RECEIVER_CONTROL_TAG_PATHS: tuple[tuple[str, FieldPath], ...] = (
         "agc_time_constant_sub",
         FieldPath.parse("receiver.sub.operator_controls.agc_time_constant"),
     ),
+    (
+        "manual_notch_width",
+        FieldPath.parse("receiver.main.operator_controls.manual_notch_width"),
+    ),
+    (
+        "manual_notch_width_sub",
+        FieldPath.parse("receiver.sub.operator_controls.manual_notch_width"),
+    ),
 )
 
 
