@@ -1054,6 +1054,148 @@ const LCD_DIRECTION_FIXTURES: readonly Fixture[] = [
 ];
 
 /**
+ * MOR-2676 — the minimum a radio can declare. No capability tags at all, one
+ * receiver, one unslotted VFO, one mode, one filter, no scopes, no TX bands,
+ * no meter calibration: every optional surface the semantic tree can mount
+ * must render its unsupported/unread shape over exactly this object. The
+ * structural fields (`stateContractVersion`/`providerGeneration`, one
+ * `freqRanges` entry, one mode/filter) stay because the real server always
+ * sends them (`server.py:_serve_capabilities` projects every profile field
+ * unconditionally) — a radio cannot declare less than this.
+ */
+const minimalCaps = (): Capabilities => ({
+  model: 'fixture', scope: false, audio: false, tx: false,
+  stateContractVersion: 1, providerGeneration: 1,
+  capabilities: [],
+  receivers: 1, vfoScheme: 'single',
+  freqRanges: [{ start: 1800000, end: 54000000, label: 'HF' }],
+  modes: ['USB'], filters: ['FIL1'],
+  antennas: 1,
+  attValues: [0], preValues: [0], agcModes: [],
+  audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
+  webrtc: { available: false, enabled: false },
+  txBands: [],
+  scopeSource: null, audioFftAvailable: false,
+} as unknown as Capabilities);
+
+/**
+ * MOR-2676 — every shipped face the placeholder guard (MOR-2651 part 2)
+ * must be able to reach in this harness. `page` is the fixtures-server
+ * entry that mounts the face; `skin` selects the entry inside
+ * `skin-witness.ts`; `layout` selects the mounted component inside
+ * `fixtures/index.html`. `caps` is the face's healthy capability shape (the
+ * all-unread state pairs it with `state: null` exactly like
+ * `connection-loss-state-null` does for the cockpit).
+ */
+export type HarnessReachWitnessSkin =
+  | 'lcd-cockpit' | 'lcd-scope' | 'flagship-probe' | 'dual-sdr-face' | 'desktop-v2';
+
+export interface HarnessReachFace {
+  readonly face: string;
+  readonly page: 'index.html' | 'mobile-witness.html' | 'skin-witness.html';
+  readonly skin?: HarnessReachWitnessSkin;
+  readonly layout?: Fixture['layout'];
+  readonly caps: () => Capabilities;
+  /**
+   * An existing fixture id that already IS this face's all-unread state
+   * (full caps, no reading) — `connection-loss-state-null` and its
+   * `--reference` twin predate MOR-2676, so they are reused rather than
+   * duplicated. Absent ⇒ a `<face>--all-unread` fixture is generated below.
+   */
+  readonly reuseAllUnread?: string;
+}
+
+const HARNESS_REACH_FACES: readonly HarnessReachFace[] = [
+  {
+    face: 'dual-receiver-cockpit', page: 'index.html', layout: 'cockpit',
+    caps: mainSubCaps, reuseAllUnread: 'connection-loss-state-null',
+  },
+  {
+    face: 'reference-twins', page: 'index.html', layout: 'reference',
+    caps: mainSubCaps, reuseAllUnread: 'connection-loss-state-null--reference',
+  },
+  { face: 'peer-split', page: 'index.html', layout: 'peer-split', caps: abSharedCaps },
+  { face: 'unified-instrument', page: 'index.html', layout: 'unified-instrument', caps: mainSubCaps },
+  { face: 'panadapter-first', page: 'index.html', layout: 'panadapter-first', caps: mainSubCaps },
+  { face: 'mobile', page: 'mobile-witness.html', caps: mainSubCaps },
+  { face: 'lcd-cockpit', page: 'skin-witness.html', skin: 'lcd-cockpit', caps: mainSubCaps },
+  { face: 'lcd-scope', page: 'skin-witness.html', skin: 'lcd-scope', caps: mainSubCaps },
+  { face: 'flagship-probe', page: 'skin-witness.html', skin: 'flagship-probe', caps: mainSubCaps },
+  { face: 'dual-sdr-face', page: 'skin-witness.html', skin: 'dual-sdr-face', caps: mainSubCaps },
+  { face: 'desktop-v2', page: 'skin-witness.html', skin: 'desktop-v2', caps: mainSubCaps },
+];
+
+/**
+ * MOR-2676 — the state axis every face above must survive, as fixture ids:
+ *
+ *  - `all-unread` — full capabilities, no reading at all (`state: null`,
+ *    the same reconnect-window state `connection-loss-state-null` already
+ *    means for the cockpit/reference layouts, extended to every face);
+ *  - `all-unsupported` — `minimalCaps` with no reading;
+ *  - `all-unsupported--reading` — `minimalCaps` over the minimal reading
+ *    (`singleState`, one receiver, one VFO, one mode, one filter).
+ *
+ * No `expect` pipeline and no `lcd` metadata: these fixtures exist so a page
+ * LOADS over the real adapters (the guard reads rendered output); the
+ * behavior-assertion layer stays owned by the fixtures that pin it.
+ */
+const harnessReachFixture = (face: HarnessReachFace): readonly Fixture[] => {
+  const states: readonly (readonly [suffix: string, what: string,
+  state: () => ServerState | null, caps: () => Capabilities, txSnapshot: TxSnapshot])[] = [
+    [
+      'all-unread',
+      'full capabilities, no reading (the reconnect window; the same state '
+        + 'connection-loss-state-null means on the cockpit/reference layouts).',
+      () => null, face.caps, tx({ fresh: false, radioTx: 'unknown' }),
+    ],
+    [
+      'all-unsupported',
+      'the minimum a radio can declare (minimalCaps), no reading at all.',
+      () => null, minimalCaps, tx({}),
+    ],
+    [
+      'all-unsupported--reading',
+      'the minimum a radio can declare (minimalCaps) over the minimal reading '
+        + '(1/single: one receiver, one unslotted VFO).',
+      singleState, minimalCaps, tx({}),
+    ],
+  ];
+  return states.map(([suffix, what, state, caps, txSnapshot]) => ({
+    id: `${face.face}--${suffix}`,
+    what: `MOR-2676 ${face.face} — ${what}`,
+    state, caps, tx: txSnapshot,
+    layout: face.layout,
+  }));
+};
+
+/** The load table the smoke test (`tests/e2e/harness-reach/`) drives. */
+export interface HarnessReachFaceLoad {
+  readonly face: string;
+  readonly page: HarnessReachFace['page'];
+  readonly skin?: HarnessReachWitnessSkin;
+  readonly allUnread: string;
+  readonly allUnsupported: string;
+  readonly allUnsupportedReading: string;
+}
+
+export const HARNESS_REACH: readonly HarnessReachFaceLoad[] = HARNESS_REACH_FACES.map(
+  (face) => ({
+    face: face.face,
+    page: face.page,
+    skin: face.skin,
+    allUnread: face.reuseAllUnread ?? `${face.face}--all-unread`,
+    allUnsupported: `${face.face}--all-unsupported`,
+    allUnsupportedReading: `${face.face}--all-unsupported--reading`,
+  }),
+);
+
+const HARNESS_REACH_FIXTURES: readonly Fixture[] = HARNESS_REACH_FACES.flatMap((face) => (
+  face.reuseAllUnread
+    ? harnessReachFixture(face).filter((f) => f.id !== `${face.face}--all-unread`)
+    : harnessReachFixture(face)
+));
+
+/**
  * The full MOR-1085 grid: every `CORE_FIXTURES` (dual-receiver-cockpit)
  * entry, plus its reference-layout twin — except `tx-adjacent-alerts`, whose
  * whole point is the cockpit's OWN zone-containment acceptance gate (b) and
@@ -1071,6 +1213,7 @@ export const FIXTURES: readonly Fixture[] = [
   ...AUDIO_RUNTIME_FIXTURES,
   ...PEER_SPLIT_FIXTURES,
   ...LCD_DIRECTION_FIXTURES,
+  ...HARNESS_REACH_FIXTURES,
 ];
 
 export const fixtureById = (id: string): Fixture | undefined =>

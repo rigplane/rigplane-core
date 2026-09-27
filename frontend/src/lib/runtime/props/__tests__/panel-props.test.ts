@@ -99,10 +99,10 @@ function makeState(overrides: Record<string, unknown> = {}) {
 }
 
 describe('panel prop field availability', () => {
-  it('defaults RF power to the normalized midpoint without state', () => {
+  it('reports RF power as unread without state (MOR-2658 finishes the deferred A12 rfPower fix)', () => {
     const props = toTxProps(null, { tx: true, capabilities: [] } as any);
 
-    expect(props.rfPower).toBe(0.5);
+    expect(props.rfPower).toBeNaN();
   });
 
   it('defaults RF front-end normalized controls without state', () => {
@@ -1441,9 +1441,15 @@ describe('A12 — batch-B projections do not fabricate defaults (MOR-1409)', () 
     // plausible-looking-but-wrong value for a raw "NaN%" glitch in a file
     // it cannot guard. This mirrors A11's own `toFilterProps.filterWidth`
     // deferral to A12 exactly.
-    it('still fabricates the RF power / mic gain / mon level / drive gain / vox / comp defaults', () => {
+    //
+    // MOR-2658 finished the rfPower member: `toTxProps` now reports NaN
+    // for an unreported `powerLevel`, and TxPanel.svelte (guarded
+    // `rfPowerDisplay`) plus MobileRadioLayout.svelte (finite-guarded
+    // readout and sheet slider) render that sentinel as an empty slot.
+    // The members below stay deferred for a future gate.
+    it('still fabricates the mic gain / mon level / drive gain / vox / comp defaults (rfPower fixed by MOR-2658)', () => {
       const props = toTxProps(null, null);
-      expect(props.rfPower).toBe(0.5);
+      expect(props.rfPower).toBeNaN();
       expect(props.micGain).toBe(128);
       expect(props.monLevel).toBe(128);
       expect(props.driveGain).toBe(128);

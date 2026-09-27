@@ -27,10 +27,11 @@
   // (panel-props.ts no longer fabricates `?? 0.5`). `normalizedPercentDisplay`
   // (primitives/scalar/value-control-core.ts, not an A12 owner) has no NaN guard —
   // `Math.round(Math.max(0, Math.min(1, NaN)) * 100)` is `NaN`, rendering
-  // the literal "NaN%". Guard locally, same shape as FilterPanel.svelte's
-  // `formatWidthDisplay`.
+  // the literal "NaN%". MOR-2668: an unread level renders '' (unlit LCD
+  // segment) in HBarRenderer's reserved `.vc-value` box (MOR-2657), the
+  // `TxAuxScalarHost.formatValue` shape — never a dash, never "NaN".
   function formatAfLevelDisplay(v: number): string {
-    return Number.isFinite(v) ? normalizedPercentDisplay(v) : '--- %';
+    return Number.isFinite(v) ? normalizedPercentDisplay(v) : '';
   }
 </script>
 

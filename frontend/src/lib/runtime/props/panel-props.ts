@@ -873,7 +873,10 @@ export function toTxProps(
   const driveGainAvailable = topFieldAvailable(state, 'driveGain');
   return {
     txActive: state?.ptt ?? false,
-    rfPower: state?.powerLevel ?? 0.5,
+    // MOR-2658: finishes the deferred A12 rfPower fix — an unreported
+    // level is `NaN` (this file's non-fabricating sentinel), never the
+    // plausible-looking 0.5 the TxPanel/mobile consumers printed as 50%.
+    rfPower: state?.powerLevel ?? Number.NaN,
     micGain: state?.micGain ?? 128,
     atuActive: (state?.tunerStatus ?? 0) > 0,
     atuTuning: (state?.tunerStatus ?? 0) === 2,

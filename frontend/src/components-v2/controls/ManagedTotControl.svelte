@@ -53,8 +53,10 @@
 
 <div class="managed-tot-control" data-testid="managed-tot-control">
   <div class="managed-tot-readout">
-    <span data-testid="managed-tot-current">
-      LIMIT {txState.fresh ? (txState.configuredSeconds === null ? 'OFF' : `${txState.configuredSeconds}s`) : '---'}
+    <span class="tot-readout" data-testid="managed-tot-current">
+      <span class="tot-live">
+        LIMIT {#if txState.fresh}{txState.configuredSeconds === null ? 'OFF' : `${txState.configuredSeconds}s`}{/if}
+      </span>
     </span>
     {#if txState.remainingMs !== null}
       <span data-testid="managed-tot-countdown">REMAINING {Math.ceil(txState.remainingMs / 1000)}s</span>
@@ -111,6 +113,24 @@
     color: var(--v2-text-primary, #e5e7eb);
     font-size: 10px;
     font-weight: 700;
+  }
+
+  /* MOR-2674 (owner rule, 2026-09-26): a stale TX snapshot is unread — the
+     LIMIT label stays, the value goes blank (unlit LCD segment), never a
+     dash run. The reservation is a minimum on the value element itself,
+     derived from the formatter's widest of 'OFF' and an integer seconds
+     value of up to four digits ('LIMIT 9999s' → 11ch in Roboto Mono), so
+     the first reading cannot move anything. A wider legal value (an
+     API-configured 5-digit seconds, or a fraction) grows the box instead
+     of overlapping the REMAINING span. */
+  .managed-tot-readout .tot-readout {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .managed-tot-readout .tot-live {
+    display: inline-block;
+    min-inline-size: 11ch;
+    white-space: nowrap;
   }
 
   .managed-tot-editor label {

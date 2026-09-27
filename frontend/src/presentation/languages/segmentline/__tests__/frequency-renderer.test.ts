@@ -114,12 +114,16 @@ describe('leading MHz zeros shift off, matching splitFrequencyToDigits()', () =>
 });
 
 describe('an unobserved frequency stays unobserved', () => {
-  it('renders a null frequency as an explicit unknown, never as 0 Hz', () => {
+  it('renders a null frequency as unlit, never as 0 Hz, never a dash run', () => {
     const r = render({ frequencyHz: null });
     expect(r.unknown).toBe(true);
     expect(r.groups).toEqual([]);
     expect(r.widthPx).toBe(0);
+    // MOR-2674 (owner rule, 2026-09-26): unlit digits, never a dash run —
+    // the same treatment fieldline/studioline got in MOR-2654.
+    expect(r.text).toBe('');
     expect(r.text).not.toMatch(/0/);
+    expect(r.text).not.toContain('-');
   });
 
   it('renders a missing frequency field the same way — absence is not zero', () => {

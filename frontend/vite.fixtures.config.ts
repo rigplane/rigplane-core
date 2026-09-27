@@ -92,13 +92,30 @@ function fixtureStubs(): Plugin {
  * "oh, that's just the companion". Answering with 204 No Content: `.ok` is
  * true so both call sites take their normal no-op path, and there is no body
  * to keep in sync with `LocalExtensionManifest`'s shape as it evolves. Every
- * OTHER route keeps the strict default 404 — this is a two-route allowlist,
- * not a tolerance policy.
+ * OTHER route keeps the strict default 404 — this is an explicit route
+ * allowlist, not a tolerance policy.
+ *
+ * MOR-2676 adds the three band-plan GET routes by the same reasoning, for
+ * the same gate: `skin-witness.ts` mounts the full desktop shell and the
+ * flagship probe, whose `SpectrumPanel`/`SpectrumToolbar`/`BandPlanOverlay`
+ * fetch `/api/v1/band-plan/{segments,layers,config}` on mount over a
+ * backend only a real server serves. Their call sites already treat a
+ * missing backend as a normal silent condition (`if (resp.ok)` guards and
+ * try/catch fallbacks to local data), but the browser still logs the 404,
+ * and the MOR-2676 smoke test fails on any console error — for faces that
+ * have nothing to do with the band plan. 204 keeps those paths honest:
+ * `resp.ok` is true, the empty body falls into the existing `?? []`
+ * defaults (or the outer catch for the `.json()` parse), and no console
+ * entry is written. POST `/api/v1/band-plan/config` (region changes) stays
+ * unstubbed: no witness page can issue it without a click.
  */
 function fixtureCompanionProbeStubs(): Plugin {
   const STUBBED_COMPANION_ROUTES: ReadonlySet<string> = new Set([
     'GET /api/local/v1/ui/manifest',
     'PUT /api/local/v1/rc28/tuning-step',
+    'GET /api/v1/band-plan/segments',
+    'GET /api/v1/band-plan/layers',
+    'GET /api/v1/band-plan/config',
   ]);
   return {
     name: 'mor-1430-fixture-companion-probe-stubs',

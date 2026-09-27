@@ -337,3 +337,129 @@ describe('MobileRadioLayout pending-field boundaries (MOR-1409 A13a)', () => {
     expect(root.textContent ?? '').not.toContain('NaN');
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// Phone TX power and SWR (MOR-2658): unread is empty in a reserved slot,
+// never '—', and never a unit ('W', 'SWR') without its number.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe('MobileRadioLayout unread TX power and SWR (MOR-2658)', () => {
+  function openTxChip(root: HTMLElement): void {
+    const txChip = Array.from(root.querySelectorAll<HTMLButtonElement>('button'))
+      .find((b) => b.textContent?.trim() === 'TX');
+    expect(txChip, 'TX chip is present when hasTx=true').toBeDefined();
+    txChip!.click();
+    flushSync();
+  }
+
+  // Kills: the '—' fallback on the phone TX power readout. A radio whose
+  // powerLevel field is structurally unavailable shows an empty reserved
+  // box, not a dash.
+  // NOTE: a connected radio with NO fieldStatus entry reads as available
+  // (the legacy no-entry fallback in field-status.ts). Before MOR-2658
+  // that branch rendered toTxProps' batch-B 0.5 stand-in (an explicit A12
+  // non-fix) as "50W", so only the unavailable branch below was pinned;
+  // the source now reports NaN and the connected-but-unobserved branch
+  // has its own pin next.
+  it('renders a structurally-unavailable TX power as an empty reserved slot, never a dash', () => {
+    radioStore.current = {
+      active: 'MAIN',
+      main: CONNECTED_RX,
+      fieldStatus: { powerLevel: { observed: false, freshness: 'missing', availability: 'unavailable' } },
+    };
+    const root = mountLayout();
+    openTxChip(root);
+    const power = root.querySelector('.m-tx-power-value')!;
+    expect(power).not.toBeNull();
+    expect(power.textContent).toBe('');
+    expect(root.textContent ?? '').not.toContain('—');
+  });
+
+  // Kills: a fabricated "50W" for a connected-but-unobserved rig — with no
+  // fieldStatus entry the legacy no-entry fallback reads as available, so
+  // the old `?? 0.5` arrived as a reading and printed "50W". toTxProps now
+  // reports NaN and the readout stays empty (MOR-2658).
+  it('renders a connected-but-unobserved TX power as an empty slot, never 50W', () => {
+    radioStore.current = { active: 'MAIN', main: CONNECTED_RX };
+    const root = mountLayout();
+    openTxChip(root);
+    expect(root.querySelector('.m-tx-power-value')?.textContent).toBe('');
+  });
+
+  // Kills: a guard so broad it hides a real reading — powerLevel 0.5 is a
+  // genuine report and must still render 50W.
+  it('renders a known TX power exactly as before', () => {
+    radioStore.current = { active: 'MAIN', main: CONNECTED_RX, powerLevel: 0.5 };
+    const root = mountLayout();
+    openTxChip(root);
+    expect(root.querySelector('.m-tx-power-value')?.textContent).toBe('50W');
+  });
+
+  // Kills: the power sheet slider printing "NaN%" for an unread rig —
+  // `normalizedPercentDisplay(NaN)` is the literal "NaN%", so the sheet
+  // needs the same finite guard TxPanel's `rfPowerDisplay` carries.
+  // BottomSheet/ValueControl are stubbed in this file, so the pin is on
+  // the exact display prop the sheet passes; the unknown-path rendering
+  // itself ('' text, no fill, no position) is pinned behaviorally through
+  // the same ValueControl construct in TxPanel.isolated.test.ts (MOR-2658).
+  it('passes an unread-safe display to the power sheet slider', () => {
+    const sheet = mobileLayoutSource.slice(mobileLayoutSource.indexOf('POWER MODAL'));
+    expect(sheet.match(/displayFn=\{([^}]*)\}/)?.[1]).toBe('formatRfPowerDisplay');
+  });
+
+  // Kills: `swr > 0` treating a real reading of 0 as absent — an unread SWR
+  // is Number.NaN from toMeterProps, never the number 0, so 0 must render.
+  // The SWR line shows only while transmitting (managedTxRf === 'on').
+  it('renders a real SWR reading of 0 while transmitting, and stays empty when unread', () => {
+    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
+    radioStore.current = {
+      active: 'MAIN', main: CONNECTED_RX, ptt: true,
+      powerMeter: 120, swrMeter: 0, alcMeter: 40,
+    };
+    const read = mountLayout();
+    openTxChip(read);
+    expect(read.querySelector('.m-tx-swr-value')?.textContent).toBe('SWR 0.0');
+    if (instance) unmount(instance);
+    instance = null;
+    if (host) host.remove();
+
+    radioStore.current = { active: 'MAIN', main: CONNECTED_RX, ptt: true };
+    const unread = mountLayout();
+    openTxChip(unread);
+    // MOR-2658: no unit without its number — the slot stays reserved but the
+    // 'SWR' word renders only with its reading.
+    expect(unread.querySelector('.m-tx-swr-value')?.textContent).toBe('');
+    expect(unread.textContent ?? '').not.toContain('—');
+  });
+
+  // Kills: a missing reserved box — the power and SWR slots keep their width
+  // for unread AND each known value, sized for the widest text ('100W').
+  it('reserves the TX power and SWR slots structurally', () => {
+    expect(mobileLayoutSource).toMatch(/\.m-tx-power-value \{[^}]*min-width:/);
+    expect(mobileLayoutSource).toMatch(/\.m-tx-swr-value \{[^}]*min-width:/);
+  });
+
+  // Kills: an SWR slot narrower than its widest text. swrMeter is raw
+  // 0-255 (radio_state.py), so the slot's `(swr / 10).toFixed(1)` maxes
+  // out at "SWR 25.5" (8 chars) — the reservation must cover exactly that
+  // (MOR-2658).
+  it('sizes the SWR slot to its widest text', () => {
+    const widest = `SWR ${(255 / 10).toFixed(1)}`;
+    expect(widest).toBe('SWR 25.5');
+    const reserved = mobileLayoutSource.match(/\.m-tx-swr-value \{[^}]*min-width: (\d+)ch;/)?.[1];
+    expect(reserved).toBe(String(widest.length));
+  });
+
+  // Kills: a widest-text claim the slot never actually renders — a rig
+  // reporting the raw maximum must show that exact text while transmitting.
+  it('renders the widest SWR text the slot can hold', () => {
+    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
+    radioStore.current = {
+      active: 'MAIN', main: CONNECTED_RX, ptt: true,
+      powerMeter: 255, swrMeter: 255, alcMeter: 40,
+    };
+    const root = mountLayout();
+    openTxChip(root);
+    expect(root.querySelector('.m-tx-swr-value')?.textContent).toBe('SWR 25.5');
+  });
+});
