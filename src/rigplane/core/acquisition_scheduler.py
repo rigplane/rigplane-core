@@ -1072,6 +1072,7 @@ class AcquisitionScheduler:
         now: float | None = None,
         tx_active: bool = False,
         observed_active: str | None = None,
+        availability: Mapping[FieldPath, bool | None] = _NO_RESOLVED_AVAILABILITY,
     ) -> tuple[AcquisitionRequest, ...]:
         """Queue and return policy-cadence poll requests that are due.
 
@@ -1083,6 +1084,17 @@ class AcquisitionScheduler:
         fresh cadence interval from the TX-start moment. Callers derive
         ``tx_active`` from their own observed PTT state; this method has no
         opinion on where that comes from.
+
+        ``availability`` carries what :func:`resolve_available_when` made of
+        each conditional field's declared ``available_when`` clauses
+        (MOR-2748): a cadence group whose paths all resolve ``False`` is
+        skipped exactly like the ``tx_only`` gate above — no query is sent
+        and the cadence clock is untouched, so the group is due the moment
+        the clause set holds again. A ``None`` resolution (a clause source
+        unobserved) and any path absent from the map keep their previous
+        membership; a group with at least one available path still
+        dispatches. :meth:`StateFreshnessService.tick` recomputes the map
+        against the current snapshot on every pass.
 
         ``observed_active`` is the currently observed value of
         ``global.slow_state.active`` (MOR-2599): on a profile that polls
@@ -1140,7 +1152,9 @@ class AcquisitionScheduler:
                 ):
                     del self._cadence_by_key[key]
         timestamp = self._clock.now() if now is None else now
-        due = self._due_poll_groups(timestamp, tx_active=tx_active)
+        due = self._due_poll_groups(
+            timestamp, tx_active=tx_active, availability=availability
+        )
         queued: list[AcquisitionRequest] = []
         for key, grouped_paths in due:
             policy = key.policy
@@ -1844,6 +1858,7 @@ class AcquisitionScheduler:
         now: float,
         *,
         tx_active: bool = False,
+        availability: Mapping[FieldPath, bool | None] = _NO_RESOLVED_AVAILABILITY,
     ) -> tuple[tuple[_AcquisitionRequestKey, tuple[FieldPath, ...]], ...]:
         due: list[tuple[_AcquisitionRequestKey, FieldPath]] = []
         for key, paths in self._poll_cadence_groups().items():
@@ -1856,6 +1871,14 @@ class AcquisitionScheduler:
                 # MOR-1485: skip entirely rather than dedupe/defer — no query
                 # sent, no cadence clock touched, so a group due since before
                 # TX started fires on the very next tx_active=True call.
+                continue
+            if all(availability.get(path, True) is False for path in paths):
+                # MOR-2748: every path in this group resolves absent — its
+                # declared ``available_when`` clause set is contradicted by
+                # an observed value. Like the tx_only gate above: no query
+                # sent, no cadence clock touched, so the group fires on the
+                # first computation whose resolution holds again. A ``None``
+                # resolution or a path absent from the map never skips.
                 continue
             state = self._cadence_state_for(key, policy, now=now)
             if state.next_due_monotonic <= now:
@@ -2488,7 +2511,8 @@ class StateFreshnessService:
         queues the reconciliations that ageing produced, and calls
         :meth:`AcquisitionScheduler.due_requests` (when a scheduler was
         wired) with the transmit fact :func:`derive_tx_active` reads from
-        the same store.
+        the same store plus the :func:`resolve_available_when` resolution
+        against the same snapshot (MOR-2748).
 
         Invariant: ``now`` (explicit or defaulted) must come from the same
         monotonic domain as ``self._next_prime_monotonic`` — callers that
@@ -2511,6 +2535,12 @@ class StateFreshnessService:
                 now=timestamp,
                 tx_active=self._tx_active(),
                 observed_active=derive_active_receiver_value(self._store),
+                # MOR-2748: recomputed against the current snapshot every
+                # pass; a group whose paths all resolve False is skipped,
+                # and fires again the first pass the declaration holds.
+                availability=resolve_available_when(
+                    scheduler._profile, self._store.snapshot()
+                ),
             )
         if (delta.freshness or delta.reconciliation_requests) and self._on_delta:
             self._on_delta(delta)

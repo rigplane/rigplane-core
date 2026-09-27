@@ -5072,10 +5072,18 @@ class _TxActiveSpyScheduler(AcquisitionScheduler):
         self.tx_active_calls: list[bool] = []
 
     def due_requests(
-        self, *, now: float | None = None, tx_active: bool = False
+        self,
+        *,
+        now: float | None = None,
+        tx_active: bool = False,
+        availability: dict[Any, bool | None] | None = None,
     ) -> tuple[Any, ...]:
         self.tx_active_calls.append(tx_active)
-        return super().due_requests(now=now, tx_active=tx_active)
+        if availability is None:
+            return super().due_requests(now=now, tx_active=tx_active)
+        return super().due_requests(
+            now=now, tx_active=tx_active, availability=availability
+        )
 
 
 def _tx_only_profile(path: FieldPath) -> RadioAcquisitionProfile:

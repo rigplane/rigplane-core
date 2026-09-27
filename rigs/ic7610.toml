@@ -406,6 +406,32 @@ cadence_seconds = 1.0
 freshness_ttl_seconds = 4.0
 adaptive_decay = false
 
+# MOR-2748: the IC-7610 Basic Manual ("Selecting the IF filter shape: Set the
+# operating mode to SSB or CW") restricts the DSP IF filter shape read to
+# SSB/CW modes, and the MOR-2733 bench check measured it refused with a bare
+# NG while MAIN was in RTTY and answered in USB. The data variants carry the
+# same mode values with `data_mode` separating them, so the membership list
+# below keeps the data modes covered. cadence/TTL/adaptive match the SETTING
+# class this path resolves to without an override (10.0 s / never / no
+# adaptive decay), so the entry only adds the availability clause.
+[state_acquisition.field_policies."receiver.main.operator_controls.filter_shape"]
+reason = "available_when: the IC-7610 Basic Manual says \"Set the operating mode to SSB or CW\" before selecting the IF filter shape, and the MOR-2733 bench refusal of the 16 56 read in RTTY (bare NG) matches that clause; gated on MAIN's own mode (MOR-2748)"
+cadence_seconds = 10.0
+freshness_ttl_seconds = "never"
+adaptive_decay = false
+available_when = [
+    { field = "receiver.main.active.freq_mode.mode", in = ["USB", "LSB", "CW", "CW-R"] },
+]
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.filter_shape"]
+reason = "available_when: same Basic Manual clause and bench refusal as MAIN, gated on SUB's own mode (MOR-2748); the data variants keep the same mode values with data_mode separating them"
+cadence_seconds = 10.0
+freshness_ttl_seconds = "never"
+adaptive_decay = false
+available_when = [
+    { field = "receiver.sub.active.freq_mode.mode", in = ["USB", "LSB", "CW", "CW-R"] },
+]
+
 # ── Parameterized Capabilities ───────────────────────────────────
 
 [attenuator]
