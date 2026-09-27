@@ -17,7 +17,7 @@
  * count. An unlisted hit fails; a listed entry that no longer occurs also
  * fails, so the fixing PR deletes its own entries in the same change.
  */
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
@@ -142,6 +142,7 @@ for (const face of HARNESS_REACH) {
   test(`face ${face.face}: placeholder tokens match the ratchet`, async ({ page }) => {
     const problems: string[] = [];
     const observed = new Set<string>();
+    const dump: OffenderEntry[] = [];
     for (const cell of cellsFor(face)) {
       const language = cell.language ?? 'default';
       const url = urlFor(face, cell);
@@ -154,7 +155,14 @@ for (const face of HARNESS_REACH) {
       for (const record of records) {
         for (const token of findPlaceholderTokens(record.text, { isTitle: record.isTitle })) {
           const key = entryKey(face.face, cell.state, language, record.locator, token.kind);
-          observed.add(key);
+          if (!observed.has(key)) {
+            observed.add(key);
+            dump.push({
+              face: face.face, state: cell.state, language,
+              locator: record.locator, token: token.kind, ticket: 'TODO',
+              example: record.text,
+            });
+          }
           if (!OFFENDERS.some((o) => entryKey(o.face, o.state, o.language, o.locator, o.token) === key)) {
             problems.push(
               `unlisted offender ${key} — text ${JSON.stringify(record.text)} `
@@ -174,5 +182,17 @@ for (const face of HARNESS_REACH) {
       }
     }
     expect(problems, `${face.face} placeholder ratchet (offenders.json)`).toEqual([]);
+    // Seeding support: with RP_PLACEHOLDER_GUARD_DUMP set to a directory,
+    // every observed (face, state, language, locator, token class) is written
+    // there as an offenders.json-shaped file (ticket left 'TODO') — the exact
+    // input for seeding/re-seeding the ratchet.
+    const dumpDir = process.env.RP_PLACEHOLDER_GUARD_DUMP;
+    if (dumpDir) {
+      mkdirSync(dumpDir, { recursive: true });
+      writeFileSync(
+        join(dumpDir, `${face.face}.json`),
+        `${JSON.stringify(dump, null, 1)}\n`,
+      );
+    }
   });
 }
