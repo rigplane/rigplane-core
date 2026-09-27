@@ -2253,10 +2253,12 @@ def test_ftx1_gates_nothing_on_dual_receive() -> None:
     acquisition = get_radio_profile("FTX-1").state_acquisition
     assert acquisition is not None
 
+    # filter_width is absent from this list since MOR-2803: it carries the
+    # per-receiver NARROW clause, which is not a dual-receive gate (MAIN's
+    # twin carries it too, pinned in tests/test_mor2803_narrow_width.py).
     sub_paths = (
         FieldPath.active("sub", "freq_mode", "freq_hz"),
         FieldPath.active("sub", "freq_mode", "mode"),
-        FieldPath.active("sub", "freq_mode", "filter_width"),
         FieldPath.receiver("sub", "meters", "s_meter"),
         FieldPath.receiver("sub", "operator_controls", "af_level"),
         FieldPath.receiver("sub", "operator_controls", "rf_gain"),
