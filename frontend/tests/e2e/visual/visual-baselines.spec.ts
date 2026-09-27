@@ -157,6 +157,98 @@ test('VFO phone tiles fit on one line and paint no freshness cue', async ({ page
   expect(result.lines.every((count) => count === 1)).toBe(true);
 });
 
+/** MOR-2656 — the phone one-line test on the IC-7300/IC-705 shape (ONE
+ *  receiver, `[vfo] readback = 'selected_unselected'` → the surface's
+ *  `relative` slot kind). The active tile shows the localized ACTIVE word,
+ *  the other tile no word at all. Every shipped catalog's word must fit the
+ *  phone tile on ONE line, and the plaque's reserved width must be IDENTICAL
+ *  in every locale (the reservation measures the widest across ALL catalogs,
+ *  so a locale switch cannot move the layout). Meets the task rule "measure,
+ *  never guess from character counts": this spec mounts the real surface in
+ *  a real browser. */
+test('phone one-tile relative (IC-7300 shape): the active role word fits on one line in every locale', async ({ page }) => {
+  await page.setViewportSize(PHONE);
+  await page.goto('/fixtures/mobile-witness.html?fixture=topology-2-main-sub', { waitUntil: 'load' });
+  await page.waitForSelector('body[data-harness-ready="true"]');
+  await page.evaluate(() => document.fonts.ready);
+  const measured = await page.evaluate(async () => {
+    // Non-literal specifiers, same pattern as the MOR-2662 mount above.
+    const runtimePath = '/@id/svelte';
+    const surfacePath = '/src/semantic/VfoSurface.svelte';
+    const fixturesPath = '/src/semantic/fixtures/topologies';
+    const storePath = '/src/lib/i18n/store.svelte.ts';
+    const { mount, flushSync, unmount } = await import(runtimePath);
+    const { default: VfoSurface } = await import(surfacePath);
+    const { topologyFixtures } = await import(fixturesPath);
+    const { setLocale, _resetLocale } = await import(storePath);
+    const base = topologyFixtures['1/ab'];
+    // IC-7300/IC-705 shape: one receiver (MAIN), relative slots, the
+    // selected one active. `vfoTiles="active"` keeps exactly that tile.
+    const model = {
+      ...base,
+      vfos: [
+        { ...base.vfos[0], slot: { kind: 'relative' as const, role: 'selected' as const },
+          label: 'Selected VFO', isActive: true, isActiveSlot: true },
+        { ...base.vfos[1], slot: { kind: 'relative' as const, role: 'unselected' as const },
+          label: 'Unselected VFO', isActive: false, isActiveSlot: false },
+      ],
+    };
+    const lines = (element: Element) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      return new Set([...range.getClientRects()].map((box) => box.top)).size;
+    };
+    /** Mount one probe. `appearance='semantic'` is the phone's one-tile
+     *  list; `'sdr'` is the desktop deck's receiver-instrument, where the
+     *  plaque's font is 12px with 0.1em tracking. */
+    const probe = (appearance: 'semantic' | 'sdr', locale: 'en-US' | 'ru-RU' | 'ja-JP') => {
+      setLocale(locale);
+      const target = document.createElement('div');
+      target.style.width = '360px';
+      document.body.append(target);
+      const component = mount(VfoSurface, {
+        target,
+        props: { viewModel: model, vfoTiles: 'active', appearance },
+      });
+      flushSync();
+      const surface = target.querySelector<HTMLElement>('[data-testid="vfo-surface"]')!;
+      const surfaceRect = surface.getBoundingClientRect();
+      const active = surface.querySelector<HTMLElement>('.vfo-role')!;
+      const value = {
+        roleText: active.textContent,
+        roleLines: lines(active),
+        surfaceOverflows: surface.scrollWidth > surfaceRect.width,
+        plaqueWidth: getComputedStyle(surface).getPropertyValue('--vfo-role-width'),
+        plaqueBoxWidth: active.getBoundingClientRect().width,
+      };
+      unmount(component);
+      target.remove();
+      return value;
+    };
+    const locales = ['en-US', 'ru-RU', 'ja-JP'] as const;
+    const outcome = {
+      phone: Object.fromEntries(locales.map((locale) => [locale, probe('semantic', locale)])),
+      desktop: Object.fromEntries(locales.map((locale) => [locale, probe('sdr', locale)])),
+    };
+    // Later tests in this file capture screenshots with the default locale.
+    _resetLocale();
+    return outcome;
+  });
+  console.log('MOR-2656 role-plaque geometry:', JSON.stringify(measured));
+  for (const deck of ['phone', 'desktop'] as const) {
+    for (const [locale, value] of Object.entries(measured[deck])) {
+      expect(value.roleLines, `${deck}/${locale}: the active role word on ONE line`).toBe(1);
+      expect(value.surfaceOverflows, `${deck}/${locale}: no horizontal overflow`).toBe(false);
+      expect(value.plaqueBoxWidth, `${deck}/${locale}: the plaque box equals the reserved width`).toBeCloseTo(
+        Number.parseFloat(value.plaqueWidth), 3,
+      );
+    }
+    // The reservation is built from ALL catalogs, so the reserved width is
+    // one constant across locales on each deck.
+    expect(new Set(Object.values(measured[deck]).map((value) => value.plaqueWidth)).size).toBe(1);
+  }
+});
+
 /** MOR-2662 — switching the active VFO swaps the ONE tile's content inside
  *  the same reserved geometry. Real browser layout (jsdom cannot measure), so
  *  the surface is mounted directly the way the "TX lower state clearance"
