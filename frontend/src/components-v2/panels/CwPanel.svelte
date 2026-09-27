@@ -4,6 +4,7 @@
   import { HardwareButton } from '$lib/Button';
   import { ValueControl } from '../controls/value-control';
   import { clamp, rawToPercentDisplay, snapToStep } from '../../primitives/scalar/value-control-core';
+  import { finiteValue, valueText } from '../../primitives/reading-text';
   import { getLocale } from '$lib/i18n';
   import type { PresentationPhase } from '../../primitives/control-feedback/control-feedback-presentation';
   import { createCommittedScalar } from '../../primitives/scalar/committed-scalar.svelte';
@@ -167,10 +168,10 @@
   // empty, not by dashes. The renderers call these with Number.NaN for an
   // unread value; finite values render exactly as before.
   function formatCwPitchDisplay(hz: number): string {
-    return Number.isFinite(hz) ? `${hz} Hz` : '';
+    return valueText(finiteValue(hz), (value) => `${value} Hz`);
   }
   function formatKeySpeedDisplay(wpm: number): string {
-    return Number.isFinite(wpm) ? `${wpm} WPM` : '';
+    return valueText(finiteValue(wpm), (value) => `${value} WPM`);
   }
   let cwPitchFeedback = $derived(getCwPitchControlFeedback());
   let keySpeedFeedback = $derived(getKeySpeedControlFeedback());

@@ -3,6 +3,7 @@
   import { HardwareButton } from '$lib/Button';
   import { ValueControl } from '../controls/value-control';
   import { normalizedPercentDisplay, rawToPercentDisplay } from '../../primitives/scalar/value-control-core';
+  import { finiteValue, valueText } from '../../primitives/reading-text';
   import { txStatusColor } from './tx-utils';
   import {
     deriveTxProps,
@@ -77,14 +78,14 @@
   // and never a '%' without its number. The renderer (HBarRenderer) calls
   // this with Number.NaN for an unread value.
   const rawTxLevelDisplay = (value: number): string =>
-    Number.isFinite(value) ? rawToPercentDisplay(value) : '';
+    valueText(finiteValue(value), rawToPercentDisplay);
   // MOR-2658: a non-finite RF power renders EMPTY in its reserved slot —
   // never the literal `NaN%`. `toTxProps` reports `Number.NaN` when the
   // rig never reported `powerLevel` (missing/absent → `?? Number.NaN`,
   // the deferred A12 rfPower fix); this guard renders that sentinel as
   // the empty slot, and the raw binding claims no slider position for it.
   const rfPowerDisplay = (value: number): string =>
-    Number.isFinite(value) ? normalizedPercentDisplay(value) : '';
+    valueText(finiteValue(value), normalizedPercentDisplay);
   const txLevelPolicy = () => createHBarContinuousScalarPolicy({
     preview: 'optimistic', debounceMs: 50, describeTarget: rawToPercentDisplay,
   });

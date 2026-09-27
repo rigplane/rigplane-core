@@ -2,6 +2,7 @@
   import { HardwareButton } from '$lib/Button';
   import { ValueControl } from '../controls/value-control';
   import { normalizedPercentDisplay } from '../../primitives/scalar/value-control-core';
+  import { finiteValue, valueText } from '../../primitives/reading-text';
   import { deriveRxAudioProps, getRxAudioHandlers } from '$lib/runtime/adapters/audio-adapter';
   import { buildMonitorOptions, formatMonitorStatus } from './audio-utils';
   import { getShortcutHint } from '../layout/shortcut-hints';
@@ -31,7 +32,7 @@
   // segment) in HBarRenderer's reserved `.vc-value` box (MOR-2657), the
   // `TxAuxScalarHost.formatValue` shape — never a dash, never "NaN".
   function formatAfLevelDisplay(v: number): string {
-    return Number.isFinite(v) ? normalizedPercentDisplay(v) : '';
+    return valueText(finiteValue(v), normalizedPercentDisplay);
   }
 </script>
 
