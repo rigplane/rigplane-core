@@ -1,18 +1,22 @@
 <!--
-  AmberMemoryStrip — compact aux-row widget showing 5 memory slots
-  (M1-M5) and the last 3 auto-QSY entries.
+  AmberMemoryStrip — compact aux-row widget showing the last 3 auto-QSY
+  entries.
 
-  Memory slots (M1-M5) are placeholder-only in this first pass — the
-  repo has no frontend memory store yet, so slots render "—". The
-  backend-memory plumbing is tracked as a followup; once it exists,
-  `memoryStore.get(n)` plugs in here without touching the component
-  contract.
+  MOR-2659: the M1-M5 memory cells are NOT drawn. The repo has no
+  frontend memory store (the only "memory store" in the tree is the
+  rig-side store-into-memory command flow in `MemorySurface.svelte`),
+  and what the app does not have is not drawn — an unlit cell would
+  pretend a readout exists. The component keeps its name and mount
+  point; when a per-slot memory store lands, the cells come back with
+  real data.
 
   QSY entries come from `$lib/stores/qsy-history` — a local ring
   buffer that debounces frequency changes into intentional QSYs
   (≥ 500 Hz delta, 1.5s stability). Each entry is a clickable chip
   that fires `onQsy(freqHz, mode)` so the parent can call into
-  `runtime.send('set_freq', ...)`.
+  `runtime.send('set_freq', ...)`. An empty history renders an
+  unlit, EMPTY placeholder in a reserved slot — never a dash
+  (MOR-2659).
 
   Part of #836 / epic #818 LCD aux-row content.
 -->
@@ -31,11 +35,8 @@
     deriveQsyRecent().slice(-3).reverse() as { freqHz: number; mode: string; at: number }[],
   );
 
-  // Memory slots — placeholder until a store lands.
-  const memorySlots = [1, 2, 3, 4, 5];
-
   function formatFreqShort(hz: number): string {
-    if (!hz || hz <= 0) return '—';
+    if (!hz || hz <= 0) return '';
     // Compact: "14.074" for HF, "144.52" for VHF.
     const mhz = hz / 1_000_000;
     return mhz >= 1000
@@ -51,20 +52,10 @@
 </script>
 
 <div class="amber-memory-strip">
-  <div class="section mem-section">
-    <span class="section-tag">MEM</span>
-    {#each memorySlots as slot}
-      <button class="slot slot-empty" disabled title={`Memory slot M${slot} — not wired yet`}>
-        <span class="slot-index">M{slot}</span>
-        <span class="slot-value">—</span>
-      </button>
-    {/each}
-  </div>
-
   <div class="section qsy-section" class:qsy-empty={recentQsy.length === 0}>
     <span class="section-tag">QSY</span>
     {#if recentQsy.length === 0}
-      <span class="qsy-placeholder">—</span>
+      <span class="qsy-placeholder" aria-hidden="true"></span>
     {:else}
       {#each recentQsy as entry (entry.at)}
         <button
@@ -99,10 +90,6 @@
     min-width: 0;
   }
 
-  .mem-section {
-    flex-shrink: 0;
-  }
-
   .qsy-section {
     flex: 1;
     min-width: 0;
@@ -124,6 +111,10 @@
   .qsy-placeholder {
     font-size: 10px;
     color: rgba(26, 16, 0, calc(var(--lcd-alpha-active) * 0.4));
+    /* MOR-2659: the empty placeholder keeps a reserved, unlit slot so the
+       first QSY chip cannot move the layout. */
+    min-inline-size: 6ch;
+    box-sizing: content-box;
   }
 
   .slot {
@@ -141,12 +132,6 @@
     white-space: nowrap;
   }
 
-  .slot:disabled,
-  .slot-empty {
-    cursor: default;
-    opacity: 0.45;
-  }
-
   .slot-qsy {
     border-color: rgba(26, 16, 0, calc(var(--lcd-alpha-active) * 0.4));
   }
@@ -154,13 +139,6 @@
   .slot-qsy:hover {
     border-color: rgba(26, 16, 0, calc(var(--lcd-alpha-active) * 0.65));
     background: rgba(26, 16, 0, var(--lcd-alpha-ghost));
-  }
-
-  .slot-index {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    color: rgba(26, 16, 0, calc(var(--lcd-alpha-active) * 0.6));
   }
 
   .slot-value {
