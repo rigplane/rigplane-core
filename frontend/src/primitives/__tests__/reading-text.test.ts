@@ -73,11 +73,11 @@ const TABLE = [
   },
   {
     name: 'an absent source returns the caller fallback (MOR-2688 S4c)',
-    value: 'USB', read: false, stale: false, absent: true, fallback: 'strict-source',
+    value: 'USB', read: false, stale: false, absent: true, fallback: 'strict-fallback',
   },
   {
     name: 'a present unknown with a fallback never falls back (MOR-2688 S4c)',
-    value: 3600, read: false, stale: false, absent: false, fallback: 'strict-source',
+    value: 3600, read: false, stale: false, absent: false, fallback: 'strict-fallback',
   },
 ] as const;
 
@@ -114,7 +114,9 @@ describe.each(TABLE)('the shared unread table (MOR-2688 S4a/S4c): $name', (row) 
     // S4c: an absent observation returns the caller's other source
     // (`absent`); a present observation never falls back. Red under a
     // mutation of `observationValue` that ignores `absent`.
-    const fallback = 'fallback' in row ? row.fallback : null;
+    const fallback = 'fallback' in row
+      ? (row.fallback as unknown as typeof row.value)
+      : null;
     const withFallback = row.absent ? fallback : expectedValue;
     expect(observationValue(observation, fallback)).toBe(withFallback);
   });
