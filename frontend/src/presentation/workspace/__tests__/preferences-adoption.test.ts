@@ -40,9 +40,8 @@ import {
 
 /** A validated workspace carrying `fields` — the ONLY way one is built here:
  *  the resolution seam consumes an already-validated object and must not
- *  re-validate (that is the store's job, MOR-1077/1079). An already-validated
- *  `WorkspaceV1` is accepted too: the re-read is a no-op for a valid object. */
-function workspace(fields: WorkspaceV1 | Record<string, unknown>): WorkspaceV1 {
+ *  re-validate (that is the store's job, MOR-1077/1079). */
+function workspace(fields: Record<string, unknown>): WorkspaceV1 {
   return readWorkspace({ version: 1, ...fields }).workspace;
 }
 
@@ -51,7 +50,7 @@ function plan(manifest: LayoutManifest, fields: Record<string, unknown> = {}) {
   return resolveSurfacePlan(manifest, workspace(fields)).visible;
 }
 /** Both halves — declaration and visibility — for the MOR-1337 asserts. */
-function resolvePlan(manifest: LayoutManifest, fields: WorkspaceV1 | Record<string, unknown> = {}) {
+function resolvePlan(manifest: LayoutManifest, fields: Record<string, unknown> = {}) {
   return resolveSurfacePlan(manifest, workspace(fields));
 }
 
@@ -276,7 +275,7 @@ describe('MOR-1082 — the surface plan starts from what the manifest declares',
     expect(read.rejections.map((r) => r.reason)).toEqual(
       expect.arrayContaining(['unknown-id', 'malformed']),
     );
-    expect([...resolvePlan(dualReceiverCockpitLayout, read.workspace).visible]).toEqual([
+    expect([...resolveSurfacePlan(dualReceiverCockpitLayout, read.workspace).visible]).toEqual([
       ['primary-vfo', ['vfo']], ['secondary-vfo', ['vfo']], ['global', ['vfo']], ['rx-tx', ['rxTx']],
       // MOR-1336 (S4): the cockpit now declares a tx-aux zone too.
       ['tx-aux', ['txAux']],
