@@ -49,7 +49,7 @@
   import type { DspField, DspViewModel } from './radio-view-model';
   import type { NotchWidthChoice } from '../lib/types/capabilities';
   import { NOTCH_WIDTH_LABELS, formatAgcTime } from '../components-v2/panels/dsp-panel-logic';
-  import { readingText } from '../primitives/reading-text';
+  import { readingText, readingValue } from '../primitives/reading-text';
   import { usable } from '../primitives/control-instruments/control-instrument-behavior';
   export { DSP_TOGGLES, type DspToggleField } from './dsp-instruments';
 
@@ -131,14 +131,16 @@
         || !onNrLattice(domain.max, domain.origin, domain.step)) {
         return unavailable;
       }
-      const projectionUsable = projection.adjustable === true
-        && usable(dsp.nrLevel)
+      // MOR-2704 T1: the text and thumb need a read value, not an operational
+      // field; `usable` decides only whether the slider acts.
+      const shown = projection.adjustable === true
+        && readingValue(dsp.nrLevel) !== null
         && acceptsNrValue(projection.value, domain);
       return {
         ...domain,
-        value: projectionUsable ? projection.value : domain.origin,
-        text: projectionUsable ? String(projection.value) : '',
-        usable: projectionUsable,
+        value: shown ? projection.value : domain.origin,
+        text: shown ? String(projection.value) : '',
+        usable: shown && usable(dsp.nrLevel),
       };
     } catch {
       return unavailable;

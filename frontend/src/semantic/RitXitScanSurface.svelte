@@ -76,7 +76,7 @@
 <script module lang="ts">
   import type { RitXitField, ScanField } from './radio-view-model';
   import { pressedOf } from './pressed-of';
-  import { readingText } from '../primitives/reading-text';
+  import { readingText, readingValue } from '../primitives/reading-text';
   import { usable } from '../primitives/control-instruments/control-instrument-behavior';
 
   /** O2 — v2's own legacy `RitXitPanel` bounds, verbatim. */
@@ -155,13 +155,13 @@
   /** Wrong-VFO guard (S3b) — see file header. */
   let activeKnown = $derived(view.activeReceiver.status === 'known');
   let decodedOffset = $derived.by(() => {
-    if (!offset || !usable(offset) || offset.reading.status !== 'known') return null;
+    const read = readingValue(offset);
+    if (read === null) return null;
     if (ritDomain === undefined) {
-      return Number.isFinite(offset.reading.value)
-        ? { value: offset.reading.value, text: String(offset.reading.value) } : null;
+      return Number.isFinite(read) ? { value: read, text: String(read) } : null;
     }
     if (ritDomain === null) return null;
-    const text = decodeControlDomain(ritDomain, offset.reading.value);
+    const text = decodeControlDomain(ritDomain, read);
     if (text === null) return null;
     const value = Number(text);
     return Number.isFinite(value) ? { value, text } : null;
@@ -278,7 +278,7 @@
             type="button" data-testid="scan-toggle" aria-pressed={pressedOf(sc.scanning)}
             disabled={!scanToggle.available || (!scanningOn && availableScanTypes.length === 0)}
             onclick={() => scanToggle.invoke()}
-          >{scanningOn ? 'STOP' : 'START'}</button>
+          >{readingValue(sc.scanning) === true ? 'STOP' : 'START'}</button>
           {#if scanCapable && availableScanTypes.length > 0}
             <div class="scan-choice-group" data-testid="scan-type-group">
               <span class="row-label">TYPE</span>

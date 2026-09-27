@@ -241,7 +241,7 @@ describe('unread facts render honestly, never fabricated', () => {
 describe('MOR-2704 G1: a KNOWN offset under operational:false fails closed', () => {
   const READ_NOT_OPERATIONAL: Availability = { structural: true, operational: false };
 
-  it('refuses the offset edit and keeps data-observed "false"', () => {
+  it('shows the read offset, refuses the offset edit and keeps data-observed "false"', () => {
     const onRitOffsetChange = vi.fn();
     const onXitOffsetChange = vi.fn();
     const r = render(
@@ -250,13 +250,37 @@ describe('MOR-2704 G1: a KNOWN offset under operational:false fails closed', () 
     );
     expect(r.input()!.disabled).toBe(true);
     expect(r.el('ritxit-offset')!.dataset.observed).toBe('false');
-    expect(r.text('ritxit-offset-value')).toBe('');
+    // MOR-2704 T1 (option A): the read value's text and thumb stay visible.
+    expect(r.el('ritxit-offset-value')!.textContent).toBe('250');
+    expect(r.input()!.valueAsNumber).toBe(250);
     const input = r.input()!;
     input.value = '300';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
     expect(onRitOffsetChange).not.toHaveBeenCalled();
     expect(onXitOffsetChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+});
+
+/* ── MOR-2704 T1 (option A): the START/STOP label follows the scanning
+   reading; the toggle stays on the `usable` gate. ── */
+describe('MOR-2704 T1: a read scanning state keeps its label while the toggle is unavailable', () => {
+  it('labels a read-but-not-operational scan STOP, with the toggle disabled and inert', () => {
+    const onScanStart = vi.fn();
+    const onScanStop = vi.fn();
+    const r = render(
+      withSc({ scanning: knownScan(true, { structural: true, operational: false }) }),
+      { onScanStart, onScanStop },
+    );
+    const toggle = r.el('scan-toggle')!;
+    expect(toggle.textContent).toBe('STOP');
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(toggle.hasAttribute('disabled')).toBe(true);
+    bypassClick(toggle);
+    flushSync();
+    expect(onScanStart).not.toHaveBeenCalled();
+    expect(onScanStop).not.toHaveBeenCalled();
     r.dispose();
   });
 });
