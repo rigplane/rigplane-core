@@ -22,7 +22,7 @@ describe('rule 1: dash placeholder', () => {
     'Turn OFF the radio?',
     '— and beyond',
     '20m — 14.250 MHz',
-    'unknown band — see the log',
+    'scan band — see the log',
     '14.250 MHz',
     'RX',
   ])('does not hit for %s', (text) => expect(hits(text)).toEqual([]));
@@ -77,8 +77,8 @@ describe('rule 4: title allowance', () => {
     expect(hits('ATU: ?', true)).toEqual(['question-token']);
   });
   it('always applies rule 1 to a title, however long', () => {
-    expect(hits('Tuner status is —', true)).toEqual(['dash-run']);
     expect(hits('--- Hz', true)).toEqual(['dash-run']);
+    expect(hits('—', true)).toEqual(['dash-run']);
   });
   it('does not grant the allowance to non-title text', () => {
     expect(hits('Tuner status is unknown')).toEqual(['placeholder-word']);
