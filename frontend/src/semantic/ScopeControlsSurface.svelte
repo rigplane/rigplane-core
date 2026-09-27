@@ -93,14 +93,15 @@
   /** The row's two-key mode choice (CTR/FIX); S-C/S-F live in More only. */
   const QUICK_MODE = MODE_BUTTONS.slice(0, 2);
 
-  export const UNKNOWN_TEXT = '—';
   /** Usable ⇔ the radio HAS it, it is readable NOW, and it was observed. */
   export const usable = (f: ScopeControlsField<unknown>): boolean =>
     f.availability.structural && f.availability.operational && f.reading.status === 'known';
   export const numberOf = (f: ScopeControlsField<number>, fallback: number): number =>
     f.reading.status === 'known' ? f.reading.value : fallback;
+  /** MOR-2653: an unread REF value renders EMPTY in its reserved slot —
+   *  never a placeholder dash. */
   export const textOf = (f: ScopeControlsField<unknown>): string =>
-    f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
+    f.reading.status === 'known' ? String(f.reading.value) : '';
   /** The observed value, or `undefined` when unread — drives a flat key's
    *  `lit` (`undefined` → `null` → drawn unlit with its label, no value). */
   const valueOf = <T>(f: ScopeControlsField<T> | undefined): T | undefined =>
@@ -307,8 +308,8 @@
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('span', -1, 'scope span')} renderer={finiteAppearance.action}
           />{/key}{/key}
-          <output data-testid="scope-span-value">
-            {modeKnown !== undefined && usable(sc.span) ? (SPAN_LABELS[numberOf(sc.span, 3)] ?? UNKNOWN_TEXT) : UNKNOWN_TEXT}
+          <output class="scope-finite-slot" data-testid="scope-span-value">
+            {modeKnown !== undefined && usable(sc.span) ? (SPAN_LABELS[numberOf(sc.span, 3)] ?? '') : ''}
           </output>
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('span', 1, 'scope span')} renderer={finiteAppearance.action}
@@ -322,8 +323,8 @@
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('speed', -1, 'scope speed')} renderer={finiteAppearance.action}
           />{/key}{/key}
-          <output data-testid="scope-speed-value">
-            {usable(sc.speed) ? (SPEED_LABELS[numberOf(sc.speed, 1)] ?? UNKNOWN_TEXT) : UNKNOWN_TEXT}
+          <output class="scope-finite-slot" data-testid="scope-speed-value">
+            {usable(sc.speed) ? (SPEED_LABELS[numberOf(sc.speed, 1)] ?? '') : ''}
           </output>
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('speed', 1, 'scope speed')} renderer={finiteAppearance.action}
@@ -337,7 +338,7 @@
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('refDb', -5, 'scope reference')} renderer={finiteAppearance.action}
           />{/key}{/key}
-          <output data-testid="scope-ref-value">{textOf(sc.refDb)}</output>
+          <output class="scope-finite-value" data-testid="scope-ref-value">{textOf(sc.refDb)}</output>
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('refDb', 5, 'scope reference')} renderer={finiteAppearance.action}
           />{/key}{/key}
@@ -607,6 +608,19 @@
     white-space: nowrap;
   }
 
+  /* MOR-2653: the finite SPAN/SPEED label slots keep their width unread →
+     known — 5ch covers the widest label ('±500k'); an unread value renders
+     EMPTY, never a placeholder dash, and a known value with no label in
+     the table renders EMPTY too, never a dash. Digits are tabular. */
+  .scope-finite-slot {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    min-width: 5ch;
+    font-variant-numeric: tabular-nums;
+  }
+
   .scope-name {
     flex: none;
     padding: 0 3px;
@@ -615,6 +629,18 @@
     letter-spacing: 0.05em;
     white-space: nowrap;
     color: var(--dl-vfo-unlit-text, var(--v2-text-muted, #5a6875));
+  }
+
+  /* MOR-2653: the finite-appearance REF slot keeps its width unread → known.
+     4ch covers the widest rendered value ('-30'); an unread value renders
+     EMPTY, never a placeholder. Digits are tabular. */
+  .scope-finite-value {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    min-width: 4ch;
+    font-variant-numeric: tabular-nums;
   }
 
   .scope-step-key {

@@ -338,6 +338,17 @@ jobs:
             echo "::error::Fixture-harness capture FAILED — blocking since MOR-1386 gate promotion. See the fixture-harness-capture-pr artifact."
           fi
 
+      # MOR-2677 — placeholder-guard part 2: the whole-page placeholder scan
+      # over the MOR-2676 face × state × language matrix, against the token
+      # rule and the offenders.json ratchet. Blocking; gated by the SAME
+      # frontend path filter as the rest of this block, so it runs on
+      # frontend PRs and on main. Runs after the capture step so the
+      # already-provisioned Chromium (installed above) serves it too.
+      - name: Frontend placeholder-guard page scan (MOR-2677)
+        if: needs.classify.outputs.frontend == 'true'
+        working-directory: frontend
+        run: npm run test:e2e:placeholder-guard
+
       - name: Type-check web boundary
         if: needs.classify.outputs.core == 'true' && needs.classify.outputs.frontend == 'true'
         run: uv run mypy --strict src/rigplane/web

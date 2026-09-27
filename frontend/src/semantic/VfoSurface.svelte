@@ -204,6 +204,15 @@
     onToggleDialLock?: () => void;
     operationInput?: VfoOperationProjectionInput;
     operationControls?: Snippet;
+    /**
+     * MOR-2662 (owner ruling 2026-09-26): the PHONE's one-tile presentation.
+     * `'active'` renders only the ACTIVE VFO's tile — the active receiver's
+     * active slot — in this surface's semantic VFO list; switching stays in
+     * the controls that survive it (the receiver choice, swap/equalize, and
+     * the A/B identity selectors for relative slots). Defaults to `'all'`:
+     * every existing caller renders the full list, byte-for-byte as before.
+     */
+    vfoTiles?: 'all' | 'active';
   }
 
   let {
@@ -236,6 +245,7 @@
     onToggleDialLock,
     operationInput,
     operationControls,
+    vfoTiles = 'all',
   }: Props = $props();
 
   /**
@@ -552,6 +562,27 @@
       (indicator) => indicatorReceiver === undefined || indicator.receiver === indicatorReceiver,
     ),
   );
+
+  /**
+   * MOR-2662 — the list this surface's semantic `.vfo-list` renders.
+   * `'active'` (the phone) keeps exactly ONE tile: the active VFO's. The
+   * startup window — no active receiver observed yet, so NO VFO carries
+   * `isActive` — falls back to MAIN's active slot (the same receiver the
+   * phone's own header already defaults to), so the tile's slot stays
+   * reserved and unlit rather than the whole tile vanishing; a receiver
+   * whose slot view was never seen keeps its one unknown-slot position.
+   * Never a second tile in any state.
+   */
+  let listVfos = $derived.by(() => {
+    if (vfoTiles !== 'active') return viewModel.vfos;
+    const active = viewModel.vfos.filter((vfo) => vfo.isActive);
+    if (active.length > 0) return active;
+    const mainActiveSlot = viewModel.vfos.filter(
+      (vfo) => vfo.receiver === 'MAIN' && vfo.isActiveSlot,
+    );
+    if (mainActiveSlot.length > 0) return mainActiveSlot;
+    return viewModel.vfos.filter((vfo) => vfo.receiver === 'MAIN').slice(0, 1);
+  });
 
   /**
    * MOR-2509 slice 2 — the panel screen's chips, projected from the same
@@ -1132,7 +1163,7 @@
     {#if appearance !== 'semantic' && !showVfoList}{@render activeReceiverStatus()}{/if}
     {#if showVfoList}
       <div class="vfo-list" data-testid="vfo-list">
-        {#each viewModel.vfos as vfo, i (vfo.receiver + ':' + i)}{@render vfoTile(vfo, i)}{/each}
+        {#each listVfos as vfo, i (vfo.receiver + ':' + i)}{@render vfoTile(vfo, i)}{/each}
       </div>
       {@render identitySelectors()}
       {#if receiverIndicators.length > 0}
@@ -1166,7 +1197,10 @@
   .vfo-list { display: flex; flex-wrap: wrap; gap: 6px; }
   .receiver-indicators { display: grid; gap: 6px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
   .vfo-tile { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12)); border-radius: 4px; background: var(--v2-bg-panel, rgba(255, 255, 255, 0.03)); }
-  .vfo-tile.is-active { border-color: var(--v2-accent-cyan, #00d4ff); }
+  /* MOR-1260: style, not colour — forced-colors keeps the shape. The mark is
+     an outline drawn INSIDE the tile, so the border keeps its 1px geometry and
+     a MAIN↔SUB switch never moves the layout. */
+  .vfo-tile.is-active { border-color: var(--v2-accent-cyan, #00d4ff); outline-width: 3px; outline-style: double; outline-color: var(--v2-accent-cyan, #00d4ff); outline-offset: -3px; }
   .vfo-role, .vfo-role-measure { font-weight: 700; font-variant-numeric: tabular-nums; }
   .vfo-role { color: var(--v2-text-secondary, rgba(255, 255, 255, 0.8)); min-width: var(--vfo-role-width); white-space: nowrap; }
   .vfo-role-measure { position: absolute; visibility: hidden; pointer-events: none; white-space: nowrap; }

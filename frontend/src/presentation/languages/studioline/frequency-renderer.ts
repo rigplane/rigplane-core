@@ -18,7 +18,8 @@ export const HERO_SIZE_PX = 56;
 export const HZ_GROUP_SIZE_PX = 28;
 /** The tuning affordance is an underline, never a weight change — 200 would reflow. */
 export const UNDERLINE_THICKNESS_PX = 2;
-const UNKNOWN_TEXT = '—';
+/** An unread frequency is unlit: no text at all in the reserved digit slots. */
+const UNKNOWN_TEXT = '';
 const GROUP_NAMES = ['mhz', 'khz', 'hz'] as const;
 
 export type FrequencyGroupName = (typeof GROUP_NAMES)[number];

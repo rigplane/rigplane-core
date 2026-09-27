@@ -143,8 +143,10 @@ describe('CenterstageDisplay', () => {
 
     expect(hero.getAttribute('data-receiver')).toBe('unknown');
     expect(hero.getAttribute('data-state')).toBe('unknown');
-    expect(hero.textContent).toContain('—.———.———');
+    // MOR-2650: the unread hero frequency is unlit digit cells — never the
+    // old '—.———.———' glyph and never MAIN's digits.
     expect(hero.textContent).not.toContain('14.250.000');
+    expect(hero.textContent).not.toMatch(/—|–|-/);
     expect(target.querySelector('[data-testid="centerstage-secondary"]')?.textContent).toContain('14.195.500');
     expect(target.querySelector('[data-testid="centerstage-meter"]')?.getAttribute('data-state')).toBe('unknown');
     expect(target.querySelector('[data-testid="lcd-af-fft"]')?.getAttribute('data-fft-mode')).toBe('safe-empty');
@@ -197,7 +199,10 @@ describe('CenterstageDisplay', () => {
     });
 
     expect(target.querySelector('[data-orbit-field="MODE"]')?.getAttribute('data-state')).toBe('unknown');
-    expect(target.querySelector('[data-orbit-field="MODE"]')?.textContent).toContain('?');
+    // MOR-2650: an unread orbit slot is unlit and empty in its reserved box —
+    // the label stays, the value draws nothing, never '?'.
+    expect(target.querySelector('[data-orbit-field="MODE"]')?.textContent).toContain('MODE');
+    expect(target.querySelector('[data-orbit-field="MODE"] .orbit-value')?.textContent).toBe('');
     expect(getComputedStyle(target.querySelector('[data-orbit-field="FILT"]')!).visibility).toBe('hidden');
     expect(getComputedStyle(target.querySelector('[data-orbit-field="AGC"]')!).visibility).toBe('hidden');
     expect(getComputedStyle(target.querySelector('[data-testid="centerstage-hero"]')!).visibility).toBe('hidden');

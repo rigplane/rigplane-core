@@ -292,7 +292,11 @@
   .hero-facts, .sub-facts { display: flex; align-items: center; gap: 6px; }
   .fact {
     box-sizing: border-box;
-    min-width: 58px;
+    /* MOR-2650: the fact slot keeps its reserved box (min-width over the
+       widest text it can render — mode `DATA-FM-N`, 8 glyphs + letterspacing
+       → 10ch floor, never below the old 58px). Unread draws nothing; a first
+       reading lights the slot without moving its neighbours. */
+    min-width: max(58px, 10ch);
     padding: 3px 7px;
     border: 1.25px solid currentColor;
     border-radius: 2px;
@@ -320,7 +324,7 @@
   .sub-label { padding: 2px 6px; font-size: 11px; }
   .sub-frequency { min-width: 0; }
   .sub-frequency :global(.frequency) { font-size: 34px; }
-  .sub-facts .fact { min-width: 50px; padding: 2px 5px; font-size: 10px; }
+  .sub-facts .fact { min-width: max(50px, 10ch); padding: 2px 5px; font-size: 10px; }
   .sub-offsets { justify-self: end; width: min(100%, 430px); }
   .sub-offsets :global(.offset) { padding-block: 1px; }
   .sub-offsets :global(.offset-value) { font-size: 13px; }

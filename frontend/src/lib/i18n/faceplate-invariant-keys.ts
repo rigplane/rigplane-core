@@ -62,7 +62,6 @@ export const FACEPLATE_INVARIANT_KEYS = [
   'core.vfo.dualWatch.label',
   'core.vfo.state.on',
   'core.vfo.state.off',
-  'core.vfo.state.unknown',
   'core.vfo.txTarget.label',
   'core.vfo.splitDigest.rx',
   'core.vfo.splitDigest.tx',

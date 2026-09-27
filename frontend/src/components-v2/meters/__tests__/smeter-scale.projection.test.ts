@@ -78,8 +78,9 @@ describe('projectSignalMeter', () => {
 
     expect(unknown).toMatchObject({
       motionFraction: null,
-      primaryText: 'S ?',
+      primaryText: '',
       secondaryText: '',
+      accessibleDescription: 'S meter',
       crossoverFraction: 11 / 20,
       scaleMode: 's',
     });
@@ -87,7 +88,8 @@ describe('projectSignalMeter', () => {
     expect(unknown.ticks).toEqual(zero.ticks);
     expect(zero.motionFraction).toBe(11 / 20);
     expect(zero.primaryText).toBe('S9');
-    expect(zero.secondaryText).toBe('\u221273 dBm');
+    expect(zero.secondaryText).toBe('−73 dBm');
+    expect(zero.accessibleDescription).toBe('S meter S9, −73 dBm');
   });
 
   it.each([
@@ -203,28 +205,30 @@ describe('projectSignalMeter', () => {
     expect(projection.accessibleDescription).toContain('\u221212 decibels relative to S9');
   });
 
-  it('never infers units or S geometry for an explicit unknown domain', () => {
+  it('renders a known value with an unknown unit exactly like an unread sample', () => {
     const projection = projectSignalMeter(53, { kind: 'unknown' });
 
     expect(projection).toMatchObject({
       scaleMode: 'none',
       motionFraction: null,
-      primaryText: '53',
-      secondaryText: 'unit unknown',
+      primaryText: '',
+      secondaryText: '',
+      accessibleDescription: 'S meter',
       crossoverFraction: null,
       marks: [],
       ticks: [],
     });
-    expect(projection.accessibleDescription).not.toMatch(/S[0-9]|dBm|raw/);
+    expect(projection).toEqual(projectSignalMeter(null, { kind: 'unknown' }));
   });
 
-  it('does not emit an S-unit placeholder for an unknown sample with explicit unknown domain', () => {
+  it('renders an unread sample as an empty caption for an explicit unknown domain', () => {
     const projection = projectSignalMeter(null, { kind: 'unknown' });
 
     expect(projection).toMatchObject({
-      scaleMode: 'none', motionFraction: null, primaryText: '?',
-      secondaryText: 'unit unknown', crossoverFraction: null, marks: [], ticks: [],
+      scaleMode: 'none', motionFraction: null, primaryText: '',
+      secondaryText: '', accessibleDescription: 'S meter',
+      crossoverFraction: null, marks: [], ticks: [],
     });
-    expect(projection.primaryText).not.toContain('S');
+    expect(projection.primaryText).toBe('');
   });
 });

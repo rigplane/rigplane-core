@@ -64,6 +64,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   getControlRange: vi.fn(() => null),
   getSmeterCalibration: vi.fn(() => null),
   getSmeterRedline: vi.fn(() => null),
+  getScopeSource: vi.fn(() => null),
 }));
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {

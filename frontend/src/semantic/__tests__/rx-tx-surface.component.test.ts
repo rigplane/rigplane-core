@@ -483,6 +483,23 @@ describe('unknown TX target', () => {
       expect(t.dataset.slot).toBe(known.slot.kind === 'slotted' ? known.slot.id : known.slot.kind);
     });
   });
+
+  it('prints no dash and no bare unit when the known target has no frequency', () => {
+    const view = topologyFixtures['1/single'];
+    if (view.txTarget.status !== 'known') throw new Error('fixture precondition');
+    const unread = { ...view, txTarget: { ...view.txTarget, frequencyHz: null } };
+    withSurface(unread, IDLE_RX, () => {
+      const t = target.querySelector('[data-testid="rx-tx-target"]') as HTMLElement;
+      expect(t.textContent).not.toContain('—');
+      expect(t.textContent).not.toMatch(/Hz/);
+      // No extra element: a nested span grew the default-path sequence, and a
+      // min-width on this paragraph shifted the phone-portrait column. The
+      // sentence itself ("TX target: … · ") is wider than the frequency it
+      // stands in for, so the slot does not shrink when the reading arrives.
+      expect(t.querySelector('[data-testid="rx-tx-target-frequency"]')).toBeNull();
+      expect(rxTxSurfaceSource).not.toMatch(/rx-tx-target-frequency/);
+    });
+  });
 });
 
 // ── 5. Accessibility ───────────────────────────────────────────────────────

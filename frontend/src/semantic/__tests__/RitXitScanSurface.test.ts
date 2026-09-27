@@ -19,7 +19,7 @@ import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
 import RitXitScanSurface, {
-  DF_SPANS, OFFSET_MAX, OFFSET_MIN, OFFSET_STEP, RESUME_MODES, SCAN_TYPES, UNKNOWN_TEXT,
+  DF_SPANS, OFFSET_MAX, OFFSET_MIN, OFFSET_STEP, RESUME_MODES, SCAN_TYPES,
 } from '../RitXitScanSurface.svelte';
 import type { RitXitScanInstrumentHandles } from '../RitXitScanInstrumentHost.svelte';
 import RitXitScanInstrumentHostFixture from './fixtures/RitXitScanInstrumentHostFixture.svelte';
@@ -185,11 +185,24 @@ describe('structural presence: absent groups render nothing extra', () => {
 const OFF_AVAIL: Availability = { structural: false, operational: false };
 
 describe('unread facts render honestly, never fabricated', () => {
-  it('shows an unread offset as unknown text with the slider at 0, not a guessed position', () => {
+  it('shows an unread offset as an EMPTY reserved slot with the slider at 0, not a guessed position (MOR-2653)', () => {
     const r = render(withRx({ ritOffset: unread<number>(), xitOffset: unread<number>() }));
-    expect(r.text('ritxit-offset-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('ritxit-offset-value')).toBe('');
+    expect(r.text('rit-offset-value')).toBe('');
+    expect(r.text('xit-offset-value')).toBe('');
     expect(r.input()!.valueAsNumber).toBe(0);
     expect(r.el('ritxit-offset')!.dataset.observed).toBe('false');
+    // Structural geometry pin (jsdom has no layout): 9ch covers the widest
+    // rendered value ('+9999 Hz'), so the slot never moves on a first read.
+    expect(SOURCE).toMatch(/\.ritxit-mode-row output, \.offset output\s*\{[^}]*min-width:\s*9ch/);
+    r.dispose();
+  });
+
+  it('renders a known offset as a signed number WITH its unit, never a unit alone (MOR-2653)', () => {
+    const r = render(withRx({ ritOffset: known(250), xitOffset: known(250) }));
+    expect(r.text('rit-offset-value')).toBe('+250 Hz');
+    expect(r.text('xit-offset-value')).toBe('+250 Hz');
+    expect(r.text('ritxit-offset-value')).toBe('250');
     r.dispose();
   });
 
@@ -463,6 +476,40 @@ describe('scan: per-field ever-reported gate (partial reporter, no capability ta
     expect(r.el('scan-type-value')).not.toBeNull();
     expect(r.el('scan-resume-value')).not.toBeNull();
     r.dispose();
+  });
+});
+
+/* ── MOR-2653: unread scan readouts are EMPTY reserved slots, never
+   placeholder dashes; known values render exactly as before ── */
+
+describe('scan readouts render honestly (MOR-2653)', () => {
+  it('renders every unread scan readout as an empty reserved slot, never a placeholder', () => {
+    const r = render(withSc({
+      scanning: unreadScan<boolean>(), scanType: unreadScan<number>(), scanResumeMode: unreadScan<number>(),
+    }));
+    for (const id of ['scan-status', 'scan-type-value', 'scan-resume-value']) {
+      expect(r.el(id)!.textContent?.trim()).toBe('');
+      expect(r.el(id)!.textContent).not.toContain('—');
+      expect(r.el(id)!.classList.contains('scan-readout')).toBe(true);
+    }
+    r.dispose();
+  });
+
+  it('renders known scan values exactly as before — verbatim wire values', () => {
+    const r = render(withSc({
+      scanning: knownScan(true), scanType: knownScan(0x23), scanResumeMode: knownScan(0xd3),
+    }));
+    expect(r.el('scan-status')!.textContent?.trim()).toBe('true');
+    expect(r.el('scan-type-value')!.textContent?.trim()).toBe('35');
+    expect(r.el('scan-resume-value')!.textContent?.trim()).toBe('211');
+    r.dispose();
+  });
+
+  // Structural geometry pin (jsdom has no layout): the reserved box is the
+  // `scan-readout` rule, and 5ch covers the widest text these readouts can
+  // render ('false'; the type/resume wire values are at most three digits).
+  it('reserves each scan readout slot at 5ch so a first reading cannot move the layout', () => {
+    expect(SOURCE).toMatch(/\.scan-readout\s*\{[^}]*min-width:\s*5ch/);
   });
 });
 

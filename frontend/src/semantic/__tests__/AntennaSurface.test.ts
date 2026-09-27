@@ -24,7 +24,7 @@ import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import {
-  ANTENNA_BLOCKED_LABEL, ANTENNA_PORTS, UNKNOWN_TEXT, antennaSwitchBlocks, tunerIdle,
+  ANTENNA_BLOCKED_LABEL, ANTENNA_PORTS, antennaSwitchBlocks, tunerIdle,
 } from '../AntennaSurface.svelte';
 import AntennaSurface from './fixtures/AntennaInstrumentHostFixture.svelte';
 import { topologyFixtures, withAntenna, withTxAux } from '../fixtures/topologies';
@@ -213,12 +213,16 @@ describe('an unread TX port renders as unknown, never as ANT 1 (CF3)', () => {
     r.dispose();
   });
 
-  // MUTATION KILLED: the same fabrication in the readout instead of the
-  // pressed state — "ANT 1" printed for a port nobody read.
-  it('prints the unknown marker for the port readout, not a port number', () => {
+  // MOR-2652: an unread port prints nothing — an unlit slot, never the dash
+  // the old pin named. The output stays mounted so the row cannot shift.
+  it('prints nothing for an unread port readout, not a port number', () => {
     const r = render(withAnt({ txAntenna: unread<number>(DEGRADED) }), RECEIVING);
-    expect(r.text('port-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('port-value')).toBe('');
+    expect(r.text('port-value')).not.toBe('—');
     expect(r.el('ports')!.dataset.observed).toBe('false');
+    const rule = /\.antenna-value\s*\{([^}]*)\}/.exec(HOST)?.[1] ?? '';
+    expect(rule).toMatch(/min-width:\s*1ch/);
+    expect(r.el('port-value')!.classList.contains('antenna-value')).toBe(true);
     r.dispose();
   });
 
@@ -247,9 +251,10 @@ describe('an unread TX port renders as unknown, never as ANT 1 (CF3)', () => {
 
   // MUTATION KILLED: rendering an unread RX-ANT as `off` — the second half of
   // the same v2 fabrication (v2 reports port 1's RX-ANT for an unread port).
-  it('renders an unread RX-ANT as unknown rather than off', () => {
+  it('renders an unread RX-ANT unlit rather than off', () => {
     const r = render(withAnt({ rxAnt: unread<boolean>(DEGRADED) }), RECEIVING);
-    expect(r.text('rx-toggle')).toContain(UNKNOWN_TEXT);
+    expect(r.text('rx-toggle')).toBe('RX-ANT:');
+    expect(r.text('rx-toggle')).not.toContain('—');
     expect(r.btn('rx-toggle')!.getAttribute('aria-pressed')).toBeNull();
     r.dispose();
   });

@@ -178,7 +178,9 @@ describe('DominantUnifiedDisplay', () => {
 
     expect(target.querySelector('[data-testid="lcd-frequency-MAIN"]')?.getAttribute('data-state')).toBe('unknown');
     expect(target.querySelector('[data-testid="lcd-main-mode"]')?.getAttribute('data-state')).toBe('unknown');
-    expect(target.querySelector('[data-testid="lcd-main-mode"]')?.textContent).toContain('?');
+    // MOR-2650: an unread fact slot is unlit and empty in its reserved box —
+    // never '?'. The fact's own text is exactly empty.
+    expect(target.querySelector('[data-testid="lcd-main-mode"]')?.textContent).toBe('');
     const unsupportedBand = target.querySelector('[data-testid="lcd-sub-band"]')!;
     expect(unsupportedBand.getAttribute('data-state')).toBe('unsupported');
     expect(getComputedStyle(unsupportedBand).visibility).toBe('hidden');

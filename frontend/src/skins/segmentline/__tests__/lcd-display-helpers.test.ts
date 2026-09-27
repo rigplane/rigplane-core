@@ -45,25 +45,64 @@ const receiver = {
 } satisfies PeerSplitReceiverDisplay;
 
 describe('LCD display helpers', () => {
-  it('preserves known, unknown, and unsupported text without inventing values', () => {
+  it('renders known values exactly and keeps unread slots unlit in a reserved box', () => {
     expect(stateText(known('USB'))).toBe('USB');
-    expect(stateText({ state: 'unknown' })).toBe('?');
-    expect(stateText({ state: 'unsupported' })).toBe('—');
+    // MOR-2650: an unread value is unlit segments — the empty string — never
+    // '?'. The slot's box is reserved by the caller's `min-width`; the
+    // helper only supplies the absence of text.
+    expect(stateText({ state: 'unknown' })).toBe('');
     expect(formatBandwidth(known(2400))).toBe('2.4k');
-    expect(formatBandwidth({ state: 'unknown' })).toBe('?');
+    expect(formatBandwidth(known(500))).toBe('500');
+    expect(formatBandwidth({ state: 'unknown' })).toBe('');
+  });
+
+  it('never prints a placeholder token for any value state', () => {
+    const fields = [
+      stateText({ state: 'unknown' }),
+      stateText({ state: 'unsupported' }),
+      formatBandwidth({ state: 'unknown' }),
+      formatBandwidth({ state: 'unsupported' }),
+      formatOffset({ state: 'unknown' }),
+      formatOffset({ state: 'unsupported' }),
+      formatOffset({ state: 'inactive' }),
+    ];
+    for (const text of fields) expect(text).not.toMatch(/[?—–]|UNKNOWN|unknown|N\/A|null|undefined|NaN/);
   });
 
   it.each([
     [{ state: 'active', offsetHz: 250 }, '+0.250'],
     [{ state: 'active', offsetHz: -54_500 }, '−54.500'],
     [{ state: 'inactive', offsetHz: 250 }, '+0.250'],
-    [{ state: 'inactive' }, '—'],
-    [{ state: 'unknown' }, '?'],
-    [{ state: 'unsupported' }, '—'],
+    // MOR-2650: a split-off rail keeps its reserved slot but draws no
+    // digits — never a fabricated 0.000 or an '—' placeholder.
+    [{ state: 'inactive' }, ''],
+    [{ state: 'unknown' }, ''],
+    [{ state: 'unsupported' }, ''],
   ] satisfies readonly (readonly [DisplayOffset, string])[])(
     'formats offset state %j truthfully',
     (field, expected) => expect(formatOffset(field)).toBe(expected),
   );
+
+  it('reserves every census slot structurally against the widest text it can render', async () => {
+    const { readFileSync } = await import('node:fs');
+    const styleOf = (file: string) => {
+      const source = readFileSync(`src/skins/segmentline/${file}`, 'utf8');
+      return source.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
+    };
+    // NOTE: jsdom has no layout, so the reserved box is pinned by rule, not
+    // pixels: each slot's `min-width` must cover its widest text —
+    // mode `DATA-FM-N` (8 glyphs + letter-spacing → 10ch floor), offset
+    // `−54.500` (7ch), flag `ATT 0` (10ch floor with its label).
+    expect(styleOf('CenterstageDisplay.svelte')).toMatch(/\.orbit-value\s*\{[^}]*min-width:\s*10ch/);
+    expect(styleOf('PanadapterDisplay.svelte')).toContain('min-width: 10ch;');
+    expect(styleOf('LcdOffsetRail.svelte')).toMatch(/\.offset-value\s*\{[^}]*min-width:\s*7ch/);
+    expect(styleOf('LcdFlagRail.svelte')).toMatch(/\.status-flag\s*\{[^}]*min-width:\s*10ch/);
+    // Peer/Dominant pills and facts reserve their box by structure (min-width
+    // over the widest pill/fact text) — an empty string keeps the box, so
+    // unread === read width without layout.
+    expect(styleOf('PeerSplitDisplay.svelte')).toMatch(/\.vfo-tag,\s*\.lcd-pill\s*\{[^}]*min-width/);
+    expect(styleOf('DominantUnifiedDisplay.svelte')).toMatch(/\.fact\s*\{[^}]*min-width:\s*max\(58px,\s*10ch\)/);
+  });
 
   it('keeps unknown meters at empty geometry and clamps calibrated fill', () => {
     expect(meterFill({ state: 'unknown' })).toBe(0);

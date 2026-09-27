@@ -293,7 +293,10 @@ describe('canonical spectrum authority and binding', () => {
       expect(button(target, label)?.disabled).toBe(true);
       expect(button(target, label)?.classList.contains('active')).toBe(false);
     }
-    expect(button(target, '—')?.disabled).toBe(true);
+    // MOR-2658: the unread receiver button is EMPTY (never '—') and inert.
+    const receiver = buttons(target).find((item) => item.title === 'Switch scope receiver')!;
+    expect(receiver.textContent).toBe('');
+    expect(receiver.disabled).toBe(true);
     for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
   });
 });
@@ -453,7 +456,8 @@ const failClosedCases: readonly FieldCase[] = [
       .find((group) => group.querySelector('.toolbar-label')?.textContent?.trim() === 'REF')
       ?.querySelector<HTMLButtonElement>('button') ?? undefined },
   { name: 'dual', valid: false, invalid: 0, find: (root) => button(root, 'DUAL') },
-  { name: 'receiver', valid: 0, invalid: 2, find: (root) => button(root, '—') },
+  { name: 'receiver', valid: 0, invalid: 2,
+    find: (root) => buttons(root).find((item) => item.title === 'Switch scope receiver') },
 ];
 
 describe('fail-closed field handling', () => {
@@ -499,6 +503,100 @@ describe('fail-closed field handling', () => {
     expect(spanValue.textContent).toBe('');
     expect(target.textContent).not.toContain('±25k'); // the read value stays dark
     expect(target.textContent).not.toContain('EDGE');
+  });
+});
+
+// ── Unread speed/REF/receiver (MOR-2658) ───────────────────────────────────
+// An unread value renders EMPTY in its reserved slot — never '—', and never
+// a unit ('SWR'-style word or REF sign) without its number. Known values
+// render exactly as before.
+
+describe('unread speed, REF and receiver (MOR-2658)', () => {
+  function speedValue(root: HTMLElement) {
+    return buttons(root).find((item) => item.title === 'Scope sweep speed')!
+      .querySelector('.toolbar-value')!;
+  }
+
+  function desktopRefValue(root: HTMLElement) {
+    return Array.from(root.querySelectorAll<HTMLElement>('.toolbar-group.hide-mobile'))
+      .find((group) => group.querySelector('.toolbar-label')?.textContent?.trim() === 'REF')!
+      .querySelector('.toolbar-value')!;
+  }
+
+  function gearRefValue(root: HTMLElement) {
+    return Array.from(root.querySelectorAll<HTMLElement>('.display-gear-popover .gear-row'))
+      .find((row) => row.querySelector('.gear-label')?.textContent?.trim() === 'REF')!
+      .querySelector('.gear-value')!;
+  }
+
+  it('renders an unread speed as an empty reserved slot, never a dash', () => {
+    authorityHarness.current = authority({ scopeControls: scopeFacts({ speed: field(1, { known: false }) }) });
+    const target = mountToolbar();
+    expect(speedValue(target).textContent).toBe('');
+    expect(speedValue(target).className).toContain('toolbar-value');
+    expect(target.textContent).not.toContain('—');
+  });
+
+  it('renders a known speed exactly as before', () => {
+    authorityHarness.current = authority({ scopeControls: scopeFacts({ speed: field(2) }) });
+    const target = mountToolbar();
+    expect(speedValue(target).textContent).toBe('SLO');
+  });
+
+  it('renders an unread REF as an empty reserved slot on desktop and mobile, never a dash', () => {
+    authorityHarness.current = authority({ scopeControls: scopeFacts({ refDb: field(0, { known: false }) }) });
+    const target = mountToolbar();
+    expect(desktopRefValue(target).textContent).toBe('');
+    target.querySelector<HTMLButtonElement>('[aria-label="Display settings"]')!.click();
+    flushSync();
+    expect(gearRefValue(target).textContent).toBe('');
+    expect(target.textContent).not.toContain('—');
+  });
+
+  it('renders known REF values exactly as before, on desktop and mobile', () => {
+    for (const value of [-30, 0, 10]) {
+      authorityHarness.current = authority({ scopeControls: scopeFacts({ refDb: field(value) }) });
+      const target = mountToolbar();
+      const expected = value > 0 ? `+${value}` : String(value);
+      expect(desktopRefValue(target).textContent).toBe(expected);
+      target.querySelector<HTMLButtonElement>('[aria-label="Display settings"]')!.click();
+      flushSync();
+      expect(gearRefValue(target).textContent).toBe(expected);
+      unmount(components.pop()!);
+      target.remove();
+    }
+  });
+
+  it('renders an unread receiver as an empty button, never a dash', () => {
+    authorityHarness.current = authority({ scopeControls: scopeFacts({ receiver: field(0, { known: false }) }) });
+    const target = mountToolbar();
+    const receiverButton = buttons(target).find((item) => item.title === 'Switch scope receiver')!;
+    expect(receiverButton.textContent).toBe('');
+    expect(receiverButton.disabled).toBe(true);
+    expect(target.textContent).not.toContain('—');
+  });
+
+  it('renders known receivers exactly as before', () => {
+    for (const [value, label] of [[0, 'MAIN'], [1, 'SUB']] as const) {
+      authorityHarness.current = authority({ scopeControls: scopeFacts({ receiver: field(value) }) });
+      const target = mountToolbar();
+      expect(buttons(target).find((item) => item.title === 'Switch scope receiver')!.textContent).toBe(label);
+      unmount(components.pop()!);
+      target.remove();
+    }
+  });
+
+  it('reserves every unread slot structurally: the value boxes outlive their values', () => {
+    const source = readFileSync(resolve('src/components/spectrum/SpectrumToolbar.svelte'), 'utf8');
+    for (const rule of ['.ref-value {', '.receiver-value {']) {
+      expect(source, `${rule} keeps its reserved box`).toContain(rule);
+    }
+    const refRule = source.match(/\.ref-value \{([^}]*)\}/)?.[1] ?? '';
+    expect(refRule).toContain('min-width:');
+    const receiverRule = source.match(/\.receiver-value \{([^}]*)\}/)?.[1] ?? '';
+    expect(receiverRule).toContain('min-width:');
+    const stepRule = source.match(/\.step-control \.toolbar-value \{([^}]*)\}/)?.[1] ?? '';
+    expect(stepRule).toContain('min-width:');
   });
 });
 
@@ -810,7 +908,10 @@ describe('source and enforcement boundary', () => {
     // MOR-2545 round-4 repin (owner style B): STEP's More copy follows the
     // sheet's measured step band (320px, re-derived from the round-4 head),
     // and the one-row/ground comments re-anchored.
-    expect(cssHash).toBe('2bd8a56451a9499498c5fd16a5b793cc86d209c01d2e582c25ed40c7bf070fcc');
+    // MOR-2658 repin: unread speed/REF/receiver render EMPTY in reserved
+    // slots — `.ref-value` gains `display: inline-block; min-width: 4ch`
+    // (replacing `28px`) and a new `.receiver-value` rule reserves `4ch`.
+    expect(cssHash).toBe('62b0ca339bfe3b974c797df850e69b28d7c9ff8e4152e1077070ed067c201327');
   });
 });
 

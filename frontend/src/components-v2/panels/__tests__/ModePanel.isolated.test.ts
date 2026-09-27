@@ -347,12 +347,20 @@ describe('ModePanel', () => {
       expect(modInputSelect(mountPanel({ hasModInput: false, modInputChoices: [] }))).toBeNull();
     });
 
-    it('shows an empty placeholder before the first readback', () => {
+    it('shows an unlit blank option before the first readback — never a dash (MOR-2659)', () => {
       const target = mountPanel({ hasModInput: true, modInputSource: null });
       const select = modInputSelect(target);
       expect(select).not.toBeNull();
       expect(select!.value).toBe('');
       expect(select!.disabled).toBe(true);
+      // The unread option renders an empty, unlit choice (PR #3733's
+      // FilterInstrumentHost precedent), replacing the old '—' pin.
+      const blank = select!.options[0];
+      expect(blank.value).toBe('');
+      expect(blank.disabled).toBe(true);
+      expect(blank.textContent).toBe('');
+      expect(Array.from(select!.options).map((option) => option.textContent?.trim()))
+        .toEqual(['', 'MIC', 'ACC', 'MIC+ACC', 'USB', 'MIC+USB', 'LAN']);
     });
 
     it('is hidden when the radio does not expose MOD-input routing', () => {

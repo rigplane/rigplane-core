@@ -8,8 +8,14 @@
 
   let formatted = $derived(formatFreq(freqHz));
 
+  // MOR-2654 (owner rule, 2026-09-26): an unread frequency is UNLIT
+  // digits, never dash placeholders. The ghost all-8s layer behind is a
+  // CONSTANT row sized to the widest MHz field across the shipped profiles
+  // (IC-9700 23cm reaches 1300 MHz = 4 digits, rigs/ic9700.toml) — it never
+  // mirrors the active reading, so the unread slot is exactly as wide as
+  // any known one and the first reading cannot move anything.
   function formatFreq(hz: number): { mhz: string; khz: string; hertz: string } {
-    if (hz <= 0) return { mhz: '--', khz: '---', hertz: '---' };
+    if (hz <= 0) return { mhz: '', khz: '', hertz: '' };
     const mhz = Math.floor(hz / 1_000_000);
     const khz = Math.floor((hz % 1_000_000) / 1_000);
     const hertz = Math.floor(hz % 1_000);
@@ -24,7 +30,7 @@
 <div class="lcd-freq" class:lcd-freq-large={size === 'large'} class:lcd-freq-small={size === 'small'}>
   <!-- Ghost segments (all-8s) for LCD look -->
   <div class="freq-ghost" aria-hidden="true">
-    <span class="seg-mhz">{formatted.mhz.replace(/./g, '8')}</span>
+    <span class="seg-mhz">8888</span>
     <span class="seg-dot">.</span>
     <span class="seg-khz">888</span>
     <span class="seg-dot">.</span>

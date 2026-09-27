@@ -530,7 +530,9 @@
         <button class="toolbar-btn small step-arrow" disabled={scopeSpeed === null} onclick={() => cycleSpeed(-1)} title="Decrease speed">◀</button>
         <button class="toolbar-btn step-control" disabled={scopeSpeed === null} onclick={() => cycleSpeed(1)} title="Scope sweep speed">
           <span class="toolbar-label">{SPEED_STATIC_LABEL}</span>
-          <span class="toolbar-value">{scopeSpeed === null ? '—' : (SPEED_LABELS[scopeSpeed] ?? '—')}</span>
+          <!-- MOR-2658: an unread speed renders EMPTY in the reserved
+               `.toolbar-value` slot (min-width below) — never a '—'. -->
+          <span class="toolbar-value">{scopeSpeed === null ? '' : (SPEED_LABELS[scopeSpeed] ?? '')}</span>
         </button>
         <button class="toolbar-btn small step-arrow" disabled={scopeSpeed === null} onclick={() => cycleSpeed(1)} title="Increase speed">▶</button>
       </div>
@@ -542,15 +544,20 @@
       <div class="toolbar-group hide-mobile">
         <span class="toolbar-label">REF</span>
         <button class="toolbar-btn small" disabled={scopeRef === null} onclick={() => changeRef(-5)}>−</button>
-        <span class="toolbar-value ref-value">{scopeRef === null ? '—' : `${scopeRef > 0 ? '+' : ''}${scopeRef}`}</span>
+        <!-- MOR-2658: an unread REF renders EMPTY in the reserved `.ref-value`
+             slot — never a '—'. -->
+        <span class="toolbar-value ref-value">{scopeRef === null ? '' : `${scopeRef > 0 ? '+' : ''}${scopeRef}`}</span>
         <button class="toolbar-btn small" disabled={scopeRef === null} onclick={() => changeRef(5)}>+</button>
       </div>
       {#if !hideSourceControls && hasDualReceiver()}
         <div class="toolbar-sub-separator"></div>
         <div class="toolbar-group">
           <button class="toolbar-btn" class:active={scopeDual === true} disabled={scopeDual === null} onclick={toggleDual} title="Dual scope">DUAL</button>
-          <button class="toolbar-btn" disabled={scopeReceiver === null} onclick={switchReceiver} title="Switch scope receiver">
-            {scopeReceiver === null ? '—' : (scopeReceiver === 1 ? 'SUB' : 'MAIN')}
+          <!-- MOR-2658: the receiver button keeps its `receiver-value` slot
+               (`4ch` covers `MAIN`/`SUB`) so a first reading cannot shift it. -->
+          <button class="toolbar-btn receiver-value" disabled={scopeReceiver === null} onclick={switchReceiver} title="Switch scope receiver">
+            <!-- MOR-2658: an unread receiver renders EMPTY — never a '—'. -->
+            {scopeReceiver === null ? '' : (scopeReceiver === 1 ? 'SUB' : 'MAIN')}
           </button>
         </div>
       {/if}
@@ -596,7 +603,9 @@
             <div class="gear-row">
               <span class="gear-label">REF</span>
               <button class="gear-btn" disabled={scopeRef === null} onclick={() => changeRef(-5)} aria-label="Decrease reference">−</button>
-              <span class="gear-value">{scopeRef === null ? '—' : `${scopeRef > 0 ? '+' : ''}${scopeRef}`}</span>
+              <!-- MOR-2658: an unread REF renders EMPTY in the reserved
+                   `.gear-value` slot — never a '—'. -->
+              <span class="gear-value">{scopeRef === null ? '' : `${scopeRef > 0 ? '+' : ''}${scopeRef}`}</span>
               <button class="gear-btn" disabled={scopeRef === null} onclick={() => changeRef(5)} aria-label="Increase reference">+</button>
               <button class="gear-btn gear-btn-zero" disabled={scopeRef === null} onclick={() => changeRef(0)} aria-label="Reset reference">0</button>
             </div>
@@ -879,8 +888,21 @@
   }
 
   .ref-value {
-    min-width: 28px;
+    /* MOR-2658: the value boxes stay reserved for unread AND each known
+       value — `4ch` covers the widest text (`-30`, `+10`, `SLO`), so a
+       first reading cannot shift the row. */
+    display: inline-block;
+    min-width: 4ch;
     text-align: center;
+  }
+
+  /* MOR-2658: the receiver button keeps its own reserved slot (`MAIN` is
+     the widest text) so a first reading cannot shift the row. */
+  .receiver-value {
+    display: inline-block;
+    min-width: 4ch;
+    font-variant-numeric: tabular-nums;
+    justify-content: center;
   }
 
   .step-control .toolbar-value {

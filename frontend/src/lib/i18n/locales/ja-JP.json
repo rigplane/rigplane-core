@@ -191,7 +191,6 @@
   "core.vfo.dualWatch.label": "Dual watch",
   "core.vfo.state.on": "on",
   "core.vfo.state.off": "off",
-  "core.vfo.state.unknown": "unknown",
 
   "core.band.tx.defaultPermit.unread": "{frequency} での TX:",
 
@@ -215,6 +214,7 @@
   "core.filter.passband.supersededAnnouncement": "{control} の {target} の要求は置き換えられました。確認済みの値は {confirmed} のままです。",
 
   "core.txGuard.modInputNotLan": "MOD 入力が {source} のため LAN 経由の音声は送信 (TX) されません。",
+  "core.txGuard.modInputNotLanUnknown": "MOD 入力が LAN ではないため LAN 経由の音声は送信 (TX) されません。",
   "core.txGuard.setLan": "LAN に設定",
   "core.txGuard.dismiss": "MOD 入力の警告を閉じる",
   "core.txGuard.autoLanLabel": "ウェブからの送信 (TX) 時に MOD 入力を自動的に LAN へ切り替える",

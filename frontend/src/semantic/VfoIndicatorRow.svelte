@@ -3,6 +3,56 @@
   entry. The component reads only the semantic contract handed to it. Shared
   ANT/TUNE/RIT/XIT facts and DUAL actions belong to slice 2.
 -->
+<script module lang="ts">
+  // MOR-2644 correction 3 (owner rule 2026-09-21: the layout never moves):
+  // every fact reserves the width of its widest lit text, the same way RFG
+  // does (`min-inline-size` in `ch`, `box-sizing: content-box`). Unread,
+  // known and changing values then all occupy the same box. Widest texts
+  // come from what this component can render for that fact: the option
+  // vocabulary the view model carries, ON/OFF for booleans, the offset range
+  // for RIT/XIT. None of these vocabularies reach this component as props
+  // (agcModes, attValues/preValues, antenna count live upstream), so the
+  // table uses each vocabulary's widest possible rendered text instead of a
+  // per-radio width:
+  // - AGC: verbatim capability label. The AGC label vocabulary
+  //   (agcModes/agcLabels) does not reach this component; labels are
+  //   verbatim and unbounded per-radio. The widest shipped label is 4
+  //   characters (FAST/SLOW/AUTO/OFF); the reservation covers a 6-character
+  //   label shape (`TUNING`, representative of the widest plausible label,
+  //   e.g. a future profile label), not any per-radio width.
+  // - NOTCH: the widest rendered state text `NOTCH MANUAL` (the component
+  //   prints the raw mode uppercased: OFF/AUTO/MANUAL).
+  // - ATT: `ATT 45 dB` — the largest attenuator step across profiles
+  //   (IC-7610 0..45 dB); attValues do not reach this component.
+  // - P.AMP: `P.AMP 2` — the largest preamp level across profiles
+  //   (0/1/2 everywhere shipped); preValues do not reach this component.
+  // - ANT: `ANT 2` — the largest antenna index across profiles
+  //   (IC-7610 has two TX ports); the port count does not reach this
+  //   component.
+  // - BW: `BW 9999 Hz` — the widest filter-width fallback the codebase uses
+  //   when no profile bound is present (`FilterPanel`, `RitXitPanel`).
+  // - RIT/XIT: `RIT OFF −9999 Hz` — minus sign, OFF, and the endpoint of the
+  //   offset range this surface family renders (RitXitScanSurface
+  //   OFFSET_MIN/MAX; the local RIT/XIT panel falls back to the same
+  //   -9999..9999 bounds when no domain is present).
+  export const FACT_SLOT_RESERVATIONS = {
+    bandwidth: 'BW 9999 Hz'.length,
+    agc: 'AGC TUNING'.length,
+    nb: 'NB OFF'.length,
+    nr: 'NR OFF'.length,
+    notch: 'NOTCH MANUAL'.length,
+    attenuator: 'ATT 45 dB'.length,
+    preamp: 'P.AMP 2'.length,
+    'ip-plus': 'IP+ OFF'.length,
+    'digi-sel': 'DIGI-SEL OFF'.length,
+    'rf-gain': 8,
+    antenna: 'ANT 2'.length,
+    atu: 'TUNE TUNING'.length,
+    rit: 'RIT OFF −9999 Hz'.length,
+    xit: 'XIT OFF −9999 Hz'.length,
+  } as const;
+</script>
+
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import LinearSMeter from '../components-v2/meters/LinearSMeter.svelte';
@@ -33,8 +83,11 @@
       : state === 'uncertain' ? 'TX?'
         : '';
 
+  // MOR-2644: an unread fact shows its label dimmed with no value text —
+  // never a dash placeholder. A fact the radio does not have is not drawn
+  // at all (the {#if} guards below). The subdued data-state paint stays.
   function numeric(field: ReceiverIndicatorField<number>): string {
-    return field.reading.status === 'known' ? String(field.reading.value) : '—';
+    return field.reading.status === 'known' ? String(field.reading.value) : '';
   }
 
   /** The RF gain the display shows, independent of provenance: the observed
@@ -66,7 +119,7 @@
   }
 
   function agc(field: ReceiverIndicatorViewModel['agcMode']): string {
-    return field.reading.status === 'known' ? String(field.reading.value) : '—';
+    return field.reading.status === 'known' ? String(field.reading.value) : '';
   }
 
   function booleanState(field: ReceiverIndicatorField<boolean>): 'on' | 'off' | 'unknown' {
@@ -75,15 +128,28 @@
 
   function booleanLabel(field: ReceiverIndicatorField<boolean>): string {
     const state = booleanState(field);
-    return state === 'unknown' ? '—' : state.toUpperCase();
+    return state === 'unknown' ? '' : state.toUpperCase();
   }
 
   function sharedBoolean(field: TxAuxField<boolean>): string {
-    return field.reading.status === 'known' ? (field.reading.value ? 'ON' : 'OFF') : '—';
+    return field.reading.status === 'known' ? (field.reading.value ? 'ON' : 'OFF') : '';
   }
 
-  function sharedNumber(field: TxAuxField<number>): string {
-    return field.reading.status === 'known' ? String(field.reading.value) : '—';
+  function sharedOffset(offset: TxAuxField<number>): string {
+    return offset.reading.status === 'known' ? String(offset.reading.value) : '';
+  }
+
+  function sharedAggregate(
+    label: 'RIT' | 'XIT', active: TxAuxField<boolean>, offset: TxAuxField<number>,
+  ): string {
+    // MOR-2644 correction 1: the Hz unit belongs to the offset number and
+    // appears only right after a known offset. Both unread → exactly the
+    // label; state known, offset unread → "RIT ON"/"RIT OFF"; both known →
+    // the same text as main today.
+    const state = sharedBoolean(active);
+    const value = sharedOffset(offset);
+    if (value === '') return state === '' ? label : `${label} ${state}`;
+    return state === '' ? `${label} ${value} Hz` : `${label} ${state} ${value} Hz`;
   }
 
   function aggregateState(
@@ -111,10 +177,14 @@
         class="fact"
         data-indicator-fact="bandwidth"
         data-state={indicator.bandwidthHz.reading.status}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS.bandwidth}ch`}
       >BW {numeric(indicator.bandwidthHz)}{indicator.bandwidthHz.reading.status === 'known' ? ' Hz' : ''}</span>
     {/if}
     {#if appearance === 'standard'}
-      <span class="header-badges"><span class="fact">BAR</span><span class="fact">{slotLabel ?? '—'}</span></span>
+      <span class="header-badges"><span class="fact">BAR</span><span
+        class="fact"
+        data-empty={slotLabel == null ? 'true' : undefined}
+      >{slotLabel ?? ''}</span></span>
     {/if}
   </header>
 
@@ -130,8 +200,8 @@
         class="s-meter-unknown"
         data-testid="receiver-s-meter-unknown"
         role="img"
-        aria-label={`${indicator.receiver} S meter unknown`}
-      >S —</div>
+        aria-label={`${indicator.receiver} S meter`}
+      ></div>
     {/if}
   </div>
 
@@ -139,44 +209,54 @@
 
   <div class="facts" aria-label={`${indicator.receiver} receiver facts`}>
     {#if indicator.agcMode.availability.structural}
-      <span class="fact" data-indicator-fact="agc" data-state={indicator.agcMode.reading.status}>
-        AGC {agc(indicator.agcMode)}
-      </span>
+      <span class="fact" data-indicator-fact="agc" data-state={indicator.agcMode.reading.status}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS.agc}ch`}
+        >AGC{indicator.agcMode.reading.status === 'known' ? ` ${agc(indicator.agcMode)}` : ''}</span
+      >
     {/if}
     {#if indicator.nbActive.availability.structural}
-      <span class="fact" data-indicator-fact="nb" data-state={booleanState(indicator.nbActive)}>
-        NB {booleanLabel(indicator.nbActive)}
-      </span>
+      <span class="fact" data-indicator-fact="nb" data-state={booleanState(indicator.nbActive)}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS.nb}ch`}
+        >NB{indicator.nbActive.reading.status === 'known' ? ` ${booleanLabel(indicator.nbActive)}` : ''}</span
+      >
     {/if}
     {#if indicator.nrActive.availability.structural}
-      <span class="fact" data-indicator-fact="nr" data-state={booleanState(indicator.nrActive)}>
-        NR {booleanLabel(indicator.nrActive)}
-      </span>
+      <span class="fact" data-indicator-fact="nr" data-state={booleanState(indicator.nrActive)}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS.nr}ch`}
+        >NR{indicator.nrActive.reading.status === 'known' ? ` ${booleanLabel(indicator.nrActive)}` : ''}</span
+      >
     {/if}
     {#if indicator.notchMode.availability.structural}
-      <span class="fact" data-indicator-fact="notch" data-state={indicator.notchMode.reading.status}>
-        NOTCH {indicator.notchMode.reading.status === 'known' ? indicator.notchMode.reading.value.toUpperCase() : '—'}
-      </span>
+      <span class="fact" data-indicator-fact="notch" data-state={indicator.notchMode.reading.status}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS.notch}ch`}
+        >NOTCH{indicator.notchMode.reading.status === 'known'
+          ? ` ${indicator.notchMode.reading.value.toUpperCase()}`
+          : ''}</span
+      >
     {/if}
     {#if indicator.attenuator.availability.structural}
-      <span class="fact" data-indicator-fact="attenuator" data-state={indicator.attenuator.reading.status}>
-        ATT {numeric(indicator.attenuator)}{indicator.attenuator.reading.status === 'known' ? ' dB' : ''}
-      </span>
+      <span class="fact" data-indicator-fact="attenuator" data-state={indicator.attenuator.reading.status}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS.attenuator}ch`}
+        >ATT{indicator.attenuator.reading.status === 'known' ? ` ${numeric(indicator.attenuator)} dB` : ''}</span
+      >
     {/if}
     {#if indicator.preamp.availability.structural}
-      <span class="fact" data-indicator-fact="preamp" data-state={indicator.preamp.reading.status}>
-        P.AMP {numeric(indicator.preamp)}
-      </span>
+      <span class="fact" data-indicator-fact="preamp" data-state={indicator.preamp.reading.status}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS.preamp}ch`}
+        >P.AMP{indicator.preamp.reading.status === 'known' ? ` ${numeric(indicator.preamp)}` : ''}</span
+      >
     {/if}
     {#if indicator.ipPlus.availability.structural}
-      <span class="fact" data-indicator-fact="ip-plus" data-state={booleanState(indicator.ipPlus)}>
-        IP+ {booleanLabel(indicator.ipPlus)}
-      </span>
+      <span class="fact" data-indicator-fact="ip-plus" data-state={booleanState(indicator.ipPlus)}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS['ip-plus']}ch`}
+        >IP+{indicator.ipPlus.reading.status === 'known' ? ` ${booleanLabel(indicator.ipPlus)}` : ''}</span
+      >
     {/if}
     {#if indicator.digiSel.availability.structural}
-      <span class="fact" data-indicator-fact="digi-sel" data-state={booleanState(indicator.digiSel)}>
-        DIGI-SEL {booleanLabel(indicator.digiSel)}
-      </span>
+      <span class="fact" data-indicator-fact="digi-sel" data-state={booleanState(indicator.digiSel)}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS['digi-sel']}ch`}
+        >DIGI-SEL{indicator.digiSel.reading.status === 'known' ? ` ${booleanLabel(indicator.digiSel)}` : ''}</span
+      >
     {/if}
     {#if indicator.rfGain.availability.structural && indicator.rfGain.display?.state !== 'unsupported'}
       {@const gainText = rfGainText(indicator.rfGain)}
@@ -189,6 +269,7 @@
         aria-label={gainText ? `RF gain ${gainText}` : undefined}
         aria-hidden={gainText ? undefined : 'true'}
         data-empty={gainText ? undefined : 'true'}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS['rf-gain']}ch`}
       >{gainText ? `RFG ${gainText}` : ''}</span>
     {/if}
   </div>
@@ -212,24 +293,30 @@
         data-indicator-rf={radioWide.rfState}
       >{rfLabel(radioWide.rfState)}</span>
       {#if radioWide.antenna.availability.structural}
-        <span class="fact" data-indicator-fact="antenna" data-state={radioWide.antenna.reading.status}>
-          ANT {sharedNumber(radioWide.antenna)}
-        </span>
+        <span class="fact" data-indicator-fact="antenna" data-state={radioWide.antenna.reading.status}
+          style:min-inline-size={`${FACT_SLOT_RESERVATIONS.antenna}ch`}
+          >ANT{radioWide.antenna.reading.status === 'known' ? ` ${sharedOffset(radioWide.antenna)}` : ''}</span
+        >
       {/if}
       {#if radioWide.atu.availability.structural}
-        <span class="fact" data-indicator-fact="atu" data-state={radioWide.atu.reading.status}>
-          TUNE {radioWide.atu.reading.status === 'known' ? radioWide.atu.reading.value.toUpperCase() : '—'}
-        </span>
+        <span class="fact" data-indicator-fact="atu" data-state={radioWide.atu.reading.status}
+          style:min-inline-size={`${FACT_SLOT_RESERVATIONS.atu}ch`}
+          >TUNE{radioWide.atu.reading.status === 'known'
+            ? ` ${radioWide.atu.reading.value.toUpperCase()}`
+            : ''}</span
+        >
       {/if}
       {#if radioWide.ritActive.availability.structural || radioWide.ritOffset.availability.structural}
-        <span class="fact" data-indicator-fact="rit" data-state={aggregateState(radioWide.ritActive, radioWide.ritOffset)}>
-          RIT {sharedBoolean(radioWide.ritActive)} {sharedNumber(radioWide.ritOffset)} Hz
-        </span>
+        <span class="fact" data-indicator-fact="rit" data-state={aggregateState(radioWide.ritActive, radioWide.ritOffset)}
+          style:min-inline-size={`${FACT_SLOT_RESERVATIONS.rit}ch`}
+          >{sharedAggregate('RIT', radioWide.ritActive, radioWide.ritOffset)}</span
+        >
       {/if}
       {#if radioWide.xitActive.availability.structural || radioWide.xitOffset.availability.structural}
-        <span class="fact" data-indicator-fact="xit" data-state={aggregateState(radioWide.xitActive, radioWide.xitOffset)}>
-          XIT {sharedBoolean(radioWide.xitActive)} {sharedNumber(radioWide.xitOffset)} Hz
-        </span>
+        <span class="fact" data-indicator-fact="xit" data-state={aggregateState(radioWide.xitActive, radioWide.xitOffset)}
+          style:min-inline-size={`${FACT_SLOT_RESERVATIONS.xit}ch`}
+          >{sharedAggregate('XIT', radioWide.xitActive, radioWide.xitOffset)}</span
+        >
       {/if}
     </div>
   </section>
@@ -262,26 +349,61 @@
   .fact[data-state='off'], .fact[data-state='unknown'] { color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55)); }
   /* Owner ruling 2026-09-23: the RFG fact keeps its slot whether or not it
      prints. The widest lit text is `RFG 99%` (7 characters in this mono
-     face); the 8ch reservation stays deliberately wider than that, so the
-     neighbouring facts never move when the gain changes between reduced,
-     full and unknown. */
-  .fact[data-indicator-fact='rf-gain'] { min-inline-size: 8ch; box-sizing: content-box; }
+     face); the reservation (8, in FACT_SLOT_RESERVATIONS) stays
+     deliberately wider than that, so the neighbouring facts never move when
+     the gain changes between reduced, full and unknown. */
+  /* MOR-2644 correction 3 (owner rule 2026-09-21: the layout never moves):
+     every fact reserves the width of its widest lit text, so an unread
+     label and its first reading occupy the same box and neighbours never
+     move. FACT_SLOT_RESERVATIONS in the module script is the ONLY source of
+     the reserved width: each fact span sets min-inline-size inline from
+     the constant, and the stylesheet carries no width of its own, so the
+     two cannot drift apart. box-sizing matches RFG so the reservation
+     covers text only, outside the shared padding and border. jsdom has no
+     layout, so the pin test asserts each rendered fact's inline
+     reservation against the constant, and each constant against the length
+     of its widest lit text. */
+  .fact[data-indicator-fact='bandwidth'], .fact[data-indicator-fact='agc'],
+  .fact[data-indicator-fact='nb'], .fact[data-indicator-fact='nr'],
+  .fact[data-indicator-fact='notch'], .fact[data-indicator-fact='attenuator'],
+  .fact[data-indicator-fact='preamp'], .fact[data-indicator-fact='ip-plus'],
+  .fact[data-indicator-fact='digi-sel'], .fact[data-indicator-fact='rf-gain'],
+  .fact[data-indicator-fact='antenna'], .fact[data-indicator-fact='atu'],
+  .fact[data-indicator-fact='rit'], .fact[data-indicator-fact='xit'] {
+    box-sizing: content-box;
+  }
   /* Empty (a displayed 100%, or unread): the slot stays reserved at the same
      size and 1px geometry, but nothing is drawn — a transparent border and
-     background instead of an empty frame. */
+     background instead of an empty frame. The unknown Standard slot badge
+     uses the same treatment: it keeps its slot at the same size but draws
+     nothing. */
   .fact[data-indicator-fact='rf-gain'][data-empty='true'] {
     border-color: transparent;
     background: transparent;
+  }
+  .header-badges .fact[data-empty='true'] {
+    min-inline-size: 1ch;
+    box-sizing: content-box;
+    border-color: transparent;
+    background: transparent;
+    color: transparent;
   }
   .s-meter { min-width: 0; overflow: hidden; }
   .s-meter-unknown {
     display: grid;
     min-height: 30px;
     place-items: center;
+    min-inline-size: 12ch;
+    box-sizing: border-box;
     border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12));
     color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55));
     font-size: 11px;
   }
+  /* MOR-2644 correction 2: the unread S-meter box keeps its main outer
+     height (30px including the 1px border) and prints no text. The width
+     reservation (min-inline-size) holds the inline size only; the global
+     border-box model holds the block size, so the 1px top and bottom
+     borders stay inside the 30px min-height. */
 
   .indicator-row[data-indicator-appearance='sdr'], .indicator-row[data-indicator-appearance='standard'] {
     padding: 0; border: 0; background: transparent; border-radius: 0; gap: 6px;

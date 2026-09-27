@@ -399,9 +399,9 @@ describe('ReceiverInstrumentHost', () => {
     expect(fills()).toBe(0); expect(meter().textContent).toContain('S1');
     publisher.emit(publication({ meterKnown: false, generation: 3 })); flushSync();
     // MOR-2509: the unknown reading renders the empty unlit face — the
-    // state lives in the accessible label, not in a placeholder glyph.
+    // accessible label carries the bare meter name, not a placeholder glyph.
     expect(fills()).toBe(0);
-    expect(meter().querySelector('svg')!.getAttribute('aria-label')).toContain('unknown');
+    expect(meter().querySelector('svg')!.getAttribute('aria-label')).toBe('S meter');
     expect(meter().textContent).not.toContain('unknown');
     expect(meter().textContent).not.toContain('?');
     motion.reduced(true); expect(motion.frames).toBe(0);
@@ -526,7 +526,7 @@ describe('ReceiverInstrumentHost', () => {
     expect(svg().querySelector('[data-meter-peak]')?.getAttribute('visibility')).toBe('hidden');
 
     publisher.emit(publication({ mainS: 53, meterQuality: [] })); flushSync();
-    expect(svg().getAttribute('aria-label')).toContain('unit unknown');
+    expect(svg().getAttribute('aria-label')).toBe('S meter');
     expect(svg().querySelectorAll('[data-scale-label]')).toHaveLength(0);
     expect(svg().querySelector('[data-meter-peak]')?.getAttribute('visibility')).toBe('hidden');
     const unprojectableTrack = svg().querySelector('[data-meter-track]')!;

@@ -22,6 +22,9 @@ import { mount, unmount, flushSync } from 'svelte';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import type { ManagedTxState } from '$lib/runtime/tx-controller/managed-state';
 import { presentationResources } from '$lib/runtime';
+import type { ResourceLease } from '$lib/runtime/resource-demand';
+import type { ServerState } from '$lib/types/state';
+import type { Capabilities } from '$lib/types/capabilities';
 
 // -- Child components the shell mounts that are irrelevant here -------------
 vi.mock('../../../components/spectrum/SpectrumPanel.svelte', async () => {
@@ -189,8 +192,11 @@ vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
 import MobileRadioLayout from '../MobileRadioLayout.svelte';
 import mobileLayoutSource from '../MobileRadioLayout.svelte?raw';
 import mobileSkinSource from '../../../skins/mobile/MobileSkin.svelte?raw';
-import { hasTx } from '$lib/stores/capabilities.svelte';
+import { hasTx, getScopeSource, getCapabilities, hasDualReceiver } from '$lib/stores/capabilities.svelte';
+import { radio } from '$lib/stores/radio.svelte';
 import { deriveModInputTxGuardProps } from '$lib/runtime/adapters/mod-input-tx-guard.svelte';
+import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
+import { topologyFixtures } from '../../../semantic/fixtures/topologies';
 
 const RX: ManagedTxState = Object.freeze({
   phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
@@ -320,10 +326,13 @@ describe('semantic VFO / RX-TX adoption in the mobile shell', () => {
 
   // Kills: adding a second copy of the wiring (one per orientation, or one
   // per chip). Exactly one instance may exist — each is a distinct TX source.
+  // MOR-2442: landscape also mounts ONE, hosting its scope panel through the
+  // managed region.
   it('never mounts a second copy, in either orientation', () => {
     const t = mountMobile();
+    expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
     rotate(true);
-    expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(0);
+    expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
     rotate(false);
     expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
   });
@@ -336,6 +345,55 @@ describe('semantic VFO / RX-TX adoption in the mobile shell', () => {
     // No mobile-local RX/TX or VFO surface reimplementation.
     expect(mobileLayoutSource).not.toContain('RxTxSurface');
     expect(mobileLayoutSource).not.toContain('VfoSurface');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1b. MOR-2662 (owner ruling 2026-09-26): the phone shows only ONE VFO —
+//     the active receiver's active slot — in both orientations. The
+//     presentation option the shell passes does it; the desktop path and the
+//     shared surface's default stay byte-identical.
+// ---------------------------------------------------------------------------
+describe('MOR-2662 — the phone shows only the active VFO', () => {
+  afterEach(() => {
+    vi.mocked(toRadioViewModel).mockReturnValue(topologyFixtures['1/single']);
+  });
+
+  // Kills: the deck still drawing BOTH VFO tiles below the header.
+  it('portrait renders exactly one VFO tile — the active receiver\'s active slot', () => {
+    vi.mocked(toRadioViewModel).mockReturnValue(topologyFixtures['2/main_sub']);
+    const t = mountMobile();
+    const tiles = t.querySelectorAll('[data-vfo-tile]');
+    expect(tiles).toHaveLength(1);
+    expect(tiles[0].getAttribute('data-vfo-receiver')).toBe('MAIN');
+    expect(tiles[0].getAttribute('data-vfo-active')).toBe('true');
+    expect(tiles[0].getAttribute('data-vfo-active-slot')).toBe('true');
+  });
+
+  // The single-receiver A/B shape: the active SLOT's tile alone survives.
+  it('portrait renders the active slot only on a slotted A/B radio', () => {
+    vi.mocked(toRadioViewModel).mockReturnValue(topologyFixtures['1/ab']);
+    const t = mountMobile();
+    const tiles = t.querySelectorAll('[data-vfo-tile]');
+    expect(tiles).toHaveLength(1);
+    expect(tiles[0].getAttribute('data-vfo-slot')).toBe('A');
+    expect(tiles[0].getAttribute('data-vfo-active')).toBe('true');
+  });
+
+  // Kills: the landscape overlay re-adding a second VFO surface.
+  it('landscape renders no VFO tiles — the strip shows the active frequency alone', () => {
+    vi.mocked(toRadioViewModel).mockReturnValue(topologyFixtures['2/main_sub']);
+    rotate(true);
+    const t = mountMobile();
+    expect(t.querySelectorAll('[data-vfo-tile]')).toHaveLength(0);
+    expect(t.querySelector('.m-ls-vfo')).not.toBeNull();
+  });
+
+  // Kills: a future edit dropping the option and silently restoring two
+  // tiles. The one-tile phone is a presentation OPTION the shell passes,
+  // never a fork of the shared surface.
+  it('passes the one-tile presentation option to the shared wiring', () => {
+    expect(mobileLayoutSource).toContain('vfoTiles="active"');
   });
 });
 
@@ -404,6 +462,96 @@ describe('spectrum slot with a spectrum-capable radio (MOR-2511)', () => {
       const slot = t.querySelector(landscape ? '.m-ls-spectrum' : '.m-spectrum');
       expect(slot?.querySelector('.spectrum-panel-stub')).not.toBeNull();
     });
+});
+
+// ---------------------------------------------------------------------------
+// 1c. Managed scope contract (MOR-2442): both orientations receive the
+// SemanticRadioSurfaces-managed projection/demand region — no second
+// subscriber, no legacy panel subscription. The two halves depend on
+// DIFFERENT mechanisms: the portrait half is killed by dropping the
+// `scopeManaged` opt-in from the SRS gates; the landscape half is killed by
+// the layout's hosted mount no longer forwarding `instruments.managedScope`
+// to its SpectrumPanel. Each pin therefore lives on the mechanism that
+// carries the region into that orientation's panel.
+// The beforeEach also establishes AUTHORITY (matching state/caps
+// generations), which the region assertions do not need but the lease pin
+// below does: without it the SRS lease effect can never engage.
+// ---------------------------------------------------------------------------
+describe('managed scope contract on a hardware-scope radio (MOR-2442)', () => {
+  // Resource spies registered during a test are restored HERE so a failing
+  // pin cannot leak its wrapper into neighboring tests.
+  const resourceSpies: { mockRestore(): void }[] = [];
+  beforeEach(() => {
+    vi.mocked(getScopeSource).mockReturnValue('hardware');
+    vi.mocked(getCapabilities).mockReturnValue({
+      capabilities: [], freqRanges: [], modes: [], filters: [],
+      providerGeneration: 1, scopeSource: 'hardware',
+    } as unknown as Capabilities);
+    radio.current = { providerGeneration: 1, fieldStatus: {} } as unknown as ServerState;
+  });
+  afterEach(() => {
+    vi.mocked(getScopeSource).mockReturnValue(null);
+    vi.mocked(getCapabilities).mockReturnValue({
+      model: '', scope: false, audio: false, tx: false,
+      capabilities: [], receivers: 1, vfoScheme: 'single',
+      freqRanges: [], modes: [], filters: [],
+      audioConfig: { sampleRate: 48000, channels: 1, codecs: [] },
+      webrtc: { available: false, enabled: false },
+      txBands: null,
+    });
+    radio.current = null;
+    for (const spy of resourceSpies.splice(0)) spy.mockRestore();
+  });
+
+  it.each([['portrait', false], ['landscape', true]] as const)(
+    'receives the SemanticRadioSurfaces-managed region in %s', (_label, landscape) => {
+      setViewport(landscape);
+      const t = mountMobile();
+      const slot = t.querySelector(landscape ? '.m-ls-spectrum' : '.m-spectrum');
+      const panel = slot?.querySelector('.spectrum-panel-stub');
+      // Projection may still be null while no frame has been accepted; the
+      // contract is the bound region object itself, non-`undefined`.
+      expect(panel?.getAttribute('data-managed-scope')).toBe('true');
+      expect(panel?.getAttribute('data-scope-demanded')).toBe('true');
+      expect(panel?.getAttribute('data-has-scope-demand-handler')).toBe('true');
+    });
+
+  // Kills: a leaked scope lease — either the hidden orientation's SRS
+  // instance holding one while the visible side holds another, or a lease
+  // surviving unmount. Planted form for the mini RED: drop the
+  // `presentationResources.release(lease)` cleanup in SemanticRadioSurfaces'
+  // lease effect — then rotation leaves TWO live leases and unmount leaves
+  // one. Each orientation mounts at most one SRS instance; the pin counts
+  // live leases at every settled step, not just the end state.
+  it('holds at most one scope lease through rotation, and none after unmount', () => {
+    const realAcquire = presentationResources.acquire.bind(presentationResources);
+    const realRelease = presentationResources.release.bind(presentationResources);
+    const live = new Set<ResourceLease>();
+    const acquire = vi.spyOn(presentationResources, 'acquire').mockImplementation((resource, consumer) => {
+      const lease = realAcquire(resource, consumer);
+      live.add(lease);
+      return lease;
+    });
+    const release = vi.spyOn(presentationResources, 'release').mockImplementation((lease) => {
+      live.delete(lease);
+      return realRelease(lease);
+    });
+    resourceSpies.push(acquire, release);
+
+    const t = mountMobile(); // portrait — the visible instance takes one lease
+    expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
+    expect(live.size).toBe(1);
+
+    rotate(true); // → landscape
+    expect(live.size).toBe(1);
+
+    rotate(false); // → back to portrait
+    expect(live.size).toBe(1);
+
+    for (const component of components.splice(0)) unmount(component);
+    flushSync();
+    expect(live.size).toBe(0); // no lease survives unmount
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -501,7 +649,10 @@ describe('orientation change preserves App authority (MOR-1086 doctrine)', () =>
     expect(release).not.toHaveBeenCalled();
 
     rotate(true);
-    expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(0);
+    // MOR-2442: landscape mounts its own ONE instance; with no display
+    // source this mount still never leases. The hardware-source lease path
+    // is pinned separately in 1c above.
+    expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
     expect(acquire).not.toHaveBeenCalled();
     expect(release).not.toHaveBeenCalled();
 

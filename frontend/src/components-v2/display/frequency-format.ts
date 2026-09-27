@@ -13,20 +13,20 @@ export interface FrequencyParts {
  * @param freq - Frequency in Hz. Negative values are clamped to 0. Floats are floored.
  */
 export function formatFrequency(freq: number): FrequencyParts {
-  // MOR-1409 A11 (coordinator adjudication 5245817033, Core #2317):
-  // `toVfoProps`/`toBandSelectorProps` (lib/runtime/props/panel-props.ts)
-  // deliberately return `NaN` for an unobserved frequency (no fabricated
-  // 14.074 MHz stand-in). `FrequencyDisplay.svelte` — this function's sole
-  // consumer, rendered unguarded on the shipped mobile skin at cold start
+  // MOR-2654 (owner rule, 2026-09-26: no question marks anywhere in the
+  // interface): an unread frequency is UNLIT digits, never dash
+  // placeholders. `toVfoProps`/`toBandSelectorProps`
+  // (lib/runtime/props/panel-props.ts) deliberately return `NaN` for an
+  // unobserved frequency (no fabricated 14.074 MHz stand-in), and
+  // `FrequencyDisplay.svelte` — this function's sole consumer, rendered
+  // unguarded on the shipped mobile skin at cold start
   // (`MobileRadioLayout.svelte`) — would otherwise show the literal string
   // "NaN.NaN.NaN". Guard here, the single choke point, rather than in each
-  // consumer. Placeholder segment widths match the sibling LCD-skin
-  // formatter's already-shipped convention for the same unknown-frequency
-  // case (`panels/lcd/AmberFrequency.svelte`'s `hz <= 0` branch): '--' for
-  // the (normally 1-2 digit) MHz group, '---' for the always-3-digit
-  // zero-padded kHz/Hz groups — never the literal "NaN" substring.
+  // consumer. The unlit form is empty strings: the caller reserves the digit
+  // slots (tabular figures), so the first reading cannot move anything —
+  // never the literal "NaN" substring, never a dash.
   if (!Number.isFinite(freq)) {
-    return { mhz: '--', khz: '---', hz: '---' };
+    return { mhz: '', khz: '', hz: '' };
   }
   const absHz = Math.max(0, Math.floor(freq));
   const mhzPart = Math.floor(absHz / 1_000_000);

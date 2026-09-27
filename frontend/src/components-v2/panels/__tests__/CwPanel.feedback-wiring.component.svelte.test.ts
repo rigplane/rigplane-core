@@ -239,9 +239,10 @@ describe('fallback CwPanel ControlFeedback wiring (MOR-1754)', () => {
   ])('fails closed for %s feedback', (_case, malformed) => {
     handlers.onBreakInDelayChange.mockClear();
     Object.assign(feedback as unknown as Record<string, unknown>, malformed); const r = render();
+    // MOR-2658: unread is an empty reserved slot — never the '—' placeholder.
     expect([r.input().disabled, r.input().getAttribute('aria-valuetext'),
       target.querySelector('[data-testid="cw-break-in-delay-value"]')?.textContent])
-      .toEqual([true, 'Control unavailable', '—']);
+      .toEqual([true, 'Control unavailable', '']);
     r.input().value = '111'; r.input().dispatchEvent(new Event('change', { bubbles: true }));
     expect(handlers.onBreakInDelayChange).not.toHaveBeenCalled();
   });
@@ -280,9 +281,10 @@ describe('fallback CwPanel ControlFeedback wiring (MOR-1754)', () => {
     });
     flushSync();
     expect(error.mock.calls.flat().join(' ')).not.toMatch(/state_unsafe_mutation/i);
+    // MOR-2658: unread is an empty reserved slot — never the '—' placeholder.
     expect([r.input().disabled, r.input().getAttribute('aria-valuetext'),
       target.querySelector('[data-testid="cw-break-in-delay-value"]')?.textContent])
-      .toEqual([true, 'Control unavailable', '—']);
+      .toEqual([true, 'Control unavailable', '']);
     r.input().dispatchEvent(new Event('change', { bubbles: true }));
     expect(handlers.onBreakInDelayChange).not.toHaveBeenCalled();
 
@@ -298,5 +300,38 @@ describe('fallback CwPanel ControlFeedback wiring (MOR-1754)', () => {
     r.input().dispatchEvent(new Event('change', { bubbles: true }));
     expect(handlers.onBreakInDelayChange).toHaveBeenCalledExactlyOnceWith(90);
     error.mockRestore();
+  });
+});
+
+// ── Unread break-in delay (MOR-2658) ───────────────────────────────────────
+// An unread delay renders EMPTY in its reserved slot — never '—', and never
+// a '%' without its number. A known delay renders exactly as before.
+describe('unread break-in delay value display (MOR-2658)', () => {
+  it('renders a known delay exactly as before', () => {
+    const r = render();
+    expect(r.input().disabled).toBe(false);
+    expect(r.input().value).toBe('64');
+    expect(target.querySelector('[data-testid="cw-break-in-delay-value"]')?.textContent)
+      .toBe('25%');
+  });
+
+  it('renders no dash, percent-alone or unknown-word anywhere when unread', () => {
+    Object.assign(feedback, { confirmed: null, phase: 'unavailable',
+      availability: 'unavailable', transitionId: 'unread' });
+    render();
+    const value = target.querySelector('[data-testid="cw-break-in-delay-value"]')?.textContent ?? '';
+    expect(value).toBe('');
+    const text = target.textContent ?? '';
+    expect(text).not.toContain('—');
+    expect(text).not.toMatch(/unknown/i);
+    for (const name of [...target.querySelectorAll('[aria-label]')].map((node) => node.getAttribute('aria-label') ?? '')) {
+      expect(name).not.toContain('—');
+    }
+  });
+
+  it('reserves the delay value slot structurally for unread and known alike', () => {
+    const source = readFileSync('src/components-v2/panels/CwPanel.svelte', 'utf8');
+    const rule = source.match(/\.break-in-delay-header output \{([^}]*)\}/)?.[1] ?? '';
+    expect(rule, 'the delay output keeps a reserved box').toContain('min-width:');
   });
 });

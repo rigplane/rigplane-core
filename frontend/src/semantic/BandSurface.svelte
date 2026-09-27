@@ -103,8 +103,11 @@
 
   export const usable = (f: BandField<unknown>): boolean =>
     f.availability.structural && f.availability.operational && f.reading.status === 'known';
-  export const textOf = (f: BandField<unknown>): string =>
-    f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
+   /** MOR-2652: an unread current band prints nothing — an unlit slot. The
+    *  denial reasons below keep `UNKNOWN_TEXT` from `band-instruments`: those
+    *  are sentences, not a value standing in for a reading. */
+   export const textOf = (f: BandField<unknown>): string =>
+     f.reading.status === 'known' ? String(f.reading.value) : '';
   export const isCurrent = (f: BandField<string>, name: string): boolean =>
     f.reading.status === 'known' && f.reading.value === name;
 
@@ -184,7 +187,7 @@
     {#if band.currentBand.availability.structural}
       <p class="band-row" data-testid="band-current" data-observed={usable(band.currentBand)}>
         <span class="band-name">BAND</span>
-        <output data-testid="band-current-value">{textOf(band.currentBand)}</output>
+        <output class="band-value" data-testid="band-current-value">{textOf(band.currentBand)}</output>
       </p>
     {/if}
 
@@ -222,6 +225,7 @@
   .band-surface { display: flex; flex-direction: column; gap: 0.25rem; }
   .band-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
   .band-name { min-width: 7ch; }
+  .band-value { display: inline-block; min-width: 8ch; font-variant-numeric: tabular-nums; }
   /* Second channel beside `data-observed`/`data-tx`, never the only one: the
      rendered word itself is the primary one and survives forced-colors. */
   [data-observed='false'] { font-style: italic; }

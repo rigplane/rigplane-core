@@ -49,8 +49,10 @@
       && field.reading.status === 'known';
   const reason = (field: Parameters<typeof usable>[0]) =>
     usable(field) ? undefined : 'field-not-observed';
+  // MOR-2648: an unread value renders an unlit box — empty text, never a
+  // `?` glyph; the box itself stays reserved (the style rule below).
   const textOf = (field: { reading: { status: 'known'; value: unknown } | { status: 'unknown' } }) =>
-    field.reading.status === 'known' ? String(field.reading.value) : '?';
+    field.reading.status === 'known' ? String(field.reading.value) : '';
   const requested = <T,>(target: T | null) => target === null
     ? undefined : { kind: 'requested-target' as const, target };
 
@@ -245,7 +247,10 @@
               data-pending-value={pendingModInput === null ? undefined : pendingModInput}
               disabled={!usable(filterPassband.modInputSource)}
               onchange={(event) => onModInputChange?.(Number(event.currentTarget.value))}>
-              {#if filterPassband.modInputSource.reading.status !== 'known'}<option value="" disabled selected>—</option>{/if}
+              <!-- MOR-2648: an unread select shows a blank, unlit choice —
+                   an empty option, never a dash or a fabricated value; the
+                   select's grid column keeps its width reserved. -->
+              {#if filterPassband.modInputSource.reading.status !== 'known'}<option value="" disabled selected></option>{/if}
               {#each filterPassband.modInputChoices ?? [] as choice (choice.value)}
                 <option value={choice.value}
                   selected={filterPassband.modInputSource.reading.status === 'known'
@@ -266,6 +271,10 @@
 <style>
   .filter-choice-group, .filter-readout { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; }
   .filter-level-name { min-width: 8ch; }
+  /* MOR-2648: the DATA-mode value box stays reserved — a flex child, so the
+     min-width applies; 4ch covers a multi-digit code, tabular digits keep a
+     changing value from shifting the row. */
+  .filter-readout output, .filter-choice-group output { min-width: 4ch; font-variant-numeric: tabular-nums; }
   .filter-choice[aria-pressed='true'] { font-weight: 700; }
   .filter-choice:disabled { cursor: not-allowed; }
   .filter-choice[data-pending='true'] { font-style: italic; opacity: 0.75; }

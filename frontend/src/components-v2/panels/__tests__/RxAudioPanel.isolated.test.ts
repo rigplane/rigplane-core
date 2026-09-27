@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
+import { readFileSync } from 'node:fs';
 import { buildMonitorOptions, formatMonitorStatus } from '../audio-utils';
 import RxAudioPanel from '../RxAudioPanel.svelte';
 
@@ -254,13 +255,19 @@ describe('callbacks', () => {
   });
 });
 
-function vcValueFor(t: HTMLElement, label: string): string {
+function vcValueEl(t: HTMLElement, label: string): HTMLElement {
   const headers = Array.from(t.querySelectorAll('.vc-header'));
   const header = headers.find(
     (h) => h.querySelector('.vc-label')?.textContent === label,
   );
   if (!header) throw new Error(`ValueControl labeled "${label}" not found`);
-  return header.querySelector('.vc-value')?.textContent ?? '';
+  const el = header.querySelector('.vc-value');
+  if (!el) throw new Error(`Value box for "${label}" not found`);
+  return el as HTMLElement;
+}
+
+function vcValueFor(t: HTMLElement, label: string): string {
+  return vcValueEl(t, label).textContent ?? '';
 }
 
 /**
@@ -270,22 +277,53 @@ function vcValueFor(t: HTMLElement, label: string): string {
  * capability gate with `props.afLevel === NaN` (panel-props.ts no longer
  * fabricates `?? 0.5`). Unguarded, `normalizedPercentDisplay(NaN)` renders
  * the literal "NaN%" (verifier-executed probe on the unguarded candidate).
- * The local `formatAfLevelDisplay` guard must render the established
- * '---'-family placeholder instead.
+ * MOR-2668: the local `formatAfLevelDisplay` guard renders an unobserved
+ * level as '' (unlit LCD segment) in HBarRenderer's reserved `.vc-value`
+ * box (MOR-2657) — never a dash, never "NaN".
  */
-describe('RxAudioPanel — no "NaN" leak for an unobserved AF level (MOR-1409 A12)', () => {
+describe('RxAudioPanel — no "NaN" leak for an unobserved AF level (MOR-1409 A12, MOR-2668)', () => {
   it('does not render a "NaN" substring for AF Level when afLevel is non-finite', () => {
     const t = mountPanel({ afLevel: Number.NaN, hasAfLevel: true, hasLiveAudio: false });
     expect(vcValueFor(t, 'AF Level')).not.toMatch(/NaN/);
   });
 
-  it('renders the established "---"-family placeholder for a non-finite AF Level', () => {
+  it('renders an empty unread AF Level in its reserved box, never a dash', () => {
     const t = mountPanel({ afLevel: Number.NaN, hasAfLevel: true, hasLiveAudio: false });
-    expect(vcValueFor(t, 'AF Level')).toBe('--- %');
+    expect(vcValueEl(t, 'AF Level')).not.toBeNull();
+    expect(vcValueFor(t, 'AF Level')).toBe('');
+  });
+
+  it('exposes no placeholder in the AF slider accessible name when unread', () => {
+    const t = mountPanel({ afLevel: Number.NaN, hasAfLevel: true, hasLiveAudio: false });
+    const slider = t.querySelector('[role="slider"]');
+    expect(slider?.getAttribute('aria-label')).toBe('AF Level');
+    expect(slider?.getAttribute('aria-valuetext')).toBeNull();
   });
 
   it('still renders the real formatted percentage for a finite AF level', () => {
     const t = mountPanel({ afLevel: 0.42, hasAfLevel: true, hasLiveAudio: false });
     expect(vcValueFor(t, 'AF Level')).toBe('42%');
+  });
+
+  it('renders the widest AF level reading exactly', () => {
+    const t = mountPanel({ afLevel: 1, hasAfLevel: true, hasLiveAudio: false });
+    expect(vcValueFor(t, 'AF Level')).toBe('100%');
+  });
+
+  it('reserves the AF value box for the widest reading (HBarRenderer .vc-value)', () => {
+    // Widest text this panel's displayFn can produce: normalized percent
+    // clamps to 0..100, so '100%'. The reservation lives in the shared
+    // HBarRenderer (MOR-2657) — pinned here structurally off its source.
+    const widest = '100%'.length;
+    const source = readFileSync(
+      'src/components-v2/controls/value-control/HBarRenderer.svelte', 'utf8',
+    ).replace(/\/\*[\s\S]*?\*\//g, '');
+    const rule = source.match(/\.vc-value \{([^}]*)\}/);
+    expect(rule).not.toBeNull();
+    const minWidth = Number(rule![1].match(/min-width: (\d+)ch/)?.[1]);
+    expect(Number.isFinite(minWidth)).toBe(true);
+    expect(minWidth).toBeGreaterThanOrEqual(widest);
+    expect(rule![1]).toContain('tabular-nums');
+    expect(source).toMatch(/\.vc-value:empty::before \{ content: '\\200b'; \}/);
   });
 });

@@ -28,7 +28,11 @@
     aria-haspopup="dialog"
     onclick={() => (open = !open)}
   >
-    TOT {txState.fresh ? (txState.configuredSeconds === null ? 'OFF' : `${txState.configuredSeconds}s`) : '---'}
+    <span class="tot-readout">
+      <span class="tot-live">
+        TOT {#if txState.fresh}{txState.configuredSeconds === null ? 'OFF' : `${txState.configuredSeconds}s`}{/if}
+      </span>
+    </span>
   </button>
 
   {#if open}
@@ -82,6 +86,24 @@
 
   .managed-tot-trigger:hover {
     border-color: var(--v2-accent-cyan, #06b6d4);
+  }
+
+  /* MOR-2674 (owner rule, 2026-09-26): a stale TX snapshot is unread — the
+     TOT label stays, the value goes blank (unlit LCD segment), never a
+     dash run. The reservation is a minimum on the value element itself,
+     derived from the formatter's widest of 'OFF' and an integer seconds
+     value of up to four digits ('TOT 9999s' → 9ch in Roboto Mono), so the
+     first reading cannot shift the status bar. A wider legal value (an
+     API-configured 5-digit seconds, or a fraction) grows the box instead
+     of overlapping the status-bar neighbours. */
+  .managed-tot-trigger .tot-readout {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .managed-tot-trigger .tot-live {
+    display: inline-block;
+    min-inline-size: 9ch;
+    white-space: nowrap;
   }
 
   .managed-tot-popover-backdrop {

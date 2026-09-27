@@ -244,7 +244,6 @@
   "core.vfo.dualWatch.label": "Dual watch",
   "core.vfo.state.on": "on",
   "core.vfo.state.off": "off",
-  "core.vfo.state.unknown": "unknown",
 
   "core.meter.state.idle": "Not measuring in receive",
   "core.meter.state.noReading": "No reading",
@@ -317,6 +316,7 @@
   "core.disabledReason.receiverLacksControl": "Not available on this receiver",
 
   "core.txGuard.modInputNotLan": "MOD input is {source}, not LAN — your voice from the web will not be transmitted (TX).",
+  "core.txGuard.modInputNotLanUnknown": "MOD input is not LAN — your voice from the web will not be transmitted (TX).",
   "core.txGuard.setLan": "Set LAN",
   "core.txGuard.dismiss": "Dismiss MOD input warning",
   "core.txGuard.autoLanLabel": "Auto-switch MOD input to LAN for web TX",

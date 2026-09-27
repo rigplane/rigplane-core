@@ -134,19 +134,23 @@ describe('AmberFrequency', () => {
     unmount(component);
   });
 
-  it('handles zero frequency gracefully (shows dashes)', () => {
+  it('handles zero frequency gracefully (unlit digits, MOR-2654)', () => {
     const component = mount(AmberFrequency, { target, props: { freqHz: 0 } });
     const active = target.querySelector('.freq-active')!;
-    expect(active.querySelector('.seg-mhz')!.textContent).toBe('--');
-    expect(active.querySelector('.seg-khz')!.textContent).toBe('---');
-    expect(active.querySelector('.seg-hz')!.textContent).toBe('---');
+    // MOR-2654 (owner rule, 2026-09-26): unread is unlit — empty digit
+    // slots over the ghost all-8s layer — never dash placeholders.
+    expect(active.querySelector('.seg-mhz')!.textContent).toBe('');
+    expect(active.querySelector('.seg-khz')!.textContent).toBe('');
+    expect(active.querySelector('.seg-hz')!.textContent).toBe('');
+    expect(active.textContent).not.toContain('-');
     unmount(component);
   });
 
-  it('handles negative frequency as zero (shows dashes)', () => {
+  it('handles negative frequency as zero (unlit digits, MOR-2654)', () => {
     const component = mount(AmberFrequency, { target, props: { freqHz: -100 } });
     const active = target.querySelector('.freq-active')!;
-    expect(active.querySelector('.seg-mhz')!.textContent).toBe('--');
+    expect(active.querySelector('.seg-mhz')!.textContent).toBe('');
+    expect(active.textContent).not.toContain('-');
     unmount(component);
   });
 
@@ -156,6 +160,21 @@ describe('AmberFrequency', () => {
     expect(ghost.querySelector('.seg-khz')!.textContent).toBe('888');
     expect(ghost.querySelector('.seg-hz')!.textContent).toBe('888');
     unmount(component);
+  });
+
+  it('keeps the ghost MHz slot constant for unread and known readings (MOR-2654 F1)', () => {
+    // The ghost row is sized to the widest MHz field across the shipped
+    // profiles (IC-9700 23cm reaches 1300 MHz = 4 digits, rigs/ic9700.toml),
+    // never mirrored from the active reading — so the unread slot is exactly
+    // as wide as any known one and the first reading cannot move anything.
+    const unread = mount(AmberFrequency, { target, props: { freqHz: 0 } });
+    const unreadGhostMhz = target.querySelector('.freq-ghost .seg-mhz')!.textContent!;
+    unmount(unread);
+    const known = mount(AmberFrequency, { target, props: { freqHz: 14_074_000 } });
+    const knownGhostMhz = target.querySelector('.freq-ghost .seg-mhz')!.textContent!;
+    unmount(known);
+    expect(unreadGhostMhz).toBe('8888');
+    expect(knownGhostMhz).toBe('8888');
   });
 
   it('applies large size class by default', () => {

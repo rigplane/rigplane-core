@@ -47,7 +47,14 @@
   .offset.unknown { color: var(--ink-soft); }
   .offset.unsupported { visibility: hidden; }
   .offset-label { font-size: 10px; font-weight: 700; letter-spacing: 0.18em; }
-  .offset-value { font-family: 'DSEG7 Classic', monospace; font-size: 16px; font-weight: 700; letter-spacing: 0.02em; }
+  .offset-value {
+    display: inline-block;
+    /* MOR-2650: the digits slot stays reserved at the widest reading
+       (`−54.500`, 7ch, tabular DSEG). An unread or split-off rail draws
+       nothing; a first reading lights the slot without moving it. */
+    min-width: 7ch;
+    font-family: 'DSEG7 Classic', monospace; font-size: 16px; font-weight: 700; letter-spacing: 0.02em;
+  }
   .offset:not(.active) .offset-value { opacity: 0.25; }
   .offset-value small { margin-left: 4px; color: var(--ink-mid); font-family: 'Share Tech Mono', monospace; font-size: 9px; }
 </style>

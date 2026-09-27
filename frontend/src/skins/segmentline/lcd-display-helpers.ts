@@ -15,8 +15,16 @@ export interface FilterEnvelope {
   readonly centerX: number;
 }
 
+// MOR-2650 (owner ruling 2026-09-26: no question marks anywhere in the
+// interface): an unread value is unlit segments — the empty string — never
+// '?'. An unsupported value is not drawn — also the empty string, never
+// '—'. The caller's slot keeps its reserved box (min-width over the widest
+// text the slot can render, tabular digits), so a first reading lights the
+// slot without moving it. No invented value: unknown is not zero, OFF, or a
+// default. `telemetryText` (MOR-2425/MOR-2540) already works this way and is
+// reused as the treatment, not duplicated.
 export function stateText<T>(field: DisplayValue<T>): string {
-  return field.state === 'known' ? String(field.value) : field.state === 'unknown' ? '?' : '—';
+  return field.state === 'known' ? String(field.value) : '';
 }
 
 export function formatBandwidth(field: DisplayValue<number>): string {
@@ -26,10 +34,8 @@ export function formatBandwidth(field: DisplayValue<number>): string {
 }
 
 export function formatOffset(field: DisplayOffset): string {
-  if (field.state !== 'active' && field.state !== 'inactive') {
-    return field.state === 'unknown' ? '?' : '—';
-  }
-  if (field.offsetHz === undefined) return '—';
+  if (field.state !== 'active' && field.state !== 'inactive') return '';
+  if (field.offsetHz === undefined) return '';
   const sign = field.offsetHz < 0 ? '−' : '+';
   return `${sign}${(Math.abs(field.offsetHz) / 1000).toFixed(3)}`;
 }

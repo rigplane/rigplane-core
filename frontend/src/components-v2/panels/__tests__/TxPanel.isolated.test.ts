@@ -124,6 +124,7 @@ vi.mock('$lib/runtime/adapters/mod-input-auto.svelte', () => ({
 
 import TxPanel from '../TxPanel.svelte';
 import txPanelSource from '../TxPanel.svelte?raw';
+import { toTxProps } from '$lib/runtime/props/panel-props';
 
 let tx: ManagedAppTxHarness;
 let components: ReturnType<typeof mount>[] = [];
@@ -143,6 +144,14 @@ function openTxSettings(container: HTMLElement) {
     .find((b) => b.textContent?.includes('LEVELS'));
   btn?.click();
   flushSync();
+}
+
+function rfPowerValue(container: HTMLElement): string {
+  const header = Array.from(container.querySelectorAll('.vc-header')).find(
+    (h) => h.querySelector('.vc-label')?.textContent === 'RF Power',
+  );
+  if (!header) throw new Error('ValueControl labeled "RF Power" not found');
+  return header.querySelector('.vc-value')?.textContent ?? '';
 }
 
 beforeEach(() => {
@@ -221,6 +230,50 @@ describe('panel structure', () => {
     openTxSettings(t);
     const labels = Array.from(t.querySelectorAll('.vc-label'));
     expect(labels.some((el) => el.textContent === 'Mic Gain')).toBe(true);
+  });
+
+  it('renders a known RF Power exactly as before', () => {
+    const t = mountPanel({ rfPower: 0.5 });
+    openTxSettings(t);
+    expect(rfPowerValue(t)).toBe('50%');
+  });
+
+  it('renders a non-finite RF Power as an empty slot, never NaN', () => {
+    const t = mountPanel({ rfPower: Number.NaN });
+    openTxSettings(t);
+    const value = rfPowerValue(t);
+    expect(value).toBe('');
+    expect(value).not.toContain('NaN');
+    expect(value).not.toMatch(/-{2,}/);
+  });
+
+  it('renders no fabricated 50% for a rig that never reported powerLevel (MOR-2658)', () => {
+    // End to end through the real projection: a connected rig with no
+    // powerLevel field and no fieldStatus entry reads as available (the
+    // legacy no-entry fallback in field-status.ts), so the old `?? 0.5`
+    // arrived as a KNOWN 0.5 and printed "50%" with a half fill. The
+    // source now reports NaN for exactly that rig.
+    const props = toTxProps({ active: 'MAIN', main: {} } as any, { tx: true, capabilities: [] } as any);
+    expect(props.rfPowerAvailable).toBe(true);
+    const t = mountPanel({ rfPower: props.rfPower });
+    openTxSettings(t);
+    expect(rfPowerValue(t)).toBe('');
+    const hbar = Array.from(t.querySelectorAll<HTMLElement>('.vc-hbar')).find(
+      (h) => h.querySelector('.vc-label')?.textContent === 'RF Power',
+    );
+    expect(hbar?.getAttribute('style')).toContain('--vc-fill-percent: 0%');
+    expect(hbar?.querySelector('[role="slider"]')?.hasAttribute('aria-valuenow')).toBe(false);
+  });
+
+  it('keeps the RF Power value in its reserved level slot', () => {
+    const t = mountPanel({ rfPower: 0.5 });
+    openTxSettings(t);
+    const header = Array.from(t.querySelectorAll('.vc-header')).find(
+      (h) => h.querySelector('.vc-label')?.textContent === 'RF Power',
+    );
+    expect(header?.closest('.tx-level-slot')).not.toBeNull();
+    const rule = txPanelSource.match(/\.tx-level-slot :global\(\.vc-value\) \{([^}]*)\}/)?.[1] ?? '';
+    expect(rule, 'the RF Power value keeps a reserved box').toContain('min-width:');
   });
 
   it('preserves the level order and illuminated orange presentation', () => {

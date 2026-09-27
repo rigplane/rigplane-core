@@ -60,7 +60,7 @@
   "observed" value — it is honestly what it is, an operator/default
   selection. `scanType`'s OWN displayed reading (`scan-type-value`) is
   untouched by this and still shows only the genuinely last-observed
-  value, `UNKNOWN_TEXT` until one exists.
+  value, EMPTY until one exists.
 
   MOR-2425 restores v2.11.1's TYPE/SPAN/RESUME affordances on
   `selectedType`'s foundation: six TYPE buttons set it and immediately
@@ -77,7 +77,6 @@
   import type { RitXitField, ScanField } from './radio-view-model';
   import { pressedOf } from './pressed-of';
 
-  export const UNKNOWN_TEXT = '—';
   /** O2 — v2's own legacy `RitXitPanel` bounds, verbatim. */
   export const OFFSET_MIN = -9999;
   export const OFFSET_MAX = 9999;
@@ -101,11 +100,14 @@
 
   export const usable = (f: RitXitField<unknown> | ScanField<unknown>): boolean =>
     f.availability.structural && f.availability.operational && f.reading.status === 'known';
+  /** MOR-2653: every readout renders EMPTY in its reserved slot when
+   *  unread — never a placeholder dash, and never a unit without its
+   *  number. */
   export const textOf = (f: RitXitField<unknown> | ScanField<unknown>): string =>
-    f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
+    f.reading.status === 'known' ? String(f.reading.value) : '';
   const isOn = (f: RitXitField<boolean>): boolean => f.reading.status === 'known' && f.reading.value === true;
   const signedOffset = (f: RitXitField<number>): string => {
-    if (f.reading.status !== 'known' || !Number.isFinite(f.reading.value)) return UNKNOWN_TEXT;
+    if (f.reading.status !== 'known' || !Number.isFinite(f.reading.value)) return '';
     const value = f.reading.value;
     return `${value > 0 ? '+' : ''}${value} Hz`;
   };
@@ -247,7 +249,7 @@
       onkeydown={offsetKeydown}
       oninput={(event) => changeOffset(event.currentTarget.valueAsNumber)}
     />
-    <output data-testid="ritxit-offset-value">{decodedOffset?.text ?? UNKNOWN_TEXT}</output>
+    <output data-testid="ritxit-offset-value">{decodedOffset?.text ?? ''}</output>
   </label>
 {/snippet}
 
@@ -275,7 +277,7 @@
       <div class="row" data-testid="scan">
         {#if sc.scanning.availability.structural}
           <span class="row-label">SCAN</span>
-          {#if part === 'all'}<span data-testid="scan-status" data-observed={usable(sc.scanning)}>{textOf(sc.scanning)}</span>{/if}
+          {#if part === 'all'}<span class="scan-readout" data-testid="scan-status" data-observed={usable(sc.scanning)}>{textOf(sc.scanning)}</span>{/if}
           <button
             type="button" data-testid="scan-toggle" aria-pressed={pressedOf(sc.scanning)}
             disabled={!scanToggle.available || (!scanningOn && availableScanTypes.length === 0)}
@@ -307,11 +309,11 @@
           {/if}
         {/if}
         {#if part === 'all' && sc.scanType.availability.structural}
-          <output data-testid="scan-type-value">{textOf(sc.scanType)}</output>
+          <output class="scan-readout" data-testid="scan-type-value">{textOf(sc.scanType)}</output>
         {/if}
         {#if sc.scanResumeMode.availability.structural}
           {#if part === 'all'}
-          <output data-testid="scan-resume-value">{textOf(sc.scanResumeMode)}</output>
+          <output class="scan-readout" data-testid="scan-resume-value">{textOf(sc.scanResumeMode)}</output>
           {/if}
           {#if scanCapable && availableResumeModes.length > 0}
             <div class="scan-choice-group" data-testid="scan-resume-group">
@@ -340,6 +342,14 @@
   .offset { display: flex; align-items: baseline; gap: 0.5rem; }
   .ritxit-mode-row, .ritxit-offset-row { display: flex; align-items: center; gap: 0.5rem; width: 100%; }
   .ritxit-mode-row output { margin-inline-start: auto; }
+  /* MOR-2653: the offset slots keep their width unread → known — 9ch covers
+     the widest rendered value ('+9999 Hz'); an unread offset renders EMPTY,
+     never a placeholder, and never a unit without its number. */
+  .ritxit-mode-row output, .offset output {
+    display: inline-block;
+    min-width: 9ch;
+    font-variant-numeric: tabular-nums;
+  }
   .ritxit-clear-row { display: flex; justify-content: flex-end; width: 100%; }
   .ritxit-scan-surface[data-part='rit-xit'] .row { flex-direction: column; align-items: stretch; }
   .ritxit-scan-surface[data-part='rit-xit'] .offset { width: 100%; }
@@ -361,6 +371,15 @@
   .scan-type-buttons { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .scan-resume-buttons { grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); }
   .row-label { font: inherit; }
+  /* MOR-2653: reserved width in EVERY state — an unread scan readout renders
+     EMPTY in its slot, never a placeholder, and the slot's box never changes
+     size when a first reading arrives. 5ch covers the widest rendered value
+     ('false'; the type/resume wire values are at most three digits). */
+  .scan-readout {
+    display: inline-block;
+    min-width: 5ch;
+    font-variant-numeric: tabular-nums;
+  }
   [aria-pressed='true'] { font-weight: 700; }
   [data-observed='false'] { font-style: italic; }
   button:disabled, input:disabled { cursor: not-allowed; }

@@ -71,7 +71,7 @@
     && current.availability.operational
     && current.reading.status === 'known';
   const formatValue = (field: CwContinuousField, value: number | null): string => {
-    if (value === null || !Number.isFinite(value)) return '—';
+    if (value === null || !Number.isFinite(value)) return '';
     const [, , , , , unit] = row(field);
     return `${value} ${unit}`;
   };
@@ -257,6 +257,14 @@
   .cw-keyer-level { display: flex; align-items: baseline; gap: 0.5rem; }
   .cw-keyer-level--presented { display: flex; width: 100%; min-width: 0; max-width: 100%; }
   .cw-keyer-name { min-width: 12ch; }
+  /* MOR-2653: the value slot keeps its width unread → known. 6ch covers the
+     widest rendered value ('48 WPM', '900 Hz'); an unread value renders
+     EMPTY, never a placeholder. Digits are tabular. */
+  .cw-keyer-level :global(.vc-value) {
+    display: inline-block;
+    min-width: 6ch;
+    font-variant-numeric: tabular-nums;
+  }
   .cw-keyer-level :global(.vc-hbar) { width: 100%; min-width: 0; }
   .command-pending { font-style: italic; }
   .sr-only {

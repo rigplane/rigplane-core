@@ -56,9 +56,11 @@
   // never sent. `normalizedPercentDisplay` has no non-finite branch —
   // `Math.round(Math.max(0, Math.min(1, NaN)) * 100)` is `NaN` — so the
   // readout would render the literal "NaN%" on the default-active mobile
-  // chip. Same shape as `RxAudioPanel.svelte`'s guard for this exact field.
+  // chip. MOR-2668: an unread level renders '' (unlit LCD segment) in
+  // HBarRenderer's reserved `.vc-value` box (MOR-2657). Same shape as
+  // `RxAudioPanel.svelte`'s guard for this exact field.
   function formatAfLevelDisplay(v: number): string {
-    return Number.isFinite(v) ? normalizedPercentDisplay(v) : '--- %';
+    return Number.isFinite(v) ? normalizedPercentDisplay(v) : '';
   }
 </script>
 

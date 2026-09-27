@@ -57,5 +57,5 @@
   .filter-envelope.inner { stroke-dasharray: 6 3; stroke-width: 1.4; }
   .filter-envelope.outer { stroke-dasharray: 0.1 4; stroke-linecap: round; stroke-width: 2.2; }
   .filter-center { stroke: var(--ink-strong); stroke-width: 1.2; }
-  .filter-label, .scope-state { fill: var(--ink-strong); font-family: 'Share Tech Mono', monospace; font-size: 11px; font-weight: 700; }
+  .filter-label, .scope-state { fill: var(--ink-strong); font-family: 'Share Tech Mono', monospace; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
 </style>

@@ -335,7 +335,8 @@ describe('projectBarMeters', () => {
       state: 'current',
       domain: { kind: 'unknown' },
       motionFraction: null,
-      displayText: '50 unit unknown',
+      displayText: '',
+      accessibleDescription: 'Po: Observed',
       fault: false,
       showPeak: false,
     });
@@ -368,7 +369,7 @@ describe('projectBarMeters', () => {
       state: 'current',
       domain: { kind: 'unknown' },
       motionFraction: null,
-      displayText: '120 unit unknown',
+      displayText: '',
       ratioScale: false,
       fault: false,
     });

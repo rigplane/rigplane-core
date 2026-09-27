@@ -3,9 +3,10 @@
   sparklines showing the last ~30 samples. Mounted in the LCD aux
   grid-area (#894 reserved the slot; #887 twin-skin lays the cockpit).
 
-  Data source: `ServerState.vdMeter` / `idMeter`. Missing fields
-  produce a "—" placeholder tile but keep the strip visible so the
-  grid row doesn't collapse under the user.
+  Data source: `ServerState.vdMeter` / `idMeter`. Unread meters render
+  an unlit, EMPTY value in the reserved `.tile-value` box (MOR-2659 —
+  never a dash) but keep the strip visible so the grid row doesn't
+  collapse under the user.
 
   The IC-7610 exposes NO temperature over CI-V (no 0x15 temp sub, no
   MetersCapable.get_temp, no RadioState/ServerState temp field), so the
@@ -66,11 +67,12 @@
   // Display conversions — rigs report raw 0..255; the calibrated piecewise
   // converters (shared with the desktop meters) turn that into engineering
   // units so the LCD strip agrees with the rest of the UI (MOR-483 part 2).
+  // MOR-2659: an unread meter renders an unlit, empty value — never a dash.
   function vdLabel(raw: number | null): string {
-    return raw === null ? '—' : formatVolts(raw);
+    return raw === null ? '' : formatVolts(raw);
   }
   function idLabel(raw: number | null): string {
-    return raw === null ? '—' : formatAmps(raw);
+    return raw === null ? '' : formatAmps(raw);
   }
 </script>
 
@@ -142,6 +144,11 @@
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.02em;
+    /* MOR-2659: the value box is reserved in EVERY state (unread and known)
+       so the first reading cannot move the layout. 7ch covers the widest
+       text today ("255 raw" / "13.8+ V"); digits are tabular. */
+    min-inline-size: 7ch;
+    font-variant-numeric: tabular-nums;
   }
 
   .tile-spark {
