@@ -8,6 +8,9 @@ import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter
 import {
   type AntennaAuthorityPublication as Publication, type AntennaInstrumentHandles,
 } from '../AntennaInstrumentHost.svelte';
+import type {
+  AtuStatus, RadioViewModel, TxAuxField,
+} from '../radio-view-model';
 import type { TxAuthoritySnapshot } from '../rx-tx-surface';
 const seats = vi.hoisted(() => ({ destroy: [] as ReturnType<typeof vi.fn>[] }));
 vi.mock('../../primitives/control-instruments/control-instrument-renderer.svelte', async (original) => {
@@ -60,7 +63,8 @@ function render(external = true) {
       return () => button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
   return { props, stop, onSelectPort, onToggleRxAnt, captures, pair,
-    publish(next: Publication) { publication = next; subscriber(next); props.view = toRadioViewModel(next.state, next.caps); },
+    publish(next: Publication) { publication = next; subscriber(next);
+      props.view = next.view ?? toRadioViewModel(next.state, next.caps); },
     tx(next: TxAuthoritySnapshot) { tx = next; }, source: () => publication,
   };
 }
@@ -169,25 +173,22 @@ describe('persistent antenna handles', () => {
     expect(target.querySelector('button')).toBeNull();
   });
   // MOR-2704 G2 safety-adjacent pin: the antenna block (`tunerIdle`) keeps
-  // a read-but-not-operational tuner from letting the switch run, and the
-  // native `data-observed` keeps its old output (the mutation mini pins
-  // this red when the imported gate's `operational` check is dropped).
+  // a read-but-not-operational tuner from letting the switch run. The view
+  // model is hand-built (through the adapter the tuner becomes UNREAD, so
+  // the state is not reachable there — radio-view-model-adapter's
+  // `txAuxField` forces `reading: unknown` when `operational` is false), so
+  // the tuner's KNOWN idle reading is imposed directly; the block must then
+  // come from the gate's `operational` check alone. The mutation mini pins
+  // this red when that check is dropped.
   it('blocks the switch while the tuner is read but not operational, on the native fallback', () => {
     const r = render(false); r.props.arrangement = 'independent'; flushSync();
-    const p = source();
-    p.state!.fieldStatus!.tunerStatus = { ...p.state!.fieldStatus!.tunerStatus!,
-      freshness: 'fresh', observed: true, availability: 'unavailable' };
-    p.state!.fieldStatus!.txAntenna = { ...p.state!.fieldStatus!.txAntenna!,
-      freshness: 'fresh', observed: true, availability: 'unavailable' };
-    p.state!.fieldStatus!.rxAntenna1 = { ...p.state!.fieldStatus!.rxAntenna1!,
-      freshness: 'fresh', observed: true, availability: 'unavailable' };
-    p.state!.fieldStatus!.rxAntenna2 = { ...p.state!.fieldStatus!.rxAntenna2!,
-      freshness: 'fresh', observed: true, availability: 'unavailable' };
-    r.publish(p); flushSync();
-    const portRow = target.querySelector('[data-testid="antenna-ports"]')!;
-    const rxRow = target.querySelector('[data-testid="antenna-rx"]')!;
-    expect(portRow.getAttribute('data-observed')).toBe('false');
-    expect(rxRow.getAttribute('data-observed')).toBe('false');
+    const base = toRadioViewModel(source().state, source().caps)!;
+    const atu: TxAuxField<AtuStatus> = {
+      reading: { status: 'known', value: 'off' },
+      availability: { structural: true, operational: false },
+    };
+    const view = { ...base, txAux: { ...base.txAux!, atu } } as RadioViewModel;
+    r.publish({ ...source(), view }); flushSync();
     const port = target.querySelector<HTMLButtonElement>('[data-testid="antenna-port-2"]')!;
     const toggle = target.querySelector<HTMLButtonElement>('[data-testid="antenna-rx-toggle"]')!;
     expect(port.disabled).toBe(true); expect(toggle.disabled).toBe(true);
