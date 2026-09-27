@@ -186,8 +186,8 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
    *  ANY import that could reach the TX controller, the transport or the
    *  permit utility — including through a relative specifier.
    *  `./pressed-of` (MOR-1358) is allow-listed alongside the fact contract:
-   *  it is a pure, dependency-free `aria-pressed` derivation shared with
-   *  four sibling surfaces, itself importing only a TYPE from
+   *  it is a pure, dependency-free `aria-pressed` derivation, itself
+   *  importing only a TYPE from
    *  `./radio-view-model` — it cannot reach the TX controller, the
    *  transport or the permit utility any more than the fact contract can.
    *  This check regexes THIS file's specifiers only, so that premise is
