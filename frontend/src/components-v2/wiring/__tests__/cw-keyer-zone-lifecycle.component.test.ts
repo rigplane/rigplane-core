@@ -158,6 +158,7 @@ const liveCaps = (): Capabilities => ({
   model: 'fixture', scope: false, audio: false, tx: true,
   capabilities: ['tx', 'cw', 'break_in', 'apf', 'twin_peak'],
   receivers: 2, vfoScheme: 'main_sub', freqRanges: [],
+  breakInChoices: [{ value: 0, label: 'OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' }],
   modes: ['CW', 'CW-R', 'RTTY', 'USB'], filters: ['FIL1', 'FIL2', 'FIL3'],
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
   webrtc: { available: false, enabled: false },

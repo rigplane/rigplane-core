@@ -705,6 +705,7 @@ describe('App presentation selection', () => {
     const liveCaps = {
       ...structuredClone(capsFixture),
       capabilities: [...capsFixture.capabilities, 'vfo_equalize'],
+      breakInChoices: [{ value: 0, label: 'OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' }],
     };
     const liveState = {
       ...structuredClone(stateFixture),

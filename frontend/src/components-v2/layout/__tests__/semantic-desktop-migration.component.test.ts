@@ -260,6 +260,7 @@ function capsFor(id: TopologyFixtureId): Capabilities {
       ? ['scope', 'audio', 'tx', 'dual_rx', 'split', 'dual_watch']
       : ['scope', 'audio', 'tx'],
     receivers: dual ? 2 : 1, vfoScheme: scheme, freqRanges: [], modes: [], filters: [],
+    breakInChoices: [{ value: 0, label: 'OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' }],
     audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
     webrtc: { available: false, enabled: false },
     txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
