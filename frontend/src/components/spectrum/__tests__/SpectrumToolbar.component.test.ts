@@ -523,6 +523,12 @@ describe('unread speed, REF and receiver (MOR-2658)', () => {
       .querySelector('.toolbar-value')!;
   }
 
+  function gearRefValue(root: HTMLElement) {
+    return Array.from(root.querySelectorAll<HTMLElement>('.display-gear-popover .gear-row'))
+      .find((row) => row.querySelector('.gear-label')?.textContent?.trim() === 'REF')!
+      .querySelector('.gear-value')!;
+  }
+
   it('renders an unread speed as an empty reserved slot, never a dash', () => {
     authorityHarness.current = authority({ scopeControls: scopeFacts({ speed: field(1, { known: false }) }) });
     const target = mountToolbar();
@@ -543,8 +549,7 @@ describe('unread speed, REF and receiver (MOR-2658)', () => {
     expect(desktopRefValue(target).textContent).toBe('');
     target.querySelector<HTMLButtonElement>('[aria-label="Display settings"]')!.click();
     flushSync();
-    const gearValue = target.querySelector('.display-gear-popover .gear-value')!;
-    expect(gearValue.textContent).toBe('');
+    expect(gearRefValue(target).textContent).toBe('');
     expect(target.textContent).not.toContain('—');
   });
 
@@ -556,7 +561,7 @@ describe('unread speed, REF and receiver (MOR-2658)', () => {
       expect(desktopRefValue(target).textContent).toBe(expected);
       target.querySelector<HTMLButtonElement>('[aria-label="Display settings"]')!.click();
       flushSync();
-      expect(target.querySelector('.display-gear-popover .gear-value')!.textContent).toBe(expected);
+      expect(gearRefValue(target).textContent).toBe(expected);
       unmount(components.pop()!);
       target.remove();
     }
@@ -903,7 +908,10 @@ describe('source and enforcement boundary', () => {
     // MOR-2545 round-4 repin (owner style B): STEP's More copy follows the
     // sheet's measured step band (320px, re-derived from the round-4 head),
     // and the one-row/ground comments re-anchored.
-    expect(cssHash).toBe('2bd8a56451a9499498c5fd16a5b793cc86d209c01d2e582c25ed40c7bf070fcc');
+    // MOR-2658 repin: unread speed/REF/receiver render EMPTY in reserved
+    // slots — `.ref-value` gains `display: inline-block; min-width: 4ch`
+    // (replacing `28px`) and a new `.receiver-value` rule reserves `4ch`.
+    expect(cssHash).toBe('62b0ca339bfe3b974c797df850e69b28d7c9ff8e4152e1077070ed067c201327');
   });
 });
 
