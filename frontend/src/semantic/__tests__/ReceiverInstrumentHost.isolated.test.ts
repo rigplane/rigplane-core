@@ -568,16 +568,17 @@ describe('ReceiverInstrumentHost', () => {
 
   // MOR-2688 S4a literal pin: the frequency the readout shows goes through
   // the display observation rule (`observationValue` inside
-  // `displayFrequency`): a STALE `main.vfoA.freqHz` observation keeps its
-  // value (R29), so the readout's source is 'display' with the observed
-  // digits; a not-observed display leaves the digits unlit — never a
-  // fallback to an invented value. Red under a mutation of
-  // `observationValue` that drops current or stale.
+  // `displayFrequency`): a STALE `main.freqHz` observation (the unslotted
+  // `main_sub` scheme's display path) keeps its value (R29), so the
+  // readout's source is 'display' with the observed digits; a not-observed
+  // display leaves the digits unlit — never a fallback to an invented
+  // value. Red under a mutation of `observationValue` that drops current
+  // or stale.
   it('shows the observed frequency through a stale display observation, and unlit digits for a not-observed one', () => {
     const stale = publication();
     const staleStatuses = stale.state!.fieldStatus!;
-    staleStatuses['main.vfoA.freqHz'] = {
-      ...staleStatuses['main.vfoA.freqHz']!, freshness: 'stale',
+    staleStatuses['main.freqHz'] = {
+      ...staleStatuses['main.freqHz']!, freshness: 'stale',
     };
     const root = mountFixture(new Publisher(stale));
     const readout = root.querySelector<HTMLElement>(
@@ -588,8 +589,8 @@ describe('ReceiverInstrumentHost', () => {
 
     const notObserved = publication();
     const unobservedStatuses = notObserved.state!.fieldStatus!;
-    unobservedStatuses['main.vfoA.freqHz'] = {
-      ...unobservedStatuses['main.vfoA.freqHz']!, observed: false,
+    unobservedStatuses['main.freqHz'] = {
+      ...unobservedStatuses['main.freqHz']!, observed: false,
     };
     const otherRoot = mountFixture(new Publisher(notObserved));
     const otherReadout = otherRoot.querySelector<HTMLElement>(
