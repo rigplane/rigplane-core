@@ -76,6 +76,7 @@ vi.mock('$lib/stores/radio.svelte', () => ({
 
 vi.mock('$lib/runtime/adapters/panel-adapters', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$lib/runtime/adapters/panel-adapters')>();
+  const { toDspProps } = await import('$lib/runtime/props/panel-props');
   const { createSubscriber } = await import('svelte/reactivity');
   let update = () => {};
   const subscribe = createSubscriber((notify) => { update = notify; return () => {}; });
@@ -85,7 +86,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', async (importOriginal) => {
     deriveDspProps: () => {
       subscribe();
       return runtimeDsp.useReal
-        ? actual.toDspProps(runtimeState.state, runtimeState.caps)
+        ? toDspProps(runtimeState.state, runtimeState.caps)
         : { ...mockProps };
     },
     getDspHandlers: () => mockHandlers,
