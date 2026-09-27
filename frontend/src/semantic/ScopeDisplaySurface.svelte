@@ -37,6 +37,7 @@
 -->
 <script module lang="ts">
   import type { ScopeDisplayField, ScopeHealthState } from './radio-view-model';
+  import { usable } from '../primitives/control-instruments/control-instrument-behavior';
 
   /** Three-tone classification for `health`, mirroring `indicatorTone`
    *  (`components-v2/layout/StatusBar.svelte`) — reproduced, not imported,
@@ -57,8 +58,6 @@
     }
   }
 
-  const usable = (f: ScopeDisplayField<unknown>): boolean =>
-    f.availability.structural && f.availability.operational && f.reading.status === 'known';
   /** The indicator's tooltip/accessible-name text: one part per READ fact,
    *  unread parts omitted — never a `—` placeholder (MOR-2545). */
   export function indicatorText(sd: {

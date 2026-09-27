@@ -339,6 +339,27 @@ describe('level intents reach the caller with the field and the raw value', () =
       expect(onLevelChange).not.toHaveBeenCalled();
     }, { onLevelChange });
   });
+
+  /**
+   * MOR-2704 G1: the KNOWN-reading, not-operational half of the gate, pinned
+   * against the imported `usable` (a mutation that drops its `operational`
+   * check re-enables the slider and this dies).
+   */
+  it('emits nothing for a KNOWN level under operational:false, keeping the disabled reason', () => {
+    const onLevelChange = vi.fn();
+    const view = withField(base(), 'notchFreq', {
+      availability: { structural: true, operational: false },
+    });
+    withSurface(view, (s) => {
+      const input = s.input('notchFreq')!;
+      expect(input.disabled).toBe(true);
+      expect(s.control('notchFreq')!.dataset.disabledReason).toBe('field-not-observed');
+      input.value = '100';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+      expect(onLevelChange).not.toHaveBeenCalled();
+    }, { onLevelChange });
+  });
 });
 
 describe('exact NR-level projection (MOR-1737)', () => {

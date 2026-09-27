@@ -64,6 +64,7 @@
 <script module lang="ts">
   import type { DisplayObservedField, TxAuxField } from './radio-view-model';
   import { readingText } from '../primitives/reading-text';
+  import { usable } from '../primitives/control-instruments/control-instrument-behavior';
 
   /** `[field, label, min, max, step]` in RAW Hz — the fallback bounds for a
    *  passband row whose group carries no domain: `ifShift` when the profile
@@ -77,12 +78,9 @@
   ] as const;
   export type FilterPassbandLevelField = (typeof FILTER_PASSBAND_LEVELS)[number][0];
 
-  /** Usable ⇔ the radio HAS it, it is readable NOW, and it has been observed.
-   *  `ModeFilterField`/`FilterPassbandField` are both declared as aliases of
+  /** `ModeFilterField`/`FilterPassbandField` are both declared as aliases of
    *  `TxAuxField` (same field shape per fact family), so one set of helpers
    *  serves every field in both groups — no per-group re-derivation. */
-  const usable = (f: TxAuxField<unknown>): boolean =>
-    f.availability.structural && f.availability.operational && f.reading.status === 'known';
   const reasonOf = (f: TxAuxField<unknown>): 'field-not-observed' | undefined =>
     usable(f) ? undefined : 'field-not-observed';
   const presentationOf = (f: TxAuxField<unknown>): 'confirmed' | 'retained' | 'unknown' =>
