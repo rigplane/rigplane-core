@@ -28,9 +28,10 @@
 </script>
 
 <div class="scope" data-scope-state={frame === null ? 'unknown' : 'frame'}>
-  {#if frame === null}<output>— scope unavailable</output>{/if}
   <canvas bind:this={canvas} aria-label="Receiver spectrum" data-supplied-pixels={frame?.pixels.length ?? 0}></canvas>
-  {#if frame !== null}<div class="axis">{frame.startFreq} — {frame.endFreq}</div>{/if}
+  <!-- MOR-2692: unread frame → no output, an unlit slot; the axis separator
+       is ' · ', never a dash. -->
+  {#if frame !== null}<div class="axis">{frame.startFreq} · {frame.endFreq}</div>{/if}
 </div>
 
 <style>

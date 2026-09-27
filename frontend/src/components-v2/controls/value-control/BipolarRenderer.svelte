@@ -284,8 +284,13 @@
     >{statusText}</span>
   {/if}
 
+  <!-- MOR-2692: the negative marker is a real minus sign '−' (U+2212), not
+       an ASCII '-' — the placeholder guard (MOR-2677) classifies a whole-
+       string ASCII dash run as a placeholder token and fails on it. This
+       axis is a constant scale annotation (not an unread/unsupported
+       value, which would instead draw nothing). -->
   <div class="vc-axis" aria-hidden="true">
-    <span class="axis-negative">-</span>
+    <span class="axis-negative">−</span>
     <span class="axis-zero">0</span>
     <span class="axis-positive">+</span>
   </div>
