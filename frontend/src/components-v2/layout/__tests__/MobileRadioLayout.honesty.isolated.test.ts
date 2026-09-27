@@ -134,6 +134,7 @@ vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
 
 import MobileRadioLayout from '../MobileRadioLayout.svelte';
 import mobileLayoutSource from '../MobileRadioLayout.svelte?raw';
+import { getSmeterCalibration } from '$lib/stores/capabilities.svelte';
 
 const LAYOUT_DIR = 'src/components-v2/layout/';
 
@@ -236,24 +237,26 @@ describe('MobileRadioLayout honest-projection rendering (MOR-1409 A13a)', () => 
   // Kills: dropping the finite guard from the landscape S-meter readout —
   // `formatSValue(NaN)` returns the literal `S${NaN}`. This is the "NaNkHz"
   // defect class that BLOCKED PR #2363, reproduced on the mobile skin.
-  it('guards the landscape S-meter readout against an unobserved signal', () => {
+  // MOR-2675: an unread value renders EMPTY in its reserved slot — never a
+  // dash run, and never a fabricated zero-signal "S9" (the state-adapter's
+  // old stand-in for a receiver that has reported nothing).
+  it('renders an unobserved landscape S-meter as an empty reserved slot, never a dash', () => {
     setViewport(844, 390);
     const readout = mountLayout().querySelector('.m-ls-smeter')?.textContent ?? '';
-    expect(readout).not.toContain('NaN');
-    // `formatSValue(0)` — the state-adapter's fabricated zero-signal reading —
-    // renders a full-scale "S9" for a receiver that has reported nothing.
-    expect(readout).not.toBe('S9');
-    expect(readout).toContain('---');
+    expect(readout).toBe('');
+    expect(readout).not.toContain('---');
+    expect(readout).not.toContain('S9');
   });
 
   // Kills: dropping the finite guard from the landscape dBm readout —
   // `formatDbm(NaN)` renders the literal "NaN dBm".
-  it('guards the landscape dBm readout against an unobserved signal', () => {
+  // MOR-2675: unread is EMPTY — no digits and no 'dBm' unit without them.
+  it('renders an unobserved landscape dBm readout as an empty reserved slot, never a dash', () => {
     setViewport(844, 390);
     const readout = mountLayout().querySelector('.m-ls-dbm')?.textContent ?? '';
-    expect(readout).not.toContain('NaN');
-    expect(readout).not.toBe('-73 dBm');
-    expect(readout).toContain('---');
+    expect(readout).toBe('');
+    expect(readout).not.toContain('---');
+    expect(readout).not.toContain('dBm');
   });
 
   // Kills: restoring `toVfoProps`' fabricated 'USB' / 'FIL1' stand-ins by
@@ -270,6 +273,71 @@ describe('MobileRadioLayout honest-projection rendering (MOR-1409 A13a)', () => 
   it('renders no "NaN" substring anywhere in portrait with nothing observed', () => {
     const text = mountLayout().textContent ?? '';
     expect(text).not.toContain('NaN');
+  });
+
+  // ── MOR-2675: the landscape readouts keep one width in every state ──
+
+  // Kills: a reservation narrower than the widest text the formatter
+  // renders over the sMeter wire domain (raw int 0–255). The widest text is
+  // derived by RUNNING the formatter at the domain top under the widest
+  // shipped calibration ladder (ic7300's table: S0 at 0, S9 at 120, S9+60
+  // at 255) — not read off one radio's constants — and the reservation must
+  // cover exactly that text. A known value renders exactly as today.
+  it('renders the widest S-unit and dBm texts the landscape readouts can hold', () => {
+    setViewport(844, 390);
+    const widestShippedLadder = [
+      { raw: 0, actual: -54, label: 'S0' },
+      { raw: 120, actual: 0, label: 'S9' },
+      { raw: 255, actual: 60, label: 'S9+60' },
+    ];
+    vi.mocked(getSmeterCalibration).mockReturnValue(widestShippedLadder);
+    try {
+      radioStore.current = { active: 'MAIN', main: { ...CONNECTED_RX, sMeter: 255 } };
+      const root = mountLayout();
+      // Known values, exact text and spaces included.
+      expect(root.querySelector('.m-ls-smeter')?.textContent).toBe('S9+60');
+      expect(root.querySelector('.m-ls-dbm')?.textContent).toBe('−13 dBm');
+      // Geometry: the reservations must cover those widest texts.
+      const reservedS = mobileLayoutSource.match(
+        /\.m-ls-smeter \{[^}]*min-width: (\d+)ch;/,
+      )?.[1];
+      expect(reservedS).toBe(String('S9+60'.length));
+      const reservedDbm = mobileLayoutSource.match(
+        /\.m-ls-dbm \{[^}]*min-width: (\d+)ch;/,
+      )?.[1];
+      // The dBm slot's widest text is the honest 'uncalibrated' label a rig
+      // with no s_meter table prints (longer than the calibrated '−13 dBm').
+      expect(reservedDbm).toBe(String('uncalibrated'.length));
+    } finally {
+      vi.mocked(getSmeterCalibration).mockReturnValue(null);
+    }
+  });
+
+  // Kills: a known uncalibrated reading rendered as anything but the honest
+  // raw-scale / 'uncalibrated' labels — and doubles as the dBm slot's
+  // widest-text pin ('uncalibrated', 13ch, reserved above).
+  it('renders a known uncalibrated reading exactly as before', () => {
+    setViewport(844, 390);
+    radioStore.current = { active: 'MAIN', main: { ...CONNECTED_RX, sMeter: 255 } };
+    const root = mountLayout();
+    expect(root.querySelector('.m-ls-smeter')?.textContent).toBe('255');
+    expect(root.querySelector('.m-ls-dbm')?.textContent).toBe('uncalibrated');
+  });
+
+  // Geometry: jsdom has no layout, so the reservations are pinned
+  // structurally against the component source (the MOR-2658/MOR-2667
+  // pattern): tabular digits, and the MOR-2657 zero-width strut that keeps
+  // the empty unread boxes' line-box metrics in the baseline-aligned
+  // `.m-ls-meter` flex row. The RIT badge always carries its label text,
+  // so it needs no strut — only the reserved width.
+  it('keeps the landscape readouts and the RIT badge reserved and tabular in every state', () => {
+    expect(mobileLayoutSource).toMatch(/\.m-ls-smeter \{[^}]*tabular-nums/);
+    expect(mobileLayoutSource).toMatch(/\.m-ls-smeter:empty::before \{ content: '\\200b'; \}/);
+    expect(mobileLayoutSource).toMatch(/\.m-ls-dbm \{[^}]*tabular-nums/);
+    expect(mobileLayoutSource).toMatch(/\.m-ls-dbm:empty::before \{ content: '\\200b'; \}/);
+    // 'RIT +9999' / 'XIT -9999' — 9ch over the shared ±9999 Hz RIT domain.
+    expect(mobileLayoutSource).toMatch(/\.m-vfo-rit \{[^}]*min-width: 9ch;/);
+    expect(mobileLayoutSource).toMatch(/\.m-vfo-rit \{[^}]*tabular-nums/);
   });
 });
 
@@ -289,21 +357,34 @@ describe('MobileRadioLayout pending-field boundaries (MOR-1409 A13a)', () => {
   // Kills: dropping the RIT-offset guard. `toRitXitProps` reports `NaN` for an
   // active RIT whose offset has never been sent, and the raw
   // `offset >= 0 ? '+' : ''` template renders "NaN" for it.
-  it('guards the RIT offset badge when the offset has not been observed', () => {
+  // MOR-2675: the unread offset renders EMPTY after its label — never a
+  // dash run — with the space kept in the label's own text node.
+  it('renders an unobserved RIT offset as an empty value after the label, never a dash', () => {
     radioStore.current = { active: 'MAIN', main: CONNECTED_RX, ritOn: true };
     const badge = mountLayout().querySelector('.m-vfo-rit')?.textContent ?? '';
-    expect(badge).toContain('RIT');
+    expect(badge).toBe('RIT ');
+    expect(badge).not.toContain('---');
     expect(badge).not.toContain('NaN');
-    expect(badge).toContain('---');
   });
 
   // Kills: dropping the same guard on the XIT branch.
-  it('guards the XIT offset badge when the offset has not been observed', () => {
+  it('renders an unobserved XIT offset as an empty value after the label, never a dash', () => {
     radioStore.current = { active: 'MAIN', main: CONNECTED_RX, ritTx: true };
     const badge = mountLayout().querySelector('.m-vfo-rit')?.textContent ?? '';
-    expect(badge).toContain('XIT');
+    expect(badge).toBe('XIT ');
+    expect(badge).not.toContain('---');
     expect(badge).not.toContain('NaN');
-    expect(badge).toContain('---');
+  });
+
+  // Kills: a guard so broad it hides a real offset — a reported ritFreq is
+  // a genuine reading and must render label, space, sign and digits intact
+  // (the known-state text is pinned with its exact spaces, MOR-2675).
+  it('renders a known RIT offset exactly, spaces included', () => {
+    radioStore.current = {
+      active: 'MAIN', main: CONNECTED_RX, ritOn: true, ritFreq: 1200,
+    };
+    const badge = mountLayout().querySelector('.m-vfo-rit')?.textContent ?? '';
+    expect(badge).toBe('RIT +1200');
   });
 
   // Kills: removing the `txMetersObserved` gate on the TX dock meter. The
@@ -440,7 +521,9 @@ describe('MobileRadioLayout unread TX power and SWR (MOR-2658)', () => {
   });
 
   // Kills: an SWR slot narrower than its widest text. swrMeter is raw
-  // 0-255 (radio_state.py), so the slot's `(swr / 10).toFixed(1)` maxes
+  // 0-255 (`src/rigplane/backends/yaesu_cat/radio.py` `get_swr_meter`;
+  // the wire field is `swrMeter` in `src/rigplane/web/state_schema.py`),
+  // so the slot's `(swr / 10).toFixed(1)` maxes
   // out at "SWR 25.5" (8 chars) — the reservation must cover exactly that
   // (MOR-2658).
   it('sizes the SWR slot to its widest text', () => {
