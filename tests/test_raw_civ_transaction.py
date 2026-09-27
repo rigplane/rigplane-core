@@ -182,6 +182,48 @@ async def test_raw_civ_transaction_data_nak_is_deterministic_failure_result(
     assert radio.external_cat_session_active is False
 
 
+@pytest.mark.parametrize(
+    ("command", "sub", "data", "request", "reply", "status"),
+    [
+        (0x16, 0x56, b"", "FEFE98E01656FD", "FEFEE098FAFD", "nak"),
+        (0x29, None, b"\x00\x16\x56", "FEFE98E029001656FD", "FEFEE098FAFD", "nak"),
+        (
+            0x29,
+            None,
+            b"\x01\x16\x56",
+            "FEFE98E029011656FD",
+            "FEFEE0982901165600FD",
+            "response",
+        ),
+    ],
+    ids=["plain", "cmd29-main", "cmd29-sub"],
+)
+async def test_raw_civ_transaction_settles_the_ic7610_filter_shape_exchange(
+    radio: IcomRadio,
+    transport: MockTransport,
+    command: int,
+    sub: int | None,
+    data: bytes,
+    request: str,
+    reply: str,
+    status: str,
+) -> None:
+    """The MOR-2733 bench exchange (2026-09-27, MAIN in RTTY, SUB in USB).
+
+    The refusal to MAIN's cmd29 read is the same bare NG as to the plain
+    read, with no 29 prefix.
+    """
+    transport.queue_response_on_send(1, _wrap(bytes.fromhex(reply)))
+
+    result = await radio.send_civ_transaction(
+        command, sub=sub, data=data, expect="data", timeout=0.2
+    )
+
+    assert transport.sent_packets[-1].endswith(bytes.fromhex(request))
+    assert result.status == status
+    assert result.frame_bytes == bytes.fromhex(reply)
+
+
 async def test_raw_civ_transaction_ack_ignores_orphan_ack_backlog(
     radio: IcomRadio,
 ) -> None:

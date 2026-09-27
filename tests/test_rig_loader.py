@@ -740,7 +740,7 @@ labels = { "1" = "FAST", "2" = "MID", "3" = "SLOW" }
         rig = load_rig(RIGS_DIR / "ic7610.toml")
         assert rig.rf_sql_control_model == "combined"
 
-    def test_ic7610_marks_scope_controls_startup_optional(self):
+    def test_ic7610_marks_scope_controls_and_filter_shape_startup_optional(self):
         rig = load_rig(RIGS_DIR / "ic7610.toml")
         acquisition = rig.to_profile().state_acquisition
         assert acquisition is not None
@@ -761,6 +761,9 @@ labels = { "1" = "FAST", "2" = "MID", "3" = "SLOW" }
                 "fixed_edge",
                 "rbw",
             )
+        } | {
+            FieldPath.parse(f"receiver.{receiver}.operator_controls.filter_shape")
+            for receiver in ("main", "sub")
         }
         actual = {
             capability.path

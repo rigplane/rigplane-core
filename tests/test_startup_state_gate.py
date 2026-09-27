@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.core.acquisition_scheduler import (
     AcquisitionRequest,
     AcquisitionScheduler,
@@ -47,6 +48,8 @@ from rigplane.core.types import bcd_encode
 from rigplane.profiles import get_radio_profile, resolve_radio_profile
 from rigplane.radio_state import RadioState
 from rigplane.runtime._civ_rx import _profile_path_for_observation
+from rigplane.runtime.radio import IcomRadio
+from rigplane.runtime.radio_initial_state import fetch_initial_state
 from rigplane.web import web_startup
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.web_startup import (
@@ -1108,3 +1111,115 @@ async def test_application_connection_selection_follows_acquisition_before_liste
         await server.start()
         await server.stop()
     assert events == ["acquire", "bind"]
+
+
+# ---------------------------------------------------------------------------
+# IC-7610: the radio refuses MAIN's filter-shape read (MOR-2733)
+# ---------------------------------------------------------------------------
+
+MAIN_FILTER_SHAPE = FieldPath.receiver("main", "operator_controls", "filter_shape")
+# The MOR-2733 bench exchange: MAIN's cmd29 filter-shape read is refused with
+# a bare NG that carries no 29 prefix, and SUB's is answered 00 (SHARP).
+_MAIN_FILTER_SHAPE_READ = bytes.fromhex("FEFE98E029001656FD")
+_SUB_FILTER_SHAPE_READ = bytes.fromhex("FEFE98E029011656FD")
+_BARE_NG = bytes.fromhex("FEFEE098FAFD")
+_SUB_FILTER_SHAPE_ANSWER = bytes.fromhex("FEFEE0982901165600FD")
+
+
+def _read_value(request: CivFrame) -> bytes:
+    """Value an unscripted read is answered with, after its echoed bytes."""
+
+    if request.command == 0x25 or (request.command, request.sub) == (0x1C, 0x03):
+        return bcd_encode(14_074_000)
+    if request.command == 0x26:
+        return b"\x01\x00\x01"
+    if request.command in (0x14, 0x15):
+        return b"\x01\x28"
+    if (request.command, request.sub) == (0x21, 0x00):
+        return b"\x00\x00\x00"
+    return b"\x00"
+
+
+class _Ic7610Wire:
+    """Answers the initial state fetch through the real CI-V ingress.
+
+    Stands in for the LAN link at the ``send_civ`` seam
+    ``runtime/radio_initial_state.py: fetch_initial_state`` sends through. A
+    read in ``script`` gets its scripted reply; every other read is echoed
+    back from the radio with :func:`_read_value` appended. Each reply goes
+    through ``parse_civ_frame`` into ``CivRuntime._route_civ_frame``.
+    """
+
+    def __init__(self, radio: IcomRadio, script: Mapping[bytes, bytes]) -> None:
+        self._radio = radio
+        self._script = script
+        self.sent: list[bytes] = []
+
+    async def send_civ(
+        self,
+        command: int,
+        sub: int | None = None,
+        data: bytes | None = None,
+        **_kwargs: object,
+    ) -> None:
+        radio_addr = self._radio._radio_addr
+        request = build_civ_frame(
+            radio_addr, CONTROLLER_ADDR, command, sub=sub, data=data
+        )
+        self.sent.append(request)
+        reply = self._script.get(request)
+        if reply is None:
+            reply = build_civ_frame(
+                CONTROLLER_ADDR,
+                radio_addr,
+                command,
+                sub=sub,
+                data=(data or b"") + _read_value(parse_civ_frame(request)),
+            )
+        await self._radio._civ_runtime._route_civ_frame(
+            parse_civ_frame(reply), generation=self._radio._civ_epoch
+        )
+
+
+@pytest.mark.asyncio
+async def test_ic7610_opens_while_the_radio_refuses_mains_filter_shape_read() -> None:
+    """MOR-2733: every initial read is answered except MAIN's filter shape.
+
+    The startup gate still completes, and MAIN's filter shape stays unread.
+    """
+
+    radio = IcomRadio("192.168.1.100", model="IC-7610")
+    server = WebServer(radio, _gated_config())
+    scheduler = _acquisition_scheduler(server)
+    assert scheduler is not None
+    # The generation advance runtime/_control_phase.py makes on connect.
+    radio._civ_runtime.advance_generation("connect")
+    wire = _Ic7610Wire(
+        radio,
+        {
+            _MAIN_FILTER_SHAPE_READ: _BARE_NG,
+            _SUB_FILTER_SHAPE_READ: _SUB_FILTER_SHAPE_ANSWER,
+        },
+    )
+    radio.send_civ = wire.send_civ  # type: ignore[method-assign]
+    radio._INITIAL_STATE_GAP_LAN = radio._INITIAL_STATE_GAP_SERIAL = 0.0
+
+    await fetch_initial_state(radio)
+
+    # Not vacuous: the initial fetch sent both filter-shape reads.
+    assert {_MAIN_FILTER_SHAPE_READ, _SUB_FILTER_SHAPE_READ} <= set(wire.sent)
+    clock = _GateClock(stop_at=10.0)
+    with _fake_gate_clock(clock):
+        try:
+            await _await_initial_state_acquisition(server, sweep=False)
+        except _GateWindowClosed:
+            outstanding = scheduler.unobserved_startup_paths(
+                _observed_paths(server, scheduler)
+            )
+            pytest.fail(
+                f"startup still waiting after {clock.now:.0f}s on {outstanding}"
+            )
+
+    assert MAIN_FILTER_SHAPE not in _observed_paths(server, scheduler)
+    sub_shape = FieldPath.receiver("1", "operator_controls", "filter_shape")
+    assert server.command_state_store.snapshot().field(sub_shape).value == 0
