@@ -366,9 +366,11 @@ describe('CwPanel — unread pitch/speed renders empty (MOR-2658)', () => {
     const source = readFileSync('src/components-v2/panels/CwPanel.svelte', 'utf8');
     const rule = source.match(/\.cw-value-slot :global\(\.vc-value\) \{([^}]*)\}/)?.[1] ?? '';
     expect(rule, 'the pitch/speed values keep a reserved box').toContain('min-width: 6ch');
-    // An empty inline-block collapses to zero height and pulls the rows
-    // below up (caught by the visual run) — the slot must keep one line.
+    // An empty inline-block collapses to zero height and, baseline-aligned,
+    // pulls the row up (caught by the visual run) — the slot must keep one
+    // line and stay out of the header's baseline alignment.
     expect(rule, 'an empty slot keeps its line height').toContain('min-height: 1lh');
+    expect(rule, 'an empty slot leaves baseline alignment').toContain('align-self: center');
   });
 });
 
