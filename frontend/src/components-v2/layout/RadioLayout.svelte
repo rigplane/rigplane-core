@@ -42,7 +42,6 @@
   import type { RfFrontEndFiniteHandles } from '../../semantic/rf-front-end-instruments';
   import type { RxAudioInstrumentHandles } from '../../semantic/rx-audio-instruments';
   import type { FilterInstrumentHandles } from '../../semantic/filter-instruments';
-  import { ANTENNA_BLOCKED_LABEL } from '../../semantic/AntennaInstrumentHost.svelte';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import KeyboardHandler from './KeyboardHandler.svelte';
   import StatusBar from './StatusBar.svelte';
@@ -653,8 +652,9 @@
 
 <!--
   MOR-2425. The Standard face arranges the two persistent antenna seats itself
-  instead of mounting the grouped `AntennaSurface`. Its accessible blocked
-  explanation remains here too without becoming volatile panel text.
+  instead of mounting the grouped `AntennaSurface`. MOR-2691: no separate
+  blocked-reason text here — the reason lives on the disabled controls' own
+  `title`, the way a real radio leaves it.
 -->
 {#snippet antennaControlLayout()}
   {#if runtime.caps?.antennas === 1}
@@ -669,9 +669,6 @@
       {@render instruments.antennaInstruments.rxAnt(true)}
     </div>
   </div>{/if}
-  {#if runtime.caps?.antennas !== 1}<span class="sr-only" id={instruments.antennaLayout.blockedId} data-testid="antenna-blocked">
-    {instruments.antennaLayout.blocked.map((code) => ANTENNA_BLOCKED_LABEL[code]).join('; ')}
-  </span>{/if}
 {/snippet}
 
 {#snippet vfoOperationControls()}
