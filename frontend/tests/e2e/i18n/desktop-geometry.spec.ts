@@ -975,6 +975,11 @@ for (const layout of ['standard', 'sdr-test', 'lcd-scope', 'lcd-cockpit']) {
           return false;
         }).map(e => e.textContent));
         expect.soft(clippedDigits, 'every frequency group survives clipping ancestors').toEqual([]);
+        // MOR-2654: the ghost all-8s layer is a constant row (8888.888.888),
+        // independent of the reading — the unread slot is exactly as wide as
+        // any known one, so the first reading cannot move anything.
+        const ghostText = await page.locator('.lcd-frame .freq-ghost').first().textContent();
+        expect.soft(ghostText?.replace(/\s/g, ''), 'LCD ghost row keeps its constant slot count').toBe('8888.888.888');
         await page.locator('.lcd-layout .content-right').evaluate(e => { e.scrollTop = e.scrollHeight; });
       } else {
         const center = await page.locator('.desktop-controls-center .content-row').boundingBox();

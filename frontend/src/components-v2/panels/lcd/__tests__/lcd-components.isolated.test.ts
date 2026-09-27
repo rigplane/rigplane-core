@@ -162,6 +162,21 @@ describe('AmberFrequency', () => {
     unmount(component);
   });
 
+  it('keeps the ghost MHz slot constant for unread and known readings (MOR-2654 F1)', () => {
+    // The ghost row is sized to the widest MHz field across the shipped
+    // profiles (IC-9700 23cm reaches 1300 MHz = 4 digits, rigs/ic9700.toml),
+    // never mirrored from the active reading — so the unread slot is exactly
+    // as wide as any known one and the first reading cannot move anything.
+    const unread = mount(AmberFrequency, { target, props: { freqHz: 0 } });
+    const unreadGhostMhz = target.querySelector('.freq-ghost .seg-mhz')!.textContent!;
+    unmount(unread);
+    const known = mount(AmberFrequency, { target, props: { freqHz: 14_074_000 } });
+    const knownGhostMhz = target.querySelector('.freq-ghost .seg-mhz')!.textContent!;
+    unmount(known);
+    expect(unreadGhostMhz).toBe('8888');
+    expect(knownGhostMhz).toBe('8888');
+  });
+
   it('applies large size class by default', () => {
     const component = mount(AmberFrequency, { target, props: { freqHz: 14_074_000 } });
     expect(target.querySelector('.lcd-freq-large')).not.toBeNull();

@@ -140,12 +140,33 @@ describe('StandardFrequencyReadout', () => {
     const unknown = projectFrequencyReadout({ confirmedHz: null });
     // MOR-2654 (owner rule, 2026-09-26): unread is unlit — the interactive
     // readout keeps its focusable slot with a no-break space; the passive
-    // readout keeps its three reserved digit slots with separator dots only.
+    // readout keeps its three reserved digit slots with invisible digits
+    // (no glyph drawn) and separator dots only.
     expect(mountReadout({ model: unknown, presentation: 'interactive' }).textContent?.trim()).toBe('');
     const passive = mountReadout({ model: unknown, presentation: 'passive' });
-    expect(passive.textContent?.replace(/\s/g, '')).toBe('..');
-    expect(passive.textContent).not.toContain('-');
     expect(passive.querySelectorAll('.digits')).toHaveLength(3);
+    expect(passive.textContent).not.toContain('-');
+    // Geometry: each slot reserves the widest content the known path can
+    // render (MHz 1-3 digits, kHz/Hz always 3) via an invisible `.unlit`
+    // span — visibility keeps the box, draws no glyph. The visible text is
+    // dots only, so the operator sees no placeholder.
+    for (const slot of passive.querySelectorAll('.digits')) {
+      expect(slot.querySelector('.unlit')!.textContent).toBe('888');
+    }
+    const known = mountReadout({
+      model: projectFrequencyReadout({ confirmedHz: 0 }),
+      presentation: 'passive',
+    });
+    const passiveWidths = [...passive.querySelectorAll('.digits')].map(
+      (slot) => slot.querySelector('.unlit')!.textContent!.length,
+    );
+    const knownWidths = [...known.querySelectorAll('.digits')].map(
+      (slot) => (slot.textContent ?? '').length,
+    );
+    expect(passiveWidths).toEqual(knownWidths);
+    // The invisible reservation must not leak a glyph into the reading:
+    // strip the separator dots and only whitespace may remain.
+    expect(passive.textContent?.replace(/\./g, '').trim()).toBe('');
   });
 });
 
