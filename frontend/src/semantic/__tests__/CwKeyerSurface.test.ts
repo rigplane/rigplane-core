@@ -923,12 +923,13 @@ describe('break-in obeys the ONE txPermit and fails closed', () => {
   // `aria-checked`, no radio role — and no wording claims a state.
   it('leaves every break-in key bare while the reading is unread', () => {
     const r = render(withCw({ breakIn: unread<BreakInMode>(DEGRADED) }));
+    const fallbackLabel: Record<string, string> = { off: 'OFF', semi: 'SEMI', full: 'FULL' };
     for (const [label] of BREAK_IN_CHOICES) {
       const key = r.el(`break-in-${label}`)!;
       expect(key.hasAttribute('aria-pressed')).toBe(false);
       expect(key.hasAttribute('aria-checked')).toBe(false);
       expect(key.getAttribute('role')).toBeNull();
-      expect(key.textContent).toBe(label);
+      expect(key.textContent).toBe(fallbackLabel[label]);
     }
     expect(r.el('break-in')!.querySelector('[role="radiogroup"]')).toBeNull();
     expect(r.el('break-in')!.querySelector('[role="group"]')).not.toBeNull();
