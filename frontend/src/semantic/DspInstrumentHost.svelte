@@ -3,7 +3,9 @@
   import { ControlButton, HardwareButton } from '$lib/Button';
   import { t } from '$lib/i18n';
   import { buildAgcOptions } from '../components-v2/panels/agc-utils';
-  import { bindChoiceInstrument, bindToggleInstrument } from '../primitives/control-instruments/control-instrument-behavior';
+  import {
+    bindChoiceInstrument, bindToggleInstrument, usable as fieldUsable,
+  } from '../primitives/control-instruments/control-instrument-behavior';
   import ControlInstrumentRendererHost from '../primitives/control-instruments/ControlInstrumentRendererHost.svelte';
   import { createChoiceRendererSeat, createToggleRendererSeat,
     type FiniteControlAppearance, type FiniteRendererContext } from '../primitives/control-instruments/control-instrument-renderer.svelte';
@@ -41,11 +43,7 @@
   const pendingId = $props.id();
   const pendingOf = (field: DspToggleField): boolean | null =>
     field === 'nrActive' ? pendingNr : pendingNb;
-  const usable = (field: DspToggleField): boolean => {
-    const current = dsp?.[field];
-    return current !== undefined && current.availability.structural
-      && current.availability.operational && current.reading.status === 'known';
-  };
+  const usable = (field: DspToggleField): boolean => fieldUsable(dsp?.[field]);
   const toggleBehavior = (field: DspToggleField) => bindToggleInstrument(() => ({
     field: dsp?.[field], invoke: (next) => onToggle?.(field, next),
   }));

@@ -168,4 +168,32 @@ describe('persistent antenna handles', () => {
     r.publish(source()); invoke(last); expect(r.onSelectPort).toHaveBeenCalledOnce(); expect(r.onToggleRxAnt).toHaveBeenCalledOnce();
     expect(target.querySelector('button')).toBeNull();
   });
+  // MOR-2704 G2 safety-adjacent pin: the antenna block (`tunerIdle`) keeps
+  // a read-but-not-operational tuner from letting the switch run, and the
+  // native `data-observed` keeps its old output (the mutation mini pins
+  // this red when the imported gate's `operational` check is dropped).
+  it('blocks the switch while the tuner is read but not operational, on the native fallback', () => {
+    const r = render(false); r.props.arrangement = 'independent'; flushSync();
+    const p = source();
+    p.state!.fieldStatus!.tunerStatus = { ...p.state!.fieldStatus!.tunerStatus!,
+      freshness: 'fresh', observed: true, availability: 'unavailable' };
+    p.state!.fieldStatus!.txAntenna = { ...p.state!.fieldStatus!.txAntenna!,
+      freshness: 'fresh', observed: true, availability: 'unavailable' };
+    p.state!.fieldStatus!.rxAntenna1 = { ...p.state!.fieldStatus!.rxAntenna1!,
+      freshness: 'fresh', observed: true, availability: 'unavailable' };
+    p.state!.fieldStatus!.rxAntenna2 = { ...p.state!.fieldStatus!.rxAntenna2!,
+      freshness: 'fresh', observed: true, availability: 'unavailable' };
+    r.publish(p); flushSync();
+    const portRow = target.querySelector('[data-testid="antenna-ports"]')!;
+    const rxRow = target.querySelector('[data-testid="antenna-rx"]')!;
+    expect(portRow.getAttribute('data-observed')).toBe('false');
+    expect(rxRow.getAttribute('data-observed')).toBe('false');
+    const port = target.querySelector<HTMLButtonElement>('[data-testid="antenna-port-2"]')!;
+    const toggle = target.querySelector<HTMLButtonElement>('[data-testid="antenna-rx-toggle"]')!;
+    expect(port.disabled).toBe(true); expect(toggle.disabled).toBe(true);
+    expect(port.title).toBe('Waiting for the tuner to confirm it is idle');
+    expect(toggle.title).toBe('Waiting for the tuner to confirm it is idle');
+    invoke(r.pair());
+    expect(r.onSelectPort).not.toHaveBeenCalled(); expect(r.onToggleRxAnt).not.toHaveBeenCalled();
+  });
 });

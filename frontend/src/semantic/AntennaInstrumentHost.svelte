@@ -9,6 +9,7 @@
   import { t } from '$lib/i18n';
   import { BLOCKED_REASON_KEY } from '$lib/i18n/blocked-reasons';
   import { readingText } from '../primitives/reading-text';
+  import { usable } from '../primitives/control-instruments/control-instrument-behavior';
 
   export const ANTENNA_PORTS = [1, 2] as const;
 
@@ -42,8 +43,6 @@
   export const antennaBlockedTitle = (blocks: readonly AntennaSwitchBlock[]): string | undefined =>
     blocks.length === 0 ? undefined : blocks.map((code) => t(ANTENNA_BLOCKED_KEY[code])).join('; ');
 
-  export const usable = (f: AntennaField<unknown>): boolean =>
-    f.availability.structural && f.availability.operational && f.reading.status === 'known';
   /** MOR-2652: an unread reading prints nothing — an unlit slot, never a
    *  dash. MOR-2688 S3: the ONE unread predicate lives in `readingText`; the
    *  on/off boolean wording stays this host's own formatter. */

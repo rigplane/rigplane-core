@@ -1,11 +1,7 @@
 <script module lang="ts">
   import type { TxAuxField } from './radio-view-model';
   import { disabledReasonText } from './disabled-reason';
-
-  const usable = (field: TxAuxField<unknown>): boolean =>
-    field.availability.structural
-    && field.availability.operational
-    && field.reading.status === 'known';
+  import { usable } from '../primitives/control-instruments/control-instrument-behavior';
 
   const reasonOf = (field: TxAuxField<unknown>): 'field-not-observed' | undefined =>
     usable(field) ? undefined : 'field-not-observed';

@@ -131,6 +131,22 @@ describe('TxAuxFiniteHost native composition', () => {
     r.dispose();
   });
 
+  // MOR-2704 G2: the imported `usable` gate — a field read but not
+  // operational refuses the action, and the title/disabled-reason outputs
+  // are what they were before (the mutation mini pins this red when the
+  // gate's `operational` check is dropped).
+  it('refuses a read-but-not-operational toggle and keeps its reason outputs', () => {
+    const r = render({ view: withField('vox', { value: true,
+      availability: { structural: true, operational: false } }) });
+    const vox = target.querySelector<HTMLButtonElement>('[data-testid="tx-aux-vox"]')!;
+    expect(vox.disabled).toBe(true);
+    expect(vox.getAttribute('data-disabled-reason')).toBe('field-not-observed');
+    expect(vox.title).toBe('Not yet observed');
+    bypassClick(vox);
+    expect(r.onToggle).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
   it('keeps ordinary ATU independent from the TUNE TX gate', () => {
     const r = render({ tx: BLOCKED });
     const atu = target.querySelector<HTMLButtonElement>('[data-testid="tx-aux-atu"]')!;
