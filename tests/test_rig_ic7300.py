@@ -11,11 +11,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from rigplane.commands import CONTROLLER_ADDR
 from rigplane.commands._codec import filter_hz_to_index, filter_index_to_hz
 from rigplane.core.exceptions import CommandError
 from rigplane.meter_cal import interpolate_meter
-from rigplane.radio import CoreRadio
+from rigplane.radio import CoreRadio, IcomRadio
+from rigplane.radio_state import RadioState
 from rigplane.rig_loader import load_rig
+from rigplane.types import CivFrame
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
 IC7300_PATH = RIGS_DIR / "ic7300.toml"
@@ -663,6 +666,10 @@ class TestSMeterCalibration:
 # gap above. Live evidence (the finding that opened this ticket): the Vd
 # tile read raw "158" with no unit, bench PSU actually reading ~13.8 V.
 #
+# Power has since left this hamlib-sourced group: MOR-2722 (part A) moved
+# it to its own manual-sourced [meters.power] table, pinned by
+# TestPowerCalibration below — only ALC/COMP/Vd/Id remain here.
+#
 # These tables are hamlib-sourced (rigs/icom/ic7300.c; full citation and
 # per-meter provenance honesty notes live as a comment in rigs/ic7300.toml
 # itself, right above the tables these tests read). The Vd anchor set is
@@ -674,11 +681,6 @@ class TestSMeterCalibration:
 _PA_METER_ANCHORS = [
     # (meter_key, raw, expected_actual) — each is a real anchor point from
     # rigs/ic7300.toml's [[meters.<key>.calibration]] tables.
-    ("power", 0, 0.0),
-    ("power", 21, 5.0),
-    ("power", 143, 50.0),
-    ("power", 213, 100.0),
-    ("power", 255, 120.0),
     ("alc", 0, 0.0),
     ("alc", 120, 100.0),
     ("comp", 0, 0.0),
@@ -695,9 +697,9 @@ _PA_METER_ANCHORS = [
 
 
 class TestPaMeterCalibration:
-    """IC-7300 power/ALC/COMP/Vd/Id calibration tables (MOR-1527)."""
+    """IC-7300 ALC/COMP/Vd/Id calibration tables (MOR-1527)."""
 
-    @pytest.mark.parametrize("meter_key", ["power", "alc", "comp", "vd", "id"])
+    @pytest.mark.parametrize("meter_key", ["alc", "comp", "vd", "id"])
     def test_declares_calibration_table(self, rig, meter_key):
         assert rig.meter_calibrations is not None
         assert meter_key in rig.meter_calibrations
@@ -741,3 +743,55 @@ class TestPaMeterCalibration:
         actual, calibrated = interpolate_meter(120, rig.meter_calibrations, "alc")
         assert calibrated is True
         assert actual == pytest.approx(100.0)
+
+
+# ── Po meter calibration in watts (MOR-2722, part A) ──────────────
+#
+# Owner decision 2026-09-27: the Po meter shows watts from the CI-V
+# reference. The [meters.power] table is manual-sourced — CI-V command
+# 15 11 "Read PO meter level": 0000=0%, 0143=50%, 213=100% (p. 19-3) —
+# with 100% taken as 100 W, the rated maximum transmit output power on
+# the HF and 50 MHz bands (SSB/CW/RTTY/FM, p. 16-2). Expected values
+# below are literals, not read back from the profile file.
+
+
+class TestPowerCalibration:
+    """IC-7300 Po meter: three manual anchors, published in watts."""
+
+    def test_power_calibration_is_exactly_the_three_manual_anchors(self, rig):
+        assert rig.meter_calibrations["power"] == [
+            {"raw": 0, "actual": 0.0, "label": "0"},
+            {"raw": 143, "actual": 50.0, "label": "50"},
+            {"raw": 213, "actual": 100.0, "label": "100"},
+        ]
+
+    def test_power_has_no_redline(self, rig):
+        """MOR-2722 asked for watts only — a redline would change the bar."""
+        assert "power" not in rig.meter_redlines
+
+    @pytest.mark.parametrize(
+        ("raw_bcd", "expected_watts"),
+        [
+            (b"\x01\x43", 50.0),  # raw 143 as 2-byte BCD
+            (b"\x02\x13", 100.0),  # raw 213 as 2-byte BCD
+        ],
+    )
+    def test_cmd15_11_frame_publishes_calibrated_watts(
+        self, raw_bcd, expected_watts
+    ):
+        """A 15 11 frame through the real IC-7300 profile lands calibrated
+        at global.meters.power (follows test_civ_rx_coverage.py's IC-7610
+        test_cmd15_tx_pa_meter_observations_emit_engineering_units case)."""
+        radio = IcomRadio("192.0.2.1", model="IC-7300")
+        radio._radio_state = RadioState()
+        frame = CivFrame(
+            to_addr=CONTROLLER_ADDR,
+            from_addr=0x94,
+            command=0x15,
+            sub=0x11,
+            data=raw_bcd,
+        )
+        radio._civ_runtime._update_state_cache_from_frame(frame)
+        field = radio._state_store.snapshot().field("global.meters.power")
+        assert field.value == pytest.approx(expected_watts)
+        assert field.quality == ("confirmed", "calibrated")
