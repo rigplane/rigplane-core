@@ -168,7 +168,7 @@ describe('DockMeterPanel uncalibrated S row (MOR-2705 part 4a)', () => {
 
   it('draws the S bar with no number and no "raw" word on an uncalibrated radio while transmitting', () => {
     setCapabilities(uncalibratedCaps());
-    const t = mountPanel({ ...baseProps, sValue: 53, rfPower: 143, txActive: true, meterSource: 'S' });
+    const t = mountPanel({ ...baseProps, sValue: 53, rfPower: 50, txActive: true, meterSource: 'S' });
     const row = t.querySelectorAll('.dock-row')[0];
     expect(row.querySelector('.dock-row-label')?.textContent).toBe('S');
     expect(row.querySelector('.dock-row-value')?.textContent).toBe('');
