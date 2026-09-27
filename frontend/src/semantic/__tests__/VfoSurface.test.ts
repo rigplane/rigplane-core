@@ -18,6 +18,9 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
+import enUS from '$lib/i18n/locales/en-US.json' with { type: 'json' };
+import jaJP from '$lib/i18n/locales/ja-JP.json' with { type: 'json' };
+import ruRU from '$lib/i18n/locales/ru-RU.json' with { type: 'json' };
 import { createRawSnippet, mount, unmount, flushSync } from 'svelte';
 import { writable, fromStore } from 'svelte/store';
 import type { ComponentProps } from 'svelte';
@@ -635,6 +638,32 @@ it('shows a distinct role per VFO across single/dual and slotted/unslotted schem
   expect(roles).toEqual(['MAIN', 'SUB']);
 });
 
+it('reserves the role plaque at the widest role text in every state', () => {
+  const source = readFileSync('src/semantic/VfoSurface.svelte', 'utf8');
+  const body = source.slice(source.indexOf('function roleLabel'), source.indexOf('const ROLE_TEXTS'));
+  const emitted = [...body.matchAll(/'([^']+)'/g)].map((match) => match[1]);
+  const listed = [...source.matchAll(/const ROLE_TEXTS = \[([^\]]+)\]/)].flatMap((match) =>
+    [...match[1].matchAll(/'([^']+)'/g)].map((text) => text[1]));
+  expect(emitted).toEqual(['Selected VFO', 'Unselected VFO']);
+  expect(listed).toEqual(expect.arrayContaining([
+    'MAIN', 'SUB', 'MAIN A', 'MAIN B', 'SUB A', 'SUB B', ...emitted,
+  ]));
+  for (const catalog of [enUS, jaJP, ruRU]) {
+    expect(Object.values(catalog).join('\n')).not.toMatch(/Selected VFO|Unselected VFO|MAIN [AB]/);
+  }
+  const widest = listed.reduce((best, text) => text.length > best.length ? text : best, '');
+  expect(widest).toBe('Unselected VFO');
+    expect(source).toMatch(/roleWidth = `\$\{Math\.ceil\(widest\)\}px`/);
+    expect(source).toMatch(/style:--vfo-role-width=\{roleWidth\}/);
+    expect(source).toMatch(/style:min-width="var\(--vfo-role-width\)"/);
+    for (const id of ['1/ab', '2/main_sub'] as const) {
+      const target = mountSurface({ viewModel: topologyFixtures[id] });
+      for (const role of target.querySelectorAll('.vfo-role:not(.vfo-role-measure)')) {
+        expect(role.getAttribute('style')).toContain('min-width: var(--vfo-role-width)');
+      }
+    }
+  });
+
 // ── MOR-1482: one stable frequency format + role text shown exactly once ───
 //
 // Live-observed bug: the unselected-VFO tile's frequency readout flipped
@@ -708,6 +737,7 @@ describe('MOR-1482: unselected-tile frequency format is stable and dot-grouped',
     const label = selected.querySelector<HTMLElement>('[data-vfo-label]')!;
     // Both carry the SAME text — the duplication the ticket reports.
     expect(role.textContent).toBe('Selected VFO');
+    expect(role.getAttribute('style')).toContain('min-width: var(--vfo-role-width)');
     expect(label.textContent).toBe('Selected VFO');
     // The role text is the one VISIBLE copy...
     expect(role.className).not.toMatch(/sr-only/);
@@ -767,6 +797,7 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
     expect(role.textContent).toBe('MAIN');
     expect(role.textContent).not.toMatch(/unknown/i);
     expect(role.classList.contains('vfo-role-unlit')).toBe(true);
+    expect(role.getAttribute('style')).toContain('min-width: var(--vfo-role-width)');
   });
 
   it('R2: two VFOs on the SAME receiver with BOTH slots unobserved render without crashing, ' +

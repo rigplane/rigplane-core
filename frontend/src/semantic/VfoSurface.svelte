@@ -346,6 +346,25 @@
     return vfo.receiver;
   }
 
+  // Owner ruling 2026-09-21: the plaque's width does not depend on its text
+  // or its state. The plaque font is proportional in studioline (system
+  // sans), so `ch` is not the glyph width. The box is measured once, off
+  // screen, in the plaque's own font, at the widest text roleLabel can
+  // emit. Those strings are English in every locale (roleLabel does not
+  // call t()); the three catalogs were checked and add no wider role text.
+  const ROLE_TEXTS = ['MAIN', 'SUB', 'MAIN A', 'MAIN B', 'SUB A', 'SUB B', 'Selected VFO', 'Unselected VFO'];
+  let roleMeasure: HTMLSpanElement | undefined = $state();
+  let roleWidth = $state('0px');
+  $effect(() => {
+    const node = roleMeasure;
+    if (!node) return;
+    const widest = Math.max(...ROLE_TEXTS.map((text) => {
+      node.textContent = text;
+      return node.getBoundingClientRect().width;
+    }));
+    roleWidth = `${Math.ceil(widest)}px`;
+  });
+
   /**
    * MOR-1482 — the ONE stable frequency format this surface's own fallback
    * uses: the same dot-grouped digit convention `FrequencyDisplayInteractive`
@@ -708,7 +727,8 @@
 
 </script>
 
-<div class="vfo-surface" role="group" aria-label={groupLabel ?? t('core.vfo.groupLabel')} data-testid="vfo-surface" data-vfo-appearance={appearance}>
+<div class="vfo-surface" role="group" aria-label={groupLabel ?? t('core.vfo.groupLabel')} data-testid="vfo-surface" data-vfo-appearance={appearance} style:--vfo-role-width={roleWidth}>
+  <span class="vfo-role vfo-role-measure" bind:this={roleMeasure} aria-hidden="true"></span>
   {#snippet activeReceiverStatus()}
   {#if showRadioWideFacts && hasDualReceiver}
     <p
@@ -755,7 +775,7 @@
         <span
           class="vfo-role"
           class:vfo-role-unlit={vfo.slot.kind === 'unknown'}
-          style:min-width={vfo.slot.kind === 'unknown' ? '6ch' : undefined}
+          style:min-width="var(--vfo-role-width)"
         >{roleLabel(vfo)}</span>
         <span
           class="vfo-freq" class:display-unknown={displayHz === null && pendingHz === null}
@@ -1138,7 +1158,8 @@
   .receiver-indicators { display: grid; gap: 6px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
   .vfo-tile { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12)); border-radius: 4px; background: var(--v2-bg-panel, rgba(255, 255, 255, 0.03)); }
   .vfo-tile.is-active { border-color: var(--v2-accent-cyan, #00d4ff); }
-  .vfo-role { font-weight: 700; color: var(--v2-text-secondary, rgba(255, 255, 255, 0.8)); font-variant-numeric: tabular-nums; }
+  .vfo-role { font-weight: 700; color: var(--v2-text-secondary, rgba(255, 255, 255, 0.8)); font-variant-numeric: tabular-nums; min-width: var(--vfo-role-width); white-space: nowrap; }
+  .vfo-role-measure { position: absolute; visibility: hidden; pointer-events: none; white-space: nowrap; }
   .vfo-role-unlit { color: var(--dl-vfo-unlit-text, var(--v2-text-muted, #5a6875)); }
   [data-vfo-appearance='semantic'] .vfo-tile { position: relative; }
   .vfo-badge { padding: 1px 4px; border-radius: 3px; font-size: 10px; color: var(--v2-accent-red, #ff2020); border: 1px solid var(--v2-accent-red, #ff2020); }
