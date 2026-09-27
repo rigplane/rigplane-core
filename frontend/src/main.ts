@@ -9,6 +9,14 @@
 // its body — including the migration call — runs before any other import
 // is evaluated.
 import './lib/migrate-legacy-storage'
+import { unregisterStaleServiceWorkers } from './lib/unregister-stale-service-workers'
+
+// Stale pre-2.x Service Workers hijack fetch (see
+// unregister-stale-service-workers.ts); drop them before the app mounts.
+// Fire-and-forget: a failed cleanup must not block startup.
+void unregisterStaleServiceWorkers().catch((error: unknown) => {
+  console.warn('[rigplane] service-worker cleanup failed:', error)
+})
 
 async function startApp() {
   try {

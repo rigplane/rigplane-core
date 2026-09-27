@@ -203,9 +203,7 @@ class TestSecurityHeaders:
         relies on 'self' alone.
         """
         csp = await self._csp(sec_server)
-        script_src = next(
-            (part for part in csp.split(";") if "script-src" in part), ""
-        )
+        script_src = next((part for part in csp.split(";") if "script-src" in part), "")
         assert "'self'" in script_src
         assert "sha256-" not in csp
 
