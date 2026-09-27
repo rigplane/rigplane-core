@@ -32,7 +32,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { proxy } from 'svelte/internal/client';
 import {
   APF_CHOICES, BREAK_IN_CHOICES, BREAK_IN_REASON_KEY, CW_LEVELS, MUTEX_LABEL, POSTURE_LABEL,
-  breakInBlockedLabel, breakInPosture, type CwLevelField,
+  breakInBlockedLabel, breakInPosture, textOf, type CwLevelField,
 } from '../CwKeyerSurface.svelte';
 import CwKeyerInstrumentHostFixture from './fixtures/CwKeyerInstrumentHostFixture.svelte';
 import { topologyFixtures, withCwKeyer, withModeFilter, withTxAux } from '../fixtures/topologies';
@@ -219,14 +219,35 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
     // BandSurface's identical closure guard. It is a pure string-resolution
     // module (no transport, no controller, no permit utility) and cannot
     // widen this file's reach any more than `./pressed-of` does.
+    // MOR-2688 S3: `../primitives/reading-text` joined the closure — the ONE
+    // unread-display rule. It imports TYPES ONLY (its own
+    // `reading-text.test.ts: has no runtime import` pins that one level down,
+    // like the `pressed-of` purity argument above), so it cannot reach the TX
+    // controller, the transport or the permit utility any more than the fact
+    // contract can.
     expect([...new Set(specifiers)]).toEqual([
       '$lib/i18n', './CwKeyerInstrumentHost.svelte', './radio-view-model', './pressed-of',
+      '../primitives/reading-text',
       'svelte',
       '../primitives/control-feedback/control-feedback-presentation',
       '../primitives/scalar/committed-scalar.svelte',
       '../primitives/scalar/value-control-core',
       '../primitives/control-instruments/control-instrument-behavior',
     ]);
+  });
+
+  // MOR-2688 S3 literal pin, with literal strings: `textOf`'s own formatter
+  // writes booleans as lowercase `on`/`off` — under a `format → String`
+  // mutation String(true) would print 'true' (never 'on'). The exported
+  // helper delegates to `readingText`, so the predicate stays exactly
+  // `status === 'known'`.
+  it('renders read booleans as on/off literals and an unread field as empty text', () => {
+    const onField = { reading: { status: 'known', value: true }, availability: ON } as CwKeyerField<unknown>;
+    const offField = { reading: { status: 'known', value: false }, availability: ON } as CwKeyerField<unknown>;
+    const unreadField = { reading: { status: 'unknown' }, availability: ON } as CwKeyerField<unknown>;
+    expect(textOf(onField)).toBe('on');
+    expect(textOf(offField)).toBe('off');
+    expect(textOf(unreadField)).toBe('');
   });
 
   it('uses current-input bindings for APF, Twin Peak and reverse paddle', () => {

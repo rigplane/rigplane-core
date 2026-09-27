@@ -8,10 +8,9 @@
   } from './rx-tx-surface';
   import { t } from '$lib/i18n';
   import { BLOCKED_REASON_KEY } from '$lib/i18n/blocked-reasons';
+  import { readingText } from '../primitives/reading-text';
 
   export const ANTENNA_PORTS = [1, 2] as const;
-  /** MOR-2652: an unread reading prints nothing — an unlit slot, never a dash. */
-  export const UNKNOWN_TEXT = '';
 
   const RF_MUST_BE_IDLE: readonly KeyBlockedReason[] = [
     'tx-busy', 'radio-transmitting', 'rf-state-unknown',
@@ -45,10 +44,12 @@
 
   export const usable = (f: AntennaField<unknown>): boolean =>
     f.availability.structural && f.availability.operational && f.reading.status === 'known';
+  /** MOR-2652: an unread reading prints nothing — an unlit slot, never a
+   *  dash. MOR-2688 S3: the ONE unread predicate lives in `readingText`; the
+   *  on/off boolean wording stays this host's own formatter. */
   export const textOf = (f: AntennaField<unknown>): string =>
-    f.reading.status !== 'known' ? UNKNOWN_TEXT
-      : typeof f.reading.value === 'boolean' ? (f.reading.value ? 'on' : 'off')
-        : String(f.reading.value);
+    readingText(f, (v) =>
+      typeof v === 'boolean' ? (v ? 'on' : 'off') : String(v));
 
   export function tunerIdle(view: RadioViewModel): boolean {
     const atu = view.txAux?.atu;
