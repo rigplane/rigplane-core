@@ -262,10 +262,27 @@ describe('AppGlobalHost — authoritative TX source', () => {
   // MUTATION KILLED: collapsing the indication to `radioTx === 'on'` only.
   // `txRisk: 'uncertain'` means the browser may own the key without a
   // confirmed readback — the lamp must fail closed, not stay dark.
+  // MOR-2671: it reads `TX` — never `TX?` — hollow-defined, with the
+  // unconfirmed accessible sentence.
   it('fails closed while TX risk is uncertain', () => {
     txHarness.emitServerSnapshot({ observedPtt: 'unknown', releaseRequired: true });
     const instance = mountAt(AppGlobalHost);
     expect(txEl()?.getAttribute('data-tx')).toBe('uncertain');
+    expect(txEl()?.textContent?.trim()).toBe('TX');
+    expect(txEl()?.getAttribute('aria-label')).toBe('Transmit not confirmed');
+    expect(txEl()?.getAttribute('aria-label')).not.toContain('?');
+    expect(txEl()?.querySelector('.global-tx-lamp')?.classList.contains('hollow')).toBe(true);
+    unmount(instance);
+  });
+
+  // MOR-2671: the confirmed lamp stays filled and named by its text alone.
+  it('draws the confirmed TX lamp filled, with no unconfirmed accessible name', () => {
+    txHarness.emitServerSnapshot({ observedPtt: 'on' });
+    const instance = mountAt(AppGlobalHost);
+    expect(txEl()?.getAttribute('data-tx')).toBe('on');
+    expect(txEl()?.textContent?.trim()).toBe('TX');
+    expect(txEl()?.hasAttribute('aria-label')).toBe(false);
+    expect(txEl()?.querySelector('.global-tx-lamp')?.classList.contains('hollow')).toBe(false);
     unmount(instance);
   });
 

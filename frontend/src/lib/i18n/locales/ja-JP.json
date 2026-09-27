@@ -18,6 +18,8 @@
   "core.app.retryIndicator": "再試行 {attempt}/{max}、次の試行まで {seconds} 秒…",
   "core.app.presentationError": "このレイアウトを読み込めませんでした。無線機との接続には影響ありません。ページを再読み込みして再試行してください。",
 
+  "core.rxTx.rf.unconfirmed": "送信が確認されていません",
+
   "core.statusbar.connection.connected": "接続済み",
   "core.statusbar.connection.notConnected": "未接続",
   "core.statusbar.connection.connectingTo": "{radio} に {transport} で接続中…",

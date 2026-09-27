@@ -711,7 +711,7 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
     }),
     // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
     expect: mainSubExpect({
-      keyDisabled: true, rfLabel: 'TX?', sessionLabel: 'keying',
+      keyDisabled: true, rfLabel: 'TX', sessionLabel: 'keying',
       zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
   },
@@ -736,7 +736,7 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
     tx: tx({ phase: 'failed', radioTx: 'unknown', txRisk: 'uncertain', fault: 'audio-failed' }),
     // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
     expect: mainSubExpect({
-      keyDisabled: true, rfLabel: 'TX?', sessionLabel: 'fault',
+      keyDisabled: true, rfLabel: 'TX', sessionLabel: 'fault',
       faultResetPresent: false, zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
   },
@@ -808,7 +808,7 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
     // inside `rx-tx`, never zone-less) is UNCHANGED; the 13 txAux controls
     // are a separate, honestly-disclosed zone-less class alongside it.
     expect: mainSubExpect({
-      keyDisabled: true, rfLabel: 'TX?', sessionLabel: 'fault',
+      keyDisabled: true, rfLabel: 'TX', sessionLabel: 'fault',
       faultResetPresent: false, modInputWarningPresent: true,
       zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),

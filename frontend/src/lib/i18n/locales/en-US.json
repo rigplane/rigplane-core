@@ -289,6 +289,7 @@
   "core.rxTx.blocked.busy": "a TX session is already in progress",
   "core.rxTx.blocked.radioTransmitting": "the radio is already transmitting",
   "core.rxTx.blocked.rfStateUnknown": "the radio's RF state has not been confirmed",
+  "core.rxTx.rf.unconfirmed": "Transmit not confirmed",
   "core.rxTx.fault.reset.action": "Dismiss TX fault",
   "core.rxTx.fault.reset.note": "Clears the fault and re-enables the key. It does not transmit.",
   "core.rxTx.fault.reset.blocked": "This TX fault cannot be dismissed yet: {reason}. It becomes dismissable once the radio confirms the transmitter is off.",

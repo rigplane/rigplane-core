@@ -16,7 +16,7 @@
   import type { RadioViewModel } from './radio-view-model';
   import {
     RF_LABEL, RF_MARK, SESSION_LABEL, blockedLabel, faultMessage, keyBlockedReasons, nextSurfaceId,
-    rfState, targetUnknownMessage, txDisabledReasons, txSessionState,
+    rfState, rfUnconfirmedLabel, targetUnknownMessage, txDisabledReasons, txSessionState,
     type RfState, type TxAuthoritySnapshot,
   } from './rx-tx-surface';
 
@@ -104,6 +104,7 @@
     <span
       class="rx-tx-label v2-status-indicator" data-testid="rx-tx-rf-label"
       data-color={RF_BADGE[rf].color} data-active={RF_BADGE[rf].active}
+      aria-label={rfUnconfirmedLabel(rf) ?? undefined}
     >{standard && rf === 'receiving' ? 'RX' : RF_LABEL[rf]}</span>
     {#if session !== 'idle'}<span class="rx-tx-session">{SESSION_LABEL[session]}</span>{/if}
     {#if tx.intent}<span class="rx-tx-intent">· {tx.intent}</span>{/if}

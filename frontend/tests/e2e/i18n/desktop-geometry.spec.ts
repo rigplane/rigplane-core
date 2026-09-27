@@ -342,7 +342,7 @@ async function standardGeometry(page: Page) {
     const rfAuthorityFailures = [...receiver.querySelectorAll<HTMLElement>('[data-indicator-fact="rf-authority"]')]
       .flatMap(element => {
         const state = element.dataset.indicatorRf;
-        const expected = state === 'transmitting' ? 'TX' : state === 'uncertain' ? 'TX?'
+        const expected = state === 'transmitting' || state === 'uncertain' ? 'TX'
           : state === 'receiving' || state === 'unknown' ? '' : null;
         const owner = element.getBoundingClientRect();
         const actual = element.textContent?.trim() ?? '';

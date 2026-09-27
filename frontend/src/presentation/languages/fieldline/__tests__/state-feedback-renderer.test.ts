@@ -91,7 +91,7 @@ describe('the LEFT rail is the always-visible TX carrier (MOR-977 §2.2)', () =>
   it('unknown RF is a THIRD thing — never collapsed into RX (MOR-977 §1.2.1)', () => {
     const unknown = fromAuthority(UNKNOWN_RF);
     expect(unknown.rail).toMatchObject({ widthPx: 16, tone: FIELDLINE_TOKENS.tx.tuning });
-    expect(unknown.band.text).toBe('TX?');
+    expect(unknown.band.text).toBe('TX');
     expect(unknown.rail).not.toEqual(fromAuthority(RX).rail);
   });
 });
@@ -211,7 +211,7 @@ describe('R9 — TX truth comes from the server projection, never from the rende
       fields: { rf: 'who-knows', session: 'brand-new-phase', fault: null, keyBlocked: false },
     }, FIELDLINE_TOKENS);
     expect(bogus.rail.widthPx).toBe(16);
-    expect(bogus.band.text).toBe('TX?');
+    expect(bogus.band.text).toBe('TX');
     expect(bogus.slab.treatment).not.toBe('idle');
   });
 

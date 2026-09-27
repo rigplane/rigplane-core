@@ -79,16 +79,20 @@ describe('the top rail is the always-visible TX carrier (MOR-977 §2.3)', () => 
 
   it('unknown RF is a THIRD thing — never collapsed into RX (MOR-977 §1.2.1)', () => {
     const unknown = fromAuthority(UNKNOWN_RF);
-    expect(unknown.rail).toMatchObject({ thicknessPx: 3, tone: STUDIOLINE_TOKENS.tx.tuning, label: 'TX?' });
+    expect(unknown.rail).toMatchObject({ thicknessPx: 3, tone: STUDIOLINE_TOKENS.tx.tuning, label: 'TX' });
     expect(unknown.rail).not.toEqual(fromAuthority(RX).rail);
   });
 });
 
 describe('state survives forced-colors and colour-vision deficiency', () => {
   // MOR-977 §4.4 required mitigation: rail thickness AND text, never colour alone.
+  // MOR-2671: doubt and keyed share thickness and text (`TX`), so the filled/outlined
+  // key shape joins the colourless signature — never a `?` in the text.
   it('no two states are distinguished by colour alone', () => {
     const states = [RX, PENDING, TX, RELEASING, FAULT, UNKNOWN_RF].map((tx) => fromAuthority(tx));
-    const colourless = states.map((s) => `${s.rail.thicknessPx}/${s.rail.label ?? 'RX'}`);
+    const colourless = states.map(
+      (s) => `${s.rail.thicknessPx}/${s.rail.label ?? 'RX'}/${s.key.filled ? 'filled' : 'outlined'}`,
+    );
     expect(new Set(colourless).size).toBe(states.length);
   });
 
@@ -180,7 +184,7 @@ describe('R9 — TX truth comes from the server projection, never from the rende
       fields: { rf: 'who-knows', session: 'brand-new-phase', fault: null, keyBlocked: false },
     }, STUDIOLINE_TOKENS);
     expect(bogus.rail.thicknessPx).toBe(3);
-    expect(bogus.rail.label).toBe('TX?');
+    expect(bogus.rail.label).toBe('TX');
     expect(bogus.key.treatment).not.toBe('idle');
   });
 

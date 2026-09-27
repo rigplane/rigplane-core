@@ -28,7 +28,9 @@
   const stopWatchingTx = tx.subscribe((next) => { txState = next; });
   onDestroy(() => stopWatchingTx());
 
-  // Fail closed: server-reported intent/debt without confirmed readback remains TX?.
+  // Fail closed: server-reported intent/debt without confirmed readback stays lit —
+  // MOR-2671: it reads `TX`, distinguished from confirmed TX by the hollow lamp and
+  // the unconfirmed accessible sentence, never by a `?` in the text.
   let txIndication = $derived(
     txState.radioTx === 'on' || txState.txRisk === 'confirmed-on'
       ? 'on'
@@ -58,9 +60,12 @@
   <Toast />
 
   {#if showTxIndication && txIndication}
-    <div class="global-tx" data-testid="global-tx-indication" data-tx={txIndication} aria-live="assertive">
-      <span class="global-tx-lamp" aria-hidden="true"></span>
-      <span>{txIndication === 'on' ? 'TX' : 'TX?'}</span>
+    <div
+      class="global-tx" data-testid="global-tx-indication" data-tx={txIndication} aria-live="assertive"
+      aria-label={txIndication === 'uncertain' ? t('core.rxTx.rf.unconfirmed') : undefined}
+    >
+      <span class="global-tx-lamp" class:hollow={txIndication === 'uncertain'} aria-hidden="true"></span>
+      <span>TX</span>
     </div>
   {/if}
 
@@ -145,9 +150,23 @@
     width: 8px;
     height: 8px;
     border-radius: 50%;
+    box-sizing: border-box;
     background: currentColor;
     box-shadow: 0 0 6px currentColor;
   }
+
+  /* MOR-2671: the unconfirmed lamp keeps the warning but is HOLLOW — a border
+     ring where confirmed TX is a filled dot. The geometry distinction survives
+     forced-colors: a border stays drawn even when backgrounds are suppressed. */
+  .global-tx-lamp.hollow {
+    background: transparent;
+    border: 2px solid currentColor;
+    box-shadow: none;
+  }
+
+  /* The slot is reserved at the widest text this lamp row can show (`TX`),
+     so a transition between the two states never moves the centred badge. */
+  .global-tx > span:last-child { min-inline-size: 2ch; }
 
   .global-tx-fault {
     top: 28px;

@@ -75,16 +75,20 @@ describe('the perimeter is the always-visible TX carrier (segmentline\'s own gra
 
   it('unknown RF is a THIRD thing — never collapsed into RX (MOR-977 §1.2.1)', () => {
     const unknown = fromAuthority(UNKNOWN_RF);
-    expect(unknown.perimeter).toMatchObject({ lit: true, label: 'TX?' });
+    // MOR-2671: doubt reads `TX` and is HOLLOW (outlined, no glow fill) where
+    // confirmed TX is filled — the distinction is shape, never a `?` in the text.
+    expect(unknown.perimeter).toMatchObject({ lit: true, label: 'TX', hollow: true, insetShadow: '' });
     expect(unknown.perimeter).not.toEqual(fromAuthority(RX).perimeter);
+    expect(fromAuthority(TX).perimeter.hollow).toBe(false);
+    expect(fromAuthority(TX).perimeter.insetShadow).not.toBe('');
   });
 });
 
 describe('state survives forced-colors and colour-vision deficiency', () => {
-  it('no two states share the same lit/label pair — colour is never the only channel', () => {
+  it('no two states share the same lit/label/shape triple — colour is never the only channel', () => {
     const colourless = ALL.map((tx) => {
       const { perimeter } = fromAuthority(tx);
-      return `${perimeter.lit}/${perimeter.label ?? 'RX'}`;
+      return `${perimeter.lit}/${perimeter.label ?? 'RX'}/${perimeter.hollow ? 'hollow' : 'filled'}`;
     });
     expect(new Set(colourless).size).toBe(ALL.length);
   });
@@ -196,7 +200,7 @@ describe('R9 — TX truth comes from the server projection, never from the rende
       kind: 'state-feedback',
       fields: { rf: 'who-knows', session: 'brand-new-phase', fault: null, keyBlocked: false },
     }, SEGMENTLINE_TOKENS);
-    expect(bogus.perimeter).toMatchObject({ lit: true, label: 'TX?' });
+    expect(bogus.perimeter).toMatchObject({ lit: true, label: 'TX', hollow: true });
     expect(bogus.cell.treatment).not.toBe('idle');
   });
 
