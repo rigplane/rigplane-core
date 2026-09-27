@@ -62,20 +62,34 @@
     if (bwRaw !== null) { widths.push(formatBandwidth({ state: 'known', value: bwRaw }).length); }
     return 2 + Math.max(...widths, 0);
   });
+  // The frequency slot keeps a one-line-tall, data-wide box in EVERY state:
+  // empty text must not collapse the grid row (review of PR #3760). The
+  // width derivation runs over the profile's tuning envelope plus the
+  // receiver's own readings — no radio constants in the component.
+  let frequencyCh = $derived.by(() => {
+    const values: number[] = [];
+    const tuneMax = view.band?.tuneMaxHz;
+    if (tuneMax !== null && tuneMax !== undefined) { values.push(tuneMax); }
+    if (vfo?.frequencyHz !== null && vfo?.frequencyHz !== undefined) { values.push(vfo.frequencyHz); }
+    const display = vfo?.display?.frequencyHz;
+    if (display !== undefined && (display.state === 'current' || display.state === 'stale')) { values.push(display.value); }
+    if (values.length === 0) { return 0; }
+    return Math.max(...values).toLocaleString('en-US').length;
+  });
 </script>
 
 <section class="cluster" data-receiver-cluster={receiver} aria-label={`${receiverId} receiver`}>
-  <header><b>{receiverId}</b>
+  <header><b>{receiverId}</b><span>VFO</span>
     {#if modeBadge}
       <span data-badge="mode" data-state={obsState(vfo?.display?.mode, vfo?.mode)} style:min-width={`${modeBadge.ch}ch`}>{modeText}</span>
     {/if}
     {#if filterBadge}
       <span data-badge="filter" data-state={obsState(vfo?.display?.filter, vfo?.filter)} style:min-width={`${filterBadge.ch}ch`}>{filterText}</span>
     {/if}
-    <span class="bw" style:min-width={`${bandwidthCh}ch`}>BW {bwRaw === null ? '' : formatBandwidth({ state: 'known', value: bwRaw })}</span>
+    <span class="bw" data-bandwidth style:min-width={`${bandwidthCh}ch`}>BW {bwRaw === null ? '' : formatBandwidth({ state: 'known', value: bwRaw })}</span>
   </header>
   <ReceiverNeedleSMeter value={meterValue} />
-  <output class="frequency" data-frequency data-state={obsState(vfo?.display?.frequencyHz, vfo?.frequencyHz)}>{frequencyText}</output>
+  <output class="frequency" data-frequency data-state={obsState(vfo?.display?.frequencyHz, vfo?.frequencyHz)} style:min-height="1em" style:min-width={`${frequencyCh}ch`}>{frequencyText}</output>
   <div class="secondary">{vfo?.label ?? ''} · {modeText} · {filterText}</div>
   <ReceiverScopeWaterfall {frame} />
 </section>

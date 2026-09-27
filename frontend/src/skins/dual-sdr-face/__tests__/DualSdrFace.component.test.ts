@@ -49,7 +49,8 @@ const receiverIndicators = (main = 11, mainBandwidth = 2_400, sub = 22, subBandw
 ];
 
 // MOR-2692 geometry fixture: mirrors the merged `view()` helper but carries
-// a real `modeFilter` group so the badge slots mount at all. The vfos are
+// a real `modeFilter` group so the badge slots mount at all, plus a `band`
+// tuning envelope for the frequency-slot reservation. The vfos are
 // deliberate no-readings (null frequency/mode/filter), i.e. the fixture's
 // unread window. Choice labels include the FTX-1-scale outliers
 // ('DATA-FM-N', 'WIDE-F3') so the reserved width is a profile-data pin, not
@@ -68,6 +69,14 @@ function modeFilterView(): RadioViewModel {
       filterWidth: unknown(),
       filterWidthMin: unknown(),
       filterWidthMax: unknown(),
+    },
+    band: {
+      currentBand: { status: 'unknown' },
+      receiverBands: { main: { status: 'unknown' }, sub: { status: 'unknown' } },
+      bandChoices: [],
+      currentBandTx: 'denied',
+      tuneMinHz: null,
+      tuneMaxHz: 30_000_000,
     },
   } as unknown as RadioViewModel;
 }
@@ -154,8 +163,8 @@ describe('DualSdrFace', () => {
     const target = document.createElement('div');
     const component = mount(DualSdrFace, { target, props: { view: view(1, [0, 1, 2], false, receiverIndicators(11, 2_400, 22, 3_100)), scopeSource: { subscribe: () => () => {} } } });
     await tick();
-    expect(target.querySelector('[data-receiver-cluster="0"] [data-bandwidth]')?.textContent).toContain('2400');
-    expect(target.querySelector('[data-receiver-cluster="1"] [data-bandwidth]')?.textContent).toContain('3100');
+    expect(target.querySelector('[data-receiver-cluster="0"] [data-bandwidth]')?.textContent).toContain('2.4k');
+    expect(target.querySelector('[data-receiver-cluster="1"] [data-bandwidth]')?.textContent).toContain('3.1k');
     expect(meter.instances.map((instance) => instance.update.mock.calls[0]?.[0])).toEqual([11, 22]);
     unmount(component);
   });
@@ -216,6 +225,23 @@ describe('DualSdrFace', () => {
     unmount(component);
     target.remove();
     // known state — 'LSB' lights the still-reserved 'WIDE-F3' slot.
+  });
+
+  // MOR-2692 geometry pin (PR-review fix): the frequency slot keeps its box
+  // in the UNREAD state too — an empty output must not let the grid row
+  // collapse. One-line height plus a width derived from the fixture's
+  // tuning envelope ('30,000,000' → 9ch), not from a radio constant.
+  it('reserves one frequency slot size in the unread state', async () => {
+    const target = document.createElement('div');
+    const component = mount(DualSdrFace, { target, props: { view: modeFilterView(), scopeSource: { subscribe: () => () => {} } } });
+    await tick();
+    for (const clusterId of ['0', '1']) {
+      const frequency = target.querySelector<HTMLElement>(`[data-receiver-cluster="${clusterId}"] [data-frequency]`);
+      expect(frequency?.textContent).toBe('');
+      expect(frequency?.style.minHeight).toBe('1em');
+      expect(frequency?.style.minWidth).toBe('9ch');
+    }
+    unmount(component);
   });
 
   it.each([
