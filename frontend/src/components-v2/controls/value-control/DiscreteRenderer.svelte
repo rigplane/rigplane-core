@@ -464,6 +464,9 @@
     color: var(--vc-text-value, var(--v2-text-bright));
     font-family: 'Roboto Mono', monospace;
     min-width: 8ch;
+    /* The box also keeps its height when unread, so an empty value cannot
+     * shrink the header line and shift the rows below. */
+    min-height: 1.4em;
     font-variant-numeric: tabular-nums;
     text-align: right;
   }
