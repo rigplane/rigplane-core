@@ -12,7 +12,7 @@
  */
 import { t } from '$lib/i18n';
 import { BLOCKED_REASON_KEY } from '$lib/i18n/blocked-reasons';
-import type { DisabledReason, RadioViewModel, TxTargetViewModel } from './radio-view-model';
+import type { DisabledReason, DisabledReasonCode, RadioViewModel, TxTargetViewModel } from './radio-view-model';
 
 /**
  * The subset of the managed server projection this surface reads. `fault` stays `string | null`
@@ -249,6 +249,30 @@ export function keyBlockedReasons(
 /** The view model's own disabled reasons that concern TX — scope/VFO reasons are not TX gates. */
 export const txDisabledReasons = (view: RadioViewModel): readonly DisabledReason[] =>
   view.disabledReasons.filter((reason) => reason.field.startsWith('tx'));
+
+/**
+ * MOR-2705 — the view-model `disabledReasons` item text (the `viewBlocked`
+ * list the surface renders next to the key-blocked list). A raw
+ * `${field}: ${code}` pair never reaches the operator: every code resolves
+ * to a plain catalog sentence, reusing the existing band/TX reason family
+ * (`core.band.tx.reason.*`, used by `BandSurface.svelte`'s own denial
+ * resolver) and the generic disabled-reason family (`core.disabledReason.*`,
+ * used by `disabled-reason.ts`, `RfFrontEndInstrumentHost.svelte` and
+ * `CwKeyerSurface.svelte`). Table over the full `DisabledReasonCode` union,
+ * precisely the F4-per-code doctrine `TARGET_REASON_KEY` below applies; the
+ * `data-reason`/`data-field` machine attributes on the list item stay.
+ */
+const VIEW_BLOCKED_KEY: Record<DisabledReasonCode, string> = {
+  'out-of-band': 'core.band.tx.reason.outOfBand',
+  'tx-target-unknown': 'core.band.tx.reason.targetUnknown',
+  'capability-unavailable': 'core.band.tx.reason.rangesNotConfigured',
+  'field-not-observed': 'core.disabledReason.unobserved',
+  'mutually-exclusive-control': 'core.disabledReason.mutuallyExclusiveControl',
+  'receiver-lacks-control': 'core.disabledReason.receiverLacksControl',
+};
+/** Resolves one view-model disabled reason to its operator-legible sentence
+ *  in the active locale — fresh `t()` per call, exactly as `blockedLabel`. */
+export const viewBlockedLabel = (item: DisabledReason): string => t(VIEW_BLOCKED_KEY[item.code]);
 
 let sequence = 0;
 /** Per-instance DOM id, so several mounted surfaces keep distinct aria targets. */

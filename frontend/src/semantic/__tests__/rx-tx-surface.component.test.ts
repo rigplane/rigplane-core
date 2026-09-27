@@ -19,9 +19,10 @@ import { ManagedTxController } from '$lib/runtime/tx-controller/managed-controll
 import { projectManagedTx } from '$lib/runtime/tx-controller/managed-state';
 import rxTxSurfaceSource from '../RxTxSurface.svelte?raw';
 import { topologyFixtures, withAudioOnlyScope, type TopologyFixtureId } from '../fixtures/topologies';
-import type { RadioViewModel } from '../radio-view-model';
+import type { DisabledReason, RadioViewModel } from '../radio-view-model';
 import {
   FAULT_REASON_CODES, blockedLabel, faultReasonLabel, keyBlockedReasons, targetUnknownMessage,
+  viewBlockedLabel,
   type KeyBlockedReason, type TxAuthoritySnapshot,
 } from '../rx-tx-surface';
 import { t } from '$lib/i18n';
@@ -480,7 +481,9 @@ describe('unknown TX target', () => {
       const t = target.querySelector('[data-testid="rx-tx-target"]') as HTMLElement;
       expect(t.dataset.target).toBe('known');
       expect(t.dataset.receiver).toBe(known.receiver);
-      expect(t.dataset.slot).toBe(known.slot.kind === 'slotted' ? known.slot.id : known.slot.kind);
+      // MOR-2705: the slot machine attribute carries a word only for a
+      // slotted target; `unslotted`/`relative` go absent.
+      expect(t.dataset.slot).toBe(known.slot.kind === 'slotted' ? known.slot.id : undefined);
     });
   });
 
@@ -489,10 +492,45 @@ describe('unknown TX target', () => {
     // `{#if}` block (Svelte's compiler strips a block fragment's leading
     // whitespace, `clean_nodes`), which glued the unit onto the number.
     // Pinned as a literal string, spaces included, against the jsdom DOM.
+    // MOR-2705: `unslotted` (and any other slot KIND word) is never the
+    // operator's word — only a slotted id (`A`/`B`) names the slot.
     withSurface(topologyFixtures['2/main_sub'], IDLE_RX, () => {
       const t = target.querySelector('[data-testid="rx-tx-target"]') as HTMLElement;
-      expect(t.textContent?.trim()).toBe('TX target: MAIN unslotted · 14250000\u00A0Hz');
+      expect(t.textContent?.trim()).toBe('TX target: MAIN · 14250000\u00A0Hz');
       expect(t.textContent).not.toContain('14250000Hz');
+      expect(t.textContent).not.toContain('unslotted');
+    });
+  });
+
+  it('MOR-2705: a slotted target names only its slot id, still separated', () => {
+    // The slot is exercised through the 1/single fixture with its unslotted
+    // record replaced by a slotted one — the readout must read `MAIN A ·`
+    // with exactly one space on each side of the dot (the leading space
+    // lives in the evaluated expression, not at an {#if} edge).
+    const view = topologyFixtures['1/single'];
+    if (view.txTarget.status !== 'known') throw new Error('fixture precondition');
+    const slottedView: RadioViewModel = {
+      ...view,
+      txTarget: { ...view.txTarget, slot: { kind: 'slotted', id: 'A' } },
+    };
+    withSurface(slottedView, IDLE_RX, () => {
+      const t = target.querySelector('[data-testid="rx-tx-target"]') as HTMLElement;
+      expect(t.textContent?.trim()).toBe('TX target: MAIN A · 14195000\u00A0Hz');
+      expect(t.dataset.slot).toBe('A');
+    });
+    // `relative` is an internal slot kind too and receives the same empty
+    // treatment as `unslotted`.
+    const relativeView: RadioViewModel = {
+      ...view,
+      txTarget: {
+        ...view.txTarget,
+        slot: { kind: 'relative', role: 'selected' },
+      },
+    };
+    withSurface(relativeView, IDLE_RX, () => {
+      const t = target.querySelector('[data-testid="rx-tx-target"]') as HTMLElement;
+      expect(t.textContent?.trim()).toBe('TX target: MAIN · 14195000\u00A0Hz');
+      expect(t.textContent).not.toContain('relative');
     });
   });
 
@@ -776,6 +814,45 @@ describe('MOR-1474 — every key-blocked reason resolves to operator-legible cop
       const li = target.querySelector('[data-testid="rx-tx-blocked"] [data-reason="radio-transmitting"]');
       expect(li?.textContent?.trim()).toBe(blockedLabel('radio-transmitting'));
       expect(s.reasons()).toContain('radio-transmitting');
+    });
+  });
+});
+
+/* ── MOR-2705 — the view-model `disabledReasons` list (the `viewBlocked`
+   items) renders plain catalog sentences, never the raw `field: code` pair.
+   The `data-reason`/`data-field` machine attributes stay. ─────────────── */
+
+describe('MOR-2705 — a view-model disabled reason reads as a sentence, not a field: code pair', () => {
+  const VIEW_BLOCKED_CASES: readonly (readonly [DisabledReason['code'], string])[] = [
+    ['out-of-band', 'core.band.tx.reason.outOfBand'],
+    ['tx-target-unknown', 'core.band.tx.reason.targetUnknown'],
+    ['capability-unavailable', 'core.band.tx.reason.rangesNotConfigured'],
+    ['field-not-observed', 'core.disabledReason.unobserved'],
+    ['mutually-exclusive-control', 'core.disabledReason.mutuallyExclusiveControl'],
+    ['receiver-lacks-control', 'core.disabledReason.receiverLacksControl'],
+  ];
+  it.each(VIEW_BLOCKED_CASES)('view-model code %s maps to catalog key %s', (code, key) => {
+    for (const field of ['txTarget', 'txPermit']) {
+      expect(viewBlockedLabel({ field, code })).toBe(t(key));
+    }
+  });
+
+  it('renders the sentence on the real blocked-reasons list item', () => {
+    // The 1/ab fixture carries { field: 'txTarget', code: 'field-not-observed' }.
+    withSurface(topologyFixtures['1/ab'], IDLE_RX, (s) => {
+      const li = target.querySelector('[data-testid="rx-tx-blocked"] [data-field="txTarget"]');
+      expect(li?.textContent?.trim()).toBe(viewBlockedLabel({ field: 'txTarget', code: 'field-not-observed' }));
+      expect(li?.textContent).not.toContain('txTarget: field-not-observed');
+      expect(s.reasons()).toContain('field-not-observed');
+    });
+  });
+
+  it('describes the key action with the same sentences, never a raw pair', () => {
+    withSurface(topologyFixtures['1/ab'], IDLE_RX, (s) => {
+      const describedBy = s.key().getAttribute('aria-describedby');
+      const description = target.querySelector<HTMLElement>(`#${describedBy}`);
+      expect(description?.textContent).not.toContain('txTarget: field-not-observed');
+      expect(description?.textContent).toContain(viewBlockedLabel({ field: 'txTarget', code: 'field-not-observed' }));
     });
   });
 });
