@@ -14,10 +14,12 @@
   // (agcModes, attValues/preValues, antenna count live upstream), so the
   // table uses each vocabulary's widest possible rendered text instead of a
   // per-radio width:
-  // - AGC: verbatim capability label, longest in the profiles is `TUNING`
-  //   (verbatim and unbounded per-radio, so this covers the widest known
-  //   one). The dict says which vocabulary is missing: AGC label set
-  //   (agcModes/agcLabels).
+  // - AGC: verbatim capability label. The AGC label vocabulary
+  //   (agcModes/agcLabels) does not reach this component; labels are
+  //   verbatim and unbounded per-radio. The widest shipped label is 4
+  //   characters (FAST/SLOW/AUTO/OFF); the reservation covers a 6-character
+  //   label shape (`TUNING`, representative of the widest plausible label,
+  //   e.g. a future profile label), not any per-radio width.
   // - NOTCH: the widest rendered state text `NOTCH MANUAL` (the component
   //   prints the raw mode uppercased: OFF/AUTO/MANUAL).
   // - ATT: `ATT 45 dB` — the largest attenuator step across profiles
