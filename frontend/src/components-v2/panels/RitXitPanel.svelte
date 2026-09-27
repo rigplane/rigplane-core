@@ -40,9 +40,11 @@
   // fabricates `?? 0`). `formatOffsetKHz` (rit-utils.ts, not an A12 owner)
   // has no NaN guard: `hz > 0` is false for NaN, so it falls to the
   // negative branch and renders the literal "−NaN kHz". Guard locally,
-  // same shape as FilterPanel.svelte's `formatWidthDisplay`.
+  // same shape as FilterPanel.svelte's `formatWidthDisplay`. MOR-2667: the
+  // unread offset renders an unlit, EMPTY box in a reserved slot (the
+  // `.offset` rule below) — never a `'--- kHz'` placeholder.
   function formatOffsetDisplay(hz: number): string {
-    return Number.isFinite(hz) ? formatOffsetKHz(hz) : '--- kHz';
+    return Number.isFinite(hz) ? formatOffsetKHz(hz) : '';
   }
 
   function handleOffsetChange(value: number) {
@@ -127,6 +129,11 @@
     font-size: 10px;
     color: var(--v2-text-disabled);
     transition: color 150ms ease;
+    /* MOR-2667: the offset box stays reserved in every state — 9ch covers
+       the widest formatOffsetKHz text ('+9.99 kHz'); tabular digits keep a
+       changing value from shifting the row. */
+    min-inline-size: 9ch;
+    font-variant-numeric: tabular-nums;
   }
 
   .offset.active {
