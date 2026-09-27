@@ -286,9 +286,8 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
     // controller, the transport or the permit utility any more than the fact
     // contract can.
     expect([...new Set(specifiers)]).toEqual([
-      '$lib/i18n', './CwKeyerInstrumentHost.svelte', './radio-view-model', './pressed-of',
-      '../primitives/reading-text',
-      'svelte', '$lib/types/capabilities',
+      '$lib/i18n', './CwKeyerInstrumentHost.svelte', '$lib/types/capabilities',
+      './radio-view-model', './pressed-of', '../primitives/reading-text', 'svelte',
       '../primitives/control-feedback/control-feedback-presentation',
       '../primitives/scalar/committed-scalar.svelte',
       '../primitives/scalar/value-control-core',
@@ -369,7 +368,7 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
       'view', 'continuousHandles', 'showKeyerSpeed', 'showPitchHz', 'standard',
       'onBreakInMode', 'onLevelChange',
       'onApfOn', 'onTwinPeakToggle', 'onReversePaddleToggle', 'breakInDelayFeedback',
-      'autoTuneAvailable', 'onAutoTune',
+      'breakInChoices', 'autoTuneAvailable', 'onAutoTune',
     ]);
   });
 
