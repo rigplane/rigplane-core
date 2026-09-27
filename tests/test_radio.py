@@ -2215,9 +2215,11 @@ class TestCivPacingIsSendToSend:
         # The stamp check picked up the machine's real elapsed time (the
         # injected clock intentionally keeps real pace), so a loaded runner
         # broke the 0.005 tolerance (MOR-2743). Pin the gate's arithmetic
-        # instead: exactly one positive paced gap per send.
+        # instead: the first send goes out immediately (the clock is seeded
+        # one gap ahead), and the write and the follow-up each pace exactly
+        # one positive gap.
         paced = [s for s in clock.sleeps if 0 < s <= gap]
-        assert len(paced) == 3
+        assert len(paced) == 2
 
     @pytest.mark.asyncio
     async def test_blocking_sends_stay_one_outstanding(
