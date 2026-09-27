@@ -818,10 +818,10 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
   });
 
   it('known activeReceiver renders "Active receiver: MAIN" with the space, and the value alone sits in its span', () => {
-    // MOR-2655 follow-up: the known-state line lost its colon-plus-space in
-    // the regenerated captures (rendered "Active receiver:MAIN"). The space
-    // now lives inside the catalog string so no compile/runtime/pipeline
-    // layer can trim it, and the value span carries the bare receiver id.
+    // MOR-2655 follow-up: with the space inside the value span, the captures
+    // drew "Active receiver:MAIN". The span is `display: inline-block`, and a
+    // space at the start of an inline-block's line is removed at render, so
+    // the separator sits in the catalog string, outside the span.
     const target = mountSurface({ viewModel: topologyFixtures['2/main_sub'] });
     const el = target.querySelector('[data-testid="vfo-active-receiver"]');
     expect(el?.textContent).toBe('Active receiver: MAIN');
