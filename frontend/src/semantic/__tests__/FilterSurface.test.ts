@@ -538,6 +538,24 @@ describe('operational availability decides whether a control is USABLE', () => {
     });
   });
 
+  // MOR-2803: while the radio declares the width field unavailable (FTX-1
+  // NARROW on: the per-mode NAR WIDTH menu owns the passband, not `SH`), the
+  // adapter publishes `operational: false` — the row must stay disabled with
+  // its reason and dispatch nothing.
+  it('keeps the width row disabled with its reason and sends nothing while the width field is unavailable', () => {
+    const onFilterWidthChange = vi.fn();
+    const view = withModeFilterField(base(), 'filterWidth', { availability: PRESENT_UNREADABLE });
+    withSurface(view, (s) => {
+      expect(s.input('filter-width')!.disabled).toBe(true);
+      expect(s.group('filter-width')!.dataset.disabledReason).toBe('field-not-observed');
+      const input = s.input('filter-width')!;
+      input.value = '3000';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+    }, { onFilterWidthChange });
+    expect(onFilterWidthChange).not.toHaveBeenCalled();
+  });
+
   // MOR-2648: an unread value renders an unlit box — empty text, never a
   // `?` glyph; the box itself stays reserved (see the geometry describe).
   it('never enables the width slider on an unobserved reading', () => {
