@@ -1074,6 +1074,40 @@ test('standard 1440 receiver S-meter keeps its box between unread and read', asy
   expect(unknownBox.height).toBe(knownBox.height);
 });
 
+// MOR-2684: the band row's permit caption reserves ONE width in every
+// state. The status slot is measured in the caption's own font (the `<small>`
+// inherits the ambient, non-monospace font, so `ch` is not exact), and this
+// comparison proves the caption's rendered width is identical between an
+// unread, an allowed and a denied permit for the same band key: the first
+// reading cannot move the band row.
+test('standard 1440 band-choice permit caption keeps one width between unread, allowed and denied', async ({ page }) => {
+  const captionWidths = async (patch?: (state: ServerState, caps: Capabilities) => void) => {
+    await boot(page, 'standard', 1440, true, 'studioline', false, 'topology-1-single', { patch });
+    const captions = page.locator('[data-testid^="band-choice-permit-"]');
+    await expect(captions.first()).toBeVisible();
+    return captions.evaluateAll(nodes => Object.fromEntries(nodes.map(node => [
+      node.getAttribute('data-testid'),
+      node.getBoundingClientRect().width,
+    ])) as Record<string, number>);
+  };
+  const allowed = await captionWidths((_state, caps) => {
+    // The fixture ships only a 20m TX segment, so 40m's default reads
+    // denied; add the 40m segment so BOTH defaults read allowed.
+    caps.txBands = [...caps.txBands!, { start: 7000000, end: 7300000, name: '40m' }];
+  });
+  const denied = await captionWidths();
+  const unread = await captionWidths((_state, caps) => {
+    // No configured TX ranges at all: every default permit is unread.
+    caps.txBands = null;
+  });
+  expect(Object.keys(allowed)).toEqual(Object.keys(denied));
+  expect(Object.keys(allowed)).toEqual(Object.keys(unread));
+  for (const [testid, width] of Object.entries(allowed)) {
+    expect(denied[testid], `${testid} denied width`).toBe(width);
+    expect(unread[testid], `${testid} unread width`).toBe(width);
+  }
+});
+
 // MOR-2425/R41: the freshness cue is gone, so the claim is now the stronger
 // one it used to approximate — the instrument's geometry does not move at all
 // through a current → stale → current recovery, and no cue comes back.

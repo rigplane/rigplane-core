@@ -33,9 +33,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import BandSurface, {
-  activeReceiverUnconfirmedReason, reasonLabel, UNKNOWN_TEXT, unresolvedReason,
+  activeReceiverUnconfirmedReason, reasonLabel, unnamedReason, unresolvedReason,
   defaultPermitLabel, mhz,
 } from '../BandSurface.svelte';
+import {
+  defaultPermitPrefix, defaultPermitStatus, PERMIT_STATUS_TEXTS,
+} from '../band-instruments';
 import { t } from '$lib/i18n';
 import { topologyFixtures, withBand } from '../fixtures/topologies';
 import type { FrequencyPermit } from '$lib/utils/tx-permit';
@@ -417,6 +420,129 @@ describe('MOR-1474 — the default-permit label resolves each status through its
       .toBe('TX at 14.074 MHz:');
     expect(defaultPermitLabel(choice)).not.toMatch(/unknown/i);
     expect(defaultPermitLabel(choice)).not.toContain('—');
+  });
+});
+
+/* ── MOR-2684: no dash on the band row, and the permit caption keeps one
+   width. An unread value is an empty slot; an unnamable denial reason has
+   no visible text and a plain catalog accessible name; the status slot is
+   reserved at the measured widest catalog status word. ────────────────── */
+
+describe('MOR-2684 — the permit caption keeps one width across its states', () => {
+  const choice = (permit: BandChoice['defaultHzTxPermit']): BandChoice => ({
+    name: '20m', startHz: 14000000, endHz: 14350000, defaultHz: 14074000, bsrCode: 4,
+    defaultHzTxPermit: permit,
+  });
+  const ALLOWED_CHOICE = choice({ status: 'allowed', band: '20m' });
+  const DENIED_CHOICE = choice({ status: 'denied', reason: 'outside-configured-ranges' });
+  const UNREAD_CHOICE = choice({ status: 'unknown', reason: 'ranges-unconfigured' });
+
+  // The known texts stay EXACTLY as they were before the split — pinned
+  // literally, spaces included, so the reserved-slot refactor cannot change
+  // what the operator reads.
+  it('renders the known allowed and denied captions literally, spaces included', () => {
+    const view = withB({});
+    const r = render(view);
+    expect(r.el('choice-permit-20m')!.textContent).toBe('TX at 14.195 MHz: allowed');
+    expect(r.el('choice-permit-MW')!.textContent).toBe('TX at 1.000 MHz: denied');
+    r.dispose();
+  });
+
+  // The unread caption keeps its sentence and gains only the reserved EMPTY
+  // status slot. Red on the old code: the caption was the bare unread
+  // sentence with no slot (and no trailing separator space).
+  it('renders the unread caption with an empty reserved status slot, never a dash', () => {
+    const view = withB({
+      bandChoices: [
+        { ...view20m(view), defaultHzTxPermit: { status: 'unknown', reason: 'ranges-unconfigured' } },
+      ],
+    });
+    const r = render(view);
+    expect(r.el('choice-permit-20m')!.textContent).toBe('TX at 14.195 MHz: ');
+    expect(r.el('choice-permit-20m')!.textContent?.trim()).toBe('TX at 14.195 MHz:');
+    expect(r.el('choice-permit-20m')!.textContent).not.toContain('—');
+    // The accessible name keeps the full sentence from `defaultPermitLabel`.
+    expect(r.btn('choice-20m')!.getAttribute('aria-label')).toBe('20m — TX at 14.195 MHz:');
+    r.dispose();
+  });
+
+  it('splits the caption into the same prefix in every state and an empty or word status', () => {
+    expect(defaultPermitPrefix(ALLOWED_CHOICE)).toBe('TX at 14.074 MHz: ');
+    expect(defaultPermitPrefix(DENIED_CHOICE)).toBe('TX at 14.074 MHz: ');
+    expect(defaultPermitPrefix(UNREAD_CHOICE)).toBe('TX at 14.074 MHz: ');
+    expect(defaultPermitStatus(ALLOWED_CHOICE)).toBe('allowed');
+    expect(defaultPermitStatus(DENIED_CHOICE)).toBe('denied');
+    expect(defaultPermitStatus(UNREAD_CHOICE)).toBe('');
+    // The catalog keeps the known label exactly the unread sentence plus
+    // ' ' plus the status word, so the prefix text node keeps ONE width.
+    expect(t('core.band.tx.defaultPermit.label', { frequency: '14.074 MHz', status: '' }))
+      .toBe(`${t('core.band.tx.defaultPermit.unread', { frequency: '14.074 MHz' })} `);
+  });
+
+  it('reserves the status slot structurally against the widest catalog status word', () => {
+    const host = readFileSync('src/semantic/BandInstrumentHost.svelte', 'utf8');
+    expect(host).toMatch(/\.permit-status\s*\{[^}]*min-width:\s*var\(--band-permit-status-width\)/);
+    expect(host).toMatch(/style:--band-permit-status-width=\{permitStatusWidth\}/);
+    expect(host).toMatch(/class="permit-status-measure"[^>]*aria-hidden="true"/);
+  });
+
+  it('measures every status word the three catalogs can render', () => {
+    const readCatalog = (locale: string): Record<string, string> =>
+      JSON.parse(readFileSync(`src/lib/i18n/locales/${locale}.json`, 'utf8'));
+    const words = new Set<string>();
+    for (const locale of ['en-US', 'ru-RU']) {
+      for (const [key, value] of Object.entries(readCatalog(locale))) {
+        if (key.startsWith('core.band.tx.defaultPermit.status.')) words.add(value);
+      }
+    }
+    // ja-JP defines no `defaultPermit.status.*` keys — its known captions
+    // resolve through the en-US fallback, so the English pair already
+    // covers it.
+    expect(
+      Object.keys(readCatalog('ja-JP')).filter(key =>
+        key.startsWith('core.band.tx.defaultPermit.status.')),
+    ).toEqual([]);
+    for (const word of words) expect(PERMIT_STATUS_TEXTS).toContain(word);
+    expect(new Set(PERMIT_STATUS_TEXTS).size).toBe(PERMIT_STATUS_TEXTS.length);
+  });
+
+  function view20m(view: RadioViewModel): BandChoice {
+    return (view.band as BandViewModel).bandChoices.find(c => c.name === '20m')!;
+  }
+});
+
+describe('MOR-2684 — an unnamed denial reason draws no dash and keeps a name', () => {
+  it('renders no visible text for an unrecognised reason code, never a dash', () => {
+    expect(reasonLabel('not-a-tx-reason-code')).toBe('');
+    // MOR-1448 F5's own hazard: an inherited `Object.prototype` key.
+    expect(reasonLabel('toString')).toBe('');
+  });
+
+  // Red on the old code: this state rendered '—' as the visible reason.
+  it('keeps the reason element empty with an accessible catalog sentence when no code explains the denial', () => {
+    const view = withB({ currentBand: knownBand('20m'), currentBandTx: 'denied' });
+    const r = render({
+      ...view,
+      txPermit: { status: 'unknown', reason: 'ranges-unconfigured' },
+      disabledReasons: [],
+    });
+    expect(r.text('tx-reason')).toBe('');
+    expect(r.el('tx-reason')!.getAttribute('aria-label'))
+      .toBe(t('core.band.tx.reason.unnamed'));
+    expect(r.el('tx-reason')!.textContent).not.toContain('—');
+    expect(unnamedReason()).not.toContain('—');
+    r.dispose();
+  });
+
+  // A caveat is a whole sentence: an empty reason would leave a dangling
+  // ': '. When no reason can be named it says so with the same sentence.
+  it('fills the caveat with the unnamed-reason sentence when no code explains the denial', () => {
+    const view = withB({ currentBand: knownBand('20m'), currentBandTx: 'allowed' });
+    const r = render({ ...view, txPermit: DENIED, disabledReasons: [] });
+    expect(r.text('tx-caveat')).toBe(t('core.band.tx.caveat.denied', {
+      reason: t('core.band.tx.reason.unnamed'),
+    }));
+    r.dispose();
   });
 });
 
@@ -850,7 +976,7 @@ describe('unknown tuning bounds fail closed (carry-forward 5, rule 5)', () => {
     expect(r.btn('entry-set')!.disabled).toBe(true);
     expect(r.el('entry')!.dataset.bounds).toBe('false');
     expect(r.text('entry-reason')).toContain('tuning limits unknown');
-    expect(r.text('entry-range')).toBe(UNKNOWN_TEXT);
+    expect(r.text('entry-range')).toBe('');
     r.dispose();
   });
 

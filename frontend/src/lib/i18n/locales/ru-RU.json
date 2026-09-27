@@ -244,6 +244,7 @@
   "core.band.tx.reason.rangesNotConfigured": "для этого радио не настроены диапазоны передачи, поэтому проверить разрешение здесь нельзя",
   "core.band.tx.reason.bandUnresolved": "текущий диапазон не удалось определить",
   "core.band.tx.reason.receiverUnconfirmed": "активный приёмник ещё не подтверждён — выберите приёмник, чтобы продолжить",
+  "core.band.tx.reason.unnamed": "причина этого запрета недоступна",
   "core.band.tx.caveat.denied": "TX разрешён на этой частоте, но передача на вашей фактической частоте не разрешена: {reason}",
   "core.band.tx.caveat.unknown": "TX разрешён на этой частоте, но ваша фактическая частота передачи не подтверждена: {reason}",
   "core.band.tx.defaultPermit.label": "TX на {frequency}: {status}",

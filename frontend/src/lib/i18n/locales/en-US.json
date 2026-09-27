@@ -264,6 +264,7 @@
   "core.band.tx.reason.rangesNotConfigured": "no transmit ranges are configured for this radio, so permission cannot be checked here",
   "core.band.tx.reason.bandUnresolved": "the current band could not be determined",
   "core.band.tx.reason.receiverUnconfirmed": "the active receiver has not been confirmed yet — select a receiver to continue",
+  "core.band.tx.reason.unnamed": "the reason for this denial is not available",
   "core.band.tx.caveat.denied": "TX is allowed on this frequency, but transmitting at your actual frequency is not allowed: {reason}",
   "core.band.tx.caveat.unknown": "TX is allowed on this frequency, but your actual transmit frequency is unconfirmed: {reason}",
   "core.band.tx.defaultPermit.label": "TX at {frequency}: {status}",
