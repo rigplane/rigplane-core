@@ -365,18 +365,15 @@ describe('LinearSMeter calibrated S-meter domain', () => {
     expect(sdr.querySelector('[data-sdr-segment="79"]')?.getAttribute('fill')).toBe('#1a2230');
   });
 
-  it.each([
-    [{ kind: 'engineering', unit: 'db' } as const, '\u221212 dB rel S9', 'scale unavailable'],
-    [{ kind: 'unknown' } as const, '-12', 'unit unknown'],
-  ])('suppresses motion, peak, and geometry for unprojectable domain %j', (domain, primary, secondary) => {
-    if (domain.kind === 'engineering') setCapabilities(makeCaps());
-    const projection = projectSignalMeter(-12, domain);
+  it('suppresses motion, peak, and geometry for an uncalibrated engineering domain', () => {
+    setCapabilities(makeCaps());
+    const projection = projectSignalMeter(-12, { kind: 'engineering', unit: 'db' });
     const target = mountMeter({
       frame: { projection, smoothedFraction: 0.8, peakFraction: 0.95, afterglowFraction: null, reducedMotion: false },
     });
 
-    expect(target.textContent).toContain(primary);
-    expect(target.textContent).toContain(secondary);
+    expect(target.textContent).toContain('\u221212 dB rel S9');
+    expect(target.textContent).toContain('scale unavailable');
     // MOR-2521: unprojectable domains keep every fill rect present but hidden.
     const fills = [...target.querySelectorAll<SVGRectElement>('[data-meter-fill]')];
     expect(fills).toHaveLength(20);
@@ -387,6 +384,25 @@ describe('LinearSMeter calibrated S-meter domain', () => {
     expect(target.querySelector('svg')?.getAttribute('aria-label')).toBe(
       projection.accessibleDescription,
     );
+  });
+
+  it('renders a known reading with an unknown unit exactly like an unread one', () => {
+    const frameFor = (projection: ReturnType<typeof projectSignalMeter>): SignalMeterFrame => ({
+      projection, smoothedFraction: 0, peakFraction: null, afterglowFraction: null, reducedMotion: false,
+    });
+    const knownTarget = mountMeter({ frame: frameFor(projectSignalMeter(-12, { kind: 'unknown' })) });
+    const unreadTarget = mountMeter({ frame: frameFor(projectSignalMeter(null, { kind: 'unknown' })) });
+
+    expect(knownTarget.textContent).toBe(unreadTarget.textContent);
+    expect(knownTarget.querySelector('svg')?.getAttribute('aria-label')).toBe('S meter');
+    expect(unreadTarget.querySelector('svg')?.getAttribute('aria-label')).toBe('S meter');
+    // MOR-2521: the unprojectable track keeps every fill rect present but hidden.
+    const fills = [...knownTarget.querySelectorAll<SVGRectElement>('[data-meter-fill]')];
+    expect(fills).toHaveLength(20);
+    expect(fills.every((rect) => rect.getAttribute('visibility') === 'hidden')).toBe(true);
+    expect(knownTarget.querySelector('[data-meter-peak]')?.getAttribute('visibility')).toBe('hidden');
+    expect([...knownTarget.querySelectorAll<SVGLineElement>('line')]
+      .every((line) => line.getAttribute('visibility') === 'hidden')).toBe(true);
   });
 
   it('starts no local motion owner for a host frame while compatibility callers start one', () => {

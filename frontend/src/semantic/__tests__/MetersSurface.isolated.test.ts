@@ -838,20 +838,17 @@ describe('station signal rendering honors the explicit sample domain (MOR-2425)'
     }
   }
 
-  it.each([
-    [{ kind: 'raw' } as const, 53, 'uncalibrated'],
-    [{ kind: 'unknown' } as const, 53, 'unit unknown'],
-  ])('keeps selected bar palettes but withholds S semantics for explicit %j', (domain, value, stateText) => {
+  it('keeps selected bar palettes but withholds S semantics for an explicit raw domain', () => {
     const caps = makeFaultCaps();
     caps.meterCalibrations!.s_meter = S_METER_CAL;
     setCapabilities(caps);
     try {
       withProbeMeterLanguage(() => {
-        const view = withSignalDomain(withRaw(base(), 'signal', value), domain);
+        const view = withSignalDomain(withRaw(base(), 'signal', 53), { kind: 'raw' });
         withSurface(view, (s) => {
           const signal = s.tile('signal')!;
-          expect(signal.textContent).toContain(String(value));
-          expect(signal.textContent).toContain(stateText);
+          expect(signal.textContent).toContain('53');
+          expect(signal.textContent).toContain('uncalibrated');
           expect(signal.textContent).not.toMatch(/S[0-9]|dBm/);
           expect([...signal.querySelectorAll<SVGLineElement>('[data-main-relevant] line')]
             .every((line) => line.getAttribute('visibility') === 'hidden')).toBe(true);
@@ -867,6 +864,44 @@ describe('station signal rendering honors the explicit sample domain (MOR-2425)'
           }
         });
       });
+    } finally {
+      clearCapabilities();
+    }
+  });
+
+  it('renders a known signal reading with an unknown unit exactly like an unread one', () => {
+    const caps = makeFaultCaps();
+    caps.meterCalibrations!.s_meter = S_METER_CAL;
+    setCapabilities(caps);
+    try {
+      const known = withSignalDomain(withRaw(base(), 'signal', 53), { kind: 'unknown' });
+      const unreadBase = base();
+      const unread = withSignalDomain({
+        ...unreadBase,
+        meters: {
+          ...unreadBase.meters!,
+          signal: { ...unreadBase.meters!.signal, reading: { status: 'unknown' } },
+        },
+      }, { kind: 'unknown' });
+      let knownText = '';
+      let unreadText = '';
+      let knownLabel: string | null = null;
+      let unreadLabel: string | null = null;
+      withSurface(known, (s) => {
+        const signal = s.tile('signal')!;
+        knownText = signal.textContent ?? '';
+        knownLabel = s.signalSvg()!.getAttribute('aria-label');
+        expect([...signal.querySelectorAll<SVGLineElement>('[data-main-relevant] line')]
+          .every((line) => line.getAttribute('visibility') === 'hidden')).toBe(true);
+        expect(signal.querySelectorAll('[data-segment]')).toHaveLength(20);
+      });
+      withSurface(unread, (s) => {
+        unreadText = s.tile('signal')!.textContent ?? '';
+        unreadLabel = s.signalSvg()!.getAttribute('aria-label');
+      });
+      expect(knownText).toBe(unreadText);
+      expect(knownLabel).toBe('S meter');
+      expect(unreadLabel).toBe('S meter');
     } finally {
       clearCapabilities();
     }
@@ -1211,21 +1246,53 @@ describe('station level meters honor explicit sample domains (MOR-2425)', () => 
     }
   });
 
-  it('keeps a known unknown-domain value visible but suppresses motion, fault, and peak', () => {
+  it('renders a known unknown-domain value exactly like an unread one, without motion, fault, or peak', () => {
     setCapabilities(makeFaultCaps());
     try {
-      let view = withRaw(base('transmitting'), 'power', 50);
-      view = withMeterDomain(view, 'power', { kind: 'unknown' });
-      view = withRaw(view, 'swr', 3);
-      view = withMeterDomain(view, 'swr', { kind: 'unknown' });
-      withSurface(view, (s) => {
-        expect(s.tile('power')!.textContent).toContain('50 unit unknown');
+      let known = withRaw(base('transmitting'), 'power', 50);
+      known = withMeterDomain(known, 'power', { kind: 'unknown' });
+      known = withRaw(known, 'swr', 3);
+      known = withMeterDomain(known, 'swr', { kind: 'unknown' });
+      const unreadBase = base('transmitting');
+      const unreadMeters = unreadBase.meters!;
+      const unread: RadioViewModel = {
+        ...unreadBase,
+        meters: {
+          ...unreadMeters,
+          power: {
+            ...unreadMeters.power,
+            reading: { status: 'unknown' },
+            display: { state: 'unknown', reason: 'not-observed' },
+            domain: { kind: 'unknown' },
+          },
+          swr: {
+            ...unreadMeters.swr,
+            reading: { status: 'unknown' },
+            display: { state: 'unknown', reason: 'not-observed' },
+            domain: { kind: 'unknown' },
+          },
+        },
+      };
+      let knownPowerText = '';
+      let unreadPowerText = '';
+      let knownSvgText = '';
+      let unreadSvgText = '';
+      withSurface(known, (s) => {
+        knownPowerText = s.tile('power')!.textContent ?? '';
+        knownSvgText = s.signalSvg()!.textContent ?? '';
+        expect(s.tile('power')!.getAttribute('aria-label')).toBe('Po meter');
         expect(visibleSlotCount(s.tile('power')!, '[data-gauge-fill]')).toBe(0);
         expect(s.tile('power')!.querySelector('[data-testid="bar-gauge-peak-marker"]')).toBeNull();
-        expect(s.signalSvg()!.textContent).toContain('3 unit unknown');
         expect(visibleSlotCount(s.signalSvg()!, '[data-lower-fill]')).toBe(0);
         expect(s.signalSvg()!.getAttribute('data-lower-fault')).toBe('false');
       });
+      withSurface(unread, (s) => {
+        unreadPowerText = s.tile('power')!.textContent ?? '';
+        unreadSvgText = s.signalSvg()!.textContent ?? '';
+        expect(s.tile('power')!.getAttribute('aria-label')).toBe('Po meter');
+      });
+      expect(knownPowerText).toBe(unreadPowerText);
+      expect(knownSvgText).toBe(unreadSvgText);
     } finally {
       clearCapabilities();
     }
@@ -1309,7 +1376,7 @@ describe('station level meters honor explicit sample domains (MOR-2425)', () => 
       const view = base('transmitting');
       view.meters!.swr = {
         ...view.meters!.swr,
-        domain: { kind: 'unknown' },
+        domain: { kind: 'raw' },
         display: { state: 'current', value: 120 },
       };
       const props: { view: RadioViewModel } = proxy({ view });

@@ -205,19 +205,20 @@ describe('projectSignalMeter', () => {
     expect(projection.accessibleDescription).toContain('\u221212 decibels relative to S9');
   });
 
-  it('never infers units or S geometry for an explicit unknown domain', () => {
+  it('renders a known value with an unknown unit exactly like an unread sample', () => {
     const projection = projectSignalMeter(53, { kind: 'unknown' });
 
     expect(projection).toMatchObject({
       scaleMode: 'none',
       motionFraction: null,
-      primaryText: '53',
-      secondaryText: 'unit unknown',
+      primaryText: '',
+      secondaryText: '',
+      accessibleDescription: 'S meter',
       crossoverFraction: null,
       marks: [],
       ticks: [],
     });
-    expect(projection.accessibleDescription).not.toMatch(/S[0-9]|dBm|raw/);
+    expect(projection).toEqual(projectSignalMeter(null, { kind: 'unknown' }));
   });
 
   it('renders an unread sample as an empty caption for an explicit unknown domain', () => {
