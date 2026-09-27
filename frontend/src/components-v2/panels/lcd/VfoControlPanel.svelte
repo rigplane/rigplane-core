@@ -80,11 +80,24 @@
     {@const label = current === null
       ? 'BK'
       : `BK-${choices.find((c) => c.value === current)?.label ?? ''}`}
+    <!-- MOR-2729 (GLM-5.3 delta review): no `ch` reserve — a hidden sizer
+         holds every text the key can show, stacked with the visible span
+         in one grid cell, so the key is always as wide as its widest
+         possible text. The sizer is aria-hidden: the accessible name stays
+         exactly the visible text. -->
     <button
       class="lcd-btn lcd-btn-bk" class:active={current !== null && current > 0}
       disabled={current === null}
       onclick={() => { if (next !== null) cwHandlers.onBreakInModeChange(next.value); }}
-    >{label}</button>
+    >
+      <span class="lcd-btn-bk-sizer" aria-hidden="true">
+        <span>BK</span>
+        {#each choices as choice}
+          <span>BK-{choice.label}</span>
+        {/each}
+      </span>
+      <span class="lcd-btn-bk-text">{label}</span>
+    </button>
   {/if}
 </div>
 
@@ -124,10 +137,21 @@
     color: var(--v2-text);
     border-color: var(--v2-accent, var(--v2-border));
   }
-  /* MOR-2729: reserve the widest BK text ("BK-SEMI"/"BK-FULL", 7ch) so
-     the layout never moves when the first reading arrives. */
+  /* MOR-2729: the BK key's width comes from the hidden sizer above —
+     every possible text stacked in one grid cell, so the layout never
+     moves when the first reading arrives. */
   .lcd-btn-bk {
-    min-width: 7ch;
+    display: inline-grid;
     text-align: center;
+  }
+  .lcd-btn-bk > span {
+    grid-area: 1 / 1;
+  }
+  .lcd-btn-bk-sizer {
+    visibility: hidden;
+    display: grid;
+  }
+  .lcd-btn-bk-sizer > span {
+    grid-area: 1 / 1;
   }
 </style>
