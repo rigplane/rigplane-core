@@ -9,17 +9,13 @@
  * `primitives/control-instruments/control-instrument-behavior`) plus a value
  * check — a safe integer inside the declared `[min, max]` domain for
  * numbers, a real boolean for booleans — returning the value or `null`.
- * A field whose `availability` is itself undefined (a partial wire or
- * fixture shape) is rejected too, exactly like the former local copies'
- * `fact?.availability?.structural` tolerance.
+ * A field whose `availability` is itself undefined is rejected too, exactly
+ * like the former local copies' `fact?.availability?.structural` tolerance.
  * A `null` means the control does not act and the lit state stays unlit;
  * nothing here ever invents a placeholder value.
  *
  * This is a semantic module, not `components/spectrum/spectrum-toolbar-logic`
- * (VfoHeader must not depend on `components/spectrum/`) and not the adapter
- * (`scope-adapter.ts` must not import primitives). Both `components/…` and
- * `components-v2/…` may import `semantic/`, as AmberCockpit already imports
- * `semantic/format-level`.
+ * and not the adapter (`scope-adapter.ts` must not import primitives).
  */
 import {
   usable,

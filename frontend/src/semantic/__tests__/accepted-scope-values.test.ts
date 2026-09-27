@@ -59,7 +59,7 @@ describe('acceptedBoolean (MOR-2704 G5a)', () => {
     ['availability undefined', { reading: { status: 'known', value: true } } as unknown as InstrumentField<boolean>, null],
     ['known true', boolField(true, true, { status: 'known', value: true }), true],
     ['known false', boolField(true, true, { status: 'known', value: false }), false],
-    ['known non-boolean (wire 1)', boolField(true, true, { status: 'known', value: 1 }), null],
+    ['known non-boolean (1)', boolField(true, true, { status: 'known', value: 1 }), null],
   ];
   for (const [name, field, expected] of cases) {
     it(`${name} → ${expected === null ? 'null' : expected}`, () => {
