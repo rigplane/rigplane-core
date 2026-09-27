@@ -491,7 +491,7 @@ describe('unknown TX target', () => {
     // Pinned as a literal string, spaces included, against the jsdom DOM.
     withSurface(topologyFixtures['2/main_sub'], IDLE_RX, () => {
       const t = target.querySelector('[data-testid="rx-tx-target"]') as HTMLElement;
-      expect(t.textContent?.trim()).toBe('TX target: MAIN unslotted · 14250000 Hz');
+      expect(t.textContent?.trim()).toBe('TX target: MAIN unslotted · 14250000\u00A0Hz');
       expect(t.textContent).not.toContain('14250000Hz');
     });
   });
