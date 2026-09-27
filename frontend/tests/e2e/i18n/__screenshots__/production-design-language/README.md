@@ -6,6 +6,22 @@ the immutable built-dist i18n suite. They are not fixture-harness captures.
 `scripts/i18n-preview-server.mjs`, while the test stubs only the backend at the
 page boundary and opens `/`.
 
+## Linux re-pin provenance (current — 2026-09-27, MOR-2674 TOT readouts unlit)
+
+StudioLine dark and FieldLine dark re-pinned at source head
+`b6bc91d8abf49d446e75dcb4e6b966f32c79bea7` (PR 3749). The MOR-2674 change
+replaces the `'---'` TOT readout placeholder with an unlit (empty) value in a
+reserved slot: the status-bar `TOT` trigger and the `TxPanel` `LIMIT` row keep
+one hidden-sizer width in every state, so the diff is exactly the moved readout
+slot (and its neighbours) — no other pixel change. StudioLine light and
+FieldLine light compare cleanly against their existing baselines on this head.
+
+Dispositions: StudioLine dark — compared-pass after re-pin. FieldLine dark —
+compared-pass after re-pin. StudioLine light — compared-pass unchanged.
+FieldLine light — compared-pass unchanged. Changed pixels measured:
+5279 (StudioLine dark), 6564 (FieldLine dark), localized to y 14–34 (status bar
+TOT trigger) and y 254–302 (`LIMIT` row) plus the bottom-dock strip.
+
 ## Linux re-pin provenance (superseded — 2026-09-14 MOR-2467 MAIN/SUB topology)
 
 All four production-root scenes are `compared-fail` at source head
