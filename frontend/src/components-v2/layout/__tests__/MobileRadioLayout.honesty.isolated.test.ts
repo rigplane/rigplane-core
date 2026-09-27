@@ -355,10 +355,11 @@ describe('MobileRadioLayout unread TX power and SWR (MOR-2658)', () => {
   // powerLevel field is structurally unavailable shows an empty reserved
   // box, not a dash.
   // NOTE: a connected radio with NO fieldStatus entry reads as available
-  // (the legacy no-entry fallback in field-status.ts) with toTxProps'
-  // documented batch-B 0.5 stand-in (an explicit A12 non-fix, pinned in
-  // panel-props.no-fabricated-defaults.test.ts) — the template cannot tell
-  // that 0.5 from a reading, so only the unavailable branch is pinned here.
+  // (the legacy no-entry fallback in field-status.ts). Before MOR-2658
+  // that branch rendered toTxProps' batch-B 0.5 stand-in (an explicit A12
+  // non-fix) as "50W", so only the unavailable branch below was pinned;
+  // the source now reports NaN and the connected-but-unobserved branch
+  // has its own pin next.
   it('renders a structurally-unavailable TX power as an empty reserved slot, never a dash', () => {
     radioStore.current = {
       active: 'MAIN',
@@ -373,13 +374,36 @@ describe('MobileRadioLayout unread TX power and SWR (MOR-2658)', () => {
     expect(root.textContent ?? '').not.toContain('—');
   });
 
-  // Kills: a fabricated "50W" for an unobserved rig — toTxProps falls back
-  // to 0.5 when powerLevel is absent, and the readout must stay dark anyway.
+  // Kills: a fabricated "50W" for a connected-but-unobserved rig — with no
+  // fieldStatus entry the legacy no-entry fallback reads as available, so
+  // the old `?? 0.5` arrived as a reading and printed "50W". toTxProps now
+  // reports NaN and the readout stays empty (MOR-2658).
+  it('renders a connected-but-unobserved TX power as an empty slot, never 50W', () => {
+    radioStore.current = { active: 'MAIN', main: CONNECTED_RX };
+    const root = mountLayout();
+    openTxChip(root);
+    expect(root.querySelector('.m-tx-power-value')?.textContent).toBe('');
+  });
+
+  // Kills: a guard so broad it hides a real reading — powerLevel 0.5 is a
+  // genuine report and must still render 50W.
   it('renders a known TX power exactly as before', () => {
     radioStore.current = { active: 'MAIN', main: CONNECTED_RX, powerLevel: 0.5 };
     const root = mountLayout();
     openTxChip(root);
     expect(root.querySelector('.m-tx-power-value')?.textContent).toBe('50W');
+  });
+
+  // Kills: the power sheet slider printing "NaN%" for an unread rig —
+  // `normalizedPercentDisplay(NaN)` is the literal "NaN%", so the sheet
+  // needs the same finite guard TxPanel's `rfPowerDisplay` carries.
+  // BottomSheet/ValueControl are stubbed in this file, so the pin is on
+  // the exact display prop the sheet passes; the unknown-path rendering
+  // itself ('' text, no fill, no position) is pinned behaviorally through
+  // the same ValueControl construct in TxPanel.isolated.test.ts (MOR-2658).
+  it('passes an unread-safe display to the power sheet slider', () => {
+    const sheet = mobileLayoutSource.slice(mobileLayoutSource.indexOf('POWER MODAL'));
+    expect(sheet.match(/displayFn=\{([^}]*)\}/)?.[1]).toBe('formatRfPowerDisplay');
   });
 
   // Kills: `swr > 0` treating a real reading of 0 as absent — an unread SWR

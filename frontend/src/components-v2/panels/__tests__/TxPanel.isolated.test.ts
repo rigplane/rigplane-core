@@ -124,6 +124,7 @@ vi.mock('$lib/runtime/adapters/mod-input-auto.svelte', () => ({
 
 import TxPanel from '../TxPanel.svelte';
 import txPanelSource from '../TxPanel.svelte?raw';
+import { toTxProps } from '$lib/runtime/props/panel-props';
 
 let tx: ManagedAppTxHarness;
 let components: ReturnType<typeof mount>[] = [];
@@ -244,6 +245,24 @@ describe('panel structure', () => {
     expect(value).toBe('');
     expect(value).not.toContain('NaN');
     expect(value).not.toMatch(/-{2,}/);
+  });
+
+  it('renders no fabricated 50% for a rig that never reported powerLevel (MOR-2658)', () => {
+    // End to end through the real projection: a connected rig with no
+    // powerLevel field and no fieldStatus entry reads as available (the
+    // legacy no-entry fallback in field-status.ts), so the old `?? 0.5`
+    // arrived as a KNOWN 0.5 and printed "50%" with a half fill. The
+    // source now reports NaN for exactly that rig.
+    const props = toTxProps({ active: 'MAIN', main: {} } as any, { tx: true, capabilities: [] } as any);
+    expect(props.rfPowerAvailable).toBe(true);
+    const t = mountPanel({ rfPower: props.rfPower });
+    openTxSettings(t);
+    expect(rfPowerValue(t)).toBe('');
+    const hbar = Array.from(t.querySelectorAll<HTMLElement>('.vc-hbar')).find(
+      (h) => h.querySelector('.vc-label')?.textContent === 'RF Power',
+    );
+    expect(hbar?.getAttribute('style')).toContain('--vc-fill-percent: 0%');
+    expect(hbar?.querySelector('[role="slider"]')?.hasAttribute('aria-valuenow')).toBe(false);
   });
 
   it('keeps the RF Power value in its reserved level slot', () => {
