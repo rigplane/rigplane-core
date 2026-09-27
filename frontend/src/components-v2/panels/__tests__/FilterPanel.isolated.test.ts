@@ -392,6 +392,28 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
     expect(t.querySelectorAll('[role="status"]')).toHaveLength(1);
   });
 
+  it('renders the width value text and pending announcement with the Russian Hz unit (ru-RU)', () => {
+    setLocale('ru-RU');
+    const tableConfig = {
+      defaults: [2100, 2100, 2100], fixed: false,
+      minHz: 1800, maxHz: 3000, stepHz: 1, table: [1800, 2100, 3000],
+    } as typeof mockProps.filterConfig;
+    setWidthFeedback({ confirmed: 2501 });
+    const idle = mountPanel({ filterConfig: tableConfig });
+    const control = idle.querySelector<HTMLElement>('[role="slider"]')!;
+    expect(control.getAttribute('aria-valuetext')).toBe('2501 Гц');
+    expect(idle.querySelector('.vc-value')?.textContent).toBe('2501 Гц');
+
+    setWidthFeedback({
+      confirmed: 2100, target: 3000, requestedTarget: 2501,
+      phase: 'awaiting-confirmation', busy: true,
+      lifecycleId: 'ru-unit', transitionId: 'ru-unit:acknowledged',
+    });
+    const busy = mountPanel({ filterConfig: tableConfig });
+    expect(busy.querySelector('[data-control-feedback-status]')?.textContent)
+      .toContain('2501 Гц');
+  });
+
   it.each(['submitted', 'queued', 'dispatched', 'awaiting-confirmation'] as const)(
     'localizes the owner-issued %s phase through one table emitter', (phase) => {
       setWidthFeedback({
@@ -1079,7 +1101,32 @@ describe('PBT and IF-shift scalar feedback (MOR-1687 part 1)', () => {
     setPassbandFeedback('inner', PENDING);
     setLocale('ru-RU');
     const t = mountPanel({ hasPbt: true, pbtInner: 0, pbtOuter: 0, pbtDomain: USB_DOMAIN });
-    expect(rowStatus(t, 'PBT Inner')).toBe('Запрошен PBT inner 600 Hz; радио ещё не подтвердило значение.');
+    expect(rowStatus(t, 'PBT Inner')).toBe('Запрошен PBT inner 600 Гц; радио ещё не подтвердило значение.');
+  });
+
+  // MOR-1687 leftover: the value/announcement unit is a literal `Hz` no
+  // more — the pins below hold the RENDERED text, never `t(key)`.
+  const describedText = (slider: HTMLElement): string | null => {
+    const id = slider.getAttribute('aria-describedby');
+    return id ? document.getElementById(id)?.textContent ?? null : null;
+  };
+
+  it('describes a pending passband target with the Hz unit in the rendered text (en-US)', () => {
+    setPassbandFeedback('inner', {
+      phase: 'submitted', busy: true, target: 1500, requestedTarget: 1500,
+      lifecycleId: 'L', transitionId: 'L:submitted',
+    });
+    const t = mountPanel({ hasPbt: true, pbtInner: 0, pbtOuter: 0, pbtDomain: USB_DOMAIN });
+    expect(describedText(sliderOf(t, 'PBT Inner'))).toBe('1500 Hz');
+    expect(rowStatus(t, 'PBT Inner'))
+      .toBe('PBT inner 1500 Hz requested; not yet confirmed by the radio.');
+  });
+
+  it('renders the passband target description with the Russian Hz unit (ru-RU)', () => {
+    setPassbandFeedback('inner', PENDING);
+    setLocale('ru-RU');
+    const t = mountPanel({ hasPbt: true, pbtInner: 0, pbtOuter: 0, pbtDomain: USB_DOMAIN });
+    expect(describedText(sliderOf(t, 'PBT Inner'))).toBe('600 Гц');
   });
 
   it('keeps the operator\'s requested value visible through the command\'s OWN lifecycle — no snap-back', () => {
