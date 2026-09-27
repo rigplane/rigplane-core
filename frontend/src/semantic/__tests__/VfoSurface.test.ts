@@ -119,8 +119,11 @@ describe('VFO qualified display continuity', () => {
     expect(unknown.querySelector('.digit')).toBeNull();
     const unsupported = view('current');
     unsupported.vfos = unsupported.vfos.map((vfo) => ({ ...vfo, display: { frequencyHz: { state: 'unsupported' }, mode: { state: 'unsupported' }, filter: { state: 'unsupported' } } }));
-    // The semantic tile still prints the dash for an unsupported readout (MOR-2527 sweep).
-    expect(mountSurface({ viewModel: unsupported }).querySelector('.vfo-freq')!.textContent?.trim()).toBe('—');
+    // MOR-2655: unsupported reaches the same fallback as unread — it prints
+    // nothing in the reserved box, never the MOR-2527 dash.
+    const unsupportedFreq = mountSurface({ viewModel: unsupported }).querySelector('.vfo-freq');
+    expect(unsupportedFreq?.textContent?.trim()).toBe('');
+    expect(unsupportedFreq?.querySelector('.vfo-freq-text')?.classList.contains('vfo-freq-unlit')).toBe(true);
   });
   // MOR-2425/R41 replaces the MOR-1692-era marker/sentence pin, in any locale.
   it.each(['en-US', 'ru-RU'] as const)('paints no freshness marker, sentence or description for a held reading in %s', (locale) => {
@@ -230,7 +233,8 @@ function expectedSlotKey(slot: VfoSlot): string {
  * formats on the same slot (the ticket's bug).
  */
 function expectedFreq(hz: number | null): string {
-  if (hz === null) return '—';
+  // MOR-2655: an unread frequency draws nothing, never a dash.
+  if (hz === null) return '';
   const { mhz, khz, hz: hzGroup } = groupDigitsForDisplay(splitFrequencyToDigits(hz));
   return [mhz, khz, hzGroup].map((group) => group.map((d) => d.char).join('')).join('.');
 }
@@ -591,8 +595,22 @@ describe.each(ids)('topology %s', (id) => {
       expect(tile.dataset.vfoSlot).toBe(expectedSlotKey(vfo.slot));
       expect(tile.dataset.vfoActive).toBe(String(vfo.isActive));
       expect(tile.dataset.vfoTxTarget).toBe(String(vfo.isTxTarget));
-      expect(tile.querySelector('.vfo-freq')?.textContent).toBe(expectedFreq(vfo.frequencyHz));
-      expect(tile.querySelector('.vfo-mode')?.textContent).toContain(vfo.mode ?? '—');
+      const freqEl = tile.querySelector('.vfo-freq');
+      if (vfo.frequencyHz === null) {
+        // MOR-2655: unread → nothing in the reserved unlit box, never a dash.
+        const textSpan = freqEl?.querySelector('.vfo-freq-text');
+        expect(textSpan?.textContent).toBe('');
+        expect(textSpan?.classList.contains('vfo-freq-unlit')).toBe(true);
+      } else {
+        expect(freqEl?.textContent).toBe(expectedFreq(vfo.frequencyHz));
+      }
+      const modeEl = tile.querySelector('.vfo-mode');
+      if (vfo.mode === null) {
+        expect(modeEl?.textContent).toBe('');
+        expect(modeEl?.classList.contains('vfo-mode-unlit')).toBe(true);
+      } else {
+        expect(modeEl?.textContent).toContain(vfo.mode);
+      }
       if (vfo.filter) expect(tile.querySelector('.vfo-mode')?.textContent).toContain(vfo.filter);
       expect(tile.querySelector('[data-vfo-tx-badge]') !== null).toBe(vfo.isTxTarget);
       const shownLabel =
@@ -638,7 +656,7 @@ it('shows a distinct role per VFO across single/dual and slotted/unslotted schem
   expect(roles).toEqual(['MAIN', 'SUB']);
 });
 
-it('reserves the role plaque at the widest role text in every state', () => {
+it('reserves the role plaque at the widest SLOTTED role text in every state', () => {
   const source = readFileSync('src/semantic/VfoSurface.svelte', 'utf8');
   const fn = source.slice(source.indexOf('function roleLabel'), source.indexOf('const ROLE_TEXTS'));
   expect(fn).toContain("slot.role === 'selected' ? 'Selected VFO' : 'Unselected VFO'");
@@ -650,14 +668,28 @@ it('reserves the role plaque at the widest role text in every state', () => {
   ]);
   const listedMatch = /const ROLE_TEXTS = \[([^\]]+)\]/.exec(source);
   const listed = [...(listedMatch?.[1] ?? '').matchAll(/'([^']+)'/g)].map((text) => text[1]);
-  expect(listed).toEqual([
-    'MAIN', 'SUB', 'MAIN A', 'MAIN B', 'SUB A', 'SUB B', 'Selected VFO', 'Unselected VFO',
-  ]);
+  // The reservation covers the slotted forms and the unread bare name. The
+  // relative forms are deliberately NOT reserved: 'Unselected VFO' (14c)
+  // cannot fit one phone line at 375px even at the slotted width — it
+  // already wraps on main — and its compact label is a separate product
+  // decision (follow-up ticket).
+  expect(listed).toEqual(['MAIN', 'SUB', 'MAIN A', 'MAIN B', 'SUB A', 'SUB B']);
+  expect(listed).not.toContain('Selected VFO');
+  expect(listed).not.toContain('Unselected VFO');
+  // The reservation is at least the widest slotted text across the three
+  // locales, built from the catalog strings, not a literal: today the
+  // catalogs carry no role or slot string, so the listed English forms win;
+  // any localized role string in a catalog joins the comparison and must be
+  // covered by the reservation.
+  const widest = [enUS, jaJP, ruRU]
+    .flatMap((catalog) => Object.values(catalog))
+    .concat(listed)
+    .filter((text) => /MAIN [AB]|SUB [AB]/.test(text))
+    .reduce((best, text) => (text.length > best.length ? text : best), '');
+  expect(listed).toContain(widest);
   for (const catalog of [enUS, jaJP, ruRU]) {
-    expect(Object.values(catalog).join('\n')).not.toMatch(/Selected VFO|Unselected VFO|MAIN [AB]/);
+    expect(Object.values(catalog).join('\n')).not.toMatch(/Selected VFO|Unselected VFO|MAIN [AB]|SUB [AB]/);
   }
-  const widest = listed.reduce((best, text) => text.length > best.length ? text : best, '');
-  expect(widest).toBe('Unselected VFO');
   expect(source).toMatch(/roleWidth = `\$\{Math\.ceil\(widest\)\}px`/);
   expect(source).toMatch(/style:--vfo-role-width=\{roleWidth\}/);
   const known = mountSurface({ viewModel: topologyFixtures['1/ab'] });
@@ -716,11 +748,13 @@ describe('MOR-1482: unselected-tile frequency format is stable and dot-grouped',
     expect(text).not.toMatch(/\s/); // no space-grouped digits either
   });
 
-  it('a not-yet-observed frequency renders the honest placeholder, never a differently-formatted number', () => {
+  it('a not-yet-observed frequency draws nothing in the reserved box, never a differently-formatted number', () => {
     const target = mountSurface({ viewModel: nonTunableModel(null) });
     const tiles = target.querySelectorAll('.vfo-freq');
     expect(tiles[0]?.textContent).toBe('7.100.000');
-    expect(tiles[1]?.textContent).toBe('—');
+    expect(tiles[1]?.textContent).toBe('');
+    // MOR-2655: the old pin was the dash; the reserved unlit box replaces it.
+    expect(tiles[1]?.querySelector('.vfo-freq-text')?.classList.contains('vfo-freq-unlit')).toBe(true);
     expect(tiles[1]?.textContent).not.toContain('MHz');
   });
 
@@ -894,14 +928,17 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
     expect(toggle.disabled).toBe(true);
   });
 
-  it('null frequency renders as an explicit placeholder, not 0 or blank', () => {
+  it('null frequency draws nothing in the reserved box, never 0 or a dash', () => {
     const base = topologyFixtures['1/single'];
     const model: RadioViewModel = validateRadioViewModel({
       ...base,
       vfos: [{ ...base.vfos[0], frequencyHz: null }],
     });
     const target = mountSurface({ viewModel: model });
-    expect(target.querySelector('.vfo-freq')?.textContent).toBe('—');
+    const freq = target.querySelector('.vfo-freq');
+    // MOR-2655: the old pin was the literal dash ('—').
+    expect(freq?.textContent).toBe('');
+    expect(freq?.querySelector('.vfo-freq-text')?.classList.contains('vfo-freq-unlit')).toBe(true);
   });
 });
 
@@ -990,8 +1027,14 @@ describe('VFO selection intent', () => {
     const target = mountSurface({ viewModel: model });
     expect(target.querySelector('[data-vfo-slot="selected"] .vfo-freq')?.textContent)
       .toContain(expectedFreq(14_250_000));
-    expect(target.querySelector('[data-vfo-slot="unselected"] .vfo-freq')?.textContent)
-      .toBe('—');
+    const unselectedFreq = target.querySelector('[data-vfo-slot="unselected"] .vfo-freq');
+    // MOR-2655: the old pin was the dash ('—').
+    expect(unselectedFreq?.textContent).toBe('');
+    expect(unselectedFreq?.querySelector('.vfo-freq-text')?.classList.contains('vfo-freq-unlit')).toBe(true);
+    // The unread mode also draws nothing in its reserved box.
+    const unselectedMode = target.querySelector('[data-vfo-slot="unselected"] .vfo-mode');
+    expect(unselectedMode?.textContent).toBe('');
+    expect(unselectedMode?.classList.contains('vfo-mode-unlit')).toBe(true);
     expect(target.querySelector('[data-testid="vfo-ops"]')?.getAttribute('data-disabled-reason'))
       .toBe('vfo-identity-unknown');
     expect(target.querySelectorAll('[data-vfo-select-absolute]')).toHaveLength(2);
@@ -1627,10 +1670,11 @@ describe('split RX/TX digest (MOR-1321)', () => {
     }
   });
 
-  // Unknown honesty, TX side: an unobserved txTarget must render the
-  // placeholder — never fall back to the active VFO's frequency, which would
-  // tell the operator he is transmitting on a frequency nobody observed.
-  it('renders the placeholder for TX while txTarget is unknown', () => {
+  // Unknown honesty, TX side: an unobserved txTarget must render nothing in
+  // its slot — never fall back to the active VFO's frequency, which would
+  // tell the operator he is transmitting on a frequency nobody observed,
+  // and (MOR-2655) never a dash either.
+  it('renders nothing for TX while txTarget is unknown', () => {
     const base = topologyFixtures['2/main_sub'];
     const model = validateRadioViewModel({
       ...base,
@@ -1645,10 +1689,12 @@ describe('split RX/TX digest (MOR-1321)', () => {
     });
     const digest = mountSurface({ viewModel: model })
       .querySelector<HTMLElement>('[data-testid="vfo-split-digest"]')!;
-    expect(digest.querySelector('[data-split-tx]')!.textContent).toContain('—');
-    // ...and RX is still stated, so the placeholder is TX-specific rather than
-    // the whole digest going blank.
-    expect(digest.querySelector('[data-split-rx]')!.textContent).not.toContain('—');
+    // MOR-2655: the old pin was `toContain('—')` on the shared formatFrequency
+    // fallback — now nothing is drawn, same rule as the tile.
+    expect(digest.querySelector('[data-split-tx]')!.textContent).not.toContain('—');
+    // ...and RX is still stated, so blank is TX-specific rather than the
+    // whole digest going blank.
+    expect(digest.querySelector('[data-split-rx]')!.textContent).not.toBe('');
   });
 
   // Kills: collapsing the split fact to a boolean for the dimming hook, which
@@ -1727,8 +1773,8 @@ describe('per-digit tuning (MOR-1322) — structural gating', () => {
   });
 
   // Kills: rendering digits from a fabricated 0 when the frequency is
-  // unobserved — MOR-977 says ABSENT, and `—` is the honest readout.
-  it('an unknown frequency renders the placeholder and NO digits', () => {
+  // unobserved — MOR-977 says ABSENT, and MOR-2655 draws nothing in the box.
+  it('an unknown frequency renders nothing in the reserved box and NO digits', () => {
     const base = topologyFixtures['1/ab'];
     const model = validateRadioViewModel({
       ...base,
@@ -1738,7 +1784,9 @@ describe('per-digit tuning (MOR-1322) — structural gating', () => {
     const slot = slots(t)[0];
     expect(slot.dataset.freqTunable).toBe('false');
     expect(slot.querySelectorAll('.digit')).toHaveLength(0);
-    expect(slot.textContent).toContain('—');
+    // MOR-2655: the old pin was `toContain('—')`.
+    expect(slot.textContent).not.toContain('—');
+    expect(slot.querySelector('.vfo-freq-text')?.classList.contains('vfo-freq-unlit')).toBe(true);
     // ABSENT, not inert: there is no control here to disable, so the slot must
     // NOT claim `aria-disabled`. That attribute is reserved for the operational
     // case (a mounted control the strip gate has made inert) — conflating the
@@ -2772,10 +2820,9 @@ describe('MOR-2342 preserved instrument intents', () => {
     const tune = vi.fn(); const split = vi.fn();
     const root = mountSurface({ viewModel: model, appearance, onTuneFrequency: tune, onToggleSplit: split });
     expect(root.querySelector('.digit')).toBeNull();
-    // MOR-2509: the Standard panel paints no glyph for an unobserved
-    // frequency; the semantic/sdr tile keeps its dash fallback.
-    expect(root.querySelector('[data-vfo-freq]')?.textContent?.trim())
-      .toBe(appearance === 'standard' ? '' : '—');
+    // MOR-2655: nothing is painted for an unobserved frequency in either
+    // appearance — the old pin kept the semantic/sdr dash ('—').
+    expect(root.querySelector('[data-vfo-freq]')?.textContent?.trim()).toBe('');
     const toggle = root.querySelector<HTMLButtonElement>('[data-vfo-split]')!;
     expect(toggle.disabled).toBe(true); toggle.click();
     expect(split).not.toHaveBeenCalled(); expect(tune).not.toHaveBeenCalled();
