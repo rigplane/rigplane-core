@@ -64,7 +64,7 @@
   import { formatKnownLevel, levelFormatsBelowMax } from './format-level';
   import { RF_FRONT_END_LEVELS } from './rf-front-end-instruments';
   import { rfUnconfirmedLabel } from './rx-tx-surface';
-  import { readingText } from '../primitives/reading-text';
+  import { observationValue, readingText, readingValue } from '../primitives/reading-text';
   import type {
     DisplayObservedField, RadioWideIndicatorsViewModel, ReceiverIndicatorField,
     ReceiverIndicatorViewModel, TxAuxField,
@@ -113,13 +113,13 @@
   }
 
   /** The RF gain the display shows, independent of provenance: the observed
-   *  display value when one exists, otherwise the strict reading. */
+   *  display value when one exists, otherwise the strict reading. MOR-2688
+   *  S4a: both vocabularies enter through `primitives/reading-text`
+   *  (`observationValue`, `readingValue`); the predicate is unchanged. */
   function rfGainShown(field: DisplayObservedField<number>): number | null {
-    if (field.display) {
-      return field.display.state === 'current' || field.display.state === 'stale'
-        ? field.display.value : null;
-    }
-    return field.reading.status === 'known' ? field.reading.value : null;
+    return field.display !== undefined
+      ? observationValue(field.display)
+      : readingValue(field);
   }
 
   /**

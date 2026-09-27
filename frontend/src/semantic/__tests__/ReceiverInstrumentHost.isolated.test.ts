@@ -566,6 +566,37 @@ describe('ReceiverInstrumentHost', () => {
     expect(tune).toHaveBeenCalledExactlyOnceWith('MAIN', 14_250_001);
   });
 
+  // MOR-2688 S4a literal pin: the frequency the readout shows goes through
+  // the display observation rule (`observationValue` inside
+  // `displayFrequency`): a STALE `main.vfoA.freqHz` observation keeps its
+  // value (R29), so the readout's source is 'display' with the observed
+  // digits; a not-observed display leaves the digits unlit — never a
+  // fallback to an invented value. Red under a mutation of
+  // `observationValue` that drops current or stale.
+  it('shows the observed frequency through a stale display observation, and unlit digits for a not-observed one', () => {
+    const stale = publication();
+    stale.state.fieldStatus['main.vfoA.freqHz'] = {
+      ...stale.state.fieldStatus['main.vfoA.freqHz']!, freshness: 'stale',
+    };
+    const root = mountFixture(new Publisher(stale));
+    const readout = root.querySelector<HTMLElement>(
+      '[data-frequency-owner="MAIN"] [data-alternate-frequency-readout]',
+    )!;
+    expect(readout.dataset.source).toBe('display');
+    expect(readout.textContent).toBe('14250000');
+
+    const notObserved = publication();
+    notObserved.state.fieldStatus['main.vfoA.freqHz'] = {
+      ...notObserved.state.fieldStatus['main.vfoA.freqHz']!, observed: false,
+    };
+    const otherRoot = mountFixture(new Publisher(notObserved));
+    const otherReadout = otherRoot.querySelector<HTMLElement>(
+      '[data-frequency-owner="MAIN"] [data-alternate-frequency-readout]',
+    )!;
+    expect(otherReadout.dataset.source).toBe('display');
+    expect(otherReadout.textContent).toBe('');
+  });
+
   it('requires the synchronous publisher and owns no fallback clocks or continuity comparison', () => {
     const addedSources = [
       'src/semantic/meter-renderer-view.ts',

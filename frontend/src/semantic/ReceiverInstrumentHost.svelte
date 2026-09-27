@@ -88,6 +88,7 @@
     type SignalMeterMotionInput,
   } from '../components-v2/meters/signal-meter-motion.svelte';
   import { projectSignalMeter } from '../components-v2/meters/smeter-scale';
+  import { observationValue } from '../primitives/reading-text';
   import type {
     MeterReading, RadioViewModel, ReceiverSMeterField, VfoViewModel,
   } from './radio-view-model';
@@ -169,9 +170,11 @@
   function displayFrequency(record: VfoViewModel | null): number | null {
     if (record === null) return null;
     const display = record.display?.frequencyHz;
-    return display === undefined
-      ? record.frequencyHz
-      : display.state === 'current' || display.state === 'stale' ? display.value : null;
+    // MOR-2688 S4a: the display.state vocabulary (current/stale → the
+    // value, anything else → nothing) is `observationValue`'s rule; the
+    // legacy `frequencyHz` fallback for a record without an observation
+    // is unchanged.
+    return display === undefined ? record.frequencyHz : observationValue(display);
   }
 
   function frequencyDisabled(model: RadioViewModel | null, receiver: ReceiverId): boolean {

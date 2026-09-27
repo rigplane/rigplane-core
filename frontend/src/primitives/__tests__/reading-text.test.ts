@@ -9,11 +9,16 @@
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { readingText } from '../reading-text';
+import {
+  observationValue, readingText, readingValue, valueText,
+  type ValueObservation,
+} from '../reading-text';
 import type { InstrumentReading } from '../control-instruments/control-instrument-behavior';
 
 const unread = <T>(): { reading: InstrumentReading<T> } => ({ reading: { status: 'unknown' } });
 const known = <T>(value: T): { reading: InstrumentReading<T> } => ({ reading: { status: 'known', value } });
+/** Marks the value so a pin can tell "formatted the value" from "printed nothing". */
+const mark = (value: unknown): string => `‹${String(value)}›`;
 
 describe('readingText (MOR-2688)', () => {
   it('renders a read value as text', () => {
@@ -42,5 +47,54 @@ describe('readingText (MOR-2688)', () => {
     expect(statements.length).toBeGreaterThan(0);
     for (const statement of statements) expect(statement.startsWith('import type ')).toBe(true);
     for (const forbidden of ['import(', 'require(']) expect(source).not.toContain(forbidden);
+  });
+});
+
+/**
+ * MOR-2688 (slice S4a) — the ONE shared table: every entry point drives
+ * the same cases through its own vocabulary, so the vocabularies cannot
+ * drift apart on `0`, `false`, `''`, `NaN`, a stale observation, or an
+ * absent source. `read` is "there is a value"; the vocabularies differ
+ * only in how they say it.
+ */
+const TABLE = [
+  { name: 'a read value', value: 'USB', read: true, stale: false, absent: false },
+  { name: 'nothing (unread / never observed)', value: 'USB', read: false, stale: false, absent: false },
+  { name: '0 — falsy is not unread', value: 0, read: true, stale: false, absent: false },
+  { name: 'false — falsy is not unread', value: false, read: true, stale: false, absent: false },
+  { name: "'' — a read empty string still formats", value: '', read: true, stale: false, absent: false },
+  { name: 'NaN — the vocabulary decides, never the value', value: Number.NaN, read: true, stale: false, absent: false },
+  { name: 'a stale observation keeps its value', value: 3600, read: true, stale: true, absent: false },
+  { name: 'an absent source is nothing', value: 'USB', read: false, stale: false, absent: true },
+] as const;
+
+describe.each(TABLE)('the shared unread table (MOR-2688 S4a): $name', (row) => {
+  const expectedText = row.read ? mark(row.value) : '';
+  const expectedValue = row.read ? row.value : null;
+  const field = row.read ? known(row.value) : unread<typeof row.value>();
+  const observation: ValueObservation<typeof row.value> | undefined = row.absent
+    ? undefined
+    : row.read
+      ? { state: row.stale ? 'stale' : 'current', value: row.value }
+      : { state: 'unknown' };
+
+  it('valueText: value or nothing → text, "" for nothing', () => {
+    expect(valueText(row.read ? row.value : null, mark)).toBe(expectedText);
+    expect(valueText(undefined, mark)).toBe('');
+  });
+
+  it('readingValue / readingText: the {reading} status vocabulary', () => {
+    expect(readingValue(field)).toBe(expectedValue);
+    expect(readingText(field, mark)).toBe(expectedText);
+    if (row.absent) expect(readingValue(undefined)).toBe(null);
+  });
+
+  it('observationValue: the display.state vocabulary', () => {
+    expect(observationValue(observation)).toBe(expectedValue);
+    expect(valueText(observationValue(observation), mark)).toBe(expectedText);
+    // an absent observation and one that carries no value are both nothing
+    expect(observationValue(undefined)).toBe(null);
+    expect(observationValue({ state: 'unsupported' })).toBe(null);
+    expect(observationValue({ state: 'unknown' })).toBe(null);
   });
 });
