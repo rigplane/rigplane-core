@@ -58,6 +58,7 @@
     type ContinuousScalarView,
   } from '../primitives/scalar/continuous-scalar.svelte';
   import { formatKnownLevel } from './format-level';
+  import { readingText } from '../primitives/reading-text';
   import type { RadioViewModel, RfFrontEndField, DisabledReason, DisabledReasonCode } from './radio-view-model';
   import {
     DISABLED_REASON_LABEL,
@@ -641,7 +642,7 @@
                  a known reading renders, EMPTY — no value text and no extra
                  grid row, so the row's element set, row count and height are
                  identical unread vs known. -->
-            <output class="sr-only" aria-label="PRE value" data-testid="rf-front-end-preamp-value">{rf.preamp.reading.status === 'known' ? preampChoiceText(rf.preamp.reading.value) : ''}</output>
+            <output class="sr-only" aria-label="PRE value" data-testid="rf-front-end-preamp-value">{readingText(rf.preamp, preampChoiceText)}</output>
           {/if}
         {/if}
         {#if preampDisabledReason()}
@@ -704,7 +705,7 @@
                  a known reading renders, EMPTY — no value text and no extra
                  grid row, so the row's element set, row count and height are
                  identical unread vs known. -->
-            <output class="sr-only" aria-label="ATT value" data-testid="rf-front-end-attenuator-value">{rf.attenuator.reading.status === 'known' ? attenuatorChoiceText(rf.attenuator.reading.value) : ''}</output>
+            <output class="sr-only" aria-label="ATT value" data-testid="rf-front-end-attenuator-value">{readingText(rf.attenuator, attenuatorChoiceText)}</output>
           {/if}
         {/if}
         {#if attenuatorDisabledReason()}

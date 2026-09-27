@@ -778,3 +778,16 @@ describe('this surface stays presentation-only', () => {
     expect(source).toMatch(/\.dsp-level > output \{[^}]*min-width: 6ch/);
   });
 });
+
+/* ── 9. MOR-2688 S2: literal pins for the migrated `fmt`/AGC-T formatter
+ *  sites (default- and row-formatter branches of `readingText`) ────────── */
+describe('fmt formatter contract (MOR-2688)', () => {
+  it.each([
+    ['nbDepth', '5'], ['notchFreq', '0'], ['manualNotchWidth', '10'],
+    ['agcTimeConstant', '0.1'],
+  ] as const)('native level %s renders the literal output %s', (field, expected) => {
+    const r = render(base());
+    expect(r.control(field)!.querySelector('output')?.textContent).toBe(expected);
+    r.dispose();
+  });
+});

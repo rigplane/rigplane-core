@@ -49,6 +49,7 @@
   import type { DspField, DspViewModel } from './radio-view-model';
   import type { NotchWidthChoice } from '../lib/types/capabilities';
   import { NOTCH_WIDTH_LABELS, formatAgcTime } from '../components-v2/panels/dsp-panel-logic';
+  import { readingText } from '../primitives/reading-text';
   export { DSP_TOGGLES, type DspToggleField } from './dsp-instruments';
 
   /** `[field, label, min, max, step, format?]` — `nrLevel`/`nbDepth` are
@@ -77,12 +78,13 @@
   const numberOf = (f: DspField<number>, fallback: number): number =>
     f.reading.status === 'known' ? f.reading.value : fallback;
   /** MOR-2527: an unread level renders NO value text — an unlit slot with
-   *  its reserved width, never a `?` stand-in. */
-  const fmt = (f: DspField<unknown>, format?: (v: number) => string): string => {
-    if (f.reading.status !== 'known') return '';
-    const v = f.reading.value;
-    return typeof v === 'boolean' ? (v ? 'on' : 'off') : format ? format(v as number) : String(v);
-  };
+   *  its reserved width, never a `?` stand-in. MOR-2688: the empty-display
+   *  rule is `readingText`'s predicate; the `on`/`off` boolean rendering and
+   *  the row formatter stay in the formatter, so the text is identical. */
+  const fmt = (f: DspField<unknown>, format?: (v: number) => string): string =>
+    readingText(f, (v) =>
+      typeof v === 'boolean' ? (v ? 'on' : 'off')
+        : format ? format(v as number) : String(v));
 
   type NrDomain = NonNullable<DspViewModel['nrLevelProjection']>['domain'];
   type NrPresentation = Readonly<{
@@ -323,15 +325,14 @@
         </div>
       {/if}
       {#if dsp.agcTimeConstant.availability.structural}
-        {@const agcTime = dsp.agcTimeConstant.reading}
         <div class="dsp-agc-time" data-expanded={settingsPanel === 'agc'}>
           <HardwareButton indicator="edge-left" color="gray" title="AGC Time — click for settings"
             disabled={!usable(dsp.agcTimeConstant)}
             ariaLabel="AGC time settings" ariaExpanded={settingsPanel === 'agc'}
             ariaControls="dsp-agc-settings"
             onclick={() => onSettingsPanelChange?.(settingsPanel === 'agc' ? null : 'agc')}
-          >AGC-T <span class="dsp-agc-time-value">{agcTime.status === 'known'
-            ? `${formatAgcTime(agcTime.value)}s` : ''}</span> {settingsPanel === 'agc' ? '▴' : '▾'}</HardwareButton>
+          >AGC-T <span class="dsp-agc-time-value">{readingText(dsp.agcTimeConstant,
+            (v) => `${formatAgcTime(v as number)}s`)}</span> {settingsPanel === 'agc' ? '▴' : '▾'}</HardwareButton>
         </div>
         {#if settingsPanel === 'agc'}
           <div class="dsp-settings" id="dsp-agc-settings">
