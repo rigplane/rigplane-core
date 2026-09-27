@@ -112,7 +112,7 @@
     ? `linear-gradient(90deg, ${fillGradient.join(', ')})`
     : (fillColor ?? accentColor));
   let displayValue = $derived(renderedValue === null
-    ? unknownDisplay ?? (displayFn ? displayFn(Number.NaN) : '—')
+    ? unknownDisplay ?? (displayFn ? displayFn(Number.NaN) : '')
     : displayFn ? displayFn(renderedValue)
       : `${formatBipolarValue(renderedValue)}${unit ? '\u00a0' + unit : ''}`);
   let absDeviationRatio = $derived.by(() => {
@@ -317,9 +317,15 @@
     text-align: left;
   }
 
+  /* MOR-2657: unread renders '' in a box reserved for the widest
+   * default-formatted readout ('+1200 Hz' of the IF-shift rows), so the
+   * first reading cannot resize the box or move its neighbours. */
   .vc-value {
     color: var(--vc-text-value, var(--v2-text-bright));
     font-family: 'Roboto Mono', monospace;
+    min-width: 8ch;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
   }
 
   .sr-only {

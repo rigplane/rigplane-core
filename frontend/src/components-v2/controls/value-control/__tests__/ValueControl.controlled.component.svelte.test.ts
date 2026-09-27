@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import ValueControl from '../ValueControl.svelte';
@@ -2057,5 +2058,67 @@ describe('ValueControl raw effective behavior authority', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('unread default renders no placeholder (MOR-2657)', () => {
+  it.each([
+    ['hbar', 'hbar', undefined, '.vc-value', '20'],
+    ['bipolar', 'bipolar', undefined, '.vc-value', '+20'],
+    ['discrete', 'discrete', undefined, '.vc-value', '20'],
+    ['knob', 'knob', undefined, '.vc-knob-value', '20'],
+    ['professional knob', 'knob', professionalSkin, '.pro-val', '20'],
+  ] as const)(
+    '%s renders an empty unread value, never a dash, and a known value exactly as before',
+    (_name, renderer, skin, valueSelector, knownText) => {
+      const unread = mountReactive({
+        ...baseProps, value: Number.NaN, renderer, skin, onChange: vi.fn(),
+      });
+      expect(unread.target.querySelector(valueSelector)?.textContent).toBe('');
+      const known = mountReactive({
+        ...baseProps, renderer, skin, onChange: vi.fn(),
+      });
+      expect(known.target.querySelector(valueSelector)?.textContent).toBe(knownText);
+    },
+  );
+
+  /** Strip comments first — the reservation comments name the widest readout
+   *  they reserve for, which the rule check must not count as source text. */
+  const withoutComments = (text: string): string => text
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  const sourceOf = (name: string): string =>
+    withoutComments(readFileSync(`src/components-v2/controls/value-control/${name}`, 'utf8'));
+
+  it('reserves the HBar/Bipolar/Discrete value box: min-width covers the widest default readout', () => {
+    // Widest default-formatted readout the shipped hosts render through these
+    // renderers without a displayFn: the IF-shift/PBT bipolar rows, '+1200 Hz'.
+    const widest = '+1200 Hz'.length;
+    for (const name of ['HBarRenderer.svelte', 'BipolarRenderer.svelte', 'DiscreteRenderer.svelte']) {
+      const rule = sourceOf(name).match(/\.vc-value \{([^}]*)\}/);
+      expect(rule, name).not.toBeNull();
+      const minWidth = Number(rule![1].match(/min-width: (\d+)ch/)?.[1]);
+      expect(Number.isFinite(minWidth), name).toBe(true);
+      expect(minWidth, name).toBeGreaterThanOrEqual(widest);
+      expect(rule![1], name).toContain('tabular-nums');
+    }
+  });
+
+  it('reserves the knob value boxes: min-width covers the widest default readout', () => {
+    // Widest default-formatted knob readout without a displayFn: '100%'.
+    const widest = '100%'.length;
+    const knobRule = sourceOf('KnobRenderer.svelte').match(/\.vc-knob-value \{([^}]*)\}/);
+    expect(knobRule).not.toBeNull();
+    const knobMin = Number(knobRule![1].match(/min-width: (\d+)ch/)?.[1]);
+    expect(Number.isFinite(knobMin)).toBe(true);
+    expect(knobMin).toBeGreaterThanOrEqual(widest);
+    expect(knobRule![1]).toContain('tabular-nums');
+    const proRule = sourceOf('skins/ProfessionalKnob.svelte').match(/\.pro-val \{([^}]*)\}/);
+    expect(proRule).not.toBeNull();
+    const proMin = Number(proRule![1].match(/min-width: (\d+)ch/)?.[1]);
+    expect(Number.isFinite(proMin)).toBe(true);
+    expect(proMin).toBeGreaterThanOrEqual(widest);
+    expect(proRule![1]).toContain('tabular-nums');
   });
 });
