@@ -63,16 +63,22 @@
   {#if p.hasTuner}
     <button class="lcd-btn" onclick={requestAtuTune}>TUNE</button>
   {/if}
-  <!-- MOR-2729: the break-in key cycles exactly the profile's published
-       choices; `[]` (X6100, X6200) renders no key at all — the FTX-1 fix
-       for the stuck-ON cycle (0/1 only, never 2). -->
+  <!-- MOR-2729: the break-in key cycles to the NEXT published value from
+       the current one; `[]` (X6100, X6200) renders no key at all — the
+       FTX-1 fix for the stuck-ON cycle. While break-in is unread (null) the
+       key is disabled and unlit with an empty label — no fabricated
+       "current" value, no guessed NEXT command. Once read it cycles. -->
   {#if p.isCwMode && p.hasCw && p.hasBreakIn && p.breakInChoices.length > 0}
     {@const choices = p.breakInChoices}
-    {@const next = choices[(choices.findIndex((c) => c.value === p.breakInMode) + 1) % choices.length]}
+    {@const current = p.breakInMode}
+    {@const next = current === null
+      ? null
+      : choices[(choices.findIndex((c) => c.value === current) + 1) % choices.length]}
     <button
-      class="lcd-btn" class:active={p.breakInMode > 0}
-      onclick={() => cwHandlers.onBreakInModeChange(next.value)}
-    >{choices.find((c) => c.value === p.breakInMode)?.label ?? ''}</button>
+      class="lcd-btn" class:active={current !== null && current > 0}
+      disabled={current === null}
+      onclick={() => { if (next !== null) cwHandlers.onBreakInModeChange(next.value); }}
+    >{current === null ? '' : (choices.find((c) => c.value === current)?.label ?? '')}</button>
   {/if}
 </div>
 

@@ -38,6 +38,10 @@ import {
  *  free of hard-coded choices (MOR-2729). */
 const BREAK_IN_CHOICES = [['off', 0], ['semi', 1], ['full', 2]] as const;
 type BreakInChoice = { value: number; label: string };
+/** MOR-2729: after the fallback deletion a prop-free render still needs the
+ *  choices it exercises, now passed EXPLICITLY. */
+const EXPLICIT_CHOICES: BreakInChoice[] =
+  BREAK_IN_CHOICES.map(([label, value]) => ({ value, label: label.toUpperCase() }));
 import CwKeyerInstrumentHostFixture from './fixtures/CwKeyerInstrumentHostFixture.svelte';
 import { topologyFixtures, withCwKeyer, withModeFilter, withTxAux } from '../fixtures/topologies';
 import type {
@@ -96,7 +100,17 @@ type Handlers = {
 };
 
 function render(view: RadioViewModel, handlers: Handlers = {}) {
-  const component = mount(CwKeyerInstrumentHostFixture, { target, props: { view, ...handlers } });
+  // MOR-2729: the exported `BEFORE FIX` lookup is gone; every prop-free
+  // render still gets the choices it exercises, passed explicitly. A test
+  // pinning the absent field passes `breakInChoices: undefined`.
+  const component = mount(CwKeyerInstrumentHostFixture, {
+    target,
+    props: {
+      view,
+      breakInChoices: EXPLICIT_CHOICES,
+      ...handlers,
+    },
+  });
   flushSync();
   const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
   return {
@@ -871,7 +885,7 @@ describe('break-in obeys the ONE txPermit and fails closed', () => {
 
   /* MOR-2729 — the break-in choice list comes from the profile's published
      `breakInChoices`, not the hard-coded trio. The prop-free renders above
-     pin the legacy fallback for older servers; these pin the profile path. */
+     pass the choices explicitly; these pin the profile path. */
   describe('MOR-2729 — profile-published choices drive the break-in keys', () => {
     const ftx1: BreakInChoice[] = [{ value: 0, label: 'OFF' }, { value: 1, label: 'ON' }];
     const ic7300: BreakInChoice[] = [

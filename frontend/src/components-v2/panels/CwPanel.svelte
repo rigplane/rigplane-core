@@ -25,7 +25,10 @@
   const handlers = getCwHandlers();
   let p = $derived(deriveCwProps());
 
-  let breakIn = $derived(p.breakIn ?? 0);
+  // MOR-2729: an unread break-in stays null — a fabricated 0 would light
+  // the OFF choice before the radio reports anything. `null === choice.value`
+  // is false, so no button is lit while unread.
+  let breakIn = $derived(p.breakIn);
   let apfMode = $derived(p.apfMode ?? 0);
   let twinPeak = $derived(p.twinPeak ?? false);
   let currentMode = $derived(p.currentMode ?? 'CW');

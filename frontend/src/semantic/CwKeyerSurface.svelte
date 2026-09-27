@@ -55,16 +55,10 @@
   import { t } from '$lib/i18n';
   import { CW_CONTINUOUS_LEVELS } from './CwKeyerInstrumentHost.svelte';
   import type { BreakInChoice } from '$lib/types/capabilities';
-  import { LEGACY_BREAK_IN_CHOICES } from '$lib/types/capabilities';
   import type { BreakInMode, CwKeyerField, DisabledReasonCode } from './radio-view-model';
   import { pressedOf } from './pressed-of';
   import { readingText } from '../primitives/reading-text';
 
-  /** MOR-2729: the v2 wire ints decode to the reading vocabulary's tags —
-   *  0 → 'off', 1 → 'semi', 2 → 'full' — whatever labels the profile
-   *  attached to them. Kept for the same reason the module keeps the wire
-   *  ints: the reading's `BreakInMode` tags are a closed union. */
-  export const BREAK_IN_CHOICES = [['off', 0], ['semi', 1], ['full', 2]] as const;
   /** MOR-2729: wire int → the reading's decode tag (see `breakInMode` in
    *  `radio-view-model-adapter.ts`), the mirror half of that ONE decode
    *  point, kept surface-local by the import-closure rule below. */
@@ -166,8 +160,8 @@
     breakInDelayFeedback?: Readonly<BreakInDelayFeedback>;
     /** MOR-2729: the profile's published break-in choices — exactly these
      *  values, exactly these labels, `[]` ⇒ NO break-in block at all
-     *  (X6100, X6200). Absent (`undefined`, older server) keeps the legacy
-     *  OFF/SEMI/FULL trio. */
+     *  (X6100, X6200). Absent (`undefined`) means no break-in control,
+     *  the same no-choice treatment `notchWidthChoices` takes. */
     breakInChoices?: readonly BreakInChoice[];
     autoTuneAvailable?: boolean;
     onAutoTune?: () => void;
@@ -240,10 +234,9 @@
     };
   });
 
-  /** MOR-2729: the drawn choice list — the profile's published values,
-   *  or the legacy trio when an older server publishes no `breakInChoices`
-   *  field at all. An explicit empty list draws NO break-in block. */
-  let breakInList = $derived(breakInChoices ?? LEGACY_BREAK_IN_CHOICES);
+  /** MOR-2729: the drawn choice list — exactly the profile's published
+   *  values. Absent and empty both draw NO break-in block. */
+  let breakInList = $derived(breakInChoices ?? []);
   /** The handler half of every gate. `disabled` alone is not enough: a design
    *  language may restyle these controls, and a programmatic click must not
    *  set what the widget refused. */

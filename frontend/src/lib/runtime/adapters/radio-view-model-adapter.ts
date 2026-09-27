@@ -1585,11 +1585,9 @@ function deriveScan(state: ServerState | null): ScanViewModel | undefined {
   };
 }
 
-/** The v2 wire encoding (`BREAK_IN_LABELS`, `components-v2/panels/
- *  cw-panel-logic.ts`), decoded ONCE here. Unlike v2's `formatBreakIn`, an
- *  unrecognised int returns `undefined` (⇒ `unknown` reading) instead of
- *  falling back to OFF — an unreadable break-in state must never present as
- *  "the key is safe". Same shape as `atuStatus` above. */
+/** An unrecognised break-in int returns `undefined` (⇒ `unknown` reading) —
+ *  an unreadable break-in state must never present as "the key is safe".
+ *  Same shape as `atuStatus` above. */
 const breakInMode = (v: unknown): BreakInMode | undefined =>
   v === 0 ? 'off' : v === 1 ? 'semi' : v === 2 ? 'full' : undefined;
 

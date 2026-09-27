@@ -923,12 +923,9 @@ export type CwKeyerField<T> = TxAuxField<T>;
  * Break-in state as a THREE-VALUED fact, never a boolean and never an int.
  * `off` = the key does not transmit; `semi` = keying transmits with a
  * hang-time (the delay fact below applies); `full` = QSK, the key transmits
- * immediately. The shipped v2 wire encoding is an int (`ServerStatePublic.
- * breakIn`, 0/1/2 — `components-v2/panels/cw-panel-logic.ts`'s
- * `BREAK_IN_LABELS`), decoded ONCE in `radio-view-model-adapter.ts`'s
- * `breakInMode`; an int this contract does not recognise decodes to the
- * field's `unknown` reading, where v2's `formatBreakIn` falls back to 'OFF'.
- * That difference is deliberate and is the whole point of the type: an
+ * immediately. That difference is deliberate and is the whole point of the
+ * type: an unreadable break-in state must never present as "the key is
+ * safe".
  * unreadable break-in state must never present as "the key is safe".
  */
 export type BreakInMode = 'off' | 'semi' | 'full';

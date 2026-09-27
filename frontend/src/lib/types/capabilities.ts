@@ -195,14 +195,6 @@ export interface BreakInChoice {
   label: string;
 }
 
-/** MOR-2729: the pre-MOR-2729 hard-coded break-in trio (`cw-panel-logic.ts`'s
- *  `BREAK_IN_LABELS`), kept ONLY as the fallback for a server that publishes
- *  no `breakInChoices` field at all. A same-version server always publishes
- *  the field, and `[]` (X6100, X6200) means no break-in control. */
-export const LEGACY_BREAK_IN_CHOICES: readonly BreakInChoice[] = Object.freeze([
-  { value: 0, label: 'OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' },
-]);
-
 export interface Capabilities {
   [extension: string]: unknown;
   model: string;
@@ -240,7 +232,7 @@ export interface Capabilities {
   notchWidthChoices?: NotchWidthChoice[];
   /** Profile-declared break-in choices (MOR-2729), in value order — `[]`
    *  when the radio declares none (X6100, X6200: no break-in control at
-   *  all), absent on older servers (legacy OFF/SEMI/FULL fallback). */
+   *  all); an absent field means the same `[]` (no break-in control). */
   breakInChoices?: BreakInChoice[];
   /** RF/SQL control model (MOR-1447 leg 2): "separate" (default, two
    *  independent controls) or "combined" (Icom-style single RF/SQL knob).
