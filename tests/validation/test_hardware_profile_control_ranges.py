@@ -55,9 +55,8 @@ class _FakeRadio:
         self.connected = True
         self.model = "FAKE"
         self.capabilities = set(capabilities)
-        self.profile = SimpleNamespace(
-            controls=controls, filter_width_encoding=encoding,
-        )
+        profile = SimpleNamespace(controls=controls, filter_width_encoding=encoding)
+        self.profile = profile
         self.writes = []
 
     def add_op(self, get_op, set_op, *, start, band):
