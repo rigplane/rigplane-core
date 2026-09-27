@@ -94,14 +94,11 @@
   /** The row's two-key mode choice (CTR/FIX); S-C/S-F live in More only. */
   const QUICK_MODE = MODE_BUTTONS.slice(0, 2);
 
-  /** Usable ⇔ the radio HAS it, it is readable NOW, and it was observed. */
-  export const usable = (f: ScopeControlsField<unknown>): boolean =>
-    f.availability.structural && f.availability.operational && f.reading.status === 'known';
   /** MOR-2703 D3: reads WITHOUT a fallback — every call site proves a read
-   *  value before invoking (`spanText` is guarded by `usable(sc.span)`; the
-   *  step actions run only through `bindActionInstrument` → `canInvoke`,
-   *  which requires `reading.status === 'known'`), so the old `fallback`
-   *  argument was unreachable on every one of them (`0` is defensive only). */
+   *  value before invoking (the step actions run only through
+   *  `bindActionInstrument` → `canInvoke`, which requires
+   *  `reading.status === 'known'`), so the old `fallback` argument was
+   *  unreachable on every one of them (`0` is defensive only). */
   export const numberOf = (f: ScopeControlsField<number>): number =>
     f.reading.status === 'known' ? f.reading.value : 0;
   /** The observed value, or `undefined` when unread — drives a flat key's
@@ -182,8 +179,8 @@
    *  placeholder) while the mode is unread or the value itself is unread:
    *  the control is unlit in place until the mode read lights it. */
   let spanText = $derived(
-    sc && modeKnown !== undefined && usable(sc.span)
-      ? (SPAN_LABELS[numberOf(sc.span)] ?? '')
+    sc && modeKnown !== undefined
+      ? readingText(sc.span, (span) => SPAN_LABELS[span] ?? '')
       : '',
   );
 
@@ -311,7 +308,7 @@
             seat={actionSeat('span', -1, 'scope span')} renderer={finiteAppearance.action}
           />{/key}{/key}
           <output class="scope-finite-slot" data-testid="scope-span-value">
-            {modeKnown !== undefined && usable(sc.span) ? (SPAN_LABELS[numberOf(sc.span)] ?? '') : ''}
+            {modeKnown !== undefined ? readingText(sc.span, (span) => SPAN_LABELS[span] ?? '') : ''}
           </output>
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('span', 1, 'scope span')} renderer={finiteAppearance.action}
@@ -326,7 +323,7 @@
             seat={actionSeat('speed', -1, 'scope speed')} renderer={finiteAppearance.action}
           />{/key}{/key}
           <output class="scope-finite-slot" data-testid="scope-speed-value">
-            {usable(sc.speed) ? (SPEED_LABELS[numberOf(sc.speed)] ?? '') : ''}
+            {readingText(sc.speed, (speed) => SPEED_LABELS[speed] ?? '')}
           </output>
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('speed', 1, 'scope speed')} renderer={finiteAppearance.action}
@@ -508,7 +505,7 @@
                     <span class="scope-name">SPEED</span>
                     <button type="button" class="scope-step-key" aria-label="Decrease scope speed"
                       disabled={!speedDown.available} onclick={() => speedDown.invoke()}>&#8249;</button>
-                    <output class="scope-step-value" data-testid="scope-speed-value">{usable(sc.speed) ? (SPEED_LABELS[numberOf(sc.speed)] ?? '') : ''}</output>
+                    <output class="scope-step-value" data-testid="scope-speed-value">{readingText(sc.speed, (speed) => SPEED_LABELS[speed] ?? '')}</output>
                     <button type="button" class="scope-step-key" aria-label="Increase scope speed"
                       disabled={!speedUp.available} onclick={() => speedUp.invoke()}>&#8250;</button>
                   </div>

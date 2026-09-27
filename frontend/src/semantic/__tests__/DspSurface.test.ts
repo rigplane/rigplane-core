@@ -456,6 +456,27 @@ describe('exact NR-level projection (MOR-1737)', () => {
   });
 });
 
+/* ── MOR-2704 T1 (option A): a read NR level's text and thumb are shown even
+   when the field is not operational; the slider stays on the `usable` gate. ── */
+describe('MOR-2704 T1: a read NR level stays visible while its slider is unavailable', () => {
+  it('shows the read NR level and its thumb, keeps the slider disabled with its reason, and emits nothing', () => {
+    const onLevelChange = vi.fn();
+    // base(): nrLevel known(8), projection { value: 8, LEGACY_NR_DOMAIN, adjustable }.
+    const view = withField(base(), 'nrLevel', { availability: { structural: true, operational: false } });
+    withSurface(view, (s) => {
+      expect(s.control('nrLevel')!.querySelector('output')!.textContent).toBe('8');
+      const input = s.input('nrLevel')!;
+      expect(input.valueAsNumber).toBe(8);
+      expect(input.disabled).toBe(true);
+      expect(s.control('nrLevel')!.dataset.disabledReason).toBe('field-not-observed');
+      input.value = '9';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+      expect(onLevelChange).not.toHaveBeenCalled();
+    }, { onLevelChange });
+  });
+});
+
 // ── 4b. Manual-notch position is the CI-V raw 0..255 domain ───────────────
 
 describe('manual-notch position stays in the documented raw domain', () => {

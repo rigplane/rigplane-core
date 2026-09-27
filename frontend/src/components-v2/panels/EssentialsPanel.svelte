@@ -6,6 +6,7 @@
   import { HardwareButton } from '$lib/Button';
   import { ValueControl } from '../controls/value-control';
   import { normalizedPercentDisplay } from '../../primitives/scalar/value-control-core';
+  import { finiteValue, valueText } from '../../primitives/reading-text';
 
   interface Props {
     vfoOps: { splitActive?: boolean };
@@ -63,7 +64,7 @@
   // HBarRenderer's reserved `.vc-value` box (MOR-2657). Same shape as
   // `RxAudioPanel.svelte`'s guard for this exact field.
   function formatAfLevelDisplay(v: number): string {
-    return Number.isFinite(v) ? normalizedPercentDisplay(v) : '';
+    return valueText(finiteValue(v), normalizedPercentDisplay);
   }
 </script>
 

@@ -106,8 +106,8 @@
   const TOTAL_HEIGHT = $derived(compact ? 22 : 30);
   const LABEL_FS    = $derived(compact ? 7  : 8);
   // MOR-1535: steps down from the base size when `displayValue` is too long
-  // to fit the fixed value column at that size (e.g. "158 raw") — SVG text
-  // clips silently on overflow rather than wrapping or ellipsizing.
+  // to fit the fixed value column at that size — SVG text clips silently on
+  // overflow rather than wrapping or ellipsizing.
   const VALUE_FS    = $derived(valueFontSize(displayValue, compact ? 9 : 11));
   const TEXT_Y      = $derived(TRACK_Y + TRACK_H / 2);
 

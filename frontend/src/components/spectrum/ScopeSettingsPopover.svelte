@@ -2,34 +2,17 @@
   import { runtime } from '$lib/runtime/frontend-runtime';
   import { toSpectrumAuthority } from '$lib/runtime/adapters/scope-adapter';
   import { bindSemanticSurfaceHandlers } from '$lib/runtime/adapters/panel-adapters';
+  import { acceptedBoolean, acceptedNumber } from '../../semantic/accepted-scope-values';
 
   let { onClose }: { onClose: () => void } = $props();
 
   const scopeHandlers = bindSemanticSurfaceHandlers().scopeControls;
   let scopeControls = $derived(toSpectrumAuthority(runtime.state, runtime.caps)?.scopeControls ?? null);
 
-  type NumberScopeField = 'centerType' | 'rbw';
-  type BooleanScopeField = 'vbwNarrow' | 'duringTx';
-
-  function acceptedNumber(field: NumberScopeField, min: number, max: number): number | null {
-    const fact = scopeControls?.[field];
-    if (!fact?.availability?.structural || !fact.availability.operational
-      || fact.reading?.status !== 'known' || !Number.isSafeInteger(fact.reading.value)
-      || fact.reading.value < min || fact.reading.value > max) return null;
-    return fact.reading.value;
-  }
-
-  function acceptedBoolean(field: BooleanScopeField): boolean | null {
-    const fact = scopeControls?.[field];
-    if (!fact?.availability?.structural || !fact.availability.operational
-      || fact.reading?.status !== 'known' || typeof fact.reading.value !== 'boolean') return null;
-    return fact.reading.value;
-  }
-
-  let centerType = $derived(acceptedNumber('centerType', 0, 2));
-  let vbwNarrow = $derived(acceptedBoolean('vbwNarrow'));
-  let rbw = $derived(acceptedNumber('rbw', 0, 2));
-  let duringTx = $derived(acceptedBoolean('duringTx'));
+  let centerType = $derived(acceptedNumber(scopeControls?.centerType, 0, 2));
+  let vbwNarrow = $derived(acceptedBoolean(scopeControls?.vbwNarrow));
+  let rbw = $derived(acceptedNumber(scopeControls?.rbw, 0, 2));
+  let duringTx = $derived(acceptedBoolean(scopeControls?.duringTx));
 
   function selectCenterType(value: number): void {
     if (centerType === null || !Number.isSafeInteger(value) || value < 0 || value > 2) return;

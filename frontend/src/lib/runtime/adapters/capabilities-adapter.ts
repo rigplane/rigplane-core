@@ -33,8 +33,8 @@ export interface MeterCalPoint {
 /**
  * Calibration knot points for a meter (e.g. `'s_meter'`, `'power'`,
  * `'swr'`). Returns `null` when capabilities haven't loaded or when the
- * radio doesn't expose calibration for this meter — callers degrade to an
- * honest raw-scale reading (`meter-utils.ts`'s `formatRaw`), never a
+ * radio doesn't expose calibration for this meter — callers degrade to no
+ * value text at all, with a neutral raw/255 bar (MOR-2722 part B), never a
  * hardcoded fallback curve borrowed from another radio (MOR-1291/MOR-1451).
  */
 export function getMeterCalibration(meterType: string): MeterCalPoint[] | null {

@@ -158,8 +158,8 @@ describe('DockMeterPanel uncalibrated S row (MOR-2705 part 4a)', () => {
   // The phone portrait TX chip mounts this panel while transmitting
   // (`MobileRadioLayout.svelte`, `.m-tx-meter`). On an uncalibrated profile
   // the S row keeps its moving bar but draws no number and no 'raw' word —
-  // a raw count is not an operator reading. The TX rows (Po/SWR/ALC) keep
-  // their MOR-1527 raw-tagged values, out of scope here.
+  // a raw count is not an operator reading. Since MOR-2722 part B the TX
+  // rows (Po/SWR/ALC) do the same without a calibration table.
   function uncalibratedCaps(): Capabilities {
     const caps = makeCaps();
     delete caps.meterCalibrations!.s_meter;
@@ -182,5 +182,33 @@ describe('DockMeterPanel uncalibrated S row (MOR-2705 part 4a)', () => {
   it('keeps the S-unit text on a calibrated radio', () => {
     const t = mountPanel({ ...baseProps, sValue: 0 });
     expect(t.querySelectorAll('.dock-row')[0].querySelector('.dock-row-value')?.textContent).toBe('S9');
+  });
+});
+
+describe('DockMeterPanel uncalibrated TX rows (MOR-2722 part B)', () => {
+  // A profile with no TX meter calibration tables at all (X6200 class):
+  // every TX row keeps its moving bar but draws no digit and no 'raw'
+  // word — on screen or in the source tag.
+  function noTxCaps(): Capabilities {
+    const caps = makeCaps();
+    delete caps.meterCalibrations!.power;
+    delete caps.meterCalibrations!.swr;
+    delete caps.meterCalibrations!.alc;
+    return caps;
+  }
+
+  it('draws the Po bar with no number and no "raw" word while transmitting, with the source tag naming only the label', () => {
+    setCapabilities(noTxCaps());
+    const t = mountPanel({ ...baseProps, rfPower: 128, txActive: true, meterSource: 'po' });
+    const row = t.querySelectorAll('.dock-row')[1];
+    expect(row.querySelector('.dock-row-label')?.textContent).toBe('Po');
+    expect(row.querySelector('.dock-row-value')?.textContent).toBe('');
+    expect(row.textContent).not.toContain('raw');
+    expect(row.textContent).not.toContain('128');
+    expect(fillPctForLabel(t, 'Po')).toBeGreaterThan(0);
+    expect(fillPctForLabel(t, 'Po')).toBeLessThan(100);
+    const sourceTag = t.querySelector('.status-tag.source')!;
+    expect(sourceTag.textContent?.trim()).toBe('Po');
+    expect(sourceTag.textContent).not.toContain('raw');
   });
 });

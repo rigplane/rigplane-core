@@ -124,8 +124,8 @@ describe('projectBarMeters', () => {
     ]);
     expect(projected[0]).toMatchObject({
       motionFraction: 128 / 255,
-      displayText: '128 raw',
-      accessibleDescription: 'Po: 128 raw',
+      displayText: '',
+      accessibleDescription: 'Po',
       observed: true,
       gauge: true,
       showPeak: true,
@@ -176,8 +176,8 @@ describe('projectBarMeters', () => {
       state: 'stale',
       domain: { kind: 'raw' },
       motionFraction: 170 / 255,
-      displayText: '170 raw',
-      accessibleDescription: 'Po: 170 raw',
+      displayText: '',
+      accessibleDescription: 'Po',
       observed: true,
       gauge: true,
       showPeak: false,
@@ -212,23 +212,25 @@ describe('projectBarMeters', () => {
     expect(projectBarMeters(view)[0]).toMatchObject({
       state: 'current',
       motionFraction: 170 / 255,
-      displayText: '170 raw',
+      displayText: '',
       stateText: '',
-      accessibleDescription: 'Po: 170 raw',
+      accessibleDescription: 'Po',
       observed: true,
       gauge: true,
     });
 
-    // MOR-2425/R41 + MOR-2540: a retained reading keeps its digits whether
+    // MOR-2425/R41 + MOR-2540: a retained reading keeps its fill whether
     // current or stale — and since MOR-2540 the indeterminate-relevance
     // case carries no ' ?' suffix either; no placeholder text on screen.
+    // MOR-2722 part B: a raw-domain value draws no number and no 'raw'
+    // word; the accessible name is the label alone.
     setDisplay(view, 'power', { state: 'stale', value: 170 });
     expect(projectBarMeters(view)[0]).toMatchObject({
       state: 'stale',
       motionFraction: 170 / 255,
-      displayText: '170 raw',
+      displayText: '',
       stateText: '',
-      accessibleDescription: 'Po: 170 raw',
+      accessibleDescription: 'Po',
       observed: true,
       gauge: true,
     });
@@ -313,7 +315,7 @@ describe('projectBarMeters', () => {
       state: 'current',
       domain: { kind: 'raw' },
       motionFraction: 50 / 255,
-      displayText: '50 raw',
+      displayText: '',
       fault: false,
       showPeak: false,
     });
@@ -356,7 +358,7 @@ describe('projectBarMeters', () => {
       state: 'current',
       domain: { kind: 'raw' },
       motionFraction: 120 / 255,
-      displayText: '120 raw',
+      displayText: '',
       ratioScale: false,
       fault: false,
       showPeak: false,

@@ -853,3 +853,73 @@ describe('external finite appearance', () => {
     expect(SOURCE).toMatch(/\.scope-finite-slot\s*\{[^}]*min-width:\s*5ch/);
   });
 });
+
+/* ── MOR-2704 T1 (option A): a read span/speed value is shown even when its
+   field is not operational; the step keys stay on the `usable` gate. ── */
+describe('MOR-2704 T1: a read value stays visible while its control is unavailable', () => {
+  const READ_NOT_OPERATIONAL: Availability = { structural: true, operational: false };
+  const appearance = {
+    action: FiniteControlRendererFixture as FiniteControlAppearance['action'],
+    toggle: FiniteControlRendererFixture as FiniteControlAppearance['toggle'],
+    choice: FiniteControlRendererFixture as FiniteControlAppearance['choice'],
+  } satisfies FiniteControlAppearance;
+
+  it('shows a read span in the row and in More while every span key is disabled and inert', () => {
+    const onSpanChange = vi.fn();
+    const r = render(withSc({ mode: known(0), span: known(3, READ_NOT_OPERATIONAL) }), { onSpanChange });
+    expect(r.el('scope-span-value')!.textContent).toBe('±25k');
+    for (const key of r.el('scope-span')!.querySelectorAll('button')) {
+      expect(key.hasAttribute('disabled')).toBe(true);
+      bypassClick(key);
+    }
+    r.openMore();
+    expect(r.el('scope-overflow-span-value')!.textContent).toBe('±25k');
+    for (const key of r.el('scope-overflow-span')!.querySelectorAll('button')) {
+      expect(key.hasAttribute('disabled')).toBe(true);
+      bypassClick(key);
+    }
+    flushSync();
+    expect(onSpanChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  it('shows a read speed in More while both speed keys are disabled and inert', () => {
+    const onSpeedChange = vi.fn();
+    const r = render(withSc({ speed: known(1, READ_NOT_OPERATIONAL) }), { onSpeedChange });
+    r.openMore();
+    expect(r.el('scope-speed-value')!.textContent).toBe('MID');
+    for (const key of r.el('scope-speed')!.querySelectorAll('button')) {
+      expect(key.hasAttribute('disabled')).toBe(true);
+      bypassClick(key);
+    }
+    flushSync();
+    expect(onSpeedChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  it('shows a read span and speed in the finite appearance while their step actions are unavailable', () => {
+    const onSpanChange = vi.fn();
+    const onSpeedChange = vi.fn();
+    const component = mount(ScopeControlsSurface, { target, props: {
+      view: withSc({
+        mode: known(0), span: known(3, READ_NOT_OPERATIONAL), speed: known(1, READ_NOT_OPERATIONAL),
+      }),
+      finiteAppearance: appearance, rendererContext: createFiniteRendererContext(),
+      onSpanChange, onSpeedChange,
+    } });
+    flushSync();
+    expect(target.querySelector('[data-testid="scope-span-value"]')!.textContent).toBe('±25k');
+    expect(target.querySelector('[data-testid="scope-speed-value"]')!.textContent).toBe('MID');
+    for (const label of [
+      'Decrease scope span', 'Increase scope span', 'Decrease scope speed', 'Increase scope speed',
+    ]) {
+      const key = target.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!;
+      expect(key.disabled).toBe(true);
+      bypassClick(key);
+    }
+    flushSync();
+    expect(onSpanChange).not.toHaveBeenCalled();
+    expect(onSpeedChange).not.toHaveBeenCalled();
+    unmount(component);
+  });
+});

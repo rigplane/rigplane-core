@@ -201,7 +201,7 @@ describe('valueFontSize', () => {
   });
 
   it('steps the font size down below the base for text past the budget', () => {
-    const fs = valueFontSize('158 raw', 11);
+    const fs = valueFontSize('13.8+ V', 11);
     expect(fs).toBeLessThan(11);
   });
 

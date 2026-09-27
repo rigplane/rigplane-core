@@ -649,6 +649,66 @@ describe('MOR-2521 — the S-meter never adds or removes nodes across a value sw
   });
 });
 
+// ── MOR-2521: the default face's readouts keep one start x per profile ─────
+
+describe('MOR-2521 — the default-face readouts start at one x sized from the calibration', () => {
+  const sUnitText = (target: HTMLElement) => target.querySelector('[data-meter-reading]')!;
+  const dbmText = (target: HTMLElement) => target.querySelector('[data-meter-reading-secondary]')!;
+
+  // IC7610_LIKE_CAL (seeded above) prints at most 'S9+40' (5 glyphs) and
+  // '−127 dBm' (8 glyphs). Both readouts are centred on x 546 for that
+  // widest text: 546 − 5 × 0.6 × 15 / 2 = 523.5 and 546 − 8 × 0.6 × 9 / 2
+  // = 524.4 on the full face, 528 and 526.8 on the compact one.
+  it.each([
+    [false, 523.5, 524.4],
+    [true, 528, 526.8],
+  ] as const)('keeps both readouts at one x when unread, at S0 and at S9+20 (compact %s)', (
+    compact, sUnitX, dbmX,
+  ) => {
+    const unread = mountMeter({ value: null, compact });
+    const s0 = mountMeter({ value: -54, compact });
+    const s9plus20 = mountMeter({ value: 20, compact });
+
+    expect(sUnitText(unread).textContent).toBe('');
+    expect(dbmText(unread).textContent).toBe('');
+    expect(sUnitText(s0).textContent).toBe('S0');
+    expect(dbmText(s0).textContent).toBe('\u2212127 dBm');
+    expect(sUnitText(s9plus20).textContent).toBe('S9+20');
+    expect(dbmText(s9plus20).textContent).toBe('\u221253 dBm');
+    for (const target of [unread, s0, s9plus20]) {
+      expect(sUnitText(target).getAttribute('text-anchor')).toBe('start');
+      expect(dbmText(target).getAttribute('text-anchor')).toBe('start');
+      expect(Number(sUnitText(target).getAttribute('x'))).toBeCloseTo(sUnitX, 9);
+      expect(Number(dbmText(target).getAttribute('x'))).toBeCloseTo(dbmX, 9);
+    }
+  });
+
+  it('sizes the slots from the mounted table, not from a constant', () => {
+    // Prints at most 'S9' (2 glyphs) and '−97 dBm' (7 glyphs):
+    // 546 − 2 × 0.6 × 15 / 2 = 537 and 546 − 7 × 0.6 × 9 / 2 = 527.1.
+    setCapabilities(makeCaps({ meterCalibrations: { s_meter: [
+      { raw: 0, actual: -24, label: 'S5' },
+      { raw: 120, actual: 0, label: 'S9' },
+    ] } }));
+    const target = mountMeter({ value: -24 });
+
+    expect(sUnitText(target).textContent).toBe('S5');
+    expect(dbmText(target).textContent).toBe('\u221297 dBm');
+    expect(Number(sUnitText(target).getAttribute('x'))).toBeCloseTo(537, 9);
+    expect(Number(dbmText(target).getAttribute('x'))).toBeCloseTo(527.1, 9);
+  });
+
+  it('keeps an uncalibrated engineering reading centred on x 546, where no table sizes a slot', () => {
+    setCapabilities(makeCaps());
+    const projection = projectSignalMeter(-12, { kind: 'engineering', unit: 'db' });
+    const target = mountMeter({ projection });
+
+    expect(sUnitText(target).textContent).toBe('\u221212 dB rel S9');
+    expect(sUnitText(target).getAttribute('text-anchor')).toBe('middle');
+    expect(Number(sUnitText(target).getAttribute('x'))).toBe(546);
+  });
+});
+
 // ── MOR-1451: no hardcoded per-radio fallback curve ─────────────────────────
 // A radio whose profile declares no `[meters.s_meter]` table gets NO
 // calibration server-side either (`_civ_rx.py`'s `_calibrated_meter_value`

@@ -1080,6 +1080,91 @@ describe('the host descriptor and LinearSMeter share one signal projection', () 
   });
 });
 
+describe('MOR-2521 — the S caption reserves the widest text the calibration prints', () => {
+  const DB: MeterValueDomain = { kind: 'engineering', unit: 'db' };
+  const spans = (s: ReturnType<typeof render>) => {
+    const caption = s.tile('signal')!.querySelector('.meter-native-caption')!;
+    return {
+      value: caption.querySelector<HTMLElement>('.meter-native-value:not(.meter-native-measure)')!,
+      secondary: caption.querySelector<HTMLElement>('.meter-native-secondary:not(.meter-native-measure)'),
+      measures: [...caption.querySelectorAll<HTMLElement>('.meter-native-measure')],
+    };
+  };
+
+  // jsdom lays nothing out, so every element here measures 10px per
+  // character: a reservation reads back as the widest candidate's length.
+  beforeEach(() => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      const width = (this.textContent ?? '').length * 10;
+      return {
+        x: 0, y: 0, top: 0, left: 0, right: width, bottom: 0, width, height: 0, toJSON: () => ({}),
+      } as DOMRect;
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    clearCapabilities();
+  });
+
+  function calibrate(table: { raw: number; actual: number; label: string }[]): void {
+    const caps = makeFaultCaps();
+    caps.meterCalibrations!.s_meter = table;
+    setCapabilities(caps);
+  }
+
+  it('keeps one min-width for an unread meter, S0 and S9+20', () => {
+    // Prints at most 'S9+40' (5 characters) and '−127 dBm' (8).
+    calibrate([
+      { raw: 0, actual: -54, label: 'S0' },
+      { raw: 130, actual: 0, label: 'S9' },
+      { raw: 240, actual: 40, label: 'S9+40' },
+    ]);
+    const cases = [
+      [withField(base(), 'signal', { unknown: true }), '', ''],
+      [withSignalDomain(withRaw(base(), 'signal', -54), DB), 'S0', '\u2212127 dBm'],
+      [withSignalDomain(withRaw(base(), 'signal', 20), DB), 'S9+20', '\u221253 dBm'],
+    ] as const;
+    for (const [view, value, secondary] of cases) {
+      withSurface(view, (s) => {
+        const { value: valueSpan, secondary: secondarySpan, measures } = spans(s);
+        expect(valueSpan.textContent).toBe(value);
+        expect(valueSpan.style.minWidth).toBe('50px');
+        expect(secondarySpan?.textContent).toBe(secondary);
+        expect(secondarySpan?.style.minWidth).toBe('80px');
+        // The measure nodes are left empty: no stray text in the caption.
+        expect(measures.map((node) => node.textContent)).toEqual(['', '']);
+      });
+    }
+  });
+
+  it('sizes the reservation from the mounted table, not from a constant', () => {
+    // Prints at most 'S9' (2 characters) and '−97 dBm' (7).
+    calibrate([
+      { raw: 0, actual: -24, label: 'S5' },
+      { raw: 120, actual: 0, label: 'S9' },
+    ]);
+    withSurface(withSignalDomain(withRaw(base(), 'signal', -24), DB), (s) => {
+      const { value: valueSpan, secondary: secondarySpan } = spans(s);
+      expect(valueSpan.textContent).toBe('S5');
+      expect(valueSpan.style.minWidth).toBe('20px');
+      expect(secondarySpan?.textContent).toBe('\u221297 dBm');
+      expect(secondarySpan?.style.minWidth).toBe('70px');
+    });
+  });
+
+  it('reserves nothing and draws no secondary span without a calibration table', () => {
+    clearCapabilities();
+    withSurface(withRaw(base(), 'signal', 53), (s) => {
+      const { value: valueSpan, secondary: secondarySpan } = spans(s);
+      expect(valueSpan.textContent).toBe('');
+      expect(valueSpan.style.minWidth).toBe('');
+      expect(secondarySpan).toBeNull();
+    });
+  });
+});
+
 describe('SWR/ALC fault highlighting reuses the dock\'s own threshold', () => {
   // MOR-1470: fault predicates are only claimable in the calibrated
   // engineering domain (an uncalibrated raw byte never asserts a fault) —
@@ -1243,11 +1328,12 @@ describe('station level meters honor explicit sample domains (MOR-2425)', () => 
       view = withRaw(view, 'swr', 120);
       view = withMeterDomain(view, 'swr', { kind: 'raw' });
       withSurface(view, (s) => {
-        expect(s.tile('alc')!.textContent).toContain('255 raw');
+        expect(s.tile('alc')!.textContent).not.toContain('raw');
+        expect(s.tile('alc')!.textContent).not.toContain('255');
         expect(s.tile('alc')!.dataset.fault).toBe('false');
         expect(s.tile('alc')!.querySelector('[data-testid="bar-gauge-peak-marker"]')).toBeNull();
         expect(s.signalSvg()!.getAttribute('data-lower-fault')).toBe('false');
-        expect(s.signalSvg()!.textContent).toContain('120 raw');
+        expect(s.signalSvg()!.textContent).not.toContain('raw');
         expect(s.signalSvg()!.querySelectorAll('[data-lower-tick-mark]')).toHaveLength(0);
         expect(s.lowerFillCount()).toBeGreaterThan(0);
       });
@@ -1394,7 +1480,7 @@ describe('station level meters honor explicit sample domains (MOR-2425)', () => 
       flushSync();
       const lowerText = () => target.querySelector('[data-lower-relevant]')?.textContent ?? '';
       const currentText = lowerText();
-      expect(currentText).toContain('120');
+      expect(currentText).not.toMatch(/120|raw/);
 
       props.view = {
         ...props.view,
@@ -1466,13 +1552,14 @@ describe('the SWR shared lower-scale row (MOR-2250, PR 2 of 2)', () => {
 // (e.g. restoring the read/unread conjunct, or dropping the fallback label).
 describe('the SWR lower scale literal text (MOR-2688 S4d)', () => {
   it('shows the read digits on a non-ratio domain, and bare label while unread', () => {
-    // raw domain → no ratio scale: the digit readout is the only text after
-    // the group label. `withField` cannot carry `domain`, so the unread
-    // fixture rewrites only the reading.
-    let view = withRaw(base('transmitting'), 'swr', 120);
-    view = withMeterDomain(view, 'swr', { kind: 'raw' });
+    // engineering ratio domain with no SWR calibration table (jsdom loads
+    // none, so `hasSwrRatioScale` is false): the digit readout is the only
+    // text after the group label. `withField` cannot carry `domain`, so the
+    // unread fixture rewrites only the reading.
+    let view = withRaw(base('transmitting'), 'swr', 2.5);
+    view = withMeterDomain(view, 'swr', { kind: 'engineering', unit: 'ratio' });
     withSurface(view, (s) => {
-      expect(s.signalSvg()!.querySelector('[data-lower-relevant]')!.textContent).toBe('SWR120 raw');
+      expect(s.signalSvg()!.querySelector('[data-lower-relevant]')!.textContent).toBe('SWR2.5');
     });
     view = {
       ...view,
@@ -1746,17 +1833,17 @@ describe('persistent TX instruments', () => {
               expect(el.getAttribute('data-fault')).not.toBe('true');
             } else {
               // current or stale (R29): the retained value renders
-              // identically either way. This fixture leaves the SWR
-              // `domain` unset, which `hasSwrRatioScale` treats as a ratio
-              // scale (ticks, not raw digits) — see the non-ratio SWR test
-              // above for the digit case — so the digit check here is
-              // power/alc only.
-              if (key !== 'swr') expect(text).toContain('170');
+              // identically either way. MOR-2722 part B: this fixture is
+              // uncalibrated, so a retained raw reading keeps its moving
+              // fill but draws no digit and no 'raw' word.
+              expect(text).not.toMatch(/170|raw/);
               expect(visibleSlotCount(el, key === 'swr' ? '[data-lower-fill]' : '[data-gauge-fill]')).toBeGreaterThan(0);
-              // MOR-2705 part 4b: current, stale and indeterminate-relevance
-              // readings all name the value — no 'Observed', no 'RF
-              // relevance indeterminate' status word.
-              expect(description).toBe(`${TX_LABEL[key]}: 170 raw`);
+              // MOR-2705 part 4b + MOR-2722 part B: current, stale and
+              // indeterminate-relevance readings all name the value — but
+              // with no honest value text the accessible name is the label
+              // alone; no 'Observed', no 'RF relevance indeterminate'
+              // status word.
+              expect(description).toBe(TX_LABEL[key]);
             }
           }
         });
@@ -1953,7 +2040,9 @@ describe('MOR-2540: TX-only meters keep their slots unlit on RX', () => {
       flushSync();
       expect(tile()).toBe(unlitNode);
       expect(boxOf()).toEqual(unlitBox);
-      expect(tile().textContent).toContain('100');
+      // MOR-2722 part B: a raw power reading (no table) keeps the same box
+      // with no digit and no 'raw' word.
+      expect(tile().textContent).not.toMatch(/100|raw/);
     } finally { unmount(component); }
   });
 

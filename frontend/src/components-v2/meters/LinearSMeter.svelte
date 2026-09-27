@@ -23,6 +23,11 @@
     projectSignalMeter,
     lerpScaleKnots,
     thinUniformScaleMarksForWidth,
+    calibratedToDbm,
+    calibratedToSUnit,
+    formatDbm,
+    getCalibrationPoints,
+    isSmeterCalibrated,
     type SignalScaleMark,
     type SignalMeterProjection,
   } from './smeter-scale';
@@ -293,6 +298,29 @@
   const S_UNIT_FS     = $derived(compact ? 12 : 15);
   const DBM_Y         = $derived(TRACK_Y + TRACK_H + (compact ? 1 : 2));
   const DBM_FS        = $derived(compact ? 8 : 9);
+  const MONO_GLYPH_ADVANCE_EM = 0.6;
+
+  // MOR-2521: the glyph count of the widest S-unit and dBm text the mounted
+  // profile's calibration knots print. Each readout below starts at the left
+  // edge of a slot that many glyphs wide, centred on READOUT_CX; uncalibrated
+  // (0), it stays middle-anchored at READOUT_CX.
+  const readoutSlotGlyphs = $derived.by(() => {
+    let sUnit = 0;
+    let dbm = 0;
+    if (isSmeterCalibrated()) {
+      for (const point of getCalibrationPoints()) {
+        sUnit = Math.max(sUnit, calibratedToSUnit(point.actual).length);
+        dbm = Math.max(dbm, formatDbm(calibratedToDbm(point.actual)).length);
+      }
+    }
+    return { sUnit, dbm };
+  });
+  const S_UNIT_X = $derived(
+    READOUT_CX - (readoutSlotGlyphs.sUnit * MONO_GLYPH_ADVANCE_EM * S_UNIT_FS) / 2,
+  );
+  const DBM_X = $derived(
+    READOUT_CX - (readoutSlotGlyphs.dbm * MONO_GLYPH_ADVANCE_EM * DBM_FS) / 2,
+  );
 
   // Lower scale row (MOR-2250): stacked below the main bar, in the bar's own
   // x-range — it sits below TRACK_Y + TRACK_H the same way the S-unit/dBm
@@ -437,7 +465,7 @@
   const VFO_LABEL_Y = 0;
   const VFO_LABEL_WEIGHT = 400;
   const VFO_PLUS_LETTER_SPACING = Math.round(-0.05 * VFO_LABEL_FS * 100) / 100;
-  const VFO_LABEL_GLYPH_ADVANCE = VFO_LABEL_FS * 0.6;
+  const VFO_LABEL_GLYPH_ADVANCE = VFO_LABEL_FS * MONO_GLYPH_ADVANCE_EM;
   const VFO_TICKS_ROW_H = 20;
   const VFO_TICK_MARK_Y1 = 15;
   const VFO_TICK_MARK_Y2 = 19;
@@ -987,23 +1015,24 @@
   <!-- Value readout: dBm aligned to bar center, S-unit above it -->
   <text
     data-meter-reading
-    x={READOUT_CX}
+    x={S_UNIT_X}
     y={TRACK_Y - (compact ? 2 : 3)}
     font-family="'Roboto Mono', monospace"
     font-size={S_UNIT_FS}
     font-weight="700"
     fill="var(--v2-text-lighter)"
-    text-anchor="middle"
+    text-anchor={readoutSlotGlyphs.sUnit > 0 ? 'start' : 'middle'}
     dominant-baseline="text-after-edge"
   >{displaySUnit}</text>
 
   <text
-    x={READOUT_CX}
+    data-meter-reading-secondary
+    x={DBM_X}
     y={TRACK_Y + TRACK_H / 2}
     font-family="'Roboto Mono', monospace"
     font-size={DBM_FS}
     fill="var(--v2-text-dim)"
-    text-anchor="middle"
+    text-anchor={readoutSlotGlyphs.dbm > 0 ? 'start' : 'middle'}
     dominant-baseline="central"
   >{displayDbm}</text>
   </g>

@@ -2,6 +2,7 @@
   import { onDestroy } from 'svelte';
   import { ValueControl } from '../controls/value-control';
   import { normalizedPercentDisplay } from '../../primitives/scalar/value-control-core';
+  import { finiteValue, valueText } from '../../primitives/reading-text';
   import {
     createContinuousPair,
     createLegacyContinuousPairPolicy,
@@ -124,8 +125,8 @@
   // MOR-2658: unread is an empty reserved slot — never the '—' placeholder,
   // and never a '%' without its number. The renderer (HBarRenderer) calls
   // this with Number.NaN for an unread value.
-  const displayRfGain = (value: number): string => Number.isFinite(value)
-    ? normalizedPercentDisplay(value) : '';
+  const displayRfGain = (value: number): string =>
+    valueText(finiteValue(value), normalizedPercentDisplay);
   const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
 </script>
 

@@ -202,3 +202,37 @@ for (const relevance of ['idle', 'relevant', 'indeterminate'] as const)
       if (relevance !== 'idle' && observation.state === 'current') expect(description).toBe(`PWR: ${text}`);
     });
   }
+
+// MOR-2722 part B: a TX meter without a calibration table shows only its
+// bar — the domain says the reading is not calibrated, so no digit reaches
+// the rail or its accessible name, in this skin or any other.
+it('shows no digit and a label-only name for an uncalibrated TX meter', () => {
+  const field: DisplayTelemetry = { state: 'known', value: 128, relevant: true,
+    domain: { kind: 'raw' },
+    txDisplay: { supported: true, relevance: 'relevant', observation: { state: 'current', value: 128 } } };
+  expect(telemetryText(field)).toBe('');
+  expect(telemetryDescription('PWR', field)).toBe('PWR');
+});
+
+it('shows no digit for an uninterpretable-domain TX meter either', () => {
+  const field: DisplayTelemetry = { state: 'known', value: 128, relevant: true,
+    domain: { kind: 'unknown' },
+    txDisplay: { supported: true, relevance: 'relevant', observation: { state: 'stale', value: 128 } } };
+  expect(telemetryText(field)).toBe('');
+  expect(telemetryDescription('PWR', field)).toBe('PWR');
+});
+
+it('keeps a calibrated TX meter digit-identical with its label: value name', () => {
+  const field: DisplayTelemetry = { state: 'known', value: 128, relevant: true,
+    domain: { kind: 'engineering', unit: 'w' },
+    txDisplay: { supported: true, relevance: 'relevant', observation: { state: 'current', value: 128 } } };
+  expect(telemetryText(field)).toBe('128');
+  expect(telemetryDescription('PWR', field)).toBe('PWR: 128');
+});
+
+it('hides the uncalibrated digit of a non-observation TX telemetry slot too', () => {
+  const field: DisplayTelemetry = { state: 'known', value: 13.7, relevant: false,
+    domain: { kind: 'raw' } };
+  expect(telemetryText(field)).toBe('');
+  expect(telemetryDescription('VD', field)).toBe('VD');
+});

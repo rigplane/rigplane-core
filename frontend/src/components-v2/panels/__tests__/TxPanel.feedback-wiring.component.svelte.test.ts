@@ -373,6 +373,12 @@ describe('TxPanel unread TX level value display (MOR-2658)', () => {
     expect(value('driveGain')).toBe(`${Math.round(VALUES.driveGain / 2.55)}%`);
   });
 
+  it('renders all four known raw levels as literal percents (MOR-2688)', () => {
+    render();
+    openSettings();
+    expect(FIELDS.map((field) => value(field))).toEqual(['16%', '31%', '47%', '63%']);
+  });
+
   it('renders unread levels as empty slots with no dash or percent-alone', () => {
     render();
     openSettings();

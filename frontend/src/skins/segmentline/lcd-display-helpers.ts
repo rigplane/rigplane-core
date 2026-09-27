@@ -6,6 +6,7 @@ import type {
   DisplayValue,
   PeerSplitReceiverDisplay,
 } from '../../semantic/radio-display-model';
+import type { MeterValueDomain } from '../../semantic/radio-view-model';
 import type { LcdAfFftInputState } from './LcdAfFft.svelte';
 
 export interface FilterEnvelope {
@@ -51,7 +52,17 @@ export function meterFill(field: DisplayValue<number>): number {
 // MOR-2540 (owner ruling 2026-09-22): no `?` anywhere else either — the
 // unsupported cases and the former ' ?' indeterminate-relevance cue are
 // gone; an indeterminate reading keeps its digits, nothing more.
+// MOR-2722 part B: a TX meter whose value is not calibrated shows no number
+// anywhere — its domain says the reading is a raw count (`raw`) or
+// uninterpretable (`unknown`), the same fact the `meter-utils.ts` formatters
+// decide by (an omitted domain is a pre-MOR-2425 fixture value, not a radio).
+// A calibrated meter (an `engineering` domain) renders exactly as before.
+function uncalibrated(domain: MeterValueDomain | undefined): boolean {
+  return domain?.kind === 'raw' || domain?.kind === 'unknown';
+}
+
 export function telemetryText(field: DisplayTelemetry): string {
+  if (uncalibrated(field.domain)) return '';
   const tx = field.txDisplay;
   if (!tx) {
     if (field.state === 'known') return String(Number(field.value.toFixed(2)));
@@ -73,13 +84,17 @@ export function telemetryDescription(label: string, field: DisplayTelemetry): st
   // measuring in receive', 'Stale observation', 'Current observation',
   // 'RF relevance indeterminate') stands in for a value.
   if (!tx) {
-    if (field.state === 'known') return `${label}: ${telemetryText(field)}`;
+    if (field.state === 'known') {
+      const text = telemetryText(field);
+      return text === '' ? label : `${label}: ${text}`;
+    }
     return label;
   }
   if (!tx.supported) return label;
   if (tx.relevance === 'idle') return label;
   if (tx.observation.state !== 'stale' && tx.observation.state !== 'current') return label;
-  return `${label}: ${telemetryText(field)}`;
+  const text = telemetryText(field);
+  return text === '' ? label : `${label}: ${text}`;
 }
 
 function envelope(

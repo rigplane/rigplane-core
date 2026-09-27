@@ -15,6 +15,7 @@
     isSpanApplicable, isEdgeApplicable,
     clampSpan, clampSpeed, clampBrt, clampRef,
   } from './spectrum-toolbar-logic';
+  import { acceptedBoolean, acceptedNumber } from '../../semantic/accepted-scope-values';
 
   interface LayerInfo {
     name: string;
@@ -220,33 +221,14 @@
   }
 
   let scopeFacts = $derived(toSpectrumAuthority(runtime.state, runtime.caps)?.scopeControls ?? null);
-
-  type NumberScopeField = 'mode' | 'edge' | 'span' | 'speed' | 'refDb' | 'receiver';
-  type BooleanScopeField = 'hold' | 'dual';
-
-  function acceptedNumber(field: NumberScopeField, min: number, max: number): number | null {
-    const fact = scopeFacts?.[field];
-    if (!fact?.availability?.structural || !fact.availability.operational
-      || fact.reading?.status !== 'known' || !Number.isSafeInteger(fact.reading.value)
-      || fact.reading.value < min || fact.reading.value > max) return null;
-    return fact.reading.value;
-  }
-
-  function acceptedBoolean(field: BooleanScopeField): boolean | null {
-    const fact = scopeFacts?.[field];
-    if (!fact?.availability?.structural || !fact.availability.operational
-      || fact.reading?.status !== 'known' || typeof fact.reading.value !== 'boolean') return null;
-    return fact.reading.value;
-  }
-
-  let scopeMode = $derived(acceptedNumber('mode', 0, 3));
-  let scopeEdge = $derived(acceptedNumber('edge', 1, 4));
-  let scopeSpan = $derived(acceptedNumber('span', 0, 7));
-  let scopeSpeed = $derived(acceptedNumber('speed', 0, 2));
-  let scopeHold = $derived(acceptedBoolean('hold'));
-  let scopeRef = $derived(acceptedNumber('refDb', -30, 10));
-  let scopeDual = $derived(acceptedBoolean('dual'));
-  let scopeReceiver = $derived(acceptedNumber('receiver', 0, 1));
+  let scopeMode = $derived(acceptedNumber(scopeFacts?.['mode'], 0, 3));
+  let scopeEdge = $derived(acceptedNumber(scopeFacts?.edge, 1, 4));
+  let scopeSpan = $derived(acceptedNumber(scopeFacts?.span, 0, 7));
+  let scopeSpeed = $derived(acceptedNumber(scopeFacts?.speed, 0, 2));
+  let scopeHold = $derived(acceptedBoolean(scopeFacts?.hold));
+  let scopeRef = $derived(acceptedNumber(scopeFacts?.refDb, -30, 10));
+  let scopeDual = $derived(acceptedBoolean(scopeFacts?.dual));
+  let scopeReceiver = $derived(acceptedNumber(scopeFacts?.receiver, 0, 1));
 
   // MOR-2565: while the mode is unread SPAN keeps its slot (owner ruling
   //  2026-09-21 — unread renders unlit in place, not absent); only a READ
