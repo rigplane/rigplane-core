@@ -225,7 +225,13 @@
             {/if}
           </div>
         {:else}
-          <span class="ch-empty-label">-- empty --</span>
+          <!-- MOR-2682: an unpopulated channel is an empty row, never a
+               dash-framed label — the `MemoryPanel.svelte` shape. The cells
+               mirror the populated row, so the row keeps its height and the
+               list cannot move when the channel fills. -->
+          <span class="ch-freq"></span>
+          <span class="ch-mode"></span>
+          <span class="ch-name"></span>
           <div class="ch-actions">
             <button
               type="button" class="action-btn store-btn-inline" title="Store VFO to this channel"

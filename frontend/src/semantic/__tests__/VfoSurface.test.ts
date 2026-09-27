@@ -952,6 +952,34 @@ describe('VFO selection intent', () => {
     expect(activeTile.querySelector('[data-vfo-select]')).toBeNull();
   });
 
+  // MOR-1260: colour is not a state channel under forced-colors, and a wider
+  // border on only the active tile shifts the layout on every MAIN↔SUB
+  // switch. The mark is an outline drawn INSIDE the tile. jsdom does not
+  // inject a Svelte <style>, so the component's own tile rules are applied
+  // as a sheet and the difference is read from computed style.
+  it('marks the active tile by an inner outline, without moving its geometry (MOR-1260)', () => {
+    const source = readFileSync('src/semantic/VfoSurface.svelte', 'utf8');
+    const styleBlock = source.slice(source.indexOf('<style>') + '<style>'.length, source.indexOf('</style>'));
+    const style = document.createElement('style');
+    style.textContent = styleBlock.replace(/\/\*[\s\S]*?\*\//g, '');
+    document.head.appendChild(style);
+    const target = mountSurface({ viewModel: topologyFixtures['2/main_sub'] });
+    const active = target.querySelector<HTMLElement>('[data-vfo-active="true"]')!;
+    const inactive = target.querySelector<HTMLElement>('[data-vfo-active="false"]')!;
+    const activeStyle = getComputedStyle(active);
+    const inactiveStyle = getComputedStyle(inactive);
+    // The layout never moves: the border keeps the same width in every state.
+    expect(activeStyle.borderTopWidth).toBe(inactiveStyle.borderTopWidth);
+    expect(activeStyle.borderRightWidth).toBe(inactiveStyle.borderRightWidth);
+    expect(activeStyle.borderBottomWidth).toBe(inactiveStyle.borderBottomWidth);
+    expect(activeStyle.borderLeftWidth).toBe(inactiveStyle.borderLeftWidth);
+    // The active mark is a shape, not a colour: a double outline on the
+    // active tile alone, drawn inside it so nothing shifts.
+    expect(activeStyle.outlineStyle).toBe('double');
+    expect(inactiveStyle.outlineStyle).not.toBe('double');
+    style.remove();
+  });
+
   it('a single-VFO topology renders no select control — structurally nothing to choose', () => {
     const target = mountSurface({ viewModel: topologyFixtures['1/single'] });
     expect(target.querySelector('[data-vfo-select]')).toBeNull();

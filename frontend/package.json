@@ -28,7 +28,8 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test -c ./playwright.config.ts",
     "test:e2e:i18n": "playwright test -c ./playwright.i18n.config.ts",
-    "test:e2e:visual": "playwright test -c ./playwright.visual.config.ts"
+    "test:e2e:visual": "playwright test -c ./playwright.visual.config.ts",
+    "test:e2e:placeholder-guard": "playwright test -c ./playwright.placeholder-guard.config.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",
