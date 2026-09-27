@@ -132,6 +132,11 @@ describe('panel-props.ts batch-A/batch-B functions carry no fabricated-default l
     // and `toFilterProps`' comparison consumers lit FIL1 for it.
     ['toVfoProps', 'const fil = rx.filter ?? 1;'],
     ['toFilterProps', 'currentFilter: rx?.filter ?? 1,'],
+    // MOR-2730: `toVfoProps` projected an unread S-meter as the number 0,
+    // which the phone layout drew as a reading. `toMeterProps` (above)
+    // already reports NaN for the same input.
+    ['toVfoProps', 'sValue: 0,'],
+    ['toVfoProps', 'sValue: rx.sMeter ?? 0,'],
   ];
 
   it.each(forbidden)('%s does not contain %j', (fn, literal) => {

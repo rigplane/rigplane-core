@@ -706,7 +706,7 @@
 
   <!-- ═══ S-METER BAR ═══ -->
   <div class="m-smeter-bar">
-    <LinearSMeter value={activeVfo.sValue} compact label="" />
+    <LinearSMeter value={finiteValue(activeVfo.sValue)} compact label="" />
   </div>
 
   <!-- ═══ SCROLLABLE CONTENT ═══ -->
