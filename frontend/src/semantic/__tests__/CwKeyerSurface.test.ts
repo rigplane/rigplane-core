@@ -904,6 +904,14 @@ describe('break-in obeys the ONE txPermit and fails closed', () => {
       expect(r.el('break-in')).toBeNull();
       r.dispose();
     });
+
+    // Item 1 (review 2026-09-27): no `LEGACY_BREAK_IN_CHOICES` fallback — an
+    // absent field means NO break-in control, like `notchWidthChoices`.
+    it('an absent breakInChoices field renders no break-in control (MOR-2729)', () => {
+      const r = render(base(), { breakInChoices: undefined });
+      expect(r.el('break-in')).toBeNull();
+      r.dispose();
+    });
   });
 
   // MOR-2690: the choices are KEYs, not radios — `aria-pressed` appears only

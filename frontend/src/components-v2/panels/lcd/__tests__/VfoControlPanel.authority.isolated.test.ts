@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import { readFileSync } from 'node:fs';
 import { keyBlockedReasons, type KeyBlockedReason } from '../../../../semantic/rx-tx-surface';
+import { toVfoControlProps } from '../../../../lib/runtime/props/panel-props';
+import type { Capabilities } from '../../../../lib/types/capabilities';
 
 const bindings = vi.hoisted(() => ({
   vfo: { onSwap: vi.fn(), onEqual: vi.fn(), onDualWatchToggle: vi.fn(), onSplitToggle: vi.fn() },
@@ -14,7 +16,7 @@ const bindings = vi.hoisted(() => ({
 const props = vi.hoisted(() => ({
   vfo: {
     hasDualRx: true, hasSplit: true, hasRit: true, hasTuner: true, isCwMode: true,
-    hasCw: true, hasBreakIn: true, breakInMode: 0,
+    hasCw: true, hasBreakIn: true, breakInMode: 0 as number | null,
     breakInChoices: [
       { value: 0, label: 'BK-OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' },
     ] as { value: number; label: string }[],
@@ -203,6 +205,30 @@ describe('VfoControlPanel authority boundary', () => {
       for (const label of ['OFF', 'SEMI', 'FULL', 'ON', 'BK-OFF']) expect(names).not.toContain(label);
     } finally {
       props.vfo.breakInChoices = legacyChoices;
+    }
+  });
+
+  // Item 1 (review 2026-09-27): no LEGACY_BREAK_IN_CHOICES fallback — against
+  // the REAL toVfoControlProps. Absent means an empty list means no BK key.
+  it('a capabilities payload with no breakInChoices field gets no break-in choices (MOR-2729)', () => {
+    const caps = { capabilities: [] } as unknown as Capabilities;
+    expect(toVfoControlProps(null, caps).breakInChoices).toEqual([]);
+  });
+
+  /* Item 4 (review 2026-09-27): while break-in is unread the BK key is
+     disabled and unlit and sends nothing, with an empty label; once read it
+     cycles as before. */
+  it('an unread break-in disables the BK key, lights nothing, and sends nothing (MOR-2729)', () => {
+    try {
+      props.vfo.breakInMode = null;
+      mountPanel();
+      const bk = button('');
+      expect(bk.disabled).toBe(true);
+      expect(bk.classList.contains('active')).toBe(false);
+      bk.click();
+      expect(bindings.cw.onBreakInModeChange).not.toHaveBeenCalled();
+    } finally {
+      props.vfo.breakInMode = 0;
     }
   });
 
