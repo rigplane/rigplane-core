@@ -335,7 +335,7 @@ describe('MOR-1082 — the single-composition order comes from the same plan', (
 
   it('flattens the plan in zone-declaration order, deduped', () => {
     // MOR-1346/2231: sdr-test's fourteen zones flatten in declaration order.
-    expect(compositionSurfaces(plan(sdrTestLayout), FALLBACK)).toEqual([
+    expect(compositionSurfaces(resolvePlan(sdrTestLayout), FALLBACK)).toEqual([
       'vfo', 'rxTx', 'meters', 'filter', 'rfFrontEnd', 'band', 'antenna', 'ritXitScan',
       'rxAudio', 'dsp', 'cwKeyer', 'txAux', 'scopeDisplay', 'scopeControls',
     ]);
@@ -353,13 +353,13 @@ describe('MOR-1082 — the single-composition order comes from the same plan', (
     // "presents … exactly ONCE" pin in
     // `components-v2/layout/__tests__/semantic-desktop-migration.component.test.ts`
     // is the counterpart that would catch a double mount.
-    expect(compositionSurfaces(plan(desktopV2Layout), FALLBACK))
+    expect(compositionSurfaces(resolvePlan(desktopV2Layout), FALLBACK))
       .toEqual(['vfo', 'rxTx', 'txAux', 'meters', 'scopeDisplay', 'filter', 'rfFrontEnd', 'band', 'antenna', 'ritXitScan', 'repeater', 'rxAudio', 'dsp', 'cwKeyer', 'memory', 'scopeControls']);
     // A within-zone reorder reaches the flattened composition — on `mobile`,
     // which still declares both surfaces in one zone (MOR-2231 split
     // sdr-test's).
     expect(compositionSurfaces(
-      plan(mobileLayout, { zoneOrder: { 'portrait-deck': ['rxTx', 'vfo'] } }), FALLBACK,
+      resolvePlan(mobileLayout, { zoneOrder: { 'portrait-deck': ['rxTx', 'vfo'] } }), FALLBACK,
     )).toEqual(['rxTx', 'vfo']);
   });
 
