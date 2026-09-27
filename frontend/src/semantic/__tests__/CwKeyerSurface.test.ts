@@ -31,9 +31,13 @@ import { flushSync, mount, unmount } from 'svelte';
 // @ts-expect-error -- Svelte does not publish types for its reactive test harness.
 import { proxy } from 'svelte/internal/client';
 import {
-  APF_CHOICES, BREAK_IN_CHOICES, BREAK_IN_REASON_KEY, CW_LEVELS, MUTEX_LABEL, POSTURE_LABEL,
+  APF_CHOICES, BREAK_IN_REASON_KEY, CW_LEVELS, MUTEX_LABEL, POSTURE_LABEL,
   breakInBlockedLabel, breakInPosture, textOf, type CwLevelField,
 } from '../CwKeyerSurface.svelte';
+/** The legacy trio, pinned locally so the surface's own export space stays
+ *  free of hard-coded choices (MOR-2729). */
+const BREAK_IN_CHOICES = [['off', 0], ['semi', 1], ['full', 2]] as const;
+type BreakInChoice = { value: number; label: string };
 import CwKeyerInstrumentHostFixture from './fixtures/CwKeyerInstrumentHostFixture.svelte';
 import { topologyFixtures, withCwKeyer, withModeFilter, withTxAux } from '../fixtures/topologies';
 import type {
@@ -87,6 +91,7 @@ type Handlers = {
   onTwinPeakToggle?: () => void;
   onReversePaddleToggle?: () => void;
   breakInDelayFeedback?: Readonly<BreakInDelayFeedback>;
+  breakInChoices?: readonly BreakInChoice[];
   onAutoTune?: () => void;
 };
 
@@ -283,7 +288,7 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
     expect([...new Set(specifiers)]).toEqual([
       '$lib/i18n', './CwKeyerInstrumentHost.svelte', './radio-view-model', './pressed-of',
       '../primitives/reading-text',
-      'svelte',
+      'svelte', '$lib/types/capabilities',
       '../primitives/control-feedback/control-feedback-presentation',
       '../primitives/scalar/committed-scalar.svelte',
       '../primitives/scalar/value-control-core',
@@ -863,6 +868,43 @@ describe('break-in obeys the ONE txPermit and fails closed', () => {
     flushSync();
     expect(onBreakInMode).toHaveBeenCalledExactlyOnceWith(mode);
     r.dispose();
+  });
+
+  /* MOR-2729 — the break-in choice list comes from the profile's published
+     `breakInChoices`, not the hard-coded trio. The prop-free renders above
+     pin the legacy fallback for older servers; these pin the profile path. */
+  describe('MOR-2729 — profile-published choices drive the break-in keys', () => {
+    const ftx1: BreakInChoice[] = [{ value: 0, label: 'OFF' }, { value: 1, label: 'ON' }];
+    const ic7300: BreakInChoice[] = [
+      { value: 0, label: 'OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' },
+    ];
+
+    it('FTX-1 lists OFF and ON only, and a click on ON dispatches mode 1', () => {
+      const onBreakInMode = vi.fn();
+      const r = render(base(), { breakInChoices: ftx1, onBreakInMode });
+      expect(r.el('break-in')).not.toBeNull();
+      expect(r.el('break-in-off')!.textContent).toBe('OFF');
+      expect(r.el('break-in-semi')!.textContent).toBe('ON');
+      expect(r.el('break-in-full')).toBeNull();
+      press(r.el('break-in-semi')!);
+      flushSync();
+      expect(onBreakInMode).toHaveBeenCalledExactlyOnceWith(1);
+      r.dispose();
+    });
+
+    it('IC-7300 keeps the published OFF / SEMI / FULL choices unchanged', () => {
+      const r = render(base(), { breakInChoices: ic7300 });
+      expect(r.el('break-in-off')!.textContent).toBe('OFF');
+      expect(r.el('break-in-semi')!.textContent).toBe('SEMI');
+      expect(r.el('break-in-full')!.textContent).toBe('FULL');
+      r.dispose();
+    });
+
+    it('a radio publishing an empty list (X6100, X6200) renders no break-in block at all', () => {
+      const r = render(base(), { breakInChoices: [] });
+      expect(r.el('break-in')).toBeNull();
+      r.dispose();
+    });
   });
 
   // MOR-2690: the choices are KEYs, not radios — `aria-pressed` appears only

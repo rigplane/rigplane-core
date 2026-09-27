@@ -262,13 +262,19 @@
     </div>
 
     <div class="toggle-row">
+      <!-- MOR-2729: the break-in control draws exactly the profile's
+           published choices (`breakInChoices` off `deriveCwProps`, empty on
+           X6100/X6200 ⇒ no key at all), never the v2 hard-coded trio. -->
       {#if showBreakIn}
-        <HardwareButton indicator="edge-left" active={breakIn === 1} color="cyan" onclick={() => onBreakInModeChange(breakIn === 1 ? 0 : 1)}>
-          SEMI
-        </HardwareButton>
-        <HardwareButton indicator="edge-left" active={breakIn === 2} color="orange" onclick={() => onBreakInModeChange(breakIn === 2 ? 0 : 2)}>
-          FULL
-        </HardwareButton>
+        {#each p.breakInChoices as choice (choice.value)}
+          <HardwareButton
+            indicator="edge-left" active={breakIn === choice.value}
+            color={choice.value === 0 ? 'cyan' : 'orange'}
+            onclick={() => onBreakInModeChange(choice.value)}
+          >
+            {choice.label}
+          </HardwareButton>
+        {/each}
       {/if}
       {#if showApf}
         <HardwareButton indicator="edge-left" active={apfActive} disabled={apfDisabled} title={apfDisabled ? 'APF only works in CW/CW-R' : null} color="cyan" onclick={() => onApfChange(apfMode > 0 ? 0 : 1)}>

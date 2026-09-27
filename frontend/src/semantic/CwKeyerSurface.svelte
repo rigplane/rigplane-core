@@ -54,17 +54,21 @@
 <script module lang="ts">
   import { t } from '$lib/i18n';
   import { CW_CONTINUOUS_LEVELS } from './CwKeyerInstrumentHost.svelte';
+  import type { BreakInChoice } from '$lib/types/capabilities';
+  import { LEGACY_BREAK_IN_CHOICES } from '$lib/types/capabilities';
   import type { BreakInMode, CwKeyerField, DisabledReasonCode } from './radio-view-model';
   import { pressedOf } from './pressed-of';
   import { readingText } from '../primitives/reading-text';
 
-  /** Break-in as THREE ABSOLUTE choices, `[label, wire mode]`. Absolute, not a
-   *  toggle: a toggle computed from an unread reading arms a guess, and here
-   *  the guess would be about the transmitter. The wire ints are v2's own
-   *  (`cw-panel-logic.ts`'s `BREAK_IN_LABELS`), consumed not reinvented.
-   *  MOR-2690: the rendered controls are KEYs — `aria-pressed` appears only
-   *  on a KNOWN reading, so an unread key claims no state at all. */
+  /** MOR-2729: the v2 wire ints decode to the reading vocabulary's tags —
+   *  0 → 'off', 1 → 'semi', 2 → 'full' — whatever labels the profile
+   *  attached to them. Kept for the same reason the module keeps the wire
+   *  ints: the reading's `BreakInMode` tags are a closed union. */
   export const BREAK_IN_CHOICES = [['off', 0], ['semi', 1], ['full', 2]] as const;
+  /** MOR-2729: wire int → the reading's decode tag (see `breakInMode` in
+   *  `radio-view-model-adapter.ts`), the mirror half of that ONE decode
+   *  point, kept surface-local by the import-closure rule below. */
+  const WIRE_DECODE: readonly string[] = ['off', 'semi', 'full'];
   /** APF as two ABSOLUTE choices over its ordinal, `[label, on]`. */
   export const APF_CHOICES = [['off', false], ['on', true]] as const;
   /** `[field, label, min, max, step, unit]` in the RAW wire units `CwPanel`
@@ -160,6 +164,11 @@
     onTwinPeakToggle?: () => void;
     onReversePaddleToggle?: () => void;
     breakInDelayFeedback?: Readonly<BreakInDelayFeedback>;
+    /** MOR-2729: the profile's published break-in choices — exactly these
+     *  values, exactly these labels, `[]` ⇒ NO break-in block at all
+     *  (X6100, X6200). Absent (`undefined`, older server) keeps the legacy
+     *  OFF/SEMI/FULL trio. */
+    breakInChoices?: readonly BreakInChoice[];
     autoTuneAvailable?: boolean;
     onAutoTune?: () => void;
   }
@@ -167,6 +176,7 @@
     view, continuousHandles, showKeyerSpeed = true, showPitchHz = true, standard = false,
     onBreakInMode, onLevelChange, onApfOn, onTwinPeakToggle, onReversePaddleToggle,
     breakInDelayFeedback,
+    breakInChoices,
     autoTuneAvailable = false, onAutoTune,
   }: Props = $props();
 
@@ -230,14 +240,20 @@
     };
   });
 
+  /** MOR-2729: the drawn choice list — the profile's published values,
+   *  or the legacy trio when an older server publishes no `breakInChoices`
+   *  field at all. An explicit empty list draws NO break-in block. */
+  let breakInList = $derived(breakInChoices ?? LEGACY_BREAK_IN_CHOICES);
   /** The handler half of every gate. `disabled` alone is not enough: a design
    *  language may restyle these controls, and a programmatic click must not
    *  set what the widget refused. */
   function setBreakIn(mode: number): void {
     if (cw && usable(cw.breakIn) && permitAllowed) onBreakInMode?.(mode);
   }
-  function toggleBreakIn(label: 'semi' | 'full', mode: 1 | 2): void {
-    setBreakIn(cw?.breakIn.reading.status === 'known' && cw.breakIn.reading.value === label ? 0 : mode);
+  function toggleBreakIn(decode: string, mode: number): void {
+    setBreakIn(
+      cw?.breakIn.reading.status === 'known' && cw.breakIn.reading.value === decode ? 0 : mode,
+    );
   }
   function setLevel(field: CwLevelField, value: number): void {
     if (cw && usable(cw[field])) onLevelChange?.(field, value);
@@ -407,14 +423,19 @@
         })}
       {/if}
     {/if}
-    {#if cw.breakIn.availability.structural}
+    {#if cw.breakIn.availability.structural && breakInList.length > 0}
       <div
         class="cw-keyer-block" data-testid="cw-keyer-break-in"
         data-posture={breakInPosture(cw.breakIn)}
         data-permitted={permitAllowed}
       >
         <div class="cw-keyer-row" role="group" aria-label="Break-in">
-          {#each (standard ? BREAK_IN_CHOICES.filter(([label]) => label !== 'off') : BREAK_IN_CHOICES) as [label, mode] (mode)}
+          <!-- MOR-2729: the keys draw exactly the profile's published
+               choices; `standard` still drops the `off` key for its 2-col
+               grid, FTX-1 ([OFF, ON]) ⇒ only ON. -->
+          {#each (standard ? breakInList.filter((c) => WIRE_DECODE[c.value] !== 'off')
+            : breakInList) as choice (choice.value)}
+            {@const decode = WIRE_DECODE[choice.value]}
             <!-- MOR-2690: a KEY, not a radio. `role="radio"` REQUIRES
                  `aria-checked`, and on an unread reading a missing or `false`
                  value reads as OFF — a claim about a reading the radio never
@@ -422,15 +443,16 @@
                  KNOWN; the gate below is untouched (rule 2). -->
             <button
               type="button" class="cw-keyer-choice"
-              data-testid={`cw-keyer-break-in-${label}`}
+              data-testid={`cw-keyer-break-in-${decode ?? String(choice.value)}`}
               aria-pressed={cw.breakIn.reading.status === 'known'
-                ? cw.breakIn.reading.value === label : undefined}
+                ? cw.breakIn.reading.value === decode : undefined}
               aria-describedby={breakInPosture(cw.breakIn) === 'unknown'
                 ? (!permitAllowed && breakInReason ? breakInReasonId : undefined)
                 : `${breakInPostureId}${!permitAllowed && breakInReason ? ` ${breakInReasonId}` : ''}`}
               disabled={!usable(cw.breakIn) || !permitAllowed}
-              onclick={() => standard && mode !== 0 ? toggleBreakIn(label as 'semi' | 'full', mode) : setBreakIn(mode)}
-            >{standard ? label.toUpperCase() : label}</button>
+              onclick={() => (standard && decode !== 'off'
+                ? toggleBreakIn(decode!, choice.value) : setBreakIn(choice.value))}
+            >{standard ? choice.label.toUpperCase() : choice.label}</button>
           {/each}
         </div>
         <!-- Rule 5: the posture is TEXT, so it survives forced-colors and so

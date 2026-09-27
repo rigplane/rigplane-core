@@ -86,6 +86,27 @@ describe('manual notch width choices (MOR-1685)', () => {
       .toEqual([]);
   });
 });
+describe('break-in choices (MOR-2729)', () => {
+  const choices = [{ value: 0, label: 'OFF' }, { value: 1, label: 'ON' }];
+  it('passes valid choices through', () => {
+    expect(validateCapabilities({ ...baseCapabilities, breakInChoices: choices }).breakInChoices)
+      .toEqual(choices);
+  });
+  it('drops malformed entries instead of throwing', () => {
+    const parsed = validateCapabilities({
+      ...baseCapabilities,
+      breakInChoices: [
+        { value: 0, label: 'OFF' }, { value: 1.5, label: 'SEMI' },
+        { value: 2, label: 7 }, { value: '3', label: 'FULL' }, { label: 'MISSING' },
+      ],
+    });
+    expect(parsed.breakInChoices).toEqual([{ value: 0, label: 'OFF' }]);
+  });
+  it('an empty published list (X6100/X6200) freezes to no choices, not the legacy trio', () => {
+    expect(validateCapabilities({ ...baseCapabilities, breakInChoices: [] }).breakInChoices)
+      .toEqual([]);
+  });
+});
 describe('normalized control capability domains', () => {
   it('validates optional per-profile MOD input choices and rejects malformed domains', () => {
     const choices = [{ value: 0, label: 'MIC' }, { value: 3, label: 'USB' }];

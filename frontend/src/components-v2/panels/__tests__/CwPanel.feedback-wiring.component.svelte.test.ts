@@ -8,6 +8,9 @@ import type { ServerState } from '$lib/types/state';
 import type { CommandLifecycle } from '$lib/stores/commands.svelte';
 const props = $state({
   cwPitch: 600, keySpeed: 12, breakIn: 1, breakInDelay: 64, apfMode: 0,
+  breakInChoices: [
+    { value: 0, label: 'OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' },
+  ],
   twinPeak: false, currentMode: 'CW', apfDisabled: false, tpfDisabled: false,
   hasCw: true, hasBreakIn: true, hasApf: false, hasTwinPeak: false, autoTuneAvailable: false,
 });

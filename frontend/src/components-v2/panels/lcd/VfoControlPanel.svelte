@@ -63,8 +63,16 @@
   {#if p.hasTuner}
     <button class="lcd-btn" onclick={requestAtuTune}>TUNE</button>
   {/if}
-  {#if p.isCwMode && p.hasCw && p.hasBreakIn}
-    <button class="lcd-btn" class:active={p.breakInMode > 0} onclick={() => cwHandlers.onBreakInModeChange(p.breakInMode === 0 ? 1 : p.breakInMode === 1 ? 2 : 0)}>{p.breakInMode === 0 ? 'BK-OFF' : p.breakInMode === 1 ? 'SEMI' : 'FULL'}</button>
+  <!-- MOR-2729: the break-in key cycles exactly the profile's published
+       choices; `[]` (X6100, X6200) renders no key at all — the FTX-1 fix
+       for the stuck-ON cycle (0/1 only, never 2). -->
+  {#if p.isCwMode && p.hasCw && p.hasBreakIn && p.breakInChoices.length > 0}
+    {@const choices = p.breakInChoices}
+    {@const next = choices[(choices.findIndex((c) => c.value === p.breakInMode) + 1) % choices.length]}
+    <button
+      class="lcd-btn" class:active={p.breakInMode > 0}
+      onclick={() => cwHandlers.onBreakInModeChange(next.value)}
+    >{choices.find((c) => c.value === p.breakInMode)?.label ?? ''}</button>
   {/if}
 </div>
 

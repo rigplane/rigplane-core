@@ -1,36 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
-  BREAK_IN_LABELS,
-  formatBreakIn,
   isBreakInActive,
   isApfActive,
 } from '../cw-panel-logic';
 
 describe('cw-panel-logic', () => {
-  describe('BREAK_IN_LABELS', () => {
-    it('has 3 entries', () => {
-      expect(Object.keys(BREAK_IN_LABELS)).toHaveLength(3);
-    });
-  });
-
-  describe('formatBreakIn', () => {
-    it('returns OFF for 0', () => {
-      expect(formatBreakIn(0)).toBe('OFF');
-    });
-
-    it('returns SEMI for 1', () => {
-      expect(formatBreakIn(1)).toBe('SEMI');
-    });
-
-    it('returns FULL for 2', () => {
-      expect(formatBreakIn(2)).toBe('FULL');
-    });
-
-    it('defaults to OFF for unknown', () => {
-      expect(formatBreakIn(99)).toBe('OFF');
-    });
-  });
-
   describe('isBreakInActive', () => {
     it('returns false for 0', () => {
       expect(isBreakInActive(0)).toBe(false);

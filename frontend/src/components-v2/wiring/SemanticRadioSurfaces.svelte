@@ -714,6 +714,10 @@
    * or absent list keeps the existing scalar.
    */
   let notchWidthChoices = $derived(runtime.caps?.notchWidthChoices);
+  /** MOR-2729: the same seam as `notchWidthChoices` above (MOR-1685) —
+   *  the break-in surface renders exactly the profile's published values,
+   *  and `[]` means none at all (X6100, X6200). */
+  let breakInChoices = $derived(runtime.caps?.breakInChoices);
   /** MOR-1731: consume the shared validated tri-state boundary. `undefined`
    * keeps legacy servers compatible; `null` is the adapter's fail-closed
    * result for present-but-unusable metadata. */
@@ -2690,6 +2694,7 @@
         {standard}
         {breakInDelayFeedback}
         {autoTuneAvailable}
+        {breakInChoices}
         onBreakInMode={(mode) => cwIntents.onBreakInModeChange(mode)}
         onLevelChange={(field, value) => CW_LEVEL_INTENT[field](value)}
         onApfOn={(on) => cwIntents.onApfChange(on ? 1 : 0)}

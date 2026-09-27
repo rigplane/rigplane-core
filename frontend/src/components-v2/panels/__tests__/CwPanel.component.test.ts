@@ -4,11 +4,15 @@ import { mount, unmount, flushSync } from 'svelte';
 import type { ControlFeedback } from '$lib/runtime/adapters/panel-adapters';
 import type { ControlDisplayDomain } from '$lib/radio/filter-controls';
 
+const LEGACY_BREAK_IN = [
+  { value: 0, label: 'OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' },
+] as const;
 const mockProps = {
   cwPitch: 600,
   keySpeed: 12,
   breakIn: 0,
   breakInDelay: 0,
+  breakInChoices: LEGACY_BREAK_IN,
   apfMode: 0,
   twinPeak: false,
   currentMode: 'CW',
@@ -79,7 +83,7 @@ function mountPanel(overrides?: Partial<typeof mockProps>) {
   beforeEach(() => {
     components = [];
     Object.assign(mockProps, {
-      cwPitch: 600, keySpeed: 12, breakIn: 0, breakInDelay: 0,
+      cwPitch: 600, keySpeed: 12, breakIn: 0, breakInDelay: 0, breakInChoices: LEGACY_BREAK_IN,
       apfMode: 0, twinPeak: false, currentMode: 'CW',
       apfDisabled: false, tpfDisabled: false,
       hasCw: true, hasBreakIn: true, hasApf: true, hasTwinPeak: true,
@@ -185,6 +189,38 @@ describe('CwPanel component rendering', () => {
     const t = mountPanel();
     const buttons = Array.from(t.querySelectorAll('button'));
     expect(buttons.some((b) => b.textContent?.trim() === 'FULL')).toBe(true);
+  });
+
+  /* MOR-2729 — the break-in control offers exactly the profile's published
+     choices; the hard-coded OFF/SEMI/FULL trio is gone. */
+  it('FTX-1 lists OFF and ON only, and a click on ON dispatches set_break_in mode 1', () => {
+    const t = mountPanel({
+      breakInChoices: [{ value: 0, label: 'OFF' }, { value: 1, label: 'ON' }],
+      breakIn: 0,
+    });
+    const labels = Array.from(t.querySelectorAll('button')).map((b) => b.textContent?.trim());
+    expect(labels).toContain('OFF');
+    expect(labels).toContain('ON');
+    expect(labels).not.toContain('SEMI');
+    expect(labels).not.toContain('FULL');
+    findButton(t, 'ON').click();
+    expect(mockHandlers.onBreakInModeChange).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
+  it('IC-7300 keeps the published OFF / SEMI / FULL choices', () => {
+    const t = mountPanel();
+    const labels = Array.from(t.querySelectorAll('button')).map((b) => b.textContent?.trim());
+    expect(labels).toContain('OFF');
+    expect(labels).toContain('SEMI');
+    expect(labels).toContain('FULL');
+    findButton(t, 'FULL').click();
+    expect(mockHandlers.onBreakInModeChange).toHaveBeenCalledExactlyOnceWith(2);
+  });
+
+  it('a radio publishing an empty break-in list (X6100, X6200) renders no break-in control', () => {
+    const t = mountPanel({ breakInChoices: [] });
+    const labels = Array.from(t.querySelectorAll('button')).map((b) => b.textContent?.trim());
+    for (const label of ['OFF', 'SEMI', 'FULL', 'ON']) expect(labels).not.toContain(label);
   });
 
   it('renders APF button', () => {

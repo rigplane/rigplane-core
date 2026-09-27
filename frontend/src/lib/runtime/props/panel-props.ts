@@ -12,7 +12,9 @@
  */
 
 import type { ServerState, ReceiverState } from '$lib/types/state';
-import type { Capabilities, ControlDomain, FilterModeConfig } from '$lib/types/capabilities';
+import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';
+import { LEGACY_BREAK_IN_CHOICES } from '$lib/types/capabilities';
+import type { BreakInChoice, ControlDomain } from '$lib/types/capabilities';
 import {
   controlDisplayDomain,
   deriveIfShift,
@@ -947,6 +949,13 @@ export interface CwProps {
   hasBreakIn: boolean;
   hasApf: boolean;
   hasTwinPeak: boolean;
+  /**
+   * MOR-2729: the profile-declared break-in choices the panel's buttons
+   * must draw, `[]` when the radio declares no break-in domain (X6100,
+   * X6200 — no control at all), the `LEGACY_BREAK_IN_CHOICES` trio when an
+   * older server publishes nothing.
+   */
+  breakInChoices: readonly BreakInChoice[];
   autoTuneAvailable: boolean;
   /**
    * The pitch control's display domain from the profile's `controls.cw_pitch`
@@ -997,6 +1006,9 @@ export function toCwProps(
     hasBreakIn: hasCap(caps, 'break_in'),
     hasApf: hasCap(caps, 'apf'),
     hasTwinPeak: hasCap(caps, 'twin_peak'),
+    // MOR-2729: a present-but-empty published list (X6100, X6200) stays
+    // EMPTY — only an absent field takes the legacy trio.
+    breakInChoices: caps?.breakInChoices ?? LEGACY_BREAK_IN_CHOICES,
     autoTuneAvailable: hasCap(caps, 'cw')
       && hasCap(caps, 'audio')
       && caps?.audioFftAvailable === true,
@@ -1305,6 +1317,9 @@ export interface VfoControlProps {
   mode: string;
   isCwMode: boolean;
   breakInMode: number;
+  /** MOR-2729: the profile-declared break-in cycle domain — `[]` means no
+   *  break-in key at all (X6100, X6200). */
+  breakInChoices: readonly BreakInChoice[];
   hasDualRx: boolean;
   hasSplit: boolean;
   hasRit: boolean;
@@ -1331,5 +1346,8 @@ export function toVfoControlProps(
     hasTuner: hasCap(caps, 'tuner'),
     hasCw: hasCap(caps, 'cw'),
     hasBreakIn: hasCap(caps, 'break_in'),
+    // MOR-2729: same empty-list rule as the CW panel — only an absent
+    // field takes the legacy cycle.
+    breakInChoices: caps?.breakInChoices ?? LEGACY_BREAK_IN_CHOICES,
   };
 }
