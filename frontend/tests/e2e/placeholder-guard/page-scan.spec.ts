@@ -181,11 +181,11 @@ for (const face of HARNESS_REACH) {
         );
       }
     }
-    expect(problems, `${face.face} placeholder ratchet (offenders.json)`).toEqual([]);
     // Seeding support: with RP_PLACEHOLDER_GUARD_DUMP set to a directory,
     // every observed (face, state, language, locator, token class) is written
     // there as an offenders.json-shaped file (ticket left 'TODO') — the exact
-    // input for seeding/re-seeding the ratchet.
+    // input for seeding/re-seeding the ratchet. Written before the ratchet
+    // assertion so a red run still produces the seed.
     const dumpDir = process.env.RP_PLACEHOLDER_GUARD_DUMP;
     if (dumpDir) {
       mkdirSync(dumpDir, { recursive: true });
@@ -194,5 +194,6 @@ for (const face of HARNESS_REACH) {
         `${JSON.stringify(dump, null, 1)}\n`,
       );
     }
+    expect(problems, `${face.face} placeholder ratchet (offenders.json)`).toEqual([]);
   });
 }
