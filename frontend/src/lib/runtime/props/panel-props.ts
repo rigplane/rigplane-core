@@ -26,6 +26,7 @@ import {
 import type { NrLevelProjection, ControlDisplayDomain, PbtRange } from '$lib/radio/filter-controls';
 import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
 import { isFieldAvailable, isFieldRead } from '$lib/state/field-status';
+import { finiteValue } from '$lib/primitives/reading-text';
 import { modInputStateKey } from '$lib/radio/mod-input';
 
 /* ── Private helpers ─────────────────────────────────────────── */
@@ -762,7 +763,13 @@ export interface DspProps {
    *  constants when the key is absent, mirroring the view-model adapter's
    *  `dsp.notchFreqDomain`. */
   notchFreqDomain?: ControlDisplayDomain;
-  manualNotchWidth: number;
+  /** The manual notch width as read (`finiteValue` of the store's reading):
+   *  `null` while unread — the panel lights no choice for it (MOR-2735). */
+  manualNotchWidth: number | null;
+  /** The active receiver publishes its `manual_notch_width`(-`_sub`) tag —
+   *  the #3811 (MOR-2726) per-receiver declaration; `false` draws no width
+   *  group at all (MOR-2735). */
+  hasManualNotchWidth: boolean;
   agcTimeConstant: number;
   hasNr: boolean;
   hasNb: boolean;
@@ -804,6 +811,15 @@ export function toDspProps(
   const nbLevelPercent = nbLevelRange !== null;
   const nbLevelMax = nbLevelRange?.raw_max ?? 10;
   const { notchFreq, notchFreqDomain } = manualNotchReading(state, caps);
+  // MOR-2735: the active receiver's width tag — the SAME per-receiver tag
+  // decision the v3 view model uses after #3811 (MOR-2726,
+  // `radio-view-model-adapter.ts`'s `manualNotchWidth`): `notch` alone is
+  // not proof of a width control — the FTX-1 / TX-500 / X6100 / X6200
+  // profiles declare no width field, so the server serves them no
+  // `manual_notch_width` tag and the panel draws no group at all.
+  const notchWidthTag = state !== null && activeReceiverKey(state) === 'sub'
+    ? 'manual_notch_width_sub'
+    : 'manual_notch_width';
   // MOR-498: the store holds the wire value (IC-7610 raw 0-9, display 1-10);
   // the conversion comes from the published `controls.nb_depth` domain
   // through the shared contract. A radio publishing none (the `hasNbDepth`
@@ -823,7 +839,10 @@ export function toDspProps(
     // notchFilter (MOR-1548): reclassified receiver-scoped.
     notchFreq,
     ...(notchFreqDomain !== null ? { notchFreqDomain } : {}),
-    manualNotchWidth: rx?.manualNotchWidth ?? 0,
+    // MOR-2735: an unread width is the store's null through `finiteValue`
+    // (the ONE unread rule, `$lib/primitives/reading-text.ts`) — the panel
+    // lights no choice for it, never a made-up WIDE.
+    manualNotchWidth: finiteValue(rx?.manualNotchWidth),
     agcTimeConstant: rx?.agcTimeConstant ?? 0,
     hasNr: hasCap(caps, 'nr') && nrAvailable,
     hasNb: hasCap(caps, 'nb') && nbAvailable,
@@ -834,6 +853,7 @@ export function toDspProps(
     hasNotch: (hasCap(caps, 'notch') || caps === null) && manualNotchAvailable,
     hasAutoNotch: (hasCap(caps, 'notch') || caps === null) && autoNotchAvailable,
     hasAgcTime: activeFieldAvailable(state, 'agcTimeConstant'),
+    hasManualNotchWidth: hasCap(caps, 'notch') && hasCap(caps, notchWidthTag),
   };
 }
 
