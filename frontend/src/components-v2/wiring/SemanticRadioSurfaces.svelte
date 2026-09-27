@@ -2975,9 +2975,6 @@
         {txAuxScalars}
         {stationMeters}
         meterAppearance={externalPresentation.record.appearances.meter}
-        <!-- MOR-1337 — admission consults VISIBILITY (a workspace-hidden
-             surface stays un-admitted), never the declaration-only
-             `zoneOwning`, same answer the pre-separation lookup gave. -->
         receiverAdmitted={surfacePlan() !== null && visibleInPlan('vfo')}
         vfoOperationsAdmitted={surfacePlan() !== null && visibleInPlan('vfo')}
         txAuxAdmitted={surfacePlan() !== null && visibleInPlan('txAux')}
