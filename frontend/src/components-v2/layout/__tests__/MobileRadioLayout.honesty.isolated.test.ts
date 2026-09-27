@@ -290,7 +290,7 @@ describe('MobileRadioLayout honest-projection rendering (MOR-1409 A13a)', () => 
   // (MOR-2705, the #3768 method).
   it('renders the widest S-unit and dBm texts the landscape readouts can hold', () => {
     setViewport(844, 390);
-    const widestShippedLadder: readonly SmeterCalibrationPoint[] = [
+    const widestShippedLadder: SmeterCalibrationPoint[] = [
       { raw: 0, actual: -54, label: 'S0' },
       { raw: 120, actual: 0, label: 'S9' },
       { raw: 255, actual: 60, label: 'S9+60' },
