@@ -411,12 +411,14 @@ adaptive_decay = false
 # SSB/CW modes, and the MOR-2733 bench check measured it refused with a bare
 # NG while MAIN was in RTTY and answered in USB. The data variants carry the
 # same mode values with `data_mode` separating them, so the membership list
-# below keeps the data modes covered. cadence/TTL/adaptive match the SETTING
-# class this path resolves to without an override (10.0 s / never / no
-# adaptive decay), so the entry only adds the availability clause.
+# below keeps the data modes covered. cadence sits at the ON_DEMAND panel
+# bound (5.0 s; the path is an on-demand member of the operator set), TTL and
+# adaptive match the SETTING class this path resolves to without an override
+# (never expires / no adaptive decay), so the entry only adds the availability
+# clause.
 [state_acquisition.field_policies."receiver.main.operator_controls.filter_shape"]
 reason = "available_when: the IC-7610 Basic Manual says \"Set the operating mode to SSB or CW\" before selecting the IF filter shape, and the MOR-2733 bench refusal of the 16 56 read in RTTY (bare NG) matches that clause; gated on MAIN's own mode (MOR-2748)"
-cadence_seconds = 10.0
+cadence_seconds = 5.0
 freshness_ttl_seconds = "never"
 adaptive_decay = false
 available_when = [
@@ -425,7 +427,7 @@ available_when = [
 
 [state_acquisition.field_policies."receiver.sub.operator_controls.filter_shape"]
 reason = "available_when: same Basic Manual clause and bench refusal as MAIN, gated on SUB's own mode (MOR-2748); the data variants keep the same mode values with data_mode separating them"
-cadence_seconds = 10.0
+cadence_seconds = 5.0
 freshness_ttl_seconds = "never"
 adaptive_decay = false
 available_when = [
