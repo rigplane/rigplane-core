@@ -265,6 +265,20 @@ describe('an unread TX port renders as unknown, never as ANT 1 (CF3)', () => {
     expect(r.btn('rx-toggle')!.getAttribute('aria-pressed')).toBeNull();
     r.dispose();
   });
+
+  // MOR-2688 S3 literal pin: a KNOWN boolean renders through `textOf`'s own
+  // formatter as lowercase `on`/`off` — under a `format → String` mutation
+  // String(true) would print 'true' (never 'on'). The label keeps its
+  // 'RX-ANT: ' separator INSIDE the template's one text node, so the known
+  // textContent keeps the space (MOR-2711 inline-block rule).
+  it('renders a known RX-ANT as the literal on/off, delegating to readingText', () => {
+    const on = render(withAnt({ rxAnt: known(true) }), RECEIVING);
+    expect(on.text('rx-toggle')).toBe('RX-ANT: on');
+    on.dispose();
+    const off = render(withAnt({ rxAnt: known(false) }), RECEIVING);
+    expect(off.text('rx-toggle')).toBe('RX-ANT: off');
+    off.dispose();
+  });
 });
 
 /* ── the under-power gate: attribute AND handler, independently ── */

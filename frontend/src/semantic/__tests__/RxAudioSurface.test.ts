@@ -117,8 +117,14 @@ describe('the RX-audio surface owns no audio lifetime (MOR-972 P0 / MOR-1058)', 
   it('imports only facts, the level formatter and the RxAudioInstrumentHost handle contract', () => {
     const specifiers = [...CODE.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
+    // MOR-2688 S3: `../primitives/reading-text` joined the closure — it carries
+    // the ONE unread-display rule and has NO runtime import (type-only), so it
+    // cannot reach transport or the audio manager any more than the fact
+    // contract can. `reading-text.test.ts`'s `has no runtime import` case pins
+    // that premise one level down, like `pressed-of`'s own purity pin.
     expect([...new Set(specifiers)].sort()).toEqual([
-      './format-level', './radio-view-model', './rx-audio-instruments',
+      '../primitives/reading-text', './format-level', './radio-view-model',
+      './rx-audio-instruments',
     ]);
     expect(FORMAT_LEVEL_SOURCE).not.toMatch(/\b(?:import|require)\b/);
   });
