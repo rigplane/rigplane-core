@@ -233,11 +233,12 @@ describe('MobileRadioLayout canonical module surface (MOR-1409 A13a)', () => {
   // (correction 5246842617 §8, applying the 5246487510 single-consumer test).
   // Hash refreshed for the MOR-1451 follow-up that re-pointed the S-meter
   // formatting at the shared `smeter-scale.ts` helpers — the module still
-  // carries no non-finite display guard.
+  // carries no non-finite display guard — and again for MOR-2705 part 4a's
+  // stale-fallback comment correction (comment-only change).
   it('leaves mobile-layout-logic.ts byte-identical', () => {
     const bytes = readFileSync(`${LAYOUT_DIR}mobile-layout-logic.ts`);
     expect(createHash('sha256').update(bytes).digest('hex')).toBe(
-      'edbfd96547b1a1ba3e8d4e24884fec0ccd0adb37d6515047a23969fdc2fe0bb6',
+      'a199a82eac6f00a6acecfb00fb749be8356f0b5e442175f76a4ecf5be97ce901',
     );
   });
 });

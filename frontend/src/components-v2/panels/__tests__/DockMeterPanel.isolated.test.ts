@@ -168,15 +168,15 @@ describe('DockMeterPanel uncalibrated S row (MOR-2705 part 4a)', () => {
 
   it('draws the S bar with no number and no "raw" word on an uncalibrated radio while transmitting', () => {
     setCapabilities(uncalibratedCaps());
-    const t = mountPanel({ ...baseProps, sValue: 53, txActive: true, meterSource: 'S' });
+    const t = mountPanel({ ...baseProps, sValue: 53, rfPower: 143, txActive: true, meterSource: 'S' });
     const row = t.querySelectorAll('.dock-row')[0];
     expect(row.querySelector('.dock-row-label')?.textContent).toBe('S');
     expect(row.querySelector('.dock-row-value')?.textContent).toBe('');
     expect(row.textContent).not.toContain('raw');
     expect(fillPctForLabel(t, 'S')).toBeGreaterThan(0);
     expect(fillPctForLabel(t, 'S')).toBeLessThan(100);
-    // The TX rows keep their raw-tagged values (MOR-1527).
-    expect(t.querySelectorAll('.dock-row')[1].querySelector('.dock-row-value')?.textContent).toContain('raw');
+    // The TX rows keep their values — the Po row still reads watts.
+    expect(t.querySelectorAll('.dock-row')[1].querySelector('.dock-row-value')?.textContent).toBe('50W');
   });
 
   it('keeps the S-unit text on a calibrated radio', () => {
