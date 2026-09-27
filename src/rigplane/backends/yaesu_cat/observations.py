@@ -519,9 +519,16 @@ class YaesuObservationAdapter:
         # filter_width (MOR-445) is a ``freq_mode`` ACTIVE-slot field, so it
         # belongs in the freq/mode lane — mirroring the legacy poller, which
         # reads it in ``_poll_medium`` for responsive knob tracking. MAIN-only
-        # and gated on the ``filter_width`` runtime capability.
-        if self._has_runtime_capability("filter_width") and self._can_poll(
-            _MAIN_FILTER_WIDTH
+        # and gated on the ``filter_width`` runtime capability. MOR-2803: also
+        # ``_available``-gated like the SUB reads below — ``rigs/ftx1.toml``
+        # declares the width absent while that receiver's NARROW is on (the
+        # manual's NAR WIDTH menu owns the passband then), so without this
+        # gate the poll re-added the width each second while
+        # StateFreshnessService._discard_declared_absent removed it each tick.
+        if (
+            self._has_runtime_capability("filter_width")
+            and self._can_poll(_MAIN_FILTER_WIDTH)
+            and self._available(_MAIN_FILTER_WIDTH)
         ):
             ok, value = await self._safe_read(
                 "main.filter_width",
@@ -539,6 +546,7 @@ class YaesuObservationAdapter:
             self._has_runtime_capability("dual_rx")
             and self._has_runtime_capability("filter_width")
             and self._can_poll(_SUB_FILTER_WIDTH)
+            and self._available(_SUB_FILTER_WIDTH)
         ):
             ok, value = await self._safe_read(
                 "sub.filter_width",

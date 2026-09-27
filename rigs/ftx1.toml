@@ -373,9 +373,22 @@ freshness_ttl_seconds = 2.0
 # SUB filter width (CAT `SH1;`), mirroring the MAIN entry below: a
 # slow-changing control emitted in the freq/mode lane, ungated for the same
 # MOR-2511 reason as freq/mode above.
+#
+# MOR-2803: with SUB's NARROW on, `SH1;` is not SUB's passband — the FTX-1
+# CAT manual (2508-C) sets the passband through the per-mode `NAR WIDTH`
+# menu while NARROW is on. Owner bench 2026-09-27 19:38 EDT (MAIN in USB, RX
+# only): four `set_filter_width` writes sent with NARROW on (3050/3700/1700/
+# 3250 Hz) were accepted and read back (3000/3500/1650/3200 Hz, snapped to
+# Table 5) with no audible change. So the width field is declared absent
+# while this receiver's `narrow` reads true: the adapter withholds the
+# `SH1;` read (no flicker against the freshness service's declared-absent
+# discard) and the frontend disables the Width control with its reason.
 [state_acquisition.field_policies."receiver.sub.active.freq_mode.filter_width"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
+available_when = [
+    { field = "receiver.sub.operator_toggles.narrow", equals = false },
+]
 
 # SUB operator controls (CAT ``AG1``/``RG1``/``SQ1``/``OS1``), ungated since
 # the bench probe of 2026-09-18 (MOR-2511 comment, 01:22Z) showed each read
@@ -436,9 +449,17 @@ freshness_ttl_seconds = 2.0
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 
+# MOR-2803 (see the SUB twin above for the full evidence): owner bench
+# 2026-09-27 19:38 EDT — `SH0;` writes were accepted and read back with
+# NARROW on but changed nothing audible; the FTX-1 CAT manual (2508-C)
+# `NAR WIDTH` menu owns the passband then. Declared absent while MAIN's
+# `narrow` reads true.
 [state_acquisition.field_policies."receiver.main.active.freq_mode.filter_width"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
+available_when = [
+    { field = "receiver.main.operator_toggles.narrow", equals = false },
+]
 
 # NB/NR levels + derived toggles, auto/manual notch DSP controls (MOR-444).
 # Slow-changing operator controls; SUB twins below (MOR-2511). The
