@@ -13,6 +13,7 @@
     type ContinuousScalarPolicy,
     type ContinuousScalarView,
   } from '../../primitives/scalar/continuous-scalar.svelte';
+  import { finiteValue, valueText } from '../../primitives/reading-text';
   import type {
     HBarIssuedStatusPresentation,
     HBarIssuedStatusSnapshot,
@@ -161,23 +162,25 @@
     // `toFilterProps`/`toAudioSpectrumProps` now return NaN for an
     // unobserved filterWidth instead of fabricating 2400 Hz. Guard at this
     // choke point — rather than let `formatFilterWidth(NaN)` leak the
-    // literal "NaNkHz" into the BW readout and settings modal. MOR-2667: an
+    // literal "NaNkHz" into the settings modal. MOR-2667: an
     // unread value renders an unlit, EMPTY box in a reserved slot (the
-    // `.bw-value`/`.modal-fixed-value` rules below), never a placeholder.
-    if (!Number.isFinite(hz)) return '';
-    const formatted = formatFilterWidth(hz);
-    return formatted.includes('k') ? `${formatted}Hz` : `${formatted} Hz`;
+    // `.modal-fixed-value` rule below), never a placeholder.
+    return valueText(finiteValue(hz), (value) => {
+      const formatted = formatFilterWidth(value);
+      return formatted.includes('k') ? `${formatted}Hz` : `${formatted} Hz`;
+    });
   }
 
-  function formatExactWidthDisplay(hz: number): string {
+  function formatExactWidthDisplay(hz: number | null): string {
     // MOR-2667: an unread value renders an unlit, EMPTY box in a reserved
     // slot — never a `'--- Hz'` placeholder.
-    if (!Number.isFinite(hz)) return '';
-    if (Number.isInteger(hz) && hz >= 1000 && hz % 100 === 0) {
-      const kilohertz = hz / 1000;
-      return `${Number.isInteger(kilohertz) ? kilohertz : kilohertz.toFixed(1)}kHz`;
-    }
-    return `${hz} Hz`;
+    return valueText(finiteValue(hz), (value) => {
+      if (Number.isInteger(value) && value >= 1000 && value % 100 === 0) {
+        const kilohertz = value / 1000;
+        return `${Number.isInteger(kilohertz) ? kilohertz : kilohertz.toFixed(1)}kHz`;
+      }
+      return `${value} Hz`;
+    });
   }
 
   let currentWidthTable = $derived(filterConfig?.table ?? []);
@@ -362,37 +365,35 @@
     // MOR-2667: a screen reader must never hear a placeholder — while a
     // value the message needs is unread, the announcement is skipped
     // entirely (same doctrine as FilterSurface's MOR-2648 width formatter).
-    const requested = feedback.requestedTarget !== null && Number.isFinite(feedback.requestedTarget)
-      ? formatExactWidthDisplay(feedback.requestedTarget) : null;
-    const confirmed = feedback.confirmed !== null && Number.isFinite(feedback.confirmed)
-      ? formatExactWidthDisplay(feedback.confirmed) : null;
+    const requested = formatExactWidthDisplay(feedback.requestedTarget);
+    const confirmed = formatExactWidthDisplay(feedback.confirmed);
     let message: string;
     switch (snapshot.announcement.phase) {
       case 'submitted':
       case 'queued':
       case 'dispatched':
       case 'awaiting-confirmation':
-        if (requested === null) return '';
+        if (requested === '') return '';
         message = t('core.filter.width.pendingAnnouncement', { target: requested });
         break;
       case 'confirmed':
-        if (confirmed === null) return '';
+        if (confirmed === '') return '';
         message = t('core.filter.width.confirmedAnnouncement', { confirmed });
         break;
       case 'failed':
-        if (requested === null || confirmed === null) return '';
+        if (requested === '' || confirmed === '') return '';
         message = t('core.filter.width.failedAnnouncement', { target: requested, confirmed });
         break;
       case 'timed-out':
-        if (requested === null || confirmed === null) return '';
+        if (requested === '' || confirmed === '') return '';
         message = t('core.filter.width.timedOutAnnouncement', { target: requested, confirmed });
         break;
       case 'cancelled':
-        if (requested === null || confirmed === null) return '';
+        if (requested === '' || confirmed === '') return '';
         message = t('core.filter.width.cancelledAnnouncement', { target: requested, confirmed });
         break;
       case 'superseded':
-        if (requested === null || confirmed === null) return '';
+        if (requested === '' || confirmed === '') return '';
         message = t('core.filter.width.supersededAnnouncement', { target: requested, confirmed });
         break;
       default:
@@ -443,37 +444,36 @@
     // value the message needs is unread, the announcement is skipped
     // entirely (same doctrine as FilterSurface's MOR-2648 passband
     // formatter).
-    const target = feedback.requestedTarget !== null && Number.isFinite(feedback.requestedTarget)
-      ? `${feedback.requestedTarget} Hz` : null;
-    const confirmed = feedback.confirmed !== null && Number.isFinite(feedback.confirmed)
-      ? `${feedback.confirmed} Hz` : null;
+    const hzText = (value: number): string => `${value} Hz`;
+    const target = valueText(finiteValue(feedback.requestedTarget), hzText);
+    const confirmed = valueText(finiteValue(feedback.confirmed), hzText);
     let message: string;
     switch (snapshot.announcement.phase) {
       case 'submitted':
       case 'queued':
       case 'dispatched':
       case 'awaiting-confirmation':
-        if (target === null) return '';
+        if (target === '') return '';
         message = t('core.filter.passband.pendingAnnouncement', { control: controlName, target });
         break;
       case 'confirmed':
-        if (confirmed === null) return '';
+        if (confirmed === '') return '';
         message = t('core.filter.passband.confirmedAnnouncement', { control: controlName, confirmed });
         break;
       case 'failed':
-        if (target === null || confirmed === null) return '';
+        if (target === '' || confirmed === '') return '';
         message = t('core.filter.passband.failedAnnouncement', { control: controlName, target, confirmed });
         break;
       case 'timed-out':
-        if (target === null || confirmed === null) return '';
+        if (target === '' || confirmed === '') return '';
         message = t('core.filter.passband.timedOutAnnouncement', { control: controlName, target, confirmed });
         break;
       case 'cancelled':
-        if (target === null || confirmed === null) return '';
+        if (target === '' || confirmed === '') return '';
         message = t('core.filter.passband.cancelledAnnouncement', { control: controlName, target, confirmed });
         break;
       case 'superseded':
-        if (target === null || confirmed === null) return '';
+        if (target === '' || confirmed === '') return '';
         message = t('core.filter.passband.supersededAnnouncement', { control: controlName, target, confirmed });
         break;
       default:
@@ -644,7 +644,7 @@
       aria-busy={filterWidthFeedback.busy}
     >
       <span class="bw-label">BW</span>
-      <span class="bw-value" data-confirmed-width>{formatExactWidthDisplay(filterWidthFeedback.confirmed ?? Number.NaN)}</span>
+      <span class="bw-value" data-confirmed-width>{formatExactWidthDisplay(filterWidthFeedback.confirmed)}</span>
       {#if filterWidthFeedback.busy && lifecycleTarget !== null}
         <span class="bw-pending-target" data-pending-width-target>
           PENDING {formatExactWidthDisplay(lifecycleTarget)}

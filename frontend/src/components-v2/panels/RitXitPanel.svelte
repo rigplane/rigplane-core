@@ -5,6 +5,7 @@
   import { getShortcutHint } from '../layout/shortcut-hints';
   import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
   import type { ControlDomain } from '$lib/types/capabilities';
+  import { finiteValue, valueText } from '../../primitives/reading-text';
 
   import { deriveRitXitProps, getRitXitHandlers } from '$lib/runtime/adapters/panel-adapters';
 
@@ -39,12 +40,11 @@
   // passes the gate with a `NaN` offset (panel-props.ts no longer
   // fabricates `?? 0`). `formatOffsetKHz` (rit-utils.ts, not an A12 owner)
   // has no NaN guard: `hz > 0` is false for NaN, so it falls to the
-  // negative branch and renders the literal "−NaN kHz". Guard locally,
-  // same shape as FilterPanel.svelte's `formatWidthDisplay`. MOR-2667: the
+  // negative branch and renders the literal "−NaN kHz". MOR-2667: the
   // unread offset renders an unlit, EMPTY box in a reserved slot (the
   // `.offset` rule below) — never a `'--- kHz'` placeholder.
   function formatOffsetDisplay(hz: number): string {
-    return Number.isFinite(hz) ? formatOffsetKHz(hz) : '';
+    return valueText(finiteValue(hz), formatOffsetKHz);
   }
 
   function handleOffsetChange(value: number) {

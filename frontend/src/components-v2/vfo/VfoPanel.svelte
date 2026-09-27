@@ -7,6 +7,7 @@
   import LinearSMeter from '../meters/LinearSMeter.svelte';
   import FrequencyDisplayInteractive from '../../primitives/frequency/FrequencyDisplayInteractive.svelte';
   import { splitFrequencyToDigits, groupDigitsForDisplay } from '../../primitives/frequency/frequency-tuning';
+  import { finiteValue, valueText } from '../../primitives/reading-text';
   import type { VfoLayoutProfile } from '../layout/vfo-layout-tokens';
   import type {
     MeterContinuitySession, MeterSourceIdentity,
@@ -133,10 +134,11 @@
   });
 
   function formatFrequency(hz: number | null | undefined): string {
-    if (hz === null || hz === undefined || !Number.isFinite(hz)) return '';
-    const groups = groupDigitsForDisplay(splitFrequencyToDigits(hz));
-    return [groups.mhz, groups.khz, groups.hz]
-      .map((group) => group.map((digit) => digit.char).join('')).join('.');
+    return valueText(finiteValue(hz), (value) => {
+      const groups = groupDigitsForDisplay(splitFrequencyToDigits(value));
+      return [groups.mhz, groups.khz, groups.hz]
+        .map((group) => group.map((digit) => digit.char).join('')).join('.');
+    });
   }
 
   /** A legacy badge colour is either a token NAME (mapped to the theme's
@@ -331,7 +333,7 @@
         <div data-testid="receiver-s-meter" data-receiver={receiver}
           data-operational={meterOperational === undefined ? undefined : String(meterOperational)}
           aria-label={sValue === null ? `${receiverLabel} S meter` : undefined}>
-          <LinearSMeter value={typeof sValue === 'number' && Number.isFinite(sValue) ? sValue : null} compact label={slotTag} variant={meterVariant} source={meterSource} session={continuitySession} />
+          <LinearSMeter value={finiteValue(sValue)} compact label={slotTag} variant={meterVariant} source={meterSource} session={continuitySession} />
         </div>
       {/if}
     </div>
