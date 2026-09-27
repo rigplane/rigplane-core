@@ -179,6 +179,19 @@
    *  MOR-2688 S3: the group is optional, so its presence is guarded at the
    *  call site; the unread predicate itself lives in `readingText`. */
   let rxMode = $derived(view.modeFilter ? readingText(view.modeFilter.currentMode) : '');
+  /** MOR-2706: the RX-mode slot's reserved width derives from the mounted
+   *  profile's own mode catalog (`modeFilter.modeChoices`) — the widest
+   *  label it can print (FTX-1 'DATA-FM-N' = 9ch, IC-7300 'RTTY-R' = 6ch),
+   *  the #3751 LCD mode-box treatment, never a raised constant. Fixed when
+   *  the capabilities load; a reading never changes it. The stylesheet's
+   *  5ch stays the floor for a catalog no longer than that. */
+  let rxModeMinWidth = $derived.by(() => {
+    let longest = 0;
+    for (const mode of view.modeFilter?.modeChoices ?? []) {
+      if (mode.length > longest) longest = mode.length;
+    }
+    return longest > 5 ? `${longest}ch` : undefined;
+  });
   /** Rule 2. The model's ONE permit, READ. No second derivation exists here —
    *  `getFrequencyPermit`, `txBands` and `band` are not imported at all. */
   let permitAllowed = $derived(view.txPermit.status === 'allowed');
@@ -381,7 +394,7 @@
   >
     {#if standard}
       <div class="cw-mode-line" data-testid="cw-keyer-rx-mode">
-        <span>RX MODE</span><output>{rxMode}</output>
+        <span>RX MODE</span><output style:min-width={rxModeMinWidth}>{rxMode}</output>
       </div>
       {#if showPitchHz}
         {@render continuousHandles.pitchHz({
@@ -645,8 +658,10 @@
   }
   .standard .cw-mode-line span { color: var(--v2-text-dim); }
   .standard .cw-mode-line output { color: var(--v2-text-bright); }
-  /* MOR-2653: the RX-mode slot keeps its width unread → known — 5ch covers
-     the widest mode name; an unread mode renders EMPTY, never a placeholder. */
+  /* MOR-2653: the RX-mode slot keeps its width unread → known — 5ch is the
+      FLOOR; the reservation itself derives inline from the mounted profile's
+      mode catalog (`rxModeMinWidth`, MOR-2706). An unread mode renders EMPTY,
+      never a placeholder. */
   .cw-mode-line output {
     display: inline-block;
     min-width: 5ch;

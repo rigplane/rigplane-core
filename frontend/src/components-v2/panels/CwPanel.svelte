@@ -181,6 +181,14 @@
   // MOR-2475 F1: same derivation for key speed from `controls.key_speed`;
   // 6/48/1 is the fallback for a radio that publishes none.
   let keySpeedDomain = $derived(p.keySpeedDomain ?? { min: 6, max: 48, step: 1 });
+  // MOR-2706: each value slot's reserved width derives from the profile's
+  // published control domain — the widest text the readout can print is the
+  // domain max in its own unit (FTX-1 cw_pitch 300..1050 → '1050 Hz' = 7ch;
+  // the legacy fallback 300..900 → '900 Hz' = 6ch; key speed 6..48 →
+  // '48 WPM' = 6ch), never a raised constant. The stylesheet's 6ch is the
+  // floor for a radio that publishes no domain.
+  let pitchSlotMinWidth = $derived(`${cwPitchDomain.max} Hz`.length + 'ch');
+  let speedSlotMinWidth = $derived(`${keySpeedDomain.max} WPM`.length + 'ch');
   const cwPitchBinding = createContinuousScalar(
     () => ({
       evidence: 'command-feedback', feedback: cwPitchFeedback, command: 'set_cw_pitch',
@@ -222,10 +230,10 @@
       <span class="cw-mode-value">{currentMode}</span>
     </div>
 
-    <!-- MOR-2658: each value keeps its own reserved slot (`6ch` covers
-         `900 Hz`, the widest pitch/speed text) so a first reading cannot
-         shift the row. -->
-    <div class="cw-value-slot">
+    <!-- MOR-2658: each value keeps its own reserved slot (MOR-2706: derived
+         from the profile's control domain, 6ch the floor — covers `900 Hz`)
+         so a first reading cannot shift the row. -->
+    <div class="cw-value-slot" style:--cw-value-min-width={pitchSlotMinWidth}>
       <ValueControl
         {...feedbackIntegratedControl}
         label="CW Pitch"
@@ -238,7 +246,7 @@
       />
     </div>
 
-    <div class="cw-value-slot">
+    <div class="cw-value-slot" style:--cw-value-min-width={speedSlotMinWidth}>
       <ValueControl
         {...feedbackIntegratedControl}
         label="Key Speed"
@@ -371,8 +379,10 @@
   }
 
   /* MOR-2658: the pitch/speed value box stays reserved for unread AND
-     each known value — `6ch` covers the widest text (`900 Hz`), and
-     `inline-block` is what makes the min-width apply to the renderer's
+     each known value — the reservation derives from the profile's control
+     domain via the per-slot `--cw-value-min-width` inline custom property
+     (MOR-2706; 6ch is the floor, covering the legacy fallback '900 Hz'),
+     and `inline-block` is what makes the min-width apply to the renderer's
      inline value span, so a first reading cannot shift the row.
      `min-height: 1lh` keeps the box one text line tall when EMPTY, and
      `align-self: center` takes it out of the header's baseline alignment:
@@ -381,7 +391,7 @@
      Both known and unknown states then share the same box. */
   .cw-value-slot :global(.vc-value) {
     display: inline-block;
-    min-width: 6ch;
+    min-width: var(--cw-value-min-width, 6ch);
     min-height: 1lh;
     align-self: center;
     font-variant-numeric: tabular-nums;

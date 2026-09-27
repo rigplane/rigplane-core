@@ -1200,6 +1200,13 @@ export interface ReceiverIndicatorViewModel {
   rfState?: MeterRfState;
   sMeter: ReceiverSMeterField;
   bandwidthHz: ReceiverIndicatorField<number>;
+  /** MOR-2706: the widest filter-width value ANY mode of the mounted
+   *  profile can print — a structural fact derived from the capabilities
+   *  and fixed when they load (never a reading), so the BW fact's slot
+   *  reservation can cover `BW {this} Hz`. Absent exactly when the radio
+   *  declares no `filter_width` capability, which is when `bandwidthHz` is
+   *  structurally absent and the BW fact is not drawn at all. */
+  bandwidthMaxHz?: number;
   agcMode: ReceiverIndicatorField<number | string>;
   nbActive: ReceiverIndicatorField<boolean>;
   nrActive: ReceiverIndicatorField<boolean>;
@@ -1760,7 +1767,8 @@ function validateReceiverSMeterField(
 function validateReceiverIndicator(value: unknown, path: string): ReceiverIndicatorViewModel {
   const v = record(value, path);
   exactKeys(v, [
-    'receiver', 'availability', 'rfState', 'sMeter', 'bandwidthHz', 'agcMode',
+    'receiver', 'availability', 'rfState', 'sMeter', 'bandwidthHz',
+    'bandwidthMaxHz', 'agcMode',
     'nbActive', 'nrActive', 'notchMode', 'attenuator', 'preamp', 'rfGain',
     'digiSel', 'ipPlus',
   ], path);
@@ -1773,6 +1781,9 @@ function validateReceiverIndicator(value: unknown, path: string): ReceiverIndica
       : {}),
     sMeter: validateReceiverSMeterField(v.sMeter, `${path}.sMeter`, receiver),
     bandwidthHz: validateTxAuxField(v.bandwidthHz, `${path}.bandwidthHz`, num),
+    ...(v.bandwidthMaxHz !== undefined
+      ? { bandwidthMaxHz: num(v.bandwidthMaxHz, `${path}.bandwidthMaxHz`) }
+      : {}),
     agcMode: validateTxAuxField(v.agcMode, `${path}.agcMode`, strOrNum),
     nbActive: validateTxAuxField(v.nbActive, `${path}.nbActive`, bool),
     nrActive: validateTxAuxField(v.nrActive, `${path}.nrActive`, bool),
