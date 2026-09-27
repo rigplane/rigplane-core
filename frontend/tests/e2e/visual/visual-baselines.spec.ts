@@ -103,6 +103,18 @@ const COCKPIT: Spec[] = [
 
 for (const spec of COCKPIT) {
   test(spec.name, async ({ page }) => {
+    // MOR-2710: the meter ballistics (`smoothing.svelte.ts` EMA,
+    // `signal-meter-motion.svelte.ts` peak-hold/afterglow) animate from 0
+    // toward the fixture reading on `requestAnimationFrame`, so a screenshot
+    // taken at `data-harness-ready` catches a mid-flight bar whose length
+    // depends on how many frames elapsed — the S-meter band moved ~one
+    // segment between regeneration runs that changed nothing. Under
+    // `prefers-reduced-motion: reduce` the meters snap to the settled value
+    // at mount and schedule no frame (the reduced-motion contract pinned in
+    // `LinearSMeter.reduced-motion.isolated.test.ts`), so every capture is
+    // pixel-stable. The live app keeps its animation: this is the capture
+    // harness only.
+    await page.emulateMedia({ reducedMotion: 'reduce' });
     // Before `goto`: the clock is installed into the page's init scripts, so
     // it has to be in place before any of the page's own script reads `Date`.
     if (spec.freezeClock) await page.clock.setFixedTime(FROZEN_CLOCK);
@@ -112,6 +124,10 @@ for (const spec of COCKPIT) {
       + (spec.mode ? `&mode=${spec.mode}` : '');
     await page.goto(url, { waitUntil: 'load' });
     await page.waitForSelector('body[data-harness-ready="true"]');
+    // MOR-2710: pin the harness contract itself — a capture taken without
+    // the emulation above animates its meters and is not reproducible.
+    expect(await page.evaluate(() =>
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches)).toBe(true);
     await expect(page).toHaveScreenshot(`${spec.name}.png`, { animations: 'disabled', caret: 'hide' });
   });
 }

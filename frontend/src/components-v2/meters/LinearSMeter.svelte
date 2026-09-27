@@ -380,7 +380,7 @@
   // ── MOR-2521: stable node set ───────────────────────────────────────────────
   // Fill rects (and the peak line) are permanent nodes: a reading changes
   // only their width/fill/visibility attributes, never their presence — the
-  // node-count sweep in __tests__/LinearSMeter.test.ts fails if a value step
+  // node-count sweep in __tests__/LinearSMeter.isolated.test.ts fails if a value step
   // adds or removes a node. The `frac > 0.01` arm keeps the sub-1% partial
   // guard the conditional markup used to carry (pinned by the same sweep).
   function segLit(i: number, full: number, frac: number): boolean {
