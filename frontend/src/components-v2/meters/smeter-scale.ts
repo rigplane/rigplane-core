@@ -8,8 +8,8 @@
  * no hardcoded per-radio curve here (MOR-1451).
  *
  * A radio whose profile has not declared a curve is UNCALIBRATED:
- * `isSmeterCalibrated()` is false, and no S-unit or dBm text is drawn at
- * all (MOR-2705 part 4a) — the bar still moves on the raw fraction, but a
+ * `isSmeterCalibrated()` is false, and no S-unit or dBm text is drawn
+ * (MOR-2705 part 4a) — the bar still moves on the raw fraction, but a
  * number would be borrowed from a curve the radio does not have.
  * Mirrors the backend's own `(value, calibrated)` convention
  * (`runtime/meter_cal.py interpolate_meter`) on the display side.

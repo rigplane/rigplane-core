@@ -326,6 +326,8 @@ describe('AmberSmeter', () => {
       const po = mount(AmberSmeter, { target, props: { value: 143, source: 'PO' } });
       expect(target.querySelector('.meter-readout')).not.toBeNull();
       expect(target.querySelector('.readout-s')?.textContent).toBe('PO');
+      expect(target.querySelector('.scale-s-label')).toBeNull();
+      expect(target.querySelector('.scale-db-zone')).toBeNull();
       unmount(po);
     } finally {
       activeSMeterCal = previous;
