@@ -10,8 +10,9 @@
  * The rule (MOR-2677, "Token rule"):
  *
  *  1. Dash placeholder — the whole string is a dash run, optionally followed
- *     by one unit word. Matches "—", "---", "--- Hz", "-------". A dash
- *     inside a sentence does not match.
+ *     by one unit word, optionally followed by another dash run. Matches
+ *     "—", "---", "--- Hz", "-------", "-- empty --". A dash inside a
+ *     sentence does not match.
  *  2. Question token — a whitespace-delimited token that is exactly "?" (or
  *     "?" with trailing punctuation). "ATU: ?" hits; "Turn OFF the radio?"
  *     does not.
@@ -42,7 +43,7 @@ export interface FindPlaceholderTokensOptions {
   readonly isTitle?: boolean;
 }
 
-const DASH_PLACEHOLDER = /^\s*[-–—]+(\s+[A-Za-zµ%]+)?\s*$/;
+const DASH_PLACEHOLDER = /^\s*[-–—]+(\s+[A-Za-zµ%]+)?(\s*[-–—]+)?\s*$/;
 const QUESTION_TOKEN = /^\?[.,;:!?]*$/;
 const PLACEHOLDER_WORDS: ReadonlySet<string> = new Set([
   'unknown', 'n/a', 'nan', 'null', 'undefined',

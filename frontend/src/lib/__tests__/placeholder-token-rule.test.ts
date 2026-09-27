@@ -17,6 +17,11 @@ describe('rule 1: dash placeholder', () => {
     expect(hits('--- µV')).toEqual(['dash-run']);
     expect(hits('--- %')).toEqual(['dash-run']);
   });
+  it('hits for a dash-framed word (amended rule 1)', () => {
+    expect(hits('-- empty --')).toEqual(['dash-run']);
+    expect(hits('— empty —')).toEqual(['dash-run']);
+    expect(hits('--empty--')).toEqual(['dash-run']);
+  });
   it.each([
     'reconnecting — please wait',
     'Turn OFF the radio?',
@@ -25,6 +30,8 @@ describe('rule 1: dash placeholder', () => {
     'scan band — see the log',
     '14.250 MHz',
     'RX',
+    'a - b',
+    'empty',
   ])('does not hit for %s', (text) => expect(hits(text)).toEqual([]));
 });
 
