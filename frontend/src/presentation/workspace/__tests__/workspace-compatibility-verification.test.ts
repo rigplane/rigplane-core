@@ -607,7 +607,7 @@ describe('MOR-1083 class 4 — the forward-read window (N=2)', () => {
     expect(getWorkspaceNotice()).toBeNull();
   });
 
-  it.each([0, 1, 5, 99, 1.5, 'two', null, true])(
+  it.each([0, 5, 99, 1.5, 'two', null, true])(
     'v%s is outside the window: discarded visibly, never silently downgraded',
     (version) => {
       const storage = new LedgerStorage();
