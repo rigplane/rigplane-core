@@ -27,7 +27,6 @@ const h = vi.hoisted(() => ({
   provide: vi.fn(),
   registerBarrier: vi.fn(),
   bootstrap: vi.fn(),
-  initBattery: vi.fn(),
   resolveSkin: vi.fn(),
   loadSkin: vi.fn(),
 }));
@@ -79,9 +78,15 @@ vi.mock('../lib/transport/ws-client', () => ({
 }));
 vi.mock('$lib/i18n', () => ({
   // Interpolate {detail} like the real catalog so failure-text tests
-  // can assert content, not just the key.
+  // can assert content, not just the key. MOR-2671: resolve the RF-risk
+  // sentence the same way, so the accessible-name pins assert the real
+  // catalog string, and empty param calls keep returning the key.
   t: (key: string, params?: Record<string, string>) =>
-    params?.detail !== undefined ? `${key}: ${params.detail}` : key,
+    params?.detail !== undefined
+      ? `${key}: ${params.detail}`
+      : key === 'core.rxTx.rf.unconfirmed'
+        ? 'Transmit not confirmed'
+        : key,
   messageFromReasonCode: (code: string) => code,
 }));
 vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
@@ -98,7 +103,6 @@ vi.mock('../skins/registry', () => ({
   loadSkin: h.loadSkin,
   getPresentationRecord: (id: unknown) => ({ id, kind: 'built-in-self-contained', resources: [] }),
 }));
-vi.mock('../lib/utils/battery', () => ({ initBatteryMonitor: h.initBattery }));
 vi.mock('../lib/media/media-session', () => ({ initMediaSession: vi.fn(), destroyMediaSession: vi.fn() }));
 vi.mock('../components-v2/wiring/SemanticRadioSurfaces.svelte', async () => ({
   default: (await import('./LayoutStub.svelte')).default,
@@ -162,7 +166,6 @@ beforeEach(() => {
   Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 });
   h.onMessage.mockReturnValue(h.offMessage);
   h.bootstrap.mockResolvedValue(vi.fn());
-  h.initBattery.mockResolvedValue(vi.fn());
   h.resolveSkin.mockImplementation(({ isMobile }: { isMobile: boolean }) => (isMobile ? 'mobile' : 'desktop-v2'));
   h.loadSkin.mockImplementation(async (skinId: string) => presentationStub(skinId));
   h.provide.mockReturnValue({ refreshAuthority: vi.fn(), release: vi.fn(), dispose: vi.fn() });
@@ -265,10 +268,27 @@ describe('AppGlobalHost — authoritative TX source', () => {
   // MUTATION KILLED: collapsing the indication to `radioTx === 'on'` only.
   // `txRisk: 'uncertain'` means the browser may own the key without a
   // confirmed readback — the lamp must fail closed, not stay dark.
+  // MOR-2671: it reads `TX` — never `TX?` — hollow-defined, with the
+  // unconfirmed accessible sentence.
   it('fails closed while TX risk is uncertain', () => {
     txHarness.emitServerSnapshot({ observedPtt: 'unknown', releaseRequired: true });
     const instance = mountAt(AppGlobalHost);
     expect(txEl()?.getAttribute('data-tx')).toBe('uncertain');
+    expect(txEl()?.textContent?.trim()).toBe('TX');
+    expect(txEl()?.getAttribute('aria-label')).toBe('Transmit not confirmed');
+    expect(txEl()?.getAttribute('aria-label')).not.toContain('?');
+    expect(txEl()?.querySelector('.global-tx-lamp')?.classList.contains('hollow')).toBe(true);
+    unmount(instance);
+  });
+
+  // MOR-2671: the confirmed lamp stays filled and named by its text alone.
+  it('draws the confirmed TX lamp filled, with no unconfirmed accessible name', () => {
+    txHarness.emitServerSnapshot({ observedPtt: 'on' });
+    const instance = mountAt(AppGlobalHost);
+    expect(txEl()?.getAttribute('data-tx')).toBe('on');
+    expect(txEl()?.textContent?.trim()).toBe('TX');
+    expect(txEl()?.hasAttribute('aria-label')).toBe(false);
+    expect(txEl()?.querySelector('.global-tx-lamp')?.classList.contains('hollow')).toBe(false);
     unmount(instance);
   });
 

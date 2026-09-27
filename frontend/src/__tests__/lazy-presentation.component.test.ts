@@ -10,10 +10,13 @@
  *   4. a switch keeps bootstrap, TX authority and the App-global host
  *      identical — nothing above the presentation boundary is replayed;
  *   5. loader failure keeps last-known-good; an initial failure yields an
- *      inert App-owned surface; a late failure after teardown is inert.
+ *      inert App-owned surface; a late failure after teardown is inert;
+ *   6. MOR-2680: a failed asset preload reloads the page only before any
+ *      layout has mounted, and only when the guard in
+ *      `lib/preload-error-reload.ts` allows it.
  */
 import { readFileSync } from 'node:fs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, tick, unmount } from 'svelte';
 import type { ExternalPresentationRecord, PresentationId, SkinId } from '../skins/registry';
 
@@ -34,7 +37,6 @@ const h = vi.hoisted(() => ({
   resourcesEnded: false,
   bootstrap: vi.fn(),
   bootstrapCleanup: vi.fn(),
-  initBattery: vi.fn(),
   provide: vi.fn(),
   registerBarrier: vi.fn(),
   txHost: undefined as { refreshAuthority: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn> } | undefined,
@@ -109,7 +111,6 @@ vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({ provideManagedAp
 vi.mock('$lib/i18n', () => ({ t: (key: string) => key }));
 vi.mock('$lib/stores/capabilities.svelte', () => ({ hasAnyScope: () => false }));
 vi.mock('$lib/stores/layout.svelte', () => ({ getLayoutMode: () => 'standard' }));
-vi.mock('../lib/utils/battery', () => ({ initBatteryMonitor: h.initBattery }));
 vi.mock('../lib/media/media-session', () => ({ initMediaSession: vi.fn(), destroyMediaSession: vi.fn() }));
 // The App-global host and local-extensions host have their own suites; here
 // they only need a stable, identifiable node so a switch can be shown not to
@@ -228,7 +229,6 @@ beforeEach(() => {
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1200 });
   Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 });
   h.bootstrap.mockResolvedValue(h.bootstrapCleanup);
-  h.initBattery.mockResolvedValue(vi.fn());
   h.resolveSkinId.mockImplementation(({ isMobile }: { isMobile: boolean }) => (isMobile ? 'mobile' : 'desktop-v2'));
   h.getPresentationRecord.mockImplementation((id: SkinId) => ({
     id, kind: 'built-in-self-contained', loader: vi.fn(), resources: h.plan(id),
@@ -800,5 +800,113 @@ describe('presentation loader failure', () => {
     expect(mountedSkin()).toBe('mobile');
 
     unmount(instance);
+  });
+});
+
+// MOR-2680 — Vite's preload helper reports a stylesheet or chunk that failed
+// to load as a cancelable `vite:preloadError` event on window.
+describe('asset preload failure (MOR-2680)', () => {
+  const MARKER = 'rigplane:preload-error-reload-at';
+  const reload = vi.fn();
+
+  /** Dispatches a cancelable `vite:preloadError` on window; returns whether App prevented it. */
+  function firePreloadError(): boolean {
+    const event = new Event('vite:preloadError', { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  }
+
+  beforeEach(() => {
+    sessionStorage.removeItem(MARKER);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    sessionStorage.removeItem(MARKER);
+  });
+
+  // MUTATION KILLED: no `vite:preloadError` listener, the MOR-2680 defect:
+  // nothing prevents the error and the page never reloads.
+  it('reloads when a preload fails before any layout has mounted', async () => {
+    const instance = mountApp();
+    await settle();
+    vi.stubGlobal('location', { reload });
+    vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+
+    expect(firePreloadError()).toBe(true);
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(sessionStorage.getItem(MARKER)).toBe('1000000');
+
+    // The pending import still resolves here; while the page reloads it must
+    // neither mount nor clear the recorded reload.
+    completeLoad('desktop-v2');
+    await settle();
+    expect(mountedCount()).toBe(0);
+    expect(sessionStorage.getItem(MARKER)).toBe('1000000');
+
+    unmount(instance);
+  });
+
+  // MUTATION KILLED: passing "no layout mounted" after a commit: a failed
+  // layout switch would reload the page.
+  it('does not reload when a preload fails after a layout has mounted', async () => {
+    const instance = mountApp();
+    await settle();
+    completeLoad('desktop-v2');
+    await settle();
+    vi.stubGlobal('location', { reload });
+
+    expect(firePreloadError()).toBe(false);
+    expect(reload).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(MARKER)).toBeNull();
+    expect(mountedSkin()).toBe('desktop-v2');
+
+    unmount(instance);
+  });
+
+  // MUTATION KILLED: dropping the 60 s window check: a preload that keeps
+  // failing would reload the page on every load.
+  it('leaves the failure surface up instead of reloading twice within 60 s', async () => {
+    sessionStorage.setItem(MARKER, '1000000');
+    const instance = mountApp();
+    await settle();
+    vi.stubGlobal('location', { reload });
+    vi.spyOn(Date, 'now').mockReturnValue(1_059_999);
+
+    expect(firePreloadError()).toBe(false);
+    expect(reload).not.toHaveBeenCalled();
+    failLoad('desktop-v2', 'Unable to preload CSS for /assets/StatusBar.css');
+    await settle();
+    expect(errorSurface()).not.toBeNull();
+
+    unmount(instance);
+  });
+
+  // MUTATION KILLED: not clearing the recorded reload when a presentation
+  // loads: a failure on a later page within 60 s of it would not reload.
+  it('clears the recorded reload once a presentation loads', async () => {
+    sessionStorage.setItem(MARKER, '1000000');
+    const instance = mountApp();
+    await settle();
+    expect(sessionStorage.getItem(MARKER)).toBe('1000000');
+
+    completeLoad('desktop-v2');
+    await settle();
+    expect(sessionStorage.getItem(MARKER)).toBeNull();
+
+    unmount(instance);
+  });
+
+  // MUTATION KILLED: leaving the listener registered after teardown.
+  it('stops listening once App unmounts', async () => {
+    const instance = mountApp();
+    await settle();
+    unmount(instance);
+    vi.stubGlobal('location', { reload });
+
+    expect(firePreloadError()).toBe(false);
+    expect(reload).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(MARKER)).toBeNull();
   });
 });

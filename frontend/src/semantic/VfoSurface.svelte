@@ -38,6 +38,9 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { t } from '$lib/i18n';
+  import enUS from '$lib/i18n/locales/en-US.json' with { type: 'json' };
+  import jaJP from '$lib/i18n/locales/ja-JP.json' with { type: 'json' };
+  import ruRU from '$lib/i18n/locales/ru-RU.json' with { type: 'json' };
   import FrequencyDisplayInteractive from '../primitives/frequency/FrequencyDisplayInteractive.svelte';
   import LinearSMeter from '../components-v2/meters/LinearSMeter.svelte';
   import type { SignalMeterFrame } from '../components-v2/meters/signal-meter-motion.svelte';
@@ -57,6 +60,7 @@
   import type { ReceiverInstrumentHandles } from './ReceiverInstrumentHost.svelte';
   import { splitFrequencyToDigits, groupDigitsForDisplay } from '../primitives/frequency/frequency-tuning';
   import { renderSlot } from './design-language-renderers';
+  import { observationValue, readingValue } from '../primitives/reading-text';
   import type { MeterContinuitySession } from '../primitives/meters/meter-ballistics.svelte';
   import type {
     BooleanFact, DisplayObservation, DspField, TxAuxField,
@@ -211,6 +215,15 @@
     onToggleDialLock?: () => void;
     operationInput?: VfoOperationProjectionInput;
     operationControls?: Snippet;
+    /**
+     * MOR-2662 (owner ruling 2026-09-26): the PHONE's one-tile presentation.
+     * `'active'` renders only the ACTIVE VFO's tile — the active receiver's
+     * active slot — in this surface's semantic VFO list; switching stays in
+     * the controls that survive it (the receiver choice, swap/equalize, and
+     * the A/B identity selectors for relative slots). Defaults to `'all'`:
+     * every existing caller renders the full list, byte-for-byte as before.
+     */
+    vfoTiles?: 'all' | 'active';
   }
 
   let {
@@ -244,6 +257,7 @@
     onToggleDialLock,
     operationInput,
     operationControls,
+    vfoTiles = 'all',
   }: Props = $props();
 
   /**
@@ -348,15 +362,55 @@
     return slot.kind;
   }
 
+  /**
+   * MOR-2656 — every catalog's active-role word, BUILT from the catalogs
+   * (never a literal), so a translation that grows longer than the shipped
+   * three lands in the measurement the day it ships. The reservation below
+   * must cover the widest of them.
+   */
+  const ACTIVE_ROLE_KEY = 'core.vfo.role.active';
+  const ACTIVE_ROLE_CATALOGS: readonly Record<string, unknown>[] = [enUS, jaJP, ruRU];
+
   function roleLabel(vfo: VfoViewModel): string {
     const { slot } = vfo;
     if (slot.kind === 'slotted') return `${vfo.receiver} ${slot.id}`;
+    // MOR-2656 (owner ruling 2026-09-26): on a radio that reports only
+    // "selected / unselected" (the `relative` kind) the active tile shows the
+    // ONE localized active word through the catalogs; the other tile has no
+    // role word at all, only the empty reserved plaque. No English literal.
     if (slot.kind === 'relative') {
-      return slot.role === 'selected' ? 'Selected VFO' : 'Unselected VFO';
+      return slot.role === 'selected' ? t(ACTIVE_ROLE_KEY) : '';
     }
-    if (slot.kind === 'unknown') return `${vfo.receiver} (${t('core.vfo.state.unknown')})`;
+    if (slot.kind === 'unknown') return vfo.receiver;
     return vfo.receiver;
   }
+
+  // Owner ruling 2026-09-21, narrowed 2026-09-27 (MOR-2656): ONE width for
+  // the plaque in every state, measured once off screen in the plaque's own
+  // font (MOR-2655) at the widest text roleLabel can emit — the SLOTTED
+  // forms, the unread bare receiver name, and the active-role word from
+  // EVERY shipped catalog, so a locale switch can no more move the layout
+  // than a first reading can. The inactive relative tile renders '' inside
+  // the same reserved plaque; that is the "no role word" half of the
+  // ruling, not a missing reservation.
+  const ROLE_TEXTS = [
+    'MAIN', 'SUB', 'MAIN A', 'MAIN B', 'SUB A', 'SUB B',
+    ...ACTIVE_ROLE_CATALOGS.map((catalog) => String(catalog[ACTIVE_ROLE_KEY] ?? '')).filter(Boolean),
+  ];
+  let roleMeasure: HTMLSpanElement | undefined = $state();
+  let roleWidth = $state('0px');
+  $effect(() => {
+    const node = roleMeasure;
+    if (!node) return;
+    const widest = Math.max(...ROLE_TEXTS.map((text) => {
+      node.textContent = text;
+      return node.getBoundingClientRect().width;
+    }));
+    // The measure node is aria-hidden and must stay empty (DualReceiverCockpit
+    // pins a degraded view with no stray receiver string in textContent).
+    node.textContent = '';
+    roleWidth = `${Math.ceil(widest)}px`;
+  });
 
   /**
    * MOR-1482 — the ONE stable frequency format this surface's own fallback
@@ -368,11 +422,11 @@
    * WORKSPACE DEFAULT, see `DEFAULT_WORKSPACE.designLanguage`) the language's
    * own thin-space-grouped text: two mismatched formats on the same slot,
    * flipping between them as the design-language activation effect raced this
-   * surface's own render. `null` still renders the honest placeholder, never
-   * a differently-formatted number.
+   * surface's own render. `null` renders nothing (MOR-2655): an unread value
+   * is an empty, unlit box, never a dash or a differently-formatted number.
    */
   function formatFrequency(hz: number | null): string {
-    if (hz === null) return '—';
+    if (hz === null) return '';
     const { mhz, khz, hz: hzGroup } = groupDigitsForDisplay(splitFrequencyToDigits(hz));
     return [mhz, khz, hzGroup].map((group) => group.map((d) => d.char).join('')).join('.');
   }
@@ -397,12 +451,7 @@
    * out-of-the-box tile text on the live bench.
    */
   function frequencyDisplay(vfo: VfoViewModel): ReturnType<typeof renderSlot> {
-    return renderSlot('frequencyDisplay', { frequencyHz: displayValue(vfo.display?.frequencyHz, vfo.frequencyHz) });
-  }
-
-  function displayValue<T>(display: DisplayObservation<T> | undefined, strict: T | null): T | null {
-    if (display === undefined) return strict;
-    return display.state === 'current' || display.state === 'stale' ? display.value : null;
+    return renderSlot('frequencyDisplay', { frequencyHz: observationValue(vfo.display?.frequencyHz, vfo.frequencyHz) });
   }
 
   /**
@@ -411,6 +460,8 @@
    * (the panel keeps the slot and draws no chip). Both carriers of
    * "unsupported" — the observation's own state and the modeFilter group's
    * structural flag — collapse into the one undefined answer here.
+   * MOR-2688 S4c: the value-or-strict rule is `observationValue` (
+   * `primitives/reading-text.ts`).
    */
   function displayModeOrFilter(
     vfo: VfoViewModel | undefined,
@@ -421,7 +472,7 @@
     if (vfo === undefined) return null;
     if (observation?.state === 'unsupported') return undefined;
     if (structural !== undefined && !structural.availability.structural) return undefined;
-    return displayValue(observation, strict);
+    return observationValue(observation, strict);
   }
 
   function hasDigitReadout(vfo: VfoViewModel): boolean {
@@ -452,6 +503,24 @@
     onTuneFrequency?.(vfo.receiver, frequencyHz);
   }
 
+  /**
+   * MOR-1331 — the digit widget's clamp at this seam. `adjustFreqByDigit`
+   * already clamps every wheel/arrow step, but this surface passed none of
+   * the band facts it owns, so the dead `0 … 999 MHz` defaults clamped
+   * nothing a real radio can reach. The band envelope is a plain readout
+   * bound, not a TX gate (fail-open past the edge stays radio-protected +
+   * txPermit fail-closed): unknown/absent/half-known bounds keep the legacy
+   * wide-open clamp exactly.
+   */
+  function tuneBounds(): { minFreq: number; maxFreq: number } | undefined {
+    const minHz = viewModel.band?.tuneMinHz;
+    const maxHz = viewModel.band?.tuneMaxHz;
+    if (minHz == null || maxHz == null || !Number.isFinite(minHz) || !Number.isFinite(maxHz)) {
+      return undefined;
+    }
+    return { minFreq: minHz, maxFreq: maxHz };
+  }
+
   function isSelectable(vfo: VfoViewModel): boolean {
     return hasVfoPair && vfo.slot.kind !== 'relative' && !vfo.isActive;
   }
@@ -477,9 +546,10 @@
    * on facts. RX is the ACTIVE VFO (what the operator is listening to); TX comes
    * from the radio-wide `txTarget`, which carries its OWN frequency and is the
    * same derivation the App TX authority uses — so the digest can never disagree
-   * with the per-tile TX-target badge. Either side reads `null` — rendered `—`
-   * by `formatFrequency` — when its fact is unobserved; neither is ever defaulted
-   * to the other's value, which is precisely what a split digest must not do.
+   * with the per-tile TX-target badge. Either side reads `null` — rendered
+   * empty by `formatFrequency` since MOR-2655 (no dash either) — when its fact
+   * is unobserved; neither is ever defaulted to the other's value, which is
+   * precisely what a split digest must not do.
    *
    * MOR-1482 disclosure: this digest has always called the SAME
    * `formatFrequency` the tile readout uses (no design-language involvement
@@ -519,6 +589,27 @@
       (indicator) => indicatorReceiver === undefined || indicator.receiver === indicatorReceiver,
     ),
   );
+
+  /**
+   * MOR-2662 — the list this surface's semantic `.vfo-list` renders.
+   * `'active'` (the phone) keeps exactly ONE tile: the active VFO's. The
+   * startup window — no active receiver observed yet, so NO VFO carries
+   * `isActive` — falls back to MAIN's active slot (the same receiver the
+   * phone's own header already defaults to), so the tile's slot stays
+   * reserved and unlit rather than the whole tile vanishing; a receiver
+   * whose slot view was never seen keeps its one unknown-slot position.
+   * Never a second tile in any state.
+   */
+  let listVfos = $derived.by(() => {
+    if (vfoTiles !== 'active') return viewModel.vfos;
+    const active = viewModel.vfos.filter((vfo) => vfo.isActive);
+    if (active.length > 0) return active;
+    const mainActiveSlot = viewModel.vfos.filter(
+      (vfo) => vfo.receiver === 'MAIN' && vfo.isActiveSlot,
+    );
+    if (mainActiveSlot.length > 0) return mainActiveSlot;
+    return viewModel.vfos.filter((vfo) => vfo.receiver === 'MAIN').slice(0, 1);
+  });
 
   /**
    * MOR-2509 slice 2 — the panel screen's chips, projected from the same
@@ -611,7 +702,7 @@
       levelLamp('att', 'ATT', indicator.attenuator);
       const frontToggle = (key: string, field: ReceiverIndicatorViewModel['ipPlus']) => {
         if (!field.availability.structural) return;
-        const value = field.reading.status === 'known' ? field.reading.value : null;
+        const value = readingValue(field);
         sections.annunciators.push({
           key, group: 'front', family: 'red',
           text: key === 'ip-plus' ? 'IP+' : 'DIGI-SEL', lit: value === true,
@@ -620,10 +711,7 @@
       frontToggle('ip-plus', indicator.ipPlus);
       frontToggle('digi-sel', indicator.digiSel);
       if (indicator.rfGain.availability.structural && indicator.rfGain.display?.state !== 'unsupported') {
-        const shown = displayValue(
-          indicator.rfGain.display,
-          indicator.rfGain.reading.status === 'known' ? indicator.rfGain.reading.value : null,
-        );
+        const shown = observationValue(indicator.rfGain.display, readingValue(indicator.rfGain));
         // Owner ruling 2026-09-23: RFG appears only while RF gain is REDUCED.
         // Coordinator decision, same day: "reduced" is what the operator
         // reads — the formatted percentage, the rounding `formatKnownLevel`
@@ -654,7 +742,7 @@
         level: DspField<number> | undefined,
       ) => {
         if (!field.availability.structural) return;
-        const value = field.reading.status === 'known' ? field.reading.value : null;
+        const value = readingValue(field);
         sections.dsp.push({
           key, text: value === true ? `${key.toUpperCase()}${levelSuffix(level)}` : key.toUpperCase(),
           lit: value === true,
@@ -663,7 +751,7 @@
       dspToggle('nb', indicator.nbActive, viewModel.dsp?.nbLevel);
       dspToggle('nr', indicator.nrActive, viewModel.dsp?.nrLevel);
       if (indicator.notchMode.availability.structural) {
-        const value = indicator.notchMode.reading.status === 'known' ? indicator.notchMode.reading.value : null;
+        const value = readingValue(indicator.notchMode);
         const text = value === 'auto' ? 'NOTCH A' : value === 'manual' ? 'NOTCH M' : 'NOTCH';
         sections.dsp.push({ key: 'notch', text, lit: value === 'auto' || value === 'manual' });
       }
@@ -675,8 +763,8 @@
         const activeField = key === 'rit' ? wide.ritActive : wide.xitActive;
         const offsetField = key === 'rit' ? wide.ritOffset : wide.xitOffset;
         if (!activeField.availability.structural && !offsetField.availability.structural) return;
-        const active = activeField.reading.status === 'known' ? activeField.reading.value : null;
-        const offset = offsetField.reading.status === 'known' ? offsetField.reading.value : null;
+        const active = readingValue(activeField);
+        const offset = readingValue(offsetField);
         const lit = active === true && offset !== null;
         sections.under[key] = {
           key,
@@ -702,19 +790,19 @@
 
 </script>
 
-<div class="vfo-surface" role="group" aria-label={groupLabel ?? t('core.vfo.groupLabel')} data-testid="vfo-surface" data-vfo-appearance={appearance}>
+<div class="vfo-surface" role="group" aria-label={groupLabel ?? t('core.vfo.groupLabel')} data-testid="vfo-surface" data-vfo-appearance={appearance} style:--vfo-role-width={roleWidth}>
+  <span class="vfo-role-measure" bind:this={roleMeasure} aria-hidden="true"></span>
   {#snippet activeReceiverStatus()}
   {#if showRadioWideFacts && hasDualReceiver}
     <p
       class="active-receiver"
+      class:active-receiver-unlit={viewModel.activeReceiver.status !== 'known'}
       data-testid="vfo-active-receiver"
       data-active-receiver={viewModel.activeReceiver.status === 'known'
         ? viewModel.activeReceiver.receiver
         : 'unknown'}
     >
-      {viewModel.activeReceiver.status === 'known'
-        ? t('core.vfo.activeReceiver.known', { receiver: viewModel.activeReceiver.receiver })
-        : t('core.vfo.activeReceiver.unknown')}
+      {t('core.vfo.activeReceiver.label')}<span class="active-receiver-value">{viewModel.activeReceiver.status === 'known' ? viewModel.activeReceiver.receiver : ''}</span>
     </p>
   {/if}
   {/snippet}
@@ -725,9 +813,9 @@
       {@const selectDisabled = selectable && (vfo.slot.kind === 'unknown' || receiverSelectDisabled(vfo))}
       {@const freq = frequencyDisplay(vfo)}
       {@const pendingHz = pendingFrequencyHz?.[vfo.receiver] ?? null}
-      {@const displayHz = displayValue(vfo.display?.frequencyHz, vfo.frequencyHz)}
-      {@const displayMode = displayValue(vfo.display?.mode, vfo.mode)}
-      {@const displayFilter = displayValue(vfo.display?.filter, vfo.filter)}
+      {@const displayHz = observationValue(vfo.display?.frequencyHz, vfo.frequencyHz)}
+      {@const displayMode = observationValue(vfo.display?.mode, vfo.mode)}
+      {@const displayFilter = observationValue(vfo.display?.filter, vfo.filter)}
       {#snippet hostedFrequency()}
         {#if vfo.receiver === 'MAIN'}
           {@render receiverInstruments!.mainFrequency({ compact: appearance === 'semantic', vfoFreqHook: false })}
@@ -747,9 +835,14 @@
         data-vfo-active-slot={vfo.isActiveSlot}
         data-vfo-tx-target={vfo.isTxTarget}
       >
-        <span class="vfo-role">{roleLabel(vfo)}</span>
+        <span
+          class="vfo-role"
+          class:vfo-role-unlit={vfo.slot.kind === 'unknown'}
+          style:min-width="var(--vfo-role-width)"
+        >{roleLabel(vfo)}</span>
         <span
           class="vfo-freq" class:display-unknown={displayHz === null && pendingHz === null}
+          class:vfo-freq-unlit={!hasDigitReadout(vfo) && displayHz === null}
           {...(appearance === 'semantic' ? freq?.attributes ?? {} : {})}
           data-vfo-freq
           data-freq-tunable={!readoutDisabled(vfo)}
@@ -788,6 +881,7 @@
               compact={appearance === 'semantic'}
               active={vfo.isActive}
               receiver={vfo.receiver === 'SUB' ? 'sub' : 'main'}
+              {...tuneBounds()}
               onFreqChange={(hz) => tuneFrequency(vfo, hz)}
               vfoFreqHook={false}
             />
@@ -814,7 +908,7 @@
             {formatFrequency(displayHz)}
           {/if}
         </span>
-        <span class="vfo-mode">{displayMode ?? '—'}{displayFilter ? ` / ${displayFilter}` : ''}</span>
+        <span class="vfo-mode" class:vfo-mode-unlit={displayMode === null}>{displayMode ?? ''}{displayFilter ? ` / ${displayFilter}` : ''}</span>
         {#if vfo.isTxTarget}
           <span class="vfo-badge" data-vfo-tx-badge>{t('core.vfo.txTarget.label')}</span>
         {/if}
@@ -992,7 +1086,7 @@
           ? [{
               key: String(index), receiver: choice.receiver === 'SUB' ? 'sub' as const : 'main' as const,
               slot: slotKey(choice.slot), label: roleLabel(choice),
-              frequencyText: formatFrequency(displayValue(choice.display?.frequencyHz, choice.frequencyHz)),
+              frequencyText: formatFrequency(observationValue(choice.display?.frequencyHz, choice.frequencyHz)),
               active: choice.isActive, activeSlot: choice.isActiveSlot, txTarget: choice.isTxTarget,
               disabled: disabled || choice.slot.kind === 'unknown' || choice.slot.kind === 'relative',
               reason: choice.slot.kind === 'relative' ? identityOnlyReasonText() : selectReasonText(choice),
@@ -1016,7 +1110,7 @@
             ? hostedFrequency : undefined}
           freq={dominant?.frequencyHz ?? null}
           displayHz={(receiverInstruments === undefined || (fixed !== undefined && !fixed.isActiveSlot)) && dominant
-            ? displayValue(dominant.display?.frequencyHz, dominant.frequencyHz) : undefined}
+            ? observationValue(dominant.display?.frequencyHz, dominant.frequencyHz) : undefined}
           pendingDisplayHz={receiverInstruments === undefined && dominant
             ? pendingFrequencyHz?.[receiver] ?? null : undefined}
           frequencyState={dominant?.display?.frequencyHz.state ?? (dominant?.frequencyHz == null ? 'unknown' : 'current')}
@@ -1024,6 +1118,8 @@
             ? `${frequencyLifetimeKey ?? 'unscoped'}:${viewModel.topologyId}:${receiver}:${dominant ? slotKey(dominant.slot) : 'unknown'}`
             : undefined}
           frequencyDisabled={!dominant || (fixed !== undefined && !fixed.isActiveSlot) || readoutDisabled(dominant)}
+          tuneMinHz={viewModel.band?.tuneMinHz ?? null}
+          tuneMaxHz={viewModel.band?.tuneMaxHz ?? null}
           controlsDisabled={fixed !== undefined && !fixed.isActiveSlot}
           mode={displayModeOrFilter(dominant, dominant?.display?.mode, dominant?.mode ?? null,
             viewModel.modeFilter?.currentMode)}
@@ -1091,7 +1187,7 @@
     {#if appearance !== 'semantic' && !showVfoList}{@render activeReceiverStatus()}{/if}
     {#if showVfoList}
       <div class="vfo-list" data-testid="vfo-list">
-        {#each viewModel.vfos as vfo, i (vfo.receiver + ':' + i)}{@render vfoTile(vfo, i)}{/each}
+        {#each listVfos as vfo, i (vfo.receiver + ':' + i)}{@render vfoTile(vfo, i)}{/each}
       </div>
       {@render identitySelectors()}
       {#if receiverIndicators.length > 0}
@@ -1120,11 +1216,28 @@
   /* Semantic-neutral layout only — existing --v2-* theme tokens, sensible fallbacks. */
   .vfo-surface { display: flex; flex-direction: column; gap: 8px; font-family: 'Roboto Mono', monospace; color: var(--v2-text-primary, #e8e8e8); }
   .active-receiver { margin: 0; font-size: 11px; color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55)); }
+  .active-receiver-value { display: inline-block; min-width: 5ch; font-variant-numeric: tabular-nums; }
+  .active-receiver-unlit { color: var(--dl-vfo-unlit-text, var(--v2-text-muted, #5a6875)); }
   .vfo-list { display: flex; flex-wrap: wrap; gap: 6px; }
   .receiver-indicators { display: grid; gap: 6px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
   .vfo-tile { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12)); border-radius: 4px; background: var(--v2-bg-panel, rgba(255, 255, 255, 0.03)); }
-  .vfo-tile.is-active { border-color: var(--v2-accent-cyan, #00d4ff); }
-  .vfo-role { font-weight: 700; color: var(--v2-text-secondary, rgba(255, 255, 255, 0.8)); }
+  /* MOR-1260: style, not colour — forced-colors keeps the shape. The mark is
+     an outline drawn INSIDE the tile, so the border keeps its 1px geometry and
+     a MAIN↔SUB switch never moves the layout. */
+  .vfo-tile.is-active { border-color: var(--v2-accent-cyan, #00d4ff); outline-width: 3px; outline-style: double; outline-color: var(--v2-accent-cyan, #00d4ff); outline-offset: -3px; }
+  .vfo-role, .vfo-role-measure { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .vfo-role { color: var(--v2-text-secondary, rgba(255, 255, 255, 0.8)); min-width: var(--vfo-role-width); white-space: nowrap; }
+  .vfo-role-measure { position: absolute; visibility: hidden; pointer-events: none; white-space: nowrap; }
+  .vfo-role-unlit { color: var(--dl-vfo-unlit-text, var(--v2-text-muted, #5a6875)); }
+  /* MOR-2655 — an unread frequency/mode draws nothing in a reserved box. The
+     reservation is in `ch` (the tile font is monospace), sized from the
+     widest text the slot can render across the shipped rigs: the frequency
+     fallback tops out at IC-9700's 1_300_000_000 → '1300.000.000' (12ch);
+     the mode spans at FTX-1's longest [modes].list label 'DATA-FM-N' plus
+     the longest FILn filter (9 + ' / ' + 4 = 16ch). */
+  .vfo-freq-unlit, .vfo-mode-unlit { display: inline-block; }
+  .vfo-freq-unlit { min-width: 12ch; }
+  .vfo-mode-unlit { min-width: 16ch; }
   [data-vfo-appearance='semantic'] .vfo-tile { position: relative; }
   .vfo-badge { padding: 1px 4px; border-radius: 3px; font-size: 10px; color: var(--v2-accent-red, #ff2020); border: 1px solid var(--v2-accent-red, #ff2020); }
   .vfo-select { border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12)); border-radius: 4px; background: transparent; color: inherit; cursor: pointer; padding: 3px 6px; }

@@ -56,7 +56,7 @@ function levelFrame(
       relevant: true, observed: true, state: 'current',
       domain: { kind: 'engineering', unit: key === 'swr' ? 'ratio' : 'w' },
       motionFraction: 0.25, scale: null, displayText: '50W', stateText: '',
-      accessibleDescription: 'Po: Current observation. 50W', fault: false,
+      accessibleDescription: 'Po: 50W', fault: false,
       showPeak: true, gauge: true,
       ...(key === 'swr' ? { ratioScale: true } : {}),
       ...projection,
@@ -139,10 +139,9 @@ describe('toSignalMeterRendererView', () => {
       expect(view.evidence).toEqual({ state: 'current', value: 12, domain: { kind: 'unknown' } });
       expect(view).toMatchObject({
         scaleMode: 'none', displayedFraction: null, peakFraction: null,
-        crossoverFraction: null, marks: [], ticks: [], primaryText: '12',
-        secondaryText: 'unit unknown',
+        crossoverFraction: null, marks: [], ticks: [], primaryText: '',
+        secondaryText: '', accessibleDescription: 'S meter',
       });
-      expect(`${view.primaryText} ${view.secondaryText}`).not.toMatch(/dBm|rel S9|uncalibrated/);
     });
 
   it('keeps qualified dB-relative-to-S9 evidence when calibrated geometry is unavailable', () => {
@@ -183,6 +182,18 @@ describe('toSignalMeterRendererView', () => {
       state: 'unknown', domain: { kind: 'engineering', unit: 'db' },
     });
     expect(view.displayedFraction).toBeNull();
+  });
+
+  // MOR-2688 S4d pin: the value enters through `finiteValue(readingValue(
+  // { reading }))` — a read zero is a value, red when the reading entry
+  // point ever maps `0` to nothing.
+  it('keeps a read zero as current evidence with value 0', () => {
+    const view = toSignalMeterRendererView(
+      frame(), { status: 'known', value: 0 }, { kind: 'engineering', unit: 'db' },
+    );
+    expect(view.evidence).toEqual({
+      state: 'current', value: 0, domain: { kind: 'engineering', unit: 'db' },
+    });
   });
 
   it.each([
@@ -262,7 +273,7 @@ describe('toLevelMeterRendererView', () => {
     const view = toLevelMeterRendererView(levelFrame('power', {
       evidence: { state: 'stale', value: 170 }, observed: false, state: 'stale',
       domain: { kind: 'raw' }, motionFraction: null, displayText: 'STALE',
-      stateText: 'STALE', accessibleDescription: 'Po: Stale observation', showPeak: false,
+      stateText: 'STALE', accessibleDescription: 'Po: 170 raw', showPeak: false,
     }, { smoothedFraction: 0.8, peakFraction: 0.9 }));
 
     expect(view).toMatchObject({
@@ -289,6 +300,20 @@ describe('toLevelMeterRendererView', () => {
     expect(current.peakFraction).toBe(0.8);
     expect(stale.displayedFraction).toBe(current.displayedFraction);
     expect(stale.peakFraction).toBe(current.peakFraction);
+  });
+
+  // MOR-2688 S4d pin: `finiteValue(observationValue(evidence))` decides the
+  // value — a stale finite level observation keeps `stale` AND draws its
+  // fraction, red when the observation entry point drops the stale value.
+  it('keeps a stale finite level observation stale while drawing its fraction', () => {
+    const view = toLevelMeterRendererView(levelFrame('power', {
+      evidence: { state: 'stale', value: 50 }, state: 'stale',
+    }));
+    expect(view.evidence).toEqual({
+      state: 'stale', value: 50, domain: { kind: 'engineering', unit: 'w' },
+    });
+    expect(view.displayedFraction).toBe(0.2);
+    expect(view.peakFraction).toBe(0.4);
   });
 
   it.each([

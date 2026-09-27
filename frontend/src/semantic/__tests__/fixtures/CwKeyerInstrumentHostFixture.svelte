@@ -19,6 +19,8 @@
     standard?: boolean;
     scalarPresentation?: Readonly<CwContinuousPresentation>;
     breakInDelayFeedback?: Readonly<BreakInDelayFeedback>;
+    /** MOR-2729: profile-published break-in choices for the surface pin. */
+    breakInChoices?: readonly { value: number; label: string }[];
     pitchFeedback?: Readonly<CommandScalarFeedback>;
     keySpeedFeedback?: Readonly<CommandScalarFeedback>;
     autoTuneAvailable?: boolean;
@@ -32,7 +34,7 @@
 
   let {
     view, presentation = 'grouped', standard = false, scalarPresentation,
-    breakInDelayFeedback, pitchFeedback, keySpeedFeedback, autoTuneAvailable = false,
+    breakInDelayFeedback, breakInChoices, pitchFeedback, keySpeedFeedback, autoTuneAvailable = false,
     onBreakInMode, onLevelChange, onApfOn, onTwinPeakToggle, onReversePaddleToggle, onAutoTune,
   }: Props = $props();
 </script>
@@ -42,7 +44,8 @@
     {#key presentation}
       {#if presentation === 'grouped'}
         <CwKeyerSurface
-          {view} continuousHandles={handles} {standard} {breakInDelayFeedback} {autoTuneAvailable}
+          {view} continuousHandles={handles} {standard} {breakInDelayFeedback} {breakInChoices}
+          {autoTuneAvailable}
           {onBreakInMode} {onLevelChange} {onApfOn} {onTwinPeakToggle}
           {onReversePaddleToggle} {onAutoTune}
         />
@@ -52,7 +55,7 @@
           <div data-slot="pitch-hz">{@render handles.pitchHz(scalarPresentation)}</div>
           <CwKeyerSurface
             {view} continuousHandles={handles} showKeyerSpeed={false} showPitchHz={false}
-            {breakInDelayFeedback} {autoTuneAvailable}
+            {breakInDelayFeedback} {breakInChoices} {autoTuneAvailable}
             {onBreakInMode} {onLevelChange} {onApfOn} {onTwinPeakToggle}
             {onReversePaddleToggle} {onAutoTune}
           />

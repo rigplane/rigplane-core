@@ -89,7 +89,7 @@ const RAIL_TABLE: Record<TxFeedbackRail, { width: 8 | 16 | 24; band: BandTreatme
   keyed: { width: 24, band: 'filled', label: 'ON AIR' },
   releasing: { width: 16, band: 'outlined', label: 'UNKEYING' },
   failed: { width: 24, band: 'filled', label: 'TX FAULT' },
-  doubt: { width: 16, band: 'outlined', label: 'TX?' },
+  doubt: { width: 16, band: 'outlined', label: 'TX' },
 };
 
 const SLAB_EDGE: Record<TxKeyTreatment, FieldlineSlab['edgeStyle']> = {

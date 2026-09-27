@@ -548,6 +548,10 @@ describe('BipolarRenderer', () => {
     expect(onChange.mock.calls.flat().every(Number.isFinite)).toBe(true);
   });
 
+  // MOR-2692: the negative marker is a real minus sign '−' (U+2212), never
+  // an ASCII dash; '0' and '+' stay. The whole-page guard's dash run rule
+  // classifies a lone ASCII '-' as a placeholder token, which is why the
+  // renderer can no longer draw it.
   it('renders polarity markers', () => {
     const target = mountControl({
       value: 0,
@@ -559,9 +563,10 @@ describe('BipolarRenderer', () => {
       onChange: vi.fn(),
     });
     const axis = target.querySelector('.vc-axis')?.textContent ?? '';
-    expect(axis).toContain('-');
+    expect(axis).toContain('−');
     expect(axis).toContain('0');
     expect(axis).toContain('+');
+    expect(axis).not.toContain('-');
   });
 
   it('formats positive values with plus sign', () => {

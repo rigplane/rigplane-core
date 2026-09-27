@@ -64,7 +64,7 @@
     getPendingNrOn, getPendingPreampLevel,
     getPendingRepeaterShift, getPendingRepeaterTone, getPendingToneFreq,
     getRepeaterHandlers,
-    getSystemHandlers, getDataModeArmed, getModInputArmed,
+    getSystemHandlers, getDataModeArmed, getModInputArmed, getFilterShapeArmed,
     deriveMemoryPanelProps, getMemoryHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
   import { toRitXitProps } from '$lib/runtime/props/panel-props';
@@ -193,6 +193,18 @@
     scopeControlsInRegionContent?: boolean;
     regionExtras?: Snippet<['left' | 'right']>;
     vfoAppearance?: 'semantic' | 'sdr' | 'standard';
+    /**
+     * MOR-2662 (owner ruling 2026-09-26): forwarded to the single
+     * composition's `VfoSurface` — `'active'` is the phone's one-tile
+     * presentation (only the active VFO's tile). Default `'all'` keeps every
+     * other mount byte-identical; the dual strips composition never reads it.
+     */
+    vfoTiles?: 'all' | 'active';
+    /** MOR-1245 — set by a shell that mounts its OWN fixed-position
+     *  `ModInputTxWarning` (MobileRadioLayout, both orientations), so the
+     *  `txAdjacentAlerts` instance suppresses itself and the preflight
+     *  cannot render twice. Default keeps every other composition. */
+    suppressModInputTxWarning?: boolean;
     /** Whether the fallback band key PRINTS its permit sentence. The key's
      *  accessible name and its `data-default-permit` carry that fact either
      *  way — `semantic/BandInstrumentHost.svelte` owns the fact, the face
@@ -200,6 +212,16 @@
     bandPermitCaption?: boolean;
     displayFrameSource?: LcdSpectrumSource;
     readonlyDisplay?: Snippet<[RadioViewModel, LcdSpectrumFrame?]>;
+    /**
+     * MOR-2442 — opt-in for a BARE consumer (mobile's self-contained default
+     * composition, where neither `children` nor `regions`/`regionContent` is
+     * in use): compute the managed scope region and expose it through the
+     * bindable `managedScopeRegion` below, so the consumer forwards it to its
+     * own scope panel instead of subscribing a second time.
+     */
+    scopeManaged?: boolean;
+    /** MOR-2442 — the managed region output for the bare `scopeManaged` consumer. */
+    managedScopeRegion?: ManagedScopeRegion | undefined;
   }
   /**
    * MOR-2231 — `regions` routes `vfo`/`rxTx` through the generic `zoned()`
@@ -222,7 +244,7 @@
    * `zoneOwning()` returns non-null on both faces.
    */
   let {
-    children: hostedChildren, externalPresentation = null, strips = 'single', stripBy = 'receiver', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', bandPermitCaption = true, displayFrameSource, readonlyDisplay,
+    children: hostedChildren, externalPresentation = null, strips = 'single', stripBy = 'receiver', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', vfoTiles = 'all', suppressModInputTxWarning = false, bandPermitCaption = true, displayFrameSource, readonlyDisplay, scopeManaged = false, managedScopeRegion = $bindable(),
   }: Props = $props();
 
   /**
@@ -692,6 +714,10 @@
    * or absent list keeps the existing scalar.
    */
   let notchWidthChoices = $derived(runtime.caps?.notchWidthChoices);
+  /** MOR-2729: the same seam as `notchWidthChoices` above (MOR-1685) —
+   *  the break-in surface renders exactly the profile's published values,
+   *  and `[]` means none at all (X6100, X6200). */
+  let breakInChoices = $derived(runtime.caps?.breakInChoices);
   /** MOR-1731: consume the shared validated tri-state boundary. `undefined`
    * keeps legacy servers compatible; `null` is the adapter's fail-closed
    * result for present-but-unusable metadata. */
@@ -1420,12 +1446,15 @@
       finiteAppearance: selectedFiniteAppearance, rendererContext: ritXitFiniteRendererContext,
     });
 
+  // MOR-2442 — a bare consumer passes `scopeManaged` instead of `children`,
+  // so hardware detection must not demand the hosted snippet.
   let scopeFrameSource = $derived(
-    displayFrameSource ?? (hostedChildren !== undefined && getScopeSource() === 'hardware' ? 'hardware' : undefined),
+    displayFrameSource ?? ((hostedChildren !== undefined || scopeManaged)
+      && getScopeSource() === 'hardware' ? 'hardware' : undefined),
   );
   let managedScope = $derived(
     scopeFrameSource === 'hardware'
-      && (hostedChildren !== undefined || (regions && regionContent !== undefined)),
+      && (hostedChildren !== undefined || (regions && regionContent !== undefined) || scopeManaged),
   );
   let scopeDemanded = $state(true);
   let scopePresentation = $state.raw<ScopeFramePresentation | null>(null);
@@ -1473,7 +1502,7 @@
     if (!enabled) selectedDisplayFrame = undefined;
     untrack(refreshScopePassband);
   }
-  let managedScopeRegion: ManagedScopeRegion | undefined = $derived.by(() => {
+  let managedScopeRegionValue: ManagedScopeRegion | undefined = $derived.by(() => {
     if (!managedScope) return undefined;
     const resolution = scopePresentation?.resolution;
     const frameMode = scopePresentation?.envelope?.frame.mode;
@@ -1483,6 +1512,10 @@
       ? { frame: resolution.frame, frameMode, acceptedSequence, passband: scopePassband.display } : null;
     return { projection, demanded: scopeDemanded, setDemand: setManagedScopeDemand };
   });
+  // MOR-2442 — the bare `scopeManaged` consumer binds the same region the
+  // hosted/region consumers read through `InstrumentComposition`/snippet
+  // arguments; either way it is exactly one owner of the scope lease.
+  $effect(() => { managedScopeRegion = managedScopeRegionValue; });
   $effect(refreshScopePassband);
 
   let scopeAuthority = $derived.by(() => {
@@ -1704,6 +1737,12 @@
   ) as unknown as TxAuxLevelFeedback);
   let dataModeArmed = $derived(getDataModeArmed());
   let pendingDataMode = $derived(dataModeArmed.armed ? dataModeArmed.value : null);
+  // MOR-1689: Filter Shape's own pending target (set_filter_shape), fed to
+  // FilterInstrumentHost the same way pendingDataMode above is — the
+  // desktop-v2 shape buttons live there, not in the settings-modal
+  // FilterPanel.
+  let filterShapeArmed = $derived(getFilterShapeArmed());
+  let pendingFilterShape = $derived(filterShapeArmed.armed ? filterShapeArmed.value : null);
   let modInputArmed = $derived(getModInputArmed());
   let pendingModInput = $derived(modInputArmed.armed ? modInputArmed.value : null);
   let pendingPreamp = $derived(
@@ -2020,7 +2059,7 @@
   {#snippet children(rfFrontEndInstruments)}
   {#snippet vfoInstrumentComposition(vfoOperations: VfoOperationHandles)}
   <FilterInstrumentHost
-    {...filterFiniteRendererSelection} {view} {pendingFilter} {pendingDataMode} {pendingModInput}
+    {...filterFiniteRendererSelection} {view} {pendingFilter} {pendingFilterShape} {pendingDataMode} {pendingModInput}
     onModeChange={filterIntents.onModeChange}
     onFilterChange={filterIntents.onFilterChange}
     onFilterShapeChange={filterIntents.onFilterShapeChange}
@@ -2105,6 +2144,7 @@
             `receiver` path `slotPosition` is undefined and the attribute is
             absent, which is what keeps the shipped decks unchanged.
           -->
+          {@const operational = isOperationalStrip(view, receiverId)}
           <div
             class="channel-strip"
             data-testid={`channel-strip-${key}`}
@@ -2112,8 +2152,13 @@
             data-strip-receiver={receiverId}
             data-strip-slot={slotPosition}
             data-strip-active={active}
-            data-strip-operational={isOperationalStrip(view, receiverId)}
+            data-strip-operational={operational}
           >
+            {#if !operational}
+              <p class="strip-unavailable" data-strip-unavailable-reason>
+                {t('core.vfo.select.receiverUnavailableReason')}
+              </p>
+            {/if}
             <!--
               `selectionPoolSize`: the slice below holds this receiver's VFOs
               only, but the operator can still choose across the WHOLE radio —
@@ -2147,7 +2192,7 @@
               onSelectVfo={selectVfo}
               onTuneFrequency={tuneFrequency}
               onOpenFrequencyEntry={frequencyEntrySupported ? openFrequencyEntry : undefined}
-              disabled={!isOperationalStrip(view, receiverId)}
+              disabled={!operational}
               indicatorReceiver={receiverId}
               suppressIdentitySelectors={stripBy === 'slot'}
               {receiverInstruments}
@@ -2197,6 +2242,7 @@
       <VfoSurface
         viewModel={mountedView}
         {appearance}
+        {vfoTiles}
         operationInput={vfoOperationInput ?? undefined}
         {operationControls}
         onSelectVfo={selectVfo}
@@ -2272,7 +2318,12 @@
     capabilities load.
   -->
   {#snippet txAdjacentAlerts()}
-    <ModInputTxWarning />
+    <!-- MOR-1245: one gate covers every render path (dual zone, single
+         regions, single default, and the hostedChildren handoff), so a
+         shell with its own fixed instance turns ALL of them off together. -->
+    {#if !suppressModInputTxWarning}
+      <ModInputTxWarning />
+    {/if}
   {/snippet}
 
   <!--
@@ -2645,6 +2696,7 @@
         {standard}
         {breakInDelayFeedback}
         {autoTuneAvailable}
+        {breakInChoices}
         onBreakInMode={(mode) => cwIntents.onBreakInModeChange(mode)}
         onLevelChange={(field, value) => CW_LEVEL_INTENT[field](value)}
         onApfOn={(on) => cwIntents.onApfChange(on ? 1 : 0)}
@@ -2967,7 +3019,7 @@
       scopeControls: hostedScopeControls,
       txFaultRecovery,
       modInputTxWarning: txAdjacentAlerts,
-      managedScope: managedScopeRegion,
+      managedScope: managedScopeRegionValue,
     })}
   {:else if strips === 'dual'}
     <!--
@@ -3048,7 +3100,7 @@
       {/if}
       {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBareSurfaces)}
       {#if regionContent}
-        {@render regionContent(scopeControlsInRegionContent ? zonedScopeControls : undefined, managedScopeRegion)}
+        {@render regionContent(scopeControlsInRegionContent ? zonedScopeControls : undefined, managedScopeRegionValue)}
       {/if}
       </div>
       <div class:desktop-controls-right={vfoAppearance !== 'semantic'} class:region-passthrough={vfoAppearance === 'semantic'}>
@@ -3241,5 +3293,15 @@
   .channel-strip[data-strip-active='true'] {
     border-left: 2px solid var(--v2-accent-cyan, #00d4ff);
     padding-left: 6px;
+  }
+
+  /* MOR-1260: the bar is a shape, so forced-colors cannot flatten it. */
+  @media (forced-colors: active) {
+    .channel-strip[data-strip-active='true'] { border-left-color: CanvasText; }
+  }
+
+  .strip-unavailable {
+    margin: 0 0 4px;
+    font-size: 11px;
   }
 </style>

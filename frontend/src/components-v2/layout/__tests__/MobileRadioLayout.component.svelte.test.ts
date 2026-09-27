@@ -387,6 +387,21 @@ describe('MobileRadioLayout structure', () => {
     expect(indicator.style.background).toContain('#facc15');
   });
 
+  // MOR-2705: an unread TX state carries NO title — never the placeholder
+  // word 'TX status unknown'. Known states keep their catalog titles.
+  it('carries no title while the TX state is unknown (MOR-2705)', () => {
+    tx.emitStale();
+    const indicator = mountMobile().querySelector<HTMLElement>('.m-tx-indicator')!;
+    expect(indicator.dataset.rf).toBe('unknown');
+    expect(indicator.getAttribute('title')).toBeNull();
+  });
+
+  it('keeps its catalog title for a known TX state (MOR-2705)', () => {
+    const indicator = mountMobile().querySelector<HTMLElement>('.m-tx-indicator')!;
+    expect(indicator.dataset.rf).toBe('off');
+    expect(indicator.getAttribute('title')).toBe('TX allowed');
+  });
+
   it('renders settings button', () => {
     expect(mountMobile().querySelector('.m-settings-btn')).not.toBeNull();
   });
@@ -408,6 +423,38 @@ describe('MobileRadioLayout structure', () => {
     expect(t.querySelector('.amber-lcd')).toBeNull();
     // The VFO overlay survives without the stage element.
     expect(t.querySelector('.m-ls-overlay')).not.toBeNull();
+  });
+});
+
+// MOR-2240 — phone-landscape must consume the full viewport width, and every
+// scalar the mobile path mounts must render through a formatter (percent/dB),
+// never the raw normalized float the bench caught on the AF slider.
+describe('MobileRadioLayout landscape spans the viewport (MOR-2240)', () => {
+  it('mounts the full-width landscape root, never the portrait column', () => {
+    const t = mountLandscape();
+    expect(t.querySelector('.m-landscape')).not.toBeNull();
+    expect(t.querySelector('.m-layout')).toBeNull();
+    expect(t.querySelector('.m-ls-overlay')).not.toBeNull();
+  });
+
+  // jsdom computes no CSS, so the full-width contract is pinned in the
+  // component source — the same raw-source idiom "hides the AUTO toggle"
+  // below applies to the SpectrumPanel branch's `hideAutoStepToggle` prop.
+  it('declares the landscape surface at full viewport width', () => {
+    const block = mobileLayoutSource.match(/\.m-landscape\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(block).toContain('width: 100dvw');
+    expect(block).toContain('left: 0');
+    expect(block).not.toContain('max-width');
+  });
+
+  // The RF Power modal is the only inline scalar this layout mounts on its
+  // own; child panels' levels (e.g. the AF control in EssentialsPanel)
+  // carry their own formatter pins. A conditional-less grep over the raw
+  // source keeps the contract against any future bare float.
+  it('routes every inline ValueControl through a display formatter', () => {
+    const tags = [...mobileLayoutSource.matchAll(/<ValueControl[\s\S]*?\/>/g)].map((m) => m[0]);
+    expect(tags.length).toBeGreaterThan(0);
+    for (const tag of tags) expect(tag).toContain('displayFn=');
   });
 });
 
@@ -695,8 +742,9 @@ describe('mobile header follows the active receiver (MOR-2511)', () => {
     const t = mountMobile();
     expect(t.querySelector('.m-vfo-freq')?.textContent).toBe('14200400');
     expect(t.querySelector('.m-vfo-mode')?.textContent).toBe('USB');
-    expect(t.querySelector('.m-vfo-sub')?.textContent).toBe('14.074');
-    expect(t.querySelector('.m-vfo-sub')?.getAttribute('title')).toBe('MAIN');
+    // MOR-2662 (owner ruling 2026-09-26): the phone shows only ONE VFO — the
+    // active one — so the other receiver's frequency is gone from the header.
+    expect(t.querySelector('.m-vfo-sub')).toBeNull();
     expect(t.querySelector('.m-smeter-bar')?.textContent).toBe('7');
     rotate(true);
     expect(t.querySelector('[data-testid="freq-echo"]')?.textContent).toBe('14200400');
@@ -707,9 +755,8 @@ describe('mobile header follows the active receiver (MOR-2511)', () => {
     const t = mountMobile();
     expect(t.querySelector('.m-vfo-freq')?.textContent).toBe('14074000');
     expect(t.querySelector('.m-vfo-mode')?.textContent).toBe('USB');
-    const sub = t.querySelector('.m-vfo-sub');
-    expect(sub?.textContent).toBe('14.200');
-    expect(sub?.getAttribute('title')).toBe('SUB');
+    // MOR-2662: same ruling, the mirrored direction — no SUB frequency either.
+    expect(t.querySelector('.m-vfo-sub')).toBeNull();
     expect(t.querySelector('.m-smeter-bar')?.textContent).toBe('3');
   });
 
@@ -932,7 +979,9 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
   });
 
   it('mounts the managed TOT control only through the TxPanel fallback', () => {
-    expect(mobileLayoutSource).toContain('<TxPanel showManagedTotControl={true} />');
+    // MOR-1245: the sheet's TxPanel also suppresses its inline MOD-input
+    // warning — the shell's fixed overlay is the one banner on mobile.
+    expect(mobileLayoutSource).toContain('<TxPanel showManagedTotControl={true} suppressModInputTxWarning />');
     expect(mobileLayoutSource).not.toContain('import ManagedTotControl');
     expect(mobileLayoutSource).not.toContain('<ManagedTotControl');
   });

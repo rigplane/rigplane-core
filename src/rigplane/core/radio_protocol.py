@@ -1789,11 +1789,7 @@ class CwControlCapable(Protocol):
         ...
 
     async def set_break_in(self, mode: BreakInMode | int) -> None:
-        """Set CW break-in mode (accepts :class:`BreakInMode` or int).
-
-        Backends that only expose binary on/off (e.g. Yaesu CAT) treat
-        :attr:`BreakInMode.OFF` as off and any other value as on.
-        """
+        """Set CW break-in mode (accepts :class:`BreakInMode` or int)."""
         ...
 
     async def set_break_in_delay(self, level: int) -> None:

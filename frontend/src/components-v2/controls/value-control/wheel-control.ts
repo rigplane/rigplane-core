@@ -51,7 +51,18 @@ export function wheelControl(node: HTMLElement, initial: WheelControl) {
     if (event.button === 0 && event.isPrimary !== false) arm();
   }
   function key(event: KeyboardEvent) {
-    if (event.key === 'Escape') disarm();
+    // MOR-2754: the Escape that ends a wheel adjustment is consumed here —
+    // without this, it bubbles to the window layer and fires the global
+    // clear_rit_xit binding. A bare Escape on an unarmed control passes
+    // through untouched.
+    if (event.key === 'Escape') {
+      const wasArmed = armed;
+      disarm();
+      if (wasArmed) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    }
     else if ((event.key === 'Enter' || event.key === ' ') && !event.repeat) {
       arm();
       event.preventDefault();

@@ -26,6 +26,7 @@ from rigplane.core.acquisition_scheduler import (
     StateFreshnessService,
     derive_tx_active,
     resolve_available_when,
+    tx_active,
 )
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import (
@@ -4323,6 +4324,145 @@ def test_tick_never_discards_a_field_the_profile_declares_unconditionally() -> N
     assert store.snapshot().field(preamp).value == 1
 
 
+def test_due_requests_skips_a_group_whose_paths_are_all_unavailable() -> None:
+    """A cadence group every clause contradicts is not dispatched (MOR-2748).
+
+    ``availability.get(path, True) is False`` -- resolved by
+    :func:`resolve_available_when` -- is the only gate; ``None`` (a clause
+    source nobody observed yet) never skips a group.
+    """
+
+    scheduler = _fm_absent_scheduler()
+    blocked = resolve_available_when(
+        scheduler._profile, _snapshot_of({_AVAIL_MODE: "FM"})
+    )
+    assert blocked == {_AVAIL_TARGET: False}
+
+    requests = scheduler.due_requests(availability=blocked)
+    assert all(_AVAIL_TARGET not in request.paths for request in requests)
+
+    # Available again: the same group is due at its normal cadence.
+    allowed = resolve_available_when(
+        scheduler._profile, _snapshot_of({_AVAIL_MODE: "USB"})
+    )
+    requests = scheduler.due_requests(availability=allowed)
+    assert any(_AVAIL_TARGET in request.paths for request in requests)
+
+
+def test_due_requests_dispatches_a_group_while_one_path_is_available() -> None:
+    """The whole group dispatches when at least one path holds (MOR-2748).
+
+    Two same-receiver operator-controls fields share the group key, so one
+    resolved ``False`` path does not withhold the group; the gate fires only
+    when EVERY path resolves ``False``.
+    """
+
+    shape = FieldPath.receiver("main", "operator_controls", "filter_shape")
+    notch = FieldPath.receiver("main", "operator_controls", "manual_notch_width")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    # identical policy values for both paths -> one cadence group
+    policy = AcquisitionPolicy(
+        available_when=(
+            AvailabilityClause(field=mode, operator="not_in", value=["FM"]),
+        )
+    )
+    profile = _profile(
+        (mode, shape, notch),
+        field_policies={shape: policy, notch: policy},
+    )
+    scheduler = AcquisitionScheduler(profile=profile, clock=FreshnessClock(start=100.0))
+    mixed = {shape: False, notch: True}
+
+    requests = scheduler.due_requests(availability=mixed)
+
+    dispatched = {path for request in requests for path in request.paths}
+    assert {shape, notch} <= dispatched
+
+
+_IC7610_MAIN_SHAPE = FieldPath.receiver("main", "operator_controls", "filter_shape")
+_IC7610_SUB_SHAPE = FieldPath.receiver("sub", "operator_controls", "filter_shape")
+
+
+def _ic7610_scheduler_availability(
+    main_mode: str | None,
+    sub_mode: str | None,
+) -> tuple[
+    AcquisitionScheduler,
+    dict[FieldPath, bool | None],
+]:
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    scheduler = AcquisitionScheduler(profile=acquisition)
+    store = StateStore()
+    at = time.monotonic()
+    for receiver, mode in (("main", main_mode), ("sub", sub_mode)):
+        if mode is None:
+            continue
+        store.apply(
+            _observation(FieldPath.active(receiver, "freq_mode", "mode"), mode, at=at)
+        )
+    return (
+        scheduler,
+        resolve_available_when(scheduler._profile, store.snapshot()),
+    )
+
+
+def _ic7610_due_and_sent(
+    scheduler: AcquisitionScheduler,
+    availability: dict[FieldPath, bool | None],
+) -> tuple[tuple[AcquisitionRequest, ...], list[Any]]:
+    executor, sent = recording_executor(get_radio_profile("IC-7610"))
+    requests = scheduler.due_requests(availability=availability)
+    for request in requests:
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+    return requests, sent
+
+
+def test_ic7610_main_filter_shape_read_is_gated_by_main_mode() -> None:
+    """MAIN in RTTY: no MAIN `16 56` read; MAIN back in USB: it fires (MOR-2748).
+
+    The IC-7610 Basic Manual specifies the IF filter shape for SSB/CW, and on
+    the bench the radio answered the read with a bare NG in RTTY (MOR-2733).
+    """
+
+    # MAIN RTTY / SUB USB: MAIN's shape is withheld, SUB's is due.
+    scheduler, availability = _ic7610_scheduler_availability("RTTY", "USB")
+    requests, sent = _ic7610_due_and_sent(scheduler, availability)
+    dispatched = {path for request in requests for path in request.paths}
+    assert _IC7610_MAIN_SHAPE not in dispatched
+    assert _IC7610_SUB_SHAPE in dispatched
+    assert acquisition_query(0x16, sub=0x56, receiver=0) not in sent
+    assert acquisition_query(0x16, sub=0x56, receiver=1) in sent
+
+    # MAIN USB: the MAIN 16 56 read is due again.
+    scheduler, availability = _ic7610_scheduler_availability("USB", "RTTY")
+    requests, sent = _ic7610_due_and_sent(scheduler, availability)
+    dispatched = {path for request in requests for path in request.paths}
+    assert _IC7610_MAIN_SHAPE in dispatched
+    assert acquisition_query(0x16, sub=0x56, receiver=0) in sent
+
+
+def test_ic7610_sub_filter_shape_read_is_gated_by_sub_mode() -> None:
+    """SUB's shape gates on SUB's mode independently of MAIN's (MOR-2748)."""
+
+    scheduler, availability = _ic7610_scheduler_availability("USB", "RTTY")
+    requests, sent = _ic7610_due_and_sent(scheduler, availability)
+    dispatched = {path for request in requests for path in request.paths}
+    assert _IC7610_SUB_SHAPE not in dispatched
+    assert _IC7610_MAIN_SHAPE in dispatched
+    assert acquisition_query(0x16, sub=0x56, receiver=1) not in sent
+    assert acquisition_query(0x16, sub=0x56, receiver=0) in sent
+
+    scheduler, availability = _ic7610_scheduler_availability("RTTY", "USB")
+    requests, sent = _ic7610_due_and_sent(scheduler, availability)
+    dispatched = {path for request in requests for path in request.paths}
+    assert _IC7610_SUB_SHAPE in dispatched
+    assert acquisition_query(0x16, sub=0x56, receiver=1) in sent
+
+
 def test_tick_discards_the_attenuator_above_the_declared_band_bound() -> None:
     store = StateStore()
     service = _ftx1_freshness_service(store)
@@ -5241,6 +5381,37 @@ def test_freshness_tick_treats_a_raising_tx_hint_as_false(
 
     assert scheduler.pending_requests() == ()
     assert any("tx_active_hint" in record.message for record in caplog.records)
+
+
+def test_tx_active_helper_pins_store_hint_and_failure_cases() -> None:
+    """MOR-2638: one ``tx_active`` body for the drain and the freshness service.
+
+    Store PTT alone opens the gate; a true hint opens it when the store has
+    not confirmed; a raising hint is False; a None hint leaves the store's
+    answer (including the drain's no-store-yet case).
+    """
+
+    clock = FreshnessClock(start=100.0)
+    ptt = FieldPath.global_("tx_state", "ptt")
+    keyed = StateStore(freshness_clock=clock)
+    keyed.apply(_observation(ptt, True, at=100.0, max_age=1000.0))
+    idle = StateStore(freshness_clock=clock)
+
+    def raising() -> bool:
+        raise RuntimeError("hint unavailable")
+
+    # the store says TX
+    assert tx_active(keyed, lambda: False) is True
+    assert tx_active(keyed, raising) is True
+    # the hint says TX
+    assert tx_active(idle, lambda: True) is True
+    # the hint raises -> False
+    assert tx_active(idle, raising) is False
+    # a None hint -> the store's answer
+    assert tx_active(keyed, None) is True
+    assert tx_active(idle, None) is False
+    assert tx_active(None, None) is False
+    assert tx_active(None, lambda: True) is True
 
 
 def test_civ_rx_stamps_the_demoted_ttl_on_poll_responses() -> None:

@@ -25,17 +25,25 @@
     type WorkspaceNoticeKind,
   } from '../../presentation/workspace/store.svelte';
   import {
-    WORKSPACE_DESIGN_LANGUAGE_IDS, WORKSPACE_LAYOUT_IDS, WORKSPACE_THEME_IDS,
-    type WorkspaceDesignLanguageId, type WorkspaceLayoutId, type WorkspaceThemeId,
-    type WorkspaceV1, type WorkspaceZoneId,
+    WORKSPACE_SKIN_DESIGN_LANGUAGES, WORKSPACE_LAYOUT_IDS, WORKSPACE_THEME_IDS,
+    workspaceDesignLanguageForSkin,
+    type WorkspaceDesignLanguageId, type WorkspaceDesignLanguageSkin, type WorkspaceLayoutId,
+    type WorkspaceThemeId, type WorkspaceV1, type WorkspaceZoneId,
   } from '../../presentation/workspace/contract';
   import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
+  import type { SkinId } from '../../skins/registry';
   import { getAvailableThemes, setThemeUserChoice } from '../theme/theme-switcher';
   import { t } from '$lib/i18n';
+
+  /** MOR-2215 variant B / MOR-2218: the operator switches only among the
+   *  current skin's declared languages (the resolved skin, from RadioLayout). */
+  let { skinId = 'desktop-v2' }: { skinId?: SkinId } = $props();
 
   const workspace = $derived(getWorkspace());
   const notice = $derived(getWorkspaceNotice());
   const themeNames = new Map(getAvailableThemes().map((th) => [th.id, th.name]));
+  const declared = $derived(WORKSPACE_SKIN_DESIGN_LANGUAGES[skinId]);
+  const language = $derived(workspaceDesignLanguageForSkin(workspace.designLanguageBySkin, skinId));
 
   let previous = $state<WorkspaceV1 | null>(null);
 
@@ -58,7 +66,7 @@
     setLayout((ev.currentTarget as HTMLSelectElement).value as WorkspaceLayoutId);
   }
   function handleLanguageChange(ev: Event): void {
-    setDesignLanguage((ev.currentTarget as HTMLSelectElement).value as WorkspaceDesignLanguageId);
+    setDesignLanguage(skinId as WorkspaceDesignLanguageSkin, (ev.currentTarget as HTMLSelectElement).value as WorkspaceDesignLanguageId);
   }
   function handleThemeChange(ev: Event): void {
     setThemeUserChoice((ev.currentTarget as HTMLSelectElement).value as WorkspaceThemeId);
@@ -80,7 +88,8 @@
     if (!previous) return;
     const prior = previous;
     setLayout(prior.layout);
-    setDesignLanguage(prior.designLanguage);
+    for (const [skin, id] of Object.entries(prior.designLanguageBySkin) as
+      [WorkspaceDesignLanguageSkin, WorkspaceDesignLanguageId][]) setDesignLanguage(skin, id);
     setThemeUserChoice(prior.theme);
     setDensity(prior.density);
     for (const [zone, surfaces] of Object.entries(prior.visibleSurfaces) as
@@ -128,14 +137,16 @@
     </select>
   </label>
 
-  <label class="ws-row">
-    <span>{t('core.settings.workspace.designLanguageLabel')}</span>
-    <select data-testid="workspace-language-select" value={workspace.designLanguage} onchange={handleLanguageChange}>
-      {#each WORKSPACE_DESIGN_LANGUAGE_IDS as id (id)}
-        <option value={id}>{humanize(id)}</option>
-      {/each}
-    </select>
-  </label>
+  {#if declared}
+    <label class="ws-row">
+      <span>{t('core.settings.workspace.designLanguageLabel')}</span>
+      <select data-testid="workspace-language-select" value={language} onchange={handleLanguageChange}>
+        {#each declared.supported as id (id)}
+          <option value={id}>{humanize(id)}</option>
+        {/each}
+      </select>
+    </label>
+  {/if}
 
   <label class="ws-row">
     <span>{t('core.settings.workspace.themeLabel')}</span>

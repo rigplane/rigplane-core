@@ -5,6 +5,7 @@
   import { getShortcutHint } from '../layout/shortcut-hints';
   import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
   import type { ControlDomain } from '$lib/types/capabilities';
+  import { finiteValue, valueText } from '../../primitives/reading-text';
 
   import { deriveRitXitProps, getRitXitHandlers } from '$lib/runtime/adapters/panel-adapters';
 
@@ -39,10 +40,11 @@
   // passes the gate with a `NaN` offset (panel-props.ts no longer
   // fabricates `?? 0`). `formatOffsetKHz` (rit-utils.ts, not an A12 owner)
   // has no NaN guard: `hz > 0` is false for NaN, so it falls to the
-  // negative branch and renders the literal "−NaN kHz". Guard locally,
-  // same shape as FilterPanel.svelte's `formatWidthDisplay`.
+  // negative branch and renders the literal "−NaN kHz". MOR-2667: the
+  // unread offset renders an unlit, EMPTY box in a reserved slot (the
+  // `.offset` rule below) — never a `'--- kHz'` placeholder.
   function formatOffsetDisplay(hz: number): string {
-    return Number.isFinite(hz) ? formatOffsetKHz(hz) : '--- kHz';
+    return valueText(finiteValue(hz), formatOffsetKHz);
   }
 
   function handleOffsetChange(value: number) {
@@ -127,6 +129,12 @@
     font-size: 10px;
     color: var(--v2-text-disabled);
     transition: color 150ms ease;
+    /* MOR-2667: the offset box stays reserved in every state — 10ch covers
+       the widest formatOffsetKHz text over the panel's fallback domain
+       (±9999 Hz → '±10.00 kHz'); tabular digits keep a changing value
+       from shifting the row. */
+    min-inline-size: 10ch;
+    font-variant-numeric: tabular-nums;
   }
 
   .offset.active {

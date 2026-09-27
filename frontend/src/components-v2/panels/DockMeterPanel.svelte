@@ -10,6 +10,7 @@
     swrLevel,
     type MeterSource,
   } from './meter-utils';
+  import { finiteValue, valueText } from '../../primitives/reading-text';
 
   interface Props {
     sValue: number;
@@ -23,6 +24,9 @@
 
   let { sValue, rfPower, swr, alc, txActive, meterSource, onMeterSourceChange }: Props = $props();
 
+  // MOR-2730: NaN is an unread S-meter — no S text and an empty S bar.
+  let sReading = $derived(finiteValue(sValue));
+
   const scaleLabels = [
     { label: '0', left: '11%' },
     { label: '10', left: '27%' },
@@ -34,7 +38,7 @@
 
   let sourceSummary = $derived(
     meterSource === 'S'
-      ? { label: 'S', value: formatSMeter(sValue) }
+      ? { label: 'S', value: valueText(sReading, formatSMeter) }
       : meterSource === 'SWR'
         ? { label: 'SWR', value: formatSwr(swr) }
         : { label: 'Po', value: formatPowerWatts(rfPower) },
@@ -50,8 +54,8 @@
       key: 'S',
       label: 'S',
       value: sValue,
-      display: formatSMeter(sValue),
-      fillPct: sLevel(sValue) * 100,
+      display: valueText(sReading, formatSMeter),
+      fillPct: sReading === null ? 0 : sLevel(sReading) * 100,
       fill: 'var(--v2-meter-s-fill)',
       track: 'var(--v2-meter-s-track)',
       valueClass: 's',

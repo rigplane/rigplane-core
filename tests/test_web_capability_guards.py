@@ -818,6 +818,75 @@ class TestCommandGuards:
         handler._ensure_capability("dual_rx", "set_dual_watch")
 
 
+class TestReceiverValidationSeat:
+    """Unsupported receivers are refused before enqueue, on the radio's say-so.
+
+    MOR-2484: the web enqueue gate calls the single runtime seat
+    (``require_receiver_for_profile``), not a web copy. A single-receiver
+    profile (IC-7300) refuses receiver=1 at enqueue time with the
+    runtime's ``CommandError`` message, so the command is never queued;
+    the dual-receiver IC-7610 admits both receivers.
+    """
+
+    def test_single_receiver_refused_before_enqueue(self):
+        from rigplane.core.exceptions import CommandError
+        from rigplane.web.handlers import ControlHandler
+
+        radio = _make_radio("IC-7300")
+        handler = ControlHandler.__new__(ControlHandler)
+        handler._radio = radio
+        queue: list[object] = []
+
+        with pytest.raises(CommandError, match="does not support receiver=1"):
+            handler._enqueue_rc_frequency(  # noqa: SLF001
+                "set_freq",
+                {"freq": 14_074_000, "receiver": 1},
+                SimpleNamespace(put=queue.append),
+                radio,
+            )
+        assert queue == []
+        # No web *copy* remains: the gate calls the runtime seat directly,
+        # so the old ControlHandler method and the old poller copy are gone.
+        # The poller's drain-time guard is a one-line call into the same
+        # runtime seat (pinned by test_profiles_routing), not a copy.
+        assert not hasattr(ControlHandler, "_ensure_receiver_supported")
+        import rigplane.web.handlers.control as control_mod
+        import rigplane.web.radio_poller as poller_mod
+
+        assert not hasattr(control_mod, "_ensure_receiver_supported")
+        assert not hasattr(poller_mod.RadioPoller, "_ensure_receiver_supported")
+
+    def test_dual_receiver_admitted_to_queue(self):
+        from rigplane.web.handlers import ControlHandler
+
+        radio = _make_radio("IC-7610")
+        handler = ControlHandler.__new__(ControlHandler)
+        handler._radio = radio
+        queue: list[object] = []
+
+        result = handler._enqueue_rc_frequency(  # noqa: SLF001
+            "set_freq",
+            {"freq": 14_074_000, "receiver": 1},
+            SimpleNamespace(put=queue.append),
+            radio,
+        )
+        assert result == {"freq": 14_074_000, "receiver": 1}
+        assert len(queue) == 1
+
+    def test_web_gate_matches_runtime_seat_message(self):
+        """The web gate raises the runtime seat's message verbatim."""
+        from rigplane.core.exceptions import CommandError
+        from rigplane.runtime._dual_rx_runtime import require_receiver_for_profile
+        from rigplane.web.handlers.control import _refuse_unsupported_receiver
+
+        radio = _make_radio("IC-7300")
+        with pytest.raises(CommandError) as gate_exc:
+            _refuse_unsupported_receiver(radio, 1, operation="set_freq")
+        with pytest.raises(CommandError) as seat_exc:
+            require_receiver_for_profile(radio.profile, 1, operation="set_freq")
+        assert str(gate_exc.value) == str(seat_exc.value)
+
+
 # ── Profile-declared second receiver (owner ruling, 2026-09-08) ─
 
 
@@ -976,7 +1045,8 @@ class TestSubReceiverAfLevelTag:
 
 class TestReceiverDeclaredControlTags:
     """``attenuator_main``/``preamp_main``/``attenuator_sub``/``preamp_sub``/
-    ``agc_time_constant``/``agc_time_constant_sub`` are served only for
+    ``agc_time_constant``/``agc_time_constant_sub``/``manual_notch_width``/
+    ``manual_notch_width_sub`` are served only for
     receivers whose fields the profile itself declares (MOR-2588), following
     the ``af_level_sub`` serving pattern (MOR-2579) with the profile's
     declared acquisition paths as the fact. ``supports_command`` admission is
@@ -1000,11 +1070,18 @@ class TestReceiverDeclaredControlTags:
                     "preamp_sub",
                     "agc_time_constant",
                     "agc_time_constant_sub",
+                    "manual_notch_width",
+                    "manual_notch_width_sub",
                 },
             ),
             (
                 "ic7300",
-                {"attenuator_main", "preamp_main", "agc_time_constant"},
+                {
+                    "attenuator_main",
+                    "preamp_main",
+                    "agc_time_constant",
+                    "manual_notch_width",
+                },
             ),
             ("ic9700", {"attenuator_main", "preamp_main"}),
             ("ic705", {"attenuator_main", "preamp_main"}),
@@ -1041,6 +1118,22 @@ class TestReceiverDeclaredControlTags:
             assert radio.profile.supports_command("set_agc_time_constant")
             assert "agc_time_constant" not in projected_receiver_control_tags(radio)
 
+    def test_width_values_and_commands_alone_do_not_project_the_notch_width_tag(
+        self,
+    ):
+        """MOR-2726: IC-9700 and IC-705 declare ``set_manual_notch_width``
+        and ``[notch] width_values`` without declaring the polled field."""
+        from rigplane.rig_loader import load_rig
+        from rigplane.runtime.radio import CoreRadio
+        from rigplane.web.runtime_helpers import projected_receiver_control_tags
+
+        for rig in ("ic9700", "ic705"):
+            config = load_rig(_RIGS_DIR / f"{rig}.toml")
+            radio = CoreRadio("127.0.0.1", profile=config.to_profile())
+            assert radio.profile.supports_command("set_manual_notch_width")
+            assert radio.profile.notch_width_values
+            assert "manual_notch_width" not in projected_receiver_control_tags(radio)
+
     @pytest.mark.asyncio
     async def test_info_and_capabilities_serve_the_declared_tags(self):
         from rigplane.core.state_pipeline_contracts import FieldPath
@@ -1054,6 +1147,8 @@ class TestReceiverDeclaredControlTags:
                 "preamp_sub",
                 "agc_time_constant",
                 "agc_time_constant_sub",
+                "manual_notch_width",
+                "manual_notch_width_sub",
             }
         )
         undeclared = {
@@ -1063,6 +1158,8 @@ class TestReceiverDeclaredControlTags:
             FieldPath.parse("receiver.sub.operator_controls.preamp"),
             FieldPath.parse("receiver.main.operator_controls.agc_time_constant"),
             FieldPath.parse("receiver.sub.operator_controls.agc_time_constant"),
+            FieldPath.parse("receiver.main.operator_controls.manual_notch_width"),
+            FieldPath.parse("receiver.sub.operator_controls.manual_notch_width"),
         }
         stripped = _make_radio("IC-7610")
         acquisition = stripped.profile.state_acquisition

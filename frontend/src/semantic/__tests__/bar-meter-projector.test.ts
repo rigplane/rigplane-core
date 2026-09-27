@@ -124,8 +124,8 @@ describe('projectBarMeters', () => {
     ]);
     expect(projected[0]).toMatchObject({
       motionFraction: 128 / 255,
-      displayText: '128 raw',
-      accessibleDescription: 'Po: Observed. 128 raw',
+      displayText: '',
+      accessibleDescription: 'Po',
       observed: true,
       gauge: true,
       showPeak: true,
@@ -165,7 +165,8 @@ describe('projectBarMeters', () => {
     });
   });
 
-  // MOR-2425/R41: the description says 'Observed' for BOTH stale and current.
+  // MOR-2705 part 4b: current, stale and indeterminate name the value
+  // alike; idle and unknown name only the label — no status word, ever.
   it('keeps stale, unknown, idle, and indeterminate TX observations distinct (R29/R32: stale keeps its value; idle/unknown are an empty scale)', () => {
     const view = base();
     setDisplay(view, 'power', { state: 'stale', value: 170 });
@@ -175,8 +176,8 @@ describe('projectBarMeters', () => {
       state: 'stale',
       domain: { kind: 'raw' },
       motionFraction: 170 / 255,
-      displayText: '170 raw',
-      accessibleDescription: 'Po: Observed. 170 raw',
+      displayText: '',
+      accessibleDescription: 'Po',
       observed: true,
       gauge: true,
       showPeak: false,
@@ -188,7 +189,7 @@ describe('projectBarMeters', () => {
       state: 'unknown',
       motionFraction: null,
       displayText: '',
-      accessibleDescription: 'Po: No reading',
+      accessibleDescription: 'Po',
       observed: false,
       gauge: true,
     });
@@ -201,7 +202,7 @@ describe('projectBarMeters', () => {
       state: 'idle',
       motionFraction: null,
       displayText: '',
-      accessibleDescription: 'Po: Not measuring in receive',
+      accessibleDescription: 'Po',
       observed: false,
       gauge: true,
     });
@@ -211,23 +212,25 @@ describe('projectBarMeters', () => {
     expect(projectBarMeters(view)[0]).toMatchObject({
       state: 'current',
       motionFraction: 170 / 255,
-      displayText: '170 raw',
+      displayText: '',
       stateText: '',
-      accessibleDescription: 'Po: RF relevance indeterminate. Observed. 170 raw',
+      accessibleDescription: 'Po',
       observed: true,
       gauge: true,
     });
 
-    // MOR-2425/R41 + MOR-2540: a retained reading keeps its digits whether
+    // MOR-2425/R41 + MOR-2540: a retained reading keeps its fill whether
     // current or stale — and since MOR-2540 the indeterminate-relevance
     // case carries no ' ?' suffix either; no placeholder text on screen.
+    // MOR-2722 part B: a raw-domain value draws no number and no 'raw'
+    // word; the accessible name is the label alone.
     setDisplay(view, 'power', { state: 'stale', value: 170 });
     expect(projectBarMeters(view)[0]).toMatchObject({
       state: 'stale',
       motionFraction: 170 / 255,
-      displayText: '170 raw',
+      displayText: '',
       stateText: '',
-      accessibleDescription: 'Po: RF relevance indeterminate. Observed. 170 raw',
+      accessibleDescription: 'Po',
       observed: true,
       gauge: true,
     });
@@ -312,7 +315,7 @@ describe('projectBarMeters', () => {
       state: 'current',
       domain: { kind: 'raw' },
       motionFraction: 50 / 255,
-      displayText: '50 raw',
+      displayText: '',
       fault: false,
       showPeak: false,
     });
@@ -335,7 +338,8 @@ describe('projectBarMeters', () => {
       state: 'current',
       domain: { kind: 'unknown' },
       motionFraction: null,
-      displayText: '50 unit unknown',
+      displayText: '',
+      accessibleDescription: 'Po',
       fault: false,
       showPeak: false,
     });
@@ -354,7 +358,7 @@ describe('projectBarMeters', () => {
       state: 'current',
       domain: { kind: 'raw' },
       motionFraction: 120 / 255,
-      displayText: '120 raw',
+      displayText: '',
       ratioScale: false,
       fault: false,
       showPeak: false,
@@ -368,7 +372,7 @@ describe('projectBarMeters', () => {
       state: 'current',
       domain: { kind: 'unknown' },
       motionFraction: null,
-      displayText: '120 unit unknown',
+      displayText: '',
       ratioScale: false,
       fault: false,
     });
@@ -674,7 +678,7 @@ it('keeps a TX-only meter projected, unlit and placeholder-free on RX (MOR-2540)
     motionFraction: null,
     displayText: '',
     stateText: '',
-    accessibleDescription: 'Po: Not measuring in receive',
+    accessibleDescription: 'Po',
   });
   expect(power.displayText).not.toContain('?');
   expect(power.accessibleDescription).not.toContain('?');

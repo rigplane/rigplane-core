@@ -144,7 +144,7 @@ describe('fieldline token set implements the MOR-977 §2.2 grammar', () => {
   });
 
   it('clamps out "dense" and declares the cockpit incompatible (MOR-977 §4.4)', () => {
-    expect(fieldline.density).toEqual({ kind: 'clamped', supported: ['comfortable', 'compact'] });
+    expect(fieldline.density).toEqual({ kind: 'clamped', supported: ['comfortable', 'compact'], default: 'comfortable' });
     expect(fieldline.layoutCompatibility).toContainEqual(
       expect.objectContaining({ layoutId: 'dual-receiver-cockpit', compatible: false }),
     );

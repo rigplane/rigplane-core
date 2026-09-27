@@ -165,7 +165,10 @@
           onchange={(e) => onModInputChange(Number(e.currentTarget.value))}
         >
           {#if modInputSource === null}
-            <option value="" disabled>—</option>
+            <!-- MOR-2659: an unread mod-input renders a blank, unlit choice —
+                 empty text, never a dash (PR #3733 FilterInstrumentHost
+                 precedent). The select's grid/flex row keeps its width. -->
+            <option value="" disabled selected></option>
           {/if}
           {#each modInputChoices as option (option.value)}
             <option value={String(option.value)}>{option.label}</option>

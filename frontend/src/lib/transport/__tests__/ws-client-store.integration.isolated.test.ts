@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import type { ReceiverState, ServerState } from '../../types/state';
 import type { Capabilities } from '../../types/capabilities';
 import { MockWebSocket, instances } from './support/fake-ws-backend';
@@ -156,10 +156,13 @@ function sendStateUpdate(socket: MockWebSocket, data: Record<string, unknown>): 
   socket.simulateMessage(JSON.stringify({ type: 'state_update', data }));
 }
 
+let loadedWsClient: typeof import('../ws-client') | null = null;
+
 // Fresh module graph per test so module-level singletons in both ws-client
 // and radio.svelte start clean (``fast`` project runs ``isolate: false``).
 async function loadModules() {
   const wsClient = await import('../ws-client');
+  loadedWsClient = wsClient;
   const store = await import('../../stores/radio.svelte');
   const capabilities = await import('../../stores/capabilities.svelte');
   return { wsClient, store, capabilities };
@@ -184,6 +187,11 @@ describe('ws-client → real radio store gate (integration)', () => {
   });
 
   afterEach(() => {
+    // ``vi.resetModules()`` does not stop the client the test loaded; left
+    // connected, a capability retry it armed calls the shared
+    // ``fetchCapabilities`` mock during a later test ('test teardown' below).
+    loadedWsClient?.disconnect();
+    loadedWsClient = null;
     globalThis.WebSocket = originalWebSocket;
     vi.resetModules();
   });
@@ -761,13 +769,18 @@ describe('ws-client → real radio store gate (integration)', () => {
     });
 
     it.each(['explicit stop', 'socket close'] as const)('cancels retry backoff on %s', async (ending) => {
-      fetchCapabilities.mockRejectedValue(new Error('HTTP 503'));
+      const callStacks: string[] = [];
+      fetchCapabilities.mockImplementation(() => {
+        callStacks.push(new Error(`fetchCapabilities call #${callStacks.length + 1}`).stack ?? '');
+        return Promise.reject(new Error('HTTP 503'));
+      });
       sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1 })));
       await vi.advanceTimersByTimeAsync(0);
       if (ending === 'explicit stop') modules.wsClient.disconnect();
       else instances[0].simulateClose();
       await vi.advanceTimersByTimeAsync(60_000);
-      expect(fetchCapabilities).toHaveBeenCalledTimes(1);
+      expect(fetchCapabilities.mock.calls.length,
+        `unexpected extra fetchCapabilities calls after ${ending}:\n${callStacks.slice(1).join('\n')}`).toBe(1);
       expect(modules.store.getRadioState()).toBeNull();
       expect(modules.capabilities.getCapabilities()).toBeNull();
     });
@@ -775,15 +788,49 @@ describe('ws-client → real radio store gate (integration)', () => {
     it.each(['resolve', 'reject'] as const)('ignores a late fetch %s after stop', async (settlement) => {
       let resolve!: (caps: Capabilities) => void;
       let reject!: (reason: Error) => void;
-      fetchCapabilities.mockImplementation(() => new Promise<Capabilities>((done, fail) => { resolve = done; reject = fail; }));
+      const callStacks: string[] = [];
+      fetchCapabilities.mockImplementation(() => {
+        callStacks.push(new Error(`fetchCapabilities call #${callStacks.length + 1}`).stack ?? '');
+        return new Promise<Capabilities>((done, fail) => { resolve = done; reject = fail; });
+      });
       sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1 })));
       modules.wsClient.disconnect();
       if (settlement === 'resolve') resolve(makeCapabilities(1));
       else reject(new Error('late HTTP 503'));
       await vi.advanceTimersByTimeAsync(60_000);
-      expect(fetchCapabilities).toHaveBeenCalledTimes(1);
+      expect(fetchCapabilities.mock.calls.length,
+        `unexpected extra fetchCapabilities calls after ${settlement}:\n${callStacks.slice(1).join('\n')}`).toBe(1);
       expect(modules.store.getRadioState()).toBeNull();
       expect(modules.capabilities.getCapabilities()).toBeNull();
+    });
+  });
+
+  // MOR-2712. Both tests run on one fake clock, installed for the whole
+  // block, so a retry that the first test's client still has armed would
+  // come due while the second test advances that clock.
+  describe('test teardown', () => {
+    beforeAll(() => {
+      vi.useFakeTimers();
+    });
+    afterAll(() => {
+      vi.useRealTimers();
+    });
+
+    it('ends while its client retries a fetch that answered the wrong generation', async () => {
+      fetchCapabilities.mockClear();
+      const { wsClient } = await loadModules();
+      wsClient.connect('ws://test/api/v1/ws');
+      instances[0].simulateOpen();
+      // The outer beforeEach answers generation 0; this session is generation 1.
+      sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1 })));
+      await vi.advanceTimersByTimeAsync(1_200);
+      expect(fetchCapabilities).toHaveBeenCalledTimes(2);
+    });
+
+    it("gets no capability fetch from the previous test's client", async () => {
+      fetchCapabilities.mockClear();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(fetchCapabilities).not.toHaveBeenCalled();
     });
   });
 

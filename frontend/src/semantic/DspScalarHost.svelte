@@ -5,7 +5,7 @@
   import { ValueControl } from '../components-v2/controls/value-control';
   import type { HBarIssuedStatusPresentation, HBarIssuedStatusSnapshot }
     from '../components-v2/controls/value-control/skin';
-  import { bindChoiceInstrument } from '../primitives/control-instruments/control-instrument-behavior';
+  import { bindChoiceInstrument, usable } from '../primitives/control-instruments/control-instrument-behavior';
   import {
     createContinuousScalar,
     createRenderedNativeRangeContinuousScalarPolicy,
@@ -15,8 +15,9 @@
   import { rawToPercentDisplay } from '../primitives/scalar/value-control-core';
   import { NOTCH_WIDTH_LABELS, formatAgcTime } from '../components-v2/panels/dsp-panel-logic';
   import { disabledReasonText } from './disabled-reason';
+  import { finiteValue, valueText } from '../primitives/reading-text';
   import type { NotchWidthChoice } from '../lib/types/capabilities';
-  import type { DspField, RadioViewModel } from './radio-view-model';
+  import type { RadioViewModel } from './radio-view-model';
   import { DSP_SCALAR_FIELDS, type DspScalarFeedback, type DspScalarField,
     type DspScalarHandles, type DspScalarPresentation } from './dsp-scalars';
 
@@ -55,9 +56,6 @@
   const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
   const safeInteger = (value: unknown): value is number =>
     typeof value === 'number' && Number.isSafeInteger(value);
-  const usable = (field: DspField<unknown> | undefined): boolean => field !== undefined
-    && field.availability.structural && field.availability.operational
-    && field.reading.status === 'known';
 
   function domain(field: DspScalarField): Readonly<{ domain: ScalarDomain; valid: boolean }> {
     if (field === 'nrLevel') {
@@ -163,13 +161,18 @@
     return { update: retire };
   }
   /** MOR-2527: an unread value renders NO text — an unlit slot with its
-   *  reserved width, never a `?` stand-in. */
+   *  reserved width, never a `?` stand-in. MOR-2688 S4b: the NaN/null
+   *  guard enters through `finiteValue`; each field's label format is
+   *  kept exactly. */
   function formatValue(field: DspScalarField, value: number | null): string {
-    if (value === null || !Number.isFinite(value)) return '';
-    if (field === 'manualNotchWidth') return NOTCH_WIDTH_LABELS[value] ?? String(value);
-    if (field === 'agcTimeConstant') return `${formatAgcTime(value)}s`;
-    return field === 'nbLevel' && nbLevelPercent
-      ? rawToPercentDisplay(value, 0, nbLevelMax) : String(value);
+    if (field === 'manualNotchWidth') {
+      return valueText(finiteValue(value), (v) => NOTCH_WIDTH_LABELS[v] ?? String(v));
+    }
+    if (field === 'agcTimeConstant') {
+      return valueText(finiteValue(value), (v) => `${formatAgcTime(v)}s`);
+    }
+    return valueText(finiteValue(value), (v) => field === 'nbLevel' && nbLevelPercent
+      ? rawToPercentDisplay(v, 0, nbLevelMax) : String(v));
   }
   function canonical(field: DspScalarField): number | null {
     const current = feedback[field];

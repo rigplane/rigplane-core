@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import type { Capabilities } from '$lib/types/capabilities';
+import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 import type { DisplayValue } from '../../../semantic/radio-display-model';
 import { meterFill } from '../lcd-display-helpers';
 
@@ -41,7 +43,21 @@ afterEach(() => {
   document.body.innerHTML = '';
   smoothing.createSmoother.mockClear();
   smoothing.instances.length = 0;
+  clearCapabilities();
 });
+
+const CALIBRATED_CAPS = {
+  model: 'IC-7610',
+  stateContractVersion: 1,
+  providerGeneration: 0,
+  meterCalibrations: {
+    s_meter: [
+      { raw: 0, actual: -54, label: 'S0' },
+      { raw: 130, actual: 0, label: 'S9' },
+      { raw: 240, actual: 40, label: 'S9+40' },
+    ],
+  },
+} as unknown as Capabilities;
 
 function render(field: DisplayValue<number>): HTMLElement {
   const target = document.createElement('div');
@@ -79,5 +95,34 @@ describe('LcdLinearSMeter ballistics wiring', () => {
     unmount(component!);
     component = null;
     expect(instance?.stop).toHaveBeenCalledOnce();
+  });
+});
+
+// MOR-2720 (MOR-2705 part 4a decision): on an uncalibrated profile the bar
+// still moves with the raw fraction, but nothing that needs a calibration is
+// drawn — no 'S' label, no S9 threshold line, no scale marks. Calibration is
+// a profile fact, so a calibrated radio is unchanged.
+describe('LcdLinearSMeter uncalibrated profile (MOR-2720)', () => {
+  it('draws the moving bar with no S label, no S9 line and no scale marks on an uncalibrated profile', () => {
+    clearCapabilities();
+    const target = render({ state: 'known', value: 53 });
+
+    // The bar moves: the smoother is driven by the raw-proportional fill.
+    expect(smoothing.instances[0]?.update).toHaveBeenCalledWith(meterFill({ state: 'known', value: 53 }));
+    expect(target.querySelector('.meter-fill')?.getAttribute('style')).toContain('width: 75%');
+    // No S label text, no threshold line, no scale marks.
+    expect(target.querySelector('.meter-label')?.textContent).toBe('');
+    expect(target.querySelector('.meter-threshold')).toBeNull();
+    expect(target.querySelector('.meter-scale')).toBeNull();
+  });
+
+  it('keeps the S label, the S9 line and the full scale on a calibrated profile', () => {
+    setCapabilities(CALIBRATED_CAPS);
+    const target = render({ state: 'known', value: 53 });
+
+    expect(target.querySelector('.meter-label')?.textContent).toBe('S');
+    expect(target.querySelector('.meter-threshold')).not.toBeNull();
+    expect([...target.querySelectorAll('.meter-scale span')].map((span) => span.textContent))
+      .toEqual(['1', '3', '5', '7', '9', '+20', '+40', '+60']);
   });
 });

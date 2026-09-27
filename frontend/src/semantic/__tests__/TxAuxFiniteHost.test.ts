@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 // @ts-expect-error -- Svelte does not publish types for its reactive test harness.
@@ -12,7 +13,7 @@ import TxAuxScalarHostFixture from './fixtures/TxAuxScalarHostFixture.svelte';
 import { topologyFixtures, withTxAux } from '../fixtures/topologies';
 import type { Availability, RadioViewModel, TxAuxViewModel } from '../radio-view-model';
 import type { TxAuthoritySnapshot } from '../rx-tx-surface';
-import type { TxAuxToggleField } from '../tx-aux-finite';
+import { TX_AUX_TOGGLES, type TxAuxToggleField } from '../tx-aux-finite';
 
 const RX_IDLE: TxAuthoritySnapshot = {
   phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
@@ -101,12 +102,13 @@ describe('TxAuxFiniteHost native composition', () => {
     r.dispose();
   });
 
-  it('keeps ATU tuning pressed and explicitly named as tuning', () => {
+  it('keeps ATU tuning pressed, with the tuning fact in the title only', () => {
     const r = render({ view: withField('atu', { value: 'tuning' }) });
     const atu = target.querySelector<HTMLButtonElement>('[data-testid="tx-aux-atu"]')!;
     expect(atu.ariaPressed).toBe('true');
-    expect(atu.textContent).toBe('ATU: tuning');
-    expect(atu.ariaLabel).toBe('ATU: tuning');
+    expect(atu.textContent).toBe('ATU');
+    expect(atu.getAttribute('aria-label')).toBe('ATU');
+    expect(atu.title).toBe('ATU: tuning');
     r.dispose();
   });
 
@@ -126,6 +128,22 @@ describe('TxAuxFiniteHost native composition', () => {
     bypassClick(tune);
     expect(r.onToggle).not.toHaveBeenCalled();
     expect(r.onAtuTune).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  // MOR-2704 G2: the imported `usable` gate — a field read but not
+  // operational refuses the action, and the title/disabled-reason outputs
+  // are what they were before (the mutation mini pins this red when the
+  // gate's `operational` check is dropped).
+  it('refuses a read-but-not-operational toggle and keeps its reason outputs', () => {
+    const r = render({ view: withField('vox', { value: true,
+      availability: { structural: true, operational: false } }) });
+    const vox = target.querySelector<HTMLButtonElement>('[data-testid="tx-aux-vox"]')!;
+    expect(vox.disabled).toBe(true);
+    expect(vox.getAttribute('data-disabled-reason')).toBe('field-not-observed');
+    expect(vox.title).toBe('Not yet observed');
+    bypassClick(vox);
+    expect(r.onToggle).not.toHaveBeenCalled();
     r.dispose();
   });
 
@@ -169,8 +187,11 @@ describe('TxAuxFiniteHost external leases', () => {
     const atu = target.querySelector<HTMLButtonElement>('[data-testid="external-ATU"]')!;
     const vox = target.querySelector<HTMLButtonElement>('[data-testid="external-VOX"]')!;
     expect(atu.ariaPressed).toBe('true');
-    expect(atu.ariaLabel).toBe('ATU: tuning');
+    expect(atu.getAttribute('aria-label')).toBe('ATU');
+    expect(atu.title).toBe('ATU: tuning');
     expect(vox.disabled).toBe(true);
+    expect(vox.hasAttribute('aria-pressed')).toBe(false);
+    expect(vox.getAttribute('aria-label')).toBe('VOX');
     const reasons = target.querySelector('[data-testid="tx-aux-tune-blocked"]')!;
     const scalars = target.querySelectorAll('[role="slider"]');
     expect(target.querySelectorAll('[data-testid="tx-aux-tune-blocked"]')).toHaveLength(1);
@@ -229,6 +250,57 @@ describe('TxAuxFiniteHost external leases', () => {
     retained();
     expect(r.onToggle).toHaveBeenCalledExactlyOnceWith('vox');
     r.dispose();
+  });
+
+  // MOR-2647: a key is a label, lit or not. An unread reading draws the
+  // unlit label with no value text and no pressed state — never `: ?`.
+  it.each(TX_AUX_TOGGLES)(
+    'draws an unread %s as the bare unlit label, on both the fallback and the renderer',
+    (field, label) => {
+      const fallback = render({ view: withField(field, { unknown: true }) });
+      const key = target.querySelector<HTMLButtonElement>(`[data-testid="tx-aux-${field}"]`)!;
+      expect(key.textContent).toBe(label);
+      expect(key.getAttribute('aria-label')).toBe(label);
+      expect(key.hasAttribute('aria-pressed')).toBe(false);
+      expect(`${key.textContent} ${key.getAttribute('aria-label')}`).not.toMatch(/[?—–]|UNKNOWN|unknown|N\/A/);
+      fallback.dispose();
+
+      const external = render({
+        view: withField(field, { unknown: true }),
+        finiteAppearance: appearance,
+        rendererContext: createFiniteRendererContext(),
+      });
+      const rendered = target.querySelector<HTMLButtonElement>(`[data-testid="external-${label}"]`)!;
+      expect(rendered.textContent).toBe(label);
+      expect(rendered.getAttribute('aria-label')).toBe(label);
+      expect(rendered.hasAttribute('aria-pressed')).toBe(false);
+      expect(`${rendered.textContent} ${rendered.getAttribute('aria-label')}`).not.toMatch(/[?—–]|UNKNOWN|unknown|N\/A/);
+      external.dispose();
+    },
+  );
+
+  it('keeps a known OFF key unlit and a known ON key lit, label only', () => {
+    const off = render({ view: withField('vox', { value: false }) });
+    const unlit = target.querySelector<HTMLButtonElement>('[data-testid="tx-aux-vox"]')!;
+    expect(unlit.textContent).toBe('VOX');
+    expect(unlit.getAttribute('aria-pressed')).toBe('false');
+    off.dispose();
+
+    const on = render({ view: withField('atu', { value: 'on' }) });
+    const lit = target.querySelector<HTMLButtonElement>('[data-testid="tx-aux-atu"]')!;
+    expect(lit.textContent).toBe('ATU');
+    expect(lit.getAttribute('aria-pressed')).toBe('true');
+    on.dispose();
+  });
+
+  // jsdom lays nothing out, so the reserved width is pinned on the rule
+  // itself: the widest label the key can show is `ATU` (3ch), and a first
+  // reading must not grow the button.
+  it('reserves the key width at the widest label', () => {
+    const source = readFileSync('src/semantic/TxAuxFiniteHost.svelte', 'utf8');
+    const rule = /\.tx-aux-toggle\s*\{([^}]*)\}/.exec(source)?.[1] ?? '';
+    expect(rule).toMatch(/min-width:\s*3ch/);
+    expect(rule).toMatch(/font-variant-numeric:\s*tabular-nums/);
   });
 
   it('revokes every retained renderer on host teardown', () => {

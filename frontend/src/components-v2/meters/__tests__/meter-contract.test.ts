@@ -220,7 +220,7 @@ describe('METER_REGISTRY census (MOR-2037)', () => {
 // ── 'calibrated-db-rel-s9' domain ───────────────────────────────────────────
 
 // Synthetic fixture — not a real radio's numbers, matching the convention
-// LinearSMeter.test.ts's IC7610_LIKE_CAL already documents for this exact
+// LinearSMeter.isolated.test.ts's IC7610_LIKE_CAL already documents for this exact
 // directory. Deliberately NON-UNIFORM (see file header) so a local
 // reimplementation that assumes even steps disagrees with the real
 // interpolation somewhere in range.

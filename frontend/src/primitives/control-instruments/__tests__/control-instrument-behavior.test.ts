@@ -1,10 +1,12 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import {
   bindAbsoluteChoiceInstrument, bindActionInstrument, bindChoiceInstrument, bindToggleInstrument,
+  usable,
   type AvailabilityActionInput, type InstrumentAvailability, type InstrumentField,
 } from '../control-instrument-behavior';
 
-const usable = <T>(value: T): InstrumentField<T> => ({
+const usableField = <T>(value: T): InstrumentField<T> => ({
   availability: { structural: true, operational: true }, reading: { status: 'known', value },
 });
 const unavailable = <T>(value: T): InstrumentField<T> => ({
@@ -19,14 +21,14 @@ describe('control-instrument behavior bindings', () => {
     const invoke = vi.fn();
     const mixed: AvailabilityActionInput = {
       // @ts-expect-error Action evidence must come from exactly one input form.
-      availability: { structural: true, operational: true }, field: usable(1), invoke,
+      availability: { structural: true, operational: true }, field: usableField(1), invoke,
     };
 
     expect(mixed).toBeDefined();
   });
 
   it('re-checks an action field and blocker at invocation time', () => {
-    let field = usable(1);
+    let field = usableField(1);
     let blocked = false;
     const invoke = vi.fn();
     const behavior = bindActionInstrument(() => ({ field, blocked, invoke }));
@@ -36,7 +38,7 @@ describe('control-instrument behavior bindings', () => {
     field = unknown<number>();
     behavior.invoke();
     blocked = true;
-    field = usable(1);
+    field = usableField(1);
     behavior.invoke();
     blocked = false;
     behavior.invoke();
@@ -84,12 +86,12 @@ describe('control-instrument behavior bindings', () => {
   });
 
   it('derives a toggle target from the current confirmed boolean', () => {
-    let field = usable(false);
+    let field = usableField(false);
     const invoke = vi.fn();
     const behavior = bindToggleInstrument(() => ({ field, invoke }));
 
     expect(behavior.confirmed).toBe(false);
-    field = usable(true);
+    field = usableField(true);
     behavior.invoke();
     expect(invoke).toHaveBeenCalledExactlyOnceWith(false);
   });
@@ -105,15 +107,15 @@ describe('control-instrument behavior bindings', () => {
 
   it('keeps a supplied feedback envelope unchanged and does not invent one', () => {
     const feedback = { phase: 'submitted', target: true } as const;
-    const present = bindToggleInstrument(() => ({ field: usable(true), invoke: vi.fn(), feedback }));
-    const absent = bindToggleInstrument(() => ({ field: usable(true), invoke: vi.fn() }));
+    const present = bindToggleInstrument(() => ({ field: usableField(true), invoke: vi.fn(), feedback }));
+    const absent = bindToggleInstrument(() => ({ field: usableField(true), invoke: vi.fn() }));
 
     expect(present.feedback).toBe(feedback);
     expect(absent.feedback).toBeUndefined();
   });
 
   it('only selects and invokes values in the current offered finite choice set', () => {
-    let field = usable(9);
+    let field = usableField(9);
     let choices = [1, 2] as readonly number[];
     const invoke = vi.fn();
     const behavior = bindChoiceInstrument(() => ({ field, choices, invoke }));
@@ -123,7 +125,7 @@ describe('control-instrument behavior bindings', () => {
     behavior.invoke(9);
     expect(invoke).not.toHaveBeenCalled();
 
-    field = usable(2);
+    field = usableField(2);
     choices = [2, 3];
     expect(behavior.selected).toBe(2);
     behavior.invoke(3);
@@ -137,7 +139,7 @@ describe('control-instrument behavior bindings', () => {
 
     expect(behavior.selected).toBeUndefined();
     expect(behavior.available).toBe(false);
-    field = usable(9);
+    field = usableField(9);
     behavior.invoke(1);
     expect(invoke).toHaveBeenCalledExactlyOnceWith(1);
   });
@@ -199,5 +201,45 @@ describe('control-instrument behavior bindings', () => {
 
     expect(present.feedback).toBe(feedback);
     expect(absent.feedback).toBeUndefined();
+  });
+});
+
+describe('usable — the field-level admission gate', () => {
+  it('admits only a field that exists and is fully available with a known reading', () => {
+    expect(usable(undefined)).toBe(false);
+    expect(usable({
+      availability: { structural: false, operational: true },
+      reading: { status: 'known', value: 1 },
+    })).toBe(false);
+    expect(usable({
+      availability: { structural: true, operational: false },
+      reading: { status: 'known', value: 1 },
+    })).toBe(false);
+    expect(usable(unknown<number>())).toBe(false);
+    expect(usable(usableField(1))).toBe(true);
+  });
+
+  it('has no finiteness test: a known NaN reading is usable', () => {
+    expect(usable(usableField(Number.NaN))).toBe(true);
+  });
+
+  it('narrows the reading to the known reading for admitted fields', () => {
+    const field: InstrumentField<number> | undefined = usableField(2);
+    if (usable(field)) expect(field.reading.value).toBe(2);
+    else throw new Error('a fully available known field must be usable');
+  });
+
+  /** The "no runtime import" pin, modelled on `reading-text.test.ts` and
+   *  `pressed-of.test.ts`: semantic surfaces receive whole field objects and
+   *  must never gain a runtime edge through this module. Type-only imports
+   *  stay allowed. */
+  it('has no runtime import', () => {
+    const source = readFileSync(
+      'src/primitives/control-instruments/control-instrument-behavior.ts',
+      'utf8',
+    );
+    const statements = [...source.matchAll(/^import\b[^;]*;/gm)].map((m) => m[0]);
+    for (const statement of statements) expect(statement.startsWith('import type ')).toBe(true);
+    for (const forbidden of ['import(', 'require(']) expect(source).not.toContain(forbidden);
   });
 });

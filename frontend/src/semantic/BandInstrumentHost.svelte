@@ -15,7 +15,8 @@
   } from '../primitives/frequency/frequency-entry-renderer.svelte';
   import BandFrequencyEntry from './BandFrequencyEntry.svelte';
   import {
-    defaultPermitLabel, interpretFrequencyEntry, mhz, UNKNOWN_TEXT,
+    defaultPermitLabel, defaultPermitPrefix, defaultPermitStatus,
+    interpretFrequencyEntry, mhz, PERMIT_STATUS_TEXTS,
     type BandInstrumentHandles,
   } from './band-instruments';
   import type { RadioViewModel } from './radio-view-model';
@@ -66,7 +67,7 @@
   );
   let entryHint = $derived(entryReady && interpretedHz !== null ? `→ ${mhz(interpretedHz)}` : '');
   let entryRangeText = $derived(boundsKnown && band?.tuneMinHz != null && band?.tuneMaxHz != null
-    ? `${mhz(band.tuneMinHz)} … ${mhz(band.tuneMaxHz)}` : UNKNOWN_TEXT);
+    ? `${mhz(band.tuneMinHz)} … ${mhz(band.tuneMaxHz)}` : '');
   let entryUnavailableReason = $derived(frequencyEntryUnavailableReason ?? (!boundsKnown
     ? t('core.band.entry.reason.boundsUnknown')
     : !receiverKnown ? t('core.band.entry.reason.receiverUnconfirmed') : undefined));
@@ -100,6 +101,28 @@
     invoke: selectBand,
   }));
   const fallbackEntryContext = createFiniteRendererContext();
+
+  /** MOR-2684: ONE width for the permit caption's status slot in every
+   *  state, measured off screen in the caption's own font (a `<small>`
+   *  under the ambient, non-monospace font) at the widest status word the
+   *  three catalogs can render — `ch` is only exact for a monospace font.
+   *  The first reading (allowed/denied) then lands in an equally wide box
+   *  and cannot move the band row. Same pattern as VfoSurface's
+   *  `--vfo-role-width` (MOR-2655). */
+  let permitStatusMeasure: HTMLElement | undefined = $state();
+  let permitStatusWidth = $state('0px');
+  $effect(() => {
+    const node = permitStatusMeasure;
+    if (!node) return;
+    const widest = Math.max(...PERMIT_STATUS_TEXTS.map((text) => {
+      node.textContent = text;
+      return node.getBoundingClientRect().width;
+    }));
+    // The measure node is aria-hidden and must stay empty.
+    node.textContent = '';
+    permitStatusWidth = `${Math.ceil(widest)}px`;
+  });
+
   let entryContext = $derived(band === undefined ? null
     : entryRendererContext ?? fallbackEntryContext);
   const frequencyEntrySeat = createFrequencyEntryRendererSeat(() => ({
@@ -184,7 +207,11 @@
         {/each}
       </div>
     {:else if finiteAppearance}{@render externalChoice()}{:else}
-      <div class="band-row" role="group" aria-label="Band select" data-testid="band-choices">
+      <div
+        class="band-row" role="group" aria-label="Band select" data-testid="band-choices"
+        style:--band-permit-status-width={permitStatusWidth}
+      >
+        <small class="permit-status-measure" bind:this={permitStatusMeasure} aria-hidden="true"></small>
         {#each band.bandChoices as choice (choice.name)}
           <button
             type="button" class="band-choice" data-testid={`band-choice-${choice.name}`}
@@ -195,7 +222,7 @@
             onclick={() => bandChoiceBehavior.invoke(choice.name)}
           >{choice.name}{#if showPermitCaption}<small
             data-testid={`band-choice-permit-${choice.name}`}
-          >{defaultPermitLabel(choice)}</small>{/if}</button>
+          >{defaultPermitPrefix(choice)}<span class="permit-status">{defaultPermitStatus(choice)}</span></small>{/if}</button>
         {/each}
       </div>
     {/if}
@@ -214,6 +241,11 @@
 
 <style>
   .band-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
+  /* MOR-2684: the status slot is reserved at the measured widest catalog
+     status word (see `permitStatusWidth`), so an unread permit (empty slot)
+     and any known verdict share ONE width and the band row never moves. */
+  .permit-status { display: inline-block; min-width: var(--band-permit-status-width); }
+  .permit-status-measure { position: absolute; visibility: hidden; pointer-events: none; white-space: nowrap; }
   .band-choice[aria-pressed='true'] { font-weight: 700; }
   button:disabled { cursor: not-allowed; }
   .visually-hidden {

@@ -108,7 +108,35 @@ describe('panel-props.ts batch-A/batch-B functions carry no fabricated-default l
     ['toScanProps', 'scanResumeMode: (state?.scanResumeMode ?? 0)'],
     ['toAudioSpectrumProps', 'filterWidth: rx?.filterWidth ?? 2400,'],
     ['toMemoryPanelProps', 'activeFreqHz: rx?.freqHz ?? 0,'],
-    ["toMemoryPanelProps", "activeMode: rx?.mode ?? '',"],
+    // toMemoryPanelProps' `activeMode: rx?.mode ?? ''` was removed here as a
+    // fabricated empty-string default, then re-pointed BACK to `''` by
+    // MOR-2673 as the deliberate unread sentinel (the old `'---'` reached
+    // the screen as a dash run). The guard this list enforces — no
+    // plausible-looking fabricated reading — still holds: `''` never equals
+    // a real, non-empty mode label, pinned behaviourally in
+    // panel-props.test.ts's MOR-2673 describe block, so it cannot be
+    // mistaken for a reading at any comparison consumer.
+    // MOR-2658: finishes the deferred A12 toTxProps fix for rfPower —
+    // moved here from `stillPresentOutOfScope` below (TxPanel.svelte and
+    // MobileRadioLayout.svelte now guard the NaN sentinel at their
+    // consumer boundaries, the guards A12 could not add).
+    ['toTxProps', 'rfPower: state?.powerLevel ?? 0.5,'],
+    // MOR-2683: finishes the deferred A12 toTxProps fix for the two levels
+    // that reach the screen — moved here from `stillPresentOutOfScope`
+    // below (TxPanel.svelte's `> 0` label gate and the amber faces'
+    // `Number.isFinite` guard render the NaN sentinel as the bare key).
+    ['toTxProps', 'compLevel: state?.compressorLevel ?? 0,'],
+    ['toTxProps', 'monLevel: state?.monitorGain ?? 128,'],
+    // MOR-2683: the two fabricated filter defaults folded into the ticket —
+    // `toVfoProps` printed the first filter's label for an unread filter,
+    // and `toFilterProps`' comparison consumers lit FIL1 for it.
+    ['toVfoProps', 'const fil = rx.filter ?? 1;'],
+    ['toFilterProps', 'currentFilter: rx?.filter ?? 1,'],
+    // MOR-2730: `toVfoProps` projected an unread S-meter as the number 0,
+    // which the phone layout drew as a reading. `toMeterProps` (above)
+    // already reports NaN for the same input.
+    ['toVfoProps', 'sValue: 0,'],
+    ['toVfoProps', 'sValue: rx.sMeter ?? 0,'],
   ];
 
   it.each(forbidden)('%s does not contain %j', (fn, literal) => {
@@ -148,17 +176,18 @@ describe('panel-props.ts batch-A/batch-B functions carry no fabricated-default l
     ['toRitXitProps', 'xitActive: state?.ritTx ?? false,'],
     ['toCwProps', 'twinPeak: rx?.twinPeakFilter ?? false,'],
     ['toScanProps', 'scanning: state?.scanning ?? false,'],
-    // toTxProps' entire batch-B family — see the explicit non-fix
-    // rationale in panel-props.test.ts's "toTxProps — explicit non-fix"
-    // describe block: TxPanel.svelte's settings-modal ValueControl calls
-    // use an unguarded displayFn that would render "NaN%" for a non-finite
-    // input, and TxPanel.svelte is not one of A12's four granted
-    // production files. Deferred whole, not partially (numeric vs.
-    // boolean), to keep the family's honesty guarantee internally
-    // consistent for a future gate to finish.
-    ['toTxProps', 'rfPower: state?.powerLevel ?? 0.5,'],
+    // toTxProps' batch-B family except rfPower — see the explicit
+    // non-fix rationale in panel-props.test.ts's "toTxProps — explicit
+    // non-fix" describe block: at A12 TxPanel.svelte's settings-modal
+    // ValueControl calls used an unguarded displayFn that would render
+    // "NaN%" for a non-finite input, and TxPanel.svelte was not one of
+    // A12's four granted production files. A12 deferred the family whole,
+    // not partially, for a future gate to finish; MOR-2658 finished
+    // rfPower (forbidden above) once the consumer-boundary guards
+    // landed. MOR-2658 finished rfPower and MOR-2683 finished compLevel /
+    // monLevel (both forbidden above, their consumer guards landed). The
+    // rows below stay deferred.
     ['toTxProps', 'micGain: state?.micGain ?? 128,'],
-    ['toTxProps', 'monLevel: state?.monitorGain ?? 128,'],
     ['toTxProps', 'driveGain: state?.driveGain ?? 128,'],
     ['toTxProps', 'voxActive: state?.voxOn ?? false,'],
     ['toTxProps', 'compActive: state?.compressorOn ?? false,'],

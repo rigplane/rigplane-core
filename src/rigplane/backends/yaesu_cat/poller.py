@@ -1304,7 +1304,7 @@ class YaesuCatPoller:
             case SetCwPitch(value=value):
                 await radio.set_cw_pitch(value)
             case SetBreakIn(mode=mode):
-                await radio.set_break_in(bool(mode))
+                await radio.set_break_in(mode)
 
             # ── TX Controls ──
             case SetCompressor(on=on):

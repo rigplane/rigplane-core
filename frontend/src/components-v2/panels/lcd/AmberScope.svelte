@@ -15,6 +15,7 @@
   import { isFieldAvailable } from '$lib/state/field-status';
   import { levelFormatsBelowMax } from '../../../semantic/format-level';
   import { RF_FRONT_END_LEVELS } from '../../../semantic/rf-front-end-instruments';
+  import { finiteValue } from '../../../primitives/reading-text';
 
   // Band lookup by frequency (LCD-specific, mirrors AmberCockpit)
   const BANDS: [string, number, number][] = [
@@ -104,7 +105,7 @@
   // ── VFO A (MAIN) — always top line ──
   // Read directly from radioState.main so the tag is statically correct (fixes codex P2).
   let mainFreqHz = $derived(radioState?.main?.freqHz ?? 0);
-  let mainMode = $derived(radioState?.main?.mode ?? '---');
+  let mainMode = $derived(radioState?.main?.mode ?? '');
   let mainBand = $derived(freqToBand(mainFreqHz));
   // Fallback 2400 Hz matches `toFilterProps()` adapter default (codex P2 on
   // PR #916): keeps the VFO A filter badge visible with a stable width when
@@ -118,8 +119,25 @@
 
   // ── VFO B (SUB) — compact second line on dual-RX only ──
   let subFreqHz = $derived(radioState?.sub?.freqHz ?? 0);
-  let subMode = $derived(radioState?.sub?.mode ?? '---');
+  let subMode = $derived(radioState?.sub?.mode ?? '');
   let subBand = $derived(freqToBand(subFreqHz));
+
+  // MOR-2673 (review F1 + quick follow-up): the reserved mode-box width is
+  // derived from the mounted profile's own mode catalog (`caps.modes`) —
+  // the widest label a shipped profile can show is profile data (FTX-1
+  // "DATA-FM-N" = 9 glyphs, IC-7300 "RTTY-R" = 6 glyphs), never a hardcoded
+  // constant. Each glyph also carries the rule's 1px letter-spacing, and
+  // `box-sizing: content-box` keeps the padding/border out of the
+  // reservation, so the slot is `calc(Nch + Npx)` for N glyphs — widest in
+  // every state. Fixed for the session: it changes only when the
+  // capabilities load, never when a reading arrives.
+  let modeBoxMinWidth = $derived.by(() => {
+    let longest = 0;
+    for (const mode of caps?.modes ?? []) {
+      if (mode.length > longest) longest = mode.length;
+    }
+    return longest > 0 ? `calc(${longest}ch + ${longest}px)` : undefined;
+  });
 
   // Active-state per VFO: A active when main is the active receiver
   let isAActive = $derived(radioState?.active !== 'SUB');
@@ -141,8 +159,15 @@
       ? [{ id: 'vox' as const, label: 'VOX', active: tx.voxActive }] : []),
     ...(hasCap('compressor') && tx.compAvailable ? [{
       id: 'proc' as const,
-      label: tx.compActive && tx.compLevelAvailable ? `PROC ${tx.compLevel}` : 'PROC',
+      // MOR-2683: a known compressor state with an unread level keeps the
+      // bare key — the availability gate keeps a missing reading's level
+      // off, and `Number.isFinite` guards toTxProps' NaN sentinel. The
+      // chip reserves 8ch (`reserveSlot` → AmberIndStrip) — the widest text
+      // it prints is `PROC 255`.
+      label: tx.compActive && tx.compLevelAvailable && Number.isFinite(tx.compLevel)
+        ? `PROC ${tx.compLevel}` : 'PROC',
       active: tx.compActive,
+      reserveSlot: 8,
     }] : []),
     ...(hasCap('attenuator') && rxAvailable('att') ? [{
       id: 'att' as const, label: 'ATT', active: (rx?.att ?? 0) > 0,
@@ -261,7 +286,14 @@
           {#if mainBand}
             <span class="vfo-band-box">{mainBand}</span>
           {/if}
-          <span class="vfo-mode-box">{mainMode}</span>
+          <!-- MOR-2673: inline min-width derived from the profile's mode
+               catalog. The App mounts this skin before the capabilities
+               fetch lands, so the box is not drawn at all until the catalog
+               is known — it appears once, with its reservation, and never
+               changes width when a reading arrives. -->
+          {#if modeBoxMinWidth}
+            <span class="vfo-mode-box" style:min-width={modeBoxMinWidth}>{mainMode}</span>
+          {/if}
           {#if mainFilterWidthLabel}
             <span class="vfo-filter-box">{mainFilterWidthLabel}</span>
           {/if}
@@ -279,7 +311,9 @@
             {#if subBand}
               <span class="vfo-band-box vfo-band-box-sub">{subBand}</span>
             {/if}
-            <span class="vfo-mode-box vfo-mode-box-sub">{subMode}</span>
+            {#if modeBoxMinWidth}
+              <span class="vfo-mode-box vfo-mode-box-sub" style:min-width={modeBoxMinWidth}>{subMode}</span>
+            {/if}
           </div>
         </div>
       {/if}
@@ -295,7 +329,7 @@
     </div>
 
     <div class="lcd-meter-row" style:grid-area="meter">
-      <AmberSmeter value={rx?.sMeter ?? -54} source="S" />
+      <AmberSmeter value={finiteValue(rx?.sMeter)} source="S" />
     </div>
 
     <!-- ═══ Scope: dominant AfScope ═══ -->
@@ -471,6 +505,16 @@
     border: 2px solid rgba(26, 16, 0, calc(var(--lcd-alpha-active) * 0.4));
     border-radius: 4px;
     padding: 2px 8px;
+  }
+
+  /* MOR-2673: the mode box is reserved in EVERY state; the reserved width
+     is the profile-derived inline `min-width` (see `modeBoxMinWidth`) —
+     no radio-specific constant here. content-box keeps the padding and
+     border out of the ch budget, so the slot covers the widest text in
+     every state. The sibling badge boxes keep their default sizing: they
+     set no width, so box-sizing never applies to them. */
+  .vfo-mode-box {
+    box-sizing: content-box;
   }
 
   .vfo-band-box {

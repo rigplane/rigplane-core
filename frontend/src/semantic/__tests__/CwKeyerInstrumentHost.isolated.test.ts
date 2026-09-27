@@ -265,6 +265,49 @@ describe('CwKeyerInstrumentHost', () => {
     r.dispose();
   });
 
+  // MOR-2706: each value slot's reserved width derives from the field's
+  // effective domain — the widest text the readout can print is the domain
+  // max in the field's own unit, never a raised constant. The CSS rule's 6ch
+  // is the floor (`var(--cw-value-min-width, 6ch)`).
+  const reservedCh = (r: ReturnType<typeof render>, field: CwContinuousField): string =>
+    r.row(field).style.getPropertyValue('--cw-value-min-width');
+
+  it('reserves the pitch slot for the FTX-1 domain max (1050 Hz = 7ch)', () => {
+    const r = render({ view: withPitchDomain({ min: 300, max: 1050, step: 10, origin: 300 }) });
+    expect(reservedCh(r, 'pitchHz')).toBe('7ch');
+    expect('1050 Hz'.length).toBeLessThanOrEqual(7);
+    r.dispose();
+  });
+
+  it('reserves the pitch slot for the Icom legacy domain max (900 Hz = 6ch)', () => {
+    const r = render();
+    expect(reservedCh(r, 'pitchHz')).toBe('6ch');
+    expect('900 Hz'.length).toBeLessThanOrEqual(6);
+    expect(reservedCh(r, 'keyerSpeed')).toBe('6ch');
+    expect('48 WPM'.length).toBeLessThanOrEqual(6);
+    r.dispose();
+  });
+
+  it('keeps the pitch reservation unchanged when a reading arrives (MOR-2706)', () => {
+    const ftx1Domain = { min: 300, max: 1050, step: 10, origin: 300 } as const;
+    const withPitchReading = (value: number | null): RadioViewModel => ({
+      ...withPitchDomain(ftx1Domain),
+      cwKeyer: {
+        ...withPitchDomain(ftx1Domain).cwKeyer!,
+        pitchHz: {
+          reading: value === null ? { status: 'unknown' } : { status: 'known', value },
+          availability: { structural: true, operational: true },
+        },
+      },
+    });
+    const unread = render({ view: withPitchReading(null) });
+    expect(reservedCh(unread, 'pitchHz')).toBe('7ch');
+    unread.dispose();
+    const read = render({ view: withPitchReading(1050) });
+    expect(reservedCh(read, 'pitchHz')).toBe('7ch');
+    read.dispose();
+  });
+
   // MOR-2475 F1: the key-speed scalar takes the same profile-domain
   // substitution as the pitch scalar — the view model's `keySpeedDomain`
   // replaces the row constant's limits when the profile publishes one.
@@ -299,6 +342,30 @@ describe('CwKeyerInstrumentHost', () => {
     r.props.pitchFeedback = undefined; flushSync();
     expect(target.querySelector('[data-testid="cw-keyer-pitchHz-value"]')?.textContent)
       .toBe('600 Hz');
+    r.dispose();
+  });
+
+  // MOR-2688 S4b: `formatValue`'s NaN/null/Infinity guard now enters
+  // through `finiteValue`. A reading-based field renders its exact text,
+  // and a known NaN reading renders `''` — red under a `finiteValue`
+  // mutation that accepts NaN.
+  it('renders a read value exactly and a known NaN reading as EMPTY (MOR-2688 S4b)', () => {
+    const r = render();
+    expect(target.querySelector('[data-testid="cw-keyer-pitchHz-value"]')?.textContent)
+      .toBe('600 Hz');
+    r.props.view = {
+      ...r.props.view,
+      cwKeyer: {
+        ...r.props.view.cwKeyer!,
+        pitchHz: {
+          reading: { status: 'known', value: Number.NaN },
+          availability: { structural: true, operational: true },
+        },
+      },
+    };
+    flushSync();
+    expect(target.querySelector('[data-testid="cw-keyer-pitchHz-value"]')?.textContent)
+      .toBe('');
     r.dispose();
   });
 
@@ -365,7 +432,8 @@ describe('CwKeyerInstrumentHost', () => {
     });
     flushSync();
     expect(slider().getAttribute('aria-disabled')).toBe('true');
-    expect(r.row('keyerSpeed').querySelector('.vc-value')?.textContent).toBe('—');
+    expect(r.row('keyerSpeed').querySelector('.vc-value')?.textContent).toBe('');
+    expect(r.row('keyerSpeed').querySelector('.vc-value')?.textContent).not.toContain('—');
 
     r.props.keySpeedFeedback = undefined;
     flushSync();
@@ -383,7 +451,8 @@ describe('CwKeyerInstrumentHost', () => {
       } },
     };
     flushSync();
-    expect(r.row('keyerSpeed').querySelector('.vc-value')?.textContent).toBe('—');
+    expect(r.row('keyerSpeed').querySelector('.vc-value')?.textContent).toBe('');
+    expect(r.row('keyerSpeed').querySelector('.vc-value')?.textContent).not.toContain('—');
     expect(slider().getAttribute('aria-disabled')).toBe('true');
     expect(r.row('keyerSpeed').dataset.observed).toBe('false');
     currentLease('keyerSpeed').nativeInput(31);
@@ -397,6 +466,25 @@ describe('CwKeyerInstrumentHost', () => {
     };
     flushSync();
     expect(target.querySelector('[data-testid="cw-keyer-keyerSpeed"]')).toBeNull();
+    r.dispose();
+  });
+
+  // MOR-2704 G4: a read (known) but not operational field refuses its action
+  // through the one exported `usable` gate and keeps `data-observed` false.
+  // Red under a mutation of `usable` that drops the `operational` check.
+  it('refuses the action for a read-but-not-operational field and keeps data-observed false (MOR-2704 G4)', () => {
+    const r = render();
+    r.props.view = {
+      ...r.props.view,
+      cwKeyer: { ...r.props.view.cwKeyer!, keyerSpeed: {
+        reading: { status: 'known', value: 24 },
+        availability: { structural: true, operational: false },
+      } },
+    };
+    flushSync();
+    expect(r.row('keyerSpeed').dataset.observed).toBe('false');
+    currentLease('keyerSpeed').nativeInput(31);
+    expect(r.onLevelChange).not.toHaveBeenCalled();
     r.dispose();
   });
 
@@ -476,5 +564,16 @@ describe('CwKeyerInstrumentHost', () => {
     expect(hostSource.match(/createRenderedNativeRangeContinuousScalarPolicy\(\)/g)).toHaveLength(1);
     expect(hostSource.match(/createContinuousScalar\(/g)).toHaveLength(1);
     expect(hostSource).not.toMatch(/form[\s\S]{0,80}(?:Policy|policy)/);
+  });
+
+  // MOR-2653: an unread continuous value renders EMPTY, never a placeholder,
+  // and its slot keeps a reserved width — 6ch covers the widest rendered
+  // value ('48 WPM', '900 Hz') so a first reading cannot move the layout.
+  it('reserves the value slot width for unread and known values alike', () => {
+    const hostSource = readFileSync('src/semantic/CwKeyerInstrumentHost.svelte', 'utf8');
+    // MOR-2706: the reservation derives from the field's effective domain via
+    // the per-level `--cw-value-min-width` custom property; 6ch is the floor.
+    expect(hostSource).toMatch(/:global\(\.vc-value\)\s*\{[^}]*min-width:\s*var\(--cw-value-min-width, 6ch\)/);
+    expect(hostSource).not.toMatch(/formatValue[\s\S]{0,200}'—'/);
   });
 });

@@ -137,7 +137,7 @@
   let hasGradient = $derived(Boolean(fillGradient && fillGradient.length > 1));
   let safeFillGradient = $derived(fillGradient ?? []);
   let displayValue = $derived(renderedValue === null
-    ? unknownDisplay ?? (displayFn ? displayFn(Number.NaN) : '—')
+    ? unknownDisplay ?? (displayFn ? displayFn(Number.NaN) : '')
     : displayFn ? displayFn(renderedValue) : String(renderedValue) + (unit ? unit : ''));
   let renderPresentation = $derived(projectScalarRenderPresentation(view, legacy, accessibility));
 
@@ -438,6 +438,11 @@
     font-size: 10px;
     font-weight: 500;
     white-space: nowrap;
+    /* MOR-2657: unread renders '' in a box reserved for the widest default
+     * readout, so the first reading cannot resize it. */
+    min-width: 4ch;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
   }
 
   .compact .vc-knob-value {

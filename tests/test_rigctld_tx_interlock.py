@@ -282,13 +282,32 @@ async def test_structural_exemptions_never_resolve_rf_truth(
 # design in PR #2755): DEFER-classified writes are silently dropped (RPRT 0,
 # radio untouched) during known TX, and truthfully refused under UNKNOWN/
 # stale RF -- never held in-band. See ``RigctldHandler._defer_write_gate``.
+# The parametrized rows below cover the two remaining DEFER wire families
+# (``S`` → ``set_split_vfo``, ``U SPLIT`` → ``set_func`` SPLIT); each row
+# asserts on the call path its own wire command takes (MOR-1893). Freq/mode/
+# VFO/RIT/XIT are no longer DEFER (MOR-1940, MOR-2171) and are pinned by
+# ``test_authority_approved_writes_dispatch_in_every_rf_state`` and
+# ``test_rit_xit_now_dispatch_in_every_rf_state`` instead.
 
 
 _DEFER_WIRES = (b"S 1 VFOA", b"U SPLIT 1")
 
 
-def _defer_wire_method(radio: AsyncMock, wire: bytes) -> AsyncMock:
-    return radio.set_split  # b"S ..." (set_split_vfo) and b"U SPLIT ..."
+def _defer_wire_mocks(
+    radio: AsyncMock, routing: Mock, wire: bytes
+) -> tuple[AsyncMock, ...]:
+    """Return the mocks on the call path ``wire`` actually takes (MOR-1893).
+
+    ``S`` (set_split_vfo) calls ``radio.set_split`` directly from
+    ``_execute_set_split_vfo``. ``U SPLIT`` instead goes through the routing
+    layer (``_execute_set_func`` → ``self._routing.set_func``, the
+    ``routing`` mock here) and never reaches ``radio.set_split`` directly —
+    watching only ``radio.set_split`` for it asserted nothing: that row
+    stayed green even with the drop gate fully disabled.
+    """
+    if wire.startswith(b"U"):
+        return (routing.set_func, radio.set_split)
+    return (radio.set_split,)
 
 
 @pytest.mark.asyncio
@@ -311,12 +330,13 @@ async def test_defer_writes_fail_closed_on_unknown_rf_state(
     wire: bytes, case: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, forced = _store(case)
-    handler, radio, _routing = _handler(store)
+    handler, radio, routing = _handler(store)
     if forced is not None:
         monkeypatch.setattr(StateStore, "snapshot", lambda _: forced)
     response = await handler.execute(parse_line(wire))
     assert response.error is HamlibError.ERJCTED
-    _defer_wire_method(radio, wire).assert_not_awaited()
+    for untouched in _defer_wire_mocks(radio, routing, wire):
+        untouched.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -331,11 +351,12 @@ async def test_defer_writes_are_dropped_silently_during_known_tx(
     ``src/rig.c``), which is written that way to avoid WSJT-X treating a
     non-zero RPRT mid-sequence as a hard rig-control failure.
     """
-    handler, radio, _routing = _handler(_store("tx")[0])
+    handler, radio, routing = _handler(_store("tx")[0])
     response = await handler.execute(parse_line(wire))
     assert response.ok
     assert format_response(parse_line(wire), response, ClientSession()) == b"RPRT 0\n"
-    _defer_wire_method(radio, wire).assert_not_awaited()
+    for untouched in _defer_wire_mocks(radio, routing, wire):
+        untouched.assert_not_awaited()
 
 
 @pytest.mark.asyncio

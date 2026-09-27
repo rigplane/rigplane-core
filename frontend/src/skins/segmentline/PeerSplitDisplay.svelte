@@ -190,6 +190,12 @@
   .receiver-column.active .column-accent { opacity: 0.85; }
   .column-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .vfo-tag, .lcd-pill {
+    box-sizing: border-box;
+    /* MOR-2650: the pill slot stays reserved at the widest text it can
+       render (mode `DATA-FM-N`, 8 glyphs + letter-spacing → 10ch floor).
+       Unread draws nothing; a first reading lights the slot without moving
+       its neighbours. Pills are flex items, so min-width applies. */
+    min-width: 10ch;
     border: 1.75px solid var(--ink-mid);
     border-radius: 3px;
     padding: 2px 9px;

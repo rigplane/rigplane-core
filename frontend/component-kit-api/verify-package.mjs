@@ -325,6 +325,16 @@ try {
   assert(!scalarDeclarationSource.includes('createContinuousScalarRendererSeat('));
   assert(!scalarDeclarationSource.includes('destroy(): void'));
   assert(!scalarDeclarationSource.includes("'availability' | 'terminal' | 'owner-dispose'"));
+  // MOR-2704 G0: `usable` is kit-internal — `@internal` must keep it out of the
+  // shipped declarations.
+  const behaviorDeclarationSource = await readFile(
+    path.join(
+      packageRoot, 'dist', 'types', 'src', 'primitives', 'control-instruments',
+      'control-instrument-behavior.d.ts',
+    ),
+    'utf8',
+  );
+  assert(!/\busable\b/u.test(behaviorDeclarationSource));
   assert(!apiDeclarationSource.includes('PresentationHostMode'));
   assert(apiDeclarationSource.includes("'external-instruments-v1'"));
   assert(apiDeclarationSource.includes('HostedFacePropsV1'));

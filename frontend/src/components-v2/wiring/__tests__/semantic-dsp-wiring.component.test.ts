@@ -306,7 +306,8 @@ const liveCaps = (withDsp: boolean): Capabilities => ({
   stateContractVersion: 1, providerGeneration: 1,
   model: 'fixture', scope: false, audio: true, tx: true,
   capabilities: withDsp
-    ? ['audio', 'tx', 'dual_rx', 'nr', 'nb', 'notch', 'agc', 'agc_time_constant', 'lan_dual_rx_audio_routing']
+    ? ['audio', 'tx', 'dual_rx', 'nr', 'nb', 'notch', 'manual_notch_width', 'agc', 'agc_time_constant',
+      'lan_dual_rx_audio_routing']
     : ['audio', 'tx', 'dual_rx', 'lan_dual_rx_audio_routing'],
   receivers: 2, vfoScheme: 'main_sub', freqRanges: [], modes: [], filters: [],
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
@@ -696,13 +697,13 @@ describe('AGC choice group', () => {
       ?.textContent?.trim()).toBe('AGC AUTO');
   });
 
-  it('renders no receiver indicator value for an unprojectable readback code', () => {
+  it('renders only the receiver indicator label for an unprojectable readback code', () => {
     h.caps = ftxAgcCaps();
     h.state = stateWithAgc(9);
     render();
 
     const indicator = q('[data-indicator-receiver="MAIN"] [data-indicator-fact="agc"]');
-    expect(indicator?.textContent?.trim()).toBe('AGC —');
+    expect(indicator?.textContent?.trim()).toBe('AGC');
     expect(indicator?.textContent).not.toContain('9');
   });
 
@@ -804,6 +805,71 @@ describe('desktop-v2 declares a real dsp zone; the cockpit does not (MOR-1368, S
   it('binds the dsp zone id against desktop-v2\'s real plan', () => {
     render({ strips: 'single' }, planFor(desktopV2Layout, {}));
     expect(q('[data-testid="dsp-surface"]')!.closest('[data-zone-id="dsp"]')).not.toBeNull();
+  });
+});
+
+/**
+ * MOR-2726: the FTX-1 keeps the `notch` tag for its manual notch on/off and
+ * position but declares no notch-width field, so the server serves it no
+ * `manual_notch_width` tag, publishes no width choices, and seeds the field
+ * status `undeclared`. A control the radio does not have is not drawn.
+ */
+describe('no Notch width control for an undeclared field (MOR-2726)', () => {
+  function useUndeclaredNotchWidth(): void {
+    h.state = proxy(liveState(true) as object);
+    const state = h.state as unknown as {
+      main: Record<string, unknown>; fieldStatus: Record<string, unknown>;
+    };
+    state.main.manualNotchWidth = null;
+    state.fieldStatus['main.manualNotchWidth'] = {
+      storePath: 'x', observed: false, freshness: 'unknown', availability: 'undeclared',
+    };
+    h.caps = {
+      ...liveCaps(true),
+      notchWidthChoices: [],
+      capabilities: liveCaps(true).capabilities
+        .filter((capability) => capability !== 'manual_notch_width'),
+    };
+  }
+  const openNotchSettings = (): HTMLElement => {
+    q<HTMLButtonElement>('button[title="Open NOTCH settings"]')!.click();
+    flushSync();
+    return q('#dsp-notch-settings')!;
+  };
+
+  it('draws no Notch width row on the bare surface', () => {
+    useUndeclaredNotchWidth();
+    render();
+    expect(q('[data-testid="dsp-notchFreq"]')).not.toBeNull();
+    expect(q('[data-testid="dsp-manualNotchWidth"]')).toBeNull();
+    expect(target.textContent).not.toContain('Notch width');
+  });
+
+  it('draws only Notch position in the desktop-v2 NOTCH settings', () => {
+    useUndeclaredNotchWidth();
+    h.selectedFiniteAppearance = finiteAppearance;
+    renderHosted();
+    const settings = openNotchSettings();
+    expect(settings.textContent).toContain('Notch position');
+    expect(settings.querySelectorAll('.vc-hbar.hw-illum')).toHaveLength(1);
+    expect(q('[data-testid="dsp-manualNotchWidth"]')).toBeNull();
+    expect(target.textContent).not.toContain('Notch width');
+  });
+
+  it('keeps the WIDE / MID / NAR group there when the receiver declares the field', () => {
+    h.state = proxy(liveState(true) as object);
+    h.caps = {
+      ...liveCaps(true),
+      notchWidthChoices: [
+        { value: 0, label: 'WIDE' }, { value: 1, label: 'MID' }, { value: 2, label: 'NAR' },
+      ],
+    };
+    h.selectedFiniteAppearance = finiteAppearance;
+    renderHosted();
+    const group = openNotchSettings().querySelector('[data-testid="dsp-manualNotchWidth"]')!;
+    expect(group.getAttribute('role')).toBe('radiogroup');
+    expect([...group.querySelectorAll('[role="radio"]')].map((choice) => choice.textContent))
+      .toEqual(['WIDE', 'MID', 'NAR']);
   });
 });
 

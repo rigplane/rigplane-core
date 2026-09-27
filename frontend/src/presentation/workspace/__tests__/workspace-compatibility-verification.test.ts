@@ -241,7 +241,7 @@ const MODULE_PATH_VALUE = /^(\.{1,2}\/|\$lib\/|src\/|\/)|\.(svelte|ts|js)$/;
  *  is exempt from the KEY marker scan (`txAux` is a SemanticSurfaceName;
  *  `rx-tx` is a declared zone id). Values are still scanned. */
 const FROZEN_VOCABULARY: ReadonlySet<string> = new Set([
-  'version', 'layout', 'designLanguage', 'theme', 'density',
+  'version', 'layout', 'designLanguage', 'designLanguageBySkin', 'theme', 'density',
   'visibleSurfaces', 'zoneOrder', 'pinnedCommands',
   'main', 'receiver-deck', 'rx-tx', 'primary-vfo', 'secondary-vfo', 'global',
   'portrait-deck', 'control-column',
@@ -458,7 +458,7 @@ describe('MOR-1083 class 3 — corrupt and partial stored state', () => {
     ['a JSON array', '[1,2,3]'],
     ['JSON null', 'null'],
     ['whitespace', '   '],
-  ])('%s resets to defaults with a visible notice, never a throw', (_label, raw) => {
+  ])('%s falls back to legacy migration when the sentinel is absent (MOR-1300)', (_label, raw) => {
     const storage = new LedgerStorage();
     seedFullLegacy(storage);
     storage.map.set(WORKSPACE_STORAGE_KEY, raw);
@@ -466,10 +466,29 @@ describe('MOR-1083 class 3 — corrupt and partial stored state', () => {
 
     expect(() => { initWorkspaceStore(storage); }).not.toThrow();
 
+    // The corrupt object recovers the operator's v2 preferences instead of
+    // landing on defaults — the very gap MOR-1083's F1 named, now fixed. The
+    // migration still never touches the retained legacy bytes.
+    expect(getWorkspace().theme).toBe('nord');
+    expect(getWorkspace().layout).toBe('lcd-scope');
+    expect(getWorkspaceNotice()).toBeNull();
+    expect(storage.snapshotOf(retainedKeys(storage))).toEqual(before);
+    expect(storage.deletes).toEqual([]);
+  });
+
+  it('a corrupt object keeps the reset notice once migration already ran (MOR-1300)', () => {
+    const storage = new LedgerStorage();
+    seedFullLegacy(storage);
+    storage.map.set(WORKSPACE_MIGRATION_SENTINEL_KEY, '1');
+    storage.map.set(WORKSPACE_STORAGE_KEY, '{{{');
+    const before = storage.snapshotOf(retainedKeys(storage));
+
+    initWorkspaceStore(storage);
+
+    // Sentinel present → the fallback gate stays closed: the reset is a plain
+    // 'stored'-branch outcome with its visible notice, exactly as before.
     expect(getWorkspace()).toEqual(DEFAULT_WORKSPACE);
     expect(getWorkspaceNotice()?.kind).toBe('reset');
-    // A corrupt workspace object does NOT re-open the migration, and does not
-    // touch the retained legacy bytes.
     expect(storage.snapshotOf(retainedKeys(storage))).toEqual(before);
     expect(storage.deletes).toEqual([]);
   });
@@ -477,7 +496,7 @@ describe('MOR-1083 class 3 — corrupt and partial stored state', () => {
   it('a partial object repairs field by field and reports every rejection', () => {
     const storage = new LedgerStorage();
     storage.map.set(WORKSPACE_STORAGE_KEY, JSON.stringify({
-      version: 1,
+      version: WORKSPACE_SCHEMA_VERSION,
       theme: 'no-such-theme',
       layout: 'no-such-layout',
       density: 'ultra',
@@ -499,7 +518,7 @@ describe('MOR-1083 class 3 — corrupt and partial stored state', () => {
   it('a cross-zone duplicate is refused rather than moved', () => {
     const storage = new LedgerStorage();
     storage.map.set(WORKSPACE_STORAGE_KEY, JSON.stringify({
-      version: 1,
+      version: WORKSPACE_SCHEMA_VERSION,
       zoneOrder: { 'receiver-deck': ['vfo', 'rxTx'], 'rx-tx': ['vfo'] },
     }));
 
@@ -528,11 +547,11 @@ const FUTURE_FIELDS = { futureField: { nested: [1, 2] }, anotherFuture: 'plain-v
 
 describe('MOR-1083 class 4 — the forward-read window (N=2)', () => {
   it('the window is exactly current+2', () => {
-    expect(WORKSPACE_SCHEMA_VERSION).toBe(1);
+    expect(WORKSPACE_SCHEMA_VERSION).toBe(2);
     expect(WORKSPACE_FORWARD_READ_WINDOW).toBe(2);
   });
 
-  it.each([2, 3])('v%i lossless: read, update and write back UN-DOWNGRADED', (version) => {
+  it.each([3, 4])('v%i lossless: read, update and write back UN-DOWNGRADED', (version) => {
     const storage = new LedgerStorage();
     storage.map.set(WORKSPACE_STORAGE_KEY, JSON.stringify({
       ...DEFAULT_WORKSPACE, version, theme: 'nord', ...FUTURE_FIELDS,
@@ -553,7 +572,7 @@ describe('MOR-1083 class 4 — the forward-read window (N=2)', () => {
     expectNoForbiddenBytes(storage, `forward-lossless-v${version}`);
   });
 
-  it.each([2, 3])('v%i LOSSY: latched read-only — no update may ever overwrite it', (version) => {
+  it.each([3, 4])('v%i LOSSY: latched read-only — no update may ever overwrite it', (version) => {
     const storage = new LedgerStorage();
     const original = JSON.stringify({
       ...DEFAULT_WORKSPACE, version, theme: `v${version}-only-theme`, ...FUTURE_FIELDS,
@@ -567,7 +586,7 @@ describe('MOR-1083 class 4 — the forward-read window (N=2)', () => {
     setDensity('compact');
     setTheme('nord', true);
     setLayout('lcd-scope');
-    setDesignLanguage('fieldline');
+    setDesignLanguage('desktop-v2', 'fieldline');
 
     expect(storage.getItem(WORKSPACE_STORAGE_KEY)).toBe(original);
     expect(storage.writes).toEqual([]);
@@ -581,14 +600,14 @@ describe('MOR-1083 class 4 — the forward-read window (N=2)', () => {
     initWorkspaceStore(storage);
     expect(storage.writes).toEqual([]);
 
-    const accepted = importWorkspace(JSON.stringify({ version: 1, theme: 'nord' }));
+    const accepted = importWorkspace(JSON.stringify({ version: WORKSPACE_SCHEMA_VERSION, theme: 'nord' }));
 
     expect(accepted.outcome).toBe('ok');
-    expect(storage.stored()).toMatchObject({ version: 1, theme: 'nord' });
+    expect(storage.stored()).toMatchObject({ version: WORKSPACE_SCHEMA_VERSION, theme: 'nord' });
     expect(getWorkspaceNotice()).toBeNull();
   });
 
-  it.each([0, 4, 99, 1.5, 'two', null, true])(
+  it.each([0, 5, 99, 1.5, 'two', null, true])(
     'v%s is outside the window: discarded visibly, never silently downgraded',
     (version) => {
       const storage = new LedgerStorage();
@@ -638,7 +657,7 @@ describe('MOR-1083 class 5 — export / import round trip', () => {
     initWorkspaceStore(storage);
     setTheme('nord', true);
     setLayout('lcd-scope');
-    setDesignLanguage('fieldline');
+    setDesignLanguage('desktop-v2', 'fieldline');
     setDensity('compact');
     setZoneVisibleSurfaces('receiver-deck', ['vfo', 'rxTx']);
     setZoneOrder('receiver-deck', ['rxTx', 'vfo']);
@@ -658,7 +677,7 @@ describe('MOR-1083 class 5 — export / import round trip', () => {
   it('a forward-read export carries its unknown fields through the round trip', () => {
     const storage = new LedgerStorage();
     storage.map.set(WORKSPACE_STORAGE_KEY, JSON.stringify({
-      ...DEFAULT_WORKSPACE, version: 2, theme: 'nord', ...FUTURE_FIELDS,
+      ...DEFAULT_WORKSPACE, version: WORKSPACE_SCHEMA_VERSION + 1, theme: 'nord', ...FUTURE_FIELDS,
     }));
     initWorkspaceStore(storage);
 
@@ -676,7 +695,7 @@ describe('MOR-1083 class 5 — export / import round trip', () => {
     const before = storage.getItem(WORKSPACE_STORAGE_KEY);
 
     const result = importWorkspace(JSON.stringify({
-      version: 1,
+      version: WORKSPACE_SCHEMA_VERSION,
       theme: 'crt-green',
       capabilities: { hasScope: true, blob: SENTINELS.capability },
       componentPath: SENTINELS.modulePath,
@@ -792,7 +811,7 @@ const ROLLBACK_CASES: readonly RollbackCase[] = [
 function exerciseStore(): void {
   setLayout('standard');
   setTheme('crt-green', true);
-  setDesignLanguage('fieldline');
+  setDesignLanguage('desktop-v2', 'fieldline');
   setDensity('compact');
   setZoneVisibleSurfaces('receiver-deck', ['vfo', 'rxTx']);
   setZoneOrder('receiver-deck', ['rxTx', 'vfo']);
@@ -820,10 +839,10 @@ describe('MOR-1083 class 6 — THE ROLLBACK PROBE', () => {
       // (b) byte-for-byte, not merely semantically.
       expect(storage.snapshotOf(retainedKeys(storage))).toEqual(before);
       // (c) nothing was ever deleted, and every key written is one of the two
-      //     the workspace owns. (Subset, not equality: the sentinel is written
-      //     only on the migrating boot — a present-but-unreadable workspace key
-      //     takes the `stored` branch and never reaches the migration. See the
-      //     characterization pin below.)
+      //     the workspace owns — including for the corrupt-workspace-object
+      //     case, which MOR-1300 now routes into the migration branch (the
+      //     sentinel is absent) instead of short-circuiting on key presence.
+      //     See the F1 pin below for the fixed expectation.
       expect(storage.deletes).toEqual([]);
       const owned = new Set([WORKSPACE_STORAGE_KEY, WORKSPACE_MIGRATION_SENTINEL_KEY]);
       expect(storage.attemptedWrites.filter((key) => !owned.has(key))).toEqual([]);
@@ -832,21 +851,21 @@ describe('MOR-1083 class 6 — THE ROLLBACK PROBE', () => {
   );
 
   /**
-   * CHARACTERIZATION — MOR-1083 finding F1 (informational, NOT a failure).
+   * MOR-1300 — MOR-1083 finding F1, FIXED.
    *
-   * `loadWorkspace` branches on PRESENCE of the workspace key, before it looks
-   * at readability. So a present-but-unreadable object short-circuits to
-   * `source: 'stored'` + `outcome: 'reset'` and the legacy migration never runs
-   * — even though the sentinel says it never ran and the legacy bytes are still
-   * sitting there, fully readable.
+   * `loadWorkspace` used to branch on PRESENCE of the workspace key before
+   * readability, so a present-but-unreadable object short-circuited to
+   * `source: 'stored'` + `outcome: 'reset'` and the legacy migration never ran
+   * — even though the sentinel said it never ran and the legacy bytes sat
+   * there, fully readable. Now a 'reset' outcome with the sentinel absent
+   * routes into the migration branch: the operator's v2 preferences are
+   * recovered instead of defaults.
    *
-   * The MOR-1083 acceptance still HOLDS: the legacy bytes are retained
-   * untouched (asserted below), so the rollback build recovers everything and
-   * nothing recoverable was overwritten before a successful commit. What is
-   * lost is only the v3-side convenience of re-folding them. Pinned here so a
-   * future change to that ordering is a deliberate decision, not a surprise.
+   * The MOR-1083 acceptance still holds: the legacy bytes are retained
+   * untouched (asserted below), so the rollback build is unaffected; and the
+   * narrow N1 gate holds too — only 'reset' falls back, never 'version-discarded'.
    */
-  it('F1: a corrupt workspace object short-circuits the migration, but retains legacy bytes', () => {
+  it('F1 FIXED: a corrupt workspace object falls back to the legacy migration (MOR-1300)', () => {
     const storage = new LedgerStorage();
     seedFullLegacy(storage);
     storage.map.set(WORKSPACE_STORAGE_KEY, '{{{');
@@ -854,24 +873,33 @@ describe('MOR-1083 class 6 — THE ROLLBACK PROBE', () => {
 
     initWorkspaceStore(storage);
 
-    // The migrated values are NOT recovered, despite the legacy keys being present...
-    expect(getWorkspace()).toEqual(DEFAULT_WORKSPACE);
-    expect(getWorkspaceNotice()?.kind).toBe('reset');
-    expect(storage.getItem(WORKSPACE_MIGRATION_SENTINEL_KEY)).toBeNull();
-    // ...but every legacy byte survives, so the rollback build is unaffected
-    // and the input remains recoverable.
+    // The migrated values ARE recovered now.
+    expect(getWorkspace().theme).toBe('nord');
+    expect(getWorkspace().layout).toBe('lcd-scope');
+    expect(getWorkspaceNotice()).toBeNull();
+    expect(storage.getItem(WORKSPACE_MIGRATION_SENTINEL_KEY)).not.toBeNull();
+    // ...and every legacy byte still survives, so the rollback build is
+    // unaffected and a downgrade during the window loses nothing.
     expect(storage.snapshotOf(retainedKeys(storage))).toEqual(before);
     expect(rollbackView(storage)).toEqual({
       layout: 'lcd-scope', theme: 'dracula', explicitTheme: true, vfoTheme: 'lcd-warm',
     });
+  });
 
-    // And clearing the unreadable object lets the migration run after all.
-    storage.map.delete(WORKSPACE_STORAGE_KEY);
-    storage.deletes.length = 0;
+  it('a version-discarded object NEVER falls back — the frozen MOR-1076 discard stays (MOR-1300 N1)', () => {
+    const storage = new LedgerStorage();
+    seedFullLegacy(storage);
+    storage.map.set(WORKSPACE_STORAGE_KEY, JSON.stringify({ version: 42, theme: 'v42' }));
+    const original = storage.getItem(WORKSPACE_STORAGE_KEY)!;
+
     initWorkspaceStore(storage);
 
-    expect(getWorkspace().theme).toBe('nord');
-    expect(getWorkspace().layout).toBe('lcd-scope');
+    // Never a silent migration over a newer object: discard, visible notice,
+    // and the out-of-window bytes are left for whichever build can read them.
+    expect(getWorkspaceNotice()?.kind).toBe('version-discarded');
+    expect(getWorkspace()).toEqual(DEFAULT_WORKSPACE);
+    expect(storage.getItem(WORKSPACE_STORAGE_KEY)).toBe(original);
+    expect(storage.getItem(WORKSPACE_MIGRATION_SENTINEL_KEY)).toBeNull();
   });
 
   it('no legacy key is ever a write target, across the whole inventory', () => {
@@ -880,7 +908,7 @@ describe('MOR-1083 class 6 — THE ROLLBACK PROBE', () => {
 
     initWorkspaceStore(storage);
     exerciseStore();
-    importWorkspace(JSON.stringify({ version: 1, theme: 'nord' }));
+    importWorkspace(JSON.stringify({ version: WORKSPACE_SCHEMA_VERSION, theme: 'nord' }));
 
     for (const key of ALL_LEGACY_KEYS) {
       expect(storage.attemptedWrites).not.toContain(key);
@@ -965,9 +993,9 @@ describe('MOR-1083 class 7 — never-overwrite-before-commit', () => {
 
   it('a serialization failure writes nothing at all (repository level)', () => {
     const storage = new LedgerStorage();
-    const cyclic: Record<string, unknown> = { version: 1 };
+    const cyclic: Record<string, unknown> = { version: WORKSPACE_SCHEMA_VERSION };
     cyclic.self = cyclic;
-    const result = readWorkspace({ version: 1, theme: 'nord' });
+    const result = readWorkspace({ version: WORKSPACE_SCHEMA_VERSION, theme: 'nord' });
     // Force `JSON.stringify` to throw inside `persistWorkspace` by handing it a
     // preserved field that cannot be serialized.
     const withCycle = { ...result, preserved: { cyclic } };
@@ -996,7 +1024,7 @@ describe('MOR-1083 class 8 — no forbidden content is ever persisted', () => {
     'a stored object carrying %s content is stripped before writeback',
     (name, fields) => {
       const storage = new LedgerStorage();
-      storage.map.set(WORKSPACE_STORAGE_KEY, JSON.stringify({ version: 1, theme: 'nord', ...fields }));
+      storage.map.set(WORKSPACE_STORAGE_KEY, JSON.stringify({ version: WORKSPACE_SCHEMA_VERSION, theme: 'nord', ...fields }));
 
       initWorkspaceStore(storage);
       setDensity('compact');
@@ -1010,7 +1038,7 @@ describe('MOR-1083 class 8 — no forbidden content is ever persisted', () => {
   it('a BENIGN unknown field IS preserved — the sweep is not a blanket strip', () => {
     const storage = new LedgerStorage();
     storage.map.set(WORKSPACE_STORAGE_KEY, JSON.stringify({
-      version: 1, theme: 'nord', operatorNote: 'field day', futureCounter: 3,
+      version: WORKSPACE_SCHEMA_VERSION, theme: 'nord', operatorNote: 'field day', futureCounter: 3,
     }));
 
     initWorkspaceStore(storage);
@@ -1027,7 +1055,7 @@ describe('MOR-1083 class 8 — no forbidden content is ever persisted', () => {
     exerciseStore();
 
     expect(Object.keys(storage.stored()!).sort()).toEqual([
-      'density', 'designLanguage', 'layout', 'pinnedCommands', 'theme',
+      'density', 'designLanguageBySkin', 'layout', 'pinnedCommands', 'theme',
       'version', 'visibleSurfaces', 'zoneOrder',
     ]);
     expectNoForbiddenBytes(storage, 'frozen-key-set');

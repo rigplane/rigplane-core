@@ -1,4 +1,3 @@
-import { t } from '$lib/i18n';
 import { calibratedToSegments } from '../../components-v2/meters/smeter-scale';
 import type {
   DisplayIndicator,
@@ -7,6 +6,7 @@ import type {
   DisplayValue,
   PeerSplitReceiverDisplay,
 } from '../../semantic/radio-display-model';
+import type { MeterValueDomain } from '../../semantic/radio-view-model';
 import type { LcdAfFftInputState } from './LcdAfFft.svelte';
 
 export interface FilterEnvelope {
@@ -15,8 +15,16 @@ export interface FilterEnvelope {
   readonly centerX: number;
 }
 
+// MOR-2650 (owner ruling 2026-09-26: no question marks anywhere in the
+// interface): an unread value is unlit segments — the empty string — never
+// '?'. An unsupported value is not drawn — also the empty string, never
+// '—'. The caller's slot keeps its reserved box (min-width over the widest
+// text the slot can render, tabular digits), so a first reading lights the
+// slot without moving it. No invented value: unknown is not zero, OFF, or a
+// default. `telemetryText` (MOR-2425/MOR-2540) already works this way and is
+// reused as the treatment, not duplicated.
 export function stateText<T>(field: DisplayValue<T>): string {
-  return field.state === 'known' ? String(field.value) : field.state === 'unknown' ? '?' : '—';
+  return field.state === 'known' ? String(field.value) : '';
 }
 
 export function formatBandwidth(field: DisplayValue<number>): string {
@@ -26,10 +34,8 @@ export function formatBandwidth(field: DisplayValue<number>): string {
 }
 
 export function formatOffset(field: DisplayOffset): string {
-  if (field.state !== 'active' && field.state !== 'inactive') {
-    return field.state === 'unknown' ? '?' : '—';
-  }
-  if (field.offsetHz === undefined) return '—';
+  if (field.state !== 'active' && field.state !== 'inactive') return '';
+  if (field.offsetHz === undefined) return '';
   const sign = field.offsetHz < 0 ? '−' : '+';
   return `${sign}${(Math.abs(field.offsetHz) / 1000).toFixed(3)}`;
 }
@@ -42,12 +48,21 @@ export function meterFill(field: DisplayValue<number>): number {
 
 // MOR-2425 (R29/R32): a stale reading keeps its digits, same as a current
 // one; only "never observed" and "idle" (not measuring in RX) collapse to
-// an empty scale — no `?`/`STALE`/`IDLE` placeholder token. The accessible
-// description below still names those two states, localized.
+// an empty scale — no `?`/`STALE`/`IDLE` placeholder token.
 // MOR-2540 (owner ruling 2026-09-22): no `?` anywhere else either — the
 // unsupported cases and the former ' ?' indeterminate-relevance cue are
 // gone; an indeterminate reading keeps its digits, nothing more.
+// MOR-2722 part B: a TX meter whose value is not calibrated shows no number
+// anywhere — its domain says the reading is a raw count (`raw`) or
+// uninterpretable (`unknown`), the same fact the `meter-utils.ts` formatters
+// decide by (an omitted domain is a pre-MOR-2425 fixture value, not a radio).
+// A calibrated meter (an `engineering` domain) renders exactly as before.
+function uncalibrated(domain: MeterValueDomain | undefined): boolean {
+  return domain?.kind === 'raw' || domain?.kind === 'unknown';
+}
+
 export function telemetryText(field: DisplayTelemetry): string {
+  if (uncalibrated(field.domain)) return '';
   const tx = field.txDisplay;
   if (!tx) {
     if (field.state === 'known') return String(Number(field.value.toFixed(2)));
@@ -61,13 +76,25 @@ export function telemetryText(field: DisplayTelemetry): string {
 
 export function telemetryDescription(label: string, field: DisplayTelemetry): string {
   const tx = field.txDisplay;
-  if (!tx) return `${label}: ${field.state === 'known' ? telemetryText(field)
-    : field.state === 'unsupported' ? 'Unsupported' : t('core.meter.state.noReading')}`;
-  if (!tx.supported) return `${label}: Unsupported`;
-  if (tx.relevance === 'idle') return `${label}: ${t('core.meter.state.idle')}`;
-  const cue = tx.relevance === 'indeterminate' ? 'RF relevance indeterminate. ' : '';
-  return `${label}: ${cue}${tx.observation.state === 'stale' ? 'Stale observation'
-    : tx.observation.state === 'current' ? `Current observation: ${Number(tx.observation.value.toFixed(2))}` : t('core.meter.state.noReading')}`;
+  // MOR-2705 parts 2 and 4b: an accessible name names what it is (the
+  // label) and, when a value is read, the value — current and stale read
+  // the same (R29/R32). An unsupported item is not drawn, so it has no
+  // accessible name; unread, unknown and idle name nothing beyond the
+  // label. No status word ('Unsupported', 'No reading', 'Not
+  // measuring in receive', 'Stale observation', 'Current observation',
+  // 'RF relevance indeterminate') stands in for a value.
+  if (!tx) {
+    if (field.state === 'known') {
+      const text = telemetryText(field);
+      return text === '' ? label : `${label}: ${text}`;
+    }
+    return label;
+  }
+  if (!tx.supported) return label;
+  if (tx.relevance === 'idle') return label;
+  if (tx.observation.state !== 'stale' && tx.observation.state !== 'current') return label;
+  const text = telemetryText(field);
+  return text === '' ? label : `${label}: ${text}`;
 }
 
 function envelope(

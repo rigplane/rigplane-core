@@ -260,6 +260,7 @@ function capsFor(id: TopologyFixtureId): Capabilities {
       ? ['scope', 'audio', 'tx', 'dual_rx', 'split', 'dual_watch']
       : ['scope', 'audio', 'tx'],
     receivers: dual ? 2 : 1, vfoScheme: scheme, freqRanges: [], modes: [], filters: [],
+    breakInChoices: [{ value: 0, label: 'OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' }],
     audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
     webrtc: { available: false, enabled: false },
     txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
@@ -1492,11 +1493,14 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
 
 /**
  * The other half of the matrix. Suppression is derived from the manifest, so
- * an id no manifest is registered under declares nothing — and every legacy
- * twin must survive untouched. This is the branch that keeps the shared v2
- * shell honest for any family the v3 build-out has not reached, and it is the
- * fail-safe direction for an unresolvable layout: the shipped panels, never a
- * screen with no VFO and no unkey affordance.
+ * an id no manifest is registered under declares nothing — and every
+ * surviving legacy twin must stay untouched. MOR-2728 deleted the receiver
+ * deck's legacy `<VfoHeader>` twin: an undeclared id now renders an EMPTY
+ * deck (no VFO readout at all) rather than a legacy one, while the sidebars'
+ * TX twin survives. This is the branch that keeps the shared v2 shell honest
+ * for any family the v3 build-out has not reached, and it is the fail-safe
+ * direction for an unresolvable layout: the shipped TX panel, never a screen
+ * with no unkey affordance.
  */
 describe('an undeclared layout keeps its legacy presentation (MOR-1313)', () => {
   const UNDECLARED = 'no-such-layout' as SkinId;
@@ -1504,9 +1508,9 @@ describe('an undeclared layout keeps its legacy presentation (MOR-1313)', () => 
   // MUTATION KILLED: making the semantic mount unconditional — "suppression"
   // that never consults the manifest would pass every desktop-v2 assertion
   // above and silently take over every future layout too.
-  it('renders the legacy VFO header and TX panel, and no semantic surfaces', () => {
+  it('renders the legacy TX panel, an empty receiver deck, and no semantic surfaces', () => {
     const t = render(UNDECLARED);
-    expect(t.querySelector('.receiver-deck .vfo-header')).not.toBeNull();
+    expect(t.querySelector('.receiver-deck .vfo-header')).toBeNull();
     expect(t.querySelector('[data-panel-id="tx"]')).not.toBeNull();
     expect(t.querySelector('[data-testid="semantic-radio-surfaces"]')).toBeNull();
     expect(t.querySelector('[data-testid="rx-tx-surface"]')).toBeNull();
@@ -1568,7 +1572,10 @@ describe('exactly one key authority on a partially declaring manifest (R9)', () 
     expect(t.querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
     expect(t.querySelectorAll('.tx-panel').length).toBe(1);
     expect(t.querySelector('[data-testid="rx-tx-surface"]')).toBeNull();
-    expect(t.querySelector('.receiver-deck .vfo-header')).not.toBeNull();
+    // MOR-2728: no semantic deck means no VFO readout at all — the legacy
+    // VfoHeader twin is deleted, so this quadrant renders an empty deck.
+    expect(t.querySelector('.receiver-deck .vfo-header')).toBeNull();
+    expect(t.querySelector('.receiver-deck [data-testid="vfo-surface"]')).toBeNull();
   });
 
   // The count stated as one law over every quadrant this shell can reach —
@@ -2606,8 +2613,9 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
       .toContain(":global([data-testid='rf-front-end-preamp-mutex-reason'])");
 
     const antenna = t.querySelector('[data-panel-id="semantic-antenna"]')!;
-    expect(antenna.querySelector('[data-testid="antenna-blocked"]')?.classList.contains('sr-only'))
-      .toBe(true);
+    // MOR-2691: the sr-only blocked-reason span is gone outright — the
+    // reason moved onto the disabled controls' own `title`.
+    expect(antenna.querySelector('[data-testid="antenna-blocked"]')).toBeNull();
     expect(antenna.querySelector('[data-testid="antenna-port-value"]')?.classList.contains('sr-only'))
       .toBe(true);
     expect(antenna.querySelector('[data-testid="antenna-rx-toggle"]')?.textContent?.trim())
@@ -2626,8 +2634,10 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     const cw = t.querySelector('[data-panel-id="semantic-cw"]')!;
     expect(cw.querySelector('[data-testid="cw-keyer-posture"]')?.closest('p')
       ?.classList.contains('sr-only')).toBe(true);
-    expect(cw.querySelector('[data-testid="cw-keyer-break-in-semi"]')?.getAttribute('aria-describedby'))
-      .toContain('-posture');
+    // MOR-2690: the break-in reading is unread in this mount, so the keys
+    // are bare — the removed unknown sentence is not described-by anything.
+    expect(cw.querySelector('[data-testid="cw-keyer-break-in-semi"]')
+      ?.getAttribute('aria-describedby') ?? '').not.toContain('-posture');
   });
 
   it.each([

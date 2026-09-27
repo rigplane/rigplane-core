@@ -45,25 +45,64 @@ const receiver = {
 } satisfies PeerSplitReceiverDisplay;
 
 describe('LCD display helpers', () => {
-  it('preserves known, unknown, and unsupported text without inventing values', () => {
+  it('renders known values exactly and keeps unread slots unlit in a reserved box', () => {
     expect(stateText(known('USB'))).toBe('USB');
-    expect(stateText({ state: 'unknown' })).toBe('?');
-    expect(stateText({ state: 'unsupported' })).toBe('—');
+    // MOR-2650: an unread value is unlit segments — the empty string — never
+    // '?'. The slot's box is reserved by the caller's `min-width`; the
+    // helper only supplies the absence of text.
+    expect(stateText({ state: 'unknown' })).toBe('');
     expect(formatBandwidth(known(2400))).toBe('2.4k');
-    expect(formatBandwidth({ state: 'unknown' })).toBe('?');
+    expect(formatBandwidth(known(500))).toBe('500');
+    expect(formatBandwidth({ state: 'unknown' })).toBe('');
+  });
+
+  it('never prints a placeholder token for any value state', () => {
+    const fields = [
+      stateText({ state: 'unknown' }),
+      stateText({ state: 'unsupported' }),
+      formatBandwidth({ state: 'unknown' }),
+      formatBandwidth({ state: 'unsupported' }),
+      formatOffset({ state: 'unknown' }),
+      formatOffset({ state: 'unsupported' }),
+      formatOffset({ state: 'inactive' }),
+    ];
+    for (const text of fields) expect(text).not.toMatch(/[?—–]|UNKNOWN|unknown|N\/A|null|undefined|NaN/);
   });
 
   it.each([
     [{ state: 'active', offsetHz: 250 }, '+0.250'],
     [{ state: 'active', offsetHz: -54_500 }, '−54.500'],
     [{ state: 'inactive', offsetHz: 250 }, '+0.250'],
-    [{ state: 'inactive' }, '—'],
-    [{ state: 'unknown' }, '?'],
-    [{ state: 'unsupported' }, '—'],
+    // MOR-2650: a split-off rail keeps its reserved slot but draws no
+    // digits — never a fabricated 0.000 or an '—' placeholder.
+    [{ state: 'inactive' }, ''],
+    [{ state: 'unknown' }, ''],
+    [{ state: 'unsupported' }, ''],
   ] satisfies readonly (readonly [DisplayOffset, string])[])(
     'formats offset state %j truthfully',
     (field, expected) => expect(formatOffset(field)).toBe(expected),
   );
+
+  it('reserves every census slot structurally against the widest text it can render', async () => {
+    const { readFileSync } = await import('node:fs');
+    const styleOf = (file: string) => {
+      const source = readFileSync(`src/skins/segmentline/${file}`, 'utf8');
+      return source.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
+    };
+    // NOTE: jsdom has no layout, so the reserved box is pinned by rule, not
+    // pixels: each slot's `min-width` must cover its widest text —
+    // mode `DATA-FM-N` (8 glyphs + letter-spacing → 10ch floor), offset
+    // `−54.500` (7ch), flag `ATT 0` (10ch floor with its label).
+    expect(styleOf('CenterstageDisplay.svelte')).toMatch(/\.orbit-value\s*\{[^}]*min-width:\s*10ch/);
+    expect(styleOf('PanadapterDisplay.svelte')).toContain('min-width: 10ch;');
+    expect(styleOf('LcdOffsetRail.svelte')).toMatch(/\.offset-value\s*\{[^}]*min-width:\s*7ch/);
+    expect(styleOf('LcdFlagRail.svelte')).toMatch(/\.status-flag\s*\{[^}]*min-width:\s*10ch/);
+    // Peer/Dominant pills and facts reserve their box by structure (min-width
+    // over the widest pill/fact text) — an empty string keeps the box, so
+    // unread === read width without layout.
+    expect(styleOf('PeerSplitDisplay.svelte')).toMatch(/\.vfo-tag,\s*\.lcd-pill\s*\{[^}]*min-width/);
+    expect(styleOf('DominantUnifiedDisplay.svelte')).toMatch(/\.fact\s*\{[^}]*min-width:\s*max\(58px,\s*10ch\)/);
+  });
 
   it('keeps unknown meters at empty geometry and clamps calibrated fill', () => {
     expect(meterFill({ state: 'unknown' })).toBe(0);
@@ -117,6 +156,21 @@ it.each([
   expect(telemetryText(field)).toBe(text);
 });
 
+// MOR-2705 parts 2 and 4b: an accessible name never carries a status
+// word. An unsupported item is not drawn, so it has no accessible name; an
+// unread one names only what it is — its label: no 'Unsupported', no 'No
+// reading', and no 'RF relevance indeterminate' cue either. A read item
+// names `<label>: <value>`, current and stale alike; idle names only the
+// label (MOR-2688: an instrument without data sits at rest).
+it('names an unsupported or unread telemetry item by its label only', () => {
+  expect(telemetryDescription('PWR', { state: 'unknown', relevant: true })).toBe('PWR');
+  expect(telemetryDescription('PWR', { state: 'unsupported', relevant: false })).toBe('PWR');
+  expect(telemetryDescription('PWR', {
+    state: 'known', value: 207, relevant: true,
+    txDisplay: { supported: false },
+  })).toBe('PWR');
+});
+
 for (const relevance of ['idle', 'relevant', 'indeterminate'] as const)
   for (const observation of [{ state: 'current', value: 12.345 }, { state: 'current', value: 0 },
     { state: 'stale', value: 87.654 }, { state: 'unknown', reason: 'not-observed' }] as const) {
@@ -131,10 +185,54 @@ for (const relevance of ['idle', 'relevant', 'indeterminate'] as const)
       expect(text).toBe(relevance === 'idle' ? '' : observation.state === 'unknown' ? ''
         : `${Number(observation.value.toFixed(2))}`);
       expect(description).toContain('PWR');
-      expect(description).not.toMatch(/207|87.65/);
-      if (relevance === 'idle') expect(description).toContain('Not measuring in receive');
-      if (relevance === 'indeterminate') expect(description).toContain('RF relevance indeterminate');
-      if (relevance !== 'idle' && observation.state === 'stale') expect(description).toContain('Stale observation');
-      if (relevance !== 'idle' && observation.state === 'unknown') expect(description).toContain('No reading');
+      // The outer legacy value (207) never reaches the name; the TX
+      // observation's own value does, for current and stale alike.
+      expect(description).not.toContain('207');
+      // MOR-2705 part 4b: current and stale name the value alike; idle and
+      // unknown name only the label.
+      if (relevance === 'idle') expect(description).toBe('PWR');
+      if (relevance !== 'idle' && observation.state === 'stale') expect(description).toBe(`PWR: ${text}`);
+      // MOR-2705 part 2 (coordinator ruling): no status word in an
+      // accessible name — neither 'No reading' nor the 'RF relevance
+      // indeterminate' cue ("indeterminate" means "unknown").
+      expect(description).not.toContain('No reading');
+      expect(description).not.toContain('indeterminate');
+      // An unknown observation names only the label, the same as unread.
+      if (relevance !== 'idle' && observation.state === 'unknown') expect(description).toBe('PWR');
+      if (relevance !== 'idle' && observation.state === 'current') expect(description).toBe(`PWR: ${text}`);
     });
   }
+
+// MOR-2722 part B: a TX meter without a calibration table shows only its
+// bar — the domain says the reading is not calibrated, so no digit reaches
+// the rail or its accessible name, in this skin or any other.
+it('shows no digit and a label-only name for an uncalibrated TX meter', () => {
+  const field: DisplayTelemetry = { state: 'known', value: 128, relevant: true,
+    domain: { kind: 'raw' },
+    txDisplay: { supported: true, relevance: 'relevant', observation: { state: 'current', value: 128 } } };
+  expect(telemetryText(field)).toBe('');
+  expect(telemetryDescription('PWR', field)).toBe('PWR');
+});
+
+it('shows no digit for an uninterpretable-domain TX meter either', () => {
+  const field: DisplayTelemetry = { state: 'known', value: 128, relevant: true,
+    domain: { kind: 'unknown' },
+    txDisplay: { supported: true, relevance: 'relevant', observation: { state: 'stale', value: 128 } } };
+  expect(telemetryText(field)).toBe('');
+  expect(telemetryDescription('PWR', field)).toBe('PWR');
+});
+
+it('keeps a calibrated TX meter digit-identical with its label: value name', () => {
+  const field: DisplayTelemetry = { state: 'known', value: 128, relevant: true,
+    domain: { kind: 'engineering', unit: 'w' },
+    txDisplay: { supported: true, relevance: 'relevant', observation: { state: 'current', value: 128 } } };
+  expect(telemetryText(field)).toBe('128');
+  expect(telemetryDescription('PWR', field)).toBe('PWR: 128');
+});
+
+it('hides the uncalibrated digit of a non-observation TX telemetry slot too', () => {
+  const field: DisplayTelemetry = { state: 'known', value: 13.7, relevant: false,
+    domain: { kind: 'raw' } };
+  expect(telemetryText(field)).toBe('');
+  expect(telemetryDescription('VD', field)).toBe('VD');
+});

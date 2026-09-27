@@ -24,6 +24,7 @@
     nbLevelPercent?: boolean;
     scalarAppearance?: ScalarAppearance;
     presentationIsCurrent?: () => boolean;
+    compactAgcTime?: boolean;
     pendingNb?: boolean | null;
     pendingNr?: boolean | null;
     pendingNotch?: DspNotchMode | null;
@@ -37,7 +38,7 @@
   }
   let { view, feedback, presentation = 'grouped', scalarPresentation,
     agcLabels = {}, notchWidthChoices, nbLevelMax = 255, nbLevelPercent = false,
-    scalarAppearance, presentationIsCurrent,
+    scalarAppearance, presentationIsCurrent, compactAgcTime,
     pendingNb = null, pendingNr = null, pendingNotch = null, pendingNotchWidth = null,
     finiteAppearance, rendererContext = null,
     onToggle, onLevelChange, onNotchModeChange, onAgcModeChange }: Props = $props();
@@ -106,7 +107,7 @@
             </section>
           {:else}
             <DspSurface {view} {finiteHandles} scalarHandles={scalarHandles} {notchWidthChoices}
-              {pendingNotchWidth}
+              {pendingNotchWidth} {compactAgcTime}
               finiteLayout={presentation === 'independent' ? independentFinite : undefined}
               scalarLayout={presentation === 'independent' ? independentScalars : undefined}
               onLevelChange={(field, value) => onLevelChange?.(field, value)} />

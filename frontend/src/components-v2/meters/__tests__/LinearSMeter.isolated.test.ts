@@ -1,0 +1,832 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { mount, unmount, flushSync } from 'svelte';
+import type { ComponentProps } from 'svelte';
+// @ts-expect-error -- Svelte does not publish types for its reactive test harness.
+import { proxy } from 'svelte/internal/client';
+import type { Capabilities } from '$lib/types/capabilities';
+import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
+
+// MOR-1451: `smeter-scale.ts` no longer ships a hardcoded per-radio fallback
+// curve — a radio with no declared `[meters.s_meter]` table is UNCALIBRATED,
+// and every text-producing function degrades to an honest raw-scale label
+// instead of borrowing a foreign radio's numbers. The tests below that
+// exercise "a" calibrated curve need one explicitly; this fixture — the
+// values `rigs/ic7610.toml` used to declare, moved here so they read as
+// what they are: one worked example, not a production default — stands in
+// for "some radio profile has published a curve", matching every existing
+// assertion's IC-7610-flavoured comments.
+const IC7610_LIKE_CAL = [
+  { raw: 0, actual: -54, label: 'S0' },
+  { raw: 26, actual: -48, label: 'S1' },
+  { raw: 52, actual: -36, label: 'S3' },
+  { raw: 78, actual: -24, label: 'S5' },
+  { raw: 103, actual: -12, label: 'S7' },
+  { raw: 130, actual: 0, label: 'S9' },
+  { raw: 165, actual: 10, label: 'S9+10' },
+  { raw: 200, actual: 20, label: 'S9+20' },
+  { raw: 240, actual: 40, label: 'S9+40' },
+];
+
+// The curve is seeded into the REAL capabilities store, not vi.mock'd, and
+// this file runs in the `isolated` project (`*.isolated.test.ts`, the
+// MOR-1272 pool-membership convention): it mounts real components with live
+// requestAnimationFrame loops and replaces `window.matchMedia`, so in the
+// shared `fast` pool (`isolate: false`) a sibling file's leftover module
+// state or pending frame timers reddened it with no production change
+// (MOR-2710). A fresh module registry and globals per file make the run
+// order-independent by construction.
+function makeCaps(overrides: Partial<Capabilities> = {}): Capabilities {
+  return {
+    model: 'IC-7610',
+    scope: true,
+    audio: true,
+    tx: true,
+    capabilities: ['scope', 'tx'],
+    receivers: 2,
+    vfoScheme: 'main_sub',
+    freqRanges: [{ start: 1800000, end: 30000000, label: 'HF' }],
+    modes: ['USB', 'LSB', 'CW', 'AM', 'FM'],
+    filters: ['FIL1', 'FIL2', 'FIL3'],
+    audioConfig: { sampleRate: 48000, channels: 1, codecs: ['opus'] },
+    webrtc: { available: true, enabled: false },
+    txBands: null,
+    stateContractVersion: 1,
+    providerGeneration: 0,
+    ...overrides,
+  };
+}
+
+import LinearSMeter from '../LinearSMeter.svelte';
+import type { SignalMeterFrame } from '../signal-meter-motion.svelte';
+import {
+  rawToSegments,
+  rawToSUnit,
+  rawToDbm,
+  formatDbm,
+  isSmeterCalibrated,
+  calibratedToSUnit,
+  projectSignalMeter,
+} from '../smeter-scale';
+
+beforeEach(() => {
+  setCapabilities(makeCaps({
+    meterCalibrations: { s_meter: IC7610_LIKE_CAL },
+  }));
+});
+
+let components: ReturnType<typeof mount>[] = [];
+let roots: HTMLElement[] = [];
+
+function mountMeter(props: ComponentProps<typeof LinearSMeter>) {
+  const target = document.createElement('div');
+  document.body.appendChild(target);
+  roots.push(target);
+  const component = mount(LinearSMeter, { target, props });
+  flushSync();
+  components.push(component);
+  return target;
+}
+
+afterEach(() => {
+  components.forEach((component) => unmount(component));
+  roots.forEach((root) => root.remove());
+  components = [];
+  roots = [];
+  clearCapabilities();
+  vi.restoreAllMocks();
+});
+
+// ── rawToSegments ──────────────────────────────────────────────────────────
+
+describe('rawToSegments', () => {
+  it('maps S0 (raw 0) to 0 segments', () => {
+    expect(rawToSegments(0)).toBe(0);
+  });
+
+  it('maps S1 (raw 26 in the IC-7610 profile) to ~1.22 segments', () => {
+    expect(rawToSegments(26)).toBeCloseTo((1 / 9) * 11, 5);
+  });
+
+  it('maps S9 (raw 130 in the IC-7610 profile) to exactly 11 segments', () => {
+    expect(rawToSegments(130)).toBe(11);
+  });
+
+  it('maps S9+20 (raw 200) to its calibrated tick position', () => {
+    const expected = 11 + ((200 - 130) / (240 - 130)) * 9;
+    expect(rawToSegments(200)).toBeCloseTo(expected, 5);
+  });
+
+  it('maps the top calibrated anchor (raw 240) to exactly 20 segments', () => {
+    expect(rawToSegments(240)).toBe(20);
+  });
+
+  it('clamps values below 0', () => {
+    expect(rawToSegments(-10)).toBe(0);
+  });
+
+  it('clamps values above 255', () => {
+    expect(rawToSegments(300)).toBe(20);
+  });
+
+  it('returns fractional values for intermediate inputs', () => {
+    const v = rawToSegments(81); // midway in S0-S9 zone
+    expect(v).toBeGreaterThan(0);
+    expect(v).toBeLessThan(11);
+  });
+});
+
+// ── rawToSUnit ─────────────────────────────────────────────────────────────
+
+describe('rawToSUnit', () => {
+  it('returns S0 for raw 0', () => {
+    expect(rawToSUnit(0)).toBe('S0');
+  });
+
+  it('returns S1 for raw 26', () => {
+    expect(rawToSUnit(26)).toBe('S1');
+  });
+
+  it('returns S5 for raw 78', () => {
+    expect(rawToSUnit(78)).toBe('S5');
+  });
+
+  it('returns S9 for raw 130', () => {
+    expect(rawToSUnit(130)).toBe('S9');
+  });
+
+  it('reads a continuous dB-over-S9 value for raw between S9 and S9+10, not the bare "S9+" hole (MOR-2024)', () => {
+    // Before MOR-2024, any raw strictly between s9Raw and the FIRST
+    // declared over-S9 knot fell through the backwards knot search and
+    // returned the literal string "S9+" with no number attached.
+    expect(rawToSUnit(140)).toBe('S9+3');
+  });
+
+  it('returns S9+20 for raw 200', () => {
+    expect(rawToSUnit(200)).toBe('S9+20');
+  });
+
+  it('reads continuously between two declared over-S9 knots too, not snapped down to the lower one (MOR-2024)', () => {
+    // raw 220 sits between the S9+20 (200) and S9+40 (240) knots. The old
+    // code walked overPoints backwards and returned the highest knot at
+    // or below v, i.e. it silently under-reported "S9+20" for anything up
+    // to (but not including) 240 -- not just the narrower hole above.
+    expect(rawToSUnit(220)).toBe('S9+30');
+  });
+
+  it('returns S9+40 for raw 240', () => {
+    expect(rawToSUnit(240)).toBe('S9+40');
+  });
+
+  it('returns S9+40 for raw 255 (max in default cal)', () => {
+    expect(rawToSUnit(255)).toBe('S9+40');
+  });
+
+  it('clamps out-of-range values', () => {
+    expect(rawToSUnit(-5)).toBe('S0');
+    expect(rawToSUnit(999)).toBe('S9+40');
+  });
+});
+
+// ── rawToDbm ──────────────────────────────────────────────────────────────
+
+describe('rawToDbm', () => {
+  it('returns -54 dBm at S0 (raw 0)', () => {
+    expect(rawToDbm(0)).toBe(-54);
+  });
+
+  it('returns 0 dBm at S9 (raw 130)', () => {
+    expect(rawToDbm(130)).toBe(0);
+  });
+
+  it('returns 20 dBm at S9+20 (raw 200)', () => {
+    expect(rawToDbm(200)).toBe(20);
+  });
+
+  it('returns 40 dBm at max (raw 255)', () => {
+    expect(rawToDbm(255)).toBe(40);
+  });
+
+  it('interpolates between breakpoints', () => {
+    // raw 172 is between 165 (+10) and 200 (+20) in the IC-7610 profile.
+    const dbm = rawToDbm(172);
+    expect(dbm).toBeGreaterThanOrEqual(10);
+    expect(dbm).toBeLessThanOrEqual(20);
+  });
+});
+
+// ── formatDbm ─────────────────────────────────────────────────────────────
+
+describe('formatDbm', () => {
+  it('formats negative values with unicode minus', () => {
+    expect(formatDbm(-67)).toBe('\u221267 dBm');
+  });
+
+  it('formats -127 dBm', () => {
+    expect(formatDbm(-127)).toBe('\u2212127 dBm');
+  });
+
+  it('formats positive values with plus sign', () => {
+    expect(formatDbm(0)).toBe('+0 dBm');
+  });
+});
+
+// ── Segment rendering logic (segment count → active segments) ─────────────
+
+describe('segment rendering logic', () => {
+  it('0 active segments at S0 (raw 0)', () => {
+    expect(Math.floor(rawToSegments(0))).toBe(0);
+  });
+
+  it('~6 segments at S5 (raw 78)', () => {
+    const segs = rawToSegments(78);
+    expect(segs).toBeGreaterThan(6);
+    expect(segs).toBeLessThan(7);
+  });
+
+  it('11 full segments at S9 (raw 130)', () => {
+    expect(Math.floor(rawToSegments(130))).toBe(11);
+  });
+
+  it('16 full segments at S9+20 (raw 200)', () => {
+    expect(Math.floor(rawToSegments(200))).toBe(16);
+  });
+
+  it('20 full segments at the top calibrated anchor (raw 240)', () => {
+    expect(Math.floor(rawToSegments(240))).toBe(20);
+  });
+
+  it('fractional segment for mid-S-unit value', () => {
+    const segs = rawToSegments(27); // halfway between S1 and S2
+    expect(segs % 1).toBeGreaterThan(0);
+  });
+});
+
+// ── Smoother attack/release constants (MOR-2509 v7) ────────────────────────
+// The owner-approved v7 meter ballistics: the displayed level rises fast
+// (attack ≤ 50 ms) and falls slowly (decay τ ≈ 300 ms), with the peak-hold
+// marker and the ~250 ms afterglow carrying the recent high reading. This
+// replaces the MOR-481 fast-release pin (~150 ms tracking) — the visible
+// lag of the falling bar is now the design, not a regression.
+
+describe('LinearSMeter attack and decay constants', () => {
+  const source = readFileSync(
+    resolve(process.cwd(), 'src/components-v2/meters/signal-meter-motion.svelte.ts'),
+    'utf8',
+  );
+
+  it('pins the v7 attack and decay constants in the motion binding', () => {
+    const attack = Number(source.match(/ATTACK_SECONDS\s*=\s*([0-9.]+)/)?.[1]);
+    const release = Number(source.match(/RELEASE_SECONDS\s*=\s*([0-9.]+)/)?.[1]);
+    expect(attack).toBeCloseTo(0.05, 5);
+    expect(release).toBeCloseTo(0.3, 5);
+    expect(source).toMatch(/createSmoother\(ATTACK_SECONDS, RELEASE_SECONDS\)/);
+  });
+});
+
+describe('LinearSMeter calibrated S-meter domain', () => {
+  it('renders S9 and -73 dBm for a calibrated 0 dB-rel-S9 reading', () => {
+    const target = mountMeter({ value: 0 });
+    const text = target.textContent ?? '';
+
+    expect(text).toContain('S9');
+    expect(text).toContain('\u221273 dBm');
+  });
+
+  it('renders S9+20 and -53 dBm for a calibrated +20 dB reading', () => {
+    const target = mountMeter({ value: 20 });
+    const text = target.textContent ?? '';
+
+    expect(text).toContain('S9+20');
+    expect(text).toContain('\u221253 dBm');
+  });
+
+  it('accepts a projection directly and keeps legacy value callers on the same projector', () => {
+    const projection = projectSignalMeter(-48);
+    const projected = mountMeter({ projection });
+    const legacy = mountMeter({ value: -48 });
+
+    for (const target of [projected, legacy]) {
+      expect(target.textContent).toContain(projection.primaryText);
+      expect(target.textContent).toContain(projection.secondaryText);
+    }
+  });
+
+  it('renders normal and SDR geometry from every supplied host-frame field', () => {
+    const projection = projectSignalMeter(0);
+    const frame = {
+      projection,
+      smoothedFraction: 0.5,
+      peakFraction: 0.8,
+      afterglowFraction: null,
+      reducedMotion: false,
+    } satisfies SignalMeterFrame;
+    const frameOnly = { frame } satisfies ComponentProps<typeof LinearSMeter>;
+    expect(frameOnly.frame).toBe(frame);
+
+    const normal = mountMeter({ frame });
+    expect(normal.textContent).toContain(projection.primaryText);
+    expect(normal.textContent).toContain(projection.secondaryText);
+    // MOR-2521: all 20 fill rects exist permanently; exactly the 10 the
+    // 0.5-smoothed frame lights are visible.
+    const fills = [...normal.querySelectorAll<SVGRectElement>('[data-meter-fill]')];
+    expect(fills).toHaveLength(20);
+    expect(fills.filter((rect) => rect.getAttribute('visibility') !== 'hidden')).toHaveLength(10);
+    expect(Number(normal.querySelector('[data-meter-peak]')?.getAttribute('x1'))).toBeCloseTo(396);
+
+    const sdr = mountMeter({ frame, variant: 'sdr-screen' });
+    expect(sdr.querySelector('[data-sdr-segment="39"]')?.getAttribute('fill')).toBe('#4FB9EC');
+    expect(sdr.querySelector('[data-sdr-segment="40"]')?.getAttribute('fill')).toBe('#1a2230');
+  });
+
+  it('renders a moving bar with no number and no word for an explicit raw domain (MOR-2705 part 4a)', () => {
+    const projection = projectSignalMeter(53, { kind: 'raw' });
+    const frame = {
+      projection,
+      smoothedFraction: projection.motionFraction!,
+      peakFraction: 0.9,
+      afterglowFraction: null,
+      reducedMotion: false,
+    } satisfies SignalMeterFrame;
+    const normal = mountMeter({ frame });
+    const sdr = mountMeter({ frame, variant: 'sdr-screen' });
+
+    for (const target of [normal, sdr]) {
+      expect(target.textContent).not.toContain('53');
+      expect(target.textContent).not.toContain('uncalibrated');
+      expect(target.textContent).not.toMatch(/S[0-9]|dBm/);
+      expect(target.querySelector('svg')?.getAttribute('aria-label')).toBe('S meter');
+    }
+    expect(normal.querySelectorAll('line')).toHaveLength(1);
+    // The bar still moves: the raw fraction lights the first SDR cell.
+    expect(sdr.querySelector('[data-sdr-segment="0"]')?.getAttribute('fill')).toBe('#4FB9EC');
+    expect(sdr.textContent).not.toContain('raw');
+    expect(sdr.textContent).not.toContain('level');
+    expect(sdr.querySelector('[data-sdr-segment="40"]')?.getAttribute('fill')).toBe('#1a2230');
+    expect(sdr.querySelector('[data-sdr-segment="79"]')?.getAttribute('fill')).toBe('#1a2230');
+  });
+
+  it('renders the engineering value with its own unit and no state word for an uncalibrated engineering domain (MOR-2705 part 4a)', () => {
+    setCapabilities(makeCaps());
+    const projection = projectSignalMeter(-12, { kind: 'engineering', unit: 'db' });
+    const target = mountMeter({
+      frame: { projection, smoothedFraction: 0.8, peakFraction: 0.95, afterglowFraction: null, reducedMotion: false },
+    });
+
+    expect(target.textContent).toContain('\u221212 dB rel S9');
+    expect(target.textContent).not.toContain('scale unavailable');
+    expect(target.textContent).not.toContain('unit unknown');
+    // MOR-2521: unprojectable domains keep every fill rect present but hidden.
+    const fills = [...target.querySelectorAll<SVGRectElement>('[data-meter-fill]')];
+    expect(fills).toHaveLength(20);
+    expect(fills.every((rect) => rect.getAttribute('visibility') === 'hidden')).toBe(true);
+    expect(target.querySelector('[data-meter-peak]')?.getAttribute('visibility')).toBe('hidden');
+    expect([...target.querySelectorAll<SVGLineElement>('line')]
+      .every((line) => line.getAttribute('visibility') === 'hidden')).toBe(true);
+    expect(target.querySelector('svg')?.getAttribute('aria-label')).toBe(
+      projection.accessibleDescription,
+    );
+  });
+
+  it('renders a known reading with an unknown unit exactly like an unread one', () => {
+    const frameFor = (projection: ReturnType<typeof projectSignalMeter>): SignalMeterFrame => ({
+      projection, smoothedFraction: 0, peakFraction: null, afterglowFraction: null, reducedMotion: false,
+    });
+    const knownTarget = mountMeter({ frame: frameFor(projectSignalMeter(-12, { kind: 'unknown' })) });
+    const unreadTarget = mountMeter({ frame: frameFor(projectSignalMeter(null, { kind: 'unknown' })) });
+
+    expect(knownTarget.textContent).toBe(unreadTarget.textContent);
+    expect(knownTarget.querySelector('svg')?.getAttribute('aria-label')).toBe('S meter');
+    expect(unreadTarget.querySelector('svg')?.getAttribute('aria-label')).toBe('S meter');
+    // MOR-2521: the unprojectable track keeps every fill rect present but hidden.
+    const fills = [...knownTarget.querySelectorAll<SVGRectElement>('[data-meter-fill]')];
+    expect(fills).toHaveLength(20);
+    expect(fills.every((rect) => rect.getAttribute('visibility') === 'hidden')).toBe(true);
+    expect(knownTarget.querySelector('[data-meter-peak]')?.getAttribute('visibility')).toBe('hidden');
+    expect([...knownTarget.querySelectorAll<SVGLineElement>('line')]
+      .every((line) => line.getAttribute('visibility') === 'hidden')).toBe(true);
+  });
+
+  it('starts no local motion owner for a host frame while compatibility callers start one', () => {
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = vi.fn().mockReturnValue({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as MediaQueryList) as unknown as typeof window.matchMedia;
+    const requestFrame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
+    try {
+      const projection = projectSignalMeter(0);
+      mountMeter({ frame: { projection, smoothedFraction: 0.5, peakFraction: null, afterglowFraction: null, reducedMotion: false } });
+      expect(requestFrame).not.toHaveBeenCalled();
+      mountMeter({ projection });
+      expect(requestFrame).toHaveBeenCalledTimes(2);
+    } finally {
+      window.matchMedia = originalMatchMedia;
+    }
+  });
+
+  it('rejects frame input combined with local value, projection, source, or session owners', () => {
+    const projection = projectSignalMeter(0);
+    const frame = { projection, smoothedFraction: 0.5, peakFraction: null, afterglowFraction: null, reducedMotion: false } satisfies SignalMeterFrame;
+    // @ts-expect-error -- a host frame and local value are exclusive owners.
+    const invalidValue: ComponentProps<typeof LinearSMeter> = { frame, value: 0 };
+    const invalidProjection: ComponentProps<typeof LinearSMeter> = { frame, projection: undefined };
+    const invalidSource: ComponentProps<typeof LinearSMeter> = { frame, source: undefined };
+    // @ts-expect-error -- a defined projection cannot accompany a host frame.
+    const invalidDefinedProjection: ComponentProps<typeof LinearSMeter> = { frame, projection };
+    const definedSource = {
+      providerGeneration: 1, scope: 'receiver', receiver: 'MAIN', path: 'main.sMeter',
+    } as const;
+    // @ts-expect-error -- a host frame owns its source continuity.
+    const invalidDefinedSource: ComponentProps<typeof LinearSMeter> = { frame, source: definedSource };
+    expect(invalidValue.value).toBe(0);
+    expect(invalidProjection).toHaveProperty('projection');
+    expect(invalidSource).toHaveProperty('source');
+    expect(invalidDefinedProjection.projection).toBe(projection);
+    expect(invalidDefinedSource).toHaveProperty('source');
+    expect(() => mountMeter(invalidValue as never)).toThrow(/exactly one of .*frame.*projection.*value/);
+    expect(() => mountMeter(invalidProjection as never)).toThrow(/exactly one of .*frame.*projection.*value/);
+    expect(() => mountMeter(invalidSource as never)).toThrow(/frame owns source and session/);
+    expect(() => mountMeter({ frame, session: null } as never)).toThrow(/frame owns source and session/);
+    expect(() => mountMeter({ frame: undefined } as never)).toThrow(/frame must be defined/);
+  });
+
+  it('rejects a dynamic switch between local-owner and host-frame modes', () => {
+    const projection = projectSignalMeter(0);
+    const frame = { projection, smoothedFraction: 0.5, peakFraction: null, afterglowFraction: null, reducedMotion: false } satisfies SignalMeterFrame;
+    const state: ComponentProps<typeof LinearSMeter> = proxy({ value: 0 });
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(LinearSMeter, { target, props: state });
+    flushSync();
+    expect(() => flushSync(() => {
+      delete (state as { value?: number | null }).value;
+      (state as { frame?: SignalMeterFrame }).frame = frame;
+    })).toThrow(/input mode cannot change after mount/);
+    unmount(component);
+    target.remove();
+  });
+
+  it('rejects dynamic callers that supply both projection and value', () => {
+    const projection = projectSignalMeter(0);
+    const projectionOnly = { projection } satisfies ComponentProps<typeof LinearSMeter>;
+    const valueOnly = { value: 0 } satisfies ComponentProps<typeof LinearSMeter>;
+    // @ts-expect-error -- the public component props make the two inputs exclusive.
+    const invalid: ComponentProps<typeof LinearSMeter> = { value: 0, projection };
+    expect(projectionOnly.projection).toBe(projection);
+    expect(valueOnly.value).toBe(0);
+    expect(invalid).toEqual({ value: 0, projection });
+    expect(() => mountMeter({ value: 0, projection } as never))
+      .toThrow(/exactly one of .*projection.*value/);
+  });
+
+  it('rejects dynamic callers that supply neither projection nor value', () => {
+    expect(() => mountMeter({} as never))
+      .toThrow(/exactly one of .*projection.*value/);
+  });
+
+  it('keeps every dense tick and the S1 label on the supplied projection after calibration replacement', () => {
+    const projection = projectSignalMeter(-48);
+    const beforeReplacement = mountMeter({ projection });
+    const denseTickXs = (target: HTMLElement) => [...target.querySelectorAll<SVGLineElement>('line')]
+      .filter((line) => line.getAttribute('y2') === '38')
+      .map((line) => Number(line.getAttribute('x1')));
+    const expectedTickXs = denseTickXs(beforeReplacement);
+    clearCapabilities();
+
+    const projected = mountMeter({ projection });
+    const legacy = mountMeter({ value: -48 });
+    expect(projected.textContent).toContain('S1');
+    expect(projected.textContent).toContain('\u2212121 dBm');
+    expect(projected.textContent).not.toContain('uncalibrated');
+    // MOR-2705 part 4a: the legacy value path on the now-uncalibrated radio
+    // renders no number and no word either.
+    expect(legacy.textContent).not.toContain('uncalibrated');
+    expect(legacy.textContent).not.toContain('\u2212121 dBm');
+    expect(legacy.textContent).not.toContain('48');
+
+    const s1Label = [...projected.querySelectorAll<SVGTextElement>('text')]
+      .find((label) => label.textContent === 'S1')!;
+    const majorTickXs = [...projected.querySelectorAll<SVGLineElement>('line')]
+      .filter((line) => line.getAttribute('y1') === '18' && line.getAttribute('y2') === '38')
+      .map((line) => Number(line.getAttribute('x1')));
+    expect(denseTickXs(projected)).toEqual(expectedTickXs);
+    expect(majorTickXs[1]).toBeCloseTo(Number(s1Label.getAttribute('x')));
+  });
+
+  it('positions both labeled marks and dense ticks from the supplied projection fractions', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'src/components-v2/meters/LinearSMeter.svelte'),
+      'utf8',
+    );
+    expect(source).toMatch(/labelMarks\s*=\s*\$derived\(signalProjection\.marks\)/);
+    expect(source).toMatch(/x=\{fractionToX\(m\.fraction\)\}/);
+    expect(source).toMatch(/\{#each signalProjection\.ticks as t\}/);
+    expect(source).toMatch(/\{@const tx = fractionToX\(t\.fraction\)\}/);
+    expect(source).not.toMatch(/\brawToSegments\b|function rawToX\b/);
+  });
+});
+
+// ── MOR-2521: value updates change attributes, never the node set ──────────
+
+describe('MOR-2521 — the S-meter never adds or removes nodes across a value sweep', () => {
+  // Host-frame input drives segment/peak geometry directly (no ballistics),
+  // so every step is a deterministic render. The sweep crosses full-segment
+  // boundaries, the sub-1% fractional guard (0.15025 -> fracSeg 0.005),
+  // exact segment boundaries (fracSeg 0), and the peak line's show/hide
+  // threshold (peak 0.95 early, no peak late).
+  const SWEEP = [
+    { smoothedFraction: 0, peakFraction: 0.95 },
+    { smoothedFraction: 0.05, peakFraction: 0.95 },
+    { smoothedFraction: 0.15025, peakFraction: 0.95 },
+    { smoothedFraction: 0.275, peakFraction: 0.95 },
+    { smoothedFraction: 0.55, peakFraction: null },
+    { smoothedFraction: 0.9275, peakFraction: null },
+    { smoothedFraction: 1, peakFraction: null },
+  ] as const;
+
+  interface NodeCounts { rect: number; line: number; fill: number }
+  interface SweepStep {
+    counts: NodeCounts;
+    visibleFills: number;
+    peakVisible: boolean;
+  }
+
+  function nodeCounts(target: HTMLElement): NodeCounts {
+    return {
+      rect: target.querySelectorAll('svg rect').length,
+      line: target.querySelectorAll('svg line').length,
+      fill: target.querySelectorAll('[data-meter-fill]').length,
+    };
+  }
+
+  function sweep(extra: Record<string, unknown> = {}): SweepStep[] {
+    const projection = projectSignalMeter(0);
+    const state = proxy({
+      frame: {
+        projection,
+        smoothedFraction: SWEEP[0].smoothedFraction,
+        peakFraction: SWEEP[0].peakFraction,
+        afterglowFraction: null,
+        reducedMotion: false,
+      } satisfies SignalMeterFrame,
+      ...extra,
+    });
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    roots.push(target);
+    const component = mount(LinearSMeter, { target, props: state as ComponentProps<typeof LinearSMeter> });
+    components.push(component);
+    return SWEEP.map((step) => {
+      state.frame = {
+        projection,
+        smoothedFraction: step.smoothedFraction,
+        peakFraction: step.peakFraction,
+        afterglowFraction: null,
+        reducedMotion: false,
+      } satisfies SignalMeterFrame;
+      flushSync();
+      return {
+        counts: nodeCounts(target),
+        visibleFills: [...target.querySelectorAll<SVGRectElement>('[data-meter-fill]')]
+          .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length,
+        peakVisible: target.querySelector('[data-meter-peak]')?.getAttribute('visibility') === 'visible',
+      };
+    });
+  }
+
+  it('default variant: one node count for every sweep step, while lit/peak state still tracks the reading', () => {
+    const steps = sweep();
+    for (const step of steps) expect(step.counts).toEqual(steps[0].counts);
+    // Literally: container background + bar track + 20 dim + 20 permanent
+    // fill rects = 42 rects; 81 calibration ticks (8 mark intervals x 10
+    // subdivisions + the final major, under this file's IC7610_LIKE_CAL)
+    // + 1 permanent peak line = 82 lines.
+    expect(steps[0].counts).toEqual({ rect: 42, line: 82, fill: 20 });
+    expect(steps.map((step) => step.visibleFills)).toEqual([0, 1, 3, 6, 11, 19, 20]);
+    expect(steps.map((step) => step.peakVisible)).toEqual([true, true, true, true, false, false, false]);
+  });
+
+  it('sdr-screen variant: one node count for every sweep step', () => {
+    const steps = sweep({ variant: 'sdr-screen' });
+    for (const step of steps) expect(step.counts).toEqual(steps[0].counts);
+    // 80 permanent half-cell rects; no lines, no data-meter-fill slots.
+    expect(steps[0].counts).toEqual({ rect: 80, line: 0, fill: 0 });
+  });
+
+  it('with lowerScale: one node count for every valueFraction step, while the lit lower count still tracks it', () => {
+    const projection = projectSignalMeter(0);
+    const state = proxy({
+      frame: {
+        projection, smoothedFraction: 0.55, peakFraction: null,
+        afterglowFraction: null, reducedMotion: false,
+      } satisfies SignalMeterFrame,
+      lowerScale: { label: 'SWR', ticks: [], valueFraction: 0, fault: false, relevant: true },
+    });
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    roots.push(target);
+    const component = mount(LinearSMeter, { target, props: state as ComponentProps<typeof LinearSMeter> });
+    components.push(component);
+    const fractions = [0, 0.53, 1, 0.0004];
+    const steps = fractions.map((valueFraction) => {
+      state.lowerScale = { ...state.lowerScale, valueFraction };
+      flushSync();
+      return {
+        counts: nodeCounts(target),
+        visibleLowerFills: [...target.querySelectorAll<SVGRectElement>('[data-lower-fill]')]
+          .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length,
+      };
+    });
+    for (const step of steps) expect(step.counts).toEqual(steps[0].counts);
+    // 42 main-bar rects + lower track + 20 lower dim + 20 lower fill = 83;
+    // 82 lines + 0 lower ticks (empty ticks array).
+    expect(steps[0].counts).toEqual({ rect: 83, line: 82, fill: 20 });
+    // 0.0004 * 20 = 0.008 <= 0.01: the sub-1% guard renders no visible fill.
+    expect(steps.map((step) => step.visibleLowerFills)).toEqual([0, 11, 20, 0]);
+  });
+});
+
+// ── MOR-2521: the default face's readouts keep one start x per profile ─────
+
+describe('MOR-2521 — the default-face readouts start at one x sized from the calibration', () => {
+  const sUnitText = (target: HTMLElement) => target.querySelector('[data-meter-reading]')!;
+  const dbmText = (target: HTMLElement) => target.querySelector('[data-meter-reading-secondary]')!;
+
+  // IC7610_LIKE_CAL (seeded above) prints at most 'S9+40' (5 glyphs) and
+  // '−127 dBm' (8 glyphs). Both readouts are centred on x 546 for that
+  // widest text: 546 − 5 × 0.6 × 15 / 2 = 523.5 and 546 − 8 × 0.6 × 9 / 2
+  // = 524.4 on the full face, 528 and 526.8 on the compact one.
+  it.each([
+    [false, 523.5, 524.4],
+    [true, 528, 526.8],
+  ] as const)('keeps both readouts at one x when unread, at S0 and at S9+20 (compact %s)', (
+    compact, sUnitX, dbmX,
+  ) => {
+    const unread = mountMeter({ value: null, compact });
+    const s0 = mountMeter({ value: -54, compact });
+    const s9plus20 = mountMeter({ value: 20, compact });
+
+    expect(sUnitText(unread).textContent).toBe('');
+    expect(dbmText(unread).textContent).toBe('');
+    expect(sUnitText(s0).textContent).toBe('S0');
+    expect(dbmText(s0).textContent).toBe('\u2212127 dBm');
+    expect(sUnitText(s9plus20).textContent).toBe('S9+20');
+    expect(dbmText(s9plus20).textContent).toBe('\u221253 dBm');
+    for (const target of [unread, s0, s9plus20]) {
+      expect(sUnitText(target).getAttribute('text-anchor')).toBe('start');
+      expect(dbmText(target).getAttribute('text-anchor')).toBe('start');
+      expect(Number(sUnitText(target).getAttribute('x'))).toBeCloseTo(sUnitX, 9);
+      expect(Number(dbmText(target).getAttribute('x'))).toBeCloseTo(dbmX, 9);
+    }
+  });
+
+  it('sizes the slots from the mounted table, not from a constant', () => {
+    // Prints at most 'S9' (2 glyphs) and '−97 dBm' (7 glyphs):
+    // 546 − 2 × 0.6 × 15 / 2 = 537 and 546 − 7 × 0.6 × 9 / 2 = 527.1.
+    setCapabilities(makeCaps({ meterCalibrations: { s_meter: [
+      { raw: 0, actual: -24, label: 'S5' },
+      { raw: 120, actual: 0, label: 'S9' },
+    ] } }));
+    const target = mountMeter({ value: -24 });
+
+    expect(sUnitText(target).textContent).toBe('S5');
+    expect(dbmText(target).textContent).toBe('\u221297 dBm');
+    expect(Number(sUnitText(target).getAttribute('x'))).toBeCloseTo(537, 9);
+    expect(Number(dbmText(target).getAttribute('x'))).toBeCloseTo(527.1, 9);
+  });
+
+  it('keeps an uncalibrated engineering reading centred on x 546, where no table sizes a slot', () => {
+    setCapabilities(makeCaps());
+    const projection = projectSignalMeter(-12, { kind: 'engineering', unit: 'db' });
+    const target = mountMeter({ projection });
+
+    expect(sUnitText(target).textContent).toBe('\u221212 dB rel S9');
+    expect(sUnitText(target).getAttribute('text-anchor')).toBe('middle');
+    expect(Number(sUnitText(target).getAttribute('x'))).toBe(546);
+  });
+});
+
+// ── MOR-1451: no hardcoded per-radio fallback curve ─────────────────────────
+// A radio whose profile declares no `[meters.s_meter]` table gets NO
+// calibration server-side either (`_civ_rx.py`'s `_calibrated_meter_value`
+// publishes the raw byte unchanged, flagged "uncalibrated" —
+// `interpolate_meter`'s own `(value, calibrated)` contract). `LinearSMeter`
+// therefore receives that raw byte directly as `value`, with no call-site
+// conversion of any kind — exactly production's real data flow. It must
+// never borrow another radio's numbers to interpret it.
+
+describe('uncalibrated fallback — no radio-specific curve is fabricated (MOR-1451)', () => {
+  beforeEach(() => {
+    // A profile that declares no meter calibration at all.
+    setCapabilities(makeCaps({ model: 'X6200' }));
+  });
+
+  it('isSmeterCalibrated() is false with no profile curve', () => {
+    expect(isSmeterCalibrated()).toBe(false);
+  });
+
+  it('rawToSUnit renders the plain raw number, never a fabricated S-unit', () => {
+    expect(rawToSUnit(53)).toBe('53');
+    expect(rawToSUnit(0)).toBe('0');
+    expect(rawToSUnit(255)).toBe('255');
+  });
+
+  it('rawToDbm passes the raw value straight through (not a claimed dBm reading)', () => {
+    expect(rawToDbm(53)).toBe(53);
+  });
+
+  // MOR-2705: a dBm that cannot be computed renders NOTHING — the word
+  // 'uncalibrated' was itself the placeholder the page guard cannot reach.
+  it('formatDbm renders NOTHING for an uncomputable dBm, never a placeholder word (MOR-2705)', () => {
+    expect(formatDbm(null)).toBe('');
+  });
+
+  it('LinearSMeter renders no number and no word for the raw byte — never S9+40 (the reported bug), fed the raw byte exactly as the backend publishes it (no call-site conversion) (MOR-2705 part 4a)', () => {
+    const target = mountMeter({ value: 53 });
+    const text = target.textContent ?? '';
+
+    expect(text).not.toContain('S9+40');
+    expect(text).not.toContain('53');
+    expect(text).not.toContain('uncalibrated');
+    expect(target.querySelector('svg')?.getAttribute('aria-label')).toBe('S meter');
+  });
+});
+
+// ── MOR-1451 conformance case: the IC-7300's own curve ──────────────────────
+//
+// IMPORTANT — the BACKEND, not the frontend, does the raw->calibrated
+// conversion when a radio profile declares `[meters.s_meter]`
+// (`_civ_rx.py`'s `_calibrated_meter_value` -> `interpolate_meter`, over
+// `profile.meter_calibrations` — see `test_civ_rx_coverage.py`'s
+// pre-existing "raw 111 -> -8" pin for a worked example on a different
+// profile). `ServerState.main.sMeter` — and therefore `LinearSMeter`'s
+// `value` prop — is ALREADY the calibrated dB-rel-S9 reading for any radio
+// whose profile has a curve; it is raw device-scale ONLY for a radio with
+// no curve (the `isSmeterCalibrated()` suite above). rigs/ic7300.toml's new
+// `[meters.s_meter]` table (this PR) moves the IC-7300 from the second
+// bucket into the first — its wire byte 53 now arrives at the frontend as
+// -30 dB-rel-S9, calibrated, NOT raw. The assertions below exercise exactly
+// that domain (`calibratedToSUnit`, not `rawToSUnit` on the wire byte —
+// feeding the wire byte through a SECOND raw->calibrated conversion was an
+// earlier, reverted draft of this fix and is exactly the double-conversion
+// bug a PR reviewer caught). The reported "S9+40" symptom happened because,
+// before this PR, the IC-7300 profile had NO table: the backend published
+// raw 53 untouched (uncalibrated), and the frontend's since-removed
+// hardcoded IC-7610-shaped fallback curve misread that raw byte as if it
+// were already a calibrated dB-rel-S9 reading, clamping it to the fallback
+// curve's top anchor (+40 dB) — "S9+40" regardless of the actual signal.
+// Fixing that required BOTH halves: the profile table (so the backend
+// calibrates this radio at all) and the honest-uncalibrated-fallback
+// removal above (so a radio that still has no table never borrows a
+// foreign curve again).
+
+describe('IC-7300 profile conformance — calibrated dB-rel-S9 renders the correct S-unit, not S9+40 (MOR-1451)', () => {
+  const IC7300_S_METER_CAL = [
+    { raw: 0, actual: -54, label: 'S0' },
+    { raw: 120, actual: 0, label: 'S9' },
+    { raw: 241, actual: 60, label: 'S9+60' },
+  ];
+
+  beforeEach(() => {
+    setCapabilities(makeCaps({
+      model: 'IC-7300',
+      meterCalibrations: { s_meter: IC7300_S_METER_CAL },
+    }));
+  });
+
+  it('the anchor round-trips: raw axis 0/120/241 -> S0/S9/S9+60', () => {
+    // Pure interpolator correctness over the published table —
+    // independent of which domain a given caller feeds it (see the
+    // calibrated-domain assertions below for what LinearSMeter's `value`
+    // prop actually carries in production).
+    expect(rawToSUnit(0)).toBe('S0');
+    expect(rawToSUnit(120)).toBe('S9');
+    expect(rawToSUnit(241)).toBe('S9+60');
+  });
+
+  it('calibratedToSUnit(0) -> S9, calibratedToSUnit(60) -> S9+60 (the documented anchors)', () => {
+    expect(calibratedToSUnit(0)).toBe('S9');
+    expect(calibratedToSUnit(60)).toBe('S9+60');
+  });
+
+  it('the live-evidence backend value (-30, from raw 53) renders S4, not the reported S9+40', () => {
+    // -30 dB-rel-S9 is what the backend actually publishes for the
+    // IC-7300 live-fixture's raw sMeter=53 under this profile's curve
+    // (interpolate_meter(53, ...) == -30, pinned server-side in
+    // tests/test_rig_ic7300.py). This is the value LinearSMeter's `value`
+    // prop receives in production — never the raw byte itself.
+    expect(calibratedToSUnit(-30)).not.toBe('S9+40');
+    expect(calibratedToSUnit(-30)).toBe('S4');
+  });
+
+  it('LinearSMeter renders S4 for the calibrated live-evidence value end-to-end', () => {
+    const target = mountMeter({ value: -30 });
+    const text = target.textContent ?? '';
+
+    expect(text).not.toContain('S9+40');
+    expect(text).toContain('S4');
+  });
+});

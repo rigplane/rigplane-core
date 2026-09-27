@@ -17,6 +17,7 @@ import {
   toRxAudioProps,
   toScanProps,
   toTxProps,
+  toVfoControlProps,
   toVfoProps,
 } from '../panel-props';
 import { findActiveBand } from '$lib/radio/band-plan';
@@ -98,10 +99,10 @@ function makeState(overrides: Record<string, unknown> = {}) {
 }
 
 describe('panel prop field availability', () => {
-  it('defaults RF power to the normalized midpoint without state', () => {
+  it('reports RF power as unread without state (MOR-2658 finishes the deferred A12 rfPower fix)', () => {
     const props = toTxProps(null, { tx: true, capabilities: [] } as any);
 
-    expect(props.rfPower).toBe(0.5);
+    expect(props.rfPower).toBeNaN();
   });
 
   it('defaults RF front-end normalized controls without state', () => {
@@ -677,10 +678,12 @@ describe('Mode panel MOD-input source (MOR-616)', () => {
  * one antenna) for missing/unsupported input. Every case below documents a
  * value that panel-props.ts used to invent out of thin air on exact base;
  * after the fix each one renders a value that cannot be mistaken for a real
- * reading (`NaN` for numbers whose type stays `number`, `'---'` for strings
- * whose type stays `string` — the same non-fabricating-sentinel convention
- * `toVfoControlProps` already used for `mode` before this gate touched
- * anything), never `null`/`undefined` (the prop type contracts are frozen —
+ * reading (`NaN` for numbers whose type stays `number`, `''` for strings
+ * whose type stays `string` — the same non-fabricating-sentinel convention,
+ * re-pointed from `'---'` to the empty string by MOR-2673 so the sentinel
+ * can never be drawn as a dash run; `''` never equals a real, non-empty
+ * mode/filter label, preserving every comparison consumer), never
+ * `null`/`undefined` (the prop type contracts are frozen —
  * no fourth production file may be touched to accommodate a wider type).
  */
 describe('A11 — batch-A projections do not fabricate defaults (MOR-1409)', () => {
@@ -688,15 +691,15 @@ describe('A11 — batch-A projections do not fabricate defaults (MOR-1409)', () 
     it('does not invent 14.074 MHz / USB / FIL1 when state is entirely absent', () => {
       const props = toVfoProps(null, 'main');
       expect(props.freq).toBeNaN();
-      expect(props.mode).toBe('---');
-      expect(props.filter).toBe('---');
+      expect(props.mode).toBe('');
+      expect(props.filter).toBe('');
     });
 
     it('does not invent 14.074 MHz / USB / FIL1 when the addressed receiver is absent from a present state', () => {
       const props = toVfoProps(makeState({ sub: undefined }), 'sub');
       expect(props.freq).toBeNaN();
-      expect(props.mode).toBe('---');
-      expect(props.filter).toBe('---');
+      expect(props.mode).toBe('');
+      expect(props.filter).toBe('');
     });
 
     it('still reports the real value for a populated receiver', () => {
@@ -864,7 +867,7 @@ describe('A11 — batch-A projections do not fabricate defaults (MOR-1409)', () 
 
     it('does not invent USB / a three-filter FIL1-FIL3 catalog without state or capabilities', () => {
       const props = toFilterProps(null, null);
-      expect(props.currentMode).toBe('---');
+      expect(props.currentMode).toBe('');
       expect(props.filterLabels).toEqual([]);
     });
 
@@ -908,12 +911,19 @@ describe('A11 — batch-A projections do not fabricate defaults (MOR-1409)', () 
   describe('toModeProps', () => {
     it('does not invent USB when state is absent', () => {
       const props = toModeProps(null, null);
-      expect(props.currentMode).toBe('---');
+      expect(props.currentMode).toBe('');
     });
 
     it('still reports the real mode for a populated receiver', () => {
       const props = toModeProps(makeState(), null);
       expect(props.currentMode).toBe('USB');
+    });
+
+    it('lights the hyphen button when the store still holds the enum token (MOR-2508)', () => {
+      for (const [stored, label] of [['PSK_R', 'PSK-R'], ['CW_R', 'CW-R'], ['RTTY_R', 'RTTY-R']] as const) {
+        const props = toModeProps(makeState({ main: { ...makeState().main, mode: stored } }), null);
+        expect(props.currentMode).toBe(label);
+      }
     });
   });
 
@@ -1018,7 +1028,8 @@ describe('A11 — batch-A projections do not fabricate defaults (MOR-1409)', () 
  * sidetone/keyer, meters, RX audio level, scan status, filter width (its
  * `toFilterProps` twin), and the memory-panel "store VFO → channel" fields.
  * Same non-fabricating-sentinel convention as A11: `NaN` for numbers whose
- * type stays `number`, `'---'` for strings whose type stays `string`,
+ * type stays `number`, `''` for strings whose type stays `string` (re-pointed
+ * from `'---'` by MOR-2673),
  * `null` for the two RIT/XIT booleans whose type widens to `boolean | null`
  * per the A12 re-anchor plan's §5 consumer-boundary matrix (both feed only
  * a `hasCap`-gated panel — see the matrix's golden-safety column — so the
@@ -1384,10 +1395,10 @@ describe('A12 — batch-B projections do not fabricate defaults (MOR-1409)', () 
   });
 
   describe('toMemoryPanelProps', () => {
-    it('does not invent activeFreqHz=0/activeMode="" when state is absent', () => {
+    it('does not invent activeFreqHz=0/activeMode stand-ins when state is absent', () => {
       const props = toMemoryPanelProps(null, null);
       expect(props.activeFreqHz).toBeNaN();
-      expect(props.activeMode).toBe('---');
+      expect(props.activeMode).toBe('');
     });
 
     it('still reports the real observed active-receiver frequency/mode', () => {
@@ -1430,14 +1441,72 @@ describe('A12 — batch-B projections do not fabricate defaults (MOR-1409)', () 
     // plausible-looking-but-wrong value for a raw "NaN%" glitch in a file
     // it cannot guard. This mirrors A11's own `toFilterProps.filterWidth`
     // deferral to A12 exactly.
-    it('still fabricates the RF power / mic gain / mon level / drive gain / vox / comp defaults', () => {
+    //
+    // MOR-2658 finished the rfPower member and MOR-2683 finished the
+    // compLevel / monLevel members: `toTxProps` now reports NaN for an
+    // unreported compressor / monitor level, and TxPanel.svelte (the `> 0`
+    // label gate) plus the amber faces (`Number.isFinite`) render the
+    // sentinel as the bare COMP/MON/PROC key. The members below stay
+    // deferred for a future gate.
+    it('still fabricates the mic gain / drive gain / vox / comp defaults (rfPower MOR-2658, levels MOR-2683)', () => {
       const props = toTxProps(null, null);
-      expect(props.rfPower).toBe(0.5);
+      expect(props.rfPower).toBeNaN();
       expect(props.micGain).toBe(128);
-      expect(props.monLevel).toBe(128);
+      expect(props.monLevel).toBeNaN();
+      expect(props.compLevel).toBeNaN();
       expect(props.driveGain).toBe(128);
       expect(props.voxActive).toBe(false);
       expect(props.compActive).toBe(false);
+    });
+  });
+
+  // MOR-2683: an unread monitor / compressor level projects the NaN sentinel
+  // (the file's non-fabricating level sentinel, `rfPower`'s MOR-2658
+  // treatment) even when the toggle itself IS known — a rig that reports
+  // monitor or compressor ON with no level must not invent one. Red on the
+  // old code: the defaults were 128 / 0, and TxPanel rendered the invented
+  // "MON 50%" / "PROC 0".
+  describe('toTxProps — unread levels project NaN, never an invented number (MOR-2683)', () => {
+    it('reports NaN for a known-ON monitor with no reported level, and the real gain when it arrives', () => {
+      const unread = toTxProps({ ...makeState(), monitorOn: true, monitorGain: null } as any, null);
+      expect(unread.monActive).toBe(true);
+      expect(unread.monLevel).toBeNaN();
+      const read = toTxProps({ ...makeState(), monitorOn: true, monitorGain: 128 } as any, null);
+      expect(read.monLevel).toBe(128);
+    });
+
+    it('reports NaN for a known-ON compressor with no reported level, and the real level when it arrives', () => {
+      const unread = toTxProps({ ...makeState(), compressorOn: true, compressorLevel: null } as any, null);
+      expect(unread.compActive).toBe(true);
+      expect(unread.compLevel).toBeNaN();
+      const read = toTxProps({ ...makeState(), compressorOn: true, compressorLevel: 7 } as any, null);
+      expect(read.compLevel).toBe(7);
+    });
+  });
+
+  // MOR-2683: an unread filter projects the unread sentinel — the empty
+  // string for the VFO label (MOR-2673's string sentinel, so no comparison
+  // consumer can light a real choice) and `null` for the filter projection's
+  // 1-based index (never filter 1). Red on the old code: both fabricated
+  // FIL1 / 1.
+  describe('unread filter projects the sentinel, never FIL1 (MOR-2683)', () => {
+    it('toVfoProps reports the empty string for a present receiver whose filter is unread', () => {
+      const state = makeState({ main: { ...makeState().main, filter: null } });
+      expect(toVfoProps(state, 'main').filter).toBe('');
+    });
+
+    it('toVfoProps still reports the real label for a read filter', () => {
+      expect(toVfoProps(makeState(), 'main').filter).toBe('FIL1');
+      const state = makeState({ main: { ...makeState().main, filter: 2 } });
+      expect(toVfoProps(state, 'main').filter).toBe('FIL2');
+    });
+
+    it('toFilterProps reports null for an unread filter, never 1, and the real index when it arrives', () => {
+      const state = makeState({ main: { ...makeState().main, filter: null } });
+      expect(toFilterProps(state, null).currentFilter).toBeNull();
+      expect(toFilterProps(makeState(), null).currentFilter).toBe(1);
+      const read = makeState({ main: { ...makeState().main, filter: 2 } });
+      expect(toFilterProps(read, null).currentFilter).toBe(2);
     });
   });
 });
@@ -1460,5 +1529,33 @@ describe('toVfoProps RFG badge (MOR-2546, owner ruling 2026-09-23)', () => {
     expect(toVfoProps(stateWithRfGain(1), 'main').badges['RFG']).toBe('');
     expect(toVfoProps(stateWithRfGain(254 / 255), 'main').badges['RFG']).toBe('');
     expect(toVfoProps(stateWithRfGain(null), 'main').badges['RFG']).toBe('');
+  });
+});
+
+describe('unread mode/filter sentinel is the empty string (MOR-2673)', () => {
+  // The old `'---'` sentinel reached the screen as a dash run. The empty
+  // string is the drawn form of an unlit LCD segment and — the property the
+  // comparison consumers rely on — never equals a real, non-empty
+  // mode/filter label, so an unread value can never light a real choice.
+  it('every string-shaped unread projection reports the empty string', () => {
+    expect(toVfoProps(null, 'main').mode).toBe('');
+    expect(toVfoProps(null, 'main').filter).toBe('');
+    expect(toFilterProps(null, null).currentMode).toBe('');
+    expect(toModeProps(null, null).currentMode).toBe('');
+    expect(toMemoryPanelProps(null, null).activeMode).toBe('');
+    expect(toVfoControlProps(null, null).mode).toBe('');
+  });
+
+  it('the sentinel never matches a real label at a comparison consumer', () => {
+    // `toVfoControlProps` compares `mode` against 'CW'/'CW-R' to gate the
+    // CW-only break-in control; an unread mode must not light it.
+    expect(toVfoControlProps(null, null).isCwMode).toBe(false);
+    // ModePanel/FilterPanel/EssentialsPanel match `currentMode === label`
+    // against the profile catalogs; the sentinel matches none of them.
+    const labels = ['USB', 'LSB', 'CW', 'CW-R', 'FM', 'AM', 'RTTY', 'FIL1'];
+    for (const label of labels) {
+      expect(toVfoProps(null, 'main').mode).not.toBe(label);
+      expect(toModeProps(null, null).currentMode).not.toBe(label);
+    }
   });
 });

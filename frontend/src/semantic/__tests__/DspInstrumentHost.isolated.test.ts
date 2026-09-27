@@ -101,6 +101,29 @@ describe('DspInstrumentHost finite ownership', () => {
     unmount(component);
   });
 
+  // MOR-2704 G2: the imported `usable` gate (the host's wrapper passes the
+  // field key into `dsp?.[field]`) — a field read but not operational
+  // refuses the action, with the same disabled-reason output as before (the
+  // mutation mini pins this red when the gate's `operational` check is
+  // dropped).
+  it('refuses a read-but-not-operational toggle and keeps its reason output', () => {
+    const onToggle = vi.fn();
+    const view = base();
+    const readNotOperational = { ...view, dsp: { ...view.dsp!, nrActive: {
+      availability: { structural: true, operational: false },
+      reading: { status: 'known', value: true },
+    } } as DspViewModel };
+    const component = mount(DspInstrumentHostFixture, { target,
+      props: { view: readNotOperational, presentation: 'grouped', onToggle } });
+    flushSync();
+    const nr = target.querySelector<HTMLButtonElement>('[data-testid="dsp-nrActive"]')!;
+    expect(nr.disabled).toBe(true);
+    expect(nr.getAttribute('data-disabled-reason')).toBe('field-not-observed');
+    nr.click();
+    expect(onToggle).not.toHaveBeenCalled();
+    unmount(component);
+  });
+
   it('does not select an offered choice for out-of-list or unknown truth', () => {
     const onAgcModeChange = vi.fn(), onNotchModeChange = vi.fn();
     let view = field(base(), 'agcMode', { status: 'known', value: 99 });

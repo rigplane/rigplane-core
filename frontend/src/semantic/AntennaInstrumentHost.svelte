@@ -4,30 +4,51 @@
   import type { ServerState } from '$lib/types/state';
   import type { AntennaField, RadioViewModel } from './radio-view-model';
   import {
-    BLOCKED_LABEL, keyBlockedReasons, type KeyBlockedReason, type TxAuthoritySnapshot,
+    keyBlockedReasons, type KeyBlockedReason, type TxAuthoritySnapshot,
   } from './rx-tx-surface';
+  import { t } from '$lib/i18n';
+  import { BLOCKED_REASON_KEY } from '$lib/i18n/blocked-reasons';
+  import { readingText } from '../primitives/reading-text';
+  import { usable } from '../primitives/control-instruments/control-instrument-behavior';
 
   export const ANTENNA_PORTS = [1, 2] as const;
-  export const UNKNOWN_TEXT = '—';
 
   const RF_MUST_BE_IDLE: readonly KeyBlockedReason[] = [
     'tx-busy', 'radio-transmitting', 'rf-state-unknown',
   ];
   export type AntennaSwitchBlock = KeyBlockedReason | 'tuner-not-ready';
-  export const ANTENNA_BLOCKED_LABEL: Record<AntennaSwitchBlock, string> = {
-    ...BLOCKED_LABEL,
-    'tx-busy': 'a TX lease is in progress — an antenna must not switch under power',
-    'radio-transmitting': 'the radio is transmitting — an antenna must not switch under power',
-    'rf-state-unknown': 'RF state unknown — an unconfirmed transmitter is treated as keyed',
-    'tuner-not-ready': 'ATU not confirmed idle — an unread tuner is treated as running',
-  };
 
-  export const usable = (f: AntennaField<unknown>): boolean =>
-    f.availability.structural && f.availability.operational && f.reading.status === 'known';
+  /**
+   * MOR-2691 — the blocked reason is no longer visible list text; it is the
+   * disabled control's own `title`, resolved here to a plain catalog sentence
+   * per block code (the same `Record<code, catalog key>` table pattern as
+   * `$lib/i18n/blocked-reasons`). Every `KeyBlockedReason` member maps onto
+   * the RX/TX gate's own sentence; the antenna gate only ever yields
+   * `tx-busy`/`radio-transmitting`/`rf-state-unknown` (see `RF_MUST_BE_IDLE`),
+   * and the two unconfirmed readings below get antenna-specific "waiting
+   * for …" wording with no "unknown" and no "?". Exhaustiveness follows the
+   * old `ANTENNA_BLOCKED_LABEL = { ...BLOCKED_LABEL, … }` spread ruling.
+   */
+  const ANTENNA_BLOCKED_KEY: Record<AntennaSwitchBlock, string> = {
+    'tx-target-unknown': BLOCKED_REASON_KEY['tx-target-unknown'],
+    'tx-permit-denied': BLOCKED_REASON_KEY['tx-permit-denied'],
+    'tx-permit-unknown': BLOCKED_REASON_KEY['tx-permit-unknown'],
+    'tx-fault': BLOCKED_REASON_KEY['tx-fault'],
+    'tx-busy': BLOCKED_REASON_KEY['tx-busy'],
+    'radio-transmitting': BLOCKED_REASON_KEY['radio-transmitting'],
+    'rf-state-unknown': 'core.antenna.blocked.transmitterUnconfirmed',
+    'tuner-not-ready': 'core.antenna.blocked.tunerNotReady',
+  };
+  /** The disabled-reason sentence for the closed gate; `undefined` while it opens. */
+  export const antennaBlockedTitle = (blocks: readonly AntennaSwitchBlock[]): string | undefined =>
+    blocks.length === 0 ? undefined : blocks.map((code) => t(ANTENNA_BLOCKED_KEY[code])).join('; ');
+
+  /** MOR-2652: an unread reading prints nothing — an unlit slot, never a
+   *  dash. MOR-2688 S3: the ONE unread predicate lives in `readingText`; the
+   *  on/off boolean wording stays this host's own formatter. */
   export const textOf = (f: AntennaField<unknown>): string =>
-    f.reading.status !== 'known' ? UNKNOWN_TEXT
-      : typeof f.reading.value === 'boolean' ? (f.reading.value ? 'on' : 'off')
-        : String(f.reading.value);
+    readingText(f, (v) =>
+      typeof v === 'boolean' ? (v ? 'on' : 'off') : String(v));
 
   export function tunerIdle(view: RadioViewModel): boolean {
     const atu = view.txAux?.atu;
@@ -58,8 +79,9 @@
     readonly rxAnt: Snippet<[compact?: boolean]>;
   }
   export interface AntennaInstrumentLayout {
-    readonly blockedId: string;
-    readonly blocked: readonly AntennaSwitchBlock[];
+    /** Why the switch is blocked right now, resolved to a catalog sentence;
+     *  `undefined` while the gate opens. */
+    readonly blockedTitle: string | undefined;
   }
 </script>
 
@@ -87,10 +109,8 @@
   let identity: string | null = null;
   let destroyed = false;
   let stop: (() => void) | undefined;
-  const id = $props.id();
   const layout = {
-    blockedId: `antenna-blocked-${id}`,
-    get blocked() { return currentInput().blockedReasons; },
+    get blockedTitle() { return antennaBlockedTitle(currentInput().blockedReasons); },
   };
   const safe = (value: unknown): value is number =>
     typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
@@ -159,10 +179,10 @@
           {#each ANTENNA_PORTS as port (port)}
             <button type="button" role="radio" class="antenna-choice"
               data-testid={`antenna-port-${port}`} data-port={port}
-              aria-checked={lease.view?.selected === port} aria-describedby={layout.blockedId}
+              aria-checked={lease.view?.selected === port} title={layout.blockedTitle}
               disabled={!lease.view?.available} onclick={() => lease.invoke(port)}>ANT {port}</button>
           {/each}
-          <output class:sr-only={compact} data-testid="antenna-port-value">{textOf(ant.txAntenna)}</output>
+          <output class="antenna-value" class:sr-only={compact} data-testid="antenna-port-value">{textOf(ant.txAntenna)}</output>
         </div>
       {/if}
     {/key}{/key}
@@ -178,9 +198,9 @@
         <div class="antenna-row" data-testid="antenna-rx" data-observed={usable(ant.rxAnt)}
           {@attach () => () => lease.dispose()}>
           <button type="button" class="antenna-choice" data-testid="antenna-rx-toggle"
-            aria-pressed={lease.view?.confirmed} aria-describedby={layout.blockedId}
+            aria-pressed={lease.view?.confirmed} title={layout.blockedTitle}
             disabled={!lease.view?.available} onclick={() => lease.invoke()}>
-            {compact ? 'RX ANT' : `RX-ANT: ${textOf(ant.rxAnt)}`}</button>
+            {compact ? 'RX ANT' : `RX-ANT:${textOf(ant.rxAnt) ? ` ${textOf(ant.rxAnt)}` : ''}`}</button>
           {#if compact}<output class="sr-only" data-testid="antenna-rx-value">{textOf(ant.rxAnt)}</output>{/if}
         </div>
       {/if}
@@ -191,6 +211,7 @@
 
 <style>
   .antenna-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; }
+  .antenna-value { display: inline-block; min-width: 1ch; font-variant-numeric: tabular-nums; }
   .antenna-choice[aria-checked='true'], .antenna-choice[aria-pressed='true'] { font-weight: 700; }
   [data-observed='false'] { font-style: italic; }
   button:disabled { cursor: not-allowed; }

@@ -63,8 +63,41 @@
   {#if p.hasTuner}
     <button class="lcd-btn" onclick={requestAtuTune}>TUNE</button>
   {/if}
-  {#if p.isCwMode && p.hasCw && p.hasBreakIn}
-    <button class="lcd-btn" class:active={p.breakInMode > 0} onclick={() => cwHandlers.onBreakInModeChange(p.breakInMode === 0 ? 1 : p.breakInMode === 1 ? 2 : 0)}>{p.breakInMode === 0 ? 'BK-OFF' : p.breakInMode === 1 ? 'SEMI' : 'FULL'}</button>
+  <!-- MOR-2729: the break-in key cycles to the NEXT published value from
+       the current one; `[]` (X6100, X6200) renders no key at all — the
+       FTX-1 fix for the stuck-ON cycle. The key KEEPS ITS NAME ("BK") in
+       every state: while break-in is unread (null) it is disabled and
+       unlit, displaying exactly "BK", and once read it shows
+       `BK-<published label>` — the operator always sees which function
+       the key controls. The name is the visible text; a separate
+       aria-label would only duplicate it. -->
+  {#if p.isCwMode && p.hasCw && p.hasBreakIn && p.breakInChoices.length > 0}
+    {@const choices = p.breakInChoices}
+    {@const current = p.breakInMode}
+    {@const next = current === null
+      ? null
+      : choices[(choices.findIndex((c) => c.value === current) + 1) % choices.length]}
+    {@const label = current === null
+      ? 'BK'
+      : `BK-${choices.find((c) => c.value === current)?.label ?? ''}`}
+    <!-- MOR-2729 (GLM-5.3 delta review): no `ch` reserve — a hidden sizer
+         holds every text the key can show, stacked with the visible span
+         in one grid cell, so the key is always as wide as its widest
+         possible text. The sizer is aria-hidden: the accessible name stays
+         exactly the visible text. -->
+    <button
+      class="lcd-btn lcd-btn-bk" class:active={current !== null && current > 0}
+      disabled={current === null}
+      onclick={() => { if (next !== null) cwHandlers.onBreakInModeChange(next.value); }}
+    >
+      <span class="lcd-btn-bk-sizer" aria-hidden="true">
+        <span>BK</span>
+        {#each choices as choice}
+          <span>BK-{choice.label}</span>
+        {/each}
+      </span>
+      <span class="lcd-btn-bk-text">{label}</span>
+    </button>
   {/if}
 </div>
 
@@ -103,5 +136,22 @@
   .lcd-btn.active {
     color: var(--v2-text);
     border-color: var(--v2-accent, var(--v2-border));
+  }
+  /* MOR-2729: the BK key's width comes from the hidden sizer above —
+     every possible text stacked in one grid cell, so the layout never
+     moves when the first reading arrives. */
+  .lcd-btn-bk {
+    display: inline-grid;
+    text-align: center;
+  }
+  .lcd-btn-bk > span {
+    grid-area: 1 / 1;
+  }
+  .lcd-btn-bk-sizer {
+    visibility: hidden;
+    display: grid;
+  }
+  .lcd-btn-bk-sizer > span {
+    grid-area: 1 / 1;
   }
 </style>

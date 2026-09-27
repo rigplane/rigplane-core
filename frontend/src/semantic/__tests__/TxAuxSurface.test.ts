@@ -73,10 +73,10 @@ type Handlers = {
 };
 
 const FEEDBACK_LEVELS = [
-  ['micGain', 'mic-gain', 128], ['driveGain', 'drive-gain', 128],
-  ['voxGain', 'vox-gain', 50], ['antiVoxGain', 'anti-vox-gain', 30],
-  ['voxDelay', 'vox-delay', 20], ['compressorLevel', 'compressor-level', 10],
-  ['monitorLevel', 'monitor-level', 128],
+  ['micGain', 'mic-gain', 128, 'Mic gain'], ['driveGain', 'drive-gain', 128, 'Drive gain'],
+  ['voxGain', 'vox-gain', 50, 'VOX gain'], ['antiVoxGain', 'anti-vox-gain', 30, 'Anti-VOX'],
+  ['voxDelay', 'vox-delay', 20, 'VOX delay'], ['compressorLevel', 'compressor-level', 10, 'COMP level'],
+  ['monitorLevel', 'monitor-level', 128, 'MON level'],
 ] as const;
 type FeedbackLevelField = (typeof FEEDBACK_LEVELS)[number][0];
 type TxAuxFeedbackRecord = Readonly<Record<FeedbackLevelField, Readonly<CommandScalarFeedback>>>;
@@ -507,6 +507,53 @@ describe('TUNE carries its own disabled reason (MOR-1481)', () => {
   });
 });
 
+// ── 4b-bis. MOR-1350 — the surface itself describes the blocked reasons ─────
+
+describe('the surface exposes TUNE\'s blocked reasons to assistive tech (MOR-1350)', () => {
+  /** Resolves EVERY aria-describedby target of the section and returns the
+   *  concatenated text — the id alone would only prove wiring, not that a
+   *  screen reader has something to actually read. */
+  function describedText(el: HTMLElement): string | null {
+    const ids = el.getAttribute('aria-describedby')?.split(' ').filter(Boolean) ?? [];
+    if (ids.length === 0) return null;
+    return ids.map((id) => target.querySelector(`#${id}`)?.textContent ?? '').join(' ');
+  }
+
+  // The surface-level half of the DisabledReason doctrine: TUNE's own button
+  // carries its reason (section 4b, MOR-1481); the surface section itself
+  // must describe the same block to a screen reader landing on the group —
+  // mirroring `RxTxSurface`'s aria-describedby pattern — instead of leaving
+  // the reasons reachable only as visible `<li data-reason>` list items.
+  it('describes the section with the joined blocked reasons while a TX-authority block applies', () => {
+    const view = base();
+    const tx = snap({ fault: 'on-timeout' });
+    const expected = visibleTuneReasons(view, tx)
+      .map((code) => blockedLabel(code)).join('; ');
+    expect(expected.length).toBeGreaterThan(0);
+    withSurface(view, tx, (s) => {
+      expect(describedText(s.root()!)).toBe(expected);
+    });
+  });
+
+  it('carries no aria-describedby on the section while TUNE is not blocked', () => {
+    withSurface(base(), snap(), (s) => {
+      expect(s.root()!.hasAttribute('aria-describedby')).toBe(false);
+    });
+  });
+
+  // MUTATION KILLED: describing the surface from reasons whose visible list
+  // never rendered — the description must follow the same structural gate
+  // the blocked list follows, or it announces a TUNE the radio cannot have.
+  it('carries no aria-describedby when the ATU is structurally absent, even while a block applies', () => {
+    const view = withField(base(), 'atu', { availability: { structural: false, operational: false } });
+    const tx = snap({ fault: 'on-timeout' });
+    expect(keyBlockedReasons(view, tx).length).toBeGreaterThan(0);
+    withSurface(view, tx, (s) => {
+      expect(s.root()!.hasAttribute('aria-describedby')).toBe(false);
+    });
+  });
+});
+
 // ── 4b. MOR-2231 — the shared control-button vocabulary ────────────────────
 //
 // Pins on CLASSES and `data-*` attributes only. Every gate, handler and aria
@@ -674,7 +721,7 @@ describe('seven TX/VOX levels consume command feedback', () => {
 
   it.each(FEEDBACK_LEVELS)(
     'keeps supplied unavailable %s evidence unavailable instead of borrowing the view reading', (
-      field, control, canonical,
+      field, control, canonical, label,
     ) => {
     const unavailable = feedback(control, canonical, 'unavailable', {
       confirmed: null, availability: 'unavailable', providerGeneration: 2, sessionEpoch: 2,
@@ -682,13 +729,16 @@ describe('seven TX/VOX levels consume command feedback', () => {
     const r = renderReactiveFeedback(feedbackRecord({ [field]: unavailable }));
     expect(r.input(field).getAttribute('aria-disabled')).toBe('true');
     expect(r.input(field).dataset.commandPhase).toBe('unavailable');
-    expect(r.row(field).querySelector('output')?.textContent).toContain('?');
+    expect(r.row(field).querySelector('[data-canonical-value]')?.textContent).toBe('');
     const status = r.row(field).querySelector<HTMLElement>('[data-command-status]')!;
     expect(status.textContent).toContain('unavailable');
     expect(status.classList).toContain('sr-only');
     expect(r.row(field).title).toBe('Not yet observed');
     expect(describedText(r.input(field))).toBe('Not yet observed');
-    expect(r.input(field).getAttribute('aria-valuetext')).toContain('unavailable');
+    expect(r.input(field).getAttribute('aria-valuetext')).toBe(
+      `${label}; ${label}: unavailable`,
+    );
+    expect(r.input(field).getAttribute('aria-valuetext')).not.toContain('?');
     expect(r.input(field).getAttribute('aria-valuenow')).toBeNull();
     const visible = r.row(field).cloneNode(true) as HTMLElement;
     visible.querySelectorAll('.sr-only').forEach((node) => node.remove());
@@ -852,6 +902,25 @@ describe('every TX-aux level slider reads back as a percent of its own domain', 
   // (`levelTextOf`), not stored as a per-row literal or a bare reference, so
   // a future domain change flows into the readout automatically instead of
   // silently going stale.
+  // MOR-2647: an unread level is an empty slot, never `?`. The box stays,
+  // so the first reading cannot shift the row.
+  it.each(TX_AUX_LEVELS)('renders an unread %s value as an empty reserved slot', (field, label) => {
+    const view = withField(base(), field, { unknown: true });
+    withSurface(view, snap(), (s) => {
+      const output = s.control(field)!.querySelector('output')!;
+      expect(output.textContent).toBe('');
+      expect(output.textContent).not.toMatch(/[?—–]|UNKNOWN|unknown|N\/A/);
+      expect(s.input(field)!.getAttribute('aria-valuetext')).toBe(label);
+    });
+  });
+
+  it('reserves the canonical value slot at the widest rendered text', () => {
+    const rule = /\.tx-aux-level > output\s*\{([^}]*)\}/.exec(source)?.[1] ?? '';
+    expect(rule).toMatch(/display:\s*inline-block/);
+    expect(rule).toMatch(/min-width:\s*4ch/);
+    expect(rule).toMatch(/font-variant-numeric:\s*tabular-nums/);
+  });
+
   it('builds the default percent format from the row\'s own bound min/max, not a bare rawToPercentDisplay reference', () => {
     expect(source).not.toMatch(/,\s*rawToPercentDisplay\s*[,\]]/);
     expect(source).toMatch(/rawToPercentDisplay\(raw,\s*min,\s*max\)/);

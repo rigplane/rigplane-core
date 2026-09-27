@@ -54,6 +54,7 @@ import { topologyFixtures, withScopeControls } from '../fixtures/topologies';
 import type { Availability, RadioViewModel, ScopeControlsField, ScopeControlsViewModel } from '../radio-view-model';
 
 const ON: Availability = { structural: true, operational: true };
+const SOURCE = readFileSync('src/semantic/ScopeControlsSurface.svelte', 'utf8');
 const OFF: Availability = { structural: false, operational: false };
 const unread = <T>(availability: Availability = ON): ScopeControlsField<T> =>
   ({ reading: { status: 'unknown' }, availability });
@@ -792,6 +793,133 @@ describe('external finite appearance', () => {
     const group = target.querySelector('[data-testid="external-Scope center type"]')!;
     expect(group.getAttribute('data-reading')).toBe('99');
     expect(group.querySelector('[aria-checked="true"]')).toBeNull();
+    unmount(component);
+  });
+
+  // MOR-2653: the finite-appearance REF output is EMPTY in a reserved box
+  // when unread — never a placeholder dash — and renders the verbatim value
+  // when known, exactly as the native row's REF already does.
+  it('renders an unread finite REF value as an empty reserved box, never a placeholder', () => {
+    const component = mount(ScopeControlsSurface, { target, props: {
+      view: withSc({ refDb: unread() }), finiteAppearance: appearance,
+      rendererContext: createFiniteRendererContext(),
+    } });
+    flushSync();
+    const value = target.querySelector('[data-testid="scope-ref-value"]')!;
+    expect(value.textContent).toBe('');
+    expect(value.textContent).not.toContain('—');
+    expect(value.classList.contains('scope-finite-value')).toBe(true);
+    unmount(component);
+  });
+
+  it('renders a known finite REF value verbatim in the same reserved box', () => {
+    const component = mount(ScopeControlsSurface, { target, props: {
+      view: withSc({ refDb: known(-30) }), finiteAppearance: appearance,
+      rendererContext: createFiniteRendererContext(),
+    } });
+    flushSync();
+    const value = target.querySelector('[data-testid="scope-ref-value"]')!;
+    expect(value.textContent).toBe('-30');
+    expect(value.classList.contains('scope-finite-value')).toBe(true);
+    unmount(component);
+  });
+
+  // MOR-2653: the span/speed label tables are NOT validated ranges — a radio
+  // can report a known value outside them. That value renders EMPTY in its
+  // reserved slot, never a dash; an unread value renders empty too.
+  it('renders finite SPAN/SPEED as EMPTY when known but unlabelled or unread, never a dash (MOR-2653)', () => {
+    const component = mount(ScopeControlsSurface, { target, props: {
+      view: withSc({ mode: known(0), span: known(9), speed: known(9) }),
+      finiteAppearance: appearance, rendererContext: createFiniteRendererContext(),
+    } });
+    flushSync();
+    for (const id of ['scope-span-value', 'scope-speed-value']) {
+      const slot = target.querySelector<HTMLElement>(`[data-testid="${id}"]`)!;
+      expect(slot.textContent).toBe('');
+      expect(slot.textContent).not.toContain('—');
+      expect(slot.classList.contains('scope-finite-slot')).toBe(true);
+    }
+    unmount(component);
+    const unreadComponent = mount(ScopeControlsSurface, { target, props: {
+      view: withSc({ mode: known(0), speed: unread() }),
+      finiteAppearance: appearance, rendererContext: createFiniteRendererContext(),
+    } });
+    flushSync();
+    expect(target.querySelector<HTMLElement>('[data-testid="scope-speed-value"]')!.textContent)
+      .toBe('');
+    unmount(unreadComponent);
+    // Structural geometry pin (jsdom has no layout): 5ch covers the widest
+    // label ('±500k'), so the slot's box never changes on a first read.
+    expect(SOURCE).toMatch(/\.scope-finite-slot\s*\{[^}]*min-width:\s*5ch/);
+  });
+});
+
+/* ── MOR-2704 T1 (option A): a read span/speed value is shown even when its
+   field is not operational; the step keys stay on the `usable` gate. ── */
+describe('MOR-2704 T1: a read value stays visible while its control is unavailable', () => {
+  const READ_NOT_OPERATIONAL: Availability = { structural: true, operational: false };
+  const appearance = {
+    action: FiniteControlRendererFixture as FiniteControlAppearance['action'],
+    toggle: FiniteControlRendererFixture as FiniteControlAppearance['toggle'],
+    choice: FiniteControlRendererFixture as FiniteControlAppearance['choice'],
+  } satisfies FiniteControlAppearance;
+
+  it('shows a read span in the row and in More while every span key is disabled and inert', () => {
+    const onSpanChange = vi.fn();
+    const r = render(withSc({ mode: known(0), span: known(3, READ_NOT_OPERATIONAL) }), { onSpanChange });
+    expect(r.el('scope-span-value')!.textContent).toBe('±25k');
+    for (const key of r.el('scope-span')!.querySelectorAll('button')) {
+      expect(key.hasAttribute('disabled')).toBe(true);
+      bypassClick(key);
+    }
+    r.openMore();
+    expect(r.el('scope-overflow-span-value')!.textContent).toBe('±25k');
+    for (const key of r.el('scope-overflow-span')!.querySelectorAll('button')) {
+      expect(key.hasAttribute('disabled')).toBe(true);
+      bypassClick(key);
+    }
+    flushSync();
+    expect(onSpanChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  it('shows a read speed in More while both speed keys are disabled and inert', () => {
+    const onSpeedChange = vi.fn();
+    const r = render(withSc({ speed: known(1, READ_NOT_OPERATIONAL) }), { onSpeedChange });
+    r.openMore();
+    expect(r.el('scope-speed-value')!.textContent).toBe('MID');
+    for (const key of r.el('scope-speed')!.querySelectorAll('button')) {
+      expect(key.hasAttribute('disabled')).toBe(true);
+      bypassClick(key);
+    }
+    flushSync();
+    expect(onSpeedChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  it('shows a read span and speed in the finite appearance while their step actions are unavailable', () => {
+    const onSpanChange = vi.fn();
+    const onSpeedChange = vi.fn();
+    const component = mount(ScopeControlsSurface, { target, props: {
+      view: withSc({
+        mode: known(0), span: known(3, READ_NOT_OPERATIONAL), speed: known(1, READ_NOT_OPERATIONAL),
+      }),
+      finiteAppearance: appearance, rendererContext: createFiniteRendererContext(),
+      onSpanChange, onSpeedChange,
+    } });
+    flushSync();
+    expect(target.querySelector('[data-testid="scope-span-value"]')!.textContent).toBe('±25k');
+    expect(target.querySelector('[data-testid="scope-speed-value"]')!.textContent).toBe('MID');
+    for (const label of [
+      'Decrease scope span', 'Increase scope span', 'Decrease scope speed', 'Increase scope speed',
+    ]) {
+      const key = target.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!;
+      expect(key.disabled).toBe(true);
+      bypassClick(key);
+    }
+    flushSync();
+    expect(onSpanChange).not.toHaveBeenCalled();
+    expect(onSpeedChange).not.toHaveBeenCalled();
     unmount(component);
   });
 });

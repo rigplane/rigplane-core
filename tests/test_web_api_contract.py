@@ -223,6 +223,51 @@ async def test_capability_endpoints_publish_notch_width_choices(model: str) -> N
         assert capability_payload["notchWidthChoices"] == expected
 
 
+_OFF_SEMI_FULL = [
+    {"value": 0, "label": "OFF"},
+    {"value": 1, "label": "SEMI"},
+    {"value": 2, "label": "FULL"},
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("FTX-1", [{"value": 0, "label": "OFF"}, {"value": 1, "label": "ON"}]),
+        ("IC-7300", _OFF_SEMI_FULL),
+        ("IC-7610", _OFF_SEMI_FULL),
+        ("X6200", []),
+    ],
+)
+async def test_capability_endpoints_publish_break_in_choices(
+    model: str, expected: list[dict[str, object]]
+) -> None:
+    """MOR-2729: both capability endpoints publish the profile's break-in
+    choices in ``[break_in] values`` order, ``[]`` when the profile declares
+    no domain. Literal expectations, never read back from the profile under
+    test."""
+    profile = resolve_radio_profile(model=model)
+    radio = SimpleNamespace(
+        model=profile.model,
+        profile=profile,
+        capabilities=set(profile.capabilities),
+        connected=False,
+        control_connected=False,
+        radio_ready=False,
+    )
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    for path in ("/api/v1/info", "/api/v1/capabilities"):
+        writer = _Writer()
+        await server._handle_http(writer, "GET", path, headers={})  # noqa: SLF001
+        status, payload = _json_response(writer)
+        assert status == 200
+        capability_payload = (
+            payload["capabilities"] if path == "/api/v1/info" else payload
+        )
+        assert capability_payload["breakInChoices"] == expected
+
+
 @pytest.mark.asyncio
 async def test_capability_endpoints_omit_controls_for_legacy_profiles(
     tmp_path: Path,

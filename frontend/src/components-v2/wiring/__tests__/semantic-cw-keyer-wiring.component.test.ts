@@ -226,6 +226,7 @@ function liveState(over: Partial<ServerState> = {}, mode = 'CW'): ServerState {
 const liveCaps = (tags: readonly string[], audioFftAvailable = false): Capabilities => ({
   model: 'fixture', scope: false, audio: false, tx: true,
   capabilities: tags, receivers: 2, vfoScheme: 'main_sub', freqRanges: [],
+  breakInChoices: [{ value: 0, label: 'OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' }],
   // A radio that declares no modes is not a radio that exists, and the
   // APF/TPF mutex reads `modeFilter.currentMode` — an empty `modes` list makes
   // the mode fact absent and BOTH controls fail closed, hiding this slice's

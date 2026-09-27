@@ -51,6 +51,33 @@ const amberCaps = {
   ],
 } as any;
 
+// MOR-2673 review F1: the shipped profile catalogs the reserved mode-box
+// width is derived from — rigs/ftx1.toml [modes].list (longest label
+// "DATA-FM-N" = 9ch, filters list empty) and rigs/ic7300.toml (longest
+// "RTTY-R" = 6ch, three FIL filters).
+const ftx1Caps = {
+  capabilities: [...amberCaps.capabilities],
+  modes: [
+    'LSB', 'USB', 'CW-U', 'FM', 'AM', 'RTTY-L', 'CW-L', 'DATA-L', 'RTTY-U',
+    'DATA-FM', 'FM-N', 'DATA-U', 'AM-N', 'PSK', 'DATA-FM-N', 'C4FM-DN', 'C4FM-VW',
+  ],
+  filters: [],
+} as any;
+
+const ic7300Caps = {
+  capabilities: [...amberCaps.capabilities],
+  modes: ['USB', 'LSB', 'CW', 'CW-R', 'AM', 'FM', 'RTTY', 'RTTY-R'],
+  filters: ['FIL1', 'FIL2', 'FIL3'],
+} as any;
+
+function reservedCh(element: Element | null): number {
+  const minWidth = (element as HTMLElement | null)?.style?.minWidth ?? '';
+  // MOR-2673 quick follow-up: the reservation is `calc(Nch + Npx)` — one
+  // ch per glyph plus the rule's 1px letter-spacing per glyph.
+  const parsed = /(\d+(?:\.\d+)?)ch/.exec(minWidth);
+  return parsed ? Number.parseFloat(parsed[1]) : 0;
+}
+
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   deriveAmberCockpitProps: () => cockpitProps.value,
   deriveAmberScopeProps: () => scopeProps.value,
@@ -115,13 +142,14 @@ function mountScope(
   state: ServerState | null,
   hasAudioFft = false,
   caps = amberCaps,
+  dual = false,
 ) {
   scopeProps.value = {
     radioState: state,
     caps,
     hasCapability: (name: string) => caps?.capabilities?.includes(name) ?? false,
     hasAudioFft,
-    hasDualReceiver: false,
+    hasDualReceiver: dual,
   };
   const target = document.createElement('div');
   document.body.appendChild(target);
@@ -462,5 +490,206 @@ describe('AmberScope filter-ratio NaN guard (MOR-1409 A14 plan §4.2 finding #3)
     const points = ghostPassbandPoints(target);
     expect(points).not.toContain('NaN');
     expect(points.length).toBeGreaterThan(0);
+  });
+});
+
+// ── MOR-2673: the unread mode/RIT sentinel never reaches the screen ────────
+
+describe('Amber unread mode / RIT sentinel (MOR-2673)', () => {
+  const fresh = {
+    storePath: 'fixture', observed: true, freshness: 'fresh', availability: 'available',
+  } as const;
+
+  function cockpitSource(): string {
+    return readFileSync('src/components-v2/panels/lcd/AmberCockpit.svelte', 'utf8');
+  }
+  function scopeSource(): string {
+    return readFileSync('src/components-v2/panels/lcd/AmberScope.svelte', 'utf8');
+  }
+
+  it('AmberCockpit draws no mode box at all until the profile catalog is known', () => {
+    // The App mounts the skin before the capabilities fetch lands
+    // (App.svelte resolves the presentation without waiting for
+    // runtime.bootstrap), so a caps-less mount is a real first frame.
+    // The box appears once, with its reservation — never hugs its padding
+    // and then jumps when the catalog arrives (MOR-2673).
+    for (const caps of [amberCaps, null]) {
+      const state = {
+        active: 'MAIN',
+        main: baseReceiver({ mode: undefined }),
+        fieldStatus: {},
+      } as unknown as ServerState;
+      const target = mountCockpit(state, false, caps);
+      expect(target.querySelector('.vfo-mode-box')).toBeNull();
+    }
+  });
+
+  it('AmberCockpit renders an unread main mode as an empty reserved slot, never a dash run', () => {
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver({ mode: undefined, filter: undefined }),
+      fieldStatus: {},
+    } as unknown as ServerState;
+    const target = mountCockpit(state, false, ic7300Caps);
+    const box = target.querySelector('.vfo-mode-box');
+    expect(box).not.toBeNull();
+    expect(box?.textContent).toBe('');
+    expect(reservedCh(box)).toBeGreaterThanOrEqual(8);
+    expect(target.textContent ?? '').not.toContain('---');
+  });
+
+  it('AmberCockpit renders a known mode exactly as before the change', () => {
+    const target = mountCockpit({
+      active: 'MAIN',
+      main: baseReceiver(),
+      fieldStatus: {},
+    } as unknown as ServerState, false, ic7300Caps);
+    expect(target.querySelector('.vfo-mode-box')?.textContent).toBe('USB 1');
+  });
+
+  it('AmberCockpit reserves the mode box and RIT value in every state (structural pin)', () => {
+    const source = cockpitSource();
+    // MOR-2673 review F1: no radio-specific width constant in the CSS — the
+    // mode box reserves through the profile-derived inline `min-width`
+    // (pinned behaviorally below); the `.rit-value` rule still reserves
+    // "−9.99 kHz" = 9ch.
+    expect(source).not.toMatch(/\.vfo-mode-box \{[^}]*min-width:/s);
+    expect(source).toContain('modeBoxMinWidth');
+    // MOR-2673 quick follow-up: content-box keeps the padding/border out of
+    // the ch budget; without it the reservation under-covers the widest
+    // text and the box jumps when a reading arrives.
+    expect(source).toMatch(/\.vfo-mode-box \{[^}]*box-sizing: content-box;/s);
+    expect(source).toMatch(/\.rit-value \{[^}]*min-width: 9ch;/s);
+    // The dash-run sentinel is gone from both amber faces entirely.
+    expect(cockpitSource()).not.toContain("'---'");
+    expect(scopeSource()).not.toContain("'---'");
+  });
+
+  it('AmberCockpit renders an active RIT with an unread offset as an empty reserved value', () => {
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver(),
+      ritOn: true,
+      fieldStatus: { ritOn: fresh, ritFreq: fresh },
+    } as unknown as ServerState;
+    const target = mountCockpit(state);
+    const value = target.querySelector('.rit-value');
+    expect(value).not.toBeNull();
+    expect(value?.textContent).toBe('');
+  });
+
+  it('AmberCockpit renders a known RIT offset exactly as before the change', () => {
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver(),
+      ritOn: true,
+      ritFreq: 250,
+      fieldStatus: { ritOn: fresh, ritFreq: fresh },
+    } as unknown as ServerState;
+    expect(mountCockpit(state).querySelector('.rit-value')?.textContent).toBe('+0.25 kHz');
+  });
+
+  it('AmberScope draws no mode box at all until the profile catalog is known', () => {
+    // Same first-frame rule as the cockpit: caps-less caps (or a catalog
+    // without modes) draws no box — it appears once, with its reservation.
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver(),
+      fieldStatus: {},
+    } as unknown as ServerState;
+    for (const caps of [amberCaps, null]) {
+      const target = mountScope(state, false, caps, true);
+      expect(target.querySelector('.vfo-mode-box')).toBeNull();
+    }
+  });
+
+  it('AmberScope renders unread main and sub modes as empty reserved slots, never a dash run', () => {
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver({ mode: undefined }),
+      sub: baseReceiver({ mode: undefined }),
+      fieldStatus: {},
+    } as unknown as ServerState;
+    const target = mountScope(state, false, ic7300Caps, true);
+    const boxes = [...target.querySelectorAll('.vfo-mode-box')];
+    expect(boxes).toHaveLength(2);
+    for (const box of boxes) {
+      expect(box.textContent).toBe('');
+      expect(reservedCh(box)).toBeGreaterThanOrEqual(6);
+    }
+    expect(target.textContent ?? '').not.toContain('---');
+  });
+
+  it('AmberScope renders known modes exactly as before the change and reserves the box structurally', () => {
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver(),
+      sub: baseReceiver({ mode: 'CW-R' }),
+      fieldStatus: {},
+    } as unknown as ServerState;
+    const target = mountScope(state, false, ic7300Caps, true);
+    const boxes = [...target.querySelectorAll('.vfo-mode-box')];
+    expect(boxes.map((box) => box.textContent)).toEqual(['USB', 'CW-R']);
+    // MOR-2673 review F1: no radio-specific width constant in the CSS —
+    // the box reserves through the profile-derived inline `min-width`
+    // (pinned behaviorally below).
+    expect(scopeSource()).not.toMatch(/\.vfo-mode-box \{[^}]*min-width:/s);
+    expect(scopeSource()).toContain('modeBoxMinWidth');
+    expect(scopeSource()).toMatch(/\.vfo-mode-box \{[^}]*box-sizing: content-box;/s);
+  });
+});
+
+// ── MOR-2673 review F1: the reserved mode-box width is profile-derived ──────
+// The old CSS constants (6ch / 8ch) under-covered the shipped Yaesu FTX-1
+// catalog ("DATA-FM-N" = 9ch, "DATA-FM-N 1" = 11ch); the reservation must
+// come from the mounted profile's own catalogs, never a hardcoded constant.
+
+describe('Amber mode-box reserved width is derived from the profile catalog (MOR-2673 review F1)', () => {
+  it('AmberCockpit reserves at least 11ch for the FTX-1 catalog ("DATA-FM-N 1")', () => {
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver({ mode: 'DATA-FM-N', filter: 1 }),
+      fieldStatus: {},
+    } as unknown as ServerState;
+    const target = mountCockpit(state, false, ftx1Caps);
+    const box = target.querySelector('.vfo-mode-box');
+    expect(box?.textContent).toBe('DATA-FM-N 1');
+    expect(reservedCh(box)).toBeGreaterThanOrEqual(11);
+  });
+
+  it('AmberCockpit keeps the IC-7300 reservation at 8ch ("RTTY-R 1")', () => {
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver({ mode: 'RTTY-R', filter: 1 }),
+      fieldStatus: {},
+    } as unknown as ServerState;
+    const target = mountCockpit(state, false, ic7300Caps);
+    const box = target.querySelector('.vfo-mode-box');
+    expect(box?.textContent).toBe('RTTY-R 1');
+    expect(reservedCh(box)).toBe(8);
+  });
+
+  it('AmberScope reserves at least 9ch for the FTX-1 catalog ("DATA-FM-N")', () => {
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver({ mode: 'DATA-FM-N' }),
+      fieldStatus: {},
+    } as unknown as ServerState;
+    const target = mountScope(state, false, ftx1Caps);
+    const box = target.querySelector('.vfo-mode-box');
+    expect(box?.textContent).toBe('DATA-FM-N');
+    expect(reservedCh(box)).toBeGreaterThanOrEqual(9);
+  });
+
+  it('AmberScope keeps the IC-7300 reservation at 6ch ("RTTY-R")', () => {
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver({ mode: 'RTTY-R' }),
+      fieldStatus: {},
+    } as unknown as ServerState;
+    const target = mountScope(state, false, ic7300Caps);
+    const box = target.querySelector('.vfo-mode-box');
+    expect(box?.textContent).toBe('RTTY-R');
+    expect(reservedCh(box)).toBe(6);
   });
 });

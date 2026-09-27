@@ -315,6 +315,18 @@ describe('MOR-2545: the indicator text carries no placeholder in ANY unread mix'
   });
 });
 
+// ── 5b. MOR-2704 G1: the KNOWN-reading, not-operational half of the gate,
+//         pinned against the imported `usable` (a mutation that drops its
+//         `operational` check flips data-observed to "true" and dies here).
+
+describe('MOR-2704 G1: a read but not-operational source stays marked unobserved', () => {
+  it('keeps data-observed "false" for a known source reading under operational:false', () => {
+    withSurface(withField(base(), 'source', { availability: UNOBSERVED }), (s) => {
+      expect(s.indicator()!.dataset.observed).toBe('false');
+    });
+  });
+});
+
 // ── 6. MOR-2545 PR2 review fix: the text readout is VISIBLE by default ─────
 //    (only the toolbar host hides it — see SpectrumToolbar.component.test.ts)
 

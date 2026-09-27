@@ -343,7 +343,8 @@ describe('TxPanel v3 command-feedback wiring', () => {
     flushSync();
     for (const field of ['micGain', 'compressorLevel', 'monitorGain'] as const) {
       expect(slider(field).getAttribute('aria-disabled')).toBe('true');
-      expect(value(field)).toBe('—');
+      // MOR-2658: unread is an empty reserved slot — never the '—' placeholder.
+      expect(value(field)).toBe('');
     }
     // MOR-2425/R29: driveGain is stale, not malformed/unresolved — it stays
     // available with its last observed value, unlike its three siblings.
@@ -353,10 +354,47 @@ describe('TxPanel v3 command-feedback wiring', () => {
 
     canonical.state = {
       ...connectedState(), micGain: 41, driveGain: 81, compressorLevel: 121, monitorGain: 161,
-    } as ServerState;
+    } as unknown as ServerState;
     flushSync();
     for (const field of FIELDS) expect(slider(field).getAttribute('aria-disabled')).toBe('false');
     expect(FIELDS.map((field) => slider(field).getAttribute('aria-valuenow')))
       .toEqual(['41', '81', '121', '161']);
+  });
+});
+
+// ── Unread TX levels (MOR-2658) ────────────────────────────────────────────
+// An unread level renders EMPTY in its reserved slot — never '—', and never
+// a '%' without its number. A known level renders exactly as before.
+describe('TxPanel unread TX level value display (MOR-2658)', () => {
+  it('renders known levels exactly as before', () => {
+    render();
+    openSettings();
+    expect(value('micGain')).toBe(`${Math.round(VALUES.micGain / 2.55)}%`);
+    expect(value('driveGain')).toBe(`${Math.round(VALUES.driveGain / 2.55)}%`);
+  });
+
+  it('renders all four known raw levels as literal percents (MOR-2688)', () => {
+    render();
+    openSettings();
+    expect(FIELDS.map((field) => value(field))).toEqual(['16%', '31%', '47%', '63%']);
+  });
+
+  it('renders unread levels as empty slots with no dash or percent-alone', () => {
+    render();
+    openSettings();
+    canonical.state = {
+      ...connectedState(),
+      micGain: Number.NaN,
+      fieldStatus: {
+        ...connectedState().fieldStatus,
+        micGain: { ...fresh(), observed: false },
+      },
+    } as unknown as ServerState;
+    flushSync();
+    expect(slider('micGain').getAttribute('aria-disabled')).toBe('true');
+    expect(value('micGain')).toBe('');
+    const text = target.textContent ?? '';
+    expect(text).not.toContain('—');
+    expect(text).not.toMatch(/unknown/i);
   });
 });

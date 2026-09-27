@@ -161,8 +161,10 @@ describe('cwKeyer per-field derivation (MOR-1296)', () => {
       } as Partial<ServerState>);
       const cw = model(state, fullCaps).cwKeyer!;
       expect(cw.breakIn.reading).toEqual({ status: 'known', value: mode });
+      const realBreakIn = toCwProps(state, fullCaps).breakIn;
+      if (typeof realBreakIn !== 'number') throw new Error('toCwProps must produce a numeric breakIn for this fixture');
       expect(cw.breakIn.reading.status === 'known' && cw.breakIn.reading.value !== 'off')
-        .toBe(isBreakInActive(toCwProps(state, fullCaps).breakIn));
+        .toBe(isBreakInActive(realBreakIn));
     },
   );
 
@@ -259,16 +261,15 @@ describe('cwKeyer honesty gate — absent raw values never fabricate (MOR-1296)'
     },
   );
 
-  it("v2's own toCwProps still fabricates breakIn/reversePaddle — the divergence there is real, not vacuous", () => {
-    // MOR-1409 A12 (Core #2317): `toCwProps`' `keySpeed`/`cwPitch` fabricated
-    // defaults were removed (now `NaN`, matching the honest
-    // `radio-view-model`'s `unknown` reading below — see the next test) —
-    // that half of the divergence this test used to document is closed.
-    // `breakIn`/`reversePaddle` were outside A12's batch-B family (not
-    // named in the re-anchor plan's §3.3 literal table) and still fabricate
-    // their pre-A12 defaults; the divergence remains real for those two.
+  it("v2's own toCwProps still fabricates reversePaddle — the divergence there is real, not vacuous", () => {
+    // MOR-1409 A12 (Core #2317): `toCwProps`' `keySpeed`/`cwPitch`/`breakIn`
+    // fabricated defaults were removed (now `NaN`/`null`, matching the
+    // honest `radio-view-model`'s `unknown` reading below — see the next
+    // test) — those halves of the divergence this test used to document are
+    // closed. `reversePaddle` stays the conservative `false` reading; the
+    // divergence remains real for it.
     const real = toCwProps(bareState(), fullCaps);
-    expect(real.breakIn).toBe(0);
+    expect(real.breakIn).toBeNull();
     expect(real.reversePaddle).toBe(false);
   });
 
@@ -278,7 +279,7 @@ describe('cwKeyer honesty gate — absent raw values never fabricate (MOR-1296)'
     expect(real.cwPitch).toBeNaN();
   });
 
-  it('an unrecognised break-in int reads unknown, where the real formatBreakIn falls back to OFF', () => {
+  it('an unrecognised break-in int reads unknown', () => {
     const state = bareState({
       breakIn: 7, fieldStatus: { ...bareState().fieldStatus, breakIn: fresh },
     } as Partial<ServerState>);

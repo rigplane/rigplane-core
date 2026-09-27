@@ -1,13 +1,20 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ControlFeedback } from '$lib/runtime/adapters/panel-adapters';
 import type { ControlDisplayDomain } from '$lib/radio/filter-controls';
+import { toCwProps } from '$lib/runtime/props/panel-props';
+import type { Capabilities } from '$lib/types/capabilities';
 
+const LEGACY_BREAK_IN: { value: number; label: string }[] = [
+  { value: 0, label: 'OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' },
+];
 const mockProps = {
   cwPitch: 600,
   keySpeed: 12,
-  breakIn: 0,
+  breakIn: 0 as number | null,
   breakInDelay: 0,
+  breakInChoices: LEGACY_BREAK_IN,
   apfMode: 0,
   twinPeak: false,
   currentMode: 'CW',
@@ -78,7 +85,7 @@ function mountPanel(overrides?: Partial<typeof mockProps>) {
   beforeEach(() => {
     components = [];
     Object.assign(mockProps, {
-      cwPitch: 600, keySpeed: 12, breakIn: 0, breakInDelay: 0,
+      cwPitch: 600, keySpeed: 12, breakIn: 0, breakInDelay: 0, breakInChoices: LEGACY_BREAK_IN,
       apfMode: 0, twinPeak: false, currentMode: 'CW',
       apfDisabled: false, tpfDisabled: false,
       hasCw: true, hasBreakIn: true, hasApf: true, hasTwinPeak: true,
@@ -184,6 +191,67 @@ describe('CwPanel component rendering', () => {
     const t = mountPanel();
     const buttons = Array.from(t.querySelectorAll('button'));
     expect(buttons.some((b) => b.textContent?.trim() === 'FULL')).toBe(true);
+  });
+
+  /* MOR-2729 — the break-in control offers exactly the profile's published
+     choices; the hard-coded OFF/SEMI/FULL trio is gone. */
+  it('FTX-1 lists OFF and ON only, and a click on ON dispatches set_break_in mode 1', () => {
+    const t = mountPanel({
+      breakInChoices: [{ value: 0, label: 'OFF' }, { value: 1, label: 'ON' }],
+      breakIn: 0,
+    });
+    const labels = Array.from(t.querySelectorAll('button')).map((b) => b.textContent?.trim());
+    expect(labels).toContain('OFF');
+    expect(labels).toContain('ON');
+    expect(labels).not.toContain('SEMI');
+    expect(labels).not.toContain('FULL');
+    findButton(t, 'ON').click();
+    expect(mockHandlers.onBreakInModeChange).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
+  it('IC-7300 keeps the published OFF / SEMI / FULL choices', () => {
+    const t = mountPanel();
+    const labels = Array.from(t.querySelectorAll('button')).map((b) => b.textContent?.trim());
+    expect(labels).toContain('OFF');
+    expect(labels).toContain('SEMI');
+    expect(labels).toContain('FULL');
+    findButton(t, 'FULL').click();
+    expect(mockHandlers.onBreakInModeChange).toHaveBeenCalledExactlyOnceWith(2);
+  });
+
+  it('a radio publishing an empty break-in list (X6100, X6200) renders no break-in control', () => {
+    const t = mountPanel({ breakInChoices: [] });
+    const labels = Array.from(t.querySelectorAll('button')).map((b) => b.textContent?.trim());
+    for (const label of ['OFF', 'SEMI', 'FULL', 'ON']) expect(labels).not.toContain(label);
+  });
+
+  // Item 1 (review 2026-09-27): no LEGACY_BREAK_IN_CHOICES fallback — against
+  // the REAL toCwProps. Absent means an empty list means NO break-in control.
+  it('a capabilities payload with no breakInChoices field gets no break-in choices (MOR-2729)', () => {
+    const caps = { capabilities: ['cw', 'break_in'] } as unknown as Capabilities;
+    expect(toCwProps(null, caps).breakInChoices).toEqual([]);
+  });
+
+  /* Item 3 (review 2026-09-27): while break-in is unread no button is lit or
+     pressed; once read, the button of exactly that value is lit. */
+  it('an unread break-in lights no break-in button and presses none (MOR-2729)', () => {
+    const t = mountPanel({ breakIn: null });
+    expect(Array.from(t.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'OFF')).toBeDefined();
+    expect(t.querySelector('[data-active="true"]')).toBeNull();
+    expect(t.querySelector('[aria-pressed="true"]')).toBeNull();
+  });
+
+  it('a read break-in lights exactly its own value: 0 lights OFF on the IC-7300 trio (MOR-2729)', () => {
+    const t = mountPanel({ breakIn: 0 });
+    expect(findButton(t, 'OFF').getAttribute('data-active')).toBe('true');
+  });
+
+  it('a read break-in lights exactly its own value: 1 lights ON on the FTX-1 pair (MOR-2729)', () => {
+    const t = mountPanel({
+      breakInChoices: [{ value: 0, label: 'OFF' }, { value: 1, label: 'ON' }],
+      breakIn: 1,
+    });
+    expect(findButton(t, 'ON').getAttribute('data-active')).toBe('true');
   });
 
   it('renders APF button', () => {
@@ -331,36 +399,83 @@ function vcValueFor(t: HTMLElement, label: string): string {
 }
 
 /**
- * A12 (MOR-1409, Core #2317, coordinator adjudication comment 5246487510)
- * — unavailable command feedback must preserve the established
- * '---'-family placeholder rather than leak a non-finite value. The local
- * formatters also preserve the exact finite-value/unit rendering.
+ * MOR-2658 — an unread pitch/speed renders EMPTY in its reserved slot:
+ * never the '--- Hz' / '--- WPM' family, and never a unit without its
+ * number. An empty slot fabricates nothing, so MOR-1409 A12 is satisfied
+ * by empty, not by dashes. The HBar/Discrete renderers call the panel's
+ * displayFn with Number.NaN for an unread value. Finite values render
+ * exactly as before.
  */
-describe('CwPanel — no "NaN" leak for unobserved pitch/speed (MOR-1409 A12)', () => {
-  it('does not render a "NaN" substring for CW Pitch when cwPitch is non-finite', () => {
+describe('CwPanel — unread pitch/speed renders empty (MOR-2658)', () => {
+  it('renders an empty CW Pitch slot for a non-finite pitch, never dashes or NaN', () => {
     const t = mountPanel({ cwPitch: Number.NaN });
-    expect(vcValueFor(t, 'CW Pitch')).not.toMatch(/NaN/);
+    const value = vcValueFor(t, 'CW Pitch');
+    expect(value).toBe('');
+    expect(value).not.toContain('NaN');
+    expect(value).not.toMatch(/-{2,}/);
   });
 
-  it('renders the established "---"-family placeholder for a non-finite CW Pitch', () => {
-    const t = mountPanel({ cwPitch: Number.NaN });
-    expect(vcValueFor(t, 'CW Pitch')).toBe('---\u00a0Hz');
-  });
-
-  it('does not render a "NaN" substring for Key Speed when keySpeed is non-finite', () => {
+  it('renders an empty Key Speed slot for a non-finite speed, never dashes or NaN', () => {
     const t = mountPanel({ keySpeed: Number.NaN });
-    expect(vcValueFor(t, 'Key Speed')).not.toMatch(/NaN/);
-  });
-
-  it('renders the established "---"-family placeholder for a non-finite Key Speed', () => {
-    const t = mountPanel({ keySpeed: Number.NaN });
-    expect(vcValueFor(t, 'Key Speed')).toBe('---\u00a0WPM');
+    const value = vcValueFor(t, 'Key Speed');
+    expect(value).toBe('');
+    expect(value).not.toContain('NaN');
+    expect(value).not.toMatch(/-{2,}/);
   });
 
   it('still renders the real formatted values for finite pitch/speed', () => {
     const t = mountPanel({ cwPitch: 700, keySpeed: 25 });
-    expect(vcValueFor(t, 'CW Pitch')).toBe('700\u00a0Hz');
-    expect(vcValueFor(t, 'Key Speed')).toBe('25\u00a0WPM');
+    expect(vcValueFor(t, 'CW Pitch')).toBe('700 Hz');
+    expect(vcValueFor(t, 'Key Speed')).toBe('25 WPM');
+  });
+
+  it('reserves the pitch/speed value slots structurally for unread and known alike', () => {
+    const source = readFileSync('src/components-v2/panels/CwPanel.svelte', 'utf8');
+    const rule = source.match(/\.cw-value-slot :global\(\.vc-value\) \{([^}]*)\}/)?.[1] ?? '';
+    // MOR-2706: the reservation derives from the mounted profile's control
+    // domain via the per-slot `--cw-value-min-width` inline custom property;
+    // 6ch is the floor for a radio that publishes no domain.
+    expect(rule, 'the pitch/speed values keep a reserved box')
+      .toContain('min-width: var(--cw-value-min-width, 6ch)');
+    // An empty inline-block collapses to zero height and, baseline-aligned,
+    // pulls the row up (caught by the visual run) — the slot must keep one
+    // line and stay out of the header's baseline alignment.
+    expect(rule, 'an empty slot keeps its line height').toContain('min-height: 1lh');
+    expect(rule, 'an empty slot leaves baseline alignment').toContain('align-self: center');
+  });
+
+  // MOR-2706: each value slot's reserved width derives from the profile's
+  // published control domain — the widest text the readout can print is the
+  // domain max in its own unit (FTX-1 cw_pitch 300..1050 → '1050 Hz' = 7ch;
+  // the legacy fallback 300..900 → '900 Hz' = 6ch; key speed 6..48 →
+  // '48 WPM' = 6ch), never a raised constant.
+  const slotVar = (t: HTMLElement, index: number): string =>
+    t.querySelectorAll<HTMLElement>('.cw-value-slot')[index]!
+      .style.getPropertyValue('--cw-value-min-width');
+
+  it('reserves the pitch slot for the FTX-1 cw_pitch max (1050 Hz = 7ch)', () => {
+    const t = mountPanel({ cwPitchDomain: { min: 300, max: 1050, step: 10, origin: 300 } });
+    expect(slotVar(t, 0)).toBe('7ch');
+    expect('1050 Hz'.length).toBeLessThanOrEqual(7);
+  });
+
+  it('reserves the pitch slot for the Icom legacy max (900 Hz = 6ch) and the speed slot (48 WPM = 6ch)', () => {
+    const t = mountPanel({ cwPitchDomain: null });
+    expect(slotVar(t, 0)).toBe('6ch');
+    expect('900 Hz'.length).toBeLessThanOrEqual(6);
+    expect(slotVar(t, 1)).toBe('6ch');
+    expect('48 WPM'.length).toBeLessThanOrEqual(6);
+  });
+
+  it('keeps the pitch reservation unchanged when a reading arrives (MOR-2706)', () => {
+    const ftx1 = { min: 300, max: 1050, step: 10, origin: 300 } as const;
+    const unread = mountPanel({ cwPitchDomain: ftx1, cwPitch: Number.NaN });
+    expect(vcValueFor(unread, 'CW Pitch')).toBe('');
+    const unreadWidth = slotVar(unread, 0);
+    const read = mountPanel({ cwPitchDomain: ftx1, cwPitch: 1050 });
+    expect(vcValueFor(read, 'CW Pitch')).toContain('1050');
+    expect(slotVar(read, 0)).toBe(unreadWidth);
+    expect(unreadWidth).toBe('7ch');
   });
 });
 

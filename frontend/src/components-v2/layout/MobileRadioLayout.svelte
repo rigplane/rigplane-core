@@ -23,12 +23,15 @@
   import type { MeterSource } from '../panels/meter-utils';
   import KeyboardHandler from './KeyboardHandler.svelte';
   import SemanticRadioSurfaces from '../wiring/SemanticRadioSurfaces.svelte';
+  import type { ManagedScopeRegion } from '$lib/runtime/adapters/scope-display-projection';
+  import type { InstrumentComposition } from '../wiring/instrument-composition';
   import MobileChipBar from './mobile-chip-bar.svelte';
   import EssentialsPanel from '../panels/EssentialsPanel.svelte';
   import PttFab from '../controls/PttFab.svelte';
   import ModInputTxWarning from '../panels/ModInputTxWarning.svelte';
   import { ValueControl } from '../controls/value-control';
   import { normalizedPercentDisplay } from '../../primitives/scalar/value-control-core';
+  import { finiteValue, valueText } from '../../primitives/reading-text';
   import {
     Settings, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
     Sliders, Radio as RadioIcon,
@@ -39,6 +42,7 @@
   } from './vfo-layout-tokens';
   import { getTxPermit } from '$lib/utils/tx-permit';
   import { getStepsForMode, formatStep, formatSValue, formatDbm, formatPower } from './mobile-layout-logic';
+  import { isSmeterCalibrated } from '../meters/smeter-scale';
   // MOR-1409 A13a: reads come from the A11/A12-hardened canonical projections
   // and commands from the sanctioned adapter layer. The retired state-adapter
   // twin under components-v2 is the stale side of a 15-of-15 divergence (it
@@ -48,7 +52,7 @@
   // count reaches zero.
   import {
     toVfoProps, toVfoOpsProps, toMeterProps,
-    toRfFrontEndProps, toModeProps, toFilterProps, toAgcProps, toRitXitProps,
+    toModeProps, toFilterProps, toAgcProps, toRitXitProps,
     toBandSelectorProps, toRxAudioProps, toDspProps, toTxProps, toCwProps, toAntennaProps, toScanProps,
   } from '$lib/runtime/props/panel-props';
   import {
@@ -68,6 +72,13 @@
   let audioState = $derived(runtime.audio);
   let txCapable = $derived(hasTx());
 
+  // MOR-2442 — the PORTRAIT mount's managed scope region: the bare
+  // `scopeManaged` SRS instance below binds it out here, and the portrait
+  // SpectrumPanel reads it. The landscape branch hosts its own instance and
+  // forwards its region through the `children` snippet instead — this bind
+  // never serves landscape.
+  let managedScopeRegion = $state<ManagedScopeRegion | undefined>(undefined);
+
   // ── VFO props ──
   let mainVfo = $derived(toVfoProps(radioState, 'main'));
   let subVfo = $derived(toVfoProps(radioState, 'sub'));
@@ -82,7 +93,6 @@
   // would re-introduce exactly the fabricated truth this gate removes.
   let rxAudio = $derived(toRxAudioProps(radioState, caps, audioState, runtime.connectionAudio));
   let tx = $derived(toTxProps(radioState, caps));
-  let rfFrontEnd = $derived(toRfFrontEndProps(radioState, caps));
   let agc = $derived(toAgcProps(radioState, caps));
   let ritXit = $derived(toRitXitProps(radioState, caps));
   let dsp = $derived(toDspProps(radioState, caps));
@@ -122,8 +132,6 @@
   // readout names the other one. Pinned by MobileRadioLayout.component.svelte.test.ts,
   // describe "mobile header follows the active receiver (MOR-2511)".
   let activeVfo = $derived(activeReceiver === 'SUB' ? subVfo : mainVfo);
-  let otherVfo = $derived(activeReceiver === 'SUB' ? mainVfo : subVfo);
-
   function selectReceiver(target: 'MAIN' | 'SUB') {
     if (target === 'MAIN') {
       vfoHandlers.onMainVfoClick?.();
@@ -499,17 +507,25 @@
   // "S NaN" / "NaN dBm" — the same defect class that BLOCKED PR #2363.
   // These are their ONLY production consumers, so per the single-consumer
   // test the guards live here and `mobile-layout-logic.ts` stays untouched.
-  // Placeholders follow the established '---' segment convention.
+  // MOR-2675: an unread value renders EMPTY in its reserved slot (the
+  // reservation lives in the styles below) — never a dash run.
   function formatSValueDisplay(actual: number): string {
-    return Number.isFinite(actual) ? formatSValue(actual) : '---';
+    return valueText(finiteValue(actual), formatSValue);
   }
   function formatDbmDisplay(actual: number): string {
-    return Number.isFinite(actual) ? formatDbm(actual) : '--- dBm';
+    return valueText(finiteValue(actual), formatDbm);
   }
   // RIT/XIT share one offset field; an active RIT whose offset has never been
   // reported must not render "+NaN".
   function formatOffsetDisplay(hz: number): string {
-    return Number.isFinite(hz) ? `${hz >= 0 ? '+' : ''}${hz}` : '---';
+    return valueText(finiteValue(hz), (value) => `${value >= 0 ? '+' : ''}${value}`);
+  }
+  // MOR-2658: the power sheet slider shares TxPanel's unread contract —
+  // an unread level renders EMPTY in its reserved slot, never "NaN%"
+  // (`normalizedPercentDisplay` has no non-finite branch). `toTxProps`
+  // reports Number.NaN when the rig never sent `powerLevel`.
+  function formatRfPowerDisplay(level: number): string {
+    return valueText(finiteValue(level), normalizedPercentDisplay);
   }
   // The TX dock meter takes raw numbers and formats all four rows itself
   // (`formatPowerWatts`/`formatSwr`/`formatAlc` each render "NaN"-class
@@ -518,7 +534,8 @@
   // worse than no reading at all — so the row is withheld until the meters
   // are actually observed, which is one poll away.
   let txMetersObserved = $derived(
-    Number.isFinite(meter.rfPower) && Number.isFinite(meter.swr) && Number.isFinite(meter.alc)
+    finiteValue(meter.rfPower) !== null && finiteValue(meter.swr) !== null
+      && finiteValue(meter.alc) !== null
   );
 </script>
 
@@ -532,7 +549,17 @@
        MobileRadioLayout.component.svelte.test.ts. -->
   {#if hasSpectrum()}
     <div class="m-ls-spectrum">
-      <SpectrumPanel hideAutoStepToggle={true} />
+      <!-- MOR-2442: landscape hosts its scope panel through the ONE
+           SemanticRadioSurfaces-managed region, the same contract the
+           portrait mount binds below. -->
+      <SemanticRadioSurfaces>
+        {#snippet children(instruments: InstrumentComposition)}
+          <SpectrumPanel hideAutoStepToggle={true}
+            scopeProjection={instruments.managedScope?.projection}
+            scopeDemanded={instruments.managedScope?.demanded ?? true}
+            onScopeDemandChange={instruments.managedScope?.setDemand} />
+        {/snippet}
+      </SemanticRadioSurfaces>
     </div>
   {/if}
   <div class="m-ls-overlay">
@@ -549,10 +576,16 @@
         >{m}</button>
       {/each}
     </div>
+    <!-- MOR-2705 part 4a: calibration is a profile fact — an uncalibrated
+         radio draws no S-unit number and no dBm readout at all for the
+         whole session (no empty reserved slot); a calibrated radio keeps
+         both reserved slots, empty until read. -->
+    {#if isSmeterCalibrated()}
     <div class="m-ls-meter">
       <span class="m-ls-smeter">{formatSValueDisplay(meter.signal)}</span>
       <span class="m-ls-dbm">{formatDbmDisplay(meter.signal)}</span>
     </div>
+    {/if}
     <div class="m-ls-controls">
       <button class="m-ls-step-btn" onclick={() => (stepPickerOpen = !stepPickerOpen)}>
         {formatStep(tuningStep)}
@@ -644,7 +677,10 @@
       </div>
     {/if}
     <div class="m-vfo-row">
-      <span class="m-tx-indicator" data-rf={managedTxRf} style="background: {txIndicatorColor}" title={managedTxRf === 'unknown' ? 'TX status unknown' : txPermit === 'allowed' ? t('core.mobile.tx.allowed') : t('core.mobile.tx.notAllowedBand')}></span>
+      <!-- MOR-2705: while the TX state is not known the indicator carries
+           NO status title — never a placeholder word. Known states keep
+           their catalog titles. -->
+      <span class="m-tx-indicator" data-rf={managedTxRf} style="background: {txIndicatorColor}" title={managedTxRf === 'unknown' ? undefined : txPermit === 'allowed' ? t('core.mobile.tx.allowed') : t('core.mobile.tx.notAllowedBand')}></span>
       <div class="m-vfo-freq" bind:this={vfoFreqElement}>
         <FrequencyDisplay freq={activeVfo.freq} compact active />
       </div>
@@ -656,9 +692,6 @@
     <div class="m-vfo-meta">
       <span class="m-vfo-mode">{activeVfo.mode}</span>
       <span class="m-vfo-filter">{activeVfo.filter}</span>
-      {#if hasDualReceiver() && otherVfo.freq > 0}
-        <span class="m-vfo-sub" title={receiverLabel(activeReceiver === 'SUB' ? 'MAIN' : 'SUB')}>{(otherVfo.freq / 1_000_000).toFixed(3)}</span>
-      {/if}
       {#if ritXit.ritActive}
         <span class="m-vfo-rit" title="RIT offset">
           RIT {formatOffsetDisplay(ritXit.ritOffset)}
@@ -673,7 +706,7 @@
 
   <!-- ═══ S-METER BAR ═══ -->
   <div class="m-smeter-bar">
-    <LinearSMeter value={activeVfo.sValue} compact label="" />
+    <LinearSMeter value={finiteValue(activeVfo.sValue)} compact label="" />
   </div>
 
   <!-- ═══ SCROLLABLE CONTENT ═══ -->
@@ -684,14 +717,21 @@
          MobileRadioLayout.component.svelte.test.ts. -->
     {#if hasSpectrum()}
       <section class="m-spectrum">
-        <SpectrumPanel hideAutoStepToggle={true} />
+        <SpectrumPanel hideAutoStepToggle={true}
+          scopeProjection={managedScopeRegion?.projection}
+          scopeDemanded={managedScopeRegion?.demanded ?? true}
+          onScopeDemandChange={managedScopeRegion?.setDemand} />
       </section>
     {/if}
 
     <!-- The semantic deck and PTT gesture both use the single App-root managed
          intent facade; the deck adds no transport or authority. -->
     <section class="m-semantic-deck">
-      <SemanticRadioSurfaces />
+      <!-- MOR-1245 — this shell mounts its OWN fixed-position copy below
+           (`.m-mod-input-warning`, both orientations), so the shared
+           wiring's instance suppresses itself. The mounting tests pin one
+           rendered banner per orientation. -->
+      <SemanticRadioSurfaces scopeManaged vfoTiles="active" bind:managedScopeRegion={managedScopeRegion} suppressModInputTxWarning />
     </section>
 
     <!-- Chip-scroll IA nav (#839) -->
@@ -760,10 +800,22 @@
         <CollapsiblePanel title="TX" panelId="m-tx" collapsible={false}>
           <div class="m-tx-compact">
             <!-- Power readout (tap → power modal) -->
+            <!-- MOR-2658: an unread power renders EMPTY in the reserved
+                 `.m-tx-power-value` slot below — never a '—' placeholder.
+                 `rfPowerAvailable` gates the modal tap, but availability
+                 alone cannot decide the text: a rig with no fieldStatus
+                 entry reads as available (legacy no-entry fallback) while
+                 `toTxProps` reports NaN, and `formatPower(NaN)` is "NaNW" —
+                 so finiteness decides with it. -->
             <button type="button" class="m-tx-info" disabled={!tx.rfPowerAvailable} onclick={() => (powerModalOpen = true)}>
-              <span class="m-tx-power-value">{tx.rfPowerAvailable ? formatPower(tx.rfPower) : '—'}</span>
+              <span class="m-tx-power-value">{valueText(tx.rfPowerAvailable ? finiteValue(tx.rfPower) : null, formatPower)}</span>
               {#if managedTxRf === 'on'}
-                <span class="m-tx-swr-value">SWR {meter.swr > 0 ? (meter.swr / 10).toFixed(1) : '—'}</span>
+                <!-- MOR-2658: an unread SWR renders EMPTY in the reserved
+                     `.m-tx-swr-value` slot — never a '—', and never the
+                     `SWR` word without its number. toMeterProps reports
+                     Number.NaN for an unobserved meter, so NaN (not 0) is
+                     absence: a real reading of 0 renders `SWR 0.0`. -->
+                <span class="m-tx-swr-value">{valueText(finiteValue(meter.swr), (swr) => `SWR ${(swr / 10).toFixed(1)}`)}</span>
               {/if}
             </button>
 
@@ -929,7 +981,7 @@
             max={1}
             step={0.01}
             renderer="hbar"
-            displayFn={normalizedPercentDisplay}
+            displayFn={formatRfPowerDisplay}
             accentColor="var(--v2-accent-red)"
             onChange={txHandlers.onRfPowerChange}
             variant="hardware-illuminated"
@@ -939,7 +991,9 @@
 
   <!-- ═══ TX SETTINGS MODAL ═══ -->
   <BottomSheet bind:open={txSettingsOpen} title={t('core.mobile.sheet.txSettings')}>
-          <TxPanel showManagedTotControl={true} />
+          <!-- MOR-1245 — while this sheet is open, the fixed overlay below
+               stays the one banner: TxPanel's inline copy is suppressed. -->
+          <TxPanel showManagedTotControl={true} suppressModInputTxWarning />
   </BottomSheet>
 </div>
 {/if}
@@ -1011,7 +1065,9 @@
     position: relative;
   }
 
-  .m-ls-spectrum > :global(.spectrum-panel) {
+  /* MOR-2442: the landscape slot hosts the panel through SemanticRadioSurfaces'
+     managed region, so a descendant selector fits the intermediate wrapper. */
+  .m-ls-spectrum :global(.spectrum-panel) {
     height: 100% !important;
     border: none !important;
     border-radius: 0 !important;
@@ -1081,6 +1137,13 @@
     background: rgba(156, 163, 175, 0.15);
     color: #9ca3af;
     letter-spacing: 0.06em;
+    /* MOR-2683: the chip keeps one width in every state — `min-width` covers
+       the widest label `toVfoProps` prints for a filter ('FIL1'…), so an
+       unread filter rendering as the empty string cannot shift its row. */
+    display: inline-block;
+    min-width: 4ch;
+    box-sizing: content-box;
+    text-align: center;
   }
 
   .m-ls-meter {
@@ -1094,13 +1157,35 @@
     font-size: 13px;
     font-weight: 700;
     color: #4ade80;
+    /* MOR-2675: one width in every state — 5ch covers the widest text
+       formatSValue renders over the raw sMeter domain (0–255): 'S9+60' on
+       the widest shipped calibration ladder (an uncalibrated radio draws no
+       readout at all, MOR-2705 part 4a); tabular digits keep a changing
+       reading from shifting the overlay row. */
+    display: inline-block;
+    min-width: 5ch;
+    font-variant-numeric: tabular-nums;
   }
+
+  /* The MOR-2657 zero-width strut keeps the empty unread box's line-box
+     metrics in this baseline-aligned flex row. */
+  .m-ls-smeter:empty::before { content: '\200b'; }
 
   .m-ls-dbm {
     font-family: 'Roboto Mono', monospace;
     font-size: 10px;
     color: #9ca3af;
+    /* MOR-2705: the reservation is sized for the widest REAL text the
+       formatter can render — '−127 dBm' (8ch), derived by running
+       formatDbm(calibratedToDbm) over the raw 0–255 sMeter domain against
+       the widest shipped s_meter ladder (S0 at −54 dB, S9+60 at +60 dB;
+       pinned by MobileRadioLayout.honesty.isolated.test.ts). */
+    display: inline-block;
+    min-width: 8ch;
+    font-variant-numeric: tabular-nums;
   }
+
+  .m-ls-dbm:empty::before { content: '\200b'; }
 
   .m-ls-controls {
     display: flex;
@@ -1326,22 +1411,12 @@
   .m-vfo-filter {
     color: var(--v2-text-secondary, #aaa);
     font-size: 11px;
-  }
-
-  .m-vfo-sub {
-    font-family: 'Roboto Mono', monospace;
-    font-size: 10px;
-    color: var(--v2-text-dim, #666);
-    margin-left: auto;
-    letter-spacing: 0.02em;
-  }
-
-  .m-vfo-sub::before {
-    content: 'SUB ';
-    font-size: 8px;
-    font-weight: 700;
-    color: var(--v2-text-dim, #555);
-    letter-spacing: 0.08em;
+    /* MOR-2683: the span keeps one width in every state — covers the widest
+       label `toVfoProps` prints for a filter ('FIL1'…), so the empty-string
+       unread sentinel (MOR-2683) cannot shift its neighbours. */
+    display: inline-block;
+    min-width: 4ch;
+    box-sizing: content-box;
   }
 
   /* RIT/XIT offset badge in sticky header meta row (#842). Only renders
@@ -1355,6 +1430,13 @@
     padding: 0 4px;
     border: 1px solid rgba(250, 204, 21, 0.35);
     border-radius: 3px;
+    /* MOR-2675: one width in every state — 9ch covers the widest text the
+       badge prints, 'RIT +9999' / 'XIT -9999' (the shared ±9999 Hz RIT
+       domain), so the empty unread offset cannot shift the meta row. */
+    display: inline-block;
+    min-width: 9ch;
+    box-sizing: content-box;
+    font-variant-numeric: tabular-nums;
   }
 
   /* ── S-meter bar (full width, below VFO) ── */
@@ -1465,6 +1547,13 @@
     color: var(--v2-text-primary, #ddd);
     letter-spacing: 0.02em;
     white-space: nowrap;
+    /* MOR-2658: the power box stays reserved for unread AND each known
+       value — `5ch` covers the widest text (`100W`), tabular digits keep
+       every width identical, so a first reading cannot shift the row. */
+    display: inline-block;
+    min-width: 5ch;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
   }
 
   .m-tx-swr-value {
@@ -1472,6 +1561,15 @@
     font-size: 9px;
     color: var(--v2-text-dim, #888);
     white-space: nowrap;
+    /* MOR-2658: same reservation as power — `8ch` covers `SWR 25.5`,
+       the widest text the slot can hold: swrMeter is raw 0–255
+       (`src/rigplane/backends/yaesu_cat/radio.py` `get_swr_meter`; the
+       wire field is `swrMeter` in `src/rigplane/web/state_schema.py`),
+       rendered as `(swr / 10).toFixed(1)`. */
+    display: inline-block;
+    min-width: 8ch;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
   }
 
   .m-atu-btn {

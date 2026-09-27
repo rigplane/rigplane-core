@@ -1678,4 +1678,81 @@ describe('KeyboardHandler', () => {
       expect(document.activeElement).toBe(freqDisplay);
     });
   });
+
+  // MOR-2754 — the Escape that finishes a wheel adjustment must not also
+  // fire the global clear_rit_xit binding (Escape in
+  // rigs/_keyboard-default.toml). wheel-control.ts arms on click/Enter; its
+  // key handler disarmed on Escape but let the event bubble to the window
+  // layer, clearing the RIT/XIT offset as a side effect. The armed Escape
+  // is consumed; a bare Escape on an unarmed control still clears.
+  describe('Escape during a wheel adjustment (MOR-2754)', () => {
+    const escapeConfig: KeyboardConfig = {
+      ...config,
+      bindings: [
+        {
+          id: 'clear-rit-xit',
+          section: 'RIT/XIT',
+          label: 'Clear offset',
+          sequence: ['Escape'],
+          action: 'clear_rit_xit',
+        },
+      ],
+    };
+
+    function mountFocusedValueControl(): HTMLElement {
+      const target = document.createElement('div');
+      document.body.appendChild(target);
+      components.push(mount(ValueControl, {
+        target,
+        props: {
+          value: 5, min: 0, max: 10, step: 1, renderer: 'hbar',
+          label: 'AF', onChange: vi.fn(),
+        },
+      }));
+      flushSync();
+      const slider = target.querySelector<HTMLElement>('[role="slider"]')!;
+      slider.focus();
+      expect(document.activeElement).toBe(slider);
+      return slider;
+    }
+
+    function pressEscape(target: HTMLElement): void {
+      target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      flushSync();
+    }
+
+    it('consumes the Escape that ends a wheel adjustment: disarmed, no clear_rit_xit', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: escapeConfig, onAction });
+      const slider = mountFocusedValueControl();
+      expect(slider.dataset.wheelArmed).toBe('false');
+
+      slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      flushSync();
+      expect(slider.dataset.wheelArmed).toBe('true');
+      expect(onAction).not.toHaveBeenCalled();
+      onAction.mockClear();
+
+      pressEscape(slider);
+
+      expect(slider.dataset.wheelArmed).toBe('false');
+      expect(onAction).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'clear_rit_xit' }),
+      );
+    });
+
+    it('still dispatches clear_rit_xit on Escape when the control is not armed', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: escapeConfig, onAction });
+      const slider = mountFocusedValueControl();
+      expect(slider.dataset.wheelArmed).toBe('false');
+
+      pressEscape(slider);
+
+      expect(slider.dataset.wheelArmed).toBe('false');
+      expect(onAction).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ action: 'clear_rit_xit' }),
+      );
+    });
+  });
 });

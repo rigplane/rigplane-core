@@ -8,6 +8,7 @@
     toDspProps, toFilterProps, formatPreLabel,
   } from '$lib/runtime/props/panel-props';
   import AmberFrequency from './AmberFrequency.svelte';
+  import { activeTuneReceiver } from '../../wiring/dual-receiver-strips';
   import AmberSmeter from './AmberSmeter.svelte';
   import AmberAfScope from './AmberAfScope.svelte';
   import AmberFilterGhost from './AmberFilterGhost.svelte';
@@ -21,6 +22,7 @@
   import { levelFormatsBelowMax } from '../../../semantic/format-level';
   import { RF_FRONT_END_LEVELS } from '../../../semantic/rf-front-end-instruments';
   import { formatOffsetKHz } from '../rit-utils';
+  import { finiteValue } from '../../../primitives/reading-text';
 
   const handlers = getAmberCockpitHandlers();
   const vfoHandlers = getVfoHandlers();
@@ -107,8 +109,9 @@
 
   // RIT-offset guard: `formatOffsetKHz()` (rit-utils.ts, frozen) has no NaN
   // branch and renders the literal "−NaN kHz" on an unobserved offset.
+  // MOR-2673: unread renders as an empty unlit segment, never a dash run.
   let ritOffsetLabel = $derived(
-    Number.isFinite(ritXit.ritOffset) ? formatOffsetKHz(ritXit.ritOffset) : '---',
+    Number.isFinite(ritXit.ritOffset) ? formatOffsetKHz(ritXit.ritOffset) : '',
   );
 
   // Filter-ratio guard: `AmberFilterGhost`/`AmberAfScope` (frozen) compute
@@ -121,7 +124,7 @@
 
   // ── LCD-specific derivations (no adapter equivalent) ──
   let rx = $derived(radioState?.active === 'SUB' ? radioState?.sub : radioState?.main);
-  let subSValue = $derived(radioState?.sub?.sMeter ?? 0);
+  let subSValue = $derived(finiteValue(radioState?.sub?.sMeter));
 
   type MeterSource = 'S' | 'PO' | 'SWR' | 'ALC' | 'COMP';
   const METER_SOURCES: MeterSource[] = ['S', 'PO', 'SWR', 'ALC', 'COMP'];
@@ -144,7 +147,7 @@
       case 'SWR': return meter.swr;
       case 'ALC': return meter.alc;
       case 'COMP': return meter.comp;
-      default: return rx?.sMeter ?? 0;  // active receiver, not always main
+      default: return finiteValue(rx?.sMeter);  // active receiver, not always main
     }
   });
 
@@ -175,8 +178,16 @@
       ? [{ id: 'vox' as const, label: 'VOX', active: tx.voxActive }] : []),
     ...(hasCap('compressor') && tx.compAvailable ? [{
       id: 'proc' as const,
-      label: tx.compActive && tx.compLevelAvailable ? `PROC ${tx.compLevel}` : 'PROC',
+      // MOR-2683: a known compressor state with an unread level keeps the
+      // bare key — the availability gate keeps a missing reading's level
+      // off, and `Number.isFinite` guards toTxProps' NaN sentinel, so an
+      // unreported level can never print "PROC 0" (or "PROC NaN"). The chip
+      // reserves 8ch (`reserveSlot` → AmberIndStrip) — the widest text it
+      // prints is `PROC 255` — so a level arriving never moves a neighbour.
+      label: tx.compActive && tx.compLevelAvailable && Number.isFinite(tx.compLevel)
+        ? `PROC ${tx.compLevel}` : 'PROC',
       active: tx.compActive,
+      reserveSlot: 8,
     }] : []),
     ...(hasCap('tuner') && tx.atuAvailable ? [{
       id: 'atu' as const,
@@ -326,27 +337,6 @@
     handlers.onTuningChange(freq, mode);
   });
 
-  function activeTuneReceiver(
-    view: ReturnType<typeof vfoContext.read>['view'],
-  ): 0 | 1 | null {
-    if (!view || view.activeReceiver.status !== 'known') return null;
-    const activeReceiver = view.activeReceiver.receiver;
-    if (view.disabledReasons.some(
-      ({ field, code }) => field === `receiver.${activeReceiver}`
-        && code === 'capability-unavailable',
-    )) return null;
-    const activeVfos = view.vfos.filter(
-      (vfo) => vfo.receiver === activeReceiver && vfo.isActive,
-    );
-    if (activeVfos.length !== 1) return null;
-    const activeVfo = activeVfos[0];
-    if (!activeVfo || activeVfo.frequencyHz === null) return null;
-    const { slot } = activeVfo;
-    if (!(slot.kind === 'slotted' || slot.kind === 'unslotted'
-      || (slot.kind === 'relative' && slot.role === 'selected'))) return null;
-    return activeReceiver === 'MAIN' ? 0 : 1;
-  }
-
   function handleQsyRecall(freqHz: number, mode: string): void {
     const view = vfoContext.read().view;
     const receiver = activeTuneReceiver(view);
@@ -364,15 +354,38 @@
   // In the dual-cockpit peer layout, column A always = main VFO, column B always = sub VFO.
   // We derive main/sub data directly so each column has stable data regardless of active state.
   let mainFreqHz = $derived(radioState?.main?.freqHz ?? 0);
-  let mainMode = $derived(radioState?.main?.mode ?? '---');
+  let mainMode = $derived(radioState?.main?.mode ?? '');
   let mainFilter = $derived(radioState?.main?.filter ?? '');
   let mainBand = $derived(freqToBand(mainFreqHz));
-  let mainSMeter = $derived(radioState?.main?.sMeter ?? 0);
+  let mainSMeter = $derived(finiteValue(radioState?.main?.sMeter));
 
   let subVfoFreqHz = $derived(radioState?.sub?.freqHz ?? 0);
   let subVfoMode = $derived(radioState?.sub?.mode ?? '');
   let subVfoFilter = $derived(radioState?.sub?.filter ?? '');
   let subVfoBand = $derived(freqToBand(subVfoFreqHz));
+
+  // MOR-2673 (review F1 + quick follow-up): the reserved mode-box width is
+  // derived from the mounted profile's own catalogs (`caps.modes`,
+  // `caps.filters`) — the widest text the box prints is the longest mode
+  // label plus the optional ` ${filter}` suffix: one space plus the widest
+  // filter index text (FTX-1 "DATA-FM-N" + " 1" = 11 glyphs, IC-7300
+  // "RTTY-R 1" = 8 glyphs), never a hardcoded constant. Each glyph also
+  // carries the rule's 1px letter-spacing, and `box-sizing: content-box`
+  // keeps the padding/border out of the reservation, so the slot is
+  // `calc(Nch + Npx)` for N glyphs — widest in every state. Fixed for the
+  // session: it changes only when the capabilities load, never when a
+  // reading arrives.
+  let modeBoxMinWidth = $derived.by(() => {
+    let longestMode = 0;
+    for (const mode of caps?.modes ?? []) {
+      if (mode.length > longestMode) longestMode = mode.length;
+    }
+    if (longestMode === 0) return undefined;
+    const filterCount = caps?.filters?.length ?? 0;
+    const filterDigits = Math.max(1, String(filterCount).length);
+    const glyphs = longestMode + 1 + filterDigits;
+    return `calc(${glyphs}ch + ${glyphs}px)`;
+  });
 
   // Active state per column: A active when main is the active receiver
   let vfoAActive = $derived(radioState?.active !== 'SUB');
@@ -425,7 +438,15 @@
           <AmberFrequency freqHz={mainFreqHz} size="large" />
         </div>
         <div class="vfo-badges">
-          <span class="vfo-mode-box">{mainMode}{mainFilter ? ` ${mainFilter}` : ''}</span>
+          <!-- MOR-2673: inline min-width derived from the profile's catalogs.
+               The App mounts this skin before the capabilities fetch lands
+               (App.svelte resolves the presentation without waiting for
+               runtime.bootstrap), so the box is not drawn at all until the
+               mode catalog is known — it appears once, with its reservation,
+               and then never changes width when a reading arrives. -->
+          {#if modeBoxMinWidth}
+            <span class="vfo-mode-box" style:min-width={modeBoxMinWidth}>{mainMode}{mainFilter ? ` ${mainFilter}` : ''}</span>
+          {/if}
           {#if mainBand}
             <span class="vfo-band-box">{mainBand}</span>
           {/if}
@@ -468,8 +489,8 @@
             <AmberFrequency freqHz={subVfoFreqHz} size="large" />
           </div>
           <div class="vfo-badges">
-            {#if subVfoMode}
-              <span class="vfo-mode-box">{subVfoMode}{subVfoFilter ? ` ${subVfoFilter}` : ''}</span>
+            {#if subVfoMode && modeBoxMinWidth}
+              <span class="vfo-mode-box" style:min-width={modeBoxMinWidth}>{subVfoMode}{subVfoFilter ? ` ${subVfoFilter}` : ''}</span>
             {/if}
             {#if subVfoBand}
               <span class="vfo-band-box">{subVfoBand}</span>
@@ -722,6 +743,12 @@
     border: 2px solid rgba(26, 16, 0, calc(var(--lcd-alpha-active) * 0.4));
     border-radius: 4px;
     padding: 2px 8px;
+    /* MOR-2673: reserved in EVERY state; the reserved width is the
+       profile-derived inline `min-width` (see `modeBoxMinWidth`) — no
+       radio-specific constant here. content-box keeps the padding and
+       border out of the ch budget, so the slot covers the widest text
+       in every state. */
+    box-sizing: content-box;
   }
 
   /* ── S-Meter ── */
@@ -775,6 +802,9 @@
     font-weight: bold;
     font-size: 16px;
     color: rgba(26, 16, 0, calc(var(--lcd-alpha-active) * 0.6));
+    /* MOR-2673: reserved for the widest "−9.99 kHz" reading, so an unread
+       empty offset and the first reading keep one width. */
+    min-width: 9ch;
   }
 
   /* ── Filter / AF Scope row (full-width grid cell) ── */

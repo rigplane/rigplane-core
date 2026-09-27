@@ -25,6 +25,14 @@ export type ReceiverId = 'MAIN' | 'SUB';
 export type VfoSlotId = 'A' | 'B';
 
 /**
+ * The `kind` discriminants of `VfoSlot` as the run-time list the page
+ * guard's identifier vocabulary reads (MOR-2716) — the single source
+ * of truth the assertion below ties the union to.
+ */
+export const VFO_SLOT_KINDS = ['slotted', 'relative', 'unslotted', 'unknown'] as const;
+export type VfoSlotKind = (typeof VFO_SLOT_KINDS)[number];
+
+/**
  * Whether a VFO/target position has an addressable A/B slot at all, distinct
  * from whether that slot was actually observed. `unslotted` = the scheme has
  * no A/B concept here (`single`, `ab_shared`); `unknown` = a slotted scheme
@@ -36,6 +44,21 @@ export type VfoSlot =
   | { kind: 'relative'; role: 'selected' | 'unselected' }
   | { kind: 'unslotted' }
   | { kind: 'unknown' };
+
+/**
+ * Compile-time tie (MOR-2716): `VfoSlot`'s members carry different fields
+ * per kind, so the union cannot derive its discriminants from
+ * `VFO_SLOT_KINDS` directly. This assertion fails to compile whenever a
+ * `kind` exists on only one side — a fifth slot kind added to the union
+ * but not the array (or vice versa) cannot compile.
+ */
+type RequireTrue<Matches extends true> = Matches;
+export type VfoSlotKindsTiedToVfoSlot = RequireTrue<
+  (<G>() => G extends VfoSlot['kind'] ? 1 : 2) extends
+    (<G>() => G extends VfoSlotKind ? 1 : 2)
+    ? true
+    : false
+>;
 
 /** MOR-988 §3.2 `ActiveRx`, verbatim: an adapter with no observation must never fabricate 'MAIN'. */
 export type ActiveRx =
@@ -100,30 +123,47 @@ export interface VfoViewModel {
   isTxTarget: boolean;
 }
 
+/**
+ * The `status: 'unknown'` reason codes of `TxTargetViewModel` as the
+ * run-time list the page guard's identifier vocabulary reads (MOR-2716) —
+ * one source of truth: the `reason` union below is derived from this array.
+ */
+export const TX_TARGET_UNKNOWN_REASONS = [
+  'not-observed', 'stale', 'unsupported', 'contradiction',
+] as const;
+export type TxTargetUnknownReason = (typeof TX_TARGET_UNKNOWN_REASONS)[number];
+
 export type TxTargetViewModel =
   | { status: 'known'; receiver: ReceiverId; slot: VfoSlot; frequencyHz: number | null }
-  | { status: 'unknown'; reason: 'not-observed' | 'stale' | 'unsupported' | 'contradiction' };
+  | { status: 'unknown'; reason: TxTargetUnknownReason };
 
 export interface ScopeAvailabilityViewModel {
   hardwareScope: Availability;
   audioFftScope: Availability;
 }
 
-export type DisabledReasonCode =
-  | 'capability-unavailable'
-  | 'field-not-observed'
-  | 'tx-target-unknown'
-  | 'out-of-band'
+/**
+ * The disabled-reason codes the parser accepts, as the run-time list the
+ * page guard's identifier vocabulary reads (MOR-2716) — one source of
+ * truth: the `DisabledReasonCode` union is derived from this array.
+ */
+export const DISABLED_REASON_CODES = [
+  'capability-unavailable',
+  'field-not-observed',
+  'tx-target-unknown',
+  'out-of-band',
   /** MOR-1293: a hardware mutex with another control's CURRENT state
    *  disables this one (e.g. PREAMP while DIGI-SEL is on/unknown, MOR-479).
    *  Distinct from `capability-unavailable` (the control doesn't exist) and
    *  `field-not-observed` (this control's OWN reading is unobserved) —
    *  here the control itself is fine, a PEER control's state disables it. */
-  | 'mutually-exclusive-control'
+  'mutually-exclusive-control',
   /** MOR-2511 B2: the active receiver's profile does not declare this control
    *  (e.g. SUB.att/preamp on FTX-1). The control is structurally absent for
    *  this receiver regardless of the radio-wide capability. */
-  | 'receiver-lacks-control';
+  'receiver-lacks-control',
+] as const;
+export type DisabledReasonCode = (typeof DISABLED_REASON_CODES)[number];
 
 export interface DisabledReason {
   field: string;
@@ -573,8 +613,9 @@ export type RfFrontEndField<T> = TxAuxField<T>;
  * live reading that can itself go stale. Per the X6200 lesson, these are
  * read from the `caps` ARGUMENT only — never a radio-specific fallback table
  * (the shipped panel's own `[0, 6, 12, 18]`/`[0, 1, 2]` UI-convenience
- * defaults are presentation, not a fact — see `radio-view-model-adapter.ts`'s
- * `deriveRfFrontEnd`).
+ * defaults are presentation, not a fact — the IC-7610's actual ATT ladder
+ * is 16 × 3 dB steps per `rigs/ic7610.toml`, not these values — see
+ * `radio-view-model-adapter.ts`'s `deriveRfFrontEnd`).
  *
  * THE MUTEX (MOR-479, MOR-1293): the shipped panel derives an IC-7610
  * hardware mutex from `digiSel` — the radio silently ignores a PREAMP set
@@ -687,8 +728,7 @@ export interface BandChoice {
  * the declared `freqRanges` (range bounds, not band bounds — the gaps between
  * bands are still tunable). `null` when the radio declares no range at all;
  * never `primitives/frequency/frequency-tuning.ts::adjustFreqByDigit`'s
- * fabricated `0 … 999 MHz` defaults, which is the only bound v2 has (that
- * function has no production caller that supplies one).
+ * fabricated `0 … 999 MHz` defaults.
  */
 export interface BandViewModel {
   currentBand: BandField<string>;
@@ -883,13 +923,9 @@ export type CwKeyerField<T> = TxAuxField<T>;
  * Break-in state as a THREE-VALUED fact, never a boolean and never an int.
  * `off` = the key does not transmit; `semi` = keying transmits with a
  * hang-time (the delay fact below applies); `full` = QSK, the key transmits
- * immediately. The shipped v2 wire encoding is an int (`ServerStatePublic.
- * breakIn`, 0/1/2 — `components-v2/panels/cw-panel-logic.ts`'s
- * `BREAK_IN_LABELS`), decoded ONCE in `radio-view-model-adapter.ts`'s
- * `breakInMode`; an int this contract does not recognise decodes to the
- * field's `unknown` reading, where v2's `formatBreakIn` falls back to 'OFF'.
- * That difference is deliberate and is the whole point of the type: an
- * unreadable break-in state must never present as "the key is safe".
+ * immediately. That difference is deliberate and is the whole point of the
+ * type: an unreadable break-in state must never present as "the key is
+ * safe".
  */
 export type BreakInMode = 'off' | 'semi' | 'full';
 
@@ -1200,6 +1236,13 @@ export interface ReceiverIndicatorViewModel {
   rfState?: MeterRfState;
   sMeter: ReceiverSMeterField;
   bandwidthHz: ReceiverIndicatorField<number>;
+  /** MOR-2706: the widest filter-width value ANY mode of the mounted
+   *  profile can print — a structural fact derived from the capabilities
+   *  and fixed when they load (never a reading), so the BW fact's slot
+   *  reservation can cover `BW {this} Hz`. Absent exactly when the radio
+   *  declares no `filter_width` capability, which is when `bandwidthHz` is
+   *  structurally absent and the BW fact is not drawn at all. */
+  bandwidthMaxHz?: number;
   agcMode: ReceiverIndicatorField<number | string>;
   nbActive: ReceiverIndicatorField<boolean>;
   nrActive: ReceiverIndicatorField<boolean>;
@@ -1339,10 +1382,6 @@ export interface RadioViewModel {
 const RECEIVER_IDS: readonly ReceiverId[] = ['MAIN', 'SUB'];
 const SLOT_IDS: readonly VfoSlotId[] = ['A', 'B'];
 const VFO_SCHEMES: readonly VfoScheme[] = ['single', 'ab', 'ab_shared', 'main_sub'];
-const DISABLED_REASON_CODES: readonly DisabledReasonCode[] = [
-  'capability-unavailable', 'field-not-observed', 'tx-target-unknown', 'out-of-band',
-  'mutually-exclusive-control', 'receiver-lacks-control',
-];
 
 function oneOf<T>(value: unknown, allowed: readonly T[], path: string): T {
   if (!allowed.includes(value as T)) invalid(path, allowed.join(' | '));
@@ -1760,7 +1799,8 @@ function validateReceiverSMeterField(
 function validateReceiverIndicator(value: unknown, path: string): ReceiverIndicatorViewModel {
   const v = record(value, path);
   exactKeys(v, [
-    'receiver', 'availability', 'rfState', 'sMeter', 'bandwidthHz', 'agcMode',
+    'receiver', 'availability', 'rfState', 'sMeter', 'bandwidthHz',
+    'bandwidthMaxHz', 'agcMode',
     'nbActive', 'nrActive', 'notchMode', 'attenuator', 'preamp', 'rfGain',
     'digiSel', 'ipPlus',
   ], path);
@@ -1773,6 +1813,9 @@ function validateReceiverIndicator(value: unknown, path: string): ReceiverIndica
       : {}),
     sMeter: validateReceiverSMeterField(v.sMeter, `${path}.sMeter`, receiver),
     bandwidthHz: validateTxAuxField(v.bandwidthHz, `${path}.bandwidthHz`, num),
+    ...(v.bandwidthMaxHz !== undefined
+      ? { bandwidthMaxHz: num(v.bandwidthMaxHz, `${path}.bandwidthMaxHz`) }
+      : {}),
     agcMode: validateTxAuxField(v.agcMode, `${path}.agcMode`, strOrNum),
     nbActive: validateTxAuxField(v.nbActive, `${path}.nbActive`, bool),
     nrActive: validateTxAuxField(v.nrActive, `${path}.nrActive`, bool),

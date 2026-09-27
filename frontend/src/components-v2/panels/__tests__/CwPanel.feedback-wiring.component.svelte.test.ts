@@ -8,6 +8,9 @@ import type { ServerState } from '$lib/types/state';
 import type { CommandLifecycle } from '$lib/stores/commands.svelte';
 const props = $state({
   cwPitch: 600, keySpeed: 12, breakIn: 1, breakInDelay: 64, apfMode: 0,
+  breakInChoices: [
+    { value: 0, label: 'OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' },
+  ],
   twinPeak: false, currentMode: 'CW', apfDisabled: false, tpfDisabled: false,
   hasCw: true, hasBreakIn: true, hasApf: false, hasTwinPeak: false, autoTuneAvailable: false,
 });
@@ -18,7 +21,7 @@ const feedback = $state({
   confirmed: 64, target: null, requestedTarget: null, phase: 'idle', busy: false,
   availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
   sessionEpoch: 1, scope: { control: 'break-in-delay', receiver: 0 },
-  repeatPolicy: 'latest-target-wins',
+  providerGeneration: 3, repeatPolicy: 'latest-target-wins',
 } as ControlFeedback<number>);
 const fresh = () => ({
   storePath: 'fixture', observed: true, freshness: 'fresh' as const,
@@ -76,7 +79,7 @@ afterEach(() => {
   component = null; target?.remove(); setLocale('en-US');
   Object.assign(feedback, { confirmed: 64, target: null, requestedTarget: null, phase: 'idle',
     busy: false, availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
-    sessionEpoch: 1, scope: { control: 'break-in-delay', receiver: 0 } });
+    sessionEpoch: 1, providerGeneration: 3, scope: { control: 'break-in-delay', receiver: 0 } });
   canonical.state = connectedState(); canonical.caps = connectedCaps();
   canonical.session = { state: 'connected', epoch: 1 };
   lifecycle.commands = [];
@@ -239,9 +242,10 @@ describe('fallback CwPanel ControlFeedback wiring (MOR-1754)', () => {
   ])('fails closed for %s feedback', (_case, malformed) => {
     handlers.onBreakInDelayChange.mockClear();
     Object.assign(feedback as unknown as Record<string, unknown>, malformed); const r = render();
+    // MOR-2658: unread is an empty reserved slot — never the '—' placeholder.
     expect([r.input().disabled, r.input().getAttribute('aria-valuetext'),
       target.querySelector('[data-testid="cw-break-in-delay-value"]')?.textContent])
-      .toEqual([true, 'Control unavailable', '—']);
+      .toEqual([true, 'Control unavailable', '']);
     r.input().value = '111'; r.input().dispatchEvent(new Event('change', { bubbles: true }));
     expect(handlers.onBreakInDelayChange).not.toHaveBeenCalled();
   });
@@ -256,5 +260,81 @@ describe('fallback CwPanel ControlFeedback wiring (MOR-1754)', () => {
     Object.assign(feedback, changedContext); flushSync();
     r.input().dispatchEvent(new Event('change', { bubbles: true }));
     expect([r.input().value, handlers.onBreakInDelayChange.mock.calls]).toEqual(['64', []]);
+  });
+
+  it('drops the delay draft when provider authority disappears and recovers without a mutation error (MOR-2433)', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    handlers.onBreakInDelayChange.mockClear();
+    const r = render();
+    r.input().value = '111';
+    r.input().dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(r.input().value).toBe('111');
+
+    Object.assign(feedback, { providerGeneration: undefined });
+    flushSync();
+    expect(error.mock.calls.flat().join(' ')).not.toMatch(/state_unsafe_mutation/i);
+    expect([r.input().disabled, r.input().value]).toEqual([false, '64']);
+    r.input().dispatchEvent(new Event('change', { bubbles: true }));
+    expect(handlers.onBreakInDelayChange).not.toHaveBeenCalled();
+
+    Object.assign(feedback, {
+      confirmed: null, target: null, requestedTarget: null, phase: 'unavailable',
+      busy: false, availability: 'unavailable', outcome: null, providerGeneration: null,
+    });
+    flushSync();
+    expect(error.mock.calls.flat().join(' ')).not.toMatch(/state_unsafe_mutation/i);
+    // MOR-2658: unread is an empty reserved slot — never the '—' placeholder.
+    expect([r.input().disabled, r.input().getAttribute('aria-valuetext'),
+      target.querySelector('[data-testid="cw-break-in-delay-value"]')?.textContent])
+      .toEqual([true, 'Control unavailable', '']);
+    r.input().dispatchEvent(new Event('change', { bubbles: true }));
+    expect(handlers.onBreakInDelayChange).not.toHaveBeenCalled();
+
+    Object.assign(feedback, {
+      confirmed: 64, target: null, requestedTarget: null, phase: 'idle', busy: false,
+      availability: 'available', outcome: null, providerGeneration: 4,
+    });
+    flushSync();
+    expect(error.mock.calls.flat().join(' ')).not.toMatch(/state_unsafe_mutation/i);
+    expect([r.input().disabled, r.input().value]).toEqual([false, '64']);
+    r.input().value = '90';
+    r.input().dispatchEvent(new Event('input', { bubbles: true }));
+    r.input().dispatchEvent(new Event('change', { bubbles: true }));
+    expect(handlers.onBreakInDelayChange).toHaveBeenCalledExactlyOnceWith(90);
+    error.mockRestore();
+  });
+});
+
+// ── Unread break-in delay (MOR-2658) ───────────────────────────────────────
+// An unread delay renders EMPTY in its reserved slot — never '—', and never
+// a '%' without its number. A known delay renders exactly as before.
+describe('unread break-in delay value display (MOR-2658)', () => {
+  it('renders a known delay exactly as before', () => {
+    const r = render();
+    expect(r.input().disabled).toBe(false);
+    expect(r.input().value).toBe('64');
+    expect(target.querySelector('[data-testid="cw-break-in-delay-value"]')?.textContent)
+      .toBe('25%');
+  });
+
+  it('renders no dash, percent-alone or unknown-word anywhere when unread', () => {
+    Object.assign(feedback, { confirmed: null, phase: 'unavailable',
+      availability: 'unavailable', transitionId: 'unread' });
+    render();
+    const value = target.querySelector('[data-testid="cw-break-in-delay-value"]')?.textContent ?? '';
+    expect(value).toBe('');
+    const text = target.textContent ?? '';
+    expect(text).not.toContain('—');
+    expect(text).not.toMatch(/unknown/i);
+    for (const name of [...target.querySelectorAll('[aria-label]')].map((node) => node.getAttribute('aria-label') ?? '')) {
+      expect(name).not.toContain('—');
+    }
+  });
+
+  it('reserves the delay value slot structurally for unread and known alike', () => {
+    const source = readFileSync('src/components-v2/panels/CwPanel.svelte', 'utf8');
+    const rule = source.match(/\.break-in-delay-header output \{([^}]*)\}/)?.[1] ?? '';
+    expect(rule, 'the delay output keeps a reserved box').toContain('min-width:');
   });
 });

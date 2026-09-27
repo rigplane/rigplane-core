@@ -234,8 +234,7 @@ polling_only = [
     # state_acquisition membership. Added to polling_only (not the new
     # IC-7300 command_response/priming shape) to match every sibling 0x16
     # DSP field already established on this profile above (e.g.
-    # audio_peak_filter). IC-7610 hardware retired 2026-08-04 — no live
-    # verification possible, so this rides the documented command table only.
+    # audio_peak_filter).
     "receiver.main.operator_controls.filter_shape",
     "receiver.sub.operator_controls.filter_shape",
     # MOR-1492 (field-policy membership wave, profile parity): notch_filter
@@ -293,6 +292,11 @@ startup_optional = [
     "scope_controls.global.display.vbw_narrow",
     "scope_controls.global.display.fixed_edge",
     "scope_controls.global.display.rbw",
+    # MOR-2733: on the bench the radio refused MAIN's filter-shape read with a
+    # bare NG while MAIN was in RTTY, and answered SUB's in USB. Neither path
+    # holds the listener; both stay in polling_only above.
+    "receiver.main.operator_controls.filter_shape",
+    "receiver.sub.operator_controls.filter_shape",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -402,6 +406,34 @@ cadence_seconds = 1.0
 freshness_ttl_seconds = 4.0
 adaptive_decay = false
 
+# MOR-2748: the IC-7610 Basic Manual ("Selecting the IF filter shape: Set the
+# operating mode to SSB or CW") restricts the DSP IF filter shape read to
+# SSB/CW modes, and the MOR-2733 bench check measured it refused with a bare
+# NG while MAIN was in RTTY and answered in USB. The data variants carry the
+# same mode values with `data_mode` separating them, so the membership list
+# below keeps the data modes covered. cadence sits at the ON_DEMAND panel
+# bound (5.0 s; the path is an on-demand member of the operator set), TTL and
+# adaptive match the SETTING class this path resolves to without an override
+# (never expires / no adaptive decay), so the entry only adds the availability
+# clause.
+[state_acquisition.field_policies."receiver.main.operator_controls.filter_shape"]
+reason = "available_when: the IC-7610 Basic Manual says \"Set the operating mode to SSB or CW\" before selecting the IF filter shape, and the MOR-2733 bench refusal of the 16 56 read in RTTY (bare NG) matches that clause; gated on MAIN's own mode (MOR-2748)"
+cadence_seconds = 5.0
+freshness_ttl_seconds = "never"
+adaptive_decay = false
+available_when = [
+    { field = "receiver.main.active.freq_mode.mode", in = ["USB", "LSB", "CW", "CW-R"] },
+]
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.filter_shape"]
+reason = "available_when: same Basic Manual clause and bench refusal as MAIN, gated on SUB's own mode (MOR-2748); the data variants keep the same mode values with data_mode separating them"
+cadence_seconds = 5.0
+freshness_ttl_seconds = "never"
+adaptive_decay = false
+available_when = [
+    { field = "receiver.sub.active.freq_mode.mode", in = ["USB", "LSB", "CW", "CW-R"] },
+]
+
 # ── Parameterized Capabilities ───────────────────────────────────
 
 [attenuator]
@@ -413,10 +445,7 @@ values = [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45]
 values = [0, 1, 2]
 
 [agc]
-# CI-V 0x16 0x12: 1=FAST, 2=MID, 3=SLOW, NO OFF (MOR-1522). IC-7610 hardware
-# retired 2026-08-04 — no live verification possible, so this rides the
-# documented CI-V Reference Guide command table only (same disclosure basis
-# as the filter_shape state_acquisition note above).
+# CI-V 0x16 0x12: 1=FAST, 2=MID, 3=SLOW, NO OFF (MOR-1522).
 modes = [1, 2, 3]
 labels = { "1" = "FAST", "2" = "MID", "3" = "SLOW" }
 
@@ -465,9 +494,7 @@ labels = { "0" = "WIDE", "1" = "MID", "2" = "NAR" }
 [filter_shape]
 # CI-V 0x16 0x56: DSP IF filter type (docs/validation/cat-audits/ic7610.md
 # "16 56 DSP IF filter type" S/R; the [commands] get/set_filter_shape entry
-# below carries the same 0=SHARP/1=SOFT comment). IC-7610 hardware retired
-# 2026-08-04 — no live verification possible, same disclosure basis as the
-# [agc] note above (MOR-1534).
+# below carries the same 0=SHARP/1=SOFT comment).
 values = [0, 1]
 labels = { "0" = "SHARP", "1" = "SOFT" }
 

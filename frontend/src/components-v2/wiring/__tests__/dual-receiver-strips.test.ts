@@ -5,7 +5,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  forReceiver, isActiveStrip, isOperationalStrip, receiversOf,
+  activeTuneReceiver, forReceiver, isActiveStrip, isOperationalStrip, receiversOf,
 } from '../dual-receiver-strips';
 import { topologyFixtures } from '../../../semantic/fixtures/topologies';
 import type { RadioViewModel } from '../../../semantic/radio-view-model';
@@ -114,5 +114,100 @@ describe('isOperationalStrip (MOR-1256)', () => {
     };
     expect(isOperationalStrip(other, 'SUB')).toBe(true);
     expect(isOperationalStrip(other, 'MAIN')).toBe(true);
+  });
+});
+
+// MOR-2704 G5b: the one tune-receiver decider, formerly two byte-identical
+// local copies in AmberCockpit.svelte and EiBiBrowser.svelte. Every `null`
+// branch below is pinned; the mutation this block must kill is "default the
+// receiver to 0 (MAIN) when the active receiver is unknown".
+describe('activeTuneReceiver (MOR-2704 G5b)', () => {
+  it('names receiver 0 when MAIN is the active receiver, 1 when SUB is', () => {
+    expect(activeTuneReceiver(dualMainSub)).toBe(0);
+    expect(activeTuneReceiver(dualAbShared)).toBe(1);
+  });
+
+  it('is null for an absent view model', () => {
+    expect(activeTuneReceiver(null)).toBeNull();
+  });
+
+  it('is null when the active receiver was never observed — never a guessed default', () => {
+    const unknownActive: RadioViewModel = {
+      ...dualMainSub,
+      activeReceiver: { status: 'unknown' },
+    };
+    expect(activeTuneReceiver(unknownActive)).toBeNull();
+  });
+
+  it('is null when the active receiver is capability-unavailable, but not for another receiver\'s reason', () => {
+    const mainUnavailable: RadioViewModel = {
+      ...dualMainSub,
+      disabledReasons: [
+        ...dualMainSub.disabledReasons,
+        { field: 'receiver.MAIN', code: 'capability-unavailable' },
+      ],
+    };
+    expect(activeTuneReceiver(mainUnavailable)).toBeNull();
+    // dualRxUnavailable disables SUB while MAIN is the active receiver — an
+    // unrelated receiver's diagnostic must never gate this one.
+    expect(activeTuneReceiver(dualRxUnavailable)).toBe(0);
+  });
+
+  it('is null when the active receiver has zero or two active VFOs', () => {
+    const noneActive: RadioViewModel = {
+      ...dualMainSub,
+      vfos: dualMainSub.vfos.map((vfo) => ({ ...vfo, isActive: false })),
+    };
+    expect(activeTuneReceiver(noneActive)).toBeNull();
+    const bothActive: RadioViewModel = {
+      ...topologyFixtures['1/ab'],
+      vfos: topologyFixtures['1/ab'].vfos.map((vfo) => ({ ...vfo, isActive: true })),
+    };
+    expect(activeTuneReceiver(bothActive)).toBeNull();
+  });
+
+  it('is null when the active VFO frequency is unknown', () => {
+    const noFreq: RadioViewModel = {
+      ...dualMainSub,
+      vfos: dualMainSub.vfos.map((vfo) => ({
+        ...vfo,
+        frequencyHz: vfo.receiver === 'MAIN' ? null : vfo.frequencyHz,
+      })),
+    };
+    expect(activeTuneReceiver(noFreq)).toBeNull();
+  });
+
+  it('is null when the active VFO slot cannot be addressed by a tune', () => {
+    const unselected: RadioViewModel = {
+      ...dualMainSub,
+      vfos: dualMainSub.vfos.map((vfo) => ({
+        ...vfo,
+        slot: vfo.receiver === 'MAIN'
+          ? { kind: 'relative' as const, role: 'unselected' as const }
+          : vfo.slot,
+      })),
+    };
+    expect(activeTuneReceiver(unselected)).toBeNull();
+    const unknownSlot: RadioViewModel = {
+      ...dualMainSub,
+      vfos: dualMainSub.vfos.map((vfo) => ({
+        ...vfo,
+        slot: vfo.receiver === 'MAIN' ? { kind: 'unknown' as const } : vfo.slot,
+      })),
+    };
+    expect(activeTuneReceiver(unknownSlot)).toBeNull();
+  });
+
+  it('addresses the selected side of a relative slot pair', () => {
+    const selected: RadioViewModel = {
+      ...dualMainSub,
+      vfos: dualMainSub.vfos.map((vfo) => ({
+        ...vfo,
+        slot: vfo.receiver === 'MAIN'
+          ? { kind: 'relative' as const, role: 'selected' as const }
+          : vfo.slot,
+      })),
+    };
+    expect(activeTuneReceiver(selected)).toBe(0);
   });
 });

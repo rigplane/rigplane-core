@@ -28,6 +28,7 @@ import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter
 import {
   FTX1_CAPABILITIES, FTX1_STATE,
 } from '$lib/runtime/adapters/__tests__/fixtures/ftx1-profile';
+import { splitFrequencyToDigits, groupDigitsForDisplay } from '../../primitives/frequency/frequency-tuning';
 
 const indicatorField = <T>(value: T) => ({
   reading: { status: 'known' as const, value },
@@ -842,6 +843,42 @@ const studiolineCss = readFileSync('src/presentation/languages/studioline/studio
   .replace(/\/\*[\s\S]*?\*\//g, '');
 
 describe('source pins: fixed slot widths (MOR-2509 slice 2)', () => {
+  it('the unread active-receiver value and the unread VFO role keep a reserved slot', () => {
+    const value = rulesFor(surfaceCss, '.active-receiver-value').join('\n');
+    expect(value).toMatch(/display:\s*inline-block/);
+    expect(value).toMatch(/min-width:\s*5ch/);
+    expect(value).toMatch(/tabular-nums/);
+    expect(surfaceSource).toMatch(
+      /class:vfo-role-unlit=\{vfo\.slot\.kind === 'unknown'\}\s+style:min-width="var\(--vfo-role-width\)"/,
+    );
+    expect(surfaceCss).toMatch(/\.vfo-role\s*\{[^}]*min-width:\s*var\(--vfo-role-width\)/);
+  });
+
+  it('the unread frequency and mode keep a reserved ch box at the widest shipped reading', () => {
+    // The frequency reservation is at least the widest fallback text the tile
+    // can render across the shipped rigs: IC-9700's top end 1_300_000_000,
+    // built through the same shared digit-grouping the component uses — the
+    // comparison is computed, never a literal.
+    const widestFreq = groupDigitsForDisplay(splitFrequencyToDigits(1_300_000_000));
+    const widestFreqText = [widestFreq.mhz, widestFreq.khz, widestFreq.hz]
+      .map((group) => group.map((digit) => digit.char).join('')).join('.');
+    const freqRule = rulesFor(surfaceCss, '.vfo-freq-unlit').join('\n');
+    expect(freqRule).toMatch(/display:\s*inline-block/);
+    const freqReserve = Number((/min-width:\s*(\d+)ch/.exec(freqRule) ?? [])[1]);
+    expect(freqReserve).toBeGreaterThanOrEqual(widestFreqText.length);
+    // The mode reservation is at least the widest mode+filter pair the
+    // shipped rigs carry: FTX-1's longest [modes].list label with the
+    // longest FILn filter.
+    expect('DATA-FM-N / FIL3').toHaveLength(16);
+    const modeRule = rulesFor(surfaceCss, '.vfo-mode-unlit').join('\n');
+    expect(modeRule).toMatch(/display:\s*inline-block/);
+    const modeReserve = Number((/min-width:\s*(\d+)ch/.exec(modeRule) ?? [])[1]);
+    expect(modeReserve).toBeGreaterThanOrEqual('DATA-FM-N / FIL3'.length);
+    // The unlit hooks themselves.
+    expect(surfaceSource).toMatch(/class:vfo-freq-unlit=\{!hasDigitReadout\(vfo\) && displayHz === null\}/);
+    expect(surfaceSource).toMatch(/class:vfo-mode-unlit=\{displayMode === null\}/);
+  });
+
   it('every tray tab, lamp and large chip declares a fixed width and never wraps', () => {
     for (const selector of ['.tab', '.lamp', '.chip-lg', '.chip-amber']) {
       const bodies = rulesFor(panelCss, selector).join('\n');

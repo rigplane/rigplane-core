@@ -915,6 +915,11 @@ raw_max = 255
 raw_min = 0
 raw_max = 255
 
+# MOR-1676: the AF level, written raw as ``AG0{level:03d};`` (below).
+[controls.af_level]
+raw_min = 0
+raw_max = 255
+
 [[freq_ranges.ranges]]
 label = "HF"
 start_hz = 100000
@@ -1214,6 +1219,12 @@ auto_speed_labels = { "4" = "FAST", "5" = "MID", "6" = "SLOW" }
 "2" = "MID"
 "3" = "SLOW"
 "4" = "AUTO"
+
+[break_in]
+# CAT ``BI`` (FTX-1 CAT manual FTX-1_CAT_OM_ENG_2508-C): P1 0 = OFF, 1 = ON.
+# SEMI/FULL is the menu item CW SETTING 15 (CW BK-IN TYPE), not a BI value.
+values = [0, 1]
+labels = { "0" = "OFF", "1" = "ON" }
 
 [commands]
 # ── Frequency / Mode ──

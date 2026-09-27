@@ -40,7 +40,7 @@ describe('the two frozen v3 declarations', () => {
   });
 
   it('fieldline clamps out "dense" (MOR-977 §4.4)', () => {
-    expect(fieldline.density).toEqual({ kind: 'clamped', supported: ['comfortable', 'compact'] });
+    expect(fieldline.density).toEqual({ kind: 'clamped', supported: ['comfortable', 'compact'], default: 'comfortable' });
   });
 
   it('fieldline declares itself layout-incompatible with dual-receiver-cockpit as a manifest fact, not a capability check', () => {
@@ -55,7 +55,7 @@ describe('the two frozen v3 declarations', () => {
   });
 
   it('studioline holds all three density steps (MOR-977 §4.2.3)', () => {
-    expect(studioline.density).toEqual({ kind: 'clamped', supported: ['comfortable', 'compact', 'dense'] });
+    expect(studioline.density).toEqual({ kind: 'clamped', supported: ['comfortable', 'compact', 'dense'], default: 'comfortable' });
   });
 });
 

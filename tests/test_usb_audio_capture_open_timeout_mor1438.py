@@ -43,6 +43,11 @@ _LOGGER_NAME = "rigplane.audio.usb_driver"
 # Tiny relative to the production default -- keeps this suite fast while
 # still exercising the real asyncio.wait()-based bound.
 _TEST_TIMEOUT_S = 0.05
+# Recovery-only bound (test_rx_open_recovers_on_next_subscriber, MOR-2743):
+# the file's point is that the retry SUCCEEDS after a bounded timeout, so
+# its bound only needs to stay bounded -- 0.05s was tight enough that a
+# loaded CI runner could not schedule the worker thread in time.
+_RECOVERY_TIMEOUT_S = 1.0
 
 
 def _fake_devices() -> list[AudioDeviceInfo]:
@@ -61,9 +66,10 @@ def _fake_devices() -> list[AudioDeviceInfo]:
 
 def _make_driver(
     backend: FakeAudioBackend | None = None,
+    capture_open_timeout: float = _TEST_TIMEOUT_S,
 ) -> tuple[UsbAudioDriver, FakeAudioBackend]:
     backend = backend or FakeAudioBackend(_fake_devices())
-    driver = UsbAudioDriver(backend=backend, capture_open_timeout=_TEST_TIMEOUT_S)
+    driver = UsbAudioDriver(backend=backend, capture_open_timeout=capture_open_timeout)
     return driver, backend
 
 
@@ -150,7 +156,7 @@ async def test_rx_open_recovers_on_next_subscriber(
     """A later subscriber (e.g. consent granted) must be able to open RX again."""
     caplog.set_level(logging.WARNING, logger=_LOGGER_NAME)
     gate = threading.Event()
-    driver, backend = _make_driver()
+    driver, backend = _make_driver(capture_open_timeout=_RECOVERY_TIMEOUT_S)
     backend.block_rx_open = gate.wait
 
     with pytest.raises(AudioCaptureOpenTimeoutError):

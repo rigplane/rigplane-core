@@ -30,7 +30,6 @@
   import SpectrumPanel from '../../components/spectrum/SpectrumPanel.svelte';
   import LeftSidebar from './LeftSidebar.svelte';
   import RightSidebar from './RightSidebar.svelte';
-  import VfoHeader from './VfoHeader.svelte';
   import type {
     InstrumentComposition, PanelChrome, PanelDragOwner, StandardTxLevelAvailability,
   } from '../wiring/instrument-composition';
@@ -42,7 +41,6 @@
   import type { RfFrontEndFiniteHandles } from '../../semantic/rf-front-end-instruments';
   import type { RxAudioInstrumentHandles } from '../../semantic/rx-audio-instruments';
   import type { FilterInstrumentHandles } from '../../semantic/filter-instruments';
-  import { ANTENNA_BLOCKED_LABEL } from '../../semantic/AntennaInstrumentHost.svelte';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import KeyboardHandler from './KeyboardHandler.svelte';
   import StatusBar from './StatusBar.svelte';
@@ -54,7 +52,7 @@
     vfoLayoutStyleVars,
     type VfoLayoutScaleOverrides,
   } from './vfo-layout-tokens';
-  import { toVfoProps, toVfoOpsProps } from '$lib/runtime/props/panel-props';
+  import { toVfoOpsProps } from '$lib/runtime/props/panel-props';
   import {
     getVfoHandlers, getKeyboardHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
@@ -249,9 +247,12 @@
   let linkFaultAttribute = $derived(linkFault === 'none' ? undefined : linkFault);
 
   // MOR-1313 (v3-rework slice S2) — PER-ZONE suppression, replacing the
-  // MOR-1065 `skinId === 'sdr-test'` boolean. This shell hosts two areas that
-  // have a semantic twin: the receiver deck (legacy `<VfoHeader>` vs the `vfo`
-  // surface) and the sidebars' `<TxPanel>` (vs the `rxTx` surface). Which one
+  // MOR-1065 `skinId === 'sdr-test'` boolean. The sidebars' `<TxPanel>` (vs
+  // the `rxTx` surface) keeps its semantic twin; the receiver deck's legacy
+  // `<VfoHeader>` twin was deleted (MOR-2728) — every layout mounting this
+  // shell declares `vfo`, pinned at the manifest level in
+  // `presentation/layouts/__tests__/forward-declaration-inventory.test.ts`.
+  // Which one
   // the semantic vertical owns is read off the ACTIVE layout manifest's zone
   // declarations: a surface some declared zone mounts renders semantically and
   // its legacy twin does NOT also render; a surface no zone declares keeps its
@@ -366,21 +367,18 @@
   // VfoHeader (issue #832) — a `$derived.by` digest plus two handler
   // functions that each called the runtime's typed-facade dispatcher for
   // 'set_scope_dual'/'switch_scope_receiver' — is deleted rather than
-  // migrated. `VfoHeader` already self-wires scope handling through its own
-  // `bindSemanticSurfaceHandlers().scopeControls` (the A07 idiom) and has
-  // ignored these exact legacy props since; see
-  // `vfo-header.isolated.test.ts`'s `VfoHeader source boundary` pin, which
-  // asserts VfoHeader's source never dereferences either optional prop.
-  // RadioLayout was the last production caller of that dispatcher; deleting
-  // this dead bridge (rather than re-pointing it at the binder for a prop
-  // VfoHeader still ignores) is what lets the dispatcher method itself
-  // delete from `frontend-runtime.ts` below.
+  // migrated. `VfoHeader` self-wired scope handling through its own
+  // `bindSemanticSurfaceHandlers().scopeControls` (the A07 idiom) and had
+  // ignored these exact legacy props since. RadioLayout was the last
+  // production caller of that dispatcher; deleting this dead bridge (rather
+  // than re-pointing it at the binder for a prop VfoHeader ignored) is what
+  // let the dispatcher method itself delete from `frontend-runtime.ts`.
+  // MOR-2728 later deleted VfoHeader and its undeclared-layout branch
+  // entirely.
   let keyboardConfig = $derived(getKeyboardConfig());
   let activeMode = $derived(radioState?.active === 'SUB' ? radioState?.sub?.mode : radioState?.main?.mode);
 
   // Derived props via state adapter
-  let mainVfo = $derived(toVfoProps(radioState, 'main'));
-  let subVfo = $derived(toVfoProps(radioState, 'sub'));
   let vfoOps = $derived(toVfoOpsProps(radioState, caps));
   let isLandscape = $state(false);
   let landscapeSpectrumDismissed = $state(false);
@@ -653,8 +651,9 @@
 
 <!--
   MOR-2425. The Standard face arranges the two persistent antenna seats itself
-  instead of mounting the grouped `AntennaSurface`. Its accessible blocked
-  explanation remains here too without becoming volatile panel text.
+  instead of mounting the grouped `AntennaSurface`. MOR-2691: no separate
+  blocked-reason text here — the reason lives on the disabled controls' own
+  `title`, the way a real radio leaves it.
 -->
 {#snippet antennaControlLayout()}
   {#if runtime.caps?.antennas === 1}
@@ -669,9 +668,6 @@
       {@render instruments.antennaInstruments.rxAnt(true)}
     </div>
   </div>{/if}
-  {#if runtime.caps?.antennas !== 1}<span class="sr-only" id={instruments.antennaLayout.blockedId} data-testid="antenna-blocked">
-    {instruments.antennaLayout.blocked.map((code) => ANTENNA_BLOCKED_LABEL[code]).join('; ')}
-  </span>{/if}
 {/snippet}
 
 {#snippet vfoOperationControls()}
@@ -871,25 +867,6 @@
   <section class="receiver-deck" bind:this={receiverDeckElement} style={receiverDeckStyle}>
     {#if semanticDeck}
       {@render semanticDeckContent(skinId === 'desktop-v2' ? 'standard' : 'semantic', true)}
-    {:else}
-      <VfoHeader
-        {mainVfo}
-        {subVfo}
-        layoutProfile={vfoLayoutProfile}
-        splitActive={vfoOps.splitActive}
-        dualWatchActive={vfoOps.dualWatch}
-        txVfo={vfoOps.txVfo}
-        onSwap={vfoHandlers.onSwap}
-        onEqual={vfoHandlers.onEqual}
-        onSplitToggle={vfoHandlers.onSplitToggle}
-        onDualWatchToggle={vfoHandlers.onDualWatchToggle}
-        onMainVfoClick={vfoHandlers.onMainVfoClick}
-        onSubVfoClick={vfoHandlers.onSubVfoClick}
-        onMainModeClick={vfoHandlers.onMainModeClick}
-        onMainFreqChange={vfoHandlers.onMainFreqChange}
-        onSubFreqChange={vfoHandlers.onSubFreqChange}
-        onSubModeClick={vfoHandlers.onSubModeClick}
-      />
     {/if}
   </section>
 
@@ -902,9 +879,9 @@
       {#if hasSpectrum()}
         <div class="spectrum-slot">
           <div class="spectrum-frame">
-            <!-- Desktop: VfoHeader bridge owns DUAL + MAIN/SUB (#832); hide
-                 the toolbar duplicate. Mobile/v1 layouts omit the prop so
-                 the toolbar retains them (#832 fallback).
+            <!-- Desktop: the semantic receiver deck owns DUAL + MAIN/SUB;
+                 hide the toolbar duplicate. Mobile/v1 layouts omit the prop
+                 so the toolbar retains them (#832 fallback).
                  `hideScopeControls` is the MOR-1369 (S6b-1) suppression
                  channel: reuses the SAME `declared` set as `LeftSidebar`/
                  `RightSidebar`/`StatusBar` above (S6-pre, MOR-1364) rather
@@ -962,7 +939,7 @@
         </CollapsiblePanel>
 
         <CollapsiblePanel title="WORKSPACE" panelId="desktop-workspace">
-          <WorkspaceSettingsPanel />
+          <WorkspaceSettingsPanel {skinId} />
           <WorkspaceImportExport />
         </CollapsiblePanel>
 

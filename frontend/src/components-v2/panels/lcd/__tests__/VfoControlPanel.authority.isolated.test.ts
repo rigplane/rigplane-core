@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import { readFileSync } from 'node:fs';
 import { keyBlockedReasons, type KeyBlockedReason } from '../../../../semantic/rx-tx-surface';
+import { toVfoControlProps } from '../../../../lib/runtime/props/panel-props';
+import type { Capabilities } from '../../../../lib/types/capabilities';
 
 const bindings = vi.hoisted(() => ({
   vfo: { onSwap: vi.fn(), onEqual: vi.fn(), onDualWatchToggle: vi.fn(), onSplitToggle: vi.fn() },
@@ -12,7 +14,13 @@ const bindings = vi.hoisted(() => ({
 }));
 
 const props = vi.hoisted(() => ({
-  vfo: { hasDualRx: true, hasSplit: true, hasRit: true, hasTuner: true, isCwMode: true, hasCw: true, hasBreakIn: true, breakInMode: 0 },
+  vfo: {
+    hasDualRx: true, hasSplit: true, hasRit: true, hasTuner: true, isCwMode: true,
+    hasCw: true, hasBreakIn: true, breakInMode: 0 as number | null,
+    breakInChoices: [
+      { value: 0, label: 'OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' },
+    ] as { value: number; label: string }[],
+  },
   ritXit: { xitActive: false },
   ops: { dualWatch: false, splitActive: false },
 }));
@@ -66,8 +74,16 @@ const blockedCases: readonly Readonly<{
   { name: 'radio TX unknown', expected: 'rf-state-unknown', view: allowed.view, tx: { ...allowed.tx, radioTx: 'unknown' } as typeof allowed.tx },
 ];
 
+/* Accessible name of a node: everything except `aria-hidden` subtrees.
+   The BK key's hidden sizer (MOR-2729) must not leak into it. */
+function accessibleText(node: Element): string {
+  const clone = node.cloneNode(true) as Element;
+  for (const hidden of Array.from(clone.querySelectorAll('[aria-hidden="true"]'))) hidden.remove();
+  return clone.textContent?.trim() ?? '';
+}
+
 function button(label: string): HTMLButtonElement {
-  const found = Array.from(target.querySelectorAll('button')).find((node) => node.textContent?.trim() === label);
+  const found = Array.from(target.querySelectorAll('button')).find((node) => accessibleText(node) === label);
   if (!found) throw new Error(`missing ${label}`);
   return found as HTMLButtonElement;
 }
@@ -111,7 +127,7 @@ describe('VfoControlPanel authority boundary', () => {
 
   it('keeps callback identity, button order, and break-in parameters exact', () => {
     mountPanel();
-    expect(Array.from(target.querySelectorAll('button')).map((node) => node.textContent?.trim()))
+    expect(Array.from(target.querySelectorAll('button')).map((node) => accessibleText(node)))
       .toEqual(['A↔B', 'A=B', 'DW', 'SPLIT', 'XIT', 'CLR', 'TUNE', 'BK-OFF']);
     button('A↔B').click(); button('A=B').click(); button('DW').click(); button('SPLIT').click();
     button('XIT').click(); button('CLR').click(); button('BK-OFF').click();
@@ -147,6 +163,134 @@ describe('VfoControlPanel authority boundary', () => {
     button('TUNE').click();
     expect(bindings.read).toHaveBeenCalledOnce();
     expect(bindings.tx.onAtuTune).not.toHaveBeenCalled();
+  });
+
+  /* MOR-2729 — the LCD break-in key cycles exactly the profile's published
+     choices. On the FTX-1 ([0=OFF, 1=ON]) it can always get BACK to OFF,
+     which the old hard-coded 0/1/2 cycle could not (stuck ON). */
+  const legacyChoices: { value: number; label: string }[] = [
+    { value: 0, label: 'OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' },
+  ];
+  function cycleCase(steps: readonly (readonly [label: string, mode: number, active: boolean])[]):
+    void {
+    for (const [label, mode, active] of steps) {
+      props.vfo.breakInMode = mode;
+      mountPanel();
+      try {
+        expect(button(label).classList.contains('active')).toBe(active);
+        button(label).click();
+        const values = [...props.vfo.breakInChoices.map((c: { value: number }) => c.value)];
+        const next = values[(values.indexOf(mode) + 1) % values.length];
+        expect(bindings.cw.onBreakInModeChange).toHaveBeenCalledWith(next);
+      } finally {
+        if (component) {
+          unmount(component);
+          component = undefined;
+        }
+      }
+    }
+  }
+
+  it('FTX-1 cycle: BK-OFF → BK-ON → BK-OFF', () => {
+    try {
+      props.vfo.breakInChoices = [{ value: 0, label: 'OFF' }, { value: 1, label: 'ON' }];
+      cycleCase([['BK-OFF', 0, false], ['BK-ON', 1, true]]);
+    } finally {
+      props.vfo.breakInChoices = legacyChoices;
+      props.vfo.breakInMode = 0;
+    }
+  });
+
+  it('IC-7300 cycle: BK-OFF → BK-SEMI → BK-FULL → BK-OFF', () => {
+    cycleCase([['BK-OFF', 0, false], ['BK-SEMI', 1, true], ['BK-FULL', 2, true]]);
+  });
+
+  it('an empty published list (X6100, X6200) renders no break-in key', () => {
+    try {
+      props.vfo.breakInChoices = [];
+      mountPanel();
+      const names = Array.from(target.querySelectorAll('button')).map((b) => b.textContent?.trim());
+      for (const label of ['OFF', 'ON', 'SEMI', 'FULL', 'BK', 'BK-OFF', 'BK-ON', 'BK-SEMI', 'BK-FULL'])
+        expect(names).not.toContain(label);
+    } finally {
+      props.vfo.breakInChoices = legacyChoices;
+    }
+  });
+
+  // Item 1 (review 2026-09-27): no LEGACY_BREAK_IN_CHOICES fallback — against
+  // the REAL toVfoControlProps. Absent means an empty list means no BK key.
+  it('a capabilities payload with no breakInChoices field gets no break-in choices (MOR-2729)', () => {
+    const caps = { capabilities: [] } as unknown as Capabilities;
+    expect(toVfoControlProps(null, caps).breakInChoices).toEqual([]);
+  });
+
+  /* Item 4 (review 2026-09-27): while break-in is unread the BK key is
+     disabled and unlit and sends nothing — but its NAME ("BK") stays, in
+     text and accessible name alike; once read it cycles as before. */
+  it('while break-in is unread, the BK key shows exactly "BK", stays disabled and unlit, and sends nothing (MOR-2729)', () => {
+    try {
+      props.vfo.breakInMode = null;
+      mountPanel();
+      const bk = button('BK');
+      expect(bk.disabled).toBe(true);
+      expect(bk.classList.contains('active')).toBe(false);
+      // the visible text is the accessible name — no separate aria-label
+      // may compensate for an empty label (review 2026-09-27).
+      expect(bk.getAttribute('aria-label') ?? bk.textContent?.trim()).toContain('BK');
+      bk.click();
+      expect(bindings.cw.onBreakInModeChange).not.toHaveBeenCalled();
+    } finally {
+      props.vfo.breakInMode = 0;
+    }
+  });
+
+  /* MOR-2729 (GLM-5.3 delta review on fb8db37a): a `min-width: 7ch` rule
+     could not reserve the widest BK text — with border-box the ch reserve
+     also had to absorb padding, border, and letter-spacing, so the first
+     reading grew the key by 15–22 px. The reserve is a hidden sizer:
+     one aria-hidden element holding `BK` plus `BK-<label>` for every
+     published choice, stacked with the visible span in one grid cell, so
+     the key is always as wide as the widest possible text. */
+  function sizerTexts(bk: HTMLElement): string[] {
+    const sizer = bk.querySelector('[aria-hidden="true"]');
+    expect(sizer, 'a hidden sizer span must exist inside the BK key').not.toBeNull();
+    return Array.from(sizer!.querySelectorAll('span')).map((node) => node.textContent ?? '');
+  }
+
+  it('the BK key carries a hidden sizer holding every possible text (MOR-2729)', () => {
+    try {
+      props.vfo.breakInChoices = [{ value: 0, label: 'OFF' }, { value: 1, label: 'ON' }];
+      mountPanel();
+      const ftx1 = target.querySelector('.lcd-btn-bk') as HTMLElement;
+      expect(sizerTexts(ftx1).sort()).toEqual(['BK', 'BK-OFF', 'BK-ON']);
+      if (component == null) throw new Error('component must be mounted before unmount');
+      unmount(component);
+      component = undefined;
+      props.vfo.breakInChoices = [
+        { value: 0, label: 'OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' },
+      ];
+      mountPanel();
+      const ic7300 = target.querySelector('.lcd-btn-bk') as HTMLElement;
+      expect(sizerTexts(ic7300).sort()).toEqual(['BK', 'BK-FULL', 'BK-OFF', 'BK-SEMI']);
+    } finally {
+      props.vfo.breakInChoices = legacyChoices;
+    }
+  });
+
+  it('the accessible name is exactly the visible text — no sizer text leaks (MOR-2729)', () => {
+    try {
+      props.vfo.breakInMode = null;
+      mountPanel();
+      expect(accessibleText(target.querySelector('.lcd-btn-bk') as Element)).toBe('BK');
+      if (component == null) throw new Error('component must be mounted before unmount');
+      unmount(component);
+      component = undefined;
+      props.vfo.breakInMode = 2;
+      mountPanel();
+      expect(accessibleText(target.querySelector('.lcd-btn-bk') as Element)).toBe('BK-FULL');
+    } finally {
+      props.vfo.breakInMode = 0;
+    }
   });
 
   it.each(['generation', 'capability', 'availability', 'impossible physical SUB'])

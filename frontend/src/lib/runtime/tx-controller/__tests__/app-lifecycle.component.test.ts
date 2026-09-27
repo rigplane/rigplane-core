@@ -6,8 +6,6 @@ const h = vi.hoisted(() => ({
   registerBarrier: vi.fn(),
   bootstrap: vi.fn(),
   bootstrapCleanup: vi.fn(),
-  initBattery: vi.fn(),
-  batteryCleanup: vi.fn(),
   initMedia: vi.fn(),
   destroyMedia: vi.fn(),
   resolveSkin: vi.fn(),
@@ -42,7 +40,6 @@ vi.mock('../../../../skins/registry', () => ({
 vi.mock('../../../../components-v2/wiring/SemanticRadioSurfaces.svelte', async () => ({
   default: (await import('../../../../components-v2/layout/__tests__/SpectrumPanelStub.svelte')).default,
 }));
-vi.mock('../../../../lib/utils/battery', () => ({ initBatteryMonitor: h.initBattery }));
 vi.mock('../../../../lib/media/media-session', () => ({ initMediaSession: h.initMedia, destroyMediaSession: h.destroyMedia }));
 vi.mock('../../../../lib/runtime/frontend-runtime', async () => {
   const { createSubscriber } = await import('svelte/reactivity');
@@ -97,8 +94,6 @@ beforeEach(() => {
   h.resolveSkin.mockImplementation(({ isMobile }: { isMobile: boolean }) => isMobile ? 'mobile' : 'desktop-v2');
   h.bootstrapCleanup.mockImplementation(() => { h.order.push('runtime'); });
   h.bootstrap.mockResolvedValue(h.bootstrapCleanup);
-  h.batteryCleanup.mockImplementation(() => { h.order.push('battery'); });
-  h.initBattery.mockResolvedValue(h.batteryCleanup);
   h.destroyMedia.mockImplementation(() => { h.order.push('media'); });
   h.registerBarrier.mockImplementation((barrier: () => Promise<void>) => {
     h.barrier = barrier;
@@ -275,18 +270,5 @@ describe('App bootstrap rejection lifecycle (MOR-1168)', () => {
     // already-armed retry timer exactly once when unmount races it.
     expect(clearTimeoutSpy).toHaveBeenCalledOnce();
     expect(clearTimeoutSpy).toHaveBeenCalledWith(armedTimer);
-  });
-});
-
-// MOR-1409 A10 — causal RED for the retirement of the battery-to-polling
-// hook. On exact base, mount subscribes to the battery monitor solely to
-// feed the (already-inert since A09b) polling-cadence multiplier; this pins
-// its removal.
-describe('App battery-monitor subscription removal (A10)', () => {
-  it('mounts without subscribing to the battery monitor', async () => {
-    const component = mountApp();
-    await settle();
-    expect(h.initBattery).not.toHaveBeenCalled();
-    unmount(component);
   });
 });

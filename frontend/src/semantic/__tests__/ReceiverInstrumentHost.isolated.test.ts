@@ -399,9 +399,9 @@ describe('ReceiverInstrumentHost', () => {
     expect(fills()).toBe(0); expect(meter().textContent).toContain('S1');
     publisher.emit(publication({ meterKnown: false, generation: 3 })); flushSync();
     // MOR-2509: the unknown reading renders the empty unlit face — the
-    // state lives in the accessible label, not in a placeholder glyph.
+    // accessible label carries the bare meter name, not a placeholder glyph.
     expect(fills()).toBe(0);
-    expect(meter().querySelector('svg')!.getAttribute('aria-label')).toContain('unknown');
+    expect(meter().querySelector('svg')!.getAttribute('aria-label')).toBe('S meter');
     expect(meter().textContent).not.toContain('unknown');
     expect(meter().textContent).not.toContain('?');
     motion.reduced(true); expect(motion.frames).toBe(0);
@@ -518,15 +518,16 @@ describe('ReceiverInstrumentHost', () => {
     const root = mountFixture(publisher);
     const meter = () => root.querySelector<HTMLElement>('[data-meter-owner="MAIN"]')!;
     const svg = () => meter().querySelector('svg')!;
-    // MOR-2509: the v7 face draws no S scale labels and no peak marker for
-    // a raw domain, and no motion at all for an unprojectable one — the
-    // unlit track itself stays, as it does for a zero reading.
-    expect(svg().getAttribute('aria-label')).toContain('raw, uncalibrated');
+    // MOR-2509 + MOR-2705 part 4a: the v7 face draws no S scale labels and
+    // no peak marker for a raw domain, and no number and no word — the
+    // accessible label is the bare meter name. The unlit track itself
+    // stays, as it does for a zero reading.
+    expect(svg().getAttribute('aria-label')).toBe('S meter');
     expect(svg().querySelectorAll('[data-scale-label]')).toHaveLength(0);
     expect(svg().querySelector('[data-meter-peak]')?.getAttribute('visibility')).toBe('hidden');
 
     publisher.emit(publication({ mainS: 53, meterQuality: [] })); flushSync();
-    expect(svg().getAttribute('aria-label')).toContain('unit unknown');
+    expect(svg().getAttribute('aria-label')).toBe('S meter');
     expect(svg().querySelectorAll('[data-scale-label]')).toHaveLength(0);
     expect(svg().querySelector('[data-meter-peak]')?.getAttribute('visibility')).toBe('hidden');
     const unprojectableTrack = svg().querySelector('[data-meter-track]')!;
@@ -552,6 +553,64 @@ describe('ReceiverInstrumentHost', () => {
     // displayed history — the extent does not step down with the reading.
     expect(Number(svg().querySelector('[data-meter-fill]')!.getAttribute('x2')))
       .toBeCloseTo(retainedFill, 6);
+  });
+
+  // MOR-1331: the hosted digit clamp reads the LIVE band envelope. The base
+  // caps carry `freqRanges: []`, so the band group is absent and the clamp
+  // stays wide open; one emission at 14.250 MHz must still leave as +1 Hz.
+  it('keeps the legacy wide clamp while the band group is absent', () => {
+    const publisher = new Publisher(publication()); const tune = vi.fn();
+    const root = mountFixture(publisher, { onTuneFrequency: tune });
+    const readout = root.querySelector<HTMLElement>('[data-frequency-owner="MAIN"] [data-alternate-frequency-readout]')!;
+    readout.querySelector<HTMLButtonElement>('[data-multiplier="1"]')!.click();
+    readout.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    expect(tune).toHaveBeenCalledExactlyOnceWith('MAIN', 14_250_001);
+  });
+
+  // MOR-2688 S4a literal pin: the frequency the readout shows goes through
+  // the display observation rule (`observationValue` inside
+  // `displayFrequency`): a STALE `main.freqHz` observation (the unslotted
+  // `main_sub` scheme's display path) keeps its value (R29), so the
+  // readout's source is 'display' with the observed digits; a not-observed
+  // display leaves the digits unlit — never a fallback to an invented
+  // value. Red under a mutation of `observationValue` that drops current
+  // or stale.
+  it('shows the observed frequency through a current or stale display observation, and unlit digits for a not-observed one', () => {
+    const current = publication();
+    const currentStatuses = current.state!.fieldStatus!;
+    currentStatuses['main.freqHz'] = {
+      ...currentStatuses['main.freqHz']!, freshness: 'fresh',
+    };
+    const currentRoot = mountFixture(new Publisher(current));
+    const currentReadout = currentRoot.querySelector<HTMLElement>(
+      '[data-frequency-owner="MAIN"] [data-alternate-frequency-readout]',
+    )!;
+    expect(currentReadout.dataset.source).toBe('display');
+    expect(currentReadout.textContent).toBe('14250000');
+
+    const stale = publication();
+    const staleStatuses = stale.state!.fieldStatus!;
+    staleStatuses['main.freqHz'] = {
+      ...staleStatuses['main.freqHz']!, freshness: 'stale',
+    };
+    const root = mountFixture(new Publisher(stale));
+    const readout = root.querySelector<HTMLElement>(
+      '[data-frequency-owner="MAIN"] [data-alternate-frequency-readout]',
+    )!;
+    expect(readout.dataset.source).toBe('display');
+    expect(readout.textContent).toBe('14250000');
+
+    const notObserved = publication();
+    const unobservedStatuses = notObserved.state!.fieldStatus!;
+    unobservedStatuses['main.freqHz'] = {
+      ...unobservedStatuses['main.freqHz']!, observed: false,
+    };
+    const otherRoot = mountFixture(new Publisher(notObserved));
+    const otherReadout = otherRoot.querySelector<HTMLElement>(
+      '[data-frequency-owner="MAIN"] [data-alternate-frequency-readout]',
+    )!;
+    expect(otherReadout.dataset.source).toBe('display');
+    expect(otherReadout.textContent).toBe('');
   });
 
   it('requires the synchronous publisher and owns no fallback clocks or continuity comparison', () => {

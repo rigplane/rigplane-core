@@ -5,9 +5,12 @@ import { proxy } from 'svelte/internal/client';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
-import { ANTENNA_BLOCKED_LABEL,
+import {
   type AntennaAuthorityPublication as Publication, type AntennaInstrumentHandles,
 } from '../AntennaInstrumentHost.svelte';
+import type {
+  AtuStatus, RadioViewModel, TxAuxField,
+} from '../radio-view-model';
 import type { TxAuthoritySnapshot } from '../rx-tx-surface';
 const seats = vi.hoisted(() => ({ destroy: [] as ReturnType<typeof vi.fn>[] }));
 vi.mock('../../primitives/control-instruments/control-instrument-renderer.svelte', async (original) => {
@@ -60,7 +63,8 @@ function render(external = true) {
       return () => button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
   return { props, stop, onSelectPort, onToggleRxAnt, captures, pair,
-    publish(next: Publication) { publication = next; subscriber(next); props.view = toRadioViewModel(next.state, next.caps); },
+    publish(next: Publication) { publication = next; subscriber(next);
+      props.view = next.view ?? toRadioViewModel(next.state, next.caps); },
     tx(next: TxAuthoritySnapshot) { tx = next; }, source: () => publication,
   };
 }
@@ -104,22 +108,24 @@ describe('persistent antenna handles', () => {
     expect(r.onSelectPort).toHaveBeenCalledExactlyOnceWith(2); expect(r.onToggleRxAnt).toHaveBeenCalledOnce();
     expect(r.captures.at(-1)).toBe(handles); expect(target.querySelector('[data-testid="antenna-surface"]')).toBeNull();
   });
-  it('renders blocked reasons for an independent arrangement, keyed to each seat by aria-describedby', () => {
+  // MOR-2691: the removed list is not an aria target for the seats anymore;
+  // the blocked reason is the disabled control's own `title`, as a catalog
+  // sentence, on every publication and on none.
+  it('moves the blocked reason to the seats own title, never to a described element', () => {
     const r = render(false); r.props.arrangement = 'independent'; flushSync();
-    const list = target.querySelector('[data-testid="independent-blocked"]')!;
-    const port = target.querySelector('[data-testid="antenna-port-2"]')!;
-    const toggle = target.querySelector('[data-testid="antenna-rx-toggle"]')!;
-    expect(list.id).not.toBe(''); expect(port.getAttribute('aria-describedby')).toBe(list.id);
-    expect(toggle.getAttribute('aria-describedby')).toBe(list.id);
-    expect(list.children).toHaveLength(0);
+    const port = target.querySelector<HTMLButtonElement>('[data-testid="antenna-port-2"]')!;
+    const toggle = target.querySelector<HTMLButtonElement>('[data-testid="antenna-rx-toggle"]')!;
+    expect(target.querySelector('[data-testid="independent-blocked"]')).toBeNull();
+    expect(port.getAttribute('aria-describedby')).toBeNull();
+    expect(toggle.getAttribute('aria-describedby')).toBeNull();
+    expect(port.title).toBe('');
     const p = source(); p.state!.tunerStatus = 2;
     p.state!.fieldStatus!.tunerStatus = { ...p.state!.fieldStatus!.tunerStatus!, freshness: 'fresh', observed: true };
     r.publish(p); flushSync();
-    expect(list.children).toHaveLength(1);
-    expect(list.querySelector('[data-reason="tuner-not-ready"]')?.textContent)
-      .toBe(ANTENNA_BLOCKED_LABEL['tuner-not-ready']);
+    expect(port.title).toBe('Waiting for the tuner to confirm it is idle');
+    expect(toggle.title).toBe('Waiting for the tuner to confirm it is idle');
     r.publish(source()); flushSync();
-    expect(list.children).toHaveLength(0);
+    expect(port.title).toBe('');
   });
   it('admits an unknown absolute destination but refuses unknown relative RX and unoffered ports', () => {
     const r = render(); const p = source(); p.state!.txAntenna = undefined; r.publish(p); flushSync();
@@ -165,5 +171,30 @@ describe('persistent antenna handles', () => {
     seats.destroy.forEach(destroy => expect(destroy).toHaveBeenCalledOnce());
     r.publish(source()); invoke(last); expect(r.onSelectPort).toHaveBeenCalledOnce(); expect(r.onToggleRxAnt).toHaveBeenCalledOnce();
     expect(target.querySelector('button')).toBeNull();
+  });
+  // MOR-2704 G2 safety-adjacent pin: the antenna block (`tunerIdle`) keeps
+  // a read-but-not-operational tuner from letting the switch run. The view
+  // model is hand-built (through the adapter the tuner becomes UNREAD, so
+  // the state is not reachable there — radio-view-model-adapter's
+  // `txAuxField` forces `reading: unknown` when `operational` is false), so
+  // the tuner's KNOWN idle reading is imposed directly; the block must then
+  // come from the gate's `operational` check alone. The mutation mini pins
+  // this red when that check is dropped.
+  it('blocks the switch while the tuner is read but not operational, on the native fallback', () => {
+    const r = render(false); r.props.arrangement = 'independent'; flushSync();
+    const base = toRadioViewModel(source().state, source().caps)!;
+    const atu: TxAuxField<AtuStatus> = {
+      reading: { status: 'known', value: 'off' },
+      availability: { structural: true, operational: false },
+    };
+    const view = { ...base, txAux: { ...base.txAux!, atu } } as RadioViewModel;
+    r.publish({ ...source(), view }); flushSync();
+    const port = target.querySelector<HTMLButtonElement>('[data-testid="antenna-port-2"]')!;
+    const toggle = target.querySelector<HTMLButtonElement>('[data-testid="antenna-rx-toggle"]')!;
+    expect(port.disabled).toBe(true); expect(toggle.disabled).toBe(true);
+    expect(port.title).toBe('Waiting for the tuner to confirm it is idle');
+    expect(toggle.title).toBe('Waiting for the tuner to confirm it is idle');
+    invoke(r.pair());
+    expect(r.onSelectPort).not.toHaveBeenCalled(); expect(r.onToggleRxAnt).not.toHaveBeenCalled();
   });
 });

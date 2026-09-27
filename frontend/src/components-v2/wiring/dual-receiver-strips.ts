@@ -137,3 +137,33 @@ export function isActiveStrip(view: RadioViewModel, receiver: ReceiverId): boole
 export function isOperationalStrip(view: RadioViewModel, receiver: ReceiverId): boolean {
   return !view.disabledReasons.some((reason) => reason.field === `receiver.${receiver}`);
 }
+
+/**
+ * MOR-2704 G5b: the receiver a receiver-scoped tune intent (set_freq and
+ * friends) would write — `0` for MAIN, `1` for SUB — or `null` when the
+ * target cannot be named fail-closed. `null` when the view model is absent,
+ * the active receiver was never observed, the active receiver is
+ * `capability-unavailable` (`receiver.<ID>` disabledReason), the receiver
+ * does not have EXACTLY one active VFO, that VFO's frequency is unknown, or
+ * its slot is not one a tune can address (slotted, unslotted, or the
+ * selected side of a relative pair). Formerly two byte-identical local
+ * copies in AmberCockpit.svelte and EiBiBrowser.svelte.
+ */
+export function activeTuneReceiver(view: RadioViewModel | null): 0 | 1 | null {
+  if (!view || view.activeReceiver.status !== 'known') return null;
+  const receiver = view.activeReceiver.receiver;
+  if (view.disabledReasons.some(
+    ({ field, code }) => field === `receiver.${receiver}`
+      && code === 'capability-unavailable',
+  )) return null;
+  const activeVfos = view.vfos.filter(
+    (vfo) => vfo.receiver === receiver && vfo.isActive,
+  );
+  if (activeVfos.length !== 1) return null;
+  const activeVfo = activeVfos[0];
+  if (!activeVfo || activeVfo.frequencyHz === null) return null;
+  const { slot } = activeVfo;
+  if (!(slot.kind === 'slotted' || slot.kind === 'unslotted'
+    || (slot.kind === 'relative' && slot.role === 'selected'))) return null;
+  return receiver === 'MAIN' ? 0 : 1;
+}

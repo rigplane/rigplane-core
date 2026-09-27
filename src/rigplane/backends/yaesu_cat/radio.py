@@ -51,7 +51,7 @@ if TYPE_CHECKING:
     from ...audio.session import AudioSession
     from ...audio.usb_driver import UsbAudioDriver
     from ...audio_bus import AudioBus
-    from ...core.state_pipeline_contracts import Observation
+    from ...core.state_pipeline_contracts import FieldPath, Observation
     from ...profiles import RadioProfile
     from ...profiles.rig_loader import RigConfig
     from ...types import BandStackRegister, MemoryChannel
@@ -229,6 +229,13 @@ class YaesuCatRadio:
         # adapter is rebuilt every cycle, the radio is not), so a permanently
         # unsupported field warns once and then demotes repeats to DEBUG.
         self._poll_warned_fields: set[str] = set()
+
+        # MOR-2757: consecutive unanswered reads per safety-critical path,
+        # kept by the observation adapter (rebuilt every poll cycle) across
+        # cycles — the same "state lives on the radio" idiom as
+        # ``_poll_warned_fields`` above. On the 3rd unanswered read the
+        # adapter records the declared-command defect that ends startup.
+        self._critical_read_timeouts: dict[FieldPath, int] = {}
 
         # MOR-2632: the last nonzero NB/NR level seen per receiver, remembered
         # when turning the function off. Lives only on this object: a radio
@@ -2365,13 +2372,21 @@ class YaesuCatRadio:
     async def set_break_in(self, mode: BreakInMode | int | bool) -> None:
         """Set CW break-in mode.
 
-        FTX-1 CAT supports binary on/off only — :attr:`BreakInMode.OFF`
-        maps to ``"0"`` and any non-OFF value (``SEMI``/``FULL``) maps
-        to ``"1"``. ``bool`` values remain accepted for backward
-        compatibility (``False``/``True`` → ``OFF``/``SEMI``).
+        ``mode`` must be one of the profile's declared ``[break_in] values``
+        (FTX-1: 0 = OFF, 1 = ON); ``False``/``True`` are 0/1.
+
+        Raises:
+            CommandError: If ``mode`` is outside the declared domain, or the
+                profile declares none (MOR-2729). Nothing is written.
         """
-        on = BreakInMode(int(mode)) != BreakInMode.OFF
-        await self._write("set_break_in", state="1" if on else "0")
+        mode_int = int(mode)
+        break_in_modes = self._config.break_in_modes
+        if break_in_modes is None or mode_int not in break_in_modes:
+            raise CommandError(
+                f"Break-in mode must be one of {sorted(break_in_modes or ())} "
+                f"for {self._config.model!r}, got {mode_int}"
+            )
+        await self._write("set_break_in", state=str(mode_int))
 
     async def read_cw_spot(self) -> bool:
         """Read CW spot tone state without mutating legacy state."""

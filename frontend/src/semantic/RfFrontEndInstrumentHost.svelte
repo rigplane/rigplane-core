@@ -38,7 +38,7 @@
     HBarIssuedStatusPresentation,
     HBarIssuedStatusSnapshot,
   } from '../components-v2/controls/value-control/skin';
-  import { bindChoiceInstrument, bindToggleInstrument } from '../primitives/control-instruments/control-instrument-behavior';
+  import { bindChoiceInstrument, bindToggleInstrument, usable } from '../primitives/control-instruments/control-instrument-behavior';
   import ControlInstrumentRendererHost from '../primitives/control-instruments/ControlInstrumentRendererHost.svelte';
   import {
     createChoiceRendererSeat, createToggleRendererSeat,
@@ -58,6 +58,7 @@
     type ContinuousScalarView,
   } from '../primitives/scalar/continuous-scalar.svelte';
   import { formatKnownLevel } from './format-level';
+  import { readingText, valueText } from '../primitives/reading-text';
   import type { RadioViewModel, RfFrontEndField, DisabledReason, DisabledReasonCode } from './radio-view-model';
   import {
     DISABLED_REASON_LABEL,
@@ -121,10 +122,6 @@
 
   const safeGeneration = (value: unknown): value is number =>
     typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-  const usable = (field: RfFrontEndField<unknown> | undefined): boolean =>
-    field?.availability.structural === true
-    && field.availability.operational
-    && field.reading.status === 'known';
   function formOf(view: RadioViewModel, requested: RfSqlControlModel): RfSqlControlModel {
     return requested === 'combined'
       && view.rfFrontEnd?.rfGain.availability.structural === true
@@ -397,16 +394,6 @@
   const feedbackIntegration = (): string => presentation.rfSqlFeedback === undefined
     ? 'compatibility-reading'
     : presentation.rfSqlFeedback === null ? 'authority-unresolved' : 'command-feedback';
-  /** MOR-2527: an unread level renders NO value text — an unlit slot, never
-   *  a `?` stand-in. The heading labels stay, and each `<output>` keeps its
-   *  box reserved (`display: inline-block; min-width: 4ch` on
-   *  `.rf-front-end-reading output` below — the widest value is `100%`), so
-   *  the SQL label cannot move when a value arrives.
-   *  MOR-1676 part R: on the raw lattice the value is already the raw int —
-   *  the text is the percentage of the published raw range, same unit as
-   *  today's normalized path. */
-  const valueText = (field: RfFrontEndLevelField, value: number | null): string => value === null
-    ? '' : rawToPercent(field, value);
   function pairLaneValue(view: Readonly<ContinuousPairView>, lane: DualParamLane): number | null {
     const laneView = view.lanes[lane];
     return view.draft?.[lane]
@@ -542,8 +529,8 @@
     aria-busy={view.busy}
   >
     <div class="rf-front-end-heading">
-      <span class="rf-front-end-reading">RF <output data-testid="rf-front-end-rf-sql-rf-value">{valueText('rfGain', pairLaneValue(view, 'rf'))}</output></span>
-      <span class="rf-front-end-reading">SQL <output data-testid="rf-front-end-rf-sql-sql-value">{valueText('squelch', pairLaneValue(view, 'sql'))}</output></span>
+      <span class="rf-front-end-reading">RF <output data-testid="rf-front-end-rf-sql-rf-value">{valueText(pairLaneValue(view, 'rf'), (v) => rawToPercent('rfGain', v))}</output></span>
+      <span class="rf-front-end-reading">SQL <output data-testid="rf-front-end-rf-sql-sql-value">{valueText(pairLaneValue(view, 'sql'), (v) => rawToPercent('squelch', v))}</output></span>
     </div>
     <div class="rf-front-end-slider">
       {#key rendererEpoch}
@@ -576,7 +563,7 @@
       aria-busy={view.busy}
     >
       <div class="rf-front-end-heading">
-        <span class="rf-front-end-reading">{label} <output>{valueText(field, scalarValue(view))}</output></span>
+        <span class="rf-front-end-reading">{label} <output>{valueText(scalarValue(view), (v) => rawToPercent(field, v))}</output></span>
       </div>
       <div class="rf-front-end-slider">
         {#key rendererEpoch}
@@ -585,7 +572,7 @@
             binding={binding} {label} renderer="hbar" showLabel={false} showValue={false} compact={true}
             variant={hardware ? 'hardware-illuminated' : 'modern'}
             accentColor={hardware ? 'var(--v2-accent-cyan-alt)' : 'var(--v2-accent-cyan)'}
-            displayFn={(value) => valueText(field, value)} issuedStatusPresentation={scalarIssuedStatuses[field]}
+            displayFn={(value) => valueText(value, (v) => rawToPercent(field, v))} issuedStatusPresentation={scalarIssuedStatuses[field]}
           />
         {/key}
       </div>
@@ -641,7 +628,7 @@
                  a known reading renders, EMPTY — no value text and no extra
                  grid row, so the row's element set, row count and height are
                  identical unread vs known. -->
-            <output class="sr-only" aria-label="PRE value" data-testid="rf-front-end-preamp-value">{rf.preamp.reading.status === 'known' ? preampChoiceText(rf.preamp.reading.value) : ''}</output>
+            <output class="sr-only" aria-label="PRE value" data-testid="rf-front-end-preamp-value">{readingText(rf.preamp, preampChoiceText)}</output>
           {/if}
         {/if}
         {#if preampDisabledReason()}
@@ -704,7 +691,7 @@
                  a known reading renders, EMPTY — no value text and no extra
                  grid row, so the row's element set, row count and height are
                  identical unread vs known. -->
-            <output class="sr-only" aria-label="ATT value" data-testid="rf-front-end-attenuator-value">{rf.attenuator.reading.status === 'known' ? attenuatorChoiceText(rf.attenuator.reading.value) : ''}</output>
+            <output class="sr-only" aria-label="ATT value" data-testid="rf-front-end-attenuator-value">{readingText(rf.attenuator, attenuatorChoiceText)}</output>
           {/if}
         {/if}
         {#if attenuatorDisabledReason()}

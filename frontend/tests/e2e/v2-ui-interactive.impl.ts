@@ -1362,18 +1362,18 @@ test('FTX-1 exact RIT lattice in Chromium', async ({ page }) => {
 
   await installWebSocketInterceptor(page);
   await page.goto(PAGE_URL ?? '', { waitUntil: 'domcontentloaded' });
-  const slider = page.locator('[data-testid="ritxit-offset"] input');
+  const slider = page.locator('[data-testid="ritxit-offset"]').getByRole('slider');
   await expect(slider).toBeVisible();
-  await expect(slider).toBeEnabled();
-  await expect(slider).toHaveAttribute('min', '-9999');
-  await expect(slider).toHaveAttribute('max', '9999');
-  await expect(slider).toHaveAttribute('step', '1');
-  await expect(slider).toHaveValue('0');
+  await expect(slider).toHaveAttribute('aria-disabled', 'false');
+  await expect(slider).toHaveAttribute('aria-valuemin', '-9999');
+  await expect(slider).toHaveAttribute('aria-valuemax', '9999');
+  await expect(slider).toHaveAttribute('aria-valuenow', '0');
   const startupCommands = await drainCommands(page);
   expect(startupCommands.filter((command) => command.name === 'set_rit_frequency'))
     .toHaveLength(0);
 
-  const sequence = [50, 0, -50, 0, -9999, 9999];
+  // MOR-2727: one arrow press is one step of the 1 Hz lattice.
+  const sequence = [1, 0, -1, 0, -9999, 9999];
   const keys = ['ArrowRight', 'ArrowLeft', 'ArrowLeft', 'ArrowRight', 'Home', 'End'];
   try {
     for (const setup of [
@@ -1381,12 +1381,12 @@ test('FTX-1 exact RIT lattice in Chromium', async ({ page }) => {
       { label: 'XIT-leading', ritOn: false, ritTx: true, ritFreq: 0 },
     ]) {
       await setFakeRitState(page, setup);
-      await expect(slider).toHaveValue('0');
+      await expect(slider).toHaveAttribute('aria-valuenow', '0');
       await clearCommands(page);
 
       for (const [index, key] of keys.entries()) {
         await slider.press(key);
-        await expect(slider, `${setup.label} ${key}`).toHaveValue(String(sequence[index]));
+        await expect(slider, `${setup.label} ${key}`).toHaveAttribute('aria-valuenow', String(sequence[index]));
       }
 
       const commands = (await drainCommands(page))

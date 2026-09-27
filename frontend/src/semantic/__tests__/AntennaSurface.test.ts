@@ -24,7 +24,7 @@ import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import {
-  ANTENNA_BLOCKED_LABEL, ANTENNA_PORTS, UNKNOWN_TEXT, antennaSwitchBlocks, tunerIdle,
+  ANTENNA_PORTS, antennaSwitchBlocks, tunerIdle,
 } from '../AntennaSurface.svelte';
 import AntennaSurface from './fixtures/AntennaInstrumentHostFixture.svelte';
 import { topologyFixtures, withAntenna, withTxAux } from '../fixtures/topologies';
@@ -99,8 +99,9 @@ function render(view: RadioViewModel, tx: TxAuthoritySnapshot, handlers: Handler
     el: (id: string) => q<HTMLElement>(`[data-testid="antenna-${id}"]`),
     btn: (id: string) => q<HTMLButtonElement>(`[data-testid="antenna-${id}"]`),
     text: (id: string) => q<HTMLElement>(`[data-testid="antenna-${id}"]`)?.textContent?.trim(),
-    reasons: () => [...target.querySelectorAll('[data-testid="antenna-blocked"] li')]
-      .map((li) => li.getAttribute('data-reason')),
+    /** MOR-2691: the blocked reason now lives ONLY on the disabled control's
+     *  `title` — never in visible text, never in a removed aria target. */
+    title: (id: string) => q<HTMLButtonElement>(`[data-testid="antenna-${id}"]`)?.title,
   };
 }
 
@@ -149,6 +150,12 @@ describe('the antenna surface owns no state and no TX authority (R9)', () => {
     ]) {
       expect(CODE).not.toContain(forbidden);
     }
+  });
+
+  // Kills: restoring the removed visible reasons list (MOR-2691) — the
+  // blocked reason lives on the disabled controls' `title` only.
+  it('renders no visible blocked-reason list, not even an sr-only one', () => {
+    expect(CODE).not.toContain('antenna-blocked');
   });
 
   // Kills: the surface growing a live-state prop beyond the view model and the
@@ -213,12 +220,16 @@ describe('an unread TX port renders as unknown, never as ANT 1 (CF3)', () => {
     r.dispose();
   });
 
-  // MUTATION KILLED: the same fabrication in the readout instead of the
-  // pressed state — "ANT 1" printed for a port nobody read.
-  it('prints the unknown marker for the port readout, not a port number', () => {
+  // MOR-2652: an unread port prints nothing — an unlit slot, never the dash
+  // the old pin named. The output stays mounted so the row cannot shift.
+  it('prints nothing for an unread port readout, not a port number', () => {
     const r = render(withAnt({ txAntenna: unread<number>(DEGRADED) }), RECEIVING);
-    expect(r.text('port-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('port-value')).toBe('');
+    expect(r.text('port-value')).not.toBe('—');
     expect(r.el('ports')!.dataset.observed).toBe('false');
+    const rule = /\.antenna-value\s*\{([^}]*)\}/.exec(HOST)?.[1] ?? '';
+    expect(rule).toMatch(/min-width:\s*1ch/);
+    expect(r.el('port-value')!.classList.contains('antenna-value')).toBe(true);
     r.dispose();
   });
 
@@ -247,11 +258,26 @@ describe('an unread TX port renders as unknown, never as ANT 1 (CF3)', () => {
 
   // MUTATION KILLED: rendering an unread RX-ANT as `off` — the second half of
   // the same v2 fabrication (v2 reports port 1's RX-ANT for an unread port).
-  it('renders an unread RX-ANT as unknown rather than off', () => {
+  it('renders an unread RX-ANT unlit rather than off', () => {
     const r = render(withAnt({ rxAnt: unread<boolean>(DEGRADED) }), RECEIVING);
-    expect(r.text('rx-toggle')).toContain(UNKNOWN_TEXT);
+    expect(r.text('rx-toggle')).toBe('RX-ANT:');
+    expect(r.text('rx-toggle')).not.toContain('—');
     expect(r.btn('rx-toggle')!.getAttribute('aria-pressed')).toBeNull();
     r.dispose();
+  });
+
+  // MOR-2688 S3 literal pin: a KNOWN boolean renders through `textOf`'s own
+  // formatter as lowercase `on`/`off` — under a `format → String` mutation
+  // String(true) would print 'true' (never 'on'). The label keeps its
+  // 'RX-ANT: ' separator INSIDE the template's one text node, so the known
+  // textContent keeps the space (MOR-2711 inline-block rule).
+  it('renders a known RX-ANT as the literal on/off', () => {
+    const on = render(withAnt({ rxAnt: known(true) }), RECEIVING);
+    expect(on.text('rx-toggle')).toBe('RX-ANT: on');
+    on.dispose();
+    const off = render(withAnt({ rxAnt: known(false) }), RECEIVING);
+    expect(off.text('rx-toggle')).toBe('RX-ANT: off');
+    off.dispose();
   });
 });
 
@@ -295,17 +321,19 @@ describe('antenna switching is gated while the transmitter is not provably idle'
 
   // MUTATION KILLED: a gate that blocks silently. An operator facing a dead
   // control with no explanation reaches for the radio's front panel instead.
-  it('states a reason naming the consequence for every blocked state', () => {
-    for (const [tx, code] of [
-      [TRANSMITTING, 'radio-transmitting'], [RF_UNKNOWN, 'rf-state-unknown'],
-    ] as const) {
-      const r = render(base(), tx);
-      expect(r.reasons()).toContain(code);
-      expect(r.el('blocked')!.textContent).toContain(ANTENNA_BLOCKED_LABEL[code]);
-      expect(r.btn('port-1')!.getAttribute('aria-describedby'))
-        .toBe(r.el('blocked')!.getAttribute('id'));
-      r.dispose();
+  // MOR-2691: the reason moved from the removed visible list to the disabled
+  // controls' own `title` — a catalog sentence with no "unknown" and no "?".
+  it.each([
+    ['transmitting', TRANSMITTING, 'a TX session is already in progress; the radio is already transmitting'],
+    ['RF-state unconfirmed', RF_UNKNOWN, 'Waiting for the transmitter to confirm it is off'],
+  ] as const)('states the blocked reason as a title sentence (%s)', (_label, tx, sentence) => {
+    const r = render(base(), tx);
+    expect(r.el('blocked')).toBeNull();
+    for (const id of ['port-1', 'port-2', 'rx-toggle']) {
+      expect(r.title(id)).toBe(sentence);
+      expect(r.btn(id)!.getAttribute('aria-describedby')).toBeNull();
     }
+    r.dispose();
   });
 
   // MUTATION KILLED: a gate that never opens. Switching MUST work on a radio
@@ -316,7 +344,8 @@ describe('antenna switching is gated while the transmitter is not provably idle'
     const onToggleRxAnt = vi.fn();
     const r = render(base(), RECEIVING, { onSelectPort, onToggleRxAnt });
     expect(r.btn('port-2')!.disabled).toBe(false);
-    expect(r.reasons()).toEqual([]);
+    expect(r.btn('port-2')!.title).toBe('');
+    expect(r.btn('rx-toggle')!.title).toBe('');
     expect(r.root()!.dataset.switchBlocked).toBe('false');
     r.btn('port-2')!.click();
     flushSync();
@@ -410,7 +439,8 @@ describe('ATU readiness comes from txAux.atu and fails closed (CF1, CF2)', () =>
     expect(tunerIdle(view)).toBe(false);
     const r = render(view, RECEIVING);
     expect(r.btn('port-1')!.disabled).toBe(true);
-    expect(r.reasons()).toContain('tuner-not-ready');
+    expect(r.title('port-1')).toBe('Waiting for the tuner to confirm it is idle');
+    expect(r.title('rx-toggle')).toBe('Waiting for the tuner to confirm it is idle');
     r.dispose();
   });
 

@@ -22,6 +22,9 @@ import { mount, unmount, flushSync } from 'svelte';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import type { ManagedTxState } from '$lib/runtime/tx-controller/managed-state';
 import { presentationResources } from '$lib/runtime';
+import type { ResourceLease } from '$lib/runtime/resource-demand';
+import type { ServerState } from '$lib/types/state';
+import type { Capabilities } from '$lib/types/capabilities';
 
 // -- Child components the shell mounts that are irrelevant here -------------
 vi.mock('../../../components/spectrum/SpectrumPanel.svelte', async () => {
@@ -30,12 +33,13 @@ vi.mock('../../../components/spectrum/SpectrumPanel.svelte', async () => {
 });
 vi.mock('../display/FrequencyDisplay.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../meters/LinearSMeter.svelte', () => ({ default: function S() { return {}; } }));
-vi.mock('../controls/CollapsiblePanel.svelte', () => ({ default: function S() { return {}; } }));
-vi.mock('../controls/BottomSheet.svelte', () => ({ default: function S() { return {}; } }));
+// MOR-1245 — CollapsiblePanel, BottomSheet and TxPanel stay REAL here: the
+// one-banner acceptance now includes the TX-settings sheet's TxPanel copy,
+// which only a real mount can prove. TxPanel's runtime inputs are mocked
+// below (panel-adapters, mod-input-auto) — same idiom as TxPanel.isolated.
 vi.mock('../controls/BandSelector.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/FilterPanel.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/RxAudioPanel.svelte', () => ({ default: function S() { return {}; } }));
-vi.mock('../panels/TxPanel.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/DspPanel.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/AgcPanel.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/RfFrontEnd.svelte', () => ({ default: function S() { return {}; } }));
@@ -65,6 +69,40 @@ vi.mock('./vfo-layout-tokens', () => ({
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: vi.fn(() => ({ visible: false, sourceLabel: null })),
   getModInputTxGuardHandlers: vi.fn(() => ({ onSetLan: vi.fn(), onDismiss: vi.fn() })),
+}));
+
+// The now-real TxPanel (MOR-1245, sheet-open one-banner test) pulls two more
+// adapters. PARTIAL panel-adapters mock — importOriginal spread keeps the
+// layout's own `bindSemanticSurfaceHandlers`/`getPresetHandlers`/
+// `getKeyboardHandlers` real; only TxPanel's three Tx accessors are faked,
+// so the real mount never pins the transport/stores modules in the shared
+// (isolate: false) cache — same #771 rationale as the guard adapter above.
+const txPanelProps = {
+  rfPower: 0.5, micGain: 128, atuActive: false, atuTuning: false,
+  voxActive: false, compActive: false, compLevel: 64, monActive: false,
+  monLevel: 64, driveGain: 128, hasTx: true, hasTuner: true, hasMonitor: true,
+};
+const txPanelHandlerNames = [
+  'onRfPowerChange', 'onMicGainChange', 'onAtuToggle', 'onAtuTune', 'onVoxToggle',
+  'onCompToggle', 'onCompLevelChange', 'onMonToggle', 'onMonLevelChange', 'onDriveGainChange',
+] as const;
+vi.mock('$lib/runtime/adapters/panel-adapters', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/adapters/panel-adapters')>();
+  return {
+    ...actual,
+    deriveTxProps: () => txPanelProps,
+    getTxHandlers: () => Object.fromEntries(txPanelHandlerNames.map((n) => [n, vi.fn()])),
+    getTxAuxControlFeedback: () => ({
+      confirmed: 128, target: null, requestedTarget: null, phase: 'idle', busy: false,
+      availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
+      sessionEpoch: 1, scope: { control: 'mic-gain', receiver: 0 },
+      repeatPolicy: 'latest-target-wins',
+    }),
+  };
+});
+vi.mock('$lib/runtime/adapters/mod-input-auto.svelte', () => ({
+  deriveAutoLanModInputProps: () => ({ available: false, enabled: false }),
+  setAutoLanModInputEnabled: vi.fn(),
 }));
 
 // A real, fully-populated view model so the semantic surfaces actually RENDER.
@@ -154,7 +192,11 @@ vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
 import MobileRadioLayout from '../MobileRadioLayout.svelte';
 import mobileLayoutSource from '../MobileRadioLayout.svelte?raw';
 import mobileSkinSource from '../../../skins/mobile/MobileSkin.svelte?raw';
-import { hasTx } from '$lib/stores/capabilities.svelte';
+import { hasTx, getScopeSource, getCapabilities, hasDualReceiver } from '$lib/stores/capabilities.svelte';
+import { radio } from '$lib/stores/radio.svelte';
+import { deriveModInputTxGuardProps } from '$lib/runtime/adapters/mod-input-tx-guard.svelte';
+import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
+import { topologyFixtures } from '../../../semantic/fixtures/topologies';
 
 const RX: ManagedTxState = Object.freeze({
   phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
@@ -284,10 +326,13 @@ describe('semantic VFO / RX-TX adoption in the mobile shell', () => {
 
   // Kills: adding a second copy of the wiring (one per orientation, or one
   // per chip). Exactly one instance may exist — each is a distinct TX source.
+  // MOR-2442: landscape also mounts ONE, hosting its scope panel through the
+  // managed region.
   it('never mounts a second copy, in either orientation', () => {
     const t = mountMobile();
+    expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
     rotate(true);
-    expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(0);
+    expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
     rotate(false);
     expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
   });
@@ -304,6 +349,107 @@ describe('semantic VFO / RX-TX adoption in the mobile shell', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 1b. MOR-2662 (owner ruling 2026-09-26): the phone shows only ONE VFO —
+//     the active receiver's active slot — in both orientations. The
+//     presentation option the shell passes does it; the desktop path and the
+//     shared surface's default stay byte-identical.
+// ---------------------------------------------------------------------------
+describe('MOR-2662 — the phone shows only the active VFO', () => {
+  afterEach(() => {
+    vi.mocked(toRadioViewModel).mockReturnValue(topologyFixtures['1/single']);
+  });
+
+  // Kills: the deck still drawing BOTH VFO tiles below the header.
+  it('portrait renders exactly one VFO tile — the active receiver\'s active slot', () => {
+    vi.mocked(toRadioViewModel).mockReturnValue(topologyFixtures['2/main_sub']);
+    const t = mountMobile();
+    const tiles = t.querySelectorAll('[data-vfo-tile]');
+    expect(tiles).toHaveLength(1);
+    expect(tiles[0].getAttribute('data-vfo-receiver')).toBe('MAIN');
+    expect(tiles[0].getAttribute('data-vfo-active')).toBe('true');
+    expect(tiles[0].getAttribute('data-vfo-active-slot')).toBe('true');
+  });
+
+  // The single-receiver A/B shape: the active SLOT's tile alone survives.
+  it('portrait renders the active slot only on a slotted A/B radio', () => {
+    vi.mocked(toRadioViewModel).mockReturnValue(topologyFixtures['1/ab']);
+    const t = mountMobile();
+    const tiles = t.querySelectorAll('[data-vfo-tile]');
+    expect(tiles).toHaveLength(1);
+    expect(tiles[0].getAttribute('data-vfo-slot')).toBe('A');
+    expect(tiles[0].getAttribute('data-vfo-active')).toBe('true');
+  });
+
+  // Kills: the landscape overlay re-adding a second VFO surface.
+  it('landscape renders no VFO tiles — the strip shows the active frequency alone', () => {
+    vi.mocked(toRadioViewModel).mockReturnValue(topologyFixtures['2/main_sub']);
+    rotate(true);
+    const t = mountMobile();
+    expect(t.querySelectorAll('[data-vfo-tile]')).toHaveLength(0);
+    expect(t.querySelector('.m-ls-vfo')).not.toBeNull();
+  });
+
+  // Kills: a future edit dropping the option and silently restoring two
+  // tiles. The one-tile phone is a presentation OPTION the shell passes,
+  // never a fork of the shared surface.
+  it('passes the one-tile presentation option to the shared wiring', () => {
+    expect(mobileLayoutSource).toContain('vfoTiles="active"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1c. MOR-1245 — the MOD-input TX preflight banner renders exactly once per
+//     orientation. The portrait deck mounts the shared wiring (whose copy
+//     exists since MOR-1065 slice c) beside the shell's fixed overlay, which
+//     without a suppression prop means two banners, one trigger.
+// ---------------------------------------------------------------------------
+describe('MOR-1245 — one MOD-input TX banner per orientation', () => {
+  beforeEach(() => {
+    vi.mocked(deriveModInputTxGuardProps).mockReturnValue({ visible: true, sourceLabel: 'MIC' });
+  });
+  afterEach(() => {
+    vi.mocked(deriveModInputTxGuardProps).mockReturnValue({ visible: false, sourceLabel: null });
+  });
+
+  // Kills the MOR-1094 duplicate: the shell's fixed overlay and the shared
+  // wiring's `txAdjacentAlerts` both mounting in portrait. The FIXED
+  // instance is the survivor — an operator cannot scroll past it while
+  // keying (MOR-1094's reason for keeping it outside the scroll deck).
+  it('renders exactly one banner in portrait, and it is the fixed overlay one', () => {
+    const t = mountMobile();
+    const banners = t.querySelectorAll('[data-testid="mod-input-tx-warning"]');
+    expect(banners).toHaveLength(1);
+    expect(t.querySelector('.m-mod-input-warning')!.contains(banners[0])).toBe(true);
+  });
+
+  // Kills the suppression leaking into landscape: the semantic deck unmounts
+  // there (`rotate(true)` → zero `semantic-radio-surfaces` per 1 above), so
+  // the fixed overlay is the ONLY possible instance and must keep rendering.
+  it('renders exactly one banner in landscape', () => {
+    const t = mountMobile();
+    rotate(true);
+    expect(t.querySelectorAll('[data-testid="mod-input-tx-warning"]')).toHaveLength(1);
+    expect(t.querySelector('.m-mod-input-warning')).not.toBeNull();
+  });
+
+  // Kills the sheet-open duplicate: the TX-settings sheet mounts the REAL
+  // TxPanel (unmocked here on purpose), whose inline copy renders a second
+  // banner unless the shell suppresses it. The fixed overlay is again the
+  // survivor — the sheet carries none.
+  it('renders exactly one banner with the TX-settings sheet open', () => {
+    const t = mountMobile();
+    t.querySelector<HTMLElement>('[aria-controls="m-chip-panel-tx"]')!.click();
+    flushSync();
+    t.querySelector<HTMLElement>('.m-tx-settings-btn')!.click();
+    flushSync();
+    const banners = t.querySelectorAll('[data-testid="mod-input-tx-warning"]');
+    expect(banners).toHaveLength(1);
+    expect(t.querySelector('.m-mod-input-warning')!.contains(banners[0])).toBe(true);
+    expect(t.querySelector('[data-testid="mod-input-tx-warning"]')!.closest('.m-sheet-content')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 1b. Spectrum slot (MOR-2511): this suite's `hasSpectrum` mock returns true,
 // so it carries the with-spectrum counterpart of the no-spectrum pins in
 // MobileRadioLayout.component.svelte.test.ts.
@@ -316,6 +462,96 @@ describe('spectrum slot with a spectrum-capable radio (MOR-2511)', () => {
       const slot = t.querySelector(landscape ? '.m-ls-spectrum' : '.m-spectrum');
       expect(slot?.querySelector('.spectrum-panel-stub')).not.toBeNull();
     });
+});
+
+// ---------------------------------------------------------------------------
+// 1c. Managed scope contract (MOR-2442): both orientations receive the
+// SemanticRadioSurfaces-managed projection/demand region — no second
+// subscriber, no legacy panel subscription. The two halves depend on
+// DIFFERENT mechanisms: the portrait half is killed by dropping the
+// `scopeManaged` opt-in from the SRS gates; the landscape half is killed by
+// the layout's hosted mount no longer forwarding `instruments.managedScope`
+// to its SpectrumPanel. Each pin therefore lives on the mechanism that
+// carries the region into that orientation's panel.
+// The beforeEach also establishes AUTHORITY (matching state/caps
+// generations), which the region assertions do not need but the lease pin
+// below does: without it the SRS lease effect can never engage.
+// ---------------------------------------------------------------------------
+describe('managed scope contract on a hardware-scope radio (MOR-2442)', () => {
+  // Resource spies registered during a test are restored HERE so a failing
+  // pin cannot leak its wrapper into neighboring tests.
+  const resourceSpies: { mockRestore(): void }[] = [];
+  beforeEach(() => {
+    vi.mocked(getScopeSource).mockReturnValue('hardware');
+    vi.mocked(getCapabilities).mockReturnValue({
+      capabilities: [], freqRanges: [], modes: [], filters: [],
+      providerGeneration: 1, scopeSource: 'hardware',
+    } as unknown as Capabilities);
+    radio.current = { providerGeneration: 1, fieldStatus: {} } as unknown as ServerState;
+  });
+  afterEach(() => {
+    vi.mocked(getScopeSource).mockReturnValue(null);
+    vi.mocked(getCapabilities).mockReturnValue({
+      model: '', scope: false, audio: false, tx: false,
+      capabilities: [], receivers: 1, vfoScheme: 'single',
+      freqRanges: [], modes: [], filters: [],
+      audioConfig: { sampleRate: 48000, channels: 1, codecs: [] },
+      webrtc: { available: false, enabled: false },
+      txBands: null,
+    });
+    radio.current = null;
+    for (const spy of resourceSpies.splice(0)) spy.mockRestore();
+  });
+
+  it.each([['portrait', false], ['landscape', true]] as const)(
+    'receives the SemanticRadioSurfaces-managed region in %s', (_label, landscape) => {
+      setViewport(landscape);
+      const t = mountMobile();
+      const slot = t.querySelector(landscape ? '.m-ls-spectrum' : '.m-spectrum');
+      const panel = slot?.querySelector('.spectrum-panel-stub');
+      // Projection may still be null while no frame has been accepted; the
+      // contract is the bound region object itself, non-`undefined`.
+      expect(panel?.getAttribute('data-managed-scope')).toBe('true');
+      expect(panel?.getAttribute('data-scope-demanded')).toBe('true');
+      expect(panel?.getAttribute('data-has-scope-demand-handler')).toBe('true');
+    });
+
+  // Kills: a leaked scope lease — either the hidden orientation's SRS
+  // instance holding one while the visible side holds another, or a lease
+  // surviving unmount. Planted form for the mini RED: drop the
+  // `presentationResources.release(lease)` cleanup in SemanticRadioSurfaces'
+  // lease effect — then rotation leaves TWO live leases and unmount leaves
+  // one. Each orientation mounts at most one SRS instance; the pin counts
+  // live leases at every settled step, not just the end state.
+  it('holds at most one scope lease through rotation, and none after unmount', () => {
+    const realAcquire = presentationResources.acquire.bind(presentationResources);
+    const realRelease = presentationResources.release.bind(presentationResources);
+    const live = new Set<ResourceLease>();
+    const acquire = vi.spyOn(presentationResources, 'acquire').mockImplementation((resource, consumer) => {
+      const lease = realAcquire(resource, consumer);
+      live.add(lease);
+      return lease;
+    });
+    const release = vi.spyOn(presentationResources, 'release').mockImplementation((lease) => {
+      live.delete(lease);
+      return realRelease(lease);
+    });
+    resourceSpies.push(acquire, release);
+
+    const t = mountMobile(); // portrait — the visible instance takes one lease
+    expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
+    expect(live.size).toBe(1);
+
+    rotate(true); // → landscape
+    expect(live.size).toBe(1);
+
+    rotate(false); // → back to portrait
+    expect(live.size).toBe(1);
+
+    for (const component of components.splice(0)) unmount(component);
+    flushSync();
+    expect(live.size).toBe(0); // no lease survives unmount
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -413,7 +649,10 @@ describe('orientation change preserves App authority (MOR-1086 doctrine)', () =>
     expect(release).not.toHaveBeenCalled();
 
     rotate(true);
-    expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(0);
+    // MOR-2442: landscape mounts its own ONE instance; with no display
+    // source this mount still never leases. The hardware-source lease path
+    // is pinned separately in 1c above.
+    expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
     expect(acquire).not.toHaveBeenCalled();
     expect(release).not.toHaveBeenCalled();
 

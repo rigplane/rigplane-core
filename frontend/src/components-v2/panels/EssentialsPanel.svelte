@@ -6,11 +6,15 @@
   import { HardwareButton } from '$lib/Button';
   import { ValueControl } from '../controls/value-control';
   import { normalizedPercentDisplay } from '../../primitives/scalar/value-control-core';
+  import { finiteValue, valueText } from '../../primitives/reading-text';
 
   interface Props {
     vfoOps: { splitActive?: boolean };
     mode: { currentMode: string; modes: string[] };
-    filter: { currentFilter: number; filterLabels?: string[] };
+    // MOR-2683: `currentFilter` is `null` while the filter reading has not
+    // arrived (`toFilterProps`' unread sentinel) — `null` never equals a
+    // real 1-based index, so no filter choice lights for an unread filter.
+    filter: { currentFilter: number | null; filterLabels?: string[] };
     rxAudio: { monitorMode: string; afLevel: number };
     dsp: { nbActive: boolean; nrMode: number; notchMode: string };
     quickModes: string[];
@@ -56,9 +60,11 @@
   // never sent. `normalizedPercentDisplay` has no non-finite branch —
   // `Math.round(Math.max(0, Math.min(1, NaN)) * 100)` is `NaN` — so the
   // readout would render the literal "NaN%" on the default-active mobile
-  // chip. Same shape as `RxAudioPanel.svelte`'s guard for this exact field.
+  // chip. MOR-2668: an unread level renders '' (unlit LCD segment) in
+  // HBarRenderer's reserved `.vc-value` box (MOR-2657). Same shape as
+  // `RxAudioPanel.svelte`'s guard for this exact field.
   function formatAfLevelDisplay(v: number): string {
-    return Number.isFinite(v) ? normalizedPercentDisplay(v) : '--- %';
+    return valueText(finiteValue(v), normalizedPercentDisplay);
   }
 </script>
 

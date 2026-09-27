@@ -2,6 +2,7 @@
   import { onDestroy } from 'svelte';
   import { ValueControl } from '../controls/value-control';
   import { normalizedPercentDisplay } from '../../primitives/scalar/value-control-core';
+  import { finiteValue, valueText } from '../../primitives/reading-text';
   import {
     createContinuousPair,
     createLegacyContinuousPairPolicy,
@@ -121,8 +122,11 @@
   const rfGainShortcut = getShortcutHint('adjust_rf_gain');
   const attShortcut = getShortcutHint('cycle_att');
   const preShortcut = getShortcutHint('cycle_preamp');
-  const displayRfGain = (value: number): string => Number.isFinite(value)
-    ? normalizedPercentDisplay(value) : '—';
+  // MOR-2658: unread is an empty reserved slot — never the '—' placeholder,
+  // and never a '%' without its number. The renderer (HBarRenderer) calls
+  // this with Number.NaN for an unread value.
+  const displayRfGain = (value: number): string =>
+    valueText(finiteValue(value), normalizedPercentDisplay);
   const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
 </script>
 
@@ -248,6 +252,16 @@
     justify-content: space-between;
     gap: 10px;
     min-width: 0;
+  }
+
+  /* MOR-2658: the RF-gain value box stays reserved for unread AND each
+     known value — `4ch` covers the widest text (`100%`), and
+     `inline-block` is what makes the min-width apply to the renderer's
+     inline value span, so a first reading cannot shift the row. */
+  [data-control="rf-gain"] :global(.vc-value) {
+    display: inline-block;
+    min-width: 4ch;
+    font-variant-numeric: tabular-nums;
   }
 
   .control-label {

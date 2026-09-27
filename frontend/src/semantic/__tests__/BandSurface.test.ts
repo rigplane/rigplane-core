@@ -33,9 +33,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import BandSurface, {
-  activeReceiverUnconfirmedReason, reasonLabel, UNKNOWN_TEXT, unresolvedReason,
+  activeReceiverUnconfirmedReason, reasonLabel, unnamedReason, unresolvedReason,
   defaultPermitLabel, mhz,
 } from '../BandSurface.svelte';
+import {
+  defaultPermitPrefix, defaultPermitStatus, PERMIT_STATUS_TEXTS,
+} from '../band-instruments';
 import { t } from '$lib/i18n';
 import { topologyFixtures, withBand } from '../fixtures/topologies';
 import type { FrequencyPermit } from '$lib/utils/tx-permit';
@@ -110,19 +113,24 @@ function typeFrequency(input: HTMLInputElement, value: string): void {
 describe('the band surface derives nothing (7B carry-forward 1)', () => {
   // Kills: importing the permit function, the band plan, capabilities or the
   // command bus — any of which would let a second permit derivation exist.
-  // MOR-1448: `$lib/i18n` joined the fact contract as the ONE permitted
-  // import beyond `./radio-view-model` — pure operator-wording lookup
-  // (`t()`), never a second fact derivation. See the two tests below for
-  // the narrowed guard this replaces.
-  it('imports only facts, i18n wording and Band instrument types', () => {
+  // MOR-1448: `$lib/i18n` joined the fact contract — pure
+  // operator-wording lookup (`t()`), never a second fact derivation. See
+  // the two tests below for the narrowed guard this replaces.
+  it('imports only facts, the field gate, i18n wording and Band instrument types', () => {
     // MOR-1448 review F6: quote-agnostic — a double-quoted import must be
     // caught exactly like a single-quoted one, not slip past a single-quote
     // -only pattern.
     const specifiers = [...CODE.matchAll(/from\s+['"]([^'"]+)['"]/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
+    // MOR-2704 G3: `../primitives/control-instruments/control-instrument-behavior`
+    // joined the closure — the field gate `usable` (MOR-2704), in place of
+    // this file's former local copy. It has NO runtime import of its own,
+    // so it cannot reach the TX controller, the
+    // transport or the permit utility any more than the fact contract can.
     expect([...new Set(specifiers)]).toEqual([
       '$lib/i18n', './radio-view-model',
       './band-instruments',
+      '../primitives/control-instruments/control-instrument-behavior',
     ]);
     expect(CODE).toContain('BandInstrumentHandles');
   });
@@ -171,6 +179,29 @@ describe('the band surface derives nothing (7B carry-forward 1)', () => {
 
 /* ── (a) the band-scoped TX answer is the LIVE fact ─────────────── */
 
+/* ── MOR-2704 G3: the imported gate keeps the read-but-NOT-operational
+   refusal — the case the local copy handled, now pinned against the
+   shared `usable` (a mutation that drops its `operational` check dies
+   here). ── */
+describe('MOR-2704 G3: a KNOWN current band under operational:false fails closed', () => {
+  const READ_NOT_OPERATIONAL = { structural: true, operational: false } as const;
+
+  it('marks the band row unobserved while the known value keeps rendering', () => {
+    const r = render(withB({
+      currentBand: {
+        reading: { status: 'known' as const, value: '20m' },
+        availability: READ_NOT_OPERATIONAL,
+      },
+    }));
+    expect(r.el('current')!.dataset.observed).toBe('false');
+    // Behaviour-identical (MOR-2704): `textOf` follows the reading status
+    // alone, so the known value keeps rendering.
+    expect(r.text('current-value')).toBe('20m');
+    r.dispose();
+  });
+});
+
+
 describe('currentBandTx is the live-frequency answer (carry-forwards 1 + 2)', () => {
   // THE F1/F3 REGRESSION PIN. The current band's own default-frequency permit
   // says `allowed`; the live fact says `denied` (a txBands segment narrower
@@ -200,7 +231,8 @@ describe('currentBandTx is the live-frequency answer (carry-forwards 1 + 2)', ()
   // "no answer" must never be how a denial is presented.
   it('still states the denial while the current band is unreadable', () => {
     const r = render(withB({ currentBand: unreadBand(), currentBandTx: 'denied' }));
-    expect(r.text('current-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('current-value')).toBe('');
+    expect(r.text('current-value')).not.toBe('—');
     expect(r.text('tx-value')).toBe('denied');
     r.dispose();
   });
@@ -387,7 +419,6 @@ describe('MOR-1474 — the default-permit label resolves each status through its
   it.each([
     ['allowed', 'core.band.tx.defaultPermit.status.allowed'],
     ['denied', 'core.band.tx.defaultPermit.status.denied'],
-    ['unknown', 'core.band.tx.defaultPermit.status.unknown'],
   ] as const)('status %s maps to catalog key %s', (status, key) => {
     const choice: BandChoice = {
       name: '20m', startHz: 14000000, endHz: 14350000, defaultHz: 14074000, bsrCode: 4,
@@ -400,6 +431,139 @@ describe('MOR-1474 — the default-permit label resolves each status through its
     expect(defaultPermitLabel(choice)).toBe(
       t('core.band.tx.defaultPermit.label', { frequency: mhz(choice.defaultHz), status: t(key) }),
     );
+  });
+
+  // MOR-2655: an unread permit is not a value. The old pin mapped `unknown`
+  // through `core.band.tx.defaultPermit.status.unknown` ("unknown") and drew
+  // "TX at 14.074 MHz: unknown". The slot stays; the status word does not.
+  it('status unknown names the frequency and draws no status word', () => {
+    const choice: BandChoice = {
+      name: '20m', startHz: 14000000, endHz: 14350000, defaultHz: 14074000, bsrCode: 4,
+      defaultHzTxPermit: { status: 'unknown', reason: 'ranges-unconfigured' },
+    };
+    expect(defaultPermitLabel(choice)).toBe(
+      t('core.band.tx.defaultPermit.unread', { frequency: mhz(choice.defaultHz) }),
+    );
+    expect(t('core.band.tx.defaultPermit.unread', { frequency: '14.074 MHz' }))
+      .toBe('TX at 14.074 MHz:');
+    expect(defaultPermitLabel(choice)).not.toMatch(/unknown/i);
+    expect(defaultPermitLabel(choice)).not.toContain('—');
+  });
+});
+
+/* ── MOR-2684: no dash on the band row, and the permit caption keeps one
+   width. An unread value is an empty slot; an unnamable denial reason has
+   no visible text and a plain catalog accessible name; the status slot is
+   reserved at the measured widest catalog status word. ────────────────── */
+
+describe('MOR-2684 — the permit caption keeps one width across its states', () => {
+  const choice = (permit: BandChoice['defaultHzTxPermit']): BandChoice => ({
+    name: '20m', startHz: 14000000, endHz: 14350000, defaultHz: 14074000, bsrCode: 4,
+    defaultHzTxPermit: permit,
+  });
+  const ALLOWED_CHOICE = choice({ status: 'allowed', band: '20m' });
+  const DENIED_CHOICE = choice({ status: 'denied', reason: 'outside-configured-ranges' });
+  const UNREAD_CHOICE = choice({ status: 'unknown', reason: 'ranges-unconfigured' });
+
+  // The known texts stay EXACTLY as they were before the split — pinned
+  // literally, spaces included, so the reserved-slot refactor cannot change
+  // what the operator reads.
+  it('renders the known allowed and denied captions literally, spaces included', () => {
+    const view = withB({});
+    const r = render(view);
+    expect(r.el('choice-permit-20m')!.textContent).toBe('TX at 14.195 MHz: allowed');
+    expect(r.el('choice-permit-MW')!.textContent).toBe('TX at 1.000 MHz: denied');
+    r.dispose();
+  });
+
+  // The unread caption keeps its sentence and gains only the reserved EMPTY
+  // status slot. Red on the old code: the caption was the bare unread
+  // sentence with no slot (and no trailing separator space).
+  it('renders the unread caption with an empty reserved status slot, never a dash', () => {
+    const unreadChoice = {
+      ...view20m(base()),
+      defaultHzTxPermit: { status: 'unknown' as const, reason: 'ranges-unconfigured' as const },
+    };
+    const view = withB({ bandChoices: [unreadChoice] });
+    const r = render(view);
+    expect(r.el('choice-permit-20m')!.textContent).toBe('TX at 14.195 MHz: ');
+    expect(r.el('choice-permit-20m')!.textContent?.trim()).toBe('TX at 14.195 MHz:');
+    expect(r.el('choice-permit-20m')!.textContent).not.toContain('—');
+    // The accessible name keeps the full sentence from `defaultPermitLabel`.
+    expect(r.btn('choice-20m')!.getAttribute('aria-label')).toBe('20m — TX at 14.195 MHz:');
+    r.dispose();
+  });
+
+  it('splits the caption into the same prefix in every state and an empty or word status', () => {
+    expect(defaultPermitPrefix(ALLOWED_CHOICE)).toBe('TX at 14.074 MHz: ');
+    expect(defaultPermitPrefix(DENIED_CHOICE)).toBe('TX at 14.074 MHz: ');
+    expect(defaultPermitPrefix(UNREAD_CHOICE)).toBe('TX at 14.074 MHz: ');
+    expect(defaultPermitStatus(ALLOWED_CHOICE)).toBe('allowed');
+    expect(defaultPermitStatus(DENIED_CHOICE)).toBe('denied');
+    expect(defaultPermitStatus(UNREAD_CHOICE)).toBe('');
+    // The catalog keeps the known label exactly the unread sentence plus
+    // ' ' plus the status word, so the prefix text node keeps ONE width.
+    expect(t('core.band.tx.defaultPermit.label', { frequency: '14.074 MHz', status: '' }))
+      .toBe(`${t('core.band.tx.defaultPermit.unread', { frequency: '14.074 MHz' })} `);
+  });
+
+  it('reserves the status slot structurally against the widest catalog status word', () => {
+    const host = readFileSync('src/semantic/BandInstrumentHost.svelte', 'utf8');
+    expect(host).toMatch(/\.permit-status\s*\{[^}]*min-width:\s*var\(--band-permit-status-width\)/);
+    expect(host).toMatch(/style:--band-permit-status-width=\{permitStatusWidth\}/);
+    expect(host).toMatch(/class="permit-status-measure"[^>]*aria-hidden="true"/);
+  });
+
+  it('measures every status word the three catalogs can render', () => {
+    const readCatalog = (locale: string): Record<string, string> =>
+      JSON.parse(readFileSync(`src/lib/i18n/locales/${locale}.json`, 'utf8'));
+    const words = new Set<string>();
+    for (const locale of ['en-US', 'ru-RU', 'ja-JP']) {
+      for (const [key, value] of Object.entries(readCatalog(locale))) {
+        if (key.startsWith('core.band.tx.defaultPermit.status.')) words.add(value);
+      }
+    }
+    for (const word of words) expect(PERMIT_STATUS_TEXTS).toContain(word);
+    expect(new Set(PERMIT_STATUS_TEXTS).size).toBe(PERMIT_STATUS_TEXTS.length);
+  });
+
+  function view20m(view: RadioViewModel): BandChoice {
+    return (view.band as BandViewModel).bandChoices.find(c => c.name === '20m')!;
+  }
+});
+
+describe('MOR-2684 — an unnamed denial reason draws no dash and keeps a name', () => {
+  it('renders no visible text for an unrecognised reason code, never a dash', () => {
+    expect(reasonLabel('not-a-tx-reason-code')).toBe('');
+    // MOR-1448 F5's own hazard: an inherited `Object.prototype` key.
+    expect(reasonLabel('toString')).toBe('');
+  });
+
+  // Red on the old code: this state rendered '—' as the visible reason.
+  it('keeps the reason element empty with an accessible catalog sentence when no code explains the denial', () => {
+    const view = withB({ currentBand: knownBand('20m'), currentBandTx: 'denied' });
+    const r = render({
+      ...view,
+      txPermit: { status: 'unknown', reason: 'ranges-unconfigured' },
+      disabledReasons: [],
+    });
+    expect(r.text('tx-reason')).toBe('');
+    expect(r.el('tx-reason')!.getAttribute('aria-label'))
+      .toBe(t('core.band.tx.reason.unnamed'));
+    expect(r.el('tx-reason')!.textContent).not.toContain('—');
+    expect(unnamedReason()).not.toContain('—');
+    r.dispose();
+  });
+
+  // A caveat is a whole sentence: an empty reason would leave a dangling
+  // ': '. When no reason can be named it says so with the same sentence.
+  it('fills the caveat with the unnamed-reason sentence when no code explains the denial', () => {
+    const view = withB({ currentBand: knownBand('20m'), currentBandTx: 'allowed' });
+    const r = render({ ...view, txPermit: DENIED, disabledReasons: [] });
+    expect(r.text('tx-caveat')).toBe(t('core.band.tx.caveat.denied', {
+      reason: t('core.band.tx.reason.unnamed'),
+    }));
+    r.dispose();
   });
 });
 
@@ -509,7 +673,8 @@ describe('the three-way denial reason distinguishes an unconfirmed receiver (MOR
   it('keeps the band-unresolved fallback when the band itself is unread', () => {
     const view = withB({ currentBand: unreadBand(), currentBandTx: 'denied' });
     const r = render({ ...view, txPermit: ALLOWED, disabledReasons: [] });
-    expect(r.text('current-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('current-value')).toBe('');
+    expect(r.text('current-value')).not.toBe('—');
     expect(r.text('tx-reason')).toBe(unresolvedReason());
     r.dispose();
   });
@@ -832,7 +997,7 @@ describe('unknown tuning bounds fail closed (carry-forward 5, rule 5)', () => {
     expect(r.btn('entry-set')!.disabled).toBe(true);
     expect(r.el('entry')!.dataset.bounds).toBe('false');
     expect(r.text('entry-reason')).toContain('tuning limits unknown');
-    expect(r.text('entry-range')).toBe(UNKNOWN_TEXT);
+    expect(r.text('entry-range')).toBe('');
     r.dispose();
   });
 
@@ -910,10 +1075,13 @@ describe('a receiver-scoped write needs a known active receiver (MOR-1322 B1 cla
 /* ── honest unknown, and the F2 standing convention ─────────────── */
 
 describe('unknown is rendered as unknown (and F2 gets no local workaround)', () => {
-  it('renders an unread current band as the unknown text, marked unobserved', () => {
+  it('renders an unread current band empty and unobserved, in a reserved box', () => {
     const r = render(withB({ currentBand: unreadBand() }));
-    expect(r.text('current-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('current-value')).toBe('');
+    expect(r.text('current-value')).not.toBe('—');
     expect(r.el('current')!.dataset.observed).toBe('false');
+    const rule = /\.band-value\s*\{([^}]*)\}/.exec(SOURCE)?.[1] ?? '';
+    expect(rule).toMatch(/min-width:\s*8ch/);
     r.dispose();
   });
 

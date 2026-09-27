@@ -63,6 +63,8 @@
 -->
 <script module lang="ts">
   import type { DisplayObservedField, TxAuxField } from './radio-view-model';
+  import { readingText } from '../primitives/reading-text';
+  import { usable } from '../primitives/control-instruments/control-instrument-behavior';
 
   /** `[field, label, min, max, step]` in RAW Hz — the fallback bounds for a
    *  passband row whose group carries no domain: `ifShift` when the profile
@@ -76,16 +78,11 @@
   ] as const;
   export type FilterPassbandLevelField = (typeof FILTER_PASSBAND_LEVELS)[number][0];
 
-  /** Usable ⇔ the radio HAS it, it is readable NOW, and it has been observed.
-   *  `ModeFilterField`/`FilterPassbandField` are both declared as aliases of
+  /** `ModeFilterField`/`FilterPassbandField` are both declared as aliases of
    *  `TxAuxField` (same field shape per fact family), so one set of helpers
    *  serves every field in both groups — no per-group re-derivation. */
-  const usable = (f: TxAuxField<unknown>): boolean =>
-    f.availability.structural && f.availability.operational && f.reading.status === 'known';
   const reasonOf = (f: TxAuxField<unknown>): 'field-not-observed' | undefined =>
     usable(f) ? undefined : 'field-not-observed';
-  const textOf = (f: TxAuxField<unknown>): string =>
-    f.reading.status === 'known' ? String(f.reading.value) : '?';
   const presentationOf = (f: TxAuxField<unknown>): 'confirmed' | 'retained' | 'unknown' =>
     usable(f) ? 'confirmed' : f.reading.status === 'known' ? 'retained' : 'unknown';
   const pbtDisplay = (f: DisplayObservedField<number>) => f.display ?? (
@@ -107,6 +104,7 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
   import { t } from '$lib/i18n';
+  import { getLocale } from '$lib/i18n/store.svelte';
   import {
     bindToggleInstrument,
   } from '../primitives/control-instruments/control-instrument-behavior';
@@ -239,19 +237,81 @@
       feedback.availability, feedback.scope.control, feedback.scope.receiver, feedback.scope.slot,
     ]);
   }
+  function formatExactWidth(value: number): string {
+    // MOR-2667: an unread value renders empty — never a `'--- Hz'`
+    // placeholder (the only caller passes a finite canonical reading; the
+    // empty guard keeps the placeholder family out of the file).
+    return Number.isFinite(value) ? `${value} Hz` : '';
+  }
+  function formatWidthAnnouncementText(
+    feedback: Readonly<CommandScalarFeedback>,
+    phase: Readonly<PoliteControlAnnouncement['phase']>,
+    fallback: string,
+    error: string | null,
+  ): string {
+    // MOR-2648: a screen reader must never hear a placeholder — while a
+    // value the message needs is unread, the announcement is skipped
+    // entirely (see `nextFilterWidthAnnouncement`).
+    const target = feedback.requestedTarget !== null && Number.isFinite(feedback.requestedTarget)
+      ? String(feedback.requestedTarget) : null;
+    const confirmed = feedback.confirmed !== null && Number.isFinite(feedback.confirmed)
+      ? String(feedback.confirmed) : null;
+    const english = getLocale() === 'en-US';
+    let message: string;
+    switch (phase) {
+      case 'submitted':
+      case 'queued':
+      case 'dispatched':
+      case 'awaiting-confirmation':
+        if (target === null) return '';
+        message = english ? fallback : t('core.filter.width.pendingAnnouncement', { target });
+        break;
+      case 'confirmed':
+        if (confirmed === null) return '';
+        message = english ? fallback : t('core.filter.width.confirmedAnnouncement', { confirmed });
+        break;
+      case 'failed':
+        if (target === null || confirmed === null) return '';
+        message = english ? fallback : t('core.filter.width.failedAnnouncement', { target, confirmed });
+        break;
+      case 'timed-out':
+        if (target === null || confirmed === null) return '';
+        message = english ? fallback : t('core.filter.width.timedOutAnnouncement', { target, confirmed });
+        break;
+      case 'cancelled':
+        if (target === null || confirmed === null) return '';
+        message = english ? fallback : t('core.filter.width.cancelledAnnouncement', { target, confirmed });
+        break;
+      case 'superseded':
+        if (target === null || confirmed === null) return '';
+        message = english ? fallback : t('core.filter.width.supersededAnnouncement', { target, confirmed });
+        break;
+      default:
+        message = english ? fallback : '';
+    }
+    return error === null || message.length === 0 ? message : `${message}: ${error}`;
+  }
   function nextFilterWidthAnnouncement(
     current: Readonly<ContinuousScalarView>,
     previous: IssuedAnnouncement | null,
   ): IssuedAnnouncement | null {
     const authorityKey = scalarAuthorityKey(current);
     const issued = current.presentation?.politeAnnouncement;
-    if (issued === null || issued === undefined || current.announcement === null) {
+    if (issued === null || issued === undefined || current.evidence !== 'command-feedback') {
+      return previous?.authorityKey === authorityKey ? previous : null;
+    }
+    const text = formatWidthAnnouncementText(
+      current.feedback, issued.phase, current.announcement ?? '', current.error,
+    );
+    // MOR-2648: an unread value skips the announcement — an empty live
+    // region is never minted for it.
+    if (text === '') {
       return previous?.authorityKey === authorityKey ? previous : null;
     }
     return Object.freeze({
       authorityKey,
       eventKey: JSON.stringify([authorityKey, issued.transitionId]),
-      text: current.error === null ? current.announcement : `${current.announcement}: ${current.error}`,
+      text,
     });
   }
   let filterWidthAnnouncement: IssuedAnnouncement | null = $state(
@@ -388,35 +448,44 @@
     error: string | null,
   ): string {
     const controlName = t(`core.filter.passband.control.${field}`);
+    // MOR-2648: a screen reader must never hear a placeholder — while a
+    // value the message needs is unread, the announcement is skipped
+    // entirely (see `nextPassbandAnnouncement`).
     const target = feedback.requestedTarget !== null && Number.isFinite(feedback.requestedTarget)
-      ? `${feedback.requestedTarget} Hz` : '--- Hz';
+      ? `${feedback.requestedTarget} Hz` : null;
     const confirmed = feedback.confirmed !== null && Number.isFinite(feedback.confirmed)
-      ? `${feedback.confirmed} Hz` : '--- Hz';
+      ? `${feedback.confirmed} Hz` : null;
     let message: string;
     switch (phase) {
       case 'submitted':
       case 'queued':
       case 'dispatched':
       case 'awaiting-confirmation':
+        if (target === null) return '';
         message = t('core.filter.passband.pendingAnnouncement', { control: controlName, target });
         break;
       case 'confirmed':
+        if (confirmed === null) return '';
         message = t('core.filter.passband.confirmedAnnouncement', { control: controlName, confirmed });
         break;
       case 'failed':
+        if (target === null || confirmed === null) return '';
         message = t('core.filter.passband.failedAnnouncement', { control: controlName, target, confirmed });
         break;
       case 'timed-out':
+        if (target === null || confirmed === null) return '';
         message = t('core.filter.passband.timedOutAnnouncement', { control: controlName, target, confirmed });
         break;
       case 'cancelled':
+        if (target === null || confirmed === null) return '';
         message = t('core.filter.passband.cancelledAnnouncement', { control: controlName, target, confirmed });
         break;
       case 'superseded':
+        if (target === null || confirmed === null) return '';
         message = t('core.filter.passband.supersededAnnouncement', { control: controlName, target, confirmed });
         break;
       default:
-        message = '';
+        return '';
     }
     return error === null ? message : `${message.replace(/[.!?]$/, '')}: ${error}`;
   }
@@ -433,10 +502,16 @@
     if (issued === null || issued === undefined || current.announcement === null) {
       return previous?.authorityKey === authorityKey ? previous : null;
     }
+    const text = formatPassbandAnnouncementText(field, current.feedback, issued.phase, current.error);
+    // MOR-2648: an unread value skips the announcement — an empty live
+    // region is never minted for it.
+    if (text === '') {
+      return previous?.authorityKey === authorityKey ? previous : null;
+    }
     return Object.freeze({
       authorityKey,
       eventKey: JSON.stringify([authorityKey, issued.transitionId]),
-      text: formatPassbandAnnouncementText(field, current.feedback, issued.phase, current.error),
+      text,
     });
   }
 
@@ -523,12 +598,16 @@
               value={filterWidthView.displayed ?? numberOf(modeFilter.filterWidth, 0)}
               disabled={!filterWidthView.editable}
               data-command-phase={filterWidthView.phase ?? undefined}
-              aria-busy={filterWidthView.busy}
+              aria-busy={filterWidthView.evidence === 'command-feedback'
+                ? filterWidthView.presentation.attributes['aria-busy'] : undefined}
+              aria-valuenow={filterWidthView.canonical ?? undefined}
+              aria-valuetext={filterWidthView.canonical === null
+                ? undefined : formatExactWidth(filterWidthView.canonical)}
               oninput={(event) => filterWidthLease?.nativeInput(event.currentTarget.valueAsNumber)}
             />
           {/if}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <output ondblclick={resetWidthRow}>{textOf(modeFilter.filterWidth)}</output>
+          <output ondblclick={resetWidthRow}>{readingText(modeFilter.filterWidth)}</output>
           {#if filterWidthAnnouncement !== null}
             {#key filterWidthAnnouncement.eventKey}
               <span class="sr-only" role="status" aria-live="polite" aria-atomic="true"
@@ -616,12 +695,16 @@
               <span class="pbt-slot" data-pbt-slot>
                 {#if display.state === 'current' || display.state === 'stale'}
                   {@render passbandRange(field, limits.min, limits.max, limits.step)}
-                {:else}
-                  <span class="pbt-unknown">{t('core.vfo.state.unknown')}</span>
                 {/if}
+                <!-- MOR-2648: an unmeasured PBT renders nothing in the
+                     reserved slot — never a localized "unknown" word; the
+                     `.pbt-slot` box below keeps the row's geometry. -->
               </span>
               <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <output class="pbt-value" aria-live="off" ondblclick={() => onPbtReset?.()}>{measured && 'value' in display ? display.value : '—'}</output>
+              <!-- MOR-2648: an unmeasured PBT renders an unlit box — empty
+                   text, never a `—` dash; the `.pbt-value` box stays
+                   reserved. -->
+              <output class="pbt-value" aria-live="off" ondblclick={() => onPbtReset?.()}>{measured && 'value' in display ? display.value : ''}</output>
               {@render passbandStatus(field)}
             </div>
           {:else}
@@ -638,7 +721,7 @@
               >{label}</span>
               {@render passbandRange(field, limits.min, limits.max, limits.step)}
               <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <output ondblclick={() => passbandRows.ifShift.lease?.reset()}>{textOf(filterPassband[field])}</output>
+              <output ondblclick={() => passbandRows.ifShift.lease?.reset()}>{readingText(filterPassband[field])}</output>
               {@render passbandStatus(field)}
             </label>
           {/if}
@@ -666,6 +749,26 @@
   .filter-surface { display: flex; flex-direction: column; gap: 0.25rem; }
   .filter-level { display: flex; align-items: baseline; gap: 0.5rem; }
   .filter-level-name { min-width: 8ch; }
+  /* MOR-2648: the width/IF-shift value box stays reserved — a flex child,
+     so the min-width applies; 5ch covers the widest text today (the width
+     fallback max '9999', the IF-shift lower bound '-1200'), tabular digits
+     keep a changing value from shifting the row. The PBT output keeps its
+     own wider `.pbt-value` box. */
+  .filter-level > output:not(.pbt-value) { min-width: 5ch; font-variant-numeric: tabular-nums; }
+  .filter-level[data-testid="filter-width"] input {
+    border: 1px solid CanvasText;
+  }
+  @media (forced-colors: active) {
+    .filter-level[data-testid="filter-width"] input { forced-color-adjust: none; }
+    .filter-level[data-testid="filter-width"] [data-control-feedback-status] {
+      forced-color-adjust: none;
+      color: CanvasText;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .filter-level[data-testid="filter-width"],
+    .filter-level[data-testid="filter-width"] * { transition: none; animation: none; }
+  }
   /* MOR-2640: the NARROW key's light — the same structural
      (forced-colors safe) weight the DSP toggles use, on the state
      attribute itself. */
@@ -673,7 +776,6 @@
   .filter-toggle[data-pending-status='pending'] { font-style: italic; opacity: 0.75; }
   .pbt-slot { display: inline-flex; align-items: center; width: 8rem; height: 1.5rem; }
   .pbt-slot input { width: 100%; margin-inline: 0; }
-  .pbt-unknown { width: 100%; text-align: center; }
   .pbt-value { min-width: 6ch; font-variant-numeric: tabular-nums; }
   .pbt-reset-button { align-self: flex-start; }
   .sr-only {

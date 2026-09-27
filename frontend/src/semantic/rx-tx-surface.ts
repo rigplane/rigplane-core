@@ -11,7 +11,9 @@
  * doubt renders as unknown. ForceOFF remains ungated.
  */
 import { t } from '$lib/i18n';
-import type { DisabledReason, RadioViewModel, TxTargetViewModel } from './radio-view-model';
+import { BLOCKED_REASON_KEY } from '$lib/i18n/blocked-reasons';
+import type { DisabledReason, DisabledReasonCode, RadioViewModel, TxTargetViewModel } from './radio-view-model';
+import { FAULT_REASON_CODES, KEY_BLOCKED_REASON_CODES } from './rx-tx-codes';
 
 /**
  * The subset of the managed server projection this surface reads. `fault` stays `string | null`
@@ -32,13 +34,23 @@ export interface TxAuthoritySnapshot {
 
 export type RfState = 'receiving' | 'transmitting' | 'uncertain' | 'unknown';
 export type TxSessionState = 'idle' | 'pending' | 'keyed' | 'releasing' | 'failed';
-export type KeyBlockedReason =
-  | 'tx-target-unknown' | 'tx-permit-denied' | 'tx-permit-unknown'
-  | 'tx-fault' | 'tx-busy' | 'radio-transmitting' | 'rf-state-unknown';
+/** MOR-2718: derived from `KEY_BLOCKED_REASON_CODES` (`rx-tx-codes.ts`), so the
+ *  page guard's identifier vocabulary and this surface read one list. */
+export type KeyBlockedReason = (typeof KEY_BLOCKED_REASON_CODES)[number];
 
-/** Passive RX/unknown stay quiet; confirmed and uncertain TX remain explicit without relying on colour. */
-export const RF_LABEL: Record<RfState, string> = { receiving: '', transmitting: 'TX', uncertain: 'TX?', unknown: '' };
+/** Passive RX/unknown stay quiet; confirmed and uncertain TX remain explicit without relying on colour.
+ *  MOR-2671: uncertain reads `TX` too — the distinction from confirmed TX is the hollow MARK below
+ *  (and, at the component level, the unconfirmed accessible sentence), never a `?` in the text. */
+export const RF_LABEL: Record<RfState, string> = { receiving: '', transmitting: 'TX', uncertain: 'TX', unknown: '' };
 export const RF_MARK: Record<RfState, string> = { receiving: '', transmitting: '▲', uncertain: '△', unknown: '' };
+/**
+ * MOR-2671: bare `TX` alone would read as CONFIRMED when the state is uncertain. The accessible
+ * name says so in words — no `?` and no `unknown` — through this one catalog sentence. `null`
+ * for every other state: those names stay their own text.
+ */
+export const RF_UNCONFIRMED_KEY = 'core.rxTx.rf.unconfirmed';
+export const rfUnconfirmedLabel = (state: RfState): string | null =>
+  state === 'uncertain' ? t(RF_UNCONFIRMED_KEY) : null;
 export const SESSION_LABEL: Record<TxSessionState, string> = { idle: 'ready', pending: 'keying', keyed: 'key down', releasing: 'releasing', failed: 'fault' };
 /**
  * MOR-1474: pre-i18n literal English, kept ONLY for `AntennaSurface.svelte`'s
@@ -68,26 +80,42 @@ export const BLOCKED_LABEL: Record<KeyBlockedReason, string> = {
 /**
  * MOR-1474: the catalog keys behind each `KeyBlockedReason` — operator-
  * legible, i18n-routed text for the REAL render paths (`RxTxSurface`,
- * `TxAuxSurface`). `tx-target-unknown` and `tx-permit-denied` REUSE the
- * exact MOR-1448 `core.band.tx.reason.*` keys: both fire off the identical
- * underlying facts BandSurface's own reasons read
- * (`view.txTarget.status !== 'known'` / `view.txPermit.status === 'denied'`)
- * — same fact, same words, not a re-derivation with its own wording that
- * could drift from BandSurface's.
+ * `TxAuxSurface`). The table itself lives in
+ * `$lib/i18n/blocked-reasons.ts`: adapters may import only semantic
+ * CONTRACT types (v3 ADR), so the value resolver `blockedReasonLabel`
+ * and the table sit on the lib side of the seam; this surface keeps
+ * only its typed `blockedLabel` wrapper.
  */
-const BLOCKED_KEY: Record<KeyBlockedReason, string> = {
-  'tx-target-unknown': 'core.band.tx.reason.targetUnknown',
-  'tx-permit-denied': 'core.band.tx.reason.outOfBand',
-  'tx-permit-unknown': 'core.rxTx.blocked.permitUnknown',
-  'tx-fault': 'core.rxTx.blocked.fault',
-  'tx-busy': 'core.rxTx.blocked.busy',
-  'radio-transmitting': 'core.rxTx.blocked.radioTransmitting',
-  'rf-state-unknown': 'core.rxTx.blocked.rfStateUnknown',
-};
+const BLOCKED_KEY: Record<KeyBlockedReason, string> = BLOCKED_REASON_KEY;
 /** Resolves a `KeyBlockedReason` to its operator-legible sentence in the
  *  active locale — called fresh on every render so it stays correct across
  *  a live locale switch (MOR-1448 `reasonLabel` precedent). */
 export const blockedLabel = (code: KeyBlockedReason): string => t(BLOCKED_KEY[code]);
+
+/**
+ * MOR-1890: the wire→semantic naming seam for TX-interlock refusals. The
+ * server delivers a `failed` lifecycle with `{blockedBy: 'tx_interlock',
+ * reason: <snake_case code>}`; this surface keys its blocked vocabulary off
+ * kebab-case, so the mapping step below is where the two spellings meet.
+ * An unrecognised wire code must NOT produce a `KeyBlockedReason` — the
+ * refusal then falls back to the raw server message rather than being
+ * swallowed by a wrong label.
+ */
+const REFUSAL_BY_WIRE_CODE: Readonly<Record<string, KeyBlockedReason>> = Object.freeze({
+  rf_state_unknown: 'rf-state-unknown',
+  radio_transmitting: 'radio-transmitting',
+});
+/** A wire refusal code, if and only if it is one this surface has heard of. */
+export const refusalBlockedReason = (code: string): KeyBlockedReason | undefined =>
+  Object.prototype.hasOwnProperty.call(REFUSAL_BY_WIRE_CODE, code)
+    ? REFUSAL_BY_WIRE_CODE[code] : undefined;
+/**
+ * MOR-1890: the refusal-code → operator-sentence resolver. Moved to
+ * `$lib/i18n/blocked-reasons` so `lib/runtime/adapters` (importing only
+ * semantic CONTRACT types per the v3 ADR) can reach it — re-exported here
+ * to keep this module's surface unchanged.
+ */
+export { blockedReasonLabel } from '$lib/i18n/blocked-reasons';
 
 export type TxTargetUnknownReason = Extract<TxTargetViewModel, { status: 'unknown' }>['reason'];
 /** MOR-1474: `view.txTarget`'s four `status: 'unknown'` reasons
@@ -117,17 +145,11 @@ export const targetUnknownMessage = (reason: TxTargetUnknownReason): string =>
   t('core.rxTx.target.unknown', { reason: targetUnknownReason(reason) });
 
 /**
- * MOR-1792: the `not-eligible` refusal's per-leg codes, re-declared here for
- * the same reason `TxAuthoritySnapshot` re-declares the TxState subset — ADR
- * invariant 11 forbids this zone importing the TX reducer. Member parity with
- * the reducer's own `TxIneligibility` is pinned in
- * `__tests__/rx-tx-authority-parity.test.ts`.
+ * MOR-1792: the `not-eligible` refusal's per-leg codes — moved to
+ * `rx-tx-codes.ts` (MOR-2718) so the page guard's scan can import them;
+ * re-exported here to keep this module's surface unchanged.
  */
-export const FAULT_REASON_CODES = [
-  'cat-ptt-unavailable', 'browser-tx-audio-unavailable', 'control-not-live',
-  'tx-permit-not-allowed', 'tx-target-unknown', 'ptt-not-off',
-  'ptt-not-authoritative', 'no-confirmed-ptt-off', 'authority-epoch-mismatch',
-] as const;
+export { FAULT_REASON_CODES } from './rx-tx-codes';
 export type TxIneligibilityReason = (typeof FAULT_REASON_CODES)[number];
 /**
  * Per-leg catalog keys. Same F4 doctrine as `TARGET_REASON_KEY` above: each
@@ -222,6 +244,30 @@ export function keyBlockedReasons(
 /** The view model's own disabled reasons that concern TX — scope/VFO reasons are not TX gates. */
 export const txDisabledReasons = (view: RadioViewModel): readonly DisabledReason[] =>
   view.disabledReasons.filter((reason) => reason.field.startsWith('tx'));
+
+/**
+ * MOR-2705 — the view-model `disabledReasons` item text (the `viewBlocked`
+ * list the surface renders next to the key-blocked list). A raw
+ * `${field}: ${code}` pair never reaches the operator: every code resolves
+ * to a plain catalog sentence, reusing the existing band/TX reason family
+ * (`core.band.tx.reason.*`, used by `BandSurface.svelte`'s own denial
+ * resolver) and the generic disabled-reason family (`core.disabledReason.*`,
+ * used by `disabled-reason.ts`, `RfFrontEndInstrumentHost.svelte` and
+ * `CwKeyerSurface.svelte`). Table over the full `DisabledReasonCode` union,
+ * precisely the F4-per-code doctrine `TARGET_REASON_KEY` below applies; the
+ * `data-reason`/`data-field` machine attributes on the list item stay.
+ */
+const VIEW_BLOCKED_KEY: Record<DisabledReasonCode, string> = {
+  'out-of-band': 'core.band.tx.reason.outOfBand',
+  'tx-target-unknown': 'core.band.tx.reason.targetUnknown',
+  'capability-unavailable': 'core.band.tx.reason.rangesNotConfigured',
+  'field-not-observed': 'core.disabledReason.unobserved',
+  'mutually-exclusive-control': 'core.disabledReason.mutuallyExclusiveControl',
+  'receiver-lacks-control': 'core.disabledReason.receiverLacksControl',
+};
+/** Resolves one view-model disabled reason to its operator-legible sentence
+ *  in the active locale — fresh `t()` per call, exactly as `blockedLabel`. */
+export const viewBlockedLabel = (item: DisabledReason): string => t(VIEW_BLOCKED_KEY[item.code]);
 
 let sequence = 0;
 /** Per-instance DOM id, so several mounted surfaces keep distinct aria targets. */

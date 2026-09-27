@@ -13,6 +13,7 @@
     type ContinuousScalarPolicy,
     type ContinuousScalarView,
   } from '../../primitives/scalar/continuous-scalar.svelte';
+  import { finiteValue, valueText } from '../../primitives/reading-text';
   import type {
     HBarIssuedStatusPresentation,
     HBarIssuedStatusSnapshot,
@@ -23,6 +24,7 @@
     deriveFilterProps,
     getFilterHandlers,
     getFilterArmed,
+    getFilterShapeArmed,
     getFilterWidthControlFeedback,
     getIfShiftControlFeedback,
     getPbtInnerHzControlFeedback,
@@ -37,6 +39,11 @@
   // pending command is racing toward, never a substitute for the confirmed
   // reading.
   let filterArmed = $derived(getFilterArmed());
+  // MOR-1689: the freshest in-flight `set_filter_shape` target, DISPLAY
+  // ONLY — same doctrine as `filterArmed` above. `filterShape` stays the
+  // sole selection source; armed only marks the SHARP/SOFT button the
+  // pending command is racing toward.
+  let filterShapeArmed = $derived(getFilterShapeArmed());
   let filterWidthFeedback = $derived(getFilterWidthControlFeedback());
   const filterArmedIdBase = $props.id();
 
@@ -102,8 +109,13 @@
   });
   let visibleWidths = $derived.by(() => {
     const values = [...factoryDefaults];
-    const activeIndex = Math.max(0, Math.min(normalizedLabels.length - 1, currentFilter - 1));
-    values[activeIndex] = filterWidth;
+    // MOR-2683: `currentFilter` is `null` while the filter reading has not
+    // arrived — no row may borrow the width as if its filter were current
+    // (`null - 1` clamps to index 0, which would mark FIL1's row).
+    if (currentFilter != null) {
+      const activeIndex = Math.max(0, Math.min(normalizedLabels.length - 1, currentFilter - 1));
+      values[activeIndex] = filterWidth;
+    }
     return values;
   });
   let isTableMode = $derived(!!(filterConfig?.table?.length));
@@ -149,22 +161,26 @@
     // MOR-1409 A12 (adjudication 5245697359, Core #2317): `panel-props.ts`'s
     // `toFilterProps`/`toAudioSpectrumProps` now return NaN for an
     // unobserved filterWidth instead of fabricating 2400 Hz. Guard at this
-    // choke point — the same `'---'`-family placeholder convention
-    // `frequency-format.ts` established at A11 (corr. 5245817033/5245876185)
-    // — rather than let `formatFilterWidth(NaN)` leak the literal "NaNkHz"
-    // into the BW readout and settings modal.
-    if (!Number.isFinite(hz)) return '--- Hz';
-    const formatted = formatFilterWidth(hz);
-    return formatted.includes('k') ? `${formatted}Hz` : `${formatted} Hz`;
+    // choke point — rather than let `formatFilterWidth(NaN)` leak the
+    // literal "NaNkHz" into the settings modal. MOR-2667: an
+    // unread value renders an unlit, EMPTY box in a reserved slot (the
+    // `.modal-fixed-value` rule below), never a placeholder.
+    return valueText(finiteValue(hz), (value) => {
+      const formatted = formatFilterWidth(value);
+      return formatted.includes('k') ? `${formatted}Hz` : `${formatted} Hz`;
+    });
   }
 
-  function formatExactWidthDisplay(hz: number): string {
-    if (!Number.isFinite(hz)) return '--- Hz';
-    if (Number.isInteger(hz) && hz >= 1000 && hz % 100 === 0) {
-      const kilohertz = hz / 1000;
-      return `${Number.isInteger(kilohertz) ? kilohertz : kilohertz.toFixed(1)}kHz`;
-    }
-    return `${hz} Hz`;
+  function formatExactWidthDisplay(hz: number | null): string {
+    // MOR-2667: an unread value renders an unlit, EMPTY box in a reserved
+    // slot — never a `'--- Hz'` placeholder.
+    return valueText(finiteValue(hz), (value) => {
+      if (Number.isInteger(value) && value >= 1000 && value % 100 === 0) {
+        const kilohertz = value / 1000;
+        return `${Number.isInteger(kilohertz) ? kilohertz : kilohertz.toFixed(1)}kHz`;
+      }
+      return `${value} Hz`;
+    });
   }
 
   let currentWidthTable = $derived(filterConfig?.table ?? []);
@@ -346,42 +362,55 @@
 
   function formatIssuedWidthStatus(snapshot: Readonly<HBarIssuedStatusSnapshot>): string {
     const feedback = snapshot.view.feedback;
-    const requested = formatExactWidthDisplay(feedback.requestedTarget ?? Number.NaN);
-    const confirmed = formatExactWidthDisplay(feedback.confirmed ?? Number.NaN);
+    // MOR-2667: a screen reader must never hear a placeholder — while a
+    // value the message needs is unread, the announcement is skipped
+    // entirely (same doctrine as FilterSurface's MOR-2648 width formatter).
+    const requested = formatExactWidthDisplay(feedback.requestedTarget);
+    const confirmed = formatExactWidthDisplay(feedback.confirmed);
     let message: string;
     switch (snapshot.announcement.phase) {
       case 'submitted':
       case 'queued':
       case 'dispatched':
       case 'awaiting-confirmation':
+        if (requested === '') return '';
         message = t('core.filter.width.pendingAnnouncement', { target: requested });
         break;
       case 'confirmed':
+        if (confirmed === '') return '';
         message = t('core.filter.width.confirmedAnnouncement', { confirmed });
         break;
       case 'failed':
+        if (requested === '' || confirmed === '') return '';
         message = t('core.filter.width.failedAnnouncement', { target: requested, confirmed });
         break;
       case 'timed-out':
+        if (requested === '' || confirmed === '') return '';
         message = t('core.filter.width.timedOutAnnouncement', { target: requested, confirmed });
         break;
       case 'cancelled':
+        if (requested === '' || confirmed === '') return '';
         message = t('core.filter.width.cancelledAnnouncement', { target: requested, confirmed });
         break;
       case 'superseded':
+        if (requested === '' || confirmed === '') return '';
         message = t('core.filter.width.supersededAnnouncement', { target: requested, confirmed });
         break;
       default:
         message = '';
     }
+    if (message.length === 0) return '';
     return snapshot.view.error === null ? message
       : `${message.replace(/[.!?]$/, '')}: ${snapshot.view.error}`;
   }
   let filterWidthStatusText = $state<string | null>(null);
   const filterWidthStatusPresentation: Readonly<HBarIssuedStatusPresentation> = {
     get text() { return filterWidthStatusText; },
-    format: formatIssuedWidthStatus,
-    accept(text) { filterWidthStatusText = text; },
+      format: formatIssuedWidthStatus,
+      // MOR-2667: a formatter that skips an announcement returns '' — an
+      // empty live region is never minted (same skip as FilterSurface's
+      // MOR-2648 nextFilterWidthAnnouncement).
+      accept(text) { filterWidthStatusText = text === '' ? null : text; },
   };
   function consumeReadOnlyWidthStatus(view: Readonly<ContinuousScalarView>): void {
     if (view.evidence !== 'command-feedback') return;
@@ -411,36 +440,46 @@
   ): string {
     const feedback = snapshot.view.feedback;
     const controlName = t(`core.filter.passband.control.${control}`);
-    const target = feedback.requestedTarget !== null && Number.isFinite(feedback.requestedTarget)
-      ? `${feedback.requestedTarget} Hz` : '--- Hz';
-    const confirmed = feedback.confirmed !== null && Number.isFinite(feedback.confirmed)
-      ? `${feedback.confirmed} Hz` : '--- Hz';
+    // MOR-2667: a screen reader must never hear a placeholder — while a
+    // value the message needs is unread, the announcement is skipped
+    // entirely (same doctrine as FilterSurface's MOR-2648 passband
+    // formatter).
+    const hzText = (value: number): string => `${value} Hz`;
+    const target = valueText(finiteValue(feedback.requestedTarget), hzText);
+    const confirmed = valueText(finiteValue(feedback.confirmed), hzText);
     let message: string;
     switch (snapshot.announcement.phase) {
       case 'submitted':
       case 'queued':
       case 'dispatched':
       case 'awaiting-confirmation':
+        if (target === '') return '';
         message = t('core.filter.passband.pendingAnnouncement', { control: controlName, target });
         break;
       case 'confirmed':
+        if (confirmed === '') return '';
         message = t('core.filter.passband.confirmedAnnouncement', { control: controlName, confirmed });
         break;
       case 'failed':
+        if (target === '' || confirmed === '') return '';
         message = t('core.filter.passband.failedAnnouncement', { control: controlName, target, confirmed });
         break;
       case 'timed-out':
+        if (target === '' || confirmed === '') return '';
         message = t('core.filter.passband.timedOutAnnouncement', { control: controlName, target, confirmed });
         break;
       case 'cancelled':
+        if (target === '' || confirmed === '') return '';
         message = t('core.filter.passband.cancelledAnnouncement', { control: controlName, target, confirmed });
         break;
       case 'superseded':
+        if (target === '' || confirmed === '') return '';
         message = t('core.filter.passband.supersededAnnouncement', { control: controlName, target, confirmed });
         break;
       default:
         message = '';
     }
+    if (message.length === 0) return '';
     return snapshot.view.error === null ? message
       : `${message.replace(/[.!?]$/, '')}: ${snapshot.view.error}`;
   }
@@ -451,7 +490,9 @@
     return {
       get text() { return passbandStatusText[control]; },
       format: (snapshot) => formatIssuedPassbandStatus(control, snapshot),
-      accept(text) { passbandStatusText[control] = text; },
+      // MOR-2667: a formatter that skips an announcement returns '' — an
+      // empty live region is never minted.
+      accept(text) { passbandStatusText[control] = text === '' ? null : text; },
     };
   }
   const ifShiftStatusPresentation = passbandIssuedStatus('ifShift');
@@ -603,7 +644,7 @@
       aria-busy={filterWidthFeedback.busy}
     >
       <span class="bw-label">BW</span>
-      <span class="bw-value" data-confirmed-width>{formatExactWidthDisplay(filterWidthFeedback.confirmed ?? Number.NaN)}</span>
+      <span class="bw-value" data-confirmed-width>{formatExactWidthDisplay(filterWidthFeedback.confirmed)}</span>
       {#if filterWidthFeedback.busy && lifecycleTarget !== null}
         <span class="bw-pending-target" data-pending-width-target>
           PENDING {formatExactWidthDisplay(lifecycleTarget)}
@@ -737,24 +778,27 @@
         <div class="shape-section">
           <div class="shape-title">Shape</div>
           <div class="shape-buttons">
-            <button
-              type="button"
-              class="shape-button v2-control-button"
-              class:active={filterShape === 0}
-              style="--control-accent:var(--v2-accent-cyan); --control-active-text:var(--v2-text-white)"
-              onclick={() => onFilterShapeChange?.(0)}
-            >
-              SHARP
-            </button>
-            <button
-              type="button"
-              class="shape-button v2-control-button"
-              class:active={filterShape === 1}
-              style="--control-accent:var(--v2-accent-green-bright); --control-active-text:var(--v2-bg-darkest)"
-              onclick={() => onFilterShapeChange?.(1)}
-            >
-              SOFT
-            </button>
+            {#each [{ value: 0, label: 'SHARP' }, { value: 1, label: 'SOFT' }] as shapeChoice}
+              {@const isShapeArmed = filterShapeArmed.armed && filterShapeArmed.value === shapeChoice.value}
+              {@const shapeArmedId = `${filterArmedIdBase}-shape-${shapeChoice.value}`}
+              <button
+                type="button"
+                class="shape-button v2-control-button"
+                class:active={filterShape === shapeChoice.value}
+                style={shapeChoice.value === 0
+                  ? '--control-accent:var(--v2-accent-cyan); --control-active-text:var(--v2-text-white)'
+                  : '--control-accent:var(--v2-accent-green-bright); --control-active-text:var(--v2-bg-darkest)'}
+                data-armed={isShapeArmed ? 'true' : undefined}
+                aria-busy={isShapeArmed}
+                aria-describedby={isShapeArmed ? shapeArmedId : undefined}
+                onclick={() => onFilterShapeChange?.(shapeChoice.value)}
+              >
+                {shapeChoice.label}
+              </button>
+              {#if isShapeArmed}
+                <span id={shapeArmedId} class="sr-only">{t('core.filter.select.pendingAnnouncement')}</span>
+              {/if}
+            {/each}
           </div>
         </div>
       {/if}
@@ -839,7 +883,16 @@
   .bw-value {
     font-size: 14px;
     font-weight: 700;
+    /* MOR-2667: the BW readout stays reserved in every state — 7ch covers
+       the widest text formatExactWidthDisplay renders ('9999 Hz',
+       '12.5kHz'); tabular digits keep a changing value from shifting the
+       row; the zero-width strut keeps the empty unread box's line-box
+       metrics in this baseline-aligned flex row. */
+    min-inline-size: 7ch;
+    font-variant-numeric: tabular-nums;
   }
+
+  .bw-value:empty::before { content: '\200b'; }
 
   .bw-pending-target {
     border: 1px dashed var(--v2-accent-cyan);
@@ -1002,6 +1055,16 @@
     color: var(--v2-text-subdued);
     font-size: 12px;
   }
+
+  /* MOR-2667: the fixed-width modal value stays reserved in every state —
+     7ch covers the widest formatWidthDisplay text ('999 Hz', '9.9kHz');
+     the zero-width strut keeps the empty unread box's line-box metrics. */
+  .modal-fixed-value {
+    min-inline-size: 7ch;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .modal-fixed-value:empty::before { content: '\200b'; }
 
   @media (max-width: 640px) {
     .filter-modal {

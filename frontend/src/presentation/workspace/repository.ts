@@ -93,15 +93,27 @@ function load(
 /** Total: every storage state yields a validated result, nothing throws. */
 export function loadWorkspace(storage: WorkspaceStorage): WorkspaceLoad {
   const stored = readKey(storage, WORKSPACE_STORAGE_KEY);
+  const migrated = readKey(storage, WORKSPACE_MIGRATION_SENTINEL_KEY);
   if (stored !== null) {
-    return load(readWorkspaceJson(stored), 'stored', storedThemeChosen(stored));
-  }
-  if (readKey(storage, WORKSPACE_MIGRATION_SENTINEL_KEY) !== null) {
+    const result = readWorkspaceJson(stored);
+    // MOR-1300: 'reset' (corrupt/unreadable bytes) must not short-circuit the
+    // legacy migration while it has never run — key PRESENCE used to be the
+    // gate, now readability is. The operator's v2 preferences are recoverable
+    // and sitting right there, so route into the migration branch below —
+    // with the SAME source/notice any first run would get. Narrowed by N1:
+    // 'version-discarded' NEVER falls back (an out-of-window newer object
+    // keeps its frozen MOR-1076 discard + visible notice, never-overwrite).
+    // With the sentinel set, a reset stays the plain stored-branch reset.
+    if (result.outcome !== 'reset' || migrated !== null) {
+      return load(result, 'stored', storedThemeChosen(stored));
+    }
+  } else if (migrated !== null) {
     // A cleared key is "back to defaults", never "resurrect a legacy choice".
     return load(readWorkspaceJson(EMPTY_WORKSPACE_JSON), 'absent', false);
   }
-  // First run. `buildWorkspaceInput` sets `theme` only when a legacy theme key
-  // existed, so its presence IS the migrated operator's explicitness.
+  // First run (or MOR-1300 fallback). `buildWorkspaceInput` sets `theme` only
+  // when a legacy theme key existed, so its presence IS the migrated
+  // operator's explicitness.
   const snapshot = snapshotLegacyStorage(storage);
   return load(readLegacyWorkspace(snapshot), 'migrated', 'theme' in buildWorkspaceInput(snapshot));
 }

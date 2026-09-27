@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Literal, Protocol
+from typing import Any, Final, Literal, Protocol
 
 from rigplane.core.exceptions import BackgroundSendDropped
 from rigplane.core.state_acquisition_policy import (
@@ -74,6 +74,7 @@ __all__ = [
     "derive_tx_active",
     "provider_uses_civ_acquisition",
     "resolve_available_when",
+    "tx_active",
 ]
 
 
@@ -409,6 +410,17 @@ _CLASS_RANK: dict[AcquisitionClass, int] = {
     klass: rank for rank, klass in enumerate(AcquisitionClass)
 }
 _MIN_RECONCILIATION_MAX_AGE = 1e-9
+#: MOR-1898: liveness budget for a request whose ``max_age`` is the
+#: freshness epsilon (``_MIN_RECONCILIATION_MAX_AGE`` or below) and that
+#: carries no explicit ``timeout``. Such a
+#: ``max_age`` only says "no prior observation may satisfy this" — it is
+#: a freshness threshold, not a deadline. Deriving the liveness deadline
+#: from it made the request born expired: the first drain sent it, the
+#: next tick reported a terminal ``acquisition_request_timeout`` for an
+#: answer that was merely one drain tick away (MOR-1898). One answer
+#: window, matching the web poller's
+#: ``_ACQUISITION_ANSWER_WINDOW_SECONDS``.
+_EPSILON_MAX_AGE_LIVENESS_SECONDS: Final[float] = 0.5
 # MOR-1490 review R2 (Finding 4): cap the number of never-before-queued paths
 # a single prime_unobserved() call will enqueue. Uncapped, a profile carrying
 # ~20 non-polling field_policies overrides would emit ~20 CI-V frames in one
@@ -863,12 +875,28 @@ class AcquisitionScheduler:
         that has already sent them skips. With it, such a merge is issued
         under a new id instead. It is not carried through the external-CAT
         deferral (:class:`_PendingEnsureFresh`).
+
+        MOR-1898: ``max_age`` is a freshness threshold — how old a confirmed
+        StateStore observation may be — never a liveness deadline on its own.
+        This split applies only to the post-write confirmation shape: a
+        ``max_age`` at the freshness epsilon (the "no prior observation may
+        satisfy this" floor used by post-write confirmations, reconciliation
+        fallbacks and the web poller's post-write readback) *without* an
+        explicit ``timeout``. Only that request keeps a real liveness budget —
+        one answer window — instead of expiring the instant it is queued. Every
+        other request keeps the established deadline: ``requested_at +
+        max_age``, with ``timeout`` still carried for the backend executor.
         """
 
         normalized_paths = _normalize_paths(paths)
         _validate_positive(max_age, label="max_age")
         normalized_priority = AcquisitionPriority(str(priority))
         now = self._clock.now()
+        liveness_deadline = (
+            now + _EPSILON_MAX_AGE_LIVENESS_SECONDS
+            if timeout is None and max_age <= _MIN_RECONCILIATION_MAX_AGE
+            else None
+        )
 
         availability = self._availability_for(normalized_paths)
         if availability is not None:
@@ -890,7 +918,11 @@ class AcquisitionScheduler:
                             reasons=(reason,),
                             timeout=timeout,
                             requested_at_monotonic=now,
-                            deadline_monotonic=now + max_age,
+                            deadline_monotonic=(
+                                now + max_age
+                                if liveness_deadline is None
+                                else liveness_deadline
+                            ),
                             external_cat_owner=self._external_cat_owner,
                         ),
                     )
@@ -904,6 +936,7 @@ class AcquisitionScheduler:
                         timeout=timeout,
                         requested_at=now,
                         external_cat_owner=self._external_cat_owner,
+                        deadline_monotonic=liveness_deadline,
                         require_fresh_dispatch=require_fresh_dispatch,
                     )
                 )
@@ -927,6 +960,7 @@ class AcquisitionScheduler:
             timeout=timeout,
             requested_at=now,
             external_cat_owner=None,
+            deadline_monotonic=liveness_deadline,
             require_fresh_dispatch=require_fresh_dispatch,
         )
         if not queued_requests:
@@ -1039,6 +1073,7 @@ class AcquisitionScheduler:
         now: float | None = None,
         tx_active: bool = False,
         observed_active: str | None = None,
+        availability: Mapping[FieldPath, bool | None] = _NO_RESOLVED_AVAILABILITY,
     ) -> tuple[AcquisitionRequest, ...]:
         """Queue and return policy-cadence poll requests that are due.
 
@@ -1050,6 +1085,17 @@ class AcquisitionScheduler:
         fresh cadence interval from the TX-start moment. Callers derive
         ``tx_active`` from their own observed PTT state; this method has no
         opinion on where that comes from.
+
+        ``availability`` carries what :func:`resolve_available_when` made of
+        each conditional field's declared ``available_when`` clauses
+        (MOR-2748): a cadence group whose paths all resolve ``False`` is
+        skipped exactly like the ``tx_only`` gate above — no query is sent
+        and the cadence clock is untouched, so the group is due the moment
+        the clause set holds again. A ``None`` resolution (a clause source
+        unobserved) and any path absent from the map keep their previous
+        membership; a group with at least one available path still
+        dispatches. :meth:`StateFreshnessService.tick` recomputes the map
+        against the current snapshot on every pass.
 
         ``observed_active`` is the currently observed value of
         ``global.slow_state.active`` (MOR-2599): on a profile that polls
@@ -1107,7 +1153,9 @@ class AcquisitionScheduler:
                 ):
                     del self._cadence_by_key[key]
         timestamp = self._clock.now() if now is None else now
-        due = self._due_poll_groups(timestamp, tx_active=tx_active)
+        due = self._due_poll_groups(
+            timestamp, tx_active=tx_active, availability=availability
+        )
         queued: list[AcquisitionRequest] = []
         for key, grouped_paths in due:
             policy = key.policy
@@ -1350,6 +1398,31 @@ class AcquisitionScheduler:
         """Return the first recorded defect, or ``None`` if there is none."""
 
         return self._startup_defect
+
+    def consecutive_request_timeouts(self, path: FieldPath) -> int:
+        """Return the real answer-window timeouts still standing for *path*.
+
+        MOR-2749: the startup gate reads this as the count of failed
+        re-read attempts for a path the radio never answers — the same
+        MOR-2614 consecutive-timeout accounting
+        :meth:`record_acquisition_failure` keeps per request key, reset by
+        any answer. A key matches the path when its scope, family,
+        receiver and slot do; the acquisition method and policy of the key
+        are not part of the match, so a provider that re-reads a path
+        through more than one of them reports the worst of them.
+        """
+
+        return max(
+            (
+                count
+                for key, count in self._consecutive_timeout_by_key.items()
+                if key.scope == path.scope.value
+                and key.family == path.family.value
+                and key.receiver_id == path.receiver_id
+                and key.slot == (None if path.slot is None else path.slot.value)
+            ),
+            default=0,
+        )
 
     def unobserved_startup_paths(
         self,
@@ -1786,6 +1859,7 @@ class AcquisitionScheduler:
         now: float,
         *,
         tx_active: bool = False,
+        availability: Mapping[FieldPath, bool | None] = _NO_RESOLVED_AVAILABILITY,
     ) -> tuple[tuple[_AcquisitionRequestKey, tuple[FieldPath, ...]], ...]:
         due: list[tuple[_AcquisitionRequestKey, FieldPath]] = []
         for key, paths in self._poll_cadence_groups().items():
@@ -1798,6 +1872,14 @@ class AcquisitionScheduler:
                 # MOR-1485: skip entirely rather than dedupe/defer — no query
                 # sent, no cadence clock touched, so a group due since before
                 # TX started fires on the very next tx_active=True call.
+                continue
+            if all(availability.get(path, True) is False for path in paths):
+                # MOR-2748: every path in this group resolves absent — its
+                # declared ``available_when`` clause set is contradicted by
+                # an observed value. Like the tx_only gate above: no query
+                # sent, no cadence clock touched, so the group fires on the
+                # first computation whose resolution holds again. A ``None``
+                # resolution or a path absent from the map never skips.
                 continue
             state = self._cadence_state_for(key, policy, now=now)
             if state.next_due_monotonic <= now:
@@ -2299,6 +2381,30 @@ def derive_tx_active(store: StateStore) -> bool:
     return ptt_field.freshness is FreshnessState.FRESH and bool(ptt_field.value)
 
 
+def tx_active(
+    store: StateStore | None,
+    hint: Callable[[], bool] | None,
+) -> bool:
+    """Observed PTT, or a managed-key hint when the radio has not confirmed yet.
+
+    MOR-2638: one body for the acquisition drain and
+    :class:`StateFreshnessService`. ``store`` may be ``None`` on the drain
+    path (no store yet); that reads as not transmitting. A failing hint is
+    logged at debug and counts as False.
+    """
+
+    observed = False if store is None else derive_tx_active(store)
+    if observed:
+        return True
+    if hint is None:
+        return False
+    try:
+        return bool(hint())
+    except Exception:
+        logger.debug("tx_active_hint failed", exc_info=True)
+        return False
+
+
 def availability_clause_holds(clause: AvailabilityClause, value: Any) -> bool:
     """Return whether one ``available_when`` clause holds for ``value``.
 
@@ -2430,7 +2536,8 @@ class StateFreshnessService:
         queues the reconciliations that ageing produced, and calls
         :meth:`AcquisitionScheduler.due_requests` (when a scheduler was
         wired) with the transmit fact :func:`derive_tx_active` reads from
-        the same store.
+        the same store plus the :func:`resolve_available_when` resolution
+        against the same snapshot (MOR-2748).
 
         Invariant: ``now`` (explicit or defaulted) must come from the same
         monotonic domain as ``self._next_prime_monotonic`` — callers that
@@ -2451,26 +2558,18 @@ class StateFreshnessService:
         if scheduler is not None:
             scheduler.due_requests(
                 now=timestamp,
-                tx_active=self._tx_active(),
+                tx_active=tx_active(self._store, self._tx_active_hint),
                 observed_active=derive_active_receiver_value(self._store),
+                # MOR-2748: recomputed against the current snapshot every
+                # pass; a group whose paths all resolve False is skipped,
+                # and fires again the first pass the declaration holds.
+                availability=resolve_available_when(
+                    scheduler._profile, self._store.snapshot()
+                ),
             )
         if (delta.freshness or delta.reconciliation_requests) and self._on_delta:
             self._on_delta(delta)
         return delta
-
-    def _tx_active(self) -> bool:
-        """Observed PTT, or a managed-key hint when the radio has not confirmed yet."""
-
-        if derive_tx_active(self._store):
-            return True
-        hint = self._tx_active_hint
-        if hint is None:
-            return False
-        try:
-            return bool(hint())
-        except Exception:
-            logger.debug("tx_active_hint failed", exc_info=True)
-            return False
 
     def _discard_declared_absent(self) -> None:
         """Remove stored fields the profile declares absent in this state.

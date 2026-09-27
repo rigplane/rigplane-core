@@ -1411,8 +1411,12 @@ describe('RF gain additive display observation', () => {
       delete indicator.sMeter.source;
       delete indicator.sMeter.domain;
     }
+    // MOR-2706: `bandwidthMaxHz` joins the structural extras the digest
+    // drops — it is a capability echo fixed when caps load, not a strict
+    // model member the digest guards (same class as `display`).
     const strictJson = JSON.stringify(legacyView, (key, value) => [
       'display', 'activeFilterConfiguration', 'dataModeChoices', 'modInputSource', 'modInputChoices',
+      'bandwidthMaxHz',
     ].includes(key) ? undefined : value);
     const digest = createHash('sha256').update(strictJson).digest('hex');
     // MOR-2425/R40+R41: ONE digest for both freshness values. Read off this
@@ -1426,9 +1430,11 @@ describe('RF gain additive display observation', () => {
     // MOR-2538: re-read after `radioWideIndicators.actions` dropped the quickSplit/quickDualWatch/speak members (backend-only commands now).
     // MOR-2588: re-read after the per-receiver AGC-time gate began deciding from the served `agc_time_constant` tag (INDICATOR_CAPS carries none, so the control is now structurally absent).
     // MOR-2640: re-read after filterPassband gained narrow (structurally absent in this fixture); the payload diff from the base adds only that member.
+    // MOR-2726: re-read after the notch-width gate began deciding from the served `manual_notch_width` tag (INDICATOR_CAPS carries none, so the control is now structurally absent).
     expect(view.dsp?.agcMode.reading).toEqual({ status: 'known', value: 0 });
     expect(view.receiverIndicators?.[0].agcMode.reading).toEqual({ status: 'known', value: 0 });
-    expect(digest).toBe('b90d372ec5dfd37d22b659d079fabc85bd00db4117f474fc7989c8cfbd147146');
+    expect(view.dsp?.manualNotchWidth.availability).toEqual({ structural: false, operational: false });
+    expect(digest).toBe('f6d3ff0d38a5e9d9389043d041f12d80854cbfdedf414eb563a87fe31cba485d');
   });
   it.each([false, true])('projects the explicit display and HOLDS RF gain, stale=%s', (stale) => {
     const view = model(displayState(stale), displayCaps, RECEIVING);

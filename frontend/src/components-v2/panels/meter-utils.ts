@@ -12,12 +12,16 @@
 //   level fns normalize it against the table's top knot. Re-running the
 //   value through the curve would be a double conversion.
 // - An explicit raw domain is authoritative even if local capability metadata
-//   also has a table. Every function here degrades to an
-//   honest raw-scale reading tagged "raw" (e.g. "158 raw"; MOR-1527 — a
-//   naked number here was previously indistinguishable from a real
-//   engineering-unit reading), a neutral raw/255 bar, and no fault claims
-//   — never a unit claim through a borrowed radio's curve. There are NO
-//   hardcoded per-radio fallback curves in this module.
+//   also has a table. Every formatter here renders nothing — no number, no
+//   "raw" word (MOR-2722 part B: a raw count is not an operator reading,
+//   same ruling as the S-meter in MOR-2705 part 4a) — while the level fns
+//   keep a neutral raw/255 bar and no fault claims — never a unit claim
+//   through a borrowed radio's curve. There are NO hardcoded per-radio
+//   fallback curves in this module.
+// - An unknown domain is uninterpretable: every tile's label already implies
+//   a unit, so a bare number would invent one. Every formatter renders it as
+//   the empty string — exactly the unread treatment (MOR-2651) — and the
+//   level/scale functions already withhold geometry the same way.
 //
 // Capability-derived calibration and redline data is routed through the
 // runtime adapter (Tier 2 batch 2) so this helper does not reach into
@@ -129,14 +133,6 @@ function formatAgainstTop(
   return `${floored.toFixed(1)} ${unit}`;
 }
 
-/** Honest raw readout for an uncalibrated meter — the device-scale number
- *  tagged "raw" so it is never mistaken for an engineering-unit claim
- *  (MOR-1527: the pre-fix bug rendered this as a naked number, e.g. a Vd
- *  tile reading a bare "158" with no indication it wasn't volts). */
-function formatRaw(value: number): string {
-  return `${Math.round(Math.max(0, Math.min(RAW_SCALE_MAX, value)))} raw`;
-}
-
 const ENGINEERING_UNIT_LABEL = {
   db: 'dB',
   normalized: 'normalized',
@@ -145,10 +141,6 @@ const ENGINEERING_UNIT_LABEL = {
   v: 'V',
   a: 'A',
 } as const satisfies Readonly<Record<MeterEngineeringUnit, string>>;
-
-function formatUnknownUnit(value: number): string {
-  return `${value} unit unknown`;
-}
 
 function formatDeclaredEngineering(value: number, unit: MeterEngineeringUnit): string {
   return `${value} ${ENGINEERING_UNIT_LABEL[unit]}`;
@@ -164,13 +156,13 @@ function matchesEngineering(
 // ---- RF power (W when calibrated) ----
 
 export function formatPowerWatts(value: number, domain?: MeterValueDomain): string {
-  if (domain?.kind === 'raw') return formatRaw(value);
-  if (domain?.kind === 'unknown') return formatUnknownUnit(value);
+  if (domain?.kind === 'raw') return '';
+  if (domain?.kind === 'unknown') return '';
   if (domain?.kind === 'engineering' && domain.unit !== 'w') {
     return formatDeclaredEngineering(value, domain.unit);
   }
   const cal = getCal('power');
-  if (!cal && domain === undefined) return formatRaw(value);
+  if (!cal && domain === undefined) return '';
   const watts = Math.max(0, cal ? Math.min(topActual(cal), value) : value);
   return `${Math.round(watts)}W`;
 }
@@ -210,14 +202,14 @@ export function hasSwrRatioScale(domain?: MeterValueDomain): boolean {
 }
 
 export function formatSwr(value: number, domain?: MeterValueDomain): string {
-  if (domain?.kind === 'raw') return formatRaw(value);
-  if (domain?.kind === 'unknown') return formatUnknownUnit(value);
+  if (domain?.kind === 'raw') return '';
+  if (domain?.kind === 'unknown') return '';
   if (domain?.kind === 'engineering' && domain.unit !== 'ratio') {
     return formatDeclaredEngineering(value, domain.unit);
   }
   const cal = getCal('swr');
   if (!cal) {
-    return domain === undefined ? formatRaw(value) : Math.max(1, value).toFixed(1);
+    return domain === undefined ? '' : Math.max(1, value).toFixed(1);
   }
   const top = topActual(cal);
   // At/beyond the table top the true ratio is off-scale — render the
@@ -254,8 +246,8 @@ export function isSwrFault(value: number, domain?: MeterValueDomain): boolean {
 //      otherwise; plain raw with no data at all) ----
 
 export function formatAlc(value: number, domain?: MeterValueDomain): string {
-  if (domain?.kind === 'raw') return formatRaw(value);
-  if (domain?.kind === 'unknown') return formatUnknownUnit(value);
+  if (domain?.kind === 'raw') return '';
+  if (domain?.kind === 'unknown') return '';
   if (domain?.kind === 'engineering' && domain.unit !== 'normalized') {
     return formatDeclaredEngineering(value, domain.unit);
   }
@@ -266,7 +258,7 @@ export function formatAlc(value: number, domain?: MeterValueDomain): string {
   if (redline !== null && redline > 0) {
     return `${Math.round((Math.max(0, Math.min(redline, value)) / redline) * 100)}%`;
   }
-  return formatRaw(value);
+  return '';
 }
 
 /** ALC's calibrated scale — the value arrives normalized 0-1 (file header). */
@@ -304,13 +296,13 @@ export function isAlcFault(value: number, domain?: MeterValueDomain): boolean {
 // ---- Vd / Id / COMP (V / A / dB when calibrated) ----
 
 export function formatVolts(value: number, domain?: MeterValueDomain): string {
-  if (domain?.kind === 'raw') return formatRaw(value);
-  if (domain?.kind === 'unknown') return formatUnknownUnit(value);
+  if (domain?.kind === 'raw') return '';
+  if (domain?.kind === 'unknown') return '';
   if (domain?.kind === 'engineering' && domain.unit !== 'v') {
     return formatDeclaredEngineering(value, domain.unit);
   }
   const cal = getCal('vd');
-  if (!cal && domain === undefined) return formatRaw(value);
+  if (!cal && domain === undefined) return '';
   return formatAgainstTop(value, cal, 'V');
 }
 
@@ -335,13 +327,13 @@ export function vdLevel(value: number, domain?: MeterValueDomain): number | null
 }
 
 export function formatAmps(value: number, domain?: MeterValueDomain): string {
-  if (domain?.kind === 'raw') return formatRaw(value);
-  if (domain?.kind === 'unknown') return formatUnknownUnit(value);
+  if (domain?.kind === 'raw') return '';
+  if (domain?.kind === 'unknown') return '';
   if (domain?.kind === 'engineering' && domain.unit !== 'a') {
     return formatDeclaredEngineering(value, domain.unit);
   }
   const cal = getCal('id');
-  if (!cal && domain === undefined) return formatRaw(value);
+  if (!cal && domain === undefined) return '';
   return formatAgainstTop(value, cal, 'A');
 }
 
@@ -363,13 +355,13 @@ export function idLevel(value: number, domain?: MeterValueDomain): number | null
 }
 
 export function formatCompDb(value: number, domain?: MeterValueDomain): string {
-  if (domain?.kind === 'raw') return formatRaw(value);
-  if (domain?.kind === 'unknown') return formatUnknownUnit(value);
+  if (domain?.kind === 'raw') return '';
+  if (domain?.kind === 'unknown') return '';
   if (domain?.kind === 'engineering' && domain.unit !== 'db') {
     return formatDeclaredEngineering(value, domain.unit);
   }
   const cal = getCal('comp');
-  if (!cal && domain === undefined) return formatRaw(value);
+  if (!cal && domain === undefined) return '';
   return `${Math.round(Math.max(0, cal ? Math.min(topActual(cal), value) : value))} dB`;
 }
 
@@ -393,11 +385,11 @@ export function compLevel(value: number, domain?: MeterValueDomain): number | nu
 // ---- S-meter (dB-rel-S9 when calibrated; MOR-1451) ----
 
 /**
- * Formats calibrated S-meter value (dB relative to S9) as an S-unit string.
- * Falls back to the honest raw-tagged reading (`formatRaw`, e.g. "53 raw";
- * MOR-1527) when the radio has no s_meter calibration table — never a
- * reading borrowed from a different radio's curve (MOR-1451), and never a
- * naked number indistinguishable from a real S-unit claim (MOR-1535).
+ * Formats a calibrated S-meter value (dB relative to S9) as an S-unit string.
+ * Renders nothing when the radio has no s_meter calibration table — a raw
+ * count is not an operator reading, and a calibrated-looking number would be
+ * invented (MOR-1451, MOR-2705 part 4a). The bar still moves: callers keep
+ * `sLevel`'s raw-proportional fill.
  *
  * The calibrated branch defers entirely to `smeter-scale.ts`'s
  * `calibratedToSUnit` (MOR-2024) — this file no longer runs its own S-unit
@@ -409,7 +401,7 @@ export function compLevel(value: number, domain?: MeterValueDomain): number | nu
 export function formatSMeter(actual: number): string {
   const calibration = getMeterCalibration('s_meter') ?? [];
   if (!isSmeterCalibrated(calibration)) {
-    return formatRaw(actual);
+    return '';
   }
   return calibratedToSUnit(actual, calibration);
 }

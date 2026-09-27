@@ -188,6 +188,13 @@ export interface NotchWidthChoice {
   label: string;
 }
 
+/** One profile-declared break-in choice (MOR-2729): a raw wire value with
+ *  its display label, in the profile's own value order. */
+export interface BreakInChoice {
+  value: number;
+  label: string;
+}
+
 export interface Capabilities {
   [extension: string]: unknown;
   model: string;
@@ -211,7 +218,7 @@ export interface Capabilities {
   filterWidthMin?: number;   // Min filter width in Hz (default 50)
   filterWidthMax?: number;   // Max filter width in Hz (default 9999)
   filterConfig?: Record<string, FilterModeConfig>;
-  attValues?: number[];   // Attenuator dB steps (e.g. [0,20] for IC-7300, [0,6,12,18] for IC-7610)
+  attValues?: number[];   // Attenuator dB steps (e.g. [0,20] for IC-7300; IC-7610 is 16 x 3 dB steps per rigs/ic7610.toml)
   attLabels?: Record<string, string>;  // Attenuator labels (e.g. {"0":"OFF","6":"6dB"})
   preValues?: number[];   // Preamp levels: 0 = off, 1 = P1, 2 = P2, etc.
   preLabels?: Record<string, string>;  // Preamp labels (e.g. {"0":"OFF","1":"P1","2":"P2"})
@@ -223,6 +230,10 @@ export interface Capabilities {
    *  order — present with the profile's choices, `[]` when the radio
    *  declares none, absent on older servers (scalar fallback). */
   notchWidthChoices?: NotchWidthChoice[];
+  /** Profile-declared break-in choices (MOR-2729), in value order — `[]`
+   *  when the radio declares none (X6100, X6200: no break-in control at
+   *  all); an absent field means the same `[]` (no break-in control). */
+  breakInChoices?: BreakInChoice[];
   /** RF/SQL control model (MOR-1447 leg 2): "separate" (default, two
    *  independent controls) or "combined" (Icom-style single RF/SQL knob).
    *  Absent on older servers — treat as "separate". */
@@ -509,6 +520,24 @@ function normalizeNotchWidthChoices(raw: Record<string, unknown>): void {
   raw.notchWidthChoices = Object.freeze(choices);
 }
 
+function isBreakInChoice(value: unknown): value is BreakInChoice {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const entry = value as Record<string, unknown>;
+  return typeof entry.value === 'number' && Number.isInteger(entry.value)
+    && Number.isSafeInteger(entry.value) && typeof entry.label === 'string';
+}
+
+/** MOR-2729: same treatment as the notch-width list above — the profile's
+ *  own order, malformed entries dropped, frozen in place. */
+function normalizeBreakInChoices(raw: Record<string, unknown>): void {
+  if (!Object.prototype.hasOwnProperty.call(raw, 'breakInChoices')) return;
+  const value = raw.breakInChoices;
+  if (!Array.isArray(value)) invalid('$.breakInChoices', 'an array');
+  const choices = value.filter(isBreakInChoice)
+    .map((entry) => Object.freeze({ value: entry.value, label: entry.label }));
+  raw.breakInChoices = Object.freeze(choices);
+}
+
 export function validateCapabilities(value: unknown): Capabilities {
   const raw = requireRecord(value, '$');
 
@@ -528,6 +557,7 @@ export function validateCapabilities(value: unknown): Capabilities {
     }
   }
   normalizeNotchWidthChoices(raw);
+  normalizeBreakInChoices(raw);
 
   const txAudioFields = [
     'audioTx',

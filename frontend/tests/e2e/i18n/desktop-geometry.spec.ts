@@ -103,6 +103,9 @@ interface BootOptions {
    *  not carry — without it no `.spectrum-slot` renders and there is no
    *  hosted row at all (round-2 finding 2). */
   patch?: (state: ServerState, caps: Capabilities) => void;
+  /** MOR-2674: fail the managed-transmit fetch so the status-bar TOT
+   *  trigger sees a stale (unread) snapshot. */
+  staleTot?: boolean;
   /** QA-only skin `?layout=flagship-probe` selects
    *  (`lib/stores/qa-cockpit-override.ts`). It is not a `CanonicalLayoutMode`,
    *  so the workspace `layout` this helper writes cannot carry it. */
@@ -152,8 +155,10 @@ async function boot(page: Page, layout: string, width: number, known: boolean, l
   const locale = options.locale ?? (width === 900 ? 'ru-RU' : 'en-US');
   await page.setViewportSize({ width, height });
   await page.addInitScript(({ state, layout, language, theme, locale }) => {
-    localStorage.setItem('rigplane:workspace', JSON.stringify({ version: 1, layout,
-      designLanguage: language, theme }));
+    // MOR-2218: activation seeds use the v2 per-skin map; a v1 global
+    // `designLanguage` is dropped on read, never migrated.
+    localStorage.setItem('rigplane:workspace', JSON.stringify({ version: 2, layout,
+      designLanguageBySkin: { 'desktop-v2': language }, theme }));
     localStorage.setItem('rigplane.i18n.locale', locale);
     const commands: unknown[] = [];
     Object.assign(window, { geometryCommands: commands });
@@ -190,6 +195,11 @@ async function boot(page: Page, layout: string, width: number, known: boolean, l
   }, { state, layout, language, theme, locale });
   await page.route('**/api/**', route => {
     const name = new URL(route.request().url()).pathname.split('/').pop();
+    if (name === 'managed-transmit' && options.staleTot) {
+      // MOR-2674: a failed refresh invalidates the TOT snapshot — the
+      // trigger must stay unread (unlit), never a dash run.
+      return route.fulfill({ status: 500, json: { error: 'stale-tot' } });
+    }
     const body = name === 'state' ? state : name === 'capabilities' ? caps : name === 'info' ? mockInfo
       : name === 'managed-transmit' ? { schemaVersion: 1, sampledAt: new Date().toISOString(),
         managedTransmit: { status: 'available', intent: { kind: options.txState === 'tx' ? 'transmit' : 'rx' }, releaseRequired: false,
@@ -342,7 +352,7 @@ async function standardGeometry(page: Page) {
     const rfAuthorityFailures = [...receiver.querySelectorAll<HTMLElement>('[data-indicator-fact="rf-authority"]')]
       .flatMap(element => {
         const state = element.dataset.indicatorRf;
-        const expected = state === 'transmitting' ? 'TX' : state === 'uncertain' ? 'TX?'
+        const expected = state === 'transmitting' || state === 'uncertain' ? 'TX'
           : state === 'receiving' || state === 'unknown' ? '' : null;
         const owner = element.getBoundingClientRect();
         const actual = element.textContent?.trim() ?? '';
@@ -975,6 +985,11 @@ for (const layout of ['standard', 'sdr-test', 'lcd-scope', 'lcd-cockpit']) {
           return false;
         }).map(e => e.textContent));
         expect.soft(clippedDigits, 'every frequency group survives clipping ancestors').toEqual([]);
+        // MOR-2654: the ghost all-8s layer is a constant row (8888.888.888),
+        // independent of the reading — the unread slot is exactly as wide as
+        // any known one, so the first reading cannot move anything.
+        const ghostText = await page.locator('.lcd-frame .freq-ghost').first().textContent();
+        expect.soft(ghostText?.replace(/\s/g, ''), 'LCD ghost row keeps its constant slot count').toBe('8888.888.888');
         await page.locator('.lcd-layout .content-right').evaluate(e => { e.scrollTop = e.scrollHeight; });
       } else {
         const center = await page.locator('.desktop-controls-center .content-row').boundingBox();
@@ -1027,6 +1042,125 @@ for (const known of [true, false]) {
     expect(errors).toEqual([]);
   });
 }
+
+// MOR-2649: an unread S-meter is an empty bar with no caption — the removed
+// '?' placeholder ink cannot change the meter's box. The wrapper div would
+// hide an inner change, so this measures the meter's OWN SVG element between
+// an unknown (unread) and a known (read) fixture: width AND height must be
+// identical, so a first reading cannot move the layout.
+// MOR-2674: an unread (stale) TOT stays unlit, and the reserved minimum
+// inline size on the value element holds the trigger at the same width as
+// any known value — the first reading cannot move the status bar.
+test('standard 1440 status-bar TOT trigger keeps its box between unread and read', async ({ page }) => {
+  const triggerWidth = async (staleTot: boolean) => {
+    await boot(page, 'standard', 1440, true, 'studioline', false, 'topology-1-single', { staleTot });
+    return page.locator('[data-testid="managed-tot-trigger"]')
+      .evaluate(element => element.getBoundingClientRect().width);
+  };
+  const knownWidth = await triggerWidth(false);
+  const unknownWidth = await triggerWidth(true);
+  expect(unknownWidth).toBe(knownWidth);
+});
+
+test('standard 1440 receiver S-meter keeps its box between unread and read', async ({ page }) => {
+  const meterBox = async (known: boolean) => {
+    await boot(page, 'standard', 1440, known, 'studioline', false, 'topology-1-single');
+    return page.locator('[data-testid="receiver-s-meter"] svg')
+      .evaluate(element => element.getBoundingClientRect().toJSON());
+  };
+  const knownBox = await meterBox(true);
+  const unknownBox = await meterBox(false);
+  expect(unknownBox.width).toBe(knownBox.width);
+  expect(unknownBox.height).toBe(knownBox.height);
+});
+
+// MOR-2521: the station S caption's value and secondary spans keep their
+// boxes, and the tile's own S-unit readout keeps its left edge, between an
+// unread meter and two readings of different length ('S0' / '−127 dBm' and
+// 'S9+30' / '−43 dBm' on the fixture's S0/S9/S9+60 table).
+test('standard 1440 station S caption keeps its boxes between unread and two readings', async ({ page }) => {
+  await boot(page, 'standard', 1440, true, 'studioline', false, 'topology-1-single');
+  // Only the S meter changes between the emitted states: its field status
+  // (unread) or its value.
+  const emit = async (revision: number, sMeter: number | null) => {
+    const { state } = catalogFixture('topology-1-single', true);
+    if (sMeter === null) Object.assign(state.fieldStatus!, unobservedMeters(['main.sMeter']));
+    else state.main.sMeter = sMeter;
+    Object.assign(state, { revision, stateRevision: revision, freshnessRevision: revision,
+      observationSeq: revision });
+    await page.evaluate(next => window.dispatchEvent(new CustomEvent('geometry-state', { detail: next })), state);
+  };
+  const tile = page.locator('[data-testid="meter-signal"]');
+  const measure = () => tile.evaluate(element => {
+    const caption = [...element.querySelectorAll('.meter-native-caption')]
+      .find(node => node.querySelector('.meter-native-label')?.textContent === 'S');
+    const box = (selector: string) => {
+      const rect = caption?.querySelector(selector)?.getBoundingClientRect();
+      return rect ? { x: rect.x, width: rect.width } : null;
+    };
+    return {
+      value: box('.meter-native-value'),
+      secondary: box('.meter-native-secondary'),
+      texts: [caption?.querySelector('.meter-native-value')?.textContent ?? null,
+        caption?.querySelector('.meter-native-secondary')?.textContent ?? null],
+      readoutX: element.querySelector('[data-meter-reading]')!.getBoundingClientRect().x,
+    };
+  });
+  await emit(2, null);
+  await expect.poll(async () => (await measure()).texts).toEqual(['', '']);
+  const unread = await measure();
+  expect(unread.value).not.toBeNull();
+  expect(unread.secondary).not.toBeNull();
+  const readings = [[-54, 'S0', '\u2212127 dBm'], [30, 'S9+30', '\u221243 dBm']] as const;
+  const readoutXs: number[] = [];
+  for (const [index, [sMeter, sUnit, dbm]] of readings.entries()) {
+    await emit(index + 3, sMeter);
+    await expect.poll(async () => (await measure()).texts).toEqual([sUnit, dbm]);
+    const read = await measure();
+    expect(read.value, `${sUnit} value box`).toEqual(unread.value);
+    expect(read.secondary, `${dbm} secondary box`).toEqual(unread.secondary);
+    readoutXs.push(read.readoutX);
+  }
+  expect(readoutXs[1], 'S-unit readout left edge').toBe(readoutXs[0]);
+});
+
+// MOR-2684: the band row's permit caption reserves ONE width in every
+// state. The status slot is measured in the caption's own font (the `<small>`
+// inherits the ambient, non-monospace font, so `ch` is not exact), and this
+// comparison proves the caption's rendered width is identical between an
+// unread, an allowed and a denied permit for the same band key: the first
+// reading cannot move the band row. Mounted on the sdr-test face: its
+// desktop-controls-left column renders the band surface's own fallback key
+// row (the printed `<small>` captions), while desktop-v2's standard left
+// column routes the same authority through `BandSelector`'s compact keys,
+// which print no caption.
+test('sdr-test 1440 band-choice permit caption keeps one width between unread, allowed and denied', async ({ page }) => {
+  const captionWidths = async (patch?: (state: ServerState, caps: Capabilities) => void) => {
+    await boot(page, 'sdr-test', 1440, true, 'studioline', false, 'topology-1-single', { patch });
+    const captions = page.locator('[data-testid^="band-choice-permit-"]');
+    await expect(captions.first()).toBeVisible();
+    return captions.evaluateAll(nodes => Object.fromEntries(nodes.map(node => [
+      node.getAttribute('data-testid'),
+      node.getBoundingClientRect().width,
+    ])) as Record<string, number>);
+  };
+  const allowed = await captionWidths((_state, caps) => {
+    // The fixture ships only a 20m TX segment, so 40m's default reads
+    // denied; add the 40m segment so BOTH defaults read allowed.
+    caps.txBands = [...caps.txBands!, { start: 7000000, end: 7300000, name: '40m' }];
+  });
+  const denied = await captionWidths();
+  const unread = await captionWidths((_state, caps) => {
+    // No configured TX ranges at all: every default permit is unread.
+    caps.txBands = null;
+  });
+  expect(Object.keys(allowed)).toEqual(Object.keys(denied));
+  expect(Object.keys(allowed)).toEqual(Object.keys(unread));
+  for (const [testid, width] of Object.entries(allowed)) {
+    expect(denied[testid], `${testid} denied width`).toBe(width);
+    expect(unread[testid], `${testid} unread width`).toBe(width);
+  }
+});
 
 // MOR-2425/R41: the freshness cue is gone, so the claim is now the stronger
 // one it used to approximate — the instrument's geometry does not move at all
@@ -1443,3 +1577,29 @@ test.describe('MOR-2545 PR3: the hosted scope row hides by band and never overla
     });
   }
 });
+
+// MOR-2673: the unread mode is an empty reserved slot, so the amber LCD
+// mode box keeps one width in every state — a real browser width comparison
+// between the unread and the read mount (jsdom has no layout; the component
+// suites pin the reserving rule and the caps-less first frame structurally
+// instead). The state contract carries an unread mode as `null`
+// (`stringOrNull`, radio.svelte.ts) — deleting the key would fail
+// `isValidServerState`, drop the full envelope, and leave the app without
+// capabilities at all.
+for (const layout of ['lcd-cockpit', 'lcd-scope'] as const) {
+  test(`${layout} keeps one mode-box width between unread and read (MOR-2673)`, async ({ page }) => {
+    await boot(page, layout, 1440, true);
+    const readBox = await page.locator('.lcd-frame .vfo-mode-box').first().boundingBox();
+    expect(readBox, `${layout} renders a mode box`).not.toBeNull();
+
+    await boot(page, layout, 1440, true, 'studioline', false, undefined, {
+      patch: (state) => {
+        (state.main as { mode?: string | null }).mode = null;
+      },
+    });
+    const unreadBox = await page.locator('.lcd-frame .vfo-mode-box').first().boundingBox();
+    expect(unreadBox, `${layout} keeps the mode box for an unread mode`).not.toBeNull();
+    expect(unreadBox!.width, `${layout} mode box width does not move when the mode arrives`)
+      .toBeCloseTo(readBox!.width, 1);
+  });
+}

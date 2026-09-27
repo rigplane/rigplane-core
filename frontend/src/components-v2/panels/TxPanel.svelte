@@ -3,6 +3,7 @@
   import { HardwareButton } from '$lib/Button';
   import { ValueControl } from '../controls/value-control';
   import { normalizedPercentDisplay, rawToPercentDisplay } from '../../primitives/scalar/value-control-core';
+  import { finiteValue, valueText } from '../../primitives/reading-text';
   import { txStatusColor } from './tx-utils';
   import {
     deriveTxProps,
@@ -28,7 +29,10 @@
   import ModInputTxWarning from './ModInputTxWarning.svelte';
   import ManagedTotControl from '../controls/ManagedTotControl.svelte';
 
-  let { showManagedTotControl = false }: { showManagedTotControl?: boolean } = $props();
+  let {
+    showManagedTotControl = false,
+    suppressModInputTxWarning = false,
+  }: { showManagedTotControl?: boolean; suppressModInputTxWarning?: boolean } = $props();
 
   const handlers = getTxHandlers();
   let p = $derived(deriveTxProps());
@@ -70,8 +74,18 @@
   let driveGainFeedback = $derived(getTxAuxControlFeedback('driveGain'));
   let compLevelFeedback = $derived(getTxAuxControlFeedback('compressorLevel'));
   let monLevelFeedback = $derived(getTxAuxControlFeedback('monitorGain'));
+  // MOR-2658: unread is an empty reserved slot — never the '—' placeholder,
+  // and never a '%' without its number. The renderer (HBarRenderer) calls
+  // this with Number.NaN for an unread value.
   const rawTxLevelDisplay = (value: number): string =>
-    Number.isFinite(value) ? rawToPercentDisplay(value) : '—';
+    valueText(finiteValue(value), rawToPercentDisplay);
+  // MOR-2658: a non-finite RF power renders EMPTY in its reserved slot —
+  // never the literal `NaN%`. `toTxProps` reports `Number.NaN` when the
+  // rig never reported `powerLevel` (missing/absent → `?? Number.NaN`,
+  // the deferred A12 rfPower fix); this guard renders that sentinel as
+  // the empty slot, and the raw binding claims no slider position for it.
+  const rfPowerDisplay = (value: number): string =>
+    valueText(finiteValue(value), normalizedPercentDisplay);
   const txLevelPolicy = () => createHBarContinuousScalarPolicy({
     preview: 'optimistic', debounceMs: 50, describeTarget: rawToPercentDisplay,
   });
@@ -268,8 +282,12 @@
     {#if showManagedTotControl}
       <ManagedTotControl />
     {/if}
-    <!-- MOR-617: warn when TX was keyed with a non-LAN MOD input -->
-    <ModInputTxWarning />
+    <!-- MOR-617: warn when TX was keyed with a non-LAN MOD input.
+         MOR-1245: a host shell with its own fixed-position banner (mobile)
+         suppresses this inline copy, keeping one banner on screen. -->
+    {#if !suppressModInputTxWarning}
+      <ModInputTxWarning />
+    {/if}
 
     <div class="tx-button-grid">
       {#if showTuner}
@@ -329,25 +347,37 @@
       <button class="modal-close" onclick={() => (settingsOpen = false)}>✕</button>
     </div>
     <div class="modal-body">
-      <ValueControl label="RF Power" value={rfPower} min={0} max={1} step={0.01}
-        renderer="hbar" displayFn={normalizedPercentDisplay} accentColor="var(--v2-accent-red)"
-        onChange={onRfPowerChange} variant="hardware-illuminated" disabled={!rfPowerAvailable} />
-      <ValueControl {...feedbackIntegratedControl} label="Mic Gain" binding={micGainBinding}
-        renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
-        issuedStatusPresentation={micGainStatus} variant="hardware-illuminated" />
-      {#if compActive}
-        <ValueControl {...feedbackIntegratedControl} label="Comp Level" binding={compLevelBinding}
+      <div class="tx-level-slot">
+        <ValueControl label="RF Power" value={rfPower} min={0} max={1} step={0.01}
+          renderer="hbar" displayFn={rfPowerDisplay} accentColor="var(--v2-accent-red)"
+          onChange={onRfPowerChange} variant="hardware-illuminated" disabled={!rfPowerAvailable} />
+      </div>
+      <!-- MOR-2658: each level value keeps its own reserved slot (`4ch`
+           covers `100%`) so a first reading cannot shift the row. -->
+      <div class="tx-level-slot">
+        <ValueControl {...feedbackIntegratedControl} label="Mic Gain" binding={micGainBinding}
           renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
-          issuedStatusPresentation={compLevelStatus} variant="hardware-illuminated" />
+          issuedStatusPresentation={micGainStatus} variant="hardware-illuminated" />
+      </div>
+      {#if compActive}
+        <div class="tx-level-slot">
+          <ValueControl {...feedbackIntegratedControl} label="Comp Level" binding={compLevelBinding}
+            renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
+            issuedStatusPresentation={compLevelStatus} variant="hardware-illuminated" />
+        </div>
       {/if}
       {#if showMon && monActive}
-        <ValueControl {...feedbackIntegratedControl} label="Mon Level" binding={monLevelBinding}
-          renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
-          issuedStatusPresentation={monLevelStatus} variant="hardware-illuminated" />
+        <div class="tx-level-slot">
+          <ValueControl {...feedbackIntegratedControl} label="Mon Level" binding={monLevelBinding}
+            renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
+            issuedStatusPresentation={monLevelStatus} variant="hardware-illuminated" />
+        </div>
       {/if}
-      <ValueControl {...feedbackIntegratedControl} label="Drive Gain" binding={driveGainBinding}
-        renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
-        issuedStatusPresentation={driveGainStatus} variant="hardware-illuminated" />
+      <div class="tx-level-slot">
+        <ValueControl {...feedbackIntegratedControl} label="Drive Gain" binding={driveGainBinding}
+          renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
+          issuedStatusPresentation={driveGainStatus} variant="hardware-illuminated" />
+      </div>
       {#if autoLan.available}
         <!-- MOR-618: opt-in auto LAN MOD-input for web TX (default OFF) -->
         <div class="auto-lan-section">
@@ -502,6 +532,16 @@
     flex-direction: column;
     gap: 10px;
     padding: 10px;
+  }
+
+  /* MOR-2658: the level value box stays reserved for unread AND each known
+     value — `4ch` covers the widest text (`100%`), and `inline-block` is
+     what makes the min-width apply to the renderer's inline value span, so
+     a first reading cannot shift the row. */
+  .tx-level-slot :global(.vc-value) {
+    display: inline-block;
+    min-width: 4ch;
+    font-variant-numeric: tabular-nums;
   }
 
   .auto-lan-section {

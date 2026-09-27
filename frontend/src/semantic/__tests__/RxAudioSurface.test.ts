@@ -114,11 +114,23 @@ describe('the RX-audio surface owns no audio lifetime (MOR-972 P0 / MOR-1058)', 
   /** The whole static import closure of the file, allow-listed. Kills: adding
    *  ANY import that could reach transport or the audio manager — including
    *  through a relative specifier, which a `$lib/...` regex would miss. */
-  it('imports only facts, the level formatter and the RxAudioInstrumentHost handle contract', () => {
+  it('imports only facts, the field gate, the level formatter, the unread-display rule and the RxAudioInstrumentHost handle contract', () => {
     const specifiers = [...CODE.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
+    // MOR-2688 S3: `../primitives/reading-text` joined the closure — it carries
+    // the ONE unread-display rule and has NO runtime import (type-only), so it
+    // cannot reach transport or the audio manager any more than the fact
+    // contract can. `reading-text.test.ts`'s `has no runtime import` case pins
+    // that premise one level down, like `pressed-of`'s own purity pin.
+    // MOR-2704 G3: `../primitives/control-instruments/control-instrument-behavior`
+    // joined the closure — the field gate `usable` (MOR-2704), in place of
+    // this file's former local copy. It has NO runtime import of its own,
+    // so it cannot reach the audio manager or the
+    // transport any more than the fact contract can.
     expect([...new Set(specifiers)].sort()).toEqual([
-      './format-level', './radio-view-model', './rx-audio-instruments',
+      '../primitives/control-instruments/control-instrument-behavior',
+      '../primitives/reading-text', './format-level', './radio-view-model',
+      './rx-audio-instruments',
     ]);
     expect(FORMAT_LEVEL_SOURCE).not.toMatch(/\b(?:import|require)\b/);
   });
@@ -319,6 +331,18 @@ describe('every unread fact renders honestly, never as the v2 default', () => {
     expect(r.text('af-value')).toBe('');
     expect(r.text('af-value')).not.toMatch(/[—–?]|UNKNOWN|N\/A|\d/);
     expect(r.el('af')!.dataset.observed).toBe('false');
+    r.dispose();
+  });
+
+  // MOR-2704 G3: the imported gate keeps the read-but-NOT-operational
+  // refusal — the case the local copy handled, now pinned against the
+  // shared `usable` (a mutation that drops its `operational` check dies
+  // here). `readingText` follows the reading status alone, so the known
+  // level keeps rendering.
+  it('marks a KNOWN-but-not-operational AF level unobserved while its value keeps rendering', () => {
+    const r = render(withRx({ afLevel: known<number>(0.42, DEGRADED) }));
+    expect(r.el('af')!.dataset.observed).toBe('false');
+    expect(r.text('af-value')).toBe('42%');
     r.dispose();
   });
 
@@ -709,6 +733,18 @@ describe('MOD-input readiness is stated, and a mismatch is never a dead end', ()
       r.dispose();
     },
   );
+
+  // Kills (MOR-2705 part 2): the readiness badge printing 'n/a' for a state
+  // that means "this check does not apply here". The badge span renders in
+  // every state (LAN / the mismatch sentence), so it is a RESERVED empty
+  // slot, not a removed slot — same shape as `unknown`.
+  it('renders a not-applicable readiness as an empty reserved slot, never "n/a"', () => {
+    const r = render(withRx({ modInputReadiness: { status: 'not-applicable' } }));
+    expect(r.text('mod-readiness')).toBe('');
+    expect(r.el('mod-input')!.textContent).not.toMatch(/n\/a/i);
+    expect(r.el('mod-input')!.dataset.readiness).toBe('not-applicable');
+    r.dispose();
+  });
 
   // Kills: a label map that drifts from the contract union.
   it('has a label for every readiness the contract can state', () => {

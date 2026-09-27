@@ -604,21 +604,20 @@ def _serialize_agc_readback(profile: "RadioProfile") -> dict[str, object] | None
     }
 
 
-def _serialize_notch_width_choices(
-    profile: "RadioProfile",
+def _serialize_choices(
+    values: tuple[int, ...] | None,
+    labels: dict[str, str] | None,
 ) -> list[dict[str, object]]:
-    """Publish the profile's manual-notch-width domain (MOR-1685).
+    """Publish a profile's manual-notch-width (MOR-1685) or break-in
+    (MOR-2729) domain.
 
-    Returns ``[{"value": <int>, "label": <str>}, ...]`` in
-    ``notch_width_values`` order, ``[]`` when the profile declares no
-    width domain. The loader (``rig_loader.py: load_rig`` rejects a
-    ``[notch].width_values`` entry with no ``width_labels`` entry at load
-    time, pinned by ``TestNotchWidthLabelsComplete``) guarantees every
-    declared value has a string-keyed label, so every declared value
-    resolves a label here.
+    Returns ``[{"value": <int>, "label": <str>}, ...]`` in declared value
+    order, ``[]`` when the profile declares no domain. The loader
+    (``rig_loader.py: load_rig``) rejects a declared value with no label in
+    either section, pinned by ``TestNotchWidthLabelsComplete`` and
+    ``TestBreakInLabelsComplete``, so every declared value resolves a label
+    here.
     """
-    values = profile.notch_width_values
-    labels = profile.notch_width_labels
     if not values or not labels:
         return []
     return [{"value": value, "label": labels[str(value)]} for value in values]
@@ -3306,7 +3305,12 @@ class WebServer:
                         if profile.scan_resume_values is not None
                         else []
                     ),
-                    "notchWidthChoices": _serialize_notch_width_choices(profile),
+                    "notchWidthChoices": _serialize_choices(
+                        profile.notch_width_values, profile.notch_width_labels
+                    ),
+                    "breakInChoices": _serialize_choices(
+                        profile.break_in_modes, profile.break_in_labels
+                    ),
                     "rfSqlControlModel": profile.rf_sql_control_model,
                     "antennas": profile.antenna_tx_count,
                     "hasRxAntenna": profile.antenna_has_rx_ant,
@@ -3797,7 +3801,12 @@ class WebServer:
                 if profile.scan_resume_values is not None
                 else []
             ),
-            "notchWidthChoices": _serialize_notch_width_choices(profile),
+            "notchWidthChoices": _serialize_choices(
+                profile.notch_width_values, profile.notch_width_labels
+            ),
+            "breakInChoices": _serialize_choices(
+                profile.break_in_modes, profile.break_in_labels
+            ),
             "rfSqlControlModel": profile.rf_sql_control_model,
             "dataModeCount": profile.data_mode_count,
             "dataModeLabels": (
@@ -6373,7 +6382,15 @@ _SECURITY_HEADERS: dict[str, str] = {
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
     "Content-Security-Policy": (
+        # MOR-2242: script-src carries the sha256 of index.html's inline
+        # service-worker-cleanup script (without a script-src directive the
+        # default-src 'self' policy blocks it); media-src data: allows the
+        # MobileRadioLayout no-sleep data:video/mp4. The hash is pinned by
+        # tests/test_security_headers.py, which recomputes it from
+        # frontend/index.html — update both together.
         "default-src 'self' ws: wss:; img-src 'self' data:; "
+        "script-src 'self' 'sha256-GUkgFZWOoTHs5UPoBwFCxrG65uTrZSQGbn1bxxn2pAo='; "
+        "media-src 'self' data:; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net"
     ),
@@ -6391,6 +6408,10 @@ async def _send_response(
         "Content-Length": str(len(body)),
         **_SECURITY_HEADERS,
         **extra_headers,
+        # The server closes the socket after every response (see
+        # WebServer._handle_connection), so every response must say so;
+        # placed last so no caller can override it. MOR-2680.
+        "Connection": "close",
     }
     header_lines = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
     response = (f"HTTP/1.1 {status} {reason}\r\n{header_lines}\r\n").encode(

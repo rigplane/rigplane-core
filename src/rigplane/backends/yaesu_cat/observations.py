@@ -16,7 +16,11 @@ from rigplane.core.acquisition_scheduler import (
 )
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
-from rigplane.core.state_pipeline_contracts import FieldPath, Observation
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    startup_critical_path,
+)
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_observation import (
     OBSERVED_PTT_PATH,
@@ -38,6 +42,15 @@ logger = logging.getLogger(__name__)
 
 Clock = Callable[[], float]
 _T = TypeVar("_T")
+
+#: MOR-2749 (owner decision, 2026-09-27 14:20 EDT) / MOR-2757: a
+#: safety-critical path (:func:`startup_critical_path`) the radio has not
+#: answered after this many consecutive reads ends startup through the
+#: declared-command defect record — the same number the web gate's
+#: ``_STARTUP_GATE_CRITICAL_ATTEMPTS`` (``web/web_startup.py``) carries for
+#: the Icom sweep branch; the backends cannot import the web layer, so the
+#: owner's number is spelled out here with this cross-reference.
+_CRITICAL_READ_TIMEOUT_ATTEMPTS = 3
 
 __all__ = ["YAESU_PTT_PATH", "YaesuObservationAdapter"]
 
@@ -468,10 +481,18 @@ class YaesuObservationAdapter:
                 if reading.failure is not None:
                     publish_ptt_error()
                     if reading.failure == "timeout":
-                        raise CatTimeoutError("PTT read failed: timeout")
+                        # MOR-2757: ``read_transmit_state`` reports the
+                        # transport timeout as a failure tag; the raised
+                        # ``CatTimeoutError`` below is built here, so the
+                        # count is taken here. The tag does not carry the
+                        # wire command, so this defect names the field only.
+                        exc = CatTimeoutError("PTT read failed: timeout")
+                        self._count_critical_read_timeouts("ptt", exc, (_PTT,))
+                        raise exc
                     if reading.failure == "transport":
                         raise CatTransportError("PTT read failed: transport")
                 else:
+                    self._note_critical_read_answers((_PTT,))
                     timestamp = self.clock()
                     if type(reading.value) is bool:
                         observations.append(
@@ -550,6 +571,12 @@ class YaesuObservationAdapter:
             return UnknownTxTarget(reason="unsupported")
         try:
             tx_func = await method()
+        except CatTimeoutError as exc:
+            # MOR-2757: the ``FT;`` read is the TX target's own read — an
+            # unanswered one counts toward that critical path, then re-raises
+            # so the poller's reconnect path still fires.
+            self._count_critical_read_timeouts("tx_target", exc, (_TX_TARGET,))
+            raise
         except (AttributeError, NotImplementedError, CatCommandRejected):
             return UnknownTxTarget(reason="unsupported")
         except (CatParseError, CatFormatError, ValueError, KeyError):
@@ -558,6 +585,7 @@ class YaesuObservationAdapter:
             return UnknownTxTarget(reason="not-observed")
         if type(tx_func) is not int or tx_func not in (0, 1):
             return UnknownTxTarget(reason="contradiction")
+        self._note_critical_read_answers((_TX_TARGET,))
         return tx_func
 
     async def _read_tx_target(self) -> TxTarget:
@@ -1772,9 +1800,18 @@ class YaesuObservationAdapter:
         and ``CatGarbledFrameError`` reach that path unchanged;
         ``CatCommandRejected`` is caught out of the same base class because a
         refusal is an answer, not link quality.
+
+        MOR-2757: the one timeout exception that IS intercepted on its way
+        out: a read of a safety-critical path that went unanswered counts
+        toward that path's consecutive-unread tally (any answer resets it),
+        so the 3rd unanswered read records the declared-command defect that
+        ends startup. The re-raise keeps the reconnect path unchanged.
         """
         try:
-            return True, await read
+            value = await read
+        except CatTimeoutError as exc:
+            self._count_critical_read_timeouts(label, exc, paths)
+            raise
         except (CatParseError, CatFormatError, ValueError, KeyError) as exc:
             # ValueError covers _read_meter / int() malformed-frame failures;
             # CatParse/FormatError subclass ValueError but are listed for clarity.
@@ -1788,7 +1825,7 @@ class YaesuObservationAdapter:
             return False, None
         except CatCommandRejected:
             try:
-                return True, await remake()
+                value = await remake()
             except CatCommandRejected as retry_exc:
                 if paths:
                     self._record_declared_defect(label, retry_exc, paths)
@@ -1807,6 +1844,63 @@ class YaesuObservationAdapter:
                     retry_exc,
                 )
                 return False, None
+        self._note_critical_read_answers(paths)
+        return True, value
+
+    def _critical_read_timeout_counts(self) -> dict[FieldPath, int] | None:
+        """Return the radio's unanswered-critical-read tally, if it has one.
+
+        The tally lives on the radio (``_critical_read_timeouts``) because
+        this adapter is rebuilt every poll cycle while the count must span
+        cycles — the ``_poll_warned_fields`` idiom. A radio object that
+        carries no tally (test doubles) simply does not count: the
+        pre-MOR-2757 behaviour.
+        """
+
+        counts = getattr(self.radio, "_critical_read_timeouts", None)
+        if isinstance(counts, dict):
+            return counts
+        return None
+
+    def _note_critical_read_answers(self, paths: tuple[FieldPath, ...]) -> None:
+        """Reset the unanswered tally of every *path* that just answered."""
+
+        counts = self._critical_read_timeout_counts()
+        if counts is None:
+            return
+        for path in paths:
+            counts.pop(path, None)
+
+    def _count_critical_read_timeouts(
+        self,
+        label: str,
+        exc: CatTimeoutError,
+        paths: tuple[FieldPath, ...],
+    ) -> None:
+        """Count one unanswered read per safety-critical path (MOR-2757).
+
+        The medium poll cycle re-issues every read each interval, so one
+        timeout per cycle is one unanswered attempt. Non-critical paths are
+        not counted — the web gate's own 10 s deadline already stops them
+        from blocking. On the attempt that reaches
+        ``_CRITICAL_READ_TIMEOUT_ATTEMPTS`` the same
+        :class:`DeclaredCommandDefect` a refused read records
+        (:meth:`_record_declared_defect`) is recorded for that one path,
+        naming the field and the command the radio never answered; the
+        startup gate aborts on it. Later records keep only the first
+        (``AcquisitionScheduler.record_startup_defect``).
+        """
+
+        counts = self._critical_read_timeout_counts()
+        if counts is None:
+            return
+        for path in paths:
+            if not startup_critical_path(path):
+                continue
+            count = counts.get(path, 0) + 1
+            counts[path] = count
+            if count >= _CRITICAL_READ_TIMEOUT_ATTEMPTS:
+                self._record_declared_defect(label, exc, (path,))
 
     def _record_declared_defect(
         self,
@@ -1834,6 +1928,8 @@ class YaesuObservationAdapter:
             command = exc.template
         elif isinstance(exc, CatCommandRejected):
             command, frame = exc.command, "?;"
+        elif isinstance(exc, CatTimeoutError):
+            command = exc.command
         defect = DeclaredCommandDefect(
             label=label,
             paths=paths,

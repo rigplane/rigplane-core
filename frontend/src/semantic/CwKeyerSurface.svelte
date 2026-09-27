@@ -44,23 +44,25 @@
       APF's with CW named. Presenting the block as plain "CW" would leave the
       operator a permanently-disabled control with no explanation.
 
-  (5) UNKNOWN IS RENDERED AS UNKNOWN. `formatBreakIn` in v2 falls back to 'OFF'
-      for an unrecognised mode; slice 9A degrades it to `unknown` instead,
-      because an unreadable break-in state must never present as "the key is
-      safe". `breakInPosture` therefore groups `unknown` WITH `armed`, never
-      with `off`.
+  (5) UNKNOWN IS RENDERED AS EMPTY, NOT AS A SENTENCE (MOR-2690). An
+      unreadable break-in state must never present as "the key is safe", so
+      `breakInPosture` still groups `unknown` WITH `armed`, never with `off`:
+      the keys stay BARE (no `aria-pressed`) and the posture line renders
+      EMPTY in its reserved slot. The owner ordered the unknown sentence
+      removed: "если нет у радио, не вижу причины оставлять на вебе".
 -->
 <script module lang="ts">
   import { t } from '$lib/i18n';
   import { CW_CONTINUOUS_LEVELS } from './CwKeyerInstrumentHost.svelte';
+  import type { BreakInChoice } from '$lib/types/capabilities';
   import type { BreakInMode, CwKeyerField, DisabledReasonCode } from './radio-view-model';
   import { pressedOf } from './pressed-of';
+  import { readingText } from '../primitives/reading-text';
 
-  /** Break-in as THREE ABSOLUTE choices, `[label, wire mode]`. Absolute, not a
-   *  toggle: a toggle computed from an unread reading arms a guess, and here
-   *  the guess would be about the transmitter. The wire ints are v2's own
-   *  (`cw-panel-logic.ts`'s `BREAK_IN_LABELS`), consumed not reinvented. */
-  export const BREAK_IN_CHOICES = [['off', 0], ['semi', 1], ['full', 2]] as const;
+  /** MOR-2729: wire int → the reading's decode tag (see `breakInMode` in
+   *  `radio-view-model-adapter.ts`), the mirror half of that ONE decode
+   *  point, kept surface-local by the import-closure rule below. */
+  const WIRE_DECODE: readonly string[] = ['off', 'semi', 'full'];
   /** APF as two ABSOLUTE choices over its ordinal, `[label, on]`. */
   export const APF_CHOICES = [['off', false], ['on', true]] as const;
   /** `[field, label, min, max, step, unit]` in the RAW wire units `CwPanel`
@@ -71,14 +73,14 @@
     ['breakInDelay', 'Break-in delay', 0, 255, 1, ''],
   ] as const;
   export type CwLevelField = (typeof CW_LEVELS)[number][0];
-  /** The ONE rendering of "not measured". Never 'OFF', never 0. */
-  export const UNKNOWN_TEXT = '—';
-  /** Break-in as the operator must read it. `unknown` is NOT 'off' (rule 5). */
+  /** Break-in as the operator must read it. `unknown` is NOT 'off' (rule 5).
+   *  MOR-2690: the unknown SENTENCE is gone — an unread break-in renders
+   *  EMPTY in its reserved line, never the word unknown and never 'off'. */
   export type BreakInPosture = 'off' | 'armed' | 'unknown';
   export const POSTURE_LABEL: Record<BreakInPosture, string> = {
     off: 'break-in off — the key does not transmit',
     armed: 'break-in ARMED — the key transmits',
-    unknown: 'break-in state unknown — assume the key transmits',
+    unknown: '',
   };
   /**
    * MOR-1474: why break-in is blocked, in the permit's own vocabulary (rule
@@ -111,14 +113,13 @@
     twinPeak: 'twin-peak filter is an RTTY control — works only in RTTY / RTTY-R',
   } as const;
 
-  /** Usable ⇔ the radio HAS it, it is readable NOW, and it was actually read. */
-  export const usable = (f: CwKeyerField<unknown>): boolean =>
-    f.availability.structural && f.availability.operational && f.reading.status === 'known';
-  /** Honest text: an unread fact reads as unknown, never as a v2 default. */
+  /** Honest text (MOR-2653): an unread fact reads as EMPTY in its reserved
+   *  slot — never a placeholder dash and never a v2 default. MOR-2688 S3: the
+   *  ONE unread predicate lives in `readingText`; the on/off boolean wording
+   *  stays this surface's own formatter. */
   export const textOf = (f: CwKeyerField<unknown>): string =>
-    f.reading.status !== 'known' ? UNKNOWN_TEXT
-      : typeof f.reading.value === 'boolean' ? (f.reading.value ? 'on' : 'off')
-        : String(f.reading.value);
+    readingText(f, (v) =>
+      typeof v === 'boolean' ? (v ? 'on' : 'off') : String(v));
   /** Rule 5: only a positively-read `'off'` is `'off'`. */
   export const breakInPosture = (f: CwKeyerField<BreakInMode>): BreakInPosture =>
     f.reading.status !== 'known' ? 'unknown' : f.reading.value === 'off' ? 'off' : 'armed';
@@ -135,6 +136,7 @@
   import {
     bindChoiceInstrument,
     bindToggleInstrument,
+    usable,
   } from '../primitives/control-instruments/control-instrument-behavior';
   import type { CwKeyerInstrumentHandles } from './CwKeyerInstrumentHost.svelte';
   import type { RadioViewModel } from './radio-view-model';
@@ -156,6 +158,11 @@
     onTwinPeakToggle?: () => void;
     onReversePaddleToggle?: () => void;
     breakInDelayFeedback?: Readonly<BreakInDelayFeedback>;
+    /** MOR-2729: the profile's published break-in choices — exactly these
+     *  values, exactly these labels, `[]` ⇒ NO break-in block at all
+     *  (X6100, X6200). Absent (`undefined`) means no break-in control,
+     *  the same no-choice treatment `notchWidthChoices` takes. */
+    breakInChoices?: readonly BreakInChoice[];
     autoTuneAvailable?: boolean;
     onAutoTune?: () => void;
   }
@@ -163,14 +170,30 @@
     view, continuousHandles, showKeyerSpeed = true, showPitchHz = true, standard = false,
     onBreakInMode, onLevelChange, onApfOn, onTwinPeakToggle, onReversePaddleToggle,
     breakInDelayFeedback,
+    breakInChoices,
     autoTuneAvailable = false, onAutoTune,
   }: Props = $props();
 
   /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine). */
   let cw = $derived(view.cwKeyer);
   let extraOpen = $state(false);
-  let rxMode = $derived(view.modeFilter?.currentMode.reading.status === 'known'
-    ? view.modeFilter.currentMode.reading.value : UNKNOWN_TEXT);
+  /** MOR-2653: an unread mode renders EMPTY in its reserved slot.
+   *  MOR-2688 S3: the group is optional, so its presence is guarded at the
+   *  call site; the unread predicate itself lives in `readingText`. */
+  let rxMode = $derived(view.modeFilter ? readingText(view.modeFilter.currentMode) : '');
+  /** MOR-2706: the RX-mode slot's reserved width derives from the mounted
+   *  profile's own mode catalog (`modeFilter.modeChoices`) — the widest
+   *  label it can print (FTX-1 'DATA-FM-N' = 9ch, IC-7300 'RTTY-R' = 6ch),
+   *  the #3751 LCD mode-box treatment, never a raised constant. Fixed when
+   *  the capabilities load; a reading never changes it. The stylesheet's
+   *  5ch stays the floor for a catalog no longer than that. */
+  let rxModeMinWidth = $derived.by(() => {
+    let longest = 0;
+    for (const mode of view.modeFilter?.modeChoices ?? []) {
+      if (mode.length > longest) longest = mode.length;
+    }
+    return longest > 5 ? `${longest}ch` : undefined;
+  });
   /** Rule 2. The model's ONE permit, READ. No second derivation exists here —
    *  `getFrequencyPermit`, `txBands` and `band` are not imported at all. */
   let permitAllowed = $derived(view.txPermit.status === 'allowed');
@@ -211,14 +234,19 @@
     };
   });
 
+  /** MOR-2729: the drawn choice list — exactly the profile's published
+   *  values. Absent and empty both draw NO break-in block. */
+  let breakInList = $derived(breakInChoices ?? []);
   /** The handler half of every gate. `disabled` alone is not enough: a design
    *  language may restyle these controls, and a programmatic click must not
    *  set what the widget refused. */
   function setBreakIn(mode: number): void {
     if (cw && usable(cw.breakIn) && permitAllowed) onBreakInMode?.(mode);
   }
-  function toggleBreakIn(label: 'semi' | 'full', mode: 1 | 2): void {
-    setBreakIn(cw?.breakIn.reading.status === 'known' && cw.breakIn.reading.value === label ? 0 : mode);
+  function toggleBreakIn(decode: string, mode: number): void {
+    setBreakIn(
+      cw?.breakIn.reading.status === 'known' && cw.breakIn.reading.value === decode ? 0 : mode,
+    );
   }
   function setLevel(field: CwLevelField, value: number): void {
     if (cw && usable(cw[field])) onLevelChange?.(field, value);
@@ -373,7 +401,7 @@
   >
     {#if standard}
       <div class="cw-mode-line" data-testid="cw-keyer-rx-mode">
-        <span>RX MODE</span><output>{rxMode}</output>
+        <span>RX MODE</span><output style:min-width={rxModeMinWidth}>{rxMode}</output>
       </div>
       {#if showPitchHz}
         {@render continuousHandles.pitchHz({
@@ -388,31 +416,47 @@
         })}
       {/if}
     {/if}
-    {#if cw.breakIn.availability.structural}
+    {#if cw.breakIn.availability.structural && breakInList.length > 0}
       <div
         class="cw-keyer-block" data-testid="cw-keyer-break-in"
         data-posture={breakInPosture(cw.breakIn)}
         data-permitted={permitAllowed}
       >
-        <div class="cw-keyer-row" role="radiogroup" aria-label="Break-in">
-          {#each (standard ? BREAK_IN_CHOICES.filter(([label]) => label !== 'off') : BREAK_IN_CHOICES) as [label, mode] (mode)}
+        <div class="cw-keyer-row" role="group" aria-label="Break-in">
+          <!-- MOR-2729: the keys draw exactly the profile's published
+               choices; `standard` still drops the `off` key for its 2-col
+               grid, FTX-1 ([OFF, ON]) ⇒ only ON. -->
+          {#each (standard ? breakInList.filter((c) => WIRE_DECODE[c.value] !== 'off')
+            : breakInList) as choice (choice.value)}
+            {@const decode = WIRE_DECODE[choice.value]}
+            <!-- MOR-2690: a KEY, not a radio. `role="radio"` REQUIRES
+                 `aria-checked`, and on an unread reading a missing or `false`
+                 value reads as OFF — a claim about a reading the radio never
+                 reported. `aria-pressed` appears only when the state is
+                 KNOWN; the gate below is untouched (rule 2). -->
             <button
-              type="button" role="radio" class="cw-keyer-choice"
-              data-testid={`cw-keyer-break-in-${label}`}
-              aria-checked={cw.breakIn.reading.status === 'known'
-                && cw.breakIn.reading.value === label}
-              aria-describedby={`${breakInPostureId}${!permitAllowed && breakInReason ? ` ${breakInReasonId}` : ''}`}
+              type="button" class="cw-keyer-choice"
+              data-testid={`cw-keyer-break-in-${decode ?? String(choice.value)}`}
+              aria-pressed={cw.breakIn.reading.status === 'known'
+                ? cw.breakIn.reading.value === decode : undefined}
+              aria-describedby={breakInPosture(cw.breakIn) === 'unknown'
+                ? (!permitAllowed && breakInReason ? breakInReasonId : undefined)
+                : `${breakInPostureId}${!permitAllowed && breakInReason ? ` ${breakInReasonId}` : ''}`}
               disabled={!usable(cw.breakIn) || !permitAllowed}
-              onclick={() => standard && mode !== 0 ? toggleBreakIn(label as 'semi' | 'full', mode) : setBreakIn(mode)}
-            >{standard ? label.toUpperCase() : label}</button>
+              onclick={() => (standard && decode !== 'off'
+                ? toggleBreakIn(decode!, choice.value) : setBreakIn(choice.value))}
+            >{standard ? choice.label.toUpperCase() : choice.label}</button>
           {/each}
         </div>
         <!-- Rule 5: the posture is TEXT, so it survives forced-colors and so
              "armed but not permitted" reads differently from "off and not
              permitted" — the operator's radio can still key from its own
              paddle while this UI refuses to change the setting. It is a
-             SENTENCE, so it gets its own line below the keys and may wrap. -->
-        <p id={breakInPostureId} class="cw-keyer-sentence" class:sr-only={standard}>
+             SENTENCE, so it gets its own line below the keys and may wrap.
+             MOR-2690: an UNREAD posture renders EMPTY on that reserved line —
+             the line keeps its box (nothing moves when the reading arrives),
+             and an empty line is referenced by no `aria-describedby`. -->
+        <p id={breakInPostureId} class="cw-keyer-sentence cw-keyer-posture-line" class:sr-only={standard}>
           <output data-testid="cw-keyer-posture">{POSTURE_LABEL[breakInPosture(cw.breakIn)]}</output>
         </p>
         {#if !permitAllowed && breakInReason}
@@ -458,9 +502,10 @@
             />
             {#if hasBreakInDelayFeedback}
             <output
+              class="cw-keyer-readout"
               data-testid="cw-keyer-breakInDelay-value"
               data-command-phase={breakInDelayView.feedback.phase}
-            >{breakInDelayView.displayed === null ? UNKNOWN_TEXT : breakInDelayView.displayed}
+            >{breakInDelayView.displayed === null ? '' : breakInDelayView.displayed}
               <span class:command-pending={breakInDelayBusy}>{breakInDelayPhaseLabel}</span>
             </output>
             {#if breakInDelayView.announcement !== null}
@@ -470,7 +515,15 @@
               >{breakInDelayView.announcement}</span>
             {/if}
             {:else}
-              <output data-testid="cw-keyer-breakInDelay-value">{textOf(f)} {unit}</output>
+              <!-- MOR-2705 part 2: the unit suffix renders only WITH a value
+                   — the same treatment #3746 (MOR-2667) gave the offsets and
+                   widths. An unread value shows neither number nor unit in
+                   the `.cw-keyer-readout` slot reserved by its 3ch rule. -->
+              {@const rawDelayText = textOf(f)}
+              <output
+                class="cw-keyer-readout"
+                data-testid="cw-keyer-breakInDelay-value"
+              >{rawDelayText}{rawDelayText !== '' && unit !== '' ? ` ${unit}` : ''}</output>
             {/if}
           {/if}
         </label>
@@ -483,7 +536,7 @@
         aria-pressed={pressedOf(cw.reversePaddle)}
         disabled={!reversePaddleToggle.available}
         onclick={() => reversePaddleToggle.invoke()}
-      >Reverse paddle: {textOf(cw.reversePaddle)}</button>
+      >Reverse paddle</button>
     {/if}
     {/snippet}
 
@@ -494,7 +547,7 @@
         {#if view.txAux}
           <p class="cw-keyer-row" data-testid="cw-keyer-sidetone"
             data-observed={usable(view.txAux.monitorLevel)}>
-            Sidetone level: {textOf(view.txAux.monitorLevel)}
+            Sidetone level: <output class="cw-keyer-readout">{textOf(view.txAux.monitorLevel)}</output>
           </p>
         {/if}
       </div>
@@ -533,7 +586,7 @@
               >APF {label}</button>
             {/each}
           {/if}
-          <output class:sr-only={standard} data-testid="cw-keyer-apf-value">{textOf(cw.apf)}</output>
+          <output class="cw-keyer-readout" class:sr-only={standard} data-testid="cw-keyer-apf-value">{textOf(cw.apf)}</output>
         </div>
         {#if mutexed('apf')}
           <p class="cw-keyer-sentence" class:sr-only={standard}>
@@ -553,7 +606,7 @@
             aria-describedby={mutexed('twinPeak') ? 'cw-keyer-twin-peak-reason' : undefined}
             disabled={!twinPeakToggle.available}
             onclick={() => twinPeakToggle.invoke()}
-          >{standard ? 'TPF' : `TPF: ${textOf(cw.twinPeak)}`}</button>
+          >TPF</button>
         </div>
         {#if mutexed('twinPeak')}
           <!-- Rule 4: RTTY is named, so a permanently-disabled control in a
@@ -579,7 +632,7 @@
            never duplicated as a second fact and never given a second control —
            the one control lives in `TxAuxSurface`. Readout only. -->
       <p class="cw-keyer-row" data-testid="cw-keyer-sidetone" data-observed={usable(view.txAux.monitorLevel)}>
-        Sidetone level: {textOf(view.txAux.monitorLevel)}
+        Sidetone level: <output class="cw-keyer-readout">{textOf(view.txAux.monitorLevel)}</output>
       </p>
     {/if}
 
@@ -602,7 +655,22 @@
   .cw-keyer-sentence { margin: 0; }
   .cw-keyer-level { display: flex; align-items: baseline; gap: 0.5rem; }
   .cw-keyer-name { min-width: 12ch; }
-  .cw-keyer-choice[aria-checked='true'], .cw-keyer-toggle[aria-pressed='true'] { font-weight: 700; }
+  /* MOR-2653: reserved width in EVERY state — an unread value renders EMPTY
+     in its slot, never a placeholder, and the slot's box never changes size
+     when a first reading arrives. 3ch covers the widest rendered value of
+     every readout using the slot (break-in delay 255, sidetone monitor level
+     0–255, APF ordinal). Digits are tabular. */
+  .cw-keyer-readout {
+    display: inline-block;
+    min-width: 3ch;
+    font-variant-numeric: tabular-nums;
+  }
+  .cw-keyer-choice[aria-checked='true'], .cw-keyer-choice[aria-pressed='true'],
+  .cw-keyer-toggle[aria-pressed='true'] { font-weight: 700; }
+  /* MOR-2690: the posture sentence's line keeps its box in EVERY state — an
+     unread posture renders EMPTY, and the first reading must not move the
+     layout. 1lh reserves exactly the one line the widest sentence needs. */
+  .cw-keyer-posture-line:not(.sr-only) { min-height: 1lh; }
   .cw-keyer-surface.standard {
     display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px;
   }
@@ -611,6 +679,15 @@
   }
   .standard .cw-mode-line span { color: var(--v2-text-dim); }
   .standard .cw-mode-line output { color: var(--v2-text-bright); }
+  /* MOR-2653: the RX-mode slot keeps its width unread → known — 5ch is the
+      FLOOR; the reservation itself derives inline from the mounted profile's
+      mode catalog (`rxModeMinWidth`, MOR-2706). An unread mode renders EMPTY,
+      never a placeholder. */
+  .cw-mode-line output {
+    display: inline-block;
+    min-width: 5ch;
+    font-variant-numeric: tabular-nums;
+  }
   .standard :global(.cw-keyer-level--presented) { grid-column: 1 / -1; }
   .standard [data-testid='cw-keyer-break-in'] { grid-column: span 2; }
   .standard [data-testid='cw-keyer-break-in'] .cw-keyer-row {

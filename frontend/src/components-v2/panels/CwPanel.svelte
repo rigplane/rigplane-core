@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import '../controls/control-button.css';
   import { HardwareButton } from '$lib/Button';
   import { ValueControl } from '../controls/value-control';
   import { clamp, rawToPercentDisplay, snapToStep } from '../../primitives/scalar/value-control-core';
+  import { finiteValue, valueText } from '../../primitives/reading-text';
   import { getLocale } from '$lib/i18n';
   import type { PresentationPhase } from '../../primitives/control-feedback/control-feedback-presentation';
   import { createCommittedScalar } from '../../primitives/scalar/committed-scalar.svelte';
@@ -24,7 +25,10 @@
   const handlers = getCwHandlers();
   let p = $derived(deriveCwProps());
 
-  let breakIn = $derived(p.breakIn ?? 0);
+  // MOR-2729: an unread break-in stays null — a fabricated 0 would light
+  // the OFF choice before the radio reports anything. `null === choice.value`
+  // is false, so no button is lit while unread.
+  let breakIn = $derived(p.breakIn);
   let apfMode = $derived(p.apfMode ?? 0);
   let twinPeak = $derived(p.twinPeak ?? false);
   let currentMode = $derived(p.currentMode ?? 'CW');
@@ -91,9 +95,13 @@
     },
     onBreakInDelayChange,
   );
-  let breakInDelayView = $derived(breakInDelayScalar.view);
+  const breakInDelayLease = breakInDelayScalar.attachRenderer();
+  let breakInDelayView = $state(untrack(() => breakInDelayLease.view));
+  $effect.pre(() => { breakInDelayView = breakInDelayLease.view; });
+  // MOR-2658: unread is an empty reserved slot — never the '—' placeholder,
+  // and never a '%' without its number.
   const delayText = (value: number | null): string =>
-    value === null ? '—' : rawToPercentDisplay(value);
+    value === null ? '' : rawToPercentDisplay(value);
   const delayLabel = (): string =>
     getLocale() === 'ru-RU' ? 'Задержка break-in' : 'Break-in Delay';
   const DELAY_PHASE_COPY: Record<'en' | 'ru', Record<PresentationPhase, string>> = {
@@ -138,15 +146,15 @@
         ),
   );
   function updateBreakInDelayDraft(event: Event): void {
-    breakInDelayScalar.input((event.currentTarget as HTMLInputElement).valueAsNumber);
+    breakInDelayLease.input((event.currentTarget as HTMLInputElement).valueAsNumber);
   }
   function commitBreakInDelay(event: Event): void {
     const target = event.currentTarget as HTMLInputElement;
-    const restored = breakInDelayScalar.commit(target.valueAsNumber);
+    const restored = breakInDelayLease.commit(target.valueAsNumber);
     if (restored !== null) target.value = String(restored);
   }
   function cancelBreakInDelay(event?: Event): void {
-    const restored = breakInDelayScalar.cancel();
+    const restored = breakInDelayLease.cancel();
     if (event?.currentTarget instanceof HTMLInputElement) {
       if (restored !== null) event.currentTarget.value = String(restored);
     }
@@ -157,13 +165,16 @@
     cancelBreakInDelay(event);
   }
 
-  // MOR-1409 A12: keep the established placeholder when canonical feedback
-  // is unavailable, and preserve the exact finite-value/unit rendering.
+  // MOR-2658: an unread value renders EMPTY in its reserved slot — never
+  // the '--- Hz' / '--- WPM' family, and never a unit without its number.
+  // An empty slot fabricates nothing, so MOR-1409 A12 is satisfied by
+  // empty, not by dashes. The renderers call these with Number.NaN for an
+  // unread value; finite values render exactly as before.
   function formatCwPitchDisplay(hz: number): string {
-    return Number.isFinite(hz) ? `${hz} Hz` : '--- Hz';
+    return valueText(finiteValue(hz), (value) => `${value} Hz`);
   }
   function formatKeySpeedDisplay(wpm: number): string {
-    return Number.isFinite(wpm) ? `${wpm} WPM` : '--- WPM';
+    return valueText(finiteValue(wpm), (value) => `${value} WPM`);
   }
   let cwPitchFeedback = $derived(getCwPitchControlFeedback());
   let keySpeedFeedback = $derived(getKeySpeedControlFeedback());
@@ -174,6 +185,14 @@
   // MOR-2475 F1: same derivation for key speed from `controls.key_speed`;
   // 6/48/1 is the fallback for a radio that publishes none.
   let keySpeedDomain = $derived(p.keySpeedDomain ?? { min: 6, max: 48, step: 1 });
+  // MOR-2706: each value slot's reserved width derives from the profile's
+  // published control domain — the widest text the readout can print is the
+  // domain max in its own unit (FTX-1 cw_pitch 300..1050 → '1050 Hz' = 7ch;
+  // the legacy fallback 300..900 → '900 Hz' = 6ch; key speed 6..48 →
+  // '48 WPM' = 6ch), never a raised constant. The stylesheet's 6ch is the
+  // floor for a radio that publishes no domain.
+  let pitchSlotMinWidth = $derived(`${cwPitchDomain.max} Hz`.length + 'ch');
+  let speedSlotMinWidth = $derived(`${keySpeedDomain.max} WPM`.length + 'ch');
   const cwPitchBinding = createContinuousScalar(
     () => ({
       evidence: 'command-feedback', feedback: cwPitchFeedback, command: 'set_cw_pitch',
@@ -201,6 +220,7 @@
     }),
   );
   onDestroy(() => {
+    breakInDelayScalar.destroy();
     cwPitchBinding.destroy();
     keySpeedBinding.destroy();
   });
@@ -214,37 +234,50 @@
       <span class="cw-mode-value">{currentMode}</span>
     </div>
 
-    <ValueControl
-      {...feedbackIntegratedControl}
-      label="CW Pitch"
-      binding={cwPitchBinding}
-      unit="Hz"
-      renderer="hbar"
-      accentColor="var(--v2-accent-cyan)"
-      variant="hardware-illuminated"
-      displayFn={formatCwPitchDisplay}
-    />
+    <!-- MOR-2658: each value keeps its own reserved slot (MOR-2706: derived
+         from the profile's control domain, 6ch the floor — covers `900 Hz`)
+         so a first reading cannot shift the row. -->
+    <div class="cw-value-slot" style:--cw-value-min-width={pitchSlotMinWidth}>
+      <ValueControl
+        {...feedbackIntegratedControl}
+        label="CW Pitch"
+        binding={cwPitchBinding}
+        unit="Hz"
+        renderer="hbar"
+        accentColor="var(--v2-accent-cyan)"
+        variant="hardware-illuminated"
+        displayFn={formatCwPitchDisplay}
+      />
+    </div>
 
-    <ValueControl
-      {...feedbackIntegratedControl}
-      label="Key Speed"
-      binding={keySpeedBinding}
-      unit="WPM"
-      renderer="discrete"
-      tickStyle="notch"
-      accentColor="var(--v2-accent-orange)"
-      variant="hardware-illuminated"
-      displayFn={formatKeySpeedDisplay}
-    />
+    <div class="cw-value-slot" style:--cw-value-min-width={speedSlotMinWidth}>
+      <ValueControl
+        {...feedbackIntegratedControl}
+        label="Key Speed"
+        binding={keySpeedBinding}
+        unit="WPM"
+        renderer="discrete"
+        tickStyle="notch"
+        accentColor="var(--v2-accent-orange)"
+        variant="hardware-illuminated"
+        displayFn={formatKeySpeedDisplay}
+      />
+    </div>
 
     <div class="toggle-row">
+      <!-- MOR-2729: the break-in control draws exactly the profile's
+           published choices (`breakInChoices` off `deriveCwProps`, empty on
+           X6100/X6200 ⇒ no key at all), never the v2 hard-coded trio. -->
       {#if showBreakIn}
-        <HardwareButton indicator="edge-left" active={breakIn === 1} color="cyan" onclick={() => onBreakInModeChange(breakIn === 1 ? 0 : 1)}>
-          SEMI
-        </HardwareButton>
-        <HardwareButton indicator="edge-left" active={breakIn === 2} color="orange" onclick={() => onBreakInModeChange(breakIn === 2 ? 0 : 2)}>
-          FULL
-        </HardwareButton>
+        {#each p.breakInChoices as choice (choice.value)}
+          <HardwareButton
+            indicator="edge-left" active={breakIn === choice.value}
+            color={choice.value === 0 ? 'cyan' : 'orange'}
+            onclick={() => onBreakInModeChange(choice.value)}
+          >
+            {choice.label}
+          </HardwareButton>
+        {/each}
       {/if}
       {#if showApf}
         <HardwareButton indicator="edge-left" active={apfActive} disabled={apfDisabled} title={apfDisabled ? 'APF only works in CW/CW-R' : null} color="cyan" onclick={() => onApfChange(apfMode > 0 ? 0 : 1)}>
@@ -262,8 +295,10 @@
       <label class="break-in-delay-control" data-testid="cw-break-in-delay-control">
         <span class="break-in-delay-header">
           <span>{delayLabel()}</span>
+          <!-- MOR-2658: an unread delay renders EMPTY in the reserved output
+               slot below — never a '—' placeholder. -->
           <output data-testid="cw-break-in-delay-value">
-            {breakInDelayView.editable ? delayText(breakInDelayView.displayed) : '—'}
+            {breakInDelayView.editable ? delayText(breakInDelayView.displayed) : ''}
           </output>
         </span>
         <input
@@ -351,6 +386,36 @@
   .break-in-delay-header {
     display: flex;
     justify-content: space-between;
+  }
+
+  /* MOR-2658: the pitch/speed value box stays reserved for unread AND
+     each known value — the reservation derives from the profile's control
+     domain via the per-slot `--cw-value-min-width` inline custom property
+     (MOR-2706; 6ch is the floor, covering the legacy fallback '900 Hz'),
+     and `inline-block` is what makes the min-width apply to the renderer's
+     inline value span, so a first reading cannot shift the row.
+     `min-height: 1lh` keeps the box one text line tall when EMPTY, and
+     `align-self: center` takes it out of the header's baseline alignment:
+     an empty inline-block has no text baseline, so baseline-aligned it
+     pulls the row up by 3px (caught by the visual run on this change).
+     Both known and unknown states then share the same box. */
+  .cw-value-slot :global(.vc-value) {
+    display: inline-block;
+    min-width: var(--cw-value-min-width, 6ch);
+    min-height: 1lh;
+    align-self: center;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* MOR-2658: the delay value box stays reserved for unread AND each known
+     value — `4ch` covers the widest text (`100%`), and `inline-block` is
+     what makes the min-width apply to the inline <output>, so a first
+     reading cannot shift the row. */
+  .break-in-delay-header output {
+    display: inline-block;
+    min-width: 4ch;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
   }
 
   .break-in-delay-control input { width: 100%; accent-color: var(--v2-accent-cyan); }

@@ -10,6 +10,7 @@ import type {
 } from '../../component-kit-api/src/index';
 import type { SignalMeterFrame } from '../components-v2/meters/signal-meter-motion.svelte';
 import { projectSignalMeter } from '../components-v2/meters/smeter-scale';
+import { finiteValue, observationValue, readingValue } from '../primitives/reading-text';
 import type { MeterReading, MeterValueDomain } from './radio-view-model';
 import type { StationLevelMeterFrame } from './StationMeterInstrumentHost.svelte';
 
@@ -26,12 +27,12 @@ function displayDomain(domain: MeterValueDomain | undefined): MeterDisplayDomain
   return Object.freeze({ kind: 'unknown' });
 }
 
-function evidence(
-  reading: MeterReading,
+function signalEvidence(
+  value: number | null,
   domain: MeterDisplayDomain,
 ): SignalMeterEvidence {
-  return reading.status === 'known' && Number.isFinite(reading.value)
-    ? Object.freeze({ state: 'current', value: reading.value, domain })
+  return value !== null
+    ? Object.freeze({ state: 'current', value, domain })
     : Object.freeze({ state: 'unknown', domain });
 }
 
@@ -57,23 +58,26 @@ export function toSignalMeterRendererView(
   domain: MeterValueDomain | undefined,
   relevant?: boolean,
 ): SignalMeterRendererView {
-  const current = reading.status === 'known' && Number.isFinite(reading.value);
+  // MOR-2688 S4d: the ONE is-there-a-value decision, through the reading
+  // entry point — used for the evidence, the geometry choice and the
+  // projector argument alike.
+  const value = finiteValue(readingValue({ reading }));
   const projection = domain === undefined
-    ? projectSignalMeter(current ? reading.value : null, { kind: 'unknown' })
-    : current ? frame.projection : projectSignalMeter(null, domain);
+    ? projectSignalMeter(value, { kind: 'unknown' })
+    : value !== null ? frame.projection : projectSignalMeter(null, domain);
   const publicDomain = displayDomain(domain);
   const validStaticGeometry = validFraction(projection.crossoverFraction)
     && projection.marks.every((mark) => Number.isFinite(mark.actual) && validFraction(mark.fraction))
     && projection.ticks.every((tick) => validFraction(tick.fraction));
   const live = validStaticGeometry
-    && current
+    && value !== null
     && projection.motionFraction !== null
     && validFraction(projection.motionFraction)
     && validFraction(frame.smoothedFraction)
     && validFraction(frame.peakFraction);
   return Object.freeze({
     kind: 'signal',
-    evidence: evidence(reading, publicDomain),
+    evidence: signalEvidence(value, publicDomain),
     ...(relevant === undefined ? {} : { relevant }),
     scaleMode: validStaticGeometry ? projection.scaleMode : 'none',
     displayedFraction: live ? frame.smoothedFraction : null,
@@ -97,15 +101,18 @@ function levelEvidence(
   domain: MeterDisplayDomain,
 ): MeterNumericEvidence {
   const evidence = frame.projection.evidence;
-  if ((evidence.state === 'current' || evidence.state === 'stale')
-    && Number.isFinite(evidence.value)) {
-    return Object.freeze({ state: evidence.state, value: evidence.value, domain });
+  // MOR-2688 S4d: the value enters through the observation entry point.
+  // The STATUS output stays exactly as before (design audit R2) — a
+  // current/stale observation keeps its state when it carries a finite
+  // value, decays to `unknown` when it does not, and the passive states
+  // (`unsupported`/`idle`/`unknown`) pass through untouched.
+  const value = finiteValue(observationValue(evidence));
+  if (evidence.state === 'current' || evidence.state === 'stale') {
+    return value !== null
+      ? Object.freeze({ state: evidence.state, value, domain })
+      : Object.freeze({ state: 'unknown', domain });
   }
-  return Object.freeze({
-    state: evidence.state === 'current' || evidence.state === 'stale'
-      ? 'unknown' : evidence.state,
-    domain,
-  });
+  return Object.freeze({ state: evidence.state, domain });
 }
 
 /** Copy one Core-owned station frame into the smaller public, immutable renderer graph. */
@@ -115,7 +122,7 @@ export function toLevelMeterRendererView(
   const projection = frame.projection;
   const domain = displayDomain(projection.domain);
   const publicEvidence = levelEvidence(frame, domain);
-  const live = (publicEvidence.state === 'current' || publicEvidence.state === 'stale')
+  const live = observationValue(publicEvidence) !== null
     && projection.motionFraction !== null
     && validFraction(projection.motionFraction)
     && validFraction(frame.motion.smoothedFraction);

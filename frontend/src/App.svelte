@@ -3,6 +3,7 @@
   import AppGlobalHost from './AppGlobalHost.svelte';
   import LocalExtensionsHost from './lib/local-extensions/LocalExtensionsHost.svelte';
   import { initMediaSession, destroyMediaSession } from './lib/media/media-session';
+  import { claimPreloadErrorReload, clearPreloadErrorReload } from './lib/preload-error-reload';
   import { presentationResources, runtime } from './lib/runtime/frontend-runtime';
   import type { AppResource, ResourceLease } from '$lib/runtime/resource-demand';
   import { systemController } from '$lib/runtime/system-controller';
@@ -32,6 +33,7 @@
   // surface plan reads `zones` and `requiredSemanticSurfaces`, nothing else.
   import './presentation/layouts/declarations';
   import { designLanguageActivation } from './presentation/workspace/activation';
+  import { workspaceDesignLanguageForSkin } from './presentation/workspace/contract';
   import {
     densityActivation, provideSurfacePlan, resolveSurfacePlan,
   } from './presentation/workspace/resolution';
@@ -94,14 +96,6 @@
   let presentation = $state<CommittedPresentation | null>(null);
   let committedLayoutId = $derived<string | null>(presentation?.layoutId ?? null);
 
-  // MOR-1081: the workspace's `designLanguage` is the ONLY source the
-  // `[data-design-language]` activation attribute (MOR-1278) is written from,
-  // and this is its only writer — the MOR-1275 renderer wiring and the
-  // language stylesheets both read that same attribute, so there is no second
-  // activation path. `designLanguageActivation` gates on the language's own
-  // manifest, which is what keeps the shipped v2 skins unchanged until the
-  // cutover (MOR-1048/MOR-1263) declares them compatible.
-  //
   // MOR-1082 rides the SAME effect and the same gate rather than adding a
   // second one: `[data-density]` carries the resolved density (the workspace
   // override clamped by the ACTIVE language's own DensityClamp) on the same
@@ -117,18 +111,15 @@
       delete document.documentElement.dataset.density;
       return;
     }
-    const stored = getDesignLanguage(getWorkspace().designLanguage);
+    const storedId = workspaceDesignLanguageForSkin(getWorkspace().designLanguageBySkin, layoutId); // MOR-2218
+    const stored = storedId === undefined ? undefined : getDesignLanguage(storedId);
     let language = stored;
     let activated = designLanguageActivation(stored, layoutId);
     if (activated === null) {
-      // The stored preference cannot activate on the resolved skin
-      // (e.g. `segmentline` off `peer-split`, or the default `studioline` ON
-      // `peer-split`, which no v2 skin's default ever declared compatible).
-      // Falls back to the FIRST registered language whose `layoutCompatibility`
-      // declares this skin, in `presentation/languages/declarations.ts`
-      // registration order (studioline, fieldline, segmentline). The STORED
-      // preference itself is untouched here — only this render's activation
-      // falls back, so leaving `peer-split` restores it without a re-choice.
+      // A hand-edited or forward-read object can still pair this skin with a
+      // language its own declarations refuse. Falls back to the FIRST
+      // registered language whose `layoutCompatibility` declares this skin;
+      // the STORED entry itself is untouched, so it survives for its own skin.
       for (const id of listDesignLanguageIds()) {
         const candidate = getDesignLanguage(id);
         const candidateActivated = designLanguageActivation(candidate, layoutId);
@@ -188,7 +179,10 @@
   );
   let loaderGeneration = 0;
   let requestedPresentationId: PresentationId | null = null;
-  /** Cleared by App teardown; a resolution that lands afterwards is inert. */
+  /**
+   * Cleared by App teardown and by a preload-error reload; a resolution that
+   * lands afterwards is inert.
+   */
   let presentationActive = true;
 
   $effect(() => {
@@ -233,6 +227,7 @@
           : { id: record.id, layoutId: record.id, component: loaded as SelfContainedPresentation, hostMode: 'self-contained' };
       }
       presentationFailed = false;
+      clearPreloadErrorReload();
       await tick();
     } catch (err) {
       // A stale or post-teardown failure is inert: only the newest request
@@ -334,6 +329,16 @@
       windowHeight = window.innerHeight;
     };
     window.addEventListener('resize', handleResize);
+    // MOR-2680: a failed asset preload before any layout has mounted reloads
+    // the page when the guard allows it.
+    const handlePreloadError = (event: Event) => {
+      if (!claimPreloadErrorReload(Date.now(), presentation !== null)) return;
+      event.preventDefault();
+      // While the page reloads, no load may mount or clear the guard's record.
+      presentationActive = false;
+      location.reload();
+    };
+    window.addEventListener('vite:preloadError', handlePreloadError);
 
     (async () => {
       try {
@@ -369,6 +374,7 @@
       cleanupBootstrap?.();
       if (retryTimer) clearTimeout(retryTimer);
       window.removeEventListener('resize', handleResize);
+      window.removeEventListener('vite:preloadError', handlePreloadError);
     };
   });
 </script>

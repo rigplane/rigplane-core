@@ -1,4 +1,3 @@
-import { t } from '$lib/i18n';
 import {
   alcLevel,
   alcScale,
@@ -119,32 +118,24 @@ export function projectTxMeterPresentation(
   readonly evidence: LevelMeterEvidence;
   readonly value: number | null;
   readonly text: string;
-  readonly description: string;
 } {
   const projected = projectTxMeterDisplay(field, rfState);
+  // MOR-2705 part 4b: this projection no longer carries a `description`
+  // field. No status word ('Not observed', 'Observed', 'No reading', 'Not
+  // measuring in receive', 'RF relevance indeterminate') stands in for a
+  // value here.
   if (!projected.supported) {
-    return {
-      state: 'unsupported', evidence: { state: 'unsupported' },
-      value: null, text: '', description: 'Not observed',
-    };
+    return { state: 'unsupported', evidence: { state: 'unsupported' }, value: null, text: '' };
   }
   const { relevance, observation } = projected;
   if (relevance === 'idle') {
-    return {
-      state: 'idle', evidence: { state: 'idle' },
-      value: null, text: '', description: t('core.meter.state.idle'),
-    };
+    return { state: 'idle', evidence: { state: 'idle' }, value: null, text: '' };
   }
   // R29/R32: a stale reading keeps its last value on the scale (digits and
   // fill), same as a current one. Anything else (never observed, or a
   // stray non-numeric state) is an empty scale: no value, no placeholder
-  // glyph — the accessible description names that too.
-  // MOR-2540 (owner ruling 2026-09-22): the former ' ?' suffix for an
-  // indeterminate RF relevance is gone as well — no placeholder text
-  // anywhere on the operator's screen. A retained indeterminate reading
-  // keeps its digits and nothing else; `stateText` stays empty in every
-  // state so the strip's boxes never change width hunting for a glyph.
-  const cue = relevance === 'indeterminate' ? 'RF relevance indeterminate. ' : '';
+  // glyph. `stateText` stays empty in every state so the strip's boxes
+  // never change width hunting for a glyph.
   const retained = observation.state === 'current' || observation.state === 'stale';
   const evidence: LevelMeterEvidence = retained
     ? { state: observation.state, value: observation.value }
@@ -154,7 +145,6 @@ export function projectTxMeterPresentation(
     evidence,
     value: retained ? observation.value : null,
     text: '',
-    description: cue + (retained ? 'Observed' : t('core.meter.state.noReading')),
   };
 }
 
@@ -193,8 +183,12 @@ function projectLevelMeter<Key extends LevelMeterKey>(
     motionFraction,
     displayText,
     stateText,
+    // MOR-2705 part 4b: the accessible name carries the label and, when a
+    // value is read and its unit is known (a non-empty format), the value —
+    // current and stale read the same (R29/R32). Unread, unknown and idle
+    // name nothing beyond the label; no status word stands in for a value.
     accessibleDescription: tx
-      ? `${label}: ${tx.description}${isObserved ? `. ${formatted}` : ''}`
+      ? (isObserved && formatted !== '' ? `${label}: ${formatted}` : label)
       : undefined,
     fault: isObserved && field.relevant
       && (FAULT_CHECKS[key]?.(value, field.domain) ?? false),

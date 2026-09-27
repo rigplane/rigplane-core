@@ -152,12 +152,19 @@
   .frequency-column.active { opacity: 1; }
   .frequency-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .receiver-label, .receiver-facts span {
+    display: inline-block;
+    /* MOR-2650: the fact slot stays reserved at the widest text it can
+       render (`DATA-FM-N`, 8 glyphs + letter-spacing → 10ch floor). Unread draws nothing; a first reading
+       lights the slot without moving its neighbours. */
+    min-width: 10ch;
+    box-sizing: border-box;
     border: 1.25px solid var(--ink-mid);
     border-radius: 2px;
     padding: 2px 7px;
     font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.08em;
+    text-align: center;
     white-space: nowrap;
   }
   .receiver-label { font-size: 14px; }

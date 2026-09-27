@@ -103,6 +103,17 @@ const COCKPIT: Spec[] = [
 
 for (const spec of COCKPIT) {
   test(spec.name, async ({ page }) => {
+    // MOR-2710: the meter ballistics (`smoothing.svelte.ts` EMA,
+    // `signal-meter-motion.svelte.ts` peak-hold/afterglow) animate from 0
+    // toward the fixture reading on `requestAnimationFrame`, so a screenshot
+    // taken at `data-harness-ready` catches a mid-flight bar whose length
+    // depends on how many frames elapsed — the S-meter band moved ~one
+    // segment between regeneration runs that changed nothing. Under
+    // `prefers-reduced-motion: reduce` the meters snap to the settled value
+    // at mount and schedule no frame (the reduced-motion contract pinned in
+    // `LinearSMeter.reduced-motion.svelte.isolated.test.ts`). The live app
+    // keeps its animation: this is the capture harness only.
+    await page.emulateMedia({ reducedMotion: 'reduce' });
     // Before `goto`: the clock is installed into the page's init scripts, so
     // it has to be in place before any of the page's own script reads `Date`.
     if (spec.freezeClock) await page.clock.setFixedTime(FROZEN_CLOCK);
@@ -112,15 +123,22 @@ for (const spec of COCKPIT) {
       + (spec.mode ? `&mode=${spec.mode}` : '');
     await page.goto(url, { waitUntil: 'load' });
     await page.waitForSelector('body[data-harness-ready="true"]');
+    // MOR-2710: pin the harness contract itself — a capture taken without
+    // the emulation above animates its meters and is not reproducible.
+    expect(await page.evaluate(() =>
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches)).toBe(true);
     await expect(page).toHaveScreenshot(`${spec.name}.png`, { animations: 'disabled', caret: 'hide' });
   });
 }
 
 /** MOR-2364 → MOR-2425/R41: the freshness cue is gone, but the one-line phone
- *  fit it had to preserve is still the claim — and no cue may come back. */
+ *  fit it had to preserve is still the claim — and no cue may come back.
+ *  MOR-2662 (owner ruling 2026-09-26): the phone shows only ONE VFO — the
+ *  active one — so this now pins the mobile layout's own deck (the
+ *  `mobile-witness` harness), one tile, still on one line. */
 test('VFO phone tiles fit on one line and paint no freshness cue', async ({ page }) => {
   await page.setViewportSize(PHONE);
-  await page.goto('/fixtures/index.html?fixture=topology-2-main-sub&theme=v2');
+  await page.goto('/fixtures/mobile-witness.html?fixture=topology-2-main-sub', { waitUntil: 'load' });
   await page.waitForSelector('body[data-harness-ready="true"]');
   await page.evaluate(() => document.fonts.ready);
   const result = await page.evaluate(() => {
@@ -133,9 +151,211 @@ test('VFO phone tiles fit on one line and paint no freshness cue', async ({ page
     return { lines, tiles: tiles.length,
       cues: document.querySelectorAll('[data-vfo-stale-cue]').length };
   });
-  expect(result.tiles).toBe(2);
+  expect(result.tiles).toBe(1);
   expect(result.cues).toBe(0);
   expect(result.lines.every((count) => count === 1)).toBe(true);
+});
+
+/** MOR-2656 — the phone one-line test on the IC-7300/IC-705 shape (ONE
+ *  receiver, `[vfo] readback = 'selected_unselected'` → the surface's
+ *  `relative` slot kind). The active tile shows the localized ACTIVE word,
+ *  the other tile no word at all. Every shipped catalog's word must fit the
+ *  phone tile on ONE line, and the plaque's reserved width must be IDENTICAL
+ *  in every locale (the reservation measures the widest across ALL catalogs,
+ *  so a locale switch cannot move the layout). Meets the task rule "measure,
+ *  never guess from character counts": this spec mounts the real surface in
+ *  a real browser. */
+test('phone one-tile relative (IC-7300 shape): the active role word fits on one line in every locale', async ({ page }) => {
+  await page.setViewportSize(PHONE);
+  await page.goto('/fixtures/mobile-witness.html?fixture=topology-2-main-sub', { waitUntil: 'load' });
+  await page.waitForSelector('body[data-harness-ready="true"]');
+  await page.evaluate(() => document.fonts.ready);
+  const measured = await page.evaluate(async () => {
+    // Non-literal specifiers, same pattern as the MOR-2662 mount above.
+    const runtimePath = '/@id/svelte';
+    const surfacePath = '/src/semantic/VfoSurface.svelte';
+    const fixturesPath = '/src/semantic/fixtures/topologies';
+    const storePath = '/src/lib/i18n/store.svelte.ts';
+    const { mount, flushSync, unmount } = await import(runtimePath);
+    const { default: VfoSurface } = await import(surfacePath);
+    const { topologyFixtures } = await import(fixturesPath);
+    const { setLocale, _resetLocale } = await import(storePath);
+    const base = topologyFixtures['1/ab'];
+    // IC-7300/IC-705 shape: one receiver (MAIN), relative slots, the
+    // selected one active. `vfoTiles="active"` keeps exactly that tile.
+    const model = {
+      ...base,
+      vfos: [
+        { ...base.vfos[0], slot: { kind: 'relative' as const, role: 'selected' as const },
+          label: 'Selected VFO', isActive: true, isActiveSlot: true },
+        { ...base.vfos[1], slot: { kind: 'relative' as const, role: 'unselected' as const },
+          label: 'Unselected VFO', isActive: false, isActiveSlot: false },
+      ],
+    };
+    const lines = (element: Element) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      return new Set([...range.getClientRects()].map((box) => box.top)).size;
+    };
+    /** Mount one probe. `appearance='semantic'` is the phone's one-tile
+     *  list; `'sdr'` is the desktop deck's receiver-instrument, where the
+     *  plaque's font is 12px with 0.1em tracking. Both return the same
+     *  reserved width variable — on the sdr deck the role sits in a `1fr`
+     *  grid column, so the rendered box stretches (by design) and only the
+     *  `min-width` RESERVATION is comparable. */
+    const probe = (appearance: 'semantic' | 'sdr', locale: 'en-US' | 'ru-RU' | 'ja-JP') => {
+      setLocale(locale);
+      const target = document.createElement('div');
+      target.style.width = '360px';
+      document.body.append(target);
+      const component = mount(VfoSurface, {
+        target,
+        props: { viewModel: model, vfoTiles: 'active', appearance },
+      });
+      flushSync();
+      const surface = target.querySelector<HTMLElement>('[data-testid="vfo-surface"]')!;
+      const surfaceRect = surface.getBoundingClientRect();
+      const active = surface.querySelector<HTMLElement>('.vfo-role')!;
+      const value = {
+        roleText: active.textContent,
+        roleLines: lines(active),
+        surfaceOverflows: surface.scrollWidth > surfaceRect.width,
+        plaqueWidth: getComputedStyle(surface).getPropertyValue('--vfo-role-width'),
+      };
+      unmount(component);
+      target.remove();
+      return value;
+    };
+    const locales = ['en-US', 'ru-RU', 'ja-JP'] as const;
+    const outcome = {
+      phone: Object.fromEntries(locales.map((locale) => [locale, probe('semantic', locale)])),
+      desktop: Object.fromEntries(locales.map((locale) => [locale, probe('sdr', locale)])),
+    };
+    // Later tests in this file capture screenshots with the default locale.
+    _resetLocale();
+    return outcome;
+  });
+  console.log('MOR-2656 role-plaque geometry:', JSON.stringify(measured));
+  for (const deck of ['phone', 'desktop'] as const) {
+    for (const [locale, value] of Object.entries(measured[deck])) {
+      expect(value.roleLines, `${deck}/${locale}: the active role word on ONE line`).toBe(1);
+      expect(value.surfaceOverflows, `${deck}/${locale}: no horizontal overflow`).toBe(false);
+    }
+    // The reservation is built from ALL catalogs, so the reserved width is
+    // one constant across locales on each deck.
+    expect(new Set(Object.values(measured[deck]).map((value) => value.plaqueWidth)).size).toBe(1);
+  }
+});
+
+/** MOR-2662 — switching the active VFO swaps the ONE tile's content inside
+ *  the same reserved geometry. Real browser layout (jsdom cannot measure), so
+ *  the surface is mounted directly the way the "TX lower state clearance"
+ *  tests above mount a meter. No unread-vs-read width pin here: the
+ *  interactive frequency readout's own unread reservation is a single
+ *  no-break space on main (MOR-2654 left the interactive branch there), so
+ *  that comparison belongs to the readout's own lane, not this one. */
+test('phone one-tile VFO keeps its box across a VFO switch (MOR-2662)', async ({ page }) => {
+  await page.setViewportSize(PHONE);
+  await page.goto('/fixtures/mobile-witness.html?fixture=topology-2-main-sub', { waitUntil: 'load' });
+  await page.waitForSelector('body[data-harness-ready="true"]');
+  await page.evaluate(() => document.fonts.ready);
+  const geometry = await page.evaluate(async () => {
+    // Non-literal specifiers (the "TX lower state clearance" tests' own
+    // pattern): a literal '/@id/svelte' import fails svelte-check's module
+    // resolution, a variable-length one is an `any` dynamic import at check
+    // time and resolves at runtime in the dev server.
+    const runtimePath = '/@id/svelte';
+    const surfacePath = '/src/semantic/VfoSurface.svelte';
+    const fixturesPath = '/src/semantic/fixtures/topologies';
+    const { mount, flushSync, unmount } = await import(runtimePath);
+    const { default: VfoSurface } = await import(surfacePath);
+    const { topologyFixtures } = await import(fixturesPath);
+    const activeOn = (id: 'A' | 'B') => topologyFixtures['1/ab'].vfos.map(
+      (vfo: { slot: { kind: string; id: string } }) => ({
+        ...vfo, frequencyHz: id === 'A' ? 7100000 : 7150000,
+        isActive: vfo.slot.kind === 'slotted' && vfo.slot.id === id,
+        isActiveSlot: vfo.slot.kind === 'slotted' && vfo.slot.id === id,
+      }));
+    const readA = { ...topologyFixtures['1/ab'], vfos: activeOn('A') };
+    const readB = { ...topologyFixtures['1/ab'], vfos: activeOn('B') };
+    const measure = (model: typeof readA) => {
+      const target = document.createElement('div');
+      target.style.width = '360px';
+      document.body.append(target);
+      const component = mount(VfoSurface, {
+        target,
+        props: { viewModel: model, vfoTiles: 'active', onTuneFrequency: () => {} },
+      });
+      flushSync();
+      const tile = target.querySelector<HTMLElement>('[data-vfo-tile]')!;
+      const box = tile.getBoundingClientRect();
+      const digits = tile.querySelectorAll('.digit').length;
+      const text = tile.querySelector('[data-vfo-freq]')?.textContent ?? '';
+      unmount(component);
+      target.remove();
+      return { width: box.width, height: box.height, digits, text };
+    };
+    return { a: measure(readA), b: measure(readB) };
+  });
+  // Exactly one tile in every state, each measured above.
+  expect(geometry.a.digits).toBeGreaterThan(0);
+  expect(geometry.b.digits).toBe(geometry.a.digits);
+  // A→B switch: same box, different content — swapped in place, no size change.
+  expect(geometry.b.width).toBe(geometry.a.width);
+  expect(geometry.b.height).toBe(geometry.a.height);
+  expect(geometry.b.text).not.toBe(geometry.a.text);
+});
+
+/**
+ * MOR-2240 — the mobile layout's portrait and landscape captures. The
+ * `fixtures/index.html` skins never mount `MobileRadioLayout`; the
+ * `fixtures/mobile-witness.html` entry does it with the same stubbed
+ * seams, at the two viewports the ticket's acceptance names (375x812,
+ * 812x375). Both captures assert the non-pixel contract before the pixel
+ * layer, which a comparator cannot see: the full-width landscape surface
+ * and the unread AF level (empty in its reserved box, never the raw
+ * normalized float from the bench).
+ */
+test('mobile-portrait--phone', async ({ page }) => {
+  // MOR-2713: without this the compact S-meter was still growing after
+  // harness-ready (for about 250 ms in run 36333915699), and captures of one
+  // commit ended its lit bar at two different pixels. Same emulation and pin
+  // as the COCKPIT loop above (MOR-2710).
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize(PHONE);
+  await page.goto('/fixtures/mobile-witness.html?fixture=topology-2-main-sub', { waitUntil: 'load' });
+  await page.waitForSelector('body[data-harness-ready="true"]');
+  expect(await page.evaluate(() =>
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches)).toBe(true);
+  await page.evaluate(() => document.fonts.ready);
+  const layout = page.locator('.m-layout');
+  await expect(layout).toBeVisible();
+  const essentials = page.locator('.m-essentials');
+  await expect(essentials).toContainText('AF Level');
+  const afText = await essentials.innerText();
+  // MOR-2668: the fixture never reports an AF level, so the readout is
+  // unread — empty text in its reserved box (`textContent`, which unlike
+  // `innerText` does not pick up the `:empty::before` line-box strut).
+  expect(await essentials.locator('.vc-value').textContent()).toBe('');
+  expect(afText).not.toContain('NaN');
+  // The bench defect class: a bare normalised float on the AF slider.
+  expect(afText).not.toMatch(/\d\.\d{6,}/);
+  await expect(page).toHaveScreenshot('mobile-portrait--phone.png', { animations: 'disabled', caret: 'hide' });
+});
+
+test('mobile-landscape--phone', async ({ page }) => {
+  await page.setViewportSize({ width: 812, height: 375 });
+  await page.goto('/fixtures/mobile-witness.html?fixture=topology-2-main-sub', { waitUntil: 'load' });
+  await page.waitForSelector('body[data-harness-ready="true"]');
+  await page.evaluate(() => document.fonts.ready);
+  const landscape = page.locator('.m-landscape');
+  await expect(landscape).toBeVisible();
+  const box = await landscape.boundingBox();
+  // Acceptance: full width — pinned here numerically, and pinned at the
+  // `width: 100dvw` rule in MobileRadioLayout.component.svelte.test.ts.
+  expect({ width: box?.width, height: box?.height }).toEqual({ width: 812, height: 375 });
+  expect(await page.locator('.m-layout').count()).toBe(0);
+  await expect(page).toHaveScreenshot('mobile-landscape--phone.png', { animations: 'disabled', caret: 'hide' });
 });
 
 /** The MOR-1088 mobile PTT pair: idle FAB and a real pointer-held FAB. */

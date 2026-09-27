@@ -6,6 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { isValidLanguageId, validateManifest, DesignLanguageValidationError, type LayoutCompatibilityDeclaration } from '../contract';
+import { fieldline, segmentline, studioline } from '../declarations';
 import { validManifest } from './fixtures';
 
 describe('naming policy', () => {
@@ -69,9 +70,26 @@ describe('density clamp', () => {
   });
 
   it('accepts a clamped subset of density levels (e.g. dense excluded)', () => {
-    const manifest = validManifest({ density: { kind: 'clamped', supported: ['comfortable', 'compact'] } });
+    const manifest = validManifest({
+      density: { kind: 'clamped', supported: ['comfortable', 'compact'], default: 'comfortable' },
+    });
     expect(() => validateManifest(manifest)).not.toThrow();
     expect(manifest.density.kind === 'clamped' && manifest.density.supported).not.toContain('dense');
+  });
+
+  // MOR-1288: the fallback a `clamped` manifest falls back to is an explicit
+  // `default` field, not the index-0-of-`supported` convention.
+  it('shipped languages declare an explicit density default (MOR-1288)', () => {
+    for (const manifest of [studioline, fieldline, segmentline]) {
+      expect(manifest.density.kind === 'clamped' && 'default' in manifest.density).toBe(true);
+    }
+  });
+
+  it('rejects a clamped manifest whose default sits outside its supported list', () => {
+    const manifest = validManifest({
+      density: { kind: 'clamped', supported: ['comfortable', 'compact'], default: 'dense' },
+    });
+    expect(() => validateManifest(manifest)).toThrow(/density default outside its supported list/);
   });
 });
 

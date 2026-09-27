@@ -2,9 +2,9 @@
   Semantic RIT/XIT + scan surface (MOR-1308, vocabulary slice 8B).
 
   Presentation only. Renders the MOR-1295 (slice 8A) `ritXit` and `scan` fact
-  groups and emits control intents as callbacks. Holds no state, consults no
-  controller, keys nothing (v3 ADR invariant 11 — same discipline as every
-  other semantic surface in this directory).
+  groups and emits control intents as callbacks. Consults no controller,
+  keys nothing (v3 ADR invariant 11 — same discipline as every other
+  semantic surface in this directory).
 
   O1 (MOR-1295 verify report, binding on this ticket). `ritOffset`/`xitOffset`
   are TWO CONTRACT FIELDS backed by ONE raw register (`ritFreq`), mirroring
@@ -60,7 +60,7 @@
   "observed" value — it is honestly what it is, an operator/default
   selection. `scanType`'s OWN displayed reading (`scan-type-value`) is
   untouched by this and still shows only the genuinely last-observed
-  value, `UNKNOWN_TEXT` until one exists.
+  value, EMPTY until one exists.
 
   MOR-2425 restores v2.11.1's TYPE/SPAN/RESUME affordances on
   `selectedType`'s foundation: six TYPE buttons set it and immediately
@@ -76,8 +76,9 @@
 <script module lang="ts">
   import type { RitXitField, ScanField } from './radio-view-model';
   import { pressedOf } from './pressed-of';
+  import { readingText, readingValue } from '../primitives/reading-text';
+  import { usable } from '../primitives/control-instruments/control-instrument-behavior';
 
-  export const UNKNOWN_TEXT = '—';
   /** O2 — v2's own legacy `RitXitPanel` bounds, verbatim. */
   export const OFFSET_MIN = -9999;
   export const OFFSET_MAX = 9999;
@@ -99,23 +100,26 @@
   export type RitXitScanSurfacePart = 'all' | 'rit-xit' | 'scan';
   const hex = (value: number): string => value.toString(16).padStart(2, '0');
 
-  export const usable = (f: RitXitField<unknown> | ScanField<unknown>): boolean =>
-    f.availability.structural && f.availability.operational && f.reading.status === 'known';
-  export const textOf = (f: RitXitField<unknown> | ScanField<unknown>): string =>
-    f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
   const isOn = (f: RitXitField<boolean>): boolean => f.reading.status === 'known' && f.reading.value === true;
-  const signedOffset = (f: RitXitField<number>): string => {
-    if (f.reading.status !== 'known' || !Number.isFinite(f.reading.value)) return UNKNOWN_TEXT;
-    const value = f.reading.value;
-    return `${value > 0 ? '+' : ''}${value} Hz`;
-  };
+  /** MOR-2653: every readout renders EMPTY in its reserved slot when
+   *  unread — never a placeholder dash, and never a unit without its
+   *  number. MOR-2688: the empty-display rule is `readingText`'s predicate,
+   *  `reading.status === 'known'`; the finite guard stays in the formatter. */
+  const signedOffset = (f: RitXitField<number>): string =>
+    readingText(f, (v) => Number.isFinite(v) ? `${v > 0 ? '+' : ''}${v} Hz` : '');
 </script>
 
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
   import { exactDecimalNumber } from '$lib/types/exact-decimal';
   import type { ControlDomain } from '$lib/types/capabilities';
+  import { ValueControl } from '../components-v2/controls/value-control';
   import { bindToggleInstrument } from '../primitives/control-instruments/control-instrument-behavior';
+  import {
+    createBipolarContinuousScalarPolicy, createContinuousScalar,
+    type ContinuousScalarInput, type ContinuousScalarPolicy,
+  } from '../primitives/scalar/continuous-scalar.svelte';
   import type {
     RitXitScanInstrumentHandles, RitXitScanInstrumentLayout,
   } from './RitXitScanInstrumentHost.svelte';
@@ -157,13 +161,13 @@
   /** Wrong-VFO guard (S3b) — see file header. */
   let activeKnown = $derived(view.activeReceiver.status === 'known');
   let decodedOffset = $derived.by(() => {
-    if (!offset || !usable(offset) || offset.reading.status !== 'known') return null;
+    const read = readingValue(offset);
+    if (read === null) return null;
     if (ritDomain === undefined) {
-      return Number.isFinite(offset.reading.value)
-        ? { value: offset.reading.value, text: String(offset.reading.value) } : null;
+      return Number.isFinite(read) ? { value: read, text: String(read) } : null;
     }
     if (ritDomain === null) return null;
-    const text = decodeControlDomain(ritDomain, offset.reading.value);
+    const text = decodeControlDomain(ritDomain, read);
     if (text === null) return null;
     const value = Number(text);
     return Number.isFinite(value) ? { value, text } : null;
@@ -216,38 +220,55 @@
     }
     if (xitLeads) onXitOffsetChange?.(raw); else onRitOffsetChange?.(raw);
   }
-  function offsetKeydown(event: KeyboardEvent): void {
-    if (!canAdjustOffset || decodedOffset === null) return;
-    const min = ritDomain?.raw_min ?? OFFSET_MIN;
-    const max = ritDomain?.raw_max ?? OFFSET_MAX;
-    let next: number;
-    switch (event.key) {
-      case 'ArrowRight': case 'ArrowUp': next = Math.min(decodedOffset.value + 50, max); break;
-      case 'ArrowLeft': case 'ArrowDown': next = Math.max(decodedOffset.value - 50, min); break;
-      case 'Home': next = min; break;
-      case 'End': next = max; break;
-      default: return;
-    }
-    event.preventDefault();
-    changeOffset(next);
+
+  /** MOR-2524/MOR-2727: the offset is the shared bipolar fader. Its policy
+   *  steps an arrow by `keyboardStep` on a lattice centred on `defaultValue`
+   *  (`bipolarKeyboardStep`), so from the origin one press and its reverse
+   *  give one step and the origin again — also without a profile domain,
+   *  where the pointer counts 50 Hz steps from OFFSET_MIN and zero is off
+   *  that lattice (MOR-1677). Arrows dispatch at once, with no debounce.
+   *  `reset` refuses: a double-click on the track sends no reset, CLEAR
+   *  resets the offset. */
+  const offsetPolicy: Readonly<ContinuousScalarPolicy> = Object.freeze({
+    ...createBipolarContinuousScalarPolicy({ debounceMs: 0 }),
+    reset: () => null,
+  });
+  function offsetInput(): Readonly<ContinuousScalarInput> {
+    const step = ritDomain?.raw_step ?? OFFSET_STEP;
+    return {
+      evidence: 'reading',
+      reading: decodedOffset === null
+        ? { status: 'unknown' } : { status: 'known', value: decodedOffset.value },
+      ownerKey: 'ritxit-offset',
+      enabled: canAdjustOffset,
+      request: changeOffset,
+      domain: {
+        min: ritDomain?.raw_min ?? OFFSET_MIN,
+        max: ritDomain?.raw_max ?? OFFSET_MAX,
+        step, keyboardStep: step, fineStepDivisor: 1,
+        defaultValue: ritDomain?.raw_origin ?? 0,
+      },
+    };
   }
+  const offsetBinding = createContinuousScalar(offsetInput, offsetPolicy);
+  onDestroy(() => offsetBinding.destroy());
+  /** The Standard face mounts this surface as part 'rit-xit'
+   *  (`RadioLayout.svelte: standardServicePanels`); only that part draws
+   *  the fader look, every other part the `modern` one. */
+  let fader = $derived(part === 'rit-xit');
 </script>
 
 {#snippet offsetSlot()}
   <label class="offset" data-testid="ritxit-offset"
     data-observed={offset !== undefined && usable(offset)}>
     <span>Offset</span>
-    <input
-      type="range"
-      min={ritDomain?.raw_min ?? OFFSET_MIN}
-      max={ritDomain?.raw_max ?? OFFSET_MAX}
-      step={ritDomain?.raw_step ?? OFFSET_STEP}
-      value={decodedOffset?.value ?? ritDomain?.raw_origin ?? 0}
-      disabled={!canAdjustOffset}
-      onkeydown={offsetKeydown}
-      oninput={(event) => changeOffset(event.currentTarget.valueAsNumber)}
+    <ValueControl
+      binding={offsetBinding} label="Offset" renderer="bipolar"
+      showLabel={false} showValue={false} compact={true}
+      variant={fader ? 'hardware-illuminated' : 'modern'}
+      accentColor={fader ? 'var(--v2-accent-cyan-alt)' : 'var(--v2-accent-cyan)'}
     />
-    <output data-testid="ritxit-offset-value">{decodedOffset?.text ?? UNKNOWN_TEXT}</output>
+    <output data-testid="ritxit-offset-value">{decodedOffset?.text ?? ''}</output>
   </label>
 {/snippet}
 
@@ -275,12 +296,12 @@
       <div class="row" data-testid="scan">
         {#if sc.scanning.availability.structural}
           <span class="row-label">SCAN</span>
-          {#if part === 'all'}<span data-testid="scan-status" data-observed={usable(sc.scanning)}>{textOf(sc.scanning)}</span>{/if}
+          {#if part === 'all'}<span class="scan-readout" data-testid="scan-status" data-observed={usable(sc.scanning)}>{readingText(sc.scanning)}</span>{/if}
           <button
             type="button" data-testid="scan-toggle" aria-pressed={pressedOf(sc.scanning)}
             disabled={!scanToggle.available || (!scanningOn && availableScanTypes.length === 0)}
             onclick={() => scanToggle.invoke()}
-          >{scanningOn ? 'STOP' : 'START'}</button>
+          >{readingValue(sc.scanning) === true ? 'STOP' : 'START'}</button>
           {#if scanCapable && availableScanTypes.length > 0}
             <div class="scan-choice-group" data-testid="scan-type-group">
               <span class="row-label">TYPE</span>
@@ -307,11 +328,11 @@
           {/if}
         {/if}
         {#if part === 'all' && sc.scanType.availability.structural}
-          <output data-testid="scan-type-value">{textOf(sc.scanType)}</output>
+          <output class="scan-readout" data-testid="scan-type-value">{readingText(sc.scanType)}</output>
         {/if}
         {#if sc.scanResumeMode.availability.structural}
           {#if part === 'all'}
-          <output data-testid="scan-resume-value">{textOf(sc.scanResumeMode)}</output>
+          <output class="scan-readout" data-testid="scan-resume-value">{readingText(sc.scanResumeMode)}</output>
           {/if}
           {#if scanCapable && availableResumeModes.length > 0}
             <div class="scan-choice-group" data-testid="scan-resume-group">
@@ -340,10 +361,21 @@
   .offset { display: flex; align-items: baseline; gap: 0.5rem; }
   .ritxit-mode-row, .ritxit-offset-row { display: flex; align-items: center; gap: 0.5rem; width: 100%; }
   .ritxit-mode-row output { margin-inline-start: auto; }
+  /* MOR-2653: the offset slots keep their width unread → known — 9ch covers
+     the widest rendered value ('+9999 Hz'); an unread offset renders EMPTY,
+     never a placeholder, and never a unit without its number. */
+  .ritxit-mode-row output, .offset output {
+    display: inline-block;
+    min-width: 9ch;
+    font-variant-numeric: tabular-nums;
+  }
   .ritxit-clear-row { display: flex; justify-content: flex-end; width: 100%; }
   .ritxit-scan-surface[data-part='rit-xit'] .row { flex-direction: column; align-items: stretch; }
   .ritxit-scan-surface[data-part='rit-xit'] .offset { width: 100%; }
-  .ritxit-scan-surface[data-part='rit-xit'] .offset input { flex: 1; min-width: 0; }
+  /* The fader takes the row's free width; where `semantic-controls.css`
+     (desktop-v2 skin) lays `.offset` out as a two-column grid, it takes a
+     whole row of that grid. */
+  .offset :global(.vc-bipolar) { flex: 1; min-width: 0; grid-column: 1 / -1; }
   .ritxit-scan-surface[data-part='rit-xit'] .ritxit-mode-row :global(button) {
     width: 60px; min-width: 60px; flex: 0 0 60px;
   }
@@ -361,7 +393,16 @@
   .scan-type-buttons { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .scan-resume-buttons { grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); }
   .row-label { font: inherit; }
+  /* MOR-2653: reserved width in EVERY state — an unread scan readout renders
+     EMPTY in its slot, never a placeholder, and the slot's box never changes
+     size when a first reading arrives. 5ch covers the widest rendered value
+     ('false'; the type/resume wire values are at most three digits). */
+  .scan-readout {
+    display: inline-block;
+    min-width: 5ch;
+    font-variant-numeric: tabular-nums;
+  }
   [aria-pressed='true'] { font-weight: 700; }
   [data-observed='false'] { font-style: italic; }
-  button:disabled, input:disabled { cursor: not-allowed; }
+  button:disabled { cursor: not-allowed; }
 </style>

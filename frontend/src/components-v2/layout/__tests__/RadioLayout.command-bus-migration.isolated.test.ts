@@ -2,7 +2,7 @@
  * MOR-1409 A13b — RadioLayout + LcdLayout command-bus migration, send()
  * facade deletion (correction 5246842617, the second A13 split leg).
  *
- * RadioLayout's read side (mainVfo/subVfo/vfoOps) moves from the legacy
+ * RadioLayout's read side (vfoOps since MOR-2728) moves from the legacy
  * `wiring/state-adapter` twin to the A11/A12-hardened
  * `lib/runtime/props/panel-props`; its live handler families
  * (vfo/keyboard) move from the `wiring/command-bus` shim to the
@@ -18,16 +18,13 @@
  * equally dead binder call.
  *
  * The two `runtime.send()` scope call sites (`handleScopeDualToggle`,
- * `handleScopeReceiverChange`) are RadioLayout's only remaining production
- * `send()` callers. Their sole consumer, `VfoHeader`, already ignores the
+ * `handleScopeReceiverChange`) were RadioLayout's only remaining production
+ * `send()` callers. Their sole consumer, `VfoHeader`, already ignored the
  * legacy `scopeStatus`/`onScopeDualToggle`/`onScopeReceiverChange` props it
- * still declares — `VfoHeader scope bridge authority` in
- * `vfo-header.isolated.test.ts:341` pins
- * `expect(source).not.toMatch(/onScopeReceiverChange\?\.|onScopeDualToggle\?\./)`
- * as proof VfoHeader self-wires scope handling via its own
- * `bindSemanticSurfaceHandlers().scopeControls` (the A07 idiom). RadioLayout
- * is the last caller of that vestigial bridge; this gate deletes it rather
- * than migrating dead code to an equally-dead binder call.
+ * still declared — VfoHeader self-wired scope handling via its own
+ * `bindSemanticSurfaceHandlers().scopeControls` (the A07 idiom), and the
+ * bridge was deleted outright (MOR-2728 later deleted VfoHeader itself,
+ * together with the undeclared-layout `{:else}` branch that mounted it).
  *
  * Each test names the mutation it exists to kill.
  */
@@ -52,10 +49,6 @@ vi.mock('$lib/stores/layout.svelte', () => ({
   getLayoutMode: vi.fn(() => 'standard'),
   cycleLayoutMode: vi.fn(),
   setLayoutMode: vi.fn(),
-}));
-
-vi.mock('../../../lib/utils/battery', () => ({
-  initBatteryMonitor: vi.fn(async () => vi.fn()),
 }));
 
 vi.mock('../../../lib/media/media-session', () => ({
@@ -154,8 +147,9 @@ import radioLayoutSource from '../RadioLayout.svelte?raw';
 
 let components: ReturnType<typeof mount>[] = [];
 
-/** Undeclared layout id: reaches the legacy VFO/TX branch (`<VfoHeader>`),
- *  the only branch RadioLayout's own read/handler surface still feeds. */
+/** Undeclared layout id: the fail-safe direction of the semantic-deck gate —
+ *  the deck renders empty (no legacy twin since MOR-2728), the rest of the
+ *  shell still mounts on the migrated surface. */
 const UNDECLARED = 'no-such-layout' as any;
 
 function mountLayout(skinId: any = UNDECLARED) {
@@ -186,7 +180,7 @@ afterEach(() => {
 // ───────────────────────────────────────────────────────────────────────────
 
 describe('RadioLayout canonical module surface (MOR-1409 A13b)', () => {
-  // Kills: re-pointing mainVfo/subVfo/vfoOps back at the legacy wiring twin.
+  // Kills: re-pointing vfoOps back at the legacy wiring twin.
   it('imports no projection from the legacy wiring state-adapter', () => {
     expect(radioLayoutSource).not.toContain('wiring/state-adapter');
   });
@@ -241,16 +235,22 @@ describe('RadioLayout canonical module surface (MOR-1409 A13b)', () => {
 // Consumer boundary: the migrated projection/handler surface still mounts
 // ───────────────────────────────────────────────────────────────────────────
 //
-// `toVfoProps`/`toVfoOpsProps`'s own honesty contract (NaN/'---' instead of
+// `toVfoOpsProps`'s own honesty contract (NaN/'---' instead of
 // a fabricated 14074000/USB/FIL1 reading) is unit-tested at its source in
 // `lib/runtime/props/__tests__/panel-props.no-fabricated-defaults.test.ts`;
 // RadioLayout's obligation is only to call the canonical two-arg signature
 // and render without error, which these prove.
 
 describe('RadioLayout mounts on the migrated projection/handler surface (MOR-1409 A13b)', () => {
-  it('renders the legacy VFO header for an undeclared layout without throwing', () => {
+  // MOR-2728: the undeclared-layout `{:else}` branch and its `<VfoHeader>`
+  // are deleted; an undeclared id now renders an empty receiver deck — the
+  // legacy twin must not resurrect. Every layout that actually mounts
+  // RadioLayout declares `vfo`, pinned at the manifest level in
+  // `presentation/layouts/__tests__/forward-declaration-inventory.test.ts`.
+  it('renders an empty receiver deck for an undeclared layout, with no legacy VfoHeader', () => {
     const t = mountLayout();
-    expect(t.querySelector('.receiver-deck .vfo-header')).not.toBeNull();
+    expect(t.querySelector('.receiver-deck')).not.toBeNull();
+    expect(t.querySelector('.receiver-deck .vfo-header')).toBeNull();
   });
 
   it('wires KeyboardHandler to a working dispatch function post-migration', () => {

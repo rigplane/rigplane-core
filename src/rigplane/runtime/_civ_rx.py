@@ -4047,10 +4047,15 @@ class CivRuntime:
         if not wait_response:
             ack_sink_token: "int | None" = None
 
-            if not expects_response:
-                token_or_future = tracker.register_ack(wait=False)
-                if isinstance(token_or_future, int):
-                    ack_sink_token = token_or_future
+            # Reads take a sink as well as writes: a refusal is a bare FA that
+            # names no command, and ``_drain_ack_sinks_before_blocking`` waits
+            # only for answers that a sink is registered for (MOR-2748).
+            token_or_future = tracker.register_ack(
+                wait=False,
+                response_key=request_key if expects_response else None,
+            )
+            if isinstance(token_or_future, int):
+                ack_sink_token = token_or_future
 
             try:
                 self.start_pump()

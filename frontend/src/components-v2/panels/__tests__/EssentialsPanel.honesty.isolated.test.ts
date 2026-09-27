@@ -11,18 +11,23 @@
  * whose `Math.round(Math.max(0, Math.min(1, NaN)) * 100)` is `NaN` — the
  * rendered string becomes the literal "NaN%". That is the same
  * formatted-display defect class that BLOCKED PR #2363 ("NaNkHz") and that
- * `RxAudioPanel.svelte:31-33` already guards for this exact field.
+ * `RxAudioPanel.svelte`'s guard already covers for this exact field.
  *
  * This panel is A13a's one granted display-honesty guard owner
  * (correction 5246842617 §3, in the 5246487510 shape): its AF readout is
  * rendered unconditionally, so no guard placed inside `MobileRadioLayout`
  * can reach it without re-fabricating a number.
  *
+ * MOR-2668: the guard renders an unobserved level as '' (unlit LCD
+ * segment) in HBarRenderer's reserved `.vc-value` box (MOR-2657) — never
+ * a dash, never "NaN".
+ *
  * Each test names the mutation it kills.
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { mount, unmount } from 'svelte';
 import type { ComponentProps } from 'svelte';
+import { readFileSync } from 'node:fs';
 import EssentialsPanel from '../EssentialsPanel.svelte';
 
 const noop = () => {};
@@ -30,7 +35,7 @@ const noop = () => {};
 function baseProps(afLevel: number): ComponentProps<typeof EssentialsPanel> {
   return {
     vfoOps: { splitActive: false },
-    mode: { currentMode: '---', modes: [] },
+    mode: { currentMode: 'USB', modes: [] },
     filter: { currentFilter: 1, filterLabels: [] },
     rxAudio: { monitorMode: 'local', afLevel },
     dsp: { nbActive: false, nrMode: 0, notchMode: 'off' },
@@ -60,6 +65,23 @@ function render(afLevel: number): HTMLElement {
   return host;
 }
 
+// Same shape as `RxAudioPanel.isolated.test.ts`'s readout lookup: find the
+// ValueControl header by label, then read its value box.
+function vcValueEl(t: HTMLElement, label: string): HTMLElement {
+  const headers = Array.from(t.querySelectorAll('.vc-header'));
+  const header = headers.find(
+    (h) => h.querySelector('.vc-label')?.textContent === label,
+  );
+  if (!header) throw new Error(`ValueControl labeled "${label}" not found`);
+  const el = header.querySelector('.vc-value');
+  if (!el) throw new Error(`Value box for "${label}" not found`);
+  return el as HTMLElement;
+}
+
+function vcValueFor(t: HTMLElement, label: string): string {
+  return vcValueEl(t, label).textContent ?? '';
+}
+
 afterEach(() => {
   if (instance) unmount(instance);
   instance = null;
@@ -67,7 +89,7 @@ afterEach(() => {
   host = null;
 });
 
-describe('EssentialsPanel AF-level display honesty (MOR-1409 A13a)', () => {
+describe('EssentialsPanel AF-level display honesty (MOR-1409 A13a, MOR-2668)', () => {
   // Kills: dropping the `Number.isFinite` guard from `formatAfLevelDisplay`
   // (mutation battery #4-equivalent for this consumer).
   it('never renders a "NaN" substring for an unobserved AF level', () => {
@@ -76,26 +98,49 @@ describe('EssentialsPanel AF-level display honesty (MOR-1409 A13a)', () => {
   });
 
   // Kills: substituting a fabricated finite fallback (e.g. `?? 0` / `?? 0.5`)
-  // instead of the established '---' placeholder convention.
-  it('renders the established placeholder for an unobserved AF level', () => {
-    const text = render(Number.NaN).textContent ?? '';
-    expect(text).toContain('---');
-    expect(text).not.toContain('0%');
-    expect(text).not.toContain('50%');
+  // or a dash-family placeholder instead of the empty unread readout.
+  it('renders an empty unread AF value in its reserved box, never a dash', () => {
+    const t = render(Number.NaN);
+    expect(vcValueEl(t, 'AF Level')).not.toBeNull();
+    expect(vcValueFor(t, 'AF Level')).toBe('');
+  });
+
+  // Kills: a placeholder leaking into the slider's accessible name.
+  it('exposes no placeholder in the AF slider accessible name when unread', () => {
+    const t = render(Number.NaN);
+    const slider = t.querySelector('[role="slider"]');
+    expect(slider?.getAttribute('aria-label')).toBe('AF Level');
+    expect(slider?.getAttribute('aria-valuetext')).toBeNull();
   });
 
   // Kills: a guard that swallows real readings too (over-broad placeholder).
   it('still renders a real observed AF level as a percentage', () => {
-    const text = render(0.42).textContent ?? '';
-    expect(text).toContain('42%');
-    expect(text).not.toContain('---');
+    expect(vcValueFor(render(0.42), 'AF Level')).toBe('42%');
   });
 
   // Kills: guarding only the extremes — 0 is a legitimate observed reading and
   // must not be confused with "never observed".
   it('renders an observed zero AF level as 0%, not as unknown', () => {
-    const text = render(0).textContent ?? '';
-    expect(text).toContain('0%');
-    expect(text).not.toContain('---');
+    expect(vcValueFor(render(0), 'AF Level')).toBe('0%');
+  });
+
+  // Kills: a reservation narrower than the widest reading this displayFn
+  // can produce ('100%' — normalized percent clamps to 0..100).
+  it('renders the widest AF level reading exactly', () => {
+    expect(vcValueFor(render(1), 'AF Level')).toBe('100%');
+  });
+
+  it('reserves the AF value box for the widest reading (HBarRenderer .vc-value)', () => {
+    const widest = '100%'.length;
+    const source = readFileSync(
+      'src/components-v2/controls/value-control/HBarRenderer.svelte', 'utf8',
+    ).replace(/\/\*[\s\S]*?\*\//g, '');
+    const rule = source.match(/\.vc-value \{([^}]*)\}/);
+    expect(rule).not.toBeNull();
+    const minWidth = Number(rule![1].match(/min-width: (\d+)ch/)?.[1]);
+    expect(Number.isFinite(minWidth)).toBe(true);
+    expect(minWidth).toBeGreaterThanOrEqual(widest);
+    expect(rule![1]).toContain('tabular-nums');
+    expect(source).toMatch(/\.vc-value:empty::before \{ content: '\\200b'; \}/);
   });
 });

@@ -153,3 +153,85 @@ describe('DockMeterPanel calibrated bar fill (MOR-482)', () => {
     expect(fillPctForLabel(t, 'ALC')).toBeGreaterThan(99);
   });
 });
+
+describe('DockMeterPanel uncalibrated S row (MOR-2705 part 4a)', () => {
+  // The phone portrait TX chip mounts this panel while transmitting
+  // (`MobileRadioLayout.svelte`, `.m-tx-meter`). On an uncalibrated profile
+  // the S row keeps its moving bar but draws no number and no 'raw' word —
+  // a raw count is not an operator reading. Since MOR-2722 part B the TX
+  // rows (Po/SWR/ALC) do the same without a calibration table.
+  function uncalibratedCaps(): Capabilities {
+    const caps = makeCaps();
+    delete caps.meterCalibrations!.s_meter;
+    return caps;
+  }
+
+  it('draws the S bar with no number and no "raw" word on an uncalibrated radio while transmitting', () => {
+    setCapabilities(uncalibratedCaps());
+    const t = mountPanel({ ...baseProps, sValue: 53, rfPower: 50, txActive: true, meterSource: 'S' });
+    const row = t.querySelectorAll('.dock-row')[0];
+    expect(row.querySelector('.dock-row-label')?.textContent).toBe('S');
+    expect(row.querySelector('.dock-row-value')?.textContent).toBe('');
+    expect(row.textContent).not.toContain('raw');
+    expect(fillPctForLabel(t, 'S')).toBeGreaterThan(0);
+    expect(fillPctForLabel(t, 'S')).toBeLessThan(100);
+    // The TX rows keep their values — the Po row still reads watts.
+    expect(t.querySelectorAll('.dock-row')[1].querySelector('.dock-row-value')?.textContent).toBe('50W');
+  });
+
+  it('keeps the S-unit text on a calibrated radio', () => {
+    const t = mountPanel({ ...baseProps, sValue: 0 });
+    expect(t.querySelectorAll('.dock-row')[0].querySelector('.dock-row-value')?.textContent).toBe('S9');
+  });
+});
+
+describe('DockMeterPanel unread S row (MOR-2730)', () => {
+  // The phone's TX chip passes `toVfoProps(...).sValue`, which is NaN while
+  // the S-meter is unread.
+  const txProps: ComponentProps<typeof DockMeterPanel> = {
+    ...baseProps, rfPower: 50, swr: 1.5, alc: 0.5, txActive: true, meterSource: 'S',
+  };
+
+  it('draws no S reading and no S fill while the S-meter is unread', () => {
+    const t = mountPanel({ ...txProps, sValue: Number.NaN });
+    const row = t.querySelectorAll('.dock-row')[0];
+    expect(row.querySelector('.dock-row-label')?.textContent).toBe('S');
+    expect(row.querySelector('.dock-row-value')?.textContent).toBe('');
+    expect(fillPctForLabel(t, 'S')).toBe(0);
+    expect(t.querySelector('.status-tag.source')?.textContent).toBe('S ');
+  });
+
+  it('still draws a read S9 (0 dB relative to S9) as S9', () => {
+    const t = mountPanel({ ...txProps, sValue: 0 });
+    expect(t.querySelectorAll('.dock-row')[0].querySelector('.dock-row-value')?.textContent).toBe('S9');
+    expect(t.querySelector('.status-tag.source')?.textContent).toBe('S S9');
+  });
+});
+
+describe('DockMeterPanel uncalibrated TX rows (MOR-2722 part B)', () => {
+  // A profile with no TX meter calibration tables at all (X6200 class):
+  // every TX row keeps its moving bar but draws no digit and no 'raw'
+  // word — on screen or in the source tag.
+  function noTxCaps(): Capabilities {
+    const caps = makeCaps();
+    delete caps.meterCalibrations!.power;
+    delete caps.meterCalibrations!.swr;
+    delete caps.meterCalibrations!.alc;
+    return caps;
+  }
+
+  it('draws the Po bar with no number and no "raw" word while transmitting, with the source tag naming only the label', () => {
+    setCapabilities(noTxCaps());
+    const t = mountPanel({ ...baseProps, rfPower: 128, txActive: true, meterSource: 'po' });
+    const row = t.querySelectorAll('.dock-row')[1];
+    expect(row.querySelector('.dock-row-label')?.textContent).toBe('Po');
+    expect(row.querySelector('.dock-row-value')?.textContent).toBe('');
+    expect(row.textContent).not.toContain('raw');
+    expect(row.textContent).not.toContain('128');
+    expect(fillPctForLabel(t, 'Po')).toBeGreaterThan(0);
+    expect(fillPctForLabel(t, 'Po')).toBeLessThan(100);
+    const sourceTag = t.querySelector('.status-tag.source')!;
+    expect(sourceTag.textContent?.trim()).toBe('Po');
+    expect(sourceTag.textContent).not.toContain('raw');
+  });
+});

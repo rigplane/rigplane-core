@@ -7,10 +7,6 @@
  * `RitXitScanSurface` 8B, `CwKeyerSurface` 9B) independently re-derived and
  * pinned the same rule instead of importing one answer: on an UNOBSERVED
  * reading, `aria-pressed` must be OMITTED (`undefined`), never `"false"`.
- * `aria-pressed="false"` is not the absence of a claim, it is the claim
- * "this control is OFF" about a reading the radio never reported — the same
- * fail-closed-presentation doctrine every semantic surface in this directory
- * follows for text (`textOf`/`fmt` render `?`/`—`, never a v2 default).
  *
  * `value !== false && value !== 'off'` (not a plain boolean cast) is
  * deliberate: it normalises both plain booleans (`vox`, `nrActive`, …) and

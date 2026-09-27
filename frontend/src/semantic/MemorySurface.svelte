@@ -32,7 +32,8 @@
 <script module lang="ts">
   import { MAX_MEMORY_CHANNELS, loadMemoryChannels, persistMemoryChannels } from './memory-channels';
   export { MAX_MEMORY_CHANNELS };
-  export const UNKNOWN_TEXT = '—';
+  /** MOR-2652: an unread active VFO prints nothing — an unlit slot, never a dash. */
+  export const UNKNOWN_TEXT = '';
 </script>
 
 <script lang="ts">
@@ -117,6 +118,13 @@
    *  on whether the raw fields happen to be finite/non-sentinel. */
   let activeFreqText = $derived(facts.vfoIdentityKnown ? formatFrequencyString(facts.activeFreqHz) : UNKNOWN_TEXT);
   let activeModeText = $derived(facts.vfoIdentityKnown ? facts.activeMode : UNKNOWN_TEXT);
+  /** Reserved width of the unread slot: formatted frequency, a space, and the
+   *  mode. `MemoryPanelProps` carries neither a mode list nor a frequency
+   *  range, so the bound is the widest reading a shipped rig profile can
+   *  produce (`rigs/*.toml`, counted 2026-09-26): highest `end_hz` is
+   *  IC-9700's 1_300_000_000 (`1300.000.000`, 12), longest `[modes].list`
+   *  label is FTX-1's `DATA-FM-N` (9). 12 + 1 + 9 = 22. */
+  const ACTIVE_VFO_RESERVE_CH = 22;
 </script>
 
 <section class="memory-surface" data-testid="memory-surface" aria-label="Memory channels">
@@ -126,7 +134,10 @@
       <span>All</span>
     </label>
     <span class="channel-count" data-testid="memory-count">{populatedCount}/{MAX_MEMORY_CHANNELS}</span>
-    <span class="active-vfo" data-testid="memory-active-vfo" data-observed={facts.vfoIdentityKnown}>
+    <span
+      class="active-vfo" data-testid="memory-active-vfo" data-observed={facts.vfoIdentityKnown}
+      style:--memory-active-vfo-width="{ACTIVE_VFO_RESERVE_CH}ch"
+    >
       {activeFreqText} {activeModeText}
     </span>
     <button
@@ -170,7 +181,7 @@
 
         {#if entry}
           <span class="ch-freq" data-testid={`memory-channel-${ch}-freq`}>{formatFrequencyString(entry.freq)}</span>
-          <span class="ch-mode">{entry.mode || UNKNOWN_TEXT}</span>
+          <span class="ch-mode">{entry.mode}</span>
 
           {#if editingName === ch}
             <input
@@ -185,7 +196,7 @@
               data-testid={`memory-channel-${ch}-name`}
               onclick={() => startEditName(ch)}
             >
-              {entry.name || UNKNOWN_TEXT}
+              {entry.name}
             </button>
           {/if}
 
@@ -214,7 +225,13 @@
             {/if}
           </div>
         {:else}
-          <span class="ch-empty-label">-- empty --</span>
+          <!-- MOR-2682: an unpopulated channel is an empty row, never a
+               dash-framed label — the `MemoryPanel.svelte` shape. The cells
+               mirror the populated row, so the row keeps its height and the
+               list cannot move when the channel fills. -->
+          <span class="ch-freq"></span>
+          <span class="ch-mode"></span>
+          <span class="ch-name"></span>
           <div class="ch-actions">
             <button
               type="button" class="action-btn store-btn-inline" title="Store VFO to this channel"
@@ -236,6 +253,11 @@
   /* Structure only — a design language owns colour (MOR-977, forced-colors). */
   .memory-surface { display: flex; flex-direction: column; gap: 0.25rem; }
   .memory-toolbar { display: flex; align-items: center; gap: 0.5rem; }
+  .active-vfo {
+    display: inline-block;
+    min-width: var(--memory-active-vfo-width, 22ch);
+    font-variant-numeric: tabular-nums;
+  }
   .channel-count { margin-left: auto; }
   .channel-list { display: flex; flex-direction: column; }
   .channel-row { display: flex; align-items: center; gap: 0.375rem; }

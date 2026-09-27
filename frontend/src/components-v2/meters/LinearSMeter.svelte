@@ -23,6 +23,11 @@
     projectSignalMeter,
     lerpScaleKnots,
     thinUniformScaleMarksForWidth,
+    calibratedToDbm,
+    calibratedToSUnit,
+    formatDbm,
+    getCalibrationPoints,
+    isSmeterCalibrated,
     type SignalScaleMark,
     type SignalMeterProjection,
   } from './smeter-scale';
@@ -293,6 +298,29 @@
   const S_UNIT_FS     = $derived(compact ? 12 : 15);
   const DBM_Y         = $derived(TRACK_Y + TRACK_H + (compact ? 1 : 2));
   const DBM_FS        = $derived(compact ? 8 : 9);
+  const MONO_GLYPH_ADVANCE_EM = 0.6;
+
+  // MOR-2521: the glyph count of the widest S-unit and dBm text the mounted
+  // profile's calibration knots print. Each readout below starts at the left
+  // edge of a slot that many glyphs wide, centred on READOUT_CX; uncalibrated
+  // (0), it stays middle-anchored at READOUT_CX.
+  const readoutSlotGlyphs = $derived.by(() => {
+    let sUnit = 0;
+    let dbm = 0;
+    if (isSmeterCalibrated()) {
+      for (const point of getCalibrationPoints()) {
+        sUnit = Math.max(sUnit, calibratedToSUnit(point.actual).length);
+        dbm = Math.max(dbm, formatDbm(calibratedToDbm(point.actual)).length);
+      }
+    }
+    return { sUnit, dbm };
+  });
+  const S_UNIT_X = $derived(
+    READOUT_CX - (readoutSlotGlyphs.sUnit * MONO_GLYPH_ADVANCE_EM * S_UNIT_FS) / 2,
+  );
+  const DBM_X = $derived(
+    READOUT_CX - (readoutSlotGlyphs.dbm * MONO_GLYPH_ADVANCE_EM * DBM_FS) / 2,
+  );
 
   // Lower scale row (MOR-2250): stacked below the main bar, in the bar's own
   // x-range — it sits below TRACK_Y + TRACK_H the same way the S-unit/dBm
@@ -380,7 +408,7 @@
   // ── MOR-2521: stable node set ───────────────────────────────────────────────
   // Fill rects (and the peak line) are permanent nodes: a reading changes
   // only their width/fill/visibility attributes, never their presence — the
-  // node-count sweep in __tests__/LinearSMeter.test.ts fails if a value step
+  // node-count sweep in __tests__/LinearSMeter.isolated.test.ts fails if a value step
   // adds or removes a node. The `frac > 0.01` arm keeps the sub-1% partial
   // guard the conditional markup used to carry (pinned by the same sweep).
   function segLit(i: number, full: number, frac: number): boolean {
@@ -437,7 +465,7 @@
   const VFO_LABEL_Y = 0;
   const VFO_LABEL_WEIGHT = 400;
   const VFO_PLUS_LETTER_SPACING = Math.round(-0.05 * VFO_LABEL_FS * 100) / 100;
-  const VFO_LABEL_GLYPH_ADVANCE = VFO_LABEL_FS * 0.6;
+  const VFO_LABEL_GLYPH_ADVANCE = VFO_LABEL_FS * MONO_GLYPH_ADVANCE_EM;
   const VFO_TICKS_ROW_H = 20;
   const VFO_TICK_MARK_Y1 = 15;
   const VFO_TICK_MARK_Y2 = 19;
@@ -567,12 +595,14 @@
   const vfoScaleMarks = $derived(thinUniformScaleMarksForWidth(
     signalProjection.uniformScaleMarks, vfoTrackW, vfoScaleLabelWidth,
   ));
-  // The v8 face reads one line — the S-unit — so the CALIBRATED case alone
+  // The v8 face reads one line — the S-unit — so a KNOWN calibrated reading
   // drops its second field (the dBm) from the projection's accessible name.
-  // Every other wording ('raw, uncalibrated', the value itself with
-  // 'unit unknown'/'scale unavailable' on unprojectable domains, the
-  // reading-unknown fallback) is a fact the projection states honestly and
-  // stays verbatim — pinned by ReceiverInstrumentHost.isolated.test.ts.
+  // Every other projection wording (the engineering value with its own
+  // unit) stays verbatim — pinned by
+  // `meters/__tests__/smeter-scale.projection.test.ts`.
+  // An uncalibrated or unread meter — and a known reading whose unit is
+  // unknown — takes the projection's bare 'S meter' name (MOR-2649,
+  // MOR-2651, MOR-2705 part 4a).
   const vfoAccessibleLabel = $derived.by(() => {
     if (signalProjection.scaleMode === 's' && signalProjection.motionFraction !== null) {
       return `S meter ${displaySUnit}`;
@@ -587,7 +617,9 @@
     {#if mainPresent}
     <g data-main-relevant={relevant ? 'true' : 'false'} opacity={relevant ? 1 : DIM_OPACITY}>
       <g font-family="Roboto Mono, monospace" font-size="11" fill="var(--v2-text-primary, #C8D4E0)" font-weight="700">
-        <text x="4" y="14">{signalProjection.scaleMode === 's' ? 'S' : signalProjection.scaleMode === 'raw' ? 'raw' : 'level'}</text>
+        <!-- MOR-2705 part 4a: the scale label 'S' is a calibrated-scale word —
+             raw and none render nothing (no 'raw', no 'level'). -->
+        <text x="4" y="14">{signalProjection.scaleMode === 's' ? 'S' : ''}</text>
         {#each labelMarks as mark}
           <text x={14 + mark.fraction * 328} y="14"
             text-anchor="middle" fill={mark.actual > 0 ? 'var(--v2-accent-red, #FF4040)' : 'var(--v2-text-primary, #C8D4E0)'}>
@@ -597,14 +629,12 @@
       </g>
       {#each Array(SDR_CELLS * 2) as _, index}
         <rect data-sdr-segment={index}
+          data-lit={index < sdrFill ? 'true' : 'false'}
           x={14 + Math.floor(index / 2) * SDR_CELL_WIDTH + (index % 2) * (SDR_SUB_WIDTH + 0.5)}
           y="22" width={SDR_SUB_WIDTH} height="18" fill={sdrColor(index)} />
       {/each}
       <text x="412" y="31" text-anchor="end" fill="var(--v2-text-primary, #DFFCF5)"
         font-family="Roboto Mono, monospace" font-size="12" font-weight="700">{displaySUnit}</text>
-      {#if signalProjection.scaleMode === 'raw'}
-        <text x="412" y="46" text-anchor="end" fill="var(--v2-text-secondary, #A0B4C8)" font-size="10">uncalibrated</text>
-      {/if}
     </g>
     {/if}
   </svg>
@@ -984,23 +1014,25 @@
 
   <!-- Value readout: dBm aligned to bar center, S-unit above it -->
   <text
-    x={READOUT_CX}
+    data-meter-reading
+    x={S_UNIT_X}
     y={TRACK_Y - (compact ? 2 : 3)}
     font-family="'Roboto Mono', monospace"
     font-size={S_UNIT_FS}
     font-weight="700"
     fill="var(--v2-text-lighter)"
-    text-anchor="middle"
+    text-anchor={readoutSlotGlyphs.sUnit > 0 ? 'start' : 'middle'}
     dominant-baseline="text-after-edge"
   >{displaySUnit}</text>
 
   <text
-    x={READOUT_CX}
+    data-meter-reading-secondary
+    x={DBM_X}
     y={TRACK_Y + TRACK_H / 2}
     font-family="'Roboto Mono', monospace"
     font-size={DBM_FS}
     fill="var(--v2-text-dim)"
-    text-anchor="middle"
+    text-anchor={readoutSlotGlyphs.dbm > 0 ? 'start' : 'middle'}
     dominant-baseline="central"
   >{displayDbm}</text>
   </g>
@@ -1027,5 +1059,59 @@
   [data-meter-fill],
   [data-meter-fill-red] {
     filter: var(--v2-meter-lit-filter, none);
+  }
+
+  /* ── MOR-1250: forced-colors (Windows High Contrast Mode) ──────────────
+   * WHCM forces `color`/`background` but not SVG presentation attributes,
+    * so this component's own palette — the 20-entry ACTIVE_COLORS list
+    * (three of the entries are CSS custom-property tokens), the dim/lower
+    * hex literals, sdrColor — rendered unchanged under it (the
+   * MOR-1233 verify probe). Author CSS overrides presentation attributes
+   * in the cascade, so this block re-paints every face onto system
+   * colours: lit state Highlight, unlit structure GrayText, ink
+   * CanvasText, faces Canvas. `forced-color-adjust: none` pins the meter
+    * to exactly these paints instead of engine-dependent forcing. The
+    * reading also lives in text and aria-labels, so colour is
+    * never the only channel. Pinned by
+   * __tests__/LinearSMeter.forced-colors.test.ts. */
+  @media (forced-colors: active) {
+    svg {
+      forced-color-adjust: none;
+    }
+    text {
+      fill: CanvasText;
+    }
+    line {
+      stroke: CanvasText;
+    }
+    /* Container and track backgrounds: canvas with a text-colour outline. */
+    rect:not([data-segment]):not([data-lower-segment]):not([data-meter-fill]):not([data-lower-fill]):not([data-sdr-segment]) {
+      fill: Canvas;
+      stroke: CanvasText;
+    }
+    /* Unlit structure: dim segments and the SDR face's unlit cells. */
+    rect[data-segment],
+    rect[data-lower-segment],
+    rect[data-sdr-segment][data-lit='false'] {
+      fill: GrayText;
+    }
+    /* The reading: lit segments on the default face and the lower row. */
+    rect[data-meter-fill],
+    rect[data-lower-fill],
+    rect[data-sdr-segment][data-lit='true'] {
+      fill: Highlight;
+    }
+    /* vfo/vfo-wide face: the bar is dash-patterned lines, not rects. */
+    line[data-meter-track],
+    line[data-lower-track] {
+      stroke: GrayText;
+    }
+    line[data-meter-fill],
+    line[data-meter-fill-red],
+    line[data-meter-glow],
+    line[data-meter-glow-red],
+    line[data-lower-fill] {
+      stroke: Highlight;
+    }
   }
 </style>

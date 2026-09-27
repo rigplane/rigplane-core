@@ -55,7 +55,10 @@ describe('FilterInstrumentHost finite ownership', () => {
     const unknown = target.querySelector<HTMLSelectElement>('[data-testid="mod-input-select"]')!;
     expect(unknown.disabled).toBe(true);
     expect(unknown.value).toBe('');
-    expect([...unknown.options].map(option => option.text)).toEqual(['—', 'MIC', 'USB']);
+    // MOR-2648: an unread select shows a blank, unlit choice — an empty
+    // option, never a dash or a fabricated value.
+    expect([...unknown.options].map(option => option.text)).toEqual(['', 'MIC', 'USB']);
+    expect(unknown.options[0]?.textContent).toBe('');
     expect(unknown.closest('[data-mod-input-status]')?.getAttribute('data-mod-input-status')).toBe('unknown');
     unmount(component);
   });
@@ -213,6 +216,22 @@ describe('FilterInstrumentHost finite ownership', () => {
     props.view = base(); flushSync();
     for (const label of ['Mode', 'Filter', 'Filter shape', 'DATA mode'])
       expect(target.querySelector(`[data-testid="external-${label}"] [aria-checked="true"]`)).not.toBeNull();
+    unmount(component);
+  });
+
+  // MOR-2704 G2: the imported `usable` gate — a field read but not
+  // operational refuses the action, and the disabled-reason and status
+  // attributes keep their old outputs (the mutation mini pins this red
+  // when the gate's `operational` check is dropped).
+  it('refuses a read-but-not-operational field and keeps its reason and status outputs', () => {
+    const view = reading(base(), 'filterPassband', 'modInputSource', { status: 'known', value: 0 }, false);
+    const props = proxy({ view, presentation: 'standard' as const, onModInputChange: vi.fn() });
+    const component = mount(FilterInstrumentHostFixture, { target, props }); flushSync();
+    const label = target.querySelector('[data-testid="standard-mod-input"]')!;
+    const select = target.querySelector<HTMLSelectElement>('[data-testid="mod-input-select"]')!;
+    expect(label.getAttribute('data-disabled-reason')).toBe('field-not-observed');
+    expect(label.getAttribute('data-mod-input-status')).toBe('retained');
+    expect(select.disabled).toBe(true);
     unmount(component);
   });
 });

@@ -33,12 +33,14 @@
     HBarIssuedStatusPresentation,
     HBarIssuedStatusSnapshot,
   } from '../components-v2/controls/value-control/skin';
+  import { usable } from '../primitives/control-instruments/control-instrument-behavior';
   import {
     createContinuousScalar,
     createRenderedNativeRangeContinuousScalarPolicy,
     type CommandScalarFeedback,
     type ContinuousScalarInput,
   } from '../primitives/scalar/continuous-scalar.svelte';
+  import { finiteValue, valueText } from '../primitives/reading-text';
   import type { CwKeyerField, RadioViewModel } from './radio-view-model';
 
   interface Props {
@@ -66,15 +68,20 @@
     const domain = field === 'pitchHz' ? view?.cwKeyer?.pitchDomain : view?.cwKeyer?.keySpeedDomain;
     return domain === undefined ? { min, max, step } : { min: domain.min, max: domain.max, step: domain.step };
   };
-  const usable = (current: CwKeyerField<unknown> | undefined): boolean =>
-    current?.availability.structural === true
-    && current.availability.operational
-    && current.reading.status === 'known';
+  // MOR-2688 S4b: the NaN/null guard enters through `finiteValue`; the
+  // unit format is kept exactly.
   const formatValue = (field: CwContinuousField, value: number | null): string => {
-    if (value === null || !Number.isFinite(value)) return '—';
     const [, , , , , unit] = row(field);
-    return `${value} ${unit}`;
+    return valueText(finiteValue(value), (v) => `${v} ${unit}`);
   };
+  /** MOR-2706: each value slot's reserved width derives from the field's
+   *  effective domain — the widest text the readout can print is the domain
+   *  max in the field's own unit (FTX-1 pitch '1050 Hz' = 7ch; the legacy
+   *  fallback '900 Hz' = 6ch; keyer speed '48 WPM' = 6ch), never a raised
+   *  constant. Fixed when the capabilities load; a reading never changes
+   *  it. The stylesheet's 6ch is the floor when no domain is published. */
+  const valueSlotMinWidth = (field: CwContinuousField): string =>
+    `${formatValue(field, limits(field).max).length}ch`;
   const fieldOf = (field: CwContinuousField): CwKeyerField<number> | undefined =>
     view?.cwKeyer?.[field];
   const feedbackOf = (field: CwContinuousField): Readonly<CommandScalarFeedback> | undefined =>
@@ -206,6 +213,7 @@
       data-min={min} data-max={max} data-step={step}
       aria-busy={currentFeedback?.busy}
       title={disabledReason}
+      style:--cw-value-min-width={valueSlotMinWidth(field)}
       use:retireHBarStatus={{ field, form }}
     >
       <span class="cw-keyer-name" class:sr-only={explicitPresentation}
@@ -257,6 +265,17 @@
   .cw-keyer-level { display: flex; align-items: baseline; gap: 0.5rem; }
   .cw-keyer-level--presented { display: flex; width: 100%; min-width: 0; max-width: 100%; }
   .cw-keyer-name { min-width: 12ch; }
+  /* MOR-2653: the value slot keeps its width unread → known. MOR-2706: the
+     reservation derives from the field's effective domain via the per-level
+     `--cw-value-min-width` inline custom property (the widest text is the
+     domain max in the unit — FTX-1 '1050 Hz' = 7ch); 6ch is the floor for a
+     radio that publishes no domain. An unread value renders EMPTY, never a
+     placeholder. Digits are tabular. */
+  .cw-keyer-level :global(.vc-value) {
+    display: inline-block;
+    min-width: var(--cw-value-min-width, 6ch);
+    font-variant-numeric: tabular-nums;
+  }
   .cw-keyer-level :global(.vc-hbar) { width: 100%; min-width: 0; }
   .command-pending { font-style: italic; }
   .sr-only {

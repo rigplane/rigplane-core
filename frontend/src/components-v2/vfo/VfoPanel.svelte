@@ -7,6 +7,7 @@
   import LinearSMeter from '../meters/LinearSMeter.svelte';
   import FrequencyDisplayInteractive from '../../primitives/frequency/FrequencyDisplayInteractive.svelte';
   import { splitFrequencyToDigits, groupDigitsForDisplay } from '../../primitives/frequency/frequency-tuning';
+  import { finiteValue, valueText } from '../../primitives/reading-text';
   import type { VfoLayoutProfile } from '../layout/vfo-layout-tokens';
   import type {
     MeterContinuitySession, MeterSourceIdentity,
@@ -69,6 +70,11 @@
     frequencyState?: 'current' | 'stale' | 'unknown' | 'unsupported';
     contextKey?: string;
     frequencyDisabled?: boolean;
+    /** MOR-1331 — the digit widget's clamp at this card's seam. Omitted
+     *  (or half-known) keeps the primitive's legacy wide-open clamp exactly:
+     *  the band envelope is a plain readout bound, never a TX gate. */
+    tuneMinHz?: number | null;
+    tuneMaxHz?: number | null;
     controlsDisabled?: boolean;
     /** Tri-state: a string is known text, null is unread (dim label),
      *  undefined is structurally unsupported (slot kept, chip not drawn). */
@@ -98,7 +104,8 @@
 
   let {
     receiver, receiverLabel, slotTag, frequency, freq, displayHz, pendingDisplayHz = null,
-    frequencyState = 'current', contextKey, frequencyDisabled = false, controlsDisabled = false,
+    frequencyState = 'current', contextKey, frequencyDisabled = false,
+    tuneMinHz = null, tuneMaxHz = null, controlsDisabled = false,
     mode, filter, sMeter, sValue, meterPresent = true, meterOperational, meterSource, continuitySession,
     isActive,
     sections, slotChoices = [], reserveMeterSpace = false,
@@ -112,6 +119,9 @@
   }: Props = $props();
 
   let meterVariant = $derived(layoutProfile === 'wide' ? 'vfo-wide' : 'vfo');
+  /** MOR-1331: both band edges known, or the primitive's own wide-open clamp. */
+  let tuneBoundsKnown = $derived(tuneMinHz != null && tuneMaxHz != null
+    && Number.isFinite(tuneMinHz) && Number.isFinite(tuneMaxHz));
   let frequencyEntryButton = $derived(onFrequencyClick !== undefined
     && (frequencyState === 'current' || frequencyState === 'stale')
     && freq !== null && freq !== undefined && Number.isFinite(freq));
@@ -124,10 +134,11 @@
   });
 
   function formatFrequency(hz: number | null | undefined): string {
-    if (hz === null || hz === undefined || !Number.isFinite(hz)) return '';
-    const groups = groupDigitsForDisplay(splitFrequencyToDigits(hz));
-    return [groups.mhz, groups.khz, groups.hz]
-      .map((group) => group.map((digit) => digit.char).join('')).join('.');
+    return valueText(finiteValue(hz), (value) => {
+      const groups = groupDigitsForDisplay(splitFrequencyToDigits(value));
+      return [groups.mhz, groups.khz, groups.hz]
+        .map((group) => group.map((digit) => digit.char).join('')).join('.');
+    });
   }
 
   /** A legacy badge colour is either a token NAME (mapped to the theme's
@@ -206,19 +217,21 @@
         e.stopPropagation();
         if (!controlsDisabled) onModeClick?.();
       }}
-      title={!controlsDisabled && onModeClick ? `Change mode (current: ${mode})` : undefined}
+      title={!controlsDisabled && onModeClick
+        ? (mode ? `Change mode (current: ${mode})` : 'Change mode')
+        : undefined}
     >
       {#if mode === undefined}
         <span class="chip-slot" aria-hidden="true"></span>
       {:else}
-        <span class="chip-lg" data-family="primary-neon" data-chip="mode" data-lit={mode !== null}>{mode ?? 'MODE'}</span>
+        <span class="chip-lg" data-family="primary-neon" data-chip="mode" data-lit={!!mode}>{mode || 'MODE'}</span>
       {/if}
     </div>
 
     {#if filter === undefined}
       <span class="chip-slot" aria-hidden="true"></span>
     {:else}
-      <span class="chip-lg" data-family="primary-neon" data-chip="filter" data-lit={filter !== null}>{filter ?? 'FIL'}</span>
+      <span class="chip-lg" data-family="primary-neon" data-chip="filter" data-lit={!!filter}>{filter || 'FIL'}</span>
     {/if}
 
     <div class="annunciators">
@@ -276,6 +289,8 @@
                 disabled={frequencyDisabled
                   || (frequencyState !== 'current' && frequencyState !== 'stale')}
                 active={isActive} {receiver} {onFreqChange} vfoFreqHook={false}
+                minFreq={tuneBoundsKnown ? tuneMinHz! : undefined}
+                maxFreq={tuneBoundsKnown ? tuneMaxHz! : undefined}
               />
             {:else}
               <span class="freq unknown-frequency">{formatFrequency(pendingDisplayHz ?? displayHz)}</span>
@@ -317,8 +332,8 @@
       {:else if meterPresent}
         <div data-testid="receiver-s-meter" data-receiver={receiver}
           data-operational={meterOperational === undefined ? undefined : String(meterOperational)}
-          aria-label={sValue === null ? `${receiverLabel} S meter unknown` : undefined}>
-          <LinearSMeter value={typeof sValue === 'number' && Number.isFinite(sValue) ? sValue : null} compact label={slotTag} variant={meterVariant} source={meterSource} session={continuitySession} />
+          aria-label={sValue === null ? `${receiverLabel} S meter` : undefined}>
+          <LinearSMeter value={finiteValue(sValue)} compact label={slotTag} variant={meterVariant} source={meterSource} session={continuitySession} />
         </div>
       {/if}
     </div>

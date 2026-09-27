@@ -106,8 +106,8 @@
   const TOTAL_HEIGHT = $derived(compact ? 22 : 30);
   const LABEL_FS    = $derived(compact ? 7  : 8);
   // MOR-1535: steps down from the base size when `displayValue` is too long
-  // to fit the fixed value column at that size (e.g. "158 raw") — SVG text
-  // clips silently on overflow rather than wrapping or ellipsizing.
+  // to fit the fixed value column at that size — SVG text clips silently on
+  // overflow rather than wrapping or ellipsizing.
   const VALUE_FS    = $derived(valueFontSize(displayValue, compact ? 9 : 11));
   const TEXT_Y      = $derived(TRACK_Y + TRACK_H / 2);
 
@@ -167,6 +167,20 @@
       ? 0
       : smoothedSegs - Math.floor(smoothedSegs),
   );
+
+  // ── MOR-2521: stable node set ───────────────────────────────────────────────
+  // Fill rects are permanent nodes: a value changes only their width and
+  // visibility attributes, never their presence — the node-count sweep in
+  // __tests__/BarGauge.constant-nodes.svelte.test.ts fails if a value step
+  // adds or removes a node. The `> 0.01` arm keeps the sub-1% partial guard
+  // the conditional markup used to carry (same shape as #3557's
+  // LinearSMeter fix).
+  function segLit(i: number, full: number, frac: number): boolean {
+    return i < full || (i === full && frac > 0.01);
+  }
+  function segWidth(i: number, full: number, frac: number): number {
+    return i === full ? Math.max(1, SEG_W * frac) : SEG_W;
+  }
 </script>
 
 <svg
@@ -215,7 +229,8 @@
     stroke-width="1"
   />
 
-  <!-- Segments -->
+  <!-- Segments (MOR-2521): every fill rect is a permanent node — a value
+       changes only its width/visibility attributes, never its presence. -->
   {#each Array(SEG_COUNT) as _, i}
     {@const x = segX(i)}
     {@const zone = getSegmentZone(i, SEG_COUNT, zones)}
@@ -228,21 +243,13 @@
     />
 
     <!-- Active -->
-    {#if i < fullSegs}
-      <rect
-        data-gauge-fill={i}
-        {x} y={TRACK_Y + 1}
-        width={SEG_W} height={TRACK_H - 2}
-        fill={zone.color}
-      />
-    {:else if i === fullSegs && fracSeg > 0.01}
-      <rect
-        data-gauge-fill={i}
-        {x} y={TRACK_Y + 1}
-        width={Math.max(1, SEG_W * fracSeg)} height={TRACK_H - 2}
-        fill={zone.color}
-      />
-    {/if}
+    <rect
+      data-gauge-fill={i}
+      {x} y={TRACK_Y + 1}
+      width={segWidth(i, fullSegs, fracSeg)} height={TRACK_H - 2}
+      fill={zone.color}
+      visibility={segLit(i, fullSegs, fracSeg) ? 'visible' : 'hidden'}
+    />
   {/each}
 
   <!-- Peak-hold marker (MOR-1282) -->

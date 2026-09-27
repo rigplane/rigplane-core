@@ -2111,6 +2111,12 @@ def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
         ("IC-7610", "global.meters.id"),
         ("IC-7610", "global.meters.power"),
         ("IC-7610", "global.meters.swr"),
+        # MOR-2748: a probe reading, not a guess: the 16 56 filter-shape read
+        # answered NG in RTTY on the bench (MOR-2733), and the Basic Manual
+        # scopes the IF filter shape to SSB/CW. Gated by each receiver's own
+        # mode.
+        ("IC-7610", "receiver.main.operator_controls.filter_shape"),
+        ("IC-7610", "receiver.sub.operator_controls.filter_shape"),
         ("IC-9700", "global.meters.alc"),
         ("IC-9700", "global.meters.comp"),
         ("IC-9700", "global.meters.power"),

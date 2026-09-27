@@ -13,12 +13,11 @@ import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.sve
 //   formatters/level fns must render that value directly, never re-run it
 //   through the curve (the double conversion this ticket removes).
 // - A meter with NO declared table arrives as the raw device byte flagged
-//   uncalibrated server-side; the frontend degrades to an honest raw
-//   readout tagged "raw" (e.g. "158 raw"; MOR-1527 — a naked number here
-//   was the live-reported bug: a Vd tile reading bare "158" with nothing
-//   marking it as not-volts), a neutral raw/255 bar — never a unit claim
-//   through a borrowed radio's curve. The hardcoded IC-7610 fallback knots
-//   are gone.
+//   uncalibrated server-side; the frontend renders NO value text — no
+//   number, no "raw" word (MOR-2722 part B: a raw count is not an operator
+//   reading, the same ruling as the S-meter in MOR-2705 part 4a) — over a
+//   neutral raw/255 bar, never a unit claim through a borrowed radio's
+//   curve. The hardcoded IC-7610 fallback knots are gone.
 //
 // Capability state is seeded into the REAL store, not vi.mock'd: this file
 // runs in the `fast` pool (`isolate: false`), where a module-scope mock
@@ -262,39 +261,39 @@ describe('explicit meter domains override capability metadata (MOR-2425)', () =>
   const raw = { kind: 'raw' } as const;
   const unknown = { kind: 'unknown' } as const;
 
-  it('keeps an explicit raw sample raw even when calibrated tables exist', () => {
+  it('renders an explicit raw sample as no text over a moving raw/255 bar, even when calibrated tables exist (MOR-2722 part B)', () => {
     expect(hasSwrRatioScale(raw)).toBe(false);
-    expect(formatPowerWatts(50, raw)).toBe('50 raw');
+    expect(formatPowerWatts(50, raw)).toBe('');
     expect(normalizePower(50, raw)).toBeCloseTo(50 / 255);
-    expect(formatSwr(3, raw)).toBe('3 raw');
+    expect(formatSwr(3, raw)).toBe('');
     expect(swrLevel(120, raw)).toBeCloseTo(120 / 255);
     expect(isSwrFault(3, raw)).toBe(false);
-    expect(formatAlc(0.95, raw)).toBe('1 raw');
+    expect(formatAlc(0.95, raw)).toBe('');
     expect(alcLevel(120, raw)).toBeCloseTo(120 / 255);
     expect(isAlcFault(255, raw)).toBe(false);
-    expect(formatVolts(13.8, raw)).toBe('14 raw');
+    expect(formatVolts(13.8, raw)).toBe('');
     expect(vdLevel(13.8, raw)).toBeCloseTo(13.8 / 255);
-    expect(formatAmps(10, raw)).toBe('10 raw');
+    expect(formatAmps(10, raw)).toBe('');
     expect(idLevel(10, raw)).toBeCloseTo(10 / 255);
-    expect(formatCompDb(15, raw)).toBe('15 raw');
+    expect(formatCompDb(15, raw)).toBe('');
     expect(compLevel(15, raw)).toBeCloseTo(15 / 255);
   });
 
-  it('retains known numeric evidence for an unknown unit without geometry or faults', () => {
+  it('renders an unknown unit as no text — like an unread reading — without geometry or faults', () => {
     expect(hasSwrRatioScale(unknown)).toBe(false);
-    expect(formatPowerWatts(50, unknown)).toBe('50 unit unknown');
+    expect(formatPowerWatts(50, unknown)).toBe('');
     expect(normalizePower(50, unknown)).toBeNull();
-    expect(formatSwr(3, unknown)).toBe('3 unit unknown');
+    expect(formatSwr(3, unknown)).toBe('');
     expect(swrLevel(3, unknown)).toBeNull();
     expect(isSwrFault(3, unknown)).toBe(false);
-    expect(formatAlc(0.95, unknown)).toBe('0.95 unit unknown');
+    expect(formatAlc(0.95, unknown)).toBe('');
     expect(alcLevel(0.95, unknown)).toBeNull();
     expect(isAlcFault(0.95, unknown)).toBe(false);
-    expect(formatVolts(13.8, unknown)).toBe('13.8 unit unknown');
+    expect(formatVolts(13.8, unknown)).toBe('');
     expect(vdLevel(13.8, unknown)).toBeNull();
-    expect(formatAmps(10, unknown)).toBe('10 unit unknown');
+    expect(formatAmps(10, unknown)).toBe('');
     expect(idLevel(10, unknown)).toBeNull();
-    expect(formatCompDb(15, unknown)).toBe('15 unit unknown');
+    expect(formatCompDb(15, unknown)).toBe('');
     expect(compLevel(15, unknown)).toBeNull();
   });
 
@@ -388,26 +387,27 @@ describe('formatCompDb / compLevel (calibrated: input is dB)', () => {
 
 // ---------------------------------------------------------------------------
 // Uncalibrated: no table declared — the backend publishes the raw device
-// byte flagged uncalibrated. Honest degradation: plain number, neutral
-// raw/255 bar, no fault claims, no borrowed-curve unit claims (MOR-1470).
+// byte flagged uncalibrated. Honest degradation: no value text, neutral
+// raw/255 bar, no fault claims, no borrowed-curve unit claims (MOR-1470,
+// MOR-2722 part B).
 // ---------------------------------------------------------------------------
 
-describe('TX meters — uncalibrated honest fallback (MOR-1470)', () => {
+describe('TX meters — uncalibrated honest fallback (MOR-1470, MOR-2722 part B)', () => {
   beforeEach(() => {
     // A profile that declares no meter calibration at all (X6200 class).
     setCapabilities(makeCaps({ model: 'X6200' }));
   });
 
-  it('formatPowerWatts renders the raw number tagged "raw", not fabricated watts (MOR-1527)', () => {
-    expect(formatPowerWatts(143)).toBe('143 raw');
+  it('formatPowerWatts renders no number and no "raw" word, not fabricated watts (MOR-2722 part B)', () => {
+    expect(formatPowerWatts(143)).toBe('');
   });
 
   it('normalizePower degrades to raw/255', () => {
     expect(normalizePower(143)).toBeCloseTo(143 / 255);
   });
 
-  it('formatSwr renders the raw number tagged "raw", not a fabricated ratio (MOR-1527)', () => {
-    expect(formatSwr(48)).toBe('48 raw');
+  it('formatSwr renders no number and no "raw" word, not a fabricated ratio (MOR-2722 part B)', () => {
+    expect(formatSwr(48)).toBe('');
   });
 
   it('swrRatio yields NaN — there is no honest ratio to compare', () => {
@@ -422,8 +422,8 @@ describe('TX meters — uncalibrated honest fallback (MOR-1470)', () => {
     expect(swrLevel(120)).toBeCloseTo(120 / 255);
   });
 
-  it('formatAlc renders the raw number tagged "raw" without table or redline (MOR-1527)', () => {
-    expect(formatAlc(60)).toBe('60 raw');
+  it('formatAlc renders no number and no "raw" word without table or redline (MOR-2722 part B)', () => {
+    expect(formatAlc(60)).toBe('');
   });
 
   it('alcLevel degrades to raw/255; isAlcFault stays silent', () => {
@@ -431,13 +431,13 @@ describe('TX meters — uncalibrated honest fallback (MOR-1470)', () => {
     expect(isAlcFault(255)).toBe(false);
   });
 
-  it('formatVolts renders the raw number tagged "raw", not fabricated volts (MOR-1527 — the live bug: a bare "184"/"158" with no unit)', () => {
-    expect(formatVolts(184)).toBe('184 raw');
+  it('formatVolts renders no number and no "raw" word, not fabricated volts (MOR-2722 part B)', () => {
+    expect(formatVolts(184)).toBe('');
   });
 
-  it('formatAmps / formatCompDb render raw numbers tagged "raw" (MOR-1527)', () => {
-    expect(formatAmps(151)).toBe('151 raw');
-    expect(formatCompDb(75)).toBe('75 raw');
+  it('formatAmps / formatCompDb render no number and no "raw" word (MOR-2722 part B)', () => {
+    expect(formatAmps(151)).toBe('');
+    expect(formatCompDb(75)).toBe('');
   });
 
   it('vdLevel / idLevel / compLevel degrade to raw/255', () => {
@@ -684,8 +684,8 @@ describe('formatSMeter / sLevel — uncalibrated fallback (MOR-1451)', () => {
     setCapabilities(makeCaps({ model: 'X6200' }));
   });
 
-  it('formatSMeter renders the raw-tagged number, not a fabricated S-unit and not a naked number (MOR-1535: the same honesty gap MOR-1527 fixed for the other six formatters)', () => {
-    expect(formatSMeter(53)).toBe('53 raw');
+  it('formatSMeter renders nothing, not a raw count and not a fabricated S-unit (MOR-2705 part 4a: a raw count is not an operator reading)', () => {
+    expect(formatSMeter(53)).toBe('');
   });
 
   it('sLevel degrades to a neutral raw-proportional bar position', () => {
@@ -721,10 +721,10 @@ describe('formatSMeter / sLevel / isSmeterCalibrated — one-knot table cannot s
     expect(isSmeterCalibrated()).toBe(false);
   });
 
-  it('formatSMeter renders the honest raw-tagged reading, never a fabricated S-unit, and is not constant across inputs', () => {
-    expect(formatSMeter(-20)).toBe('0 raw');
-    expect(formatSMeter(53)).toBe('53 raw');
-    expect(formatSMeter(150)).toBe('150 raw');
+  it('formatSMeter renders nothing — never a fabricated S-unit, never a raw count (MOR-2705 part 4a)', () => {
+    expect(formatSMeter(-20)).toBe('');
+    expect(formatSMeter(53)).toBe('');
+    expect(formatSMeter(150)).toBe('');
   });
 
   it('sLevel agrees with formatSMeter that this tile is uncalibrated', () => {

@@ -110,7 +110,7 @@ describe('formatFrequencyString', () => {
   });
 });
 
-// ── A11 non-finite guard (MOR-1409, Core #2317) ────────────────────────────
+// ── A11 non-finite guard (MOR-1409, Core #2317; MOR-2654 unlit form) ─────
 //
 // Coordinator adjudication 5245817033 granted this file as A11's fourth
 // production owner: `toVfoProps`/`toBandSelectorProps`
@@ -122,27 +122,31 @@ describe('formatFrequencyString', () => {
 // These are the consumer-boundary proof the adjudication requires: no "NaN"
 // substring anywhere in the output for non-finite input, and the populated
 // (finite) path is provably byte-for-byte unaffected.
+//
+// MOR-2654 (owner rule, 2026-09-26): the unlit form is EMPTY strings —
+// unlit LCD digits in reserved slots — never dash placeholders.
 describe('formatFrequency non-finite guard (MOR-1409 A11, adjudication 5245817033)', () => {
-  it('returns placeholder segments — never a "NaN" substring — for NaN input', () => {
+  it('returns empty unlit segments — never a "NaN" substring — for NaN input', () => {
     const parts = formatFrequency(Number.NaN);
-    expect(parts).toEqual({ mhz: '--', khz: '---', hz: '---' });
+    expect(parts).toEqual({ mhz: '', khz: '', hz: '' });
     expect(parts.mhz).not.toContain('NaN');
     expect(parts.khz).not.toContain('NaN');
     expect(parts.hz).not.toContain('NaN');
   });
 
-  it('formatFrequencyString(NaN) joins to "--.---.---" — never "NaN.NaN.NaN"', () => {
+  it('formatFrequencyString(NaN) joins to ".." — never "NaN.NaN.NaN", never a dash', () => {
     const s = formatFrequencyString(Number.NaN);
-    expect(s).toBe('--.---.---');
+    expect(s).toBe('..');
     expect(s).not.toContain('NaN');
+    expect(s).not.toContain('-');
   });
 
   it('also guards +/-Infinity (any non-finite input, not just NaN)', () => {
     expect(formatFrequency(Number.POSITIVE_INFINITY)).toEqual({
-      mhz: '--', khz: '---', hz: '---',
+      mhz: '', khz: '', hz: '',
     });
     expect(formatFrequency(Number.NEGATIVE_INFINITY)).toEqual({
-      mhz: '--', khz: '---', hz: '---',
+      mhz: '', khz: '', hz: '',
     });
   });
 

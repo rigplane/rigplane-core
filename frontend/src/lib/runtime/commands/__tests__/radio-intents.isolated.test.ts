@@ -120,7 +120,7 @@ describe('typed non-PTT radio intents', () => {
         version: 1, ...(host_api === undefined ? {} : { host_api }),
         extensions: [{ id: 'meter', mount: 'floating-overlay', entry: '/local/meter.js' }],
       }) });
-      expect(await loadLocalExtensionManifest({ fetch })).toBeNull();
+      expect(await loadLocalExtensionManifest({ fetch, supervisorAdvertised: true })).toBeNull();
       expect(warn).toHaveBeenCalledExactlyOnceWith(expect.stringMatching(/host_api.*2\.0.*migrat/i));
       expect(warn).toHaveBeenCalledWith(expect.stringMatching(/PTT.*unsupported/));
     } finally {

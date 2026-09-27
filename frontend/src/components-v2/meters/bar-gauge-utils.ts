@@ -62,11 +62,10 @@ const MIN_VALUE_FONT_SIZE = 6;
  * Font size for `BarGauge`'s `displayValue` text, stepped down from
  * `baseFontSize` when the string is too long to fit the fixed ~40px value
  * column at that size (MOR-1535). SVG text neither wraps nor ellipsizes on
- * overflow — it clips silently — so a value like MOR-1527's raw-tagged
- * fallback ("158 raw", 7 chars) would otherwise lose characters at the
- * non-compact VALUE_FS=11 (~6-char budget). Short strings (the common
- * case: "35W", "S9+40") are unaffected — this only ever shrinks text that
- * would have clipped, never grows it past `baseFontSize`.
+ * overflow — it clips silently — so an over-budget string would otherwise
+ * lose characters at the non-compact VALUE_FS=11 (~6-char budget). Short
+ * strings (the common case: "35W", "S9+40") are unaffected — this only ever
+ * shrinks text that would have clipped, never grows it past `baseFontSize`.
  */
 export function valueFontSize(displayValue: string, baseFontSize: number): number {
   const chars = displayValue.length;

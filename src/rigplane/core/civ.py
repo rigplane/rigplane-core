@@ -59,6 +59,7 @@ class _AckWaiter:
     created_monotonic: float
     generation: int
     nak_only: bool = False
+    response_key: CivRequestKey | None = None
 
 
 @dataclass(slots=True)
@@ -173,8 +174,12 @@ class CivRequestTracker:
         *,
         consume_backlog: bool = True,
         nak_only: bool = False,
+        response_key: CivRequestKey | None = None,
     ) -> asyncio.Future[CivFrame] | int:
         """Register a pending request that expects an ACK/NAK.
+
+        ``response_key`` is read for a sink (``wait=False``) only; ``resolve``
+        says when a data response retires that sink.
 
         Returns:
             - Future when ``wait=True`` (caller awaits ACK/NAK)
@@ -214,6 +219,7 @@ class CivRequestTracker:
                 token=token,
                 created_monotonic=created,
                 generation=self._generation,
+                response_key=response_key,
             )
         )
         return token
@@ -404,6 +410,14 @@ class CivRequestTracker:
                         pending.future.set_result(frame)
                     return True
                 i += 1
+            # Otherwise it retires the oldest sink whose ``response_key`` it
+            # matches.
+            for index, waiter in enumerate(self._ack_waiters):
+                if waiter.response_key is not None and self._matches(
+                    waiter.response_key, frame
+                ):
+                    del self._ack_waiters[index]
+                    return True
             return False
 
         return False

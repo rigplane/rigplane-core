@@ -99,6 +99,7 @@ type Props = Handlers & {
   agcLabels?: Record<string, string>; nbLevelMax?: number; nbLevelPercent?: boolean;
   pendingNb?: boolean | null; pendingNr?: boolean | null;
   pendingNotch?: DspNotchMode | null;
+  compactAgcTime?: boolean;
 };
 
 function render(view: RadioViewModel, props: Props = {}) {
@@ -338,6 +339,27 @@ describe('level intents reach the caller with the field and the raw value', () =
       expect(onLevelChange).not.toHaveBeenCalled();
     }, { onLevelChange });
   });
+
+  /**
+   * MOR-2704 G1: the KNOWN-reading, not-operational half of the gate, pinned
+   * against the imported `usable` (a mutation that drops its `operational`
+   * check re-enables the slider and this dies).
+   */
+  it('emits nothing for a KNOWN level under operational:false, keeping the disabled reason', () => {
+    const onLevelChange = vi.fn();
+    const view = withField(base(), 'notchFreq', {
+      availability: { structural: true, operational: false },
+    });
+    withSurface(view, (s) => {
+      const input = s.input('notchFreq')!;
+      expect(input.disabled).toBe(true);
+      expect(s.control('notchFreq')!.dataset.disabledReason).toBe('field-not-observed');
+      input.value = '100';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+      expect(onLevelChange).not.toHaveBeenCalled();
+    }, { onLevelChange });
+  });
 });
 
 describe('exact NR-level projection (MOR-1737)', () => {
@@ -427,6 +449,27 @@ describe('exact NR-level projection (MOR-1737)', () => {
       const input = s.input('nrLevel')!;
       expect(input.disabled).toBe(true);
       input.value = String(projection.value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+      expect(onLevelChange).not.toHaveBeenCalled();
+    }, { onLevelChange });
+  });
+});
+
+/* ── MOR-2704 T1 (option A): a read NR level's text and thumb are shown even
+   when the field is not operational; the slider stays on the `usable` gate. ── */
+describe('MOR-2704 T1: a read NR level stays visible while its slider is unavailable', () => {
+  it('shows the read NR level and its thumb, keeps the slider disabled with its reason, and emits nothing', () => {
+    const onLevelChange = vi.fn();
+    // base(): nrLevel known(8), projection { value: 8, LEGACY_NR_DOMAIN, adjustable }.
+    const view = withField(base(), 'nrLevel', { availability: { structural: true, operational: false } });
+    withSurface(view, (s) => {
+      expect(s.control('nrLevel')!.querySelector('output')!.textContent).toBe('8');
+      const input = s.input('nrLevel')!;
+      expect(input.valueAsNumber).toBe(8);
+      expect(input.disabled).toBe(true);
+      expect(s.control('nrLevel')!.dataset.disabledReason).toBe('field-not-observed');
+      input.value = '9';
       input.dispatchEvent(new Event('input', { bubbles: true }));
       flushSync();
       expect(onLevelChange).not.toHaveBeenCalled();
@@ -776,5 +819,48 @@ describe('this surface stays presentation-only', () => {
   // host's own floor lives beside it (see DspScalarHost.isolated.test.ts).
   it('keeps the native level value slot width floor in the surface CSS', () => {
     expect(source).toMatch(/\.dsp-level > output \{[^}]*min-width: 6ch/);
+  });
+});
+
+/* ── 9. MOR-2688 S2: literal pins for the migrated `fmt`/AGC-T formatter
+ *  sites (default- and row-formatter branches of `readingText`) ────────── */
+describe('fmt formatter contract (MOR-2688)', () => {
+  it.each([
+    ['nbDepth', '5'], ['notchFreq', '0'], ['agcTimeConstant', '0.1'],
+  ] as const)('native level %s renders the literal output %s', (field, expected) => {
+    const r = render(base());
+    expect(r.control(field)!.querySelector('output')?.textContent).toBe(expected);
+    r.dispose();
+  });
+
+  // The pin value must sit inside `NOTCH_WIDTH_LABELS`' keys (0–2): the
+  // fixture's fallback value 10 renders '10' under the formatter AND under
+  // `String`, so a format→`String` mutation would stay green. Value 2 maps
+  // to 'NARROW' under the formatter, '2' under `String` — the mutation goes
+  // red (verified on the mini, noted in the PR body).
+  it('manualNotchWidth renders the label the row formatter maps', () => {
+    const view = base();
+    const labelled = {
+      ...view,
+      dsp: {
+        ...view.dsp!,
+        manualNotchWidth: {
+          ...view.dsp!.manualNotchWidth,
+          reading: { status: 'known' as const, value: 2 },
+        },
+      } as DspViewModel,
+    };
+    const r = render(labelled);
+    expect(r.control('manualNotchWidth')!.querySelector('output')?.textContent).toBe('NARROW');
+    r.dispose();
+  });
+
+  // Literal pin for the compact AGC-T span — under a format→`String`
+  // mutation '0.1s' becomes '0s' (verified on the mini, noted in the PR
+  // body).
+  it('compact AGC-T span renders the literal formatted time', () => {
+    const r = render(base(), { compactAgcTime: true });
+    expect(r.root()!.querySelector('.dsp-agc-time-value')?.textContent).toBe('0.1s');
+    r.dispose();
   });
 });

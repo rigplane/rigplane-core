@@ -211,6 +211,19 @@ describe('two-scalar DSP family host', () => {
     r.dispose();
   });
 
+  // MOR-2688 S4b: `formatValue`'s NaN/null/Infinity guard now enters
+  // through `finiteValue`. A read value renders its exact text, and a
+  // confirmed NaN renders `''` — red under a `finiteValue` mutation that
+  // accepts NaN.
+  it('renders a read value exactly and a confirmed NaN as EMPTY (MOR-2688 S4b)', () => {
+    const r = render();
+    expect(r.row('nbLevel')?.querySelector('[data-canonical-value]')?.textContent).toBe('64');
+    r.props.feedback = feedback({ nbLevel: commandFeedback('nbLevel', { confirmed: Number.NaN }) });
+    flushSync();
+    expect(r.row('nbLevel')?.querySelector('[data-canonical-value]')?.textContent).toBe('');
+    r.dispose();
+  });
+
   it('keeps a null NR domain unknown, disabled, and command-inert', () => {
     const current = view();
     const r = render({
@@ -282,6 +295,22 @@ describe('two-scalar DSP family host', () => {
     // MOR-2527: an unread value carries no placeholder anywhere, including
     // the accessible value text — never a `?`.
     expect(r.scalar('nbWidth')?.dataset.accessibilityValueText).not.toContain('?');
+    r.dispose();
+  });
+
+  // MOR-2704 G4: a read (known) but not operational field refuses its action
+  // through the one exported `usable` gate and keeps the old disabled reason.
+  // Red under a mutation of `usable` that drops the `operational` check.
+  it('refuses the action for a read-but-not-operational field and keeps its disabled reason (MOR-2704 G4)', () => {
+    const current = view();
+    const r = render({
+      view: { ...current, dsp: { ...current.dsp!,
+        nbWidth: { reading: { status: 'known', value: 2 },
+          availability: { structural: true, operational: false } } } },
+    });
+    expect(r.row('nbWidth')?.dataset.disabledReason).toBe('field-not-observed');
+    r.scalar('nbWidth')?.click();
+    expect(r.onLevelChange).not.toHaveBeenCalled();
     r.dispose();
   });
 

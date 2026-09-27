@@ -863,12 +863,14 @@ function deriveFilterPassband(
  * — family enumeration is explicit and CLOSED (filter shape / IF-shift / PBT
  * are family 4, `deriveFilterPassband` above; never duplicated here).
  *
- * Evidence gate (N3): each field's structural gate mirrors `toDspProps`'/
- * `toAgcProps`' OWN gate verbatim — `hasCap(caps, 'nr'|'nb'|'notch'|'agc')`,
- * or (for `nbDepth`/`nbWidth`) the presence of a `controls.nb_depth` range,
- * exactly `toDspProps`' own `hasNbDepth`/`hasNbWidth` (`hasNbWidth` borrows
- * `hasNbDepth`'s signal verbatim, same as that function does). The group
- * itself emits only when at least one of these signals is positive.
+ * Evidence gate (N3): each field's structural gate is its capability,
+ * `hasCap(caps, 'nr'|'nb'|'notch'|'agc')`, or (for `nbDepth`/`nbWidth`) the
+ * presence of a `controls.nb_depth` range, the signal `toDspProps`' own
+ * `hasNbDepth`/`hasNbWidth` read (`hasNbWidth` borrows `hasNbDepth`'s signal
+ * verbatim, same as that function does). `manualNotchWidth` and
+ * `agcTimeConstant` also need their receiver's declared-field tag (below).
+ * The group itself emits only when at least one of those four capabilities
+ * or the range is present.
  */
 function deriveDsp(
   state: ServerState | null, caps: Capabilities | null,
@@ -949,8 +951,12 @@ function deriveDsp(
     // per-receiver rationale — same pattern as manualNotchWidth below.
     notchFreq: txAuxField(hasNotchCap, notchFreqObserved, notchFreqValue),
     ...(notchFreqDomain !== null ? { notchFreqDomain } : {}),
+    // MOR-2726: `notch` alone is not proof of a notch-width control — the
+    // FTX-1 has a manual notch but no width. Same declared-field gate as
+    // `agcTimeConstant` below.
     manualNotchWidth: txAuxField(
-      hasNotchCap, topFieldAvailable(state, `${base}manualNotchWidth`), numOrUndef(rx?.manualNotchWidth),
+      hasNotchCap && hasCap(caps, onSub ? 'manual_notch_width_sub' : 'manual_notch_width'),
+      topFieldAvailable(state, `${base}manualNotchWidth`), numOrUndef(rx?.manualNotchWidth),
     ),
     agcMode: {
       ...txAuxField(hasAgcCap, agcReadable, agcProjection.mode),
@@ -998,8 +1004,10 @@ function deriveDsp(
  * `preValues`/`attValues` are the capability-derived choice sets
  * (`Capabilities.preValues`/`.attValues`, verbatim) — see
  * `RfFrontEndViewModel`'s doc comment. Deliberately `?? []`, never the
- * shipped panel's `[0, 1, 2]`/`[0, 6, 12, 18]` IC-7610-shaped UI-convenience
- * fallback (X6200 lesson: no radio-specific tables in the fact layer).
+ * shipped panel's `[0, 1, 2]`/`[0, 6, 12, 18]` presentation-only
+ * UI-convenience fallback (the IC-7610's actual ATT ladder is 16 × 3 dB
+ * steps per `rigs/ic7610.toml`; X6200 lesson: no radio-specific tables in
+ * the fact layer).
  *
  * THE MUTEX is NOT derived here — it lives in `toRadioViewModel`, below,
  * where it reads THIS function's own `digiSel` field back rather than
@@ -1049,6 +1057,35 @@ function deriveRfFrontEnd(
  * retained observation — `sMeterRetained` below admits `current` or `stale`.
  * Global absent-key semantics remain unchanged.
  */
+/**
+ * MOR-2706: the widest filter-width value ANY mode of the mounted profile
+ * can print — the ceiling the semantic BW fact's slot reservation derives
+ * from (`ReceiverIndicatorViewModel.bandwidthMaxHz`). Each mode
+ * contributes its `maxHz`, its table's last step, or its widest segment
+ * endpoint, whichever it has; the profile-wide `filterWidthMax` (the 9999
+ * codebase default when the profile declares none) is the floor. The same
+ * per-mode vocabulary `panel-props.ts`'s `filterWidthMax` fallback reads,
+ * taken across every mode instead of the active one only.
+ */
+function widestFilterWidthHz(caps: Capabilities): number {
+  let widest = caps.filterWidthMax ?? 9999;
+  for (const config of Object.values(caps.filterConfig ?? {})) {
+    // A malformed per-mode entry (the adapter's own tests feed `null` and
+    // non-finite tables straight in) contributes no width — the same
+    // witholding `resolveFilterModeConfig` applies to the active mode.
+    if (config === null || typeof config !== 'object') continue;
+    const modeMax = config.maxHz
+      ?? (config.table?.length ? config.table[config.table.length - 1] : undefined)
+      ?? (config.segments
+        ? Math.max(...config.segments.map((segment) => segment.hzMax))
+        : undefined);
+    if (modeMax !== undefined && Number.isFinite(modeMax) && modeMax > widest) {
+      widest = modeMax;
+    }
+  }
+  return widest;
+}
+
 function deriveReceiverIndicators(
   state: ServerState | null,
   caps: Capabilities,
@@ -1137,6 +1174,9 @@ function deriveReceiverIndicators(
           : null,
       },
       bandwidthHz: strictField(hasWidth, 'filterWidth', numOrUndef(rx?.filterWidth)),
+      // MOR-2706: the structural ceiling the BW fact's slot reservation
+      // derives from — fixed when the capabilities load, never a reading.
+      ...(hasWidth ? { bandwidthMaxHz: widestFilterWidthHz(caps) } : {}),
       agcMode: strictField(hasAgc, 'agc', agcMode),
       nbActive: strictField(hasNb, 'nb', boolOrUndef(rx?.nb)),
       nrActive: strictField(hasNr, 'nr', boolOrUndef(rx?.nr)),
@@ -1545,11 +1585,9 @@ function deriveScan(state: ServerState | null): ScanViewModel | undefined {
   };
 }
 
-/** The v2 wire encoding (`BREAK_IN_LABELS`, `components-v2/panels/
- *  cw-panel-logic.ts`), decoded ONCE here. Unlike v2's `formatBreakIn`, an
- *  unrecognised int returns `undefined` (⇒ `unknown` reading) instead of
- *  falling back to OFF — an unreadable break-in state must never present as
- *  "the key is safe". Same shape as `atuStatus` above. */
+/** An unrecognised break-in int returns `undefined` (⇒ `unknown` reading) —
+ *  an unreadable break-in state must never present as "the key is safe".
+ *  Same shape as `atuStatus` above. */
 const breakInMode = (v: unknown): BreakInMode | undefined =>
   v === 0 ? 'off' : v === 1 ? 'semi' : v === 2 ? 'full' : undefined;
 

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
 import DualParamRenderer from '../DualParamRenderer.svelte';
 import type { DualParamIssuedStatusPresentation } from '../dual-param-issued-status';
@@ -439,5 +440,80 @@ describe('MOR-2512: command modifiers leave the renderer alone', () => {
     control.dispatchEvent(plainEvent);
     expect(plainEvent.defaultPrevented).toBe(true);
     expect(lease.key).toHaveBeenCalledWith({ key: 'ArrowUp', fine: false });
+  });
+});
+
+describe('MOR-2657: unread lanes render unlit, never a dash', () => {
+  function unreadLaneView() {
+    return {
+      evidence: 'reading' as const,
+      reading: { status: 'unknown' as const },
+      availability: 'available' as const,
+      canonical: null,
+      localRequested: null,
+      feedback: null,
+      phase: null,
+      error: null,
+      presentation: null,
+      announcement: null,
+    };
+  }
+  function unreadView(): ContinuousPairView {
+    return {
+      ...readingView(),
+      canonical: { rf: null, sql: null },
+      lanes: { rf: unreadLaneView(), sql: unreadLaneView() },
+    };
+  }
+  function halfReadView(): ContinuousPairView {
+    return { ...readingView(), canonical: { rf: 1, sql: null }, lanes: { rf: readingView().lanes.rf, sql: unreadLaneView() } };
+  }
+
+  it('renders both unread numbers empty and drops aria-valuetext entirely', () => {
+    const { binding } = fakeBinding(1, unreadView);
+    const { target } = mountReactive(binding);
+    const nums = [...target.querySelectorAll('.vc-num')];
+    expect(nums).toHaveLength(2);
+    expect(nums[0].textContent).toBe('');
+    expect(nums[1].textContent).toBe('');
+    expect(slider(target).getAttribute('aria-valuetext')).toBeNull();
+  });
+
+  it('renders the known lane and drops only the unread lane from aria-valuetext', () => {
+    const { binding } = fakeBinding(1, halfReadView);
+    const { target } = mountReactive(binding);
+    const nums = [...target.querySelectorAll('.vc-num')];
+    expect(nums[0].textContent).toBe('100%');
+    expect(nums[1].textContent).toBe('');
+    expect(slider(target).getAttribute('aria-valuetext')).toBe('RF 100%');
+  });
+
+  it('renders known values exactly as before', () => {
+    const { binding } = fakeBinding(1);
+    const { target } = mountReactive(binding);
+    const nums = [...target.querySelectorAll('.vc-num')];
+    expect(nums[0].textContent).toBe('100%');
+    expect(nums[1].textContent).toBe('0%');
+    expect(slider(target).getAttribute('aria-valuetext')).toBe('RF 100%, squelch 0%');
+  });
+
+  it('reserves the number boxes: min-width covers the widest readout', () => {
+    const withoutComments = (text: string): string => text
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    const source = withoutComments(
+      readFileSync('src/components-v2/controls/value-control/DualParamRenderer.svelte', 'utf8'),
+    );
+    const rule = source.match(/\.vc-num \{([^}]*)\}/);
+    expect(rule).not.toBeNull();
+    // Widest text the numbers render: '100%'.
+    const minWidth = Number(rule![1].match(/min-width: (\d+)ch/)?.[1]);
+    expect(Number.isFinite(minWidth)).toBe(true);
+    expect(minWidth).toBeGreaterThanOrEqual('100%'.length);
+    expect(rule![1]).toContain('tabular-nums');
+    expect(rule![1]).toContain('inline-block');
+    // The empty number keeps the line-box metrics of a known number.
+    expect(source).toMatch(/\.vc-num:empty::before \{ content: '\\200b'; \}/);
   });
 });

@@ -58,7 +58,10 @@ export function densityActivation(
   const clamp = manifest.density;
   if (clamp.kind === 'not-applicable') return override;
   if (clamp.supported.includes(override)) return override;
-  return clamp.supported[0] ?? null;
+  // The fallback is the manifest's DECLARED default (MOR-1288), not the
+  // retired index-0-of-`supported` convention; `validateManifest` pins it
+  // to a member of `supported`.
+  return clamp.default;
 }
 
 /** Zone id → the ordered surfaces that may mount there, after the workspace. */

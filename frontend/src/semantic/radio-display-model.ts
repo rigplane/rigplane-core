@@ -1,5 +1,6 @@
 import type {
-  DisplayObservedMeterField, MeterRfState, MeterField, RadioViewModel, ReceiverId, ReceiverIndicatorViewModel, TxAuxField,
+  DisplayObservedMeterField, MeterRfState, MeterField, MeterValueDomain,
+  RadioViewModel, ReceiverId, ReceiverIndicatorViewModel, TxAuxField,
   VfoSlotId, VfoViewModel,
 } from './radio-view-model';
 import { projectTxMeterDisplay, type TxMeterDisplay } from './tx-meter-display';
@@ -23,6 +24,10 @@ export type DisplayOffset =
 export type DisplayTelemetry = DisplayValue<number> & {
   readonly relevant: boolean;
   readonly txDisplay?: TxMeterDisplay;
+  // MOR-2722 part B: the meter's own value domain, the same fact the
+  // meter-utils formatters decide by. `raw`/`unknown` means the value is
+  // not calibrated — no number may be drawn from it in any skin.
+  readonly domain?: MeterValueDomain;
 };
 
 export type DisplaySlotId = ReceiverId | VfoSlotId;
@@ -216,7 +221,7 @@ function atuIndicator(
 
 function telemetry(field: MeterField | undefined): DisplayTelemetry {
   const value = displayValue(field);
-  return { ...value, relevant: field?.relevant ?? false };
+  return { ...value, relevant: field?.relevant ?? false, domain: field?.domain };
 }
 
 function txTelemetry(field: DisplayObservedMeterField | undefined, rfState: MeterRfState): DisplayTelemetry {

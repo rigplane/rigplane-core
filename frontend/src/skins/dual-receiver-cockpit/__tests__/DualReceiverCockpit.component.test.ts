@@ -465,6 +465,11 @@ describe('dual-rx-unavailable: SUB strip present but operationally disabled (MOR
     const subSelects = subStrip.querySelectorAll<HTMLButtonElement>('[data-vfo-select]');
     expect(subSelects).toHaveLength(1);
     subSelects.forEach((b) => expect(b.disabled).toBe(true));
+    // MOR-1260: dimming is not a reason. The unavailable strip must say why,
+    // in text a sighted operator can read (not an sr-only span).
+    const reason = subStrip.querySelector('[data-strip-unavailable-reason]');
+    expect(reason?.textContent?.trim().length).toBeGreaterThan(0);
+    expect(reason?.classList.contains('sr-only')).toBe(false);
 
     // Kill-test (2): the disabled-SUB fixture must not affect MAIN liveness.
     // MAIN's own tile is the active one, so it renders no select control at

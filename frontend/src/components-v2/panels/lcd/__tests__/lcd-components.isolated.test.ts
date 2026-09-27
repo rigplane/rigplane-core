@@ -134,19 +134,23 @@ describe('AmberFrequency', () => {
     unmount(component);
   });
 
-  it('handles zero frequency gracefully (shows dashes)', () => {
+  it('handles zero frequency gracefully (unlit digits, MOR-2654)', () => {
     const component = mount(AmberFrequency, { target, props: { freqHz: 0 } });
     const active = target.querySelector('.freq-active')!;
-    expect(active.querySelector('.seg-mhz')!.textContent).toBe('--');
-    expect(active.querySelector('.seg-khz')!.textContent).toBe('---');
-    expect(active.querySelector('.seg-hz')!.textContent).toBe('---');
+    // MOR-2654 (owner rule, 2026-09-26): unread is unlit — empty digit
+    // slots over the ghost all-8s layer — never dash placeholders.
+    expect(active.querySelector('.seg-mhz')!.textContent).toBe('');
+    expect(active.querySelector('.seg-khz')!.textContent).toBe('');
+    expect(active.querySelector('.seg-hz')!.textContent).toBe('');
+    expect(active.textContent).not.toContain('-');
     unmount(component);
   });
 
-  it('handles negative frequency as zero (shows dashes)', () => {
+  it('handles negative frequency as zero (unlit digits, MOR-2654)', () => {
     const component = mount(AmberFrequency, { target, props: { freqHz: -100 } });
     const active = target.querySelector('.freq-active')!;
-    expect(active.querySelector('.seg-mhz')!.textContent).toBe('--');
+    expect(active.querySelector('.seg-mhz')!.textContent).toBe('');
+    expect(active.textContent).not.toContain('-');
     unmount(component);
   });
 
@@ -156,6 +160,21 @@ describe('AmberFrequency', () => {
     expect(ghost.querySelector('.seg-khz')!.textContent).toBe('888');
     expect(ghost.querySelector('.seg-hz')!.textContent).toBe('888');
     unmount(component);
+  });
+
+  it('keeps the ghost MHz slot constant for unread and known readings (MOR-2654 F1)', () => {
+    // The ghost row is sized to the widest MHz field across the shipped
+    // profiles (IC-9700 23cm reaches 1300 MHz = 4 digits, rigs/ic9700.toml),
+    // never mirrored from the active reading — so the unread slot is exactly
+    // as wide as any known one and the first reading cannot move anything.
+    const unread = mount(AmberFrequency, { target, props: { freqHz: 0 } });
+    const unreadGhostMhz = target.querySelector('.freq-ghost .seg-mhz')!.textContent!;
+    unmount(unread);
+    const known = mount(AmberFrequency, { target, props: { freqHz: 14_074_000 } });
+    const knownGhostMhz = target.querySelector('.freq-ghost .seg-mhz')!.textContent!;
+    unmount(known);
+    expect(unreadGhostMhz).toBe('8888');
+    expect(knownGhostMhz).toBe('8888');
   });
 
   it('applies large size class by default', () => {
@@ -283,6 +302,36 @@ describe('AmberSmeter', () => {
     const sub = target.querySelector('.readout-dbm')!;
     expect(sub.textContent).toBe(formatCompDb(75)); // '15 dB', not '6dB'
     unmount(component);
+  });
+
+  // MOR-2705 part 4a: calibration is a profile fact — on an uncalibrated
+  // radio the S-source readout contents and the S/dB scale words are empty,
+  // but the readout BOX keeps its 80px reservation for every source: the
+  // source flips to a TX meter as soon as a finite TX reading arrives, and
+  // the box must not appear or disappear with a reading.
+  it('keeps an empty readout box for the S source and hides the S/dB scale words on an uncalibrated radio (MOR-2705 part 4a)', () => {
+    const previous = activeSMeterCal;
+    activeSMeterCal = [];
+    try {
+      const component = mount(AmberSmeter, { target, props: { value: 53, source: 'S' } });
+      expect(target.querySelector('.meter-readout')).not.toBeNull();
+      expect(target.querySelector('.readout-s')).toBeNull();
+      expect(target.querySelector('.readout-dbm')).toBeNull();
+      expect(target.querySelector('.meter-readout')?.textContent).toBe('');
+      expect(target.querySelector('.scale-s-label')).toBeNull();
+      expect(target.querySelector('.scale-db-zone')).toBeNull();
+      expect(target.querySelectorAll('.seg').length).toBe(192);
+      unmount(component);
+
+      const po = mount(AmberSmeter, { target, props: { value: 143, source: 'PO' } });
+      expect(target.querySelector('.meter-readout')).not.toBeNull();
+      expect(target.querySelector('.readout-s')?.textContent).toBe('PO');
+      expect(target.querySelector('.scale-s-label')).toBeNull();
+      expect(target.querySelector('.scale-db-zone')).toBeNull();
+      unmount(po);
+    } finally {
+      activeSMeterCal = previous;
+    }
   });
 });
 

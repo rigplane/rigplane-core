@@ -12,7 +12,8 @@
  */
 
 import type { ServerState, ReceiverState } from '$lib/types/state';
-import type { Capabilities, ControlDomain, FilterModeConfig } from '$lib/types/capabilities';
+import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';
+import type { BreakInChoice, ControlDomain } from '$lib/types/capabilities';
 import {
   controlDisplayDomain,
   deriveIfShift,
@@ -26,6 +27,7 @@ import {
 import type { NrLevelProjection, ControlDisplayDomain, PbtRange } from '$lib/radio/filter-controls';
 import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
 import { isFieldAvailable, isFieldRead } from '$lib/state/field-status';
+import { finiteValue } from '../../../primitives/reading-text';
 import { modInputStateKey } from '$lib/radio/mod-input';
 
 /* ── Private helpers ─────────────────────────────────────────── */
@@ -118,12 +120,13 @@ export function toVfoProps(
       // unobserved VFO stays unknown. `freq`/`mode`/`filter` keep their
       // `number`/`string` contract, so the sentinel is a value that can
       // never be mistaken for a real reading (`NaN` never equals a real
-      // frequency; `'---'` never equals a real mode/filter label — see
-      // `toVfoControlProps`'s pre-existing use of the same convention).
+      // frequency; `''` never equals a real mode/filter label, which are all
+      // non-empty — MOR-2673). The empty string is the drawn form of an
+      // unlit LCD segment: renderers draw it as nothing in a reserved slot.
       freq: Number.NaN,
-      mode: '---',
-      filter: '---',
-      sValue: 0,
+      mode: '',
+      filter: '',
+      sValue: Number.NaN,
       isActive: receiver === 'main',
       badges: {},
     };
@@ -134,9 +137,9 @@ export function toVfoProps(
     return {
       receiver,
       freq: Number.NaN,
-      mode: '---',
-      filter: '---',
-      sValue: 0,
+      mode: '',
+      filter: '',
+      sValue: Number.NaN,
       isActive: receiver === 'main',
       badges: {},
     };
@@ -173,15 +176,19 @@ export function toVfoProps(
   if ((state.tunerStatus ?? 0) === 2) badges['TUNE'] = true;
 
   const filters = ['FIL1', 'FIL2', 'FIL3'];
-  const fil = rx.filter ?? 1;
-  const filterLabel = filters[fil - 1] ?? `FIL${fil}`;
+  // MOR-2683: an unread filter projects the empty string — the same unread
+  // sentinel `mode` carries (MOR-2673) — never the first filter's label.
+  // `''` never equals a real, non-empty filter label, so a comparison
+  // consumer can never light a choice for a reading that never arrived.
+  const fil = rx.filter;
+  const filterLabel = fil == null ? '' : (filters[fil - 1] ?? `FIL${fil}`);
 
   return {
     receiver,
     freq: rx.freqHz ?? Number.NaN,
-    mode: rx.mode ?? '---',
+    mode: rx.mode ?? '',
     filter: filterLabel,
-    sValue: rx.sMeter ?? 0,
+    sValue: rx.sMeter ?? Number.NaN,
     isActive,
     badges,
     rit: state.ritOn
@@ -389,7 +396,7 @@ export function resolveFilterModeConfig(
 
 export interface FilterProps {
   currentMode: string;
-  currentFilter: number;
+  currentFilter: number | null;
   filterShape: number;
   hasFilterShape: boolean;
   filterLabels: string[];
@@ -460,8 +467,13 @@ export function toFilterProps(
     // to add the consumer-boundary guard (`formatWidthDisplay`'s
     // `Number.isFinite` check), so the fabricated default can now be
     // removed here. See its `toAudioSpectrumProps` twin below.
-    currentMode: rx?.mode ?? '---',
-    currentFilter: rx?.filter ?? 1,
+    currentMode: rx?.mode ?? '',
+    // MOR-2683: an unread filter projects `null`, never filter 1 — a
+    // consumer that lights the current filter must light no choice for a
+    // reading that never arrived (`null` never equals a real 1-based
+    // filter index). Arithmetic consumers must guard on `!= null`
+    // (FilterPanel.svelte's `visibleWidths`).
+    currentFilter: rx?.filter ?? null,
     filterShape: rx?.filterShape ?? 0,
     // MOR-1503: whether the radio has a REAL filter_shape command of its
     // own (Icom family, e.g. IC-7300). The FTX-1 declares no
@@ -650,6 +662,12 @@ export interface ModeProps {
   hasModInput: boolean;
 }
 
+function profileModeLabel(mode: string | null | undefined): string {
+  // MOR-2673: the unread sentinel is the empty string — never a real label.
+  if (!mode) return '';
+  return mode.replace(/_/g, '-');
+}
+
 export function toModeProps(
   state: ServerState | null,
   caps: Capabilities | null,
@@ -668,7 +686,10 @@ export function toModeProps(
   const modInputSource = modInputKey === null ? null : state?.[modInputKey] ?? null;
   return {
     // MOR-1409 A11: no fabricated USB stand-in for an unobserved mode.
-    currentMode: rx?.mode ?? '---',
+    // MOR-2508: the mode panel matches buttons by strict equality against the
+    // profile labels (hyphen form). A store that still holds the CI-V enum
+    // token ("PSK_R") must light the same button as "PSK-R".
+    currentMode: profileModeLabel(rx?.mode),
     // MOR-1409 A12 (expanded mandate, adjudication 5245697359, Core #2317):
     // no fabricated 10-mode invented catalog. `modes` is a
     // capability-derived choice set — same convention as `toAgcProps`'
@@ -743,7 +764,13 @@ export interface DspProps {
    *  constants when the key is absent, mirroring the view-model adapter's
    *  `dsp.notchFreqDomain`. */
   notchFreqDomain?: ControlDisplayDomain;
-  manualNotchWidth: number;
+  /** The manual notch width as read (`finiteValue` of the store's reading):
+   *  `null` while unread — the panel lights no choice for it (MOR-2735). */
+  manualNotchWidth: number | null;
+  /** The active receiver publishes its `manual_notch_width`(-`_sub`) tag —
+   *  the #3811 (MOR-2726) per-receiver declaration; `false` draws no width
+   *  group at all (MOR-2735). */
+  hasManualNotchWidth: boolean;
   agcTimeConstant: number;
   hasNr: boolean;
   hasNb: boolean;
@@ -785,6 +812,15 @@ export function toDspProps(
   const nbLevelPercent = nbLevelRange !== null;
   const nbLevelMax = nbLevelRange?.raw_max ?? 10;
   const { notchFreq, notchFreqDomain } = manualNotchReading(state, caps);
+  // MOR-2735: the active receiver's width tag — the SAME per-receiver tag
+  // decision the v3 view model uses after #3811 (MOR-2726,
+  // `radio-view-model-adapter.ts`'s `manualNotchWidth`): `notch` alone is
+  // not proof of a width control — the FTX-1 / TX-500 / X6100 / X6200
+  // profiles declare no width field, so the server serves them no
+  // `manual_notch_width` tag and the panel draws no group at all.
+  const notchWidthTag = state !== null && activeReceiverKey(state) === 'sub'
+    ? 'manual_notch_width_sub'
+    : 'manual_notch_width';
   // MOR-498: the store holds the wire value (IC-7610 raw 0-9, display 1-10);
   // the conversion comes from the published `controls.nb_depth` domain
   // through the shared contract. A radio publishing none (the `hasNbDepth`
@@ -804,7 +840,10 @@ export function toDspProps(
     // notchFilter (MOR-1548): reclassified receiver-scoped.
     notchFreq,
     ...(notchFreqDomain !== null ? { notchFreqDomain } : {}),
-    manualNotchWidth: rx?.manualNotchWidth ?? 0,
+    // MOR-2735: an unread width is the store's null through `finiteValue`
+    // (the ONE unread rule, `$lib/primitives/reading-text.ts`) — the panel
+    // lights no choice for it, never a made-up WIDE.
+    manualNotchWidth: finiteValue(rx?.manualNotchWidth),
     agcTimeConstant: rx?.agcTimeConstant ?? 0,
     hasNr: hasCap(caps, 'nr') && nrAvailable,
     hasNb: hasCap(caps, 'nb') && nbAvailable,
@@ -815,6 +854,7 @@ export function toDspProps(
     hasNotch: (hasCap(caps, 'notch') || caps === null) && manualNotchAvailable,
     hasAutoNotch: (hasCap(caps, 'notch') || caps === null) && autoNotchAvailable,
     hasAgcTime: activeFieldAvailable(state, 'agcTimeConstant'),
+    hasManualNotchWidth: hasCap(caps, 'notch') && hasCap(caps, notchWidthTag),
   };
 }
 
@@ -863,15 +903,24 @@ export function toTxProps(
   const driveGainAvailable = topFieldAvailable(state, 'driveGain');
   return {
     txActive: state?.ptt ?? false,
-    rfPower: state?.powerLevel ?? 0.5,
+    // MOR-2658: finishes the deferred A12 rfPower fix — an unreported
+    // level is `NaN` (this file's non-fabricating sentinel), never the
+    // plausible-looking 0.5 the TxPanel/mobile consumers printed as 50%.
+    rfPower: state?.powerLevel ?? Number.NaN,
     micGain: state?.micGain ?? 128,
     atuActive: (state?.tunerStatus ?? 0) > 0,
     atuTuning: (state?.tunerStatus ?? 0) === 2,
     voxActive: state?.voxOn ?? false,
     compActive: state?.compressorOn ?? false,
-    compLevel: state?.compressorLevel ?? 0,
+    // MOR-2683: finishes the deferred A12 family for the two levels that
+    // reach the screen (TxPanel.svelte's COMP/MON buttons, the amber faces'
+    // PROC chip) — an unreported level is `Number.NaN` (this file's
+    // non-fabricating sentinel, as `rfPower` in MOR-2658), never a
+    // plausible-looking 0 / 128. Consumers guard on finiteness and render
+    // the bare key.
+    compLevel: state?.compressorLevel ?? Number.NaN,
     monActive: state?.monitorOn ?? false,
-    monLevel: state?.monitorGain ?? 128,
+    monLevel: state?.monitorGain ?? Number.NaN,
     driveGain: state?.driveGain ?? 128,
     hasTx: caps?.tx ?? false,
     hasTuner: hasCap(caps, 'tuner') && atuAvailable,
@@ -894,7 +943,11 @@ export function toTxProps(
 export interface CwProps {
   cwPitch: number;
   keySpeed: number;
-  breakIn: number;
+  /**
+   * MOR-2729 (review 2026-09-27): an unread break-in stays `number | null` —
+   * `null`, never the fabricated 0 that lights the OFF choice.
+   */
+  breakIn: number | null;
   apfMode: number;
   // `twinPeak` keeps its `boolean` (not `boolean | null`) contract — see
   // `toRitXitProps`' header comment: `CwPanel.svelte`'s `HardwareButton
@@ -919,6 +972,13 @@ export interface CwProps {
   hasBreakIn: boolean;
   hasApf: boolean;
   hasTwinPeak: boolean;
+  /**
+   * MOR-2729: the profile-declared break-in choices the panel's buttons
+   * must draw — `[]` when the radio declares no break-in domain (X6100,
+   * X6200) or publishes the field absence-treated as `[]`; no control at
+   * all either way.
+   */
+  breakInChoices: readonly BreakInChoice[];
   autoTuneAvailable: boolean;
   /**
    * The pitch control's display domain from the profile's `controls.cw_pitch`
@@ -940,7 +1000,6 @@ export function toCwProps(
   caps: Capabilities | null,
 ): CwProps {
   const rx = state ? activeRx(state) : null;
-  const breakInVal = state?.breakIn ?? 0;
   const mode = rx?.mode ?? 'USB';
   // Mode-gated CW filters (MOR-492): APF (Audio Peak Filter) is only meaningful
   // in CW/CW-R; TPF (Twin Peak Filter) only in RTTY/RTTY-R. Disable the control
@@ -953,14 +1012,16 @@ export function toCwProps(
     // sidetone-level stand-ins for an unobserved CW receiver.
     cwPitch: state?.cwPitch ?? Number.NaN,
     keySpeed: state?.keySpeed ?? Number.NaN,
-    breakIn: breakInVal,
+    // MOR-2729: `null` is the unread sentinel — a comparison consumer can
+    // never light a choice for a reading that never arrived.
+    breakIn: state?.breakIn ?? null,
     apfMode: rx?.apfTypeLevel ?? 0,
     twinPeak: rx?.twinPeakFilter ?? false,
     currentMode: mode,
     apfDisabled,
     tpfDisabled,
     wpm: state?.keySpeed ?? Number.NaN,
-    breakInActive: breakInVal > 0,
+    breakInActive: (state?.breakIn ?? 0) > 0,
     breakInDelay: state?.breakInDelay ?? 0,
     sidetonePitch: state?.cwPitch ?? Number.NaN,
     sidetoneLevel: state?.monitorGain ?? Number.NaN,
@@ -969,6 +1030,8 @@ export function toCwProps(
     hasBreakIn: hasCap(caps, 'break_in'),
     hasApf: hasCap(caps, 'apf'),
     hasTwinPeak: hasCap(caps, 'twin_peak'),
+    // MOR-2729: absent === empty === no break-in control (X6100, X6200).
+    breakInChoices: caps?.breakInChoices ?? [],
     autoTuneAvailable: hasCap(caps, 'cw')
       && hasCap(caps, 'audio')
       && caps?.audioFftAvailable === true,
@@ -1244,13 +1307,13 @@ export function toMemoryPanelProps(
   const rx = state ? activeRx(state) : null;
   const receiverKey = state?.active === 'SUB' ? 'sub' : 'main';
   // MOR-1409 A12: no fabricated 0 Hz / empty-string stand-ins for an
-  // unobserved active receiver. Same `NaN`/`'---'` non-fabricating-sentinel
+  // unobserved active receiver. Same `NaN`/`''` non-fabricating-sentinel
   // convention `toVfoProps`/`toFilterProps` already use for the same
   // field shapes — `MemoryPanel.svelte`'s "store VFO → channel" action only
   // reads these on an explicit user click, never during initial render.
   return {
     activeFreqHz: rx?.freqHz ?? Number.NaN,
-    activeMode: rx?.mode ?? '---',
+    activeMode: rx?.mode ?? '',
     vfoIdentityKnown: !relativeVfoIdentityUnknown(state, caps, receiverKey),
   };
 }
@@ -1276,7 +1339,12 @@ export function toAmberTelemetryProps(state: ServerState | null): AmberTelemetry
 export interface VfoControlProps {
   mode: string;
   isCwMode: boolean;
-  breakInMode: number;
+  /** MOR-2729: an unread break-in stays null — the BK key derives no
+   *  fabricated "current" value to cycle from. */
+  breakInMode: number | null;
+  /** MOR-2729: the profile-declared break-in cycle domain — `[]` means no
+   *  break-in key at all (X6100, X6200). */
+  breakInChoices: readonly BreakInChoice[];
   hasDualRx: boolean;
   hasSplit: boolean;
   hasRit: boolean;
@@ -1290,16 +1358,20 @@ export function toVfoControlProps(
   caps: Capabilities | null,
 ): VfoControlProps {
   const rx = state ? activeRx(state) : null;
-  const mode = rx?.mode ?? '---';
+  // MOR-2673: `''` is the unread sentinel — it never equals 'CW'/'CW-R',
+  // so an unobserved mode can never light the CW-only controls.
+  const mode = rx?.mode ?? '';
   return {
     mode,
     isCwMode: mode === 'CW' || mode === 'CW-R',
-    breakInMode: state?.breakIn ?? 0,
+    breakInMode: state?.breakIn ?? null,
     hasDualRx: hasCap(caps, 'dual_rx'),
     hasSplit: hasCap(caps, 'split'),
     hasRit: hasCap(caps, 'rit'),
     hasTuner: hasCap(caps, 'tuner'),
     hasCw: hasCap(caps, 'cw'),
     hasBreakIn: hasCap(caps, 'break_in'),
+    // MOR-2729: same absent === empty rule as the CW panel.
+    breakInChoices: caps?.breakInChoices ?? [],
   };
 }

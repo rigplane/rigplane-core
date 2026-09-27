@@ -3,8 +3,8 @@
  * FilterPanel, pinned against the GENERATED capabilities fixture (see
  * `lib/runtime/adapters/__tests__/fixtures/ftx1-profile.ts`). Table 5
  * semantics pinned here: bounds are the table's first and last entry;
- * fixed modes are not operable; a null width reads as the existing
- * '--- Hz' unavailable treatment.
+ * fixed modes are not operable; a null width reads as the empty unlit
+ * readout in its reserved slot (MOR-2667).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
@@ -65,6 +65,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   },
   getFilterHandlers: () => mockHandlers,
   getFilterArmed: () => ({ armed: false, value: null }),
+  getFilterShapeArmed: () => ({ armed: false, value: null }),
   getFilterWidthControlFeedback: () =>
     widthFeedbackStore.get('value') ?? makeFeedback('filter-width', mockProps.filterWidth),
   getPbtInnerHzControlFeedback: () => makeFeedback('pbt-inner', mockProps.pbtInner ?? 0),
@@ -228,9 +229,10 @@ describe('MOR-1679 FTX-1 null width (C4FM, SH code 00)', () => {
     setProps({ currentMode: 'C4FM-DN', filterWidth: Number.NaN, filterConfig: null });
   });
 
-  it('reads as the existing --- Hz unavailable treatment and emits no width write', () => {
+  it('reads as the empty unlit BW readout (MOR-2667) and emits no width write', () => {
     const t = mountPanel();
-    expect(t.querySelector('.bw-value')?.textContent).toBe('--- Hz');
+    expect(t.querySelector('.bw-value')?.textContent).toBe('');
+    expect(t.textContent).not.toContain('---');
     const labels = Array.from(t.querySelectorAll('.vc-label')).map((el) => el.textContent);
     expect(labels).not.toContain('WIDTH');
     const row = t.querySelector<HTMLElement>('[data-filter-width-lifecycle]');

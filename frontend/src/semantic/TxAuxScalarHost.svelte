@@ -6,6 +6,7 @@
     HBarIssuedStatusPresentation,
     HBarIssuedStatusSnapshot,
   } from '../components-v2/controls/value-control/skin';
+  import { usable } from '../primitives/control-instruments/control-instrument-behavior';
   import {
     createContinuousScalar,
     createHBarContinuousScalarPolicy,
@@ -16,6 +17,7 @@
   } from '../primitives/scalar/continuous-scalar.svelte';
   import { rawToPercentDisplay } from '../primitives/scalar/value-control-core';
   import { disabledReasonText } from './disabled-reason';
+  import { finiteValue, valueText } from '../primitives/reading-text';
   import type { RadioViewModel, TxAuxField } from './radio-view-model';
   import {
     TX_AUX_FEEDBACK_LEVELS,
@@ -50,16 +52,21 @@
   };
   const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
   const row = (field: TxAuxLevelField) => TX_AUX_LEVELS.find(([candidate]) => candidate === field)!;
-  const usable = (field: TxAuxField<unknown>): boolean => field.availability.structural
-    && field.availability.operational && field.reading.status === 'known';
   const reasonText = (field: TxAuxField<unknown>): string | undefined =>
     (!field.availability.structural
       ? disabledReasonText(field.availability)
       : usable(field) ? undefined : disabledReasonText({ structural: true, operational: false }));
+  // MOR-2647: an unread value renders no text. Every consumer of this —
+  // the readout, the canonical output, aria-valuetext and the feedback
+  // status — inherits the empty string, so none of them can print `?`.
+  // MOR-2688 S4b: the NaN/null guard enters through `finiteValue`; the row
+  // format is kept exactly.
   const formatValue = (field: TxAuxLevelField, value: number | null): string => {
-    if (value === null || !Number.isFinite(value)) return '?';
     const [, , min, max, , format] = row(field);
-    return (format ?? ((raw: number) => rawToPercentDisplay(raw, min, max)))(value);
+    return valueText(
+      finiteValue(value),
+      format ?? ((raw: number) => rawToPercentDisplay(raw, min, max)),
+    );
   };
 
   function request(field: TxAuxLevelField, value: number): void {
@@ -170,8 +177,10 @@
     if (feedback.phase === 'idle') return '';
     const [, label] = row(field);
     const target = feedback.target ?? feedback.requestedTarget;
-    const requested = target === null ? '' : `; requested ${formatValue(field, target)}`;
-    const confirmed = `; confirmed ${formatValue(field, feedback.confirmed)}`;
+    const requestedText = formatValue(field, target);
+    const confirmedText = formatValue(field, feedback.confirmed);
+    const requested = requestedText === '' ? '' : `; requested ${requestedText}`;
+    const confirmed = confirmedText === '' ? '' : `; confirmed ${confirmedText}`;
     const error = feedback.outcome?.error === undefined ? '' : `; ${feedback.outcome.error}`;
     return `${label}: ${feedback.phase.replaceAll('-', ' ')}${requested}${confirmed}${error}`;
   }
@@ -201,9 +210,10 @@
     {@const currentStatus = status(field)}
     {@const currentFeedback = feedbackOf(field)}
     {@const disabledReason = reason(field)}
+    {@const canonicalText = formatValue(field, canonical(field))}
     {@const accessibility = {
       description: disabledReason ?? null,
-      valueText: `${label}: ${formatValue(field, canonical(field))}${currentStatus === '' ? '' : `; ${currentStatus}`}`,
+      valueText: `${label}${canonicalText === '' ? '' : `: ${canonicalText}`}${currentStatus === '' ? '' : `; ${currentStatus}`}`,
     }}
     <div
       class="tx-aux-level"
@@ -310,6 +320,10 @@
   .tx-aux-level { display: grid; grid-template-columns: 10ch 8rem auto; align-items: center; gap: 0.5rem; }
   .tx-aux-level--presented { display: flex; width: 100%; min-width: 0; max-width: 100%; }
   .tx-aux-name { white-space: nowrap; }
+  /* MOR-2647: the value box stays reserved. `4ch` covers the widest
+     rendered text (`100%`), and `inline-block` is what makes the min-width
+     apply to the inline <output>, so a first reading cannot shift the row. */
+  .tx-aux-level > output { display: inline-block; min-width: 4ch; font-variant-numeric: tabular-nums; }
   .tx-aux-level :global(.vc-hbar) { width: 100%; min-width: 0; }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 </style>

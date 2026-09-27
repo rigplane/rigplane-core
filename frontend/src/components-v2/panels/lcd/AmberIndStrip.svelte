@@ -30,8 +30,11 @@
     variant?: 'tx' | 'tuning';
     /** Owner ruling 2026-09-23 (MOR-2546): reserve this chip's slot width so
      *  an emptied label never shifts neighbouring chips; the emptied chip
-     *  prints no text and is aria-hidden. */
-    reserveSlot?: boolean;
+     *  prints no text and is aria-hidden. `true` reserves the default 4ch;
+     *  a number reserves that many `ch` instead — set by the consumer for
+     *  the widest text the chip prints in any state (MOR-2683: the PROC
+     *  chip prints `PROC` bare and `PROC 255` with a level). */
+    reserveSlot?: boolean | number;
   }
 
   interface Props {
@@ -64,7 +67,8 @@
       class:active={token.active}
       class:ind-tx={token.variant === 'tx'}
       class:ind-tuning={token.variant === 'tuning'}
-      class:slot-reserved={token.reserveSlot === true}
+      class:slot-reserved={token.reserveSlot != null && token.reserveSlot !== false}
+      style={typeof token.reserveSlot === 'number' ? `min-inline-size: ${token.reserveSlot}ch` : undefined}
       class:ind-empty={token.label === ''}
       aria-hidden={token.label === '' ? 'true' : undefined}
     >{token.label}</span>
@@ -152,6 +156,10 @@
     box-sizing: content-box;
     text-align: center;
   }
+
+  /* MOR-2683: a numeric `reserveSlot` overrides the 4ch default through the
+     token's inline `min-inline-size` — same box rule, sized by the consumer
+     for the chip's own widest text. */
 
   .lcd-ind.ind-empty {
     border-color: transparent;
