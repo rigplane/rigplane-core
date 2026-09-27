@@ -7,7 +7,7 @@
 // reliably — the browser hashes the exact bytes between the <script> tags
 // of the served index.html (MOR-2242).
 export async function unregisterStaleServiceWorkers(): Promise<void> {
-  if (!('serviceWorker' in navigator)) return
+  if (!navigator.serviceWorker) return
   const registrations = await navigator.serviceWorker.getRegistrations()
   await Promise.all(registrations.map((registration) => registration.unregister()))
 }
