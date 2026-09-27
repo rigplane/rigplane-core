@@ -25,13 +25,6 @@ export type ReceiverId = 'MAIN' | 'SUB';
 export type VfoSlotId = 'A' | 'B';
 
 /**
- * Whether a VFO/target position has an addressable A/B slot at all, distinct
- * from whether that slot was actually observed. `unslotted` = the scheme has
- * no A/B concept here (`single`, `ab_shared`); `unknown` = a slotted scheme
- * (`ab`, `main_sub`) whose slot could not be observed — MOR-988 §3.2/§4:
- * missing/stale never synthesizes `A`.
- */
-/**
  * The `kind` discriminants of `VfoSlot` as the run-time list the page
  * guard's identifier vocabulary reads (MOR-2716) — the single source
  * of truth the assertion below ties the union to.
@@ -39,6 +32,13 @@ export type VfoSlotId = 'A' | 'B';
 export const VFO_SLOT_KINDS = ['slotted', 'relative', 'unslotted', 'unknown'] as const;
 export type VfoSlotKind = (typeof VFO_SLOT_KINDS)[number];
 
+/**
+ * Whether a VFO/target position has an addressable A/B slot at all, distinct
+ * from whether that slot was actually observed. `unslotted` = the scheme has
+ * no A/B concept here (`single`, `ab_shared`); `unknown` = a slotted scheme
+ * (`ab`, `main_sub`) whose slot could not be observed — MOR-988 §3.2/§4:
+ * missing/stale never synthesizes `A`.
+ */
 export type VfoSlot =
   | { kind: 'slotted'; id: VfoSlotId }
   | { kind: 'relative'; role: 'selected' | 'unselected' }
