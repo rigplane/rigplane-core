@@ -74,8 +74,7 @@ describe('VfoIndicatorRow', () => {
 
   // MOR-2688 S4b: the known + finite check enters through
   // `finiteValue(readingValue(...))`. A known NaN reading takes the unread
-  // shell — red under a `finiteValue` mutation that accepts a marker
-  // value.
+  // shell — red under a `finiteValue` mutation that accepts NaN.
   it('renders the unread shell for a known NaN S-meter reading (MOR-2688 S4b)', () => {
     const root = render({ indicator: indicator({ sMeter: known(Number.NaN) }) });
     expect(root.querySelector('[data-testid="receiver-s-meter"] svg')).toBeNull();

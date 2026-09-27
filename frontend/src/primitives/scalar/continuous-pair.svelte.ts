@@ -3,6 +3,7 @@ import {
   type ControlFeedbackPresentation,
   type ControlFeedbackPresentationState,
 } from '../control-feedback/control-feedback-presentation';
+import { finiteValue } from '../reading-text';
 import {
   createContinuousScalar,
   type CommandScalarFeedback,
@@ -271,8 +272,6 @@ interface ProjectedCandidate {
 const sameIdentity = (left: Identity | null, right: Identity): boolean =>
   left !== null && left.length === right.length
   && left.every((value, index) => Object.is(value, right[index]));
-const finiteValue = (value: number | null | undefined): number | null =>
-  value !== null && value !== undefined && Number.isFinite(value) ? value : null;
 
 function canonicalLane(input: Readonly<ContinuousPairInput>, lane: LaneName): number | null {
   return input.evidence === 'reading'

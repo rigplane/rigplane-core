@@ -51,11 +51,12 @@ describe('readingText (MOR-2688)', () => {
 });
 
 /**
- * MOR-2688 (slice S4a) — the ONE shared table: every entry point drives
- * the same cases through its own vocabulary, so the vocabularies cannot
- * drift apart on `0`, `false`, `''`, `NaN`, a stale observation, or an
- * absent source. `read` is "there is a value"; the vocabularies differ
- * only in how they say it.
+ * MOR-2688 (slice S4a) — the ONE shared table for the two status/state
+ * entry points (`readingValue`, `observationValue`): each drives the same
+ * cases through its own vocabulary, so they cannot drift apart on `0`,
+ * `false`, `''`, `NaN`, a stale observation, or an absent source.
+ * `read` is "there is a value". `FINITE_TABLE` below is separate: the
+ * finite-number vocabulary decides by the value.
  */
 const TABLE = [
   { name: 'a read value', value: 'USB', read: true, stale: false, absent: false },
@@ -106,10 +107,10 @@ describe.each(TABLE)('the shared unread table (MOR-2688 S4a): $name', (row) => {
 });
 
 /**
- * MOR-2688 (slice S4b) — vocabulary 3, the legacy NaN/null/Infinity
- * marker, through `finiteValue`. A finite number formats; NaN, ±Infinity,
- * null and undefined are nothing. Goes red under a mutation that accepts
- * any marker value (for example NaN) — the marker value would format.
+ * MOR-2688 (slice S4b) — the finite-number vocabulary, through
+ * `finiteValue`. A finite number formats; NaN, ±Infinity, null and
+ * undefined are nothing. Goes red under a mutation that accepts NaN —
+ * the NaN would format.
  */
 const FINITE_TABLE = [
   { name: 'a read positive value formats', value: 3.5, expected: mark(3.5) },

@@ -398,16 +398,6 @@
   const feedbackIntegration = (): string => presentation.rfSqlFeedback === undefined
     ? 'compatibility-reading'
     : presentation.rfSqlFeedback === null ? 'authority-unresolved' : 'command-feedback';
-  /** MOR-2527: an unread level renders NO value text — an unlit slot, never
-   *  a `?` stand-in; the NaN/`null` text rule now comes from the core
-   *  `valueText` (`primitives/reading-text`), applying `rawToPercent` to
-   *  read values. The heading labels stay, and each `<output>` keeps its
-   *  box reserved (`display: inline-block; min-width: 4ch` on
-   *  `.rf-front-end-reading output` below — the widest value is `100%`), so
-   *  the SQL label cannot move when a value arrives.
-   *  MOR-1676 part R: on the raw lattice the value is already the raw int —
-   *  the text is the percentage of the published raw range, same unit as
-   *  today's normalized path. */
   function pairLaneValue(view: Readonly<ContinuousPairView>, lane: DualParamLane): number | null {
     const laneView = view.lanes[lane];
     return view.draft?.[lane]

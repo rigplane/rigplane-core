@@ -348,7 +348,7 @@ describe('CwKeyerInstrumentHost', () => {
   // MOR-2688 S4b: `formatValue`'s NaN/null/Infinity guard now enters
   // through `finiteValue`. A reading-based field renders its exact text,
   // and a known NaN reading renders `''` — red under a `finiteValue`
-  // mutation that accepts a marker value.
+  // mutation that accepts NaN.
   it('renders a read value exactly and a known NaN reading as EMPTY (MOR-2688 S4b)', () => {
     const r = render();
     expect(target.querySelector('[data-testid="cw-keyer-pitchHz-value"]')?.textContent)
