@@ -5,7 +5,7 @@
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
   import { ValueControl } from '../components-v2/controls/value-control';
   import {
-    bindAbsoluteChoiceInstrument, bindActionInstrument, bindChoiceInstrument,
+    bindAbsoluteChoiceInstrument, bindActionInstrument, bindChoiceInstrument, usable,
   } from '../primitives/control-instruments/control-instrument-behavior';
   import ControlInstrumentRendererHost from '../primitives/control-instruments/ControlInstrumentRendererHost.svelte';
   import {
@@ -36,13 +36,6 @@
     SubscribeRxAudioAuthority,
   } from './rx-audio-instruments';
 
-  /** Usable ⇔ the radio HAS it, it is readable NOW, and it was actually read.
-   *  Deliberately re-declared rather than imported from `RxAudioSurface.svelte`
-   *  — the same small-predicate duplication `DspInstrumentHost`/`DspSurface`
-   *  already carry between a host and its paired surface (both declare their
-   *  own `usable`). */
-  const usable = (f: RxAudioField<unknown>): boolean =>
-    f.availability.structural && f.availability.operational && f.reading.status === 'known';
   /** MOR-2527 (owner rule 2026-09-21): a routing VALUE renders no text at
    *  all while the reading is unknown — an unlit slot, never a `—`
    *  placeholder. The `<output>` stays mounted with a reserved min-width so
@@ -297,10 +290,8 @@
       && targetKnown
       && currentAuthority?.muted === false
       && readingMatchesTarget
-      && field?.availability.structural === true
-      && field.availability.operational
-      && reading.status === 'known'
-      && Number.isFinite(reading.value)
+      && usable(field)
+      && Number.isFinite(field.reading.value)
       && onAfLevelChange !== undefined;
     const base = {
       domain: AF_DOMAIN,
@@ -349,10 +340,8 @@
       && currentAuthority?.target !== 'browser-volume'
       && currentAuthority?.muted === false
       && presentation.rxAudio?.monitorMode !== 'live'
-      && field?.availability.structural === true
-      && field.availability.operational
-      && reading.status === 'known'
-      && Number.isFinite(reading.value)
+      && usable(field)
+      && Number.isFinite(field.reading.value)
       && onReceiverAfLevelChange !== undefined;
     const base = {
       domain: AF_DOMAIN,
