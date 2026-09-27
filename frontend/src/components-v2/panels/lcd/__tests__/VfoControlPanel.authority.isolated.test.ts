@@ -74,8 +74,16 @@ const blockedCases: readonly Readonly<{
   { name: 'radio TX unknown', expected: 'rf-state-unknown', view: allowed.view, tx: { ...allowed.tx, radioTx: 'unknown' } as typeof allowed.tx },
 ];
 
+/* Accessible name of a node: everything except `aria-hidden` subtrees.
+   The BK key's hidden sizer (MOR-2729) must not leak into it. */
+function accessibleText(node: Element): string {
+  const clone = node.cloneNode(true) as Element;
+  for (const hidden of Array.from(clone.querySelectorAll('[aria-hidden="true"]'))) hidden.remove();
+  return clone.textContent?.trim() ?? '';
+}
+
 function button(label: string): HTMLButtonElement {
-  const found = Array.from(target.querySelectorAll('button')).find((node) => node.textContent?.trim() === label);
+  const found = Array.from(target.querySelectorAll('button')).find((node) => accessibleText(node) === label);
   if (!found) throw new Error(`missing ${label}`);
   return found as HTMLButtonElement;
 }
@@ -231,6 +239,53 @@ describe('VfoControlPanel authority boundary', () => {
       expect(bk.getAttribute('aria-label') ?? bk.textContent?.trim()).toContain('BK');
       bk.click();
       expect(bindings.cw.onBreakInModeChange).not.toHaveBeenCalled();
+    } finally {
+      props.vfo.breakInMode = 0;
+    }
+  });
+
+  /* MOR-2729 (GLM-5.3 delta review on fb8db37a): a `min-width: 7ch` rule
+     could not reserve the widest BK text — with border-box the ch reserve
+     also had to absorb padding, border, and letter-spacing, so the first
+     reading grew the key by 15–22 px. The reserve is a hidden sizer:
+     one aria-hidden element holding `BK` plus `BK-<label>` for every
+     published choice, stacked with the visible span in one grid cell, so
+     the key is always as wide as the widest possible text. */
+  function sizerTexts(bk: HTMLElement): string[] {
+    const sizer = bk.querySelector('[aria-hidden="true"]');
+    expect(sizer, 'a hidden sizer span must exist inside the BK key').not.toBeNull();
+    return Array.from(sizer!.querySelectorAll('span')).map((node) => node.textContent ?? '');
+  }
+
+  it('the BK key carries a hidden sizer holding every possible text (MOR-2729)', () => {
+    try {
+      props.vfo.breakInChoices = [{ value: 0, label: 'OFF' }, { value: 1, label: 'ON' }];
+      mountPanel();
+      const ftx1 = target.querySelector('.lcd-btn-bk') as HTMLElement;
+      expect(sizerTexts(ftx1).sort()).toEqual(['BK', 'BK-OFF', 'BK-ON']);
+      unmount(component);
+      component = undefined;
+      props.vfo.breakInChoices = [
+        { value: 0, label: 'OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' },
+      ];
+      mountPanel();
+      const ic7300 = target.querySelector('.lcd-btn-bk') as HTMLElement;
+      expect(sizerTexts(ic7300).sort()).toEqual(['BK', 'BK-FULL', 'BK-OFF', 'BK-SEMI']);
+    } finally {
+      props.vfo.breakInChoices = legacyChoices;
+    }
+  });
+
+  it('the accessible name is exactly the visible text — no sizer text leaks (MOR-2729)', () => {
+    try {
+      props.vfo.breakInMode = null;
+      mountPanel();
+      expect(accessibleText(target.querySelector('.lcd-btn-bk') as Element)).toBe('BK');
+      unmount(component);
+      component = undefined;
+      props.vfo.breakInMode = 2;
+      mountPanel();
+      expect(accessibleText(target.querySelector('.lcd-btn-bk') as Element)).toBe('BK-FULL');
     } finally {
       props.vfo.breakInMode = 0;
     }
