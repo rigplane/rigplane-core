@@ -58,10 +58,11 @@
  * their true S-units (S2, S4, S6) are three different labels, and a
  * constant can match at most one.
  *
- * Probe selection is constrained to EVEN sub-S9 S-units (S2, S4, S6, not
- * S1/S3/S5/S7/S9): `LinearSMeter`'s own scale ruler permanently renders
- * the odd anchors S1/S3/S5/S7/S9 as axis labels regardless of `value`
- * (`smeter-scale.ts: getScaleMarks`), so asserting an odd result with a
+  * Probe selection is constrained to EVEN sub-S9 S-units (S2, S4, S6, not
+  * S1/S3/S5/S7/S9): `LinearSMeter`'s own scale ruler permanently renders
+  * the odd anchors S1/S3/S5/S7/S9 as axis labels regardless of `value`
+  * (`smeter-scale.ts`'s uniform-scale marks, thinned by
+  * `thinUniformScaleMarksForWidth`), so asserting an odd result with a
  * plain substring match would risk a false pass — the ruler would already
  * contain that digit even if the live readout were wrong. This is why the
  * third probe (-11) sits in the 6 dB S6-S7 step right after the

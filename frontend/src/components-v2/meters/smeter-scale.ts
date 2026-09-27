@@ -20,7 +20,7 @@
  * (`runtime/meter_cal.py interpolate_meter`) on the display side.
  */
 
-import { getSmeterCalibration, getSmeterRedline } from '$lib/stores/capabilities.svelte';
+import { getSmeterCalibration } from '$lib/stores/capabilities.svelte';
 import {
   calibratedToDbm as calibratedToDbmForCalibration,
   calibratedToRaw as calibratedToRawForCalibration,
@@ -128,11 +128,6 @@ export function isSmeterCalibrated(): boolean {
  *  uncalibrated — a neutral bar-geometry anchor, not a claimed threshold. */
 export function getS9Raw(): number {
   return getS9RawForCalibration(getCal());
-}
-
-/** Get redline raw value. */
-export function getRedlineRaw(): number {
-  return getSmeterRedline() ?? getS9Raw();
 }
 
 /** Last calibration raw knot, used as the right edge of visual S-meter scales. */
@@ -260,11 +255,6 @@ function scaleTicks(
   const last = anchors[anchors.length - 1];
   tick(last.raw, last.actual, 'major');
   return ticks;
-}
-
-/** Major S-meter marks derived from the active calibration table. */
-export function getScaleMarks(): SmeterMark[] {
-  return scaleMarks(getCal());
 }
 
 /** The dB-rel-S9 level at which the table's own S-unit interpolation

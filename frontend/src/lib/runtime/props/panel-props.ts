@@ -863,7 +863,6 @@ export function toDspProps(
 export interface TxProps {
   txActive: boolean;
   rfPower: number;
-  micGain: number;
   atuActive: boolean;
   atuTuning: boolean;
   voxActive: boolean;
@@ -871,7 +870,6 @@ export interface TxProps {
   compLevel: number;
   monActive: boolean;
   monLevel: number;
-  driveGain: number;
   hasTx: boolean;
   hasTuner: boolean;
   hasMonitor: boolean;
@@ -907,7 +905,6 @@ export function toTxProps(
     // level is `NaN` (this file's non-fabricating sentinel), never the
     // plausible-looking 0.5 the TxPanel/mobile consumers printed as 50%.
     rfPower: state?.powerLevel ?? Number.NaN,
-    micGain: state?.micGain ?? 128,
     atuActive: (state?.tunerStatus ?? 0) > 0,
     atuTuning: (state?.tunerStatus ?? 0) === 2,
     voxActive: state?.voxOn ?? false,
@@ -921,7 +918,6 @@ export function toTxProps(
     compLevel: state?.compressorLevel ?? Number.NaN,
     monActive: state?.monitorOn ?? false,
     monLevel: state?.monitorGain ?? Number.NaN,
-    driveGain: state?.driveGain ?? 128,
     hasTx: caps?.tx ?? false,
     hasTuner: hasCap(caps, 'tuner') && atuAvailable,
     hasMonitor: hasCap(caps, 'monitor') && monAvailable,

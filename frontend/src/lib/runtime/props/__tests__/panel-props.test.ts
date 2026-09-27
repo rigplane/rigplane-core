@@ -165,7 +165,6 @@ describe('panel prop field availability', () => {
     );
 
     expect(props.rfPower).toBe(0.75);
-    expect(props.micGain).toBe(90);
     expect(props.rfPowerAvailable).toBe(true);
     expect(props.micGainAvailable).toBe(true);
   });
@@ -1427,7 +1426,7 @@ describe('A12 — batch-B projections do not fabricate defaults (MOR-1409)', () 
     // consumer) is entirely hidden on the desktop-v2 skin
     // (`hideTxPanel={semanticRxTx}`, true for desktop-v2 — zero golden
     // risk there) but IS reachable on the mobile skin. Its settings-modal
-    // `ValueControl` calls for rfPower/micGain/monLevel/driveGain pass
+    // `ValueControl` calls for rfPower/monLevel pass
     // `displayFn={normalizedPercentDisplay}`/`rawToPercentDisplay`, neither
     // of which guards a non-finite input — a `NaN` sentinel here would
     // render the literal "NaN%" in a real, live, mobile-reachable surface
@@ -1446,15 +1445,15 @@ describe('A12 — batch-B projections do not fabricate defaults (MOR-1409)', () 
     // compLevel / monLevel members: `toTxProps` now reports NaN for an
     // unreported compressor / monitor level, and TxPanel.svelte (the `> 0`
     // label gate) plus the amber faces (`Number.isFinite`) render the
-    // sentinel as the bare COMP/MON/PROC key. The members below stay
-    // deferred for a future gate.
-    it('still fabricates the mic gain / drive gain / vox / comp defaults (rfPower MOR-2658, levels MOR-2683)', () => {
+    // sentinel as the bare COMP/MON/PROC key. MOR-2685 deleted the
+    // micGain / driveGain value members whole (dead outputs with no
+    // production reader; their availability flags stay). The members
+    // below stay deferred for a future gate.
+    it('still fabricates the vox / comp defaults (rfPower MOR-2658, levels MOR-2683)', () => {
       const props = toTxProps(null, null);
       expect(props.rfPower).toBeNaN();
-      expect(props.micGain).toBe(128);
       expect(props.monLevel).toBeNaN();
       expect(props.compLevel).toBeNaN();
-      expect(props.driveGain).toBe(128);
       expect(props.voxActive).toBe(false);
       expect(props.compActive).toBe(false);
     });

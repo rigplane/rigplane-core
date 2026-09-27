@@ -185,10 +185,10 @@ describe('panel-props.ts batch-A/batch-B functions carry no fabricated-default l
     // not partially, for a future gate to finish; MOR-2658 finished
     // rfPower (forbidden above) once the consumer-boundary guards
     // landed. MOR-2658 finished rfPower and MOR-2683 finished compLevel /
-    // monLevel (both forbidden above, their consumer guards landed). The
-    // rows below stay deferred.
-    ['toTxProps', 'micGain: state?.micGain ?? 128,'],
-    ['toTxProps', 'driveGain: state?.driveGain ?? 128,'],
+    // monLevel (both forbidden above, their consumer guards landed).
+    // MOR-2685 deleted micGain / driveGain whole (dead outputs with no
+    // production reader — the availability flags stay). The rows below
+    // stay deferred.
     ['toTxProps', 'voxActive: state?.voxOn ?? false,'],
     ['toTxProps', 'compActive: state?.compressorOn ?? false,'],
   ];
