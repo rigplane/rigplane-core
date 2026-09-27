@@ -847,10 +847,10 @@ describe('source pins: fixed slot widths (MOR-2509 slice 2)', () => {
     expect(value).toMatch(/display:\s*inline-block/);
     expect(value).toMatch(/min-width:\s*5ch/);
     expect(value).toMatch(/tabular-nums/);
-    const role = rulesFor(surfaceCss, '.vfo-role').join('\n');
-    expect(role).toMatch(/display:\s*inline-block/);
-    expect(role).toMatch(/min-width:\s*6ch/);
-    expect(role).toMatch(/tabular-nums/);
+    expect(surfaceSource).toMatch(
+      /class:vfo-role-unlit=\{vfo\.slot\.kind === 'unknown'\}\s+style:min-width=\{vfo\.slot\.kind === 'unknown' \? '6ch' : undefined\}/,
+    );
+    expect(surfaceCss).not.toMatch(/\.vfo-role\s*\{[^}]*min-width:\s*6ch/);
   });
 
   it('every tray tab, lamp and large chip declares a fixed width and never wraps', () => {

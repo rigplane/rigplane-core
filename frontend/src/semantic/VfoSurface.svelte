@@ -755,6 +755,7 @@
         <span
           class="vfo-role"
           class:vfo-role-unlit={vfo.slot.kind === 'unknown'}
+          style:min-width={vfo.slot.kind === 'unknown' ? '6ch' : undefined}
         >{roleLabel(vfo)}</span>
         <span
           class="vfo-freq" class:display-unknown={displayHz === null && pendingHz === null}
@@ -1137,7 +1138,7 @@
   .receiver-indicators { display: grid; gap: 6px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
   .vfo-tile { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12)); border-radius: 4px; background: var(--v2-bg-panel, rgba(255, 255, 255, 0.03)); }
   .vfo-tile.is-active { border-color: var(--v2-accent-cyan, #00d4ff); }
-  .vfo-role { font-weight: 700; color: var(--v2-text-secondary, rgba(255, 255, 255, 0.8)); display: inline-block; min-width: 6ch; font-variant-numeric: tabular-nums; }
+  .vfo-role { font-weight: 700; color: var(--v2-text-secondary, rgba(255, 255, 255, 0.8)); font-variant-numeric: tabular-nums; }
   .vfo-role-unlit { color: var(--dl-vfo-unlit-text, var(--v2-text-muted, #5a6875)); }
   [data-vfo-appearance='semantic'] .vfo-tile { position: relative; }
   .vfo-badge { padding: 1px 4px; border-radius: 3px; font-size: 10px; color: var(--v2-accent-red, #ff2020); border: 1px solid var(--v2-accent-red, #ff2020); }
