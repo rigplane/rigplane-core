@@ -29,7 +29,6 @@ const LANGUAGES = [null, 'studioline', 'fieldline', 'segmentline'] as const;
 interface OffenderEntry {
   readonly face: string;
   readonly state: string;
-  readonly language: string;
   readonly locator: string;
   readonly token: string;
   readonly ticket: string;
@@ -52,8 +51,8 @@ const offendersPath = join(dirname(fileURLToPath(import.meta.url)), 'offenders.j
 const OFFENDERS: readonly OffenderEntry[] =
   JSON.parse(readFileSync(offendersPath, 'utf8')) as OffenderEntry[];
 
-const entryKey = (face: string, state: string, language: string, locator: string,
-  token: string): string => `${face}|${state}|${language}|${locator}|${token}`;
+const entryKey = (face: string, state: string, locator: string,
+  token: string): string => `${face}|${state}|${locator}|${token}`;
 
 function cellsFor(face: (typeof HARNESS_REACH)[number]): readonly Cell[] {
   return [
@@ -144,7 +143,6 @@ for (const face of HARNESS_REACH) {
     const observed = new Set<string>();
     const dump: OffenderEntry[] = [];
     for (const cell of cellsFor(face)) {
-      const language = cell.language ?? 'default';
       const url = urlFor(face, cell);
       await page.goto(url, { waitUntil: 'load' });
       await expect(
@@ -154,16 +152,16 @@ for (const face of HARNESS_REACH) {
       const records = await collectRecords(page);
       for (const record of records) {
         for (const token of findPlaceholderTokens(record.text, { isTitle: record.isTitle })) {
-          const key = entryKey(face.face, cell.state, language, record.locator, token.kind);
+          const key = entryKey(face.face, cell.state, record.locator, token.kind);
           if (!observed.has(key)) {
             observed.add(key);
             dump.push({
-              face: face.face, state: cell.state, language,
+              face: face.face, state: cell.state,
               locator: record.locator, token: token.kind, ticket: 'TODO',
               example: record.text,
             });
           }
-          if (!OFFENDERS.some((o) => entryKey(o.face, o.state, o.language, o.locator, o.token) === key)) {
+          if (!OFFENDERS.some((o) => entryKey(o.face, o.state, o.locator, o.token) === key)) {
             problems.push(
               `unlisted offender ${key} — text ${JSON.stringify(record.text)} `
               + `(token ${JSON.stringify(token.token)}) at ${url}`,
@@ -173,17 +171,17 @@ for (const face of HARNESS_REACH) {
       }
     }
     for (const o of OFFENDERS.filter((o) => o.face === face.face)) {
-      if (!observed.has(entryKey(o.face, o.state, o.language, o.locator, o.token))) {
+      if (!observed.has(entryKey(o.face, o.state, o.locator, o.token))) {
         problems.push(
-          `stale offender ${entryKey(o.face, o.state, o.language, o.locator, o.token)} `
+          `stale offender ${entryKey(o.face, o.state, o.locator, o.token)} `
           + `(ticket ${o.ticket}) no longer occurs — delete its offenders.json entry in the `
           + `same change that fixed it`,
         );
       }
     }
     // Seeding support: with RP_PLACEHOLDER_GUARD_DUMP set to a directory,
-    // every observed (face, state, language, locator, token class) is written
-    // there as an offenders.json-shaped file (ticket left 'TODO') — the exact
+    // every observed (face, state, locator, token class) is written there
+    // as an offenders.json-shaped file (ticket left 'TODO') — the exact
     // input for seeding/re-seeding the ratchet. Written before the ratchet
     // assertion so a red run still produces the seed.
     const dumpDir = process.env.RP_PLACEHOLDER_GUARD_DUMP;
