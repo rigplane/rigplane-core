@@ -43,6 +43,17 @@ function ritFixture(): { state: ServerState; caps: Capabilities } {
   return { state, caps };
 }
 
+/** MOR-1677: the same radio without a published RIT domain, where the
+ *  offset falls back to the legacy -9999..9999 Hz / 50 Hz-step lattice.
+ *  Min-anchored lattices (the old native range input, or a mutated
+ *  `bipolarKeyboardStep`) put +1/-49 next to zero, so zero is unreachable;
+ *  only this lattice can catch that regression — the FTX-1 1 Hz lattice
+ *  anchors identically from any origin. */
+function legacyRitFixture(): { state: ServerState; caps: Capabilities } {
+  const { state, caps } = ritFixture();
+  return { state, caps: { ...caps, controls: {} } as unknown as Capabilities };
+}
+
 async function boot(page: Page, state: ServerState, caps: Capabilities): Promise<void> {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.addInitScript(({ state }) => {
@@ -132,4 +143,47 @@ test('the slider keeps the arrows after a click even where the click does not mo
   });
   await clickThenStep(page);
   await expect.poll(() => tuningFrames(page)).toEqual(ONE_HZ_STEPS);
+});
+
+/* MOR-1677 — through exact zero in real Chromium. The boot offset reads 0
+ * and the click lands on the slider's geometric centre: value 0, which the
+ * min-anchored pointer lattice snaps to +1 Hz (its own documented quirk; the
+ * click's own frame is dropped before the arrows). Every arrow then steps on
+ * the ORIGIN-centred keyboard lattice (`bipolarKeyboardStep`), so the four
+ * presses GATE through exact zero both ways. A min-anchored keyboard step
+ * instead walks +1 → +51 → +1 → -49 → +1, never crossing zero. The mock
+ * never echoes state, so `aria-valuenow` (the canonical reading) cannot be
+ * checked against the frames; the frames themselves are the pin. */
+const FIFTY_HZ_THROUGH_ZERO = [
+  { name: 'set_rit_frequency', params: { freq: 50 } },
+  { name: 'set_rit_frequency', params: { freq: 0 } },
+  { name: 'set_rit_frequency', params: { freq: -50 } },
+  { name: 'set_rit_frequency', params: { freq: 0 } },
+];
+
+const ONE_HZ_THROUGH_ZERO = [
+  { name: 'set_rit_frequency', params: { freq: 1 } },
+  { name: 'set_rit_frequency', params: { freq: 0 } },
+];
+
+test('with no RIT domain the arrows step through exact zero on the 50 Hz lattice and send no set_freq (MOR-1677)', async ({ page }) => {
+  const { state, caps } = legacyRitFixture();
+  await boot(page, state, caps);
+  await page.locator(OFFSET).getByRole('slider').click();
+  await clearFrames(page);
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('ArrowLeft');
+  await page.keyboard.press('ArrowLeft');
+  await page.keyboard.press('ArrowRight');
+  await expect.poll(() => tuningFrames(page)).toEqual(FIFTY_HZ_THROUGH_ZERO);
+});
+
+test('with the FTX-1 RIT domain the arrows step through exact zero one 1 Hz step at a time (MOR-1677)', async ({ page }) => {
+  const { state, caps } = ritFixture();
+  await boot(page, state, caps);
+  await page.locator(OFFSET).getByRole('slider').click();
+  await clearFrames(page);
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('ArrowLeft');
+  await expect.poll(() => tuningFrames(page)).toEqual(ONE_HZ_THROUGH_ZERO);
 });
