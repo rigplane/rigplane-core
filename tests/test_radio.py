@@ -1415,6 +1415,94 @@ class TestAckSinkRobustness:
                 await pump
 
     @pytest.mark.asyncio
+    async def test_refused_background_read_does_not_settle_a_waiting_write(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        """MOR-2748: a background read's refusal is not the write's answer.
+
+        A refusal is a bare ``FA`` that names no command.  The read and its
+        refusal are the ``cmd29-main`` case of ``test_raw_civ_transaction.py:
+        test_raw_civ_transaction_settles_the_ic7610_filter_shape_exchange``.
+        The read goes out fire-and-forget, as a background poll's does, and
+        its refusal arrives while a write waits for its own ``FB``.
+        """
+        runtime = radio._civ_runtime
+        radio._civ_min_interval = 0.0
+        # Long enough that no wait inside this test can end on the clock.
+        radio._civ_ack_sink_grace = 10.0
+        read = bytes.fromhex("FEFE98E029001656FD")
+        refusal = parse_civ_frame(bytes.fromhex("FEFEE098FAFD"))
+        write = build_civ_frame(
+            IC_7610_ADDR,
+            CONTROLLER_ADDR,
+            _CMD_LEVEL,
+            sub=_SUB_RF_POWER,
+            data=b"\x01\x28",
+        )
+        ack = parse_civ_frame(build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, _CMD_ACK))
+        with patch.object(runtime, "start_pump"):
+            assert await runtime._execute_civ_raw(read, wait_response=False) is None
+            write_task = asyncio.create_task(runtime._execute_civ_raw(write))
+            try:
+                await asyncio.sleep(0)  # the write runs up to its first wait
+                await runtime._route_civ_frame(refusal, generation=radio._civ_epoch)
+                for _ in range(1000):
+                    if len(mock_transport.sent_packets) == 2:
+                        break
+                    await asyncio.sleep(0.001)
+                assert len(mock_transport.sent_packets) == 2, "the write never went out"
+                await runtime._route_civ_frame(ack, generation=radio._civ_epoch)
+                result = await asyncio.wait_for(write_task, timeout=2.0)
+            finally:
+                write_task.cancel()
+                await asyncio.gather(write_task, return_exceptions=True)
+
+        assert result is ack
+
+    @pytest.mark.asyncio
+    async def test_write_still_gets_its_own_refusal_after_an_answered_read(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        """MOR-2748: a write's own refusal still settles that write.
+
+        The background read is the ``cmd29-sub`` case of the same exchange,
+        which the radio answers with data; the ``FA`` after it is the
+        write's own.  With the grace this long, a write that kept waiting on
+        the read once the read was answered fails here instead of only
+        running late.
+        """
+        runtime = radio._civ_runtime
+        radio._civ_min_interval = 0.0
+        radio._civ_ack_sink_grace = 10.0
+        read = bytes.fromhex("FEFE98E029011656FD")
+        answer = parse_civ_frame(bytes.fromhex("FEFEE0982901165600FD"))
+        refusal = parse_civ_frame(bytes.fromhex("FEFEE098FAFD"))
+        write = build_civ_frame(
+            IC_7610_ADDR,
+            CONTROLLER_ADDR,
+            _CMD_LEVEL,
+            sub=_SUB_RF_POWER,
+            data=b"\x01\x28",
+        )
+        with patch.object(runtime, "start_pump"):
+            assert await runtime._execute_civ_raw(read, wait_response=False) is None
+            await runtime._route_civ_frame(answer, generation=radio._civ_epoch)
+            write_task = asyncio.create_task(runtime._execute_civ_raw(write))
+            try:
+                for _ in range(1000):
+                    if len(mock_transport.sent_packets) == 2:
+                        break
+                    await asyncio.sleep(0.001)
+                assert len(mock_transport.sent_packets) == 2, "the write never went out"
+                await runtime._route_civ_frame(refusal, generation=radio._civ_epoch)
+                result = await asyncio.wait_for(write_task, timeout=2.0)
+            finally:
+                write_task.cancel()
+                await asyncio.gather(write_task, return_exceptions=True)
+
+        assert result is refusal
+
+    @pytest.mark.asyncio
     async def test_fire_and_forget_missing_ack_does_not_poison_next_ack(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
