@@ -199,6 +199,9 @@
   "core.vfo.state.off": "off",
 
   "core.band.tx.defaultPermit.unread": "{frequency} での TX:",
+  "core.band.tx.reason.outOfBand": "送信周波数が設定された送信範囲の外にあります — 送信 VFO を許可されたバンドに合わせてください",
+  "core.band.tx.reason.targetUnknown": "無線機は送信する周波数を確認していません",
+  "core.band.tx.reason.rangesNotConfigured": "この無線機には送信範囲が設定されていないため、ここでは許可を確認できません",
   "core.band.tx.reason.unnamed": "この禁止の理由は利用できません",
 
   "core.meter.state.idle": "受信中は測定していません",
