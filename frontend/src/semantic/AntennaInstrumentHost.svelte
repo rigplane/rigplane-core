@@ -23,11 +23,18 @@
    * MOR-2691 — the blocked reason is no longer visible list text; it is the
    * disabled control's own `title`, resolved here to a plain catalog sentence
    * per block code (the same `Record<code, catalog key>` table pattern as
-   * `$lib/i18n/blocked-reasons`). `tx-busy`/`radio-transmitting` reuse the
-   * RX/TX gate's sentences; the two unconfirmed readings get their own
-   * "waiting for …" wording with no "unknown" and no "?".
+   * `$lib/i18n/blocked-reasons`). Every `KeyBlockedReason` member maps onto
+   * the RX/TX gate's own sentence; the antenna gate only ever yields
+   * `tx-busy`/`radio-transmitting`/`rf-state-unknown` (see `RF_MUST_BE_IDLE`),
+   * and the two unconfirmed readings below get antenna-specific "waiting
+   * for …" wording with no "unknown" and no "?". Exhaustiveness follows the
+   * old `ANTENNA_BLOCKED_LABEL = { ...BLOCKED_LABEL, … }` spread ruling.
    */
   const ANTENNA_BLOCKED_KEY: Record<AntennaSwitchBlock, string> = {
+    'tx-target-unknown': BLOCKED_REASON_KEY['tx-target-unknown'],
+    'tx-permit-denied': BLOCKED_REASON_KEY['tx-permit-denied'],
+    'tx-permit-unknown': BLOCKED_REASON_KEY['tx-permit-unknown'],
+    'tx-fault': BLOCKED_REASON_KEY['tx-fault'],
     'tx-busy': BLOCKED_REASON_KEY['tx-busy'],
     'radio-transmitting': BLOCKED_REASON_KEY['radio-transmitting'],
     'rf-state-unknown': 'core.antenna.blocked.transmitterUnconfirmed',
