@@ -21,14 +21,14 @@ describe('control-instrument behavior bindings', () => {
     const invoke = vi.fn();
     const mixed: AvailabilityActionInput = {
       // @ts-expect-error Action evidence must come from exactly one input form.
-      availability: { structural: true, operational: true }, field: usable(1), invoke,
+      availability: { structural: true, operational: true }, field: usableField(1), invoke,
     };
 
     expect(mixed).toBeDefined();
   });
 
   it('re-checks an action field and blocker at invocation time', () => {
-    let field = usable(1);
+    let field = usableField(1);
     let blocked = false;
     const invoke = vi.fn();
     const behavior = bindActionInstrument(() => ({ field, blocked, invoke }));
@@ -38,7 +38,7 @@ describe('control-instrument behavior bindings', () => {
     field = unknown<number>();
     behavior.invoke();
     blocked = true;
-    field = usable(1);
+    field = usableField(1);
     behavior.invoke();
     blocked = false;
     behavior.invoke();
@@ -86,12 +86,12 @@ describe('control-instrument behavior bindings', () => {
   });
 
   it('derives a toggle target from the current confirmed boolean', () => {
-    let field = usable(false);
+    let field = usableField(false);
     const invoke = vi.fn();
     const behavior = bindToggleInstrument(() => ({ field, invoke }));
 
     expect(behavior.confirmed).toBe(false);
-    field = usable(true);
+    field = usableField(true);
     behavior.invoke();
     expect(invoke).toHaveBeenCalledExactlyOnceWith(false);
   });
@@ -107,15 +107,15 @@ describe('control-instrument behavior bindings', () => {
 
   it('keeps a supplied feedback envelope unchanged and does not invent one', () => {
     const feedback = { phase: 'submitted', target: true } as const;
-    const present = bindToggleInstrument(() => ({ field: usable(true), invoke: vi.fn(), feedback }));
-    const absent = bindToggleInstrument(() => ({ field: usable(true), invoke: vi.fn() }));
+    const present = bindToggleInstrument(() => ({ field: usableField(true), invoke: vi.fn(), feedback }));
+    const absent = bindToggleInstrument(() => ({ field: usableField(true), invoke: vi.fn() }));
 
     expect(present.feedback).toBe(feedback);
     expect(absent.feedback).toBeUndefined();
   });
 
   it('only selects and invokes values in the current offered finite choice set', () => {
-    let field = usable(9);
+    let field = usableField(9);
     let choices = [1, 2] as readonly number[];
     const invoke = vi.fn();
     const behavior = bindChoiceInstrument(() => ({ field, choices, invoke }));
@@ -125,7 +125,7 @@ describe('control-instrument behavior bindings', () => {
     behavior.invoke(9);
     expect(invoke).not.toHaveBeenCalled();
 
-    field = usable(2);
+    field = usableField(2);
     choices = [2, 3];
     expect(behavior.selected).toBe(2);
     behavior.invoke(3);
@@ -139,7 +139,7 @@ describe('control-instrument behavior bindings', () => {
 
     expect(behavior.selected).toBeUndefined();
     expect(behavior.available).toBe(false);
-    field = usable(9);
+    field = usableField(9);
     behavior.invoke(1);
     expect(invoke).toHaveBeenCalledExactlyOnceWith(1);
   });
