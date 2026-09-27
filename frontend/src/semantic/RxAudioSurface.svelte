@@ -38,6 +38,7 @@
 <script module lang="ts">
   import type { RxAudioField } from './radio-view-model';
   import { formatKnownLevel } from './format-level';
+  import { readingText } from '../primitives/reading-text';
 
   export {
     FOCUS_CHOICES, LINK_LOST_TEXT, MONITOR_MODES, READINESS_LABEL, SPLIT_CHOICES,
@@ -47,9 +48,10 @@
   export const usable = (f: RxAudioField<unknown>): boolean =>
     f.availability.structural && f.availability.operational && f.reading.status === 'known';
   /** MOR-2527: an unread AF level renders no value text — an unlit slot,
-   *  never a `—` placeholder. */
+   *  never a `—` placeholder. MOR-2688 S3: the ONE unread-display rule lives
+   *  in `readingText`; the 0..1 level formatter stays this surface's own. */
   const afText = (f: RxAudioField<number>): string =>
-    f.reading.status === 'known' ? formatKnownLevel(f.reading.value, 0, 1) : '';
+    readingText(f, (v) => formatKnownLevel(v, 0, 1));
 </script>
 
 <script lang="ts">

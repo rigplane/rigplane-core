@@ -145,7 +145,7 @@
       ? t('core.statusbar.power.toggleOn')
       : radioPowerOn === false
         ? t('core.statusbar.power.toggleOff')
-        : t('core.statusbar.power.toggleUnknown')
+        : ''
   );
 
   let powerLabel = $derived(
@@ -530,7 +530,8 @@
         class:power-unknown={radioPowerOn === null}
         disabled={radioPowerOn === null}
         onclick={handlePowerToggle}
-        title={powerTooltip}
+        title={powerTooltip || undefined}
+        aria-label={radioPowerOn === null ? undefined : powerTooltip}
       >
         <Power size={14} strokeWidth={2} />
         <span class="btn-label">{powerLabel}</span>

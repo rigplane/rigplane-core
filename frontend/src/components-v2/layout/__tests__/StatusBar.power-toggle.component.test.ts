@@ -159,8 +159,12 @@ describe('StatusBar power toggle (MOR-1673, in-page confirm)', () => {
     // the rendered text, not on t(key).
     expect(btn.textContent).toContain('POWER');
     expect(btn.textContent ?? '').not.toContain('UNKNOWN');
-    expect(btn.title).toBe('Radio power state unknown');
-    expect(btn.title).not.toMatch(/click/i);
+    // MOR-2655: "Radio power state unknown" was an accessible name, not a
+    // disabled-reason sentence. The button keeps no accessible name that
+    // says "unknown"; the old pin was `btn.title === 'Radio power state unknown'`.
+    expect(btn.getAttribute('aria-label')).toBeNull();
+    expect(btn.title).toBe('');
+    expect(`${btn.getAttribute('aria-label') ?? ''} ${btn.title}`).not.toMatch(/unknown/i);
 
     // Defence in depth: strip the disabled attribute and click anyway —
     // the handler itself must refuse (no dialog, no dispatch).
