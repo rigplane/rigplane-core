@@ -221,7 +221,7 @@
   }
 
   let scopeFacts = $derived(toSpectrumAuthority(runtime.state, runtime.caps)?.scopeControls ?? null);
-  let scopeMode = $derived(acceptedNumber(scopeFacts?.mode, 0, 3));
+  let scopeMode = $derived(acceptedNumber(scopeFacts?.['mode'], 0, 3));
   let scopeEdge = $derived(acceptedNumber(scopeFacts?.edge, 1, 4));
   let scopeSpan = $derived(acceptedNumber(scopeFacts?.span, 0, 7));
   let scopeSpeed = $derived(acceptedNumber(scopeFacts?.speed, 0, 2));

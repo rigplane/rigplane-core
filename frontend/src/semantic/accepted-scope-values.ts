@@ -9,6 +9,9 @@
  * `primitives/control-instruments/control-instrument-behavior`) plus a value
  * check — a safe integer inside the declared `[min, max]` domain for
  * numbers, a real boolean for booleans — returning the value or `null`.
+ * A field whose `availability` is itself undefined (a partial wire or
+ * fixture shape) is rejected too, exactly like the former local copies'
+ * `fact?.availability?.structural` tolerance.
  * A `null` means the control does not act and the lit state stays unlit;
  * nothing here ever invents a placeholder value.
  *
@@ -33,6 +36,7 @@ export function acceptedNumber(
   min: number,
   max: number,
 ): number | null {
+  if (field === undefined || field.availability === undefined) return null;
   if (!usable(field)) return null;
   const { value } = field.reading;
   if (!Number.isSafeInteger(value) || value < min || value > max) return null;
@@ -44,6 +48,7 @@ export function acceptedNumber(
  * or the value is not a real boolean.
  */
 export function acceptedBoolean(field: InstrumentField<boolean> | undefined): boolean | null {
+  if (field === undefined || field.availability === undefined) return null;
   if (!usable(field)) return null;
   const { value } = field.reading;
   if (typeof value !== 'boolean') return null;
