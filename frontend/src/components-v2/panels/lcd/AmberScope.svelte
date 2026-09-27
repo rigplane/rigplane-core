@@ -158,8 +158,13 @@
       ? [{ id: 'vox' as const, label: 'VOX', active: tx.voxActive }] : []),
     ...(hasCap('compressor') && tx.compAvailable ? [{
       id: 'proc' as const,
-      label: tx.compActive && tx.compLevelAvailable ? `PROC ${tx.compLevel}` : 'PROC',
+      // MOR-2683: a known compressor state with an unread level keeps the
+      // bare key — `Number.isFinite` guards toTxProps' NaN sentinel. The
+      // chip reserves 8ch (`reserveSlot` → AmberIndStrip) — the widest text
+      // it prints is `PROC 255`.
+      label: tx.compActive && Number.isFinite(tx.compLevel) ? `PROC ${tx.compLevel}` : 'PROC',
       active: tx.compActive,
+      reserveSlot: 8,
     }] : []),
     ...(hasCap('attenuator') && rxAvailable('att') ? [{
       id: 'att' as const, label: 'ATT', active: (rx?.att ?? 0) > 0,

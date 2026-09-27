@@ -1125,6 +1125,13 @@
     background: rgba(156, 163, 175, 0.15);
     color: #9ca3af;
     letter-spacing: 0.06em;
+    /* MOR-2683: the chip keeps one width in every state — `min-width` covers
+       the widest label `toVfoProps` prints for a filter ('FIL1'…), so an
+       unread filter rendering as the empty string cannot shift its row. */
+    display: inline-block;
+    min-width: 4ch;
+    box-sizing: content-box;
+    text-align: center;
   }
 
   .m-ls-meter {
@@ -1370,6 +1377,12 @@
   .m-vfo-filter {
     color: var(--v2-text-secondary, #aaa);
     font-size: 11px;
+    /* MOR-2683: the span keeps one width in every state — covers the widest
+       label `toVfoProps` prints for a filter ('FIL1'…), so the empty-string
+       unread sentinel (MOR-2683) cannot shift its neighbours. */
+    display: inline-block;
+    min-width: 4ch;
+    box-sizing: content-box;
   }
 
   /* RIT/XIT offset badge in sticky header meta row (#842). Only renders

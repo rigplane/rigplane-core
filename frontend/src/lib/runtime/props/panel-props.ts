@@ -174,8 +174,12 @@ export function toVfoProps(
   if ((state.tunerStatus ?? 0) === 2) badges['TUNE'] = true;
 
   const filters = ['FIL1', 'FIL2', 'FIL3'];
-  const fil = rx.filter ?? 1;
-  const filterLabel = filters[fil - 1] ?? `FIL${fil}`;
+  // MOR-2683: an unread filter projects the empty string — the same unread
+  // sentinel `mode` carries (MOR-2673) — never the first filter's label.
+  // `''` never equals a real, non-empty filter label, so a comparison
+  // consumer can never light a choice for a reading that never arrived.
+  const fil = rx.filter;
+  const filterLabel = fil == null ? '' : (filters[fil - 1] ?? `FIL${fil}`);
 
   return {
     receiver,
@@ -390,7 +394,7 @@ export function resolveFilterModeConfig(
 
 export interface FilterProps {
   currentMode: string;
-  currentFilter: number;
+  currentFilter: number | null;
   filterShape: number;
   hasFilterShape: boolean;
   filterLabels: string[];
@@ -462,7 +466,12 @@ export function toFilterProps(
     // `Number.isFinite` check), so the fabricated default can now be
     // removed here. See its `toAudioSpectrumProps` twin below.
     currentMode: rx?.mode ?? '',
-    currentFilter: rx?.filter ?? 1,
+    // MOR-2683: an unread filter projects `null`, never filter 1 — a
+    // consumer that lights the current filter must light no choice for a
+    // reading that never arrived (`null` never equals a real 1-based
+    // filter index). Arithmetic consumers must guard on `!= null`
+    // (FilterPanel.svelte's `visibleWidths`).
+    currentFilter: rx?.filter ?? null,
     filterShape: rx?.filterShape ?? 0,
     // MOR-1503: whether the radio has a REAL filter_shape command of its
     // own (Icom family, e.g. IC-7300). The FTX-1 declares no
@@ -882,9 +891,15 @@ export function toTxProps(
     atuTuning: (state?.tunerStatus ?? 0) === 2,
     voxActive: state?.voxOn ?? false,
     compActive: state?.compressorOn ?? false,
-    compLevel: state?.compressorLevel ?? 0,
+    // MOR-2683: finishes the deferred A12 family for the two levels that
+    // reach the screen (TxPanel.svelte's COMP/MON buttons, the amber faces'
+    // PROC chip) — an unreported level is `Number.NaN` (this file's
+    // non-fabricating sentinel, as `rfPower` in MOR-2658), never a
+    // plausible-looking 0 / 128. Consumers guard on finiteness and render
+    // the bare key.
+    compLevel: state?.compressorLevel ?? Number.NaN,
     monActive: state?.monitorOn ?? false,
-    monLevel: state?.monitorGain ?? 128,
+    monLevel: state?.monitorGain ?? Number.NaN,
     driveGain: state?.driveGain ?? 128,
     hasTx: caps?.tx ?? false,
     hasTuner: hasCap(caps, 'tuner') && atuAvailable,

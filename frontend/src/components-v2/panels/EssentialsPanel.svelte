@@ -10,7 +10,10 @@
   interface Props {
     vfoOps: { splitActive?: boolean };
     mode: { currentMode: string; modes: string[] };
-    filter: { currentFilter: number; filterLabels?: string[] };
+    // MOR-2683: `currentFilter` is `null` while the filter reading has not
+    // arrived (`toFilterProps`' unread sentinel) — `null` never equals a
+    // real 1-based index, so no filter choice lights for an unread filter.
+    filter: { currentFilter: number | null; filterLabels?: string[] };
     rxAudio: { monitorMode: string; afLevel: number };
     dsp: { nbActive: boolean; nrMode: number; notchMode: string };
     quickModes: string[];

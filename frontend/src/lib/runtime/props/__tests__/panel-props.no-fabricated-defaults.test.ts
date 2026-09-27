@@ -121,6 +121,17 @@ describe('panel-props.ts batch-A/batch-B functions carry no fabricated-default l
     // MobileRadioLayout.svelte now guard the NaN sentinel at their
     // consumer boundaries, the guards A12 could not add).
     ['toTxProps', 'rfPower: state?.powerLevel ?? 0.5,'],
+    // MOR-2683: finishes the deferred A12 toTxProps fix for the two levels
+    // that reach the screen — moved here from `stillPresentOutOfScope`
+    // below (TxPanel.svelte's `> 0` label gate and the amber faces'
+    // `Number.isFinite` guard render the NaN sentinel as the bare key).
+    ['toTxProps', 'compLevel: state?.compressorLevel ?? 0,'],
+    ['toTxProps', 'monLevel: state?.monitorGain ?? 128,'],
+    // MOR-2683: the two fabricated filter defaults folded into the ticket —
+    // `toVfoProps` printed the first filter's label for an unread filter,
+    // and `toFilterProps`' comparison consumers lit FIL1 for it.
+    ['toVfoProps', 'const fil = rx.filter ?? 1;'],
+    ['toFilterProps', 'currentFilter: rx?.filter ?? 1,'],
   ];
 
   it.each(forbidden)('%s does not contain %j', (fn, literal) => {
@@ -168,9 +179,10 @@ describe('panel-props.ts batch-A/batch-B functions carry no fabricated-default l
     // A12's four granted production files. A12 deferred the family whole,
     // not partially, for a future gate to finish; MOR-2658 finished
     // rfPower (forbidden above) once the consumer-boundary guards
-    // landed. The rows below stay deferred.
+    // landed. MOR-2658 finished rfPower and MOR-2683 finished compLevel /
+    // monLevel (both forbidden above, their consumer guards landed). The
+    // rows below stay deferred.
     ['toTxProps', 'micGain: state?.micGain ?? 128,'],
-    ['toTxProps', 'monLevel: state?.monitorGain ?? 128,'],
     ['toTxProps', 'driveGain: state?.driveGain ?? 128,'],
     ['toTxProps', 'voxActive: state?.voxOn ?? false,'],
     ['toTxProps', 'compActive: state?.compressorOn ?? false,'],

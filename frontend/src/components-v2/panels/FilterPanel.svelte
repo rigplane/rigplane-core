@@ -108,8 +108,13 @@
   });
   let visibleWidths = $derived.by(() => {
     const values = [...factoryDefaults];
-    const activeIndex = Math.max(0, Math.min(normalizedLabels.length - 1, currentFilter - 1));
-    values[activeIndex] = filterWidth;
+    // MOR-2683: `currentFilter` is `null` while the filter reading has not
+    // arrived — no row may borrow the width as if its filter were current
+    // (`null - 1` clamps to index 0, which would mark FIL1's row).
+    if (currentFilter != null) {
+      const activeIndex = Math.max(0, Math.min(normalizedLabels.length - 1, currentFilter - 1));
+      values[activeIndex] = filterWidth;
+    }
     return values;
   });
   let isTableMode = $derived(!!(filterConfig?.table?.length));

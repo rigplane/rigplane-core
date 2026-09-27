@@ -1442,19 +1442,71 @@ describe('A12 — batch-B projections do not fabricate defaults (MOR-1409)', () 
     // it cannot guard. This mirrors A11's own `toFilterProps.filterWidth`
     // deferral to A12 exactly.
     //
-    // MOR-2658 finished the rfPower member: `toTxProps` now reports NaN
-    // for an unreported `powerLevel`, and TxPanel.svelte (guarded
-    // `rfPowerDisplay`) plus MobileRadioLayout.svelte (finite-guarded
-    // readout and sheet slider) render that sentinel as an empty slot.
-    // The members below stay deferred for a future gate.
-    it('still fabricates the mic gain / mon level / drive gain / vox / comp defaults (rfPower fixed by MOR-2658)', () => {
+    // MOR-2658 finished the rfPower member and MOR-2683 finished the
+    // compLevel / monLevel members: `toTxProps` now reports NaN for an
+    // unreported compressor / monitor level, and TxPanel.svelte (the `> 0`
+    // label gate) plus the amber faces (`Number.isFinite`) render the
+    // sentinel as the bare COMP/MON/PROC key. The members below stay
+    // deferred for a future gate.
+    it('still fabricates the mic gain / drive gain / vox / comp defaults (rfPower MOR-2658, levels MOR-2683)', () => {
       const props = toTxProps(null, null);
       expect(props.rfPower).toBeNaN();
       expect(props.micGain).toBe(128);
-      expect(props.monLevel).toBe(128);
+      expect(props.monLevel).toBeNaN();
+      expect(props.compLevel).toBeNaN();
       expect(props.driveGain).toBe(128);
       expect(props.voxActive).toBe(false);
       expect(props.compActive).toBe(false);
+    });
+  });
+
+  // MOR-2683: an unread monitor / compressor level projects the NaN sentinel
+  // (the file's non-fabricating level sentinel, `rfPower`'s MOR-2658
+  // treatment) even when the toggle itself IS known — a rig that reports
+  // monitor or compressor ON with no level must not invent one. Red on the
+  // old code: the defaults were 128 / 0, and TxPanel rendered the invented
+  // "MON 50%" / "PROC 0".
+  describe('toTxProps — unread levels project NaN, never an invented number (MOR-2683)', () => {
+    it('reports NaN for a known-ON monitor with no reported level, and the real gain when it arrives', () => {
+      const unread = toTxProps({ ...makeState(), monitorOn: true, monitorGain: null } as any, null);
+      expect(unread.monActive).toBe(true);
+      expect(unread.monLevel).toBeNaN();
+      const read = toTxProps({ ...makeState(), monitorOn: true, monitorGain: 128 } as any, null);
+      expect(read.monLevel).toBe(128);
+    });
+
+    it('reports NaN for a known-ON compressor with no reported level, and the real level when it arrives', () => {
+      const unread = toTxProps({ ...makeState(), compressorOn: true, compressorLevel: null } as any, null);
+      expect(unread.compActive).toBe(true);
+      expect(unread.compLevel).toBeNaN();
+      const read = toTxProps({ ...makeState(), compressorOn: true, compressorLevel: 7 } as any, null);
+      expect(read.compLevel).toBe(7);
+    });
+  });
+
+  // MOR-2683: an unread filter projects the unread sentinel — the empty
+  // string for the VFO label (MOR-2673's string sentinel, so no comparison
+  // consumer can light a real choice) and `null` for the filter projection's
+  // 1-based index (never filter 1). Red on the old code: both fabricated
+  // FIL1 / 1.
+  describe('unread filter projects the sentinel, never FIL1 (MOR-2683)', () => {
+    it('toVfoProps reports the empty string for a present receiver whose filter is unread', () => {
+      const state = makeState({ main: { ...makeState().main, filter: null } });
+      expect(toVfoProps(state, 'main').filter).toBe('');
+    });
+
+    it('toVfoProps still reports the real label for a read filter', () => {
+      expect(toVfoProps(makeState(), 'main').filter).toBe('FIL1');
+      const state = makeState({ main: { ...makeState().main, filter: 2 } });
+      expect(toVfoProps(state, 'main').filter).toBe('FIL2');
+    });
+
+    it('toFilterProps reports null for an unread filter, never 1, and the real index when it arrives', () => {
+      const state = makeState({ main: { ...makeState().main, filter: null } });
+      expect(toFilterProps(state, null).currentFilter).toBeNull();
+      expect(toFilterProps(makeState(), null).currentFilter).toBe(1);
+      const read = makeState({ main: { ...makeState().main, filter: 2 } });
+      expect(toFilterProps(read, null).currentFilter).toBe(2);
     });
   });
 });
