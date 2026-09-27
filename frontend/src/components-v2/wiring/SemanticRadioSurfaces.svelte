@@ -53,6 +53,9 @@
   } from '../../semantic/pbt-presentation-continuity';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import {
+    txFaultObligation, type TxFaultObligation, type TxFaultObligationInputs,
+  } from '$lib/runtime/tx-controller/model';
+  import {
     bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getDspControlFeedback,
     getAfLevelControlFeedback, projectDspControlFeedbackToDisplay,
     getFilterWidthControlFeedback, getRfPowerControlFeedback,
@@ -757,6 +760,52 @@
   const tx = getManagedAppTxController();
 
   let txState = $state.raw(tx.snapshot());
+  /**
+   * MOR-1795 — the fault-dismissal derivation, restored from the MOR-1784
+   * design the MOR-2168 thin-client refactor flattened into a hardcoded
+   * refusal. The snapshot may carry the reducer's own obligation fields
+   * (`txFaultObligation` inputs in `model.ts`, re-declared OPTIONAL in
+   * `managed-state.ts`): a live projection never carries them today (the
+   * server owns the reset lifecycle), so the generic server-recovery
+   * wording in `txFaultRecovery` below is the only live branch and the
+   * derivation never runs there; a capture fixture carrying ANY of the
+   * fields enters the MOR-1784 dismissal branches — none set → dismissable,
+   * one set → refused with the obligation named. The dismissal affordance
+   * carries no handler by design: the managed thin client has no reset
+   * seam (the server owns it, 2b1c4a7b), and the branch cannot render live;
+   * the capture pins exactly that refusal/dismissal shape.
+   */
+  const obligationInputs = (
+    snapshot: {
+      pendingOff?: object | null;
+      modRestorePending?: boolean;
+      mayOwnKey?: boolean;
+      cleanupGuard?: object | null;
+    },
+  ): TxFaultObligationInputs | null => {
+    return snapshot.pendingOff !== undefined || snapshot.modRestorePending !== undefined
+      || snapshot.mayOwnKey !== undefined || snapshot.cleanupGuard !== undefined
+      ? {
+          pendingOff: snapshot.pendingOff ?? null,
+          modRestorePending: snapshot.modRestorePending ?? false,
+          mayOwnKey: snapshot.mayOwnKey ?? false,
+          cleanupGuard: snapshot.cleanupGuard ?? null,
+        }
+      : null;
+  };
+  let faultObligationInputs = $derived(
+    txState.phase === 'failed' ? obligationInputs(txState) : null,
+  );
+  let faultObligation = $derived(
+    faultObligationInputs ? txFaultObligation(faultObligationInputs) : null,
+  );
+  let faultDismissable = $derived(faultObligationInputs !== null && faultObligation === null);
+  const FAULT_OBLIGATION_KEY: Record<TxFaultObligation, string> = {
+    'dekey-pending': 'core.rxTx.fault.reset.reason.dekeyPending',
+    'key-held': 'core.rxTx.fault.reset.reason.keyHeld',
+    'mod-restore': 'core.rxTx.fault.reset.reason.modRestore',
+    cleanup: 'core.rxTx.fault.reset.reason.cleanup',
+  };
   let stationSubscriber: Parameters<SubscribeStationMeterAuthority>[0] | null = null;
   let stationControl: ControlAuthorityPublication | null = null;
 
@@ -2266,13 +2315,39 @@
     {/if}
   {/snippet}
 
-  <!-- Server failure stays visible beside every RX/TX presentation. -->
+  <!--
+    MOR-1795: the live branch is still the generic server-recovery note —
+    the managed projection never carries the obligation fields today, so
+    `faultObligationInputs` is null live and the MOR-1784 dismissal branches
+    below remain capture-only until the server document names an obligation.
+    The dismissal affordance has no handler by design: the managed thin
+    client has no reset seam (the server owns it, 2b1c4a7b). MOR-1258's pin
+    keeps its bare-failed state intentionally: the bare branch above is what
+    a real server snapshot produces today; the obligation-carrying variant
+    is exercised by the two new `tx-phase-fault-dismissable` /
+    `tx-phase-fault-refused` captures.
+  -->
   {#snippet txFaultRecovery()}
     {#if txState.phase === 'failed'}
-      <div class="tx-fault-recovery" data-testid="tx-fault-recovery" data-dismissable="false">
-        <p class="tx-fault-note" data-testid="tx-fault-reset-blocked" role="status">
-          TX recovery is pending on the server. Force Off remains available.
-        </p>
+      <div class="tx-fault-recovery" data-testid="tx-fault-recovery" data-dismissable={faultDismissable}>
+        {#if faultObligationInputs !== null}
+          {#if faultDismissable}
+            <button
+              type="button" class="tx-fault-reset" data-testid="tx-fault-reset"
+            >{t('core.rxTx.fault.reset.action')}</button>
+            <span class="tx-fault-note" data-testid="tx-fault-reset-note"
+            >{t('core.rxTx.fault.reset.note')}</span>
+          {:else}
+            <p
+              class="tx-fault-note" data-testid="tx-fault-reset-blocked" role="status"
+              data-reason={faultObligation}
+            >{t('core.rxTx.fault.reset.blocked', { reason: t(FAULT_OBLIGATION_KEY[faultObligation!]) })}</p>
+          {/if}
+        {:else}
+          <p class="tx-fault-note" data-testid="tx-fault-reset-blocked" role="status">
+            TX recovery is pending on the server. Force Off remains available.
+          </p>
+        {/if}
       </div>
     {/if}
   {/snippet}
@@ -3233,6 +3308,18 @@
   .tx-fault-note {
     margin: 0;
     font-size: 0.85em;
+  }
+  /* MOR-1784's dismissal action, restored by MOR-1795 for the capture harness
+     (never reached live — see the snippet comment above). */
+  .tx-fault-reset {
+    align-self: flex-start;
+    padding: 3px 8px;
+    border: 1px solid var(--v2-accent-red, #ef4444);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--v2-accent-red, #ef4444);
+    font: inherit;
+    cursor: pointer;
   }
   /* MOR-1067: two borderless channel strips sharing one optical left margin —
      the RxTxSurface below stays a single shared block, outside this grid. */

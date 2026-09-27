@@ -29,6 +29,22 @@ export interface TxSnapshot {
   configuredSeconds: number | null;
   remainingMs: number | null;
   lastOperation: 'ptt_on' | 'transmit_on' | 'force_receive' | null;
+  /**
+   * MOR-1795 — TX-fault obligation fields, OPTIONAL and left `undefined` by
+   * every pre-existing fixture so its approved baseline stays byte-identical.
+   * They mirror the reducer's own guard inputs (`txFaultObligation` in
+   * `src/lib/runtime/tx-controller/model.ts`), so a capture can place the
+   * fault-recovery snippet into either branch: a snapshot carrying the
+   * fields with none set renders the dismissable branch; one with an
+   * obligation set renders the refused branch with the obligation named.
+   * The production projection (`ManagedTxState`) declares the same four
+   * OPTIONAL fields; the server document never carries them today, so the
+   * live render keeps its hardcoded server-owns-recovery wording.
+   */
+  pendingOff?: object | null;
+  modRestorePending?: boolean;
+  mayOwnKey?: boolean;
+  cleanupGuard?: object | null;
 }
 
 export interface ModGuardProps {
