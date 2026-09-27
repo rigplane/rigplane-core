@@ -78,14 +78,15 @@ export function telemetryDescription(label: string, field: DisplayTelemetry): st
   }
   if (!tx.supported) return label;
   if (tx.relevance === 'idle') return `${label}: ${t('core.meter.state.idle')}`;
-  // An unread observation names only the label; the relevance cue (a
-  // relevance modifier, not a status word) still applies for indeterminate.
-  if (tx.observation.state !== 'stale' && tx.observation.state !== 'current')
-    return tx.relevance === 'indeterminate' ? `${label}: RF relevance indeterminate.` : label;
-  const cue = tx.relevance === 'indeterminate' ? 'RF relevance indeterminate. ' : '';
+  // MOR-2705 part 2 (coordinator ruling): the 'RF relevance indeterminate'
+  // cue is gone too — "indeterminate" means "unknown", a status word never
+  // stands in for a value, and a reason sentence may live only in the
+  // title of a disabled control, which this is not. An unknown observation
+  // names only the label, the same as unread.
+  if (tx.observation.state !== 'stale' && tx.observation.state !== 'current') return label;
   return tx.observation.state === 'stale'
-    ? `${label}: ${cue}Stale observation`
-    : `${label}: ${cue}Current observation: ${Number(tx.observation.value.toFixed(2))}`;
+    ? `${label}: Stale observation`
+    : `${label}: Current observation: ${Number(tx.observation.value.toFixed(2))}`;
 }
 
 function envelope(

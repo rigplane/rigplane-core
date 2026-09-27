@@ -158,8 +158,8 @@ it.each([
 
 // MOR-2705 part 2: an accessible name never carries a status word. An
 // unsupported item is not drawn, so it has no accessible name; an unread
-// one names only what it is — its label. Red on the old 'Unsupported' /
-// 'No reading' renderers.
+// one names only what it is — its label: no 'Unsupported', no 'No
+// reading', and no 'RF relevance indeterminate' cue either.
 it('names an unsupported or unread telemetry item by its label only', () => {
   expect(telemetryDescription('PWR', { state: 'unknown', relevant: true })).toBe('PWR');
   expect(telemetryDescription('PWR', { state: 'unsupported', relevant: false })).toBe('PWR');
@@ -185,14 +185,13 @@ for (const relevance of ['idle', 'relevant', 'indeterminate'] as const)
       expect(description).toContain('PWR');
       expect(description).not.toMatch(/207|87.65/);
       if (relevance === 'idle') expect(description).toContain('Not measuring in receive');
-      if (relevance === 'indeterminate') expect(description).toContain('RF relevance indeterminate');
       if (relevance !== 'idle' && observation.state === 'stale') expect(description).toContain('Stale observation');
-      // MOR-2705 part 2: an unread observation names only the label — no
-      // 'No reading' status word in the accessible name. The relevance cue
-      // (a modifier, not a status word) still applies when indeterminate.
-      if (relevance !== 'idle' && observation.state === 'unknown') {
-        expect(description).not.toContain('No reading');
-        expect(description).toBe(relevance === 'relevant' ? 'PWR' : 'PWR: RF relevance indeterminate.');
-      }
+      // MOR-2705 part 2 (coordinator ruling): no status word in an
+      // accessible name — neither 'No reading' nor the 'RF relevance
+      // indeterminate' cue ("indeterminate" means "unknown").
+      expect(description).not.toContain('No reading');
+      expect(description).not.toContain('indeterminate');
+      // An unknown observation names only the label, the same as unread.
+      if (relevance !== 'idle' && observation.state === 'unknown') expect(description).toBe('PWR');
     });
   }
