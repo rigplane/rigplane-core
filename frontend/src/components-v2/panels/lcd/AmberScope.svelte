@@ -121,6 +121,20 @@
   let subMode = $derived(radioState?.sub?.mode ?? '');
   let subBand = $derived(freqToBand(subFreqHz));
 
+  // MOR-2673 (review F1): the reserved mode-box width is derived from the
+  // mounted profile's own mode catalog (`caps.modes`) — the widest label a
+  // shipped profile can show is profile data (FTX-1 "DATA-FM-N" = 9ch,
+  // IC-7300 "RTTY-R" = 6ch), never a hardcoded constant. Fixed for the
+  // session: it changes only when the capabilities load, never when a
+  // reading arrives.
+  let modeBoxMinWidth = $derived.by(() => {
+    let longest = 0;
+    for (const mode of caps?.modes ?? []) {
+      if (mode.length > longest) longest = mode.length;
+    }
+    return longest > 0 ? `${longest}ch` : undefined;
+  });
+
   // Active-state per VFO: A active when main is the active receiver
   let isAActive = $derived(radioState?.active !== 'SUB');
   let isBActive = $derived(radioState?.active === 'SUB');
@@ -261,7 +275,8 @@
           {#if mainBand}
             <span class="vfo-band-box">{mainBand}</span>
           {/if}
-          <span class="vfo-mode-box">{mainMode}</span>
+          <!-- MOR-2673: inline min-width derived from the profile's mode catalog -->
+          <span class="vfo-mode-box" style:min-width={modeBoxMinWidth}>{mainMode}</span>
           {#if mainFilterWidthLabel}
             <span class="vfo-filter-box">{mainFilterWidthLabel}</span>
           {/if}
@@ -279,7 +294,7 @@
             {#if subBand}
               <span class="vfo-band-box vfo-band-box-sub">{subBand}</span>
             {/if}
-            <span class="vfo-mode-box vfo-mode-box-sub">{subMode}</span>
+            <span class="vfo-mode-box vfo-mode-box-sub" style:min-width={modeBoxMinWidth}>{subMode}</span>
           </div>
         </div>
       {/if}
@@ -473,12 +488,9 @@
     padding: 2px 8px;
   }
 
-  /* MOR-2673: the mode box is reserved in EVERY state, sized for the widest
-     mode label it can show ("RTTY-R"), so an unread empty mode and a first
-     reading keep one width. */
-  .vfo-mode-box {
-    min-width: 6ch;
-  }
+  /* MOR-2673: the mode box is reserved in EVERY state; the reserved width
+     is the profile-derived inline `min-width` (see `modeBoxMinWidth`) —
+     no radio-specific constant here. */
 
   .vfo-band-box {
     background: rgba(26, 16, 0, var(--lcd-alpha-ghost));

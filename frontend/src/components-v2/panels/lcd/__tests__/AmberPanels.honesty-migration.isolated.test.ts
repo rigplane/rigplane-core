@@ -51,6 +51,31 @@ const amberCaps = {
   ],
 } as any;
 
+// MOR-2673 review F1: the shipped profile catalogs the reserved mode-box
+// width is derived from — rigs/ftx1.toml [modes].list (longest label
+// "DATA-FM-N" = 9ch, filters list empty) and rigs/ic7300.toml (longest
+// "RTTY-R" = 6ch, three FIL filters).
+const ftx1Caps = {
+  capabilities: [...amberCaps.capabilities],
+  modes: [
+    'LSB', 'USB', 'CW-U', 'FM', 'AM', 'RTTY-L', 'CW-L', 'DATA-L', 'RTTY-U',
+    'DATA-FM', 'FM-N', 'DATA-U', 'AM-N', 'PSK', 'DATA-FM-N', 'C4FM-DN', 'C4FM-VW',
+  ],
+  filters: [],
+} as any;
+
+const ic7300Caps = {
+  capabilities: [...amberCaps.capabilities],
+  modes: ['USB', 'LSB', 'CW', 'CW-R', 'AM', 'FM', 'RTTY', 'RTTY-R'],
+  filters: ['FIL1', 'FIL2', 'FIL3'],
+} as any;
+
+function reservedCh(element: Element | null): number {
+  const minWidth = (element as HTMLElement | null)?.style?.minWidth ?? '';
+  const parsed = Number.parseFloat(minWidth);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   deriveAmberCockpitProps: () => cockpitProps.value,
   deriveAmberScopeProps: () => scopeProps.value,
@@ -504,9 +529,12 @@ describe('Amber unread mode / RIT sentinel (MOR-2673)', () => {
 
   it('AmberCockpit reserves the mode box and RIT value in every state (structural pin)', () => {
     const source = cockpitSource();
-    // The `.vfo-mode-box` rule reserves the widest text it can show
-    // ("RTTY-R 1" = 8ch); the `.rit-value` rule reserves "−9.99 kHz" = 9ch.
-    expect(source).toMatch(/\.vfo-mode-box \{[^}]*min-width: 8ch;/s);
+    // MOR-2673 review F1: no radio-specific width constant in the CSS — the
+    // mode box reserves through the profile-derived inline `min-width`
+    // (pinned behaviorally below); the `.rit-value` rule still reserves
+    // "−9.99 kHz" = 9ch.
+    expect(source).not.toMatch(/\.vfo-mode-box \{[^}]*min-width:/s);
+    expect(source).toContain('modeBoxMinWidth');
     expect(source).toMatch(/\.rit-value \{[^}]*min-width: 9ch;/s);
     // The dash-run sentinel is gone from both amber faces entirely.
     expect(cockpitSource()).not.toContain("'---'");
@@ -561,6 +589,65 @@ describe('Amber unread mode / RIT sentinel (MOR-2673)', () => {
     const target = mountScope(state, false, amberCaps, true);
     const boxes = [...target.querySelectorAll('.vfo-mode-box')];
     expect(boxes.map((box) => box.textContent)).toEqual(['USB', 'CW-R']);
-    expect(scopeSource()).toMatch(/\.vfo-mode-box \{[^}]*min-width: 6ch;/s);
+    // MOR-2673 review F1: no radio-specific width constant in the CSS —
+    // the box reserves through the profile-derived inline `min-width`
+    // (pinned behaviorally below).
+    expect(scopeSource()).not.toMatch(/\.vfo-mode-box \{[^}]*min-width:/s);
+    expect(scopeSource()).toContain('modeBoxMinWidth');
+  });
+});
+
+// ── MOR-2673 review F1: the reserved mode-box width is profile-derived ──────
+// The old CSS constants (6ch / 8ch) under-covered the shipped Yaesu FTX-1
+// catalog ("DATA-FM-N" = 9ch, "DATA-FM-N 1" = 11ch); the reservation must
+// come from the mounted profile's own catalogs, never a hardcoded constant.
+
+describe('Amber mode-box reserved width is derived from the profile catalog (MOR-2673 review F1)', () => {
+  it('AmberCockpit reserves at least 11ch for the FTX-1 catalog ("DATA-FM-N 1")', () => {
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver({ mode: 'DATA-FM-N', filter: 1 }),
+      fieldStatus: {},
+    } as unknown as ServerState;
+    const target = mountCockpit(state, false, ftx1Caps);
+    const box = target.querySelector('.vfo-mode-box');
+    expect(box?.textContent).toBe('DATA-FM-N 1');
+    expect(reservedCh(box)).toBeGreaterThanOrEqual(11);
+  });
+
+  it('AmberCockpit keeps the IC-7300 reservation at 8ch ("RTTY-R 1")', () => {
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver({ mode: 'RTTY-R', filter: 1 }),
+      fieldStatus: {},
+    } as unknown as ServerState;
+    const target = mountCockpit(state, false, ic7300Caps);
+    const box = target.querySelector('.vfo-mode-box');
+    expect(box?.textContent).toBe('RTTY-R 1');
+    expect(reservedCh(box)).toBe(8);
+  });
+
+  it('AmberScope reserves at least 9ch for the FTX-1 catalog ("DATA-FM-N")', () => {
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver({ mode: 'DATA-FM-N' }),
+      fieldStatus: {},
+    } as unknown as ServerState;
+    const target = mountScope(state, false, ftx1Caps);
+    const box = target.querySelector('.vfo-mode-box');
+    expect(box?.textContent).toBe('DATA-FM-N');
+    expect(reservedCh(box)).toBeGreaterThanOrEqual(9);
+  });
+
+  it('AmberScope keeps the IC-7300 reservation at 6ch ("RTTY-R")', () => {
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver({ mode: 'RTTY-R' }),
+      fieldStatus: {},
+    } as unknown as ServerState;
+    const target = mountScope(state, false, ic7300Caps);
+    const box = target.querySelector('.vfo-mode-box');
+    expect(box?.textContent).toBe('RTTY-R');
+    expect(reservedCh(box)).toBe(6);
   });
 });

@@ -375,6 +375,24 @@
   let subVfoFilter = $derived(radioState?.sub?.filter ?? '');
   let subVfoBand = $derived(freqToBand(subVfoFreqHz));
 
+  // MOR-2673 (review F1): the reserved mode-box width is derived from the
+  // mounted profile's own catalogs (`caps.modes`, `caps.filters`) — the
+  // widest text the box prints is the longest mode label plus the optional
+  // ` ${filter}` suffix: one space plus the widest filter index text
+  // (FTX-1 "DATA-FM-N" + " 1" = 11ch, IC-7300 "RTTY-R 1" = 8ch), never a
+  // hardcoded constant. Fixed for the session: it changes only when the
+  // capabilities load, never when a reading arrives.
+  let modeBoxMinWidth = $derived.by(() => {
+    let longestMode = 0;
+    for (const mode of caps?.modes ?? []) {
+      if (mode.length > longestMode) longestMode = mode.length;
+    }
+    if (longestMode === 0) return undefined;
+    const filterCount = caps?.filters?.length ?? 0;
+    const filterDigits = Math.max(1, String(filterCount).length);
+    return `${longestMode + 1 + filterDigits}ch`;
+  });
+
   // Active state per column: A active when main is the active receiver
   let vfoAActive = $derived(radioState?.active !== 'SUB');
   let vfoBActive = $derived(radioState?.active === 'SUB');
@@ -426,7 +444,8 @@
           <AmberFrequency freqHz={mainFreqHz} size="large" />
         </div>
         <div class="vfo-badges">
-          <span class="vfo-mode-box">{mainMode}{mainFilter ? ` ${mainFilter}` : ''}</span>
+          <!-- MOR-2673: inline min-width derived from the profile's catalogs -->
+          <span class="vfo-mode-box" style:min-width={modeBoxMinWidth}>{mainMode}{mainFilter ? ` ${mainFilter}` : ''}</span>
           {#if mainBand}
             <span class="vfo-band-box">{mainBand}</span>
           {/if}
@@ -470,7 +489,7 @@
           </div>
           <div class="vfo-badges">
             {#if subVfoMode}
-              <span class="vfo-mode-box">{subVfoMode}{subVfoFilter ? ` ${subVfoFilter}` : ''}</span>
+              <span class="vfo-mode-box" style:min-width={modeBoxMinWidth}>{subVfoMode}{subVfoFilter ? ` ${subVfoFilter}` : ''}</span>
             {/if}
             {#if subVfoBand}
               <span class="vfo-band-box">{subVfoBand}</span>
@@ -723,10 +742,9 @@
     border: 2px solid rgba(26, 16, 0, calc(var(--lcd-alpha-active) * 0.4));
     border-radius: 4px;
     padding: 2px 8px;
-    /* MOR-2673: reserved in EVERY state, sized for the widest text the box
-       can show ("RTTY-R 1" — mode plus the optional filter suffix), so an
-       unread empty mode and a first reading keep one width. */
-    min-width: 8ch;
+    /* MOR-2673: reserved in EVERY state; the reserved width is the
+       profile-derived inline `min-width` (see `modeBoxMinWidth`) — no
+       radio-specific constant here. */
   }
 
   /* ── S-Meter ── */
