@@ -336,3 +336,71 @@ describe('MobileRadioLayout pending-field boundaries (MOR-1409 A13a)', () => {
     expect(root.textContent ?? '').not.toContain('NaN');
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// Phone TX power and SWR (MOR-2658): unread is empty in a reserved slot,
+// never '—', and never a unit ('W', 'SWR') without its number.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe('MobileRadioLayout unread TX power and SWR (MOR-2658)', () => {
+  function openTxChip(root: HTMLElement): void {
+    const txChip = Array.from(root.querySelectorAll<HTMLButtonElement>('button'))
+      .find((b) => b.textContent?.trim() === 'TX');
+    expect(txChip, 'TX chip is present when hasTx=true').toBeDefined();
+    txChip!.click();
+    flushSync();
+  }
+
+  // Kills: the '—' fallback on the phone TX power readout. A radio that has
+  // not reported powerLevel shows an empty reserved box, not a dash.
+  it('renders an unread TX power as an empty reserved slot, never a dash', () => {
+    radioStore.current = { active: 'MAIN', main: CONNECTED_RX };
+    const root = mountLayout();
+    openTxChip(root);
+    const power = root.querySelector('.m-tx-power-value')!;
+    expect(power).not.toBeNull();
+    expect(power.textContent).toBe('');
+    expect(root.textContent ?? '').not.toContain('—');
+  });
+
+  // Kills: a fabricated "50W" for an unobserved rig — toTxProps falls back
+  // to 0.5 when powerLevel is absent, and the readout must stay dark anyway.
+  it('renders a known TX power exactly as before', () => {
+    radioStore.current = { active: 'MAIN', main: CONNECTED_RX, powerLevel: 0.5 };
+    const root = mountLayout();
+    openTxChip(root);
+    expect(root.querySelector('.m-tx-power-value')?.textContent).toBe('50W');
+  });
+
+  // Kills: `swr > 0` treating a real reading of 0 as absent — an unread SWR
+  // is Number.NaN from toMeterProps, never the number 0, so 0 must render.
+  // The SWR line shows only while transmitting (managedTxRf === 'on').
+  it('renders a real SWR reading of 0 while transmitting, and stays empty when unread', () => {
+    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
+    radioStore.current = {
+      active: 'MAIN', main: CONNECTED_RX, ptt: true,
+      powerMeter: 120, swrMeter: 0, alcMeter: 40,
+    };
+    const read = mountLayout();
+    openTxChip(read);
+    expect(read.querySelector('.m-tx-swr-value')?.textContent).toBe('SWR 0.0');
+    if (instance) unmount(instance);
+    instance = null;
+    if (host) host.remove();
+
+    radioStore.current = { active: 'MAIN', main: CONNECTED_RX, ptt: true };
+    const unread = mountLayout();
+    openTxChip(unread);
+    // MOR-2658: no unit without its number — the slot stays reserved but the
+    // 'SWR' word renders only with its reading.
+    expect(unread.querySelector('.m-tx-swr-value')?.textContent).toBe('');
+    expect(unread.textContent ?? '').not.toContain('—');
+  });
+
+  // Kills: a missing reserved box — the power and SWR slots keep their width
+  // for unread AND each known value, sized for the widest text ('100W').
+  it('reserves the TX power and SWR slots structurally', () => {
+    expect(mobileLayoutSource).toMatch(/\.m-tx-power-value \{[^}]*min-width:/);
+    expect(mobileLayoutSource).toMatch(/\.m-tx-swr-value \{[^}]*min-width:/);
+  });
+});
