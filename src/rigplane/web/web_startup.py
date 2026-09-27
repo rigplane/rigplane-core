@@ -16,11 +16,21 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from ..core.acquisition_scheduler import AcquisitionScheduler, resolve_available_when
+from ..core.acquisition_scheduler import (
+    AcquisitionScheduler,
+    DeclaredCommandDefect,
+    resolve_available_when,
+)
 from ..core.radio_protocol import ObservationPollable, StatePollable, StateStoreCapable
-from ..core.state_pipeline_contracts import FieldPath, Observation
+from ..core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    startup_critical_path,
+)
+from ..profiles import RadioProfile
 from ..radio_state import RadioState
 from ..runtime._civ_rx import _profile_path_for_observation
+from ..runtime._state_queries import acquisition_query_resolver_for_profile
 from ..startup_checks import assert_radio_startup_ready
 from .discovery import DiscoveryResponder, RadioInfo  # noqa: TID251
 from .dx_cluster import DXClusterClient  # noqa: TID251
@@ -52,6 +62,14 @@ _STARTUP_GATE_STALL_WARNING_SECONDS = 60.0
 _STARTUP_GATE_PRIME_LIMIT = 1
 #: Shortest spacing between two startup-sweep primes of the same path.
 _STARTUP_GATE_REPRIME_SECONDS = 1.0
+#: MOR-2749 (owner decision, 2026-09-27 14:20 EDT): a startup path that is
+#: not safety-critical stops blocking the gate this many seconds after the
+#: initial fetch; its control stays unread (dimmed) and polling continues.
+_STARTUP_GATE_NON_CRITICAL_DEADLINE_SECONDS = 10.0
+#: MOR-2749: a safety-critical path unanswered after this many attempts —
+#: the initial fetch plus two failed re-reads — fails startup through the
+#: scheduler's declared-command defect record.
+_STARTUP_GATE_CRITICAL_ATTEMPTS = 3
 
 
 def _installed_managed_tx_composition(radio: object) -> object | None:
@@ -173,16 +191,84 @@ def _abort_on_startup_defect(scheduler: AcquisitionScheduler) -> None:
     )
 
 
+def _startup_path_command(server: WebServer, path: FieldPath) -> str:
+    """Return the CI-V wire form the radio would read *path* with.
+
+    Reuses :func:`acquisition_query_resolver_for_profile` — the single
+    path-to-query mapping the poller's executor already reads through —
+    over the radio's own profile, so the defect names the exact command
+    the radio never answered. Radios without a resolvable profile (no
+    ``_profile``, or no declared getter for the path) get an empty
+    command.
+    """
+
+    profile = getattr(server._radio, "_profile", None)
+    if not isinstance(profile, RadioProfile):
+        return ""
+    query = acquisition_query_resolver_for_profile(profile)(path)
+    if query is None:
+        return ""
+    if query.receiver is not None:
+        parts = [f"29 {query.receiver:02X}", f"{query.command:02X}"]
+    else:
+        parts = [f"{query.command:02X}"]
+    if query.sub is not None:
+        parts.append(f"{query.sub:02X}")
+    parts.extend(f"{byte:02X}" for byte in query.data)
+    return " ".join(parts)
+
+
+def _record_critical_startup_defect(
+    server: WebServer,
+    scheduler: AcquisitionScheduler,
+    path: FieldPath,
+) -> None:
+    """Record the defect that ends startup for an unanswered critical path.
+
+    The same :class:`DeclaredCommandDefect` record a Yaesu backend leaves on
+    the scheduler when a declared read cannot answer — the gate's existing
+    abort path (``_abort_on_startup_defect``) picks it up; no second
+    failure mechanism is added.
+    """
+
+    defect = DeclaredCommandDefect(
+        label="startup gate",
+        paths=(path,),
+        command=_startup_path_command(server, path),
+        frame="",
+        detail=(
+            f"safety-critical path with no answer after "
+            f"{_STARTUP_GATE_CRITICAL_ATTEMPTS} attempts"
+        ),
+    )
+    scheduler.record_startup_defect(defect)
+
+
 async def _await_initial_state_acquisition(
     server: WebServer,
     *,
     sweep: bool,
 ) -> None:
-    """Block until ``AcquisitionScheduler.unobserved_startup_paths`` is empty.
+    """Block until the startup gate's blocking set is empty.
 
-    The wait is indefinite unless a backend records a
-    :class:`DeclaredCommandDefect` on the scheduler, which aborts it — see
-    :func:`_abort_on_startup_defect`. There is no serve-anyway timeout.
+    Since the owner decision of 2026-09-27 14:20 EDT (MOR-2749, reversing
+    R36b of MOR-2425 for non-critical fields), the wait is no longer
+    indefinite for every field:
+
+    * a path that is not safety-critical
+      (:func:`..core.state_pipeline_contracts.startup_critical_path`)
+      stops blocking :data:`_STARTUP_GATE_NON_CRITICAL_DEADLINE_SECONDS`
+      after the initial fetch — one WARNING names the paths, their
+      controls stay unread (dimmed), and polling continues; and
+    * a safety-critical path unanswered after
+      :data:`_STARTUP_GATE_CRITICAL_ATTEMPTS` attempts (the initial fetch
+      plus failed re-reads, counted by the scheduler's consecutive-timeout
+      accounting) fails startup with an error naming the field and the
+      command, through the same :class:`DeclaredCommandDefect` record a
+      backend leaves on the scheduler.
+
+    Before that decision there was no serve-anyway timeout: every declared,
+    non-``tx_only`` path held the listener open forever.
 
     ``sweep`` re-primes the scheduler while the gate is open. It is set only
     on the branch that builds a :class:`RadioPoller`, because that is the
@@ -220,9 +306,37 @@ async def _await_initial_state_acquisition(
     )
     gap = _startup_gap_seconds(server._radio)
     fewest = len(outstanding)
-    last_progress = last_log = time.monotonic()
+    gate_started = last_progress = last_log = time.monotonic()
     primed_at: dict[FieldPath, float] = {}
+    #: Paths whose non-critical deadline has passed (MOR-2749); they stop
+    #: blocking but stay unread — the poller keeps asking for them.
+    expired: set[FieldPath] = set()
     while outstanding:
+        now = time.monotonic()
+        if now - gate_started >= _STARTUP_GATE_NON_CRITICAL_DEADLINE_SECONDS:
+            lapsed = tuple(
+                path
+                for path in outstanding
+                if path not in expired and not startup_critical_path(path)
+            )
+            if lapsed:
+                expired.update(lapsed)
+                logger.warning(
+                    "initial state acquisition: no answer for %s after %.0fs; "
+                    "serving without them",
+                    ", ".join(str(path) for path in lapsed),
+                    _STARTUP_GATE_NON_CRITICAL_DEADLINE_SECONDS,
+                )
+        blocking = tuple(path for path in outstanding if path not in expired)
+        if not blocking:
+            break
+        for path in blocking:
+            if startup_critical_path(path) and (
+                1 + scheduler.consecutive_request_timeouts(path)
+                >= _STARTUP_GATE_CRITICAL_ATTEMPTS
+            ):
+                _record_critical_startup_defect(server, scheduler, path)
+                _abort_on_startup_defect(scheduler)
         if sweep:
             queued_at = time.monotonic()
             withheld = tuple(
@@ -249,9 +363,9 @@ async def _await_initial_state_acquisition(
         if len(outstanding) < fewest:
             fewest = len(outstanding)
             last_progress = now
-        if outstanding and now - last_log >= _STARTUP_GATE_LOG_INTERVAL_SECONDS:
+        if blocking and now - last_log >= _STARTUP_GATE_LOG_INTERVAL_SECONDS:
             last_log = now
-            paths = ", ".join(str(path) for path in outstanding)
+            paths = ", ".join(str(path) for path in blocking)
             if now - last_progress >= _STARTUP_GATE_STALL_WARNING_SECONDS:
                 logger.warning(
                     "initial state acquisition: no new field for %.0fs, "

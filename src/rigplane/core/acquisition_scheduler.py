@@ -1384,6 +1384,31 @@ class AcquisitionScheduler:
 
         return self._startup_defect
 
+    def consecutive_request_timeouts(self, path: FieldPath) -> int:
+        """Return the real answer-window timeouts still standing for *path*.
+
+        MOR-2749: the startup gate reads this as the count of failed
+        re-read attempts for a path the radio never answers — the same
+        MOR-2614 consecutive-timeout accounting
+        :meth:`record_acquisition_failure` keeps per request key, reset by
+        any answer. A key matches the path when its scope, family,
+        receiver and slot do; the acquisition method and policy of the key
+        are not part of the match, so a provider that re-reads a path
+        through more than one of them reports the worst of them.
+        """
+
+        return max(
+            (
+                count
+                for key, count in self._consecutive_timeout_by_key.items()
+                if key.scope == path.scope.value
+                and key.family == path.family.value
+                and key.receiver_id == path.receiver_id
+                and key.slot == (None if path.slot is None else path.slot.value)
+            ),
+            default=0,
+        )
+
     def unobserved_startup_paths(
         self,
         observed_paths: Iterable[FieldPath],

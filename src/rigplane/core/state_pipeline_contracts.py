@@ -42,6 +42,7 @@ __all__ = [
     "VfoSlot",
     "acquisition_class_for_path",
     "demoted_acquisition_class",
+    "startup_critical_path",
 ]
 
 LOCAL_MONOTONIC_CLOCK_DOMAIN = "local_monotonic"
@@ -577,6 +578,38 @@ _DEMOTION_MAP: Final[dict[AcquisitionClass, AcquisitionClass]] = {
     AcquisitionClass.SETTING: AcquisitionClass.MENU,
     AcquisitionClass.MENU: AcquisitionClass.MENU,
 }
+
+#: MOR-2749 (owner decision, 2026-09-27 14:20 EDT): the fields whose
+#: absence must still refuse startup once the web gate's non-critical
+#: deadline passes — frequency and mode (the live tuning pair), PTT,
+#: split, and the TX target. The acquisition classes do not separate
+#: them (``split`` and ``tx_target`` share CONTROL with
+#: ``filter_width``), so the owner's list is derived here once, from
+#: field paths, next to the class membership it complements.
+_STARTUP_CRITICAL_FREQ_MODE_NAMES: Final[frozenset[str]] = frozenset(
+    _LIVE_TUNING_FIELD_NAMES
+)
+_STARTUP_CRITICAL_TX_STATE_NAMES: Final[frozenset[str]] = frozenset(
+    {"ptt", "split", "tx_target"}
+)
+
+
+def startup_critical_path(path: FieldPath) -> bool:
+    """Return whether *path* is safety-critical for the startup gate.
+
+    MOR-2749: only these paths keep blocking the web gate after its
+    non-critical deadline; every other unanswered path stops blocking and
+    is served unread. Frequency and mode are the ``freq_mode`` live
+    tuning pair; PTT, split and the TX target are ``tx_state`` facts. A
+    ``scope_controls`` ``mode`` (the scope's own mode setting) is not the
+    operating mode and is not critical.
+    """
+
+    if path.family is FieldFamily.FREQ_MODE:
+        return path.name in _STARTUP_CRITICAL_FREQ_MODE_NAMES
+    if path.family is FieldFamily.TX_STATE:
+        return path.name in _STARTUP_CRITICAL_TX_STATE_NAMES
+    return False
 
 
 def demoted_acquisition_class(klass: AcquisitionClass) -> AcquisitionClass:
