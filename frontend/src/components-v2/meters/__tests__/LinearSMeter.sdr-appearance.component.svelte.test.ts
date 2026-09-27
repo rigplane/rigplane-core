@@ -35,11 +35,15 @@ describe('MOR-2342 opt-in SDR meter', () => {
     expect(root.querySelector('svg')?.getAttribute('aria-label')).toContain('73 dBm');
     expect(root.textContent).toContain('+60');
   });
-  it('does not borrow an S-unit scale for an uncalibrated radio', () => {
+  it('shows no number and no word at all for an uncalibrated radio (MOR-2705 part 4a)', () => {
     clearCapabilities();
     const root = render(27, 'sdr-screen');
-    expect(root.textContent).toContain('uncalibrated');
+    expect(root.textContent).not.toContain('uncalibrated');
+    expect(root.textContent).not.toContain('raw');
+    expect(root.textContent).not.toContain('level');
+    expect(root.textContent).not.toContain('27');
     expect(root.textContent).not.toContain('S9');
+    expect(root.querySelector('svg')?.getAttribute('aria-label')).toBe('S meter');
     expect(root.querySelector('svg')?.getAttribute('aria-label')).not.toContain('dBm');
   });
   it('renders the v7 pixel-locked face, not the SDR cell grid, for the vfo-wide variant', () => {

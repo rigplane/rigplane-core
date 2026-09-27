@@ -41,6 +41,7 @@
   } from './vfo-layout-tokens';
   import { getTxPermit } from '$lib/utils/tx-permit';
   import { getStepsForMode, formatStep, formatSValue, formatDbm, formatPower } from './mobile-layout-logic';
+  import { isSmeterCalibrated } from '../meters/smeter-scale';
   // MOR-1409 A13a: reads come from the A11/A12-hardened canonical projections
   // and commands from the sanctioned adapter layer. The retired state-adapter
   // twin under components-v2 is the stale side of a 15-of-15 divergence (it
@@ -573,10 +574,16 @@
         >{m}</button>
       {/each}
     </div>
+    <!-- MOR-2705 part 4a: calibration is a profile fact — an uncalibrated
+         radio draws no S-unit number and no dBm readout at all for the
+         whole session (no empty reserved slot); a calibrated radio keeps
+         both reserved slots, empty until read. -->
+    {#if isSmeterCalibrated()}
     <div class="m-ls-meter">
       <span class="m-ls-smeter">{formatSValueDisplay(meter.signal)}</span>
       <span class="m-ls-dbm">{formatDbmDisplay(meter.signal)}</span>
     </div>
+    {/if}
     <div class="m-ls-controls">
       <button class="m-ls-step-btn" onclick={() => (stepPickerOpen = !stepPickerOpen)}>
         {formatStep(tuningStep)}

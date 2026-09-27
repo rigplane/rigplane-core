@@ -161,14 +161,15 @@ describe('projectSignalMeter', () => {
     },
   );
 
-  it('uses the existing honest raw fallback when no calibration is declared', () => {
+  it('shows a moving bar and no number at all when no calibration is declared (MOR-2705 part 4a)', () => {
     setCapabilities(capabilities(false));
 
     const projection = projectSignalMeter(53);
     expect(projection.motionFraction).toBeCloseTo((53 / 127.5) * 11 / 20);
     expect(projection.scaleMode).toBe('raw');
-    expect(projection.primaryText).toBe('53');
-    expect(projection.secondaryText).toBe('uncalibrated');
+    expect(projection.primaryText).toBe('');
+    expect(projection.secondaryText).toBe('');
+    expect(projection.accessibleDescription).toBe('S meter');
     expect(projection.crossoverFraction).toBe(11 / 20);
     expect(projection.marks).toEqual([]);
     expect(projection.ticks).toEqual([]);
@@ -179,17 +180,18 @@ describe('projectSignalMeter', () => {
 
     expect(projection).toMatchObject({
       scaleMode: 'raw',
-      primaryText: '53',
-      secondaryText: 'uncalibrated',
+      primaryText: '',
+      secondaryText: '',
       crossoverFraction: null,
       marks: [],
       ticks: [],
     });
     expect(projection.motionFraction).toBeCloseTo((53 / 127.5) * 11 / 20);
-    expect(projection.accessibleDescription).not.toMatch(/S[0-9]|dBm/);
+    expect(projection.accessibleDescription).toBe('S meter');
+    expect(projection.accessibleDescription).not.toMatch(/S[0-9]|dBm|raw/);
   });
 
-  it('keeps engineering text but suppresses unsupported geometry without calibration', () => {
+  it('renders the engineering value with its own unit, and no state word, without calibration (MOR-2705 part 4a)', () => {
     setCapabilities(capabilities(false));
 
     const projection = projectSignalMeter(-12, { kind: 'engineering', unit: 'db' });
@@ -197,12 +199,29 @@ describe('projectSignalMeter', () => {
       scaleMode: 'none',
       motionFraction: null,
       primaryText: '\u221212 dB rel S9',
-      secondaryText: 'scale unavailable',
+      secondaryText: '',
       crossoverFraction: null,
       marks: [],
       ticks: [],
     });
-    expect(projection.accessibleDescription).toContain('\u221212 decibels relative to S9');
+    expect(projection.accessibleDescription).toBe('S meter \u221212 decibels relative to S9');
+    expect(projection.accessibleDescription).not.toContain('scale unavailable');
+  });
+
+  it('renders a known engineering value with a unit the S meter cannot carry exactly like an unread sample (MOR-2705 part 4a)', () => {
+    const projection = projectSignalMeter(12, { kind: 'engineering', unit: 'w' });
+
+    expect(projection).toMatchObject({
+      scaleMode: 'none',
+      motionFraction: null,
+      primaryText: '',
+      secondaryText: '',
+      accessibleDescription: 'S meter',
+      crossoverFraction: null,
+      marks: [],
+      ticks: [],
+    });
+    expect(projection).toEqual(projectSignalMeter(null, { kind: 'unknown' }));
   });
 
   it('renders a known value with an unknown unit exactly like an unread sample', () => {

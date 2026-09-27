@@ -303,6 +303,30 @@ describe('AmberSmeter', () => {
     expect(sub.textContent).toBe(formatCompDb(75)); // '15 dB', not '6dB'
     unmount(component);
   });
+
+  // MOR-2705 part 4a: calibration is a profile fact — on an uncalibrated
+  // radio the S-source readout and the S/dB scale words are not drawn at
+  // all (no empty reserved slot), while the TX sources keep theirs.
+  it('draws no readout and no S/dB scale words for the S source on an uncalibrated radio (MOR-2705 part 4a)', () => {
+    const previous = activeSMeterCal;
+    activeSMeterCal = [];
+    try {
+      const component = mount(AmberSmeter, { target, props: { value: 53, source: 'S' } });
+      expect(target.querySelector('.meter-readout')).toBeNull();
+      expect(target.querySelector('.readout-s')).toBeNull();
+      expect(target.querySelector('.readout-dbm')).toBeNull();
+      expect(target.querySelector('.scale-s-label')).toBeNull();
+      expect(target.querySelector('.scale-db-zone')).toBeNull();
+      expect(target.querySelectorAll('.seg').length).toBe(192);
+      unmount(component);
+
+      const po = mount(AmberSmeter, { target, props: { value: 143, source: 'PO' } });
+      expect(target.querySelector('.meter-readout')).not.toBeNull();
+      unmount(po);
+    } finally {
+      activeSMeterCal = previous;
+    }
+  });
 });
 
 // ── MOR-2034: non-uniform-calibration discrimination ────────────────────────

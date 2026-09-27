@@ -9,6 +9,7 @@
     getCalibrationPoints,
     getScaleMaxRaw,
     getS9Raw,
+    isSmeterCalibrated,
   } from '../../meters/smeter-scale';
   import { formatPowerWatts, formatSwr, formatAlc, formatCompDb } from '../meter-utils';
 
@@ -77,6 +78,13 @@
 
   let filledSegs = $derived(Math.round(smoother.value));
 
+  // MOR-2705 part 4a: calibration is a profile fact. On an uncalibrated
+  // radio the S-source readout (the raw count, the dBm) and the S/dB scale
+  // words are not drawn at all for the whole session — never an empty
+  // reserved slot. The TX sources (PO/SWR/ALC/COMP) carry their own units
+  // and do not depend on the S-meter calibration, so they keep the readout.
+  let sSourceHidden = $derived(source === 'S' && !isSmeterCalibrated());
+
   // Sub-readouts use the calibrated piecewise converters from meter-utils
   // (shared with the desktop meters) instead of crude raw/255 maps, so the
   // LCD agrees with the rest of the UI (MOR-483 part 2).
@@ -121,16 +129,21 @@
           <span class="tick-label">{tick.label}</span>
         </div>
       {/each}
-      <span class="scale-s-label">S</span>
-      <span class="scale-db-zone" style="left: {(s9Raw / scaleMaxRaw) * 100}%">dB</span>
+      {#if !sSourceHidden}
+        <span class="scale-s-label">S</span>
+        <span class="scale-db-zone" style="left: {(s9Raw / scaleMaxRaw) * 100}%">dB</span>
+      {/if}
     </div>
   </div>
 
-  <!-- Readout -->
+  <!-- Readout: not drawn at all for the S source on an uncalibrated radio
+       (MOR-2705 part 4a) — the TX sources keep it. -->
+  {#if !sSourceHidden}
   <div class="meter-readout">
     <span class="readout-s">{sReadout.label}</span>
     <span class="readout-dbm">{sReadout.sub}</span>
   </div>
+  {/if}
 </div>
 
 <style>

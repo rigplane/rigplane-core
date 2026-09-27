@@ -518,10 +518,11 @@ describe('ReceiverInstrumentHost', () => {
     const root = mountFixture(publisher);
     const meter = () => root.querySelector<HTMLElement>('[data-meter-owner="MAIN"]')!;
     const svg = () => meter().querySelector('svg')!;
-    // MOR-2509: the v7 face draws no S scale labels and no peak marker for
-    // a raw domain, and no motion at all for an unprojectable one — the
-    // unlit track itself stays, as it does for a zero reading.
-    expect(svg().getAttribute('aria-label')).toContain('raw, uncalibrated');
+    // MOR-2509 + MOR-2705 part 4a: the v7 face draws no S scale labels and
+    // no peak marker for a raw domain, and no number and no word — the
+    // accessible label is the bare meter name. The unlit track itself
+    // stays, as it does for a zero reading.
+    expect(svg().getAttribute('aria-label')).toBe('S meter');
     expect(svg().querySelectorAll('[data-scale-label]')).toHaveLength(0);
     expect(svg().querySelector('[data-meter-peak]')?.getAttribute('visibility')).toBe('hidden');
 
