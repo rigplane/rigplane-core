@@ -1544,6 +1544,25 @@ describe('FilterPanel — no placeholder for unread widths and offsets (MOR-2667
     expect(t.textContent).not.toContain('---');
   });
 
+  // MOR-2688 S5b: a read fixed width prints exactly, spaces included, in
+  // both of the formatter's branches.
+  it.each([
+    [2400, '2.4kHz'],
+    [500, '500 Hz'],
+  ] as const)('renders a read fixed-config modal width of %i Hz as %j', (filterWidth, text) => {
+    const t = mountPanel({
+      filterWidth,
+      filterConfig: { defaults: [], fixed: true, minHz: 50, maxHz: 3600, stepHz: 50 },
+    });
+    (t.querySelector('.settings-button') as HTMLButtonElement).click();
+    flushSync();
+    const fixedValues = Array.from(document.querySelectorAll('.modal-fixed-value')).map(
+      (el) => el.textContent,
+    );
+    expect(fixedValues.length).toBeGreaterThan(0);
+    for (const value of fixedValues) expect(value).toBe(text);
+  });
+
   // Geometry: jsdom has no layout, so the reservations are pinned
   // structurally against the component source (the MOR-2648/MOR-2659
   // pattern).

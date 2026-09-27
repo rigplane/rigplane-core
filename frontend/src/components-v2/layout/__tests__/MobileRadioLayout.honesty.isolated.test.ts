@@ -521,13 +521,32 @@ describe('MobileRadioLayout unread TX power and SWR (MOR-2658)', () => {
   // Kills: the power sheet slider printing "NaN%" for an unread rig —
   // `normalizedPercentDisplay(NaN)` is the literal "NaN%", so the sheet
   // needs the same finite guard TxPanel's `rfPowerDisplay` carries.
-  // BottomSheet/ValueControl are stubbed in this file, so the pin is on
-  // the exact display prop the sheet passes; the unknown-path rendering
-  // itself ('' text, no fill, no position) is pinned behaviorally through
-  // the same ValueControl construct in TxPanel.isolated.test.ts (MOR-2658).
   it('passes an unread-safe display to the power sheet slider', () => {
     const sheet = mobileLayoutSource.slice(mobileLayoutSource.indexOf('POWER MODAL'));
     expect(sheet.match(/displayFn=\{([^}]*)\}/)?.[1]).toBe('formatRfPowerDisplay');
+  });
+
+  // MOR-2688 S5b: the sheet mounts the real BottomSheet and ValueControl
+  // here, so the slider's value text is pinned as drawn, read and unread.
+  it('draws the power sheet slider value as its percent, and nothing while unread', () => {
+    radioStore.current = { active: 'MAIN', main: CONNECTED_RX, powerLevel: 0.5 };
+    const read = mountLayout();
+    openTxChip(read);
+    read.querySelector<HTMLButtonElement>('.m-tx-info')!.click();
+    flushSync();
+    expect(read.querySelector('.m-sheet-content .vc-value')?.textContent).toBe('50%');
+    if (instance) unmount(instance);
+    instance = null;
+    if (host) host.remove();
+
+    radioStore.current = { active: 'MAIN', main: CONNECTED_RX };
+    const unread = mountLayout();
+    openTxChip(unread);
+    unread.querySelector<HTMLButtonElement>('.m-tx-info')!.click();
+    flushSync();
+    const value = unread.querySelector('.m-sheet-content .vc-value');
+    expect(value).not.toBeNull();
+    expect(value!.textContent).toBe('');
   });
 
   // Kills: `swr > 0` treating a real reading of 0 as absent — an unread SWR

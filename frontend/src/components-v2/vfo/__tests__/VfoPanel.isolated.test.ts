@@ -131,7 +131,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   getSmeterRedline: vi.fn(() => null),
 }));
 
-import { getCapabilities, receiverLabel } from '$lib/stores/capabilities.svelte';
+import { getCapabilities, getSmeterCalibration, receiverLabel } from '$lib/stores/capabilities.svelte';
 
 let components: ReturnType<typeof mount>[] = [];
 
@@ -579,6 +579,16 @@ describe('explicit presentation contract', () => {
     expect(t.querySelector('[data-vfo-freq]')?.textContent?.trim()).toBe('');
   });
 
+  // MOR-2688 S5b: with confirmed truth unknown, the static readout prints a
+  // finite display value and nothing for a non-finite one.
+  it.each([
+    [14_074_000, '14.074.000'],
+    [Number.NaN, ''],
+  ] as const)('prints display value %s in the static readout as %j', (displayHz, text) => {
+    const t = mountPanel({ ...explicit, freq: null, displayHz, pendingDisplayHz: null });
+    expect(t.querySelector('.unknown-frequency')?.textContent).toBe(text);
+  });
+
   it('keeps the established wrapper hook and the real frequency control in tab order', () => {
     const t = mountPanel(explicit);
     expect(t.querySelector('[data-vfo-freq]')?.classList.contains('vfo-freq')).toBe(true);
@@ -593,6 +603,25 @@ describe('explicit presentation contract', () => {
     expect(unknown.querySelector('[data-testid="receiver-s-meter"]')?.getAttribute('aria-label')).toBe('MAIN S meter');
     const absent = mountPanel({ ...explicit, meterPresent: false });
     expect(absent.querySelector('[data-testid="receiver-s-meter"]')).toBeNull();
+  });
+
+  // MOR-2688 S5b: the meter draws a finite value and a non-finite one as
+  // unread, seen through the meter's accessible name on a calibrated radio.
+  it.each([
+    [60, 'S meter S9+60'],
+    [Number.NaN, 'S meter'],
+  ] as const)('names S-meter value %s as %j on a calibrated radio', (sValue, name) => {
+    vi.mocked(getSmeterCalibration).mockReturnValue([
+      { raw: 0, actual: -54, label: 'S0' },
+      { raw: 120, actual: 0, label: 'S9' },
+      { raw: 255, actual: 60, label: 'S9+60' },
+    ]);
+    try {
+      const t = mountPanel({ ...explicit, sValue });
+      expect(t.querySelector('[data-testid="receiver-s-meter"] svg')?.getAttribute('aria-label')).toBe(name);
+    } finally {
+      vi.mocked(getSmeterCalibration).mockReturnValue(null);
+    }
   });
 
   it('places caller-owned frequency and meter snippets in the established seats', () => {
