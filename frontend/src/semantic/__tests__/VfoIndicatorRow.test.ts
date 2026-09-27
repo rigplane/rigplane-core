@@ -389,10 +389,10 @@ describe('RF gain display observation', () => {
   });
 
   it('reserves wider than the widest lit text (RFG 99%) in the fact slot', () => {
+    // The reservation comes from FACT_SLOT_RESERVATIONS (see the rendered
+    // pin below); the stylesheet carries no width of its own to drift.
     const source = readFileSync('src/semantic/VfoIndicatorRow.svelte', 'utf8');
-    expect(source).toMatch(
-      /\.fact\[data-indicator-fact='rf-gain'\]\s*\{[^}]*min-inline-size:\s*8ch/,
-    );
+    expect(source).not.toMatch(/\.fact\[data-indicator-fact='rf-gain'\]\s*\{[^}]*min-inline-size/);
   });
 
   it('an empty RFG fact draws no visible frame while keeping the reserved slot', () => {
@@ -406,7 +406,7 @@ describe('RF gain display observation', () => {
     expect(source).toMatch(
       /\.fact\[data-indicator-fact='rf-gain'\]\[data-empty='true'\]\s*\{[^}]*border-color:\s*transparent/,
     );
-    expect(source).toMatch(/\.fact\[data-indicator-fact='rf-gain'\]\s*\{[^}]*min-inline-size:\s*8ch/);
+    expect(node.style.minInlineSize).toBe(`${FACT_SLOT_RESERVATIONS['rf-gain']}ch`);
   });
 
   // MOR-2644 correction 3 (owner rule 2026-09-21): every fact reserves the
@@ -423,5 +423,18 @@ describe('RF gain display observation', () => {
     const reserved = FACT_SLOT_RESERVATIONS[fact as keyof typeof FACT_SLOT_RESERVATIONS];
     expect(reserved, `missing reservation for ${fact}`).toBeDefined();
     expect(reserved, `${fact}: min-inline-size must cover "${widest}"`).toBeGreaterThanOrEqual(widest.length);
+  });
+
+  // FACT_SLOT_RESERVATIONS is the only source of the reserved width: every
+  // rendered fact's inline min-inline-size must equal its constant, so the
+  // stylesheet cannot drift from the table (review finding 1, MOR-2644).
+  it('renders every fact reservation inline from FACT_SLOT_RESERVATIONS', () => {
+    render({ indicator: indicator(), radioWide: shared() });
+    for (const fact of Object.keys(FACT_SLOT_RESERVATIONS)) {
+      const node = target.querySelector<HTMLElement>(`[data-indicator-fact="${fact}"]`);
+      expect(node, `${fact} must render to carry its reservation`).not.toBeNull();
+      expect(node.style.minInlineSize, `${fact}: inline reservation must equal the constant`)
+        .toBe(`${FACT_SLOT_RESERVATIONS[fact as keyof typeof FACT_SLOT_RESERVATIONS]}ch`);
+    }
   });
 });

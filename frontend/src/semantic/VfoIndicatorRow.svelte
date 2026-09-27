@@ -177,6 +177,7 @@
         class="fact"
         data-indicator-fact="bandwidth"
         data-state={indicator.bandwidthHz.reading.status}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS.bandwidth}ch`}
       >BW {numeric(indicator.bandwidthHz)}{indicator.bandwidthHz.reading.status === 'known' ? ' Hz' : ''}</span>
     {/if}
     {#if appearance === 'standard'}
@@ -209,21 +210,25 @@
   <div class="facts" aria-label={`${indicator.receiver} receiver facts`}>
     {#if indicator.agcMode.availability.structural}
       <span class="fact" data-indicator-fact="agc" data-state={indicator.agcMode.reading.status}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS.agc}ch`}
         >AGC{indicator.agcMode.reading.status === 'known' ? ` ${agc(indicator.agcMode)}` : ''}</span
       >
     {/if}
     {#if indicator.nbActive.availability.structural}
       <span class="fact" data-indicator-fact="nb" data-state={booleanState(indicator.nbActive)}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS.nb}ch`}
         >NB{indicator.nbActive.reading.status === 'known' ? ` ${booleanLabel(indicator.nbActive)}` : ''}</span
       >
     {/if}
     {#if indicator.nrActive.availability.structural}
       <span class="fact" data-indicator-fact="nr" data-state={booleanState(indicator.nrActive)}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS.nr}ch`}
         >NR{indicator.nrActive.reading.status === 'known' ? ` ${booleanLabel(indicator.nrActive)}` : ''}</span
       >
     {/if}
     {#if indicator.notchMode.availability.structural}
       <span class="fact" data-indicator-fact="notch" data-state={indicator.notchMode.reading.status}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS.notch}ch`}
         >NOTCH{indicator.notchMode.reading.status === 'known'
           ? ` ${indicator.notchMode.reading.value.toUpperCase()}`
           : ''}</span
@@ -231,21 +236,25 @@
     {/if}
     {#if indicator.attenuator.availability.structural}
       <span class="fact" data-indicator-fact="attenuator" data-state={indicator.attenuator.reading.status}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS.attenuator}ch`}
         >ATT{indicator.attenuator.reading.status === 'known' ? ` ${numeric(indicator.attenuator)} dB` : ''}</span
       >
     {/if}
     {#if indicator.preamp.availability.structural}
       <span class="fact" data-indicator-fact="preamp" data-state={indicator.preamp.reading.status}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS.preamp}ch`}
         >P.AMP{indicator.preamp.reading.status === 'known' ? ` ${numeric(indicator.preamp)}` : ''}</span
       >
     {/if}
     {#if indicator.ipPlus.availability.structural}
       <span class="fact" data-indicator-fact="ip-plus" data-state={booleanState(indicator.ipPlus)}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS['ip-plus']}ch`}
         >IP+{indicator.ipPlus.reading.status === 'known' ? ` ${booleanLabel(indicator.ipPlus)}` : ''}</span
       >
     {/if}
     {#if indicator.digiSel.availability.structural}
       <span class="fact" data-indicator-fact="digi-sel" data-state={booleanState(indicator.digiSel)}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS['digi-sel']}ch`}
         >DIGI-SEL{indicator.digiSel.reading.status === 'known' ? ` ${booleanLabel(indicator.digiSel)}` : ''}</span
       >
     {/if}
@@ -260,6 +269,7 @@
         aria-label={gainText ? `RF gain ${gainText}` : undefined}
         aria-hidden={gainText ? undefined : 'true'}
         data-empty={gainText ? undefined : 'true'}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS['rf-gain']}ch`}
       >{gainText ? `RFG ${gainText}` : ''}</span>
     {/if}
   </div>
@@ -284,11 +294,13 @@
       >{rfLabel(radioWide.rfState)}</span>
       {#if radioWide.antenna.availability.structural}
         <span class="fact" data-indicator-fact="antenna" data-state={radioWide.antenna.reading.status}
+          style:min-inline-size={`${FACT_SLOT_RESERVATIONS.antenna}ch`}
           >ANT{radioWide.antenna.reading.status === 'known' ? ` ${sharedOffset(radioWide.antenna)}` : ''}</span
         >
       {/if}
       {#if radioWide.atu.availability.structural}
         <span class="fact" data-indicator-fact="atu" data-state={radioWide.atu.reading.status}
+          style:min-inline-size={`${FACT_SLOT_RESERVATIONS.atu}ch`}
           >TUNE{radioWide.atu.reading.status === 'known'
             ? ` ${radioWide.atu.reading.value.toUpperCase()}`
             : ''}</span
@@ -296,11 +308,13 @@
       {/if}
       {#if radioWide.ritActive.availability.structural || radioWide.ritOffset.availability.structural}
         <span class="fact" data-indicator-fact="rit" data-state={aggregateState(radioWide.ritActive, radioWide.ritOffset)}
+          style:min-inline-size={`${FACT_SLOT_RESERVATIONS.rit}ch`}
           >{sharedAggregate('RIT', radioWide.ritActive, radioWide.ritOffset)}</span
         >
       {/if}
       {#if radioWide.xitActive.availability.structural || radioWide.xitOffset.availability.structural}
         <span class="fact" data-indicator-fact="xit" data-state={aggregateState(radioWide.xitActive, radioWide.xitOffset)}
+          style:min-inline-size={`${FACT_SLOT_RESERVATIONS.xit}ch`}
           >{sharedAggregate('XIT', radioWide.xitActive, radioWide.xitOffset)}</span
         >
       {/if}
@@ -335,31 +349,29 @@
   .fact[data-state='off'], .fact[data-state='unknown'] { color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55)); }
   /* Owner ruling 2026-09-23: the RFG fact keeps its slot whether or not it
      prints. The widest lit text is `RFG 99%` (7 characters in this mono
-     face); the 8ch reservation stays deliberately wider than that, so the
-     neighbouring facts never move when the gain changes between reduced,
-     full and unknown. */
-  .fact[data-indicator-fact='rf-gain'] { min-inline-size: 8ch; box-sizing: content-box; }
+     face); the reservation (8, in FACT_SLOT_RESERVATIONS) stays
+     deliberately wider than that, so the neighbouring facts never move when
+     the gain changes between reduced, full and unknown. */
   /* MOR-2644 correction 3 (owner rule 2026-09-21: the layout never moves):
-     every other fact reserves its widest lit text the same way, so an
-     unread label and its first reading occupy the same box and neighbours
-     never move. Widths mirror FACT_SLOT_RESERVATIONS in the module script
-     (`ch` counts of each fact's widest rendered text); box-sizing matches
-     RFG so the reservation covers text only, outside the shared padding
-     and border. The pin test asserts each reservation against the length of
-     its widest lit text, since jsdom has no layout. */
-  .fact[data-indicator-fact='bandwidth'] { min-inline-size: 10ch; box-sizing: content-box; }
-  .fact[data-indicator-fact='agc'] { min-inline-size: 10ch; box-sizing: content-box; }
-  .fact[data-indicator-fact='nb'] { min-inline-size: 6ch; box-sizing: content-box; }
-  .fact[data-indicator-fact='nr'] { min-inline-size: 6ch; box-sizing: content-box; }
-  .fact[data-indicator-fact='notch'] { min-inline-size: 12ch; box-sizing: content-box; }
-  .fact[data-indicator-fact='attenuator'] { min-inline-size: 9ch; box-sizing: content-box; }
-  .fact[data-indicator-fact='preamp'] { min-inline-size: 7ch; box-sizing: content-box; }
-  .fact[data-indicator-fact='ip-plus'] { min-inline-size: 8ch; box-sizing: content-box; }
-  .fact[data-indicator-fact='digi-sel'] { min-inline-size: 12ch; box-sizing: content-box; }
-  .fact[data-indicator-fact='antenna'] { min-inline-size: 5ch; box-sizing: content-box; }
-  .fact[data-indicator-fact='atu'] { min-inline-size: 11ch; box-sizing: content-box; }
-  .fact[data-indicator-fact='rit'] { min-inline-size: 15ch; box-sizing: content-box; }
-  .fact[data-indicator-fact='xit'] { min-inline-size: 15ch; box-sizing: content-box; }
+     every fact reserves the width of its widest lit text, so an unread
+     label and its first reading occupy the same box and neighbours never
+     move. FACT_SLOT_RESERVATIONS in the module script is the ONLY source of
+     the reserved width: each fact span sets min-inline-size inline from
+     the constant, and the stylesheet carries no width of its own, so the
+     two cannot drift apart. box-sizing matches RFG so the reservation
+     covers text only, outside the shared padding and border. jsdom has no
+     layout, so the pin test asserts each rendered fact's inline
+     reservation against the constant, and each constant against the length
+     of its widest lit text. */
+  .fact[data-indicator-fact='bandwidth'], .fact[data-indicator-fact='agc'],
+  .fact[data-indicator-fact='nb'], .fact[data-indicator-fact='nr'],
+  .fact[data-indicator-fact='notch'], .fact[data-indicator-fact='attenuator'],
+  .fact[data-indicator-fact='preamp'], .fact[data-indicator-fact='ip-plus'],
+  .fact[data-indicator-fact='digi-sel'], .fact[data-indicator-fact='rf-gain'],
+  .fact[data-indicator-fact='antenna'], .fact[data-indicator-fact='atu'],
+  .fact[data-indicator-fact='rit'], .fact[data-indicator-fact='xit'] {
+    box-sizing: content-box;
+  }
   /* Empty (a displayed 100%, or unread): the slot stays reserved at the same
      size and 1px geometry, but nothing is drawn — a transparent border and
      background instead of an empty frame. The unknown Standard slot badge
