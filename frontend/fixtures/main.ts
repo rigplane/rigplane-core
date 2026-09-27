@@ -282,7 +282,7 @@ window.__harness = {
           name: 'fixture-mounted-no-assertion-pipeline', ok: true,
           detail: 'this fixture carries no behavior-assertion pipeline (MOR-2676) — this '
             + 'confirms the harness mounted, not that the composition is correct.',
-        ]),
+        }]),
   tokens: tokenSnapshot,
   // `styleProbe` takes its root explicitly (it cannot infer one) and
   // peer-split fixtures never call `runAssertions` — see `assert` above.
