@@ -224,13 +224,15 @@ describe('panel structure', () => {
   // `LinearSMeter` (which expects calibrated dB) — raw 53 rendered as
   // "S9+40" regardless of the actual signal. `getSmeterCalibration` is
   // mocked to `null` above (no radio profile curve in this suite), so the
-  // honest-fallback path applies: the S meter must render the plain raw
-  // number, never a fabricated S-unit.
+  // honest-fallback path applies: the S meter must render no number at
+  // all (MOR-2705 part 4a — the raw count is not an operator reading),
+  // never a fabricated S-unit.
   it('does not render S9+40 for a raw sMeter reading (MOR-1451)', () => {
     const t = mountPanel({ ...baseProps, sValue: 53 });
     const text = t.querySelector('svg')?.textContent ?? '';
     expect(text).not.toContain('S9+40');
-    expect(text).toContain('53');
+    expect(text).not.toContain('53');
+    expect(text).not.toContain('uncalibrated');
   });
 
   it('renders the active band tab from capabilities', () => {

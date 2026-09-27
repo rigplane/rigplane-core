@@ -2828,7 +2828,9 @@ describe('MOR-2342 historical instrument presentations', () => {
     const standard = mountSurface({ viewModel: base, appearance: 'standard' });
     expect(standard.querySelector('.panel .panel-header')).not.toBeNull();
     expect(standard.querySelector('[data-testid="receiver-s-meter"]')?.getAttribute('data-operational')).toBe('true');
-    expect(standard.querySelector('[data-testid="receiver-s-meter"] svg')?.textContent).toContain('0');
+    // MOR-2705 part 4a: an uncalibrated radio draws no number at all — the
+    // raw sMeter count (0) is not an operator reading — and no word.
+    expect(standard.querySelector('[data-testid="receiver-s-meter"] svg')?.textContent).not.toContain('uncalibrated');
 
     const indicator = base.receiverIndicators![0];
     const unknown = mountSurface({

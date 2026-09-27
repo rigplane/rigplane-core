@@ -798,9 +798,11 @@ describe('raw sMeter renders honestly, never a fabricated S-unit (MOR-1451)', ()
     const view = withRaw(base(), 'signal', 53);
     withSurface(view, (s) => {
       const tile = s.tile('signal')!;
-      const text = tile.textContent ?? '';
-      expect(text).not.toContain('53');
-      expect(text).not.toContain('uncalibrated');
+      // The signal caption's own value span is the number's only seat; the
+      // SWR lower-scale marks beside it legitimately carry their own digits.
+      const value = tile.querySelector('.meter-native-caption .meter-native-value');
+      expect(value?.textContent).toBe('');
+      expect(tile.textContent).not.toContain('uncalibrated');
       expect(tile.querySelector('svg')?.getAttribute('aria-label')).toBe('S meter');
     });
   });
@@ -850,7 +852,10 @@ describe('station signal rendering honors the explicit sample domain (MOR-2425)'
         const view = withSignalDomain(withRaw(base(), 'signal', 53), { kind: 'raw' });
         withSurface(view, (s) => {
           const signal = s.tile('signal')!;
-          expect(signal.textContent).not.toContain('53');
+          // The signal caption's own value span is the number's only seat;
+          // the SWR lower-scale marks beside it carry their own digits.
+          expect(signal.querySelector('.meter-native-caption .meter-native-value')
+            ?.textContent).toBe('');
           expect(signal.textContent).not.toContain('uncalibrated');
           expect(signal.textContent).not.toMatch(/S[0-9]|dBm/);
           expect([...signal.querySelectorAll<SVGLineElement>('[data-main-relevant] line')]
