@@ -1163,12 +1163,12 @@
     font-family: 'Roboto Mono', monospace;
     font-size: 10px;
     color: #9ca3af;
-    /* MOR-2675: same reservation — 13ch covers the widest text formatDbm
+    /* MOR-2675: same reservation — 12ch covers the widest text formatDbm
        renders over the sMeter domain: the honest 'uncalibrated' label of a
        rig with no s_meter table (a calibrated rig's widest is '−13 dBm',
        7ch). */
     display: inline-block;
-    min-width: 13ch;
+    min-width: 12ch;
     font-variant-numeric: tabular-nums;
   }
 
