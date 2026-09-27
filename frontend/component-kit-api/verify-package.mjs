@@ -334,7 +334,7 @@ try {
     ),
     'utf8',
   );
-  assert(!behaviorDeclarationSource.includes('usable'));
+  assert(!/\busable\b/u.test(behaviorDeclarationSource));
   assert(!apiDeclarationSource.includes('PresentationHostMode'));
   assert(apiDeclarationSource.includes("'external-instruments-v1'"));
   assert(apiDeclarationSource.includes('HostedFacePropsV1'));

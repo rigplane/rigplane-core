@@ -58,7 +58,7 @@ export interface AbsoluteChoiceInput<T, Feedback> {
  * `undefined` and narrows `field.reading` to the known reading.
  *
  * Internal to the kit: the shipped component-kit-api declarations must not
- * expose it. Semantic surfaces migrate onto it one by one (MOR-2704 G1–G6).
+ * expose it.
  *
  * @internal
  */
