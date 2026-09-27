@@ -18,7 +18,7 @@ const props = vi.hoisted(() => ({
     hasDualRx: true, hasSplit: true, hasRit: true, hasTuner: true, isCwMode: true,
     hasCw: true, hasBreakIn: true, breakInMode: 0 as number | null,
     breakInChoices: [
-      { value: 0, label: 'BK-OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' },
+      { value: 0, label: 'OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' },
     ] as { value: number; label: string }[],
   },
   ritXit: { xitActive: false },
@@ -161,7 +161,7 @@ describe('VfoControlPanel authority boundary', () => {
      choices. On the FTX-1 ([0=OFF, 1=ON]) it can always get BACK to OFF,
      which the old hard-coded 0/1/2 cycle could not (stuck ON). */
   const legacyChoices: { value: number; label: string }[] = [
-    { value: 0, label: 'BK-OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' },
+    { value: 0, label: 'OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' },
   ];
   function cycleCase(steps: readonly (readonly [label: string, mode: number, active: boolean])[]):
     void {
@@ -183,18 +183,18 @@ describe('VfoControlPanel authority boundary', () => {
     }
   }
 
-  it('FTX-1 cycle: OFF → ON → OFF', () => {
+  it('FTX-1 cycle: BK-OFF → BK-ON → BK-OFF', () => {
     try {
       props.vfo.breakInChoices = [{ value: 0, label: 'OFF' }, { value: 1, label: 'ON' }];
-      cycleCase([['OFF', 0, false], ['ON', 1, true]]);
+      cycleCase([['BK-OFF', 0, false], ['BK-ON', 1, true]]);
     } finally {
       props.vfo.breakInChoices = legacyChoices;
       props.vfo.breakInMode = 0;
     }
   });
 
-  it('IC-7300 cycle: BK-OFF → SEMI → FULL → BK-OFF', () => {
-    cycleCase([['BK-OFF', 0, false], ['SEMI', 1, true], ['FULL', 2, true]]);
+  it('IC-7300 cycle: BK-OFF → BK-SEMI → BK-FULL → BK-OFF', () => {
+    cycleCase([['BK-OFF', 0, false], ['BK-SEMI', 1, true], ['BK-FULL', 2, true]]);
   });
 
   it('an empty published list (X6100, X6200) renders no break-in key', () => {
@@ -202,7 +202,8 @@ describe('VfoControlPanel authority boundary', () => {
       props.vfo.breakInChoices = [];
       mountPanel();
       const names = Array.from(target.querySelectorAll('button')).map((b) => b.textContent?.trim());
-      for (const label of ['OFF', 'SEMI', 'FULL', 'ON', 'BK-OFF']) expect(names).not.toContain(label);
+      for (const label of ['OFF', 'ON', 'SEMI', 'FULL', 'BK', 'BK-OFF', 'BK-ON', 'BK-SEMI', 'BK-FULL'])
+        expect(names).not.toContain(label);
     } finally {
       props.vfo.breakInChoices = legacyChoices;
     }
@@ -216,15 +217,18 @@ describe('VfoControlPanel authority boundary', () => {
   });
 
   /* Item 4 (review 2026-09-27): while break-in is unread the BK key is
-     disabled and unlit and sends nothing, with an empty label; once read it
-     cycles as before. */
-  it('an unread break-in disables the BK key, lights nothing, and sends nothing (MOR-2729)', () => {
+     disabled and unlit and sends nothing — but its NAME ("BK") stays, in
+     text and accessible name alike; once read it cycles as before. */
+  it('while break-in is unread, the BK key shows exactly "BK", stays disabled and unlit, and sends nothing (MOR-2729)', () => {
     try {
       props.vfo.breakInMode = null;
       mountPanel();
-      const bk = button('');
+      const bk = button('BK');
       expect(bk.disabled).toBe(true);
       expect(bk.classList.contains('active')).toBe(false);
+      // the visible text is the accessible name — no separate aria-label
+      // may compensate for an empty label (review 2026-09-27).
+      expect(bk.getAttribute('aria-label') ?? bk.textContent?.trim()).toContain('BK');
       bk.click();
       expect(bindings.cw.onBreakInModeChange).not.toHaveBeenCalled();
     } finally {
