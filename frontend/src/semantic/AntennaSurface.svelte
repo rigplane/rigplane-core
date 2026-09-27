@@ -2,7 +2,7 @@
   import type { RadioViewModel } from './radio-view-model';
   import type { TxAuthoritySnapshot } from './rx-tx-surface';
 
-  export { ANTENNA_PORTS, UNKNOWN_TEXT, usable, textOf,
+  export { ANTENNA_PORTS,
     tunerIdle, antennaSwitchBlocks, type AntennaSwitchBlock } from './AntennaInstrumentHost.svelte';
   import { antennaSwitchBlocks,
     type AntennaInstrumentHandles, type AntennaInstrumentLayout,

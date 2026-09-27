@@ -10,8 +10,7 @@
   import { BLOCKED_REASON_KEY } from '$lib/i18n/blocked-reasons';
 
   export const ANTENNA_PORTS = [1, 2] as const;
-  /** MOR-2652: an unread reading prints nothing — an unlit slot, never a dash.
-   *  Kept exported because `AntennaSurface.svelte` re-exports the name. */
+  /** MOR-2652: an unread reading prints nothing — an unlit slot, never a dash. */
   export const UNKNOWN_TEXT = '';
 
   const RF_MUST_BE_IDLE: readonly KeyBlockedReason[] = [
