@@ -1106,10 +1106,10 @@ describe('the AF control consumes the admitted-target lane (MOR-1687 F2)', () =>
     expect(Number(knob(row)!.getAttribute('aria-valuenow'))).toBeCloseTo(0.31, 10);
   });
 
-  // MOR-1676: with `controls.af_level` published, the knob steps on the raw
-  // range through this lane — raw 128 up to 129 and back to 128, sent as the
-  // normalized 129/255 and 128/255.
-  it.each(LANES)('%s steps one raw unit and back on the published raw range', (
+  // MOR-1676: with `controls.af_level` published, the AF MAIN / AF SUB knobs
+  // step on the raw range through this lane — raw 128 up to 129 and back to
+  // 128, sent as the normalized 129/255 and 128/255.
+  it.each(LANES.filter(([, row]) => row !== 'af'))('%s steps one raw unit and back on the published raw range', (
     _label, row, _other, key, receiver, makeCaps,
   ) => {
     h.rxEnabled = false;
@@ -1131,6 +1131,21 @@ describe('the AF control consumes the admitted-target lane (MOR-1687 F2)', () =>
       ['set_af_level', { level: 129 / 255, receiver }],
       ['set_af_level', { level: 128 / 255, receiver }],
     ]);
+  });
+
+  // The single-receiver row reads the same range through this lane; its step
+  // and back are driven in `RxAudioInstrumentHost.isolated.test.ts`.
+  it('the single-receiver AF knob reads the published raw range through this lane', () => {
+    h.rxEnabled = false;
+    h.audio = { muted: false, rxEnabled: false, volume: 42 };
+    h.caps = {
+      ...singleReceiverCaps(), controls: { af_level: { raw_min: 0, raw_max: 255 } },
+    } as Capabilities;
+    expect(setCapabilities(h.caps as Capabilities)).toBe(true);
+    h.state = afState(1, 128 / 255);
+    render();
+    expect(knob('af')!.getAttribute('aria-valuemax')).toBe('255');
+    expect(knob('af')!.getAttribute('aria-valuenow')).toBe('128');
   });
 });
 
