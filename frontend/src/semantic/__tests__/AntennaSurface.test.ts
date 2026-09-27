@@ -271,7 +271,7 @@ describe('an unread TX port renders as unknown, never as ANT 1 (CF3)', () => {
   // String(true) would print 'true' (never 'on'). The label keeps its
   // 'RX-ANT: ' separator INSIDE the template's one text node, so the known
   // textContent keeps the space (MOR-2711 inline-block rule).
-  it('renders a known RX-ANT as the literal on/off, delegating to readingText', () => {
+  it('renders a known RX-ANT as the literal on/off', () => {
     const on = render(withAnt({ rxAnt: known(true) }), RECEIVING);
     expect(on.text('rx-toggle')).toBe('RX-ANT: on');
     on.dispose();

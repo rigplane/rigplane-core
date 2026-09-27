@@ -240,8 +240,8 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
   // writes booleans as lowercase `on`/`off` — under a `format → String`
   // mutation String(true) would print 'true' (never 'on'). The exported
   // helper delegates to `readingText`, so the predicate stays exactly
-  // `status === 'known'` (the audit's R1 ruling).
-  it('renders booleans through textOf as on/off literals, delegating to readingText', () => {
+  // `status === 'known'`.
+  it('renders read booleans as on/off literals and an unread field as empty text', () => {
     const onField = { reading: { status: 'known', value: true }, availability: ON } as CwKeyerField<unknown>;
     const offField = { reading: { status: 'known', value: false }, availability: ON } as CwKeyerField<unknown>;
     const unreadField = { reading: { status: 'unknown' }, availability: ON } as CwKeyerField<unknown>;

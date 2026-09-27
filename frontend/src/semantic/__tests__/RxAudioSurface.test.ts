@@ -114,7 +114,7 @@ describe('the RX-audio surface owns no audio lifetime (MOR-972 P0 / MOR-1058)', 
   /** The whole static import closure of the file, allow-listed. Kills: adding
    *  ANY import that could reach transport or the audio manager — including
    *  through a relative specifier, which a `$lib/...` regex would miss. */
-  it('imports only facts, the level formatter and the RxAudioInstrumentHost handle contract', () => {
+  it('imports only facts, the level formatter, the unread-display rule and the RxAudioInstrumentHost handle contract', () => {
     const specifiers = [...CODE.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
     // MOR-2688 S3: `../primitives/reading-text` joined the closure — it carries

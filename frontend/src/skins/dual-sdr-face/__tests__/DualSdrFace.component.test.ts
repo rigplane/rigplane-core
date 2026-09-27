@@ -187,7 +187,7 @@ describe('DualSdrFace', () => {
   // MOR-2688 S3 literal pins: the P.AMP value and the scope MODE status go
   // through `readingText` — the MODE site's own formatter prefixes 'MODE ',
   // so under a `format → String` mutation it prints '0', never 'MODE 0'.
-  it('renders the known P.AMP value and the literal MODE … status through readingText', async () => {
+  it('renders the known P.AMP value and the literal MODE … status', async () => {
     const target = document.createElement('div');
     const component = mount(DualSdrFace, { target, props: { view: view(1, [0, 1, 2], false, []), scopeSource: { subscribe: () => () => {} } } });
     await tick();
