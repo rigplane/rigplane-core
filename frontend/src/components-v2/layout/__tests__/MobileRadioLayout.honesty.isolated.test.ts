@@ -309,11 +309,15 @@ describe('MobileRadioLayout honest-projection rendering (MOR-1409 A13a)', () => 
       expect(reservedS).toBe(String('S9+60'.length));
       // MOR-2705: the dBm slot's widest text no longer includes the
       // 'uncalibrated' word — the formatter renders nothing for an
-      // uncomputable dBm. The widest REAL text is derived below by running
-      // the formatter over the whole raw 0–255 domain on this ladder.
+      // uncomputable dBm. The widest REAL text is derived below by RUNNING
+      // the formatter over the ladder's own calibrated-dB domain (the
+      // sMeter line carries calibrated dB-rel-S9 inside [min, max]), not a
+      // radio constant.
+      const domainMin = widestShippedLadder[0].actual;
+      const domainMax = widestShippedLadder[widestShippedLadder.length - 1].actual;
       let widestDbm = '';
-      for (let raw = 0; raw <= 255; raw += 1) {
-        const text = formatDbmPure(calibratedToDbmPure(raw, widestShippedLadder));
+      for (let value = domainMin; value <= domainMax; value += 1) {
+        const text = formatDbmPure(calibratedToDbmPure(value, widestShippedLadder));
         if (text.length > widestDbm.length) widestDbm = text;
       }
       expect(widestDbm).toBe('−127 dBm');
