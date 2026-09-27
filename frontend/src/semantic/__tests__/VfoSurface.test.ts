@@ -3174,10 +3174,11 @@ describe('MOR-2688 S4c — the Standard chips read through the entry points', ()
     // must return the strict reading, never nothing.
     expect(subRfg.textContent).toBe('RFG 75%');
     expect(subRfg.getAttribute('data-lit')).toBe('true');
-    // MAIN rfGain is a known 0: the chip keeps its reserved slot, unlit.
+    // MAIN rfGain is a known 0 — reduced at the formatted level, so the
+    // strict reading decides there too.
     const main = root.querySelector<HTMLElement>('[data-receiver-instrument="MAIN"]')!;
     const mainRfg = main.querySelector<HTMLElement>('[data-indicator-fact="rfg"]')!;
-    expect(mainRfg.textContent).toBe('');
-    expect(mainRfg.getAttribute('data-lit')).toBe('false');
+    expect(mainRfg.textContent).toBe('RFG 0%');
+    expect(mainRfg.getAttribute('data-lit')).toBe('true');
   });
 });
