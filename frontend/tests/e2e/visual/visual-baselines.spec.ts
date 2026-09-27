@@ -138,6 +138,48 @@ test('VFO phone tiles fit on one line and paint no freshness cue', async ({ page
   expect(result.lines.every((count) => count === 1)).toBe(true);
 });
 
+/**
+ * MOR-2240 — the mobile layout's portrait and landscape captures. The
+ * `fixtures/index.html` skins never mount `MobileRadioLayout`; the
+ * `fixtures/mobile-witness.html` entry does it with the same stubbed
+ * seams, at the two viewports the ticket's acceptance names (375x812,
+ * 812x375). Both captures assert the non-pixel contract before the pixel
+ * layer, which a comparator cannot see: the full-width landscape surface
+ * and the formatted AF level (never the raw normalized float from the
+ * bench).
+ */
+test('mobile-portrait--phone', async ({ page }) => {
+  await page.setViewportSize(PHONE);
+  await page.goto('/fixtures/mobile-witness.html?fixture=topology-2-main-sub', { waitUntil: 'load' });
+  await page.waitForSelector('body[data-harness-ready="true"]');
+  await page.evaluate(() => document.fonts.ready);
+  const layout = page.locator('.m-layout');
+  await expect(layout).toBeVisible();
+  const essentials = page.locator('.m-essentials');
+  await expect(essentials).toContainText('AF Level');
+  const afText = await essentials.innerText();
+  expect(afText).toMatch(/--- %|\d+(\.\d+)?%/);
+  expect(afText).not.toContain('NaN');
+  // The bench defect class: a bare normalised float on the AF slider.
+  expect(afText).not.toMatch(/\d\.\d{6,}/);
+  await expect(page).toHaveScreenshot('mobile-portrait--phone.png', { animations: 'disabled', caret: 'hide' });
+});
+
+test('mobile-landscape--phone', async ({ page }) => {
+  await page.setViewportSize({ width: 812, height: 375 });
+  await page.goto('/fixtures/mobile-witness.html?fixture=topology-2-main-sub', { waitUntil: 'load' });
+  await page.waitForSelector('body[data-harness-ready="true"]');
+  await page.evaluate(() => document.fonts.ready);
+  const landscape = page.locator('.m-landscape');
+  await expect(landscape).toBeVisible();
+  const box = await landscape.boundingBox();
+  // Acceptance: full width — pinned here numerically, and pinned at the
+  // `width: 100dvw` rule in MobileRadioLayout.component.svelte.test.ts.
+  expect({ width: box?.width, height: box?.height }).toEqual({ width: 812, height: 375 });
+  expect(await page.locator('.m-layout').count()).toBe(0);
+  await expect(page).toHaveScreenshot('mobile-landscape--phone.png', { animations: 'disabled', caret: 'hide' });
+});
+
 /** The MOR-1088 mobile PTT pair: idle FAB and a real pointer-held FAB. */
 test('ptt-idle--mobile', async ({ page }) => {
   await page.setViewportSize(PHONE);

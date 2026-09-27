@@ -200,7 +200,8 @@ describe('currentBandTx is the live-frequency answer (carry-forwards 1 + 2)', ()
   // "no answer" must never be how a denial is presented.
   it('still states the denial while the current band is unreadable', () => {
     const r = render(withB({ currentBand: unreadBand(), currentBandTx: 'denied' }));
-    expect(r.text('current-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('current-value')).toBe('');
+    expect(r.text('current-value')).not.toBe('—');
     expect(r.text('tx-value')).toBe('denied');
     r.dispose();
   });
@@ -509,7 +510,8 @@ describe('the three-way denial reason distinguishes an unconfirmed receiver (MOR
   it('keeps the band-unresolved fallback when the band itself is unread', () => {
     const view = withB({ currentBand: unreadBand(), currentBandTx: 'denied' });
     const r = render({ ...view, txPermit: ALLOWED, disabledReasons: [] });
-    expect(r.text('current-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('current-value')).toBe('');
+    expect(r.text('current-value')).not.toBe('—');
     expect(r.text('tx-reason')).toBe(unresolvedReason());
     r.dispose();
   });
@@ -910,10 +912,13 @@ describe('a receiver-scoped write needs a known active receiver (MOR-1322 B1 cla
 /* ── honest unknown, and the F2 standing convention ─────────────── */
 
 describe('unknown is rendered as unknown (and F2 gets no local workaround)', () => {
-  it('renders an unread current band as the unknown text, marked unobserved', () => {
+  it('renders an unread current band empty and unobserved, in a reserved box', () => {
     const r = render(withB({ currentBand: unreadBand() }));
-    expect(r.text('current-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('current-value')).toBe('');
+    expect(r.text('current-value')).not.toBe('—');
     expect(r.el('current')!.dataset.observed).toBe('false');
+    const rule = /\.band-value\s*\{([^}]*)\}/.exec(SOURCE)?.[1] ?? '';
+    expect(rule).toMatch(/min-width:\s*8ch/);
     r.dispose();
   });
 

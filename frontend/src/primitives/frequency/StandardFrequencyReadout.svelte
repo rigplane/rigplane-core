@@ -83,9 +83,14 @@
            the focusable readout keeps its height and slot. -->
       <span class="digits">&nbsp;</span>
     {:else}
-      <span class="digits">{model.textGroups.mhz}</span><span class="sep">.</span><span
-        class="digits">{model.textGroups.khz}</span><span class="sep">.</span><span
-        class="digits">{model.textGroups.hz}</span>
+      <!-- MOR-2654 (owner rule, 2026-09-26): unread is unlit — each digit
+           slot keeps the width of the widest content the known path can
+           render (MHz 1-3 digits, kHz/Hz always 3) via invisible digits:
+           visibility keeps the box, draws no glyph, so the first reading
+           cannot move anything. -->
+      <span class="digits"><span class="unlit">888</span></span><span class="sep">.</span><span
+        class="digits"><span class="unlit">888</span></span><span class="sep">.</span><span
+        class="digits"><span class="unlit">888</span></span>
     {/if}
   {:else if interactive}
     {#each model.groups.mhz as digit}
@@ -206,6 +211,8 @@
     opacity: 0.5;
     margin: 0 0.02em;
   }
+
+  .unlit { visibility: hidden; }
 
   .freq.interactive .sep { pointer-events: none; }
 

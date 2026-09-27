@@ -458,7 +458,7 @@ describe('MOR-1083 class 3 — corrupt and partial stored state', () => {
     ['a JSON array', '[1,2,3]'],
     ['JSON null', 'null'],
     ['whitespace', '   '],
-  ])('%s resets to defaults with a visible notice, never a throw', (_label, raw) => {
+  ])('%s falls back to legacy migration when the sentinel is absent (MOR-1300)', (_label, raw) => {
     const storage = new LedgerStorage();
     seedFullLegacy(storage);
     storage.map.set(WORKSPACE_STORAGE_KEY, raw);
@@ -466,10 +466,29 @@ describe('MOR-1083 class 3 — corrupt and partial stored state', () => {
 
     expect(() => { initWorkspaceStore(storage); }).not.toThrow();
 
+    // The corrupt object recovers the operator's v2 preferences instead of
+    // landing on defaults — the very gap MOR-1083's F1 named, now fixed. The
+    // migration still never touches the retained legacy bytes.
+    expect(getWorkspace().theme).toBe('nord');
+    expect(getWorkspace().layout).toBe('lcd-scope');
+    expect(getWorkspaceNotice()).toBeNull();
+    expect(storage.snapshotOf(retainedKeys(storage))).toEqual(before);
+    expect(storage.deletes).toEqual([]);
+  });
+
+  it('a corrupt object keeps the reset notice once migration already ran (MOR-1300)', () => {
+    const storage = new LedgerStorage();
+    seedFullLegacy(storage);
+    storage.map.set(WORKSPACE_MIGRATION_SENTINEL_KEY, '1');
+    storage.map.set(WORKSPACE_STORAGE_KEY, '{{{');
+    const before = storage.snapshotOf(retainedKeys(storage));
+
+    initWorkspaceStore(storage);
+
+    // Sentinel present → the fallback gate stays closed: the reset is a plain
+    // 'stored'-branch outcome with its visible notice, exactly as before.
     expect(getWorkspace()).toEqual(DEFAULT_WORKSPACE);
     expect(getWorkspaceNotice()?.kind).toBe('reset');
-    // A corrupt workspace object does NOT re-open the migration, and does not
-    // touch the retained legacy bytes.
     expect(storage.snapshotOf(retainedKeys(storage))).toEqual(before);
     expect(storage.deletes).toEqual([]);
   });
@@ -820,10 +839,10 @@ describe('MOR-1083 class 6 — THE ROLLBACK PROBE', () => {
       // (b) byte-for-byte, not merely semantically.
       expect(storage.snapshotOf(retainedKeys(storage))).toEqual(before);
       // (c) nothing was ever deleted, and every key written is one of the two
-      //     the workspace owns. (Subset, not equality: the sentinel is written
-      //     only on the migrating boot — a present-but-unreadable workspace key
-      //     takes the `stored` branch and never reaches the migration. See the
-      //     characterization pin below.)
+      //     the workspace owns — including for the corrupt-workspace-object
+      //     case, which MOR-1300 now routes into the migration branch (the
+      //     sentinel is absent) instead of short-circuiting on key presence.
+      //     See the F1 pin below for the fixed expectation.
       expect(storage.deletes).toEqual([]);
       const owned = new Set([WORKSPACE_STORAGE_KEY, WORKSPACE_MIGRATION_SENTINEL_KEY]);
       expect(storage.attemptedWrites.filter((key) => !owned.has(key))).toEqual([]);
@@ -832,21 +851,21 @@ describe('MOR-1083 class 6 — THE ROLLBACK PROBE', () => {
   );
 
   /**
-   * CHARACTERIZATION — MOR-1083 finding F1 (informational, NOT a failure).
+   * MOR-1300 — MOR-1083 finding F1, FIXED.
    *
-   * `loadWorkspace` branches on PRESENCE of the workspace key, before it looks
-   * at readability. So a present-but-unreadable object short-circuits to
-   * `source: 'stored'` + `outcome: 'reset'` and the legacy migration never runs
-   * — even though the sentinel says it never ran and the legacy bytes are still
-   * sitting there, fully readable.
+   * `loadWorkspace` used to branch on PRESENCE of the workspace key before
+   * readability, so a present-but-unreadable object short-circuited to
+   * `source: 'stored'` + `outcome: 'reset'` and the legacy migration never ran
+   * — even though the sentinel said it never ran and the legacy bytes sat
+   * there, fully readable. Now a 'reset' outcome with the sentinel absent
+   * routes into the migration branch: the operator's v2 preferences are
+   * recovered instead of defaults.
    *
-   * The MOR-1083 acceptance still HOLDS: the legacy bytes are retained
-   * untouched (asserted below), so the rollback build recovers everything and
-   * nothing recoverable was overwritten before a successful commit. What is
-   * lost is only the v3-side convenience of re-folding them. Pinned here so a
-   * future change to that ordering is a deliberate decision, not a surprise.
+   * The MOR-1083 acceptance still holds: the legacy bytes are retained
+   * untouched (asserted below), so the rollback build is unaffected; and the
+   * narrow N1 gate holds too — only 'reset' falls back, never 'version-discarded'.
    */
-  it('F1: a corrupt workspace object short-circuits the migration, but retains legacy bytes', () => {
+  it('F1 FIXED: a corrupt workspace object falls back to the legacy migration (MOR-1300)', () => {
     const storage = new LedgerStorage();
     seedFullLegacy(storage);
     storage.map.set(WORKSPACE_STORAGE_KEY, '{{{');
@@ -854,24 +873,33 @@ describe('MOR-1083 class 6 — THE ROLLBACK PROBE', () => {
 
     initWorkspaceStore(storage);
 
-    // The migrated values are NOT recovered, despite the legacy keys being present...
-    expect(getWorkspace()).toEqual(DEFAULT_WORKSPACE);
-    expect(getWorkspaceNotice()?.kind).toBe('reset');
-    expect(storage.getItem(WORKSPACE_MIGRATION_SENTINEL_KEY)).toBeNull();
-    // ...but every legacy byte survives, so the rollback build is unaffected
-    // and the input remains recoverable.
+    // The migrated values ARE recovered now.
+    expect(getWorkspace().theme).toBe('nord');
+    expect(getWorkspace().layout).toBe('lcd-scope');
+    expect(getWorkspaceNotice()).toBeNull();
+    expect(storage.getItem(WORKSPACE_MIGRATION_SENTINEL_KEY)).not.toBeNull();
+    // ...and every legacy byte still survives, so the rollback build is
+    // unaffected and a downgrade during the window loses nothing.
     expect(storage.snapshotOf(retainedKeys(storage))).toEqual(before);
     expect(rollbackView(storage)).toEqual({
       layout: 'lcd-scope', theme: 'dracula', explicitTheme: true, vfoTheme: 'lcd-warm',
     });
+  });
 
-    // And clearing the unreadable object lets the migration run after all.
-    storage.map.delete(WORKSPACE_STORAGE_KEY);
-    storage.deletes.length = 0;
+  it('a version-discarded object NEVER falls back — the frozen MOR-1076 discard stays (MOR-1300 N1)', () => {
+    const storage = new LedgerStorage();
+    seedFullLegacy(storage);
+    storage.map.set(WORKSPACE_STORAGE_KEY, JSON.stringify({ version: 42, theme: 'v42' }));
+    const original = storage.getItem(WORKSPACE_STORAGE_KEY)!;
+
     initWorkspaceStore(storage);
 
-    expect(getWorkspace().theme).toBe('nord');
-    expect(getWorkspace().layout).toBe('lcd-scope');
+    // Never a silent migration over a newer object: discard, visible notice,
+    // and the out-of-window bytes are left for whichever build can read them.
+    expect(getWorkspaceNotice()?.kind).toBe('version-discarded');
+    expect(getWorkspace()).toEqual(DEFAULT_WORKSPACE);
+    expect(storage.getItem(WORKSPACE_STORAGE_KEY)).toBe(original);
+    expect(storage.getItem(WORKSPACE_MIGRATION_SENTINEL_KEY)).toBeNull();
   });
 
   it('no legacy key is ever a write target, across the whole inventory', () => {

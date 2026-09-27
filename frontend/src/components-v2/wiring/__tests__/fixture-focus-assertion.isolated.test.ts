@@ -104,3 +104,36 @@ describe('fixture focus assertion inert slider exception', () => {
     expect(admitted(html)).toBe(false);
   });
 });
+
+describe('fixture assertion disabled-reason doctrine (MOR-1350)', () => {
+  /** Runs the real assertion pipeline over synthetic DOM and reports the
+   *  `disabled-tune-exposes-its-reason-accessibly` result: `undefined` when
+   *  the check makes no claim (TUNE absent or usable). */
+  const doctrine = (html: string): boolean | undefined => {
+    document.body.innerHTML = `<div data-testid="dual-receiver-cockpit">${html}</div>`;
+    const result = runAssertions(fixtureById('caps-unloaded')!.expect!)
+      .find(result => result.name === 'disabled-tune-exposes-its-reason-accessibly');
+    return result?.ok;
+  };
+
+  it('accepts a disabled TUNE whose aria-describedby resolves to reason text', () => {
+    expect(doctrine('<button data-testid="tx-aux-atu-tune" disabled '
+      + 'aria-describedby="tune-reason">TUNE</button>'
+      + '<span id="tune-reason" class="sr-only">Not yet observed</span>')).toBe(true);
+  });
+
+  it.each([
+    ['no aria-describedby at all', '<button data-testid="tx-aux-atu-tune" disabled>TUNE</button>'],
+    ['dangling id', '<button data-testid="tx-aux-atu-tune" disabled '
+      + 'aria-describedby="missing">TUNE</button>'],
+    ['empty target text', '<button data-testid="tx-aux-atu-tune" disabled '
+      + 'aria-describedby="tune-reason">TUNE</button><span id="tune-reason"></span>'],
+  ])('rejects a disabled TUNE with %s', (_label, html) => {
+    expect(doctrine(html)).toBe(false);
+  });
+
+  it('makes no claim while TUNE is absent or usable', () => {
+    expect(doctrine('<button data-testid="tx-aux-atu-tune">TUNE</button>')).toBeUndefined();
+    expect(doctrine('')).toBeUndefined();
+  });
+});

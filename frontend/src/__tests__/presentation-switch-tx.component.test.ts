@@ -44,8 +44,6 @@ const h = vi.hoisted(() => ({
   registerBarrier: vi.fn(),
   bootstrap: vi.fn(),
   bootstrapCleanup: vi.fn(),
-  initBattery: vi.fn(),
-  batteryCleanup: vi.fn(),
   notifyRuntime: () => {},
   runtimeState: { stateRevision: 1 } as Record<string, unknown> | null,
   runtimeCaps: { tx: true } as Record<string, unknown> | null,
@@ -88,7 +86,6 @@ vi.mock('../skins/registry', () => ({
 vi.mock('../components-v2/wiring/SemanticRadioSurfaces.svelte', async () => ({
   default: (await import('./LayoutStub.svelte')).default,
 }));
-vi.mock('../lib/utils/battery', () => ({ initBatteryMonitor: h.initBattery }));
 vi.mock('../lib/media/media-session', () => ({
   initMediaSession: vi.fn(),
   destroyMediaSession: vi.fn(),
@@ -279,8 +276,6 @@ describe('MOR-1086 — TX authority identity across a presentation switch', () =
     h.stop.mockClear();
     h.submit.mockClear();
     h.registerBarrier.mockReset().mockImplementation(() => () => {});
-    h.initBattery.mockReset().mockResolvedValue(h.batteryCleanup);
-    h.batteryCleanup.mockReset();
     h.runtimeState = { stateRevision: 1 };
     h.runtimeCaps = { tx: true };
   });

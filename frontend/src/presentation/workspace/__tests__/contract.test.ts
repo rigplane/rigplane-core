@@ -55,14 +55,18 @@ describe('registry sync — the pinned id spaces still match their live owners',
     expect([...WORKSPACE_DESIGN_LANGUAGE_IDS]).toEqual([studioline.id, fieldline.id, segmentline.id]);
     for (const manifest of [studioline, fieldline, segmentline]) {
       expect(manifest.density.kind).toBe('clamped');
-      const supported = manifest.density.kind === 'clamped' ? manifest.density.supported : [];
-      expect(WORKSPACE_DENSITY_CLAMP[manifest.id as 'studioline']).toEqual(supported);
+      if (manifest.density.kind === 'clamped') {
+        expect(WORKSPACE_DENSITY_CLAMP[manifest.id as 'studioline']).toEqual({
+          supported: manifest.density.supported,
+          default: manifest.density.default,
+        });
+      }
     }
     // fieldline and segmentline both clamp `dense` out (0.6 relative density
     // for fieldline, MOR-977 §4.4; segmentline's 7px meter pitch collides
     // with the dense cell outline, `../../languages/declarations.ts`).
-    expect(WORKSPACE_DENSITY_CLAMP.fieldline).not.toContain('dense');
-    expect(WORKSPACE_DENSITY_CLAMP.segmentline).not.toContain('dense');
+    expect(WORKSPACE_DENSITY_CLAMP.fieldline.supported).not.toContain('dense');
+    expect(WORKSPACE_DENSITY_CLAMP.segmentline.supported).not.toContain('dense');
   });
 
   it('theme ids are exactly the switcher\'s 21-id list, in order', () => {

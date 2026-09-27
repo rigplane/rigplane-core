@@ -404,7 +404,8 @@ describe('TxAuxScalarHost independent composition', () => {
     flushSync();
     expect(slider.getAttribute('aria-valuenow')).toBeNull();
     expect(slider.getAttribute('aria-disabled')).toBe('true');
-    expect(slider.getAttribute('aria-valuetext')).toContain('Mic gain: ?');
+    expect(slider.getAttribute('aria-valuetext')).toBe('Mic gain; Mic gain: unavailable');
+    expect(slider.getAttribute('aria-valuetext')).not.toContain('?');
     expect(slider.getAttribute('aria-valuetext')).toContain('unavailable');
     expect(slider.getAttribute('aria-describedby')).not.toBeNull();
     r.dispose();

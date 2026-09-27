@@ -211,7 +211,7 @@ export interface Capabilities {
   filterWidthMin?: number;   // Min filter width in Hz (default 50)
   filterWidthMax?: number;   // Max filter width in Hz (default 9999)
   filterConfig?: Record<string, FilterModeConfig>;
-  attValues?: number[];   // Attenuator dB steps (e.g. [0,20] for IC-7300, [0,6,12,18] for IC-7610)
+  attValues?: number[];   // Attenuator dB steps (e.g. [0,20] for IC-7300; IC-7610 is 16 x 3 dB steps per rigs/ic7610.toml)
   attLabels?: Record<string, string>;  // Attenuator labels (e.g. {"0":"OFF","6":"6dB"})
   preValues?: number[];   // Preamp levels: 0 = off, 1 = P1, 2 = P2, etc.
   preLabels?: Record<string, string>;  // Preamp labels (e.g. {"0":"OFF","1":"P1","2":"P2"})

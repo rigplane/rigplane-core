@@ -18,7 +18,7 @@ const feedback = $state({
   confirmed: 64, target: null, requestedTarget: null, phase: 'idle', busy: false,
   availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
   sessionEpoch: 1, scope: { control: 'break-in-delay', receiver: 0 },
-  repeatPolicy: 'latest-target-wins',
+  providerGeneration: 3, repeatPolicy: 'latest-target-wins',
 } as ControlFeedback<number>);
 const fresh = () => ({
   storePath: 'fixture', observed: true, freshness: 'fresh' as const,
@@ -76,7 +76,7 @@ afterEach(() => {
   component = null; target?.remove(); setLocale('en-US');
   Object.assign(feedback, { confirmed: 64, target: null, requestedTarget: null, phase: 'idle',
     busy: false, availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
-    sessionEpoch: 1, scope: { control: 'break-in-delay', receiver: 0 } });
+    sessionEpoch: 1, providerGeneration: 3, scope: { control: 'break-in-delay', receiver: 0 } });
   canonical.state = connectedState(); canonical.caps = connectedCaps();
   canonical.session = { state: 'connected', epoch: 1 };
   lifecycle.commands = [];
@@ -256,5 +256,47 @@ describe('fallback CwPanel ControlFeedback wiring (MOR-1754)', () => {
     Object.assign(feedback, changedContext); flushSync();
     r.input().dispatchEvent(new Event('change', { bubbles: true }));
     expect([r.input().value, handlers.onBreakInDelayChange.mock.calls]).toEqual(['64', []]);
+  });
+
+  it('drops the delay draft when provider authority disappears and recovers without a mutation error (MOR-2433)', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    handlers.onBreakInDelayChange.mockClear();
+    const r = render();
+    r.input().value = '111';
+    r.input().dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(r.input().value).toBe('111');
+
+    Object.assign(feedback, { providerGeneration: undefined });
+    flushSync();
+    expect(error.mock.calls.flat().join(' ')).not.toMatch(/state_unsafe_mutation/i);
+    expect([r.input().disabled, r.input().value]).toEqual([false, '64']);
+    r.input().dispatchEvent(new Event('change', { bubbles: true }));
+    expect(handlers.onBreakInDelayChange).not.toHaveBeenCalled();
+
+    Object.assign(feedback, {
+      confirmed: null, target: null, requestedTarget: null, phase: 'unavailable',
+      busy: false, availability: 'unavailable', outcome: null, providerGeneration: null,
+    });
+    flushSync();
+    expect(error.mock.calls.flat().join(' ')).not.toMatch(/state_unsafe_mutation/i);
+    expect([r.input().disabled, r.input().getAttribute('aria-valuetext'),
+      target.querySelector('[data-testid="cw-break-in-delay-value"]')?.textContent])
+      .toEqual([true, 'Control unavailable', '—']);
+    r.input().dispatchEvent(new Event('change', { bubbles: true }));
+    expect(handlers.onBreakInDelayChange).not.toHaveBeenCalled();
+
+    Object.assign(feedback, {
+      confirmed: 64, target: null, requestedTarget: null, phase: 'idle', busy: false,
+      availability: 'available', outcome: null, providerGeneration: 4,
+    });
+    flushSync();
+    expect(error.mock.calls.flat().join(' ')).not.toMatch(/state_unsafe_mutation/i);
+    expect([r.input().disabled, r.input().value]).toEqual([false, '64']);
+    r.input().value = '90';
+    r.input().dispatchEvent(new Event('input', { bubbles: true }));
+    r.input().dispatchEvent(new Event('change', { bubbles: true }));
+    expect(handlers.onBreakInDelayChange).toHaveBeenCalledExactlyOnceWith(90);
+    error.mockRestore();
   });
 });

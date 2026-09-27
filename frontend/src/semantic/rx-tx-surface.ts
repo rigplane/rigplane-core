@@ -11,6 +11,7 @@
  * doubt renders as unknown. ForceOFF remains ungated.
  */
 import { t } from '$lib/i18n';
+import { BLOCKED_REASON_KEY } from '$lib/i18n/blocked-reasons';
 import type { DisabledReason, RadioViewModel, TxTargetViewModel } from './radio-view-model';
 
 /**
@@ -68,26 +69,42 @@ export const BLOCKED_LABEL: Record<KeyBlockedReason, string> = {
 /**
  * MOR-1474: the catalog keys behind each `KeyBlockedReason` — operator-
  * legible, i18n-routed text for the REAL render paths (`RxTxSurface`,
- * `TxAuxSurface`). `tx-target-unknown` and `tx-permit-denied` REUSE the
- * exact MOR-1448 `core.band.tx.reason.*` keys: both fire off the identical
- * underlying facts BandSurface's own reasons read
- * (`view.txTarget.status !== 'known'` / `view.txPermit.status === 'denied'`)
- * — same fact, same words, not a re-derivation with its own wording that
- * could drift from BandSurface's.
+ * `TxAuxSurface`). The table itself lives in
+ * `$lib/i18n/blocked-reasons.ts`: adapters may import only semantic
+ * CONTRACT types (v3 ADR), so the value resolver `blockedReasonLabel`
+ * and the table sit on the lib side of the seam; this surface keeps
+ * only its typed `blockedLabel` wrapper.
  */
-const BLOCKED_KEY: Record<KeyBlockedReason, string> = {
-  'tx-target-unknown': 'core.band.tx.reason.targetUnknown',
-  'tx-permit-denied': 'core.band.tx.reason.outOfBand',
-  'tx-permit-unknown': 'core.rxTx.blocked.permitUnknown',
-  'tx-fault': 'core.rxTx.blocked.fault',
-  'tx-busy': 'core.rxTx.blocked.busy',
-  'radio-transmitting': 'core.rxTx.blocked.radioTransmitting',
-  'rf-state-unknown': 'core.rxTx.blocked.rfStateUnknown',
-};
+const BLOCKED_KEY: Record<KeyBlockedReason, string> = BLOCKED_REASON_KEY;
 /** Resolves a `KeyBlockedReason` to its operator-legible sentence in the
  *  active locale — called fresh on every render so it stays correct across
  *  a live locale switch (MOR-1448 `reasonLabel` precedent). */
 export const blockedLabel = (code: KeyBlockedReason): string => t(BLOCKED_KEY[code]);
+
+/**
+ * MOR-1890: the wire→semantic naming seam for TX-interlock refusals. The
+ * server delivers a `failed` lifecycle with `{blockedBy: 'tx_interlock',
+ * reason: <snake_case code>}`; this surface keys its blocked vocabulary off
+ * kebab-case, so the mapping step below is where the two spellings meet.
+ * An unrecognised wire code must NOT produce a `KeyBlockedReason` — the
+ * refusal then falls back to the raw server message rather than being
+ * swallowed by a wrong label.
+ */
+const REFUSAL_BY_WIRE_CODE: Readonly<Record<string, KeyBlockedReason>> = Object.freeze({
+  rf_state_unknown: 'rf-state-unknown',
+  radio_transmitting: 'radio-transmitting',
+});
+/** A wire refusal code, if and only if it is one this surface has heard of. */
+export const refusalBlockedReason = (code: string): KeyBlockedReason | undefined =>
+  Object.prototype.hasOwnProperty.call(REFUSAL_BY_WIRE_CODE, code)
+    ? REFUSAL_BY_WIRE_CODE[code] : undefined;
+/**
+ * MOR-1890: the refusal-code → operator-sentence resolver. Moved to
+ * `$lib/i18n/blocked-reasons` so `lib/runtime/adapters` (importing only
+ * semantic CONTRACT types per the v3 ADR) can reach it — re-exported here
+ * to keep this module's surface unchanged.
+ */
+export { blockedReasonLabel } from '$lib/i18n/blocked-reasons';
 
 export type TxTargetUnknownReason = Extract<TxTargetViewModel, { status: 'unknown' }>['reason'];
 /** MOR-1474: `view.txTarget`'s four `status: 'unknown'` reasons

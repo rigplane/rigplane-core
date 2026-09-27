@@ -5708,6 +5708,20 @@ class TestPerVfoRoutingFreq:
         single_rx_radio.set_freq.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_single_rx_set_mode_vfob_returns_evfo_mor2484(
+        self, single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
+    ) -> None:
+        """MOR-2484: the rigctld path refuses the SUB/VFO B receiver on a
+        single-RX profile (IC-7300 style) with EVFO — the same meaning as
+        the web enqueue gate's refusal, via the VFO-name seat
+        (``_resolve_target_vfo``)."""
+        resp = await single_rx_handler.execute(
+            _vfo_set_cmd("set_mode", "VFOB", "USB", "2400")
+        )
+        assert resp.error == HamlibError.EVFO
+        single_rx_radio.set_mode.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_dual_rx_get_freq_unknown_vfo_arg_returns_evfo(
         self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
     ) -> None:

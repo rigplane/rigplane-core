@@ -64,7 +64,7 @@
     getPendingNrOn, getPendingPreampLevel,
     getPendingRepeaterShift, getPendingRepeaterTone, getPendingToneFreq,
     getRepeaterHandlers,
-    getSystemHandlers, getDataModeArmed, getModInputArmed,
+    getSystemHandlers, getDataModeArmed, getModInputArmed, getFilterShapeArmed,
     deriveMemoryPanelProps, getMemoryHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
   import { toRitXitProps } from '$lib/runtime/props/panel-props';
@@ -193,6 +193,11 @@
     scopeControlsInRegionContent?: boolean;
     regionExtras?: Snippet<['left' | 'right']>;
     vfoAppearance?: 'semantic' | 'sdr' | 'standard';
+    /** MOR-1245 — set by a shell that mounts its OWN fixed-position
+     *  `ModInputTxWarning` (MobileRadioLayout, both orientations), so the
+     *  `txAdjacentAlerts` instance suppresses itself and the preflight
+     *  cannot render twice. Default keeps every other composition. */
+    suppressModInputTxWarning?: boolean;
     /** Whether the fallback band key PRINTS its permit sentence. The key's
      *  accessible name and its `data-default-permit` carry that fact either
      *  way — `semantic/BandInstrumentHost.svelte` owns the fact, the face
@@ -200,6 +205,16 @@
     bandPermitCaption?: boolean;
     displayFrameSource?: LcdSpectrumSource;
     readonlyDisplay?: Snippet<[RadioViewModel, LcdSpectrumFrame?]>;
+    /**
+     * MOR-2442 — opt-in for a BARE consumer (mobile's self-contained default
+     * composition, where neither `children` nor `regions`/`regionContent` is
+     * in use): compute the managed scope region and expose it through the
+     * bindable `managedScopeRegion` below, so the consumer forwards it to its
+     * own scope panel instead of subscribing a second time.
+     */
+    scopeManaged?: boolean;
+    /** MOR-2442 — the managed region output for the bare `scopeManaged` consumer. */
+    managedScopeRegion?: ManagedScopeRegion | undefined;
   }
   /**
    * MOR-2231 — `regions` routes `vfo`/`rxTx` through the generic `zoned()`
@@ -222,7 +237,7 @@
    * `zoneOwning()` returns non-null on both faces.
    */
   let {
-    children: hostedChildren, externalPresentation = null, strips = 'single', stripBy = 'receiver', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', bandPermitCaption = true, displayFrameSource, readonlyDisplay,
+    children: hostedChildren, externalPresentation = null, strips = 'single', stripBy = 'receiver', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', suppressModInputTxWarning = false, bandPermitCaption = true, displayFrameSource, readonlyDisplay, scopeManaged = false, managedScopeRegion = $bindable(),
   }: Props = $props();
 
   /**
@@ -1420,12 +1435,15 @@
       finiteAppearance: selectedFiniteAppearance, rendererContext: ritXitFiniteRendererContext,
     });
 
+  // MOR-2442 — a bare consumer passes `scopeManaged` instead of `children`,
+  // so hardware detection must not demand the hosted snippet.
   let scopeFrameSource = $derived(
-    displayFrameSource ?? (hostedChildren !== undefined && getScopeSource() === 'hardware' ? 'hardware' : undefined),
+    displayFrameSource ?? ((hostedChildren !== undefined || scopeManaged)
+      && getScopeSource() === 'hardware' ? 'hardware' : undefined),
   );
   let managedScope = $derived(
     scopeFrameSource === 'hardware'
-      && (hostedChildren !== undefined || (regions && regionContent !== undefined)),
+      && (hostedChildren !== undefined || (regions && regionContent !== undefined) || scopeManaged),
   );
   let scopeDemanded = $state(true);
   let scopePresentation = $state.raw<ScopeFramePresentation | null>(null);
@@ -1473,7 +1491,7 @@
     if (!enabled) selectedDisplayFrame = undefined;
     untrack(refreshScopePassband);
   }
-  let managedScopeRegion: ManagedScopeRegion | undefined = $derived.by(() => {
+  let managedScopeRegionValue: ManagedScopeRegion | undefined = $derived.by(() => {
     if (!managedScope) return undefined;
     const resolution = scopePresentation?.resolution;
     const frameMode = scopePresentation?.envelope?.frame.mode;
@@ -1483,6 +1501,10 @@
       ? { frame: resolution.frame, frameMode, acceptedSequence, passband: scopePassband.display } : null;
     return { projection, demanded: scopeDemanded, setDemand: setManagedScopeDemand };
   });
+  // MOR-2442 — the bare `scopeManaged` consumer binds the same region the
+  // hosted/region consumers read through `InstrumentComposition`/snippet
+  // arguments; either way it is exactly one owner of the scope lease.
+  $effect(() => { managedScopeRegion = managedScopeRegionValue; });
   $effect(refreshScopePassband);
 
   let scopeAuthority = $derived.by(() => {
@@ -1704,6 +1726,12 @@
   ) as unknown as TxAuxLevelFeedback);
   let dataModeArmed = $derived(getDataModeArmed());
   let pendingDataMode = $derived(dataModeArmed.armed ? dataModeArmed.value : null);
+  // MOR-1689: Filter Shape's own pending target (set_filter_shape), fed to
+  // FilterInstrumentHost the same way pendingDataMode above is — the
+  // desktop-v2 shape buttons live there, not in the settings-modal
+  // FilterPanel.
+  let filterShapeArmed = $derived(getFilterShapeArmed());
+  let pendingFilterShape = $derived(filterShapeArmed.armed ? filterShapeArmed.value : null);
   let modInputArmed = $derived(getModInputArmed());
   let pendingModInput = $derived(modInputArmed.armed ? modInputArmed.value : null);
   let pendingPreamp = $derived(
@@ -2020,7 +2048,7 @@
   {#snippet children(rfFrontEndInstruments)}
   {#snippet vfoInstrumentComposition(vfoOperations: VfoOperationHandles)}
   <FilterInstrumentHost
-    {...filterFiniteRendererSelection} {view} {pendingFilter} {pendingDataMode} {pendingModInput}
+    {...filterFiniteRendererSelection} {view} {pendingFilter} {pendingFilterShape} {pendingDataMode} {pendingModInput}
     onModeChange={filterIntents.onModeChange}
     onFilterChange={filterIntents.onFilterChange}
     onFilterShapeChange={filterIntents.onFilterShapeChange}
@@ -2276,7 +2304,12 @@
     capabilities load.
   -->
   {#snippet txAdjacentAlerts()}
-    <ModInputTxWarning />
+    <!-- MOR-1245: one gate covers every render path (dual zone, single
+         regions, single default, and the hostedChildren handoff), so a
+         shell with its own fixed instance turns ALL of them off together. -->
+    {#if !suppressModInputTxWarning}
+      <ModInputTxWarning />
+    {/if}
   {/snippet}
 
   <!--
@@ -2971,7 +3004,7 @@
       scopeControls: hostedScopeControls,
       txFaultRecovery,
       modInputTxWarning: txAdjacentAlerts,
-      managedScope: managedScopeRegion,
+      managedScope: managedScopeRegionValue,
     })}
   {:else if strips === 'dual'}
     <!--
@@ -3052,7 +3085,7 @@
       {/if}
       {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBareSurfaces)}
       {#if regionContent}
-        {@render regionContent(scopeControlsInRegionContent ? zonedScopeControls : undefined, managedScopeRegion)}
+        {@render regionContent(scopeControlsInRegionContent ? zonedScopeControls : undefined, managedScopeRegionValue)}
       {/if}
       </div>
       <div class:desktop-controls-right={vfoAppearance !== 'semantic'} class:region-passthrough={vfoAppearance === 'semantic'}>

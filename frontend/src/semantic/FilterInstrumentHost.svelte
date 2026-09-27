@@ -15,6 +15,7 @@
   interface ExistingProps {
     view: RadioViewModel | null;
     pendingFilter?: number | null;
+    pendingFilterShape?: number | null;
     pendingDataMode?: number | null;
     pendingModInput?: number | null;
     onModeChange?: (mode: string) => void;
@@ -31,7 +32,7 @@
   type Props = ExistingProps & RendererSelection;
 
   let {
-    view, pendingFilter = null, pendingDataMode = null, pendingModInput = null,
+    view, pendingFilter = null, pendingFilterShape = null, pendingDataMode = null, pendingModInput = null,
     onModeChange, onFilterChange, onFilterShapeChange, onDataModeChange, onModInputChange,
     finiteAppearance, rendererContext, children,
   }: Props = $props();
@@ -39,6 +40,7 @@
   let modeFilter = $derived(view?.modeFilter);
   let filterPassband = $derived(view?.filterPassband);
   const pendingId = $props.id();
+  const pendingFilterShapeId = `${pendingId}-shape`;
   const pendingDataModeId = `${pendingId}-data-mode`;
   const pendingModInputId = `${pendingId}-mod-input`;
   const usable = (field: { availability: { structural: boolean; operational: boolean };
@@ -47,8 +49,10 @@
       && field.reading.status === 'known';
   const reason = (field: Parameters<typeof usable>[0]) =>
     usable(field) ? undefined : 'field-not-observed';
+  // MOR-2648: an unread value renders an unlit box — empty text, never a
+  // `?` glyph; the box itself stays reserved (the style rule below).
   const textOf = (field: { reading: { status: 'known'; value: unknown } | { status: 'unknown' } }) =>
-    field.reading.status === 'known' ? String(field.reading.value) : '?';
+    field.reading.status === 'known' ? String(field.reading.value) : '';
   const requested = <T,>(target: T | null) => target === null
     ? undefined : { kind: 'requested-target' as const, target };
 
@@ -100,9 +104,9 @@
     requested: requested(pendingFilter), invoke: value => onFilterChange?.(value as number),
   }), { selectionRequiresAvailability: true });
   const shapeSeat = createChoiceRendererSeat<FilterFiniteChoiceValue>(() => ({
-    context: rendererContext ?? null, field: filterPassband?.filterShape, label: 'Filter shape',
+    context: rendererContext ?? null,     field: filterPassband?.filterShape, label: 'Filter shape',
     options: FILTER_SHAPES.map(([value, label]) => ({ value, label })),
-    invoke: value => onFilterShapeChange?.(value as number),
+    requested: requested(pendingFilterShape), invoke: value => onFilterShapeChange?.(value as number),
   }), { selectionRequiresAvailability: true });
   const dataSeat = createChoiceRendererSeat<FilterFiniteChoiceValue>(() => ({
     context: rendererContext ?? null, field: filterPassband?.dataMode, label: 'DATA mode',
@@ -152,10 +156,17 @@
 {#snippet shape()}
   {#if filterPassband?.filterShapeControlStructural}
     {#if finiteAppearance}{@render external(shapeSeat)}{:else}
-      <div class="filter-choice-group" data-testid="filter-shape" data-disabled-reason={reason(filterPassband.filterShape)}>
+      <!-- MOR-1689: same pending affordance the filter() snippet above uses —
+           data-pending on the in-flight choice only, a group announcement
+           while one is in flight, and the confirmed filterShape reading as
+           the sole selection source. -->
+      <div class="filter-choice-group" data-testid="filter-shape" data-disabled-reason={reason(filterPassband.filterShape)}
+        aria-describedby={pendingFilterShape !== null ? pendingFilterShapeId : undefined}>
         {#each FILTER_SHAPES as [value, label] (value)}<button type="button" class="filter-choice"
           data-testid={`filter-shape-${value}`} aria-pressed={shapeBehavior.available && shapeBehavior.isSelected(value)}
-          disabled={!shapeBehavior.available} onclick={() => shapeBehavior.invoke(value)}>{label}</button>{/each}
+          data-pending={pendingFilterShape === value} disabled={!shapeBehavior.available}
+          onclick={() => shapeBehavior.invoke(value)}>{label}</button>{/each}
+        {#if pendingFilterShape !== null}<span id={pendingFilterShapeId} class="sr-only">{t('core.filter.select.pendingAnnouncement')}</span>{/if}
       </div>
     {/if}
   {/if}
@@ -236,7 +247,10 @@
               data-pending-value={pendingModInput === null ? undefined : pendingModInput}
               disabled={!usable(filterPassband.modInputSource)}
               onchange={(event) => onModInputChange?.(Number(event.currentTarget.value))}>
-              {#if filterPassband.modInputSource.reading.status !== 'known'}<option value="" disabled selected>—</option>{/if}
+              <!-- MOR-2648: an unread select shows a blank, unlit choice —
+                   an empty option, never a dash or a fabricated value; the
+                   select's grid column keeps its width reserved. -->
+              {#if filterPassband.modInputSource.reading.status !== 'known'}<option value="" disabled selected></option>{/if}
               {#each filterPassband.modInputChoices ?? [] as choice (choice.value)}
                 <option value={choice.value}
                   selected={filterPassband.modInputSource.reading.status === 'known'
@@ -257,6 +271,10 @@
 <style>
   .filter-choice-group, .filter-readout { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; }
   .filter-level-name { min-width: 8ch; }
+  /* MOR-2648: the DATA-mode value box stays reserved — a flex child, so the
+     min-width applies; 4ch covers a multi-digit code, tabular digits keep a
+     changing value from shifting the row. */
+  .filter-readout output, .filter-choice-group output { min-width: 4ch; font-variant-numeric: tabular-nums; }
   .filter-choice[aria-pressed='true'] { font-weight: 700; }
   .filter-choice:disabled { cursor: not-allowed; }
   .filter-choice[data-pending='true'] { font-style: italic; opacity: 0.75; }

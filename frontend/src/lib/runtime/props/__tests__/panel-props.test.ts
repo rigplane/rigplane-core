@@ -915,6 +915,13 @@ describe('A11 — batch-A projections do not fabricate defaults (MOR-1409)', () 
       const props = toModeProps(makeState(), null);
       expect(props.currentMode).toBe('USB');
     });
+
+    it('lights the hyphen button when the store still holds the enum token (MOR-2508)', () => {
+      for (const [stored, label] of [['PSK_R', 'PSK-R'], ['CW_R', 'CW-R'], ['RTTY_R', 'RTTY-R']] as const) {
+        const props = toModeProps(makeState({ main: { ...makeState().main, mode: stored } }), null);
+        expect(props.currentMode).toBe(label);
+      }
+    });
   });
 
   describe('toAgcProps', () => {

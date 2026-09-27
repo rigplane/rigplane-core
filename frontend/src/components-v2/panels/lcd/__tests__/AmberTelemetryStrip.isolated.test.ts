@@ -1,16 +1,21 @@
 /**
- * Component-level render tests for AmberTelemetryStrip (MOR-483 parts 2 & 3).
+ * Component-level render tests for AmberTelemetryStrip (MOR-483 parts 2 & 3,
+ * MOR-2659 unread treatment).
  *
  * Part 2 — telemetry labels must use the CALIBRATED meter-utils formatters
  * (formatVolts / formatAmps), not the old raw/255 linear maps.
  * Part 3 — the dead TEMP tile (IC-7610 exposes no CI-V temperature) is gone;
  * the strip renders exactly two tiles (VD · ID).
+ * MOR-2659 — an unread meter renders an unlit, EMPTY value in a reserved
+ * box, never a dash.
  *
  * Uses native svelte mount() in jsdom. The runtime adapter
  * `deriveAmberTelemetryProps` is mocked to feed deterministic raw values.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount } from 'svelte';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 
 import { formatVolts, formatAmps } from '../../meter-utils';
 
@@ -21,8 +26,14 @@ import { formatVolts, formatAmps } from '../../meter-utils';
 const VD_VOLTS = 13.8;
 const ID_AMPS = 10;
 
+// MOR-2659: mutable so a test can feed unread (null) meters.
+const mockTelemetry: { vdRaw: number | null; idRaw: number | null } = {
+  vdRaw: VD_VOLTS,
+  idRaw: ID_AMPS,
+};
+
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
-  deriveAmberTelemetryProps: () => ({ vdRaw: VD_VOLTS, idRaw: ID_AMPS }),
+  deriveAmberTelemetryProps: () => mockTelemetry,
 }));
 
 import type { Capabilities } from '$lib/types/capabilities';
@@ -68,6 +79,8 @@ beforeEach(() => {
   target = document.createElement('div');
   document.body.appendChild(target);
   setCapabilities(makeCaps());
+  mockTelemetry.vdRaw = VD_VOLTS;
+  mockTelemetry.idRaw = ID_AMPS;
 });
 
 afterEach(() => {
@@ -100,5 +113,47 @@ describe('AmberTelemetryStrip', () => {
     expect(values[1]).toBe(formatAmps(ID_AMPS));
     expect(values[1]).toContain('10.0');
     unmount(component);
+  });
+
+  // ── MOR-2659: an unread meter renders unlit and empty, never a dash ──
+  describe('unread meters (MOR-2659)', () => {
+    it('renders an unlit, empty value while a meter is unread — never a dash', () => {
+      mockTelemetry.vdRaw = null;
+      mockTelemetry.idRaw = null;
+      const component = mount(AmberTelemetryStrip, { target, props: {} });
+      const values = Array.from(target.querySelectorAll('.tile-value'));
+      expect(values.map((v) => v.textContent)).toEqual(['', '']);
+      const tiles = Array.from(target.querySelectorAll('.tile'));
+      expect(tiles.every((tile) => tile.classList.contains('tile-empty'))).toBe(true);
+      expect(target.textContent).not.toContain('—');
+      expect(target.textContent).not.toContain('unknown');
+      unmount(component);
+    });
+
+    it('renders the unread tile empty while the other stays known', () => {
+      mockTelemetry.vdRaw = null;
+      const component = mount(AmberTelemetryStrip, { target, props: {} });
+      const values = Array.from(target.querySelectorAll('.tile-value')).map((v) => v.textContent);
+      expect(values[0]).toBe('');
+      expect(values[1]).toBe(formatAmps(ID_AMPS));
+      unmount(component);
+    });
+
+    // Reserved-slot pin (AmberIndStrip MOR-2546 precedent: readFileSync of the
+    // component + a regex on its `<style>`, #3591): the value box must keep
+    // its width in the unread state so the first reading cannot move the
+    // layout. 7ch covers the widest text today ("255 raw" / "13.8+ V").
+    it('reserves the tile-value box for the widest text it can show', () => {
+      const stripSource = readFileSync(
+        path.resolve(process.cwd(), 'src/components-v2/panels/lcd/AmberTelemetryStrip.svelte'),
+        'utf8',
+      );
+      expect(stripSource).toMatch(
+        /\.tile-value\s*\{[^}]*min-inline-size:\s*7ch/,
+      );
+      expect(stripSource).toMatch(
+        /\.tile-value\s*\{[^}]*font-variant-numeric:\s*tabular-nums/,
+      );
+    });
   });
 });

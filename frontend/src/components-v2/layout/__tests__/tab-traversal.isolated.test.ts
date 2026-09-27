@@ -49,10 +49,6 @@ vi.mock('$lib/stores/layout.svelte', () => ({
   setLayoutMode: vi.fn(),
 }));
 
-vi.mock('../../../lib/utils/battery', () => ({
-  initBatteryMonitor: vi.fn(async () => vi.fn()),
-}));
-
 vi.mock('../../../lib/media/media-session', () => ({
   initMediaSession: vi.fn(),
   destroyMediaSession: vi.fn(),

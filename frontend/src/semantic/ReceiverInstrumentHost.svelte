@@ -258,6 +258,18 @@
     let authority = $state.raw<ReceiverFrequencyAuthority | null>(initialAuthority);
     let context = $state.raw<object | null>(initialAuthority === null ? null : {});
     const receiverKey = receiver === 'SUB' ? 'sub' : 'main';
+    // MOR-1331 — the digit widget's clamp at this seam: the band envelope
+    // from the LIVE model when both edges are known, else the legacy
+    // wide-open clamp exactly. A plain readout bound, never a TX gate
+    // (fail-open past the edge stays radio-protected + txPermit fail-closed).
+    function tuneBound(which: 'min' | 'max'): number {
+      const edge = which === 'min' ? model?.band?.tuneMinHz : model?.band?.tuneMaxHz;
+      const other = which === 'min' ? model?.band?.tuneMaxHz : model?.band?.tuneMinHz;
+      if (edge == null || other == null || !Number.isFinite(edge) || !Number.isFinite(other)) {
+        return which === 'min' ? 0 : 999_000_000;
+      }
+      return edge;
+    }
     const frequency = createFrequencyInstrumentBinding({
       get confirmedHz() { return activeRecord(model, receiver)?.frequencyHz ?? null; },
       get displayHz() { return displayFrequency(activeRecord(model, receiver)); },
@@ -269,8 +281,8 @@
       get disabled() { return frequencyDisabled(model, receiver); },
       get context() { return context; },
       receiver: receiverKey,
-      minFreq: 0,
-      maxFreq: 999_000_000,
+      get minFreq() { return tuneBound('min'); },
+      get maxFreq() { return tuneBound('max'); },
       get onFreqChange() {
         return onTuneFrequency === undefined
           ? undefined : (frequencyHz: number) => onTuneFrequency?.(receiver, frequencyHz);

@@ -124,7 +124,10 @@ const DOM_BACKED: Readonly<Record<string, () => boolean>> = {
   'desktop-v2': () => sharedShellMounts(desktopV2Layout),
   'lcd-cockpit': () => /<SemanticRadioSurfaces\s*\/>/.test(lcdLayoutSource),
   'lcd-scope': () => /<SemanticRadioSurfaces\s*\/>/.test(lcdLayoutSource),
-  'mobile': () => /<SemanticRadioSurfaces\s*\/>/.test(mobileLayoutSource),
+  // MOR-1245: MobileRadioLayout passes `suppressModInputTxWarning` beside
+  // the (implicit single) composition — same attribute-order-free form as
+  // `flagship-probe`, pinning the dedup prop at the source level.
+  'mobile': () => /<SemanticRadioSurfaces(?=[^>]*\bsuppressModInputTxWarning\b)[^>]*\/>/.test(mobileLayoutSource),
   'dual-receiver-cockpit': () => /<SemanticRadioSurfaces strips="dual"\s*\/>/.test(cockpitShellSource),
   // T160 PR-1: the geometry probe mounts the same dual-receiver composition
   // unconditionally, so every surface its manifest declares has a real DOM

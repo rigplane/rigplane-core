@@ -16,7 +16,8 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
-import MemorySurface, { MAX_MEMORY_CHANNELS, UNKNOWN_TEXT } from '../MemorySurface.svelte';
+import MemorySurface, { MAX_MEMORY_CHANNELS } from '../MemorySurface.svelte';
+import { formatFrequencyString } from '../../components-v2/display/frequency-format';
 import { MEMORY_STORAGE_KEY, type MemoryEntry } from '../memory-channels';
 import type { MemoryPanelProps } from '../../lib/runtime/props/panel-props';
 
@@ -205,7 +206,19 @@ describe('unknown VFO identity (WRONG-VFO GUARD)', () => {
     const r = render(UNKNOWN_IDENTITY);
     const readout = r.target.querySelector('[data-testid="memory-active-vfo"]')!;
     expect(readout.textContent).not.toMatch(/\d/);
-    expect(readout.textContent?.trim()).toBe(`${UNKNOWN_TEXT} ${UNKNOWN_TEXT}`);
+    expect(readout.textContent?.trim()).toBe('');
+    expect(readout.textContent).not.toContain('—');
+    // Highest shipped `end_hz` (IC-9700, 1_300_000_000) and the longest
+    // shipped `[modes].list` label (FTX-1, DATA-FM-N). The pin builds that
+    // string; a literal `14ch` that merely repeats the rule is not enough.
+    const widest = `${formatFrequencyString(1_300_000_000)} DATA-FM-N`;
+    expect(widest).toBe('1300.000.000 DATA-FM-N');
+    const reserved = Number(
+      ((readout as HTMLElement).style.getPropertyValue('--memory-active-vfo-width').match(/^(\d+)ch$/) ?? [])[1],
+    );
+    expect(reserved).toBeGreaterThanOrEqual(widest.length);
+    const rule = /\.active-vfo\s*\{([^}]*)\}/.exec(SOURCE)?.[1] ?? '';
+    expect(rule).toMatch(/min-width:\s*var\(--memory-active-vfo-width/);
     expect(readout.getAttribute('data-observed')).toBe('false');
     r.dispose();
   });

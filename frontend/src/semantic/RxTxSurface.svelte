@@ -122,7 +122,7 @@
   {#if known}
     <p class:sr-only={standard} data-testid="rx-tx-target" data-target="known"
       data-receiver={receiver} data-slot={slot}>
-      TX target: {receiver} {slot} · {frequencyHz ?? '—'} Hz
+      TX target: {receiver} {slot} · {frequencyHz ?? ''}{#if frequencyHz !== null} Hz{/if}
     </p>
   {:else}
     <p class:sr-only={standard} data-testid="rx-tx-target" data-target="unknown" data-reason={reason}>

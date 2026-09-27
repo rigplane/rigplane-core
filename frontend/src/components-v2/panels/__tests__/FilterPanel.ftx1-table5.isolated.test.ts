@@ -65,6 +65,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   },
   getFilterHandlers: () => mockHandlers,
   getFilterArmed: () => ({ armed: false, value: null }),
+  getFilterShapeArmed: () => ({ armed: false, value: null }),
   getFilterWidthControlFeedback: () =>
     widthFeedbackStore.get('value') ?? makeFeedback('filter-width', mockProps.filterWidth),
   getPbtInnerHzControlFeedback: () => makeFeedback('pbt-inner', mockProps.pbtInner ?? 0),

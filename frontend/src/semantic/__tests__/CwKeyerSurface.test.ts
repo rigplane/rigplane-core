@@ -32,7 +32,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { proxy } from 'svelte/internal/client';
 import {
   APF_CHOICES, BREAK_IN_CHOICES, BREAK_IN_REASON_KEY, CW_LEVELS, MUTEX_LABEL, POSTURE_LABEL,
-  UNKNOWN_TEXT, breakInBlockedLabel, breakInPosture, type CwLevelField,
+  breakInBlockedLabel, breakInPosture, type CwLevelField,
 } from '../CwKeyerSurface.svelte';
 import CwKeyerInstrumentHostFixture from './fixtures/CwKeyerInstrumentHostFixture.svelte';
 import { topologyFixtures, withCwKeyer, withModeFilter, withTxAux } from '../fixtures/topologies';
@@ -193,6 +193,24 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
    *  This check regexes THIS file's specifiers only, so that premise is
    *  pinned one level down by `pressed-of.test.ts`'s `'has no runtime
    *  import'` case (verify-MOR-1358 F1) — the two together are the closure. */
+
+  it('renders the RX-mode line as an EMPTY reserved slot when the mode is unread (MOR-2653)', () => {
+    const observed = withModeFilter(base());
+    const view: RadioViewModel = {
+      ...observed,
+      modeFilter: {
+        ...observed.modeFilter!,
+        currentMode: { reading: { status: 'unknown' }, availability: ON },
+      },
+    };
+    const r = render(view, { standard: true });
+    expect(r.el('rx-mode')!.querySelector('output')!.textContent?.trim()).toBe('');
+    // Structural geometry pin (jsdom has no layout): 5ch covers the widest
+    // mode name, so the slot's box never changes when a first read arrives.
+    expect(SOURCE).toMatch(/\.cw-mode-line output\s*\{[^}]*min-width:\s*5ch/);
+    r.dispose();
+  });
+
   it('imports only the allow-listed fact, presentation and numeric dependencies', () => {
     const specifiers = [...CODE.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
@@ -415,7 +433,8 @@ describe('Break-in Delay separates draft, submitted target and confirmed truth',
     expect(unavailableInput.disabled).toBe(true);
     expect(unavailableInput.dataset.commandPhase).toBe('unavailable');
     expect(unavailableInput.getAttribute('aria-valuetext')).toBe('Break-in delay unavailable');
-    expect(unavailable.text('breakInDelay-value')).toContain('— unavailable');
+    expect(unavailable.text('breakInDelay-value')).toBe('unavailable');
+    expect(unavailable.text('breakInDelay-value')).not.toContain('—');
     unavailable.dispose();
   });
 
@@ -577,7 +596,8 @@ describe('Break-in Delay separates draft, submitted target and confirmed truth',
     expect(r.input().disabled).toBe(true);
     expect(r.input().hasAttribute('aria-valuenow')).toBe(false);
     expect(r.input().getAttribute('aria-valuetext')).toBe('Break-in delay unavailable');
-    expect(r.output().textContent).toContain('— unavailable');
+    expect(r.output().textContent).toContain('unavailable');
+    expect(r.output().textContent).not.toContain('—');
     r.input().value = '99';
     r.input().dispatchEvent(new Event('input', { bubbles: true }));
     r.input().dispatchEvent(new Event('change', { bubbles: true }));
@@ -596,7 +616,8 @@ describe('Break-in Delay separates draft, submitted target and confirmed truth',
     const r = renderReactiveFeedback(malformed);
     expect(r.input().disabled).toBe(true);
     expect(r.input().hasAttribute('aria-valuenow')).toBe(false);
-    expect(r.output().textContent).toContain('— unavailable');
+    expect(r.output().textContent).toContain('unavailable');
+    expect(r.output().textContent).not.toContain('—');
     r.dispose();
   });
 });
@@ -963,13 +984,16 @@ describe('every unread fact renders honestly, never as a v2 default', () => {
   });
 
   // Kills: an unread level rendering as a number, and a thumb free to claim
-  // any position (the MOR-1279 F1 / MOR-1304 F2 precedent).
-  it.each(NATIVE_LEVELS)('renders an unread %s as unknown and parks the thumb at min', (field, _l, min) => {
+  // any position (the MOR-1279 F1 / MOR-1304 F2 precedent). MOR-2653: the
+  // unread value is EMPTY in its reserved slot — never a placeholder dash.
+  it.each(NATIVE_LEVELS)('renders an unread %s as an empty reserved slot and parks the thumb at min', (field, _l, min) => {
     const onLevelChange = vi.fn();
     const r = render(
       withCw({ [field]: unread<number>() } as Partial<CwKeyerViewModel>), { onLevelChange },
     );
-    expect(r.text(`${field}-value`)).toContain(UNKNOWN_TEXT);
+    expect(r.text(`${field}-value`)).toBe('');
+    expect(r.text(`${field}-value`)).not.toContain('—');
+    expect(r.el(`${field}-value`)!.classList.contains('cw-keyer-readout')).toBe(true);
     expect(r.el(field)!.dataset.observed).toBe('false');
     expect(r.input(field)!.disabled).toBe(true);
     expect(r.input(field)!.valueAsNumber).toBe(min);
@@ -1008,9 +1032,11 @@ describe('every unread fact renders honestly, never as a v2 default', () => {
     }
   });
 
-  it('renders an unread APF ordinal as unknown with nothing checked', () => {
+  it('renders an unread APF ordinal as an empty reserved slot with nothing checked', () => {
     const r = render(withCw({ apf: unread<number>(DEGRADED) }));
-    expect(r.text('apf-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('apf-value')).toBe('');
+    expect(r.text('apf-value')).not.toContain('—');
+    expect(r.el('apf-value')!.classList.contains('cw-keyer-readout')).toBe(true);
     for (const [label] of APF_CHOICES) {
       expect(r.el(`apf-${label}`)!.getAttribute('aria-checked')).toBe('false');
     }
@@ -1035,9 +1061,9 @@ describe('every unread fact renders honestly, never as a v2 default', () => {
   });
 
   it.each([
-    ['twinPeak', 'twin-peak-toggle', 'onTwinPeakToggle'],
-    ['reversePaddle', 'reverse-paddle', 'onReversePaddleToggle'],
-  ] as const)('disables and refuses %s while unobserved', (field, id, handler) => {
+    ['twinPeak', 'twin-peak-toggle', 'onTwinPeakToggle', 'TPF'],
+    ['reversePaddle', 'reverse-paddle', 'onReversePaddleToggle', 'Reverse paddle'],
+  ] as const)('disables and refuses %s while unobserved', (field, id, handler, _label) => {
     const spy = vi.fn();
     const r = render(
       withCw({ [field]: unread<boolean>(DEGRADED) } as Partial<CwKeyerViewModel>),
@@ -1051,6 +1077,26 @@ describe('every unread fact renders honestly, never as a v2 default', () => {
     r.dispose();
   });
 
+  // MOR-2653 KEY treatment (MOR-2527 owner rule): a toggle is a KEY — the
+  // label only, lit by `aria-pressed`; an unread reading draws the unlit
+  // label with no `NAME: value` text and no pressed state at all.
+  it.each([
+    ['twinPeak', 'twin-peak-toggle', 'onTwinPeakToggle', 'TPF'],
+    ['reversePaddle', 'reverse-paddle', 'onReversePaddleToggle', 'Reverse paddle'],
+  ] as const)('renders %s as a KEY — the label only, never "NAME: value"', (field, id, _handler, label) => {
+    for (const [value, pressed] of [[true, 'true'], [false, 'false']] as const) {
+      const r = render(withCw({ [field]: known(value) } as Partial<CwKeyerViewModel>));
+      expect(r.text(id)).toBe(label);
+      expect(r.text(id)).not.toContain(':');
+      expect(r.el(id)!.getAttribute('aria-pressed')).toBe(pressed);
+      r.dispose();
+    }
+    const unreadR = render(withCw({ [field]: unread<boolean>(DEGRADED) } as Partial<CwKeyerViewModel>));
+    expect(unreadR.text(id)).toBe(label);
+    expect(unreadR.el(id)!.hasAttribute('aria-pressed')).toBe(false);
+    unreadR.dispose();
+  });
+
   it('emits the reverse-paddle intent when observed', () => {
     const onReversePaddleToggle = vi.fn();
     const r = render(base(), { onReversePaddleToggle });
@@ -1061,11 +1107,19 @@ describe('every unread fact renders honestly, never as a v2 default', () => {
   });
 
   // Kills: an unknown state that is only a colour or an attribute (MOR-977).
-  it('keeps every unknown distinguishable as TEXT', () => {
+  // MOR-2653: every unknown readout is now an EMPTY reserved slot — the
+  // honest rendering the operator can still tell from a value — never a
+  // placeholder dash.
+  it('keeps every unknown honest — an empty reserved slot, never placeholder text', () => {
     const r = render(withCw({
       keyerSpeed: unread<number>(), pitchHz: unread<number>(), apf: unread<number>(),
+      breakInDelay: unread<number>(),
     }));
-    expect(r.root()!.textContent).toContain(UNKNOWN_TEXT);
+    for (const id of ['apf-value', 'breakInDelay-value']) {
+      expect(r.text(id)).toBe('');
+      expect(r.text(id)).not.toContain('—');
+      expect(r.el(id)!.classList.contains('cw-keyer-readout')).toBe(true);
+    }
     r.dispose();
   });
 });
@@ -1080,6 +1134,22 @@ describe('sidetone level is txAux.monitorLevel — read there, not duplicated (M
     const r = render(withTxAux(base()));
     expect(r.text('sidetone')).toBe('Sidetone level: 128');
     expect(r.el('sidetone')!.querySelector('input, button')).toBeNull();
+    r.dispose();
+  });
+
+  // MOR-2653: an unread sidetone level renders an EMPTY reserved slot after
+  // the label — never a placeholder dash and never an invented value.
+  it('renders an unread sidetone level as an empty reserved slot', () => {
+    const observed = withTxAux(base());
+    const view = {
+      ...observed,
+      txAux: { ...observed.txAux!, monitorLevel: unread<number>() },
+    };
+    const r = render(view);
+    expect(r.text('sidetone')).toBe('Sidetone level:');
+    expect(r.text('sidetone')).not.toContain('—');
+    const slot = r.el('sidetone')!.querySelector('output.cw-keyer-readout')!;
+    expect(slot.textContent?.trim()).toBe('');
     r.dispose();
   });
 

@@ -399,9 +399,9 @@ describe('ReceiverInstrumentHost', () => {
     expect(fills()).toBe(0); expect(meter().textContent).toContain('S1');
     publisher.emit(publication({ meterKnown: false, generation: 3 })); flushSync();
     // MOR-2509: the unknown reading renders the empty unlit face — the
-    // state lives in the accessible label, not in a placeholder glyph.
+    // accessible label carries the bare meter name, not a placeholder glyph.
     expect(fills()).toBe(0);
-    expect(meter().querySelector('svg')!.getAttribute('aria-label')).toContain('unknown');
+    expect(meter().querySelector('svg')!.getAttribute('aria-label')).toBe('S meter');
     expect(meter().textContent).not.toContain('unknown');
     expect(meter().textContent).not.toContain('?');
     motion.reduced(true); expect(motion.frames).toBe(0);
@@ -552,6 +552,18 @@ describe('ReceiverInstrumentHost', () => {
     // displayed history — the extent does not step down with the reading.
     expect(Number(svg().querySelector('[data-meter-fill]')!.getAttribute('x2')))
       .toBeCloseTo(retainedFill, 6);
+  });
+
+  // MOR-1331: the hosted digit clamp reads the LIVE band envelope. The base
+  // caps carry `freqRanges: []`, so the band group is absent and the clamp
+  // stays wide open; one emission at 14.250 MHz must still leave as +1 Hz.
+  it('keeps the legacy wide clamp while the band group is absent', () => {
+    const publisher = new Publisher(publication()); const tune = vi.fn();
+    const root = mountFixture(publisher, { onTuneFrequency: tune });
+    const readout = root.querySelector<HTMLElement>('[data-frequency-owner="MAIN"] [data-alternate-frequency-readout]')!;
+    readout.querySelector<HTMLButtonElement>('[data-multiplier="1"]')!.click();
+    readout.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    expect(tune).toHaveBeenCalledExactlyOnceWith('MAIN', 14_250_001);
   });
 
   it('requires the synchronous publisher and owns no fallback clocks or continuity comparison', () => {

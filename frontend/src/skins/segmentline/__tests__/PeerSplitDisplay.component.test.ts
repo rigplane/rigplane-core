@@ -182,8 +182,15 @@ describe('PeerSplitDisplay', () => {
 
     expect(factRail.querySelectorAll('[data-state="active"]')).toHaveLength(0);
     expect(factRail.querySelectorAll('[data-state="unknown"]')).toHaveLength(9);
-    expect(factRail.textContent).toContain('PRE ?');
-    expect(factRail.textContent).toContain('ATT ?');
+    // MOR-2650: an unread flag is its bare unlit label in a reserved slot —
+    // no value text, no '?' placeholder. PRE/ATT carry no statusLabel hook,
+    // so the front flags are found by their label text.
+    expect(factRail.textContent).toContain('PRE');
+    expect(factRail.textContent).toContain('ATT');
+    const frontFlags = [...factRail.querySelectorAll('.status-flag')]
+      .filter((node) => /^(PRE|ATT)/.test(node.textContent?.trim() ?? ''));
+    expect(frontFlags).toHaveLength(2);
+    expect(frontFlags.map((node) => node.textContent?.trim())).toEqual(['PRE', 'ATT']);
   });
 
   it('keeps split-off geometry without claiming a zero delta', () => {
@@ -193,8 +200,10 @@ describe('PeerSplitDisplay', () => {
     const splitCells = target.querySelectorAll('[data-testid$="-split"]');
 
     expect(splitCells).toHaveLength(2);
+    // MOR-2650: the split-off slot keeps its reserved box with no digits —
+    // never a fabricated 0.000 or an '—' placeholder.
     expect([...splitCells].map((cell) => cell.textContent)).toEqual([
-      'SPLIT —kHz', 'SPLIT —kHz',
+      'SPLIT kHz', 'SPLIT kHz',
     ]);
     expect([...splitCells].some((cell) => cell.textContent?.includes('0.000'))).toBe(false);
   });

@@ -34,7 +34,6 @@ const h = vi.hoisted(() => ({
   resourcesEnded: false,
   bootstrap: vi.fn(),
   bootstrapCleanup: vi.fn(),
-  initBattery: vi.fn(),
   provide: vi.fn(),
   registerBarrier: vi.fn(),
   txHost: undefined as { refreshAuthority: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn> } | undefined,
@@ -109,7 +108,6 @@ vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({ provideManagedAp
 vi.mock('$lib/i18n', () => ({ t: (key: string) => key }));
 vi.mock('$lib/stores/capabilities.svelte', () => ({ hasAnyScope: () => false }));
 vi.mock('$lib/stores/layout.svelte', () => ({ getLayoutMode: () => 'standard' }));
-vi.mock('../lib/utils/battery', () => ({ initBatteryMonitor: h.initBattery }));
 vi.mock('../lib/media/media-session', () => ({ initMediaSession: vi.fn(), destroyMediaSession: vi.fn() }));
 // The App-global host and local-extensions host have their own suites; here
 // they only need a stable, identifiable node so a switch can be shown not to
@@ -228,7 +226,6 @@ beforeEach(() => {
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1200 });
   Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 });
   h.bootstrap.mockResolvedValue(h.bootstrapCleanup);
-  h.initBattery.mockResolvedValue(vi.fn());
   h.resolveSkinId.mockImplementation(({ isMobile }: { isMobile: boolean }) => (isMobile ? 'mobile' : 'desktop-v2'));
   h.getPresentationRecord.mockImplementation((id: SkinId) => ({
     id, kind: 'built-in-self-contained', loader: vi.fn(), resources: h.plan(id),

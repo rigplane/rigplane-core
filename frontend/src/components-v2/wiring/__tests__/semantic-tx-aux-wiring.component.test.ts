@@ -1704,7 +1704,9 @@ describe('MOR-2509 bridge radio-function keys share state with the TX panel', ()
     // TUNING reads amber so it stays visually distinct from ON (red).
     expect(bridgeTuner.getAttribute('data-indicator-color')).toBe('amber');
     expect(txTuner.getAttribute('aria-pressed')).toBe('true');
-    expect(txTuner.textContent).toContain('tuning');
+    // MOR-2647: the key text stays the bare label; the tuning fact moves to the title.
+    expect(txTuner.textContent?.trim()).toBe('ATU');
+    expect(txTuner.getAttribute('title')).toBe('ATU: tuning');
   });
 
   it('clicking the bridge keys dispatches the TX panel handlers, not a fork', () => {
