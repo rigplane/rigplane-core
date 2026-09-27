@@ -154,14 +154,22 @@ test('phone one-tile VFO keeps its box across a VFO switch (MOR-2662)', async ({
   await page.waitForSelector('body[data-harness-ready="true"]');
   await page.evaluate(() => document.fonts.ready);
   const geometry = await page.evaluate(async () => {
-    const { mount, flushSync, unmount } = await import('/@id/svelte');
-    const { default: VfoSurface } = await import('/src/semantic/VfoSurface.svelte');
-    const { topologyFixtures } = await import('/src/semantic/fixtures/topologies');
-    const activeOn = (id: 'A' | 'B') => topologyFixtures['1/ab'].vfos.map((vfo) => ({
-      ...vfo, frequencyHz: id === 'A' ? 7100000 : 7150000,
-      isActive: vfo.slot.kind === 'slotted' && vfo.slot.id === id,
-      isActiveSlot: vfo.slot.kind === 'slotted' && vfo.slot.id === id,
-    }));
+    // Non-literal specifiers (the "TX lower state clearance" tests' own
+    // pattern): a literal '/@id/svelte' import fails svelte-check's module
+    // resolution, a variable-length one is an `any` dynamic import at check
+    // time and resolves at runtime in the dev server.
+    const runtimePath = '/@id/svelte';
+    const surfacePath = '/src/semantic/VfoSurface.svelte';
+    const fixturesPath = '/src/semantic/fixtures/topologies';
+    const { mount, flushSync, unmount } = await import(runtimePath);
+    const { default: VfoSurface } = await import(surfacePath);
+    const { topologyFixtures } = await import(fixturesPath);
+    const activeOn = (id: 'A' | 'B') => topologyFixtures['1/ab'].vfos.map(
+      (vfo: { slot: { kind: string; id: string } }) => ({
+        ...vfo, frequencyHz: id === 'A' ? 7100000 : 7150000,
+        isActive: vfo.slot.kind === 'slotted' && vfo.slot.id === id,
+        isActiveSlot: vfo.slot.kind === 'slotted' && vfo.slot.id === id,
+      }));
     const readA = { ...topologyFixtures['1/ab'], vfos: activeOn('A') };
     const readB = { ...topologyFixtures['1/ab'], vfos: activeOn('B') };
     const measure = (model: typeof readA) => {
