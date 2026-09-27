@@ -131,8 +131,6 @@
   // readout names the other one. Pinned by MobileRadioLayout.component.svelte.test.ts,
   // describe "mobile header follows the active receiver (MOR-2511)".
   let activeVfo = $derived(activeReceiver === 'SUB' ? subVfo : mainVfo);
-  let otherVfo = $derived(activeReceiver === 'SUB' ? mainVfo : subVfo);
-
   function selectReceiver(target: 'MAIN' | 'SUB') {
     if (target === 'MAIN') {
       vfoHandlers.onMainVfoClick?.();
@@ -682,9 +680,6 @@
     <div class="m-vfo-meta">
       <span class="m-vfo-mode">{activeVfo.mode}</span>
       <span class="m-vfo-filter">{activeVfo.filter}</span>
-      {#if hasDualReceiver() && otherVfo.freq > 0}
-        <span class="m-vfo-sub" title={receiverLabel(activeReceiver === 'SUB' ? 'MAIN' : 'SUB')}>{(otherVfo.freq / 1_000_000).toFixed(3)}</span>
-      {/if}
       {#if ritXit.ritActive}
         <span class="m-vfo-rit" title="RIT offset">
           RIT {formatOffsetDisplay(ritXit.ritOffset)}
@@ -724,7 +719,7 @@
            (`.m-mod-input-warning`, both orientations), so the shared
            wiring's instance suppresses itself. The mounting tests pin one
            rendered banner per orientation. -->
-      <SemanticRadioSurfaces scopeManaged bind:managedScopeRegion={managedScopeRegion} suppressModInputTxWarning />
+      <SemanticRadioSurfaces scopeManaged vfoTiles="active" bind:managedScopeRegion={managedScopeRegion} suppressModInputTxWarning />
     </section>
 
     <!-- Chip-scroll IA nav (#839) -->
@@ -1375,22 +1370,6 @@
   .m-vfo-filter {
     color: var(--v2-text-secondary, #aaa);
     font-size: 11px;
-  }
-
-  .m-vfo-sub {
-    font-family: 'Roboto Mono', monospace;
-    font-size: 10px;
-    color: var(--v2-text-dim, #666);
-    margin-left: auto;
-    letter-spacing: 0.02em;
-  }
-
-  .m-vfo-sub::before {
-    content: 'SUB ';
-    font-size: 8px;
-    font-weight: 700;
-    color: var(--v2-text-dim, #555);
-    letter-spacing: 0.08em;
   }
 
   /* RIT/XIT offset badge in sticky header meta row (#842). Only renders

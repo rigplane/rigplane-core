@@ -193,6 +193,13 @@
     scopeControlsInRegionContent?: boolean;
     regionExtras?: Snippet<['left' | 'right']>;
     vfoAppearance?: 'semantic' | 'sdr' | 'standard';
+    /**
+     * MOR-2662 (owner ruling 2026-09-26): forwarded to the single
+     * composition's `VfoSurface` — `'active'` is the phone's one-tile
+     * presentation (only the active VFO's tile). Default `'all'` keeps every
+     * other mount byte-identical; the dual strips composition never reads it.
+     */
+    vfoTiles?: 'all' | 'active';
     /** MOR-1245 — set by a shell that mounts its OWN fixed-position
      *  `ModInputTxWarning` (MobileRadioLayout, both orientations), so the
      *  `txAdjacentAlerts` instance suppresses itself and the preflight
@@ -237,7 +244,7 @@
    * `zoneOwning()` returns non-null on both faces.
    */
   let {
-    children: hostedChildren, externalPresentation = null, strips = 'single', stripBy = 'receiver', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', suppressModInputTxWarning = false, bandPermitCaption = true, displayFrameSource, readonlyDisplay, scopeManaged = false, managedScopeRegion = $bindable(),
+    children: hostedChildren, externalPresentation = null, strips = 'single', stripBy = 'receiver', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', vfoTiles = 'all', suppressModInputTxWarning = false, bandPermitCaption = true, displayFrameSource, readonlyDisplay, scopeManaged = false, managedScopeRegion = $bindable(),
   }: Props = $props();
 
   /**
@@ -2230,6 +2237,7 @@
       <VfoSurface
         viewModel={view}
         {appearance}
+        {vfoTiles}
         operationInput={vfoOperationInput ?? undefined}
         {operationControls}
         onSelectVfo={selectVfo}

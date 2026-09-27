@@ -350,14 +350,22 @@ describe('no antenna command leaves the tree while the transmitter is not idle',
   // MUTATION KILLED (end to end, past `disabled` AND past the surface handler):
   // inverting or dropping the under-power gate. This is the whole point of the
   // slice — a relay switched under power damages the radio.
-  it.each([['transmitting', TRANSMITTING], ['RF-state unknown', RF_UNKNOWN]] as const)(
-    'sends nothing on a forced port click while %s', (_label, snapshot) => {
+  it.each([
+    ['transmitting', TRANSMITTING, 'a TX session is already in progress; the radio is already transmitting'],
+    ['RF-state unconfirmed', RF_UNKNOWN, 'Waiting for the transmitter to confirm it is off'],
+  ] as const)('sends nothing on a forced port click while %s', (_label, snapshot, sentence) => {
       txHarness.emitServerSnapshot(snapshot);
       render();
       forceClick(btn('port-2')!);
       forceClick(btn('rx-toggle')!);
       expect(sendCommand).not.toHaveBeenCalled();
       expect(btn('port-2')!.disabled).toBe(true);
+      // MOR-2691: the removed `antenna-blocked` element is gone; the catalog
+      // sentence is on the disabled controls' `title`, built off the same
+      // block codes the gate uses.
+      expect(el('blocked')).toBeNull();
+      expect(btn('port-2')!.title).toBe(sentence);
+      expect(btn('rx-toggle')!.title).toBe(sentence);
     },
   );
 
@@ -367,7 +375,9 @@ describe('no antenna command leaves the tree while the transmitter is not idle',
   it('sends nothing while the live tunerStatus was never observed', () => {
     h.state = liveState({ tunerStatus: undefined } as Partial<ServerState>);
     render();
-    expect(el('blocked')!.textContent).toContain('ATU');
+    // MOR-2691: the reason is the disabled control's `title`, as a catalog
+    // sentence — the removed `antenna-blocked` list was the only ATU text.
+    expect(btn('port-2')!.title).toBe('Waiting for the tuner to confirm it is idle');
     forceClick(btn('port-2')!);
     expect(sendCommand).not.toHaveBeenCalled();
   });
@@ -490,7 +500,7 @@ describe('the persistent host admits on CURRENT facts, not on rendered props', (
     flushSync();
 
     // Host admission is still open: no blocked reason, the port still enabled.
-    expect(el('blocked')!.textContent.trim()).toBe('');
+    expect(btn('port-2')!.title).toBe('');
     expect(btn('port-2')!.disabled).toBe(false);
     forceClick(btn('port-2')!);
     expect(sendCommand).not.toHaveBeenCalled();
@@ -513,7 +523,11 @@ describe('one mounted host outlives replacing the Standard face with the SDR fac
 
   // MUTATION KILLED: mounting the host inside a face-specific branch, or
   // handing each face its own owner. Either way the seats below would be
-  // replaced with the face rather than outliving it.
+  // replaced with the face rather than outliving it. MOR-2691 note: the old
+  // identity pin read the `blockedId` off the removed `antenna-blocked`
+  // element, so the surviving-owner claim now pins on the authority
+  // subscription count and the seat arrangement, and on a still-routed
+  // command below.
   it('arranges the seats independently on Standard, grouped on SDR, and back', () => {
     const props = renderHosted('desktop-v2');
     const subscribers = h.authoritySubscribers.size;
@@ -521,17 +535,13 @@ describe('one mounted host outlives replacing the Standard face with the SDR fac
     expect(independent()).toHaveLength(1);
     expect(grouped()).toHaveLength(0);
     expect(seats()).toEqual([1, 1]);
-    expect(btn('port-2')!.getAttribute('aria-describedby')).toBe(el('blocked')!.id);
-    // `blockedId` is minted once per HOST instance (`$props.id()`), so holding
-    // it across both replacements is what says ONE owner survived them.
-    const owner = el('blocked')!.id;
+    expect(btn('port-2')!.getAttribute('aria-describedby')).toBeNull();
 
     props.skinId = 'sdr-test';
     flushSync();
     expect(grouped()).toHaveLength(1);
     expect(independent()).toHaveLength(0);
     expect(seats()).toEqual([1, 1]);
-    expect(el('blocked')!.id).toBe(owner);
     expect(h.authoritySubscribers.size).toBe(subscribers);
 
     props.skinId = 'desktop-v2';
@@ -539,7 +549,6 @@ describe('one mounted host outlives replacing the Standard face with the SDR fac
     expect(independent()).toHaveLength(1);
     expect(grouped()).toHaveLength(0);
     expect(seats()).toEqual([1, 1]);
-    expect(el('blocked')!.id).toBe(owner);
     expect(h.authoritySubscribers.size).toBe(subscribers);
 
     // The seats the third face rendered still reach the shipped command.
