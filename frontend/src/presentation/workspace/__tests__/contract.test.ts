@@ -244,7 +244,6 @@ describe('decision 4 + MOR-2218 — density ids and the per-skin language map', 
   });
 
   it('MOR-2218: an undeclared stored value clamps to THAT skin\'s default', () => {
-    // `studioline` is known but no `peer-split` declaration accepts it.
     const undeclared = readWorkspace({ ...VALID, designLanguageBySkin: { 'peer-split': 'studioline' } });
     expect(undeclared.workspace.designLanguageBySkin).toEqual({ 'peer-split': 'segmentline' });
     expect(undeclared.rejections).toContainEqual({ field: 'designLanguageBySkin.peer-split', reason: 'out-of-clamp' });
