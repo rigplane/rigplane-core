@@ -798,8 +798,8 @@ describe('raw sMeter renders honestly, never a fabricated S-unit (MOR-1451)', ()
     const view = withRaw(base(), 'signal', 53);
     withSurface(view, (s) => {
       const tile = s.tile('signal')!;
-      // The signal caption's own value span is the number's only seat; the
-      // SWR lower-scale marks beside it legitimately carry their own digits.
+      // The signal caption's own value span is empty; the SWR lower-scale
+      // marks beside it legitimately carry their own digits.
       const value = tile.querySelector('.meter-native-caption .meter-native-value');
       expect(value?.textContent).toBe('');
       expect(tile.textContent).not.toContain('uncalibrated');
@@ -852,8 +852,8 @@ describe('station signal rendering honors the explicit sample domain (MOR-2425)'
         const view = withSignalDomain(withRaw(base(), 'signal', 53), { kind: 'raw' });
         withSurface(view, (s) => {
           const signal = s.tile('signal')!;
-          // The signal caption's own value span is the number's only seat;
-          // the SWR lower-scale marks beside it carry their own digits.
+          // The signal caption's own value span is empty; the SWR
+          // lower-scale marks beside it carry their own digits.
           expect(signal.querySelector('.meter-native-caption .meter-native-value')
             ?.textContent).toBe('');
           expect(signal.textContent).not.toContain('uncalibrated');

@@ -570,7 +570,8 @@
   // The v8 face reads one line — the S-unit — so a KNOWN calibrated reading
   // drops its second field (the dBm) from the projection's accessible name.
   // Every other projection wording (the engineering value with its own
-  // unit) stays verbatim — pinned by ReceiverInstrumentHost.isolated.test.ts.
+  // unit) stays verbatim — pinned by
+  // `meters/__tests__/smeter-scale.projection.test.ts`.
   // An uncalibrated or unread meter — and a known reading whose unit is
   // unknown — takes the projection's bare 'S meter' name (MOR-2649,
   // MOR-2651, MOR-2705 part 4a).
@@ -606,9 +607,6 @@
       {/each}
       <text x="412" y="31" text-anchor="end" fill="var(--v2-text-primary, #DFFCF5)"
         font-family="Roboto Mono, monospace" font-size="12" font-weight="700">{displaySUnit}</text>
-      <!-- MOR-2705 part 4a: an uncalibrated radio draws no number under the
-           value — the raw count is not an operator reading. -->
-
     </g>
     {/if}
   </svg>

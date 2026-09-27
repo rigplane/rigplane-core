@@ -305,16 +305,19 @@ describe('AmberSmeter', () => {
   });
 
   // MOR-2705 part 4a: calibration is a profile fact — on an uncalibrated
-  // radio the S-source readout and the S/dB scale words are not drawn at
-  // all (no empty reserved slot), while the TX sources keep theirs.
-  it('draws no readout and no S/dB scale words for the S source on an uncalibrated radio (MOR-2705 part 4a)', () => {
+  // radio the S-source readout contents and the S/dB scale words are empty,
+  // but the readout BOX keeps its 80px reservation for every source: the
+  // source flips to a TX meter as soon as a finite TX reading arrives, and
+  // the box must not appear or disappear with a reading.
+  it('keeps an empty readout box for the S source and hides the S/dB scale words on an uncalibrated radio (MOR-2705 part 4a)', () => {
     const previous = activeSMeterCal;
     activeSMeterCal = [];
     try {
       const component = mount(AmberSmeter, { target, props: { value: 53, source: 'S' } });
-      expect(target.querySelector('.meter-readout')).toBeNull();
+      expect(target.querySelector('.meter-readout')).not.toBeNull();
       expect(target.querySelector('.readout-s')).toBeNull();
       expect(target.querySelector('.readout-dbm')).toBeNull();
+      expect(target.querySelector('.meter-readout')?.textContent).toBe('');
       expect(target.querySelector('.scale-s-label')).toBeNull();
       expect(target.querySelector('.scale-db-zone')).toBeNull();
       expect(target.querySelectorAll('.seg').length).toBe(192);
@@ -322,6 +325,7 @@ describe('AmberSmeter', () => {
 
       const po = mount(AmberSmeter, { target, props: { value: 143, source: 'PO' } });
       expect(target.querySelector('.meter-readout')).not.toBeNull();
+      expect(target.querySelector('.readout-s')?.textContent).toBe('PO');
       unmount(po);
     } finally {
       activeSMeterCal = previous;

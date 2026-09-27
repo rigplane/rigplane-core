@@ -26,9 +26,10 @@ export function formatStep(hz: number): string {
 
 // ── S-meter formatting ──
 // Thin delegates to the shared calibration-aware helpers (MOR-1451): the
-// mobile readouts follow the same profile-declared curve — and the same
-// honest-uncalibrated raw fallback — as every other S-meter surface,
-// instead of a third hardcoded copy of one radio's math.
+// mobile readouts follow the same profile-declared curve as every other
+// S-meter surface, instead of a third hardcoded copy of one radio's math.
+// An uncalibrated radio draws no S-unit/dBm text at all (MOR-2705 part 4a);
+// the layout removes the whole readout row (isSmeterCalibrated gate).
 
 export function formatSValue(actual: number): string {
   return calibratedToSUnit(actual);

@@ -393,11 +393,11 @@ export function compLevel(value: number, domain?: MeterValueDomain): number | nu
 // ---- S-meter (dB-rel-S9 when calibrated; MOR-1451) ----
 
 /**
- * Formats calibrated S-meter value (dB relative to S9) as an S-unit string.
- * Falls back to the honest raw-tagged reading (`formatRaw`, e.g. "53 raw";
- * MOR-1527) when the radio has no s_meter calibration table — never a
- * reading borrowed from a different radio's curve (MOR-1451), and never a
- * naked number indistinguishable from a real S-unit claim (MOR-1535).
+ * Formats a calibrated S-meter value (dB relative to S9) as an S-unit string.
+ * Renders nothing when the radio has no s_meter calibration table — a raw
+ * count is not an operator reading, and a calibrated-looking number would be
+ * invented (MOR-1451, MOR-2705 part 4a). The bar still moves: callers keep
+ * `sLevel`'s raw-proportional fill.
  *
  * The calibrated branch defers entirely to `smeter-scale.ts`'s
  * `calibratedToSUnit` (MOR-2024) — this file no longer runs its own S-unit
@@ -409,7 +409,7 @@ export function compLevel(value: number, domain?: MeterValueDomain): number | nu
 export function formatSMeter(actual: number): string {
   const calibration = getMeterCalibration('s_meter') ?? [];
   if (!isSmeterCalibrated(calibration)) {
-    return formatRaw(actual);
+    return '';
   }
   return calibratedToSUnit(actual, calibration);
 }

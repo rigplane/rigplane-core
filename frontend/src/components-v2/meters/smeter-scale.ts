@@ -112,9 +112,9 @@ function getCal(): SmeterCalibrationPoint[] {
  *  with at least two knots. Interpolation needs two points to define a
  *  line; a single knot cannot support a calibrated reading, so it counts
  *  as uncalibrated the same as zero knots (MOR-2024) rather than resolving
- *  every input to that one knot's value. False means the S-unit/dBm text
- *  below must fall back to an honest raw-scale label instead of
- *  fabricating a reading against a borrowed curve (MOR-1451). */
+ *  every input to that one knot's value. False means no S-unit or dBm text
+ *  may be drawn at all — a reading would be fabricated against a borrowed
+ *  curve (MOR-1451, MOR-2705 part 4a); the bar still moves. */
 export function isSmeterCalibrated(): boolean {
   return isSmeterCalibratedForCalibration(getCal());
 }

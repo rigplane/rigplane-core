@@ -78,12 +78,16 @@
 
   let filledSegs = $derived(Math.round(smoother.value));
 
-  // MOR-2705 part 4a: calibration is a profile fact. On an uncalibrated
-  // radio the S-source readout (the raw count, the dBm) and the S/dB scale
-  // words are not drawn at all for the whole session — never an empty
-  // reserved slot. The TX sources (PO/SWR/ALC/COMP) carry their own units
-  // and do not depend on the S-meter calibration, so they keep the readout.
-  let sSourceHidden = $derived(source === 'S' && !isSmeterCalibrated());
+  // MOR-2705 part 4a: calibration is a profile fact, but the readout box is
+  // shared by every source — the source flips to a TX meter as soon as a
+  // finite TX reading arrives, so the box never appears or disappears with a
+  // reading (nothing blinks, nothing moves). On an uncalibrated radio the
+  // S-source box stays EMPTY (no number, no word); the TX sources (PO/SWR/
+  // ALC/COMP) carry their own units and do not depend on the S-meter
+  // calibration. The S/dB scale words depend on calibration alone, never on
+  // the selected source.
+  let sContentsHidden = $derived(source === 'S' && !isSmeterCalibrated());
+  let scaleWordsHidden = $derived(!isSmeterCalibrated());
 
   // Sub-readouts use the calibrated piecewise converters from meter-utils
   // (shared with the desktop meters) instead of crude raw/255 maps, so the
@@ -129,21 +133,22 @@
           <span class="tick-label">{tick.label}</span>
         </div>
       {/each}
-      {#if !sSourceHidden}
+      {#if !scaleWordsHidden}
         <span class="scale-s-label">S</span>
         <span class="scale-db-zone" style="left: {(s9Raw / scaleMaxRaw) * 100}%">dB</span>
       {/if}
     </div>
   </div>
 
-  <!-- Readout: not drawn at all for the S source on an uncalibrated radio
-       (MOR-2705 part 4a) — the TX sources keep it. -->
-  {#if !sSourceHidden}
+  <!-- MOR-2705 part 4a: the box stays for every source (its 80px
+       reservation keeps the bar from narrowing when the source flips);
+       only its S-source contents are empty on an uncalibrated radio. -->
   <div class="meter-readout">
-    <span class="readout-s">{sReadout.label}</span>
-    <span class="readout-dbm">{sReadout.sub}</span>
+    {#if !sContentsHidden}
+      <span class="readout-s">{sReadout.label}</span>
+      <span class="readout-dbm">{sReadout.sub}</span>
+    {/if}
   </div>
-  {/if}
 </div>
 
 <style>

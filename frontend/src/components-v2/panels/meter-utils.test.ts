@@ -684,8 +684,8 @@ describe('formatSMeter / sLevel — uncalibrated fallback (MOR-1451)', () => {
     setCapabilities(makeCaps({ model: 'X6200' }));
   });
 
-  it('formatSMeter renders the raw-tagged number, not a fabricated S-unit and not a naked number (MOR-1535: the same honesty gap MOR-1527 fixed for the other six formatters)', () => {
-    expect(formatSMeter(53)).toBe('53 raw');
+  it('formatSMeter renders nothing, not a raw count and not a fabricated S-unit (MOR-2705 part 4a: a raw count is not an operator reading)', () => {
+    expect(formatSMeter(53)).toBe('');
   });
 
   it('sLevel degrades to a neutral raw-proportional bar position', () => {
@@ -721,10 +721,10 @@ describe('formatSMeter / sLevel / isSmeterCalibrated — one-knot table cannot s
     expect(isSmeterCalibrated()).toBe(false);
   });
 
-  it('formatSMeter renders the honest raw-tagged reading, never a fabricated S-unit, and is not constant across inputs', () => {
-    expect(formatSMeter(-20)).toBe('0 raw');
-    expect(formatSMeter(53)).toBe('53 raw');
-    expect(formatSMeter(150)).toBe('150 raw');
+  it('formatSMeter renders nothing — never a fabricated S-unit, never a raw count (MOR-2705 part 4a)', () => {
+    expect(formatSMeter(-20)).toBe('');
+    expect(formatSMeter(53)).toBe('');
+    expect(formatSMeter(150)).toBe('');
   });
 
   it('sLevel agrees with formatSMeter that this tile is uncalibrated', () => {
