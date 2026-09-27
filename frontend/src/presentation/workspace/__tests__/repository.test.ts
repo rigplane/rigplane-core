@@ -221,7 +221,7 @@ describe('workspace unknown future versions (MOR-1079)', () => {
     expect(writable).toBe(true);
   });
 
-  it.each([0, 1, 5, 99, 1.5, 'two', null])('discards an unreadable version, NEVER falling back to migration: %s', (version) => {
+  it.each([0, 5, 99, 1.5, 'two', null])('discards an unreadable version, NEVER falling back to migration: %s', (version) => {
     const storage = new FakeStorage();
     seedLegacy(storage);
     store(storage, { ...DEFAULT_WORKSPACE, version, theme: 'nord' });

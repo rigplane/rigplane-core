@@ -281,8 +281,11 @@ export function readWorkspace(input: unknown): WorkspaceReadResult {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) return reset('');
   const raw = input as Record<string, unknown>;
   const version = raw.version;
+  // MOR-2218: exactly one version back migrates on read (v1 → v2); anything
+  // older or unknown still rides the discard rule.
+  const migrating = version === WORKSPACE_SCHEMA_VERSION - 1;
   const readable = typeof version === 'number' && Number.isInteger(version)
-    && version >= WORKSPACE_SCHEMA_VERSION && version <= WORKSPACE_SCHEMA_VERSION + WORKSPACE_FORWARD_READ_WINDOW;
+    && version >= WORKSPACE_SCHEMA_VERSION - 1 && version <= WORKSPACE_SCHEMA_VERSION + WORKSPACE_FORWARD_READ_WINDOW;
   if (!readable) {
     return { outcome: 'version-discarded', discardedVersion: version, workspace: DEFAULT_WORKSPACE, preserved: {}, rejections: [{ field: 'version', reason: 'malformed' }] };
   }
@@ -301,14 +304,14 @@ export function readWorkspace(input: unknown): WorkspaceReadResult {
   }
 
   const workspace: WorkspaceV1 = {
-    version, layout, designLanguageBySkin,
+    version: migrating ? WORKSPACE_SCHEMA_VERSION : version, layout, designLanguageBySkin,
     theme: pickId(raw.theme, WORKSPACE_THEME_IDS, 'default', 'theme', rejections),
     density: pickDensity(raw.density, rejections),
     visibleSurfaces: pickZoneMap(raw.visibleSurfaces, 'visibleSurfaces', rejections),
     zoneOrder: pickZoneMap(raw.zoneOrder, 'zoneOrder', rejections),
     pinnedCommands: pickCommands(raw.pinnedCommands, rejections),
   };
-  const outcome = version > WORKSPACE_SCHEMA_VERSION ? 'forward-read' : rejections.length > 0 ? 'repaired' : 'ok';
+  const outcome = version > WORKSPACE_SCHEMA_VERSION ? 'forward-read' : rejections.length > 0 || migrating ? 'repaired' : 'ok';
   return { outcome, workspace, preserved, rejections };
 }
 

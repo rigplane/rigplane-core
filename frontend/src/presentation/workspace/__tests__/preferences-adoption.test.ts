@@ -111,10 +111,6 @@ describe('MOR-1082 — density resolves against the ACTIVE design language', () 
   });
 
   it('clamps against the ACTIVE language even when the stored one allows the value', () => {
-    // The workspace stores `studioline` + `dense`; the language actually
-    // ACTIVE on screen is a fieldline-clamped one. Kills: resolving the clamp
-    // from `workspace.designLanguage` (or from the pinned mirror) instead of
-    // from the manifest handed in.
     const stored = workspace({ density: 'dense' });
     expect(stored.density).toBe('dense');
     expect(densityActivation(activeFieldline, 'dual-receiver-cockpit', stored.density)).toBe('comfortable');

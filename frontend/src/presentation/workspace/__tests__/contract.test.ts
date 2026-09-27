@@ -154,14 +154,24 @@ describe('decision 11 + rollback window — version policy', () => {
     expect(result.rejections).toEqual([{ field: 'version', reason: 'malformed' }]);
   });
 
-  it.each([undefined, null, '1', 1.5, 0, 1])('discards a non-current version marker %p', (version) => {
+  it.each([undefined, null, '1', 1.5, 0])('discards a non-current version marker %p', (version) => {
     expect(readWorkspace({ ...VALID, version }).outcome).toBe('version-discarded');
   });
 
-  it('MOR-2218: a stored v1 object is discarded, not migrated — the version bump rides the existing rule', () => {
-    const result = readWorkspace({ ...VALID, version: 1, designLanguage: 'fieldline', designLanguageBySkin: undefined });
-    expect(result.outcome).toBe('version-discarded');
-    expect(result.workspace).toEqual(DEFAULT_WORKSPACE);
+  it('MOR-2218: a stored v1 object migrates to v2 — fields kept, global designLanguage dropped', () => {
+    const result = readWorkspace({
+      version: 1, layout: 'lcd-scope', designLanguage: 'fieldline', designLanguageBySkin: undefined,
+      theme: 'nord', density: 'compact',
+      visibleSurfaces: { 'control-column': ['vfo'] }, zoneOrder: { 'rx-tx': ['rxTx'] },
+      pinnedCommands: ['set_compressor'],
+    });
+    expect(result.outcome).toBe('repaired');
+    expect(result.workspace).toEqual({
+      version: 2, layout: 'lcd-scope', designLanguageBySkin: {}, theme: 'nord', density: 'compact',
+      visibleSurfaces: { 'control-column': ['vfo'] }, zoneOrder: { 'rx-tx': ['rxTx'] },
+      pinnedCommands: ['set_compressor'],
+    });
+    expect(result.preserved).not.toHaveProperty('designLanguage');
   });
 
   it.each([3, 4])('N=2 forward-read: version %i is READ, not discarded', (version) => {

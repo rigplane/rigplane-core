@@ -70,7 +70,7 @@ describe('workspace store boot (MOR-1079)', () => {
 
     expect(getWorkspace().theme).toBe('tokyo-night');
     expect(getWorkspace().layout).toBe('standard');
-    expect(storage.getItem(WORKSPACE_MIGRATION_SENTINEL_KEY)).toBe('1');
+    expect(storage.getItem(WORKSPACE_MIGRATION_SENTINEL_KEY)).toBe(String(WORKSPACE_SCHEMA_VERSION));
     expect(stored(storage).theme).toBe('tokyo-night');
   });
 
@@ -128,7 +128,7 @@ describe('workspace store boot (MOR-1079)', () => {
 
     expect(getWorkspace().layout).toBe('lcd-cockpit');
     expect(getWorkspace().theme).toBe('nord');
-    expect(quota.getItem(WORKSPACE_MIGRATION_SENTINEL_KEY)).toBe('1');
+    expect(quota.getItem(WORKSPACE_MIGRATION_SENTINEL_KEY)).toBe(String(WORKSPACE_SCHEMA_VERSION));
   });
 });
 
@@ -198,7 +198,7 @@ describe('the discard signal is surfaced, never swallowed (MOR-1079)', () => {
     // corrupt bytes are replaced by the committed migration result.
     expect(getWorkspace().theme).toBe('nord');
     expect(getWorkspaceNotice()).toBeNull();
-    expect(storage.getItem(WORKSPACE_MIGRATION_SENTINEL_KEY)).toBe('1');
+    expect(storage.getItem(WORKSPACE_MIGRATION_SENTINEL_KEY)).toBe(String(WORKSPACE_SCHEMA_VERSION));
     expect(stored(storage).theme).toBe('nord');
   });
 

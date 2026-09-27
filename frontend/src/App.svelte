@@ -95,14 +95,6 @@
   let presentation = $state<CommittedPresentation | null>(null);
   let committedLayoutId = $derived<string | null>(presentation?.layoutId ?? null);
 
-  // MOR-1081: the workspace's `designLanguage` is the ONLY source the
-  // `[data-design-language]` activation attribute (MOR-1278) is written from,
-  // and this is its only writer — the MOR-1275 renderer wiring and the
-  // language stylesheets both read that same attribute, so there is no second
-  // activation path. `designLanguageActivation` gates on the language's own
-  // manifest, which is what keeps the shipped v2 skins unchanged until the
-  // cutover (MOR-1048/MOR-1263) declares them compatible.
-  //
   // MOR-1082 rides the SAME effect and the same gate rather than adding a
   // second one: `[data-density]` carries the resolved density (the workspace
   // override clamped by the ACTIVE language's own DensityClamp) on the same

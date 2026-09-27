@@ -547,11 +547,11 @@ const FUTURE_FIELDS = { futureField: { nested: [1, 2] }, anotherFuture: 'plain-v
 
 describe('MOR-1083 class 4 — the forward-read window (N=2)', () => {
   it('the window is exactly current+2', () => {
-    expect(WORKSPACE_SCHEMA_VERSION).toBe(1);
+    expect(WORKSPACE_SCHEMA_VERSION).toBe(2);
     expect(WORKSPACE_FORWARD_READ_WINDOW).toBe(2);
   });
 
-  it.each([2, 3])('v%i lossless: read, update and write back UN-DOWNGRADED', (version) => {
+  it.each([3, 4])('v%i lossless: read, update and write back UN-DOWNGRADED', (version) => {
     const storage = new LedgerStorage();
     storage.map.set(WORKSPACE_STORAGE_KEY, JSON.stringify({
       ...DEFAULT_WORKSPACE, version, theme: 'nord', ...FUTURE_FIELDS,
@@ -572,7 +572,7 @@ describe('MOR-1083 class 4 — the forward-read window (N=2)', () => {
     expectNoForbiddenBytes(storage, `forward-lossless-v${version}`);
   });
 
-  it.each([2, 3])('v%i LOSSY: latched read-only — no update may ever overwrite it', (version) => {
+  it.each([3, 4])('v%i LOSSY: latched read-only — no update may ever overwrite it', (version) => {
     const storage = new LedgerStorage();
     const original = JSON.stringify({
       ...DEFAULT_WORKSPACE, version, theme: `v${version}-only-theme`, ...FUTURE_FIELDS,
