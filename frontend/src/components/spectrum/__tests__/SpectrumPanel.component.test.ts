@@ -2671,7 +2671,7 @@ describe('center panorama motion (MOR-2464)', () => {
       // MOR-2743: the intermediate shift exists only inside the real 0–100 ms
       // PANORAMA_SETTLE_MS band, and the rAF frame that renders it can miss
       // that band on a loaded runner (quick run 36340105991 lost it once).
-      // Same treatment as the MOR-2714 pin below the file: drive the
+      // Same treatment as the MOR-2714 pin above the file: drive the
       // panorama clock from a stubbed performance.now stepped per tick, so
       // the intermediate and the settled value are both deterministic.
       let panoramaNow = 0;
