@@ -50,6 +50,9 @@ export interface SegmentlinePerimeter {
   readonly lit: boolean;
   readonly label: string | null;
   readonly tone: string;
+  /** MOR-2671: the doubt bucket is HOLLOW — an outlined ring with no glow fill —
+   *  so the unconfirmed warning never relies on colour or a `?` in the text. */
+  readonly hollow: boolean;
   /** Empty string when not lit — never a partial glow. */
   readonly insetShadow: string;
   readonly transition: string;
@@ -82,13 +85,15 @@ export interface SegmentlineStateFeedback {
  * the perimeter rather than a rail or a band, belongs to segmentline. `null`
  * label at `idle` is the RX baseline — the only silent state.
  */
-const RAIL_TABLE: Record<TxFeedbackRail, { readonly lit: boolean; readonly label: string | null }> = {
-  idle: { lit: false, label: null },
-  pending: { lit: true, label: 'KEYING' },
-  keyed: { lit: true, label: 'TX' },
-  releasing: { lit: true, label: 'UNKEYING' },
-  failed: { lit: true, label: 'TX FAULT' },
-  doubt: { lit: true, label: 'TX?' },
+const RAIL_TABLE: Record<TxFeedbackRail, {
+  readonly lit: boolean; readonly label: string | null; readonly hollow: boolean;
+}> = {
+  idle: { lit: false, label: null, hollow: false },
+  pending: { lit: true, label: 'KEYING', hollow: false },
+  keyed: { lit: true, label: 'TX', hollow: false },
+  releasing: { lit: true, label: 'UNKEYING', hollow: false },
+  failed: { lit: true, label: 'TX FAULT', hollow: false },
+  doubt: { lit: true, label: 'TX', hollow: true },
 };
 
 export function renderStateFeedback(
@@ -114,7 +119,8 @@ export function renderStateFeedback(
       lit: rail.lit,
       label: rail.label,
       tone,
-      insetShadow: rail.lit ? FRAME_GLOW : '',
+      hollow: rail.hollow,
+      insetShadow: rail.lit && !rail.hollow ? FRAME_GLOW : '',
       transition: `border-color ${tokens.motion.durationMs}ms linear, box-shadow ${tokens.motion.durationMs}ms linear`,
     },
     cell: {

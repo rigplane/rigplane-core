@@ -15,7 +15,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
-import { DEFAULT_WORKSPACE } from '../contract';
+import { DEFAULT_WORKSPACE, WORKSPACE_SCHEMA_VERSION } from '../contract';
 import { designLanguageActivation } from '../activation';
 import { WORKSPACE_MIGRATION_SENTINEL_KEY, WORKSPACE_STORAGE_KEY } from '../repository';
 import { getWorkspace, initWorkspaceStore, setDesignLanguage } from '../store.svelte';
@@ -68,7 +68,7 @@ function recorder(seed: Record<string, string> = {}): Recorder {
 }
 
 function workspaceJson(fields: Record<string, unknown>): string {
-  return JSON.stringify({ version: 1, ...fields });
+  return JSON.stringify({ version: WORKSPACE_SCHEMA_VERSION, ...fields });
 }
 
 /** Every key written that is not the one workspace key or its migration sentinel. */
@@ -162,21 +162,21 @@ describe('MOR-1081 — one workspace field set owns the selection', () => {
 
     setLayoutMode('lcd-scope');
     setThemeUserChoice('gruvbox-dark');
-    setDesignLanguage('fieldline');
+    setDesignLanguage('desktop-v2', 'fieldline');
 
     // Reload: a fresh init against the same bytes.
     initWorkspaceStore(rec.storage);
 
     expect(getLayoutMode()).toBe('lcd-scope');
     expect(getTheme()).toBe('gruvbox-dark');
-    expect(getWorkspace().designLanguage).toBe('fieldline');
+    expect(getWorkspace().designLanguageBySkin['desktop-v2']).toBe('fieldline');
   });
 
   it('keeps selection working in-memory when writes are blocked (forward-read-only)', () => {
     // A newer object this build cannot fully represent: the store latches
     // "not writable", but the operator can still change presentation now.
     const rec = recorder({
-      [WORKSPACE_STORAGE_KEY]: JSON.stringify({ version: 2, layout: 'lcd-scope', theme: 'v2-only-theme' }),
+      [WORKSPACE_STORAGE_KEY]: JSON.stringify({ version: 4, layout: 'lcd-scope', theme: 'v2-only-theme' }),
       [WORKSPACE_MIGRATION_SENTINEL_KEY]: '1',
     });
     initWorkspaceStore(rec.storage);
@@ -310,7 +310,7 @@ describe('MOR-1278 — the workspace is the only source [data-design-language] i
     const rec = recorder({
       [WORKSPACE_STORAGE_KEY]: workspaceJson({
         layout: 'standard',
-        designLanguage: 'fieldline',
+        designLanguageBySkin: { 'desktop-v2': 'fieldline' },
         density: 'compact',
         futureBenign: { preserved: true },
       }),
@@ -332,18 +332,18 @@ describe('MOR-1278 — the workspace is the only source [data-design-language] i
     expect(designLanguageActivation(fieldline, resolveSkinId({
       capabilities: null, layoutPreference: getLayoutMode(), isMobile: false, hasAnyScope: false,
     }))).toBeNull();
-    expect(getWorkspace().designLanguage).toBe('fieldline');
+    expect(getWorkspace().designLanguageBySkin['desktop-v2']).toBe('fieldline');
     expect(getWorkspace().density).toBe('compact');
 
     setLayoutMode('standard');
     expect(designLanguageActivation(fieldline, resolveSkinId({
       capabilities: null, layoutPreference: getLayoutMode(), isMobile: false, hasAnyScope: false,
     }))).toBe('fieldline');
-    expect(getWorkspace().designLanguage).toBe('fieldline');
+    expect(getWorkspace().designLanguageBySkin['desktop-v2']).toBe('fieldline');
     expect(getWorkspace().density).toBe('compact');
     expect(JSON.parse(rec.data.get(WORKSPACE_STORAGE_KEY)!)).toMatchObject({
       layout: 'standard',
-      designLanguage: 'fieldline',
+      designLanguageBySkin: { 'desktop-v2': 'fieldline' },
       density: 'compact',
       futureBenign: { preserved: true },
     });

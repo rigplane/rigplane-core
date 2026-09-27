@@ -17,7 +17,7 @@ import {
   canPersistWorkspace, loadWorkspace, markWorkspaceMigrated, persistWorkspace,
 } from '../repository';
 import { LEGACY_KEY_ROUTING } from '../legacy-readers';
-import { DEFAULT_WORKSPACE, serializeWorkspace } from '../contract';
+import { DEFAULT_WORKSPACE, WORKSPACE_SCHEMA_VERSION, serializeWorkspace } from '../contract';
 
 class FakeStorage {
   readonly map = new Map<string, string>();
@@ -213,7 +213,7 @@ describe('workspace unknown future versions (MOR-1079)', () => {
 
   it('a lossless forward read stays writable', () => {
     const storage = new FakeStorage();
-    store(storage, { ...DEFAULT_WORKSPACE, version: 2, futureField: 7 });
+    store(storage, { ...DEFAULT_WORKSPACE, version: WORKSPACE_SCHEMA_VERSION + 1, futureField: 7 });
 
     const { result, writable } = loadWorkspace(storage);
 
@@ -221,7 +221,7 @@ describe('workspace unknown future versions (MOR-1079)', () => {
     expect(writable).toBe(true);
   });
 
-  it.each([0, 4, 99, 1.5, 'two', null])('discards an unreadable version, NEVER falling back to migration: %s', (version) => {
+  it.each([0, 5, 99, 1.5, 'two', null])('discards an unreadable version, NEVER falling back to migration: %s', (version) => {
     const storage = new FakeStorage();
     seedLegacy(storage);
     store(storage, { ...DEFAULT_WORKSPACE, version, theme: 'nord' });

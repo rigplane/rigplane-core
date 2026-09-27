@@ -11,7 +11,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   DEFAULT_WORKSPACE, WORKSPACE_DENSITY_CLAMP, WORKSPACE_DESIGN_LANGUAGE_IDS, WORKSPACE_LAYOUT_IDS,
-  WORKSPACE_SCHEMA_VERSION, WORKSPACE_THEME_IDS, WORKSPACE_ZONE_IDS, normalizeWorkspaceLayoutId,
+  WORKSPACE_SCHEMA_VERSION, WORKSPACE_SKIN_DESIGN_LANGUAGES, WORKSPACE_THEME_IDS, WORKSPACE_ZONE_IDS,
+  normalizeWorkspaceLayoutId,
   readWorkspace, readWorkspaceJson, serializeWorkspace, workspaceLayoutManifestId,
   type WorkspaceForbiddenClass, type WorkspaceV1,
 } from '../contract';
@@ -29,9 +30,9 @@ import { getAvailableThemes } from '../../../components-v2/theme/theme-switcher'
 import { LEGACY_LAYOUT_ALIASES } from '../../layout-mode';
 
 const VALID: WorkspaceV1 = {
-  version: 1,
+  version: WORKSPACE_SCHEMA_VERSION,
   layout: 'lcd-cockpit',
-  designLanguage: 'fieldline',
+  designLanguageBySkin: { 'desktop-v2': 'fieldline' },
   theme: 'nord',
   density: 'compact',
   visibleSurfaces: { 'control-column': ['vfo'] },
@@ -80,6 +81,25 @@ describe('registry sync — the pinned id spaces still match their live owners',
     const live = [...new Set(manifests.flatMap((m) => m.zones.map((z) => z.id)))].sort();
     expect([...WORKSPACE_ZONE_IDS].sort()).toEqual(live);
   });
+
+  it('per-skin design-language declarations match the live layoutCompatibility manifests', () => {
+    // Derived from the LIVE declarations: `supported` is every language
+    // whose `layoutCompatibility` names the skin `compatible: true`, and
+    // `default` is the first of those (MOR-2218: derive, never hand-write).
+    const live: Record<string, { supported: string[]; default: string }> = {};
+    for (const manifest of [studioline, fieldline, segmentline]) {
+      for (const entry of manifest.layoutCompatibility) {
+        if (entry.compatible !== true) continue;
+        (live[entry.layoutId] ??= { supported: [], default: manifest.id }).supported.push(manifest.id);
+      }
+    }
+    expect(Object.keys(WORKSPACE_SKIN_DESIGN_LANGUAGES).sort()).toEqual(Object.keys(live).sort());
+    for (const [skin, declared] of Object.entries(WORKSPACE_SKIN_DESIGN_LANGUAGES)) {
+      expect(declared.supported).toEqual(live[skin]?.supported);
+      expect(declared.default).toBe(live[skin]?.default);
+    }
+  });
+
 });
 
 describe('decision 12 — valid v1 round-trips unchanged', () => {
@@ -134,11 +154,27 @@ describe('decision 11 + rollback window — version policy', () => {
     expect(result.rejections).toEqual([{ field: 'version', reason: 'malformed' }]);
   });
 
-  it.each([undefined, null, '1', 1.5, 0])('discards a non-v1 version marker %p', (version) => {
+  it.each([undefined, null, '1', 1.5, 0])('discards a non-current version marker %p', (version) => {
     expect(readWorkspace({ ...VALID, version }).outcome).toBe('version-discarded');
   });
 
-  it.each([2, 3])('N=2 forward-read: version %i is READ, not discarded', (version) => {
+  it('MOR-2218: a stored v1 object migrates to v2 — fields kept, global designLanguage dropped', () => {
+    const result = readWorkspace({
+      version: 1, layout: 'lcd-scope', designLanguage: 'fieldline', designLanguageBySkin: undefined,
+      theme: 'nord', density: 'compact',
+      visibleSurfaces: { 'control-column': ['vfo'] }, zoneOrder: { 'rx-tx': ['rxTx'] },
+      pinnedCommands: ['set_compressor'],
+    });
+    expect(result.outcome).toBe('repaired');
+    expect(result.workspace).toEqual({
+      version: 2, layout: 'lcd-scope', designLanguageBySkin: {}, theme: 'nord', density: 'compact',
+      visibleSurfaces: { 'control-column': ['vfo'] }, zoneOrder: { 'rx-tx': ['rxTx'] },
+      pinnedCommands: ['set_compressor'],
+    });
+    expect(result.preserved).not.toHaveProperty('designLanguage');
+  });
+
+  it.each([3, 4])('N=2 forward-read: version %i is READ, not discarded', (version) => {
     const stored = { ...VALID, version, brandNewField: 'from-a-newer-app' };
     const result = readWorkspace(stored);
     expect(result.outcome).toBe('forward-read');
@@ -148,8 +184,8 @@ describe('decision 11 + rollback window — version policy', () => {
     expect(serializeWorkspace(result)).toEqual(stored);
   });
 
-  it('version 4 is one past the window and discards', () => {
-    expect(readWorkspace({ ...VALID, version: 4 }).outcome).toBe('version-discarded');
+  it('version 5 is one past the window and discards', () => {
+    expect(readWorkspace({ ...VALID, version: 5 }).outcome).toBe('version-discarded');
   });
 });
 
@@ -198,27 +234,39 @@ describe('forbidden classes — one refusal per class, fail-closed', () => {
   });
 });
 
-describe('decision 4 — density is clamped by the ACTIVE design language', () => {
-  it('honours an in-clamp override', () => {
-    expect(readWorkspace({ ...VALID, designLanguage: 'studioline', density: 'dense' }).workspace.density).toBe('dense');
+describe('decision 4 + MOR-2218 — density ids and the per-skin language map', () => {
+  it('honours every density the union clamp admits; an unknown id repairs', () => {
+    expect(readWorkspace({ ...VALID, density: 'dense' }).workspace.density).toBe('dense');
+    const unknown = readWorkspace({ ...VALID, density: 'spacious' });
+    expect(unknown.workspace.density).toBe('comfortable');
+    expect(unknown.rejections).toContainEqual({ field: 'density', reason: 'unknown-id' });
   });
 
-  it('clamps `dense` out under fieldline and says why', () => {
-    const result = readWorkspace({ ...VALID, designLanguage: 'fieldline', density: 'dense' });
-    expect(result.workspace.density).toBe('comfortable');
-    expect(result.rejections).toContainEqual({ field: 'density', reason: 'out-of-clamp' });
+  it('keeps a declared per-skin value, drops an undeclared skin key, degrades a malformed map', () => {
+    const stored = { ...VALID, designLanguageBySkin: { 'desktop-v2': 'fieldline', 'peer-split': 'segmentline' } };
+    expect(readWorkspace(stored).workspace.designLanguageBySkin)
+      .toEqual({ 'desktop-v2': 'fieldline', 'peer-split': 'segmentline' });
+    expect(serializeWorkspace(readWorkspace(stored))).toEqual(stored);
+    const unknown = readWorkspace({ ...VALID, designLanguageBySkin: { 'lcd-cockpit': 'studioline' } });
+    expect(unknown.workspace.designLanguageBySkin).toEqual({});
+    expect(unknown.rejections).toContainEqual({ field: 'designLanguageBySkin.lcd-cockpit', reason: 'unknown-id' });
+    expect(readWorkspace({ ...VALID, designLanguageBySkin: 'studioline' }).workspace.designLanguageBySkin).toEqual({});
   });
 
-  it('an unknown density is `unknown-id`, not `out-of-clamp`', () => {
-    expect(readWorkspace({ ...VALID, density: 'spacious' }).rejections)
-      .toContainEqual({ field: 'density', reason: 'unknown-id' });
+  it('MOR-2218: an undeclared stored value clamps to THAT skin\'s default', () => {
+    const undeclared = readWorkspace({ ...VALID, designLanguageBySkin: { 'peer-split': 'studioline' } });
+    expect(undeclared.workspace.designLanguageBySkin).toEqual({ 'peer-split': 'segmentline' });
+    expect(undeclared.rejections).toContainEqual({ field: 'designLanguageBySkin.peer-split', reason: 'out-of-clamp' });
+    // An unknown language id is `unknown-id` and still clamps to the default.
+    const unknown = readWorkspace({ ...VALID, designLanguageBySkin: { 'desktop-v2': 'nope' } });
+    expect(unknown.workspace.designLanguageBySkin).toEqual({ 'desktop-v2': 'studioline' });
+    expect(unknown.rejections).toContainEqual({ field: 'designLanguageBySkin.desktop-v2', reason: 'unknown-id' });
   });
 
-  it('the clamp follows the language that was actually accepted, not the one requested', () => {
-    // An invalid language falls back to studioline, whose clamp then admits `dense`.
-    const result = readWorkspace({ ...VALID, designLanguage: 'nope', density: 'dense' });
-    expect(result.workspace.designLanguage).toBe('studioline');
-    expect(result.workspace.density).toBe('dense');
+  it('MOR-2218: the retired global `designLanguage` is dropped, not migrated, not preserved', () => {
+    const result = readWorkspace({ ...VALID, designLanguage: 'fieldline' });
+    expect(result.workspace.designLanguageBySkin).toEqual(VALID.designLanguageBySkin);
+    expect(serializeWorkspace(result)).not.toHaveProperty('designLanguage');
   });
 });
 
@@ -282,11 +330,11 @@ describe('decisions 5 and 6 — zone constraints', () => {
 describe('decision 12 — invalid state resets, never throws, never blocks boot', () => {
   it('invalid-everything (but a readable version) falls back field by field', () => {
     const result = readWorkspace({
-      version: 1, layout: 7, designLanguage: {}, theme: 'no-such-theme', density: null,
+      version: WORKSPACE_SCHEMA_VERSION, layout: 7, designLanguageBySkin: 'nope', theme: 'no-such-theme', density: null,
       visibleSurfaces: 'nope', zoneOrder: null, pinnedCommands: 'set_compressor',
     });
     expect(result.outcome).toBe('repaired');
-    expect(result.workspace).toEqual({ ...DEFAULT_WORKSPACE, version: 1 });
+    expect(result.workspace).toEqual({ ...DEFAULT_WORKSPACE, version: WORKSPACE_SCHEMA_VERSION });
   });
 
   it.each([null, undefined, 42, 'text', [], true, NaN])('never throws on %p', (input) => {
@@ -301,8 +349,8 @@ describe('decision 12 — invalid state resets, never throws, never blocks boot'
   });
 
   it('a prototype-polluting key is treated as an ordinary unknown field, not applied', () => {
-    const result = readWorkspace(JSON.parse('{"version":1,"__proto__":{"polluted":true}}') as unknown);
+    const result = readWorkspace(JSON.parse('{"version":2,"__proto__":{"polluted":true}}') as unknown);
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
-    expect(result.workspace).toEqual({ ...DEFAULT_WORKSPACE, version: 1 });
+    expect(result.workspace).toEqual({ ...DEFAULT_WORKSPACE, version: WORKSPACE_SCHEMA_VERSION });
   });
 });

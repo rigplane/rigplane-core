@@ -63,6 +63,7 @@
 -->
 <script module lang="ts">
   import type { DisplayObservedField, TxAuxField } from './radio-view-model';
+  import { readingText } from '../primitives/reading-text';
 
   /** `[field, label, min, max, step]` in RAW Hz — the fallback bounds for a
    *  passband row whose group carries no domain: `ifShift` when the profile
@@ -84,10 +85,6 @@
     f.availability.structural && f.availability.operational && f.reading.status === 'known';
   const reasonOf = (f: TxAuxField<unknown>): 'field-not-observed' | undefined =>
     usable(f) ? undefined : 'field-not-observed';
-  // MOR-2648: an unread value renders an unlit box — empty text, never a
-  // `?` glyph; the box itself stays reserved (the style rules below).
-  const textOf = (f: TxAuxField<unknown>): string =>
-    f.reading.status === 'known' ? String(f.reading.value) : '';
   const presentationOf = (f: TxAuxField<unknown>): 'confirmed' | 'retained' | 'unknown' =>
     usable(f) ? 'confirmed' : f.reading.status === 'known' ? 'retained' : 'unknown';
   const pbtDisplay = (f: DisplayObservedField<number>) => f.display ?? (
@@ -612,7 +609,7 @@
             />
           {/if}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <output ondblclick={resetWidthRow}>{textOf(modeFilter.filterWidth)}</output>
+          <output ondblclick={resetWidthRow}>{readingText(modeFilter.filterWidth)}</output>
           {#if filterWidthAnnouncement !== null}
             {#key filterWidthAnnouncement.eventKey}
               <span class="sr-only" role="status" aria-live="polite" aria-atomic="true"
@@ -726,7 +723,7 @@
               >{label}</span>
               {@render passbandRange(field, limits.min, limits.max, limits.step)}
               <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <output ondblclick={() => passbandRows.ifShift.lease?.reset()}>{textOf(filterPassband[field])}</output>
+              <output ondblclick={() => passbandRows.ifShift.lease?.reset()}>{readingText(filterPassband[field])}</output>
               {@render passbandStatus(field)}
             </label>
           {/if}

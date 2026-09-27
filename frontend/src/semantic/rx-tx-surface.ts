@@ -37,9 +37,19 @@ export type KeyBlockedReason =
   | 'tx-target-unknown' | 'tx-permit-denied' | 'tx-permit-unknown'
   | 'tx-fault' | 'tx-busy' | 'radio-transmitting' | 'rf-state-unknown';
 
-/** Passive RX/unknown stay quiet; confirmed and uncertain TX remain explicit without relying on colour. */
-export const RF_LABEL: Record<RfState, string> = { receiving: '', transmitting: 'TX', uncertain: 'TX?', unknown: '' };
+/** Passive RX/unknown stay quiet; confirmed and uncertain TX remain explicit without relying on colour.
+ *  MOR-2671: uncertain reads `TX` too — the distinction from confirmed TX is the hollow MARK below
+ *  (and, at the component level, the unconfirmed accessible sentence), never a `?` in the text. */
+export const RF_LABEL: Record<RfState, string> = { receiving: '', transmitting: 'TX', uncertain: 'TX', unknown: '' };
 export const RF_MARK: Record<RfState, string> = { receiving: '', transmitting: '▲', uncertain: '△', unknown: '' };
+/**
+ * MOR-2671: bare `TX` alone would read as CONFIRMED when the state is uncertain. The accessible
+ * name says so in words — no `?` and no `unknown` — through this one catalog sentence. `null`
+ * for every other state: those names stay their own text.
+ */
+export const RF_UNCONFIRMED_KEY = 'core.rxTx.rf.unconfirmed';
+export const rfUnconfirmedLabel = (state: RfState): string | null =>
+  state === 'uncertain' ? t(RF_UNCONFIRMED_KEY) : null;
 export const SESSION_LABEL: Record<TxSessionState, string> = { idle: 'ready', pending: 'keying', keyed: 'key down', releasing: 'releasing', failed: 'fault' };
 /**
  * MOR-1474: pre-i18n literal English, kept ONLY for `AntennaSurface.svelte`'s

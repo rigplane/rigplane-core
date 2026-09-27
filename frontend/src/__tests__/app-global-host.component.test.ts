@@ -78,9 +78,15 @@ vi.mock('../lib/transport/ws-client', () => ({
 }));
 vi.mock('$lib/i18n', () => ({
   // Interpolate {detail} like the real catalog so failure-text tests
-  // can assert content, not just the key.
+  // can assert content, not just the key. MOR-2671: resolve the RF-risk
+  // sentence the same way, so the accessible-name pins assert the real
+  // catalog string, and empty param calls keep returning the key.
   t: (key: string, params?: Record<string, string>) =>
-    params?.detail !== undefined ? `${key}: ${params.detail}` : key,
+    params?.detail !== undefined
+      ? `${key}: ${params.detail}`
+      : key === 'core.rxTx.rf.unconfirmed'
+        ? 'Transmit not confirmed'
+        : key,
   messageFromReasonCode: (code: string) => code,
 }));
 vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
@@ -262,10 +268,27 @@ describe('AppGlobalHost — authoritative TX source', () => {
   // MUTATION KILLED: collapsing the indication to `radioTx === 'on'` only.
   // `txRisk: 'uncertain'` means the browser may own the key without a
   // confirmed readback — the lamp must fail closed, not stay dark.
+  // MOR-2671: it reads `TX` — never `TX?` — hollow-defined, with the
+  // unconfirmed accessible sentence.
   it('fails closed while TX risk is uncertain', () => {
     txHarness.emitServerSnapshot({ observedPtt: 'unknown', releaseRequired: true });
     const instance = mountAt(AppGlobalHost);
     expect(txEl()?.getAttribute('data-tx')).toBe('uncertain');
+    expect(txEl()?.textContent?.trim()).toBe('TX');
+    expect(txEl()?.getAttribute('aria-label')).toBe('Transmit not confirmed');
+    expect(txEl()?.getAttribute('aria-label')).not.toContain('?');
+    expect(txEl()?.querySelector('.global-tx-lamp')?.classList.contains('hollow')).toBe(true);
+    unmount(instance);
+  });
+
+  // MOR-2671: the confirmed lamp stays filled and named by its text alone.
+  it('draws the confirmed TX lamp filled, with no unconfirmed accessible name', () => {
+    txHarness.emitServerSnapshot({ observedPtt: 'on' });
+    const instance = mountAt(AppGlobalHost);
+    expect(txEl()?.getAttribute('data-tx')).toBe('on');
+    expect(txEl()?.textContent?.trim()).toBe('TX');
+    expect(txEl()?.hasAttribute('aria-label')).toBe(false);
+    expect(txEl()?.querySelector('.global-tx-lamp')?.classList.contains('hollow')).toBe(false);
     unmount(instance);
   });
 

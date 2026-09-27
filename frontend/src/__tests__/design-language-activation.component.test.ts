@@ -32,7 +32,7 @@
  *     NOT touch the stored preference. `segmentline` stored + a skin it can't
  *     activate on (`desktop-v2`) still yields a styled surface (`studioline`,
  *     the first language in registration order that declares `desktop-v2`),
- *     `getWorkspace().designLanguage` stays `'segmentline'` throughout, and
+ *     the peer-split entry stays `'segmentline'` throughout, and
  *     returning to `peer-split` restores `segmentline` with no re-choice.
  *     Kill: removing the same fallback loop leaves the attribute absent once
  *     `desktop-v2` is resolved.
@@ -196,7 +196,7 @@ describe('segmentline activation, in a rendered App', () => {
     const instance = mountApp();
 
     setLayout('peer-split');
-    setDesignLanguage('segmentline');
+    setDesignLanguage('peer-split', 'segmentline');
     flushSync();
 
     expect(document.documentElement.dataset.designLanguage).toBeUndefined();
@@ -211,7 +211,7 @@ describe('segmentline activation, in a rendered App', () => {
 
   it('B: selecting only the peer-split LAYOUT (no explicit language) still activates segmentline', async () => {
     const instance = mountApp();
-    expect(getWorkspace().designLanguage).toBe('studioline'); // the DEFAULT_WORKSPACE value
+    expect(getWorkspace().designLanguageBySkin).toEqual({}); // no explicit choice, per-skin default
 
     setLayout('peer-split');
     flushSync();
@@ -228,6 +228,7 @@ describe('segmentline activation, in a rendered App', () => {
     const instance = mountApp();
 
     setLayout('peer-split');
+    setDesignLanguage('peer-split', 'segmentline');
     setDensity('dense');
     flushSync();
     await complete('peer-split');
@@ -243,7 +244,7 @@ describe('segmentline activation, in a rendered App', () => {
     expect(document.documentElement.dataset.designLanguage).toBe('segmentline');
     expect(document.documentElement.dataset.languageMode).toBe(committedLanguageMode);
     expect(document.documentElement.dataset.density).toBe('comfortable');
-    expect(getWorkspace().designLanguage).toBe('studioline');
+    expect(getWorkspace().designLanguageBySkin).toEqual({ 'peer-split': 'segmentline' });
 
     // A workspace update while B is pending still resolves against committed A.
     setDensity('comfortable');
@@ -268,7 +269,7 @@ describe('segmentline activation, in a rendered App', () => {
     await complete('desktop-v2');
     expect(document.documentElement.dataset.designLanguage).toBe('studioline');
     expect(document.documentElement.dataset.density).toBe('dense');
-    expect(getWorkspace().designLanguage).toBe('studioline');
+    expect(getWorkspace().designLanguageBySkin).toEqual({ 'peer-split': 'segmentline' });
 
     unmount(instance);
     consoleError.mockRestore();

@@ -556,9 +556,29 @@ describe('accessibility', () => {
     expect(marks.get('unknown')).toBe('');
     expect(rows.get('unknown')).toBe(rows.get('receiving'));
     expect(texts.get('transmitting')).toBe('TX');
-    expect(texts.get('uncertain')).toBe('TX?');
-    expect(marks.get('transmitting')).not.toBe('');
-    expect(marks.get('uncertain')).not.toBe('');
+    // MOR-2671: the unconfirmed state reads `TX` — never `TX?`. The
+    // hollow mark and the accessible sentence carry the distinction.
+    expect(texts.get('uncertain')).toBe('TX');
+    expect(marks.get('transmitting')).toBe('▲');
+    expect(marks.get('uncertain')).toBe('△');
+  });
+
+  // MOR-2671: bare `TX` alone would read as CONFIRMED for the unconfirmed
+  // state, so the accessible name says it is unconfirmed in words — through
+  // the one catalog sentence, with no `?` and no `unknown`.
+  it('names the uncertain RF state unconfirmed in its accessible label', () => {
+    withSurface(topologyFixtures['1/single'], snap({ txRisk: 'uncertain' }), (s) => {
+      const label = s.state().querySelector('[data-testid="rx-tx-rf-label"]');
+      expect(label?.getAttribute('aria-label')).toBe(t('core.rxTx.rf.unconfirmed'));
+      expect(label?.getAttribute('aria-label')).not.toContain('?');
+    });
+  });
+
+  it('keeps the confirmed RF state named by its own text alone', () => {
+    withSurface(topologyFixtures['1/single'], snap({ radioTx: 'on' }), (s) => {
+      const label = s.state().querySelector('[data-testid="rx-tx-rf-label"]');
+      expect(label?.hasAttribute('aria-label')).toBe(false);
+    });
   });
 
   it('associates the blocked reasons with the key action for screen readers', () => {
@@ -703,7 +723,7 @@ describe('MOR-2231 — TX controls carry the shared control-button vocabulary', 
   it.each([
     [IDLE_RX, 'receiving', 'muted', 'false', ''],
     [snap({ radioTx: 'on' }), 'transmitting', 'red', 'true', 'TX'],
-    [snap({ txRisk: 'uncertain' }), 'uncertain', 'amber', 'true', 'TX?'],
+    [snap({ txRisk: 'uncertain' }), 'uncertain', 'amber', 'true', 'TX'],
     [snap({ radioTx: 'unknown' }), 'unknown', 'muted', 'false', ''],
   ] as const)('the RF badge paints %#: %s as a %s indicator', (tx, rf, color, active, text) => {
     withSurface(topologyFixtures['1/single'], tx, (s) => {

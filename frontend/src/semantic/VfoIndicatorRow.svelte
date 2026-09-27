@@ -59,6 +59,7 @@
   import type { MeterContinuitySession } from '../primitives/meters/meter-ballistics.svelte';
   import { formatKnownLevel, levelFormatsBelowMax } from './format-level';
   import { RF_FRONT_END_LEVELS } from './rf-front-end-instruments';
+  import { rfUnconfirmedLabel } from './rx-tx-surface';
   import type {
     DisplayObservedField, RadioWideIndicatorsViewModel, ReceiverIndicatorField,
     ReceiverIndicatorViewModel, TxAuxField,
@@ -78,10 +79,11 @@
     indicator, radioWide, appearance = 'semantic', children, slotLabel, continuitySession, sMeter,
   }: Props = $props();
 
+  /** MOR-2671: uncertain reads `TX` as well — the distinction from confirmed TX is the
+   *  hollow dashed outline (`[data-indicator-rf='uncertain']` below) plus the unconfirmed
+   *  accessible sentence, never a `?` in the text. */
   const rfLabel = (state: RadioWideIndicatorsViewModel['rfState']): string =>
-    state === 'transmitting' ? 'TX'
-      : state === 'uncertain' ? 'TX?'
-        : '';
+    state === 'transmitting' || state === 'uncertain' ? 'TX' : '';
 
   // MOR-2644: an unread fact shows its label dimmed with no value text —
   // never a dash placeholder. A fact the radio does not have is not drawn
@@ -291,6 +293,7 @@
         class="rf-lamp"
         data-indicator-fact="rf-authority"
         data-indicator-rf={radioWide.rfState}
+        aria-label={rfUnconfirmedLabel(radioWide.rfState) ?? undefined}
       >{rfLabel(radioWide.rfState)}</span>
       {#if radioWide.antenna.availability.structural}
         <span class="fact" data-indicator-fact="antenna" data-state={radioWide.antenna.reading.status}
@@ -345,6 +348,9 @@
   }
   .rf-lamp { min-inline-size: 3ch; box-sizing: content-box; }
   .rf-lamp.tx { color: var(--v2-accent-red, #ff4545); border-color: currentColor; }
+  /* MOR-2671: the unconfirmed lamp is hollow — a dashed outline where confirmed
+     TX is solid. Geometry, not colour, so the distinction survives forced-colors. */
+  .rf-lamp[data-indicator-rf='uncertain'] { border-style: dashed; }
   .fact[data-state='on'], .fact[data-state='known'] { color: var(--v2-text-primary, #e8e8e8); }
   .fact[data-state='off'], .fact[data-state='unknown'] { color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55)); }
   /* Owner ruling 2026-09-23: the RFG fact keeps its slot whether or not it
