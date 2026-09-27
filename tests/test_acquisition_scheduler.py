@@ -26,6 +26,7 @@ from rigplane.core.acquisition_scheduler import (
     StateFreshnessService,
     derive_tx_active,
     resolve_available_when,
+    tx_active,
 )
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import (
@@ -5380,6 +5381,37 @@ def test_freshness_tick_treats_a_raising_tx_hint_as_false(
 
     assert scheduler.pending_requests() == ()
     assert any("tx_active_hint" in record.message for record in caplog.records)
+
+
+def test_tx_active_helper_pins_store_hint_and_failure_cases() -> None:
+    """MOR-2638: one ``tx_active`` body for the drain and the freshness service.
+
+    Store PTT alone opens the gate; a true hint opens it when the store has
+    not confirmed; a raising hint is False; a None hint leaves the store's
+    answer (including the drain's no-store-yet case).
+    """
+
+    clock = FreshnessClock(start=100.0)
+    ptt = FieldPath.global_("tx_state", "ptt")
+    keyed = StateStore(freshness_clock=clock)
+    keyed.apply(_observation(ptt, True, at=100.0, max_age=1000.0))
+    idle = StateStore(freshness_clock=clock)
+
+    def raising() -> bool:
+        raise RuntimeError("hint unavailable")
+
+    # the store says TX
+    assert tx_active(keyed, lambda: False) is True
+    assert tx_active(keyed, raising) is True
+    # the hint says TX
+    assert tx_active(idle, lambda: True) is True
+    # the hint raises -> False
+    assert tx_active(idle, raising) is False
+    # a None hint -> the store's answer
+    assert tx_active(keyed, None) is True
+    assert tx_active(idle, None) is False
+    assert tx_active(None, None) is False
+    assert tx_active(None, lambda: True) is True
 
 
 def test_civ_rx_stamps_the_demoted_ttl_on_poll_responses() -> None:

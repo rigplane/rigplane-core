@@ -74,6 +74,7 @@ __all__ = [
     "derive_tx_active",
     "provider_uses_civ_acquisition",
     "resolve_available_when",
+    "tx_active",
 ]
 
 
@@ -2380,6 +2381,30 @@ def derive_tx_active(store: StateStore) -> bool:
     return ptt_field.freshness is FreshnessState.FRESH and bool(ptt_field.value)
 
 
+def tx_active(
+    store: StateStore | None,
+    hint: Callable[[], bool] | None,
+) -> bool:
+    """Observed PTT, or a managed-key hint when the radio has not confirmed yet.
+
+    MOR-2638: one body for the acquisition drain and
+    :class:`StateFreshnessService`. ``store`` may be ``None`` on the drain
+    path (no store yet); that reads as not transmitting. A failing hint is
+    logged at debug and counts as False.
+    """
+
+    observed = False if store is None else derive_tx_active(store)
+    if observed:
+        return True
+    if hint is None:
+        return False
+    try:
+        return bool(hint())
+    except Exception:
+        logger.debug("tx_active_hint failed", exc_info=True)
+        return False
+
+
 def availability_clause_holds(clause: AvailabilityClause, value: Any) -> bool:
     """Return whether one ``available_when`` clause holds for ``value``.
 
@@ -2533,7 +2558,7 @@ class StateFreshnessService:
         if scheduler is not None:
             scheduler.due_requests(
                 now=timestamp,
-                tx_active=self._tx_active(),
+                tx_active=tx_active(self._store, self._tx_active_hint),
                 observed_active=derive_active_receiver_value(self._store),
                 # MOR-2748: recomputed against the current snapshot every
                 # pass; a group whose paths all resolve False is skipped,
@@ -2545,20 +2570,6 @@ class StateFreshnessService:
         if (delta.freshness or delta.reconciliation_requests) and self._on_delta:
             self._on_delta(delta)
         return delta
-
-    def _tx_active(self) -> bool:
-        """Observed PTT, or a managed-key hint when the radio has not confirmed yet."""
-
-        if derive_tx_active(self._store):
-            return True
-        hint = self._tx_active_hint
-        if hint is None:
-            return False
-        try:
-            return bool(hint())
-        except Exception:
-            logger.debug("tx_active_hint failed", exc_info=True)
-            return False
 
     def _discard_declared_absent(self) -> None:
         """Remove stored fields the profile declares absent in this state.
