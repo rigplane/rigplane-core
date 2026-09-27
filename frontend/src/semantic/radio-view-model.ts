@@ -33,8 +33,8 @@ export type VfoSlotId = 'A' | 'B';
  */
 /**
  * The `kind` discriminants of `VfoSlot` as the run-time list the page
- * guard's identifier vocabulary reads (MOR-2716) — one source of truth:
- * the `kind` values below stay in lockstep with this array.
+ * guard's identifier vocabulary reads (MOR-2716) — the single source
+ * of truth the assertion below ties the union to.
  */
 export const VFO_SLOT_KINDS = ['slotted', 'relative', 'unslotted', 'unknown'] as const;
 export type VfoSlotKind = (typeof VFO_SLOT_KINDS)[number];
@@ -44,6 +44,21 @@ export type VfoSlot =
   | { kind: 'relative'; role: 'selected' | 'unselected' }
   | { kind: 'unslotted' }
   | { kind: 'unknown' };
+
+/**
+ * Compile-time tie (MOR-2716): `VfoSlot`'s members carry different fields
+ * per kind, so the union cannot derive its discriminants from
+ * `VFO_SLOT_KINDS` directly. This assertion fails to compile whenever a
+ * `kind` exists on only one side — a fifth slot kind added to the union
+ * but not the array (or vice versa) cannot compile.
+ */
+type RequireTrue<Matches extends true> = Matches;
+export type VfoSlotKindsTiedToVfoSlot = RequireTrue<
+  (<G>() => G extends VfoSlot['kind'] ? 1 : 2) extends
+    (<G>() => G extends VfoSlotKind ? 1 : 2)
+    ? true
+    : false
+>;
 
 /** MOR-988 §3.2 `ActiveRx`, verbatim: an adapter with no observation must never fabricate 'MAIN'. */
 export type ActiveRx =
