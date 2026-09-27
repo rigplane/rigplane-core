@@ -1080,6 +1080,77 @@ describe('the host descriptor and LinearSMeter share one signal projection', () 
   });
 });
 
+describe('MOR-2521 — the S caption reserves the widest text the calibration prints', () => {
+  const DB: MeterValueDomain = { kind: 'engineering', unit: 'db' };
+  const spans = (s: ReturnType<typeof render>) => {
+    const caption = s.tile('signal')!.querySelector('.meter-native-caption')!;
+    return {
+      value: caption.querySelector<HTMLElement>('.meter-native-value')!,
+      secondary: caption.querySelector<HTMLElement>('.meter-native-secondary'),
+    };
+  };
+
+  it('keeps one min-width for an unread meter, S0 and S9+20', () => {
+    // Prints at most 'S9+40' (5 glyphs) and '−127 dBm' (8 glyphs).
+    const caps = makeFaultCaps();
+    caps.meterCalibrations!.s_meter = [
+      { raw: 0, actual: -54, label: 'S0' },
+      { raw: 130, actual: 0, label: 'S9' },
+      { raw: 240, actual: 40, label: 'S9+40' },
+    ];
+    setCapabilities(caps);
+    try {
+      const cases = [
+        [withField(base(), 'signal', { unknown: true }), '', ''],
+        [withSignalDomain(withRaw(base(), 'signal', -54), DB), 'S0', '\u2212127 dBm'],
+        [withSignalDomain(withRaw(base(), 'signal', 20), DB), 'S9+20', '\u221253 dBm'],
+      ] as const;
+      for (const [view, value, secondary] of cases) {
+        withSurface(view, (s) => {
+          const { value: valueSpan, secondary: secondarySpan } = spans(s);
+          expect(valueSpan.textContent).toBe(value);
+          expect(valueSpan.style.minWidth).toBe('5ch');
+          expect(secondarySpan?.textContent).toBe(secondary);
+          expect(secondarySpan?.style.minWidth).toBe('8ch');
+        });
+      }
+    } finally {
+      clearCapabilities();
+    }
+  });
+
+  it('sizes the reservation from the mounted table, not from a constant', () => {
+    // Prints at most 'S9' (2 glyphs) and '−97 dBm' (7 glyphs).
+    const caps = makeFaultCaps();
+    caps.meterCalibrations!.s_meter = [
+      { raw: 0, actual: -24, label: 'S5' },
+      { raw: 120, actual: 0, label: 'S9' },
+    ];
+    setCapabilities(caps);
+    try {
+      withSurface(withSignalDomain(withRaw(base(), 'signal', -24), DB), (s) => {
+        const { value: valueSpan, secondary: secondarySpan } = spans(s);
+        expect(valueSpan.textContent).toBe('S5');
+        expect(valueSpan.style.minWidth).toBe('2ch');
+        expect(secondarySpan?.textContent).toBe('\u221297 dBm');
+        expect(secondarySpan?.style.minWidth).toBe('7ch');
+      });
+    } finally {
+      clearCapabilities();
+    }
+  });
+
+  it('reserves nothing and draws no secondary span without a calibration table', () => {
+    clearCapabilities();
+    withSurface(withRaw(base(), 'signal', 53), (s) => {
+      const { value: valueSpan, secondary: secondarySpan } = spans(s);
+      expect(valueSpan.textContent).toBe('');
+      expect(valueSpan.style.minWidth).toBe('');
+      expect(secondarySpan).toBeNull();
+    });
+  });
+});
+
 describe('SWR/ALC fault highlighting reuses the dock\'s own threshold', () => {
   // MOR-1470: fault predicates are only claimable in the calibrated
   // engineering domain (an uncalibrated raw byte never asserts a fault) —

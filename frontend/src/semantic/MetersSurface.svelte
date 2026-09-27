@@ -82,6 +82,9 @@
 
 <script lang="ts">
   import LinearSMeter from '../components-v2/meters/LinearSMeter.svelte';
+  import {
+    calibratedToDbm, calibratedToSUnit, formatDbm, getCalibrationPoints, isSmeterCalibrated,
+  } from '../components-v2/meters/smeter-scale';
   import MeterRendererSeat from '../component-kits/MeterRendererSeat.svelte';
   import { RF_LABEL, RF_MARK, rfUnconfirmedLabel } from './rx-tx-surface';
   import StationMeterBarPlacement from './StationMeterBarPlacement.svelte';
@@ -95,6 +98,24 @@
     handles: StationMeterInstrumentHandles;
   }
   let { handles }: Props = $props();
+
+  /** MOR-2521: the S caption's value and secondary `min-width`s, in `ch`:
+   *  the glyph count of the widest S-unit and dBm text the mounted
+   *  profile's calibration knots print. Undefined when uncalibrated. */
+  const signalCaptionMinWidth = $derived.by(() => {
+    let sUnit = 0;
+    let dbm = 0;
+    if (isSmeterCalibrated()) {
+      for (const point of getCalibrationPoints()) {
+        sUnit = Math.max(sUnit, calibratedToSUnit(point.actual).length);
+        dbm = Math.max(dbm, formatDbm(calibratedToDbm(point.actual)).length);
+      }
+    }
+    return {
+      value: sUnit > 0 ? `${sUnit}ch` : undefined,
+      secondary: dbm > 0 ? `${dbm}ch` : undefined,
+    };
+  });
 </script>
 
 {#snippet station(
@@ -164,9 +185,11 @@
           {#if present(field)}
             <div class="meter-native-caption" aria-hidden="true" data-relevant={field.relevant}>
               <span class="meter-native-label">S</span>
-              <span class="meter-native-value">{signalProjection?.primaryText ?? ''}</span>
-              {#if signalProjection?.secondaryText}
-                <span class="meter-native-secondary">{signalProjection.secondaryText}</span>
+              <span class="meter-native-value" style:min-width={signalCaptionMinWidth.value}
+              >{signalProjection?.primaryText ?? ''}</span>
+              {#if signalCaptionMinWidth.secondary}
+                <span class="meter-native-secondary" style:min-width={signalCaptionMinWidth.secondary}
+                >{signalProjection?.secondaryText ?? ''}</span>
               {/if}
             </div>
           {/if}

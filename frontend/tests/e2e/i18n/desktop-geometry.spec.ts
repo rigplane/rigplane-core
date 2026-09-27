@@ -1074,6 +1074,56 @@ test('standard 1440 receiver S-meter keeps its box between unread and read', asy
   expect(unknownBox.height).toBe(knownBox.height);
 });
 
+// MOR-2521: the station S caption's value and secondary spans keep their
+// boxes, and the tile's own S-unit readout keeps its left edge, between an
+// unread meter and two readings of different length ('S0' / '−127 dBm' and
+// 'S9+30' / '−43 dBm' on the fixture's S0/S9/S9+60 table).
+test('standard 1440 station S caption keeps its boxes between unread and two readings', async ({ page }) => {
+  await boot(page, 'standard', 1440, true, 'studioline', false, 'topology-1-single');
+  // Only the S meter changes between the emitted states: its field status
+  // (unread) or its value.
+  const emit = async (revision: number, sMeter: number | null) => {
+    const { state } = catalogFixture('topology-1-single', true);
+    if (sMeter === null) Object.assign(state.fieldStatus!, unobservedMeters(['main.sMeter']));
+    else state.main.sMeter = sMeter;
+    Object.assign(state, { revision, stateRevision: revision, freshnessRevision: revision,
+      observationSeq: revision });
+    await page.evaluate(next => window.dispatchEvent(new CustomEvent('geometry-state', { detail: next })), state);
+  };
+  const tile = page.locator('[data-testid="meter-signal"]');
+  const measure = () => tile.evaluate(element => {
+    const caption = [...element.querySelectorAll('.meter-native-caption')]
+      .find(node => node.querySelector('.meter-native-label')?.textContent === 'S');
+    const box = (selector: string) => {
+      const rect = caption?.querySelector(selector)?.getBoundingClientRect();
+      return rect ? { x: rect.x, width: rect.width } : null;
+    };
+    return {
+      value: box('.meter-native-value'),
+      secondary: box('.meter-native-secondary'),
+      texts: [caption?.querySelector('.meter-native-value')?.textContent ?? null,
+        caption?.querySelector('.meter-native-secondary')?.textContent ?? null],
+      readoutX: element.querySelector('[data-meter-reading]')!.getBoundingClientRect().x,
+    };
+  });
+  await emit(2, null);
+  await expect.poll(async () => (await measure()).texts).toEqual(['', '']);
+  const unread = await measure();
+  expect(unread.value).not.toBeNull();
+  expect(unread.secondary).not.toBeNull();
+  const readings = [[-54, 'S0', '\u2212127 dBm'], [30, 'S9+30', '\u221243 dBm']] as const;
+  const readoutXs: number[] = [];
+  for (const [index, [sMeter, sUnit, dbm]] of readings.entries()) {
+    await emit(index + 3, sMeter);
+    await expect.poll(async () => (await measure()).texts).toEqual([sUnit, dbm]);
+    const read = await measure();
+    expect(read.value, `${sUnit} value box`).toEqual(unread.value);
+    expect(read.secondary, `${dbm} secondary box`).toEqual(unread.secondary);
+    readoutXs.push(read.readoutX);
+  }
+  expect(readoutXs[1], 'S-unit readout left edge').toBe(readoutXs[0]);
+});
+
 // MOR-2684: the band row's permit caption reserves ONE width in every
 // state. The status slot is measured in the caption's own font (the `<small>`
 // inherits the ambient, non-monospace font, so `ch` is not exact), and this
