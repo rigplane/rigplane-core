@@ -11,12 +11,13 @@
 import { describe, it, expect } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import BarGauge from '../BarGauge.svelte';
+import type { BarMeterFrame } from '../bar-meter-motion.svelte';
 
 describe('MOR-2521 — BarGauge never adds or removes nodes across a value sweep', () => {
   const SWEEP = [0, 0.05, 0.1005, 0.275, 0.55, 0.7, 0.9275, 1] as const;
 
   it('one node count for every sweep step, while the lit count still tracks the reading', () => {
-    const state = $state({
+    const state = $state<{ frame: BarMeterFrame; label: string; displayValue: string }>({
       frame: { smoothedFraction: SWEEP[0], peakFraction: 0.8 },
       label: 'Po',
       displayValue: '50W',
