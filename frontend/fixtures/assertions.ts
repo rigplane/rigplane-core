@@ -759,6 +759,8 @@ export function styleProbe(rootTestId: string): Record<string, Record<string, st
       borderLeftStyle: cs.borderLeftStyle,
       borderTopWidth: cs.borderTopWidth,
       borderLeftWidth: cs.borderLeftWidth,
+      outlineStyle: cs.outlineStyle,
+      outlineWidth: cs.outlineWidth,
       forcedColorAdjust: cs.forcedColorAdjust,
     };
   }
