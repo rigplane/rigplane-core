@@ -17,7 +17,7 @@ const props = vi.hoisted(() => ({
     hasCw: true, hasBreakIn: true, breakInMode: 0,
     breakInChoices: [
       { value: 0, label: 'BK-OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' },
-    ],
+    ] as { value: number; label: string }[],
   },
   ritXit: { xitActive: false },
   ops: { dualWatch: false, splitActive: false },
@@ -158,9 +158,9 @@ describe('VfoControlPanel authority boundary', () => {
   /* MOR-2729 — the LCD break-in key cycles exactly the profile's published
      choices. On the FTX-1 ([0=OFF, 1=ON]) it can always get BACK to OFF,
      which the old hard-coded 0/1/2 cycle could not (stuck ON). */
-  const legacyChoices = [
+  const legacyChoices: { value: number; label: string }[] = [
     { value: 0, label: 'BK-OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' },
-  ] as const;
+  ];
   function cycleCase(steps: readonly (readonly [label: string, mode: number, active: boolean])[]):
     void {
     for (const [label, mode, active] of steps) {
@@ -183,12 +183,10 @@ describe('VfoControlPanel authority boundary', () => {
 
   it('FTX-1 cycle: OFF → ON → OFF', () => {
     try {
-      props.vfo.breakInChoices = [
-        { value: 0, label: 'OFF' }, { value: 1, label: 'ON' },
-      ] as typeof props.vfo.breakInChoices;
+      props.vfo.breakInChoices = [{ value: 0, label: 'OFF' }, { value: 1, label: 'ON' }];
       cycleCase([['OFF', 0, false], ['ON', 1, true]]);
     } finally {
-      props.vfo.breakInChoices = legacyChoices as typeof props.vfo.breakInChoices;
+      props.vfo.breakInChoices = legacyChoices;
       props.vfo.breakInMode = 0;
     }
   });
@@ -199,12 +197,12 @@ describe('VfoControlPanel authority boundary', () => {
 
   it('an empty published list (X6100, X6200) renders no break-in key', () => {
     try {
-      props.vfo.breakInChoices = [] as typeof props.vfo.breakInChoices;
+      props.vfo.breakInChoices = [];
       mountPanel();
       const names = Array.from(target.querySelectorAll('button')).map((b) => b.textContent?.trim());
       for (const label of ['OFF', 'SEMI', 'FULL', 'ON', 'BK-OFF']) expect(names).not.toContain(label);
     } finally {
-      props.vfo.breakInChoices = legacyChoices as typeof props.vfo.breakInChoices;
+      props.vfo.breakInChoices = legacyChoices;
     }
   });
 

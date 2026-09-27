@@ -4,9 +4,9 @@ import { mount, unmount, flushSync } from 'svelte';
 import type { ControlFeedback } from '$lib/runtime/adapters/panel-adapters';
 import type { ControlDisplayDomain } from '$lib/radio/filter-controls';
 
-const LEGACY_BREAK_IN = [
+const LEGACY_BREAK_IN: { value: number; label: string }[] = [
   { value: 0, label: 'OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' },
-] as const;
+];
 const mockProps = {
   cwPitch: 600,
   keySpeed: 12,
