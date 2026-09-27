@@ -268,7 +268,7 @@
       <!-- MOR-2729: the break-in control draws exactly the profile's
            published choices (`breakInChoices` off `deriveCwProps`, empty on
            X6100/X6200 ⇒ no key at all), never the v2 hard-coded trio. -->
-      {#if showBreakIn}
+      {#if showBreakIn && p.breakInChoices.length > 0}
         <!-- MOR-2797: the same visible row label the Standard face's
              break-in row has — the bare OFF / ON choice labels read as
              "something is on", not as break-in. -->
