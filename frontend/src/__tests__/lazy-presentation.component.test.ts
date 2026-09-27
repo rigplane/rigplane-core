@@ -809,7 +809,7 @@ describe('asset preload failure (MOR-2680)', () => {
   const MARKER = 'rigplane:preload-error-reload-at';
   const reload = vi.fn();
 
-  /** Dispatches the event the way Vite's helper does; returns whether App prevented it. */
+  /** Dispatches a cancelable `vite:preloadError` on window; returns whether App prevented it. */
   function firePreloadError(): boolean {
     const event = new Event('vite:preloadError', { cancelable: true });
     window.dispatchEvent(event);

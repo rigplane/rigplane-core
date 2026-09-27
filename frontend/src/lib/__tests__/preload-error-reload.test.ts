@@ -12,7 +12,7 @@ import {
 
 const MARKER = 'rigplane:preload-error-reload-at';
 
-/** Runs `body` while reading the `sessionStorage` global throws, as a browser with storage blocked does. */
+/** Runs `body` while reading the `sessionStorage` global throws. */
 function withUnreachableSessionStorage(body: () => void): void {
   const original = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage')!;
   Object.defineProperty(globalThis, 'sessionStorage', {
