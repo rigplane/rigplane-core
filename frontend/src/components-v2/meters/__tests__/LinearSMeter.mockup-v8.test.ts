@@ -386,21 +386,25 @@ describe('MOR-2509 R2-2 — the mock-up v8 numeral rule', () => {
     setCapabilities(makeCaps(DENSE_PLUS_CAL));
     const svg = mountMeter(withPo());
     const labels = [...svg.querySelectorAll('[data-scale-label]')];
-    // Only S9 and every +10 knot declared: the rule keeps one numeral per
-    // mock-up rung. Red if the thinning stops dropping intermediate knots.
+    // Only S9 and every +10 knot declared: S0 and S9 bracket every odd
+    // S-unit (MOR-2790), and the rule keeps one numeral per mock-up rung.
+    // Red if the thinning stops dropping intermediate + rungs.
     expect(labels.map((label) => label.textContent))
-      .toEqual(['9', '+20', '+40', '+60']);
-    // Slot-zero anchoring, not first-index: this table's first DRAWN numeral
-    // is '9' at slot 4/7 and still centres — only a numeral at share 0
-    // (FTX-1's '1' above) left-anchors.
-    expect(labels[0]!.getAttribute('text-anchor')).toBe('middle');
+      .toEqual(['1', '3', '5', '7', '9', '+20', '+40', '+60']);
+    // Every numeral centres on its slot except a slot-zero '1'.
+    labels.forEach((label, index) => {
+      expect(label.getAttribute('text-anchor')).toBe(index === 0 ? 'start' : 'middle');
+    });
   });
 
   it('keeps the sparse 548px label array unchanged', () => {
     setCapabilities(makeCaps(SPARSE_PLUS_CAL));
     const svg = mountMeter(withPo());
     const labels = [...svg.querySelectorAll('[data-scale-label]')];
-    expect(labels.map((label) => label.textContent)).toEqual(['9', '+60']);
+    // The sparse S0/S9/S9+60 table brackets every odd S-unit and the +60
+    // rung (MOR-2790) — the same shape as the IC-7300 profile's table.
+    expect(labels.map((label) => label.textContent))
+      .toEqual(['1', '3', '5', '7', '9', '+60']);
   });
 
   it('keeps every 140px FTX-1 label at least its rendered width plus the fixed gap apart', () => {

@@ -370,22 +370,23 @@ describe('MOR-2509 v7 VFO face — the fill maps the reading onto the drawn scal
     expect(svg.querySelector('[data-meter-fill-red]')!.getAttribute('visibility')).toBe('hidden');
   });
 
-  it('the three-knot table draws only its declared numerals — no invented S-units', () => {
+  it('the three-knot table draws the numerals its linear interpolation places (MOR-2790)', () => {
     setCapabilities(makeCaps(IC7300_LIKE_CAL));
     const target = mountMeter({ value: -12, variant: 'vfo', compact: true });
     const labels = [...svgOf(target).querySelectorAll('[data-scale-label]')];
-    // Only the S9 knot is declared (S0 carries no numeral on this scale) and
-    // the table's only declared + knot is +60 — the v7 fixed +20/+40 set is
-    // gone; a numeral the table does not declare is not drawn.
-    expect(labels.map((label) => label.textContent)).toEqual(['9', '+60']);
-    const slots = [4 / 7, 1];
+    // The S0 and S9 knots bracket every odd S-unit between them and S9+60
+    // brackets +20/+40/+60, so the linear calibration itself places the
+    // full ladder — the numerals are not invented.
+    expect(labels.map((label) => label.textContent))
+      .toEqual(['1', '3', '5', '7', '9', '+20', '+40', '+60']);
+    const slots = [0, 1 / 7, 2 / 7, 3 / 7, 4 / 7, 5 / 7, 6 / 7, 1];
     labels.forEach((label, index) => {
       expect(Number(label.getAttribute('x'))).toBeCloseTo(TRACK_X + slots[index] * TRACK_W, 1);
     });
     // Left-anchoring belongs to the slot-ZERO numeral (mock-up
-    // `.ticks span:first-child` on the 1..+60 ladder); a sparse table's
-    // first drawn numeral still centres on its slot.
-    expect(labels[0]!.getAttribute('text-anchor')).toBe('middle');
+    // `.ticks span:first-child` on the 1..+60 ladder): the '1' at share 0
+    // left-anchors; every other numeral centres on its slot.
+    expect(labels[0]!.getAttribute('text-anchor')).toBe('start');
   });
 
   it('the three-knot table maps S9+60 onto the full final dash and S1 to the left end', () => {
