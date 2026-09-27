@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0b9] — 2026-09-27
+
 ### Added
 
 - **Repeater controls are a side panel on the receiver tuned to a
@@ -374,6 +376,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live tuple, so the display recaptures once a complete
   post-retirement geometry set exists, without the operator having
   to stop tuning.
+
+- **The TX-target frequency keeps its space before Hz (MOR-2711).**
+  The RX/TX surface used to glue the unit onto the number
+  (`14250000Hz`); the pair now renders as one expression, the
+  number and the unit joined by a no-break space, so on a narrow
+  phone line they wrap together and the unit never sits alone on
+  the next line. An unread target still shows neither number nor
+  unit.
+
+- **The phone's unread S-meter, dBm and offset readouts draw empty
+  reserved slots (MOR-2675).** `---` and `--- dBm` are gone; the
+  meter slots keep one width in every state with tabular digits and
+  a zero-width strut, and the RIT/XIT badge keeps its label with an
+  empty offset in a slot sized for `RIT +9999`. Known values render
+  exactly as before.
+
+- **No dash on the band row, and the permit caption keeps one width
+  (MOR-2684, MOR-2672).** An unread tuning range and an
+  unrecognised reason code render no text instead of `—`. A denial
+  whose reason cannot be named draws no visible text — never a dash
+  — while a screen reader hears the catalog sentence "the reason
+  for this denial is not available"; the caveat sentence uses the
+  same words instead of leaving a dangling ": ". Each band choice's
+  TX permit caption reserves one width for allowed and denied in
+  every locale, measured in the caption's own font, so the first
+  verdict cannot move the row.
+
+- **Value slots reserve the widest value of the mounted radio
+  (MOR-2706).** The CW keyer's RX-mode slot sizes itself to the
+  longest mode name in the profile's catalog, the pitch and
+  key-speed slots to their domain maxima in their own units, and
+  the VFO indicator's BW fact to the widest filter width across the
+  profile's modes. Each reservation is fixed when capabilities
+  load; a reading never changes it. The old fixed widths stay as
+  floors for a radio that publishes no domain.
+
+- **The active VFO tile says ACTIVE on selected/unselected radios
+  (MOR-2656).** On a radio that reports only selected versus
+  unselected — the IC-7300 and IC-705 — the active tile shows the
+  one localized word (ACTIVE / АКТИВЕН / 使用中) and the other tile
+  an empty plaque, instead of the English "Selected VFO" and
+  "Unselected VFO" pair. The plaque reserves one width for the
+  widest catalog word, so a locale switch moves nothing.
+
+- **The RX/TX surface speaks in sentences and names no internal
+  slot kind (MOR-2705).** The blocked list used to print raw
+  `field: code` pairs; every code now resolves to a catalog
+  sentence, on screen and in the accessible description. The
+  TX-target line names a slot only for a slotted radio (`MAIN A`);
+  unslotted and relative targets show no kind word.
+
+- **Readouts that cannot know a value show nothing, not a word
+  (MOR-2705).** The RX-audio readiness badge renders an empty
+  reserved slot for not-applicable instead of `n/a`; the break-in
+  delay prints its unit only with a value; a dBm that cannot be
+  computed renders nothing instead of "uncalibrated", and the
+  phone's dBm slot is sized for the widest real value (`−127 dBm`).
+  While the TX state is unknown, the phone's TX indicator carries
+  no title.
+
+- **An uncalibrated S-meter shows its bar and nothing it cannot
+  know (MOR-2705).** The bar still moves on the raw fraction, but
+  no number, no `raw`/`level` scale word and no "uncalibrated" line
+  is drawn; the accessible name is the bare "S meter". On the phone
+  the S-unit and dBm readouts are not drawn at all for an
+  uncalibrated radio; on the Amber LCD the readout box stays put
+  but empty for the S source, and the S/dB scale words hide. An
+  engineering dB reading prints its value with its unit and no
+  state word.
+
+- **Meter accessible names carry the label and the value, never a
+  status word (MOR-2705).** Unread, unknown and idle meters name
+  the label alone — "Po", "PWR" — with no "No reading", "Not
+  measuring in receive" or "Unsupported". A retained value reads as
+  label plus value, the same for current and stale. Visible text
+  does not change.
+
+- **The band TX reason sentences are translated into Japanese
+  (MOR-2715).** The out-of-band, unknown-target and
+  ranges-not-configured sentences no longer fall back to English,
+  in the band denial and in the RX/TX blocked list that reuses
+  them.
+
+- **The remaining catalog keys that fell back to English are
+  translated (MOR-2717).** Nineteen Russian workspace-settings
+  strings and eighty-three Japanese strings — RX/TX, band permit,
+  pending-announcement and the rest — now render in the operator's
+  locale, and the permit caption's reservation covers the Japanese
+  許可 / 禁止 verdicts.
 
 ### Documentation
 
@@ -3138,7 +3229,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b7...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b9...HEAD
+[3.0.0b9]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b8...v3.0.0b9
 [3.0.0b7]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b6...v3.0.0b7
 [3.0.0b6]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b5...v3.0.0b6
 [3.0.0b5]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b4...v3.0.0b5
