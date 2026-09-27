@@ -94,7 +94,7 @@ describe('managed TOT control', () => {
     expect(live.textContent!.trim()).toBe('LIMIT');
   });
 
-  it('renders an unread limit unlit in a reserved slot — no dash run, and the slot holds the widest value', () => {
+  it('renders an unread limit unlit in a reserved slot — no dash run, the reservation derived from the formatter, and a wider known value grows the box', () => {
     const target = mountControl();
     tx.emitStale();
     flushSync();
@@ -102,31 +102,40 @@ describe('managed TOT control', () => {
     expect(current.textContent).not.toContain('-');
     // The label stays; the value is empty (unlit LCD segment).
     expect(current.querySelector('.tot-live')!.textContent!.trim()).toBe('LIMIT');
-    // The hidden sizer keeps one width in every state: it is sized for the
-    // widest value the known path can render ('OFF' or an NNNs seconds
-    // text), so the first reading cannot move anything.
-    const sizer = current.querySelector<HTMLElement>('.tot-sizer')!;
-    expect(sizer.textContent).toBe('LIMIT 9999s');
-    expect(sizer.getAttribute('aria-hidden')).toBe('true');
+    // The reservation is derived from the formatter, not a hand number:
+    // the widest of 'OFF' and an integer seconds value of up to 4 digits.
+    const format = (seconds: number | null) => (seconds === null ? 'LIMIT OFF' : `LIMIT ${seconds}s`);
+    const widest = Math.max(format(null).length, format(9999).length);
     // Known OFF is real and renders through the same slot.
     tx.emitServerSnapshot({ configuredSeconds: null, remainingMs: null });
     flushSync();
     const offLive = current.querySelector('.tot-live')!.textContent!.trim();
     expect(offLive).toBe('LIMIT OFF');
-    expect(sizer.textContent!.length).toBeGreaterThanOrEqual(offLive.length);
     // A known seconds text also stays inside the reservation.
     tx.emitServerSnapshot({ configuredSeconds: 180, remainingMs: 42_100 });
     flushSync();
     const knownLive = current.querySelector('.tot-live')!.textContent!.trim();
     expect(knownLive).toBe('LIMIT 180s');
-    expect(sizer.textContent!.length).toBeGreaterThanOrEqual(knownLive.length);
-    // The reservation draws no glyph: the sizer keeps the box and the live
-    // layer overlays it without changing it. Static pin — jsdom never
-    // applies scoped styles (pattern follows StandardFrequencyReadout).
+    expect(knownLive.length).toBeLessThanOrEqual(widest);
+    // A wider legal value (TOT accepts any positive finite number) renders
+    // in full next to the REMAINING span: the live text is an ordinary
+    // inline sibling, never an absolute overlay that would overlap it.
+    tx.emitServerSnapshot({ configuredSeconds: 12345, remainingMs: 42_100 });
+    flushSync();
+    const wideLive = current.querySelector('.tot-live')!.textContent!.trim();
+    expect(wideLive).toBe('LIMIT 12345s');
+    expect(wideLive.length).toBeGreaterThan(widest);
+    expect(current.querySelector('[data-testid="managed-tot-countdown"]')?.textContent).toContain('43s');
+    // Static pins: the reservation is a minimum (min-inline-size) on the
+    // live element itself, exactly the derived width; no absolute
+    // positioning anywhere on it. (jsdom never applies scoped styles —
+    // pattern follows StandardFrequencyReadout.)
     const source = readFileSync('src/components-v2/controls/ManagedTotControl.svelte', 'utf8');
     const css = (source.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '').replace(/\/\*[\s\S]*?\*\//g, '');
-    expect(css).toMatch(/\.tot-sizer\s*\{\s*visibility\s*:\s*hidden/);
-    expect(css).toMatch(/\.tot-live\s*\{\s*position\s*:\s*absolute/);
+    const reservation = css.match(/\.tot-live\s*\{[^}]*min-inline-size\s*:\s*(\d+)ch/);
+    expect(reservation, '.tot-live must reserve a minimum inline size').not.toBeNull();
+    expect(Number(reservation![1])).toBe(widest);
+    expect(css).not.toMatch(/\.tot-live\s*\{[^}]*position\s*:\s*absolute/);
   });
 
   it('accepts positive fractional drafts through the facade', async () => {

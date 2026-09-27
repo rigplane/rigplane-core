@@ -29,7 +29,6 @@
     onclick={() => (open = !open)}
   >
     <span class="tot-readout">
-      <span class="tot-sizer" aria-hidden="true">TOT 9999s</span>
       <span class="tot-live">
         TOT {#if txState.fresh}{txState.configuredSeconds === null ? 'OFF' : `${txState.configuredSeconds}s`}{/if}
       </span>
@@ -91,23 +90,20 @@
 
   /* MOR-2674 (owner rule, 2026-09-26): a stale TX snapshot is unread — the
      TOT label stays, the value goes blank (unlit LCD segment), never a
-     dash run. The hidden sizer keeps one width in every state, sized to
-     the widest value the known path renders ('OFF' or an NNNs seconds
-     text), so the first reading cannot shift the status bar. The live
-     layer overlays the sizer without changing it. */
+     dash run. The reservation is a minimum on the value element itself,
+     derived from the formatter's widest of 'OFF' and an integer seconds
+     value of up to four digits ('TOT 9999s' → 9ch in Roboto Mono), so the
+     first reading cannot shift the status bar. A wider legal value (an
+     API-configured 5-digit seconds, or a fraction) grows the box instead
+     of overlapping the status-bar neighbours. */
   .managed-tot-trigger .tot-readout {
-    position: relative;
     font-variant-numeric: tabular-nums;
   }
 
-  .managed-tot-trigger .tot-sizer {
-    visibility: hidden;
-  }
-
   .managed-tot-trigger .tot-live {
-    position: absolute;
-    inset: 0;
-    text-align: start;
+    display: inline-block;
+    min-inline-size: 9ch;
+    white-space: nowrap;
   }
 
   .managed-tot-popover-backdrop {

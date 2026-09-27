@@ -10,17 +10,27 @@ page boundary and opens `/`.
 
 StudioLine dark and FieldLine dark re-pinned at source head
 `b6bc91d8abf49d446e75dcb4e6b966f32c79bea7` (PR 3749). The MOR-2674 change
-replaces the `'---'` TOT readout placeholder with an unlit (empty) value in a
-reserved slot: the status-bar `TOT` trigger and the `TxPanel` `LIMIT` row keep
-one hidden-sizer width in every state, so the diff is exactly the moved readout
-slot (and its neighbours) — no other pixel change. StudioLine light and
-FieldLine light compare cleanly against their existing baselines on this head.
+replaces the `'---'` TOT readout placeholder with an unlit (empty) value in
+a reserved slot (sized via a minimum inline size on the value element), so
+the diff is exactly the moved readout slot (and its neighbours) — no other
+pixel change. StudioLine light and FieldLine light compare cleanly against
+their existing baselines on this head.
+
+The re-pin copied two capture files byte-for-byte from artifact
+`mor-1400-production-visual-diagnostics` (id 10923060777), produced by
+[quick run 36291643962](https://github.com/rigplane/rigplane-core/actions/runs/36291643962)
+at the code head above: `playwright-report/data/95f537664f3f9a3dce28587eb4440fb9d34b9ed2.png`
+→ `studioline--dark--production-root.png` and
+`playwright-report/data/83e42e2ee159e1c34e72c90b4942e4fee20a51a7.png`
+→ `fieldline--dark--production-root.png`. The `__screenshots__` entries in
+the same zip were not copied — they carry the old expected baselines.
 
 Dispositions: StudioLine dark — compared-pass after re-pin. FieldLine dark —
 compared-pass after re-pin. StudioLine light — compared-pass unchanged.
-FieldLine light — compared-pass unchanged. Changed pixels measured:
-5279 (StudioLine dark), 6564 (FieldLine dark), localized to y 14–34 (status bar
-TOT trigger) and y 254–302 (`LIMIT` row) plus the bottom-dock strip.
+FieldLine light — compared-pass unchanged. Changed pixels measured with PIL
+`.convert('RGB')`, max channel diff > 8, old (origin/main) → committed:
+5087 (StudioLine dark), 5951 (FieldLine dark), localized to y 14–37 (status
+bar TOT trigger) and y 254–302 (`LIMIT` row) plus the bottom-dock strip.
 
 ## Linux re-pin provenance (superseded — 2026-09-14 MOR-2467 MAIN/SUB topology)
 

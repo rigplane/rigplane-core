@@ -1046,9 +1046,9 @@ for (const known of [true, false]) {
 // hide an inner change, so this measures the meter's OWN SVG element between
 // an unknown (unread) and a known (read) fixture: width AND height must be
 // identical, so a first reading cannot move the layout.
-// MOR-2674: an unread (stale) TOT stays unlit, and its hidden sizer holds
-// the trigger at the same width as any known value — the first reading
-// cannot move the status bar.
+// MOR-2674: an unread (stale) TOT stays unlit, and the reserved minimum
+// inline size on the value element holds the trigger at the same width as
+// any known value — the first reading cannot move the status bar.
 test('standard 1440 status-bar TOT trigger keeps its box between unread and read', async ({ page }) => {
   const triggerWidth = async (staleTot: boolean) => {
     await boot(page, 'standard', 1440, true, 'studioline', false, 'topology-1-single', { staleTot });

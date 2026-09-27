@@ -54,7 +54,6 @@
 <div class="managed-tot-control" data-testid="managed-tot-control">
   <div class="managed-tot-readout">
     <span class="tot-readout" data-testid="managed-tot-current">
-      <span class="tot-sizer" aria-hidden="true">LIMIT 9999s</span>
       <span class="tot-live">
         LIMIT {#if txState.fresh}{txState.configuredSeconds === null ? 'OFF' : `${txState.configuredSeconds}s`}{/if}
       </span>
@@ -118,22 +117,20 @@
 
   /* MOR-2674 (owner rule, 2026-09-26): a stale TX snapshot is unread — the
      LIMIT label stays, the value goes blank (unlit LCD segment), never a
-     dash run. The hidden sizer keeps one width in every state, sized to
-     the widest value the known path renders ('OFF' or an NNNs seconds
-     text), so the first reading cannot move anything. The live layer
-     overlays the sizer without changing it. */
+     dash run. The reservation is a minimum on the value element itself,
+     derived from the formatter's widest of 'OFF' and an integer seconds
+     value of up to four digits ('LIMIT 9999s' → 11ch in Roboto Mono), so
+     the first reading cannot move anything. A wider legal value (an
+     API-configured 5-digit seconds, or a fraction) grows the box instead
+     of overlapping the REMAINING span. */
   .managed-tot-readout .tot-readout {
-    position: relative;
     font-variant-numeric: tabular-nums;
   }
 
-  .managed-tot-readout .tot-sizer {
-    visibility: hidden;
-  }
-
   .managed-tot-readout .tot-live {
-    position: absolute;
-    inset: 0;
+    display: inline-block;
+    min-inline-size: 11ch;
+    white-space: nowrap;
   }
 
   .managed-tot-editor label {
