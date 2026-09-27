@@ -18,6 +18,10 @@
 //   engineering-unit reading), a neutral raw/255 bar, and no fault claims
 //   — never a unit claim through a borrowed radio's curve. There are NO
 //   hardcoded per-radio fallback curves in this module.
+// - An unknown domain is uninterpretable: every tile's label already implies
+//   a unit, so a bare number would invent one. Every formatter renders it as
+//   the empty string — exactly the unread treatment (MOR-2651) — and the
+//   level/scale functions already withhold geometry the same way.
 //
 // Capability-derived calibration and redline data is routed through the
 // runtime adapter (Tier 2 batch 2) so this helper does not reach into
@@ -146,10 +150,6 @@ const ENGINEERING_UNIT_LABEL = {
   a: 'A',
 } as const satisfies Readonly<Record<MeterEngineeringUnit, string>>;
 
-function formatUnknownUnit(value: number): string {
-  return `${value} unit unknown`;
-}
-
 function formatDeclaredEngineering(value: number, unit: MeterEngineeringUnit): string {
   return `${value} ${ENGINEERING_UNIT_LABEL[unit]}`;
 }
@@ -165,7 +165,7 @@ function matchesEngineering(
 
 export function formatPowerWatts(value: number, domain?: MeterValueDomain): string {
   if (domain?.kind === 'raw') return formatRaw(value);
-  if (domain?.kind === 'unknown') return formatUnknownUnit(value);
+  if (domain?.kind === 'unknown') return '';
   if (domain?.kind === 'engineering' && domain.unit !== 'w') {
     return formatDeclaredEngineering(value, domain.unit);
   }
@@ -211,7 +211,7 @@ export function hasSwrRatioScale(domain?: MeterValueDomain): boolean {
 
 export function formatSwr(value: number, domain?: MeterValueDomain): string {
   if (domain?.kind === 'raw') return formatRaw(value);
-  if (domain?.kind === 'unknown') return formatUnknownUnit(value);
+  if (domain?.kind === 'unknown') return '';
   if (domain?.kind === 'engineering' && domain.unit !== 'ratio') {
     return formatDeclaredEngineering(value, domain.unit);
   }
@@ -255,7 +255,7 @@ export function isSwrFault(value: number, domain?: MeterValueDomain): boolean {
 
 export function formatAlc(value: number, domain?: MeterValueDomain): string {
   if (domain?.kind === 'raw') return formatRaw(value);
-  if (domain?.kind === 'unknown') return formatUnknownUnit(value);
+  if (domain?.kind === 'unknown') return '';
   if (domain?.kind === 'engineering' && domain.unit !== 'normalized') {
     return formatDeclaredEngineering(value, domain.unit);
   }
@@ -305,7 +305,7 @@ export function isAlcFault(value: number, domain?: MeterValueDomain): boolean {
 
 export function formatVolts(value: number, domain?: MeterValueDomain): string {
   if (domain?.kind === 'raw') return formatRaw(value);
-  if (domain?.kind === 'unknown') return formatUnknownUnit(value);
+  if (domain?.kind === 'unknown') return '';
   if (domain?.kind === 'engineering' && domain.unit !== 'v') {
     return formatDeclaredEngineering(value, domain.unit);
   }
@@ -336,7 +336,7 @@ export function vdLevel(value: number, domain?: MeterValueDomain): number | null
 
 export function formatAmps(value: number, domain?: MeterValueDomain): string {
   if (domain?.kind === 'raw') return formatRaw(value);
-  if (domain?.kind === 'unknown') return formatUnknownUnit(value);
+  if (domain?.kind === 'unknown') return '';
   if (domain?.kind === 'engineering' && domain.unit !== 'a') {
     return formatDeclaredEngineering(value, domain.unit);
   }
@@ -364,7 +364,7 @@ export function idLevel(value: number, domain?: MeterValueDomain): number | null
 
 export function formatCompDb(value: number, domain?: MeterValueDomain): string {
   if (domain?.kind === 'raw') return formatRaw(value);
-  if (domain?.kind === 'unknown') return formatUnknownUnit(value);
+  if (domain?.kind === 'unknown') return '';
   if (domain?.kind === 'engineering' && domain.unit !== 'db') {
     return formatDeclaredEngineering(value, domain.unit);
   }

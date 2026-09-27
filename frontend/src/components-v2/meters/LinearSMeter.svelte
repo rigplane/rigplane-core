@@ -569,10 +569,11 @@
   ));
   // The v8 face reads one line — the S-unit — so a KNOWN calibrated reading
   // drops its second field (the dBm) from the projection's accessible name.
-  // Every other projection wording ('raw, uncalibrated', the value itself with
-  // 'unit unknown'/'scale unavailable' on unprojectable domains) stays
+  // Every other projection wording ('raw, uncalibrated', the value itself
+  // with 'scale unavailable' on an uncalibrated engineering domain) stays
   // verbatim — pinned by ReceiverInstrumentHost.isolated.test.ts. An unread
-  // meter takes the projection's bare 'S meter' name (MOR-2649).
+  // meter — and a known reading whose unit is unknown — takes the
+  // projection's bare 'S meter' name (MOR-2649, MOR-2651).
   const vfoAccessibleLabel = $derived.by(() => {
     if (signalProjection.scaleMode === 's' && signalProjection.motionFraction !== null) {
       return `S meter ${displaySUnit}`;
