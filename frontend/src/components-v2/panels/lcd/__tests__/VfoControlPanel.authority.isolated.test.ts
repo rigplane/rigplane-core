@@ -127,7 +127,7 @@ describe('VfoControlPanel authority boundary', () => {
 
   it('keeps callback identity, button order, and break-in parameters exact', () => {
     mountPanel();
-    expect(Array.from(target.querySelectorAll('button')).map((node) => node.textContent?.trim()))
+    expect(Array.from(target.querySelectorAll('button')).map((node) => accessibleText(node)))
       .toEqual(['A↔B', 'A=B', 'DW', 'SPLIT', 'XIT', 'CLR', 'TUNE', 'BK-OFF']);
     button('A↔B').click(); button('A=B').click(); button('DW').click(); button('SPLIT').click();
     button('XIT').click(); button('CLR').click(); button('BK-OFF').click();
