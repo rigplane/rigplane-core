@@ -201,8 +201,8 @@
   </header>
 
   <div class="s-meter" data-testid="receiver-s-meter" data-receiver={indicator.receiver}>
-    {@const sMeterValue = finiteValue(readingValue(indicator.sMeter))}
-    {#if sMeterValue !== null}
+    {#if finiteValue(readingValue(indicator.sMeter)) !== null}
+      {@const sMeterValue = finiteValue(readingValue(indicator.sMeter))}
       {#if sMeter}
         {@render sMeter()}
       {:else}
