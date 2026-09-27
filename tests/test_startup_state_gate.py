@@ -498,6 +498,9 @@ class _RecordingScheduler:
             self.on_prime()
         return ()
 
+    def consecutive_request_timeouts(self, _path: FieldPath) -> int:
+        return 0
+
 
 class _FakeSocket:
     def getsockname(self) -> tuple[str, int]:
@@ -1304,12 +1307,14 @@ RIGS_DIR = Path(__file__).resolve().parents[1] / "rigs"
 
 
 def _critical_startup_value(path: FieldPath) -> object:
+    from rigplane.core.tx_target import KnownTxTarget
+
     if path.name == "freq_hz":
         return 14_074_000
     if path.name == "mode":
         return "LSB"
     if path.name == "tx_target":
-        return "main"
+        return KnownTxTarget(receiver="MAIN", slot=None, frequency_hz=14_074_000)
     return False  # ptt, split
 
 
