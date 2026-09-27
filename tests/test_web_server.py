@@ -17,6 +17,7 @@ import base64
 import contextlib
 import errno
 import hashlib
+import http.client
 import json
 import logging
 import socket
@@ -755,6 +756,58 @@ class TestHttpEndpoints:
         host, port = _addr(server)
         status, _, _ = await _http_get(host, port, "/api/v1/nonexistent")
         assert status == 404
+
+    async def test_response_says_connection_close(self, server: WebServer) -> None:
+        """Every plain response carries ``Connection: close`` (MOR-2680).
+
+        The server closes the socket after each request, so the raw
+        response bytes must tell HTTP/1.1 clients not to reuse it.
+        """
+        host, port = _addr(server)
+        reader, writer = await asyncio.open_connection(host, port)
+        try:
+            writer.write(f"GET /api/v1/info HTTP/1.1\r\nHost: {host}\r\n\r\n".encode())
+            await writer.drain()
+            raw = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5.0)
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+        assert raw.startswith(b"HTTP/1.1 200 ")
+        assert b"\r\nConnection: close\r\n" in raw
+
+    async def test_pooled_client_gets_two_complete_responses(
+        self, server: WebServer
+    ) -> None:
+        """A connection-reusing client gets two full 200s (MOR-2680).
+
+        One ``http.client.HTTPConnection`` (which pools like Pro's aiohttp
+        proxy) makes two GETs in a row. On the old code the second
+        ``getresponse()`` fails because the server already closed a socket
+        the client believed was keep-alive.
+        """
+        host, port = _addr(server)
+
+        def _two_sequential_gets() -> tuple[tuple[int, bytes], tuple[int, bytes]]:
+            conn = http.client.HTTPConnection(host, port, timeout=5)
+            try:
+                conn.request("GET", "/api/v1/info")
+                first = conn.getresponse()
+                first_result = (first.status, first.read())
+                conn.request("GET", "/api/v1/info")
+                second = conn.getresponse()
+                second_result = (second.status, second.read())
+                return first_result, second_result
+            finally:
+                conn.close()
+
+        (status1, body1), (status2, body2) = await asyncio.to_thread(
+            _two_sequential_gets
+        )
+        assert status1 == 200
+        assert status2 == 200
+        assert json.loads(body1)["server"] == "rigplane"
+        assert json.loads(body2)["server"] == "rigplane"
 
     async def test_info_and_state_flow_from_serial_mock_radio(
         self, server_serial_radio: tuple[WebServer, SerialMockRadio]

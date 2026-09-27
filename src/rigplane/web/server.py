@@ -6399,6 +6399,10 @@ async def _send_response(
         "Content-Length": str(len(body)),
         **_SECURITY_HEADERS,
         **extra_headers,
+        # The server closes the socket after every response (see
+        # WebServer._handle_connection), so every response must say so;
+        # placed last so no caller can override it. MOR-2680.
+        "Connection": "close",
     }
     header_lines = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
     response = (f"HTTP/1.1 {status} {reason}\r\n{header_lines}\r\n").encode(
