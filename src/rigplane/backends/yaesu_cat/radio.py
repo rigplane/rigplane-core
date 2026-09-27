@@ -2365,13 +2365,21 @@ class YaesuCatRadio:
     async def set_break_in(self, mode: BreakInMode | int | bool) -> None:
         """Set CW break-in mode.
 
-        FTX-1 CAT supports binary on/off only — :attr:`BreakInMode.OFF`
-        maps to ``"0"`` and any non-OFF value (``SEMI``/``FULL``) maps
-        to ``"1"``. ``bool`` values remain accepted for backward
-        compatibility (``False``/``True`` → ``OFF``/``SEMI``).
+        ``mode`` must be one of the profile's declared ``[break_in] values``
+        (FTX-1: 0 = OFF, 1 = ON); ``False``/``True`` are 0/1.
+
+        Raises:
+            CommandError: If ``mode`` is outside the declared domain, or the
+                profile declares none (MOR-2729). Nothing is written.
         """
-        on = BreakInMode(int(mode)) != BreakInMode.OFF
-        await self._write("set_break_in", state="1" if on else "0")
+        mode_int = int(mode)
+        break_in_modes = self._config.break_in_modes
+        if break_in_modes is None or mode_int not in break_in_modes:
+            raise CommandError(
+                f"Break-in mode must be one of {sorted(break_in_modes or ())} "
+                f"for {self._config.model!r}, got {mode_int}"
+            )
+        await self._write("set_break_in", state=str(mode_int))
 
     async def read_cw_spot(self) -> bool:
         """Read CW spot tone state without mutating legacy state."""

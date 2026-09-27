@@ -1215,6 +1215,12 @@ auto_speed_labels = { "4" = "FAST", "5" = "MID", "6" = "SLOW" }
 "3" = "SLOW"
 "4" = "AUTO"
 
+[break_in]
+# CAT ``BI`` (FTX-1 CAT manual FTX-1_CAT_OM_ENG_2508-C): P1 0 = OFF, 1 = ON.
+# SEMI/FULL is the menu item CW SETTING 15 (CW BK-IN TYPE), not a BI value.
+values = [0, 1]
+labels = { "0" = "OFF", "1" = "ON" }
+
 [commands]
 # ── Frequency / Mode ──
 get_freq       = { cat = { read = "FA;", parse = "FA{freq:09d};" } }

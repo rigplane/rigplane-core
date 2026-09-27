@@ -604,21 +604,20 @@ def _serialize_agc_readback(profile: "RadioProfile") -> dict[str, object] | None
     }
 
 
-def _serialize_notch_width_choices(
-    profile: "RadioProfile",
+def _serialize_choices(
+    values: tuple[int, ...] | None,
+    labels: dict[str, str] | None,
 ) -> list[dict[str, object]]:
-    """Publish the profile's manual-notch-width domain (MOR-1685).
+    """Publish a profile's manual-notch-width (MOR-1685) or break-in
+    (MOR-2729) domain.
 
-    Returns ``[{"value": <int>, "label": <str>}, ...]`` in
-    ``notch_width_values`` order, ``[]`` when the profile declares no
-    width domain. The loader (``rig_loader.py: load_rig`` rejects a
-    ``[notch].width_values`` entry with no ``width_labels`` entry at load
-    time, pinned by ``TestNotchWidthLabelsComplete``) guarantees every
-    declared value has a string-keyed label, so every declared value
-    resolves a label here.
+    Returns ``[{"value": <int>, "label": <str>}, ...]`` in declared value
+    order, ``[]`` when the profile declares no domain. The loader
+    (``rig_loader.py: load_rig``) rejects a declared value with no label in
+    either section, pinned by ``TestNotchWidthLabelsComplete`` and
+    ``TestBreakInLabelsComplete``, so every declared value resolves a label
+    here.
     """
-    values = profile.notch_width_values
-    labels = profile.notch_width_labels
     if not values or not labels:
         return []
     return [{"value": value, "label": labels[str(value)]} for value in values]
@@ -3306,7 +3305,12 @@ class WebServer:
                         if profile.scan_resume_values is not None
                         else []
                     ),
-                    "notchWidthChoices": _serialize_notch_width_choices(profile),
+                    "notchWidthChoices": _serialize_choices(
+                        profile.notch_width_values, profile.notch_width_labels
+                    ),
+                    "breakInChoices": _serialize_choices(
+                        profile.break_in_modes, profile.break_in_labels
+                    ),
                     "rfSqlControlModel": profile.rf_sql_control_model,
                     "antennas": profile.antenna_tx_count,
                     "hasRxAntenna": profile.antenna_has_rx_ant,
@@ -3797,7 +3801,12 @@ class WebServer:
                 if profile.scan_resume_values is not None
                 else []
             ),
-            "notchWidthChoices": _serialize_notch_width_choices(profile),
+            "notchWidthChoices": _serialize_choices(
+                profile.notch_width_values, profile.notch_width_labels
+            ),
+            "breakInChoices": _serialize_choices(
+                profile.break_in_modes, profile.break_in_labels
+            ),
             "rfSqlControlModel": profile.rf_sql_control_model,
             "dataModeCount": profile.data_mode_count,
             "dataModeLabels": (
