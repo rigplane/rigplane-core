@@ -73,6 +73,15 @@ vi.mock('$lib/runtime', async () => {
   };
 });
 
+// Hook budget sized for a loaded CI runner, not a quiet laptop (MOR-2796):
+// the whole-suite run on the loaded Mac mini pushed this beforeAll to the
+// 30 s it used to carry, 0.3 s from the limit on a clean run of the same
+// head. The cost is the on-demand Vite/Svelte transform of the import
+// graph (jsdom: a build, no browser, no capture), which scales with machine
+// load. 90 s still catches what the budget exists for — a hung or throwing
+// import that never resolves — while absorbing only machine-speed variance.
+const CI_HOOK_BUDGET_MS = 90_000;
+
 describe('StatusBar bad-link chip (MOR-2425 R29(3))', () => {
   let target: HTMLElement | null = null;
   let instance: object | null = null;
@@ -83,10 +92,10 @@ describe('StatusBar bad-link chip (MOR-2425 R29(3))', () => {
   let flushSync: typeof import('svelte')['flushSync'];
   let StatusBar: (typeof import('../StatusBar.svelte'))['default'];
 
-  // Explicit budget, not vitest's 10s default: these four dynamic imports
-  // (transformed here, not at collection time — see file header for why
-  // they must stay dynamic) cost ~4.8s cold, and 8 concurrent single-file
-  // runs all exceeded the 10s default (measured; 4 concurrent still passed
+  // See CI_HOOK_BUDGET_MS above: four dynamic imports (transformed here,
+  // not at collection time — see file header for why they must stay
+  // dynamic) cost ~4.8s cold, and 8 concurrent single-file runs all
+  // exceeded the 10s default (measured; 4 concurrent still passed
   // at ~7.3s).
   beforeAll(async () => {
     vi.useFakeTimers();
@@ -94,7 +103,7 @@ describe('StatusBar bad-link chip (MOR-2425 R29(3))', () => {
     ({ t } = await import('$lib/i18n'));
     ({ mount, unmount, flushSync } = await import('svelte'));
     ({ default: StatusBar } = await import('../StatusBar.svelte'));
-  }, 30_000);
+  }, CI_HOOK_BUDGET_MS);
 
   afterAll(() => {
     vi.useRealTimers();

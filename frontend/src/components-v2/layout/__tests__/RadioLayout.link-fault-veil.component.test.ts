@@ -126,6 +126,17 @@ function stripGlobal(selector: string): string {
   return selector.slice(prefix.length, -1);
 }
 
+// Explicit budget rather than vitest's 10s default: these dynamic imports
+// pull the whole semantic surface graph, which is far heavier than the
+// four the sibling chip test loads. Sized for a loaded CI runner (MOR-2796):
+// the suite measured 29.66 s on clean origin/main and 30.03 s at an
+// unrelated head, so the previous 30 s ceiling failed under load. The cost
+// is the on-demand Vite/Svelte transform of the import graph (jsdom: a
+// build, no browser, no capture). 90 s still catches what the budget exists
+// for — a hung or throwing import that never resolves — while absorbing
+// only machine-speed variance.
+const CI_HOOK_BUDGET_MS = 90_000;
+
 describe('RadioLayout link-fault veil (MOR-2425 C-R3)', () => {
   let target: HTMLElement | null = null;
   let instance: object | null = null;
@@ -135,15 +146,12 @@ describe('RadioLayout link-fault veil (MOR-2425 C-R3)', () => {
   let flushSync: typeof import('svelte')['flushSync'];
   let Fixture: (typeof import('./fixtures/HostedRadioLayoutFixture.svelte'))['default'];
 
-  // Explicit budget rather than vitest's 10s default: these dynamic imports
-  // pull the whole semantic surface graph, which is far heavier than the
-  // four the sibling chip test loads.
   beforeAll(async () => {
     vi.useFakeTimers();
     conn = await import('$lib/stores/connection.svelte');
     ({ mount, unmount, flushSync } = await import('svelte'));
     ({ default: Fixture } = await import('./fixtures/HostedRadioLayoutFixture.svelte'));
-  }, 30_000);
+  }, CI_HOOK_BUDGET_MS);
 
   afterAll(() => {
     vi.useRealTimers();
