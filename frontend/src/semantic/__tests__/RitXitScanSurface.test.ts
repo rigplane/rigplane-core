@@ -73,12 +73,16 @@ function render(view: RadioViewModel, handlers: Handlers = {}) {
     root: () => q('[data-testid="ritxit-scan-surface"]'),
     el: (id: string) => q<HTMLElement>(`[data-testid="${id}"]`),
     text: (id: string) => q<HTMLElement>(`[data-testid="${id}"]`)?.textContent?.trim(),
-    input: () => q<HTMLInputElement>('[data-testid="ritxit-offset"] input'),
+    slider: () => q<HTMLElement>('[data-testid="ritxit-offset"] [role="slider"]'),
     all: (id: string) => target.querySelectorAll(`[data-testid="${id}"]`),
   };
 }
 /** MOR-1304 F3 recipe: bypasses jsdom's disabled-button `.click()` no-op. */
 const bypassClick = (el: HTMLElement) => el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+const press = (el: HTMLElement, key: string, shiftKey = false): void => {
+  el.dispatchEvent(new KeyboardEvent('keydown', { key, shiftKey, bubbles: true, cancelable: true }));
+  flushSync();
+};
 
 /**
  * MOR-2425 restore — the TYPE/SPAN/RESUME groups live entirely in the SCAN
@@ -185,12 +189,12 @@ describe('structural presence: absent groups render nothing extra', () => {
 const OFF_AVAIL: Availability = { structural: false, operational: false };
 
 describe('unread facts render honestly, never fabricated', () => {
-  it('shows an unread offset as an EMPTY reserved slot with the slider at 0, not a guessed position (MOR-2653)', () => {
+  it('shows an unread offset as an EMPTY reserved slot with no slider value, never a guessed one (MOR-2653)', () => {
     const r = render(withRx({ ritOffset: unread<number>(), xitOffset: unread<number>() }));
     expect(r.text('ritxit-offset-value')).toBe('');
     expect(r.text('rit-offset-value')).toBe('');
     expect(r.text('xit-offset-value')).toBe('');
-    expect(r.input()!.valueAsNumber).toBe(0);
+    expect(r.slider()!.hasAttribute('aria-valuenow')).toBe(false);
     expect(r.el('ritxit-offset')!.dataset.observed).toBe('false');
     // Structural geometry pin (jsdom has no layout): 9ch covers the widest
     // rendered value ('+9999 Hz'), so the slot never moves on a first read.
@@ -209,25 +213,22 @@ describe('unread facts render honestly, never fabricated', () => {
   // F3 (fix round, verify-MOR-1308 M6/M7): activeReceiver stays KNOWN here —
   // isolates the offset's OWN observation gate from the S3b wrong-VFO guard.
   // Both halves of "refuse an edit to an unobserved offset" pinned
-  // independently: the `disabled` attribute (M7) and the in-handler guard,
+  // independently: the `aria-disabled` state (M7) and the in-handler guard,
   // bypassed via a direct dispatch (M6).
   it('disables the offset slider while the offset itself is unread (activeReceiver known)', () => {
     const r = render(withRx({ ritOffset: unread<number>(), xitOffset: unread<number>() }));
-    expect(r.input()!.disabled).toBe(true);
+    expect(r.slider()!.getAttribute('aria-disabled')).toBe('true');
     r.dispose();
   });
 
-  it('refuses an offset edit dispatched directly at the input while the offset is unread, bypassing disabled', () => {
+  it('refuses an offset edit dispatched directly at the slider while the offset is unread, bypassing disabled', () => {
     const onRitOffsetChange = vi.fn();
     const onXitOffsetChange = vi.fn();
     const r = render(
       withRx({ ritOffset: unread<number>(), xitOffset: unread<number>() }),
       { onRitOffsetChange, onXitOffsetChange },
     );
-    const input = r.input()!;
-    input.value = '300';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    flushSync();
+    press(r.slider()!, 'ArrowRight');
     expect(onRitOffsetChange).not.toHaveBeenCalled();
     expect(onXitOffsetChange).not.toHaveBeenCalled();
     r.dispose();
@@ -248,15 +249,12 @@ describe('MOR-2704 G1: a KNOWN offset under operational:false fails closed', () 
       withRx({ ritOffset: known(250, READ_NOT_OPERATIONAL), xitOffset: known(250, READ_NOT_OPERATIONAL) }),
       { onRitOffsetChange, onXitOffsetChange },
     );
-    expect(r.input()!.disabled).toBe(true);
+    expect(r.slider()!.getAttribute('aria-disabled')).toBe('true');
     expect(r.el('ritxit-offset')!.dataset.observed).toBe('false');
     // MOR-2704 T1 (option A): the read value's text and thumb stay visible.
     expect(r.el('ritxit-offset-value')!.textContent).toBe('250');
-    expect(r.input()!.valueAsNumber).toBe(250);
-    const input = r.input()!;
-    input.value = '300';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    flushSync();
+    expect(r.slider()!.getAttribute('aria-valuenow')).toBe('250');
+    press(r.slider()!, 'ArrowRight');
     expect(onRitOffsetChange).not.toHaveBeenCalled();
     expect(onXitOffsetChange).not.toHaveBeenCalled();
     r.dispose();
@@ -322,18 +320,15 @@ describe('S3b wrong-VFO guard: every RIT/XIT control fails closed while activeRe
 
   it('disables the offset slider', () => {
     const r = render(unknownActive);
-    expect(r.input()!.disabled).toBe(true);
+    expect(r.slider()!.getAttribute('aria-disabled')).toBe('true');
     r.dispose();
   });
 
-  it('refuses an offset edit dispatched directly at the input, bypassing disabled', () => {
+  it('refuses an offset edit dispatched directly at the slider, bypassing disabled', () => {
     const onRitOffsetChange = vi.fn();
     const onXitOffsetChange = vi.fn();
     const r = render(unknownActive, { onRitOffsetChange, onXitOffsetChange });
-    const input = r.input()!;
-    input.value = '500';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    flushSync();
+    press(r.slider()!, 'ArrowRight');
     expect(onRitOffsetChange).not.toHaveBeenCalled();
     expect(onXitOffsetChange).not.toHaveBeenCalled();
     r.dispose();
@@ -357,7 +352,7 @@ describe('S3b wrong-VFO guard: every RIT/XIT control fails closed while activeRe
   it('re-enables every RIT/XIT control once activeReceiver is known', () => {
     const r = render(base());
     for (const id of ['ritxit-rit-toggle', 'ritxit-clear']) expect(r.el(id)!.hasAttribute('disabled')).toBe(false);
-    expect(r.input()!.disabled).toBe(false);
+    expect(r.slider()!.getAttribute('aria-disabled')).toBe('false');
     r.dispose();
   });
 });
@@ -452,10 +447,7 @@ describe('O1: one offset register under two capability gates', () => {
     const r = render(
       withRx({ ritActive: known(true), xitActive: known(false) }), { onRitOffsetChange, onXitOffsetChange },
     );
-    const input = r.input()!;
-    input.value = '300';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    flushSync();
+    press(r.slider()!, 'ArrowRight');
     expect(onRitOffsetChange).toHaveBeenCalledExactlyOnceWith(300);
     expect(onXitOffsetChange).not.toHaveBeenCalled();
     r.dispose();
@@ -467,11 +459,8 @@ describe('O1: one offset register under two capability gates', () => {
     const r = render(
       withRx({ ritActive: known(false), xitActive: known(true) }), { onRitOffsetChange, onXitOffsetChange },
     );
-    const input = r.input()!;
-    input.value = '-300';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    flushSync();
-    expect(onXitOffsetChange).toHaveBeenCalledExactlyOnceWith(-300);
+    press(r.slider()!, 'ArrowLeft');
+    expect(onXitOffsetChange).toHaveBeenCalledExactlyOnceWith(200);
     expect(onRitOffsetChange).not.toHaveBeenCalled();
     r.dispose();
   });
@@ -482,11 +471,8 @@ describe('O1: one offset register under two capability gates', () => {
     const r = render(
       withRx({ ritActive: known(false), xitActive: known(false) }), { onRitOffsetChange, onXitOffsetChange },
     );
-    const input = r.input()!;
-    input.value = '0';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    flushSync();
-    expect(onRitOffsetChange).toHaveBeenCalledExactlyOnceWith(0);
+    press(r.slider()!, 'ArrowRight');
+    expect(onRitOffsetChange).toHaveBeenCalledExactlyOnceWith(300);
     expect(onXitOffsetChange).not.toHaveBeenCalled();
     r.dispose();
   });
@@ -501,12 +487,59 @@ describe('O1: one offset register under two capability gates', () => {
   });
 
   it('exposes v2\'s own -9999..9999 Hz / 50 Hz-step bounds (O2)', () => {
-    const r = render(base());
-    const input = r.input()!;
-    expect(Number(input.min)).toBe(OFFSET_MIN);
-    expect(Number(input.max)).toBe(OFFSET_MAX);
-    expect(Number(input.step)).toBe(OFFSET_STEP);
+    const onRitOffsetChange = vi.fn();
+    const r = render(withRx({ ritOffset: known(0), xitOffset: known(0) }), { onRitOffsetChange });
+    expect(r.slider()!.getAttribute('aria-valuemin')).toBe(String(OFFSET_MIN));
+    expect(r.slider()!.getAttribute('aria-valuemax')).toBe(String(OFFSET_MAX));
+    press(r.slider()!, 'ArrowRight');
+    expect(onRitOffsetChange).toHaveBeenCalledExactlyOnceWith(OFFSET_STEP);
     r.dispose();
+  });
+});
+
+/* ── MOR-2524 / MOR-2727: the offset is the shared bipolar fader ─────── */
+describe('the offset slider is the shared ValueControl fader', () => {
+  it('owns the arrow keys, Shift included, only while it is editable', () => {
+    const live = render(base());
+    expect(live.slider()!.getAttribute('data-owns-arrows')).toBe('both shift');
+    live.dispose();
+    const unreadOffset = render(withRx({ ritOffset: unread<number>(), xitOffset: unread<number>() }));
+    expect(unreadOffset.slider()!.hasAttribute('data-owns-arrows')).toBe(false);
+    unreadOffset.dispose();
+  });
+
+  it('steps one lattice step per arrow from zero and back to exact zero, Shift included, with Home/End at the bounds (MOR-1677)', () => {
+    const onRitOffsetChange = vi.fn();
+    const r = render(withRx({ ritOffset: known(0), xitOffset: known(0) }), { onRitOffsetChange });
+    const slider = r.slider()!;
+    press(slider, 'ArrowRight');
+    press(slider, 'ArrowLeft');
+    press(slider, 'ArrowRight', true);
+    press(slider, 'Home');
+    press(slider, 'End');
+    expect(onRitOffsetChange.mock.calls).toEqual([[50], [0], [50], [-9999], [9999]]);
+    r.dispose();
+  });
+
+  it('sends nothing on a double-click: CLEAR is the offset reset', () => {
+    const onRitOffsetChange = vi.fn();
+    const r = render(base(), { onRitOffsetChange });
+    r.slider()!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    flushSync();
+    expect(onRitOffsetChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  it.each([
+    ['rit-xit', true],
+    ['all', false],
+  ] as const)('part "%s" draws the illuminated fader: %s, with a centre mark either way', (part, illuminated) => {
+    const component = mount(RitXitScanSurface, { target, props: { view: base(), handles: stubHandles, part } });
+    flushSync();
+    const fader = target.querySelector<HTMLElement>('[data-testid="ritxit-offset"] .vc-bipolar')!;
+    expect(fader.classList.contains('hw-illum')).toBe(illuminated);
+    expect(fader.querySelector(illuminated ? '.hil-center-mark' : '.vc-track-center')).not.toBeNull();
+    unmount(component);
   });
 });
 

@@ -189,6 +189,13 @@ function render(props: { strips?: 'single' | 'dual' } = {}): void {
 
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
 const el = (id: string) => q<HTMLElement>(`[data-testid="${id}"]`);
+const offsetSlider = () => q<HTMLElement>('[data-testid="ritxit-offset"] [role="slider"]')!;
+function press(slider: HTMLElement, key: string): KeyboardEvent {
+  const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+  slider.dispatchEvent(event);
+  flushSync();
+  return event;
+}
 /** Keeps the mocked view-model state AND the real command-bus store
  *  (`getRadioState()`) in agreement — `onRitToggle`/`onXitToggle` read the
  *  latter directly. */
@@ -236,21 +243,15 @@ afterEach(() => {
 describe('O1: editing via either gate reaches the wire as the identical command', () => {
   it('RIT-leading: sends set_rit_frequency with the edited value', () => {
     render();
-    const input = q<HTMLInputElement>('[data-testid="ritxit-offset"] input')!;
-    input.value = '300';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    flushSync();
+    press(offsetSlider(), 'ArrowRight');
     expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_rit_frequency', { freq: 300 });
   });
 
   it('XIT-leading: sends the SAME set_rit_frequency command, not a different one', () => {
     useState(liveState({ ritOn: false, ritTx: true } as Partial<ServerState>));
     render();
-    const input = q<HTMLInputElement>('[data-testid="ritxit-offset"] input')!;
-    input.value = '-300';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    flushSync();
-    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_rit_frequency', { freq: -300 });
+    press(offsetSlider(), 'ArrowLeft');
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_rit_frequency', { freq: 200 });
   });
 
   it('never shows two divergent offset values', () => {
@@ -270,89 +271,89 @@ describe('O1: editing via either gate reaches the wire as the identical command'
 });
 
 describe('MOR-1731 exact RIT domain', () => {
-  function renderExact(state: ServerState = liveState()): HTMLInputElement {
-    const caps = liveCaps(RIT_XIT_TAGS, { rit: FTX_RIT_DOMAIN });
+  function renderExact(
+    state: ServerState = liveState(), domain: ControlDomain = FTX_RIT_DOMAIN,
+  ): HTMLElement {
+    const caps = liveCaps(RIT_XIT_TAGS, { rit: domain });
     h.caps = caps;
     setCapabilities(caps);
     useState(state);
     render();
-    return q<HTMLInputElement>('[data-testid="ritxit-offset"] input')!;
+    return offsetSlider();
   }
 
   function pressAt(raw: number, key: string): void {
     if (component) unmount(component);
     component = null;
     document.body.innerHTML = '';
-    const input = renderExact(liveState({ ritFreq: raw }));
-    const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
-    input.dispatchEvent(event);
-    expect(event.defaultPrevented).toBe(true);
-    flushSync();
+    expect(press(renderExact(liveState({ ritFreq: raw })), key).defaultPrevented).toBe(true);
   }
 
-  it('renders exact zero on the declared one-Hz native lattice without an intent', () => {
-    const input = renderExact(liveState({ ritFreq: 0 }));
-    expect([input.min, input.max, input.step, input.value]).toEqual(['-9999', '9999', '1', '0']);
+  it('renders exact zero on the declared one-Hz lattice without an intent', () => {
+    const slider = renderExact(liveState({ ritFreq: 0 }));
+    expect(['aria-valuemin', 'aria-valuemax', 'aria-valuenow'].map((name) => slider.getAttribute(name)))
+      .toEqual(['-9999', '9999', '0']);
     expect(el('ritxit-offset-value')!.textContent).toBe('0');
     expect(sendCommand).not.toHaveBeenCalled();
   });
 
+  // MOR-2727: one arrow press is one step of the profile's 1 Hz lattice.
   it.each([
     ['horizontal', 'ArrowRight', 'ArrowLeft'],
     ['vertical', 'ArrowUp', 'ArrowDown'],
-  ])('separates %s 50 Hz gestures from the native lattice and preserves endpoints',
+  ])('steps %s arrows by one lattice step through exact zero and preserves endpoints',
     (_axis, increase, decrease) => {
       pressAt(0, increase);
-      pressAt(50, decrease);
+      pressAt(1, decrease);
       pressAt(0, decrease);
-      pressAt(-50, increase);
+      pressAt(-1, increase);
       pressAt(0, 'Home');
       pressAt(0, 'End');
       expect(vi.mocked(sendCommand).mock.calls).toEqual([
-        ['set_rit_frequency', { freq: 50 }],
+        ['set_rit_frequency', { freq: 1 }],
         ['set_rit_frequency', { freq: 0 }],
-        ['set_rit_frequency', { freq: -50 }],
+        ['set_rit_frequency', { freq: -1 }],
         ['set_rit_frequency', { freq: 0 }],
         ['set_rit_frequency', { freq: -9999 }],
         ['set_rit_frequency', { freq: 9999 }],
       ]);
     });
 
+  it('steps a 2 Hz lattice by 2 Hz', () => {
+    press(renderExact(liveState({ ritFreq: 0 }), {
+      ...FTX_RIT_DOMAIN, raw_min: -10000, raw_max: 10000, raw_step: 2,
+      display_min: '-10000' as never, display_max: '10000' as never, display_step: '2' as never,
+    }), 'ArrowRight');
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_rit_frequency', { freq: 2 });
+  });
+
   it.each([
-    ['RIT-leading', { ritOn: true, ritTx: false }, 50],
-    ['XIT-leading', { ritOn: false, ritTx: true }, -50],
-  ] as const)('%s exact input reaches exactly one existing offset handler', (_name, flags, freq) => {
-    const input = renderExact(liveState(flags));
-    input.value = String(freq);
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    flushSync();
+    ['RIT-leading', { ritOn: true, ritTx: false }, 'ArrowRight', 1],
+    ['XIT-leading', { ritOn: false, ritTx: true }, 'ArrowLeft', -1],
+  ] as const)('%s exact input reaches exactly one existing offset handler', (_name, flags, key, freq) => {
+    press(renderExact(liveState({ ...flags, ritFreq: 0 })), key);
     expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_rit_frequency', { freq });
   });
 
   it('keeps the legacy constants when capability domains are absent', () => {
     render();
-    const input = q<HTMLInputElement>('[data-testid="ritxit-offset"] input')!;
-    expect([input.min, input.max, input.step]).toEqual(['-9999', '9999', '50']);
+    expect(['aria-valuemin', 'aria-valuemax'].map((name) => offsetSlider().getAttribute(name)))
+      .toEqual(['-9999', '9999']);
+    press(offsetSlider(), 'ArrowRight');
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_rit_frequency', { freq: 300 });
   });
 
   it.each([
     ['malformed domain', liveState(), { rit: { mapping: 'identity' } }],
     ['invalid current raw value', liveState({ ritFreq: 10000 }), { rit: FTX_RIT_DOMAIN }],
-    ['failed exact encode', liveState({ ritFreq: 0 }), { rit: {
-      ...FTX_RIT_DOMAIN, raw_min: -10000, raw_max: 10000, raw_step: 2,
-      display_min: '-10000' as never, display_max: '10000' as never, display_step: '2' as never,
-    } }],
   ] as const)('%s refuses adjustment and emits nothing', (_name, state, controls) => {
     const caps = liveCaps(RIT_XIT_TAGS, controls as never);
     h.caps = caps;
     setCapabilities(caps);
     useState(state);
     render();
-    const input = q<HTMLInputElement>('[data-testid="ritxit-offset"] input')!;
-    if (_name !== 'failed exact encode') expect(input.disabled).toBe(true);
-    input.value = '1';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    flushSync();
+    expect(offsetSlider().getAttribute('aria-disabled')).toBe('true');
+    press(offsetSlider(), 'ArrowRight');
     expect(sendCommand).not.toHaveBeenCalled();
   });
 
@@ -361,26 +362,19 @@ describe('MOR-1731 exact RIT domain', () => {
     ['wrong VFO', liveState({ active: 'OTHER' } as never)],
     ['unread offset', (() => { const state = liveState({ ritFreq: undefined }); return state; })()],
   ] as const)('%s emits no exact-domain offset intent', (_name, state) => {
-    const input = renderExact(state);
-    expect(input.disabled).toBe(true);
-    input.dispatchEvent(new KeyboardEvent('keydown', {
-      key: 'ArrowRight', bubbles: true, cancelable: true,
-    }));
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    flushSync();
+    const slider = renderExact(state);
+    expect(slider.getAttribute('aria-disabled')).toBe('true');
+    press(slider, 'ArrowRight');
     expect(sendCommand).not.toHaveBeenCalled();
   });
 
   // MOR-2425/R40: a HELD offset is an offset, not a refusal.
   it('a held (stale) offset stays adjustable and emits an exact-domain intent', () => {
     const base = liveState();
-    const input = renderExact({ ...base, fieldStatus: { ...base.fieldStatus,
+    const slider = renderExact({ ...base, fieldStatus: { ...base.fieldStatus,
       ritFreq: { ...fresh, freshness: 'stale', availability: 'stale' } } } as ServerState);
-    expect(input.disabled).toBe(false);
-    input.dispatchEvent(new KeyboardEvent('keydown', {
-      key: 'ArrowRight', bubbles: true, cancelable: true,
-    }));
-    flushSync();
+    expect(slider.getAttribute('aria-disabled')).toBe('false');
+    press(slider, 'ArrowRight');
     expect(sendCommand).toHaveBeenCalledOnce();
   });
 });
