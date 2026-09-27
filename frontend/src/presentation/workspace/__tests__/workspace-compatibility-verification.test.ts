@@ -241,7 +241,7 @@ const MODULE_PATH_VALUE = /^(\.{1,2}\/|\$lib\/|src\/|\/)|\.(svelte|ts|js)$/;
  *  is exempt from the KEY marker scan (`txAux` is a SemanticSurfaceName;
  *  `rx-tx` is a declared zone id). Values are still scanned. */
 const FROZEN_VOCABULARY: ReadonlySet<string> = new Set([
-  'version', 'layout', 'designLanguage', 'theme', 'density',
+  'version', 'layout', 'designLanguage', 'designLanguageBySkin', 'theme', 'density',
   'visibleSurfaces', 'zoneOrder', 'pinnedCommands',
   'main', 'receiver-deck', 'rx-tx', 'primary-vfo', 'secondary-vfo', 'global',
   'portrait-deck', 'control-column',
@@ -496,7 +496,7 @@ describe('MOR-1083 class 3 — corrupt and partial stored state', () => {
   it('a partial object repairs field by field and reports every rejection', () => {
     const storage = new LedgerStorage();
     storage.map.set(WORKSPACE_STORAGE_KEY, JSON.stringify({
-      version: 1,
+      version: WORKSPACE_SCHEMA_VERSION,
       theme: 'no-such-theme',
       layout: 'no-such-layout',
       density: 'ultra',
@@ -518,7 +518,7 @@ describe('MOR-1083 class 3 — corrupt and partial stored state', () => {
   it('a cross-zone duplicate is refused rather than moved', () => {
     const storage = new LedgerStorage();
     storage.map.set(WORKSPACE_STORAGE_KEY, JSON.stringify({
-      version: 1,
+      version: WORKSPACE_SCHEMA_VERSION,
       zoneOrder: { 'receiver-deck': ['vfo', 'rxTx'], 'rx-tx': ['vfo'] },
     }));
 
@@ -586,7 +586,7 @@ describe('MOR-1083 class 4 — the forward-read window (N=2)', () => {
     setDensity('compact');
     setTheme('nord', true);
     setLayout('lcd-scope');
-    setDesignLanguage('fieldline');
+    setDesignLanguage('desktop-v2', 'fieldline');
 
     expect(storage.getItem(WORKSPACE_STORAGE_KEY)).toBe(original);
     expect(storage.writes).toEqual([]);
@@ -600,14 +600,14 @@ describe('MOR-1083 class 4 — the forward-read window (N=2)', () => {
     initWorkspaceStore(storage);
     expect(storage.writes).toEqual([]);
 
-    const accepted = importWorkspace(JSON.stringify({ version: 1, theme: 'nord' }));
+    const accepted = importWorkspace(JSON.stringify({ version: WORKSPACE_SCHEMA_VERSION, theme: 'nord' }));
 
     expect(accepted.outcome).toBe('ok');
-    expect(storage.stored()).toMatchObject({ version: 1, theme: 'nord' });
+    expect(storage.stored()).toMatchObject({ version: WORKSPACE_SCHEMA_VERSION, theme: 'nord' });
     expect(getWorkspaceNotice()).toBeNull();
   });
 
-  it.each([0, 4, 99, 1.5, 'two', null, true])(
+  it.each([0, 1, 5, 99, 1.5, 'two', null, true])(
     'v%s is outside the window: discarded visibly, never silently downgraded',
     (version) => {
       const storage = new LedgerStorage();
@@ -657,7 +657,7 @@ describe('MOR-1083 class 5 — export / import round trip', () => {
     initWorkspaceStore(storage);
     setTheme('nord', true);
     setLayout('lcd-scope');
-    setDesignLanguage('fieldline');
+    setDesignLanguage('desktop-v2', 'fieldline');
     setDensity('compact');
     setZoneVisibleSurfaces('receiver-deck', ['vfo', 'rxTx']);
     setZoneOrder('receiver-deck', ['rxTx', 'vfo']);
@@ -677,7 +677,7 @@ describe('MOR-1083 class 5 — export / import round trip', () => {
   it('a forward-read export carries its unknown fields through the round trip', () => {
     const storage = new LedgerStorage();
     storage.map.set(WORKSPACE_STORAGE_KEY, JSON.stringify({
-      ...DEFAULT_WORKSPACE, version: 2, theme: 'nord', ...FUTURE_FIELDS,
+      ...DEFAULT_WORKSPACE, version: WORKSPACE_SCHEMA_VERSION + 1, theme: 'nord', ...FUTURE_FIELDS,
     }));
     initWorkspaceStore(storage);
 
@@ -695,7 +695,7 @@ describe('MOR-1083 class 5 — export / import round trip', () => {
     const before = storage.getItem(WORKSPACE_STORAGE_KEY);
 
     const result = importWorkspace(JSON.stringify({
-      version: 1,
+      version: WORKSPACE_SCHEMA_VERSION,
       theme: 'crt-green',
       capabilities: { hasScope: true, blob: SENTINELS.capability },
       componentPath: SENTINELS.modulePath,
@@ -811,7 +811,7 @@ const ROLLBACK_CASES: readonly RollbackCase[] = [
 function exerciseStore(): void {
   setLayout('standard');
   setTheme('crt-green', true);
-  setDesignLanguage('fieldline');
+  setDesignLanguage('desktop-v2', 'fieldline');
   setDensity('compact');
   setZoneVisibleSurfaces('receiver-deck', ['vfo', 'rxTx']);
   setZoneOrder('receiver-deck', ['rxTx', 'vfo']);
@@ -908,7 +908,7 @@ describe('MOR-1083 class 6 — THE ROLLBACK PROBE', () => {
 
     initWorkspaceStore(storage);
     exerciseStore();
-    importWorkspace(JSON.stringify({ version: 1, theme: 'nord' }));
+    importWorkspace(JSON.stringify({ version: WORKSPACE_SCHEMA_VERSION, theme: 'nord' }));
 
     for (const key of ALL_LEGACY_KEYS) {
       expect(storage.attemptedWrites).not.toContain(key);
@@ -993,9 +993,9 @@ describe('MOR-1083 class 7 — never-overwrite-before-commit', () => {
 
   it('a serialization failure writes nothing at all (repository level)', () => {
     const storage = new LedgerStorage();
-    const cyclic: Record<string, unknown> = { version: 1 };
+    const cyclic: Record<string, unknown> = { version: WORKSPACE_SCHEMA_VERSION };
     cyclic.self = cyclic;
-    const result = readWorkspace({ version: 1, theme: 'nord' });
+    const result = readWorkspace({ version: WORKSPACE_SCHEMA_VERSION, theme: 'nord' });
     // Force `JSON.stringify` to throw inside `persistWorkspace` by handing it a
     // preserved field that cannot be serialized.
     const withCycle = { ...result, preserved: { cyclic } };
@@ -1024,7 +1024,7 @@ describe('MOR-1083 class 8 — no forbidden content is ever persisted', () => {
     'a stored object carrying %s content is stripped before writeback',
     (name, fields) => {
       const storage = new LedgerStorage();
-      storage.map.set(WORKSPACE_STORAGE_KEY, JSON.stringify({ version: 1, theme: 'nord', ...fields }));
+      storage.map.set(WORKSPACE_STORAGE_KEY, JSON.stringify({ version: WORKSPACE_SCHEMA_VERSION, theme: 'nord', ...fields }));
 
       initWorkspaceStore(storage);
       setDensity('compact');
@@ -1038,7 +1038,7 @@ describe('MOR-1083 class 8 — no forbidden content is ever persisted', () => {
   it('a BENIGN unknown field IS preserved — the sweep is not a blanket strip', () => {
     const storage = new LedgerStorage();
     storage.map.set(WORKSPACE_STORAGE_KEY, JSON.stringify({
-      version: 1, theme: 'nord', operatorNote: 'field day', futureCounter: 3,
+      version: WORKSPACE_SCHEMA_VERSION, theme: 'nord', operatorNote: 'field day', futureCounter: 3,
     }));
 
     initWorkspaceStore(storage);
@@ -1055,7 +1055,7 @@ describe('MOR-1083 class 8 — no forbidden content is ever persisted', () => {
     exerciseStore();
 
     expect(Object.keys(storage.stored()!).sort()).toEqual([
-      'density', 'designLanguage', 'layout', 'pinnedCommands', 'theme',
+      'density', 'designLanguageBySkin', 'layout', 'pinnedCommands', 'theme',
       'version', 'visibleSurfaces', 'zoneOrder',
     ]);
     expectNoForbiddenBytes(storage, 'frozen-key-set');

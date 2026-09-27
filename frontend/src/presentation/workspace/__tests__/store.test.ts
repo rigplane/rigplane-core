@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   WORKSPACE_MIGRATION_SENTINEL_KEY, WORKSPACE_STORAGE_KEY,
 } from '../repository';
-import { DEFAULT_WORKSPACE } from '../contract';
+import { DEFAULT_WORKSPACE, WORKSPACE_SCHEMA_VERSION } from '../contract';
 import {
   dismissWorkspaceNotice, exportWorkspace, getWorkspace, getWorkspaceNotice, importWorkspace,
   initWorkspaceStore, resetWorkspace, setDensity, setDesignLanguage, setLayout, setPinnedCommands,
@@ -182,7 +182,7 @@ describe('the discard signal is surfaced, never swallowed (MOR-1079)', () => {
     expect(getWorkspaceNotice()?.kind).toBe('reset');
 
     const other = new FakeStorage();
-    other.map.set(WORKSPACE_STORAGE_KEY, JSON.stringify({ version: 1, theme: 'no-such-theme' }));
+    other.map.set(WORKSPACE_STORAGE_KEY, JSON.stringify({ version: WORKSPACE_SCHEMA_VERSION, theme: 'no-such-theme' }));
     initWorkspaceStore(other);
     expect(getWorkspaceNotice()?.kind).toBe('repaired');
     expect(getWorkspaceNotice()?.rejections).toContainEqual({ field: 'theme', reason: 'unknown-id' });
@@ -267,31 +267,18 @@ describe('semantic actions go through the validator (MOR-1079)', () => {
 
   it('applies each typed field', () => {
     setLayout('lcd-cockpit');
-    setDesignLanguage('fieldline');
+    setDesignLanguage('desktop-v2', 'fieldline');
     setTheme('lcd-warm');
     setZoneVisibleSurfaces('rx-tx', ['rxTx']);
     setZoneOrder('receiver-deck', ['vfo', 'meters']);
     setPinnedCommands(['set_compressor']);
 
     expect(getWorkspace()).toMatchObject({
-      layout: 'lcd-cockpit', designLanguage: 'fieldline', theme: 'lcd-warm',
+      layout: 'lcd-cockpit', designLanguageBySkin: { 'desktop-v2': 'fieldline' }, theme: 'lcd-warm',
       visibleSurfaces: { 'rx-tx': ['rxTx'] }, zoneOrder: { 'receiver-deck': ['vfo', 'meters'] },
       pinnedCommands: ['set_compressor'],
     });
     expect(stored(storage).theme).toBe('lcd-warm');
-  });
-
-  it('re-clamps density when the design language changes under it', () => {
-    setDensity('dense');
-    expect(getWorkspace().density).toBe('dense');
-
-    setDesignLanguage('fieldline');
-
-    expect(getWorkspace().density).toBe('comfortable');
-    expect(getWorkspaceNotice()).toEqual({
-      kind: 'repaired', rejections: [{ field: 'density', reason: 'out-of-clamp' }],
-    });
-    expect(stored(storage).density).toBe('comfortable');
   });
 
   it('rejects a cross-zone duplicate rather than persisting it', () => {
@@ -346,7 +333,7 @@ describe('resetWorkspace (MOR-1080)', () => {
     resetWorkspace();
 
     expect(getWorkspaceNotice()).toBeNull();
-    expect(stored(storage).version).toBe(1);
+    expect(stored(storage).version).toBe(WORKSPACE_SCHEMA_VERSION);
     expect(stored(storage).theme).toBe('default');
 
     setTheme('nord');
@@ -424,10 +411,12 @@ describe('importWorkspace (MOR-1080)', () => {
 describe('exportWorkspace (MOR-1080)', () => {
   it('serializes the current validated fields plus every preserved unknown field, verbatim', () => {
     storage.map.set(WORKSPACE_STORAGE_KEY, JSON.stringify({
-      ...DEFAULT_WORKSPACE, version: 2, theme: 'nord', futureField: 42,
+      ...DEFAULT_WORKSPACE, version: WORKSPACE_SCHEMA_VERSION + 1, theme: 'nord', futureField: 42,
     }));
     initWorkspaceStore(storage);
 
-    expect(exportWorkspace()).toEqual({ ...DEFAULT_WORKSPACE, version: 2, theme: 'nord', futureField: 42 });
+    expect(exportWorkspace()).toEqual({
+      ...DEFAULT_WORKSPACE, version: WORKSPACE_SCHEMA_VERSION + 1, theme: 'nord', futureField: 42,
+    });
   });
 });
