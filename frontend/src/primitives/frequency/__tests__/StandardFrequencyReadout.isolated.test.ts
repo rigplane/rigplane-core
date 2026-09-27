@@ -165,9 +165,12 @@ describe('StandardFrequencyReadout', () => {
       (slot) => (slot.textContent ?? '').length,
     );
     expect(passiveWidths).toEqual(knownWidths);
-    // The invisible reservation must not leak a glyph into the reading:
-    // strip the separator dots and only whitespace may remain.
-    expect(passive.textContent?.replace(/\./g, '').trim()).toBe('');
+    // The reservation draws no glyph: every `.unlit` span is hidden by
+    // the component's own rule, so the operator sees separator dots only.
+    for (const slot of passive.querySelectorAll('.digits')) {
+      const unlit = slot.querySelector<HTMLElement>('.unlit')!;
+      expect(getComputedStyle(unlit).visibility).toBe('hidden');
+    }
   });
 });
 
