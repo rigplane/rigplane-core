@@ -784,6 +784,7 @@
         >{roleLabel(vfo)}</span>
         <span
           class="vfo-freq" class:display-unknown={displayHz === null && pendingHz === null}
+          class:vfo-freq-unlit={!hasDigitReadout(vfo) && displayHz === null}
           {...(appearance === 'semantic' ? freq?.attributes ?? {} : {})}
           data-vfo-freq
           data-freq-tunable={!readoutDisabled(vfo)}
@@ -846,10 +847,7 @@
               a future hero-scale mount (not this tile) is the intended
               consumer.
             -->
-            <span
-              class="vfo-freq-text"
-              class:vfo-freq-unlit={displayHz === null}
-            >{formatFrequency(displayHz)}</span>
+            {formatFrequency(displayHz)}
           {/if}
         </span>
         <span class="vfo-mode" class:vfo-mode-unlit={displayMode === null}>{displayMode ?? ''}{displayFilter ? ` / ${displayFilter}` : ''}</span>

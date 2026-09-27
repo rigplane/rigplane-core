@@ -123,7 +123,8 @@ describe('VFO qualified display continuity', () => {
     // nothing in the reserved box, never the MOR-2527 dash.
     const unsupportedFreq = mountSurface({ viewModel: unsupported }).querySelector('.vfo-freq');
     expect(unsupportedFreq?.textContent?.trim()).toBe('');
-    expect(unsupportedFreq?.querySelector('.vfo-freq-text')?.classList.contains('vfo-freq-unlit')).toBe(true);
+    expect(unsupportedFreq?.classList.contains('display-unknown')).toBe(true);
+    expect(unsupportedFreq?.classList.contains('vfo-freq-unlit')).toBe(true);
   });
   // MOR-2425/R41 replaces the MOR-1692-era marker/sentence pin, in any locale.
   it.each(['en-US', 'ru-RU'] as const)('paints no freshness marker, sentence or description for a held reading in %s', (locale) => {
@@ -598,18 +599,19 @@ describe.each(ids)('topology %s', (id) => {
       const freqEl = tile.querySelector('.vfo-freq');
       if (vfo.frequencyHz === null) {
         // MOR-2655: unread → nothing in the reserved unlit box, never a dash.
-        const textSpan = freqEl?.querySelector('.vfo-freq-text');
-        expect(textSpan?.textContent).toBe('');
-        expect(textSpan?.classList.contains('vfo-freq-unlit')).toBe(true);
+        expect(freqEl?.textContent).toBe('');
+        expect(freqEl?.classList.contains('display-unknown')).toBe(true);
+        expect(freqEl?.classList.contains('vfo-freq-unlit')).toBe(true);
       } else {
         expect(freqEl?.textContent).toBe(expectedFreq(vfo.frequencyHz));
       }
       const modeEl = tile.querySelector('.vfo-mode');
       if (vfo.mode === null) {
-        expect(modeEl?.textContent).toBe('');
+        expect(modeEl?.textContent).not.toContain('—');
         expect(modeEl?.classList.contains('vfo-mode-unlit')).toBe(true);
       } else {
         expect(modeEl?.textContent).toContain(vfo.mode);
+        expect(modeEl?.classList.contains('vfo-mode-unlit')).toBe(false);
       }
       if (vfo.filter) expect(tile.querySelector('.vfo-mode')?.textContent).toContain(vfo.filter);
       expect(tile.querySelector('[data-vfo-tx-badge]') !== null).toBe(vfo.isTxTarget);
@@ -754,7 +756,8 @@ describe('MOR-1482: unselected-tile frequency format is stable and dot-grouped',
     expect(tiles[0]?.textContent).toBe('7.100.000');
     expect(tiles[1]?.textContent).toBe('');
     // MOR-2655: the old pin was the dash; the reserved unlit box replaces it.
-    expect(tiles[1]?.querySelector('.vfo-freq-text')?.classList.contains('vfo-freq-unlit')).toBe(true);
+    expect(tiles[1]?.classList.contains('display-unknown')).toBe(true);
+    expect(tiles[1]?.classList.contains('vfo-freq-unlit')).toBe(true);
     expect(tiles[1]?.textContent).not.toContain('MHz');
   });
 
@@ -938,7 +941,8 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
     const freq = target.querySelector('.vfo-freq');
     // MOR-2655: the old pin was the literal dash ('—').
     expect(freq?.textContent).toBe('');
-    expect(freq?.querySelector('.vfo-freq-text')?.classList.contains('vfo-freq-unlit')).toBe(true);
+    expect(freq?.classList.contains('display-unknown')).toBe(true);
+    expect(freq?.classList.contains('vfo-freq-unlit')).toBe(true);
   });
 });
 
@@ -1030,7 +1034,8 @@ describe('VFO selection intent', () => {
     const unselectedFreq = target.querySelector('[data-vfo-slot="unselected"] .vfo-freq');
     // MOR-2655: the old pin was the dash ('—').
     expect(unselectedFreq?.textContent).toBe('');
-    expect(unselectedFreq?.querySelector('.vfo-freq-text')?.classList.contains('vfo-freq-unlit')).toBe(true);
+    expect(unselectedFreq?.classList.contains('display-unknown')).toBe(true);
+    expect(unselectedFreq?.classList.contains('vfo-freq-unlit')).toBe(true);
     // The unread mode also draws nothing in its reserved box.
     const unselectedMode = target.querySelector('[data-vfo-slot="unselected"] .vfo-mode');
     expect(unselectedMode?.textContent).toBe('');
@@ -1786,7 +1791,8 @@ describe('per-digit tuning (MOR-1322) — structural gating', () => {
     expect(slot.querySelectorAll('.digit')).toHaveLength(0);
     // MOR-2655: the old pin was `toContain('—')`.
     expect(slot.textContent).not.toContain('—');
-    expect(slot.querySelector('.vfo-freq-text')?.classList.contains('vfo-freq-unlit')).toBe(true);
+    expect(slot.classList.contains('display-unknown')).toBe(true);
+    expect(slot.classList.contains('vfo-freq-unlit')).toBe(true);
     // ABSENT, not inert: there is no control here to disable, so the slot must
     // NOT claim `aria-disabled`. That attribute is reserved for the operational
     // case (a mounted control the strip gate has made inert) — conflating the
@@ -2481,7 +2487,8 @@ describe('per-digit tuning (MOR-1322) — composition with an ACTIVE design lang
   });
 
   // Exactly ONE readout per tile, counted structurally — no tautology this
-  // time: a tile must carry either digits or text, never both.
+  // time: a tile must carry either digits or text, never both. MOR-2655 adds
+  // the one blank the tile may carry: the unlit, reserved unread box.
   it.each([...LANGUAGES, null])('%s: every tile carries exactly one readout', (lang) => {
     activate(lang);
     for (const props of [{}, { onTuneFrequency: vi.fn() }]) {
@@ -2493,9 +2500,16 @@ describe('per-digit tuning (MOR-1322) — composition with an ACTIVE design lang
           .filter((n) => n.nodeType === Node.TEXT_NODE)
           .map((n) => n.textContent!.trim()).join('');
         // Exactly one filling: digits XOR text. Both arms are asserted, and
-        // they differ — no tautology this time (verification B2).
+        // they differ — no tautology this time (verification B2). MOR-2655:
+        // the blank third arm is the unlit reserved unread box, and only it —
+        // never a blank that came from anywhere else.
         if (hasDigits) expect(ownText, 'digits + text = double readout').toBe('');
-        else expect(ownText.length, 'no digits and no text = blank readout').toBeGreaterThan(0);
+        else if (ownText.length === 0) {
+          expect(slot.classList.contains('display-unknown'),
+            'a blank readout must be the unlit reserved box').toBe(true);
+          expect(slot.classList.contains('vfo-freq-unlit')).toBe(true);
+          expect(slot.textContent).not.toContain('—');
+        } else expect(ownText.length, 'known readout carries its text').toBeGreaterThan(0);
       }
     }
   });

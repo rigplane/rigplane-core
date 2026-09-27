@@ -875,7 +875,7 @@ describe('source pins: fixed slot widths (MOR-2509 slice 2)', () => {
     const modeReserve = Number((/min-width:\s*(\d+)ch/.exec(modeRule) ?? [])[1]);
     expect(modeReserve).toBeGreaterThanOrEqual('DATA-FM-N / FIL3'.length);
     // The unlit hooks themselves.
-    expect(surfaceSource).toMatch(/class:vfo-freq-unlit=\{displayHz === null\}/);
+    expect(surfaceSource).toMatch(/class:vfo-freq-unlit=\{!hasDigitReadout\(vfo\) && displayHz === null\}/);
     expect(surfaceSource).toMatch(/class:vfo-mode-unlit=\{displayMode === null\}/);
   });
 
