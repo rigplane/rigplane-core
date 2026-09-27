@@ -56,6 +56,7 @@
   import { CW_CONTINUOUS_LEVELS } from './CwKeyerInstrumentHost.svelte';
   import type { BreakInMode, CwKeyerField, DisabledReasonCode } from './radio-view-model';
   import { pressedOf } from './pressed-of';
+  import { readingText } from '../primitives/reading-text';
 
   /** Break-in as THREE ABSOLUTE choices, `[label, wire mode]`. Absolute, not a
    *  toggle: a toggle computed from an unread reading arms a guess, and here
@@ -118,11 +119,12 @@
   export const usable = (f: CwKeyerField<unknown>): boolean =>
     f.availability.structural && f.availability.operational && f.reading.status === 'known';
   /** Honest text (MOR-2653): an unread fact reads as EMPTY in its reserved
-   *  slot — never a placeholder dash and never a v2 default. */
+   *  slot — never a placeholder dash and never a v2 default. MOR-2688 S3: the
+   *  ONE unread predicate lives in `readingText`; the on/off boolean wording
+   *  stays this surface's own formatter. */
   export const textOf = (f: CwKeyerField<unknown>): string =>
-    f.reading.status !== 'known' ? ''
-      : typeof f.reading.value === 'boolean' ? (f.reading.value ? 'on' : 'off')
-        : String(f.reading.value);
+    readingText(f, (v) =>
+      typeof v === 'boolean' ? (v ? 'on' : 'off') : String(v));
   /** Rule 5: only a positively-read `'off'` is `'off'`. */
   export const breakInPosture = (f: CwKeyerField<BreakInMode>): BreakInPosture =>
     f.reading.status !== 'known' ? 'unknown' : f.reading.value === 'off' ? 'off' : 'armed';
@@ -173,9 +175,10 @@
   /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine). */
   let cw = $derived(view.cwKeyer);
   let extraOpen = $state(false);
-  /** MOR-2653: an unread mode renders EMPTY in its reserved slot. */
-  let rxMode = $derived(view.modeFilter?.currentMode.reading.status === 'known'
-    ? view.modeFilter.currentMode.reading.value : '');
+  /** MOR-2653: an unread mode renders EMPTY in its reserved slot.
+   *  MOR-2688 S3: the group is optional, so its presence is guarded at the
+   *  call site; the unread predicate itself lives in `readingText`. */
+  let rxMode = $derived(view.modeFilter ? readingText(view.modeFilter.currentMode) : '');
   /** Rule 2. The model's ONE permit, READ. No second derivation exists here —
    *  `getFrequencyPermit`, `txBands` and `band` are not imported at all. */
   let permitAllowed = $derived(view.txPermit.status === 'allowed');

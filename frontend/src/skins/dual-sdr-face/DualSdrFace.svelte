@@ -2,6 +2,7 @@
   import type { RadioViewModel } from '../../semantic/radio-view-model';
   import type { ScopeFrame } from '../../lib/runtime/adapters/scope-adapter';
   import ReceiverInstrumentCluster from './ReceiverInstrumentCluster.svelte';
+  import { readingText } from '../../primitives/reading-text';
   export interface ScopeFrameSource {
     subscribe(listener: (frame: ScopeFrame) => void): () => void;
     subscribeHealth?(listener: (live: boolean) => void): () => void;
@@ -37,11 +38,11 @@
 
 <main class="face" data-testid="dual-sdr-face">
   <aside class="rail" aria-label="Receiver controls">
-    <button data-control="ant" disabled>ANT<br />{''}</button><button data-control="pre" disabled={preNext === null} onclick={() => preNext !== null && onPreChange?.(preNext)}>P.AMP<br />{pre?.reading.status === 'known' ? String(pre.reading.value) : ''}</button>
+    <button data-control="ant" disabled>ANT<br />{''}</button><button data-control="pre" disabled={preNext === null} onclick={() => preNext !== null && onPreChange?.(preNext)}>P.AMP<br />{pre ? readingText(pre) : ''}</button>
     {#each ['att', 'ip', 'agc', 'vox', 'comp', 'mode'] as name}<button data-control={name} disabled>{name === 'ip' ? 'IP+' : name.toUpperCase()}<br />{''}</button>{/each}
   </aside>
   <section class="instruments"><ReceiverInstrumentCluster {view} receiver={0} frame={frames[0]} /><ReceiverInstrumentCluster {view} receiver={1} frame={frames[1]} /></section>
-  <div class="status">SPECTRUM SCOPE · {view.scopeControls?.mode.reading.status === 'known' ? `MODE ${view.scopeControls.mode.reading.value}` : ''}</div>
+  <div class="status">SPECTRUM SCOPE · {view.scopeControls ? readingText(view.scopeControls.mode, (v) => `MODE ${v}`) : ''}</div>
   <nav class="softkeys" aria-label="Scope softkeys">{#each ['menu1', 'edge', 'hold', 'cent-fix', 'main-sub', 'dual', 'expd-set'] as name}<button data-control={name} disabled>{name === 'cent-fix' ? 'CENT/FIX' : name === 'main-sub' ? 'MAIN/SUB' : name === 'expd-set' ? 'EXPD/SET' : name.toUpperCase()}</button>{/each}</nav>
 </main>
 
