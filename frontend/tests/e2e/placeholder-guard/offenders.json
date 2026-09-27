@@ -1,2 +1,570 @@
 [
+ {
+  "face": "desktop-v2",
+  "state": "desktop-v2--all-unread",
+  "locator": "[data-testid=\"rx-tx-blocked\"] <li> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"txTarget: field-not-observed\""
+ },
+ {
+  "face": "desktop-v2",
+  "state": "desktop-v2--all-unread",
+  "locator": "[data-testid=\"rx-tx-key\"] <button> aria-describedby:rx-tx-1",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; the radio's RF state has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "desktop-v2",
+  "state": "desktop-v2--all-unread",
+  "locator": "[data-testid=\"rx-tx-surface\"] <span> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; the radio's RF state has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "desktop-v2",
+  "state": "desktop-v2--all-unsupported",
+  "locator": "[data-testid=\"rx-tx-blocked\"] <li> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"txTarget: field-not-observed\""
+ },
+ {
+  "face": "desktop-v2",
+  "state": "desktop-v2--all-unsupported",
+  "locator": "[data-testid=\"rx-tx-key\"] <button> aria-describedby:rx-tx-1",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "desktop-v2",
+  "state": "desktop-v2--all-unsupported",
+  "locator": "[data-testid=\"rx-tx-surface\"] <span> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "desktop-v2",
+  "state": "desktop-v2--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-blocked\"] <li> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "out-of-band in \"txPermit: out-of-band\""
+ },
+ {
+  "face": "desktop-v2",
+  "state": "desktop-v2--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-key\"] <button> aria-describedby:rx-tx-1",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "out-of-band in \"your transmit frequency is outside the configured transmit ranges — tune the transmitting VFO into an allowed band; txPermit: out-of-band\""
+ },
+ {
+  "face": "desktop-v2",
+  "state": "desktop-v2--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-surface\"] <span> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "out-of-band in \"your transmit frequency is outside the configured transmit ranges — tune the transmitting VFO into an allowed band; txPermit: out-of-band\""
+ },
+ {
+  "face": "desktop-v2",
+  "state": "desktop-v2--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-target\"] <p> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "unslotted in \"TX target: MAIN unslotted · 14195000 Hz\""
+ },
+ {
+  "face": "dual-receiver-cockpit",
+  "state": "connection-loss-state-null",
+  "locator": "[data-testid=\"rx-tx-blocked\"] <li> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"txTarget: field-not-observed\""
+ },
+ {
+  "face": "dual-receiver-cockpit",
+  "state": "connection-loss-state-null",
+  "locator": "[data-testid=\"rx-tx-key\"] <button> aria-describedby:rx-tx-1",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; the radio's RF state has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "dual-receiver-cockpit",
+  "state": "connection-loss-state-null",
+  "locator": "[data-testid=\"rx-tx-surface\"] <span> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; the radio's RF state has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "dual-receiver-cockpit",
+  "state": "dual-receiver-cockpit--all-unsupported",
+  "locator": "[data-testid=\"rx-tx-blocked\"] <li> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"txTarget: field-not-observed\""
+ },
+ {
+  "face": "dual-receiver-cockpit",
+  "state": "dual-receiver-cockpit--all-unsupported",
+  "locator": "[data-testid=\"rx-tx-key\"] <button> aria-describedby:rx-tx-1",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "dual-receiver-cockpit",
+  "state": "dual-receiver-cockpit--all-unsupported",
+  "locator": "[data-testid=\"rx-tx-surface\"] <span> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "dual-receiver-cockpit",
+  "state": "dual-receiver-cockpit--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-blocked\"] <li> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "out-of-band in \"txPermit: out-of-band\""
+ },
+ {
+  "face": "dual-receiver-cockpit",
+  "state": "dual-receiver-cockpit--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-key\"] <button> aria-describedby:rx-tx-1",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "out-of-band in \"your transmit frequency is outside the configured transmit ranges — tune the transmitting VFO into an allowed band; txPermit: out-of-band\""
+ },
+ {
+  "face": "dual-receiver-cockpit",
+  "state": "dual-receiver-cockpit--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-surface\"] <span> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "out-of-band in \"your transmit frequency is outside the configured transmit ranges — tune the transmitting VFO into an allowed band; txPermit: out-of-band\""
+ },
+ {
+  "face": "dual-receiver-cockpit",
+  "state": "dual-receiver-cockpit--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-target\"] <p> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "unslotted in \"TX target: MAIN unslotted · 14195000 Hz\""
+ },
+ {
+  "face": "flagship-probe",
+  "state": "flagship-probe--all-unread",
+  "locator": "[data-testid=\"rx-tx-blocked\"] <li> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"txTarget: field-not-observed\""
+ },
+ {
+  "face": "flagship-probe",
+  "state": "flagship-probe--all-unread",
+  "locator": "[data-testid=\"rx-tx-key\"] <button> aria-describedby:rx-tx-1",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; the radio's RF state has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "flagship-probe",
+  "state": "flagship-probe--all-unread",
+  "locator": "[data-testid=\"rx-tx-surface\"] <span> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; the radio's RF state has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "flagship-probe",
+  "state": "flagship-probe--all-unsupported",
+  "locator": "[data-testid=\"rx-tx-blocked\"] <li> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"txTarget: field-not-observed\""
+ },
+ {
+  "face": "flagship-probe",
+  "state": "flagship-probe--all-unsupported",
+  "locator": "[data-testid=\"rx-tx-key\"] <button> aria-describedby:rx-tx-1",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "flagship-probe",
+  "state": "flagship-probe--all-unsupported",
+  "locator": "[data-testid=\"rx-tx-surface\"] <span> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "flagship-probe",
+  "state": "flagship-probe--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-blocked\"] <li> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "out-of-band in \"txPermit: out-of-band\""
+ },
+ {
+  "face": "flagship-probe",
+  "state": "flagship-probe--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-key\"] <button> aria-describedby:rx-tx-1",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "out-of-band in \"your transmit frequency is outside the configured transmit ranges — tune the transmitting VFO into an allowed band; txPermit: out-of-band\""
+ },
+ {
+  "face": "flagship-probe",
+  "state": "flagship-probe--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-surface\"] <span> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "out-of-band in \"your transmit frequency is outside the configured transmit ranges — tune the transmitting VFO into an allowed band; txPermit: out-of-band\""
+ },
+ {
+  "face": "flagship-probe",
+  "state": "flagship-probe--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-target\"] <p> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "unslotted in \"TX target: MAIN unslotted · 14195000 Hz\""
+ },
+ {
+  "face": "lcd-cockpit",
+  "state": "lcd-cockpit--all-unread",
+  "locator": "[data-testid=\"rx-tx-blocked\"] <li> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"txTarget: field-not-observed\""
+ },
+ {
+  "face": "lcd-cockpit",
+  "state": "lcd-cockpit--all-unread",
+  "locator": "[data-testid=\"rx-tx-key\"] <button> aria-describedby:rx-tx-1",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; the radio's RF state has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "lcd-cockpit",
+  "state": "lcd-cockpit--all-unread",
+  "locator": "[data-testid=\"rx-tx-surface\"] <span> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; the radio's RF state has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "lcd-cockpit",
+  "state": "lcd-cockpit--all-unsupported",
+  "locator": "[data-testid=\"rx-tx-blocked\"] <li> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"txTarget: field-not-observed\""
+ },
+ {
+  "face": "lcd-cockpit",
+  "state": "lcd-cockpit--all-unsupported",
+  "locator": "[data-testid=\"rx-tx-key\"] <button> aria-describedby:rx-tx-1",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "lcd-cockpit",
+  "state": "lcd-cockpit--all-unsupported",
+  "locator": "[data-testid=\"rx-tx-surface\"] <span> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "lcd-cockpit",
+  "state": "lcd-cockpit--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-blocked\"] <li> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "out-of-band in \"txPermit: out-of-band\""
+ },
+ {
+  "face": "lcd-cockpit",
+  "state": "lcd-cockpit--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-key\"] <button> aria-describedby:rx-tx-1",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "out-of-band in \"your transmit frequency is outside the configured transmit ranges — tune the transmitting VFO into an allowed band; txPermit: out-of-band\""
+ },
+ {
+  "face": "lcd-cockpit",
+  "state": "lcd-cockpit--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-surface\"] <span> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "out-of-band in \"your transmit frequency is outside the configured transmit ranges — tune the transmitting VFO into an allowed band; txPermit: out-of-band\""
+ },
+ {
+  "face": "lcd-cockpit",
+  "state": "lcd-cockpit--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-target\"] <p> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "unslotted in \"TX target: MAIN unslotted · 14195000 Hz\""
+ },
+ {
+  "face": "lcd-scope",
+  "state": "lcd-scope--all-unread",
+  "locator": "[data-testid=\"rx-tx-blocked\"] <li> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"txTarget: field-not-observed\""
+ },
+ {
+  "face": "lcd-scope",
+  "state": "lcd-scope--all-unread",
+  "locator": "[data-testid=\"rx-tx-key\"] <button> aria-describedby:rx-tx-1",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; the radio's RF state has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "lcd-scope",
+  "state": "lcd-scope--all-unread",
+  "locator": "[data-testid=\"rx-tx-surface\"] <span> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; the radio's RF state has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "lcd-scope",
+  "state": "lcd-scope--all-unsupported",
+  "locator": "[data-testid=\"rx-tx-blocked\"] <li> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"txTarget: field-not-observed\""
+ },
+ {
+  "face": "lcd-scope",
+  "state": "lcd-scope--all-unsupported",
+  "locator": "[data-testid=\"rx-tx-key\"] <button> aria-describedby:rx-tx-1",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "lcd-scope",
+  "state": "lcd-scope--all-unsupported",
+  "locator": "[data-testid=\"rx-tx-surface\"] <span> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "lcd-scope",
+  "state": "lcd-scope--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-blocked\"] <li> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "out-of-band in \"txPermit: out-of-band\""
+ },
+ {
+  "face": "lcd-scope",
+  "state": "lcd-scope--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-key\"] <button> aria-describedby:rx-tx-1",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "out-of-band in \"your transmit frequency is outside the configured transmit ranges — tune the transmitting VFO into an allowed band; txPermit: out-of-band\""
+ },
+ {
+  "face": "lcd-scope",
+  "state": "lcd-scope--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-surface\"] <span> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "out-of-band in \"your transmit frequency is outside the configured transmit ranges — tune the transmitting VFO into an allowed band; txPermit: out-of-band\""
+ },
+ {
+  "face": "lcd-scope",
+  "state": "lcd-scope--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-target\"] <p> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "unslotted in \"TX target: MAIN unslotted · 14195000 Hz\""
+ },
+ {
+  "face": "mobile",
+  "state": "mobile--all-unread",
+  "locator": "[data-testid=\"rx-tx-blocked\"] <li> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"txTarget: field-not-observed\""
+ },
+ {
+  "face": "mobile",
+  "state": "mobile--all-unread",
+  "locator": "[data-testid=\"rx-tx-key\"] <button> aria-describedby:rx-tx-1",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; the radio's RF state has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "mobile",
+  "state": "mobile--all-unread",
+  "locator": "[data-testid=\"rx-tx-surface\"] <span> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; the radio's RF state has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "mobile",
+  "state": "mobile--all-unread",
+  "locator": "[no-testid] <span> title",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "unknown in \"TX status unknown\""
+ },
+ {
+  "face": "mobile",
+  "state": "mobile--all-unsupported",
+  "locator": "[data-testid=\"rx-tx-blocked\"] <li> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"txTarget: field-not-observed\""
+ },
+ {
+  "face": "mobile",
+  "state": "mobile--all-unsupported",
+  "locator": "[data-testid=\"rx-tx-key\"] <button> aria-describedby:rx-tx-1",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "mobile",
+  "state": "mobile--all-unsupported",
+  "locator": "[data-testid=\"rx-tx-surface\"] <span> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "mobile",
+  "state": "mobile--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-blocked\"] <li> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "out-of-band in \"txPermit: out-of-band\""
+ },
+ {
+  "face": "mobile",
+  "state": "mobile--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-key\"] <button> aria-describedby:rx-tx-1",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "out-of-band in \"your transmit frequency is outside the configured transmit ranges — tune the transmitting VFO into an allowed band; txPermit: out-of-band\""
+ },
+ {
+  "face": "mobile",
+  "state": "mobile--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-surface\"] <span> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "out-of-band in \"your transmit frequency is outside the configured transmit ranges — tune the transmitting VFO into an allowed band; txPermit: out-of-band\""
+ },
+ {
+  "face": "mobile",
+  "state": "mobile--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-target\"] <p> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "unslotted in \"TX target: MAIN unslotted · 14195000 Hz\""
+ },
+ {
+  "face": "reference-twins",
+  "state": "connection-loss-state-null--reference",
+  "locator": "[data-testid=\"rx-tx-blocked\"] <li> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"txTarget: field-not-observed\""
+ },
+ {
+  "face": "reference-twins",
+  "state": "connection-loss-state-null--reference",
+  "locator": "[data-testid=\"rx-tx-key\"] <button> aria-describedby:rx-tx-1",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; the radio's RF state has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "reference-twins",
+  "state": "connection-loss-state-null--reference",
+  "locator": "[data-testid=\"rx-tx-surface\"] <span> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; the radio's RF state has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "reference-twins",
+  "state": "reference-twins--all-unsupported",
+  "locator": "[data-testid=\"rx-tx-blocked\"] <li> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"txTarget: field-not-observed\""
+ },
+ {
+  "face": "reference-twins",
+  "state": "reference-twins--all-unsupported",
+  "locator": "[data-testid=\"rx-tx-key\"] <button> aria-describedby:rx-tx-1",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "reference-twins",
+  "state": "reference-twins--all-unsupported",
+  "locator": "[data-testid=\"rx-tx-surface\"] <span> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "field-not-observed in \"the radio has not confirmed the frequency it would transmit on; your transmit frequency's permission has not been confirmed; txTarget: field-not-observed; txPermit: tx-target-unknown\""
+ },
+ {
+  "face": "reference-twins",
+  "state": "reference-twins--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-blocked\"] <li> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "out-of-band in \"txPermit: out-of-band\""
+ },
+ {
+  "face": "reference-twins",
+  "state": "reference-twins--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-key\"] <button> aria-describedby:rx-tx-1",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "out-of-band in \"your transmit frequency is outside the configured transmit ranges — tune the transmitting VFO into an allowed band; txPermit: out-of-band\""
+ },
+ {
+  "face": "reference-twins",
+  "state": "reference-twins--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-surface\"] <span> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "out-of-band in \"your transmit frequency is outside the configured transmit ranges — tune the transmitting VFO into an allowed band; txPermit: out-of-band\""
+ },
+ {
+  "face": "reference-twins",
+  "state": "reference-twins--all-unsupported--reading",
+  "locator": "[data-testid=\"rx-tx-target\"] <p> text",
+  "token": "internal-identifier",
+  "ticket": "MOR-2705",
+  "example": "unslotted in \"TX target: MAIN unslotted · 14195000 Hz\""
+ }
 ]
