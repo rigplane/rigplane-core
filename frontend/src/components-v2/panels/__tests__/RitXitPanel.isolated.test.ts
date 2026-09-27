@@ -380,8 +380,8 @@ describe('RitXitPanel — offset box geometry (MOR-2667)', () => {
     expect(rule).not.toBeNull();
     // The reservation is sized from the formatter, not a guess: the widest
     // text over the panel's fallback domain (±9999 Hz) is
-    // formatOffsetKHz(9999) — '−10.00 kHz' — and the CSS reserves that
-    // many ch.
+    // formatOffsetKHz(±9999), '+10.00 kHz' / '−10.00 kHz' (10 characters),
+    // and the CSS reserves that many ch.
     const widest = formatOffsetKHz(9999);
     expect(widest).toBe('+10.00 kHz');
     expect(rule![1]).toContain(`min-inline-size: ${widest.length}ch`);
