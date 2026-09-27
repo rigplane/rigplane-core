@@ -1467,13 +1467,14 @@ describe('the SWR shared lower-scale row (MOR-2250, PR 2 of 2)', () => {
 // (e.g. restoring the read/unread conjunct, or dropping the fallback label).
 describe('the SWR lower scale literal text (MOR-2688 S4d)', () => {
   it('shows the read digits on a non-ratio domain, and bare label while unread', () => {
-    // raw domain → no ratio scale: the digit readout is the only text after
-    // the group label. `withField` cannot carry `domain`, so the unread
-    // fixture rewrites only the reading.
-    let view = withRaw(base('transmitting'), 'swr', 120);
-    view = withMeterDomain(view, 'swr', { kind: 'raw' });
+    // engineering ratio domain with no SWR calibration table (jsdom loads
+    // none, so `hasSwrRatioScale` is false): the digit readout is the only
+    // text after the group label. `withField` cannot carry `domain`, so the
+    // unread fixture rewrites only the reading.
+    let view = withRaw(base('transmitting'), 'swr', 2.5);
+    view = withMeterDomain(view, 'swr', { kind: 'engineering', unit: 'ratio' });
     withSurface(view, (s) => {
-      expect(s.signalSvg()!.querySelector('[data-lower-relevant]')!.textContent).toBe('SWR120 raw');
+      expect(s.signalSvg()!.querySelector('[data-lower-relevant]')!.textContent).toBe('SWR2.5');
     });
     view = {
       ...view,
