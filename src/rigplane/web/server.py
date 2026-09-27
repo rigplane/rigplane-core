@@ -3542,13 +3542,16 @@ class WebServer:
         if not isinstance(session, AudioSession):
             return {"enabled": False}
         event = session.last_event
+        rx_silent = bool(getattr(session, "rx_silent", False))
         return {
             "enabled": True,
             "state": session.state.value,
-            "lastEvent": None if event is None else _audio_session_event_json(
-                event, rx_silent=bool(getattr(session, "rx_silent", False))
+            "lastEvent": (
+                None
+                if event is None
+                else _audio_session_event_json(event, rx_silent=rx_silent)
             ),
-            "rxSilent": bool(getattr(session, "rx_silent", False)),
+            "rxSilent": rx_silent,
         }
 
     def _runtime_connection_payload(self) -> dict[str, Any]:
