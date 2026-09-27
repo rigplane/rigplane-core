@@ -57,6 +57,7 @@ from ..radio_protocol import StateModelCapable, StateModelService, StateStoreCap
 from ..radio_state import RadioState, ReceiverState
 from ..runtime import _poller_types as tx_commands  # noqa: TID251
 from ..runtime import tx_interlock
+from ..runtime._dual_rx_runtime import require_receiver_for_profile
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
 from ..runtime.managed_tx_state import ManagedTxOutcome
 from ..types import Mode
@@ -2198,6 +2199,27 @@ class RigctldHandler:
             return 1 if target == "VFOB" else 0
         return 0
 
+    def _require_vfo_receiver(self, target: Literal["VFOA", "VFOB"]) -> None:
+        """Refuse SUB (``VFOB``) routing when the profile has no second receiver.
+
+        MOR-2484: the VFO-name parsing stays protocol-local, but the
+        receiver refusal goes through the runtime seat
+        (:func:`require_receiver_for_profile`), the same seat the web
+        enqueue gate uses. The seat's ``CommandError`` maps back to
+        ``ValueError`` so callers keep their per-consumer ``EVFO`` reply.
+        """
+        if target != "VFOB":
+            return
+        profile = getattr(self._radio, "profile", None)
+        if profile is None or self._profile_vfo_info() is None:
+            # No usable profile object to validate against (mock or
+            # profile-less radios): keep the protocol-local refusal.
+            raise ValueError("VFOB requested on single-receiver profile (info=None)")
+        try:
+            require_receiver_for_profile(profile, 1, operation="rigctld vfo routing")
+        except CommandError as exc:
+            raise ValueError(str(exc)) from exc
+
     def _resolve_target_vfo(self, vfo_arg: str | None) -> Literal["VFOA", "VFOB"]:
         """Map a Hamlib VFO arg to the canonical VFO name for routing.
 
@@ -2210,20 +2232,16 @@ class RigctldHandler:
             targets SUB.
 
         Raises:
-            ValueError: ``vfo_arg`` is unrecognised, OR ``"VFOB"`` was
-                requested on a single-receiver profile. Callers map this
-                to ``HamlibError.EVFO``.
+            ValueError: ``vfo_arg`` is unrecognised, OR the SUB receiver
+                is refused by the runtime seat (single-receiver profile).
+                Callers map this to ``HamlibError.EVFO``.
         """
         if vfo_arg is None or vfo_arg == "currVFO":
             return cast(Literal["VFOA", "VFOB"], self._active_vfo_name())
         if vfo_arg == "VFOA":
             return "VFOA"
         if vfo_arg == "VFOB":
-            info = self._profile_vfo_info()
-            if info is None or info[0] < 2:
-                raise ValueError(
-                    f"VFOB requested on single-receiver profile (info={info!r})"
-                )
+            self._require_vfo_receiver("VFOB")
             return "VFOB"
         raise ValueError(f"Unknown VFO arg: {vfo_arg!r}")
 
@@ -2231,9 +2249,8 @@ class RigctldHandler:
         if vfo_arg is None or vfo_arg in {"currVFO", "VFOA"}:
             return
         if vfo_arg == "VFOB":
-            info = self._profile_vfo_info()
-            if info is not None and info[0] >= 2:
-                return
+            self._require_vfo_receiver("VFOB")
+            return
         raise ValueError(f"Unknown VFO arg: {vfo_arg!r}")
 
     async def _cmd_get_vfo(self, cmd: RigctldCommand) -> RigctldResponse:
