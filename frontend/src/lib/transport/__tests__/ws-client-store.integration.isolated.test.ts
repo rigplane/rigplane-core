@@ -761,13 +761,18 @@ describe('ws-client → real radio store gate (integration)', () => {
     });
 
     it.each(['explicit stop', 'socket close'] as const)('cancels retry backoff on %s', async (ending) => {
-      fetchCapabilities.mockRejectedValue(new Error('HTTP 503'));
+      const callStacks: string[] = [];
+      fetchCapabilities.mockImplementation(() => {
+        callStacks.push(new Error(`fetchCapabilities call #${callStacks.length + 1}`).stack ?? '');
+        return Promise.reject(new Error('HTTP 503'));
+      });
       sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1 })));
       await vi.advanceTimersByTimeAsync(0);
       if (ending === 'explicit stop') modules.wsClient.disconnect();
       else instances[0].simulateClose();
       await vi.advanceTimersByTimeAsync(60_000);
-      expect(fetchCapabilities).toHaveBeenCalledTimes(1);
+      expect(fetchCapabilities.mock.calls.length,
+        `unexpected extra fetchCapabilities calls after ${ending}:\n${callStacks.slice(1).join('\n')}`).toBe(1);
       expect(modules.store.getRadioState()).toBeNull();
       expect(modules.capabilities.getCapabilities()).toBeNull();
     });
@@ -775,13 +780,18 @@ describe('ws-client → real radio store gate (integration)', () => {
     it.each(['resolve', 'reject'] as const)('ignores a late fetch %s after stop', async (settlement) => {
       let resolve!: (caps: Capabilities) => void;
       let reject!: (reason: Error) => void;
-      fetchCapabilities.mockImplementation(() => new Promise<Capabilities>((done, fail) => { resolve = done; reject = fail; }));
+      const callStacks: string[] = [];
+      fetchCapabilities.mockImplementation(() => {
+        callStacks.push(new Error(`fetchCapabilities call #${callStacks.length + 1}`).stack ?? '');
+        return new Promise<Capabilities>((done, fail) => { resolve = done; reject = fail; });
+      });
       sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1 })));
       modules.wsClient.disconnect();
       if (settlement === 'resolve') resolve(makeCapabilities(1));
       else reject(new Error('late HTTP 503'));
       await vi.advanceTimersByTimeAsync(60_000);
-      expect(fetchCapabilities).toHaveBeenCalledTimes(1);
+      expect(fetchCapabilities.mock.calls.length,
+        `unexpected extra fetchCapabilities calls after ${settlement}:\n${callStacks.slice(1).join('\n')}`).toBe(1);
       expect(modules.store.getRadioState()).toBeNull();
       expect(modules.capabilities.getCapabilities()).toBeNull();
     });
