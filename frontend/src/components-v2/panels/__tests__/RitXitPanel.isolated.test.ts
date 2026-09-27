@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { mount, unmount, flushSync } from 'svelte';
 import { formatOffset, formatOffsetKHz, shouldShowPanel } from '../rit-utils';
 import type { ControlDomain } from '$lib/types/capabilities';
@@ -329,7 +330,8 @@ describe('RIT exact-domain mapper', () => {
  * `NaN` offset (panel-props.ts no longer fabricates `?? 0`). Unguarded,
  * `formatOffsetKHz(NaN)` renders the literal "−NaN kHz" (verifier-executed
  * probe on the unguarded candidate). The local `formatOffsetDisplay` guard
- * must render the established '---'-family placeholder instead.
+ * renders an unlit, EMPTY box in a reserved slot (MOR-2667) — never a
+ * placeholder.
  */
 describe('RitXitPanel — no "NaN" leak for an unobserved offset (MOR-1409 A12)', () => {
   it('does not render a "NaN" substring for the RIT offset readout when ritOffset is non-finite', () => {
@@ -338,10 +340,11 @@ describe('RitXitPanel — no "NaN" leak for an unobserved offset (MOR-1409 A12)'
     expect(offsetText).not.toMatch(/NaN/);
   });
 
-  it('renders the established "---"-family placeholder for a non-finite RIT offset', () => {
+  it('renders an empty, unlit RIT offset readout for a non-finite RIT offset — never a placeholder (MOR-2667)', () => {
     const target = mountPanel({ ritActive: true, ritOffset: Number.NaN });
     const offsetText = target.querySelector('.offset')?.textContent ?? '';
-    expect(offsetText).toBe('--- kHz');
+    expect(offsetText).toBe('');
+    expect(target.textContent).not.toContain('---');
   });
 
   it('does not render a "NaN" substring for the XIT offset readout when xitOffset is non-finite', () => {
@@ -350,12 +353,34 @@ describe('RitXitPanel — no "NaN" leak for an unobserved offset (MOR-1409 A12)'
     // XIT's span is the second `.offset` element when both hasRit/hasXit.
     const xitOffsetText = offsetSpans[offsetSpans.length - 1]?.textContent ?? '';
     expect(xitOffsetText).not.toMatch(/NaN/);
-    expect(xitOffsetText).toBe('--- kHz');
+    expect(xitOffsetText).toBe('');
   });
 
   it('still renders the real formatted offset for a finite value', () => {
     const target = mountPanel({ ritActive: true, ritOffset: 5000 });
     const offsetText = target.querySelector('.offset')?.textContent ?? '';
     expect(offsetText).toBe('+5.00 kHz');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MOR-2667 — the unread offset keeps its reserved slot
+// ---------------------------------------------------------------------------
+
+describe('RitXitPanel — offset box geometry (MOR-2667)', () => {
+  // jsdom has no layout, so the reservation is pinned structurally
+  // against the component source (the MOR-2648/MOR-2659 pattern).
+  const withoutComments = (source: string) => source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  const panelSource = withoutComments(readFileSync('src/components-v2/panels/RitXitPanel.svelte', 'utf8'));
+
+  it('keeps the offset box reserved and tabular while unread', () => {
+    const rule = panelSource.match(/\.offset \{([^}]*)\}/);
+    expect(rule).not.toBeNull();
+    // Widest text formatOffsetKHz renders today: '+9.99 kHz' /
+    // '−9.99 kHz' (9 chars) — 9ch covers both.
+    expect(rule![1]).toContain('min-inline-size: 9ch');
+    expect(rule![1]).toContain('tabular-nums');
   });
 });

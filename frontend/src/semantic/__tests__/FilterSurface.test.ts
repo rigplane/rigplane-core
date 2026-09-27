@@ -548,6 +548,16 @@ describe('operational availability decides whether a control is USABLE', () => {
     });
   });
 
+  // MOR-2667: the unread fallback behind the aria-valuetext path renders
+  // empty — no '--- Hz' placeholder anywhere on the surface.
+  it('carries no placeholder glyph anywhere on an unobserved width reading', () => {
+    const view = withModeFilterField(base(), 'filterWidth', { unknown: true });
+    withSurface(view, (s) => {
+      expect(s.input('filter-width')!.getAttribute('aria-valuetext')).toBeNull();
+      expect(s.root()!.textContent).not.toContain('---');
+    });
+  });
+
   it('renders the IF-shift value box empty on an unobserved reading, never a placeholder glyph', () => {
     const view = withPassbandField(base(), 'ifShift', { unknown: true });
     withSurface(view, (s) => {

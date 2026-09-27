@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { mount, unmount, flushSync } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { formatFilterWidth } from '../filter-utils';
@@ -355,7 +356,7 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
   });
 
   it.each([
-    [null, '--- Hz'],
+    [null, ''],
     [1700, '1.7kHz'],
     [3100, '3.1kHz'],
   ] as const)('does not fabricate geometry for confirmed value %s', (confirmed, text) => {
@@ -1434,10 +1435,11 @@ describe('FilterPanel — no fabricated defaults at the consumer boundary (MOR-1
     expect(bwValue).not.toMatch(/NaN/);
   });
 
-  it('renders the established "---"-family placeholder in the BW readout for a non-finite filterWidth', () => {
+  it('renders an empty, unlit BW readout for a non-finite filterWidth — never a placeholder (MOR-2667)', () => {
     const t = mountPanel({ filterWidth: Number.NaN });
     const bwValue = t.querySelector('.bw-value')?.textContent ?? '';
-    expect(bwValue).toBe('--- Hz');
+    expect(bwValue).toBe('');
+    expect(t.textContent).not.toContain('---');
   });
 
   it('still renders the real formatted width for a finite filterWidth', () => {
@@ -1482,5 +1484,93 @@ describe('FilterPanel — no fabricated defaults at the consumer boundary (MOR-1
     expect(buttons).toContain('FIL1');
     expect(buttons).toContain('FIL2');
     expect(buttons).not.toContain('FIL3');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MOR-2667 — no '--- Hz' for unread offsets and widths
+// ---------------------------------------------------------------------------
+
+describe('FilterPanel — no placeholder for unread widths and offsets (MOR-2667)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('announces nothing while a value the width message needs is unread — never a placeholder', () => {
+    setWidthFeedback({
+      confirmed: null, requestedTarget: null, phase: 'failed', busy: false,
+      outcome: { phase: 'failed', error: 'radio refused' },
+      lifecycleId: 'L', transitionId: 'L:failed',
+    });
+    const t = mountPanel({ filterWidthMin: 1800, filterWidthMax: 3000 });
+    expect(t.querySelector('[data-filter-width-live]')).toBeNull();
+    expect(t.textContent).not.toContain('---');
+  });
+
+  it('announces nothing while a value the passband message needs is unread — never a placeholder', () => {
+    setPassbandFeedback('inner', {
+      confirmed: null, requestedTarget: null, phase: 'failed', busy: false,
+      outcome: { phase: 'failed', error: 'radio refused' },
+      lifecycleId: 'L', transitionId: 'L:failed',
+    });
+    const t = mountPanel({
+      hasPbt: true, pbtInner: 0, pbtOuter: 0,
+      pbtDomain: { min: -1800, max: 1800, step: 50, origin: 0 },
+    });
+    const slider = t.querySelectorAll('[role="slider"]');
+    expect(slider.length).toBeGreaterThan(0);
+    const statusRegions = Array.from(t.querySelectorAll('[data-control-feedback-status]'))
+      .map((el) => el.textContent ?? '');
+    expect(statusRegions.every((text) => !text.includes('---'))).toBe(true);
+    expect(t.textContent).not.toContain('---');
+  });
+
+  it('renders an empty fixed-config modal value for a non-finite filterWidth — never a placeholder', () => {
+    const t = mountPanel({
+      filterWidth: Number.NaN,
+      filterConfig: { defaults: [], fixed: true, minHz: 50, maxHz: 3600, stepHz: 50 },
+    });
+    (t.querySelector('.settings-button') as HTMLButtonElement).click();
+    flushSync();
+    const fixedValues = Array.from(document.querySelectorAll('.modal-fixed-value')).map(
+      (el) => el.textContent,
+    );
+    expect(fixedValues.length).toBeGreaterThan(0);
+    for (const text of fixedValues) expect(text).toBe('');
+    expect(t.textContent).not.toContain('---');
+  });
+
+  // Geometry: jsdom has no layout, so the reservations are pinned
+  // structurally against the component source (the MOR-2648/MOR-2659
+  // pattern).
+  const withoutComments = (source: string) => source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  const panelSource = withoutComments(readFileSync('src/components-v2/panels/FilterPanel.svelte', 'utf8'));
+
+  it('keeps the BW readout box reserved, tabular, and strutted while unread', () => {
+    const rule = panelSource.match(/\.bw-value \{([^}]*)\}/);
+    expect(rule).not.toBeNull();
+    // Widest text formatExactWidthDisplay renders today: '9999 Hz' and
+    // '12.5kHz' (7 chars) — 7ch covers both.
+    expect(rule![1]).toContain('min-inline-size: 7ch');
+    expect(rule![1]).toContain('tabular-nums');
+    // The zero-width strut keeps the empty unread box's line-box metrics
+    // in the baseline-aligned .bw-row flex row (the MOR-2657 strut).
+    expect(panelSource).toMatch(/\.bw-value:empty::before \{ content: '\\200b'; \}/);
+  });
+
+  it('keeps the fixed-width modal value box reserved, tabular, and strutted while unread', () => {
+    const rule = panelSource.match(/\.modal-fixed-value \{([^}]*)\}/);
+    expect(rule).not.toBeNull();
+    // Widest text formatWidthDisplay renders today: '999 Hz' and '9.9kHz'
+    // (6 chars) — 7ch covers both with margin.
+    expect(rule![1]).toContain('min-inline-size: 7ch');
+    expect(rule![1]).toContain('tabular-nums');
+    expect(panelSource).toMatch(/\.modal-fixed-value:empty::before \{ content: '\\200b'; \}/);
   });
 });
