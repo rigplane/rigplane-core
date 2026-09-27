@@ -269,6 +269,8 @@
   "core.rxTx.blocked.busy": "сеанс TX уже выполняется",
   "core.rxTx.blocked.radioTransmitting": "радио уже передаёт",
   "core.rxTx.blocked.rfStateUnknown": "RF-состояние радио не подтверждено",
+  "core.antenna.blocked.transmitterUnconfirmed": "Ждём, пока передатчик подтвердит, что он выключен",
+  "core.antenna.blocked.tunerNotReady": "Ждём, пока тюнер подтвердит, что он свободен",
   "core.rxTx.rf.unconfirmed": "Передача не подтверждена",
   "core.rxTx.fault.reset.action": "Сбросить ошибку TX",
   "core.rxTx.fault.reset.note": "Снимает ошибку и снова разрешает переход на передачу. Саму передачу не включает.",

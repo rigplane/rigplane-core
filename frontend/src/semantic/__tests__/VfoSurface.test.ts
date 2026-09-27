@@ -2836,3 +2836,92 @@ describe('MOR-2467: main_sub Standard displays receiver-level MAIN/SUB records',
     ]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// MOR-2662 (owner ruling 2026-09-26): the phone's ONE-tile presentation.
+// `vfoTiles="active"` renders only the ACTIVE VFO's tile — the active
+// receiver's active slot — while every default caller keeps the full list.
+// ---------------------------------------------------------------------------
+describe('MOR-2662 — the one-tile presentation (vfoTiles="active")', () => {
+  const ab = topologyFixtures['1/ab'];
+  const dual = topologyFixtures['2/main_sub'];
+  // The IC-7300/IC-705 shape: relative slots, selected/unselected readback,
+  // A/B identity unresolved (the adapter's own labels, verbatim).
+  const relative: RadioViewModel = {
+    ...ab,
+    vfos: [
+      {
+        receiver: 'MAIN', slot: { kind: 'relative', role: 'selected' }, label: 'Selected VFO',
+        frequencyHz: 7100000, mode: 'LSB', filter: 'NARROW',
+        isActive: true, isActiveSlot: true, isTxTarget: false,
+      },
+      {
+        receiver: 'MAIN', slot: { kind: 'relative', role: 'unselected' }, label: 'Unselected VFO',
+        frequencyHz: 7150000, mode: 'LSB', filter: 'NARROW',
+        isActive: false, isActiveSlot: false, isTxTarget: false,
+      },
+    ],
+  };
+
+  it.each([
+    ['slotted A/B', ab, 'A'],
+    ['dual receiver', dual, 'unslotted'],
+    ['relative (IC-7300 shape)', relative, 'selected'],
+  ] as const)('%s: renders exactly the active VFO\'s tile', (_label, model, slotKey) => {
+    const root = mountSurface({ viewModel: model, vfoTiles: 'active' });
+    const tiles = root.querySelectorAll('[data-vfo-tile]');
+    expect(tiles).toHaveLength(1);
+    expect(tiles[0].getAttribute('data-vfo-active')).toBe('true');
+    expect(tiles[0].getAttribute('data-vfo-slot')).toBe(slotKey);
+  });
+
+  it('the default presentation still renders every tile (the option, not a default change)', () => {
+    const root = mountSurface({ viewModel: ab });
+    expect(root.querySelectorAll('[data-vfo-tile]')).toHaveLength(2);
+  });
+
+  it('keeps the IC-7300 A/B identity selectors — switching stays possible with one tile', () => {
+    const root = mountSurface({ viewModel: relative, vfoTiles: 'active' });
+    expect(root.querySelector('[data-testid="vfo-identity-selectors"]')).not.toBeNull();
+    expect(root.querySelector('[data-vfo-select-absolute="A"]')).not.toBeNull();
+    expect(root.querySelector('[data-vfo-select-absolute="B"]')).not.toBeNull();
+  });
+
+  it('switching the active VFO swaps the ONE tile in place — same element, no second tile', () => {
+    const model = writable(structuredClone(ab));
+    const live = fromStore(model);
+    const root = mountSurface({
+      get viewModel() { return live.current as RadioViewModel; },
+      vfoTiles: 'active',
+    });
+    const list = root.querySelector('[data-testid="vfo-list"]')!;
+    const tile = root.querySelector('[data-vfo-tile]')!;
+    expect(tile.getAttribute('data-vfo-slot')).toBe('A');
+    expect(tile.textContent).toContain('7.100.000');
+
+    const flipped = structuredClone(ab);
+    flipped.vfos = flipped.vfos.map((vfo) => ({ ...vfo, isActive: vfo.slot.kind === 'slotted' && vfo.slot.id === 'B', isActiveSlot: vfo.slot.kind === 'slotted' && vfo.slot.id === 'B' }));
+    model.set(flipped);
+    flushSync();
+
+    // Same list, exactly one tile, and it is the SAME DOM node — the content
+    // swapped in place, so nothing can move (the browser-lane spec pins the
+    // real width below zero movement).
+    expect(root.querySelector('[data-testid="vfo-list"]')).toBe(list);
+    expect(root.querySelectorAll('[data-vfo-tile]')).toHaveLength(1);
+    expect(root.querySelector('[data-vfo-tile]')).toBe(tile);
+    expect(tile.getAttribute('data-vfo-slot')).toBe('B');
+    expect(tile.textContent).toContain('7.150.000');
+  });
+
+  it('startup window (no active receiver observed): still exactly one tile, none invented active', () => {
+    const unread = structuredClone(dual);
+    unread.activeReceiver = { status: 'unknown' };
+    unread.vfos = unread.vfos.map((vfo) => ({ ...vfo, isActive: false }));
+    const root = mountSurface({ viewModel: unread, vfoTiles: 'active' });
+    const tiles = root.querySelectorAll('[data-vfo-tile]');
+    expect(tiles).toHaveLength(1);
+    expect(tiles[0].getAttribute('data-vfo-active')).toBe('false');
+    expect(tiles[0].getAttribute('data-vfo-receiver')).toBe('MAIN');
+  });
+});

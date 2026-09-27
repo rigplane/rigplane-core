@@ -2606,8 +2606,9 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
       .toContain(":global([data-testid='rf-front-end-preamp-mutex-reason'])");
 
     const antenna = t.querySelector('[data-panel-id="semantic-antenna"]')!;
-    expect(antenna.querySelector('[data-testid="antenna-blocked"]')?.classList.contains('sr-only'))
-      .toBe(true);
+    // MOR-2691: the sr-only blocked-reason span is gone outright — the
+    // reason moved onto the disabled controls' own `title`.
+    expect(antenna.querySelector('[data-testid="antenna-blocked"]')).toBeNull();
     expect(antenna.querySelector('[data-testid="antenna-port-value"]')?.classList.contains('sr-only'))
       .toBe(true);
     expect(antenna.querySelector('[data-testid="antenna-rx-toggle"]')?.textContent?.trim())

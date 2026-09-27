@@ -3,7 +3,7 @@
   import type { Capabilities } from '$lib/types/capabilities';
   import type { ServerState } from '$lib/types/state';
   import AntennaInstrumentHost, {
-    ANTENNA_BLOCKED_LABEL, type AntennaAuthorityPublication,
+    type AntennaAuthorityPublication,
   } from '../../AntennaInstrumentHost.svelte';
   import AntennaSurface from '../../AntennaSurface.svelte';
   import type { RadioViewModel } from '../../radio-view-model';
@@ -47,13 +47,10 @@
   subscribeControlAuthority={subscribe} readTx={readTx ?? (() => tx)}>
   {#snippet children(handles, layout)}
     {@const captured = capture(handles)}
-    {#if body}
-      {#if arrangement === 'grouped'}<AntennaSurface {view} {tx} {handles} {layout} />
-      {:else}<div data-testid="independent-tx">{@render handles.txPort()}</div>
-        <aside data-testid="independent-rx">{@render handles.rxAnt()}</aside>
-        <ul data-testid="independent-blocked" id={layout.blockedId}>
-          {#each layout.blocked as code (code)}<li data-reason={code}>{ANTENNA_BLOCKED_LABEL[code]}</li>{/each}
-        </ul>{/if}
-    {/if}
+      {#if body}
+        {#if arrangement === 'grouped'}<AntennaSurface {view} {tx} {handles} {layout} />
+        {:else}<div data-testid="independent-tx">{@render handles.txPort()}</div>
+          <aside data-testid="independent-rx">{@render handles.rxAnt()}</aside>{/if}
+      {/if}
   {/snippet}
 </AntennaInstrumentHost>

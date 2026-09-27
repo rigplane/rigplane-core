@@ -289,6 +289,8 @@
   "core.rxTx.blocked.busy": "a TX session is already in progress",
   "core.rxTx.blocked.radioTransmitting": "the radio is already transmitting",
   "core.rxTx.blocked.rfStateUnknown": "the radio's RF state has not been confirmed",
+  "core.antenna.blocked.transmitterUnconfirmed": "Waiting for the transmitter to confirm it is off",
+  "core.antenna.blocked.tunerNotReady": "Waiting for the tuner to confirm it is idle",
   "core.rxTx.rf.unconfirmed": "Transmit not confirmed",
   "core.rxTx.fault.reset.action": "Dismiss TX fault",
   "core.rxTx.fault.reset.note": "Clears the fault and re-enables the key. It does not transmit.",
