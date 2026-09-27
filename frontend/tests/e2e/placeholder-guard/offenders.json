@@ -1,10 +1,1 @@
-[
- {
-  "face": "mobile",
-  "state": "mobile--all-unread",
-  "locator": "[no-testid] <span> title",
-  "token": "internal-identifier",
-  "ticket": "MOR-2705",
-  "example": "unknown in \"TX status unknown\""
- }
-]
+[]

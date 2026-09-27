@@ -12,17 +12,14 @@
  * one of those tables puts it on screen-alert with no other edit.
  *
  * The `KeyBlockedReason` codes and `FAULT_REASON_CODES` live only in
- * `rx-tx-surface.ts` (owned by #3774) behind an i18n import chain the
- * Node-side scan cannot load; they are out of this vocabulary until that
- * file offers an importable runtime table.
+ * `rx-tx-surface.ts` behind an i18n import chain the Node-side scan cannot
+ * load; they are out of this vocabulary.
  *
  * Matching: whole identifiers only. An identifier run is a maximal
  * `[A-Za-z0-9_-]` sequence, so `-` inside a code is part of the code, and a
  * longer or shorter variant (`field-not-observed-yet`,
- * `prefixed-field-not-observed`) does not match. Ordinary English words in
- * catalog sentences cannot trip the rule unless they are exactly the
- * identifier. Unlike the token rule, there is no title allowance: a raw
- * code is wrong in a title too.
+ * `prefixed-field-not-observed`) does not match. Unlike the token rule,
+ * there is no title allowance: a raw code is wrong in a title too.
  */
 import {
   DISABLED_REASON_CODES,
