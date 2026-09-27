@@ -3,6 +3,7 @@
     bindVfoTunerContext, getVfoHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
   import { getAuthHeaders } from '$lib/auth';
+  import { activeTuneReceiver } from '../../components-v2/wiring/dual-receiver-strips';
 
   const vfoHandlers = getVfoHandlers();
   const vfoContext = bindVfoTunerContext();
@@ -147,27 +148,6 @@
   }
 
   // ── Actions ──
-
-  function activeTuneReceiver(
-    view: ReturnType<typeof vfoContext.read>['view'],
-  ): 0 | 1 | null {
-    if (!view || view.activeReceiver.status !== 'known') return null;
-    const activeReceiver = view.activeReceiver.receiver;
-    if (view.disabledReasons.some(
-      ({ field, code }) => field === `receiver.${activeReceiver}`
-        && code === 'capability-unavailable',
-    )) return null;
-    const activeVfos = view.vfos.filter(
-      (vfo) => vfo.receiver === activeReceiver && vfo.isActive,
-    );
-    if (activeVfos.length !== 1) return null;
-    const activeVfo = activeVfos[0];
-    if (!activeVfo || activeVfo.frequencyHz === null) return null;
-    const { slot } = activeVfo;
-    if (!(slot.kind === 'slotted' || slot.kind === 'unslotted'
-      || (slot.kind === 'relative' && slot.role === 'selected'))) return null;
-    return activeReceiver === 'MAIN' ? 0 : 1;
-  }
 
   function tuneToStation(s: any): void {
     const view = vfoContext.read().view;

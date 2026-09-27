@@ -8,6 +8,7 @@
     toDspProps, toFilterProps, formatPreLabel,
   } from '$lib/runtime/props/panel-props';
   import AmberFrequency from './AmberFrequency.svelte';
+  import { activeTuneReceiver } from '../../wiring/dual-receiver-strips';
   import AmberSmeter from './AmberSmeter.svelte';
   import AmberAfScope from './AmberAfScope.svelte';
   import AmberFilterGhost from './AmberFilterGhost.svelte';
@@ -334,27 +335,6 @@
     const mode = rx?.mode ?? '';
     handlers.onTuningChange(freq, mode);
   });
-
-  function activeTuneReceiver(
-    view: ReturnType<typeof vfoContext.read>['view'],
-  ): 0 | 1 | null {
-    if (!view || view.activeReceiver.status !== 'known') return null;
-    const activeReceiver = view.activeReceiver.receiver;
-    if (view.disabledReasons.some(
-      ({ field, code }) => field === `receiver.${activeReceiver}`
-        && code === 'capability-unavailable',
-    )) return null;
-    const activeVfos = view.vfos.filter(
-      (vfo) => vfo.receiver === activeReceiver && vfo.isActive,
-    );
-    if (activeVfos.length !== 1) return null;
-    const activeVfo = activeVfos[0];
-    if (!activeVfo || activeVfo.frequencyHz === null) return null;
-    const { slot } = activeVfo;
-    if (!(slot.kind === 'slotted' || slot.kind === 'unslotted'
-      || (slot.kind === 'relative' && slot.role === 'selected'))) return null;
-    return activeReceiver === 'MAIN' ? 0 : 1;
-  }
 
   function handleQsyRecall(freqHz: number, mode: string): void {
     const view = vfoContext.read().view;
