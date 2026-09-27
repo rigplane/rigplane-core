@@ -1145,13 +1145,13 @@
     font-size: 13px;
     font-weight: 700;
     color: #4ade80;
-    /* MOR-2675: one width in every state — 6ch covers the widest text
+    /* MOR-2675: one width in every state — 5ch covers the widest text
        formatSValue renders over the raw sMeter domain (0–255): 'S9+60' on
        the widest shipped calibration ladder (an uncalibrated rig tops out
        at '255'); tabular digits keep a changing reading from shifting the
        overlay row. */
     display: inline-block;
-    min-width: 6ch;
+    min-width: 5ch;
     font-variant-numeric: tabular-nums;
   }
 
