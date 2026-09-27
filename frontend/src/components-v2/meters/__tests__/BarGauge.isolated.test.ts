@@ -17,7 +17,11 @@ describe('BarGauge hosted frame input', () => {
     });
     flushSync();
     try {
-      expect(target.querySelectorAll('[data-gauge-fill]')).toHaveLength(5);
+      // MOR-2521: all 10 fill rects exist permanently; exactly the 5 the
+      // 0.45 frame lights are visible.
+      const fills = [...target.querySelectorAll<SVGRectElement>('[data-gauge-fill]')];
+      expect(fills).toHaveLength(10);
+      expect(fills.filter((rect) => rect.getAttribute('visibility') !== 'hidden')).toHaveLength(5);
       expect(target.querySelector('[data-testid="bar-gauge-peak-marker"]')?.getAttribute('x'))
         .toBe('211');
       expect(requestFrame).not.toHaveBeenCalled();

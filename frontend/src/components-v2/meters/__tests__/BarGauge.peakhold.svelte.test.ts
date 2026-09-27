@@ -59,8 +59,10 @@ function markerX(t: HTMLElement): number | null {
   return x === null || x === undefined ? null : parseFloat(x);
 }
 
+// MOR-2521: fill rects are permanent nodes; count the lit (visible) ones.
 function fillCount(t: HTMLElement): number {
-  return t.querySelectorAll('[data-gauge-fill]').length;
+  return [...t.querySelectorAll<SVGRectElement>('[data-gauge-fill]')]
+    .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length;
 }
 
 const MAIN_SOURCE = {

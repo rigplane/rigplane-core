@@ -267,8 +267,10 @@ const signalHasPeak = (): boolean => qSvg('[data-testid="meter-signal"] svg')!
   .querySelector('[data-meter-peak]')?.getAttribute('visibility') === 'visible';
 const barSvg = (field: string): SVGSVGElement =>
   qSvg(`[data-testid="meter-${field}"] svg`)!;
+// MOR-2521: BarGauge fill rects are permanent nodes; count the lit ones.
 const barFillCount = (field: string): number =>
-  barSvg(field).querySelectorAll('[data-gauge-fill]').length;
+  [...barSvg(field).querySelectorAll<SVGRectElement>('[data-gauge-fill]')]
+    .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length;
 const barPeakX = (field: string): number | null => {
   const x = barSvg(field).querySelector('[data-testid="bar-gauge-peak-marker"]')?.getAttribute('x');
   return x === null || x === undefined ? null : Number(x);
