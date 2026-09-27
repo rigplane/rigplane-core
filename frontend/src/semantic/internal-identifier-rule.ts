@@ -4,16 +4,15 @@
  * no runtime callers — its only callers are this module's vitest suite and
  * the Playwright page scan (`tests/e2e/placeholder-guard/page-scan.spec.ts`).
  *
- * Vocabulary: built at run time from the view-model contract's own constant
- * tables — the parser's accepted disabled-reason codes
- * (`DISABLED_REASON_CODES`), the VFO slot kinds (`VFO_SLOT_KINDS`) and the
- * TX-target unknown reason codes (`TX_TARGET_UNKNOWN_REASONS`), all in
- * `radio-view-model.ts`. Never a hand-written second list: adding a code to
- * one of those tables puts it on screen-alert with no other edit.
- *
- * The `KeyBlockedReason` codes and `FAULT_REASON_CODES` live only in
- * `rx-tx-surface.ts` behind an i18n import chain the Node-side scan cannot
- * load; they are out of this vocabulary.
+ * Vocabulary: built at run time from the contract's own constant tables —
+ * the parser's accepted disabled-reason codes (`DISABLED_REASON_CODES`),
+ * the VFO slot kinds (`VFO_SLOT_KINDS`) and the TX-target unknown reason
+ * codes (`TX_TARGET_UNKNOWN_REASONS`), all in `radio-view-model.ts` — and
+ * the RX/TX surface's key-blocked reason codes
+ * (`KEY_BLOCKED_REASON_CODES`) and fault reason codes
+ * (`FAULT_REASON_CODES`), both in `rx-tx-codes.ts`. Never a hand-written
+ * second list: adding a code to one of those tables puts it on
+ * screen-alert with no other edit.
  *
  * Matching: whole identifiers only. An identifier run is a maximal
  * `[A-Za-z0-9_-]` sequence, so `-` inside a code is part of the code, and a
@@ -26,6 +25,7 @@ import {
   TX_TARGET_UNKNOWN_REASONS,
   VFO_SLOT_KINDS,
 } from './radio-view-model';
+import { FAULT_REASON_CODES, KEY_BLOCKED_REASON_CODES } from './rx-tx-codes';
 
 export type InternalIdentifierTokenKind = 'internal-identifier';
 
@@ -40,6 +40,8 @@ export const INTERNAL_IDENTIFIER_VOCABULARY: readonly string[] = [
     ...DISABLED_REASON_CODES,
     ...VFO_SLOT_KINDS,
     ...TX_TARGET_UNKNOWN_REASONS,
+    ...KEY_BLOCKED_REASON_CODES,
+    ...FAULT_REASON_CODES,
   ]),
 ].sort();
 

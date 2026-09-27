@@ -9,6 +9,10 @@ import {
   INTERNAL_IDENTIFIER_VOCABULARY,
 } from '../internal-identifier-rule';
 import {
+  FAULT_REASON_CODES,
+  KEY_BLOCKED_REASON_CODES,
+} from '../rx-tx-codes';
+import {
   DISABLED_REASON_CODES,
   TX_TARGET_UNKNOWN_REASONS,
   VFO_SLOT_KINDS,
@@ -29,6 +33,29 @@ describe('MOR-2716: the vocabulary comes from the code\'s own constants', () => 
   it('adds a new code through the constants alone, with no second list', () => {
     expect(INTERNAL_IDENTIFIER_VOCABULARY).toContain('field-not-observed');
     expect(INTERNAL_IDENTIFIER_VOCABULARY).toContain('unslotted');
+  });
+});
+
+describe('MOR-2718: the RX/TX surface\'s key-blocked and fault reason codes', () => {
+  it('contains every key-blocked reason code', () => {
+    for (const code of KEY_BLOCKED_REASON_CODES) {
+      expect(INTERNAL_IDENTIFIER_VOCABULARY).toContain(code);
+    }
+  });
+  it('contains every fault reason code', () => {
+    for (const code of FAULT_REASON_CODES) {
+      expect(INTERNAL_IDENTIFIER_VOCABULARY).toContain(code);
+    }
+  });
+  it('hits for a planted key-blocked code "rf-state-unknown"', () => {
+    expect(findInternalIdentifiers('key blocked: rf-state-unknown')).toEqual([
+      { kind: 'internal-identifier', token: 'rf-state-unknown' },
+    ]);
+  });
+  it('hits for a planted fault code "ptt-not-authoritative"', () => {
+    expect(findInternalIdentifiers('fault leg ptt-not-authoritative reported')).toEqual([
+      { kind: 'internal-identifier', token: 'ptt-not-authoritative' },
+    ]);
   });
 });
 

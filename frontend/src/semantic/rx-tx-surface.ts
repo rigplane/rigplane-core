@@ -13,6 +13,7 @@
 import { t } from '$lib/i18n';
 import { BLOCKED_REASON_KEY } from '$lib/i18n/blocked-reasons';
 import type { DisabledReason, DisabledReasonCode, RadioViewModel, TxTargetViewModel } from './radio-view-model';
+import { FAULT_REASON_CODES, KEY_BLOCKED_REASON_CODES } from './rx-tx-codes';
 
 /**
  * The subset of the managed server projection this surface reads. `fault` stays `string | null`
@@ -33,9 +34,9 @@ export interface TxAuthoritySnapshot {
 
 export type RfState = 'receiving' | 'transmitting' | 'uncertain' | 'unknown';
 export type TxSessionState = 'idle' | 'pending' | 'keyed' | 'releasing' | 'failed';
-export type KeyBlockedReason =
-  | 'tx-target-unknown' | 'tx-permit-denied' | 'tx-permit-unknown'
-  | 'tx-fault' | 'tx-busy' | 'radio-transmitting' | 'rf-state-unknown';
+/** MOR-2718: derived from `KEY_BLOCKED_REASON_CODES` (`rx-tx-codes.ts`), so the
+ *  page guard's identifier vocabulary and this surface read one list. */
+export type KeyBlockedReason = (typeof KEY_BLOCKED_REASON_CODES)[number];
 
 /** Passive RX/unknown stay quiet; confirmed and uncertain TX remain explicit without relying on colour.
  *  MOR-2671: uncertain reads `TX` too — the distinction from confirmed TX is the hollow MARK below
@@ -144,17 +145,13 @@ export const targetUnknownMessage = (reason: TxTargetUnknownReason): string =>
   t('core.rxTx.target.unknown', { reason: targetUnknownReason(reason) });
 
 /**
- * MOR-1792: the `not-eligible` refusal's per-leg codes, re-declared here for
- * the same reason `TxAuthoritySnapshot` re-declares the TxState subset — ADR
- * invariant 11 forbids this zone importing the TX reducer. Member parity with
- * the reducer's own `TxIneligibility` is pinned in
+ * MOR-1792: the `not-eligible` refusal's per-leg codes — moved to
+ * `rx-tx-codes.ts` (MOR-2718) so the page guard's scan can import them;
+ * re-exported here to keep this module's surface unchanged. Member parity
+ * with the reducer's own `TxIneligibility` is pinned in
  * `__tests__/rx-tx-authority-parity.test.ts`.
  */
-export const FAULT_REASON_CODES = [
-  'cat-ptt-unavailable', 'browser-tx-audio-unavailable', 'control-not-live',
-  'tx-permit-not-allowed', 'tx-target-unknown', 'ptt-not-off',
-  'ptt-not-authoritative', 'no-confirmed-ptt-off', 'authority-epoch-mismatch',
-] as const;
+export { FAULT_REASON_CODES } from './rx-tx-codes';
 export type TxIneligibilityReason = (typeof FAULT_REASON_CODES)[number];
 /**
  * Per-leg catalog keys. Same F4 doctrine as `TARGET_REASON_KEY` above: each
