@@ -469,6 +469,25 @@ describe('CwKeyerInstrumentHost', () => {
     r.dispose();
   });
 
+  // MOR-2704 G4: a read (known) but not operational field refuses its action
+  // through the one exported `usable` gate and keeps `data-observed` false.
+  // Red under a mutation of `usable` that drops the `operational` check.
+  it('refuses the action for a read-but-not-operational field and keeps data-observed false (MOR-2704 G4)', () => {
+    const r = render();
+    r.props.view = {
+      ...r.props.view,
+      cwKeyer: { ...r.props.view.cwKeyer!, keyerSpeed: {
+        reading: { status: 'known', value: 24 },
+        availability: { structural: true, operational: false },
+      } },
+    };
+    flushSync();
+    expect(r.row('keyerSpeed').dataset.observed).toBe('false');
+    currentLease('keyerSpeed').nativeInput(31);
+    expect(r.onLevelChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
   it('keeps one status lane while moving HBar-knob-HBar', () => {
     activation.selected = undefined;
     const failed = (transitionId: string, providerGeneration = 1): Feedback => feedback('keyerSpeed', {

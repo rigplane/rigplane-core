@@ -33,6 +33,7 @@
     HBarIssuedStatusPresentation,
     HBarIssuedStatusSnapshot,
   } from '../components-v2/controls/value-control/skin';
+  import { usable } from '../primitives/control-instruments/control-instrument-behavior';
   import {
     createContinuousScalar,
     createRenderedNativeRangeContinuousScalarPolicy,
@@ -67,10 +68,6 @@
     const domain = field === 'pitchHz' ? view?.cwKeyer?.pitchDomain : view?.cwKeyer?.keySpeedDomain;
     return domain === undefined ? { min, max, step } : { min: domain.min, max: domain.max, step: domain.step };
   };
-  const usable = (current: CwKeyerField<unknown> | undefined): boolean =>
-    current?.availability.structural === true
-    && current.availability.operational
-    && current.reading.status === 'known';
   // MOR-2688 S4b: the NaN/null guard enters through `finiteValue`; the
   // unit format is kept exactly.
   const formatValue = (field: CwContinuousField, value: number | null): string => {

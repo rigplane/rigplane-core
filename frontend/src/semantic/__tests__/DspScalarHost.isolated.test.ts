@@ -298,6 +298,22 @@ describe('two-scalar DSP family host', () => {
     r.dispose();
   });
 
+  // MOR-2704 G4: a read (known) but not operational field refuses its action
+  // through the one exported `usable` gate and keeps the old disabled reason.
+  // Red under a mutation of `usable` that drops the `operational` check.
+  it('refuses the action for a read-but-not-operational field and keeps its disabled reason (MOR-2704 G4)', () => {
+    const current = view();
+    const r = render({
+      view: { ...current, dsp: { ...current.dsp!,
+        nbWidth: { reading: { status: 'known', value: 2 },
+          availability: { structural: true, operational: false } } } },
+    });
+    expect(r.row('nbWidth')?.dataset.disabledReason).toBe('field-not-observed');
+    r.scalar('nbWidth')?.click();
+    expect(r.onLevelChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
   it('reads replacement callbacks and feedback without remounting bindings', () => {
     const r = render();
     const bindings = [...capture.bindings];
