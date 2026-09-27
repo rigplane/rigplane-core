@@ -1467,13 +1467,20 @@ describe('the SWR shared lower-scale row (MOR-2250, PR 2 of 2)', () => {
 describe('the SWR lower scale literal text (MOR-2688 S4d)', () => {
   it('shows the read digits on a non-ratio domain, and bare label while unread', () => {
     // raw domain → no ratio scale: the digit readout is the only text after
-    // the group label.
+    // the group label. `withField` cannot carry `domain`, so the unread
+    // fixture rewrites only the reading.
     let view = withRaw(base('transmitting'), 'swr', 120);
     view = withMeterDomain(view, 'swr', { kind: 'raw' });
     withSurface(view, (s) => {
       expect(s.signalSvg()!.querySelector('[data-lower-relevant]')!.textContent).toBe('SWR120 raw');
     });
-    view = withField(view, 'swr', { unknown: true });
+    view = {
+      ...view,
+      meters: {
+        ...view.meters!,
+        swr: { ...view.meters!.swr, reading: { status: 'unknown' } },
+      } as MetersViewModel,
+    };
     withSurface(view, (s) => {
       expect(s.signalSvg()!.querySelector('[data-lower-relevant]')!.textContent).toBe('SWR');
     });
@@ -1493,7 +1500,13 @@ describe('the SWR lower scale literal text (MOR-2688 S4d)', () => {
           expect(group.textContent).toBe('SWR11.522.53∞');
           expect(group.getAttribute('aria-label')).toBe('SWR: 1.9');
         });
-        view = withField(view, 'swr', { unknown: true });
+        view = {
+          ...view,
+          meters: {
+            ...view.meters!,
+            swr: { ...view.meters!.swr, reading: { status: 'unknown' } },
+          } as MetersViewModel,
+        };
         withSurface(view, (s) => {
           const group = groupOf(s);
           expect(group.textContent).toBe('SWR11.522.53∞');
