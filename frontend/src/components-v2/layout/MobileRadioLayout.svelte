@@ -1165,8 +1165,7 @@
     color: #9ca3af;
     /* MOR-2675: same reservation — 12ch covers the widest text formatDbm
        renders over the sMeter domain: the honest 'uncalibrated' label of a
-       rig with no s_meter table (a calibrated rig's widest is '−13 dBm',
-       7ch). */
+       rig with no s_meter table. */
     display: inline-block;
     min-width: 12ch;
     font-variant-numeric: tabular-nums;

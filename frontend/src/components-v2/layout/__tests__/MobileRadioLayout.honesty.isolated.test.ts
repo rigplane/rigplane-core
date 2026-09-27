@@ -280,8 +280,8 @@ describe('MobileRadioLayout honest-projection rendering (MOR-1409 A13a)', () => 
   // Kills: a reservation narrower than the widest text the formatter
   // renders over the sMeter wire domain (raw int 0–255). The widest text is
   // derived by RUNNING the formatter at the domain top under the widest
-  // shipped calibration ladder (ic7300's table: S0 at 0, S9 at 120, S9+60
-  // at 255) — not read off one radio's constants — and the reservation must
+  // calibration ladder this test mocks below — not read off one radio's
+  // constants — and the reservation must
   // cover exactly that text. A known value renders exactly as today.
   it('renders the widest S-unit and dBm texts the landscape readouts can hold', () => {
     setViewport(844, 390);
