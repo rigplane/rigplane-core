@@ -19,11 +19,14 @@ import asyncio
 import logging
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from dataclasses import replace
+from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.core.acquisition_scheduler import (
     AcquisitionRequest,
     AcquisitionScheduler,
@@ -41,12 +44,16 @@ from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
     SourceMetadata,
+    startup_critical_path,
 )
 from rigplane.core.state_store import StateStore
 from rigplane.core.types import bcd_encode
 from rigplane.profiles import get_radio_profile, resolve_radio_profile
+from rigplane.profiles.rig_loader import discover_rigs
 from rigplane.radio_state import RadioState
 from rigplane.runtime._civ_rx import _profile_path_for_observation
+from rigplane.runtime.radio import IcomRadio
+from rigplane.runtime.radio_initial_state import fetch_initial_state
 from rigplane.web import web_startup
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.web_startup import (
@@ -278,6 +285,21 @@ class _PacingScheduler(AcquisitionScheduler):
 _PACING_GAP = 0.125  # exact in binary, so the asserted instants are exact
 
 
+def _critical_wait_profile() -> RadioAcquisitionProfile:
+    """One cadence-owned, safety-critical path: ``global.tx_state.ptt``."""
+
+    path = FieldPath.global_("tx_state", "ptt")
+    return RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=(
+            FieldCapability(path=path, polling=True),
+        ),
+        field_policies={
+            path: AcquisitionPolicy(cadence_seconds=1.0, freshness_ttl_seconds=15.0),
+        },
+    )
+
+
 def _pacing_server(scheduler: AcquisitionScheduler) -> WebServer:
     radio = _CivRadio(scheduler)
     radio._INITIAL_STATE_GAP_SERIAL = _PACING_GAP
@@ -333,8 +355,14 @@ async def test_never_answered_path_is_reprimed_once_per_reprime_interval() -> No
 async def test_outstanding_paths_are_logged_then_warned_when_nothing_arrives(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """The wait-log cadence itself, on a critical path (MOR-2749).
+
+    A non-critical path no longer waits past the 10 s deadline, so the
+    5 s / 60 s log cadence is pinned on ``global.tx_state.ptt`` — a
+    safety-critical path the sweep-less gate still waits on indefinitely.
+    """
     clock = _GateClock(stop_at=65.0 + _PACING_GAP)
-    scheduler = AcquisitionScheduler(profile=_sweep_profile(1))
+    scheduler = AcquisitionScheduler(profile=_critical_wait_profile())
     server = _pacing_server(scheduler)
     (outstanding,) = scheduler.unobserved_startup_paths(())
 
@@ -1108,3 +1136,317 @@ async def test_application_connection_selection_follows_acquisition_before_liste
         await server.start()
         await server.stop()
     assert events == ["acquire", "bind"]
+
+
+# ---------------------------------------------------------------------------
+# IC-7610: the radio refuses MAIN's filter-shape read (MOR-2733)
+# ---------------------------------------------------------------------------
+
+MAIN_FILTER_SHAPE = FieldPath.receiver("main", "operator_controls", "filter_shape")
+SUB_FILTER_SHAPE = FieldPath.receiver("sub", "operator_controls", "filter_shape")
+# The MOR-2733 bench exchange: MAIN's cmd29 filter-shape read is refused with
+# a bare NG that carries no 29 prefix, and SUB's is answered 00 (SHARP).
+_MAIN_FILTER_SHAPE_READ = bytes.fromhex("FEFE98E029001656FD")
+_SUB_FILTER_SHAPE_READ = bytes.fromhex("FEFE98E029011656FD")
+_BARE_NG = bytes.fromhex("FEFEE098FAFD")
+_SUB_FILTER_SHAPE_ANSWER = bytes.fromhex("FEFEE0982901165600FD")
+
+
+def _read_value(request: CivFrame) -> bytes:
+    """Value an unscripted read is answered with, after its echoed bytes."""
+
+    if request.command == 0x25 or (request.command, request.sub) == (0x1C, 0x03):
+        return bcd_encode(14_074_000)
+    if request.command == 0x26:
+        return b"\x01\x00\x01"
+    if request.command in (0x14, 0x15):
+        return b"\x01\x28"
+    if (request.command, request.sub) == (0x21, 0x00):
+        return b"\x00\x00\x00"
+    return b"\x00"
+
+
+class _Ic7610Wire:
+    """Answers the initial state fetch through the real CI-V ingress.
+
+    Stands in for the LAN link at the ``send_civ`` seam
+    ``runtime/radio_initial_state.py: fetch_initial_state`` sends through. A
+    read in ``script`` gets its scripted reply; every other read is echoed
+    back from the radio with :func:`_read_value` appended. Each reply goes
+    through ``parse_civ_frame`` into ``CivRuntime._route_civ_frame``.
+    """
+
+    def __init__(self, radio: IcomRadio, script: Mapping[bytes, bytes]) -> None:
+        self._radio = radio
+        self._script = script
+        self.sent: list[bytes] = []
+
+    async def send_civ(
+        self,
+        command: int,
+        sub: int | None = None,
+        data: bytes | None = None,
+        **_kwargs: object,
+    ) -> None:
+        radio_addr = self._radio._radio_addr
+        request = build_civ_frame(
+            radio_addr, CONTROLLER_ADDR, command, sub=sub, data=data
+        )
+        self.sent.append(request)
+        reply = self._script.get(request)
+        if reply is None:
+            reply = build_civ_frame(
+                CONTROLLER_ADDR,
+                radio_addr,
+                command,
+                sub=sub,
+                data=(data or b"") + _read_value(parse_civ_frame(request)),
+            )
+        await self._radio._civ_runtime._route_civ_frame(
+            parse_civ_frame(reply), generation=self._radio._civ_epoch
+        )
+
+
+# ---------------------------------------------------------------------------
+# MOR-2749: only safety-critical fields block opening; the rest stop
+# blocking 10 s after the initial fetch
+# ---------------------------------------------------------------------------
+
+
+def _filter_shapes_startup_required(
+    scheduler: AcquisitionScheduler,
+) -> AcquisitionScheduler:
+    """Rebuild the IC-7610 profile with #3815's lines reverted in-test.
+
+    Both filter-shape capabilities come back ``startup_required``, so the
+    test pins the deadline rule on the pre-#3815 profile shape and stays
+    correct after that profile change merges.
+    """
+
+    flipped = replace(
+        scheduler._profile,
+        capabilities=tuple(
+            replace(capability, startup_required=True)
+            if capability.path in {MAIN_FILTER_SHAPE, SUB_FILTER_SHAPE}
+            else capability
+            for capability in scheduler._profile.capabilities
+        ),
+    )
+    return AcquisitionScheduler(profile=flipped)
+
+
+@pytest.mark.asyncio
+async def test_ic7610_opens_by_the_deadline_while_refusing_mains_filter_shape_read(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-2749 (a): a refused non-critical field opens after 10 s.
+
+    The profile carries #3815's ``startup_optional`` lines removed (reverted
+    inside the test), the radio answers every initial read except MAIN's
+    filter shape (bare NG), and the gate must complete at the 10 s deadline
+    with a WARNING naming the path — with MAIN's filter shape still unread.
+    """
+
+    radio = IcomRadio("192.168.1.100", model="IC-7610")
+    server = WebServer(radio, _gated_config())
+    attached = _acquisition_scheduler(server)
+    assert attached is not None
+    scheduler = _filter_shapes_startup_required(attached)
+    radio._acquisition_scheduler = scheduler
+    # Not vacuous: with #3815's lines reverted, both filter shapes block.
+    assert {MAIN_FILTER_SHAPE, SUB_FILTER_SHAPE} <= set(
+        scheduler.unobserved_startup_paths(())
+    )
+    # The generation advance runtime/_control_phase.py makes on connect.
+    radio._civ_runtime.advance_generation("connect")
+    wire = _Ic7610Wire(
+        radio,
+        {
+            _MAIN_FILTER_SHAPE_READ: _BARE_NG,
+            _SUB_FILTER_SHAPE_READ: _SUB_FILTER_SHAPE_ANSWER,
+        },
+    )
+    radio.send_civ = wire.send_civ  # type: ignore[method-assign]
+    radio._INITIAL_STATE_GAP_LAN = radio._INITIAL_STATE_GAP_SERIAL = 0.05
+
+    await fetch_initial_state(radio)
+
+    # Not vacuous: the initial fetch sent both filter-shape reads.
+    assert {_MAIN_FILTER_SHAPE_READ, _SUB_FILTER_SHAPE_READ} <= set(wire.sent)
+    clock = _GateClock(stop_at=12.0)
+    with (
+        caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"),
+        _fake_gate_clock(clock),
+    ):
+        try:
+            await _await_initial_state_acquisition(server, sweep=False)
+        except _GateWindowClosed:
+            outstanding = scheduler.unobserved_startup_paths(
+                _observed_paths(server, scheduler)
+            )
+            pytest.fail(
+                f"startup still waiting after {clock.now:.0f}s on {outstanding}"
+            )
+
+    assert clock.now < 12.0
+    assert MAIN_FILTER_SHAPE not in _observed_paths(server, scheduler)
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+        and "receiver.main.operator_controls.filter_shape" in record.getMessage()
+    ]
+    assert warnings, "the deadline WARNING must name the unanswered path"
+    assert "after 10s" in warnings[0]
+
+
+RIGS_DIR = Path(__file__).resolve().parents[1] / "rigs"
+
+
+def _critical_startup_value(path: FieldPath) -> object:
+    if path.name == "freq_hz":
+        return 14_074_000
+    if path.name == "mode":
+        return "LSB"
+    if path.name == "tx_target":
+        return "main"
+    return False  # ptt, split
+
+
+def _shipped_startup_profiles() -> list[pytest.param]:
+    params = []
+    for model, rig in sorted(discover_rigs(RIGS_DIR).items()):
+        profile = rig.to_profile()
+        if profile.state_acquisition is None:
+            continue
+        params.append(pytest.param(model, profile.state_acquisition, id=model))
+    assert params, "no shipped profile carries state acquisition"
+    return params
+
+
+@pytest.mark.parametrize(
+    ("model", "acquisition"), _shipped_startup_profiles()
+)
+@pytest.mark.asyncio
+async def test_shipped_profile_opens_by_the_deadline_with_every_non_critical_path_unanswered(
+    model: str,
+    acquisition: RadioAcquisitionProfile,
+) -> None:
+    """MOR-2749 (b): no non-critical field of any shipped profile hangs the open.
+
+    Every safety-critical path is answered up front and every other
+    startup-required path is never answered at all; the gate must still
+    complete at the 10 s deadline, on the fake clock.
+    """
+
+    scheduler = AcquisitionScheduler(profile=acquisition)
+    outstanding = scheduler.unobserved_startup_paths(())
+    non_critical = tuple(
+        path for path in outstanding if not startup_critical_path(path)
+    )
+    critical = tuple(path for path in outstanding if startup_critical_path(path))
+    assert non_critical, f"{model}: no startup-required non-critical path to pin"
+
+    server = WebServer(_CivRadio(scheduler), _gated_config())
+    for path in critical:
+        server.command_state_store.apply(
+            _observation(path, _critical_startup_value(path), at=0.0)
+        )
+
+    clock = _GateClock(stop_at=11.0)
+    with _fake_gate_clock(clock):
+        try:
+            await _await_initial_state_acquisition(server, sweep=False)
+        except _GateWindowClosed:
+            still = tuple(
+                path
+                for path in scheduler.unobserved_startup_paths(
+                    _observed_paths(server, scheduler)
+                )
+                if not startup_critical_path(path)
+            )
+            pytest.fail(
+                f"{model}: non-critical paths still blocking after "
+                f"{clock.now:.0f}s: {still}"
+            )
+
+    assert clock.now >= 10.0
+
+
+@pytest.mark.asyncio
+async def test_never_answered_critical_path_fails_startup_after_three_attempts() -> (
+    None
+):
+    """MOR-2749 (c): three failed attempts on a critical path end startup.
+
+    ``global.tx_state.ptt`` is cadence-owned and never answered: the initial
+    fetch plus two re-reads that time out for real (the MOR-2614
+    consecutive-timeout accounting) reach three attempts, and the gate
+    fails through the declared-command defect record, naming the field and
+    the CI-V command the radio never answered.
+    """
+
+    from rigplane.core.acquisition_scheduler import AcquisitionPriority
+
+    PTT = FieldPath.global_("tx_state", "ptt")
+    radio = IcomRadio("192.168.1.100", model="IC-7300")
+    server = WebServer(radio, _gated_config())
+    scheduler = AcquisitionScheduler(profile=_critical_wait_profile())
+    radio._acquisition_scheduler = scheduler
+    radio._INITIAL_STATE_GAP_LAN = radio._INITIAL_STATE_GAP_SERIAL = 0.05
+    assert scheduler.unobserved_startup_paths(()) == (PTT,)
+
+    def _re_read_without_answer(now: float) -> None:
+        # What the drain does with a cadence group that never answers: it
+        # re-reads on cadence, and each answer window that closes without a
+        # reply is a real timeout (MOR-874's grace aside).
+        scheduler.ensure_fresh(
+            (PTT,),
+            max_age=1e-9,
+            priority=AcquisitionPriority.BACKGROUND,
+            reason="startup-gate",
+        )
+        for request in scheduler.pending_requests():
+            scheduler.record_acquisition_failure(
+                request,
+                reason="acquisition_request_timeout",
+                failed_paths=request.paths,
+                now=now,
+                link_healthy=False,
+            )
+
+    clock = _GateClock(stop_at=6.0)
+    clock.on_tick = _re_read_without_answer
+    with _fake_gate_clock(clock):
+        with pytest.raises(RuntimeError) as caught:
+            await _await_initial_state_acquisition(server, sweep=True)
+
+    message = str(caught.value)
+    assert message.startswith("web startup aborted: ")
+    assert message.endswith("Refusing to start a half-working server.")
+    assert "global.tx_state.ptt" in message
+    assert "1C 00" in message
+    assert "no answer after 3 attempts" in message
+    assert scheduler.startup_defect is not None
+
+
+@pytest.mark.asyncio
+async def test_gate_is_unchanged_when_every_declared_path_answers() -> None:
+    """MOR-2749 (d): a radio that answers everything binds as before.
+
+    Nothing is outstanding when the gate is entered, so neither the
+    deadline nor the attempt rule engages: no wait, no WARNING, no defect.
+    """
+
+    scheduler = _scheduler()
+    server = WebServer(_CivRadio(scheduler), _gated_config())
+    for path in scheduler.unobserved_startup_paths(()):
+        server.command_state_store.apply(_observation(path, 0, at=0.0))
+
+    clock = _GateClock(stop_at=0.05)
+    with _fake_gate_clock(clock):
+        await _await_initial_state_acquisition(server, sweep=True)
+
+    assert clock.now == 0.0
+    assert scheduler.startup_defect is None
+    assert scheduler.unobserved_startup_paths(_observed_paths(server, scheduler)) == ()
