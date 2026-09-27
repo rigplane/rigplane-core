@@ -231,3 +231,83 @@ describe('unknown VFO identity (WRONG-VFO GUARD)', () => {
     r.dispose();
   });
 });
+
+/**
+ * MOR-2682 — an unpopulated channel renders as an empty row, never
+ * '-- empty --'. The same treatment as the legacy `MemoryPanel` twin: the
+ * unpopulated branch renders the same three value cells as a populated row
+ * (`.ch-freq` / `.ch-mode` / `.ch-name`), empty, in their reserved slots.
+ * The row keeps the channel number and its store affordance; the value
+ * carries no "empty" wording, so the accessible name derives from the
+ * number and the store action alone, with no override.
+ */
+describe('unpopulated channels render as empty rows (MOR-2682)', () => {
+  function renderAll(): ReturnType<typeof render> {
+    seed({ 2: { freq: 7_100_000, mode: 'LSB', name: 'saved' } });
+    const r = render(KNOWN);
+    const checkbox = r.target.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    checkbox.click();
+    flushSync();
+    return r;
+  }
+
+  it('shows the unpopulated channel alongside the populated one once "All" is shown', () => {
+    const r = renderAll();
+    expect(r.row(1)).not.toBeNull();
+    expect(r.row(2)).not.toBeNull();
+    r.dispose();
+  });
+
+  it('renders no "-- empty --" label element for an unpopulated channel', () => {
+    const r = renderAll();
+    const row = r.row(1);
+    expect(row).not.toBeNull();
+    expect(row?.querySelector('.ch-empty-label')).toBeNull();
+    expect(row?.textContent).not.toContain('-- empty --');
+    r.dispose();
+  });
+
+  it('keeps the channel number and renders the value cells empty', () => {
+    const r = renderAll();
+    const row = r.row(1);
+    expect(row?.querySelector('.ch-number')?.textContent).toBe('01');
+    expect(row?.querySelector('.ch-freq')?.textContent).toBe('');
+    expect(row?.querySelector('.ch-mode')?.textContent).toBe('');
+    expect(row?.querySelector('.ch-name')?.textContent).toBe('');
+    r.dispose();
+  });
+
+  it('renders the empty value as nothing at all: no dash-framed word, no "empty" wording', () => {
+    const r = renderAll();
+    const row = r.row(1);
+    const value = ['.ch-freq', '.ch-mode', '.ch-name']
+      .map((sel) => row?.querySelector(sel)?.textContent ?? 'MISSING')
+      .join('|');
+    expect(value).toBe('||');
+    expect(row?.getAttribute('aria-label')).toBeNull();
+    expect(row?.textContent).not.toContain('empty');
+    r.dispose();
+  });
+
+  it('gives the empty name slot no edit affordance: a span, never the rename button', () => {
+    const r = renderAll();
+    expect(r.row(1)?.querySelector('.ch-name')?.tagName).toBe('SPAN');
+    expect(r.row(2)?.querySelector('.ch-name')?.tagName).toBe('BUTTON');
+    r.dispose();
+  });
+
+  it('keeps the store affordance on the empty row', () => {
+    const r = renderAll();
+    const store = r.btn(1, 'store');
+    expect(store).not.toBeNull();
+    expect(store?.textContent?.trim()).toBe('<<VFO');
+    expect(store?.disabled).toBe(false);
+    r.dispose();
+  });
+
+  it('keeps the channel row a centered flex row, so empty cells cannot re-seat it', () => {
+    const rule = /\.channel-row\s*\{([^}]*)\}/.exec(SOURCE)?.[1] ?? '';
+    expect(rule).toContain('display: flex');
+    expect(rule).toContain('align-items: center');
+  });
+});
