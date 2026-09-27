@@ -1465,3 +1465,25 @@ test.describe('MOR-2545 PR3: the hosted scope row hides by band and never overla
     });
   }
 });
+
+// MOR-2673: the unread mode is an empty reserved slot, so the amber LCD
+// mode box keeps one width in every state — a real browser width comparison
+// between the unread and the read mount (jsdom has no layout; the component
+// suites pin the reserving rule structurally instead).
+for (const layout of ['lcd-cockpit', 'lcd-scope'] as const) {
+  test(`${layout} keeps one mode-box width between unread and read (MOR-2673)`, async ({ page }) => {
+    await boot(page, layout, 1440, true);
+    const readBox = await page.locator('.lcd-frame .vfo-mode-box').first().boundingBox();
+    expect(readBox, `${layout} renders a mode box`).not.toBeNull();
+
+    await boot(page, layout, 1440, true, 'studioline', false, undefined, {
+      patch: (state) => {
+        delete (state.main as { mode?: string }).mode;
+      },
+    });
+    const unreadBox = await page.locator('.lcd-frame .vfo-mode-box').first().boundingBox();
+    expect(unreadBox, `${layout} keeps the mode box for an unread mode`).not.toBeNull();
+    expect(unreadBox!.width, `${layout} mode box width does not move when the mode arrives`)
+      .toBeCloseTo(readBox!.width, 1);
+  });
+}

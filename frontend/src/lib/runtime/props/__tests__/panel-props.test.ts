@@ -17,6 +17,7 @@ import {
   toRxAudioProps,
   toScanProps,
   toTxProps,
+  toVfoControlProps,
   toVfoProps,
 } from '../panel-props';
 import { findActiveBand } from '$lib/radio/band-plan';
@@ -677,10 +678,12 @@ describe('Mode panel MOD-input source (MOR-616)', () => {
  * one antenna) for missing/unsupported input. Every case below documents a
  * value that panel-props.ts used to invent out of thin air on exact base;
  * after the fix each one renders a value that cannot be mistaken for a real
- * reading (`NaN` for numbers whose type stays `number`, `'---'` for strings
- * whose type stays `string` — the same non-fabricating-sentinel convention
- * `toVfoControlProps` already used for `mode` before this gate touched
- * anything), never `null`/`undefined` (the prop type contracts are frozen —
+ * reading (`NaN` for numbers whose type stays `number`, `''` for strings
+ * whose type stays `string` — the same non-fabricating-sentinel convention,
+ * re-pointed from `'---'` to the empty string by MOR-2673 so the sentinel
+ * can never be drawn as a dash run; `''` never equals a real, non-empty
+ * mode/filter label, preserving every comparison consumer), never
+ * `null`/`undefined` (the prop type contracts are frozen —
  * no fourth production file may be touched to accommodate a wider type).
  */
 describe('A11 — batch-A projections do not fabricate defaults (MOR-1409)', () => {
@@ -688,15 +691,15 @@ describe('A11 — batch-A projections do not fabricate defaults (MOR-1409)', () 
     it('does not invent 14.074 MHz / USB / FIL1 when state is entirely absent', () => {
       const props = toVfoProps(null, 'main');
       expect(props.freq).toBeNaN();
-      expect(props.mode).toBe('---');
-      expect(props.filter).toBe('---');
+      expect(props.mode).toBe('');
+      expect(props.filter).toBe('');
     });
 
     it('does not invent 14.074 MHz / USB / FIL1 when the addressed receiver is absent from a present state', () => {
       const props = toVfoProps(makeState({ sub: undefined }), 'sub');
       expect(props.freq).toBeNaN();
-      expect(props.mode).toBe('---');
-      expect(props.filter).toBe('---');
+      expect(props.mode).toBe('');
+      expect(props.filter).toBe('');
     });
 
     it('still reports the real value for a populated receiver', () => {
@@ -864,7 +867,7 @@ describe('A11 — batch-A projections do not fabricate defaults (MOR-1409)', () 
 
     it('does not invent USB / a three-filter FIL1-FIL3 catalog without state or capabilities', () => {
       const props = toFilterProps(null, null);
-      expect(props.currentMode).toBe('---');
+      expect(props.currentMode).toBe('');
       expect(props.filterLabels).toEqual([]);
     });
 
@@ -908,7 +911,7 @@ describe('A11 — batch-A projections do not fabricate defaults (MOR-1409)', () 
   describe('toModeProps', () => {
     it('does not invent USB when state is absent', () => {
       const props = toModeProps(null, null);
-      expect(props.currentMode).toBe('---');
+      expect(props.currentMode).toBe('');
     });
 
     it('still reports the real mode for a populated receiver', () => {
@@ -1025,7 +1028,8 @@ describe('A11 — batch-A projections do not fabricate defaults (MOR-1409)', () 
  * sidetone/keyer, meters, RX audio level, scan status, filter width (its
  * `toFilterProps` twin), and the memory-panel "store VFO → channel" fields.
  * Same non-fabricating-sentinel convention as A11: `NaN` for numbers whose
- * type stays `number`, `'---'` for strings whose type stays `string`,
+ * type stays `number`, `''` for strings whose type stays `string` (re-pointed
+ * from `'---'` by MOR-2673),
  * `null` for the two RIT/XIT booleans whose type widens to `boolean | null`
  * per the A12 re-anchor plan's §5 consumer-boundary matrix (both feed only
  * a `hasCap`-gated panel — see the matrix's golden-safety column — so the
@@ -1391,10 +1395,10 @@ describe('A12 — batch-B projections do not fabricate defaults (MOR-1409)', () 
   });
 
   describe('toMemoryPanelProps', () => {
-    it('does not invent activeFreqHz=0/activeMode="" when state is absent', () => {
+    it('does not invent activeFreqHz=0/activeMode stand-ins when state is absent', () => {
       const props = toMemoryPanelProps(null, null);
       expect(props.activeFreqHz).toBeNaN();
-      expect(props.activeMode).toBe('---');
+      expect(props.activeMode).toBe('');
     });
 
     it('still reports the real observed active-receiver frequency/mode', () => {
@@ -1467,5 +1471,33 @@ describe('toVfoProps RFG badge (MOR-2546, owner ruling 2026-09-23)', () => {
     expect(toVfoProps(stateWithRfGain(1), 'main').badges['RFG']).toBe('');
     expect(toVfoProps(stateWithRfGain(254 / 255), 'main').badges['RFG']).toBe('');
     expect(toVfoProps(stateWithRfGain(null), 'main').badges['RFG']).toBe('');
+  });
+});
+
+describe('unread mode/filter sentinel is the empty string (MOR-2673)', () => {
+  // The old `'---'` sentinel reached the screen as a dash run. The empty
+  // string is the drawn form of an unlit LCD segment and — the property the
+  // comparison consumers rely on — never equals a real, non-empty
+  // mode/filter label, so an unread value can never light a real choice.
+  it('every string-shaped unread projection reports the empty string', () => {
+    expect(toVfoProps(null, 'main').mode).toBe('');
+    expect(toVfoProps(null, 'main').filter).toBe('');
+    expect(toFilterProps(null, null).currentMode).toBe('');
+    expect(toModeProps(null, null).currentMode).toBe('');
+    expect(toMemoryPanelProps(null, null).activeMode).toBe('');
+    expect(toVfoControlProps(null, null).mode).toBe('');
+  });
+
+  it('the sentinel never matches a real label at a comparison consumer', () => {
+    // `toVfoControlProps` compares `mode` against 'CW'/'CW-R' to gate the
+    // CW-only break-in control; an unread mode must not light it.
+    expect(toVfoControlProps(null, null).isCwMode).toBe(false);
+    // ModePanel/FilterPanel/EssentialsPanel match `currentMode === label`
+    // against the profile catalogs; the sentinel matches none of them.
+    const labels = ['USB', 'LSB', 'CW', 'CW-R', 'FM', 'AM', 'RTTY', 'FIL1'];
+    for (const label of labels) {
+      expect(toVfoProps(null, 'main').mode).not.toBe(label);
+      expect(toModeProps(null, null).currentMode).not.toBe(label);
+    }
   });
 });

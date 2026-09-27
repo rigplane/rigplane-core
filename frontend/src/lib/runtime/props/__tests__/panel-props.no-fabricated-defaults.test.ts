@@ -108,7 +108,14 @@ describe('panel-props.ts batch-A/batch-B functions carry no fabricated-default l
     ['toScanProps', 'scanResumeMode: (state?.scanResumeMode ?? 0)'],
     ['toAudioSpectrumProps', 'filterWidth: rx?.filterWidth ?? 2400,'],
     ['toMemoryPanelProps', 'activeFreqHz: rx?.freqHz ?? 0,'],
-    ["toMemoryPanelProps", "activeMode: rx?.mode ?? '',"],
+    // toMemoryPanelProps' `activeMode: rx?.mode ?? ''` was removed here as a
+    // fabricated empty-string default, then re-pointed BACK to `''` by
+    // MOR-2673 as the deliberate unread sentinel (the old `'---'` reached
+    // the screen as a dash run). The guard this list enforces — no
+    // plausible-looking fabricated reading — still holds: `''` never equals
+    // a real, non-empty mode label, pinned behaviourally in
+    // panel-props.test.ts's MOR-2673 describe block, so it cannot be
+    // mistaken for a reading at any comparison consumer.
   ];
 
   it.each(forbidden)('%s does not contain %j', (fn, literal) => {

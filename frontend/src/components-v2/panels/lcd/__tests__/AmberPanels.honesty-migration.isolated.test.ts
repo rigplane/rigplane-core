@@ -115,13 +115,14 @@ function mountScope(
   state: ServerState | null,
   hasAudioFft = false,
   caps = amberCaps,
+  dual = false,
 ) {
   scopeProps.value = {
     radioState: state,
     caps,
     hasCapability: (name: string) => caps?.capabilities?.includes(name) ?? false,
     hasAudioFft,
-    hasDualReceiver: false,
+    hasDualReceiver: dual,
   };
   const target = document.createElement('div');
   document.body.appendChild(target);
@@ -462,5 +463,104 @@ describe('AmberScope filter-ratio NaN guard (MOR-1409 A14 plan §4.2 finding #3)
     const points = ghostPassbandPoints(target);
     expect(points).not.toContain('NaN');
     expect(points.length).toBeGreaterThan(0);
+  });
+});
+
+// ── MOR-2673: the unread mode/RIT sentinel never reaches the screen ────────
+
+describe('Amber unread mode / RIT sentinel (MOR-2673)', () => {
+  const fresh = {
+    storePath: 'fixture', observed: true, freshness: 'fresh', availability: 'available',
+  } as const;
+
+  function cockpitSource(): string {
+    return readFileSync('src/components-v2/panels/lcd/AmberCockpit.svelte', 'utf8');
+  }
+  function scopeSource(): string {
+    return readFileSync('src/components-v2/panels/lcd/AmberScope.svelte', 'utf8');
+  }
+
+  it('AmberCockpit renders an unread main mode as an empty reserved slot, never a dash run', () => {
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver({ mode: undefined, filter: undefined }),
+      fieldStatus: {},
+    } as unknown as ServerState;
+    const target = mountCockpit(state);
+    const box = target.querySelector('.vfo-mode-box');
+    expect(box).not.toBeNull();
+    expect(box?.textContent).toBe('');
+    expect(target.textContent ?? '').not.toContain('---');
+  });
+
+  it('AmberCockpit renders a known mode exactly as before the change', () => {
+    const target = mountCockpit({
+      active: 'MAIN',
+      main: baseReceiver(),
+      fieldStatus: {},
+    } as unknown as ServerState);
+    expect(target.querySelector('.vfo-mode-box')?.textContent).toBe('USB 1');
+  });
+
+  it('AmberCockpit reserves the mode box and RIT value in every state (structural pin)', () => {
+    const source = cockpitSource();
+    // The `.vfo-mode-box` rule reserves the widest text it can show
+    // ("RTTY-R 1" = 8ch); the `.rit-value` rule reserves "−9.99 kHz" = 9ch.
+    expect(source).toMatch(/\.vfo-mode-box \{[^}]*min-width: 8ch;/s);
+    expect(source).toMatch(/\.rit-value \{[^}]*min-width: 9ch;/s);
+    // The dash-run sentinel is gone from both amber faces entirely.
+    expect(cockpitSource()).not.toContain("'---'");
+    expect(scopeSource()).not.toContain("'---'");
+  });
+
+  it('AmberCockpit renders an active RIT with an unread offset as an empty reserved value', () => {
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver(),
+      ritOn: true,
+      fieldStatus: { ritOn: fresh, ritFreq: fresh },
+    } as unknown as ServerState;
+    const target = mountCockpit(state);
+    const value = target.querySelector('.rit-value');
+    expect(value).not.toBeNull();
+    expect(value?.textContent).toBe('');
+  });
+
+  it('AmberCockpit renders a known RIT offset exactly as before the change', () => {
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver(),
+      ritOn: true,
+      ritFreq: 250,
+      fieldStatus: { ritOn: fresh, ritFreq: fresh },
+    } as unknown as ServerState;
+    expect(mountCockpit(state).querySelector('.rit-value')?.textContent).toBe('+0.25 kHz');
+  });
+
+  it('AmberScope renders unread main and sub modes as empty reserved slots, never a dash run', () => {
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver({ mode: undefined }),
+      sub: baseReceiver({ mode: undefined }),
+      fieldStatus: {},
+    } as unknown as ServerState;
+    const target = mountScope(state, false, amberCaps, true);
+    const boxes = [...target.querySelectorAll('.vfo-mode-box')];
+    expect(boxes).toHaveLength(2);
+    for (const box of boxes) expect(box.textContent).toBe('');
+    expect(target.textContent ?? '').not.toContain('---');
+  });
+
+  it('AmberScope renders known modes exactly as before the change and reserves the box structurally', () => {
+    const state = {
+      active: 'MAIN',
+      main: baseReceiver(),
+      sub: baseReceiver({ mode: 'CW-R' }),
+      fieldStatus: {},
+    } as unknown as ServerState;
+    const target = mountScope(state, false, amberCaps, true);
+    const boxes = [...target.querySelectorAll('.vfo-mode-box')];
+    expect(boxes.map((box) => box.textContent)).toEqual(['USB', 'CW-R']);
+    expect(scopeSource()).toMatch(/\.vfo-mode-box \{[^}]*min-width: 6ch;/s);
   });
 });
