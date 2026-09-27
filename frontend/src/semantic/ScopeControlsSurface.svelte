@@ -93,7 +93,6 @@
   /** The row's two-key mode choice (CTR/FIX); S-C/S-F live in More only. */
   const QUICK_MODE = MODE_BUTTONS.slice(0, 2);
 
-  export const UNKNOWN_TEXT = '—';
   /** Usable ⇔ the radio HAS it, it is readable NOW, and it was observed. */
   export const usable = (f: ScopeControlsField<unknown>): boolean =>
     f.availability.structural && f.availability.operational && f.reading.status === 'known';
@@ -309,8 +308,8 @@
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('span', -1, 'scope span')} renderer={finiteAppearance.action}
           />{/key}{/key}
-          <output data-testid="scope-span-value">
-            {modeKnown !== undefined && usable(sc.span) ? (SPAN_LABELS[numberOf(sc.span, 3)] ?? UNKNOWN_TEXT) : UNKNOWN_TEXT}
+          <output class="scope-finite-slot" data-testid="scope-span-value">
+            {modeKnown !== undefined && usable(sc.span) ? (SPAN_LABELS[numberOf(sc.span, 3)] ?? '') : ''}
           </output>
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('span', 1, 'scope span')} renderer={finiteAppearance.action}
@@ -324,8 +323,8 @@
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('speed', -1, 'scope speed')} renderer={finiteAppearance.action}
           />{/key}{/key}
-          <output data-testid="scope-speed-value">
-            {usable(sc.speed) ? (SPEED_LABELS[numberOf(sc.speed, 1)] ?? UNKNOWN_TEXT) : UNKNOWN_TEXT}
+          <output class="scope-finite-slot" data-testid="scope-speed-value">
+            {usable(sc.speed) ? (SPEED_LABELS[numberOf(sc.speed, 1)] ?? '') : ''}
           </output>
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('speed', 1, 'scope speed')} renderer={finiteAppearance.action}
@@ -607,6 +606,19 @@
     align-items: center;
     gap: 1px;
     white-space: nowrap;
+  }
+
+  /* MOR-2653: the finite SPAN/SPEED label slots keep their width unread →
+     known — 5ch covers the widest label ('±500k'); an unread value renders
+     EMPTY, never a placeholder dash, and a known value with no label in
+     the table renders EMPTY too, never a dash. Digits are tabular. */
+  .scope-finite-slot {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    min-width: 5ch;
+    font-variant-numeric: tabular-nums;
   }
 
   .scope-name {

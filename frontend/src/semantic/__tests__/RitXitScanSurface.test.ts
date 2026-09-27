@@ -19,7 +19,7 @@ import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
 import RitXitScanSurface, {
-  DF_SPANS, OFFSET_MAX, OFFSET_MIN, OFFSET_STEP, RESUME_MODES, SCAN_TYPES, UNKNOWN_TEXT,
+  DF_SPANS, OFFSET_MAX, OFFSET_MIN, OFFSET_STEP, RESUME_MODES, SCAN_TYPES,
 } from '../RitXitScanSurface.svelte';
 import type { RitXitScanInstrumentHandles } from '../RitXitScanInstrumentHost.svelte';
 import RitXitScanInstrumentHostFixture from './fixtures/RitXitScanInstrumentHostFixture.svelte';
@@ -185,11 +185,24 @@ describe('structural presence: absent groups render nothing extra', () => {
 const OFF_AVAIL: Availability = { structural: false, operational: false };
 
 describe('unread facts render honestly, never fabricated', () => {
-  it('shows an unread offset as unknown text with the slider at 0, not a guessed position', () => {
+  it('shows an unread offset as an EMPTY reserved slot with the slider at 0, not a guessed position (MOR-2653)', () => {
     const r = render(withRx({ ritOffset: unread<number>(), xitOffset: unread<number>() }));
-    expect(r.text('ritxit-offset-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('ritxit-offset-value')).toBe('');
+    expect(r.text('rit-offset-value')).toBe('');
+    expect(r.text('xit-offset-value')).toBe('');
     expect(r.input()!.valueAsNumber).toBe(0);
     expect(r.el('ritxit-offset')!.dataset.observed).toBe('false');
+    // Structural geometry pin (jsdom has no layout): 9ch covers the widest
+    // rendered value ('+9999 Hz'), so the slot never moves on a first read.
+    expect(SOURCE).toMatch(/\.ritxit-mode-row output, \.offset output\s*\{[^}]*min-width:\s*9ch/);
+    r.dispose();
+  });
+
+  it('renders a known offset as a signed number WITH its unit, never a unit alone (MOR-2653)', () => {
+    const r = render(withRx({ ritOffset: known(250), xitOffset: known(250) }));
+    expect(r.text('rit-offset-value')).toBe('+250 Hz');
+    expect(r.text('xit-offset-value')).toBe('+250 Hz');
+    expect(r.text('ritxit-offset-value')).toBe('250');
     r.dispose();
   });
 

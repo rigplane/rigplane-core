@@ -71,9 +71,6 @@
     ['breakInDelay', 'Break-in delay', 0, 255, 1, ''],
   ] as const;
   export type CwLevelField = (typeof CW_LEVELS)[number][0];
-  /** MOR-2653 holdover: only the RX-mode line still renders this; every
-   *  `textOf` readout below renders EMPTY in its reserved slot when unread. */
-  export const UNKNOWN_TEXT = '—';
   /** Break-in as the operator must read it. `unknown` is NOT 'off' (rule 5). */
   export type BreakInPosture = 'off' | 'armed' | 'unknown';
   export const POSTURE_LABEL: Record<BreakInPosture, string> = {
@@ -171,8 +168,9 @@
   /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine). */
   let cw = $derived(view.cwKeyer);
   let extraOpen = $state(false);
+  /** MOR-2653: an unread mode renders EMPTY in its reserved slot. */
   let rxMode = $derived(view.modeFilter?.currentMode.reading.status === 'known'
-    ? view.modeFilter.currentMode.reading.value : UNKNOWN_TEXT);
+    ? view.modeFilter.currentMode.reading.value : '');
   /** Rule 2. The model's ONE permit, READ. No second derivation exists here —
    *  `getFrequencyPermit`, `txBands` and `band` are not imported at all. */
   let permitAllowed = $derived(view.txPermit.status === 'allowed');
@@ -624,6 +622,13 @@
   }
   .standard .cw-mode-line span { color: var(--v2-text-dim); }
   .standard .cw-mode-line output { color: var(--v2-text-bright); }
+  /* MOR-2653: the RX-mode slot keeps its width unread → known — 5ch covers
+     the widest mode name; an unread mode renders EMPTY, never a placeholder. */
+  .cw-mode-line output {
+    display: inline-block;
+    min-width: 5ch;
+    font-variant-numeric: tabular-nums;
+  }
   .standard :global(.cw-keyer-level--presented) { grid-column: 1 / -1; }
   .standard [data-testid='cw-keyer-break-in'] { grid-column: span 2; }
   .standard [data-testid='cw-keyer-break-in'] .cw-keyer-row {

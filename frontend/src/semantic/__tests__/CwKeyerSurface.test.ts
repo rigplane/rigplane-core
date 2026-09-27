@@ -193,6 +193,24 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
    *  This check regexes THIS file's specifiers only, so that premise is
    *  pinned one level down by `pressed-of.test.ts`'s `'has no runtime
    *  import'` case (verify-MOR-1358 F1) — the two together are the closure. */
+
+  it('renders the RX-mode line as an EMPTY reserved slot when the mode is unread (MOR-2653)', () => {
+    const observed = withModeFilter(base());
+    const view: RadioViewModel = {
+      ...observed,
+      modeFilter: {
+        ...observed.modeFilter!,
+        currentMode: { reading: { status: 'unknown' }, availability: ON },
+      },
+    };
+    const r = render(view, { standard: true });
+    expect(r.el('rx-mode')!.querySelector('output')!.textContent?.trim()).toBe('');
+    // Structural geometry pin (jsdom has no layout): 5ch covers the widest
+    // mode name, so the slot's box never changes when a first read arrives.
+    expect(SOURCE).toMatch(/\.cw-mode-line output\s*\{[^}]*min-width:\s*5ch/);
+    r.dispose();
+  });
+
   it('imports only the allow-listed fact, presentation and numeric dependencies', () => {
     const specifiers = [...CODE.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);

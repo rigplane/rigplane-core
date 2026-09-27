@@ -54,6 +54,7 @@ import { topologyFixtures, withScopeControls } from '../fixtures/topologies';
 import type { Availability, RadioViewModel, ScopeControlsField, ScopeControlsViewModel } from '../radio-view-model';
 
 const ON: Availability = { structural: true, operational: true };
+const SOURCE = readFileSync('src/semantic/ScopeControlsSurface.svelte', 'utf8');
 const OFF: Availability = { structural: false, operational: false };
 const unread = <T>(availability: Availability = ON): ScopeControlsField<T> =>
   ({ reading: { status: 'unknown' }, availability });
@@ -169,6 +170,25 @@ describe('carry-forward (3): EDGE/SPAN visibility is a rendering decision on top
     expect(r.el('scope-span')!.querySelector('button')!.hasAttribute('disabled')).toBe(false);
     expect(r.el('scope-span-value')!.textContent).toBe('±25k'); // fixture span = 3
     r.dispose();
+  });
+
+  // MOR-2653: the span/speed label tables are NOT validated ranges — a radio
+  // can report a known value outside them. That value renders EMPTY in its
+  // reserved slot, never a dash; an unread value renders empty too.
+  it('renders SPAN/SPEED as EMPTY when known but unlabelled or unread, never a dash (MOR-2653)', () => {
+    const r = render(withSc({ mode: known(0), span: known(9), speed: known(9) }));
+    expect(r.el('scope-span-value')!.textContent).toBe('');
+    expect(r.el('scope-speed-value')!.textContent).toBe('');
+    for (const id of ['scope-span-value', 'scope-speed-value']) {
+      expect(r.el(id)!.classList.contains('scope-finite-slot')).toBe(true);
+    }
+    r.dispose();
+    const unreadR = render(withSc({ mode: known(0), speed: unread() }));
+    expect(unreadR.el('scope-speed-value')!.textContent).toBe('');
+    unreadR.dispose();
+    // Structural geometry pin (jsdom has no layout): 5ch covers the widest
+    // label ('±500k'), so the slot's box never changes on a first read.
+    expect(SOURCE).toMatch(/\.scope-finite-slot\s*\{[^}]*min-width:\s*5ch/);
   });
 
   // A radio with no span control at all draws nothing — the unread case is
