@@ -215,19 +215,21 @@
         e.stopPropagation();
         if (!controlsDisabled) onModeClick?.();
       }}
-      title={!controlsDisabled && onModeClick ? `Change mode (current: ${mode})` : undefined}
+      title={!controlsDisabled && onModeClick
+        ? (mode ? `Change mode (current: ${mode})` : 'Change mode')
+        : undefined}
     >
       {#if mode === undefined}
         <span class="chip-slot" aria-hidden="true"></span>
       {:else}
-        <span class="chip-lg" data-family="primary-neon" data-chip="mode" data-lit={mode !== null}>{mode ?? 'MODE'}</span>
+        <span class="chip-lg" data-family="primary-neon" data-chip="mode" data-lit={!!mode}>{mode || 'MODE'}</span>
       {/if}
     </div>
 
     {#if filter === undefined}
       <span class="chip-slot" aria-hidden="true"></span>
     {:else}
-      <span class="chip-lg" data-family="primary-neon" data-chip="filter" data-lit={filter !== null}>{filter ?? 'FIL'}</span>
+      <span class="chip-lg" data-family="primary-neon" data-chip="filter" data-lit={!!filter}>{filter || 'FIL'}</span>
     {/if}
 
     <div class="annunciators">

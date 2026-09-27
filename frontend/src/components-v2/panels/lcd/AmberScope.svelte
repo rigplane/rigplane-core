@@ -104,7 +104,7 @@
   // ── VFO A (MAIN) — always top line ──
   // Read directly from radioState.main so the tag is statically correct (fixes codex P2).
   let mainFreqHz = $derived(radioState?.main?.freqHz ?? 0);
-  let mainMode = $derived(radioState?.main?.mode ?? '---');
+  let mainMode = $derived(radioState?.main?.mode ?? '');
   let mainBand = $derived(freqToBand(mainFreqHz));
   // Fallback 2400 Hz matches `toFilterProps()` adapter default (codex P2 on
   // PR #916): keeps the VFO A filter badge visible with a stable width when
@@ -118,7 +118,7 @@
 
   // ── VFO B (SUB) — compact second line on dual-RX only ──
   let subFreqHz = $derived(radioState?.sub?.freqHz ?? 0);
-  let subMode = $derived(radioState?.sub?.mode ?? '---');
+  let subMode = $derived(radioState?.sub?.mode ?? '');
   let subBand = $derived(freqToBand(subFreqHz));
 
   // Active-state per VFO: A active when main is the active receiver
@@ -471,6 +471,13 @@
     border: 2px solid rgba(26, 16, 0, calc(var(--lcd-alpha-active) * 0.4));
     border-radius: 4px;
     padding: 2px 8px;
+  }
+
+  /* MOR-2673: the mode box is reserved in EVERY state, sized for the widest
+     mode label it can show ("RTTY-R"), so an unread empty mode and a first
+     reading keep one width. */
+  .vfo-mode-box {
+    min-width: 6ch;
   }
 
   .vfo-band-box {

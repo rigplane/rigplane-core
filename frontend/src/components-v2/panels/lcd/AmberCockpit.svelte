@@ -107,8 +107,9 @@
 
   // RIT-offset guard: `formatOffsetKHz()` (rit-utils.ts, frozen) has no NaN
   // branch and renders the literal "−NaN kHz" on an unobserved offset.
+  // MOR-2673: unread renders as an empty unlit segment, never a dash run.
   let ritOffsetLabel = $derived(
-    Number.isFinite(ritXit.ritOffset) ? formatOffsetKHz(ritXit.ritOffset) : '---',
+    Number.isFinite(ritXit.ritOffset) ? formatOffsetKHz(ritXit.ritOffset) : '',
   );
 
   // Filter-ratio guard: `AmberFilterGhost`/`AmberAfScope` (frozen) compute
@@ -364,7 +365,7 @@
   // In the dual-cockpit peer layout, column A always = main VFO, column B always = sub VFO.
   // We derive main/sub data directly so each column has stable data regardless of active state.
   let mainFreqHz = $derived(radioState?.main?.freqHz ?? 0);
-  let mainMode = $derived(radioState?.main?.mode ?? '---');
+  let mainMode = $derived(radioState?.main?.mode ?? '');
   let mainFilter = $derived(radioState?.main?.filter ?? '');
   let mainBand = $derived(freqToBand(mainFreqHz));
   let mainSMeter = $derived(radioState?.main?.sMeter ?? 0);
@@ -722,6 +723,10 @@
     border: 2px solid rgba(26, 16, 0, calc(var(--lcd-alpha-active) * 0.4));
     border-radius: 4px;
     padding: 2px 8px;
+    /* MOR-2673: reserved in EVERY state, sized for the widest text the box
+       can show ("RTTY-R 1" — mode plus the optional filter suffix), so an
+       unread empty mode and a first reading keep one width. */
+    min-width: 8ch;
   }
 
   /* ── S-Meter ── */
@@ -775,6 +780,9 @@
     font-weight: bold;
     font-size: 16px;
     color: rgba(26, 16, 0, calc(var(--lcd-alpha-active) * 0.6));
+    /* MOR-2673: reserved for the widest "−9.99 kHz" reading, so an unread
+       empty offset and the first reading keep one width. */
+    min-width: 9ch;
   }
 
   /* ── Filter / AF Scope row (full-width grid cell) ── */
