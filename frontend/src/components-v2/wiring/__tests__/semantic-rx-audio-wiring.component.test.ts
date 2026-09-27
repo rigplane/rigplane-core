@@ -1105,6 +1105,33 @@ describe('the AF control consumes the admitted-target lane (MOR-1687 F2)', () =>
     expect(getCommandLifecycles()[0]?.status).toBe('acknowledged');
     expect(Number(knob(row)!.getAttribute('aria-valuenow'))).toBeCloseTo(0.31, 10);
   });
+
+  // MOR-1676: with `controls.af_level` published, the knob steps on the raw
+  // range through this lane — raw 128 up to 129 and back to 128, sent as the
+  // normalized 129/255 and 128/255.
+  it.each(LANES)('%s steps one raw unit and back on the published raw range', (
+    _label, row, _other, key, receiver, makeCaps,
+  ) => {
+    h.rxEnabled = false;
+    h.audio = { muted: false, rxEnabled: false, volume: 42 };
+    h.caps = { ...makeCaps(), controls: { af_level: { raw_min: 0, raw_max: 255 } } } as Capabilities;
+    expect(setCapabilities(h.caps as Capabilities)).toBe(true);
+    h.state = afState(1, 128 / 255, key);
+    render();
+    const step = (arrow: 'ArrowRight' | 'ArrowLeft') => {
+      knob(row)!.dispatchEvent(new KeyboardEvent('keydown', { key: arrow, bubbles: true, cancelable: true }));
+      flushSync();
+    };
+    expect(knob(row)!.getAttribute('aria-valuenow')).toBe('128');
+    step('ArrowRight');
+    pushAfState(2, 129 / 255, key);
+    expect(knob(row)!.getAttribute('aria-valuenow')).toBe('129');
+    step('ArrowLeft');
+    expect(vi.mocked(sendCommand).mock.calls.filter(([name]) => name === 'set_af_level')).toEqual([
+      ['set_af_level', { level: 129 / 255, receiver }],
+      ['set_af_level', { level: 128 / 255, receiver }],
+    ]);
+  });
 });
 
 /**

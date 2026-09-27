@@ -112,6 +112,17 @@ function publication(options: {
   };
 }
 
+/** MOR-1676: `publication()` whose caps publish `controls.af_level`, raw 0..255. */
+function rawAfPublication(options: Parameters<typeof publication>[0] = {}): Publication {
+  const base = publication(options);
+  return {
+    ...base,
+    caps: {
+      ...(base.caps as Capabilities), controls: { af_level: { raw_min: 0, raw_max: 255 } },
+    } as Capabilities,
+  };
+}
+
 const unknownField = {
   reading: { status: 'unknown' as const },
   availability: { structural: false, operational: false },
@@ -392,6 +403,79 @@ describe('RxAudioInstrumentHost per-receiver AF knobs (MOR-2579)', () => {
     lease.key({ key: 'ArrowRight', fine: false });
     lease.nativeInput(0.5);
     expect(r.onReceiverAfLevelChange).not.toHaveBeenCalled();
+  });
+
+  it('steps each knob one raw unit on the published raw range (MOR-1676)', () => {
+    const r = renderKnobs(rawAfPublication(), dual(128 / 255, 200 / 255));
+    expect(r.knob('main').rendererLease.view.canonical).toBe(128);
+    expect(r.knob('sub').rendererLease.view.canonical).toBe(200);
+    expect(r.knob('main').rendererLease.key({ key: 'ArrowRight', fine: false })).toBe(true);
+    expect(r.knob('sub').rendererLease.key({ key: 'ArrowLeft', fine: false })).toBe(true);
+    expect(r.onReceiverAfLevelChange.mock.calls).toEqual([['main', 129 / 255], ['sub', 199 / 255]]);
+  });
+});
+
+/* MOR-1676 — with `controls.af_level` published, the radio-AF slider moves on
+ * the raw 0..255 range, one raw unit per step, and sends raw r as r / 255, so
+ * a step and its reverse come back to the same raw value. */
+describe('RxAudioInstrumentHost radio-AF raw range (MOR-1676)', () => {
+  it('steps 128 to 129 and back by keyboard, sent as 129/255 then 128/255', () => {
+    const r = render(rawAfPublication(), audio(128 / 255));
+    const lease = r.slider().rendererLease;
+    expect(lease.view.domain).toEqual({
+      min: 0, max: 255, step: 1, defaultValue: null, fineStepDivisor: 1,
+    });
+    expect(lease.view.canonical).toBe(128);
+    expect(lease.key({ key: 'ArrowRight', fine: false })).toBe(true);
+    r.transition(rawAfPublication(), audio(129 / 255));
+    expect(lease.view.canonical).toBe(129);
+    expect(lease.key({ key: 'ArrowLeft', fine: false })).toBe(true);
+    expect(r.onAfLevelChange.mock.calls).toEqual([[129 / 255], [128 / 255]]);
+  });
+
+  it('steps 128 to 129 and back by pointer, sent as 129/255 then 128/255', () => {
+    const r = render(rawAfPublication(), audio(128 / 255));
+    const lease = r.slider().rendererLease;
+    const up = lease.beginPointer();
+    expect(up).not.toBeNull();
+    lease.pointer(up!, 129); lease.endPointer(up!);
+    r.transition(rawAfPublication(), audio(129 / 255));
+    expect(lease.view.canonical).toBe(129);
+    const down = lease.beginPointer();
+    expect(down).not.toBeNull();
+    lease.pointer(down!, 128); lease.endPointer(down!);
+    expect(r.onAfLevelChange.mock.calls).toEqual([[129 / 255], [128 / 255]]);
+  });
+
+  it('restores every raw value 0..254 after one step up and one back, 255 reached from 254', () => {
+    const r = render(rawAfPublication(), audio(0));
+    const lease = r.slider().rendererLease;
+    const expected: number[][] = [];
+    for (let raw = 0; raw < 255; raw += 1) {
+      r.transition(rawAfPublication(), audio(raw / 255));
+      expect(lease.view.canonical).toBe(raw);
+      expect(lease.key({ key: 'ArrowRight', fine: false })).toBe(true);
+      r.transition(rawAfPublication(), audio((raw + 1) / 255));
+      expect(lease.view.canonical).toBe(raw + 1);
+      expect(lease.key({ key: 'ArrowLeft', fine: false })).toBe(true);
+      r.transition(rawAfPublication(), audio(raw / 255));
+      expect(lease.view.canonical).toBe(raw);
+      expected.push([(raw + 1) / 255], [raw / 255]);
+    }
+    expect(r.onAfLevelChange.mock.calls).toEqual(expected);
+  });
+
+  it('reads a normalized 0.5 (raw 127.5, a rounding tie) as raw 128', () => {
+    const r = render(rawAfPublication(), audio(0.5));
+    expect(r.slider().rendererLease.view.canonical).toBe(128);
+  });
+
+  it('keeps the browser volume on the 0.01 lattice with the raw range published', () => {
+    const r = render(rawAfPublication({ rxEnabled: true }), audio(0.2, true, 'live'));
+    const lease = r.slider().rendererLease;
+    expect(lease.view.domain.max).toBe(1);
+    expect(lease.key({ key: 'ArrowRight', fine: false })).toBe(true);
+    expect(r.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(0.21);
   });
 });
 
