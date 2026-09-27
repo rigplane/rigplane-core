@@ -72,8 +72,10 @@ const ic7300Caps = {
 
 function reservedCh(element: Element | null): number {
   const minWidth = (element as HTMLElement | null)?.style?.minWidth ?? '';
-  const parsed = Number.parseFloat(minWidth);
-  return Number.isNaN(parsed) ? 0 : parsed;
+  // MOR-2673 quick follow-up: the reservation is `calc(Nch + Npx)` — one
+  // ch per glyph plus the rule's 1px letter-spacing per glyph.
+  const parsed = /(\d+(?:\.\d+)?)ch/.exec(minWidth);
+  return parsed ? Number.parseFloat(parsed[1]) : 0;
 }
 
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
@@ -553,6 +555,10 @@ describe('Amber unread mode / RIT sentinel (MOR-2673)', () => {
     // "−9.99 kHz" = 9ch.
     expect(source).not.toMatch(/\.vfo-mode-box \{[^}]*min-width:/s);
     expect(source).toContain('modeBoxMinWidth');
+    // MOR-2673 quick follow-up: content-box keeps the padding/border out of
+    // the ch budget; without it the reservation under-covers the widest
+    // text and the box jumps when a reading arrives.
+    expect(source).toMatch(/\.vfo-mode-box \{[^}]*box-sizing: content-box;/s);
     expect(source).toMatch(/\.rit-value \{[^}]*min-width: 9ch;/s);
     // The dash-run sentinel is gone from both amber faces entirely.
     expect(cockpitSource()).not.toContain("'---'");
@@ -629,6 +635,7 @@ describe('Amber unread mode / RIT sentinel (MOR-2673)', () => {
     // (pinned behaviorally below).
     expect(scopeSource()).not.toMatch(/\.vfo-mode-box \{[^}]*min-width:/s);
     expect(scopeSource()).toContain('modeBoxMinWidth');
+    expect(scopeSource()).toMatch(/\.vfo-mode-box \{[^}]*box-sizing: content-box;/s);
   });
 });
 

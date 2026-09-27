@@ -375,13 +375,17 @@
   let subVfoFilter = $derived(radioState?.sub?.filter ?? '');
   let subVfoBand = $derived(freqToBand(subVfoFreqHz));
 
-  // MOR-2673 (review F1): the reserved mode-box width is derived from the
-  // mounted profile's own catalogs (`caps.modes`, `caps.filters`) — the
-  // widest text the box prints is the longest mode label plus the optional
-  // ` ${filter}` suffix: one space plus the widest filter index text
-  // (FTX-1 "DATA-FM-N" + " 1" = 11ch, IC-7300 "RTTY-R 1" = 8ch), never a
-  // hardcoded constant. Fixed for the session: it changes only when the
-  // capabilities load, never when a reading arrives.
+  // MOR-2673 (review F1 + quick follow-up): the reserved mode-box width is
+  // derived from the mounted profile's own catalogs (`caps.modes`,
+  // `caps.filters`) — the widest text the box prints is the longest mode
+  // label plus the optional ` ${filter}` suffix: one space plus the widest
+  // filter index text (FTX-1 "DATA-FM-N" + " 1" = 11 glyphs, IC-7300
+  // "RTTY-R 1" = 8 glyphs), never a hardcoded constant. Each glyph also
+  // carries the rule's 1px letter-spacing, and `box-sizing: content-box`
+  // keeps the padding/border out of the reservation, so the slot is
+  // `calc(Nch + Npx)` for N glyphs — widest in every state. Fixed for the
+  // session: it changes only when the capabilities load, never when a
+  // reading arrives.
   let modeBoxMinWidth = $derived.by(() => {
     let longestMode = 0;
     for (const mode of caps?.modes ?? []) {
@@ -390,7 +394,8 @@
     if (longestMode === 0) return undefined;
     const filterCount = caps?.filters?.length ?? 0;
     const filterDigits = Math.max(1, String(filterCount).length);
-    return `${longestMode + 1 + filterDigits}ch`;
+    const glyphs = longestMode + 1 + filterDigits;
+    return `calc(${glyphs}ch + ${glyphs}px)`;
   });
 
   // Active state per column: A active when main is the active receiver
@@ -751,7 +756,10 @@
     padding: 2px 8px;
     /* MOR-2673: reserved in EVERY state; the reserved width is the
        profile-derived inline `min-width` (see `modeBoxMinWidth`) — no
-       radio-specific constant here. */
+       radio-specific constant here. content-box keeps the padding and
+       border out of the ch budget, so the slot covers the widest text
+       in every state. */
+    box-sizing: content-box;
   }
 
   /* ── S-Meter ── */

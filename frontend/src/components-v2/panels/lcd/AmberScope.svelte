@@ -121,18 +121,21 @@
   let subMode = $derived(radioState?.sub?.mode ?? '');
   let subBand = $derived(freqToBand(subFreqHz));
 
-  // MOR-2673 (review F1): the reserved mode-box width is derived from the
-  // mounted profile's own mode catalog (`caps.modes`) — the widest label a
-  // shipped profile can show is profile data (FTX-1 "DATA-FM-N" = 9ch,
-  // IC-7300 "RTTY-R" = 6ch), never a hardcoded constant. Fixed for the
-  // session: it changes only when the capabilities load, never when a
-  // reading arrives.
+  // MOR-2673 (review F1 + quick follow-up): the reserved mode-box width is
+  // derived from the mounted profile's own mode catalog (`caps.modes`) —
+  // the widest label a shipped profile can show is profile data (FTX-1
+  // "DATA-FM-N" = 9 glyphs, IC-7300 "RTTY-R" = 6 glyphs), never a hardcoded
+  // constant. Each glyph also carries the rule's 1px letter-spacing, and
+  // `box-sizing: content-box` keeps the padding/border out of the
+  // reservation, so the slot is `calc(Nch + Npx)` for N glyphs — widest in
+  // every state. Fixed for the session: it changes only when the
+  // capabilities load, never when a reading arrives.
   let modeBoxMinWidth = $derived.by(() => {
     let longest = 0;
     for (const mode of caps?.modes ?? []) {
       if (mode.length > longest) longest = mode.length;
     }
-    return longest > 0 ? `${longest}ch` : undefined;
+    return longest > 0 ? `calc(${longest}ch + ${longest}px)` : undefined;
   });
 
   // Active-state per VFO: A active when main is the active receiver
@@ -498,7 +501,13 @@
 
   /* MOR-2673: the mode box is reserved in EVERY state; the reserved width
      is the profile-derived inline `min-width` (see `modeBoxMinWidth`) —
-     no radio-specific constant here. */
+     no radio-specific constant here. content-box keeps the padding and
+     border out of the ch budget, so the slot covers the widest text in
+     every state. The sibling badge boxes keep their default sizing: they
+     set no width, so box-sizing never applies to them. */
+  .vfo-mode-box {
+    box-sizing: content-box;
+  }
 
   .vfo-band-box {
     background: rgba(26, 16, 0, var(--lcd-alpha-ghost));
