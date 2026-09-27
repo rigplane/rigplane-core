@@ -193,7 +193,10 @@ it('null empties immediately and clears old fill/peak before a smaller sample', 
   flushSync();
   expect(t.querySelector('svg') === svg).toBe(true);
   expect(t.querySelector('rect[x="44"]') === track).toBe(true);
-  expect(t.querySelectorAll('rect')).toHaveLength(12);
+  // MOR-2521: the 10 fill rects stay as permanent hidden nodes — background
+  // + track + 10 dim + 10 hidden fills = 22; nothing is lit by a null value.
+  expect(t.querySelectorAll('rect')).toHaveLength(22);
+  expect(fillCount(t)).toBe(0);
   expect(svg?.getAttribute('data-fault')).toBe('false');
   expect(markerCount(t)).toBe(0);
   state.value = 0.1;
@@ -201,10 +204,12 @@ it('null empties immediately and clears old fill/peak before a smaller sample', 
   state.showPeak = true;
   flushSync();
   expect(markerX(t)).toBe(64);
-  expect(t.querySelectorAll('rect')).toHaveLength(13);
+  // The peak marker adds the one node a value step may still create.
+  expect(t.querySelectorAll('rect')).toHaveLength(23);
   vi.advanceTimersByTime(100);
   flushSync();
-  expect(t.querySelectorAll('rect').length).toBeLessThanOrEqual(14);
+  // A settled reading changes attributes only — never the node count.
+  expect(t.querySelectorAll('rect')).toHaveLength(23);
 });
 
 describe('BarGauge source continuity (MOR-2402)', () => {
