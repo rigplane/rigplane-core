@@ -63,7 +63,9 @@ export const HERO_SIZE_PX = 56;
 /** Hz group at 0.62 of the hero step: subordinate, still legible at arm's length. */
 export const HZ_GROUP_RATIO = 0.62;
 export const SEPARATOR = '.';
-const UNKNOWN_TEXT = '-------';
+// MOR-2674: unread is unlit, never a dash run — the same treatment
+// fieldline/studioline got in MOR-2654.
+const UNKNOWN_TEXT = '';
 const GROUP_NAMES = ['mhz', 'khz', 'hz'] as const;
 
 export type FrequencyGroupName = (typeof GROUP_NAMES)[number];

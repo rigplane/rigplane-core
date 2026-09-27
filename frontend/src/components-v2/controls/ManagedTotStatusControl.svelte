@@ -28,7 +28,12 @@
     aria-haspopup="dialog"
     onclick={() => (open = !open)}
   >
-    TOT {txState.fresh ? (txState.configuredSeconds === null ? 'OFF' : `${txState.configuredSeconds}s`) : '---'}
+    <span class="tot-readout">
+      <span class="tot-sizer" aria-hidden="true">TOT 9999s</span>
+      <span class="tot-live">
+        TOT {#if txState.fresh}{txState.configuredSeconds === null ? 'OFF' : `${txState.configuredSeconds}s`}{/if}
+      </span>
+    </span>
   </button>
 
   {#if open}
@@ -82,6 +87,27 @@
 
   .managed-tot-trigger:hover {
     border-color: var(--v2-accent-cyan, #06b6d4);
+  }
+
+  /* MOR-2674 (owner rule, 2026-09-26): a stale TX snapshot is unread — the
+     TOT label stays, the value goes blank (unlit LCD segment), never a
+     dash run. The hidden sizer keeps one width in every state, sized to
+     the widest value the known path renders ('OFF' or an NNNs seconds
+     text), so the first reading cannot shift the status bar. The live
+     layer overlays the sizer without changing it. */
+  .managed-tot-trigger .tot-readout {
+    position: relative;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .managed-tot-trigger .tot-sizer {
+    visibility: hidden;
+  }
+
+  .managed-tot-trigger .tot-live {
+    position: absolute;
+    inset: 0;
+    text-align: start;
   }
 
   .managed-tot-popover-backdrop {
