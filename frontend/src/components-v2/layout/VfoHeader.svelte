@@ -16,6 +16,7 @@
   import { runtime } from '$lib/runtime/frontend-runtime';
   import { toSpectrumAuthority } from '$lib/runtime/adapters/scope-adapter';
   import { bindSemanticSurfaceHandlers, getVfoHandlers } from '$lib/runtime/adapters/panel-adapters';
+  import { acceptedBoolean, acceptedNumber } from '../../semantic/accepted-scope-values';
   import { formatFrequency } from '../display/frequency-format';
   import type { VfoLayoutProfile } from './vfo-layout-tokens';
   import type { VfoStateProps } from './layout-utils';
@@ -76,28 +77,10 @@
   const scopeHandlers = bindSemanticSurfaceHandlers().scopeControls;
   let scopeControls = $derived(toSpectrumAuthority(runtime.state, runtime.caps)?.scopeControls ?? null);
 
-  type NumberScopeField = 'span' | 'speed' | 'receiver';
-  type BooleanScopeField = 'dual';
-
-  function acceptedNumber(field: NumberScopeField, min: number, max: number): number | null {
-    const fact = scopeControls?.[field];
-    if (!fact?.availability?.structural || !fact.availability.operational
-      || fact.reading?.status !== 'known' || !Number.isSafeInteger(fact.reading.value)
-      || fact.reading.value < min || fact.reading.value > max) return null;
-    return fact.reading.value;
-  }
-
-  function acceptedBoolean(field: BooleanScopeField): boolean | null {
-    const fact = scopeControls?.[field];
-    if (!fact?.availability?.structural || !fact.availability.operational
-      || fact.reading?.status !== 'known' || typeof fact.reading.value !== 'boolean') return null;
-    return fact.reading.value;
-  }
-
-  let scopeSpan = $derived(acceptedNumber('span', 0, 7));
-  let scopeSpeed = $derived(acceptedNumber('speed', 0, 2));
-  let scopeReceiver = $derived(acceptedNumber('receiver', 0, 1));
-  let scopeDual = $derived(acceptedBoolean('dual'));
+  let scopeSpan = $derived(acceptedNumber(scopeControls?.span, 0, 7));
+  let scopeSpeed = $derived(acceptedNumber(scopeControls?.speed, 0, 2));
+  let scopeReceiver = $derived(acceptedNumber(scopeControls?.receiver, 0, 1));
+  let scopeDual = $derived(acceptedBoolean(scopeControls?.dual));
 
   function formatBridgeFrequency(freq: number): string {
     const { mhz, khz } = formatFrequency(freq);
