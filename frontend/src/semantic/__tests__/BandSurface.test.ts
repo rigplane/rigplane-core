@@ -113,21 +113,19 @@ function typeFrequency(input: HTMLInputElement, value: string): void {
 describe('the band surface derives nothing (7B carry-forward 1)', () => {
   // Kills: importing the permit function, the band plan, capabilities or the
   // command bus — any of which would let a second permit derivation exist.
-  // MOR-1448: `$lib/i18n` joined the fact contract as the ONE permitted
-  // import beyond `./radio-view-model` — pure operator-wording lookup
-  // (`t()`), never a second fact derivation. See the two tests below for
-  // the narrowed guard this replaces.
-  it('imports only facts, i18n wording and Band instrument types', () => {
+  // MOR-1448: `$lib/i18n` joined the fact contract — pure
+  // operator-wording lookup (`t()`), never a second fact derivation. See
+  // the two tests below for the narrowed guard this replaces.
+  it('imports only facts, the field gate, i18n wording and Band instrument types', () => {
     // MOR-1448 review F6: quote-agnostic — a double-quoted import must be
     // caught exactly like a single-quoted one, not slip past a single-quote
     // -only pattern.
     const specifiers = [...CODE.matchAll(/from\s+['"]([^'"]+)['"]/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
     // MOR-2704 G3: `../primitives/control-instruments/control-instrument-behavior`
-    // joined the closure — the ONE field gate `usable` (MOR-2704), in place of
-    // this file's former local copy. It has NO runtime import of its own
-    // (`control-instrument-behavior.test.ts`'s `has no runtime import` case
-    // pins that one level down), so it cannot reach the TX controller, the
+    // joined the closure — the field gate `usable` (MOR-2704), in place of
+    // this file's former local copy. It has NO runtime import of its own,
+    // so it cannot reach the TX controller, the
     // transport or the permit utility any more than the fact contract can.
     expect([...new Set(specifiers)]).toEqual([
       '$lib/i18n', './radio-view-model',
@@ -197,8 +195,7 @@ describe('MOR-2704 G3: a KNOWN current band under operational:false fails closed
     }));
     expect(r.el('current')!.dataset.observed).toBe('false');
     // Behaviour-identical (MOR-2704): `textOf` follows the reading status
-    // alone, so the known value keeps rendering — the value-text predicate
-    // is T1's separate decision, not this migration's.
+    // alone, so the known value keeps rendering.
     expect(r.text('current-value')).toBe('20m');
     r.dispose();
   });

@@ -15,8 +15,7 @@
       That fact is the LIVE-frequency permit (MOR-1294 verify F1: the adapter
       evaluates `getFrequencyPermit(observedFreqHz, caps.txBands)`), already
       collapsed fail-closed. This file re-derives nothing: it holds no band
-      plan, no `txBands`, no permit function, and its whole import list is the
-      fact contract.
+      plan, no `txBands`, no permit function.
 
   (2) `BandChoice.defaultHzTxPermit` IS A POINT SAMPLE, AND IS LABELLED AS
       ONE. It answers "may I key at THIS band's default frequency", never "may

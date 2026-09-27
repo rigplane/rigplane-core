@@ -838,9 +838,7 @@ describe('break-in obeys the ONE txPermit and fails closed', () => {
   // refusal — the case the local copy handled, now pinned against the
   // shared `usable` (a mutation that drops its `operational` check dies
   // here). The permit is allowed, so ONLY the gate refuses. `textOf`
-  // follows the reading status alone, so the known delay keeps rendering
-  // — the value-text predicate is T1's separate decision, not this
-  // migration's.
+  // follows the reading status alone, so the known delay keeps rendering.
   it('disables and refuses break-in while its reading is known but not operational', () => {
     const onBreakInMode = vi.fn();
     const r = render(withCw({
