@@ -60,9 +60,10 @@ export interface SignalScaleKnot {
 
 /**
  * MOR-2509: one numeral the evenly spaced face may draw, and the slot
- * fraction it sits at. Only what the radio's own calibration declares can
- * be labelled: an S-unit numeral requires a declared S-labelled knot at
- * that odd unit, and a +dB numeral requires a declared `S9+<dB>` knot. A
+ * fraction it sits at. Only what the radio's own calibration places can
+ * be labelled: an odd S-unit numeral requires declared S-labelled knots
+ * bracketing it (MOR-2790 — S0 counts as unit 0), and a +dB numeral
+ * requires an S9 knot and a declared `S9+<N>` knot with N >= that dB. A
  * numeral the calibration cannot place is simply absent — its slot stays
  * empty, so nothing shifts between radios.
  */
@@ -361,34 +362,43 @@ export const MIN_SIGNAL_SCALE_LABEL_GAP_PX = 1;
 
 /**
  * MOR-2509: the numerals the evenly spaced face draws for this
- * calibration, per mock-up v8. S-unit numerals sit at the ODD units
- * (1 3 5 7 9) the table itself declares — a two-knot S0/S9 table declares
- * no odd numeral between them, so none may be invented. '+dB' numerals sit
- * only at knots the table declares as `S9+<dB>` (no invented +20 on a
- * radio without that knot), thinned left-to-right so no numeral's slot sits
- * closer to the previously kept one than a "+NN" numeral's ink width at the
- * deck's minimum track width — the S9 slot seeds that walk, so a dense
- * +10/+20 ladder keeps only +20.
+ * calibration, per mock-up v8. MOR-2790: a numeral the table's own
+ * interpolation places is not invented — an odd S-unit numeral (1 3 5 7 9)
+ * is drawn when the declared S-labelled knots bracket it (one knot at or
+ * below that unit, S0 counting as unit 0, and one at or above it), so a
+ * sparse S0/S9/S9+60 table still places every odd unit its linear
+ * interpolation passes through. A '+dB' numeral (+20/+40/+60) is drawn
+ * when an S9 knot and a declared `S9+<N>` knot with N >= that dB bracket
+ * it, thinned left-to-right so no numeral's slot sits closer to the
+ * previously kept one than a "+NN" numeral's ink width at the deck's
+ * minimum track width — the S9 slot seeds that walk, so a dense +10/+20
+ * ladder keeps only +20.
  */
 function uniformScaleMarksFor(
   calibration: readonly SmeterCalibrationPoint[],
 ): readonly SignalScaleMark[] {
   if (!isSmeterCalibratedForCalibration(calibration)) return [];
   const marks: SignalScaleMark[] = [];
-  for (const point of calibration) {
-    const unit = /^S([1-9])$/.exec(point.label);
-    if (unit && Number.parseInt(unit[1], 10) % 2 === 1) {
-      const value = Number.parseInt(unit[1], 10);
-      marks.push({ slot: (value - 1) / 14, text: String(value), overS9: false });
+  const units = calibration
+    .map((point) => /^S(\d)$/.exec(point.label))
+    .filter((match): match is RegExpExecArray => match !== null)
+    .map((match) => Number.parseInt(match[1], 10));
+  for (const unit of [1, 3, 5, 7, 9]) {
+    const bracketed = units.some((value) => value <= unit)
+      && units.some((value) => value >= unit);
+    if (bracketed) {
+      marks.push({ slot: (unit - 1) / 14, text: String(unit), overS9: false });
     }
   }
-  const plusDb = calibration
+  const hasS9 = units.includes(9);
+  const maxPlusDb = calibration
     .map((point) => /^S9\+([0-9]+)$/.exec(point.label))
     .filter((match): match is RegExpExecArray => match !== null)
     .map((match) => Number.parseInt(match[1], 10))
-    .sort((left, right) => left - right);
+    .reduce((max, db) => Math.max(max, db), 0);
   let lastKeptSlot = S9_UNIFORM_FRACTION;
-  for (const db of plusDb) {
+  for (const db of [20, 40, 60]) {
+    if (!hasS9 || maxPlusDb < db) continue;
     const slot = S9_UNIFORM_FRACTION + (db / 60) * OVER_S9_SPAN_FRACTION;
     if (slot - lastKeptSlot < MIN_PLUS_MARK_SLOT_GAP) continue;
     marks.push({ slot, text: `+${db}`, overS9: true });
