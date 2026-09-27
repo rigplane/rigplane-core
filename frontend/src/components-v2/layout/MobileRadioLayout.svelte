@@ -668,7 +668,10 @@
       </div>
     {/if}
     <div class="m-vfo-row">
-      <span class="m-tx-indicator" data-rf={managedTxRf} style="background: {txIndicatorColor}" title={managedTxRf === 'unknown' ? 'TX status unknown' : txPermit === 'allowed' ? t('core.mobile.tx.allowed') : t('core.mobile.tx.notAllowedBand')}></span>
+      <!-- MOR-2705: while the TX state is not known the indicator carries
+           NO status title — never a placeholder word. Known states keep
+           their catalog titles. -->
+      <span class="m-tx-indicator" data-rf={managedTxRf} style="background: {txIndicatorColor}" title={managedTxRf === 'unknown' ? undefined : txPermit === 'allowed' ? t('core.mobile.tx.allowed') : t('core.mobile.tx.notAllowedBand')}></span>
       <div class="m-vfo-freq" bind:this={vfoFreqElement}>
         <FrequencyDisplay freq={activeVfo.freq} compact active />
       </div>
@@ -1163,11 +1166,13 @@
     font-family: 'Roboto Mono', monospace;
     font-size: 10px;
     color: #9ca3af;
-    /* MOR-2675: same reservation — 12ch covers the widest text formatDbm
-       renders over the sMeter domain: the honest 'uncalibrated' label of a
-       rig with no s_meter table. */
+    /* MOR-2705: the reservation is sized for the widest REAL text the
+       formatter can render — '−127 dBm' (8ch), derived by running
+       formatDbm(calibratedToDbm) over the raw 0–255 sMeter domain against
+       the widest shipped s_meter ladder (S0 at −54 dB, S9+60 at +60 dB;
+       pinned by MobileRadioLayout.honesty.isolated.test.ts). */
     display: inline-block;
-    min-width: 12ch;
+    min-width: 8ch;
     font-variant-numeric: tabular-nums;
   }
 

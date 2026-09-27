@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { RadioViewModel, DisplayObservation } from '../../semantic/radio-view-model';
+  import { readingValue, valueText } from '../../primitives/reading-text';
   import type { ScopeFrame } from '../../lib/runtime/adapters/scope-adapter';
   import { formatBandwidth } from '../segmentline/lcd-display-helpers';
   import ReceiverNeedleSMeter from './ReceiverNeedleSMeter.svelte';
@@ -9,8 +10,12 @@
   let receiverId = $derived(receiver === 0 ? 'MAIN' : 'SUB');
   let vfo = $derived(view.vfos.find((item) => item.receiver === receiverId));
   let indicator = $derived(view.receiverIndicators?.find((item) => item.receiver === receiverId));
-  let meterValue = $derived(indicator?.sMeter.reading.status === 'known' ? indicator.sMeter.reading.value : null);
-  let bwRaw = $derived(indicator?.bandwidthHz.reading.status === 'known' ? indicator.bandwidthHz.reading.value : null);
+  // MOR-2688 S4a: `bwRaw` and `meterValue` are value-or-nothing through the
+  // `{reading}` status entry point (`readingValue`). `bwRaw` stays ONE
+  // derivation: it feeds both the bandwidth slot's reserved width below
+  // and its text.
+  let meterValue = $derived(readingValue(indicator?.sMeter));
+  let bwRaw = $derived(readingValue(indicator?.bandwidthHz));
 
   // The text treatment (MOR-2692, same shape as the segmentline wave's
   // `stateText`, reused rather than duplicated): current/stale → the value,
@@ -86,7 +91,7 @@
     {#if filterBadge}
       <span data-badge="filter" data-state={obsState(vfo?.display?.filter, vfo?.filter)} style:min-width={`${filterBadge.ch}ch`}>{filterText}</span>
     {/if}
-    <span class="bw" data-bandwidth style:min-width={`${bandwidthCh}ch`}>BW {bwRaw === null ? '' : formatBandwidth({ state: 'known', value: bwRaw })}</span>
+    <span class="bw" data-bandwidth style:min-width={`${bandwidthCh}ch`}>BW {valueText(bwRaw, (v) => formatBandwidth({ state: 'known', value: v }))}</span>
   </header>
   <ReceiverNeedleSMeter value={meterValue} />
   <output class="frequency" data-frequency data-state={obsState(vfo?.display?.frequencyHz, vfo?.frequencyHz)} style:min-height="1em" style:min-width={`${frequencyCh}ch`}>{frequencyText}</output>

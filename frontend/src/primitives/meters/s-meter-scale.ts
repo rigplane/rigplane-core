@@ -128,7 +128,8 @@ export function calibratedToDbm(
 }
 
 export function formatDbm(dbm: number | null): string {
-  if (dbm === null) return 'uncalibrated';
-  const sign = dbm < 0 ? '\u2212' : '+';
+  // MOR-2705: a dBm that cannot be computed renders NOTHING — never a word.
+  if (dbm === null) return '';
+  const sign = dbm < 0 ? '−' : '+';
   return `${sign}${Math.abs(dbm)} dBm`;
 }

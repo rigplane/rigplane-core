@@ -173,7 +173,7 @@ export function calibratedToSUnit(actual: number): string {
 /** Map calibrated dB-rel-S9 to user-facing dBm referenced to S9=-73 dBm.
  *  `null` when uncalibrated — a dBm figure with no calibration behind it
  *  would be a fabricated physical unit, not a passthrough (MOR-1451);
- *  `formatDbm` renders this as an explicit "uncalibrated" label. */
+ *  MOR-2705: `formatDbm(null)` renders NOTHING — never a word. */
 export function calibratedToDbm(actual: number): number | null {
   return calibratedToDbmForCalibration(actual, getCal());
 }

@@ -566,6 +566,52 @@ describe('ReceiverInstrumentHost', () => {
     expect(tune).toHaveBeenCalledExactlyOnceWith('MAIN', 14_250_001);
   });
 
+  // MOR-2688 S4a literal pin: the frequency the readout shows goes through
+  // the display observation rule (`observationValue` inside
+  // `displayFrequency`): a STALE `main.freqHz` observation (the unslotted
+  // `main_sub` scheme's display path) keeps its value (R29), so the
+  // readout's source is 'display' with the observed digits; a not-observed
+  // display leaves the digits unlit — never a fallback to an invented
+  // value. Red under a mutation of `observationValue` that drops current
+  // or stale.
+  it('shows the observed frequency through a current or stale display observation, and unlit digits for a not-observed one', () => {
+    const current = publication();
+    const currentStatuses = current.state!.fieldStatus!;
+    currentStatuses['main.freqHz'] = {
+      ...currentStatuses['main.freqHz']!, freshness: 'fresh',
+    };
+    const currentRoot = mountFixture(new Publisher(current));
+    const currentReadout = currentRoot.querySelector<HTMLElement>(
+      '[data-frequency-owner="MAIN"] [data-alternate-frequency-readout]',
+    )!;
+    expect(currentReadout.dataset.source).toBe('display');
+    expect(currentReadout.textContent).toBe('14250000');
+
+    const stale = publication();
+    const staleStatuses = stale.state!.fieldStatus!;
+    staleStatuses['main.freqHz'] = {
+      ...staleStatuses['main.freqHz']!, freshness: 'stale',
+    };
+    const root = mountFixture(new Publisher(stale));
+    const readout = root.querySelector<HTMLElement>(
+      '[data-frequency-owner="MAIN"] [data-alternate-frequency-readout]',
+    )!;
+    expect(readout.dataset.source).toBe('display');
+    expect(readout.textContent).toBe('14250000');
+
+    const notObserved = publication();
+    const unobservedStatuses = notObserved.state!.fieldStatus!;
+    unobservedStatuses['main.freqHz'] = {
+      ...unobservedStatuses['main.freqHz']!, observed: false,
+    };
+    const otherRoot = mountFixture(new Publisher(notObserved));
+    const otherReadout = otherRoot.querySelector<HTMLElement>(
+      '[data-frequency-owner="MAIN"] [data-alternate-frequency-readout]',
+    )!;
+    expect(otherReadout.dataset.source).toBe('display');
+    expect(otherReadout.textContent).toBe('');
+  });
+
   it('requires the synchronous publisher and owns no fallback clocks or continuity comparison', () => {
     const addedSources = [
       'src/semantic/meter-renderer-view.ts',

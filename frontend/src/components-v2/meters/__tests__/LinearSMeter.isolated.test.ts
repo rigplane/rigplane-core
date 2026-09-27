@@ -673,8 +673,10 @@ describe('uncalibrated fallback — no radio-specific curve is fabricated (MOR-1
     expect(rawToDbm(53)).toBe(53);
   });
 
-  it('formatDbm renders an explicit "uncalibrated" label, not a fabricated unit', () => {
-    expect(formatDbm(null)).toBe('uncalibrated');
+  // MOR-2705: a dBm that cannot be computed renders NOTHING — the word
+  // 'uncalibrated' was itself the placeholder the page guard cannot reach.
+  it('formatDbm renders NOTHING for an uncomputable dBm, never a placeholder word (MOR-2705)', () => {
+    expect(formatDbm(null)).toBe('');
   });
 
   it('LinearSMeter renders the raw number and "uncalibrated" — never S9+40 (the reported bug), fed the raw byte exactly as the backend publishes it (no call-site conversion)', () => {
