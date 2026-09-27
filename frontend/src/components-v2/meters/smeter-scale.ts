@@ -117,9 +117,9 @@ function getCal(): SmeterCalibrationPoint[] {
  *  with at least two knots. Interpolation needs two points to define a
  *  line; a single knot cannot support a calibrated reading, so it counts
  *  as uncalibrated the same as zero knots (MOR-2024) rather than resolving
- *  every input to that one knot's value. False means the S-unit/dBm text
- *  below must fall back to an honest raw-scale label instead of
- *  fabricating a reading against a borrowed curve (MOR-1451). */
+ *  every input to that one knot's value. False means no S-unit or dBm text
+ *  may be drawn at all — a reading would be fabricated against a borrowed
+ *  curve (MOR-1451, MOR-2705 part 4a); the bar still moves. */
 export function isSmeterCalibrated(): boolean {
   return isSmeterCalibratedForCalibration(getCal());
 }
@@ -501,13 +501,16 @@ export function projectSignalMeter(
   }
 
   if (scaleMode === 'raw') {
-    const primaryText = calibratedToSUnitForCalibration(value, projectionCalibration);
+    // MOR-2705 part 4a: an uncalibrated S-meter shows its bar and nothing
+    // it cannot know. The raw count is not an operator reading — it means
+    // nothing to an operator, and a calibrated-looking number would be
+    // invented (MOR-1451) — so no number, no word, and the bare meter name.
     return {
       scaleMode,
       motionFraction: calibratedToSegmentsForCalibration(value, projectionCalibration) / SEGMENT_DOMAIN,
-      primaryText,
-      secondaryText: 'uncalibrated',
-      accessibleDescription: `S meter ${primaryText} raw, uncalibrated`,
+      primaryText: '',
+      secondaryText: '',
+      accessibleDescription: 'S meter',
       crossoverFraction,
       uniformScaleKnots,
       uniformScaleMarks,
@@ -517,22 +520,32 @@ export function projectSignalMeter(
   }
 
   if (scaleMode === 'none') {
-    // Unknown domains funnel into the unread branch above; only engineering
-    // domains reach this branch (MOR-2651 leaves them untouched).
+    // Engineering domains (MOR-2705 part 4a): a reading renders its value
+    // with its own unit when the unit is known — dB relative to S9 needs no
+    // S-scale to be truthful — and never a state word. A unit the signal
+    // meter cannot carry renders exactly like an unread sample (MOR-2651).
     const engineeringDb = domain?.kind === 'engineering' && domain.unit === 'db';
+    if (!engineeringDb) {
+      return {
+        scaleMode,
+        motionFraction: null,
+        primaryText: '',
+        secondaryText: '',
+        accessibleDescription: 'S meter',
+        crossoverFraction,
+        uniformScaleKnots,
+        uniformScaleMarks,
+        marks,
+        ticks,
+      };
+    }
     const signedValue = `${value < 0 ? '\u2212' : value > 0 ? '+' : ''}${Math.abs(value)}`;
-    const valueText = engineeringDb
-      ? `${signedValue} dB rel S9`
-      : String(value);
-    const stateText = engineeringDb ? 'scale unavailable' : 'unit unknown';
     return {
       scaleMode,
       motionFraction: null,
-      primaryText: valueText,
-      secondaryText: stateText,
-      accessibleDescription: engineeringDb
-        ? `S meter ${signedValue} decibels relative to S9, ${stateText}`
-        : `S meter ${valueText}, ${stateText}`,
+      primaryText: `${signedValue} dB rel S9`,
+      secondaryText: '',
+      accessibleDescription: `S meter ${signedValue} decibels relative to S9`,
       crossoverFraction,
       uniformScaleKnots,
       uniformScaleMarks,

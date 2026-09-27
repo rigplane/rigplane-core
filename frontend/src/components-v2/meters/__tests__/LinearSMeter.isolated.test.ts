@@ -340,7 +340,7 @@ describe('LinearSMeter calibrated S-meter domain', () => {
     expect(sdr.querySelector('[data-sdr-segment="40"]')?.getAttribute('fill')).toBe('#1a2230');
   });
 
-  it('renders explicit raw domain without S marks, dBm, or an S9 color crossover', () => {
+  it('renders a moving bar with no number and no word for an explicit raw domain (MOR-2705 part 4a)', () => {
     const projection = projectSignalMeter(53, { kind: 'raw' });
     const frame = {
       projection,
@@ -353,20 +353,21 @@ describe('LinearSMeter calibrated S-meter domain', () => {
     const sdr = mountMeter({ frame, variant: 'sdr-screen' });
 
     for (const target of [normal, sdr]) {
-      expect(target.textContent).toContain('53');
-      expect(target.textContent).toContain('uncalibrated');
+      expect(target.textContent).not.toContain('53');
+      expect(target.textContent).not.toContain('uncalibrated');
       expect(target.textContent).not.toMatch(/S[0-9]|dBm/);
-      expect(target.querySelector('svg')?.getAttribute('aria-label')).toBe(
-        projection.accessibleDescription,
-      );
+      expect(target.querySelector('svg')?.getAttribute('aria-label')).toBe('S meter');
     }
     expect(normal.querySelectorAll('line')).toHaveLength(1);
-    expect(sdr.textContent).toContain('raw');
+    // The bar still moves: the raw fraction lights the first SDR cell.
+    expect(sdr.querySelector('[data-sdr-segment="0"]')?.getAttribute('fill')).toBe('#4FB9EC');
+    expect(sdr.textContent).not.toContain('raw');
+    expect(sdr.textContent).not.toContain('level');
     expect(sdr.querySelector('[data-sdr-segment="40"]')?.getAttribute('fill')).toBe('#1a2230');
     expect(sdr.querySelector('[data-sdr-segment="79"]')?.getAttribute('fill')).toBe('#1a2230');
   });
 
-  it('suppresses motion, peak, and geometry for an uncalibrated engineering domain', () => {
+  it('renders the engineering value with its own unit and no state word for an uncalibrated engineering domain (MOR-2705 part 4a)', () => {
     setCapabilities(makeCaps());
     const projection = projectSignalMeter(-12, { kind: 'engineering', unit: 'db' });
     const target = mountMeter({
@@ -374,7 +375,8 @@ describe('LinearSMeter calibrated S-meter domain', () => {
     });
 
     expect(target.textContent).toContain('\u221212 dB rel S9');
-    expect(target.textContent).toContain('scale unavailable');
+    expect(target.textContent).not.toContain('scale unavailable');
+    expect(target.textContent).not.toContain('unit unknown');
     // MOR-2521: unprojectable domains keep every fill rect present but hidden.
     const fills = [...target.querySelectorAll<SVGRectElement>('[data-meter-fill]')];
     expect(fills).toHaveLength(20);
@@ -499,8 +501,11 @@ describe('LinearSMeter calibrated S-meter domain', () => {
     expect(projected.textContent).toContain('S1');
     expect(projected.textContent).toContain('\u2212121 dBm');
     expect(projected.textContent).not.toContain('uncalibrated');
-    expect(legacy.textContent).toContain('uncalibrated');
+    // MOR-2705 part 4a: the legacy value path on the now-uncalibrated radio
+    // renders no number and no word either.
+    expect(legacy.textContent).not.toContain('uncalibrated');
     expect(legacy.textContent).not.toContain('\u2212121 dBm');
+    expect(legacy.textContent).not.toContain('48');
 
     const s1Label = [...projected.querySelectorAll<SVGTextElement>('text')]
       .find((label) => label.textContent === 'S1')!;
@@ -679,13 +684,14 @@ describe('uncalibrated fallback — no radio-specific curve is fabricated (MOR-1
     expect(formatDbm(null)).toBe('');
   });
 
-  it('LinearSMeter renders the raw number and "uncalibrated" — never S9+40 (the reported bug), fed the raw byte exactly as the backend publishes it (no call-site conversion)', () => {
+  it('LinearSMeter renders no number and no word for the raw byte — never S9+40 (the reported bug), fed the raw byte exactly as the backend publishes it (no call-site conversion) (MOR-2705 part 4a)', () => {
     const target = mountMeter({ value: 53 });
     const text = target.textContent ?? '';
 
     expect(text).not.toContain('S9+40');
-    expect(text).toContain('53');
-    expect(text).toContain('uncalibrated');
+    expect(text).not.toContain('53');
+    expect(text).not.toContain('uncalibrated');
+    expect(target.querySelector('svg')?.getAttribute('aria-label')).toBe('S meter');
   });
 });
 

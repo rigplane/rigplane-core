@@ -50,6 +50,7 @@
   import type { NotchWidthChoice } from '../lib/types/capabilities';
   import { NOTCH_WIDTH_LABELS, formatAgcTime } from '../components-v2/panels/dsp-panel-logic';
   import { readingText } from '../primitives/reading-text';
+  import { usable } from '../primitives/control-instruments/control-instrument-behavior';
   export { DSP_TOGGLES, type DspToggleField } from './dsp-instruments';
 
   /** `[field, label, min, max, step, format?]` — `nrLevel`/`nbDepth` are
@@ -70,9 +71,6 @@
   export type DspSurfacePart = 'all' | 'agc' | 'dsp';
   const [, , NR_FALLBACK_MIN, NR_FALLBACK_MAX, NR_FALLBACK_STEP] = DSP_LEVELS[0];
 
-  /** Usable ⇔ the radio HAS it, it is readable NOW, and it has been observed. */
-  const usable = (f: DspField<unknown>): boolean =>
-    f.availability.structural && f.availability.operational && f.reading.status === 'known';
   const reasonOf = (f: DspField<unknown>): 'field-not-observed' | undefined =>
     usable(f) ? undefined : 'field-not-observed';
   const numberOf = (f: DspField<number>, fallback: number): number =>

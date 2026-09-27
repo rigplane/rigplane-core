@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { RadioViewModel, DisplayObservation } from '../../semantic/radio-view-model';
-  import { readingValue, valueText } from '../../primitives/reading-text';
+  import { observationValue, readingValue, valueText } from '../../primitives/reading-text';
   import type { ScopeFrame } from '../../lib/runtime/adapters/scope-adapter';
   import { formatBandwidth } from '../segmentline/lcd-display-helpers';
   import ReceiverNeedleSMeter from './ReceiverNeedleSMeter.svelte';
@@ -17,31 +17,23 @@
   let meterValue = $derived(readingValue(indicator?.sMeter));
   let bwRaw = $derived(readingValue(indicator?.bandwidthHz));
 
-  // The text treatment (MOR-2692, same shape as the segmentline wave's
-  // `stateText`, reused rather than duplicated): current/stale → the value,
-  // anything else → '' (empty unlit slot). Unreadable falls back to the
-  // plain legacy value when the typed `display` observation is absent.
+  // MOR-2688 S4c: the display.state treatment enters through
+  // `observationValue` — current/stale → the value, anything else →
+  // nothing; an ABSENT observation returns the caller's legacy value.
   function obsText<T extends string | number>(display: DisplayObservation<T> | undefined, legacy: T | null | undefined): string {
-    if (display !== undefined) {
-      return display.state === 'current' || display.state === 'stale' ? String(display.value) : '';
-    }
-    return legacy !== null && legacy !== undefined ? String(legacy) : '';
+    return valueText(observationValue(display, legacy ?? null), String);
   }
   function obsState<T>(display: DisplayObservation<T> | undefined, legacy: T | null | undefined): 'current' | 'unknown' {
-    if (display !== undefined) return display.state === 'current' || display.state === 'stale' ? 'current' : 'unknown';
-    return legacy !== null && legacy !== undefined ? 'current' : 'unknown';
+    return observationValue(display, legacy ?? null) !== null ? 'current' : 'unknown';
   }
   let modeText = $derived(obsText(vfo?.display?.mode, vfo?.mode));
   let filterText = $derived(obsText(vfo?.display?.filter, vfo?.filter));
-  let frequencyText = $derived.by(() => {
-    const display = vfo?.display?.frequencyHz;
-    if (display !== undefined) {
-      return display.state === 'current' || display.state === 'stale'
-        ? display.value.toLocaleString('en-US') : '';
-    }
-    return vfo?.frequencyHz !== null && vfo?.frequencyHz !== undefined
-      ? vfo.frequencyHz.toLocaleString('en-US') : '';
-  });
+  let frequencyText = $derived(
+    valueText(
+      observationValue(vfo?.display?.frequencyHz, vfo?.frequencyHz ?? null),
+      (v: number) => v.toLocaleString('en-US'),
+    ),
+  );
 
   // Reserved widths come from the mounted profile's choice sets — the
   // owner's rule: no radio-specific values hardcoded in components. A badge
@@ -59,8 +51,9 @@
   let bandwidthCh = $derived.by(() => {
     const widths: number[] = [];
     if (view.modeFilter) {
-      if (view.modeFilter.filterWidthMax.reading.status === 'known') {
-        widths.push(formatBandwidth({ state: 'known', value: view.modeFilter.filterWidthMax.reading.value }).length);
+      const maxWidth = readingValue(view.modeFilter.filterWidthMax);
+      if (maxWidth !== null) {
+        widths.push(formatBandwidth({ state: 'known', value: maxWidth }).length);
       }
       for (const label of view.modeFilter.filterChoices) { widths.push(label.length); }
     }
@@ -76,8 +69,8 @@
     const tuneMax = view.band?.tuneMaxHz;
     if (tuneMax !== null && tuneMax !== undefined) { values.push(tuneMax); }
     if (vfo?.frequencyHz !== null && vfo?.frequencyHz !== undefined) { values.push(vfo.frequencyHz); }
-    const display = vfo?.display?.frequencyHz;
-    if (display !== undefined && (display.state === 'current' || display.state === 'stale')) { values.push(display.value); }
+    const observed = observationValue(vfo?.display?.frequencyHz);
+    if (observed !== null) { values.push(observed); }
     if (values.length === 0) { return 0; }
     return Math.max(...values).toLocaleString('en-US').length;
   });

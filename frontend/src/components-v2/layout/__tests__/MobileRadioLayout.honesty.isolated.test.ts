@@ -143,6 +143,14 @@ import {
 
 const LAYOUT_DIR = 'src/components-v2/layout/';
 
+// MOR-2705 part 4a: a calibrated ladder for the reserved-slot pins — the
+// readouts exist (and stay empty until read) only on a calibrated radio.
+const SMETER_LADDER: SmeterCalibrationPoint[] = [
+  { raw: 0, actual: -54, label: 'S0' },
+  { raw: 120, actual: 0, label: 'S9' },
+  { raw: 255, actual: 60, label: 'S9+60' },
+];
+
 let host: HTMLElement | null = null;
 let instance: Record<string, unknown> | null = null;
 
@@ -225,11 +233,12 @@ describe('MobileRadioLayout canonical module surface (MOR-1409 A13a)', () => {
   // (correction 5246842617 §8, applying the 5246487510 single-consumer test).
   // Hash refreshed for the MOR-1451 follow-up that re-pointed the S-meter
   // formatting at the shared `smeter-scale.ts` helpers — the module still
-  // carries no non-finite display guard.
+  // carries no non-finite display guard — and again for MOR-2705 part 4a's
+  // stale-fallback comment correction (comment-only change).
   it('leaves mobile-layout-logic.ts byte-identical', () => {
     const bytes = readFileSync(`${LAYOUT_DIR}mobile-layout-logic.ts`);
     expect(createHash('sha256').update(bytes).digest('hex')).toBe(
-      'edbfd96547b1a1ba3e8d4e24884fec0ccd0adb37d6515047a23969fdc2fe0bb6',
+      'a199a82eac6f00a6acecfb00fb749be8356f0b5e442175f76a4ecf5be97ce901',
     );
   });
 });
@@ -247,10 +256,17 @@ describe('MobileRadioLayout honest-projection rendering (MOR-1409 A13a)', () => 
   // old stand-in for a receiver that has reported nothing).
   it('renders an unobserved landscape S-meter as an empty reserved slot, never a dash', () => {
     setViewport(844, 390);
-    const readout = mountLayout().querySelector('.m-ls-smeter')?.textContent ?? '';
-    expect(readout).toBe('');
-    expect(readout).not.toContain('---');
-    expect(readout).not.toContain('S9');
+    // MOR-2705 part 4a: the reserved-slot contract is the CALIBRATED
+    // radio's — an uncalibrated radio draws no readout at all.
+    vi.mocked(getSmeterCalibration).mockReturnValue(SMETER_LADDER);
+    try {
+      const readout = mountLayout().querySelector('.m-ls-smeter')?.textContent ?? '';
+      expect(readout).toBe('');
+      expect(readout).not.toContain('---');
+      expect(readout).not.toContain('S9');
+    } finally {
+      vi.mocked(getSmeterCalibration).mockReturnValue(null);
+    }
   });
 
   // Kills: dropping the finite guard from the landscape dBm readout —
@@ -258,10 +274,17 @@ describe('MobileRadioLayout honest-projection rendering (MOR-1409 A13a)', () => 
   // MOR-2675: unread is EMPTY — no digits and no 'dBm' unit without them.
   it('renders an unobserved landscape dBm readout as an empty reserved slot, never a dash', () => {
     setViewport(844, 390);
-    const readout = mountLayout().querySelector('.m-ls-dbm')?.textContent ?? '';
-    expect(readout).toBe('');
-    expect(readout).not.toContain('---');
-    expect(readout).not.toContain('dBm');
+    // MOR-2705 part 4a: the reserved-slot contract is the CALIBRATED
+    // radio's — an uncalibrated radio draws no readout at all.
+    vi.mocked(getSmeterCalibration).mockReturnValue(SMETER_LADDER);
+    try {
+      const readout = mountLayout().querySelector('.m-ls-dbm')?.textContent ?? '';
+      expect(readout).toBe('');
+      expect(readout).not.toContain('---');
+      expect(readout).not.toContain('dBm');
+    } finally {
+      vi.mocked(getSmeterCalibration).mockReturnValue(null);
+    }
   });
 
   // Kills: restoring `toVfoProps`' fabricated 'USB' / 'FIL1' stand-ins by
@@ -330,16 +353,17 @@ describe('MobileRadioLayout honest-projection rendering (MOR-1409 A13a)', () => 
     }
   });
 
-  // Kills: printing the 'uncalibrated' word where no dBm is computable —
-  // per profile THAT is fixed when capabilities load, so the slot simply
-  // stays empty and nothing moves (MOR-2705). The S-unit text keeps its raw
-  // reading.
-  it('renders no dBm readout at all on an uncalibrated radio (MOR-2705)', () => {
+  // Kills: printing the 'uncalibrated' word where no dBm is computable, and
+  // the raw count as if it were a reading — per profile BOTH are fixed when
+  // capabilities load, so the readouts are not drawn at all (no empty
+  // reserved slot) and nothing moves (MOR-2705 part 4a).
+  it('draws no S-unit number and no dBm readout at all on an uncalibrated radio (MOR-2705 part 4a)', () => {
     setViewport(844, 390);
     radioStore.current = { active: 'MAIN', main: { ...CONNECTED_RX, sMeter: 255 } };
     const root = mountLayout();
-    expect(root.querySelector('.m-ls-smeter')?.textContent).toBe('255');
-    expect(root.querySelector('.m-ls-dbm')?.textContent).toBe('');
+    expect(root.querySelector('.m-ls-meter')).toBeNull();
+    expect(root.querySelector('.m-ls-smeter')).toBeNull();
+    expect(root.querySelector('.m-ls-dbm')).toBeNull();
   });
 
   // Geometry: jsdom has no layout, so the reservations are pinned

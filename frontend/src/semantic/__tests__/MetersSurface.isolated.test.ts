@@ -796,11 +796,16 @@ describe('raw sMeter renders honestly, never a fabricated S-unit (MOR-1451)', ()
     });
   });
 
-  it('renders the honest raw-scale reading (53), not a fabricated S-unit, when uncalibrated', () => {
+  it('renders no number at all — not the raw count, not a fabricated S-unit — when uncalibrated (MOR-2705 part 4a)', () => {
     const view = withRaw(base(), 'signal', 53);
     withSurface(view, (s) => {
-      const text = s.tile('signal')!.textContent ?? '';
-      expect(text).toContain('53');
+      const tile = s.tile('signal')!;
+      // The signal caption's own value span is empty; the SWR lower-scale
+      // marks beside it legitimately carry their own digits.
+      const value = tile.querySelector('.meter-native-caption .meter-native-value');
+      expect(value?.textContent).toBe('');
+      expect(tile.textContent).not.toContain('uncalibrated');
+      expect(tile.querySelector('svg')?.getAttribute('aria-label')).toBe('S meter');
     });
   });
 });
@@ -849,8 +854,11 @@ describe('station signal rendering honors the explicit sample domain (MOR-2425)'
         const view = withSignalDomain(withRaw(base(), 'signal', 53), { kind: 'raw' });
         withSurface(view, (s) => {
           const signal = s.tile('signal')!;
-          expect(signal.textContent).toContain('53');
-          expect(signal.textContent).toContain('uncalibrated');
+          // The signal caption's own value span is empty; the SWR
+          // lower-scale marks beside it carry their own digits.
+          expect(signal.querySelector('.meter-native-caption .meter-native-value')
+            ?.textContent).toBe('');
+          expect(signal.textContent).not.toContain('uncalibrated');
           expect(signal.textContent).not.toMatch(/S[0-9]|dBm/);
           expect([...signal.querySelectorAll<SVGLineElement>('[data-main-relevant] line')]
             .every((line) => line.getAttribute('visibility') === 'hidden')).toBe(true);
@@ -918,7 +926,7 @@ describe('station signal rendering honors the explicit sample domain (MOR-2425)'
       withSurface(view, (s) => {
         const tile = s.tile('signal')!;
         expect(tile.textContent).toContain('\u221212 dB rel S9');
-        expect(tile.textContent).toContain('scale unavailable');
+        expect(tile.textContent).not.toContain('scale unavailable');
         expect([...tile.querySelectorAll<SVGRectElement>('[data-meter-fill]')]
           .every((rect) => rect.getAttribute('visibility') === 'hidden')).toBe(true);
         expect(tile.querySelector('[data-meter-peak]')?.getAttribute('visibility')).toBe('hidden');

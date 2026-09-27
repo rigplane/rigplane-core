@@ -71,9 +71,17 @@ const TABLE = [
     name: 'a value on a not-value state is nothing — the state decides, never the value',
     value: 3600, read: false, stale: false, absent: false, carryValue: true,
   },
+  {
+    name: 'an absent source returns the caller fallback (MOR-2688 S4c)',
+    value: 'USB', read: false, stale: false, absent: true, fallback: 'strict-fallback',
+  },
+  {
+    name: 'a present unknown with a fallback never falls back (MOR-2688 S4c)',
+    value: 3600, read: false, stale: false, absent: false, fallback: 'strict-fallback',
+  },
 ] as const;
 
-describe.each(TABLE)('the shared unread table (MOR-2688 S4a): $name', (row) => {
+describe.each(TABLE)('the shared unread table (MOR-2688 S4a/S4c): $name', (row) => {
   const expectedText = row.read ? mark(row.value) : '';
   const expectedValue = row.read ? row.value : null;
   const field = row.read ? known(row.value) : unread<typeof row.value>();
@@ -82,7 +90,9 @@ describe.each(TABLE)('the shared unread table (MOR-2688 S4a): $name', (row) => {
     : row.read
       ? { state: row.stale ? 'stale' : 'current', value: row.value }
       : 'carryValue' in row
-        ? { state: 'unknown', value: row.value }
+        // an impossible shape on purpose: the pin must survive the entry
+        // point widening to "value on any state"
+        ? ({ state: 'unknown', value: row.value } as unknown as ValueObservation<typeof row.value>)
         : { state: 'unknown' };
 
   it('valueText: value or nothing → text, "" for nothing', () => {
@@ -103,6 +113,14 @@ describe.each(TABLE)('the shared unread table (MOR-2688 S4a): $name', (row) => {
     expect(observationValue(undefined)).toBe(null);
     expect(observationValue({ state: 'unsupported' })).toBe(null);
     expect(observationValue({ state: 'unknown' })).toBe(null);
+    // S4c: an absent observation returns the caller's other source
+    // (`absent`); a present observation never falls back. Red under a
+    // mutation of `observationValue` that ignores `absent`.
+    const fallback = 'fallback' in row
+      ? (row.fallback as unknown as typeof row.value)
+      : null;
+    const withFallback = row.absent ? fallback : expectedValue;
+    expect(observationValue(observation, fallback)).toBe(withFallback);
   });
 });
 

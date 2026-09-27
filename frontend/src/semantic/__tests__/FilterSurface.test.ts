@@ -1774,6 +1774,24 @@ describe('NARROW toggle (MOR-2640)', () => {
     expect(onNarrowToggle).not.toHaveBeenCalled();
   });
 
+  // MOR-2704 G1: the KNOWN-reading, not-operational half of the gate, now
+  // pinned against the imported `usable` (a mutation that drops its
+  // `operational` check turns the key enabled and this dies).
+  it('a read but not-operational key stays disabled, reason intact, refusing a bypassed click', () => {
+    const onNarrowToggle = vi.fn();
+    const view = withNarrowField(base(), {
+      value: true,
+      availability: { structural: true, operational: false },
+    });
+    const r = renderNarrowOnly(view, { onNarrowToggle });
+    expect(r.button()!.disabled).toBe(true);
+    expect(r.button()!.dataset.disabledReason).toBe('field-not-observed');
+    r.button()!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+    expect(onNarrowToggle).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
   it('reaches the surface through the host fixture wiring: click dispatches, pending marks', () => {
     // The same prop path `SemanticRadioSurfaces` uses — the host fixture
     // forwards `onNarrowToggle`/`pendingNarrow` unchanged, so a dropped or

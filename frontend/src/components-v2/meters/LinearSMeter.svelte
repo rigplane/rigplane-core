@@ -569,11 +569,12 @@
   ));
   // The v8 face reads one line — the S-unit — so a KNOWN calibrated reading
   // drops its second field (the dBm) from the projection's accessible name.
-  // Every other projection wording ('raw, uncalibrated', the value itself
-  // with 'scale unavailable' on an uncalibrated engineering domain) stays
-  // verbatim — pinned by ReceiverInstrumentHost.isolated.test.ts. An unread
-  // meter — and a known reading whose unit is unknown — takes the
-  // projection's bare 'S meter' name (MOR-2649, MOR-2651).
+  // Every other projection wording (the engineering value with its own
+  // unit) stays verbatim — pinned by
+  // `meters/__tests__/smeter-scale.projection.test.ts`.
+  // An uncalibrated or unread meter — and a known reading whose unit is
+  // unknown — takes the projection's bare 'S meter' name (MOR-2649,
+  // MOR-2651, MOR-2705 part 4a).
   const vfoAccessibleLabel = $derived.by(() => {
     if (signalProjection.scaleMode === 's' && signalProjection.motionFraction !== null) {
       return `S meter ${displaySUnit}`;
@@ -588,7 +589,9 @@
     {#if mainPresent}
     <g data-main-relevant={relevant ? 'true' : 'false'} opacity={relevant ? 1 : DIM_OPACITY}>
       <g font-family="Roboto Mono, monospace" font-size="11" fill="var(--v2-text-primary, #C8D4E0)" font-weight="700">
-        <text x="4" y="14">{signalProjection.scaleMode === 's' ? 'S' : signalProjection.scaleMode === 'raw' ? 'raw' : 'level'}</text>
+        <!-- MOR-2705 part 4a: the scale label 'S' is a calibrated-scale word —
+             raw and none render nothing (no 'raw', no 'level'). -->
+        <text x="4" y="14">{signalProjection.scaleMode === 's' ? 'S' : ''}</text>
         {#each labelMarks as mark}
           <text x={14 + mark.fraction * 328} y="14"
             text-anchor="middle" fill={mark.actual > 0 ? 'var(--v2-accent-red, #FF4040)' : 'var(--v2-text-primary, #C8D4E0)'}>
@@ -604,9 +607,6 @@
       {/each}
       <text x="412" y="31" text-anchor="end" fill="var(--v2-text-primary, #DFFCF5)"
         font-family="Roboto Mono, monospace" font-size="12" font-weight="700">{displaySUnit}</text>
-      {#if signalProjection.scaleMode === 'raw' && signalProjection.motionFraction !== null}
-        <text x="412" y="46" text-anchor="end" fill="var(--v2-text-secondary, #A0B4C8)" font-size="10">uncalibrated</text>
-      {/if}
     </g>
     {/if}
   </svg>

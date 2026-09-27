@@ -153,3 +153,34 @@ describe('DockMeterPanel calibrated bar fill (MOR-482)', () => {
     expect(fillPctForLabel(t, 'ALC')).toBeGreaterThan(99);
   });
 });
+
+describe('DockMeterPanel uncalibrated S row (MOR-2705 part 4a)', () => {
+  // The phone portrait TX chip mounts this panel while transmitting
+  // (`MobileRadioLayout.svelte`, `.m-tx-meter`). On an uncalibrated profile
+  // the S row keeps its moving bar but draws no number and no 'raw' word —
+  // a raw count is not an operator reading. The TX rows (Po/SWR/ALC) keep
+  // their MOR-1527 raw-tagged values, out of scope here.
+  function uncalibratedCaps(): Capabilities {
+    const caps = makeCaps();
+    delete caps.meterCalibrations!.s_meter;
+    return caps;
+  }
+
+  it('draws the S bar with no number and no "raw" word on an uncalibrated radio while transmitting', () => {
+    setCapabilities(uncalibratedCaps());
+    const t = mountPanel({ ...baseProps, sValue: 53, rfPower: 50, txActive: true, meterSource: 'S' });
+    const row = t.querySelectorAll('.dock-row')[0];
+    expect(row.querySelector('.dock-row-label')?.textContent).toBe('S');
+    expect(row.querySelector('.dock-row-value')?.textContent).toBe('');
+    expect(row.textContent).not.toContain('raw');
+    expect(fillPctForLabel(t, 'S')).toBeGreaterThan(0);
+    expect(fillPctForLabel(t, 'S')).toBeLessThan(100);
+    // The TX rows keep their values — the Po row still reads watts.
+    expect(t.querySelectorAll('.dock-row')[1].querySelector('.dock-row-value')?.textContent).toBe('50W');
+  });
+
+  it('keeps the S-unit text on a calibrated radio', () => {
+    const t = mountPanel({ ...baseProps, sValue: 0 });
+    expect(t.querySelectorAll('.dock-row')[0].querySelector('.dock-row-value')?.textContent).toBe('S9');
+  });
+});

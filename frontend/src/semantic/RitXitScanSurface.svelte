@@ -77,6 +77,7 @@
   import type { RitXitField, ScanField } from './radio-view-model';
   import { pressedOf } from './pressed-of';
   import { readingText } from '../primitives/reading-text';
+  import { usable } from '../primitives/control-instruments/control-instrument-behavior';
 
   /** O2 — v2's own legacy `RitXitPanel` bounds, verbatim. */
   export const OFFSET_MIN = -9999;
@@ -99,8 +100,6 @@
   export type RitXitScanSurfacePart = 'all' | 'rit-xit' | 'scan';
   const hex = (value: number): string => value.toString(16).padStart(2, '0');
 
-  export const usable = (f: RitXitField<unknown> | ScanField<unknown>): boolean =>
-    f.availability.structural && f.availability.operational && f.reading.status === 'known';
   const isOn = (f: RitXitField<boolean>): boolean => f.reading.status === 'known' && f.reading.value === true;
   /** MOR-2653: every readout renders EMPTY in its reserved slot when
    *  unread — never a placeholder dash, and never a unit without its

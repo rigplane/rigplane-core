@@ -234,6 +234,33 @@ describe('unread facts render honestly, never fabricated', () => {
   });
 });
 
+/* ── MOR-2704 G1: the imported gate keeps the read-but-NOT-operational
+   refusal — the case the local copy handled, now pinned against the
+   shared `usable` (a mutation that drops its `operational` check dies
+   here). ── */
+describe('MOR-2704 G1: a KNOWN offset under operational:false fails closed', () => {
+  const READ_NOT_OPERATIONAL: Availability = { structural: true, operational: false };
+
+  it('refuses the offset edit and keeps data-observed "false"', () => {
+    const onRitOffsetChange = vi.fn();
+    const onXitOffsetChange = vi.fn();
+    const r = render(
+      withRx({ ritOffset: known(250, READ_NOT_OPERATIONAL), xitOffset: known(250, READ_NOT_OPERATIONAL) }),
+      { onRitOffsetChange, onXitOffsetChange },
+    );
+    expect(r.input()!.disabled).toBe(true);
+    expect(r.el('ritxit-offset')!.dataset.observed).toBe('false');
+    expect(r.text('ritxit-offset-value')).toBe('');
+    const input = r.input()!;
+    input.value = '300';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(onRitOffsetChange).not.toHaveBeenCalled();
+    expect(onXitOffsetChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+});
+
 describe('S3b wrong-VFO guard: every RIT/XIT control fails closed while activeReceiver is unknown', () => {
   it('disables the RIT toggle', () => {
     const r = render({ ...withRitXit(topologyFixtures['1/single']), activeReceiver: { status: 'unknown' } });
