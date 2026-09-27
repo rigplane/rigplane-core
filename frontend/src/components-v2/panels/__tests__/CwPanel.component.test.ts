@@ -225,6 +225,31 @@ describe('CwPanel component rendering', () => {
     for (const label of ['OFF', 'SEMI', 'FULL', 'ON']) expect(labels).not.toContain(label);
   });
 
+  /* MOR-2797 — the phone's break-in buttons get the same visible row label
+     the Standard face's break-in row has: the bare OFF / ON choice labels
+     read as "something is on", not as break-in. The literal English text is
+     pinned, never `t(key)`. */
+  it('FTX-1 renders the visible Break-in row label before the OFF / ON buttons', () => {
+    const t = mountPanel({
+      breakInChoices: [{ value: 0, label: 'OFF' }, { value: 1, label: 'ON' }],
+      breakIn: 0,
+    });
+    const label = t.querySelector<HTMLElement>('[data-testid="cw-break-in-label"]')!;
+    expect(label.textContent).toBe('Break-in');
+    const row = label.closest('.toggle-row')!;
+    const texts = Array.from(row.querySelectorAll('button')).map((b) => b.textContent?.trim());
+    expect(texts).toContain('OFF');
+    expect(texts).toContain('ON');
+    expect(texts).not.toContain('SEMI');
+    expect(label.compareDocumentPosition(findButton(t, 'OFF'))
+      & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  });
+
+  it('renders no break-in row label when the radio publishes no break-in choices', () => {
+    const t = mountPanel({ breakInChoices: [] });
+    expect(t.querySelector('[data-testid="cw-break-in-label"]')).toBeNull();
+  });
+
   // Item 1 (review 2026-09-27): no LEGACY_BREAK_IN_CHOICES fallback — against
   // the REAL toCwProps. Absent means an empty list means NO break-in control.
   it('a capabilities payload with no breakInChoices field gets no break-in choices (MOR-2729)', () => {

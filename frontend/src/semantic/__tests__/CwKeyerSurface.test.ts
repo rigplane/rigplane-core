@@ -928,6 +928,76 @@ describe('break-in obeys the ONE txPermit and fails closed', () => {
     });
   });
 
+  /* MOR-2797 — the Standard face's break-in row carries a visible row
+     label, the same way its neighbouring rows say CW PITCH / KEYER SPEED:
+     the FTX-1's OFF/ON domain left the row as a lone 'ON' button that read
+     as "something is on", not as break-in. The literal text is pinned per
+     locale — never `t(key)` — so a catalog drift cannot pass silently. */
+  describe('MOR-2797 — the break-in row shows a visible label in Standard mode', () => {
+    const ftx1: BreakInChoice[] = [{ value: 0, label: 'OFF' }, { value: 1, label: 'ON' }];
+    const ic7300: BreakInChoice[] = [
+      { value: 0, label: 'OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' },
+    ];
+    const rowLabel = (r: ReturnType<typeof render>): HTMLElement | null =>
+      r.el('break-in')!.querySelector<HTMLElement>('[data-testid="cw-keyer-break-in-label"]');
+
+    it('FTX-1 renders the literal Break-in label above the unchanged ON key', () => {
+      const r = render(base(), { standard: true, breakInChoices: ftx1 });
+      const label = rowLabel(r)!;
+      expect(label.textContent).toBe('Break-in');
+      // The label lives inside the break-in row and nothing else moves: the
+      // row keeps exactly the one key Standard draws for the OFF/ON pair.
+      const row = label.closest('.cw-keyer-row')!;
+      expect(row.closest('[data-testid="cw-keyer-break-in"]')).not.toBeNull();
+      expect(label.compareDocumentPosition(row.querySelector('button')!)
+        & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+      expect(r.el('break-in-off')).toBeNull();
+      expect(r.text('break-in-semi')).toBe('ON');
+      expect(row.querySelectorAll('button')).toHaveLength(1);
+      r.dispose();
+    });
+
+    it('IC-7300 renders the same label with the SEMI / FULL keys unchanged', () => {
+      const r = render(base(), { standard: true, breakInChoices: ic7300 });
+      const label = rowLabel(r)!;
+      expect(label.textContent).toBe('Break-in');
+      expect(r.text('break-in-semi')).toBe('SEMI');
+      expect(r.text('break-in-full')).toBe('FULL');
+      expect(label.closest('.cw-keyer-row')!.querySelectorAll('button')).toHaveLength(2);
+      r.dispose();
+    });
+
+    // The label renders UPPER-CASE like CW PITCH / KEYER SPEED, but through
+    // the stylesheet (the neighbouring labels uppercase the same way), never
+    // by upper-casing the catalog text — the Russian text would break.
+    it('upper-cases the label through the stylesheet on its own grid line', () => {
+      const sheet = /<style>([\s\S]*?)<\/style>/.exec(CODE)![1];
+      expect(sheet).toMatch(/\.standard \.cw-keyer-row-label\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/);
+      expect(sheet).toMatch(/\.standard \.cw-keyer-row-label\s*\{[^}]*text-transform:\s*uppercase/);
+      const r = render(base(), { standard: true, breakInChoices: ic7300 });
+      expect(rowLabel(r)!.textContent).toBe('Break-in');
+      r.dispose();
+    });
+
+    it('renders the Russian label text through the same catalog key', () => {
+      const previousLocale = getLocale();
+      setLocale('ru-RU');
+      try {
+        const r = render(base(), { standard: true, breakInChoices: ftx1 });
+        expect(rowLabel(r)!.textContent).toBe('Брейк-ин');
+        r.dispose();
+      } finally {
+        setLocale(previousLocale);
+      }
+    });
+
+    it('renders no row label outside Standard mode', () => {
+      const r = render(base(), { breakInChoices: ic7300 });
+      expect(rowLabel(r)).toBeNull();
+      r.dispose();
+    });
+  });
+
   // MOR-2690: the choices are KEYs, not radios — `aria-pressed` appears only
   // on a KNOWN reading, and `aria-checked` is gone entirely: a radio REQUIRES
   // `aria-checked`, and on an unread key a missing or `false` one reads as
