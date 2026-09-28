@@ -41,13 +41,14 @@ omit `WebConfig.auth_token` or leave it empty; a nonempty value raises
 
 Radio login credentials, bind selection and TLS options retain their existing
 roles. Diagnostic send/save/delete requests still use preview-bound
-`X-Diagnostic-CSRF`; diagnostic submission still requires consent. Diagnostic
-Origin checks apply to those diagnostic handlers, not globally to ordinary
-commands or WebSocket upgrades. See `src/rigplane/web/server.py:
-WebServer._handle_diagnose_send` and `src/rigplane/web/handlers/diagnostics.py:
-check_origin_or_loopback`.
+`X-Diagnostic-CSRF`; diagnostic submission still requires consent. The
+diagnostic routes no longer carry their own Origin check: the
+state-changing-request Origin rule below (MOR-2881) covers them, and the old
+per-handler `check_origin_or_loopback` with its loopback skip is gone. See
+`src/rigplane/web/web_routing.py: dispatch_http_request` and
+`src/rigplane/web/handlers/diagnostics.py: DiagnosticsHandler`.
 
-### Host allowlist and WebSocket Origin guard (MOR-2880)
+### Host allowlist, Origin guards (MOR-2880, MOR-2881)
 
 Without an application credential, the listener itself is the boundary, so
 every HTTP route and every WebSocket upgrade now runs a Host allowlist before
@@ -77,21 +78,34 @@ throttled WARNING naming the path, Origin and Host
 `test_http_local_hosts_accepted` and `test_ws_allowed_host_flag_admits_configured_name`.
 
 The four WebSocket upgrades (`/api/v1/ws`, `/api/v1/scope`,
-`/api/v1/audio-scope`, `/api/v1/audio`) additionally enforce a same-origin
-`Origin` rule with no loopback exception: a missing `Origin` is admitted
-(non-browser clients; the Pro supervisor's proxy sends none on its WebSocket
-leg), while a present one must be same-origin with the request — scheme, host
-and port — and its host must pass the Host allowlist, or the upgrade is
-refused with `403` before it happens. The same-origin comparison is shared
-with the diagnostic routes' check via
-`src/rigplane/web/host_guard.py: origin_matches_host`;
-`src/rigplane/web/handlers/diagnostics.py: check_origin_or_loopback` keeps its
-loopback-bind skip. Pinned by
-`tests/test_web_origin_host_guard.py: test_ws_foreign_origin_refused_before_upgrade`,
-`test_ws_same_origin_accepted` and `test_ws_missing_origin_accepted`.
-
-The Origin check on ordinary HTTP routes is deferred to MOR-2881. Pinned by
-`tests/test_web_origin_host_guard.py: test_http_foreign_origin_with_allowed_host_still_accepted`.
+`/api/v1/audio-scope`, `/api/v1/audio`) and every state-changing HTTP
+request — `POST`, `PUT`, `PATCH` or `DELETE` on any path, plus `GET
+/clearcache`, which wipes the browser's storage for this origin via its
+`Clear-Site-Data` response — enforce the same same-origin `Origin` rule
+with no loopback exception: a missing `Origin` is admitted (non-browser
+clients; the Pro supervisor's proxy sends none on either leg), while a
+present one must be same-origin with the request — scheme, host and
+port — and its host must pass the Host allowlist, or the request is
+refused with `403` and the JSON body
+`{"error": "forbidden: origin not allowed"}` before any handler or
+upgrade runs. Read-only `GET`/`HEAD` routes admit any `Origin`. The one
+comparison lives in `src/rigplane/web/host_guard.py: origin_matches_host`
+behind `src/rigplane/web/host_guard.py: same_origin_allowed`, applied by
+`src/rigplane/web/web_routing.py: dispatch_http_request` (HTTP requests)
+and `src/rigplane/web/server.py: WebServer._handle_websocket`
+(upgrades). Pinned by `tests/test_web_origin_host_guard.py:
+test_ws_foreign_origin_refused_before_upgrade`,
+`test_ws_same_origin_accepted`, `test_ws_missing_origin_accepted`,
+`test_http_state_changing_foreign_origin_refused`,
+`test_http_state_changing_same_origin_admitted`,
+`test_http_state_changing_missing_origin_admitted`,
+`test_http_origin_checked_before_route_semantics`,
+`test_http_clearcache_foreign_origin_refused`,
+`test_http_clearcache_missing_origin_admitted` and
+`test_http_read_only_get_foreign_origin_still_admitted`, plus
+`tests/test_web_diagnostics.py: test_cross_origin_send_blocked`,
+`test_loopback_bind_foreign_origin_refused` and
+`test_loopback_bind_no_origin_admitted`.
 
 The `authRequired` runtime and station fields remain Boolean and are now `false`
 (`src/rigplane/web/server.py: WebServer._serve_runtime`,
