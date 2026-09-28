@@ -37,6 +37,12 @@ from test_radio_poller_coverage import _make_radio
 
 _FORBIDDEN_SOURCES = frozenset({"command_response", "poll_response"})
 
+# The scan-echo pin drives ``RadioPoller._execute`` directly to exercise the
+# dispatch body; the interlock seat at its head correctly fails closed on an
+# un-seeded store, so state the RF premise the way the coverage suite does
+# (see the fixture docstring in conftest.py).
+pytestmark = pytest.mark.usefixtures("observed_rx_dispatch_premise")
+
 
 @pytest.fixture(autouse=True)
 def _no_real_serial_io(monkeypatch: pytest.MonkeyPatch) -> None:
