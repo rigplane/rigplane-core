@@ -12,6 +12,7 @@ import pytest
 
 from rigplane.cli import (
     _HOST_NOT_SET,
+    _ShutdownBackstop,
     _build_backend_config,
     _build_parser,
     _finalize_ptt_args,
@@ -1994,8 +1995,10 @@ class TestProductionManagedTxComposition:
         assert radio.entered
         composition = radio._managed_tx_composition
         assert composition is not None
+        backstop = command.await_args.kwargs["shutdown_backstop"]
+        assert isinstance(backstop, _ShutdownBackstop)
         command.assert_awaited_once_with(
-            radio, args, managed_tx_composition=composition
+            radio, args, managed_tx_composition=composition, shutdown_backstop=backstop
         )
 
     @pytest.mark.asyncio
@@ -2091,6 +2094,214 @@ class TestProductionManagedTxComposition:
 
         candidate.shutdown.assert_awaited_once()
         radio.__aexit__.assert_not_awaited()
+
+
+class TestFirstSignalShutdownBound:
+    """MOR-2875: the bound on a web/station shutdown after its first signal."""
+
+    @staticmethod
+    def _record_exits(monkeypatch: pytest.MonkeyPatch, events: list[str]) -> None:
+        from rigplane import cli
+
+        monkeypatch.setattr(cli.os, "_exit", lambda code: events.append(f"exit {code}"))
+
+    @staticmethod
+    def _errors(caplog: pytest.LogCaptureFixture) -> list[str]:
+        return [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+
+    @pytest.mark.asyncio
+    async def test_a_release_slower_than_the_bound_unkeys_before_the_bound_acts(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import asyncio
+
+        from rigplane.cli import _ManagedTxRadioSession
+
+        events: list[str] = []
+        self._record_exits(monkeypatch, events)
+
+        async def slow_unkey(_termination: asyncio.Event) -> None:
+            await asyncio.sleep(0.3)  # past the 0.1 s bound, inside its own
+            events.append("unkey")
+
+        radio = MagicMock()
+        radio.__aexit__ = AsyncMock(side_effect=lambda *_a: events.append("radio exit"))
+        composition = MagicMock()
+        composition.shutdown = AsyncMock(side_effect=slow_unkey)
+
+        async def shutdown_sequence() -> None:
+            await session.__aexit__(None, None, None)
+
+        shutdown = asyncio.create_task(shutdown_sequence())
+        backstop = _ShutdownBackstop(shutdown, bound_s=0.1)
+        session = _ManagedTxRadioSession(radio, composition, backstop)
+        backstop.arm()
+        await asyncio.wait({shutdown}, timeout=2.0)
+        await asyncio.wait({session._shutdown_task}, timeout=2.0)  # noqa: SLF001
+        backstop.disarm()
+
+        assert events == ["unkey", "radio exit"]
+        assert self._errors(caplog) == []
+
+    @pytest.mark.asyncio
+    async def test_the_forced_exit_waits_for_a_release_started_after_the_cancel(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+
+        from rigplane import cli
+
+        events: list[str] = []
+        self._record_exits(monkeypatch, events)
+        monkeypatch.setattr(cli, "_SHUTDOWN_FORCED_EXIT_GRACE_S", 0.05)
+        hang = asyncio.Event()
+
+        async def unkey() -> None:
+            await asyncio.sleep(0.3)
+            events.append("unkey")
+
+        async def shutdown_sequence() -> None:
+            try:
+                await hang.wait()  # a step that never finishes
+            finally:
+                release = asyncio.ensure_future(unkey())
+                backstop.protect(release, "unkey", 2.0)
+                await asyncio.shield(release)
+                await hang.wait()  # and a second one after the release
+
+        shutdown = asyncio.create_task(shutdown_sequence())
+        backstop = _ShutdownBackstop(shutdown, bound_s=0.1)
+        backstop.arm()
+        await asyncio.wait_for(backstop._clock, 2.0)  # noqa: SLF001
+        hang.set()
+        await asyncio.gather(shutdown, return_exceptions=True)
+
+        assert events == ["unkey", "exit 130"]
+
+    @pytest.mark.asyncio
+    async def test_at_the_bound_pending_tasks_are_logged_and_the_shutdown_cancelled(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import asyncio
+
+        events: list[str] = []
+        self._record_exits(monkeypatch, events)
+
+        async def stuck_radio_disconnect() -> None:
+            await asyncio.Event().wait()
+
+        async def shutdown_sequence() -> None:
+            await stuck_radio_disconnect()
+
+        shutdown = asyncio.create_task(shutdown_sequence(), name="the-shutdown")
+        backstop = _ShutdownBackstop(shutdown, bound_s=0.1)
+        backstop.arm()
+        await asyncio.wait({shutdown}, timeout=2.0)
+        backstop.disarm()
+
+        assert shutdown.cancelled()
+        assert events == []
+        (report,) = self._errors(caplog)
+        assert "the-shutdown: " in report
+        assert "<locals>.shutdown_sequence -> " in report
+        assert "<locals>.stuck_radio_disconnect -> " in report
+
+    @pytest.mark.asyncio
+    async def test_the_clock_the_first_signal_starts_stops_when_the_shutdown_ends(
+        self,
+    ) -> None:
+        import asyncio
+
+        from rigplane.cli import _run
+
+        clocks: list[asyncio.Task[None]] = []
+
+        async def first_signal_then_stop(_radio, _args, **kwargs) -> int:
+            kwargs["shutdown_backstop"].arm()
+            clocks.extend(
+                t for t in asyncio.all_tasks() if t.get_name() == "shutdown-backstop"
+            )
+            return 0
+
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "web", "--no-rigctld"])
+        with (
+            patch(
+                "rigplane.cli.create_radio",
+                return_value=TestProductionManagedTxComposition._Radio(),
+            ),
+            patch("rigplane.cli.check_ports_available"),
+            patch("rigplane.cli._cmd_web", side_effect=first_signal_then_stop),
+        ):
+            assert await _run(args) == 0
+        await asyncio.sleep(0)
+        stopped = [clock.cancelled() for clock in clocks]
+        for clock in clocks:
+            clock.cancel()
+
+        assert stopped == [True]
+
+    @pytest.mark.asyncio
+    async def test_cmd_web_starts_the_clock_on_the_first_signal(self) -> None:
+        from rigplane.cli import _cmd_web
+
+        class FakeWebServer:
+            def __init__(self, _radio, _cfg) -> None:
+                pass
+
+            async def serve_forever(
+                self, *, on_started=None, on_shutdown_signal=None
+            ) -> None:
+                on_started()
+                on_shutdown_signal()
+
+        backstop = MagicMock()
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "web", "--no-rigctld"])
+        with patch("rigplane.web.server.WebServer", FakeWebServer):
+            assert await _cmd_web(AsyncMock(), args, shutdown_backstop=backstop) == 0
+
+        backstop.arm.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_a_managed_tx_shutdown_that_never_finishes_is_left_after_its_bound(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import asyncio
+
+        from rigplane import cli
+
+        monkeypatch.setattr(cli, "_MANAGED_TX_SHUTDOWN_DRAIN_S", 0.05)
+        monkeypatch.setattr(cli, "_MANAGED_TX_SHUTDOWN_SETTLE_S", 0.05)
+        terminated: list[bool] = []
+        release = asyncio.Event()
+
+        async def never_finishes(termination: asyncio.Event) -> None:
+            await termination.wait()
+            terminated.append(True)
+            await release.wait()  # still running after termination
+
+        composition = MagicMock()
+        composition.shutdown = AsyncMock(side_effect=never_finishes)
+        await asyncio.wait_for(cli._shutdown_managed_tx_composition(composition), 1.0)
+        release.set()
+        await asyncio.sleep(0.01)
+
+        assert terminated == [True]
+        (error,) = self._errors(caplog)
+        assert error.startswith("managed TX shutdown: unkey not confirmed")
+
+    @pytest.mark.asyncio
+    async def test_a_terminated_managed_tx_shutdown_is_an_unconfirmed_unkey(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from rigplane import cli
+        from rigplane.runtime.managed_tx_authority import ShutdownResult
+
+        composition = MagicMock()
+        composition.shutdown = AsyncMock(return_value=ShutdownResult.TERMINATED)
+        await cli._shutdown_managed_tx_composition(composition)
+
+        (error,) = self._errors(caplog)
+        assert error.startswith("managed TX shutdown: unkey not confirmed")
 
 
 class TestRemainingPortPreflight:

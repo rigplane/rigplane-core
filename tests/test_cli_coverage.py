@@ -8,7 +8,7 @@ import json
 import types
 import wave
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -222,6 +222,7 @@ async def test_run_dispatches_non_audio_commands(
             radio,
             args,
             managed_tx_composition=radio._managed_tx_composition,
+            shutdown_backstop=ANY,
         )
     else:
         handler.assert_awaited_once_with(radio, args)
@@ -272,6 +273,7 @@ async def test_run_web_uses_serial_backend_factory_config() -> None:
         radio,
         args,
         managed_tx_composition=radio._managed_tx_composition,
+        shutdown_backstop=ANY,
     )
 
 

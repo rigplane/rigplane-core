@@ -5,10 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-import logging
-import os
 import pathlib
-import signal
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -835,92 +832,48 @@ def test_shutdown_signal_handler_falls_back_when_loop_does_not_support_signals(
     assert triggered == 1
 
 
-@pytest.mark.asyncio
-async def test_first_signal_bounds_shutdown_when_a_step_never_completes(
-    monkeypatch, caplog
+async def test_first_signal_leaves_the_shutdown_bound_to_the_caller(
+    monkeypatch,
 ) -> None:
-    """MOR-2875: the first SIGTERM must end shutdown within the stated bound.
+    """MOR-2875: ``serve_forever`` reports the first signal and arms nothing.
 
-    ``stop()`` here never completes on its own — the stand hang of
-    2026-09-28, where the process sat idle after «web server stopped» until
-    a human-sent second signal cancelled everything. The bound watchdog must
-    cancel every still-pending task (logging each by name) so the first
-    signal alone unwinds the shutdown.
+    The bound that force-ends a hung shutdown belongs to the CLI, which owns
+    the process; a library caller of ``serve_forever`` must not get one.
     """
-    monkeypatch.setattr(server_module, "_FIRST_SIGNAL_SHUTDOWN_BOUND_S", 0.3)
-    monkeypatch.setattr(server_module, "_SHUTDOWN_BOUND_FORCED_EXIT_GRACE_S", 10.0)
+    handlers: list[object] = []
+    monkeypatch.setattr(
+        server_module,
+        "_install_shutdown_signal_handlers",
+        lambda _loop, on_signal: handlers.append(on_signal),
+    )
     srv = WebServer(None, WebConfig(host="127.0.0.1", port=0, discovery=False))
+    stopping, release = asyncio.Event(), asyncio.Event()
 
-    async def never_completing_stop() -> None:
-        await asyncio.Event().wait()
+    async def slow_stop() -> None:
+        stopping.set()
+        await release.wait()
 
-    monkeypatch.setattr(srv, "stop", never_completing_stop)
-
-    with (
-        patch(
-            "rigplane.web.web_startup.asyncio.start_server",
-            new=AsyncMock(return_value=_FakeAsyncServer()),
-        ),
-        caplog.at_level(logging.WARNING),
+    monkeypatch.setattr(srv, "stop", slow_stop)
+    signals: list[str] = []
+    with patch(
+        "rigplane.web.web_startup.asyncio.start_server",
+        new=AsyncMock(return_value=_FakeAsyncServer()),
     ):
-        serve_task = asyncio.create_task(srv.serve_forever())
-        await asyncio.sleep(0.05)
-        t0 = time.monotonic()
-        os.kill(os.getpid(), signal.SIGTERM)
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait({serve_task}, timeout=5.0)
-        # The watchdog cancels every pending task — this test task's await
-        # included; that cancellation is the bound firing. Give the unwound
-        # serve task a moment to finish, then require it finished fast.
-        await asyncio.wait({serve_task}, timeout=2.0)
-        assert serve_task.done()
-        assert serve_task.cancelled() or serve_task.exception() is None
-    elapsed = time.monotonic() - t0
-    assert elapsed < 3.0
-    bound_warnings = [
-        record.getMessage()
-        for record in caplog.records
-        if "cancelling" in record.getMessage() and "bound" in record.getMessage()
-    ]
-    assert bound_warnings, "the bound must log the cancellation by task name"
-    assert "never_completing_stop" in bound_warnings[0]
-
-
-@pytest.mark.asyncio
-async def test_shutdown_bound_forces_exit_when_cancellation_is_ignored(
-    monkeypatch, caplog
-) -> None:
-    """MOR-2875: a task that survives the bound's cancellations must not
-    keep the process alive past the forced-exit grace."""
-    exits: list[int] = []
-    monkeypatch.setattr(server_module.os, "_exit", lambda code: exits.append(code))
-    release = asyncio.Event()
-
-    async def uncancellable_loiter() -> None:
-        # Survives the bound's one cancellation round (that is the point),
-        # but gives up after a bounded survival so a RED run cannot hang
-        # pytest's task teardown waiting for it.
-        survived = 0
-        while not release.is_set() and survived < 40:
-            try:
-                await asyncio.sleep(0.05)
-            except asyncio.CancelledError:
-                survived += 1
-                continue
-
-    loiter = asyncio.create_task(uncancellable_loiter())
-    watchdog = asyncio.create_task(
-        server_module._enforce_first_signal_shutdown_bound(0.15, 0.15)
-    )
-    with caplog.at_level(logging.WARNING):
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.sleep(5.0)
+        serve = asyncio.create_task(
+            srv.serve_forever(on_shutdown_signal=lambda: signals.append("first"))
+        )
+        while not handlers:
+            await asyncio.sleep(0)
+        before = asyncio.all_tasks()
+        handlers[0]()  # type: ignore[operator]
+        scheduled_by_the_signal = asyncio.all_tasks() - before
+        await asyncio.wait_for(stopping.wait(), 1.0)
         release.set()
-        await asyncio.gather(loiter, watchdog, return_exceptions=True)
-    assert exits == [1]
-    assert any(
-        "uncancellable_loiter" in record.getMessage() for record in caplog.records
-    )
+        await asyncio.wait_for(serve, 1.0)
+        await WebServer.stop(srv)
+
+    assert signals == ["first"]
+    assert scheduled_by_the_signal == set()
 
 
 @pytest.mark.asyncio

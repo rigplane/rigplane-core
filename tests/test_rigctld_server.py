@@ -2779,3 +2779,66 @@ class TestStateAcquisitionDrainPolicies:
                 "request was swallowed by the external-CAT stand-down"
             )
         assert len(filtered_ids) == len(pending) - len(cadence_only)
+
+
+# ---------------------------------------------------------------------------
+# MOR-2875: the shutdown waits carry their own bounds
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("cancelled", [False, True], ids=["waited", "cancelled-once"])
+async def test_a_handback_that_never_settles_is_waited_on_only_for_its_bound(
+    mock_radio: MagicMock,
+    cfg: RigctldConfig,
+    proto: MagicMock,
+    handler: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    cancelled: bool,
+) -> None:
+    monkeypatch.setattr("rigplane.rigctld.server.SESSION_TX_HANDBACK_TIMEOUT_S", 0.05)
+    started, never = asyncio.Event(), asyncio.Event()
+
+    async def release_session_tx(_session_id: str) -> None:
+        started.set()
+        await never.wait()
+
+    handler.release_session_tx = release_session_tx
+    srv = RigctldServer(mock_radio, cfg, _protocol=proto, _handler=handler)
+    teardown = asyncio.ensure_future(srv._release_session_tx("s1"))
+    await asyncio.wait_for(started.wait(), 1.0)
+    if cancelled:
+        teardown.cancel()  # stop() reaching the session mid-handback
+    # asyncio.wait, not wait_for: a timeout here must not cancel the teardown
+    # into its second, bounded wait and pass for the wrong reason.
+    done, _ = await asyncio.wait({teardown}, timeout=1.0)
+    never.set()  # the abandoned handback may finish now
+    await asyncio.sleep(0)
+
+    assert done == {teardown}
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert errors[0].startswith("session s1: managed TX handback did not settle")
+    assert errors[0].endswith("unkey not confirmed")
+
+
+async def test_stop_waits_for_a_listener_that_never_closes_only_for_its_bound(
+    mock_radio: MagicMock,
+    cfg: RigctldConfig,
+    proto: MagicMock,
+    handler: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("rigplane.rigctld.server.LISTENER_CLOSE_TIMEOUT_S", 0.05)
+
+    class _NeverClosingListener:
+        def close(self) -> None:
+            pass
+
+        async def wait_closed(self) -> None:
+            await asyncio.Event().wait()
+
+    srv = RigctldServer(mock_radio, cfg, _protocol=proto, _handler=handler)
+    srv._server = cast(Any, _NeverClosingListener())
+    await asyncio.wait_for(srv.stop(), 1.0)
+    assert srv._server is None
