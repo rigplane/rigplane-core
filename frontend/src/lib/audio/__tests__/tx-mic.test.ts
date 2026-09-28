@@ -116,6 +116,28 @@ describe('TxMic', () => {
     expect(context.close).toHaveBeenCalled();
   });
 
+  describe('secure context (MOR-2845)', () => {
+    afterEach(() => {
+      // jsdom on localhost reports a secure context; pin that back so the
+      // fast-pool neighbours are unaffected by the insecure-context case.
+      Object.defineProperty(window, 'isSecureContext', { value: true, configurable: true });
+    });
+
+    it('blames the connection, not the browser, on a plain-HTTP page', async () => {
+      Object.defineProperty(window, 'isSecureContext', { value: false, configurable: true });
+      expect(await new TxMic(vi.fn()).start()).toBe('TX MIC: insecure context');
+    });
+
+    it('still blames the browser when a secure context lacks getUserMedia', async () => {
+      Object.defineProperty(window, 'isSecureContext', { value: true, configurable: true });
+      Object.defineProperty(globalThis, 'navigator', {
+        value: {},
+        writable: true, configurable: true,
+      });
+      expect(await new TxMic(vi.fn()).start()).toBe('TX MIC: microphone capture not supported');
+    });
+  });
+
   it('uses legacy WebKit getUserMedia for PCM16 fallback', async () => {
     delete (globalThis as any).AudioEncoder;
     delete (globalThis as any).MediaStreamTrackProcessor;
