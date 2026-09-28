@@ -442,6 +442,7 @@ describe('one PBT inner lifecycle is bounded and equivalent on desktop, narrow m
       expect(setPbtInnerCalls()).toEqual([{ value: dragRaw, receiver: 0 }]);
     },
   );
+});
 
 // ---------------------------------------------------------------------------
 // MOR-1689 — the same equivalence for the Filter Shape SHARP/SOFT choices.
