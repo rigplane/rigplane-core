@@ -826,6 +826,7 @@ class ControlHandler:
                     raise
                 return
             self._enqueue_current_dx_spots()
+            await self._send_current_audio_session()
         event_task: asyncio.Task[None] = asyncio.create_task(self._event_sender_loop())
         try:
             # Inside the try, so the finally below owns every exit from here on;
@@ -1205,6 +1206,33 @@ class ControlHandler:
                 self._event_queue.put_nowait({"type": "dx_spots", "spots": spots})
             except asyncio.QueueFull:
                 logger.debug("control: dropping DX spots behind full state queue")
+
+    async def _send_current_audio_session(self) -> None:
+        """MOR-2792: deliver the live audio-session snapshot on connect.
+
+        Edges arrive later on the existing ``audio_session`` event. A page
+        that connects after the silence edge still needs the current value,
+        so it is sent directly (not via the event queue) next to hello and
+        the initial state.
+        """
+        getter = getattr(self._server, "current_audio_session_event_json", None)
+        if not callable(getter):
+            return
+        try:
+            data = getter()
+        except Exception:
+            logger.debug("control: audio_session snapshot failed", exc_info=True)
+            return
+        if data is None:
+            return
+        try:
+            await self._ws.send_text(
+                encode_json({"type": "event", "name": "audio_session", "data": data})
+            )
+        except BaseException as exc:
+            logger.debug("control: failed to send audio_session snapshot", exc_info=True)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
 
     async def _handle_command(self, msg: dict[str, Any]) -> None:
         cmd_id = msg.get("id", "")

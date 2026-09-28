@@ -13,6 +13,7 @@ zero-frames model the window without real sleeps — same seam as
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -21,6 +22,8 @@ import pytest
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
 from rigplane.audio.session import AudioSession
 from rigplane.audio.usb_driver import _SILENCE_WARN_SECONDS, UsbAudioDriver
+from rigplane.backends.ic7300.serial import Ic7300SerialRadio
+from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.server import WebConfig, WebServer
 
 _SILENT_FRAME = b"\x00" * 1920
@@ -159,3 +162,88 @@ async def test_quiet_non_zero_stream_never_raises_silent_now() -> None:
     assert driver.rx_silent is False
     payload = await _runtime_payload(radio)
     assert payload["audioSession"]["rxSilent"] is False
+
+
+class _FakeCivLink:
+    """Minimal serial CI-V link double so Ic7300SerialRadio constructs."""
+
+    def __init__(self) -> None:
+        self.connected = False
+        self.ready = False
+        self.healthy = False
+
+    async def connect(self) -> None:
+        self.connected = self.ready = self.healthy = True
+
+    async def disconnect(self) -> None:
+        self.connected = self.ready = self.healthy = False
+
+    async def send(self, frame: bytes) -> None:
+        _ = frame
+
+
+def test_rx_silent_finds_the_ic7300_usb_audio_driver() -> None:
+    """Pin the private-slot lookup against the IC-7300 USB path (MOR-2792).
+
+    ``_IcomSerialRadioBase`` stores the ``UsbAudioDriver`` at
+    ``_serial_audio_driver``. A rename of that slot would silently turn
+    ``AudioSession.rx_silent`` off and no test would fail — this one does.
+    """
+    backend = FakeAudioBackend(_fake_devices())
+    driver = UsbAudioDriver(backend=backend)
+    radio = Ic7300SerialRadio(
+        device="/dev/ttyUSB-fake",
+        civ_link=_FakeCivLink(),
+        audio_driver=driver,
+    )
+    assert getattr(radio, "_serial_audio_driver", None) is driver
+
+    session = AudioSession(radio)
+    assert session.rx_silent is False
+    # The flag lives on the driver the IC-7300 USB path actually holds.
+    driver._rx_silent = True  # noqa: SLF001 — pin the lookup, not the watchdog
+    assert session.rx_silent is True
+
+
+@pytest.mark.asyncio
+async def test_control_connect_delivers_rx_silent_without_an_edge() -> None:
+    """A client that connects while the session is silent gets ``rxSilent: true``.
+
+    No ``audio_session`` edge is emitted here — the connect-time snapshot on
+    the control channel alone must carry the flag (MOR-2792).
+    """
+    driver, backend, _radio, session = _start()
+    await driver.start_rx(lambda _frame: None, frame_ms=1000)
+    stream = backend.rx_streams[0]
+    for _ in range(_SILENCE_WARN_SECONDS):
+        stream.inject_frame(_SILENT_FRAME)
+    assert session.rx_silent is True
+
+    web_radio = SimpleNamespace(
+        model="IC-7300",
+        backend_id="rigplane",
+        connected=True,
+        control_connected=True,
+        radio_ready=True,
+        capabilities=set(),
+        _audio_session=session,
+    )
+    srv = WebServer(web_radio, WebConfig(host="127.0.0.1", port=0))
+
+    sent: list[dict[str, Any]] = []
+
+    class _Ws:
+        async def send_text(self, payload: str) -> None:
+            sent.append(json.loads(payload))
+
+        async def recv(self) -> Any:
+            raise EOFError
+
+    handler = ControlHandler(_Ws(), web_radio, "test", "IC-7300", server=srv)
+    await handler.run()
+
+    events = [
+        m for m in sent if m.get("type") == "event" and m.get("name") == "audio_session"
+    ]
+    assert events, sent
+    assert events[0]["data"]["rxSilent"] is True

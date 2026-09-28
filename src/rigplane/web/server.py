@@ -3554,6 +3554,29 @@ class WebServer:
             "rxSilent": rx_silent,
         }
 
+    def current_audio_session_event_json(self) -> dict[str, Any] | None:
+        """Connect-time audio-session snapshot in the edge event shape (MOR-2792).
+
+        A page that opens the control channel after the silence edge must still
+        see the live ``rxSilent`` value. Same JSON as the ``audio_session`` edge
+        (``_audio_session_event_json``); ``None`` when no session is attached.
+        """
+        radio = self._radio
+        session = getattr(radio, "_audio_session", None) if radio is not None else None
+        if not isinstance(session, AudioSession):
+            return None
+        rx_silent = bool(getattr(session, "rx_silent", False))
+        event = session.last_event
+        if event is None:
+            # No edge yet — synthesize so ``rxSilent`` still reaches the client.
+            event = AudioSessionEvent(
+                state=session.state,
+                reason="snapshot",
+                leg="rx",
+                timestamp=time.monotonic(),
+            )
+        return _audio_session_event_json(event, rx_silent=rx_silent)
+
     def _runtime_connection_payload(self) -> dict[str, Any]:
         """Connection/reconnect status block for the runtime payload (MOR-594).
 

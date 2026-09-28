@@ -1,7 +1,8 @@
 import type { WsCommand, WsIncoming } from '../types/protocol';
 import { makeCommandId } from '../types/protocol';
 import { refusalBlockedReason, type KeyBlockedReason } from '../../semantic/rx-tx-surface';
-import { isLiveRadioAvailable, setWsConnected, markStateUpdated, setReconnecting, setRadioStatus, setRxSilent } from '../stores/connection.svelte';
+import { isLiveRadioAvailable, setWsConnected, markStateUpdated, setReconnecting, setRadioStatus } from '../stores/connection.svelte';
+import { setRxSilent } from '../stores/rx-silence.svelte';
 import { isValidServerState, matchesCurrentCapabilityTopology, resetRadioState, setRadioState } from '../stores/radio.svelte';
 import { capabilitiesMatchGeneration, clearCapabilities, setCapabilities } from '../stores/capabilities.svelte';
 import { fetchCapabilities } from './http-client';

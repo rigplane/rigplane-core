@@ -5,7 +5,6 @@ type RadioHealth = NonNullable<ServerState['radioHealth']>;
 
 let wsConnected = $state(false);
 let audioConnected = $state(false);
-let rxSilent = $state(false);
 let scopeConnected = $state(false);
 let scopeLastFrame = $state(0);
 let radioStatus = $state<'connected' | 'connecting' | 'reconnecting' | 'disconnected'>('disconnected');
@@ -94,15 +93,6 @@ export function setAudioConnected(v: boolean): void {
 
 export function isAudioConnected(): boolean {
   return audioConnected;
-}
-
-/** MOR-2792: server RX capture is bit-exact digital silence. */
-export function setRxSilent(v: boolean): void {
-  rxSilent = v;
-}
-
-export function isRxSilent(): boolean {
-  return rxSilent;
 }
 
 export function isOverallConnected(): boolean {
