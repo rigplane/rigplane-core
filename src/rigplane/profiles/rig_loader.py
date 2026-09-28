@@ -30,6 +30,7 @@ from rigplane.core.state_acquisition_policy import (
     ReconciliationPriority,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.types import ToneSquelchType
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.profiles.control_domain import (
     _on_control_lattice,
@@ -679,6 +680,7 @@ class RigConfig:
     state_acquisition: RadioAcquisitionProfile | None = None
     tx_policy: TxPolicy = field(default_factory=TxPolicy)
     ctcss_tones_centihz: tuple[int, ...] | None = None
+    tone_squelch_types: dict[int, ToneSquelchType] | None = None
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -840,6 +842,11 @@ class RigConfig:
             agc_auto_mode=self.agc_auto_mode,
             agc_auto_speed_labels=self.agc_auto_speed_labels,
             ctcss_tones_centihz=self.ctcss_tones_centihz,
+            tone_squelch_types=(
+                None
+                if self.tone_squelch_types is None
+                else dict(self.tone_squelch_types)
+            ),
             break_in_modes=self.break_in_modes,
             break_in_labels=self.break_in_labels,
             notch_width_values=self.notch_width_values,
@@ -1117,6 +1124,48 @@ def _resolve_ctcss_table(
             f"{filename}: unknown CTCSS table {table_name!r} in "
             f"{DEFAULT_CTCSS_TABLES_PROFILE_NAME}"
         ) from exc
+
+
+def _resolve_tone_squelch_types(
+    path: Path, data: dict[str, Any]
+) -> dict[int, ToneSquelchType] | None:
+    """Parse ``[tone_squelch_types]``: selector code -> neutral type (MOR-2131).
+
+    A profile that declares ``get_tone_squelch_type`` must carry the table,
+    because the decoder reads the code's meaning from it and nowhere else.
+    """
+    filename = path.name
+    section = data.get("tone_squelch_types")
+    if section is None:
+        if "get_tone_squelch_type" in data.get("commands", {}):
+            raise RigLoadError(
+                f"{filename}: get_tone_squelch_type needs a [tone_squelch_types] table"
+            )
+        return None
+    if not isinstance(section, dict) or not section:
+        raise RigLoadError(
+            f"{filename}: [tone_squelch_types] must be a non-empty table"
+        )
+    table: dict[int, ToneSquelchType] = {}
+    for raw_code, raw_type in section.items():
+        try:
+            code = int(raw_code)
+        except ValueError as exc:
+            raise RigLoadError(
+                f"{filename}: [tone_squelch_types] key {raw_code!r} is not a code"
+            ) from exc
+        if not 0 <= code <= 0xFF:
+            raise RigLoadError(
+                f"{filename}: [tone_squelch_types] code {code} is not one byte"
+            )
+        try:
+            table[code] = ToneSquelchType(raw_type)
+        except ValueError as exc:
+            raise RigLoadError(
+                f"{filename}: [tone_squelch_types].{raw_code} = {raw_type!r} is not "
+                f"one of {sorted(t.value for t in ToneSquelchType)}"
+            ) from exc
+    return table
 
 
 def _parse_command_value(
@@ -2084,6 +2133,7 @@ def load_rig(path: Path) -> RigConfig:
             f"{sorted(VALID_RF_SQL_CONTROL_MODELS)}, got {rf_sql_control_model!r}"
         )
     ctcss_tones_centihz = _resolve_ctcss_table(path, data, features)
+    tone_squelch_types = _resolve_tone_squelch_types(path, data)
 
     # Validate [validation].write_only_controls — each entry must be a declared
     # capability. These route through the validate set-and-observe engine path
@@ -2866,6 +2916,7 @@ def load_rig(path: Path) -> RigConfig:
         agc_auto_mode=agc_auto_mode,
         agc_auto_speed_labels=agc_auto_speed_labels,
         ctcss_tones_centihz=ctcss_tones_centihz,
+        tone_squelch_types=tone_squelch_types,
         break_in_modes=break_in_modes,
         break_in_labels=break_in_labels,
         notch_width_values=notch_width_values,

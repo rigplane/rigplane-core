@@ -14,6 +14,8 @@ __all__ = [
     "FilterShape",
     "SsbTxBandwidth",
     "RepeaterShiftDirection",
+    "ToneSquelchType",
+    "ctcss_booleans_for_tone_squelch_type",
     "AudioCodec",
     "AudioCapabilities",
     "get_audio_capabilities",
@@ -145,6 +147,42 @@ class RepeaterShiftDirection(IntEnum):
     PLUS = 0x01
     MINUS = 0x02
     ARS = 0x03
+
+
+class ToneSquelchType(StrEnum):
+    """Neutral tone squelch types a profile's ``[tone_squelch_types]`` table
+    maps its selector codes to (MOR-2131). ``_T`` / ``_R`` name what the
+    radio uses on transmit and receive when the two differ.
+    """
+
+    OFF = "off"
+    TONE = "tone"
+    TSQL = "tsql"
+    DTCS = "dtcs"
+    DTCS_T = "dtcs_t"
+    TONE_T_DTCS_R = "tone_t_dtcs_r"
+    DTCS_T_TSQL_R = "dtcs_t_tsql_r"
+    TONE_T_TSQL_R = "tone_t_tsql_r"
+
+
+_CTCSS_BOOLEANS_BY_TONE_SQUELCH_TYPE: dict[ToneSquelchType, tuple[bool, bool]] = {
+    ToneSquelchType.OFF: (False, False),
+    ToneSquelchType.TONE: (True, False),
+    ToneSquelchType.TSQL: (True, True),
+}
+
+
+def ctcss_booleans_for_tone_squelch_type(
+    tone_squelch_type: ToneSquelchType | None,
+) -> tuple[bool | None, bool | None]:
+    """Return the ``(repeater_tone, repeater_tsql)`` pair a type implies.
+
+    Only OFF, TONE and TSQL are expressible as the two CTCSS booleans; any
+    other type, or an unknown one, reads ``(None, None)``.
+    """
+    if tone_squelch_type is None:
+        return (None, None)
+    return _CTCSS_BOOLEANS_BY_TONE_SQUELCH_TYPE.get(tone_squelch_type, (None, None))
 
 
 class ScopeCompletionPolicy(StrEnum):
