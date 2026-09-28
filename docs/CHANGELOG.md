@@ -11,6 +11,407 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0b10] — 2026-09-28
+
+### Added
+
+- **The RIT/XIT offset slider is the fader and owns its arrow keys
+  (MOR-2524, MOR-2727).** The offset moves from a raw range input onto
+  the shared bipolar control: on the Standard face it draws the
+  hardware-illuminated fader with its centre mark, and the other faces
+  draw the modern bipolar track. A click focuses it, and while it is
+  editable the arrow keys step the offset instead of tuning the VFO.
+  One press is one step of the profile's RIT domain — 1 Hz on every
+  profile that declares one, 50 Hz without a domain — centred on the
+  domain origin, so one press and its reverse return to exactly zero.
+  Shift+arrow gives the same step, Home and End go to the bounds, and
+  CLEAR stays the reset. The old raw input swallowed global shortcuts
+  while focused; the fader does not, so Escape still clears the offset.
+  An unread offset draws no value text and no aria-valuenow.
+
+- **The page says when the server receives only digital silence from
+  the radio (MOR-2792).** The RX audio surface shows a plain message
+  in English, Russian and Japanese instead of playing silence. The
+  flag rides the existing `audio_session` event as `rxSilent`, and a
+  page that connects after the silence edge still sees it: the current
+  value arrives on the control WebSocket right after `hello`. The USB
+  driver's silence watchdog owns detection; a LAN radio reports false.
+  The first non-zero frame clears the flag.
+
+- **The phone keeps the scope controls in a SCOPE chip tab
+  (MOR-2851).** Nothing is drawn above the panorama any more. The
+  SCOPE chip, present only when the radio has a spectrum and placed
+  right after BAND, holds VIEW (when a managed scope region exists),
+  AVG, PEAK and BANDS, plus the existing semantic scope controls. The
+  bottom tuning bar still carries STEP.
+
+- **The phone meta row shows bandwidth, AGC, NB and NR beside mode
+  and filter (MOR-2852, MOR-2873).** The chips appear in that order
+  after mode and filter and follow the MAIN/SUB switch. NB and NR
+  show a bare label, lit when on and dimmed while unread; the
+  bandwidth chip keeps the unit's case (`BW 2400 Hz`). The other
+  indicator-row appearances are unchanged.
+
+### Changed
+
+- **The phone portrait layout drops the VFO / RX-TX deck and scrolls
+  as one column (MOR-2816).** The header shows the active VFO, the
+  chip tabs hold the controls, and the FAB and TX chip hold transmit.
+  The S-meter on top is the receiver's own compact meter, following
+  the receiver the header shows. Every portrait button has a label of
+  at least 16 px and a touch height of at least 44 px; labels wrap
+  rather than clip. The spectrum toolbar stays one horizontally
+  scrolling row, and the panorama keeps at least 190 px at a 375 px
+  width.
+
+### Fixed
+
+- **The segmentline and needle S-meters draw only what an uncalibrated
+  radio can show (MOR-2720).** On a profile without an S-meter
+  calibration the segmentline LCD meter keeps its moving bar but draws
+  no S label, no S9 threshold line and no scale marks, and the dual-SDR
+  needle meter keeps its arc and moves with the raw reading but draws
+  no S scale marks. The needle meter's accessible name is "S meter" in
+  every state; an uncalibrated radio used to read "S meter unavailable"
+  there and the needle did not move at all. Calibration decides, never
+  the radio's name, and a calibrated radio's meter is unchanged.
+
+- **Every HTTP response says Connection: close, and a failed first
+  layout load recovers once (MOR-2680).** The server closes the socket
+  after every response but never said so; a keep-alive HTTP/1.1 client
+  that reused the connection got a reset, and a pooled proxy could
+  answer a stylesheet request with a 502 that left the UI on "This
+  layout failed to load". Every response now carries Connection: close
+  after the caller's own headers, so no caller can override it; the
+  WebSocket 101 response keeps Connection: Upgrade. When a CSS preload
+  of the first layout still fails, the page now reloads itself once —
+  never after a layout has mounted, and never twice within 60 seconds.
+
+- **A TX meter without a calibration table shows only its bar
+  (MOR-2722).** The Po, SWR, ALC, COMP, Vd and Id tiles no longer print
+  a device-scale number tagged "raw": the formatters render nothing for
+  a raw domain and for the no-domain, no-table fallback, the bar keeps
+  moving on the neutral raw fraction, and the meter's accessible name
+  is its label alone. The segmentline telemetry rail applies the same
+  rule through the meter's own domain. This reaches the FTX-1's power,
+  ALC and compressor meters, every IC-705 and IC-9700 TX meter but SWR,
+  and the TX-500, X6100 and X6200. Calibrated meters render as before.
+
+- **The S-meter reading and its dBm keep one left edge (MOR-2521).**
+  The S-meter readouts were middle-anchored, so the left edge moved
+  whenever the text changed length. Each readout now starts at the left
+  edge of a slot as wide as the widest text the mounted profile's
+  calibration points can print, so an unread, a short and a long
+  reading hold one edge — on the default face's S tile and in the
+  phone layout. The STATION METERS S caption reserves the same widths
+  in its own font, measured again once the web fonts have loaded, and
+  its dBm span is rendered whenever the radio is calibrated and stays
+  empty until a reading arrives, so the first reading no longer
+  pushes the value aside. Without a calibration the readout keeps its
+  centred anchor. The station-meter bars keep a constant set of cells
+  instead of re-creating them. Every bar renders its ten fill cells on
+  every update and changes only their width and visibility as the
+  value moves. An unread value lights no cell. The peak marker still
+  appears only while a peak is armed.
+
+- **A read value stays visible while its control is unavailable
+  (MOR-2704).** A field's value text now follows its reading alone;
+  whether the control can act stays on the usability gate. On the scope
+  controls the span and speed labels show their read value, on RIT/XIT
+  the offset text, the slider thumb and the scan START/STOP label keep
+  the read state instead of blanking, and on the DSP surface the NR
+  level and its thumb show the read level. The controls themselves stay
+  disabled with their reason and dispatch nothing.
+
+- **The AF slider steps in raw units (MOR-1676).** Where the profile
+  publishes an AF raw range, the AF LEVEL slider and the AF MAIN / AF
+  SUB knobs step one raw unit at a time. The command keeps its
+  normalized value and the server rounds it back to the same raw unit,
+  so a step and its reverse restore the exact value. The FTX-1 profile
+  publishes AF as raw 0–255, the range of its CAT AG command. Browser
+  volume and radios that publish no range keep the 0.01 step.
+
+- **No Notch width control is drawn on a radio without one
+  (MOR-2726).** The web capabilities publish the manual-notch-width
+  tags only for receivers whose profile declares the width field, and
+  the DSP surfaces treat the width as present only with the notch
+  capability and that tag. The FTX-1, TX-500, X6100 and X6200 no longer
+  draw a permanently disabled width slider, and the IC-705 and IC-9700
+  lose a choice group that was always dimmed, because they declare the
+  width command without the polled field. The IC-7300 keeps its WIDE /
+  MID / NAR group, and the IC-7610 keeps it on MAIN and SUB.
+
+- **FTX-1 break-in is on/off from its profile, and an undeclared value
+  is never sent (MOR-2729).** The FTX-1 profile declares break-in as
+  OFF and ON, the two values its CAT command takes; SEMI and FULL are a
+  separate radio menu, not wire values. `/api/v1/info` and
+  `/api/v1/capabilities` publish the profile's `breakInChoices` as
+  value and label pairs — OFF/SEMI/FULL on the Icom profiles that
+  declare three levels, and an empty list where none is declared. A
+  break-in value outside the profile's list is refused with a command
+  error and nothing is written: on the FTX-1 a FULL request used to be
+  written as ON. The Yaesu poller passes the mode through instead of
+  collapsing every non-OFF value to ON, and a profile that declares a
+  break-in value without a label fails to load. The break-in control
+  offers exactly the radio's choices. On the phone CW panel there is
+  one button per published choice, and a click sends that value. On
+  the desktop CW keyer the published labels draw, and with no
+  published choices there is no break-in block. On the LCD face the
+  BK key cycles through the published values — OFF and ON on the
+  FTX-1 — and shows `BK-<label>` once read; while unread it shows
+  `BK`, is disabled and sends nothing. A radio that publishes no
+  choices, like the X6100 and X6200, shows no break-in control.
+  While break-in is unread no choice is lit anywhere.
+
+- **The phone and LCD faces draw no S-meter reading until one is read
+  (MOR-2730, MOR-2740).** The phone passed a zero for an unread
+  S-meter, which a calibrated radio drew as a lit S9 with its dBm
+  value — in the portrait meter and in the TX dock's S row. An unread
+  S-meter now draws no text and no fill, the accessible name is the
+  bare meter name, and the readouts keep their size. The lcd-cockpit
+  and lcd-scope faces did the same through their defaults, which drew
+  S9 and S0 on a calibrated radio; an unread value now lights no
+  segment and hides the readout text while the readout box keeps its
+  size. A read S9 renders exactly as before.
+
+- **The IC-7610 opens without waiting on the main receiver's filter
+  shape (MOR-2733).** With MAIN in a mode that has no DSP filter shape
+  — RTTY on the live radio — the radio refuses the filter-shape read
+  with a bare negative acknowledgement, and startup waited on that one
+  field until the connection was dropped. Both receivers' filter-shape
+  paths are now startup-optional: the server completes startup without
+  them, keeps polling the field, and takes its value from the radio's
+  answer when one arrives.
+
+- **The legacy DSP panel lights no notch width until one is read, and
+  draws none on a radio without one (MOR-2735).** The WIDE / MID / NAR
+  group in the manual-notch settings lit WIDE whenever no width reading
+  existed, on every radio. The width now comes from the reading alone
+  and lights no choice while unread, and the group is drawn only on a
+  radio whose profile declares the width field, through the same
+  per-receiver tag as the v3 surfaces. This covers the LCD sidebars,
+  the RadioLayout DSP panel and the phone DSP section.
+
+- **The Escape key that ends a wheel adjustment no longer clears
+  the RIT/XIT offset (MOR-2754).** While a value control is armed
+  for the mouse wheel, its Escape is consumed there instead of
+  reaching the global keyboard layer, which binds Escape to clearing
+  RIT/XIT. Finishing a wheel adjustment on AF level, RF gain,
+  squelch or the RIT/XIT offset itself leaves the offset alone. An
+  Escape on a focused control that is not armed still clears RIT/XIT,
+  and with an armed control inside the TX settings popover the first
+  Escape ends the adjustment and the second closes the popover.
+
+- **Opening a radio waits only for safety-critical fields; any
+  other field stops blocking after 10 seconds (MOR-2749).** The
+  safety-critical fields are frequency and mode plus PTT, split and
+  the TX target. A field outside that set that never answers
+  is served unread — its control stays dimmed — while polling
+  continues, and one warning names the lapsed fields. A
+  safety-critical field
+  still unanswered after 3 failed reads ends startup with an error
+  naming the field and the CI-V command. On Yaesu CAT a refused read
+  still ends startup at once.
+
+- **A refused CI-V read settles only the request that caused it,
+  and the IC-7610 filter shape is read only in SSB and CW
+  (MOR-2748).** The scheduler skips a poll group whose every field
+  the profile declares unavailable, and resumes it on the first pass
+  after it becomes available again. On the IC-7610 the MAIN and SUB
+  filter-shape reads are declared available only when that receiver's
+  mode is USB, LSB, CW or CW-R, so with MAIN in RTTY no `16 56` read
+  goes out. While the mode itself is unread the read still goes out.
+  A bare refusal now settles only the request that caused it: a
+  refused background read no longer answers a waiting write, which
+  gets its own acknowledgement.
+
+- **On Yaesu CAT, a safety-critical field that never answers ends
+  startup with a named error (MOR-2757).** Consecutive unanswered
+  reads of a safety-critical field are counted, and any answer
+  resets the count. On the third unanswered read startup aborts,
+  naming the field and the CAT command the radio never answered. A
+  refused read is still retried once, as before. The rigctld client
+  ends startup after three unanswered critical reads. PTT, frequency
+  and mode reads that time out three times in a row record a declared
+  defect and refuse the startup bind, matching the Yaesu path. A
+  connection drop never counts, so a link loss cannot build the
+  defect, and a successful read resets the tally. A read timeout no
+  longer ends polling for good: the poller reopens the transport
+  before the next cycle. An operator disconnect stays disconnected.
+
+- **On a single-receiver radio the active receiver reads MAIN from
+  startup and survives reconnects (MOR-2784).** The server publishes
+  `MAIN` as the active receiver itself and re-publishes it after
+  every provider-generation advance, such as an operator disconnect
+  or a soft reconnect. Before, the fact was dropped and the active
+  receiver read null, so the panorama drew no passband and ignored
+  waterfall clicks. Single-receiver radios are the IC-705, IC-7300,
+  TX-500, X6100 and X6200.
+
+- **The filter Hz unit follows the locale (MOR-1687).** The filter
+  width and passband value and its announcements no longer hard-code
+  `Hz`. In Russian they read `Гц`; English and Japanese keep `Hz`.
+
+- **The station-meter bars honour forced-colors like the S-meter
+  (MOR-1250).** Under Windows High Contrast Mode the bars repaint
+  onto system colours: lit fills and the peak marker use Highlight,
+  unlit segments GrayText, ink CanvasText, faces Canvas. Normal
+  rendering is unchanged.
+
+- **The page's own service-worker cleanup runs from the bundle
+  under the core server's CSP (MOR-2242).** The inline script's
+  pinned hash never matched the served page, so the stale pre-2.x
+  service-worker cleanup never ran. The cleanup now runs from the
+  bundle before the app mounts and unregisters every registration it
+  can see, so stale registrations that hijack fetch are dropped on
+  load; a failed cleanup never blocks startup. The CSP carries no
+  inline allowance: `script-src 'self'`.
+
+- **The IC-7300 S-meter draws the S-unit numerals its linear
+  calibration places (MOR-2790).** An odd S-unit numeral is drawn
+  when the declared S-labelled knots bracket it, and a `+dB` numeral
+  when S9 and a declared `S9+<N>` bracket it. From its S0/S9/S9+60
+  anchors the IC-7300 now draws `1 3 5 7 9 +20 +40 +60`, each where
+  the meter's own pointer reaches that level. The FTX-1 and IC-7610
+  are unchanged, and an uncalibrated radio still draws no numerals.
+
+- **The reconnect recovery pass runs with managed transmit
+  installed (MOR-2798).** After a serial soft reconnect the server
+  refetches radio state and re-enables the scope, which never ran on
+  that path before.
+
+- **The Standard face shows shortcut hints, and Alt-hold edge cases
+  are fixed (MOR-2793).** The keyboard-bound instrument controls —
+  mode, DATA, filter, RIT/XIT/CLEAR, RF gain, ATT, PRE and AF —
+  carry the same hints the legacy panels expose, drawn as an overlay
+  while Alt is held, so no element moves. Hints appear only while
+  Alt/Option is the only modifier held. A held Alt that auto-repeats
+  after a chord no longer restarts the hint timer, and disabling the
+  keyboard mid-hold clears the scheduled timer.
+
+- **On the single composition, an unavailable receiver's select is
+  disabled with its reason (MOR-1342).** The unsliced VFO surface
+  applies the same per-receiver operational disable the cockpit
+  strips derive; the LCD face mounts this composition directly. The
+  select of a receiver that is not available right now is disabled
+  and names the reason; the transmit key stays enabled.
+
+- **Fixed-width modes publish the profile's declared width for the
+  selected slot (MOR-2503).** In a fixed-width mode the radio
+  reports no filter width, so the filter width was null in FM and
+  the scope drew no passband. The server now publishes the declared
+  slot width from the profile, marked declared rather than measured.
+  A `1A 03` answer in a fixed-width mode no longer overwrites it
+  with a raw index. Covered: FM on the IC-7610, IC-7300 and IC-9700,
+  and FM, WFM and DV on the IC-705.
+
+- **The break-in row shows a visible label on the Standard face
+  (MOR-2797).** The row now carries a shared Break-in label above the
+  choice keys, in English, Russian and Japanese, so a two-value OFF/ON
+  domain is no longer a lone unlabelled button. The choice keys are
+  unchanged. The phone CwPanel break-in block gets the same label and
+  draws neither label nor keys when the profile publishes no break-in
+  choices.
+
+- **On the FTX-1, Width is unavailable while NARROW is on
+  (MOR-2803).** While a receiver's NARROW reads true the profile
+  declares that receiver's `filter_width` absent: the width row stays
+  disabled with its reason and dispatches nothing, and the Yaesu
+  adapter withholds the width read. The per-mode NAR WIDTH menu owns
+  the passband then. The first medium poll pass primes an unobserved
+  NARROW so the gate can resolve in that same pass; a failed prime
+  leaves the width read withheld. A path whose condition is still
+  unobserved stays in the startup gate's outstanding set.
+
+- **A fixed-width `1A 03` answer no longer poisons the FM filter
+  cache (MOR-2823).** In a fixed-width mode the answer is a raw index,
+  and the legacy cache still stored it, so rigctld `\m` answered
+  `FM 0` before the first observation. The cache now skips that answer
+  and keeps the last decoded width; `\m` answers the handler table's
+  passband for the selected slot instead. Non-fixed modes keep writing
+  the measured width.
+
+- **The RF/SQL screen-reader status text stays off the screen
+  (MOR-2843).** Moving the RF slider no longer paints the combined
+  control's "confirmed" status line on screen. The DualParamRenderer
+  now defines its own visually-hidden rule; the status spans stay in
+  the accessibility tree with polite live announcements.
+
+- **The desktop status bar stays usable under the power-off overlay
+  (MOR-1240).** While the radio is powered off the overlay covers the
+  window below the status bar and keeps its Power ON action. The bar
+  publishes its bottom edge as a document-level custom property; a
+  layout without a status bar keeps the full-screen overlay. The
+  orphaned powered-off hint string is gone.
+
+- **Missing mic capture on a plain-HTTP page blames the connection,
+  not the browser (MOR-2845).** Pressing PTT on a non-secure context
+  now says the microphone needs a secure connection: open the page
+  over https (the server's `--tls` address) or on localhost. The old
+  "not supported by this browser" message remains for a secure context
+  without `getUserMedia`.
+
+- **A command cancelled by a radio link drop shows a plain operator
+  message (MOR-2846, MOR-2847).** The toast reads "Connection to the
+  radio was interrupted; the command was cancelled. Try again."
+  instead of the internal fencing reason. The server marks those
+  outcomes structurally and sends a `commandLinkLost` notification
+  code; other failures keep `commandExecutionFailed` with their
+  reason. While the link is down those per-command toasts are
+  suppressed in favour of the persistent link indicator.
+
+- **The audio bridge TX gate fails closed on unknown or stale state
+  (MOR-2863).** Host audio reaches the radio only when the managed TX
+  intent is keyed or a fresh observed PTT is ON. Unknown or stale
+  observations, a missing authority, snapshot errors, gate-callable
+  exceptions and startup before acquisition all drop frames. The
+  standalone bridge CLI without a gate keeps its ungated behaviour;
+  the keyed path still passes the first frame immediately.
+
+- **An Icom unkey waits for the radio's answer (MOR-2860).** A
+  FORCE_RECEIVE now settles only on an answer that can be attributed
+  to it: FB accepts, FA rejects, silence stays uncertain. Uncertain
+  and rejected releases keep the release debt and retry. Every release
+  is logged, with a warning when it is not confirmed. The PTT-on path
+  is unchanged.
+
+- **A silent serial CI-V link with polls outstanding declares
+  link-down and parks TX (MOR-2861).** The watchdog no longer treats a
+  merely ready session as liveness. While fresh polls are outstanding
+  and no CI-V frame is parsed for about two answer windows plus one
+  watchdog tick, the link is declared down and managed TX is parked.
+  A lost fire-and-forget sink cannot hold that clock on a quiet
+  healthy radio.
+
+- **Browser TX audio is gated on the managed TX predicate
+  (MOR-2870).** Microphone frames on the WebSocket audio handler and
+  the WebRTC audio channel reach the radio only while the managed TX
+  intent is keyed or a fresh observed PTT is ON. A frame after key
+  release, or while the observation is stale, is dropped and counted.
+
+### Security
+
+- **A rigctld connection whose first line is an HTTP request line is
+  refused (MOR-2890).** A web page's no-cors POST to the rigctld port
+  used to earn ENIMPL per line and then run its body as a command,
+  including PTT. The connection is now closed before anything is
+  parsed or run, with one throttled warning per peer. Normal rigctld
+  sessions are unchanged; lowercase or partial request lines are not
+  refused.
+
+- **Foreign Hosts are refused on every route and foreign Origins on
+  WebSocket upgrades and state-changing HTTP requests (MOR-2880,
+  MOR-2881).** Every HTTP route and WebSocket upgrade runs a Host
+  allowlist before any handler: IP literals, simple local labels, and
+  names ending in `.localhost`, `.local`, `.home.arpa` or `.internal`.
+  Anything else gets 421. `--allowed-host NAME` (repeatable) on `web`
+  admits more names. A present Origin on the four WebSocket upgrades
+  must be same-origin and pass the Host rule, otherwise 403 before the
+  upgrade; a missing Origin is admitted. The same rule covers POST,
+  PUT, PATCH, DELETE and the state-changing GET `/clearcache`. The
+  diagnose routes' separate Origin check and its loopback skip are
+  gone.
+
 ## [3.0.0b9] — 2026-09-27
 
 ### Added

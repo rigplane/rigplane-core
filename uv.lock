@@ -2125,7 +2125,7 @@ wheels = [
 
 [[package]]
 name = "rigplane"
-version = "3.0.0b9"
+version = "3.0.0b10"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
