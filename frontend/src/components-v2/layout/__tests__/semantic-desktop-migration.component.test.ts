@@ -1377,8 +1377,8 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
         skinId === 'desktop-v2' ? 'antenna-control-grid' : 'antenna-surface',
         'ritxit-scan-surface']],
       ['center', ['scope-controls-surface', 'scope-display-surface']],
-      ['right', ['rx-audio-surface', 'dsp-surface', 'cw-keyer-surface',
-        ...(skinId === 'desktop-v2' ? [] : ['tx-aux-surface']), 'rx-tx-surface']],
+      ['right', ['rx-tx-surface', 'rx-audio-surface', 'dsp-surface', 'cw-keyer-surface',
+        ...(skinId === 'desktop-v2' ? [] : ['tx-aux-surface'])]],
     ] as const) {
       for (const surface of surfaces) {
         const selector = `[data-testid="${surface}"]`;

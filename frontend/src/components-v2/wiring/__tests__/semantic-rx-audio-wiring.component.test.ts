@@ -913,20 +913,6 @@ describe('desktop-v2 declares a real rx-audio zone; the cockpit does not (MOR-13
     expect(firstKey).toBeGreaterThan(lastAudio);
     expect(seq.at(-1)?.dataset.testid).toBe('rx-tx-unkey');
   });
-
-  it('keeps rx-tx last on the live desktop-v2 face once rx-audio has loaded (MOR-1347)', () => {
-    h.caps = liveCaps(AUDIO_TAGS);
-    renderHostedFace('desktop-v2');
-    const seq = [...target.querySelectorAll<HTMLElement>(
-      'button, input, select, a[href], [tabindex]',
-    )];
-    const lastAudio = seq.reduce(
-      (last, el, i) => (el.closest('[data-testid="rx-audio-surface"]') ? i : last), -1,
-    );
-    const firstKey = seq.findIndex((el) => el.dataset.testid === 'rx-tx-key');
-    expect(lastAudio).toBeGreaterThanOrEqual(0);
-    expect(firstKey).toBeGreaterThan(lastAudio);
-  });
 });
 
 /**

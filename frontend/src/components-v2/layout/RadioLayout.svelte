@@ -204,8 +204,8 @@
   const standardRightDrag: PanelDragOwner | null = standardFaceAtMount ? createDragReorder({
     storageKey: 'rigplane:right-panel-order',
     defaults: [
-      'semantic-rx-audio', 'semantic-dsp', 'semantic-cw',
-      'semantic-memory', 'semantic-tx-aux', 'audio-scope', 'semantic-rx-tx',
+      'semantic-rx-tx', 'semantic-rx-audio', 'semantic-dsp', 'semantic-cw',
+      'semantic-memory', 'semantic-tx-aux', 'audio-scope',
     ],
     containerSelector: '.standard-panel-owner-right',
   }) : null;
@@ -718,6 +718,11 @@
       undefined, panelChrome(owner, 'semantic-scan', 'SCAN'), 'scan',
     )}
   {/if}
+  {#if owner.order.includes('semantic-rx-tx')}
+    {@render instruments.rxTx(
+      undefined, panelChrome(owner, 'semantic-rx-tx', 'TX'), standardTxLayout,
+    )}
+  {/if}
   {#if owner.order.includes('semantic-rx-audio')}
     {@render instruments.rxAudio(
       undefined, rxAudioFiniteLayout, panelChrome(owner, 'semantic-rx-audio'),
@@ -739,11 +744,6 @@
   {#if owner.order.includes('semantic-meters')}
     {@render instruments.meters(undefined, panelChrome(owner, 'semantic-meters'))}
   {/if}
-  {#if owner.order.includes('semantic-rx-tx')}
-    {@render instruments.rxTx(
-      undefined, panelChrome(owner, 'semantic-rx-tx', 'TX'), standardTxLayout,
-    )}
-  {/if}
   <div class="content-left">
     <LeftSidebar
       hideTxPanel={semanticRxTx} {declared} dragOwner={owner} {showReset}
@@ -757,6 +757,9 @@
 
 {#snippet semanticDeckContent(appearance: 'standard' | 'sdr' | 'semantic', allowBare = false)}
   {@render instruments.vfo(appearance, allowBare, vfoOperationControls)}
+  {@render instruments.rxTx(allowBare)}
+  {@render instruments.txFaultRecovery()}
+  {@render instruments.modInputTxWarning()}
   {@render instruments.rxAudio(allowBare)}
   {@render instruments.rfFrontEnd(allowBare)}
   {@render instruments.filter(allowBare)}
@@ -769,9 +772,6 @@
   {@render instruments.scopeDisplay(allowBare)}
   {@render instruments.txAuxControls(txAuxInstrumentLayout, allowBare)}
   {@render instruments.meters(allowBare)}
-  {@render instruments.rxTx(allowBare)}
-  {@render instruments.txFaultRecovery()}
-  {@render instruments.modInputTxWarning()}
 {/snippet}
 
 {#if skinId === 'mobile'}
@@ -835,13 +835,13 @@
           {@render instruments.modInputTxWarning()}
           {@render standardServicePanels(standardRightDrag)}
         {:else}
+          {@render instruments.rxTx()}
+          {@render instruments.txFaultRecovery()}
+          {@render instruments.modInputTxWarning()}
           {@render instruments.rxAudio()}
           {@render instruments.dsp()}
           {@render instruments.cwKeyer()}
           {@render instruments.txAuxControls(txAuxInstrumentLayout)}
-          {@render instruments.rxTx()}
-          {@render instruments.txFaultRecovery()}
-          {@render instruments.modInputTxWarning()}
           <div class="content-right"><RightSidebar hideTxPanel={semanticRxTx} {declared} /></div>
         {/if}
       </div>
