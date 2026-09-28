@@ -650,20 +650,18 @@ _CMD1A_CTL_MEM_LEVEL_FIELDS = {
     b"\x02\x92": ("vox_delay", 1),
 }
 
-# 0x1A/0x05 ctl-mem prefix(es) whose RadioState mirror write was migrated to
-# the StateStore observation pipeline (MOR-459). ``_handle_1a`` skips the
-# redundant ``setattr`` mirror for these prefixes; ``_observations_from_frame``
-# is the source of truth and reuses the identical ``parse_level_response``
-# decode. Two prefixes because voxDelay's ctl-mem control number is
-# per-model, not a CI-V-wide constant: 0x02 0x92 is IC-7610's (retired
-# hardware, docs/validation/cat-audits/ic7610.md), 0x01 0x91 is IC-7300's —
-# the live reference (docs/validation/cat-audits/ic7300.md; MOR-1483 leg 2).
+# The ctl-mem prefix in ``_CMD1A_CTL_MEM_LEVEL_FIELDS`` whose RadioState
+# mirror write was migrated to the StateStore observation pipeline (MOR-459);
+# ``_handle_1a`` skips the redundant ``setattr`` mirror for it.
 _CTL_MEM_VOX_DELAY_PREFIX = b"\x02\x92"
-_CTL_MEM_VOX_DELAY_PREFIX_IC7300 = b"\x01\x91"
-_CTL_MEM_VOX_DELAY_PREFIXES = (
-    _CTL_MEM_VOX_DELAY_PREFIX,
-    _CTL_MEM_VOX_DELAY_PREFIX_IC7300,
-)
+
+# 0x1A/0x05 menu replies observed into state (MOR-2975). The control number
+# is profile data: the reply resolves through the profile's reverse index to
+# the getter it answers (``CivRuntime._ctl_mem_getter``), and the getter names
+# the field and its BCD width here.
+_CTL_MEM_OBSERVED_GETTERS: dict[str, tuple[FieldPath, int]] = {
+    "get_vox_delay": (FieldPath.global_("operator_controls", "vox_delay"), 1),
+}
 
 # CI-V data watchdog (wfview icomudpcivdata::watchdog)
 # If no CI-V data for this long, send open_close to restart the stream.
@@ -2730,22 +2728,27 @@ class CivRuntime:
         elif (
             frame.command == 0x1A
             and frame.sub == 0x05
-            and bytes(frame.data[:2]) in _CTL_MEM_VOX_DELAY_PREFIXES
+            and len(frame.data) > 2
+            and (
+                observed := _CTL_MEM_OBSERVED_GETTERS.get(
+                    self._ctl_mem_getter(frame) or ""
+                )
+            )
+            is not None
         ):
-            # VOX hang delay: 1-byte BCD ctl-mem level, reusing the exact decode
-            # of ``_handle_1a``. The 2-byte ctl-mem control number is
-            # per-model (``_CTL_MEM_VOX_DELAY_PREFIXES``), so match whichever
-            # one the frame actually carries. Promoted to a global
-            # operator-control int (MOR-459; multi-model MOR-1483 leg 2).
+            # A menu level the profile declares a getter for: BCD after the
+            # 2-byte control number, the decode ``_handle_1a`` uses (MOR-459,
+            # MOR-2975).
+            path, bcd_bytes = observed
             observations.append(
                 self._observation(
-                    FieldPath.global_("operator_controls", "vox_delay"),
+                    path,
                     parse_level_response(
                         frame,
                         command=0x1A,
                         sub=0x05,
                         prefix=bytes(frame.data[:2]),
-                        bcd_bytes=1,
+                        bcd_bytes=bcd_bytes,
                     ),
                     frame=frame,
                 )
@@ -3182,6 +3185,21 @@ class CivRuntime:
             max_age=max_age,
             quality=quality,
         )
+
+    def _ctl_mem_getter(self, frame: CivFrame) -> str | None:
+        """Name the profile getter a ``1A 05`` reply answers, or None.
+
+        The reply's control number resolves through the profile's reverse
+        index; a getter and its setter share the bytes, so the one ``get_``
+        name among the candidates is the answer.
+        """
+        index = getattr(self._host._profile, "reverse_index", None)
+        if index is None:
+            return None
+        result = index.resolve(frame.command, frame.sub, bytes(frame.data))
+        names = {result.name} if result.name is not None else set(result.candidates)
+        getters = [name for name in names if name.startswith("get_")]
+        return getters[0] if len(getters) == 1 else None
 
     def _calibrated_meter_value(
         self, raw_value: int, meter_key: str
