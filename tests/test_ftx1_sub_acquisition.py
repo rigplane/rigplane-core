@@ -189,6 +189,7 @@ async def test_sub_state_is_acquired_in_single_receive() -> None:
     # and the width stays withheld behind the narrow-ON declaration, not
     # behind an unresolved clause.
     commands = [call.args[0] for call in radio._transport.query.await_args_list]
+    assert snapshot.field(_SUB_NARROW).value is True
     assert "SH1;" not in commands
     # MAIN's NARROW reads off (``NA00``), so MAIN's width is read (USB
     # Table 5 code 20 → 3000 Hz).
