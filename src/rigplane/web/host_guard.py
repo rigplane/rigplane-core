@@ -6,7 +6,10 @@ Two guards against a web page running in the operator's browser:
 - **Host allowlist** (DNS-rebinding defence, mirrors Pro's MOR-2877
   rule): every HTTP route and WebSocket upgrade reads the RAW ``Host``
   request header — never a value derived from the bind address — and
-  admits only local names. Everything else gets ``421``.
+  admits only local names. A missing ``Host`` header is admitted too
+  (pinned by ``test_ws_local_hosts_accepted[None]`` and
+  ``test_http_local_hosts_accepted[None]``); everything else — an
+  empty, malformed or non-local value — gets ``421``.
 - **Same-Origin on WebSocket upgrades and state-changing HTTP
   requests** (MOR-2881): a present ``Origin`` must be same-origin with
   the request (scheme, host, port) and its host must pass the same

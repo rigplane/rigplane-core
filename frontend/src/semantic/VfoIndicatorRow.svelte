@@ -64,6 +64,7 @@
 
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { t } from '$lib/i18n';
   import LinearSMeter from '../components-v2/meters/LinearSMeter.svelte';
   import type { MeterContinuitySession } from '../primitives/meters/meter-ballistics.svelte';
   import { formatKnownLevel, levelFormatsBelowMax } from './format-level';
@@ -168,7 +169,9 @@
     const state = sharedBoolean(active);
     const value = readingText(offset);
     if (value === '') return state === '' ? label : `${label} ${state}`;
-    return state === '' ? `${label} ${value} Hz` : `${label} ${state} ${value} Hz`;
+    // MOR-2905: the hertz unit comes from the i18n catalog («Гц» in ru).
+    const unit = t('core.filter.unit.hz');
+    return state === '' ? `${label} ${value} ${unit}` : `${label} ${state} ${value} ${unit}`;
   }
 
   function aggregateState(
@@ -184,7 +187,7 @@
   {#if indicator}
     {#if fact === 'bandwidth' && indicator.bandwidthHz.availability.structural}
       <span class="fact" data-indicator-fact="bandwidth" data-state={indicator.bandwidthHz.reading.status}
-        style:min-inline-size={`${bandwidthReservationCh}ch`}>BW {readingText(indicator.bandwidthHz, (v) => `${String(v)} Hz`)}</span>
+        style:min-inline-size={`${bandwidthReservationCh}ch`}>BW {readingText(indicator.bandwidthHz, (v) => `${String(v)} ${t('core.filter.unit.hz')}`)}</span>
     {:else if fact === 'agc' && indicator.agcMode.availability.structural}
       <span class="fact" data-indicator-fact="agc" data-state={indicator.agcMode.reading.status}
         style:min-inline-size={`${FACT_SLOT_RESERVATIONS.agc}ch`}>AGC{readingText(indicator.agcMode, (v) => ` ${String(v)}`)}</span>
@@ -234,7 +237,7 @@
             data-indicator-fact="bandwidth"
             data-state={indicator.bandwidthHz.reading.status}
             style:min-inline-size={`${bandwidthReservationCh}ch`}
-          >BW {readingText(indicator.bandwidthHz, (v) => `${String(v)} Hz`)}</span>
+          >BW {readingText(indicator.bandwidthHz, (v) => `${String(v)} ${t('core.filter.unit.hz')}`)}</span>
         {/if}
         {#if appearance === 'standard'}
           <span class="header-badges"><span class="fact">BAR</span><span

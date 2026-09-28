@@ -1884,3 +1884,39 @@ describe('unread readouts keep their reserved boxes (MOR-2648)', () => {
     expect(rule![1]).toContain('grid-template-columns: 1fr minmax(0, 1fr)');
   });
 });
+
+// ── MOR-2905: the hertz unit comes from the i18n catalog ────────────────────
+describe('the exact-width and passband hertz unit follows the locale (MOR-2905)', () => {
+  // The pins hold the RENDERED text through the one `core.filter.unit.hz`
+  // catalog key — never `t(key)` — so a re-introduced literal fails here.
+  const passbandPending: Readonly<CommandScalarFeedback> = {
+    confirmed: 0, target: 600, requestedTarget: 600, phase: 'submitted', busy: true,
+    availability: 'available', outcome: null, lifecycleId: '2905:passband',
+    transitionId: '2905:passband:submitted', sessionEpoch: 7,
+    scope: { control: 'pbt-inner', receiver: 0 }, repeatPolicy: 'latest-target-wins',
+  };
+
+  it.each(['en-US', 'ru-RU'] as const)('the width slider names its exact value with the %s hertz unit', (locale) => {
+    const previous = getLocale();
+    setLocale(locale);
+    try {
+      withSurface(base(), (surface) => {
+        expect(surface.input('filter-width')!.getAttribute('aria-valuetext'))
+          .toBe(locale === 'ru-RU' ? '2400 Гц' : '2400 Hz');
+      });
+    } finally { setLocale(previous); }
+  });
+
+  it('announces a pending passband target with the Russian hertz unit (ru-RU)', () => {
+    const previous = getLocale();
+    setLocale('ru-RU');
+    try {
+      withSurface(base(), (s) => {
+        const status = s.group('filter-pbtInner')!
+          .querySelector<HTMLElement>('[data-control-feedback-status]');
+        expect(status!.textContent)
+          .toBe('Запрошен PBT inner 600 Гц; радио ещё не подтвердило значение.');
+      }, {}, { pbtInnerFeedback: passbandPending } as PendingProps);
+    } finally { setLocale(previous); }
+  });
+});

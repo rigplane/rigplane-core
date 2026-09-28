@@ -10,14 +10,14 @@ The library supports a comprehensive set of CI-V commands for controlling your I
 
 ```python
 # Get current frequency (returns Hz as int)
-freq = await radio.get_frequency()
+freq = await radio.get_freq()
 print(f"{freq / 1e6:.3f} MHz")  # 14.074 MHz
 
 # Set frequency
-await radio.set_frequency(14_074_000)   # 20m FT8
-await radio.set_frequency(7_074_000)    # 40m FT8
-await radio.set_frequency(3_573_000)    # 80m FT8
-await radio.set_frequency(144_300_000)  # 2m SSB
+await radio.set_freq(14_074_000)   # 20m FT8
+await radio.set_freq(7_074_000)    # 40m FT8
+await radio.set_freq(3_573_000)    # 80m FT8
+await radio.set_freq(144_300_000)  # 2m SSB
 ```
 
 Frequency is always in **Hz** (integer). The radio internally uses BCD encoding (5 bytes, little-endian).
@@ -57,18 +57,20 @@ Available modes:
 | `WFM` | `0x06` | Wide FM |
 | `CW_R` | `0x07` | CW Reverse |
 | `RTTY_R` | `0x08` | RTTY Reverse |
+| `PSK` | `0x12` | PSK |
+| `PSK_R` | `0x13` | PSK Reverse |
 | `DV` | `0x17` | D-Star Digital Voice |
 
 ## RF Power
 
 ```python
 # Get RF power level (0–255)
-power = await radio.get_power()
+power = await radio.get_rf_power()
 
 # Set RF power level
-await radio.set_power(128)  # ~50% power
-await radio.set_power(255)  # Maximum power
-await radio.set_power(0)    # Minimum power
+await radio.set_rf_power(128)  # ~50% power
+await radio.set_rf_power(255)  # Maximum power
+await radio.set_rf_power(0)    # Minimum power
 ```
 
 !!! note "Power Mapping"
@@ -80,7 +82,7 @@ await radio.set_power(0)    # Minimum power
 # S-meter (0–255, receive signal strength)
 s = await radio.get_s_meter()
 
-# SWR meter (0–255, during TX only)
+# SWR as a calibrated ratio (float, >= 1.0); get_swr_meter() returns the raw 0–255 reading
 swr = await radio.get_swr()
 
 # ALC meter (0–255, during TX only)

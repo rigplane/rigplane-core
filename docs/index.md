@@ -85,13 +85,11 @@ RigPlane keeps the browser UI, audio path, diagnostics, and `rigctld`-compatible
 - :white_check_mark: **Audio streaming** — RX/TX with jitter buffer and full-duplex support
 - :white_check_mark: **Audio FFT Scope** — real-time FFT on USB/LAN audio for radios without hardware spectrum
 - :white_check_mark: **Discovery** — find supported LAN radios automatically; assisted serial CAT discovery can suggest and validate Hamlib candidates
-- :white_check_mark: **CLI tool** — `rigplane status`, `rigplane freq 14.074m`
+- :white_check_mark: **CLI tool** — `rigplane --model IC-7610 status`, `rigplane --model IC-7610 freq 14.074m`
 - :white_check_mark: **Built-in Web UI** — spectrum, waterfall, controls, meters, audio in browser; LCD layout for non-scope radios
 - :white_check_mark: **Async + Sync API** — async by default, blocking wrapper available
 - :white_check_mark: **Auto-reconnect** — watchdog + exponential backoff (opt-in)
-- :white_check_mark: **Minimal dependencies** — core requires only `pyserial`; no web frameworks or heavy libraries
 - :white_check_mark: **Type-annotated** — full `py.typed` support for IDE autocompletion
-- :white_check_mark: **4492 tests** — high coverage with golden protocol fixtures, UDP wire tests, and real-radio integration suite
 
 ## Supported Radios
 
@@ -105,10 +103,8 @@ RigPlane keeps the browser UI, audio path, diagnostics, and `rigctld`-compatible
 | Xiegu X6200 | CI-V `0xA4` | :material-help-circle: Native profile + discovery disambiguation; hardware reports welcome |
 | Xiegu X6100 | CI-V `0x70` / Hamlib candidate | :material-help-circle: Profile only; assisted discovery candidate |
 | Lab599 TX-500 | Kenwood CAT / Hamlib candidate | :material-help-circle: Profile only; assisted discovery candidate |
-| IC-7851 | CI-V `0x8E` | :material-help-circle: Should work |
-| IC-R8600 | CI-V `0x96` | :material-help-circle: Should work |
 
-See [Supported Radios](guide/radios.md) and the [Hamlib provider guide](guide/hamlib-rigctld-provider.md) for full details. Any Icom radio with LAN/WiFi control should work — the CI-V address is configurable. If you're choosing the commercial desktop app first, start from the matching landing page on [rigplane.com](https://rigplane.com/): [IC-7610](https://rigplane.com/ic-7610/), [IC-7300](https://rigplane.com/ic-7300/), [IC-705](https://rigplane.com/ic-705/), [IC-9700](https://rigplane.com/ic-9700/), or the platform pages for [Mac](https://rigplane.com/ham-radio-software/mac/) and [Linux](https://rigplane.com/ham-radio-software/linux/).
+See [Supported Radios](guide/radios.md) and the [Hamlib provider guide](guide/hamlib-rigctld-provider.md) for full details. If you're choosing the commercial desktop app first, start from the matching landing page on [rigplane.com](https://rigplane.com/): [IC-7610](https://rigplane.com/ic-7610/), [IC-7300](https://rigplane.com/ic-7300/), [IC-705](https://rigplane.com/ic-705/), [IC-9700](https://rigplane.com/ic-9700/), or the platform pages for [Mac](https://rigplane.com/ham-radio-software/mac/) and [Linux](https://rigplane.com/ham-radio-software/linux/).
 
 ## Indexing policy
 
@@ -123,7 +119,7 @@ from rigplane import create_radio, LanBackendConfig
 async def main():
     config = LanBackendConfig(host="192.168.1.100", username="user", password="pass", model="IC-7610")
     async with create_radio(config) as radio:
-        freq = await radio.get_frequency()
+        freq = await radio.get_freq()
         print(f"{freq / 1e6:.3f} MHz")
 
 asyncio.run(main())

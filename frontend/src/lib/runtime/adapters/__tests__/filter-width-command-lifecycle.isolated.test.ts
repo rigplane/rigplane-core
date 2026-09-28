@@ -122,7 +122,7 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
       'set_compressor_level', 'set_monitor_gain', 'set_nb_level', 'set_nb_width',
       'set_nr_level', 'set_nb_depth',
       'set_notch_filter', 'set_manual_notch_width', 'set_agc_time_constant',
-      'set_pbt_inner', 'set_pbt_outer', 'set_if_shift',
+      'set_pbt_inner', 'set_pbt_outer', 'set_if_shift', 'set_filter_shape',
     ]);
     expect(RADIO_INTENT_NAMES).toContain(FILTER_WIDTH_COMMAND_DESCRIPTOR.intentName);
     const main = FILTER_WIDTH_COMMAND_DESCRIPTOR.scope(command({ params: { width: 3000, receiver: 0 } }))!;
@@ -652,6 +652,10 @@ describe('Break-in Delay ControlFeedback projection (MOR-1744)', () => {
       ['set_pbt_inner', PBT_INNER_COMMAND_DESCRIPTOR],
       ['set_pbt_outer', PBT_OUTER_COMMAND_DESCRIPTOR],
       ['set_if_shift', IF_SHIFT_COMMAND_DESCRIPTOR],
+      // MOR-1689: the shape descriptor is resolved through the registry so
+      // this pin fails with a clean diff (undefined entry) before the
+      // descriptor exists, not with a module-load error.
+      ['set_filter_shape', getStateBackedCommandDescriptor('set_filter_shape')],
     ]);
     const scope = BREAK_IN_DELAY_COMMAND_DESCRIPTOR.scope(delayCommand());
     expect(scope).toEqual({ control: 'break-in-delay', receiver: 0 });

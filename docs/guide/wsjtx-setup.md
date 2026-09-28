@@ -24,7 +24,7 @@ pip install rigplane
 # Install the RigPlane Virtual Audio Driver (macOS, ships with RigPlane Pro)
 
 # Start all-in-one server; the bridge auto-detects the RigPlane cable ends
-rigplane --host <RADIO_IP> --user <USER> --pass <PASS> web \
+rigplane --model IC-7610 --host <RADIO_IP> --user <USER> --pass-file <PASSWORD_FILE> web \
   --bridge "RigPlane Virtual Cable Output" --bridge-tx-device "RigPlane Virtual Cable Input"
 ```
 
@@ -44,7 +44,7 @@ fixed 20 ms PCM frames before transmit.
 **Alternative: rigctld only** (no Web UI or audio bridge):
 
 ```bash
-rigplane --host <RADIO_IP> --user <USER> --pass <PASS> serve --wsjtx-compat
+rigplane --model IC-7610 --host <RADIO_IP> --user <USER> --pass-file <PASSWORD_FILE> serve --wsjtx-compat
 ```
 
 ### 2. Configure WSJT-X
@@ -193,9 +193,8 @@ The server gracefully handles client disconnect:
 
 ### Radio becomes unresponsive after disconnect
 
-1. The circuit breaker may have tripped. Wait ~6 seconds for auto-recovery.
-2. Restart the server if needed: Ctrl-C and re-launch.
-3. Check if another application (wfview, flrig) is also controlling the radio.
+1. Restart the server if needed: Ctrl-C and re-launch.
+2. Check if another application (wfview, flrig) is also controlling the radio.
 
 ### Mode shows USB instead of PKTUSB
 

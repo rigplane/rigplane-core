@@ -6,19 +6,21 @@ import * as baseline from '../../scripts/control-feedback-debt-baseline.mjs';
 const { CONTROL_FEEDBACK_DEBT_BASELINE } = baseline;
 
 describe('control feedback debt baseline (MOR-1714)', () => {
-  it('exports exactly 39 unique identities in deterministic order', () => {
-    expect(CONTROL_FEEDBACK_DEBT_BASELINE).toHaveLength(39);
-    expect(new Set(CONTROL_FEEDBACK_DEBT_BASELINE).size).toBe(39);
+  // MOR-2909: the legacy RitXitPanel Offset row left the radio-backed
+  // debt — it rides the shared scalar binding now (feedback-integrated).
+  it('exports exactly 38 unique identities in deterministic order', () => {
+    expect(CONTROL_FEEDBACK_DEBT_BASELINE).toHaveLength(38);
+    expect(new Set(CONTROL_FEEDBACK_DEBT_BASELINE).size).toBe(38);
     expect(CONTROL_FEEDBACK_DEBT_BASELINE).toEqual([...CONTROL_FEEDBACK_DEBT_BASELINE].sort());
     const digest = createHash('sha256').update(CONTROL_FEEDBACK_DEBT_BASELINE.join('\n')).digest('hex');
-    expect(digest).toBe('4915044c6d8f92d65e33e3eb58110fad999445f999a23231cbc0b9d868ec8f80');
+    expect(digest).toBe('8660601f8fc25fc4a0a58814cd47dbf73600c8709b39e479c8f18ad4ba48066c');
   });
 
   it('exposes no mutable membership collection', () => {
     expect(Object.keys(baseline)).toEqual(['CONTROL_FEEDBACK_DEBT_BASELINE']);
     expect(Object.isFrozen(CONTROL_FEEDBACK_DEBT_BASELINE)).toBe(true);
     expect(() => (CONTROL_FEEDBACK_DEBT_BASELINE as unknown as string[]).push('src/semantic/NewDebt.svelte::input::unlabelled::value')).toThrow(TypeError);
-    expect(CONTROL_FEEDBACK_DEBT_BASELINE).toHaveLength(39);
+    expect(CONTROL_FEEDBACK_DEBT_BASELINE).toHaveLength(38);
   });
 
   it('uses only stable public identity fields', () => {

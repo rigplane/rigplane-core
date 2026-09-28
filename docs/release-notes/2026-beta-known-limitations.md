@@ -61,15 +61,10 @@ that class of defect is release-blocking by definition and is not on this list.
   software (20 Hz, 10 Hz to 1050 Hz, 0–10) but have not been re-run on the
   radio since the change.** (MOR-1681, MOR-1682, MOR-1678 — hardware rerun
   pending)
-- **The band picker omits 6 m, 2 m, and 70 cm** although the radio supports
-  them; use the frequency entry or the radio's own controls for those bands.
-  (MOR-1674)
 - **Attenuator and preamp cannot be set for the SUB receiver.** The FTX-1 CAT
   `RA`/`PA` commands have no SUB form; the controls are shown disabled with
   the hint "Not available on this receiver" while SUB is active. (MOR-2511,
   owner ruling 2026-09-17)
-- **NARROW cannot be switched from the web on either receiver.** The setting
-  is read and shown; no write intent exists yet. (MOR-2511 follow-up)
 
 ## rigctld write handling during transmit
 

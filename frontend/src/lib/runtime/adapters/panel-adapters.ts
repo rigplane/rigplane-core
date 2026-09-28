@@ -41,6 +41,7 @@ import {
   BREAK_IN_DELAY_COMMAND_DESCRIPTOR,
   CW_PITCH_COMMAND_DESCRIPTOR,
   DSP_COMMAND_DESCRIPTORS,
+  FILTER_SHAPE_COMMAND_DESCRIPTOR,
   FILTER_WIDTH_COMMAND_DESCRIPTOR,
   IF_SHIFT_COMMAND_DESCRIPTOR,
   KEY_SPEED_COMMAND_DESCRIPTOR,
@@ -438,6 +439,22 @@ export function getFilterWidthControlFeedback(): Readonly<ControlFeedback<number
   return projectControlFeedback(
     FILTER_WIDTH_COMMAND_DESCRIPTOR, runtime.state, getCommandLifecycles(),
     { control: 'filter-width', receiver }, currentControlSessionEpoch(), isCommandLifecycleSuperseded,
+  );
+}
+
+/**
+ * Full Filter Shape (SHARP/SOFT) projection for the shared choice seam
+ * (MOR-1689). Same read shape as `getFilterWidthControlFeedback` above —
+ * StateStore stays the only confirmed truth, the freshest in-flight
+ * `set_filter_shape` target rides the phase/transition machinery, and the
+ * separate `getFilterShapeArmed` below keeps serving the MOR-1519 armed
+ * marker (both read the SAME lifecycle through the SAME decision table).
+ */
+export function getFilterShapeControlFeedback(): Readonly<ControlFeedback<number>> {
+  const receiver: 0 | 1 = runtime.state?.active === 'SUB' ? 1 : 0;
+  return projectControlFeedback(
+    FILTER_SHAPE_COMMAND_DESCRIPTOR, runtime.state, getCommandLifecycles(),
+    { control: 'filter-shape', receiver }, currentControlSessionEpoch(), isCommandLifecycleSuperseded,
   );
 }
 

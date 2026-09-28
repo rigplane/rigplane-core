@@ -78,12 +78,12 @@ If you need remote control:
 
 | Input | Validation |
 |-------|-----------|
-| Frequency | Positive integer, BCD encoding limits to 10 digits (≤ 9,999,999,999 Hz) |
+| Frequency | Non-negative integer, BCD encoding limits to 10 digits (≤ 9,999,999,999 Hz) |
 | Power level | 0–255 range check |
 | Mode | Enum validation |
 | Credentials | Truncated to 16 characters (protocol limit) |
 | CI-V address | 1-byte value (0x00–0xFF) |
-| CW text | ASCII encoding (non-ASCII silently dropped) |
+| CW text | ASCII encoding; non-ASCII text raises `UnicodeEncodeError` |
 | Timeout | Positive float |
 
 ### No Arbitrary Code Execution
@@ -97,7 +97,7 @@ The library processes binary protocol data with fixed-format parsing (struct.unp
 
 ### Dependencies
 
-Runtime: **`pyserial`** and **`pyserial-asyncio`** (core); optional extras (`opuslib`, `sounddevice`, `numpy`, `pillow`, `cryptography`) installed only when requested. Minimal supply-chain surface.
+Runtime, always installed: `aiohttp`, `pyserial`, `pyserial-asyncio`, `opuslib`, `sounddevice`, `numpy`, `platformdirs`. Optional extras, installed only when requested: `pillow` (`scope`), `cryptography` (`tls`), `scipy` (`dsp`), `aiortc` (`webrtc`).
 
 ## Reporting Vulnerabilities
 
