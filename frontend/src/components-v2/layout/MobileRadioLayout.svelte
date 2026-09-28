@@ -967,7 +967,7 @@
   </SemanticRadioSurfaces>
 
   <!-- ═══ TUNING STRIP ═══ -->
-  <nav class="m-tuning-strip">
+  <nav class="m-tuning-strip" data-bottom-bar>
     <button class="m-tune-btn m-tune-fast" onclick={() => tuneBy(-10)}>
       <ChevronsLeft size={18} />
     </button>
@@ -1649,6 +1649,23 @@
      control stays directly visible — the owner asked for Reference and Span
      on this tab — and the More panel keeps only its native extras (full
      mode, EDGE, CENTRE, RBW, SPEED, DUAL, During TX, VBW narrow). */
+  /* MOR-2895 (owner, 2026-09-28 15:11 EDT — correction round 2): no red
+     anywhere inside the phone SCOPE tab. ScopeFlatKey keeps reading the
+     flat lamp tokens everywhere else (skins that set their own lamp colour,
+     e.g. the LCD faces, keep it); THIS tab's own container remaps every
+     token the flat-key grammar can resolve red through onto the existing
+     cyan on-state accent — the one the NB/NR chip bar lights with — and
+     kills the lamp glow. Custom properties inherit down the DOM, so the
+     fixed-position More panel (a DOM descendant of this section) is
+     covered too. Scoped to #m-chip-panel-scope only: nothing above (the
+     panorama) or outside this tab changes colour. */
+  #m-chip-panel-scope {
+    --vfo-lamp-color: var(--v2-accent-cyan, #22d3ee);
+    --dl-vfo-red-text: var(--v2-accent-cyan, #22d3ee);
+    --dl-vfo-red: var(--v2-accent-cyan, #22d3ee);
+    --dl-vfo-red-glow: none;
+  }
+
   .m-scope-controls {
     padding: 0 10px 10px;
   }
@@ -1686,20 +1703,20 @@
     font-size: 18px;
   }
 
-   .m-scope-controls :global(.scope-flat-key) {
-     min-width: 72px;
-     padding: 0 12px;
-   }
+  .m-scope-controls :global(.scope-flat-key) {
+    min-width: 72px;
+    padding: 0 12px;
+  }
 
-   /* MOR-2895: the More panel's rows may wrap on the phone — the 16px/44px
-      button floors make the four-key MODE row wider than the panel at a
-      360 px viewport, and `nowrap` there would push items past the panel's
-      and the viewport's right edge. The panel is a DOM descendant of this
-      tab, so the override reaches it despite its fixed positioning. */
-   .m-scope-controls :global(.scope-more-row) {
-     flex-wrap: wrap;
-     row-gap: 8px;
-   }
+  /* MOR-2895: the More panel's rows may wrap on the phone — the 16px/44px
+     button floors make the four-key MODE row wider than the panel at a
+     360 px viewport, and `nowrap` there would push items past the panel's
+     and the viewport's right edge. The panel is a DOM descendant of this
+     tab, so the override reaches it despite its fixed positioning. */
+  .m-scope-controls :global(.scope-more-row) {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
 
   /* ── TX compact section ── */
   .m-tx-compact {

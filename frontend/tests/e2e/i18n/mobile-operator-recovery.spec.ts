@@ -454,6 +454,28 @@ test('SCOPE More menu clears the tuning bar; lit items share the NB chip cyan (M
         });
       const nbChip = document.querySelector('.m-vfo-meta .fact[data-indicator-fact="nb"][data-state="on"]');
       const duringTx = document.querySelector('[data-testid="scope-duringTx"]');
+      // MOR-2895 round 2: the tab's own container remaps the lamp tokens.
+      // Computed custom properties stay raw token streams (hex), not
+      // resolved colors, so each token is resolved through a probe element
+      // INSIDE the tab — the same resolution path any key in the tab takes.
+      const scopeTab = document.querySelector('#m-chip-panel-scope');
+      let tabTokens: Record<string, string | null> | null = null;
+      if (scopeTab instanceof HTMLElement) {
+        const probe = document.createElement('div');
+        scopeTab.appendChild(probe);
+        const resolveColor = (token: string): string => {
+          probe.style.color = `var(${token})`;
+          return getComputedStyle(probe).color;
+        };
+        probe.style.textShadow = 'var(--dl-vfo-red-glow)';
+        tabTokens = {
+          lamp: resolveColor('--vfo-lamp-color'),
+          redText: resolveColor('--dl-vfo-red-text'),
+          red: resolveColor('--dl-vfo-red'),
+          glow: getComputedStyle(probe).textShadow,
+        };
+        probe.remove();
+      }
       return {
         viewport: { width: innerWidth, height: innerHeight },
         panel: panelEl.getBoundingClientRect().toJSON(),
@@ -461,6 +483,7 @@ test('SCOPE More menu clears the tuning bar; lit items share the NB chip cyan (M
         items,
         nbBar: nbChip ? getComputedStyle(nbChip, '::before').backgroundColor : null,
         duringTxColor: duringTx ? getComputedStyle(duringTx).color : null,
+        tabTokens,
       };
     });
     writeFileSync(info.outputPath(`mor-2895-more-${width}.json`), JSON.stringify(audit, null, 2));
@@ -483,6 +506,16 @@ test('SCOPE More menu clears the tuning bar; lit items share the NB chip cyan (M
     expect(audit.nbBar, `${stage}: lit NB chip bar present`).not.toBeNull();
     expect(audit.duringTxColor, `${stage}: lit During TX key present`).not.toBeNull();
     expect(audit.duringTxColor, `${stage}: During TX uses the cyan accent`).toBe(audit.nbBar);
+    // Round 2: the remap lives on the tab's own container, so every lamp
+    // token resolves to the same cyan INSIDE the tab and the glow is gone —
+    // no element in the tab can resolve the flat lamp red. (ScopeFlatKey
+    // keeps the lamp grammar outside the tab; that is pinned at the
+    // component level in MobileRadioLayout.component.svelte.test.ts.)
+    expect(audit.tabTokens, `${stage}: the SCOPE tab container resolved its tokens`).not.toBeNull();
+    expect(audit.tabTokens!.lamp, `${stage}: --vfo-lamp-color resolves to the cyan accent`).toBe(audit.nbBar);
+    expect(audit.tabTokens!.redText, `${stage}: --dl-vfo-red-text resolves to the cyan accent`).toBe(audit.nbBar);
+    expect(audit.tabTokens!.red, `${stage}: --dl-vfo-red resolves to the cyan accent`).toBe(audit.nbBar);
+    expect(audit.tabTokens!.glow, `${stage}: no lamp glow inside the tab`).toBe('none');
     await page.keyboard.press('Escape');
     await expect(panel).toHaveCount(0);
   }

@@ -41,13 +41,29 @@
     const { offsetWidth: w, offsetHeight: h } = panel;
     const left = Math.max(8, Math.min(rect.right - w, window.innerWidth - 8 - w));
     // MOR-2895 (owner, 2026-09-28 15:10 EDT): open DOWN only while the whole
-    // panel fits between the key and the viewport's bottom margin. On the
-    // portrait phone the ⋯ key sits just above the fixed bottom tuning bar,
-    // and the old always-down clamp buried the panel's tail (During TX, VBW
-    // narrow) under that bar. No room below ⇒ open UP, flush 8 px above the
-    // key; when the panel fits neither way the old top-clamped downward
-    // placement stays (the panel's max-height keeps it scrollable).
-    const roomBelow = window.innerHeight - 8 - h;
+    // panel fits between the key and the bottom boundary. On the portrait
+    // phone the ⋯ key sits just above the fixed bottom tuning bar, and the
+    // old always-down clamp buried the panel's tail (During TX, VBW narrow)
+    // under that bar. No room below ⇒ open UP, flush 8 px above the key;
+    // when the panel fits neither way the old top-clamped downward placement
+    // stays (the panel's max-height keeps it scrollable).
+    //
+    // Correction round 2: the bottom boundary MEASURES the fixed bottom
+    // chrome instead of assuming the viewport edge. Any layout bar that
+    // owns the screen's bottom declares itself with `data-bottom-bar` (the
+    // phone's tuning strip does); the panel must clear the bar's ACTUAL top
+    // edge, read live from the element — never a hard-coded height, so the
+    // strip growing (52 px today, 76 px under MOR-2874's PTT strip) needs
+    // no change here. Layouts without such chrome keep the old viewport
+    // bottom minus the 8 px margin; the bar gets the same 8 px clearance.
+    // jsdom reports 0×0 boxes, so degenerate top:0 bars are ignored.
+    const barTops = Array.from(document.querySelectorAll<HTMLElement>('[data-bottom-bar]'))
+      .map((el) => el.getBoundingClientRect().top)
+      .filter((top) => top > 0 && top < window.innerHeight);
+    const bottomLimit = barTops.length
+      ? Math.min(...barTops) - 8
+      : window.innerHeight - 8;
+    const roomBelow = bottomLimit - h;
     const top = rect.bottom <= roomBelow
       ? rect.bottom
       : Math.max(8, Math.min(rect.top - 8 - h, roomBelow));

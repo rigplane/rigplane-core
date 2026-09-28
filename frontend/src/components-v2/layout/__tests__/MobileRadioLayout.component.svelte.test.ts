@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
@@ -1084,6 +1085,73 @@ describe('MobileRadioLayout SCOPE tab desktop-toolbar controls (MOR-2895)', () =
     } finally {
       restore();
     }
+  });
+
+  // MOR-2895 correction round 2 (owner, 2026-09-28): the cyan on-state is
+  // scoped to the phone SCOPE tab's own container. The shared ScopeFlatKey
+  // keeps the flat lamp grammar everywhere else, so skins that set their own
+  // lamp colour (the LCD faces) keep it. This Vitest/jsdom config injects no
+  // component <style> (documented in PeerSplitLayout.component.test.ts, the
+  // #2968 pin), so the mapping is pinned on the layout's source and on the
+  // DOM tree it governs; the resolved cyan is proven in a real browser by
+  // the MOR-2895 e2e audit.
+  describe('MOR-2895 round 2 — no red inside the phone SCOPE tab, lamp grammar kept outside it', () => {
+    const layoutSource = readFileSync('src/components-v2/layout/MobileRadioLayout.svelte', 'utf8');
+    const flatKeySource = readFileSync('src/components/spectrum/ScopeFlatKey.svelte', 'utf8');
+
+    it('the SCOPE tab container remaps every red-capable lamp token onto the cyan accent', () => {
+      const rule = layoutSource.match(/#m-chip-panel-scope\s*\{[^}]*\}/)?.[0] ?? '';
+      expect(rule, 'a #m-chip-panel-scope rule exists').not.toBe('');
+      expect(rule).toContain('--vfo-lamp-color: var(--v2-accent-cyan');
+      expect(rule).toContain('--dl-vfo-red-text: var(--v2-accent-cyan');
+      expect(rule).toContain('--dl-vfo-red: var(--v2-accent-cyan');
+      expect(rule).toContain('--dl-vfo-red-glow: none');
+      // Scoped to the tab ONLY: the remap appears exactly once in the file,
+      // so no surface outside this tab (VFO lamps, other chip panels)
+      // inherits the override.
+      expect(layoutSource.match(/--vfo-lamp-color:/g) ?? []).toHaveLength(1);
+    });
+
+    it('the shared ScopeFlatKey reads the lamp tokens again — no cyan hardcoded into the key', () => {
+      expect(flatKeySource)
+        .toContain('color: var(--vfo-lamp-color, var(--dl-vfo-red-text, var(--dl-vfo-red, #e2362c)));');
+      expect(flatKeySource).toContain('text-shadow: var(--dl-vfo-red-glow, none);');
+      // RED on the round-1 head, which hardcoded --v2-accent-cyan here and
+      // deleted the glow rule.
+      expect(flatKeySource).not.toContain('--v2-accent-cyan');
+    });
+
+    it('the fixed More panel and the value digits are DOM descendants of the remapped container', () => {
+      // Custom properties inherit down the DOM tree, not the layout tree:
+      // the mapping reaches the More panel only because the panel is a DOM
+      // descendant of #m-chip-panel-scope despite its position: fixed.
+      const restore = withHardwareScopeRadio();
+      try {
+        const t = mountMobileWithAppPlan();
+        const panel = openScopePanel(t);
+        const more = openMore(panel);
+        expect(panel.id).toBe('m-chip-panel-scope');
+        expect(panel.contains(more)).toBe(true);
+        // The SPAN/REF value digits read the same lamp chain
+        // (.scope-step-value in ScopeControlsSurface.svelte), so the same
+        // container mapping covers them; the tab's own screen keys
+        // (VIEW/AVG/PEAK/BANDS) are ScopeFlatKey instances inside it too.
+        expect(panel.querySelector('.scope-step-value')).not.toBeNull();
+        expect(panel.querySelectorAll('.scope-flat-key').length).toBeGreaterThan(0);
+      } finally {
+        restore();
+      }
+    });
+
+    it('the tuning strip declares its live box to fixed-position popovers (data-bottom-bar)', () => {
+      const t = mountMobile();
+      // The More panel's flip-up decision measures the bar's ACTUAL top
+      // edge from the element (52 px today, 76 px under open PR #3879 /
+      // MOR-2874) — this attribute is what makes the strip measurable.
+      const bar = t.querySelector('.m-tuning-strip');
+      expect(bar, 'the tuning strip renders').not.toBeNull();
+      expect(bar!.hasAttribute('data-bottom-bar')).toBe(true);
+    });
   });
 
   it('a single-receiver radio draws no MAIN/SUB segment — unsupported is not drawn', () => {
