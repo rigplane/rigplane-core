@@ -31,6 +31,7 @@ from rigplane.core.state_pipeline_contracts import (
     CommandSource,
     FieldPath,
     Observation,
+    ObservationSource,
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
@@ -1375,8 +1376,16 @@ def command_response_observation(
     provider: str,
     transport: str | None = None,
     value: Any = None,
+    source: ObservationSource = "command_response",
 ) -> Observation:
-    """Create a confirmed command-response observation for an intent target."""
+    """Create a confirmed command-response observation for an intent target.
+
+    The default ``command_response`` source is a claim that the radio
+    answered and this code parsed it (MOR-2893). A caller whose value was
+    NOT parsed from a radio answer — e.g. an expected-value echo after a
+    fire-and-forget setter — must pass an explicitly unconfirmed source
+    such as ``local_reconcile`` instead.
+    """
 
     if intent.target is None:
         raise ValueError(f"command {intent.name!r} has no observable target")
@@ -1389,7 +1398,7 @@ def command_response_observation(
         path=intent.target,
         value=observed_value,
         source=SourceMetadata(
-            source="command_response",
+            source=source,
             provider=provider,
             transport=transport,
             command_source=intent.source,
