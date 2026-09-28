@@ -1,18 +1,17 @@
 /**
- * MOR-2241 — one link-loss notice instead of a flood of
- * "provider generation invalidated" toasts.
+ * MOR-2847 / MOR-2241 — link-loss command-failure toasts.
  *
  * Server path (structured, not message-text matching):
  *   `src/rigplane/web/server.py: _on_provider_generation` terminates
  *   in-flight commands with reason "provider generation invalidated";
  *   `_on_command_lifecycle_event` forwards each as a targeted notification
- *   with `code: 'commandExecutionFailed'` and
- *   `params: { reason: 'provider generation invalidated' }`.
+ *   with `code: 'commandLinkLost'` and `params: { reason }` (the reason
+ *   stays as a diagnostic parameter only).
  *
- * While the radio link is not connected
- * (`getRadioLinkState() !== 'connected'` — the same derivation that drives
- * the StatusBar link chip), those link-loss terminations must not become
- * per-command toasts. The chip is the persistent disconnected indicator.
+ * While the radio link is not connected (`getRadioLinkState() !==
+ * 'connected'` — the same derivation that drives the StatusBar link chip),
+ * those link-loss terminations must not become per-command toasts. The chip
+ * is the persistent disconnected indicator.
  *
  * The transport layer is mocked: the registered `onMessage` handler is
  * captured and synthetic `notification` payloads are dispatched, mirroring
@@ -55,7 +54,7 @@ function linkLossTermination(): Record<string, unknown> {
     level: 'error',
     message: 'Command failed: provider generation invalidated',
     category: 'command',
-    code: 'commandExecutionFailed',
+    code: 'commandLinkLost',
     params: { reason: 'provider generation invalidated' },
   };
 }
@@ -125,25 +124,46 @@ function errorMessages(): string[] {
   );
 }
 
-describe('Toast — plain invalidation message (MOR-2846)', () => {
+describe('Toast — commandLinkLost code resolution (MOR-2847)', () => {
   /**
-   * The internal fencing literals that terminate an in-flight command at
-   * (or around) a provider-generation change:
-   *   - "provider generation invalidated" — `server.py:
-   *     _on_provider_generation` → `terminate_active_commands`;
-   *   - "command invalidated during provider generation change" and
-   *     "command invalidated during execution" — `command_service.py`
-   *     `CommandExecutionInvalidatedError` (same USB-vanish class).
-   * All three must render one plain operator message, never the internal
-   * reason, in every locale — pinned here in en-US.
+   * A `commandLinkLost` notification renders the plain localized text via
+   * `messageFromReasonCode`, whatever the diagnostic reason parameter
+   * carries — the reason text must never select the message.
    */
-  const INVALIDATION_REASONS = [
+  it.each([
+    undefined,
+    { reason: 'provider generation invalidated' },
+    { reason: 'command invalidated during provider generation change' },
+    { reason: 'command invalidated during execution' },
+    { reason: 'anything else the server may ever say' },
+  ])('renders the plain message with params %j', (params) => {
+    app = mount(Toast, { target: host });
+    flushSync();
+
+    dispatchNotification({
+      level: 'error',
+      message: 'Command failed: provider generation invalidated',
+      category: 'command',
+      code: 'commandLinkLost',
+      ...(params === undefined ? {} : { params }),
+    });
+    flushSync();
+
+    expect(errorMessages()).toEqual([
+      'Connection to the radio was interrupted; the command was cancelled. Try again.',
+    ]);
+  });
+
+  /**
+   * The literal reason-text matching is gone: a fencing reason under the
+   * generic `commandExecutionFailed` code renders the generic template,
+   * never the plain link-lost text.
+   */
+  it.each([
     'provider generation invalidated',
     'command invalidated during provider generation change',
     'command invalidated during execution',
-  ];
-
-  it.each(INVALIDATION_REASONS)('renders a plain message, never the internal reason %j', (reason) => {
+  ])('renders the generic template for reason %j under the generic code', (reason) => {
     app = mount(Toast, { target: host });
     flushSync();
 
@@ -156,9 +176,7 @@ describe('Toast — plain invalidation message (MOR-2846)', () => {
     });
     flushSync();
 
-    expect(errorMessages()).toEqual([
-      'Connection to the radio was interrupted; the command was cancelled. Try again.',
-    ]);
+    expect(errorMessages()).toEqual([`Command failed: ${reason}`]);
   });
 });
 

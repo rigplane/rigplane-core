@@ -49,6 +49,7 @@ logger = logging.getLogger(__name__)
 _WRITE_CONFIRMATION_MAX_AGE = 1e-9
 
 __all__ = [
+    "COMMAND_OUTCOME_INVALIDATED",
     "CommandExecutionInvalidatedError",
     "CommandExecutionResult",
     "CommandExecutor",
@@ -80,6 +81,13 @@ _NORMALIZED_LEVEL_EXPECTATION_COMMANDS = {
 
 Clock = Callable[[], float]
 LifecycleSubscriber = Callable[[CommandLifecycleEvent], None]
+
+#: Lifecycle ``details["outcome"]`` marker for a command ended by fencing —
+#: an in-flight invalidation at (or around) a provider-generation change.
+#: Consumers that must classify the failure (the web server choosing the
+#: RP-ML-005 notification code, MOR-2847) read this structured outcome
+#: instead of matching the free-text reason.
+COMMAND_OUTCOME_INVALIDATED = "commandInvalidated"
 
 
 class CommandExecutionInvalidatedError(RuntimeError):

@@ -14,6 +14,8 @@ import pytest
 
 from rigplane._bounded_queue import BoundedQueue
 from rigplane.core.command_service import (
+    COMMAND_OUTCOME_INVALIDATED,
+    CommandExecutionInvalidatedError,
     CommandExecutionResult,
     CommandService,
     command_intent_from_request,
@@ -3780,12 +3782,17 @@ async def test_deferred_lifecycle_ack_identity_and_bounded_queue() -> None:
 
 
 @pytest.mark.asyncio
-async def test_link_loss_termination_reason_pins_toast_filter_contract_with_page() -> (
-    None
-):
-    # MOR-2241: pins the contract with frontend/src/components/shared/Toast.svelte —
-    # the page suppresses per-command toasts while disconnected only for this
-    # exact code/params pair; rewording the server literal silently breaks it.
+async def test_provider_generation_fencing_notifies_command_link_lost() -> None:
+    """MOR-2847: a link-loss fencing termination notifies its issuer with
+    the stable ``commandLinkLost`` code (resolved by the frontend via
+    ``messageFromReasonCode`` to ``core.toast.commandLinkLost``), never with
+    the free-text reason as the match key. The reason stays as a diagnostic
+    param.
+
+    Also pins the MOR-2241 contract with
+    frontend/src/components/shared/Toast.svelte: the page suppresses
+    per-command toasts while disconnected only for this code.
+    """
     srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     issuer_q, bystander_q = _register_two_sessions(srv)
     srv.command_service._executor = _StubCommandExecutor()  # noqa: SLF001
@@ -3808,13 +3815,156 @@ async def test_link_loss_termination_reason_pins_toast_filter_contract_with_page
     assert n["type"] == "notification"
     assert n["level"] == "error"
     assert n["category"] == "command"
-    assert n["code"] == "commandExecutionFailed"
+    assert n["code"] == "commandLinkLost"
     assert n["params"] == {"reason": "provider generation invalidated"}
     lifecycle = issuer_q.get_nowait()
     assert lifecycle["type"] == "command_lifecycle"
     assert lifecycle["state"] == "failed"
+    assert lifecycle["details"] == {"outcome": COMMAND_OUTCOME_INVALIDATED}
     assert lifecycle["commandId"] == "cmd-link-loss-1" and issuer_q.empty()
     assert bystander_q.empty()  # zero — never broadcast
+
+
+class _GatedCommandExecutor:
+    """Executor double that blocks until released, racing an in-flight
+    invalidation against a completing executor (command_service.py)."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
+        self.started.set()
+        await self.release.wait()
+        return CommandExecutionResult()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_generation_changed", "reason"),
+    [
+        (True, "command invalidated during provider generation change"),
+        (False, "command invalidated during execution"),
+    ],
+)
+async def test_in_flight_invalidation_notifies_command_link_lost(
+    provider_generation_changed: bool, reason: str
+) -> None:
+    """MOR-2847: the CommandService.execute fencing invalidations — the
+    executor completes after the command's in-flight seat was silently
+    detached — record a failed lifecycle event carrying the structured
+    fencing outcome, and the notification seam resolves that outcome to
+    ``commandLinkLost`` by kind, never by matching the reason text.
+
+    The acknowledged-history precondition mirrors production: the
+    issuer-only notification doctrine (MOR-1445) delivers only post-ack
+    failures, and was_acknowledged is derived per command_id from
+    CommandService's recorded history.
+    """
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
+    issuer_q, bystander_q = _register_two_sessions(srv)
+    service = srv.command_service
+
+    intent = command_intent_from_request(
+        "set_freq",
+        {"freq_hz": 14250000},
+        source="websocket",
+        command_id="cmd-fence-1",
+        session_id="session-issuer",
+    )
+    srv.command_service._executor = _StubCommandExecutor()  # noqa: SLF001
+    await service.execute(intent)  # acknowledged history for this command id
+    _drain_queue(issuer_q)
+
+    gated = _GatedCommandExecutor()
+    srv.command_service._executor = gated  # noqa: SLF001
+    execution = asyncio.create_task(service.execute(intent))
+    await gated.started.wait()
+    # Silently detach the in-flight seat (the acknowledged-seat capacity
+    # eviction class — no terminal event for this id), leaving the
+    # invalidation branch as the only failure reporter.
+    service._active_commands.pop(  # noqa: SLF001
+        ("websocket", "session-issuer", "cmd-fence-1")
+    )
+    if provider_generation_changed:
+        srv.command_state_store.begin_provider_generation()
+        _drain_queue(issuer_q)
+    gated.release.set()
+    with pytest.raises(CommandExecutionInvalidatedError, match=reason):
+        await execution
+
+    n = issuer_q.get_nowait()
+    assert n["type"] == "notification"
+    assert n["level"] == "error"
+    assert n["category"] == "command"
+    assert n["code"] == "commandLinkLost"
+    assert n["params"] == {"reason": reason}
+    lifecycle = issuer_q.get_nowait()
+    assert lifecycle["type"] == "command_lifecycle"
+    assert lifecycle["state"] == "failed"
+    assert lifecycle["details"] == {"outcome": COMMAND_OUTCOME_INVALIDATED}
+    assert issuer_q.empty()
+    assert bystander_q.empty()  # zero — never broadcast
+
+
+@pytest.mark.asyncio
+async def test_command_failure_notification_codes_resolve_in_every_locale() -> (
+    None
+):
+    """MOR-2847 contract: every notification code the server can send for
+    command failures resolves to a ``core.toast.<code>`` key in every
+    shipped locale (frontend ``messageFromReasonCode``). The code list is
+    derived from the server's two real command-failure notification paths —
+    the fencing outcome and the ordinary post-ack failure — not from a
+    hand-written copy.
+    """
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
+    issuer_q, _ = _register_two_sessions(srv)
+    srv.command_service._executor = _StubCommandExecutor()  # noqa: SLF001
+    service = srv.command_service
+
+    fencing = command_intent_from_request(
+        "set_freq",
+        {"freq_hz": 14250000},
+        source="websocket",
+        command_id="cmd-code-a",
+        session_id="session-issuer",
+    )
+    await service.execute(fencing)
+    srv.command_state_store.begin_provider_generation()
+
+    ordinary = command_intent_from_request(
+        "set_attenuator",
+        {"db": 20, "receiver": 0},
+        source="websocket",
+        command_id="cmd-code-b",
+        session_id="session-issuer",
+    )
+    await service.execute(ordinary)
+    assert service.fail_command("cmd-code-b", message="radio did not respond")
+
+    codes: set[str] = set()
+    while not issuer_q.empty():
+        item = issuer_q.get_nowait()
+        if item.get("type") == "notification" and item.get("category") == "command":
+            codes.add(item["code"])
+    # Pins the derived set: growing it requires the locale keys below.
+    assert codes == {"commandLinkLost", "commandExecutionFailed"}
+
+    locales = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "frontend"
+        / "src"
+        / "lib"
+        / "i18n"
+        / "locales"
+    )
+    shipped = sorted(path.stem for path in locales.glob("*.json"))
+    assert shipped == ["en-US", "ja-JP", "ru-RU"]
+    for path in sorted(locales.glob("*.json")):
+        catalog = json.loads(path.read_text())
+        for code in codes:
+            assert f"core.toast.{code}" in catalog, (path.name, code)
 
 
 @pytest.mark.asyncio
