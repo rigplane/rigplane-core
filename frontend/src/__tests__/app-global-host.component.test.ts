@@ -390,6 +390,92 @@ describe('App composition — one host above the presentation boundary', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// MOR-1240 — while the radio is powered off, the desktop status bar stays
+// usable; the phone layout has no status bar and keeps the full-screen
+// overlay.
+// ---------------------------------------------------------------------------
+describe('MOR-1240 — the powered-off overlay leaves the desktop status bar usable', () => {
+  const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8');
+  const cssOf = (rel: string) =>
+    (read(rel).match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '').replace(/\/\*[\s\S]*?\*\//g, '');
+  const hasUncoveredClass = () => powerEl()?.classList.contains('leave-status-bar') ?? false;
+
+  function mountHostWith(props: Record<string, unknown>) {
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const instance = mount(AppGlobalHost, { target, props });
+    flushSync();
+    return instance;
+  }
+
+  // This Vitest/jsdom config injects no component <style> and jsdom does no
+  // layout, so a real hit-test (`document.elementFromPoint` at a control's
+  // centre) is impossible here. The class pin plus the CSS source pin below
+  // are the equivalent: the class selects the rule, the rule's `top` is what
+  // keeps the bar uncovered in a real browser — the same source-pin idiom
+  // PeerSplitLayout.component.test.ts uses for its CSS.
+  it('starts the overlay below the status bar strip while keeping its Power ON action', async () => {
+    h.radioPowerOn = false;
+    h.powerOn.mockResolvedValue(undefined);
+    const instance = mountHostWith({ uncoverStatusBar: true });
+
+    expect(powerEl()).not.toBeNull();
+    expect(hasUncoveredClass()).toBe(true);
+    powerEl()?.querySelector<HTMLButtonElement>('.power-on-btn')?.click();
+    await settle();
+    expect(h.powerOn).toHaveBeenCalledTimes(1);
+
+    unmount(instance);
+  });
+
+  it('keeps the full-screen overlay when the layout hosts no status bar', () => {
+    h.radioPowerOn = false;
+    const instance = mountHostWith({});
+
+    expect(powerEl()).not.toBeNull();
+    expect(hasUncoveredClass()).toBe(false);
+
+    unmount(instance);
+  });
+
+  // The uncovered strip must be exactly the status bar's height: too small
+  // and the overlay still eats the bar's bottom edge, too large and it opens
+  // a hole above it.
+  it('pins the uncovered top edge to the StatusBar strip height', () => {
+    const barHeight = cssOf('../components-v2/layout/StatusBar.svelte')
+      .match(/\.status-bar\s*\{([^}]*)\}/)?.[1]
+      .match(/height:\s*([^;]+);/)?.[1].trim();
+    expect(barHeight).toBe('28px');
+    const uncovered = cssOf('../AppGlobalHost.svelte')
+      .match(/\.power-off-overlay\.leave-status-bar\s*\{([^}]*)\}/)?.[1];
+    expect(uncovered).toContain(`top: ${barHeight}`);
+  });
+
+  it('App uncovers the bar on the desktop layout and restores the full-screen overlay on the phone layout', async () => {
+    h.radioPowerOn = false;
+    const instance = mountAt(App);
+    await settle();
+    flushSync();
+    expect(hasUncoveredClass()).toBe(true); // desktop-v2
+
+    const resize = async (width: number) => {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+      window.dispatchEvent(new Event('resize'));
+      flushSync();
+      await settle();
+      flushSync();
+    };
+    await resize(390);
+    expect(document.querySelector('.layout-stub')?.getAttribute('data-skin')).toBe('mobile');
+    expect(hasUncoveredClass()).toBe(false);
+    await resize(1200);
+    expect(hasUncoveredClass()).toBe(true);
+
+    unmount(instance);
+  });
+});
+
 describe('Layouts no longer own the App-global surfaces', () => {
   const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8');
 
