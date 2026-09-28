@@ -1628,11 +1628,7 @@ def snapshot_field_status_inputs(
     ``declared`` is every ``field_policies`` key plus every capability path
     the profile does NOT mark unavailable
     (:attr:`~rigplane.core.state_acquisition_policy.FieldCapability.is_unavailable`,
-    which covers both ``unsupported`` and ``unknown``). ``field_policies``
-    alone would not do: ``rigs/ic705.toml`` has no
-    ``[state_acquisition.field_policies]`` table, so every one of the 133
-    entries this projection emits for it — ``main.freqHz`` included —
-    would read ``undeclared``.
+    which covers both ``unsupported`` and ``unknown``).
     """
 
     return resolve_available_when(acquisition, snapshot), declared_field_paths(

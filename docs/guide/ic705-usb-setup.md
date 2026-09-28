@@ -9,7 +9,6 @@ This guide shows how to control the IC-705 via **USB serial CI-V + USB audio dev
 ## Why Use the Serial Backend?
 
 - **No network required** — direct USB connection
-- **Lower latency** — no UDP/network overhead
 - **Simpler setup** — no IP config, username, or password
 - **Field operation** — works without WiFi/Ethernet
 - **Portable operation** — ideal for IC-705's portable/QRP use case
@@ -17,33 +16,25 @@ This guide shows how to control the IC-705 via **USB serial CI-V + USB audio dev
 ## Hardware Requirements
 
 - IC-705 portable transceiver (HF/VHF/UHF)
-- USB-C cable (IC-705 uses USB-C)
-- macOS computer (tested on Ventura+ arm64/Intel)
+- USB cable for the IC-705's **[microUSB]** port
+- macOS computer
 
 ## Radio Configuration
 
-!!! danger "Critical Setup Step"
-    On the IC-705, navigate to **Menu → Set → Connectors → CI-V → CI-V USB Port** and set it to **`Link to [CI-V]`**, **NOT** `[REMOTE]`.
-
-    - `Link to [CI-V]` — serial CI-V commands work (required for rigplane serial backend)
-    - `[REMOTE]` — RS-BA1 mode, serial CI-V is blocked
-
-    This is the same critical setting as IC-7610; confirmed by wfview reference and IC-7610 hardware validation.
+The IC-705 CI-V Reference Guide (p.2) says to set the radio's CI-V address,
+data communication speed and transceive function in Set mode, and refers to
+the IC-705 instruction manual for those settings.
 
 ### Recommended Radio Settings
 
 | Setting | Value | Why |
 |---------|-------|-----|
-| **CI-V USB Port** | `Link to [CI-V]` | ✅ Required — enables serial CI-V |
-| **CI-V USB Baud Rate** | `115200` | Recommended for scope/waterfall |
-| **CI-V Address** | `0xA4` (IC-705 default) | Library auto-detects from profile |
-| **USB Audio TX** | Enabled | Allows browser/WSJT-X TX via USB audio |
-| **USB Audio RX** | Enabled | Exports RX audio to computer |
+| **CI-V data communication speed** | `115200` | RigPlane's default for the IC-705; needed for scope/waterfall |
+| **CI-V Address** | `0xA4` (IC-705 default) | RigPlane reads it from the IC-705 profile (`--model IC-705`) |
 
 !!! note "Baud Rate"
     - `115200` baud is recommended for scope/waterfall capability
-    - Lower baud rates (19200, 9600) work for basic control (freq, mode, PTT) but scope/waterfall is disabled by a guardrail due to high packet rate
-    - CI-V baud rate IS significant on IC-705 — it must match between radio and library
+    - Below `115200`, scope/waterfall is disabled by a guardrail due to high packet rate
 
 !!! info "IC-705 Single Receiver"
     The IC-705 has a single receiver, unlike the IC-7610's dual receiver. The library automatically enforces this via the IC-705 profile — operations on `receiver=1` will fail with `CommandError`.
@@ -66,30 +57,23 @@ pip install rigplane
 ### 2. Connect the Radio
 
 1. Power on the IC-705
-2. Connect USB-C cable from Mac to IC-705 **USB-C port** (top panel)
-3. Wait ~5 seconds for macOS to enumerate the device
+2. Connect a USB cable from the Mac to the IC-705's **[microUSB] port** (right side panel)
 
 ### 3. Find the Serial Device
 
+The IC-705 presents two USB serial ports. Its CI-V Reference Guide (p.2)
+names them "IC-705 Serial Port A (CI-V)" and "IC-705 Serial Port B" on a PC
+with Icom's USB driver: CI-V is on port A.
+
 ```bash
 # List serial devices
-ls -l /dev/cu.usbserial-*
-
-# Example output:
-# /dev/cu.usbserial-IC705123
+ls -l /dev/cu.*
 ```
-
-The IC-705 typically appears as `/dev/cu.usbserial-*` where the suffix may include "IC705" or the radio's serial number.
 
 You can also use `rigplane discover --serial-only` to list USB serial candidates and identify likely supported radios:
 
 ```bash
 rigplane discover --serial-only
-```
-
-```
-IC-705:
-  • Serial: /dev/cu.usbserial-IC705123 (115200 baud)
 ```
 
 ### 4. Find USB Audio Devices
@@ -102,70 +86,20 @@ rigplane --list-audio-devices
 Audio-device listing requires `sounddevice`, which ships with the core
 install since v0.19 (`pip install rigplane`).
 
-**Example output:**
-
-```json
-[
-  {
-    "index": 0,
-    "name": "IC-705",
-    "max_input_channels": 2,
-    "max_output_channels": 2,
-    "default_samplerate": 48000.0
-  },
-  {
-    "index": 1,
-    "name": "IC-705 TX",
-    "max_input_channels": 0,
-    "max_output_channels": 2,
-    "default_samplerate": 48000.0
-  },
-  {
-    "index": 2,
-    "name": "IC-705 RX",
-    "max_input_channels": 2,
-    "max_output_channels": 0,
-    "default_samplerate": 48000.0
-  }
-]
-```
-
 !!! note "Audio Device Names"
-    IC-705 USB audio devices may appear as:
-    - `IC-705` (combined RX/TX)
-    - `IC-705 RX` (receive audio from radio)
-    - `IC-705 TX` (transmit audio to radio)
-
-    The library will auto-detect these devices when you use the serial backend with audio enabled.
+    Without `--rx-device` and `--tx-device`, RigPlane picks a USB audio device
+    itself. To choose one, pass a device name from this list to `--rx-device`
+    and `--tx-device`.
 
 ## Usage Examples
 
 ### CLI: Basic Control
 
+Replace `/dev/cu.XXXX` with the IC-705's CI-V port from step 3.
+
 ```bash
-# Connect via USB serial (no audio)
-rigplane --backend serial --device /dev/cu.usbserial-IC705123 \
-  --model IC-705 --baudrate 115200 repl
-
-# Connect with USB audio enabled
-rigplane --backend serial --device /dev/cu.usbserial-IC705123 \
-  --model IC-705 --baudrate 115200 \
-  --rx-audio-device "IC-705 RX" \
-  --tx-audio-device "IC-705 TX" \
-  repl
-```
-
-**REPL commands:**
-
-```
->>> freq
-7074000
->>> freq 14074000
->>> mode
-('USB', 2)
->>> mode LSB
->>> ptt on
->>> ptt off
+# Frequency, mode and meters over USB serial
+rigplane --serial-port /dev/cu.XXXX --model IC-705 status
 ```
 
 ### Python: Async API
@@ -178,11 +112,11 @@ from rigplane.backends.config import SerialBackendConfig
 async def main():
     # Create IC-705 serial backend
     config = SerialBackendConfig(
-        device="/dev/cu.usbserial-IC705123",
+        device="/dev/cu.XXXX",
         model="IC-705",
         baudrate=115200,
-        rx_audio_device="IC-705 RX",  # Optional
-        tx_audio_device="IC-705 TX",  # Optional
+        rx_device=None,  # Optional: a name from `rigplane --list-audio-devices`
+        tx_device=None,  # Optional
     )
 
     radio = create_radio(config)
@@ -206,60 +140,24 @@ async def main():
 asyncio.run(main())
 ```
 
-### Python: Sync API
-
-```python
-from rigplane.backends.factory import create_radio
-from rigplane.backends.config import SerialBackendConfig
-
-# Create IC-705 serial backend
-config = SerialBackendConfig(
-    device="/dev/cu.usbserial-IC705123",
-    model="IC-705",
-    baudrate=115200,
-)
-
-radio = create_radio(config)
-
-with radio:
-    # Sync operations
-    radio.set_frequency(7_074_000)
-    freq = radio.get_frequency()
-    print(f"Frequency: {freq} Hz")
-
-    radio.set_mode("LSB")
-    mode, filt = radio.get_mode()
-    print(f"Mode: {mode}, Filter: {filt}")
-```
-
 ### Web UI
 
 ```bash
 # Start web server with IC-705 serial backend
-rigplane --backend serial --device /dev/cu.usbserial-IC705123 \
-  --model IC-705 --baudrate 115200 \
-  --rx-audio-device "IC-705 RX" \
-  --tx-audio-device "IC-705 TX" \
+rigplane --serial-port /dev/cu.XXXX --model IC-705 \
+  --rx-device "<RX device name>" \
+  --tx-device "<TX device name>" \
   web
 
-# Open browser to http://localhost:7610
+# Open browser to http://localhost:8080
 ```
-
-The web UI provides:
-- Frequency/mode control
-- VFO select/swap
-- Scope/waterfall display
-- Audio bridge (browser → radio TX, radio RX → browser)
-- PTT control
-- Memory/filter/settings panels
 
 ### rigctld (Hamlib Compatibility)
 
 ```bash
 # Start rigctld server with IC-705 serial backend
-rigplane --backend serial --device /dev/cu.usbserial-IC705123 \
-  --model IC-705 --baudrate 115200 \
-  rigctld --port 4532
+rigplane --serial-port /dev/cu.XXXX --model IC-705 \
+  serve --port 4532
 
 # Test with rigctl client
 rigctl -m 2 -r localhost:4532 f  # Get frequency
@@ -279,20 +177,18 @@ ls -l /dev/cu.*
 ```
 
 **Solutions:**
-- Verify USB-C cable is data-capable (not charge-only)
+- Verify the USB cable is data-capable (not charge-only)
 - Try a different USB port on your Mac
 - Power cycle the IC-705 and wait for enumeration
-- Check macOS System Settings → Privacy & Security → USB permissions
 
 ### CI-V Commands Failing
 
 **Symptoms:** Connection succeeds but commands timeout or return NAK
 
 **Solutions:**
-1. ✅ **Verify `CI-V USB Port = Link to [CI-V]`** (most common issue)
-2. Check CI-V baud rate matches radio setting (default: 115200)
-3. Verify CI-V address is `0xA4` (IC-705 default)
-4. Check USB cable integrity
+1. Check the radio's CI-V data communication speed against the baud rate RigPlane uses (`115200` unless `--serial-baud` sets another)
+2. Verify CI-V address is `0xA4` (IC-705 default)
+3. Check USB cable integrity
 
 ### USB Audio Not Working
 
@@ -300,7 +196,6 @@ ls -l /dev/cu.*
 
 **Solutions:**
 - Make sure you're on rigplane v0.19+ (audio deps ship with the core install; for older versions run `pip install 'rigplane[bridge]'`)
-- Verify `USB Audio RX/TX = Enabled` in radio settings
 - Check audio device names with `rigplane --list-audio-devices`
 - macOS may require microphone/audio permissions for the terminal app
 
@@ -311,8 +206,8 @@ ls -l /dev/cu.*
 **Solutions:**
 - IC-705 requires `115200` baud for scope capability
 - Lower baud rates (19200, 9600) will trigger the guardrail
-- Set `--baudrate 115200` or `baudrate=115200` in config
-- Override guardrail with `--allow-low-baud-scope` (not recommended)
+- Set `--serial-baud 115200` or `baudrate=115200` in config
+- Override guardrail with `allow_low_baud_scope=True` in `SerialBackendConfig` or `ICOM_SERIAL_SCOPE_ALLOW_LOW_BAUD=1` (not recommended)
 
 ### Single Receiver Errors
 
@@ -326,24 +221,20 @@ ls -l /dev/cu.*
 |---------|--------|---------|-------|
 | **Receiver count** | 1 | 2 | IC-705 single receiver only |
 | **Command 29 (sub RX)** | ❌ No | ✅ Yes | IC-705 profile: `command_29` not in capabilities |
-| **CI-V Address** | `0xA4` | `0x98` | Auto-detected from profile |
-| **Baud rates** | 115200 recommended | 115200 recommended | Lower rates work but disable scope |
-| **Audio codec** | PCM 1ch 16bit | PCM 1ch/2ch 16bit | IC-705 same as IC-7610 |
+| **CI-V Address** | `0xA4` | `0x98` | From the `--model` profile |
+| **Baud rates** | 115200 recommended | 115200 recommended | Lower rates disable scope |
 | **Scope** | Single stream | Dual stream | IC-705 single receiver = single scope |
-| **USB connector** | USB-C | USB-B | Different cables |
 | **Portable** | ✅ Yes (QRP, battery) | ❌ No (base station) | IC-705 field-optimized |
 
 ## Backend Comparison: LAN vs Serial
 
 | | LAN (UDP) | Serial (USB) |
 |-|-----------|--------------|
-| **Connection** | Ethernet/WiFi | USB cable |
-| **Setup** | IP config, username, password | Plug and play |
-| **Latency** | ~10-50ms | ~5-20ms |
+| **Connection** | WiFi | USB cable |
+| **Setup** | IP address, username, password, `--model IC-705` | Serial port, `--model IC-705` |
 | **Field operation** | Requires network | Direct connection |
-| **Audio** | Opus over LAN | USB audio devices |
+| **Audio** | Over the LAN link | USB audio devices |
 | **Scope** | UDP stream | USB serial stream |
-| **Production status** | ✅ Stable (M1-M4) | ✅ Stable (M3, IC-7610 parity) |
 
 ## See Also
 
@@ -352,13 +243,11 @@ ls -l /dev/cu.*
 - [Troubleshooting](troubleshooting.md) — Common issues and solutions
 - [Backend Capabilities](radios.md) — Full capability matrix
 
-## Hardware Procurement Status
+## Validation Status
 
-!!! warning "Development Hardware"
-    IC-705 backend implementation is complete (commit 2e10765), but **hardware validation is pending** IC-705 procurement. Integration tests with real IC-705 hardware will be added once the radio is available.
-
-    **Software validation:** Contract tests with mock IC-705 profile pass (13/13 tests).
-    **Hardware validation:** Blocked on IC-705 procurement (tracked in MSMA-20).
+!!! warning "Not yet validated on 3.0"
+    The IC-705 is community-validated on RigPlane 2.x over WiFi. It has not
+    yet been validated on 3.0.
 
 ## Get the Packaged Desktop App
 
