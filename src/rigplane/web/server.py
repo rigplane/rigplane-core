@@ -1124,8 +1124,7 @@ class WebServer:
         except ValueError:
             if isinstance(self._radio, ProviderOwnedStateCapable):
                 logger.debug(
-                    "profile unresolved; provider-owned backend serves "
-                    "with no profile"
+                    "profile unresolved; provider-owned backend serves with no profile"
                 )
                 return None
             raise
@@ -3990,9 +3989,7 @@ class WebServer:
                         list(profile.pre_values) if profile.pre_values else [0]
                     ),
                     "preLabels": profile.pre_labels if profile.pre_labels else {},
-                    "agcModes": (
-                        list(profile.agc_modes) if profile.agc_modes else []
-                    ),
+                    "agcModes": (list(profile.agc_modes) if profile.agc_modes else []),
                     "agcLabels": profile.agc_labels if profile.agc_labels else {},
                     "agcReadback": _serialize_agc_readback(profile),
                     "scanTypeValues": (
