@@ -192,7 +192,9 @@ async def test_probe_timeout_keeps_http_and_ws_answering(
         assert resp.status == 200
         await resp.release()
 
-        pong = await ws.ping()
+        # aiohttp's ping() is synchronous: it sends PING and returns the
+        # future that resolves when the PONG arrives — await THAT, bounded.
+        pong = ws.ping()
         await asyncio.wait_for(pong, timeout=1.0)
 
         with pytest.raises(AudioCaptureOpenTimeoutError):
