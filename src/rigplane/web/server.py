@@ -100,7 +100,7 @@ from .host_guard import (  # noqa: TID251
     MISDIRECTED_BODY,
     ORIGIN_FORBIDDEN_BODY,
     host_header_allowed,
-    websocket_origin_allowed,
+    same_origin_allowed,
 )
 from .managed_tx_view import build_managed_tx_view  # noqa: TID251
 from .transport.webrtc import webrtc_available  # noqa: TID251
@@ -6001,10 +6001,7 @@ class WebServer:
         reader: asyncio.StreamReader | None,
     ) -> None:
         """POST /api/v1/diagnose/send — upload a previewed bundle."""
-        from .handlers.diagnostics import (  # noqa: TID251
-            _ClientError,
-            check_origin_or_loopback,
-        )
+        from .handlers.diagnostics import _ClientError  # noqa: TID251
         from rigplane.diagnostics import (
             BundleTooLarge,
             DiagnosticUploadError,
@@ -6015,17 +6012,7 @@ class WebServer:
             UploadFailed,
         )
 
-        h = headers or {}
-        allowed, reason = check_origin_or_loopback(
-            h.get("origin"),
-            self._config.host,
-            self._config.port,
-            h.get("host"),
-        )
-        if not allowed:
-            await _send_diag_error(writer, 403, reason, reason)
-            return
-        csrf = h.get("x-diagnostic-csrf", "")
+        csrf = (headers or {}).get("x-diagnostic-csrf", "")
 
         body_dict = await self._read_json_body(writer, headers, reader)
         if body_dict is None:
@@ -6098,22 +6085,9 @@ class WebServer:
         reader: asyncio.StreamReader | None,
     ) -> None:
         """POST /api/v1/diagnose/save — return the bundle as a download."""
-        from .handlers.diagnostics import (  # noqa: TID251
-            _ClientError,
-            check_origin_or_loopback,
-        )
+        from .handlers.diagnostics import _ClientError  # noqa: TID251
 
-        h = headers or {}
-        allowed, reason = check_origin_or_loopback(
-            h.get("origin"),
-            self._config.host,
-            self._config.port,
-            h.get("host"),
-        )
-        if not allowed:
-            await _send_diag_error(writer, 403, reason, reason)
-            return
-        csrf = h.get("x-diagnostic-csrf", "")
+        csrf = (headers or {}).get("x-diagnostic-csrf", "")
 
         body_dict = await self._read_json_body(writer, headers, reader)
         if body_dict is None:
@@ -6147,22 +6121,9 @@ class WebServer:
         preview_id: str,
     ) -> None:
         """DELETE /api/v1/diagnose/preview/<preview_id>."""
-        from .handlers.diagnostics import (  # noqa: TID251
-            _ClientError,
-            check_origin_or_loopback,
-        )
+        from .handlers.diagnostics import _ClientError  # noqa: TID251
 
-        h = headers or {}
-        allowed, reason = check_origin_or_loopback(
-            h.get("origin"),
-            self._config.host,
-            self._config.port,
-            h.get("host"),
-        )
-        if not allowed:
-            await _send_diag_error(writer, 403, reason, reason)
-            return
-        csrf = h.get("x-diagnostic-csrf", "")
+        csrf = (headers or {}).get("x-diagnostic-csrf", "")
         if not preview_id:
             await _send_diag_error(
                 writer, 400, "preview_missing", "preview_id required"
@@ -6341,7 +6302,7 @@ class WebServer:
         origin = headers.get("origin")
         if origin is not None:
             scheme = "https" if self._config.tls else "http"
-            if not websocket_origin_allowed(
+            if not same_origin_allowed(
                 origin, raw_host, scheme, self._config.allowed_hosts
             ):
                 self._log_refused_request("websocket origin", path, headers)

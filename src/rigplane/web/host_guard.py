@@ -1,4 +1,5 @@
-"""Host allowlist and same-Origin rules for the web server (MOR-2880).
+"""Host allowlist and same-Origin rules for the web server (MOR-2880,
+MOR-2881).
 
 Two guards against a web page running in the operator's browser:
 
@@ -6,13 +7,12 @@ Two guards against a web page running in the operator's browser:
   rule): every HTTP route and WebSocket upgrade reads the RAW ``Host``
   request header — never a value derived from the bind address — and
   admits only local names. Everything else gets ``421``.
-- **Same-Origin on WebSocket upgrades**: a present ``Origin`` must be
-  same-origin with the request (scheme, host, port) and its host must
-  pass the same allowlist; otherwise ``403`` before the upgrade. A
+- **Same-Origin on WebSocket upgrades and state-changing HTTP
+  requests** (MOR-2881): a present ``Origin`` must be same-origin with
+  the request (scheme, host, port) and its host must pass the same
+  allowlist; otherwise ``403`` before the upgrade/handler runs. A
   missing ``Origin`` is admitted (non-browser clients; the Pro
-  supervisor's proxy sends none on its WebSocket leg).
-
-The Origin-check-on-HTTP-routes half is deferred to MOR-2881.
+  supervisor's proxy sends none on either leg).
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ __all__ = [
     "ORIGIN_FORBIDDEN_BODY",
     "host_header_allowed",
     "origin_matches_host",
-    "websocket_origin_allowed",
+    "same_origin_allowed",
 ]
 
 # Special-use / local-only name suffixes admitted by the allowlist.
@@ -55,7 +55,8 @@ MISDIRECTED_BODY = json.dumps(
     {"error": "misdirected request: host not allowed"}
 ).encode("ascii")
 
-#: Body every refused (403) WebSocket upgrade answers with.
+#: Body every refused (403) WebSocket upgrade or state-changing HTTP
+#: request answers with.
 ORIGIN_FORBIDDEN_BODY = json.dumps({"error": "forbidden: origin not allowed"}).encode(
     "ascii"
 )
@@ -155,11 +156,10 @@ def origin_matches_host(
 ) -> bool:
     """True when *origin* serializes to ``<scheme>://<request_host>``.
 
-    The same-origin comparison shared with the diagnostic routes'
-    :func:`rigplane.web.handlers.diagnostics.check_origin_or_loopback`
-    (which admits both schemes because it cannot know the listener's);
-    the WebSocket guard passes the request's actual scheme only.
-    Comparison is case-insensitive (scheme and host are, per RFC 3986).
+    The one same-origin comparison, shared by the WebSocket guard and
+    the state-changing HTTP guard, both of which pass the request's
+    actual scheme. Comparison is case-insensitive (scheme and host are,
+    per RFC 3986).
     """
     if not request_host:
         return False
@@ -167,13 +167,14 @@ def origin_matches_host(
     return any(lowered == f"{scheme}://{request_host}".lower() for scheme in schemes)
 
 
-def websocket_origin_allowed(
+def same_origin_allowed(
     origin: str,
     raw_host: str | None,
     scheme: str,
     extra_hosts: Collection[str] = (),
 ) -> bool:
-    """Same-origin rule for the four WebSocket upgrades.
+    """Same-origin rule for the four WebSocket upgrades (MOR-2880) and
+    every state-changing HTTP request (MOR-2881).
 
     *origin* must parse as an absolute http(s) URL whose serialization
     equals ``scheme://<raw Host header>`` (so scheme, host and port all
