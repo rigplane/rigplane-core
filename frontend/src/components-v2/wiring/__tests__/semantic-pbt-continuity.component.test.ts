@@ -5,6 +5,7 @@ import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import { EMPTY_PBT_PRESENTATION, projectPbtPresentation } from '../../../semantic/pbt-presentation-continuity';
 import { topologyFixtures, withFilterPassband } from '../../../semantic/fixtures/topologies';
+import { measuredPbtRawToHz } from '$lib/radio/filter-controls';
 
 const h = vi.hoisted(() => ({
   session: { state: 'connected', epoch: 1 }, listeners: new Set<(next: { state: string; epoch: number }) => void>(),
@@ -170,5 +171,68 @@ describe('mounted fractional PBT display (MOR-1692)', () => {
     expect(setCapabilities(caps(8))).toBe(true);
     accept(state(190, 128, 1, 8, 'MAIN', 'fresh', 0.25)); flushSync();
     expect(value('pbtInner')).not.toBeNull(); expect(row().dataset.presentation).toBe('confirmed');
+  });
+});
+
+// MOR-2234 acceptance item 1: with the radio connected, the surface shows the
+// same value and freshness fieldStatus reports. The projection under test is
+// `deriveFilterPassband` + `qualifyDisplayObservation` through the full
+// wiring — the PBT rows render in `FilterSurface.svelte` (`filter-pbtInner`/
+// `filter-pbtOuter`, the `filterPassband` view-model group; `DspSurface`
+// consumes the same adapter's groups but carries no PBT row of its own).
+describe('MOR-2234: a fresh PBT observation shows on the surface (item 1)', () => {
+  // The fixture's measured lattice: width 2400 Hz, USB step 50 Hz. Expected
+  // readings come from the ONE conversion (`measuredPbtRawToHz`), never a
+  // hand-computed literal that could drift from the radio's snap rule.
+  const hz = (raw: number) => String(measuredPbtRawToHz(raw, 2400, 50));
+  const row = (field: 'pbtInner' | 'pbtOuter') =>
+    target.querySelector<HTMLElement>(`[data-testid="filter-${field}"]`)!;
+
+  it('renders the ACTIVE receiver\'s observed raw as the shown Hz reading, never the other receiver\'s path', () => {
+    // Distinct per-receiver raws: if the surface read `sub.*` while MAIN is
+    // active (or vice versa), the second half of the assertions reddens.
+    const main = state(100, 40, 1);
+    main.sub!.pbtInner = 200; main.sub!.pbtOuter = 60;
+    accept(main); render();
+    for (const [field, raw] of [['pbtInner', 100], ['pbtOuter', 40]] as const) {
+      expect(row(field).dataset.presentation).toBe('confirmed');
+      expect(row(field).querySelector('output')!.textContent).toBe(hz(raw));
+      const input = row(field).querySelector('input')!;
+      expect(input.disabled).toBe(false);
+      expect(input.value).toBe(hz(raw));
+    }
+    const sub = state(100, 40, 2, 7, 'SUB');
+    sub.sub!.pbtInner = 200; sub.sub!.pbtOuter = 60;
+    accept(sub); flushSync();
+    expect(row('pbtInner').querySelector('output')!.textContent).toBe(hz(200));
+    expect(row('pbtOuter').querySelector('output')!.textContent).toBe(hz(60));
+    expect(row('pbtInner').dataset.presentation).toBe('confirmed');
+  });
+});
+
+// MOR-2234 acceptance item 1, guard half: a surface control whose field was
+// never observed renders unknown/unread — never a value that arrived
+// through a legacy fallback (the payload's legacy mirror raw).
+describe('MOR-2234: a never-observed PBT field renders unknown, never a legacy fallback (item 1 guard)', () => {
+  const hz = (raw: number) => String(measuredPbtRawToHz(raw, 2400, 50));
+  const row = (field: 'pbtInner' | 'pbtOuter') =>
+    target.querySelector<HTMLElement>(`[data-testid="filter-${field}"]`)!;
+
+  it('never shows the payload\'s legacy mirror raw when fieldStatus says the field was never observed', () => {
+    // Raw 208 is the legacy mirror value carried in the payload (the bench
+    // saw `main.pbtInner = 128` alongside fieldStatus observed=true); here
+    // the mirror is present but the field's own status says never observed.
+    const next = state(100, 40, 1);
+    next.main!.pbtInner = 208;
+    next.fieldStatus!['main.pbtInner'] = { ...fresh(1), observed: false };
+    accept(next); render();
+    expect(row('pbtInner').dataset.presentation).toBe('unknown');
+    expect(row('pbtInner').querySelector('input')).toBeNull();
+    expect(row('pbtInner').querySelector('output')!.textContent).toBe('');
+    // The legacy mirror's Hz must not appear anywhere in the row, and the
+    // OBSERVED sibling keeps its own reading — unknown is per-field.
+    expect(row('pbtInner').textContent).not.toContain(hz(208));
+    expect(row('pbtOuter').dataset.presentation).toBe('confirmed');
+    expect(row('pbtOuter').querySelector('output')!.textContent).toBe(hz(40));
   });
 });
