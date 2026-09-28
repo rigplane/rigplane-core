@@ -74,7 +74,24 @@
     runtime.radioPowerOn !== true
       && runtime.radioHealth?.likelyCause === 'radio_powered_off_likely',
   );
-  let overlayVisible = $derived(runtime.radioPowerOn === false || radioNotAnswering);
+  // MOR-2876: the server started while the radio's serial port could not be
+  // opened and keeps retrying it ('radio_not_connected'). The same overlay
+  // says so, without Power ON: there is no port to send it through, and the
+  // server refuses power-on in that state.
+  let radioNotConnected = $derived(
+    runtime.radioPowerOn !== true
+      && runtime.radioHealth?.likelyCause === 'radio_not_connected',
+  );
+  let overlayVisible = $derived(
+    runtime.radioPowerOn === false || radioNotAnswering || radioNotConnected,
+  );
+  let overlayLabel = $derived(
+    radioNotConnected
+      ? 'core.overlay.poweredOff.notConnectedLabel'
+      : radioNotAnswering
+        ? 'core.overlay.poweredOff.notAnsweringLabel'
+        : 'core.overlay.poweredOff.label',
+  );
   // The Power ON action exists only where the profile binds a CI-V
   // power-on command (`power_on` in rigs/*.toml, published as
   // capabilities.powerOnCommand). Elsewhere the operator gets the plain
@@ -117,24 +134,16 @@
       role="dialog"
       aria-modal="true"
       data-testid="global-power-off"
-      data-state={radioNotAnswering ? 'not-answering' : 'powered-off'}
-      aria-label={t(
-        radioNotAnswering
-          ? 'core.overlay.poweredOff.notAnsweringLabel'
-          : 'core.overlay.poweredOff.label',
-      )}
+      data-state={radioNotConnected ? 'not-connected' : radioNotAnswering ? 'not-answering' : 'powered-off'}
+      aria-label={t(overlayLabel)}
     >
       <div class="power-off-content">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
           <line x1="12" y1="2" x2="12" y2="12" />
         </svg>
-        <span class="power-off-label">{t(
-          radioNotAnswering
-            ? 'core.overlay.poweredOff.notAnsweringLabel'
-            : 'core.overlay.poweredOff.label',
-        )}</span>
-        {#if powerOnCommand}
+        <span class="power-off-label">{t(overlayLabel)}</span>
+        {#if powerOnCommand && !radioNotConnected}
           <button class="power-on-btn" onclick={handlePowerOn}>
             {t('core.overlay.poweredOff.powerOnButton')}
           </button>
