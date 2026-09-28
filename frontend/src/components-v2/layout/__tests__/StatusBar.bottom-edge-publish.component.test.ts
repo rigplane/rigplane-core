@@ -103,11 +103,21 @@ describe('MOR-1240 — StatusBar publishes its bottom edge (--rp-status-bar-bott
   let targets: HTMLElement[] = [];
   let instances: object[] = [];
 
-  function render(component: typeof StatusBar | typeof AppGlobalHost): HTMLElement {
+  function renderStatusBar(): HTMLElement {
     const target = document.createElement('div');
     document.body.appendChild(target);
     targets.push(target);
-    const instance = mount(component, { target }) as object;
+    const instance = mount(StatusBar, { target }) as object;
+    instances.push(instance);
+    flushSync();
+    return target;
+  }
+
+  function renderHost(): HTMLElement {
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    targets.push(target);
+    const instance = mount(AppGlobalHost, { target }) as object;
     instances.push(instance);
     flushSync();
     return target;
@@ -137,7 +147,7 @@ describe('MOR-1240 — StatusBar publishes its bottom edge (--rp-status-bar-bott
   });
 
   it('publishes the ceil of the bar bottom on mount and removes it on unmount', () => {
-    const target = render(StatusBar);
+    const target = renderStatusBar();
     expect(target.querySelector('.status-bar')).not.toBeNull();
     expect(bottomEdge()).toBe('34px');
 
@@ -149,11 +159,11 @@ describe('MOR-1240 — StatusBar publishes its bottom edge (--rp-status-bar-bott
   it('keeps a newer instance\'s value: an older bar\'s cleanup must not wipe it', () => {
     // Two bars are never mounted together in-tree, but a skin switch
     // destroys the old StatusBar only after the new one has mounted.
-    render(StatusBar);
+    renderStatusBar();
     expect(bottomEdge()).toBe('34px');
 
     rect = { bottom: 50.2 };
-    render(StatusBar);
+    renderStatusBar();
     expect(bottomEdge()).toBe('51px');
 
     // Unmount the FIRST instance: its cleanup must leave the second
@@ -172,7 +182,7 @@ describe('MOR-1240 — StatusBar publishes its bottom edge (--rp-status-bar-bott
   it('republishes when the link-lost row appears — a real state flip, no observer callback', () => {
     setWsConnected(true);
     flushSync();
-    const target = render(StatusBar);
+    const target = renderStatusBar();
     expect(target.querySelector('.control-link-lost')).toBeNull();
     expect(bottomEdge()).toBe('34px');
 
@@ -194,7 +204,7 @@ describe('MOR-1240 — StatusBar publishes its bottom edge (--rp-status-bar-bott
   // is the assertable fact.
   it('a StatusBar mounted after power-off makes the edge variable present', () => {
     power.radioPowerOn = false;
-    const host = render(AppGlobalHost);
+    const host = renderHost();
     const overlay = host.querySelector<HTMLElement>('[data-testid="global-power-off"]');
     expect(overlay).not.toBeNull();
     // No StatusBar yet: no property anywhere, overlay full-screen via the
@@ -203,7 +213,7 @@ describe('MOR-1240 — StatusBar publishes its bottom edge (--rp-status-bar-bott
     expect(overlay!.style.top).toBe(`var(${BOTTOM_EDGE}, 0px)`);
 
     // The skin chunk finishes loading and mounts the bar afterwards.
-    const bar = render(StatusBar);
+    const bar = renderStatusBar();
     expect(bar.querySelector('.status-bar')).not.toBeNull();
     expect(bottomEdge()).toBe('34px');
   });
