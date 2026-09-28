@@ -140,7 +140,7 @@ Scanning for radios (3s LAN + serial)...
 Found 1 radio with 2 connection methods:
 
 IC-7610:
-  • LAN: 192.168.55.40
+  • LAN: 192.168.1.50
   • Serial: /dev/cu.usbserial-11320 (19200 baud)
 ```
 
