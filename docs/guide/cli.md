@@ -40,7 +40,7 @@ All commands accept these options:
 
     ```bash
     # ~/.bashrc or ~/.zshrc
-    export ICOM_HOST=192.168.55.40
+    export ICOM_HOST=192.168.1.50
     export ICOM_USER=myuser
     export ICOM_PASS=mypass
     ```
@@ -91,7 +91,7 @@ rigplane supports four backends: **LAN** (default), **serial** (USB CI-V),
 rigplane --model IC-7610 status
 
 # Explicit IP
-rigplane --model IC-7610 --host 192.168.55.40 status
+rigplane --model IC-7610 --host 192.168.1.50 status
 rigplane --model IC-7610 --backend lan status
 ```
 
@@ -743,11 +743,11 @@ rigplane --model IC-7610 serve --wsjtx-compat
 Transparent UDP relay that forwards all radio traffic between a remote client and the physical radio. Useful for accessing a shack radio over a VPN without exposing the radio's IP directly.
 
 ```bash
-# Forward radio at 192.168.55.40 to all VPN clients
-rigplane proxy --radio 192.168.55.40
+# Forward radio at 192.168.1.50 to all VPN clients
+rigplane proxy --radio 192.168.1.50
 
 # Listen only on VPN interface, custom base port
-rigplane proxy --radio 192.168.55.40 --listen 10.8.0.1 --port 50010
+rigplane proxy --radio 192.168.1.50 --listen 10.8.0.1 --port 50010
 ```
 
 | Option | Default | Description |
