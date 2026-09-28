@@ -210,8 +210,9 @@ def set_repeater_shift(
 def parse_repeater_shift_response(data: bytes) -> RepeaterShiftDirection | None:
     """Return the shift direction a 0F reply reports, or ``None``.
 
-    A split-ON reply (01) reports SIMPLEX: the reply is one byte, so a radio
-    reading split is not reading duplex.
+    A split-ON reply (01) reports SIMPLEX, an inference from the table's
+    shape: the reply is one byte, so a radio reading split is not reading
+    duplex.
     """
     if not data:
         return None

@@ -262,6 +262,7 @@ requires-map	vfo.py:get_dual_watch
 requires-map	vfo.py:get_main_sub_band
 requires-map	vfo.py:get_quick_dual_watch
 requires-map	vfo.py:get_quick_split
+requires-map	vfo.py:get_repeater_shift
 requires-map	vfo.py:get_split
 requires-map	vfo.py:get_tuning_step
 requires-map	vfo.py:get_vfo
@@ -275,6 +276,7 @@ requires-map	vfo.py:set_dual_watch_off
 requires-map	vfo.py:set_dual_watch_on
 requires-map	vfo.py:set_quick_dual_watch
 requires-map	vfo.py:set_quick_split
+requires-map	vfo.py:set_repeater_shift
 requires-map	vfo.py:set_split
 requires-map	vfo.py:set_tuning_step
 requires-map	vfo.py:set_vfo
