@@ -101,7 +101,8 @@ async def test_api_state_serves_200_from_backend_observations_only() -> None:
     status, payload = _status_and_json(writer)
     assert status == 200
     assert payload["stateContractVersion"] == 1
-    assert payload["main"]["freq"] == 14_070_000
+    # The public receiver key for freq is freqHz (_RECEIVER_KEY_MAP).
+    assert payload["main"]["freqHz"] == 14_070_000
     # No fabricated second receiver: the backend declares no dual_rx.
     assert "sub" not in payload
 
