@@ -46,6 +46,25 @@ candidate witness before it becomes a tested compatibility claim.
 | WIRE3 | General rigctld framing and structured operations | Preserve audited wire shape; representative fake-provider witnesses remain required. |
 | OUT1 | Private internals, arbitrary external profiles, blanket 2.x emulation | No compatibility promise; Pro release and external-consumer census are outside this scope. |
 
+## The radio model is required
+
+2.11 fell back to the IC-7610 profile when no model was given. 3.0 does not
+guess. The `lan` and `serial` backends need `--model` (on `lan`, a
+`--radio-addr` that matches a loaded profile also works); without it the
+command stops with:
+
+```text
+Error: Cannot resolve a radio profile: no profile, model, or matching radio_addr identifies the radio. Pass an explicit profile= or model= — rigplane no longer guesses a default rig.
+```
+
+In Python, `LanBackendConfig` and `IcomRadio` need `model=`, `profile=` or a
+matching `radio_addr=`, and `SerialBackendConfig` needs `model=`. Add
+`--model` to scripts and service units that ran without it. The
+`yaesu-cat` and `rigctld` backends run without it.
+
+Sources: `src/rigplane/profiles/__init__.py: resolve_radio_profile`;
+`src/rigplane/backends/factory.py: create_radio`.
+
 ## Application-token removal
 
 Remove `--auth-token` and `--auth-token-file` from Core launch commands;
@@ -193,7 +212,7 @@ For scripts, replace sequential leave-keyed shell commands:
 ```bash
 # Old sequencing no longer describes the command lifecycle:
 # rigplane ptt on && sleep 10 && rigplane ptt off
-rigplane ptt --for 10
+rigplane --model IC-7610 ptt --for 10
 ```
 
 Supply your usual connection options. `ptt on` remains alive until interruption

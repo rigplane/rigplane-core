@@ -85,7 +85,7 @@ RigPlane keeps the browser UI, audio path, diagnostics, and `rigctld`-compatible
 - :white_check_mark: **Audio streaming** — RX/TX with jitter buffer and full-duplex support
 - :white_check_mark: **Audio FFT Scope** — real-time FFT on USB/LAN audio for radios without hardware spectrum
 - :white_check_mark: **Discovery** — find supported LAN radios automatically; assisted serial CAT discovery can suggest and validate Hamlib candidates
-- :white_check_mark: **CLI tool** — `rigplane status`, `rigplane freq 14.074m`
+- :white_check_mark: **CLI tool** — `rigplane --model IC-7610 status`, `rigplane --model IC-7610 freq 14.074m`
 - :white_check_mark: **Built-in Web UI** — spectrum, waterfall, controls, meters, audio in browser; LCD layout for non-scope radios
 - :white_check_mark: **Async + Sync API** — async by default, blocking wrapper available
 - :white_check_mark: **Auto-reconnect** — watchdog + exponential backoff (opt-in)

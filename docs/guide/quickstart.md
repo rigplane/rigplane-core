@@ -18,29 +18,31 @@ export ICOM_PASS=mypass           # Network password
 
 ## 2. Try the CLI
 
+Every command that talks to the radio needs `--model` (use your radio's model):
+
 ```bash
 # Check radio status
-rigplane status
+rigplane --model IC-7610 status
 ```
 
 Expected output:
 
 ```
-Frequency:    14,074,000 Hz  (14.074000 MHz)
-Mode:         USB
-S-meter:      42
-Power:        50
+Frequency:   14,074,000 Hz  (14.074000 MHz)
+Mode:      USB
+S-meter:   42
+Power:     50
 ```
 
 ```bash
 # Change frequency
-rigplane freq 14.074m
+rigplane --model IC-7610 freq 14.074m
 
 # Change mode
-rigplane mode USB
+rigplane --model IC-7610 mode USB
 
 # Read meters as JSON
-rigplane meter --json
+rigplane --model IC-7610 meter --json
 ```
 
 ## 3. Python API
