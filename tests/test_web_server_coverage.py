@@ -38,6 +38,7 @@ from rigplane.web import server as server_module
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import CommandQueue, EnableScope, RadioPoller
 from rigplane.web.server import WebConfig, WebServer, _send_response, run_web_server
+from rigplane.web.web_startup import attach_managed_tx_composition
 from test_radio_poller_coverage import (
     _instrument_guarded_vfo_wire,
     _make_radio,
@@ -373,6 +374,87 @@ async def test_start_and_stop_with_radio_sets_callbacks() -> None:
     # radio.disconnect is NOT called by WebServer.stop() — it's the caller's
     # responsibility via the context manager (async with radio:).
     radio.disconnect.assert_not_awaited()
+    assert fake_server.closed is True
+
+
+class _FakeManagedTxPort:
+    """Minimal ManagedTxCompositionPort stand-in for startup wiring tests."""
+
+    def __init__(self) -> None:
+        self.authority = object()
+        self.validated: list[object] = []
+
+    def validate_state_store(self, store: object) -> None:
+        self.validated.append(store)
+
+
+class _ManagedTxStateNotifyRadio(_StateNotifyRadio):
+    """StateNotifyCapable radio with a managed TX composition installed."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.managed_tx_port = _FakeManagedTxPort()
+        self._managed_tx_composition = self.managed_tx_port
+        # ScopeCapable protocol attrs so the reconnect recovery pass can
+        # queue the scope re-enable against this radio.
+        self.capabilities = {"scope"}
+        self.on_scope_data = MagicMock()
+        self.scope_stream = MagicMock()
+        self.enable_scope = AsyncMock()
+        self.disable_scope = AsyncMock()
+
+
+@pytest.mark.asyncio
+async def test_managed_tx_start_still_registers_reconnect_recovery_pass() -> None:
+    """MOR-2798: managed TX must not leave the reconnect recovery unregistered.
+
+    ``rigplane web`` always installs a managed TX composition (cli/__init__.py
+    builds one or exits), so gating ``set_reconnect_callback`` on the
+    composition's absence left every production web session without the
+    post-soft-reconnect state refetch and scope re-enable.
+    """
+    radio = _ManagedTxStateNotifyRadio()
+    radio.state_cache = MagicMock()
+    radio.disconnect = AsyncMock()
+    radio.connected = True
+    radio.radio_ready = True
+    radio.control_connected = True
+    radio._fetch_initial_state = AsyncMock()
+    fake_server = _FakeAsyncServer()
+    fake_poller = MagicMock(
+        drain_tx_safety_commands=AsyncMock(), select_vfo_a_on_connect=AsyncMock()
+    )
+
+    srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    attach_managed_tx_composition(srv, radio.managed_tx_port)
+
+    with (
+        patch(
+            "rigplane.web.web_startup.asyncio.start_server",
+            new=AsyncMock(return_value=fake_server),
+        ),
+        patch("rigplane.web.web_startup.RadioPoller", return_value=fake_poller),
+    ):
+        await srv.start()
+        # The managed TX composition is installed and validated on this server,
+        # so the guard that previously skipped registration is genuinely taken.
+        assert radio._managed_tx_composition is radio.managed_tx_port
+        assert vars(srv)["_production_managed_tx_port"] is radio.managed_tx_port
+        assert radio.managed_tx_port.validated  # _validate_managed_tx ran
+        # The soft-reconnect recovery pass must stay registered.
+        assert radio._reconnect_callback == srv._on_radio_reconnect
+
+        # Simulate the radio's post-soft_reconnect edge: the registered
+        # callback must refetch state and queue the scope re-enable.
+        srv._scope_handlers.add(MagicMock())  # noqa: SLF001
+        radio._reconnect_callback()
+        await asyncio.sleep(0.05)  # let the refetch task complete
+
+        radio._fetch_initial_state.assert_awaited_once()
+        assert any(isinstance(c, EnableScope) for c in srv.command_queue.drain())
+        await srv.stop()
+
+    fake_poller.stop.assert_called_once()
     assert fake_server.closed is True
 
 
