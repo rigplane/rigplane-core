@@ -50,6 +50,13 @@
         return 'neutral';
     }
   }
+
+  // MOR-1240: the current owner of the document-level
+  // `--rp-status-bar-bottom` property. Module-level so every StatusBar
+  // instance sees the same token: whoever published last owns the
+  // property, and a destroying instance removes it only while it is
+  // still the owner (see the instance script).
+  let owner: symbol | null = null;
 </script>
 
 <script lang="ts">
@@ -394,10 +401,10 @@
 
   // Ownership is by token, not by value: two skins can publish the same
   // bottom string, so the published value can never decide whose cleanup
-  // may remove the property. Each instance mints its own token; whoever
-  // published last owns the property, and a destroying instance removes
-  // it only while it is still the owner.
-  let owner: symbol | null = null;
+  // may remove the property. Each instance mints its own token (the
+  // module-level `owner` above records the last publisher), and a
+  // destroying instance removes the property only while it is still the
+  // owner.
   const mine = Symbol('status-bar-bottom-edge');
   let barEl: HTMLElement | undefined = $state();
 
