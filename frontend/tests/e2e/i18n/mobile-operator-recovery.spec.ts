@@ -207,9 +207,11 @@ test('360 px portrait keeps the meta facts on one line, nothing clipped (MOR-285
   expect(measured.scrollW).toBeLessThanOrEqual(measured.clientW + 1);
   expect(measured.facts.map((f) => f.fact)).toEqual(['bandwidth', 'agc', 'nb', 'nr']);
   // MOR-2873: the meta row is styled `text-transform: uppercase`, but the
-  // filter-width unit must keep its source case: `BW 2400 Hz`, not
-  // `BW 2400 HZ`. Only a real browser sees this — jsdom applies no CSS.
-  expect(measured.facts.find((f) => f.fact === 'bandwidth')?.text).toBe('BW 2400 Hz');
+  // filter-width unit must keep its source case: `… Hz`, not `… HZ`.
+  // The width itself is scenario data (the local mock and the private
+  // capture replay stage different values), so pin the case, not the
+  // number. Only a real browser sees this — jsdom applies no CSS.
+  expect(measured.facts.find((f) => f.fact === 'bandwidth')?.text).toMatch(/^BW \d+ Hz$/);
   for (const fact of measured.facts) {
     expect.soft(fact.right, `${fact.fact} in viewport`).toBeLessThanOrEqual(360);
     expect.soft(fact.scrollW, `${fact.fact} not clipped`).toBeLessThanOrEqual(fact.clientW + 1);
