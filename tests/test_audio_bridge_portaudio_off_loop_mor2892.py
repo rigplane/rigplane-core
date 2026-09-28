@@ -176,8 +176,6 @@ async def test_playback_start_timeout_keeps_loop_free_and_fails_start(
     finally:
         await ticker.stop()
         await ticker_task
-        gate.set()  # release the stuck background open; its late handle closes
-        await asyncio.sleep(0.05)
 
     assert ticker.progressed >= 3, (
         "event loop should keep making progress while the open is stuck"
@@ -191,6 +189,11 @@ async def test_playback_start_timeout_keeps_loop_free_and_fails_start(
     warnings = _warnings(caplog)
     assert len(warnings) == 1, "exactly one actionable warning on timeout"
     assert "playback open" in warnings[0].getMessage()
+
+    # Release LAST: the abandoned open's late-handle close logs its own
+    # warning, which must land after the assertions above (mor1438 shape).
+    gate.set()
+    await asyncio.sleep(0.05)
 
 
 @pytest.mark.timeout(10)
@@ -214,8 +217,6 @@ async def test_capture_start_timeout_keeps_loop_free_and_fails_start(
     finally:
         await ticker.stop()
         await ticker_task
-        gate.set()  # release the stuck background open; its late handle closes
-        await asyncio.sleep(0.05)
 
     assert ticker.progressed >= 3, (
         "event loop should keep making progress while the open is stuck"
@@ -226,6 +227,11 @@ async def test_capture_start_timeout_keeps_loop_free_and_fails_start(
     warnings = _warnings(caplog)
     assert len(warnings) == 1, "exactly one actionable warning on timeout"
     assert "capture open" in warnings[0].getMessage()
+
+    # Release LAST: the abandoned open's late-handle close logs its own
+    # warning, which must land after the assertions above (mor1438 shape).
+    gate.set()
+    await asyncio.sleep(0.05)
 
 
 @pytest.mark.timeout(10)
