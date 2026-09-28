@@ -1508,6 +1508,10 @@ class FakeRxStream:
         # tests can assert a late/abandoned handle was closed off the event
         # loop rather than by a synchronous await on the loop thread.
         self.stop_thread_ident: int | None = None
+        # MOR-2892: same purpose as ``block_open`` for ``stop()`` — lets
+        # tests model a genuinely blocking Pa_StopStream/Pa_CloseStream so
+        # the driver's bounded off-loop stop handling can be exercised.
+        self.block_stop: Callable[[], None] | None = None
 
     @property
     def running(self) -> bool:
@@ -1529,6 +1533,10 @@ class FakeRxStream:
 
     async def stop(self) -> None:
         self.stop_thread_ident = threading.get_ident()
+        # Recorded before the hook so the off-loop-thread assertion stays
+        # meaningful even when the block makes the stop time out.
+        if self.block_stop is not None:
+            self.block_stop()
         _release_exclusive_device(self._exclusive, self._device, self)
         self._running = False
         self._callback = None
@@ -1789,6 +1797,11 @@ class FakeAudioBackend:
         # MOR-1573: same purpose as block_rx_open/block_tx_open, for the
         # same-device full-duplex open path (UsbAudioDriver.start_duplex).
         self.block_duplex_open: Callable[[], None] | None = None
+        # MOR-2892: invoked inside check_sample_rate — lets tests model a
+        # genuinely blocking ``Pa_IsFormatSupported`` format probe (the
+        # stand-freeze incident path) without a real backend. ``None``
+        # (default) behaves exactly as before.
+        self.block_probe: Callable[[], None] | None = None
 
     def _strict_stream_kwargs(self, device: AudioDeviceId) -> dict[str, Any]:
         """Strict-mode plumbing for a new fake stream (MOR-566).
@@ -1815,6 +1828,8 @@ class FakeAudioBackend:
         *,
         direction: str = "rx",
     ) -> bool:
+        if self.block_probe is not None:
+            self.block_probe()
         return sample_rate in self._supported_rates
 
     def add_device(self, device: AudioDeviceInfo) -> None:
