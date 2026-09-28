@@ -548,7 +548,7 @@ rigplane --model IC-7610 power-off
 
 ### `discover`
 
-Discover Icom radios on LAN and USB serial ports. Results are grouped by model and CI-V address. A LAN result has neither, so it is listed under its IP address, apart from the same radio's USB entry. Optional Hamlib flags add assisted discovery and read-only validation for external `rigctld` provider setup.
+Discover Icom radios on the LAN, and CI-V and Yaesu CAT radios on USB serial ports. Results are grouped by model and address: the CI-V address, or the model ID a Yaesu radio reports. A LAN result has neither, so it is listed under its IP address, apart from the same radio's USB entry. Optional Hamlib flags add assisted discovery and read-only validation for external `rigctld` provider setup.
 
 ```bash
 rigplane discover                   # LAN + serial
