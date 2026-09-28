@@ -1321,7 +1321,7 @@ describe('MOR-1693: the combined RF/SQL knob behaves identically on the semantic
   function observeFace(skinId: 'desktop-v2' | 'sdr-test'): Record<string, unknown> {
     h.caps = liveCaps(true, 'combined');
     h.state = centeredState();
-    acceptedState = acceptedStoreState(h.state);
+    acceptedState = acceptedStoreState(h.state as ServerState);
     expect(setRadioState(acceptedState)).toBe(true);
     expect(setCapabilities(h.caps as Capabilities)).toBe(true);
     renderHostedFace(skinId);
@@ -1386,7 +1386,7 @@ describe('MOR-1693: the combined RF/SQL knob behaves identically on the semantic
   it('SDR face pins: the four canonical knob positions dispatch the established raw intents, bounded per step', () => {
     h.caps = liveCaps(true, 'combined');
     h.state = centeredState();
-    acceptedState = acceptedStoreState(h.state);
+    acceptedState = acceptedStoreState(h.state as ServerState);
     expect(setRadioState(acceptedState)).toBe(true);
     expect(setCapabilities(h.caps as Capabilities)).toBe(true);
     renderHostedFace('sdr-test');
@@ -1426,7 +1426,7 @@ describe('MOR-1693: the combined RF/SQL knob behaves identically on the semantic
   it('SDR face pins: thumb and values follow the gesture-local draft immediately, pending target on the element', () => {
     h.caps = liveCaps(true, 'combined');
     h.state = centeredState();
-    acceptedState = acceptedStoreState(h.state);
+    acceptedState = acceptedStoreState(h.state as ServerState);
     expect(setRadioState(acceptedState)).toBe(true);
     expect(setCapabilities(h.caps as Capabilities)).toBe(true);
     renderHostedFace('sdr-test');
@@ -1454,5 +1454,4 @@ describe('MOR-1693: the combined RF/SQL knob behaves identically on the semantic
     });
     expect(h.sentCommands).toHaveLength(1);
   });
-});
 });
