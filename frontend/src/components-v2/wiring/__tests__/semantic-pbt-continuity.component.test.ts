@@ -29,6 +29,7 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({ deriveModInp
 
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
+import { resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
@@ -188,6 +189,8 @@ describe('MOR-2234: a fresh PBT observation shows on the surface (item 1)', () =
   const row = (field: 'pbtInner' | 'pbtOuter') =>
     target.querySelector<HTMLElement>(`[data-testid="filter-${field}"]`)!;
 
+  beforeEach(() => { resetCommandLifecycle(); });
+
   it('renders the ACTIVE receiver\'s observed raw as the shown Hz reading, never the other receiver\'s path', () => {
     // Distinct per-receiver raws: if the surface read `sub.*` while MAIN is
     // active (or vice versa), the second half of the assertions reddens.
@@ -218,6 +221,8 @@ describe('MOR-2234: a never-observed PBT field renders unknown, never a legacy f
   const hz = (raw: number) => String(measuredPbtRawToHz(raw, 2400, 50));
   const row = (field: 'pbtInner' | 'pbtOuter') =>
     target.querySelector<HTMLElement>(`[data-testid="filter-${field}"]`)!;
+
+  beforeEach(() => { resetCommandLifecycle(); });
 
   it('never shows the payload\'s legacy mirror raw when fieldStatus says the field was never observed', () => {
     // Raw 208 is the legacy mirror value carried in the payload (the bench
