@@ -688,13 +688,13 @@ describe('receiver facts handles (MOR-2852)', () => {
   function factsPublication(): Publication {
     const pub = publication();
     (pub.caps as Capabilities).capabilities = ['dual_rx', 'filter_width', 'agc', 'nb', 'nr'];
-    pub.state.main = { ...pub.state.main, filterWidth: 2400, agc: 0, nb: false, nr: false };
-    pub.state.sub = { ...pub.state.sub, filterWidth: 500, agc: 2, nb: true, nr: true };
-    pub.state.fieldStatus = {
-      ...pub.state.fieldStatus,
+    const s = pub.state as ServerState;
+    s.main = { ...s.main, filterWidth: 2400, agc: 0, nb: false, nr: false };
+    s.sub = { ...s.sub, filterWidth: 500, agc: 2, nb: true, nr: true };
+    s.fieldStatus = Object.assign({ ...s.fieldStatus }, {
       'main.filterWidth': available(), 'main.agc': available(), 'main.nb': available(), 'main.nr': available(),
       'sub.filterWidth': available(), 'sub.agc': available(), 'sub.nb': available(), 'sub.nr': available(),
-    } as ServerState['fieldStatus'];
+    }) as unknown as ServerState['fieldStatus'];
     return pub;
   }
   function mountFacts(publisher: Publisher): HTMLElement {

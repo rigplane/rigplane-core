@@ -439,7 +439,7 @@ describe('MobileRadioLayout structure', () => {
           ...('SUB' === active || caps.receivers === 2 ? {
             'sub.filterWidth': seen(), 'sub.agc': seen(), 'sub.nb': seen(), 'sub.nr': seen(),
           } : {}),
-        } as ServerState['fieldStatus'],
+        } as unknown as ServerState['fieldStatus'],
       } as unknown as ServerState;
       vi.mocked(getCapabilities).mockReturnValue(caps);
     }
