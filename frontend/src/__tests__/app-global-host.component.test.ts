@@ -154,7 +154,7 @@ function mountAt(component: typeof App | typeof AppGlobalHost) {
 const hostEl = () => document.querySelector('[data-testid="app-global-host"]');
 const txEl = () => document.querySelector('[data-testid="global-tx-indication"]');
 const faultEl = () => document.querySelector('[data-testid="global-tx-fault"]');
-const powerEl = () => document.querySelector('[data-testid="global-power-off"]');
+const powerEl = () => document.querySelector<HTMLElement>('[data-testid="global-power-off"]');
 
 beforeEach(() => {
   vi.clearAllMocks();
