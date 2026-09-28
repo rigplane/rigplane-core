@@ -43,15 +43,16 @@ uv run pytest tests/test_rig_loader.py tests/test_rig_multi_vendor.py -v
 | Protocol | Type string | Examples | Description |
 |----------|------------|----------|-------------|
 | Icom CI-V | `"civ"` | IC-7610, IC-7300, Xiegu X6100/X6200 | Binary CI-V frames |
-| Kenwood CAT | `"kenwood_cat"` | Lab599 TX-500, Kenwood TS-890S | Text `"CMD params;"` |
-| Yaesu CAT | `"yaesu_cat"` | Yaesu FTX-1, FT-710 | Yaesu text protocol |
+| Kenwood CAT | `"kenwood_cat"` | Lab599 TX-500 | Text `"CMD params;"` |
+| Yaesu CAT | `"yaesu_cat"` | Yaesu FTX-1 | Yaesu text protocol |
 
 ```toml
 [protocol]
 type = "civ"  # or "kenwood_cat" or "yaesu_cat"
 ```
 
-For CI-V radios, `[radio].civ_addr` is required. For Kenwood/Yaesu, omit it.
+For CI-V radios, set `[radio].civ_addr`: the loader does not require it and
+defaults a missing address to 0. For Kenwood/Yaesu, omit it.
 Do not assume a CI-V address uniquely identifies a model: Xiegu X6200 and
 Icom IC-705 both use `0xA4` by default, so discovery and profile selection must
 also consider model evidence such as hardware IDs and the resolved rig profile.
@@ -137,7 +138,7 @@ style = "toggle_and_level" # IC-7610: separate ON/OFF + level slider
 Styles:
 - `toggle` — ON/OFF (IC-7300 ATT, X6100 ATT)
 - `stepped` — Discrete steps with \[−\]\[dropdown\]\[+\] (IC-7610 ATT)
-- `selector` — Dropdown/selector (FTX-1 ATT: 4 named levels)
+- `selector` — Dropdown/selector (FTX-1 ATT: named OFF/ON levels)
 - `toggle_and_level` — Separate toggle + slider (IC-7610 NB/NR)
 - `level_is_toggle` — 0=OFF, >0=level (FTX-1 NB/NR)
 
