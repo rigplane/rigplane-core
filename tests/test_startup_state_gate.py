@@ -2424,3 +2424,61 @@ async def test_powerstat_on_reaches_the_backend_power_on_path() -> None:
     await poller._execute(SetPowerstat(True))  # noqa: SLF001
 
     radio.set_powerstat.assert_awaited_once_with(True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("observed_rx_dispatch_premise")
+async def test_silent_startup_scan_seed_and_echo_never_count_as_radio_observation() -> (
+    None
+):
+    """MOR-2841 (round 4): the stand flip, pinned on the verdict predicate.
+
+    Round 3's stand check flipped the "radio probably off" verdict back on
+    because the connect-time scan seed and the fire-and-forget scan echoes
+    recorded ``command_response`` — a source
+    :func:`runtime_helpers.store_has_radio_observation` counts as the radio
+    having answered. MOR-2893 (#3875) relabelled both writers
+    ``local_reconcile``; its suite pins the forbidden-source list, while
+    this pins the verdict predicate itself: a silent startup that seeds
+    the scan facts and then echoes a scan command still observes nothing
+    from the radio, so the not-answering verdict survives both writers.
+    """
+
+    from rigplane.backends.icom7610 import Icom7610SerialRadio
+    from rigplane.web.radio_poller import CommandQueue, RadioPoller, ScanStart
+    from rigplane.web.runtime_helpers import store_has_radio_observation
+    from test_icom7610_serial_radio import _FakeSerialCivLink
+
+    # Leg 1 — the silent serial startup: the connect-time scan seed on a
+    # link that never answers a single byte.
+    link = _FakeSerialCivLink()
+    radio = Icom7610SerialRadio(
+        device="/dev/ttyUSB0",
+        civ_link=link,
+        timeout=0.1,
+        _enumerate_serial_ports_fn=lambda: [],
+    )
+    await radio.connect()
+    store = radio.state_store
+    poller = RadioPoller(
+        radio, CommandQueue(), radio_state=radio._radio_state, state_store=store
+    )
+
+    # The startup section of RadioPoller._run(), verbatim order (the same
+    # shape as test_mor2893_honest_provenance).
+    await poller._fetch_nb_controls()  # noqa: SLF001
+    await poller._fetch_mod_inputs()  # noqa: SLF001
+    poller._seed_scan_facts_at_connect()  # noqa: SLF001
+
+    assert store_has_radio_observation(store) is False
+
+    # Leg 2 — a fire-and-forget scan echo on the same silent store: the
+    # values land (the UI bootstrap depends on them) without ever reading
+    # as a radio answer.
+    await poller._execute(ScanStart(scan_type=0x01))  # noqa: SLF001
+
+    scanning = store.snapshot().field(FieldPath.global_("slow_state", "scanning"))
+    assert scanning.value is True
+    assert store_has_radio_observation(store) is False
+
+    await radio.disconnect()
