@@ -151,9 +151,8 @@ def _drive_stream_open(coro: "Coroutine[Any, Any, None]") -> None:
     any blocking work off the caller's loop without changing the
     ``RxStream``/``TxStream`` contract. Reused for BOTH the initial open
     (:meth:`_BoundedPortAudioPool.open_stream_bounded`) and a late/abandoned
-    handle's close (:meth:`_BoundedPortAudioPool.close_late_stream`, F2) —
-    a wedged device can block its ``stop()`` exactly as it blocked its
-    ``start()``.
+    handle's close (:meth:`_BoundedPortAudioPool.close_late_stream`, F2): a
+    wedged device can block its ``stop()`` exactly as it blocked its ``start()``.
     """
     asyncio.run(coro)
 
@@ -163,32 +162,25 @@ class _BoundedPortAudioPool:
 
     Stand incident (2026-09-28): a pending macOS microphone-permission
     prompt (TCC) blocked ``Pa_IsFormatSupported`` on the event-loop
-    thread and froze the whole server (MOR-2892). Every PortAudio call
-    reachable from the web server now runs on this pool — the
-    :class:`UsbAudioDriver` (format probes, device enumeration, stream
-    opens/stops since MOR-1438/MOR-2892) AND the :class:`AudioBridge`
-    (enumeration, stream starts/stops) — awaited no longer than the
-    caller's bound. Sharing ONE pool and ONE saturation counter is the
-    point: a second executor or per-consumer bound would let the two
-    subsystems wedge each other's blind spot. On exceeding the bound the
-    audio request fails with one operator-readable warning while the
-    server keeps answering HTTP and WebSockets; the abandoned work item
-    keeps running unattended on its worker.
-
-    ``inflight`` counts submitted-but-unfinished operations (MOR-1573):
-    an abandoned (timed-out or cancelled) call stays counted until its
-    future actually resolves, so the saturation fail-fast tracks REAL
-    worker-pool pressure.
+    thread and froze the whole server (MOR-2892). Every web-reachable
+    PortAudio call now runs here — the :class:`UsbAudioDriver` (probes,
+    enumeration, opens/stops) AND the :class:`AudioBridge`
+    (enumeration, starts/stops) — awaited no longer than the caller's
+    bound. ONE pool and ONE saturation counter is the point: a second
+    executor would let the two subsystems wedge each other's blind
+    spot. Past the bound the request fails with one operator-readable
+    warning while the server keeps answering; the abandoned work item
+    keeps running unattended on its worker. ``inflight`` counts
+    submitted-but-unfinished operations (MOR-1573): an abandoned call
+    stays counted until its future resolves, so the fail-fast tracks
+    REAL worker-pool pressure.
     """
 
     def __init__(self) -> None:
-        # A DEDICATED pool, not ``loop.run_in_executor(None, ...)``'s
-        # process-wide default executor (MOR-1438, F3) — see
-        # ``_CAPTURE_OPEN_MAX_WORKERS``. Non-daemon threads (stdlib
-        # default): a permanently wedged open leaves a live thread that
-        # ``atexit`` will try to join, which can delay process exit —
-        # the same failure mode the frozen event loop already caused
-        # pre-fix, not a new regression.
+        # DEDICATED pool, not the process-wide default executor
+        # (MOR-1438, F3; bound: ``_CAPTURE_OPEN_MAX_WORKERS``).
+        # Non-daemon threads: a wedged-open thread delays ``atexit`` —
+        # the same failure mode the frozen loop already had pre-fix.
         self._executor = ThreadPoolExecutor(
             max_workers=_CAPTURE_OPEN_MAX_WORKERS,
             thread_name_prefix="rigplane-audio-open",
@@ -196,11 +188,9 @@ class _BoundedPortAudioPool:
         self.inflight = 0
 
     def submit_tracked(self, fn: Callable[[], Any]) -> "asyncio.Future[Any]":
-        """Submit *fn* to the pool, counted in ``inflight``.
+        """Submit *fn* to the pool; ``inflight`` uncounts only on settle.
 
-        The done-callback decrements the counter only when the work item
-        actually settles, so abandoned (timed-out) calls keep the
-        saturation check honest.
+        Abandoned (timed-out) calls stay counted, keeping saturation honest.
         """
         loop = asyncio.get_running_loop()
         future = loop.run_in_executor(self._executor, fn)
@@ -212,16 +202,6 @@ class _BoundedPortAudioPool:
         future.add_done_callback(_on_settled)
         return future
 
-    def _fail_saturated(self, *, direction: str, what: str) -> None:
-        logger.warning(
-            "usb-audio: PortAudio worker pool saturated by %d stuck "
-            "operation(s) — failing the %s %s fast instead of queuing "
-            "behind them",
-            self.inflight,
-            direction.upper(),
-            what,
-        )
-
     async def run_bounded(
         self,
         fn: Callable[[], Any],
@@ -232,16 +212,20 @@ class _BoundedPortAudioPool:
     ) -> Any:
         """Run a PortAudio-touching call off the loop, bounded.
 
-        On exceeding the bound the audio request FAILS with one
-        operator-readable warning — the observed cause was a permission
-        prompt waiting on the computer running RigPlane, so the message
-        says how to clear it. The abandoned work item holds no consumer
-        handle, so there is nothing to late-close. Caller cancellation
-        propagates unchanged (``asyncio.wait`` never cancels the future);
-        the work item still settles and uncounts itself.
+        Past the bound the request FAILS with one operator-readable
+        warning (it names the permission prompt to clear). The abandoned
+        item holds no consumer handle — nothing to late-close — and
+        still settles and uncounts itself on caller cancellation.
         """
         if self.inflight >= _CAPTURE_OPEN_MAX_WORKERS:
-            self._fail_saturated(direction=direction, what=what)
+            logger.warning(
+                "usb-audio: PortAudio worker pool saturated by %d stuck "
+                "operation(s) — failing the %s %s fast instead of queuing "
+                "behind them",
+                self.inflight,
+                direction.upper(),
+                what,
+            )
             raise AudioCaptureOpenTimeoutError(
                 f"PortAudio worker pool saturated by "
                 f"{self.inflight} stuck operation(s)."
@@ -277,13 +261,10 @@ class _BoundedPortAudioPool:
         """Start a stream off the loop, bounded, with late-close cleanup.
 
         Saturation fail-fast (MOR-1573), the bounded await, and the
-        abandoned-open cleanup (MOR-1438 F1/F2) for stream opens. The
-        caller already constructed *start_coro* before this runs, so the
-        fail-fast path closes it explicitly — otherwise it is dropped
-        unawaited, which triggers Python's "coroutine was never awaited"
-        warning and skips any cleanup the coroutine itself would run.
-        *what* names the operation in warnings (the bridge opens
-        playback/duplex legs through here too).
+        abandoned-open cleanup (MOR-1438 F1/F2). The fail-fast path
+        closes the pre-constructed *start_coro* explicitly (else Python
+        warns "coroutine was never awaited"). *what* names the
+        operation in warnings (bridge legs open through here too).
         """
         if self.inflight >= _CAPTURE_OPEN_MAX_WORKERS:
             logger.warning(
@@ -333,13 +314,10 @@ class _BoundedPortAudioPool:
     ) -> None:
         """Detach from a still-running background open (MOR-1438, F1).
 
-        Nobody will await *future* to completion any more (timeout or
-        caller cancellation), so its eventual result must not be
-        silently dropped: a stream that finishes opening late would flip
-        ``running`` True with no consumer and no callback wired up. When
-        it settles, :meth:`close_late_stream` closes the late handle.
-        Handles the race where *future* already finished right as the
-        abandonment landed by closing immediately.
+        Nobody awaits *future* any more, so :meth:`close_late_stream`
+        closes the handle when it settles (else a late open flips
+        ``running`` True with no consumer). An already-settled future
+        closes immediately.
         """
         if future.done():
             self.close_late_stream(future, stream, direction, what)
@@ -359,22 +337,13 @@ class _BoundedPortAudioPool:
     ) -> None:
         """Close a stream handle that finished opening after abandonment.
 
-        Fires as an asyncio done-callback ON THE EVENT-LOOP THREAD — but
-        a real ``stream.stop()`` is the SAME kind of synchronous
-        Pa_StopStream/Pa_CloseStream call this pool exists to keep off
-        that thread (MOR-1438, F2): a wedged device can block its close
-        exactly as it blocked its open. So the close itself is driven
-        through :func:`_drive_stream_open` on this pool, never awaited
-        directly here, and submitted via :meth:`submit_tracked` so a
-        wedged late close is COUNTED against the saturation bound
-        (MOR-2892 — it previously went through a raw ``run_in_executor``
-        and occupied a worker uncounted). A late-arriving handle would
-        otherwise hold the OS device open forever — a handle nobody
-        stops leaks a binding.
-
-        An abandoned open that later resolves with an EXCEPTION (as
-        opposed to a late-but-successful open) is logged as its own
-        WARNING (MOR-1573); there is no stream handle to close then.
+        Fires as a done-callback ON THE EVENT-LOOP THREAD, but the close
+        itself runs on this pool via :func:`_drive_stream_open`
+        (MOR-1438, F2) — a wedged device blocks ``stop()`` exactly as
+        it blocked ``start()`` — and is COUNTED via
+        :meth:`submit_tracked` (MOR-2892). An unclosed late handle
+        would hold the OS device open forever. A late EXCEPTION (no
+        handle to close) logs as its own WARNING (MOR-1573).
         """
         if future.cancelled():
             return
@@ -434,9 +403,7 @@ class _BoundedPortAudioPool:
 bounded_portaudio_pool = _BoundedPortAudioPool()
 """Module singleton shared by ``UsbAudioDriver`` and ``AudioBridge``.
 
-One executor, one worker bound (``_CAPTURE_OPEN_MAX_WORKERS``), one
-inflight counter — deliberately NOT per-instance so the bridge cannot
-grow a second pool the driver's saturation guard cannot see
+One executor, one bound, one counter — deliberately NOT per-instance
 (MOR-2892 review round 1)."""
 
 
@@ -1285,14 +1252,7 @@ class UsbAudioDriver:
 
     @property
     def _inflight_opens(self) -> int:
-        """Pressure on the shared bounded PortAudio pool (MOR-2892).
-
-        Kept as a read-only alias: the saturation guard and the
-        regression tests read this counter. The pool itself
-        (``bounded_portaudio_pool``) owns the number — one counter for
-        the driver AND the bridge, so neither can wedge the other's
-        blind spot.
-        """
+        """Read-only alias for the shared pool's pressure (MOR-2892)."""
         return bounded_portaudio_pool.inflight
 
     async def _open_stream(
