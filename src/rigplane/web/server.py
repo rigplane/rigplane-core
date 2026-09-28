@@ -2165,10 +2165,7 @@ class WebServer:
             self._radio,
             server_reachable=True,
             now_monotonic=now,
-            served_with_silent_link=(
-                self._served_with_silent_link
-                and not store_has_radio_observation(self.command_state_store)
-            ),
+            served_with_silent_link=False,
         )
         signature = (
             health.get("serverReachable"),
