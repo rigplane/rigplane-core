@@ -1201,6 +1201,55 @@ async def test_rigctld_connection_drop_never_builds_a_declared_defect() -> None:
     assert fake.connections >= 3
 
 
+@pytest.mark.asyncio
+async def test_rigctld_operator_disconnect_is_not_undone_by_the_poller() -> None:
+    """MOR-2757 review: an intentional disconnect stays disconnected.
+
+    ``/api/v1/radio/disconnect`` closes the transport while the
+    observation poller keeps running (it is stopped only at server
+    shutdown). The poller's reconnect must not reopen the transport
+    after that intentional disconnect — within two medium intervals no
+    new connection reaches the fake server and the radio stays
+    disconnected — while ``connect()`` clears the flag and polling
+    resumes. An *unintended* drop (the test above) still reconnects.
+    """
+    from rigplane.backends.rigctld_client.radio import (
+        RigctldClientObservationPoller,
+    )
+
+    fake = _TcpRigctldServer()
+    await fake.start()
+    radio = _real_rigctld_radio(fake)
+    await radio.connect()
+    poller = RigctldClientObservationPoller(
+        radio,
+        lambda _observations: None,
+        medium_interval=0.05,
+        slow_interval=1.0,
+    )
+    try:
+        await poller.start()
+        await asyncio.sleep(0.2)
+        connections_before_disconnect = fake.connections
+        assert fake.connections >= 1
+
+        await radio.disconnect()
+        # More than two medium intervals: enough for a failed cycle and
+        # a reconnect attempt the old head performed.
+        await asyncio.sleep(0.5)
+        assert radio.connected is False
+        assert fake.connections == connections_before_disconnect
+
+        await radio.connect()
+        await asyncio.sleep(0.2)
+        assert radio.connected is True
+        assert fake.connections > connections_before_disconnect
+    finally:
+        await poller.stop()
+        await radio.disconnect()
+        await fake.stop()
+
+
 # ---------------------------------------------------------------------------
 # MOR-2757: an unanswered safety-critical read on the Yaesu CAT path
 # ---------------------------------------------------------------------------
