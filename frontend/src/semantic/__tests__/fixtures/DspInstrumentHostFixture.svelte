@@ -45,8 +45,8 @@
       {:else if presentation === 'standard'}
         <section data-testid="standard-dsp-composition">
           <div data-slot="compact">
-            {@render handles.compactNb()}{@render handles.compactNr()}
-            {@render handles.compactManualNotch()}{@render handles.compactAutoNotch()}
+            {#if handles.compactNb}{@render handles.compactNb()}{/if}{#if handles.compactNr}{@render handles.compactNr()}{/if}
+            {#if handles.compactManualNotch}{@render handles.compactManualNotch()}{/if}{#if handles.compactAutoNotch}{@render handles.compactAutoNotch()}{/if}
           </div>
           <div data-slot="agc">{@render handles.agcMode(true)}</div>
         </section>
