@@ -736,6 +736,33 @@ def _healthy_radio(active: str = "MAIN", *, last_civ: float) -> MagicMock:
 
 
 @pytest.mark.asyncio
+async def test_civ_link_healthy_reports_false_on_a_silent_serial_link() -> None:
+    """MOR-2861: a serial session that merely reads "ready" must not keep the
+    poller's health gate green on a completely silent CI-V link.
+
+    Before the fix, ``_serial_civ_watchdog_loop`` re-stamped
+    ``_last_civ_data_received`` on every ready-session tick, so this gate
+    stayed True forever on a dead link (the 2026-09-28 IC-7300 incident).
+    With the re-stamp removed, the timestamp ages past
+    ``_civ_ready_idle_timeout`` and the gate must answer False.
+    """
+    from test_icom7610_serial_radio import _FakeSerialCivLink
+
+    from rigplane.backends.icom7610 import Icom7610SerialRadio
+
+    link = _FakeSerialCivLink(fail_connect_calls=set(range(2, 100)))
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._civ_ready_idle_timeout = 0.05
+    await radio.connect()
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await asyncio.sleep(0.3)
+    assert poller._civ_link_healthy(now=time.monotonic()) is False  # noqa: SLF001
+
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_sent_request_deadline_is_send_relative_not_enqueue_relative() -> None:
     # MOR-874 fix 1: a request that sat queued and sent late must be judged
     # from its SEND time, not enqueue time. With send_at far past

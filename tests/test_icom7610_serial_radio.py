@@ -25,6 +25,7 @@ from rigplane.commands import (
     build_civ_frame,
     parse_civ_frame,
 )
+from rigplane.core.civ import CivRequestKey
 from rigplane.core.state_store import StateStore
 from rigplane.exceptions import CommandError, ConnectionError
 from rigplane.exceptions import TimeoutError as RigplaneTimeoutError
@@ -733,6 +734,66 @@ async def test_serial_link_down_stops_audio_capture() -> None:
     )
 
     assert usb_audio.rx_running is False
+
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_silent_link_with_ready_session_declares_link_down(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-2861: a merely-"ready" session with polls outstanding and no parsed
+    CI-V frame must be declared link-down (which parks managed TX).
+
+    Fixture shape mirrors the 2026-09-28 IC-7300 incident: the raw session
+    reads ready, ``rx_packet_count`` never advances, and the request tracker
+    records zero timeouts (fire-and-forget polls and scope GETs cancelled at
+    0.2 s never produce one). A fake clock steps past the profile-derived
+    silence limit, so the assertion is not sensitive to the derived value.
+    """
+    import logging
+
+    # Reconnect attempts fail (device never returns on the same path) so the
+    # link-down state does not self-heal mid-assertion.
+    link = _FakeSerialCivLink(fail_connect_calls=set(range(2, 100)))
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._SERIAL_WATCHDOG_INTERVAL_S = 0.005
+    await radio.connect()
+    assert radio.radio_ready is True
+
+    # One fire-and-forget poll outstanding: a keyed response sink, exactly
+    # what the web poller's BACKGROUND read sends register (MOR-2861).
+    radio._civ_request_tracker.register_ack(
+        wait=False, response_key=CivRequestKey(command=0x03, sub=None)
+    )
+    assert radio._civ_request_tracker.timeout_count == 0
+
+    # Fake clock: jump straight past the derived silence limit instead of
+    # waiting real seconds (``getattr`` fallback keeps this RED-safe on the
+    # pre-fix code, which has no such attribute).
+    now = {"t": time.monotonic()}
+    radio._civ_silence_time_source = lambda: now["t"]  # type: ignore[attr-defined]
+    silence_limit = getattr(radio, "_serial_link_down_silence_timeout_s", 10.0)
+
+    managed_tx = _FakeManagedTxRuntime()
+    radio._managed_tx_runtime = managed_tx  # type: ignore[assignment]
+
+    with caplog.at_level(logging.ERROR, logger="rigplane.backends._icom_serial_base"):
+        now["t"] += silence_limit + 1.0
+        assert await _wait_until(
+            lambda: radio.conn_state == RadioConnectionState.RECONNECTING,
+            timeout_s=2.0,
+        )
+
+    error_lines = [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.ERROR and "link-down" in r.getMessage()
+    ]
+    assert len(error_lines) == 1, (
+        f"expected exactly one link-down ERROR line, got {len(error_lines)}"
+    )
+    assert managed_tx.ready_calls == [False]
 
     await radio.disconnect()
 
