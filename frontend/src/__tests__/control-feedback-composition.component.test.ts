@@ -81,7 +81,7 @@ function liveCaps(): Capabilities {
   return {
     stateContractVersion: 1, providerGeneration: PROVIDER_GENERATION,
     model: 'fixture', scope: false, audio: false, tx: false,
-    capabilities: ['filter_width'],
+    capabilities: ['filter_width', 'filter_shape'],
     receivers: 1, vfoScheme: 'single',
     freqRanges: [], modes: ['USB'], filters: ['FIL1'],
     filterWidthMin: 50, filterWidthMax: 3600,
@@ -110,7 +110,7 @@ function liveState(seq = 3): ServerState {
   const slot = { freqHz: 14250000, mode: 'USB', filterNum: 1, dataMode: 0 };
   const receiver = {
     ...slot, vfoA: slot, vfoB: { ...slot, freqHz: 14300000 }, activeSlot: 'A', filter: 1,
-    filterWidth: CONFIRMED_HZ,
+    filterWidth: CONFIRMED_HZ, filterShape: 0,
     sMeter: -12, att: 0, preamp: 0, nb: false, nr: false,
     afLevel: 0.4, rfGain: 0.75, squelch: 0.1,
   };
@@ -127,6 +127,7 @@ function liveState(seq = 3): ServerState {
       'main.mode': fresh,
       'main.filter': fresh,
       'main.filterWidth': fresh,
+      'main.filterShape': fresh,
       'main.freqHz': fresh,
     },
   } as unknown as ServerState;
@@ -329,5 +330,134 @@ describe('structural feedback survives locale, forced-colors and reduced-motion 
     expect(widthRule).toContain('@media (forced-colors: active)');
     expect(widthRule).toContain('@media (prefers-reduced-motion: reduce)');
     expect(widthRule).not.toContain('font-style');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MOR-1689 — the same equivalence for the Filter Shape SHARP/SOFT choices.
+// The desktop/workspace seat is the semantic `FilterInstrumentHost` shape
+// snippet; the narrow-mobile seat is the chip FilterPanel's settings-modal
+// shape section. One `set_filter_shape` lifecycle must land as the same
+// phase, busy and canonical `aria-pressed` on each, name the requested
+// target through a transition-deduplicated polite live region, and the
+// activation intent must be identical across the three mounts.
+// ---------------------------------------------------------------------------
+
+const SHAPE_TARGET = 1; // SOFT
+
+function shapeControl(kind: Presentation): HTMLButtonElement | null {
+  if (kind === 'narrow-mobile') {
+    // The phone's shape buttons live in the chip FilterPanel's settings
+    // modal, behind the sheet's ⚙ trigger.
+    const gear = target.querySelector<HTMLButtonElement>('button[aria-label="Open filter settings"]');
+    gear!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+    return target.querySelector<HTMLButtonElement>('.shape-section .shape-button');
+  }
+  return target.querySelector<HTMLButtonElement>('[data-testid="filter-shape-1"]');
+}
+
+function shapeSnapshot(kind: Presentation) {
+  const control = shapeControl(kind);
+  const scope = kind === 'narrow-mobile'
+    ? target.querySelector<HTMLElement>('.shape-section')
+    : target.querySelector<HTMLElement>('[data-testid="filter-shape"]');
+  const canonical = kind === 'narrow-mobile'
+    ? target.querySelector<HTMLElement>('.shape-section .shape-button')
+    : target.querySelector<HTMLElement>('[data-testid="filter-shape-0"]');
+  const live = target.querySelector<HTMLElement>(
+    '[data-testid="filter-shape"] [data-control-feedback-status], .shape-section [data-filter-shape-live]',
+  );
+  return {
+    mounted: control !== null,
+    phase: control?.getAttribute('data-command-phase') ?? null,
+    scopeBusy: scope?.getAttribute('aria-busy'),
+    canonicalPressed: canonical !== null
+      && (canonical.getAttribute('aria-pressed') === 'true'
+        || canonical.classList.contains('active')),
+    live: live?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
+  };
+}
+
+describe('one Filter Shape choice lifecycle is equivalent on desktop, narrow mobile and a workspace-selected mount (MOR-1689)', () => {
+  const LIVE_STATUS: Readonly<Record<Presentation, string>> = {
+    desktop: 'Submitting: SOFT',
+    'narrow-mobile': 'SOFT: Pending, not yet confirmed',
+    'workspace-selected': 'Submitting: SOFT',
+  };
+
+  it.each(['desktop', 'narrow-mobile', 'workspace-selected'] as const)(
+    '%s: pending phase, busy, canonical aria-pressed and live status match the shared DTO',
+    (kind) => {
+      render(kind);
+      dispatchRadioIntent({ name: 'set_filter_shape', params: { shape: SHAPE_TARGET, receiver: 0 } });
+      flushSync();
+
+      const command = getCommandLifecycles().find((candidate) => candidate.name === 'set_filter_shape');
+      expect(command?.status).toBe('pending');
+      expect(command?.params).toMatchObject({ shape: SHAPE_TARGET });
+
+      const seen = shapeSnapshot(kind);
+      expect(seen.mounted).toBe(true);
+      expect(seen.phase).toBe('submitted');
+      expect(seen.scopeBusy).toBe('true');
+      // Canonical selection stays the confirmed SHARP (0) — the requested
+      // SOFT (1) target is marked separately, never as confirmed.
+      expect(seen.canonicalPressed).toBe(true);
+      expect(getLocale()).toBe('en-US');
+      expect(seen.live).toBe(LIVE_STATUS[kind]);
+    },
+  );
+
+  it('keeps the shape choice intent identical across the three mounts', () => {
+    const dispatched: unknown[] = [];
+    for (const kind of ['desktop', 'narrow-mobile', 'workspace-selected'] as const) {
+      render(kind);
+      const control = shapeControl(kind);
+      expect(control, kind).not.toBeNull();
+      control!.focus();
+      h.commands.mockClear();
+      // A <button> activation — the same click event pointer and keyboard
+      // input both produce — dispatches the one supported intent.
+      control!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      flushSync();
+      dispatched.push(h.commands.mock.calls.map(([name, params]) => [name, params]));
+      unmount(component!);
+      component = null;
+      document.body.innerHTML = '';
+      resetCommandLifecycle();
+      resetRadioState();
+    }
+    expect(dispatched[0]).toEqual(dispatched[1]);
+    expect(dispatched[1]).toEqual(dispatched[2]);
+    expect(dispatched[0]).toEqual([['set_filter_shape', { shape: SHAPE_TARGET, receiver: 0 }]]);
+  });
+});
+
+describe('Filter Shape structural feedback survives locale, forced-colors and reduced-motion (MOR-1689)', () => {
+  it('announces the same pending shape in Russian without making color or motion the only signal', () => {
+    setLocale('ru-RU');
+    render('narrow-mobile');
+    dispatchRadioIntent({ name: 'set_filter_shape', params: { shape: SHAPE_TARGET, receiver: 0 } });
+    flushSync();
+    const seen = shapeSnapshot('narrow-mobile');
+    expect(seen.phase).toBe('submitted');
+    expect(seen.scopeBusy).toBe('true');
+    expect(seen.canonicalPressed).toBe(true);
+    expect(seen.live).toBe('SOFT: В ожидании, ещё не подтверждено');
+  });
+
+  it('keeps forced-colors and reduced-motion as structural rules beside the phase attribute', () => {
+    const host = readFileSync('src/semantic/FilterInstrumentHost.svelte', 'utf8');
+    const style = host.slice(host.lastIndexOf('<style>'));
+    expect(host).toContain('data-command-phase={shapePhase');
+    expect(style).toContain('@media (forced-colors: active)');
+    expect(style).toContain('@media (prefers-reduced-motion: reduce)');
+    // The pending affordance must not be italic-only (MOR-1689 acceptance):
+    // the structural underline channel survives forced-colors.
+    const pendingRule = style.slice(style.indexOf('[data-pending'), style.indexOf('\n', style.indexOf('[data-pending')));
+    expect(pendingRule).toContain('text-decoration');
+    const panel = readFileSync('src/components-v2/panels/FilterPanel.svelte', 'utf8');
+    expect(panel).toContain('data-command-phase={filterShapeFeedback.phase');
   });
 });
