@@ -2523,6 +2523,11 @@ def _fast_retry_serial_radio(device: str, link: object) -> _IcomSerialRadioBase:
     radio._SERIAL_WATCHDOG_INTERVAL_S = 0.005
     radio._SERIAL_WATCHDOG_RETRY_S = 0.005
     radio._SERIAL_WATCHDOG_RETRY_MAX_S = 0.01
+    # The fake link answers no poll: once the port opens, the watchdog would
+    # declare link-down on that silence, parking transmit and reopening the
+    # port under the assertions at a moment that depends on runner load. No
+    # test here is about link-down, so its evidence never crosses.
+    radio._serial_civ_timeout_evidence_crossed_threshold = lambda: False
     return radio
 
 
@@ -2641,10 +2646,6 @@ async def test_missing_serial_port_serves_not_connected_instead_of_exiting(
             assert await _wait_until(
                 lambda: composition._active_provider is not None, timeout_s=5.0
             )
-            # Stop the watchdog now that it has reopened the port: a link-down
-            # it could declare on this silent link would park transmit and
-            # move the state under the assertions below.
-            await radio._stop_civ_data_watchdog()
             assert radio.connected is True
             health = server._build_radio_health()
             assert health["likelyCause"] == "radio_powered_off_likely"
@@ -2719,6 +2720,48 @@ def test_only_a_recorded_open_failure_makes_reconnecting_a_missing_port() -> Non
 
 
 @pytest.mark.asyncio
+async def test_http_connect_and_power_on_leave_the_port_retry_running(
+    tmp_path: Path,
+) -> None:
+    """A manual connect in the missing-port state keeps the retry loop alive.
+
+    ``connect()`` on a missing port fails and rests the radio
+    ``DISCONNECTED``, which the watchdog never retries. So
+    ``/api/v1/radio/connect`` and the power-on reconnect refuse with the
+    WebSocket ``radio_connect`` handler's ``backend_recovering`` error, and
+    the port still connects when it appears.
+    """
+
+    from test_icom7610_serial_radio import _FakeSerialCivLink, _wait_until
+    from test_web_server_coverage import _FakeWriter, _reader_with, _response_json
+
+    device = str(tmp_path / "cu.usbserial-1420")
+    link = _FakeSerialCivLink(fail_connect=_port_missing_error(device))
+    radio = _fast_retry_serial_radio(device, link)
+
+    async with _served_through_cli(radio) as server:
+        connect_writer, power_writer = _FakeWriter(), _FakeWriter()
+        await server._handle_radio_control("/api/v1/radio/connect", connect_writer)
+        power_on = b'{"state": "on"}'
+        await server._handle_radio_control(
+            "/api/v1/radio/power",
+            power_writer,
+            headers={"content-length": str(len(power_on))},
+            reader=_reader_with(power_on),
+        )
+
+        calls = link.connect_calls
+        assert await _wait_until(lambda: link.connect_calls > calls, timeout_s=5.0)
+        link._fail_connect = None
+        assert await _wait_until(lambda: radio.connected, timeout_s=5.0)
+
+    for writer in (connect_writer, power_writer):
+        status, body = _response_json(writer)
+        assert status == 409
+        assert body["error"] == "backend_recovering"
+
+
+@pytest.mark.asyncio
 async def test_tx_returns_after_the_late_first_open(tmp_path: Path) -> None:
     """Transmit is refused without a port and follows the normal rules after.
 
@@ -2757,10 +2800,6 @@ async def test_tx_returns_after_the_late_first_open(tmp_path: Path) -> None:
         assert await _wait_until(
             lambda: composition._active_provider is not None, timeout_s=5.0
         )
-        # Stop the watchdog now that it has reopened the port: a link-down on
-        # this silent link would park the provider before the key below.
-        await radio._stop_civ_data_watchdog()
-        assert composition._active_provider is not None
         assert composition._active_provider.transport_identity is radio._civ_transport
         keyed = await composition.authority.submit_ptt(True, "late-open-owner")
         assert keyed.outcome is ManagedTxOutcome.ACCEPTED

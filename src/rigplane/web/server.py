@@ -5530,6 +5530,24 @@ class WebServer:
     ) -> None:
         """Handle POST /api/v1/radio/{disconnect,connect,power,cw/send,cw/stop}."""
         radio = self._radio
+
+        async def refused_while_recovering() -> bool:
+            # MOR-2876: the WebSocket ``radio_connect`` handler's refusal. On a
+            # serial port the recovery loop is retrying, a failed ``connect()``
+            # rests the radio DISCONNECTED, which the watchdog never retries.
+            if not self._control_handler_for()._backend_recovering():  # noqa: SLF001
+                return False
+            await self._send_json(
+                writer,
+                409,
+                "Conflict",
+                {
+                    "error": "backend_recovering",
+                    "message": "backend is already managing radio recovery",
+                },
+            )
+            return True
+
         if radio is None:
             body = json.dumps(
                 {"error": "no_radio", "message": "No radio configured"},
@@ -5554,6 +5572,8 @@ class WebServer:
                 self.command_state_store.begin_provider_generation()
                 resp = {"status": "disconnected"}
             elif path == "/api/v1/radio/connect":
+                if await refused_while_recovering():
+                    return
                 poller = self._radio_poller
                 generation = (
                     poller._vfo_connection_generation()
@@ -5626,6 +5646,8 @@ class WebServer:
                 if power_state == "on" and not getattr(
                     radio, "control_connected", False
                 ):
+                    if await refused_while_recovering():
+                        return
                     # Radio is off → reconnect transport first, then send power-on CI-V
                     logger.info("power-on: radio disconnected, reconnecting first")
                     try:

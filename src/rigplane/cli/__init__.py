@@ -1927,8 +1927,10 @@ class _ManagedTxRadioSession:
             entered = await self._radio.__aenter__()
         except RigplaneConnectionError as exc:
             # MOR-2876: a serial port that cannot be opened (pyserial's
-            # SerialException is an OSError) does not end web/station. The
-            # backend keeps retrying it; no transport is marked ready here.
+            # SerialException is an OSError) does not end web/station, and
+            # neither does an open that times out (TimeoutError is an OSError
+            # on Python 3.11+): the backend's watchdog retries the port from
+            # its next tick. No transport is marked ready here.
             recover = getattr(self._radio, "start_reconnect_recovery", None)
             if not isinstance(exc.__cause__, OSError) or not callable(recover):
                 raise
