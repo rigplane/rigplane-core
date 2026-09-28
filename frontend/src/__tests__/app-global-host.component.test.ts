@@ -393,34 +393,16 @@ describe('App composition — one host above the presentation boundary', () => {
 // ---------------------------------------------------------------------------
 // MOR-1240 — while the radio is powered off, the desktop status bar stays
 // usable; a layout without a status bar keeps the full-screen overlay.
+// The dependency is inverted (PR #3852 review): the host measures nothing —
+// StatusBar publishes `--rp-status-bar-bottom` while mounted and the overlay
+// only consumes it in CSS. The publish side is pinned in
+// StatusBar.bottom-edge-publish.component.test.ts; jsdom does no layout, so
+// what is assertable here is the CSS contract and the fallback.
 // ---------------------------------------------------------------------------
 describe('MOR-1240 — the powered-off overlay leaves the desktop status bar usable', () => {
   const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8');
-
-  // jsdom does no layout and has no ResizeObserver, so each test stubs the
-  // bar's `getBoundingClientRect` and a fake ResizeObserver that the test
-  // fires by hand — the same idiom ScaledStage.isolated.test.ts uses.
-  class FakeResizeObserver {
-    static instances: FakeResizeObserver[] = [];
-    readonly callback: ResizeObserverCallback;
-    observe = vi.fn();
-    disconnect = vi.fn();
-    constructor(callback: ResizeObserverCallback) {
-      this.callback = callback;
-      FakeResizeObserver.instances.push(this);
-    }
-  }
-
-  let barRect = { bottom: 0 };
-
-  function mountBar() {
-    const bar = document.createElement('div');
-    bar.setAttribute('data-status-bar', '');
-    bar.getBoundingClientRect = () =>
-      ({ bottom: barRect.bottom, top: 0, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) }) as unknown as DOMRect;
-    document.body.appendChild(bar);
-    return bar;
-  }
+  const BOTTOM_EDGE = '--rp-status-bar-bottom';
+  const bottomEdge = () => document.documentElement.style.getPropertyValue(BOTTOM_EDGE);
 
   function mountHost() {
     const target = document.createElement('div');
@@ -430,77 +412,58 @@ describe('MOR-1240 — the powered-off overlay leaves the desktop status bar usa
     return instance;
   }
 
-  beforeEach(() => {
-    FakeResizeObserver.instances = [];
-    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it('starts the overlay below the bar\'s real bottom edge, rounded up to a whole pixel', () => {
+  it('starts the overlay at the bar edge StatusBar publishes, through CSS alone', () => {
     h.radioPowerOn = false;
-    barRect = { bottom: 33.4 };
-    mountBar();
+    // A mounted StatusBar (see the publish suite) is the only writer.
+    document.documentElement.style.setProperty(BOTTOM_EDGE, '34px');
     const instance = mountHost();
 
-    expect(powerEl()?.style.top).toBe('34px');
+    expect(powerEl()?.style.top).toBe(`var(${BOTTOM_EDGE}, 0px)`);
 
+    document.documentElement.style.removeProperty(BOTTOM_EDGE);
     unmount(instance);
   });
 
-  it('follows the bar when a later rect change moves it down', () => {
-    h.radioPowerOn = false;
-    barRect = { bottom: 33.4 };
-    mountBar();
-    const instance = mountHost();
-    expect(powerEl()?.style.top).toBe('34px');
-
-    // A link-lost row appears above the bar and pushes it down.
-    barRect = { bottom: 47.6 };
-    FakeResizeObserver.instances.at(-1)?.callback([], {} as ResizeObserver);
-    flushSync();
-    expect(powerEl()?.style.top).toBe('48px');
-
-    unmount(instance);
-  });
-
-  it('keeps the full-screen overlay when no [data-status-bar] element exists', () => {
+  it('keeps the full-screen overlay when no StatusBar is mounted', () => {
     h.radioPowerOn = false;
     const instance = mountHost();
 
     expect(powerEl()).not.toBeNull();
-    expect(powerEl()?.style.top).toBe('');
+    // No bar publishes, so the variable is unset anywhere: the overlay's
+    // top collapses to the 0px fallback — full-screen.
+    expect(bottomEdge()).toBe('');
+    expect(powerEl()?.style.top).toBe(`var(${BOTTOM_EDGE}, 0px)`);
 
     unmount(instance);
   });
 
-  it('keeps its Power ON action and tears the observers down on power-on', async () => {
+  it('keeps its Power ON action from the host', async () => {
     h.radioPowerOn = false;
     h.powerOn.mockResolvedValue(undefined);
-    mountBar();
     const instance = mountHost();
 
     powerEl()?.querySelector<HTMLButtonElement>('.power-on-btn')?.click();
     await settle();
     expect(h.powerOn).toHaveBeenCalledTimes(1);
 
-    h.radioPowerOn = true;
-    h.notifyRuntime();
-    flushSync();
-    expect(FakeResizeObserver.instances.at(-1)?.disconnect).toHaveBeenCalled();
-    expect(powerEl()).toBeNull();
-
     unmount(instance);
   });
 
-  // The DOM contract the overlay relies on: StatusBar's own root carries
-  // `data-status-bar`, and the phone layout composes no StatusBar at all —
-  // so it can never grow a `top` cut by accident.
-  it('pins the bar contract: StatusBar\'s root is [data-status-bar]; the phone layout mounts none', () => {
-    expect(read('../components-v2/layout/StatusBar.svelte'))
-      .toMatch(/<div class="status-bar" data-status-bar=""/);
+  // The CSS contract the overlay relies on: StatusBar (and only StatusBar)
+  // writes the document-level edge property, and the phone layout composes
+  // no StatusBar at all — so it can never grow a top cut by accident.
+  it('pins the edge contract: StatusBar publishes it; AppGlobalHost only consumes it in CSS; the phone layout mounts no bar', () => {
+    const statusBar = read('../components-v2/layout/StatusBar.svelte');
+    expect(statusBar).toMatch(/--rp-status-bar-bottom/);
+    expect(statusBar).toMatch(/setProperty\(BOTTOM_EDGE_PROPERTY/);
+    expect(statusBar).not.toMatch(/data-status-bar/);
+
+    const host = read('../AppGlobalHost.svelte');
+    expect(host).toContain(`var(${BOTTOM_EDGE}, 0px)`);
+    // The host must not measure: no DOM lookup for a bar, no observers.
+    expect(host).not.toMatch(/querySelector[^)]*status-bar/);
+    expect(host).not.toMatch(/ResizeObserver/);
+
     expect(read('../components-v2/layout/MobileRadioLayout.svelte'))
       .not.toMatch(/StatusBar\.svelte/);
   });
@@ -519,13 +482,14 @@ describe('MOR-1240 — the powered-off overlay leaves the desktop status bar usa
       flushSync();
     };
 
-    // The desktop stub in this harness mounts no bar: the overlay stays
-    // full-screen until a layout actually provides one.
-    expect(powerEl()?.style.top).toBe('');
+    // The desktop stub in this harness mounts no bar: nothing ever
+    // publishes the edge, so the overlay stays full-screen via the CSS
+    // fallback across a layout swap.
+    expect(bottomEdge()).toBe('');
     await resize(390);
     expect(document.querySelector('.layout-stub')?.getAttribute('data-skin')).toBe('mobile');
-    expect(document.querySelector('[data-status-bar]')).toBeNull();
-    expect(powerEl()?.style.top).toBe('');
+    expect(document.querySelector('.status-bar')).toBeNull();
+    expect(bottomEdge()).toBe('');
 
     unmount(instance);
   });
