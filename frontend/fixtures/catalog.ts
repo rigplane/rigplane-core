@@ -202,6 +202,39 @@ function withMeters(state: ServerState): ServerState {
 }
 
 /**
+ * MOR-2852 — the four receiver fact leaves the phone meta row's chips read
+ * (`VfoIndicatorRow.svelte` chips appearance: BW/AGC/NB/NR), with their
+ * observation entries. `baseCaps` already declares the `filter_width`/`agc`/
+ * `nb`/`nr` capability tags every catalog entry shares, so the chips are
+ * structural everywhere; what they lack on the bare topology states is a
+ * READING — `mainSubState` observes only `freqHz`/`mode`/`filter`, so the
+ * chips render unknown (dimmed, no value). This overlay makes them known.
+ *
+ * DELIBERATELY an overlay applied only by the phone-witness fixture below,
+ * never by `mainSubState` itself: every desktop/reference/LCD fixture is
+ * built from the same topology states, and a known BW/AGC/NB/NR reading
+ * would repaint their `VfoIndicatorRow` fact texts (the non-chips
+ * appearances print the values) — changing non-phone baselines this ticket
+ * does not own. Same shape as `withMeters` (both receivers, fresh entries).
+ */
+const RECEIVER_FACT_LEAVES = ['filterWidth', 'agc', 'nb', 'nr'] as const;
+
+function withReceiverFacts(state: ServerState): ServerState {
+  const s = state as unknown as Record<string, unknown>;
+  const rx = (v: unknown) =>
+    (v === undefined ? v : { ...(v as Record<string, unknown>), filterWidth: 2400, agc: 1, nb: false, nr: false });
+  const paths: string[] = [];
+  for (const rxKey of ['main', 'sub']) {
+    for (const leaf of RECEIVER_FACT_LEAVES) paths.push(`${rxKey}.${leaf}`);
+  }
+  return {
+    ...s,
+    main: rx(s.main), sub: rx(s.sub),
+    fieldStatus: { ...(s.fieldStatus as FieldStatusMap), ...statuses(paths) },
+  } as unknown as ServerState;
+}
+
+/**
  * MOR-1351: hardened to a REAL radio's shape — IC-7610 (`rigs/ic7610.toml`),
  * the only dual-receiver profile in the tree and already this fixture's
  * implied topology (`receivers: 2, vfoScheme: 'main_sub'`) — modes/filters/
@@ -1035,6 +1068,28 @@ const LCD_DIRECTION_FIXTURES: readonly Fixture[] = [
 ];
 
 /**
+ * MOR-2852 — the phone witness's facts-bearing twin of `topology-2-main-sub`.
+ * Same radio as its sibling (`mainSubCaps` = `baseCaps`, which already
+ * declares the `filter_width`/`agc`/`nb`/`nr` tags), same meters overlay,
+ * plus the `withReceiverFacts` leaves so the mobile meta row's chips read
+ * KNOWN in the phone captures. Only `fixtures/mobile-witness.html` consumers
+ * point at this id; every desktop/reference/LCD capture stays on the shared
+ * `topology-2-main-sub` state and never sees the overlay. No `expect` block:
+ * `mobile-witness.ts` mounts without the assertion pipeline (same as the
+ * peer-split/LCD witness fixtures).
+ */
+const PHONE_WITNESS_FIXTURES: readonly Fixture[] = [
+  {
+    id: 'topology-2-main-sub--phone',
+    what: 'MOR-2852 phone witness twin of topology-2-main-sub: same radio and meters, plus the '
+      + 'receiver fact leaves (BW/AGC/NB/NR) so the phone meta row chips read known.',
+    state: () => withReceiverFacts(withMeters(mainSubState('MAIN'))),
+    caps: mainSubCaps,
+    tx: tx({}),
+  },
+];
+
+/**
  * MOR-2676 — the minimum a radio can declare. No capability tags at all, one
  * receiver, one unslotted VFO, one mode, one filter, no scopes, no TX bands,
  * no meter calibration: every optional surface the semantic tree can mount
@@ -1194,6 +1249,7 @@ export const FIXTURES: readonly Fixture[] = [
   ...AUDIO_RUNTIME_FIXTURES,
   ...PEER_SPLIT_FIXTURES,
   ...LCD_DIRECTION_FIXTURES,
+  ...PHONE_WITNESS_FIXTURES,
   ...HARNESS_REACH_FIXTURES,
 ];
 

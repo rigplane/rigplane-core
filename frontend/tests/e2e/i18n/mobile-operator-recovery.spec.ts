@@ -6,14 +6,36 @@ import type { ServerState } from '../../../src/lib/types/state';
 
 const workspace = { version: 1, layout: 'standard', designLanguage: 'studioline', theme: 'github-light' };
 const { sub: _unusedSub, ...singleReceiverState } = mockState;
+// MOR-2852: the meta row's BW/AGC/NB/NR chips are capability-gated
+// (`radio-view-model-adapter.ts` deriveReceiverIndicators) and a KNOWN
+// reading additionally requires observation evidence (`seen()`), so this
+// spec states both locally: the four capability tags, and fresh
+// `fieldStatus` entries for the `main.*` leaves the adapter reads — the
+// same pattern `mobile-unread-smeter.spec.ts` uses for its S-meter leaf.
+// The shared `./fixtures` mock deliberately declares neither: other specs
+// in this pack must keep seeing the chips structurally absent.
+function observedLeaf(leaf: string) {
+  return {
+    storePath: `main.${leaf}`, observed: true,
+    freshness: 'fresh' as const, availability: 'available' as const,
+    lastObservedMonotonic: 0,
+  };
+}
 const state = {
   ...singleReceiverState,
   main: { ...mockState.main, freqHz: 14_035_720, mode: 'CW', filter: 3,
     filterWidth: 150, unselectedVfo: { freqHz: 14_332_000, mode: 'USB', filterNum: 1, dataMode: 0 } },
+  fieldStatus: {
+    'main.filterWidth': observedLeaf('filterWidth'),
+    'main.agc': observedLeaf('agc'),
+    'main.nb': observedLeaf('nb'),
+    'main.nr': observedLeaf('nr'),
+  },
 } satisfies Omit<ServerState, 'sub'>;
 const capabilities = { ...mockCapabilities, model: 'IC-7300', receivers: 1,
   vfoScheme: 'ab', vfoReadback: 'selected_unselected', audioTx: true, audioTxRoute: 'usb',
-  audioTxRequiredModInputSource: null } satisfies Capabilities;
+  audioTxRequiredModInputSource: null,
+  capabilities: ['scope', 'audio', 'tx', 'filter_width', 'agc', 'nb', 'nr'] } satisfies Capabilities;
 const managedTransmit = {
   schemaVersion: 1, sampledAt: '2026-09-05T02:00:21.182Z',
   managedTransmit: { status: 'available', intent: { kind: 'rx' }, releaseRequired: false,

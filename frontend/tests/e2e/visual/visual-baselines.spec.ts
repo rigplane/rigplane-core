@@ -319,7 +319,10 @@ test('mobile-portrait--phone', async ({ page }) => {
   // as the COCKPIT loop above (MOR-2710).
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize(PHONE);
-  await page.goto('/fixtures/mobile-witness.html?fixture=topology-2-main-sub', { waitUntil: 'load' });
+  // MOR-2852: the phone captures use the facts-bearing twin so the meta
+  // row's BW/AGC/NB/NR chips read KNOWN; every desktop/reference/LCD
+  // capture stays on the shared `topology-2-main-sub`.
+  await page.goto('/fixtures/mobile-witness.html?fixture=topology-2-main-sub--phone', { waitUntil: 'load' });
   await page.waitForSelector('body[data-harness-ready="true"]');
   expect(await page.evaluate(() =>
     window.matchMedia('(prefers-reduced-motion: reduce)').matches)).toBe(true);
@@ -341,7 +344,7 @@ test('mobile-portrait--phone', async ({ page }) => {
 
 test('mobile-landscape--phone', async ({ page }) => {
   await page.setViewportSize({ width: 812, height: 375 });
-  await page.goto('/fixtures/mobile-witness.html?fixture=topology-2-main-sub', { waitUntil: 'load' });
+  await page.goto('/fixtures/mobile-witness.html?fixture=topology-2-main-sub--phone', { waitUntil: 'load' });
   await page.waitForSelector('body[data-harness-ready="true"]');
   await page.evaluate(() => document.fonts.ready);
   const landscape = page.locator('.m-landscape');
