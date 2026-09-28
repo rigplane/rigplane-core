@@ -209,30 +209,42 @@ type ButtonAudit = {
 };
 
 function auditScript(): ButtonAudit[] {
-  const root = document.querySelector('.m-layout, .m-landscape');
-  if (!root) throw new Error('phone root not found');
+  // MOR-2816: the audit walks EVERY phone root, not only the arrangement
+  // roots — the floating MOD-input warning banner (.m-mod-input-warning)
+  // and the PTT FAB button sit outside .m-layout/.m-landscape, so a single
+  // root query never saw their buttons. The FAB root IS the button, so a
+  // root that matches the selector set is audited itself.
+  const roots = Array.from(document.querySelectorAll<HTMLElement>(
+    '.m-layout, .m-landscape, .m-mod-input-warning, .ptt-fab',
+  ));
+  if (roots.length === 0) throw new Error('phone root not found');
   const audited: ButtonAudit[] = [];
-  for (const el of Array.from(root.querySelectorAll<HTMLElement>('button, [role="button"]'))) {
-    const style = getComputedStyle(el);
-    if (style.display === 'none' || style.visibility === 'hidden') continue;
-    const rects = el.getClientRects();
-    if (rects.length === 0) continue;
-    const rect = el.getBoundingClientRect();
-    if (rect.width < 1 || rect.height < 1) continue;
-    const text = (el.textContent ?? '').trim();
-    const glyphs = Array.from(el.querySelectorAll('svg')).map((svg) => {
-      const r = svg.getBoundingClientRect();
-      return { width: r.width, height: r.height };
-    });
-    audited.push({
-      label: text.slice(0, 24) || (glyphs.length ? '(glyph)' : '(empty)'),
-      className: el.getAttribute('class')?.slice(0, 48) ?? '',
-      font: parseFloat(style.fontSize),
-      width: rect.width,
-      height: rect.height,
-      clipped: el.scrollWidth > el.clientWidth + 1,
-      glyphs,
-    });
+  for (const root of roots) {
+    const buttons = root.matches('button, [role="button"]')
+      ? [root, ...Array.from(root.querySelectorAll<HTMLElement>('button, [role="button"]'))]
+      : Array.from(root.querySelectorAll<HTMLElement>('button, [role="button"]'));
+    for (const el of buttons) {
+      const style = getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') continue;
+      const rects = el.getClientRects();
+      if (rects.length === 0) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) continue;
+      const text = (el.textContent ?? '').trim();
+      const glyphs = Array.from(el.querySelectorAll('svg')).map((svg) => {
+        const r = svg.getBoundingClientRect();
+        return { width: r.width, height: r.height };
+      });
+      audited.push({
+        label: text.slice(0, 24) || (glyphs.length ? '(glyph)' : '(empty)'),
+        className: el.getAttribute('class')?.slice(0, 48) ?? '',
+        font: parseFloat(style.fontSize),
+        width: rect.width,
+        height: rect.height,
+        clipped: el.scrollWidth > el.clientWidth + 1,
+        glyphs,
+      });
+    }
   }
   return audited;
 }

@@ -1834,15 +1834,21 @@
      chip panels, the spectrum toolbar mounted in .m-content, sheets and
      modals opened from the phone — carries a label of at least 16px
      and a touch height of at least 44px. Rows may wrap or drop buttons
-     per row; no label is clipped or ellipsised. Scoped under .m-layout
-     only: desktop, reference and LCD layouts and the .m-landscape
-     arrangement keep their own sizes. `!important` is required because
+     per row; no label is clipped or ellipsised. Scoped to the portrait
+     phone only: desktop, reference and LCD layouts and the .m-landscape
+     arrangement keep their own sizes. The floors also reach the two
+     button mounts that sit OUTSIDE the .m-layout scroll root — the
+     floating MOD-input warning banner (.m-mod-input-warning, whose own
+     labels were 11-12px) and the PTT FAB button — so no portrait phone
+     button escapes them. `!important` is required because
      the shared spectrum toolbar pins some button fonts at 8–9px and the
      global control-button face pins nowrap + overflow:hidden on the
      button itself, and `max(16px, 1em)` keeps any already-larger label
      (e.g. the sheet close glyph) at its own size. */
   .m-layout :global(button),
-  .m-layout :global([role='button']) {
+  .m-layout :global([role='button']),
+  .m-mod-input-warning :global(button),
+  :global(.ptt-fab) {
     font-size: max(16px, 1em) !important;
     min-height: 44px !important;
     min-width: 44px;
