@@ -446,7 +446,7 @@ async def test_pool_saturation_fails_fast_instead_of_queuing(
             "pool never drained -- the wedged opens' handles were not closed, "
             "so nothing can be concluded about the probe open"
         )
-        assert backend.rx_streams[len(wedged):] == [], (
+        assert backend.rx_streams[len(wedged) :] == [], (
             "saturated pool must fail WITHOUT handing anything to a worker; "
             "an extra stream handle was created, so the start queued behind "
             "the wedged workers instead of failing fast"

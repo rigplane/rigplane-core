@@ -275,9 +275,9 @@ async def test_stop_rx_off_loop_and_bounded(
     assert stream.stop_thread_ident != threading.get_ident(), (
         "stream stop must run off the event-loop thread"
     )
-    assert any(
-        "stream stop" in w.getMessage() for w in _warnings(caplog)
-    ), "timeout warning must name the stuck operation"
+    assert any("stream stop" in w.getMessage() for w in _warnings(caplog)), (
+        "timeout warning must name the stuck operation"
+    )
 
     gate.set()  # let the abandoned background stop finally complete
     for _ in range(50):
@@ -318,6 +318,6 @@ async def test_enumeration_timeout_bounded(
 
     assert ticker.progressed >= 3
     assert driver.rx_running is False
-    assert any(
-        "device enumeration" in w.getMessage() for w in _warnings(caplog)
-    ), "timeout warning must name the stuck operation"
+    assert any("device enumeration" in w.getMessage() for w in _warnings(caplog)), (
+        "timeout warning must name the stuck operation"
+    )
