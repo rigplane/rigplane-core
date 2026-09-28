@@ -49,6 +49,7 @@ from ..core.acquisition_scheduler import (
 )
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.command_service import (
+    COMMAND_OUTCOME_INVALIDATED,
     CommandExecutionResult,
     CommandService,
     command_intent_from_request,
@@ -2143,7 +2144,9 @@ class WebServer:
     def _on_provider_generation(self, _generation: int) -> None:
         """Fail active Web work at the canonical provider invalidation edge."""
         self.command_service.terminate_active_commands(
-            "provider generation invalidated", source="websocket"
+            "provider generation invalidated",
+            source="websocket",
+            details={"outcome": COMMAND_OUTCOME_INVALIDATED},
         )
         # The advance cleared every entry, this structural fact included.
         self._publish_single_receiver_topology()
@@ -2301,12 +2304,22 @@ class WebServer:
             # the issuer-only doctrine means there is no one left to notify.
             return
         reason = event.message or "unknown error"
+        # MOR-2847: classify by the structured fencing outcome the failure
+        # was recorded with (command_service.py: COMMAND_OUTCOME_INVALIDATED),
+        # never by matching the free-text reason. Every other post-ack
+        # failure keeps the generic commandExecutionFailed code.
+        outcome = event.details.get("outcome") if event.details else None
+        code = (
+            "commandLinkLost"
+            if outcome == COMMAND_OUTCOME_INVALIDATED
+            else "commandExecutionFailed"
+        )
         self.send_notification_to_session(
             session_id,
             "error",
             f"Command failed: {reason}",
             "command",
-            code="commandExecutionFailed",
+            code=code,
             params={"reason": reason},
         )
         self._send_lifecycle(event)
@@ -2398,6 +2411,16 @@ class WebServer:
                 }
             else:
                 return False
+        elif event.state == "failed" and set(details) == {
+            "session_id",
+            "outcome",
+        }:
+            # MOR-2847: a fencing invalidation recorded by command_service
+            # (COMMAND_OUTCOME_INVALIDATED). Rebuilt from the literal, never
+            # passed through — same doctrine as the interlock branch above.
+            if details.get("outcome") != COMMAND_OUTCOME_INVALIDATED:
+                return False
+            public_details = {"outcome": COMMAND_OUTCOME_INVALIDATED}
         elif set(details) != {"session_id"}:
             return False
         acknowledged = any(

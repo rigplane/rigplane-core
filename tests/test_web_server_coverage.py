@@ -3908,9 +3908,7 @@ async def test_in_flight_invalidation_notifies_command_link_lost(
 
 
 @pytest.mark.asyncio
-async def test_command_failure_notification_codes_resolve_in_every_locale() -> (
-    None
-):
+async def test_command_failure_notification_codes_resolve_in_every_locale() -> None:
     """MOR-2847 contract: every notification code the server can send for
     command failures resolves to a ``core.toast.<code>`` key in every
     shipped locale (frontend ``messageFromReasonCode``). The code list is

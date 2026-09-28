@@ -82,6 +82,7 @@ _NORMALIZED_LEVEL_EXPECTATION_COMMANDS = {
 Clock = Callable[[], float]
 LifecycleSubscriber = Callable[[CommandLifecycleEvent], None]
 
+
 #: Lifecycle ``details["outcome"]`` marker for a command ended by fencing —
 #: an in-flight invalidation at (or around) a provider-generation change.
 #: Consumers that must classify the failure (the web server choosing the
@@ -243,6 +244,17 @@ class CommandService:
                 "command invalidated during provider generation change"
                 if self._state_store.provider_generation != provider_generation
                 else "command invalidated during execution"
+            )
+            # Record the fencing outcome as a structured lifecycle detail
+            # (idempotent: a terminate that already failed the command
+            # leaves it terminal and this call is a no-op), so downstream
+            # consumers classify by kind instead of the reason text.
+            self.fail_command(
+                intent.id,
+                source=intent.source,
+                session_id=_session_id(intent),
+                message=message,
+                details={"outcome": COMMAND_OUTCOME_INVALIDATED},
             )
             raise CommandExecutionInvalidatedError(message)
 
@@ -442,6 +454,7 @@ class CommandService:
         *,
         source: CommandSource | None = None,
         session_id: str | None | object = _UNSET,
+        details: Mapping[str, Any] | None = None,
     ) -> int:
         """Fail active commands in an exact source/session lifecycle scope."""
 
@@ -467,6 +480,7 @@ class CommandService:
                 source=scoped_source,
                 session_id=scoped_session,
                 message=reason,
+                details=details,
             )
         return len(matches)
 

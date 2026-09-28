@@ -84,9 +84,6 @@
    */
   function renderToast(toast: ToastItem): string {
     if (toast.code) {
-      if (isProviderInvalidation(toast.code, toast.params)) {
-        return t('core.toast.commandLinkLost');
-      }
       return messageFromReasonCode(toast.code, toast.params);
     }
     return toast.message;
@@ -94,37 +91,16 @@
 
   /**
    * MOR-2241: the server terminates every in-flight command when the radio
-   * link drops (`server.py: _on_provider_generation` → "provider generation
-   * invalidated", one notification per command via `_on_command_lifecycle_event`
-   * with `code: 'commandExecutionFailed'`). While the link is not connected
-   * those failures are CAUSED BY the link loss, and the StatusBar link chip
-   * (`getRadioLinkState()`) is the persistent disconnected indicator — a
-   * per-command toast for each one is a flood, not information. Recognised by
-   * the structured reason, never by message text.
+   * link drops (`server.py: _on_provider_generation`), each surfacing as a
+   * per-command notification with `code: 'commandLinkLost'` (MOR-2847 —
+   * classified by the server from the structured fencing outcome, never by
+   * reason text). While the link is not connected those failures are CAUSED
+   * BY the link loss, and the StatusBar link chip (`getRadioLinkState()`)
+   * is the persistent disconnected indicator — a per-command toast for each
+   * one is a flood, not information.
    */
-  const LINK_LOSS_TERMINATION_REASON = 'provider generation invalidated';
-
-  function isLinkLossTermination(code?: string, params?: MessageParams): boolean {
-    if (code !== 'commandExecutionFailed' || !params) return false;
-    return params['reason'] === LINK_LOSS_TERMINATION_REASON;
-  }
-
-  /**
-   * MOR-2846: internal fencing reasons that end an in-flight command at
-   * (or around) a provider-generation change — the USB-vanish/reconnect
-   * class. They are stable server-side literals, never localized there;
-   * the operator sees one plain localized message instead of the internal
-   * reason string interpolated into `core.toast.commandExecutionFailed`.
-   */
-  const PLAIN_INVALIDATION_REASONS = new Set([
-    LINK_LOSS_TERMINATION_REASON,
-    'command invalidated during provider generation change',
-    'command invalidated during execution',
-  ]);
-
-  function isProviderInvalidation(code?: string, params?: MessageParams): boolean {
-    if (code !== 'commandExecutionFailed' || !params) return false;
-    return typeof params['reason'] === 'string' && PLAIN_INVALIDATION_REASONS.has(params['reason']);
+  function isLinkLossTermination(code?: string): boolean {
+    return code === 'commandLinkLost';
   }
 
   onMount(() => {
@@ -138,7 +114,7 @@
             : undefined;
         if (
           lvl === 'error'
-          && isLinkLossTermination(code, params)
+          && isLinkLossTermination(code)
           && getRadioLinkState() !== 'connected'
         ) {
           return;
