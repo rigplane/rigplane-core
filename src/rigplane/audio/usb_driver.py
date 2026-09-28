@@ -150,9 +150,10 @@ def _drive_stream_open(coro: "Coroutine[Any, Any, None]") -> None:
     via a private event loop on a worker thread (MOR-1438) safely moves
     any blocking work off the caller's loop without changing the
     ``RxStream``/``TxStream`` contract. Reused for BOTH the initial open
-    (:meth:`UsbAudioDriver._open_stream`) and a late/abandoned handle's
-    close (:meth:`UsbAudioDriver._close_late_stream`, F2) — a wedged
-    device can block its ``stop()`` exactly as it blocked its ``start()``.
+    (:meth:`_BoundedPortAudioPool.open_stream_bounded`) and a late/abandoned
+    handle's close (:meth:`_BoundedPortAudioPool.close_late_stream`, F2) —
+    a wedged device can block its ``stop()`` exactly as it blocked its
+    ``start()``.
     """
     asyncio.run(coro)
 
@@ -271,6 +272,7 @@ class _BoundedPortAudioPool:
         *,
         direction: str,
         timeout: float,
+        what: str = "capture open",
     ) -> None:
         """Start a stream off the loop, bounded, with late-close cleanup.
 
@@ -280,18 +282,21 @@ class _BoundedPortAudioPool:
         fail-fast path closes it explicitly — otherwise it is dropped
         unawaited, which triggers Python's "coroutine was never awaited"
         warning and skips any cleanup the coroutine itself would run.
+        *what* names the operation in warnings (the bridge opens
+        playback/duplex legs through here too).
         """
         if self.inflight >= _CAPTURE_OPEN_MAX_WORKERS:
             logger.warning(
-                "usb-audio: %s capture open worker pool saturated by %d "
+                "usb-audio: %s %s worker pool saturated by %d "
                 "stuck open(s) — failing fast instead of queuing behind "
                 "them",
                 direction.upper(),
+                what,
                 self.inflight,
             )
             start_coro.close()
             raise AudioCaptureOpenTimeoutError(
-                f"{direction.upper()} capture open worker pool saturated "
+                f"{direction.upper()} {what} worker pool saturated "
                 f"by {self.inflight} stuck open(s)."
             )
 
@@ -299,23 +304,23 @@ class _BoundedPortAudioPool:
         try:
             _done, pending = await asyncio.wait({future}, timeout=timeout)
         except asyncio.CancelledError:
-            self.abandon_open(future, stream, direction)
+            self.abandon_open(future, stream, direction, what)
             raise
         if future in pending:
-            self.abandon_open(future, stream, direction)
+            self.abandon_open(future, stream, direction, what)
             logger.warning(
-                "usb-audio: %s capture open timed out after %.1fs — likely "
+                "usb-audio: %s %s timed out after %.1fs — likely "
                 "blocked on OS capture-permission consent (macOS TCC "
                 "microphone-consent prompt that never rendered, see "
                 "MOR-1420); marking %s audio unavailable for this session, "
                 "will retry on the next subscriber",
                 direction.upper(),
+                what,
                 timeout,
                 direction,
             )
             raise AudioCaptureOpenTimeoutError(
-                f"{direction.upper()} capture open timed out after "
-                f"{timeout}s."
+                f"{direction.upper()} {what} timed out after {timeout}s."
             )
         future.result()  # re-raise the open's own exception, if any
 
@@ -324,6 +329,7 @@ class _BoundedPortAudioPool:
         future: "asyncio.Future[None]",
         stream: "RxStream | TxStream | DuplexStream",
         direction: str,
+        what: str = "capture open",
     ) -> None:
         """Detach from a still-running background open (MOR-1438, F1).
 
@@ -336,11 +342,11 @@ class _BoundedPortAudioPool:
         abandonment landed by closing immediately.
         """
         if future.done():
-            self.close_late_stream(future, stream, direction)
+            self.close_late_stream(future, stream, direction, what)
             return
 
         def _on_late_open(late_future: "asyncio.Future[None]") -> None:
-            self.close_late_stream(late_future, stream, direction)
+            self.close_late_stream(late_future, stream, direction, what)
 
         future.add_done_callback(_on_late_open)
 
@@ -349,6 +355,7 @@ class _BoundedPortAudioPool:
         future: "asyncio.Future[None]",
         stream: "RxStream | TxStream | DuplexStream",
         direction: str,
+        what: str = "capture open",
     ) -> None:
         """Close a stream handle that finished opening after abandonment.
 
@@ -374,20 +381,20 @@ class _BoundedPortAudioPool:
         exc = future.exception()
         if exc is not None:
             logger.warning(
-                "usb-audio: %s capture open abandoned and later failed: %s",
+                "usb-audio: %s %s abandoned and later failed: %s",
                 direction.upper(),
+                what,
                 exc,
                 exc_info=exc,
             )
             return
         logger.warning(
-            "usb-audio: %s capture open completed after it was abandoned "
+            "usb-audio: %s %s completed after it was abandoned "
             "— closing the late handle instead of leaking it",
             direction.upper(),
+            what,
         )
-        close_future = self.submit_tracked(
-            lambda: _drive_stream_open(stream.stop())
-        )
+        close_future = self.submit_tracked(lambda: _drive_stream_open(stream.stop()))
 
         def _on_close_done(done_future: "asyncio.Future[None]") -> None:
             if done_future.cancelled():
