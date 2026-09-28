@@ -1868,8 +1868,6 @@
     height: auto;
     min-height: 44px;
     max-height: 64px;
-    flex-wrap: nowrap;
-    overflow-x: auto;
     overflow-y: hidden;
     -webkit-overflow-scrolling: touch;
   }
