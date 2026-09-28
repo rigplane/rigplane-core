@@ -191,7 +191,8 @@ describe('MOR-2234: a fresh PBT observation shows on the surface (item 1)', () =
   it('renders the ACTIVE receiver\'s observed raw as the shown Hz reading, never the other receiver\'s path', () => {
     // Distinct per-receiver raws: if the surface read `sub.*` while MAIN is
     // active (or vice versa), the second half of the assertions reddens.
-    const main = state(100, 40, 1);
+    // (Marker 1 was consumed by the beforeEach accept.)
+    const main = state(100, 40, 2);
     main.sub!.pbtInner = 200; main.sub!.pbtOuter = 60;
     accept(main); render();
     for (const [field, raw] of [['pbtInner', 100], ['pbtOuter', 40]] as const) {
@@ -201,7 +202,7 @@ describe('MOR-2234: a fresh PBT observation shows on the surface (item 1)', () =
       expect(input.disabled).toBe(false);
       expect(input.value).toBe(hz(raw));
     }
-    const sub = state(100, 40, 2, 7, 'SUB');
+    const sub = state(100, 40, 3, 7, 'SUB');
     sub.sub!.pbtInner = 200; sub.sub!.pbtOuter = 60;
     accept(sub); flushSync();
     expect(row('pbtInner').querySelector('output')!.textContent).toBe(hz(200));
@@ -222,7 +223,8 @@ describe('MOR-2234: a never-observed PBT field renders unknown, never a legacy f
     // Raw 208 is the legacy mirror value carried in the payload (the bench
     // saw `main.pbtInner = 128` alongside fieldStatus observed=true); here
     // the mirror is present but the field's own status says never observed.
-    const next = state(100, 40, 1);
+    // (Marker 1 was consumed by the beforeEach accept.)
+    const next = state(100, 40, 2);
     next.main!.pbtInner = 208;
     next.fieldStatus!['main.pbtInner'] = { ...fresh(1), observed: false };
     accept(next); render();
