@@ -22,10 +22,10 @@ This guide shows how to control the IC-7610 via **USB serial CI-V + USB audio de
 ## Radio Configuration
 
 !!! danger "Critical Setup Step"
-    On the IC-7610, navigate to **Menu → Set → Connectors → CI-V → CI-V USB Port** and set it to **`Link to [CI-V]`**, **NOT** `[REMOTE]`.
+    On the IC-7610, navigate to **Menu → Set → Connectors → CI-V → CI-V USB Port** and set it to **`Unlink from [REMOTE]`** (the radio's default), **NOT** `Link to [REMOTE]`.
     
-    - `Link to [CI-V]` — serial CI-V commands work (required for rigplane serial backend)
-    - `[REMOTE]` — RS-BA1 mode, serial CI-V is blocked
+    - `Unlink from [REMOTE]` — the `[USB]` and `[REMOTE]` CI-V ports work independently; serial CI-V commands work, and the CI-V USB Baud Rate setting applies only in this mode
+    - `Link to [REMOTE]` — the `[USB]` and `[REMOTE]` CI-V ports are connected internally; serial CI-V is blocked
     
     This finding was confirmed with live hardware validation in issue #146.
 
@@ -33,11 +33,9 @@ This guide shows how to control the IC-7610 via **USB serial CI-V + USB audio de
 
 | Setting | Value | Why |
 |---------|-------|-----|
-| **CI-V USB Port** | `Link to [CI-V]` | ✅ Required — enables serial CI-V |
+| **CI-V USB Port** | `Unlink from [REMOTE]` | ✅ Required — enables serial CI-V |
 | **CI-V USB Baud Rate** | `115200` | Recommended for scope/waterfall |
 | **CI-V Address** | `0x98` (default) | Library auto-detects, but confirm if changed |
-| **USB Audio TX** | Enabled | Allows browser/WSJT-X TX via USB audio |
-| **USB Audio RX** | Enabled | Exports RX audio to computer |
 
 !!! note "Baud Rate"
     - `115200` baud is recommended for scope/waterfall capability
@@ -102,13 +100,13 @@ Example output:
 
 ```
 4 audio device(s):
-  [0] IC-7610 USB Audio  (in=2, out=2)
+  [0] USB Audio CODEC  (in=2, out=2)
   [1] Built-in Microphone  (in=2, out=0)
   [2] Built-in Output  (in=0, out=2)
   [3] RigPlane Virtual Cable Output  (in=0, out=2)
 ```
 
-The IC-7610 USB audio device is typically named `IC-7610 USB Audio` or similar.
+An Icom radio's USB audio device is named `USB Audio CODEC`.
 
 !!! tip "JSON Output"
     ```bash
@@ -146,10 +144,10 @@ rigplane --backend serial --model IC-7610 mode
 Expected output:
 
 ```
-Frequency:    14,074,000 Hz  (14.074000 MHz)
-Mode:         USB
-S-meter:      42
-Power:        50
+Frequency:   14,074,000 Hz  (14.074000 MHz)
+Mode:      USB
+S-meter:   42
+Power:     50
 ```
 
 ### 6. Test Audio (Optional)
@@ -157,7 +155,7 @@ Power:        50
 ```bash
 # Capture 10 seconds of RX audio to WAV
 rigplane --backend serial --model IC-7610 \
-    --rx-device "IC-7610 USB Audio" \
+    --rx-device "USB Audio CODEC" \
     audio rx --out test_rx.wav --seconds 10
 
 # Audio devices are auto-detected if not specified
@@ -211,18 +209,18 @@ async def main():
         device="/dev/cu.usbserial-111120",
         baudrate=115200,
         radio_addr=0x98,
-        rx_device="IC-7610 USB Audio",  # or None for auto-detect
-        tx_device="IC-7610 USB Audio",  # or None for auto-detect
+        rx_device="USB Audio CODEC",  # or None for auto-detect
+        tx_device="USB Audio CODEC",  # or None for auto-detect
     )
     
     radio = create_radio(config)
     
     async with radio:
         # Control
-        freq = await radio.get_frequency()
+        freq = await radio.get_freq()
         print(f"Frequency: {freq/1e6:.3f} MHz")
         
-        await radio.set_frequency(14_074_000)
+        await radio.set_freq(14_074_000)
         await radio.set_mode("USB")
         
         # Meters
@@ -233,7 +231,8 @@ async def main():
         from rigplane.radio_protocol import AudioCapable
         if isinstance(radio, AudioCapable):
             def on_audio(packet):
-                print(f"RX audio: {len(packet.data)} bytes")
+                if packet is not None:  # the callback also receives None
+                    print(f"RX audio: {len(packet.data)} bytes")
             
             await radio.start_audio_rx_opus(on_audio)
             await asyncio.sleep(10)
@@ -247,8 +246,8 @@ asyncio.run(main())
 ```bash
 # Start web UI on serial backend
 rigplane --backend serial --model IC-7610 \
-    --rx-device "IC-7610 USB Audio" \
-    --tx-device "IC-7610 USB Audio" \
+    --rx-device "USB Audio CODEC" \
+    --tx-device "USB Audio CODEC" \
     web
 
 # Then open http://localhost:8080
@@ -319,23 +318,21 @@ ls -l /dev/cu.usbserial-*
 # If not, contact system admin or check USB security settings
 ```
 
-### "Audio device 'IC-7610 USB Audio' not found"
+### USB audio device not found
 
-**Cause**: USB audio not exported by radio, or wrong device name.
+**Cause**: Wrong device name, or the radio's USB audio device is not visible.
 
 **Fix**:
-1. Verify USB audio is enabled in radio settings:
-   - Menu → Set → Connectors → USB Audio → **Enabled**
-2. List available devices:
+1. List available devices:
    ```bash
    rigplane --list-audio-devices
    ```
-3. Use exact device name from the list (case-sensitive)
-4. If still not visible, disconnect/reconnect USB cable
+2. Use exact device name from the list (case-sensitive)
+3. If still not visible, disconnect/reconnect USB cable
 
-### "Scope over serial requires baudrate >= 115200"
+### "Scope unavailable at … baud (minimum 115200)"
 
-**Symptom**: `CommandError` when calling `enable_scope()` or `capture_scope_frame()` with baud rate < 115200.
+**Symptom**: `ConnectionError` when calling `enable_scope()` or `capture_scope_frame()` with baud rate < 115200.
 
 **Cause**: Scope/waterfall CI-V traffic is high-rate (~225 packets/sec on LAN). Lower serial baud rates cannot sustain this rate without starving command responses.
 
@@ -349,13 +346,12 @@ ls -l /dev/cu.usbserial-*
    ```bash
    export ICOM_SERIAL_SCOPE_ALLOW_LOW_BAUD=1
    ```
-   Library will log a warning about timeout risk.
 
 ### "CI-V response timed out" on serial
 
 **Causes**:
 1. **Wrong baud rate** — radio and library must match
-2. **Wrong CI-V USB Port setting** — must be `Link to [CI-V]`, not `[REMOTE]`
+2. **Wrong CI-V USB Port setting** — must be `Unlink from [REMOTE]`, not `Link to [REMOTE]`
 3. **Serial port busy** — another app (wfview, hamlib, etc.) is using the serial device
 
 **Fix**:
@@ -388,13 +384,10 @@ Use `rigplane --list-audio-devices` to find the correct indices.
 
 ### Audio TX not working
 
-**Cause**: Radio USB Audio TX not enabled.
-
 **Fix**:
-1. Menu → Set → Connectors → USB Audio → **USB Audio TX** → **Enabled**
-2. Check PTT is active before transmitting audio
-3. Verify `--tx-device` matches the USB audio device name
-4. Check **Menu → Set → Connectors → MOD Input** for the active mode group —
+1. Check PTT is active before transmitting audio
+2. Verify `--tx-device` matches the USB audio device name
+3. Check **Menu → Set → Connectors → MOD Input** for the active mode group —
    for USB audio TX the source must be `USB`. If MIC is in the source list,
    the open microphone modulates instead of (or on top of) the computer
    audio. The same trap affects network (LAN) voice TX — see
@@ -435,8 +428,8 @@ For convenience, set these in your shell profile:
 # ~/.bashrc or ~/.zshrc
 export ICOM_SERIAL_DEVICE=/dev/cu.usbserial-111120
 export ICOM_SERIAL_BAUDRATE=115200
-export ICOM_USB_RX_DEVICE="IC-7610 USB Audio"
-export ICOM_USB_TX_DEVICE="IC-7610 USB Audio"
+export ICOM_USB_RX_DEVICE="USB Audio CODEC"
+export ICOM_USB_TX_DEVICE="USB Audio CODEC"
 
 # Then simply:
 rigplane --backend serial --model IC-7610 status
@@ -463,7 +456,7 @@ If you're currently using the LAN backend and want to switch to serial:
 2. **CLI**: add `--backend serial` flag:
    ```bash
    # Before (LAN, default)
-   rigplane status
+   rigplane --model IC-7610 status
    
    # After (Serial)
    rigplane --backend serial --model IC-7610 status
