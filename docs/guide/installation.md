@@ -7,14 +7,18 @@ description: Install RigPlane from PyPI on macOS, Linux, or Windows — Python 3
 ## Requirements
 
 - **Python 3.11+**
-- An Icom radio with LAN/WiFi connectivity (IC-7610, IC-705, IC-9700, etc.) or USB serial (IC-7300, IC-7610, etc.)
-- Network access to the radio (same LAN/subnet)
+- A supported radio: see [Supported Radios](radios.md)
+- For a LAN radio, network access to it; auto-discovery needs the same subnet
 
 ## Install from PyPI
 
 ```bash
 pip install rigplane
 ```
+
+While RigPlane 3.0 is in beta, `pip install rigplane` installs the latest 2.x
+release. No 3.0 build is on PyPI yet; to run 3.0, [install from
+source](#install-from-source).
 
 The prebuilt wheel includes the Web UI and does not require Node.js or npm.
 If pip must build from a source distribution instead, follow the source-build
@@ -30,7 +34,7 @@ toolchain, not a claim that other versions are supported.
 
 ```bash
 git clone https://github.com/rigplane/rigplane-core.git
-cd rigplane
+cd rigplane-core
 pip install -e .
 ```
 
@@ -40,7 +44,7 @@ For running tests and contributing:
 
 ```bash
 git clone https://github.com/rigplane/rigplane-core.git
-cd rigplane
+cd rigplane-core
 pip install -e ".[dev]"
 ```
 
@@ -77,8 +81,8 @@ Before connecting, ensure your radio is configured for LAN control:
 ### IC-7610
 
 1. **Menu → Set → Network** — configure IP address (static recommended)
-2. **Menu → Set → Network → Remote Control** — enable "Network Control"
-3. **Menu → Set → Network → Network User** — create a username/password
+2. **Menu → Set → Network → Network Control** — set to ON
+3. **Menu → Set → Network → Network User1** — set an ID and a password
 4. Default port: **50001**
 
 ### IC-705

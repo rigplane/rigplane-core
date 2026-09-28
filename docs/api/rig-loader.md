@@ -68,10 +68,13 @@ rigs = discover_rigs(Path("rigs/"))
 for model, cfg in rigs.items():
     print(f"{model}: protocol={cfg.protocol_type}, receivers={cfg.receiver_count}")
 # FTX-1: protocol=yaesu_cat, receivers=2
+# IC-705: protocol=civ, receivers=1
 # IC-7300: protocol=civ, receivers=1
 # IC-7610: protocol=civ, receivers=2
+# IC-9700: protocol=civ, receivers=2
 # TX-500: protocol=kenwood_cat, receivers=1
 # X6100: protocol=civ, receivers=1
+# X6200: protocol=civ, receivers=1
 ```
 
 ---
@@ -80,41 +83,7 @@ for model, cfg in rigs.items():
 
 ### `RigConfig`
 
-```python
-@dataclass(frozen=True, slots=True)
-class RigConfig:
-    id: str
-    model: str
-    civ_addr: int                            # 0 for non-CI-V radios
-    receiver_count: int
-    has_lan: bool
-    has_wifi: bool
-    default_baud: int
-    capabilities: tuple[str, ...]
-    modes: tuple[str, ...]
-    filters: tuple[str, ...]
-    vfo_scheme: str                          # "ab" | "main_sub" | "ab_shared" | "single"
-    vfo_main_select: tuple[int, ...] | None
-    vfo_sub_select: tuple[int, ...] | None
-    vfo_swap: tuple[int, ...] | None
-    freq_ranges: tuple[dict, ...]
-    commands: dict[str, CommandSpec]         # may be empty for non-CI-V
-    cmd29_routes: tuple[tuple[int, int | None], ...]
-    spectrum: dict[str, int] | None
-    att_values: tuple[int, ...] | None
-    pre_values: tuple[int, ...] | None
-    agc_modes: tuple[int, ...] | None
-    agc_labels: dict[str, str] | None
-    rf_sql_control_model: str = "separate"   # "separate" | "combined" (Icom-style single RF/SQL knob)
-    protocol_type: str = "civ"               # "civ" | "kenwood_cat" | "yaesu_cat"
-    protocol_address: int | None = None
-    protocol_baud: int | None = None
-    controls: dict[str, dict] | None = None  # {"attenuator": {"style": "stepped"}, ...}
-    meter_calibrations: dict[str, list[dict]] | None = None
-    meter_redlines: dict[str, int] | None = None
-    rules: tuple[dict, ...] = ()             # [{"kind": "mutex", "fields": [...]}, ...]
-```
-
+`profiles/rig_loader.py: RigConfig` holds every field parsed from a rig file.
 Frozen dataclass. All values are immutable after construction.
 
 #### `.to_profile()` → `RadioProfile`
@@ -152,7 +121,6 @@ cmd_map = cfg.to_command_map()
 
 cmd_map.get("get_af_level")  # (0x14, 0x01)
 cmd_map.get("scope_on")      # (0x27, 0x10)
-len(cmd_map)                 # ~150 commands
 ```
 
 ---

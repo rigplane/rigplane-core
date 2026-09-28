@@ -94,6 +94,11 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
     sessionEpoch: 1, scope: { control: field, receiver: 0 },
     repeatPolicy: 'latest-target-wins',
   }),
+  // MOR-2910: RF power joined TxPanel's bound lanes (the hidden-status
+  // $effect reads it while the modal is closed); EssentialsPanel's AF lane
+  // reads the shared AF lane. This file asserts neither reading.
+  getRfPowerControlFeedback: () => ({ ...idleFeedback('rf-power'), confirmed: 0.5 }),
+  getAfLevelControlFeedback: () => ({ ...idleFeedback('af-level'), confirmed: 0.5 }),
   // Amber faces
   deriveAmberCockpitProps: () => cockpitProps.value,
   deriveAmberScopeProps: () => scopeProps.value,
@@ -106,6 +111,10 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   getFilterHandlers: () => filterHandlers,
   getFilterArmed: () => ({ armed: false, value: null }),
   getFilterShapeArmed: () => ({ armed: false, value: null }),
+  // MOR-1689 leg 2: this suite opens the settings modal with
+  // `hasFilterShape: true`, so the panel consults the shape feedback —
+  // the honest mock is the same idle projection the width row gets.
+  getFilterShapeControlFeedback: () => idleFeedback('filter-shape'),
   getFilterWidthControlFeedback: () => idleFeedback('filter-width'),
   getPbtInnerHzControlFeedback: () => idleFeedback('pbt-inner'),
   getPbtOuterHzControlFeedback: () => idleFeedback('pbt-outer'),

@@ -1,6 +1,7 @@
 import { SvelteMap } from 'svelte/reactivity';
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { getLocale, setLocale } from '$lib/i18n';
 import { createRawSnippet, flushSync, mount, unmount, type ComponentProps } from 'svelte';
 import VfoIndicatorRow, { FACT_SLOT_RESERVATIONS } from '../VfoIndicatorRow.svelte';
 import type {
@@ -567,6 +568,17 @@ describe('chips appearance (MOR-2852) — the phone meta facts', () => {
       appearance: 'chips', facts: ['bandwidth', 'agc'] });
     expect(root.querySelector('[data-indicator-fact="bandwidth"]')?.textContent?.trim()).toBe('BW 2400 Hz');
     expect(root.querySelector('[data-indicator-fact="agc"]')?.textContent?.trim()).toBe('AGC SLOW');
+  });
+
+  it('takes the BW fact unit from the catalog: the Russian chip reads Гц (ru-RU, MOR-2905)', () => {
+    const previous = getLocale();
+    setLocale('ru-RU');
+    try {
+      const root = render({ indicator: indicator({ bandwidthHz: known(2400), agcMode: known('SLOW') }),
+        appearance: 'chips', facts: ['bandwidth', 'agc'] });
+      expect(root.querySelector('[data-indicator-fact="bandwidth"]')?.textContent?.trim()).toBe('BW 2400 Гц');
+      expect(root.querySelector('[data-indicator-fact="agc"]')?.textContent?.trim()).toBe('AGC SLOW');
+    } finally { setLocale(previous); }
   });
 
   it('dimmed-label-only unread BW and AGC, reserving the same slot', () => {

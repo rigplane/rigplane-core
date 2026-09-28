@@ -79,7 +79,7 @@ Most users should use `radio.on_scope_data()` (on the `Radio` returned by `creat
 
 ## Scope Command Builders
 
-Low-level CI-V command builders for scope control. All accept optional `to_addr` and `from_addr` parameters.
+Low-level CI-V command builders for scope control. All take a required `to_addr` and an optional `from_addr`.
 
 | Function | CI-V | Description |
 |----------|------|-------------|
@@ -91,7 +91,7 @@ Low-level CI-V command builders for scope control. All accept optional `to_addr`
 | `scope_main_sub(receiver)` | `0x27 0x12` | Select scope receiver (0=MAIN, 1=SUB) |
 | `scope_single_dual(dual)` | `0x27 0x13` | Single/dual scope mode |
 | `scope_set_mode(mode)` | `0x27 0x14` | Set scope mode (0–3) |
-| `scope_set_span(span)` | `0x27 0x15` | Set scope span (0–7) |
+| `scope_set_span(span, presets=...)` | `0x27 0x15` | Set scope span: an index into `presets`, the radio's declared span table (`RadioProfile.scope_span_presets_hz`) |
 | `scope_set_edge(edge)` | `0x27 0x16` | Set scope edge (1–4) |
 | `scope_set_hold(on)` | `0x27 0x17` | Scope hold on/off |
 | `scope_set_ref(ref)` | `0x27 0x19` | Set reference level in dB (-30.0 to +10.0) |

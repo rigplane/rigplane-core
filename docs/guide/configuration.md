@@ -6,22 +6,24 @@ description: Configure RigPlane backends, credentials, and runtime options — L
 
 ## Backend Selection
 
-rigplane supports two backends selected via `--backend`:
+rigplane supports four backends selected via `--backend`:
 
 | Backend | Description |
 |---------|-------------|
 | `lan` (default) | Connects over UDP to the radio's LAN interface |
 | `serial` | Connects via USB CI-V serial port + USB audio devices |
+| `yaesu-cat` | Yaesu text CAT over a USB serial port |
+| `rigctld` | An external Hamlib `rigctld` process over TCP |
 
 ## LAN Backend Parameters
 
 | Parameter | Python API | CLI Flag | Env Var | Default | Description |
 |-----------|-----------|----------|---------|---------|-------------|
-| Host | `host` | `--host` | `ICOM_HOST` | `192.168.1.100` | Radio IP address |
+| Host | `host` | `--host` | `ICOM_HOST` | — (the CLI auto-discovers when unset) | Radio IP address |
 | Port | `port` | `--control-port` | `ICOM_PORT` | `50001` | Control port |
 | Username | `username` | `--user` | `ICOM_USER` | `""` | Auth username |
-| Password | `password` | `--pass` | `ICOM_PASS` | `""` | Auth password |
-| CI-V Address | `radio_addr` | — | — | `0x98` (IC-7610) | Radio's CI-V address |
+| Password | `password` | `--pass-file` (`--pass` is deprecated) | `ICOM_PASS` | `""` | Auth password |
+| CI-V Address | `radio_addr` | `--radio-addr` | — | from the radio profile (`model`) | Radio's CI-V address |
 | Timeout | `timeout` | `--timeout` | — | `5.0` | Operation timeout (seconds) |
 
 ## Serial Backend Parameters
@@ -33,7 +35,7 @@ rigplane supports two backends selected via `--backend`:
 | PTT mode | `ptt_mode` | `--serial-ptt-mode` | `ICOM_SERIAL_PTT_MODE` | `civ` | Serial PTT control mode (`civ` supported) |
 | RX device | `rx_device` | `--rx-device` | `ICOM_USB_RX_DEVICE` | auto | USB audio RX device selector (name, index, or hardware id) |
 | TX device | `tx_device` | `--tx-device` | `ICOM_USB_TX_DEVICE` | auto | USB audio TX device selector (name, index, or hardware id) |
-| CI-V Address | `radio_addr` | — | — | `0x98` (IC-7610) | Radio's CI-V address |
+| CI-V Address | `radio_addr` | `--radio-addr` | — | from the radio profile (`model`) | Radio's CI-V address |
 | Timeout | `timeout` | `--timeout` | — | `5.0` | Operation timeout (seconds) |
 
 ```bash
@@ -58,8 +60,6 @@ Each Icom radio model has a default CI-V address. You can also configure a custo
 | IC-7300 | `0x94` |
 | IC-705 | `0xA4` |
 | IC-9700 | `0xA2` |
-| IC-7851 | `0x8E` |
-| IC-R8600 | `0x96` |
 
 ```python
 from rigplane import create_radio, LanBackendConfig
@@ -171,8 +171,8 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 
 # Or target specific modules
-logging.getLogger("rigplane.transport").setLevel(logging.DEBUG)
-logging.getLogger("rigplane.radio").setLevel(logging.DEBUG)
+logging.getLogger("rigplane.core.transport").setLevel(logging.DEBUG)
+logging.getLogger("rigplane.runtime.radio").setLevel(logging.DEBUG)
 ```
 
 Log levels:

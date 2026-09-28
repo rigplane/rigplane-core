@@ -2862,10 +2862,12 @@ class CivRuntime:
                     )
                 )
         elif frame.command == 0x0F and frame.data:
+            # 0F reads 00 = split OFF, 01 = split ON, 11 = DUP−, 12 = DUP+
+            # (IC-705 CI-V Reference Guide p.3): only 01 is split ON (MOR-2929).
             observations.append(
                 self._observation(
                     FieldPath.global_("tx_state", "split"),
-                    bool(frame.data[0]),
+                    frame.data[0] == 0x01,
                     frame=frame,
                 )
             )

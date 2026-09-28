@@ -1854,7 +1854,7 @@ class TestToProfile:
     @pytest.mark.parametrize(
         ("filename", "tx_count", "has_rx_antenna"),
         [
-            ("ic705.toml", 1, True),
+            ("ic705.toml", 1, False),
             ("ic7610.toml", 2, True),
             ("ic7300.toml", 1, False),
             ("ic9700.toml", 1, False),
@@ -3745,7 +3745,11 @@ class TestIc705DeclaresAbsentCommands:
     bare ``set_dual_watch`` name, +1). MOR-1983 adds the two RBW names
     because the scope table ends at 1E; the legacy boolean
     TX-frequency-monitor names MOR-1983 also added here were deleted
-    entirely by MOR-2246, not merely left declared absent. Pinned by
+    entirely by MOR-2246, not merely left declared absent. MOR-2917 adds
+    twelve wfview-derived names that no command-table row of either guide
+    edition (A7560-8EX-1, A7560-8EX-6) documents: drive gain (14 14),
+    DIGI-SEL shift (14 13), APF type level (14 05), audio peak filter
+    (16 32), RX antenna (16 53) and antenna select (12). Pinned by
     name, not just count, so a future D2 pass on another command can't
     silently swap one of these for a different one and still pass a
     bare-count check.
@@ -3781,6 +3785,18 @@ class TestIc705DeclaresAbsentCommands:
             "set_scope_rbw",
             "get_rx_antenna_ant2",
             "set_rx_antenna_ant2",
+            "get_drive_gain",
+            "set_drive_gain",
+            "get_digisel_shift",
+            "set_digisel_shift",
+            "get_apf_type_level",
+            "set_apf_type_level",
+            "get_audio_peak_filter",
+            "set_audio_peak_filter",
+            "get_rx_antenna",
+            "set_rx_antenna",
+            "get_antenna",
+            "set_antenna",
         }
     )
 

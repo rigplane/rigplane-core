@@ -65,6 +65,7 @@
     getPendingRepeaterShift, getPendingRepeaterTone, getPendingToneFreq,
     getRepeaterHandlers,
     getSystemHandlers, getDataModeArmed, getModInputArmed, getFilterShapeArmed,
+    getFilterShapeControlFeedback,
     deriveMemoryPanelProps, getMemoryHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
   import { toRitXitProps } from '$lib/runtime/props/panel-props';
@@ -1744,6 +1745,14 @@
   // FilterPanel.
   let filterShapeArmed = $derived(getFilterShapeArmed());
   let pendingFilterShape = $derived(filterShapeArmed.armed ? filterShapeArmed.value : null);
+  // MOR-1689: the full shape command-feedback projection for the semantic
+  // host's shared choice seam — consulted only while the shape control is
+  // structural in the SAME view the host renders from, so a radio without
+  // `filter_shape` never reads the lifecycle at all.
+  let filterShapeFeedback = $derived(
+    view?.filterPassband?.filterShapeControlStructural === true
+      ? getFilterShapeControlFeedback() : undefined,
+  );
   let modInputArmed = $derived(getModInputArmed());
   let pendingModInput = $derived(modInputArmed.armed ? modInputArmed.value : null);
   let pendingPreamp = $derived(
@@ -2061,6 +2070,7 @@
   {#snippet vfoInstrumentComposition(vfoOperations: VfoOperationHandles)}
   <FilterInstrumentHost
     {...filterFiniteRendererSelection} {view} {pendingFilter} {pendingFilterShape} {pendingDataMode} {pendingModInput}
+    {filterShapeFeedback}
     onModeChange={filterIntents.onModeChange}
     onFilterChange={filterIntents.onFilterChange}
     onFilterShapeChange={filterIntents.onFilterShapeChange}

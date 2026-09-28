@@ -97,6 +97,14 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
       repeatPolicy: 'latest-target-wins',
     };
   },
+  // MOR-2910: RF power joined the bound lanes — its confirmed reading travels
+  // the shared lane (driven by the same `rfPower` prop the display cases set).
+  getRfPowerControlFeedback: () => ({
+    confirmed: mockProps.rfPower, target: null, requestedTarget: null,
+    phase: 'idle', busy: false, availability: 'available', outcome: null,
+    lifecycleId: null, transitionId: null, sessionEpoch: 1,
+    scope: { control: 'rf-power', receiver: 0 }, repeatPolicy: 'latest-target-wins',
+  }),
 }));
 
 const txHost = vi.hoisted(() => ({ current: undefined as unknown as ManagedAppTxController }));
@@ -187,13 +195,14 @@ afterEach(() => {
 });
 
 describe('panel structure', () => {
-  it('owns feedback bindings for exactly the four live raw TX controls', () => {
+  it('owns feedback bindings for the four raw TX controls plus RF power (MOR-2910)', () => {
     mountPanel({ compActive: true, monActive: true });
     expect(new Set(feedbackAccess.mock.calls.map(([field]) => field))).toEqual(new Set([
       'micGain', 'driveGain', 'compressorLevel', 'monitorGain',
     ]));
-    expect(txPanelSource.match(/binding=\{(?:mic|drive|comp|mon)\w*Binding\}/g)).toHaveLength(4);
-    expect(txPanelSource).not.toMatch(/label="RF Power"[^>]*binding=/s);
+    expect(txPanelSource.match(/binding=\{(?:mic|drive|comp|mon|rfPower)\w*Binding\}/g)).toHaveLength(5);
+    // MOR-2910 closes the deferred A12 rfPower fix: RF power is bound now.
+    expect(txPanelSource).toContain('binding={rfPowerBinding}');
     expect(txPanelSource).not.toMatch(/stores\/(commands|radio)|sendCommand|dispatchRadioIntent/);
     for (const seam of ['ptt.down()', 'ptt.up()', 'onAtuTune', 'onCompToggle', 'onMonToggle']) {
       expect(txPanelSource).toContain(seam);

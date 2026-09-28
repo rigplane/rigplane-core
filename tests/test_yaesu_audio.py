@@ -158,7 +158,7 @@ class TestAudioDescriptors:
     def test_audio_tx_codec_is_raw_pcm(self, radio: YaesuCatRadio) -> None:
         assert radio.audio_tx_codec == AudioCodec.PCM_1CH_16BIT
 
-    def test_duplex_mode_same_device_macos_is_exclusive(
+    async def test_duplex_mode_same_device_macos_is_exclusive(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(sys, "platform", "darwin")
@@ -172,11 +172,19 @@ class TestAudioDescriptors:
                 ),
             ]
         )
+        driver = UsbAudioDriver(backend=backend)
         r = YaesuCatRadio(
             device="/dev/fake0",
-            audio_driver=UsbAudioDriver(backend=backend),
+            audio_driver=driver,
         )
-        assert r.audio_duplex_mode == "exclusive"
+        # MOR-2892: duplex_mode is a pure cache read — the pair resolves
+        # on the bounded start path, so the descriptor is read AFTER the
+        # first start warmed the selection cache, not before.
+        await driver.start_rx(lambda _frame: None)
+        try:
+            assert r.audio_duplex_mode == "exclusive"
+        finally:
+            await driver.stop_rx()
 
     def test_duplex_mode_falls_back_to_full_without_driver_support(
         self, radio: YaesuCatRadio
