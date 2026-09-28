@@ -2342,8 +2342,6 @@ async def _cmd_audio_probe(config: BackendConfig, args: argparse.Namespace) -> i
     if not isinstance(config, LanBackendConfig):
         print("Error: audio probe requires a LAN backend.", file=sys.stderr)
         return 1
-    # Each attempt builds a radio from this config; without a resolvable
-    # profile every candidate would be recorded as failed (MOR-2952).
     try:
         resolve_radio_profile(
             profile=config.profile,
