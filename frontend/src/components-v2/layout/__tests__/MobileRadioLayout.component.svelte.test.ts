@@ -413,7 +413,8 @@ describe('MobileRadioLayout structure', () => {
   // receiver the header shows, reached through the hosted instruments.
   describe('meta row receiver facts (MOR-2852)', () => {
     const capsFacts = (receivers = 2): Capabilities => ({
-      freqRanges: [], modes: ['USB', 'LSB'], filters: ['FIL1', 'FIL2'],
+      freqRanges: [], modes: ['USB', 'LSB'], filters: ['FIL1', 'FIL2'], stateContractVersion: 1,
+      providerGeneration: 1,
       receivers, vfoScheme: receivers === 2 ? 'main_sub' : 'single',
       capabilities: ['dual_rx', 'filter_width', 'agc', 'nb', 'nr'],
       agcModes: [0, 1, 2],
