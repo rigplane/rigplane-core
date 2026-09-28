@@ -2801,6 +2801,51 @@ async def test_power_on_still_reconnects_a_silent_port_that_opened_before() -> N
 
 
 @pytest.mark.asyncio
+async def test_power_on_is_refused_only_while_a_never_opened_port_is_retried() -> None:
+    """Power-on reconnects first, as on main, unless a never-opened port is retried.
+
+    A port that opened and has since vanished, and a never-opened port that
+    nothing retries (a plain ``connect()`` failed), are both outside the
+    missing-port state. There the reconnect fails and power-on is still sent.
+    """
+
+    from rigplane.exceptions import ConnectionError as RigplaneConnectionError
+    from test_icom7610_serial_radio import _FakeSerialCivLink
+    from test_web_server_coverage import _FakeWriter, _reader_with, _response_json
+
+    async def power_on(radio: _IcomSerialRadioBase) -> tuple[int, dict[str, object]]:
+        radio.set_powerstat = AsyncMock()  # type: ignore[method-assign]
+        writer, body = _FakeWriter(), b'{"state": "on"}'
+        await WebServer(radio, _gated_config())._handle_radio_control(
+            "/api/v1/radio/power",
+            writer,
+            headers={"content-length": str(len(body))},
+            reader=_reader_with(body),
+        )
+        radio.set_powerstat.assert_awaited_once_with(True)
+        return _response_json(writer)
+
+    link = _FakeSerialCivLink()
+    vanished = _fast_retry_serial_radio("/dev/ttyUSB0", link)
+    await vanished.connect()
+    await vanished._stop_civ_data_watchdog()
+    await vanished._declare_serial_link_down()
+    link._fail_connect = _port_missing_error("/dev/ttyUSB0")
+    with pytest.raises(RigplaneConnectionError):
+        await vanished.soft_reconnect()  # the watchdog's retry, recorded
+    assert await power_on(vanished) == (200, {"status": "ok", "power": "on"})
+    await vanished.disconnect()
+
+    never = _fast_retry_serial_radio(
+        "/dev/ttyUSB0",
+        _FakeSerialCivLink(fail_connect=_port_missing_error("/dev/ttyUSB0")),
+    )
+    with pytest.raises(RigplaneConnectionError):
+        await never.connect()
+    assert await power_on(never) == (200, {"status": "ok", "power": "on"})
+
+
+@pytest.mark.asyncio
 async def test_tx_returns_after_the_late_first_open(tmp_path: Path) -> None:
     """Transmit is refused without a port and follows the normal rules after.
 
