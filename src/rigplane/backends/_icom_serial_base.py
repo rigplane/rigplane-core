@@ -79,10 +79,10 @@ def _derive_link_down_silence_timeout(
             acquisition.default_policy,
             *acquisition.field_policies.values(),
         ]
-        cadences = [p.cadence_seconds for p in policies if p.cadence_seconds is not None]
-    slowest = (
-        max(cadences) if cadences else _SERIAL_LINK_DOWN_FALLBACK_CADENCE_S
-    )
+        cadences = [
+            p.cadence_seconds for p in policies if p.cadence_seconds is not None
+        ]
+    slowest = max(cadences) if cadences else _SERIAL_LINK_DOWN_FALLBACK_CADENCE_S
     return slowest + 2.0 * answer_window_s
 
 
@@ -291,8 +291,9 @@ class _IcomSerialRadioBase(CoreRadio):
         self._civ_silence_started_monotonic: float | None = None
         self._civ_silence_time_source: Callable[[], float] = time.monotonic
         self._civ_link_down_note = ""
-        self._serial_link_down_silence_timeout_s = (
-            _derive_link_down_silence_timeout(self._profile, self._civ_get_timeout)
+        self._serial_link_down_silence_timeout_s = _derive_link_down_silence_timeout(
+            self._profile,
+            self._civ_get_timeout,
         )
         # MOR-1440 review round 2: identity of the transport the above two
         # baselines were last measured against. Every (re)connect installs a
@@ -1243,10 +1244,7 @@ class _IcomSerialRadioBase(CoreRadio):
         self._civ_watchdog_last_seen_timeouts = total
         if isinstance(rx_count, int):
             self._civ_watchdog_last_seen_rx_packets = rx_count
-        if (
-            self._civ_consecutive_timeouts
-            >= self._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD
-        ):
+        if self._civ_consecutive_timeouts >= self._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD:
             self._civ_link_down_note = (
                 f"{self._civ_consecutive_timeouts} consecutive CI-V command "
                 "timeout(s) with no response"
