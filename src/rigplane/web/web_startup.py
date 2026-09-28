@@ -541,8 +541,7 @@ async def _start_web_server(
                 # Register callback so CI-V RX stream can notify us of state changes.
                 server._radio.set_state_change_callback(server._on_radio_state_change)
                 # Re-enable scope after soft_reconnect (CI-V stream reset loses scope state)
-                if _installed_managed_tx_composition(server._radio) is None:
-                    server._radio.set_reconnect_callback(server._on_radio_reconnect)
+                server._radio.set_reconnect_callback(server._on_radio_reconnect)
             server._radio_poller = RadioPoller(
                 server._radio,
                 server._command_queue,
