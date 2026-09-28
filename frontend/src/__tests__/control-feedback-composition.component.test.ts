@@ -153,11 +153,16 @@ function skinFor(kind: Presentation): SkinId {
   return kind === 'narrow-mobile' ? 'mobile' : 'desktop-v2';
 }
 
-function render(kind: Presentation): void {
+function render(kind: Presentation, phoneShape = false): void {
   // The phone mount needs its table catalog in place before the layout
   // resolves the FilterPanel's width rule; a fresh state revision (above
-  // beforeEach's) keeps the re-set monotonic within one test.
-  expect(setCapabilities(kind === 'narrow-mobile' ? phoneCaps() : liveCaps())).toBe(true);
+  // beforeEach's) keeps the re-set monotonic within one test. The shape
+  // describes pass `phoneShape`: the phone's shape buttons live in the chip
+  // FilterPanel's SETTINGS MODAL, which only the non-table (IC-7300-shaped)
+  // panel renders — the table-mode branch has no ⚙/modal at all, and an
+  // FTX-1-shaped table radio has no `filter_shape` to mount either way.
+  const phone = phoneShape ? liveCaps() : phoneCaps();
+  expect(setCapabilities(kind === 'narrow-mobile' ? phone : liveCaps())).toBe(true);
   expect(setRadioState(liveState(9))).toBe(true);
   target = document.createElement('div');
   document.body.appendChild(target);
@@ -389,7 +394,7 @@ describe('one Filter Shape choice lifecycle is equivalent on desktop, narrow mob
   it.each(['desktop', 'narrow-mobile', 'workspace-selected'] as const)(
     '%s: pending phase, busy, canonical aria-pressed and live status match the shared DTO',
     (kind) => {
-      render(kind);
+      render(kind, true);
       dispatchRadioIntent({ name: 'set_filter_shape', params: { shape: SHAPE_TARGET, receiver: 0 } });
       flushSync();
 
@@ -412,7 +417,7 @@ describe('one Filter Shape choice lifecycle is equivalent on desktop, narrow mob
   it('keeps the shape choice intent identical across the three mounts', () => {
     const dispatched: unknown[] = [];
     for (const kind of ['desktop', 'narrow-mobile', 'workspace-selected'] as const) {
-      render(kind);
+      render(kind, true);
       const control = shapeControl(kind);
       expect(control, kind).not.toBeNull();
       control!.focus();
@@ -437,7 +442,7 @@ describe('one Filter Shape choice lifecycle is equivalent on desktop, narrow mob
 describe('Filter Shape structural feedback survives locale, forced-colors and reduced-motion (MOR-1689)', () => {
   it('announces the same pending shape in Russian without making color or motion the only signal', () => {
     setLocale('ru-RU');
-    render('narrow-mobile');
+    render('narrow-mobile', true);
     dispatchRadioIntent({ name: 'set_filter_shape', params: { shape: SHAPE_TARGET, receiver: 0 } });
     flushSync();
     const seen = shapeSnapshot('narrow-mobile');

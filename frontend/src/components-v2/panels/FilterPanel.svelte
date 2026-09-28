@@ -68,22 +68,29 @@
     FILTER_SHAPE_CHOICES.find(choice => choice.value === target)?.label ?? String(target);
   let shapeAnnouncedTransitionIds: readonly string[] = [];
   let shapeLive = $state<Readonly<{ transitionId: string; text: string }> | null>(null);
+  let shapeBusy = $state(false);
   $effect(() => {
     const feedback: Readonly<ControlFeedbackPresentationInput<number>> | null = filterShapeFeedback;
     if (feedback === null) {
       shapeAnnouncedTransitionIds = [];
       shapeLive = null;
-      return;
-    }
-    if (feedback.busy !== true || feedback.transitionId === null || feedback.target === null) {
-      shapeLive = null;
+      shapeBusy = false;
       return;
     }
     const presentation = projectControlFeedbackPresentation(
       feedback, { announcedTransitionIds: shapeAnnouncedTransitionIds }, describeShapeTarget,
     );
     shapeAnnouncedTransitionIds = presentation.state.announcedTransitionIds;
-    if (presentation.politeAnnouncement !== null) {
+    shapeBusy = presentation.attributes['aria-busy'] === 'true';
+    // Phone emitter doctrine (MOR-1703 width precedent): the localized
+    // pending family announces while the control is in flight, exactly once
+    // per transition; terminal outcomes stay the semantic host's projector
+    // messages. An unchanged transition must not erase the standing text.
+    if (!shapeBusy) {
+      shapeLive = null;
+      return;
+    }
+    if (presentation.politeAnnouncement !== null && feedback.target !== null) {
       shapeLive = {
         transitionId: presentation.politeAnnouncement.transitionId,
         text: `${describeShapeTarget(feedback.target)}: ${t('core.filter.select.pendingAnnouncement')}`,
@@ -828,7 +835,6 @@
              region names the requested target. data-armed/italic stay the
              secondary channel, never the only indication. -->
         {@const shapePhase = filterShapeFeedback?.phase}
-        {@const shapeBusy = filterShapeFeedback?.busy === true}
         <div class="shape-section" data-command-phase={shapePhase} aria-busy={shapeBusy}>
           <div class="shape-title">Shape</div>
           <div class="shape-buttons">

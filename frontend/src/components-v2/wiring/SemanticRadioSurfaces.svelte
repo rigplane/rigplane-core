@@ -1747,9 +1747,10 @@
   let pendingFilterShape = $derived(filterShapeArmed.armed ? filterShapeArmed.value : null);
   // MOR-1689: the full shape command-feedback projection for the semantic
   // host's shared choice seam — consulted only while the shape control is
-  // structural, so a radio without `filter_shape` never reads the lifecycle.
+  // structural in the SAME view the host renders from, so a radio without
+  // `filter_shape` never reads the lifecycle at all.
   let filterShapeFeedback = $derived(
-    canonicalView?.filterPassband?.filterShapeControlStructural === true
+    view?.filterPassband?.filterShapeControlStructural === true
       ? getFilterShapeControlFeedback() : undefined,
   );
   let modInputArmed = $derived(getModInputArmed());

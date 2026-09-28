@@ -139,17 +139,21 @@
   // requested target, and ONE polite announcement per lifecycle transition
   // (the announced ids live in a plain closure, not reactive state: the
   // dedup ledger must not itself retrigger the effect that writes it).
+  // `busy` is read from the presentation's own aria-busy derivation — the
+  // structural input deliberately omits a separate busy field.
   const describeShapeTarget = (target: number): string =>
     FILTER_SHAPES.find(([value]) => value === target)?.[1] ?? String(target);
   let shapeAnnouncedTransitionIds: readonly string[] = [];
   let shapeAnnouncement = $state<Readonly<{ transitionId: string; message: string }> | null>(null);
   let shapeStatusText = $state<string | null>(null);
+  let shapeBusy = $state(false);
   $effect(() => {
     const feedback = filterShapeFeedback;
     if (feedback === undefined) {
       shapeAnnouncedTransitionIds = [];
       shapeAnnouncement = null;
       shapeStatusText = null;
+      shapeBusy = false;
       return;
     }
     const presentation = projectControlFeedbackPresentation(
@@ -157,10 +161,18 @@
     );
     shapeAnnouncedTransitionIds = presentation.state.announcedTransitionIds;
     shapeStatusText = presentation.currentStatus;
-    shapeAnnouncement = presentation.politeAnnouncement === null ? null : {
-      transitionId: presentation.politeAnnouncement.transitionId,
-      message: presentation.politeAnnouncement.message,
-    };
+    shapeBusy = presentation.attributes['aria-busy'] === 'true';
+    // A transition's announcement stands until the control goes idle — a
+    // terminal outcome (failed/superseded/…) is heard exactly once, and an
+    // unrelated state churn must not erase a still-relevant message.
+    if (feedback.phase === 'idle' || feedback.phase === 'unavailable') {
+      shapeAnnouncement = null;
+    } else if (presentation.politeAnnouncement !== null) {
+      shapeAnnouncement = {
+        transitionId: presentation.politeAnnouncement.transitionId,
+        message: presentation.politeAnnouncement.message,
+      };
+    }
   });
 </script>
 
@@ -210,7 +222,6 @@
            requested target, and a transition-deduplicated polite live
            region. Italic stays a secondary channel, never the only one. -->
       {@const shapePhase = filterShapeFeedback?.phase}
-      {@const shapeBusy = filterShapeFeedback?.busy === true}
       <div class="filter-choice-group" data-testid="filter-shape" data-disabled-reason={reason(filterPassband.filterShape)}
         data-command-phase={shapePhase}
         aria-busy={shapeBusy}
