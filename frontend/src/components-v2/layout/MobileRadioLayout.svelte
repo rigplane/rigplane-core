@@ -956,10 +956,10 @@
 
   <!-- ═══ TUNING STRIP ═══ -->
   <nav class="m-tuning-strip">
-    <button class="m-tune-btn m-tune-fast" onclick={() => tuneBy(-10)}>
+    <button class="m-tune-btn m-tune-fast" onclick={() => tuneBy(-10)} aria-label={t('core.mobile.tune.downFast')}>
       <ChevronsLeft size={18} />
     </button>
-    <button class="m-tune-btn" onclick={() => tuneBy(-1)}>
+    <button class="m-tune-btn" onclick={() => tuneBy(-1)} aria-label={t('core.mobile.tune.downStep')}>
       <ChevronLeft size={22} />
     </button>
     <div class="m-tune-step-wrapper">
@@ -988,10 +988,10 @@
         </div>
       {/if}
     </div>
-    <button class="m-tune-btn" onclick={() => tuneBy(1)}>
+    <button class="m-tune-btn" onclick={() => tuneBy(1)} aria-label={t('core.mobile.tune.upStep')}>
       <ChevronRight size={22} />
     </button>
-    <button class="m-tune-btn m-tune-fast" onclick={() => tuneBy(10)}>
+    <button class="m-tune-btn m-tune-fast" onclick={() => tuneBy(10)} aria-label={t('core.mobile.tune.upFast')}>
       <ChevronsRight size={18} />
     </button>
   </nav>
