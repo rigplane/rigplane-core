@@ -325,7 +325,13 @@
       command,
       domain: {
         min: pbtDomain.min, max: pbtDomain.max, step: pbtDomain.step,
-        defaultValue: 0, fineStepDivisor: 10,
+        // MOR-2535/MOR-2909 (the semantic FilterSurface's `passbandInput`
+        // doctrine): the PBT lanes declare NO lease-level default, so a
+        // null here keeps `lease.reset()` a no-op — a track double-click
+        // sends nothing. The reset is the ATOMIC `onPbtReset` dispatch
+        // site (the Reset button); the legacy panel has no label/value
+        // cells to carry the gesture.
+        defaultValue: null, fineStepDivisor: 10,
       },
       request,
     };
