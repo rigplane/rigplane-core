@@ -38,7 +38,7 @@ on `--backend rigctld` run without it. See
 ## LAN Radios
 
 - A dropped LAN session comes back as soon as the radio reports the session
-  free, instead of after a watchdog wait.
+  free, instead of after a watchdog wait (checked on the IC-7610).
 - A refused IC-7610 login says what the radio's error code means: another
   session from this computer, or a client on another computer.
 

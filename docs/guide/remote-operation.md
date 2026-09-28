@@ -12,9 +12,22 @@ Keep that port off the internet and reach it only through a path you control.
 ## Keep the Server Off the Internet
 
 - Do not forward the web port (8080 by default) on your router.
-- `rigplane web` listens on all interfaces by default (`--host 0.0.0.0`). On a
-  machine that other networks can reach, pass `--host 127.0.0.1` and come in
-  through an SSH tunnel, or block the port with a firewall.
+- `rigplane web` listens on all interfaces by default (`--host 0.0.0.0`), so
+  everyone on the same network (guest Wi-Fi, an office, a dorm) can reach the
+  port and key the transmitter. When you do not need access from the LAN, pass
+  `--host 127.0.0.1` and come in through an SSH tunnel. When you do, use it
+  only on a network you trust, or let a firewall admit only your own machines.
+
+`--host` means two things. Before the subcommand it is the radio's address;
+after `web` it is the address the web server listens on:
+
+```bash
+rigplane --model IC-7610 --host 192.168.1.50 --user USER --pass-file .rigplane-pass \
+    web --host 127.0.0.1
+```
+
+Here `192.168.1.50` is the radio and `127.0.0.1` is where the web server
+listens.
 
 ## Reach It Over an SSH Tunnel
 
