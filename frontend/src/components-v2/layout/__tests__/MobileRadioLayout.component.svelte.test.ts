@@ -236,7 +236,7 @@ vi.mock('$lib/runtime/props/panel-props', async (importOriginal) => {
 
 import MobileRadioLayout from '../MobileRadioLayout.svelte';
 import mobileLayoutSource from '../MobileRadioLayout.svelte?raw';
-import { hasTx, hasDualReceiver, hasSpectrum, getCapabilities } from '$lib/stores/capabilities.svelte';
+import { hasTx, hasDualReceiver, hasSpectrum, getCapabilities, getScopeSource } from '$lib/stores/capabilities.svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import { MOD_INPUT_SOURCES } from '$lib/radio/mod-input';
@@ -632,12 +632,16 @@ describe('MobileRadioLayout SCOPE chip tab (MOR-2851)', () => {
   function withSpectrumRadio(): () => void {
     const oldCaps = getCapabilities();
     vi.mocked(hasSpectrum).mockReturnValue(true);
+    // The managed scope region (VIEW's demand) exists only for a hardware
+    // scope source — the same gate SemanticRadioSurfaces applies.
+    vi.mocked(getScopeSource).mockReturnValue('hardware');
     vi.mocked(getCapabilities).mockReturnValue({
       ...oldCaps, model: 'fixture', receivers: 1, vfoScheme: 'ab', capabilities: ['scope'],
     } as Capabilities);
     (radio as unknown as { current: { active?: 'MAIN' | 'SUB' } | null }).current = { active: 'MAIN' };
     return () => {
       vi.mocked(hasSpectrum).mockReturnValue(false);
+      vi.mocked(getScopeSource).mockReturnValue(null);
       vi.mocked(getCapabilities).mockReturnValue(oldCaps);
       (radio as unknown as { current: { active?: 'MAIN' | 'SUB' } | null }).current = null;
     };
