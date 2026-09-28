@@ -101,6 +101,7 @@ _RECEIVER_OPERATOR_CONTROL_FIELDS = {
     "tone_freq",
     "tsql_freq",
     "repeater_shift",
+    "tone_squelch_type",
     "key_speed",
     "cw_pitch",
     "monitor_gain",
