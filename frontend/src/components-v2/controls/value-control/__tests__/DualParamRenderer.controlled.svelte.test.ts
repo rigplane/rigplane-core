@@ -231,6 +231,31 @@ describe('binding-only DualParamRenderer', () => {
     expect(presentation.sql.format).toHaveBeenCalledOnce();
   });
 
+  it('MOR-2843: keeps the RF status span in the accessibility tree through a status change', () => {
+    const state = $state({ input: commandPairInput({
+      target: 0.55, phase: 'submitted', busy: true,
+      lifecycleId: 'rf-1', transitionId: 'rf-submitted',
+    }, {}) });
+    const pair = createContinuousPair(() => state.input, nativeRangeContinuousPairPolicy);
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    mounted.push(mount(DualParamRenderer, { target, props: { binding: pair } }));
+    flushSync();
+
+    const rfStatus = () => target.querySelector('[data-control-feedback-status]');
+    expect(rfStatus()?.getAttribute('role')).toBe('status');
+    expect(rfStatus()?.getAttribute('aria-live')).toBe('polite');
+
+    state.input = commandPairInput({
+      requestedTarget: 0.7, phase: 'failed',
+      outcome: { phase: 'failed', error: 'radio rejected' },
+      lifecycleId: 'rf-2', transitionId: 'rf-failed',
+    }, {});
+    flushSync();
+    expect(rfStatus()?.getAttribute('role')).toBe('status');
+    expect(rfStatus()?.textContent).toBe('Failed: 0.7');
+  });
+
   it('preserves default local output for actual stateful pair announcements', () => {
     const input = commandPairInput({
       target: 0.55, phase: 'submitted', busy: true,
