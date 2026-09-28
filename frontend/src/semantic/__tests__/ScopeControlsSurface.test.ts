@@ -525,6 +525,29 @@ describe('the More panel ([MORE ▾])', () => {
     }
   });
 
+  // MOR-2895 (owner, 2026-09-28 15:10 EDT): on the portrait phone the ⋯ key
+  // sits just above the fixed bottom tuning bar — opening down buried the
+  // panel's tail (During TX, VBW narrow) under that bar. No room below ⇒ the
+  // panel opens UP, flush 8 px above the key.
+  it('flips the panel UP above the key when the panel does not fit below it (MOR-2895)', () => {
+    const realHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerHeight', { value: 812, configurable: true, writable: true });
+    // jsdom reports every box as 0 px tall; lend the panel a real height so
+    // the fit arithmetic has something to fit.
+    const realSize = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get: () => 300 });
+    const r = render(base());
+    try {
+      r.el('scope-more')!.getBoundingClientRect = () => ({ top: 700, bottom: 744, right: 700 }) as DOMRect;
+      r.openMore();
+      expect(r.el('scope-more-panel')!.style.top).toBe('392px'); // 700 − 8 − 300, above the key
+    } finally {
+      r.dispose();
+      if (realSize) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', realSize);
+      Object.defineProperty(window, 'innerHeight', { value: realHeight, configurable: true, writable: true });
+    }
+  });
+
   it('registers its window keydown/resize/scroll listeners only while open (MOR-2514 keeps its Esc)', () => {
     const add = vi.spyOn(window, 'addEventListener');
     const remove = vi.spyOn(window, 'removeEventListener');
