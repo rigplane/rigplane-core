@@ -11,10 +11,12 @@ are in [2026 beta known limitations](release-notes/2026-beta-known-limitations.m
 
 ## Name Your Radio
 
-Every command that talks to a radio needs its model: `--model IC-7300` on the
-command line, `model="IC-7300"` in Python. RigPlane no longer guesses; 2.x fell
-back to the IC-7610 profile. The FTX-1 on `--backend yaesu-cat` and an external
-rigctld on `--backend rigctld` run without it. See
+Every command that talks to a radio must say which radio it is: `--model
+IC-7300` on the command line, `model="IC-7300"` in Python. On the LAN backend a
+`--radio-addr` (or `radio_addr=`) that matches a known radio also works; the
+serial backend needs the model. RigPlane no longer guesses; 2.11 fell back to
+the IC-7610 profile. The FTX-1 on `--backend yaesu-cat` and an external rigctld
+on `--backend rigctld` run without it. See
 [The radio model is required](migrate.md#the-radio-model-is-required).
 
 ## Readings Show Only What the Radio Reported
@@ -49,7 +51,6 @@ rigctld on `--backend rigctld` run without it. See
 - NARROW on the FTX-1.
 - Manual Notch Width is a WIDE / MID / NAR choice on the IC-7300, IC-7610,
   IC-705 and IC-9700.
-- MUTE saves each receiver's AF level and restores it when you leave MUTE.
 - The FTX-1's SUB receiver: which SUB controls were checked on the radio is
   listed under "Dual-receiver topology" in the
   [known limitations](release-notes/2026-beta-known-limitations.md).
@@ -62,6 +63,7 @@ logic.
 
 ## For Library Users
 
-Each radio's commands and value ranges come from its profile file under
-`rigs/` ([Rig Profiles](guide/rig-profiles.md)). The
+On the `lan`, `serial` and `yaesu-cat` backends, each radio's commands and
+value ranges come from its profile file under `rigs/`
+([Rig Profiles](guide/rig-profiles.md)). The
 [migration guide](migrate.md) lists the API changes from 2.x.

@@ -30,8 +30,12 @@ origin, so voice TX from the browser microphone works without a certificate.
 ## Reach It Over Your Own VPN
 
 With WireGuard, Tailscale or a similar VPN, open the station by its VPN IP
-address. A host name with a dot in it works only if it ends in `.localhost`,
-`.local`, `.home.arpa` or `.internal`, or if you start `rigplane web` with
+address. Everyone else on that VPN can reach the port too, and with it the
+radio, including transmit, so use a VPN that only you (and people you trust
+with your transmitter) are on.
+
+A host name with a dot in it works only if it ends in `.localhost`, `.local`,
+`.home.arpa` or `.internal`, or if you start `rigplane web` with
 `--allowed-host <name>`; otherwise the server answers
 `421 Misdirected Request`.
 
@@ -43,6 +47,7 @@ TX needs HTTPS with a certificate the browser trusts: see
 
 Run RigPlane at the station, on the same network as a LAN radio, and use the
 VPN or tunnel only between your browser and RigPlane. The radio's own LAN
-audio can break over tunnels that drop IP fragments; see
-[LAN Audio Breaks Over WireGuard or Other UDP Tunnels](troubleshooting.md#lan-audio-breaks-over-wireguard-or-other-udp-tunnels)
-and [Audio Stutters Over VPN/Tailscale](troubleshooting.md#audio-stutters-over-vpntailscale).
+audio can break over tunnels that drop IP fragments (see
+[LAN Audio Breaks Over WireGuard or Other UDP Tunnels](troubleshooting.md#lan-audio-breaks-over-wireguard-or-other-udp-tunnels)),
+and browser audio can stutter over a VPN with jitter (see
+[Audio Stutters Over VPN/Tailscale](troubleshooting.md#audio-stutters-over-vpntailscale)).
