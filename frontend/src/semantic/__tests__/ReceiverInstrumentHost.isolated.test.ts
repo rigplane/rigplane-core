@@ -655,24 +655,6 @@ describe('ReceiverInstrumentHost', () => {
       slot: { kind: 'slotted', id: 'A' }, frequencyHz: 1,
     } as const;
 
-  it('builds the Po lower-scale descriptor for the TX-target receiver only', () => {
-    const structuralPower = {
-      presence: 'present',
-      reading: { status: 'known', value: 100 },
-      display: { state: 'current', value: 100 },
-      availability: { structural: true, operational: true },
-      relevant: true,
-      domain: { kind: 'engineering', unit: 'w' },
-      source: null,
-    } as unknown as MetersViewModel['power'];
-    const meters = {
-      power: structuralPower, rfState: 'transmitting',
-    } as unknown as MetersViewModel;
-    const knownMain = {
-      status: 'known', receiver: 'MAIN',
-      slot: { kind: 'slotted', id: 'A' }, frequencyHz: 1,
-    } as const;
-
     expect(buildPowerLowerScale(meters, knownMain, 'transmitting', 'MAIN')).toBeDefined();
     expect(buildPowerLowerScale(meters, knownMain, 'transmitting', 'SUB')).toBeUndefined();
     expect(buildPowerLowerScale(
