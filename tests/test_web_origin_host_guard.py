@@ -382,9 +382,7 @@ async def test_http_state_changing_foreign_origin_refused(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tls,scheme", [(False, "http"), (True, "https")])
-async def test_http_state_changing_same_origin_admitted(
-    tls: bool, scheme: str
-) -> None:
+async def test_http_state_changing_same_origin_admitted(tls: bool, scheme: str) -> None:
     """A same-origin Origin reaches the route handler (503, not 403/421)."""
     srv = _make_srv(tls=tls)
     writer = _MemoryWriter()
