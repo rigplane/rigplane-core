@@ -321,3 +321,83 @@ async def test_enumeration_timeout_bounded(
     assert any("device enumeration" in w.getMessage() for w in _warnings(caplog)), (
         "timeout warning must name the stuck operation"
     )
+
+
+@pytest.mark.timeout(10)
+async def test_duplex_mode_cold_cache_never_touches_portaudio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cold ``duplex_mode`` read must not enumerate PortAudio on the loop.
+
+    ``duplex_mode`` is reachable from the web server with a COLD cache
+    (``radio_poller``, ``session.audio_setup_order``) — e.g. right after
+    ``set_serial_port`` cleared the selection cache on rediscovery. The
+    read is a pure cache hit (MOR-2892); any backend touch fails here.
+    """
+    driver, backend = _make_driver(capture_open_timeout=1.0)
+
+    def _forbidden_list() -> list[AudioDeviceInfo]:
+        raise AssertionError("duplex_mode touched PortAudio on the loop")
+
+    monkeypatch.setattr(backend, "list_devices", _forbidden_list)
+
+    assert driver.duplex_mode == "full"
+
+    driver.set_serial_port("/dev/cu.usbserial-9931")
+    assert driver.duplex_mode == "full"
+
+
+@pytest.mark.timeout(10)
+async def test_late_close_counted_against_pool_bound() -> None:
+    """A wedged late-handle close must COUNT against the pool bound.
+
+    ``_close_late_stream`` fires as a done-callback after an abandoned
+    open belatedly completes (MOR-1438 F2). Its ``stream.stop()`` is the
+    same blocking Pa_StopStream/Pa_CloseStream class as every other
+    bounded operation — before MOR-2892 it went through a raw
+    ``run_in_executor`` and a wedged close occupied a worker WITHOUT
+    being counted, so eight of them could exhaust the pool while the
+    saturation guard still reported it empty.
+    """
+    open_gate = threading.Event()
+    stop_gate = threading.Event()
+    driver, backend = _make_driver()
+    backend.block_rx_open = open_gate.wait
+
+    # Abandon an open; it keeps running on its worker.
+    with pytest.raises(AudioCaptureOpenTimeoutError):
+        await driver.start_rx(lambda _frame: None)
+    stream = backend.rx_streams[-1]
+    # The LATE close (submitted once the open completes) hangs on this.
+    stream.block_stop = stop_gate.wait
+
+    loop = asyncio.get_running_loop()
+    try:
+        open_gate.set()  # the abandoned open completes -> late close fires
+
+        # Deterministic wait: FakeRxStream.stop records the worker thread
+        # BEFORE blocking, so once this is set the stuck close is in
+        # flight on a worker.
+        deadline = loop.time() + 5.0
+        while loop.time() < deadline and stream.stop_thread_ident is None:
+            await asyncio.sleep(0.005)
+        assert stream.stop_thread_ident is not None, (
+            "the late close never started — done-callback did not fire"
+        )
+
+        assert driver._inflight_opens == 1, (
+            "a wedged late close must be counted like every other "
+            "bounded operation; an uncounted close silently exhausts "
+            "the pool behind the saturation guard's back"
+        )
+        assert stream.stop_thread_ident != threading.get_ident(), (
+            "the late close must run off the event-loop thread"
+        )
+    finally:
+        stop_gate.set()
+        open_gate.set()
+
+    deadline = loop.time() + 5.0
+    while loop.time() < deadline and driver._inflight_opens != 0:
+        await asyncio.sleep(0.005)
+    assert driver._inflight_opens == 0, "released close must uncount itself"
