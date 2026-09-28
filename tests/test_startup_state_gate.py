@@ -2151,6 +2151,96 @@ async def test_silent_link_serves_instead_of_failing_startup(
 
 
 @pytest.mark.asyncio
+async def test_silent_link_serves_even_after_the_reconnect_reopens_the_port(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-2841 stand recheck (2026-09-28): the raced sequence serves too.
+
+    The stand exposed the first cut's blind spot: link-down fires at
+    11:35:28, the watchdog's ``soft_reconnect`` reopens the
+    present-but-silent port at 11:35:32 (connection state back to
+    ``CONNECTED``), and only then does the gate's third failed critical
+    read decide at 11:35:34 — against a state that no longer says
+    ``RECONNECTING``, so the MOR-2749 abort won. This drives the whole
+    sequence for real on the serial backend's own machinery (a fake CI-V
+    link that connects fine and never answers), freezes the
+    reconnect-completed instant, then runs the gate: the decision must
+    rest on the link-down detector having fired, not on the
+    instantaneous connection state, so the server serves in the
+    not-answering state instead of aborting.
+    """
+
+    import logging
+
+    from rigplane import IC_7610_ADDR
+    from rigplane.backends.icom7610 import Icom7610SerialRadio
+    from rigplane.commands import _CMD_FREQ_GET
+    from rigplane.exceptions import TimeoutError as RigplaneTimeoutError
+    from rigplane.runtime._connection_state import RadioConnectionState
+    from test_icom7610_serial_radio import _FakeSerialCivLink, _wait_until
+
+    # Phase A — the stand sequence through the real backend: silent link,
+    # link-down fires, and the reconnect REOPENS the silent port.
+    link = _FakeSerialCivLink()  # connect always succeeds; never answers
+    radio = Icom7610SerialRadio(
+        device="/dev/ttyUSB0",
+        civ_link=link,
+        # Hermetic on any host: no OS enumeration, so rediscovery can never
+        # adopt (or probe) a real sibling port (MOR-1453 seams).
+        _enumerate_serial_ports_fn=lambda: [],
+    )
+    radio._civ_min_interval = 0.001
+    radio._civ_get_timeout = 0.03
+    radio._SERIAL_WATCHDOG_INTERVAL_S = 0.005
+    await radio.connect()
+
+    frame = build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, _CMD_FREQ_GET)
+    for _ in range(radio._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD):
+        with pytest.raises(RigplaneTimeoutError):
+            await radio._send_civ_raw(frame, wait_response=True)
+    assert await _wait_until(
+        lambda: radio.conn_state == RadioConnectionState.RECONNECTING,
+        timeout_s=2.0,
+    )
+    # ...and the reopen: connect call #2 succeeds on the silent port, so
+    # the state machine is back to CONNECTED before the gate ever decides.
+    assert await _wait_until(
+        lambda: link.connect_calls >= 2
+        and radio.conn_state == RadioConnectionState.CONNECTED,
+        timeout_s=2.0,
+    )
+    await radio._stop_civ_data_watchdog()  # freeze the raced instant
+
+    # Phase B — the gate decides three failed critical reads in, exactly
+    # as at 11:35:34 on the stand: connection state CONNECTED, zero radio
+    # observations, link-down having fired earlier in the same startup.
+    PTT = FieldPath.global_("tx_state", "ptt")
+    scheduler = AcquisitionScheduler(profile=_critical_wait_profile())
+    server = WebServer(radio, _gated_config())
+    radio._acquisition_scheduler = scheduler
+    radio._INITIAL_STATE_GAP_LAN = radio._INITIAL_STATE_GAP_SERIAL = 0.05
+    assert scheduler.unobserved_startup_paths(()) == (PTT,)
+
+    clock = _GateClock(stop_at=6.0)
+    clock.on_tick = _re_read_without_answer(scheduler, PTT)
+    with caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"):
+        with _fake_gate_clock(clock):
+            # Returns instead of raising: no RuntimeError, no
+            # _GateWindowClosed (the gate released before 6 s).
+            await _await_initial_state_acquisition(server, sweep=True)
+
+    assert scheduler.startup_defect is None
+    warnings = [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and "not answering" in r.getMessage()
+    ]
+    assert len(warnings) == 1
+
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_silent_link_then_radio_answers_completes_acquisition() -> None:
     """MOR-2841: Power ON mid-wait — acquisition completes normally.
 
