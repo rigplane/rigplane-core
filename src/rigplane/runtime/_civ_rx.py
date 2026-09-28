@@ -3035,8 +3035,7 @@ class CivRuntime:
         Profile-dependent: ``segmented_bcd_index`` BCD-decodes the response
         byte, while ``raw_byte_index`` uses the first data byte directly. The
         resulting index is mapped to Hz via the mode/data-mode filter rule.
-        Shared by ``_observations_from_frame`` and ``_handle_1a`` so both
-        produce a byte-for-byte identical value (MOR-437).
+        Shared by ``_observations_from_frame`` and ``_handle_1a`` (MOR-437).
         """
 
         from rigplane.commands import _bcd_decode_value, filter_index_to_hz

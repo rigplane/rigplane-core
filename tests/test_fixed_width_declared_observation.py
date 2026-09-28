@@ -7,8 +7,8 @@ nevertheless declares each slot's width in ``[filters.width.<MODE>]``
 the selected FIL number — so the ingress can publish
 ``defaults[filter - 1]`` as a DECLARED ``filter_width`` observation, never a
 measured one. A mode that declares no fixed table (SSB/CW) keeps publishing
-no width from the mode frame; the measured ``1A 03`` path is untouched, and
-a fixed mode that declares no ``defaults`` (X6200 AM/FM) gets nothing
+no width from the mode frame, and a fixed mode that declares no
+``defaults`` (X6200 AM/FM) gets nothing
 invented for it.
 """
 
