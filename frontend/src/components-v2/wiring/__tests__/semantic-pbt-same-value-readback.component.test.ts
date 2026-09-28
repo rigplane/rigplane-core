@@ -25,7 +25,7 @@ const CONFIRMED_HZ = measuredPbtRawToHz(CONFIRMED_RAW, WIDTH_HZ, STEP_HZ)!;
 const h = vi.hoisted(() => ({
   session: { state: 'connected' as const, epoch: 1 },
   listeners: new Set<(next: { state: string; epoch: number }) => void>(),
-  commands: vi.fn(() => true),
+  commands: vi.fn<(name: string, params?: Record<string, unknown>, id?: string) => boolean>(() => true),
   txController: null as ManagedAppTxController | null,
 }));
 vi.mock('$lib/transport/ws-client', async (importOriginal) => {
