@@ -1001,7 +1001,7 @@ class TestBackendInferenceFromModel:
         assert isinstance(config, SerialBackendConfig)
         assert config.model == "IC-7300"
 
-    async def test_icom_lan_inference_unchanged(self):
+    async def test_civ_lan_inference_unchanged(self):
         p = _build_parser()
         args = p.parse_args(["--model", "IC-7300", "--host", "1.2.3.4", "status"])
         config = await _build_backend_config(args)
