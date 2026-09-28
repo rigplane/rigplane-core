@@ -895,7 +895,12 @@ describe('MobileRadioLayout SCOPE tab desktop-toolbar controls (MOR-2895)', () =
   } as const;
 
   /** A hardware-scope radio with every scope leaf read. `dual_rx` makes the
-   *  receiver/SRC segment structural too, so every control draws. */
+   *  receiver/SRC segment structural too, so every control draws. The state
+   *  is a FULL valid snapshot (both receivers, txTarget, connection): the
+   *  view-model guard runs in DEV, and a minimal `{ active }` object with
+   *  `receivers: 2` caps makes the derived view invalid — the guard throws
+   *  inside the wiring's projection effect and `view` stays null, which
+   *  silently unmounts every surface (found the hard way, MOR-2895). */
   function withHardwareScopeRadio(options: { dual?: boolean; mode?: number } = {}): () => void {
     const oldCaps = getCapabilities();
     vi.mocked(hasSpectrum).mockReturnValue(true);
@@ -905,9 +910,20 @@ describe('MobileRadioLayout SCOPE tab desktop-toolbar controls (MOR-2895)', () =
       vfoScheme: 'ab',
       capabilities: options.dual === false ? ['scope'] : ['scope', 'dual_rx'],
     } as Capabilities);
+    const slot = (freqHz: number) => ({ freqHz, mode: 'USB' as const, filterNum: 1, dataMode: 0 });
+    const receiver = (freqHz: number) => ({
+      ...slot(freqHz), vfoA: slot(freqHz), vfoB: slot(freqHz + 50000),
+      activeSlot: 'A' as const, filter: 1, sMeter: 0,
+    });
     const leaves = Object.keys(SCOPE_READS) as (keyof typeof SCOPE_READS)[];
     (radio as unknown as { current: { active?: 'MAIN' | 'SUB' } | null }).current = {
-      active: 'MAIN',
+      revision: 1, stateRevision: 1, freshnessRevision: 1, observationSeq: 1,
+      updatedAt: '2026-09-28T00:00:00Z', tunerStatus: 0,
+      stateContractVersion: 1, providerGeneration: 31,
+      active: 'MAIN', split: false, dualWatch: false, ptt: false,
+      txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
+      main: receiver(14250000), sub: receiver(14300000),
+      connection: { rigConnected: true, radioReady: true, controlConnected: true },
       scopeControls: { ...SCOPE_READS, ...(options.mode === undefined ? {} : { mode: options.mode }) },
       fieldStatus: Object.fromEntries(leaves.map((leaf) => [`scopeControls.${leaf}`, {
         storePath: `scopeControls.${leaf}`, observed: true,
@@ -955,8 +971,17 @@ describe('MobileRadioLayout SCOPE tab desktop-toolbar controls (MOR-2895)', () =
       const t = mountMobileWithAppPlan();
       const panel = openScopePanel(t);
       // The production defect: with the plan resolved and no allowBare
-      // argument, zoned() rendered nothing here (owner, 2026-09-28).
-      expect(panel.querySelector('[data-testid="scope-controls-surface"]')).not.toBeNull();
+      // argument, zoned() rendered nothing here (owner, 2026-09-28). The
+      // wrapper assertion separates the two failure shapes: no wrapper means
+      // the call site broke; an empty wrapper means zoned() withheld the
+      // body (view null — e.g. a view-model guard throw in the projection
+      // effect).
+      const wrapper = panel.querySelector('.m-scope-controls');
+      expect(wrapper, 'the scope-controls mount wrapper renders').not.toBeNull();
+      expect(
+        panel.querySelector('[data-testid="scope-controls-surface"]'),
+        `the semantic surface renders inside the wrapper (wrapper children: ${wrapper?.childElementCount ?? 'n/a'})`,
+      ).not.toBeNull();
     } finally {
       restore();
     }
@@ -1063,8 +1088,13 @@ describe('MobileRadioLayout SCOPE tab desktop-toolbar controls (MOR-2895)', () =
     try {
       const t = mountMobileWithAppPlan();
       const panel = openScopePanel(t);
+      // The surface itself mounts (no vacuous pass): only the receiver
+      // segment is withheld — the structural gate, not the whole row.
+      expect(panel.querySelector('[data-testid="scope-controls-surface"]')).not.toBeNull();
+      expect(panel.querySelector('[data-testid="scope-span"]')).not.toBeNull();
       expect(panel.querySelector('[data-testid="scope-receiver"]')).toBeNull();
-      expect(panel.querySelector('[data-testid="scope-dual"]')).toBeNull();
+      const more = openMore(panel);
+      expect(more.querySelector('[data-testid="scope-dual"]')).toBeNull();
     } finally {
       restore();
     }
