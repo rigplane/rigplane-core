@@ -18,7 +18,12 @@ from rigplane.audio.probe_runner import (
     run_audio_probe,
 )
 from rigplane.backends.config import LanBackendConfig, SerialBackendConfig
-from rigplane.cli import _attempt_stock_radio_lan_audio_probe, _cmd_audio_probe
+from rigplane.cli import (
+    _attempt_stock_radio_lan_audio_probe,
+    _build_parser,
+    _cmd_audio_probe,
+    _run,
+)
 
 
 @pytest.mark.asyncio
@@ -213,6 +218,74 @@ async def test_cmd_audio_probe_rejects_non_lan_backend(capsys) -> None:
 
     assert rc == 1
     assert "LAN backend" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra_args", [[], ["--dry-run"]], ids=["probe", "dry-run"])
+async def test_audio_probe_without_resolvable_profile_refuses_before_probing(
+    monkeypatch,
+    tmp_path,
+    capsys,
+    extra_args,
+) -> None:
+    """`--host` alone identifies no radio, so the probe refuses like `status`.
+
+    A dry run refuses too: it checks the plan the real run would execute.
+    """
+    monkeypatch.delenv("ICOM_SERIAL_DEVICE", raising=False)
+    output = tmp_path / "probe.json"
+    args = _build_parser().parse_args(
+        [
+            "--host",
+            "127.0.0.1",
+            "audio",
+            "probe",
+            *extra_args,
+            "--limit",
+            "1",
+            "--output",
+            str(output),
+        ]
+    )
+
+    rc = await _run(args)
+
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert captured.err.startswith("Error: Cannot resolve a radio profile")
+    assert captured.out == ""
+    assert not output.exists()
+
+
+@pytest.mark.asyncio
+async def test_audio_probe_radio_addr_of_a_loaded_profile_identifies_the_radio(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """0x98 is the IC-7610's CI-V address in rigs/ic7610.toml; no --model needed."""
+    monkeypatch.delenv("ICOM_SERIAL_DEVICE", raising=False)
+    output = tmp_path / "probe.json"
+    args = _build_parser().parse_args(
+        [
+            "--host",
+            "127.0.0.1",
+            "--radio-addr",
+            "0x98",
+            "audio",
+            "probe",
+            "--dry-run",
+            "--limit",
+            "1",
+            "--output",
+            str(output),
+        ]
+    )
+
+    rc = await _run(args)
+
+    assert rc == 0
+    summary = json.loads(output.read_text())["metadata"]["summary"]
+    assert summary == {"pass": 0, "rejected": 0, "failed": 0, "skipped": 1}
 
 
 @pytest.mark.asyncio
