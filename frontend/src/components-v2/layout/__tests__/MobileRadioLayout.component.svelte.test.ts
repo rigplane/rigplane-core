@@ -897,18 +897,21 @@ describe('MobileRadioLayout SCOPE tab desktop-toolbar controls (MOR-2895)', () =
   /** A hardware-scope radio with every scope leaf read. `dual_rx` makes the
    *  receiver/SRC segment structural too, so every control draws. The state
    *  is a FULL valid snapshot (both receivers, txTarget, connection): the
-   *  view-model guard runs in DEV, and a minimal `{ active }` object with
-   *  `receivers: 2` caps makes the derived view invalid — the guard throws
-   *  inside the wiring's projection effect and `view` stays null, which
-   *  silently unmounts every surface (found the hard way, MOR-2895). */
+   *  view-model guard runs in DEV, and `2/ab` — receivers: 2 with the 'ab'
+   *  scheme — is not a legal topology, so the guard throws inside the
+   *  wiring's projection effect and `view` stays null, silently unmounting
+   *  the surface (found the hard way, MOR-2895; the dual fixture mirrors
+   *  semantic-scope-controls-wiring's `liveState`, whose topology is
+   *  `2/main_sub`). */
   function withHardwareScopeRadio(options: { dual?: boolean; mode?: number } = {}): () => void {
+    const dual = options.dual !== false;
     const oldCaps = getCapabilities();
     vi.mocked(hasSpectrum).mockReturnValue(true);
     vi.mocked(getScopeSource).mockReturnValue('hardware');
     vi.mocked(getCapabilities).mockReturnValue({
-      ...oldCaps, model: 'fixture', receivers: options.dual === false ? 1 : 2,
-      vfoScheme: 'ab',
-      capabilities: options.dual === false ? ['scope'] : ['scope', 'dual_rx'],
+      ...oldCaps, model: 'fixture', receivers: dual ? 2 : 1,
+      vfoScheme: dual ? 'main_sub' : 'ab',
+      capabilities: dual ? ['scope', 'dual_rx'] : ['scope'],
     } as Capabilities);
     const slot = (freqHz: number) => ({ freqHz, mode: 'USB' as const, filterNum: 1, dataMode: 0 });
     const receiver = (freqHz: number) => ({
