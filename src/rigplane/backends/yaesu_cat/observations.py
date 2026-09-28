@@ -525,41 +525,59 @@ class YaesuObservationAdapter:
         # manual's NAR WIDTH menu owns the passband then), so without this
         # gate the poll re-added the width each second while
         # StateFreshnessService._discard_declared_absent removed it each tick.
-        if (
-            self._has_runtime_capability("filter_width")
-            and self._can_poll(_MAIN_FILTER_WIDTH)
-            and self._available(_MAIN_FILTER_WIDTH)
+        # The gate withholds the read while the clause is unobserved, and
+        # NARROW lives in the slow lane, so the first pass primes it
+        # (``_prime_narrow_clause``) before deciding.
+        if self._has_runtime_capability("filter_width") and self._can_poll(
+            _MAIN_FILTER_WIDTH
         ):
-            ok, value = await self._safe_read(
-                "main.filter_width",
-                self.radio.read_filter_width(0, mode=main_mode),
-                lambda: self.radio.read_filter_width(0, mode=main_mode),
-                paths=(_MAIN_FILTER_WIDTH,),
+            await self._prime_narrow_clause(
+                adapter,
+                observations,
+                label="main.narrow",
+                receiver=0,
+                narrow=_MAIN_NARROW,
+                width=_MAIN_FILTER_WIDTH,
             )
-            if ok:
-                observations.append(
-                    adapter.observation(
-                        _MAIN_FILTER_WIDTH, value, native_id="read_filter_width"
-                    )
+            if self._available(_MAIN_FILTER_WIDTH):
+                ok, value = await self._safe_read(
+                    "main.filter_width",
+                    self.radio.read_filter_width(0, mode=main_mode),
+                    lambda: self.radio.read_filter_width(0, mode=main_mode),
+                    paths=(_MAIN_FILTER_WIDTH,),
                 )
+                if ok:
+                    observations.append(
+                        adapter.observation(
+                            _MAIN_FILTER_WIDTH, value, native_id="read_filter_width"
+                        )
+                    )
         if (
             self._has_runtime_capability("dual_rx")
             and self._has_runtime_capability("filter_width")
             and self._can_poll(_SUB_FILTER_WIDTH)
-            and self._available(_SUB_FILTER_WIDTH)
         ):
-            ok, value = await self._safe_read(
-                "sub.filter_width",
-                self.radio.read_filter_width(1, mode=sub_mode),
-                lambda: self.radio.read_filter_width(1, mode=sub_mode),
-                paths=(_SUB_FILTER_WIDTH,),
+            await self._prime_narrow_clause(
+                adapter,
+                observations,
+                label="sub.narrow",
+                receiver=1,
+                narrow=_SUB_NARROW,
+                width=_SUB_FILTER_WIDTH,
             )
-            if ok:
-                observations.append(
-                    adapter.observation(
-                        _SUB_FILTER_WIDTH, value, native_id="read_filter_width"
-                    )
+            if self._available(_SUB_FILTER_WIDTH):
+                ok, value = await self._safe_read(
+                    "sub.filter_width",
+                    self.radio.read_filter_width(1, mode=sub_mode),
+                    lambda: self.radio.read_filter_width(1, mode=sub_mode),
+                    paths=(_SUB_FILTER_WIDTH,),
                 )
+                if ok:
+                    observations.append(
+                        adapter.observation(
+                            _SUB_FILTER_WIDTH, value, native_id="read_filter_width"
+                        )
+                    )
         return tuple(observations)
 
     def observed_ptt_observation(
@@ -1982,21 +2000,62 @@ class YaesuObservationAdapter:
         return bool(capability.can_poll)
 
     def _available(self, path: FieldPath) -> bool:
-        """Return False only while a declared clause is contradicted.
+        """Return False while a declared clause is contradicted or unobserved.
 
         The ``available_when`` clauses are resolved against a
         :class:`StateStore` attached to the radio as ``_state_store``; with
-        none attached the read proceeds unchanged. MOR-2803: an unresolved
-        clause (``None`` — its source field has not been observed yet) counts
-        as available, mirroring ``AcquisitionScheduler._due_poll_groups``
-        (MOR-2748): an unread NARROW must not withhold the width read.
+        none attached the read proceeds unchanged.
         """
 
         store = getattr(self.radio, "_state_store", None)
         if not isinstance(store, StateStore):
             return True
         availability = resolve_available_when(self.profile, store.snapshot())
-        return availability.get(path, True) is not False
+        return availability.get(path, True) is True
+
+    async def _prime_narrow_clause(
+        self,
+        adapter: ProviderObservationAdapter,
+        observations: list[Observation],
+        *,
+        label: str,
+        receiver: int,
+        narrow: FieldPath,
+        width: FieldPath,
+    ) -> None:
+        """Read an unobserved NARROW once, before this receiver's width read.
+
+        The width's ``available_when`` clause (MOR-2803) resolves against
+        the store, and an unresolved clause — ``None``, nobody has observed
+        the toggle yet — withholds the width read through ``_available``.
+        NARROW is a slow-lane field, so the first medium pass after startup
+        can run before the slow lane observes it. Make the condition known
+        first: read the toggle here, apply it to the store so the width gate
+        below resolves in this same pass, and publish the observation like
+        any other. Once observed — here or by the slow lane — this is a
+        no-op; a failed read leaves the clause unresolved, which withholds
+        the width read exactly as before.
+        """
+
+        if not self._can_poll(narrow):
+            return
+        store = getattr(self.radio, "_state_store", None)
+        if not isinstance(store, StateStore):
+            return
+        availability = resolve_available_when(self.profile, store.snapshot())
+        if availability.get(width, True) is not None:
+            return
+        ok, value = await self._safe_read(
+            label,
+            self.radio.read_narrow(receiver),
+            lambda: self.radio.read_narrow(receiver),
+            paths=(narrow,),
+        )
+        if not ok:
+            return
+        observation = adapter.observation(narrow, value, native_id="read_narrow")
+        store.apply_current(observation)
+        observations.append(observation)
 
     def _has_runtime_capability(self, capability: str) -> bool:
         raw: object = getattr(self.radio, "capabilities", set())

@@ -176,7 +176,14 @@ async def test_sub_state_is_acquired_in_single_receive() -> None:
     snapshot = store.snapshot()
     assert snapshot.field(_SUB_FREQ).value == 144_500_000
     assert snapshot.field(_SUB_MODE).value == "USB"
-    assert snapshot.field(_SUB_FILTER_WIDTH).value == 2450
+    # MOR-2803: the bench radio answers ``NA1;`` with narrow ON, and the
+    # width clause declares the SUB width absent while SUB's NARROW is on —
+    # the medium pass primes the toggle before the width read
+    # (``_prime_narrow_clause``), so the clause resolves here and no ``SH1;``
+    # goes out: the width is withheld, not merely delayed behind an unobserved
+    # clause. MAIN's NARROW reads off (``NA00``), so MAIN's width is read.
+    with pytest.raises(KeyError):
+        snapshot.field(_SUB_FILTER_WIDTH)
     assert snapshot.field(_SUB_S_METER).value == -36
 
 
