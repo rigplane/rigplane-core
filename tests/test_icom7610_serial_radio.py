@@ -32,7 +32,7 @@ from rigplane.runtime.managed_tx_composition import (
     ManagedTxComposition,
     install_managed_tx_composition,
 )
-from rigplane.runtime.managed_tx_state import ManagedTxOutcome
+from rigplane.runtime.managed_tx_state import ActuationResult, ManagedTxOutcome
 from rigplane.types import AudioCodec
 from rigplane.types import bcd_encode
 
@@ -154,7 +154,7 @@ class _FakeSerialCivLink:
         self._responses_by_send: dict[int, list[bytes]] = {}
         self.device_history: list[str] = []
         self.lifecycle_events = lifecycle_events
-        self._ptt_off_answer = ptt_off_answer
+        self.ptt_off_answer = ptt_off_answer
 
     def set_device(self, device: str) -> None:
         self.device_history.append(device)
@@ -190,11 +190,15 @@ class _FakeSerialCivLink:
         for response in self._responses_by_send.pop(send_no, []):
             self._responses.put_nowait(response)
         # ``CoreRadio.actuate`` waits for the answer to the ``1C 00 00`` unkey
-        # (MOR-2860): FB by default, else ``ptt_off_answer`` (FA, or ``None``
-        # for no answer at all).
-        if self._ptt_off_answer is not None and payload[4:-1] == b"\x1c\x00\x00":
+        # and distrusts it while another write's answer may be unclaimed
+        # (MOR-2860), so both PTT writes are answered here: ``1C 00 01`` with
+        # FB, ``1C 00 00`` with ``ptt_off_answer`` (``None`` answers nothing).
+        answer = {b"\x1c\x00\x01": 0xFB, b"\x1c\x00\x00": self.ptt_off_answer}.get(
+            payload[4:-1]
+        )
+        if answer is not None:
             self._responses.put_nowait(
-                bytes((0xFE, 0xFE, payload[3], payload[2], self._ptt_off_answer, 0xFD))
+                bytes((0xFE, 0xFE, payload[3], payload[2], answer, 0xFD))
             )
 
     async def send_written(
@@ -455,6 +459,29 @@ async def test_serial_disconnect_retires_composition_before_transport_close(
     close_index = lifecycle_events.index(("disconnect", None))
     assert off_index < retire_index < close_index
     await composition.shutdown(asyncio.Event())
+
+
+@pytest.mark.asyncio
+async def test_idle_force_off_on_an_answering_radio_leaves_no_debt(tmp_path) -> None:
+    """MOR-2860: an idle ForceOff that the radio answers with FB owes nothing."""
+    link = _FakeSerialCivLink()
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    composition = ManagedTxComposition(radio, config_path=tmp_path / "managed-tx.json")
+    install_managed_tx_composition(radio, composition)
+    store = StateStore()
+    store.begin_provider_generation()
+    await composition.bind_state_store(store)
+    await radio.connect()
+    try:
+        assert await composition.authority.force_off() is ManagedTxOutcome.ACCEPTED
+        state = (await composition.authority.snapshot()).state
+    finally:
+        await radio.disconnect()
+        await composition.shutdown(asyncio.Event())
+
+    assert state.last_actuation is not None
+    assert state.last_actuation.result is ActuationResult.ACCEPTED
+    assert not state.release_required
 
 
 def test_serial_radio_rejects_unsupported_ptt_mode() -> None:

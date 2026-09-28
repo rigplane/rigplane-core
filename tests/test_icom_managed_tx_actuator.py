@@ -170,6 +170,60 @@ async def test_force_receive_settles_on_the_radio_answer(
     assert sent == [bytes(radio._commands.ptt_off(to_addr=radio._radio_addr))]
 
 
+async def _force_receive(radio: IcomRadio) -> ActuationResult:
+    return await radio.actuate(
+        _token(), ActuationOperation.FORCE_RECEIVE, is_current=lambda: True
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_late_answer_to_a_timed_out_unkey_does_not_settle_the_next() -> None:
+    """MOR-2860: FB names no command, so an FB in the second unkey's window
+    may be the first one's late answer; one answer window later an FB counts
+    again."""
+    link = _FakeSerialCivLink(ptt_off_answer=None)
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._civ_get_timeout = 0.2
+    await radio.connect()
+    try:
+        results = [await _force_receive(radio)]
+        link.queue_response_on_send(
+            2, build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, 0xFB)
+        )
+        results.append(await _force_receive(radio))
+        await asyncio.sleep(radio._civ_get_timeout)
+        link.ptt_off_answer = 0xFB
+        results.append(await _force_receive(radio))
+    finally:
+        await radio.disconnect()
+
+    assert results == [
+        ActuationResult.UNCERTAIN,
+        ActuationResult.UNCERTAIN,
+        ActuationResult.ACCEPTED,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_unkey_after_a_dropped_write_sink_stays_uncertain() -> None:
+    """MOR-2860: a fire-and-forget write still unanswered when the unkey starts
+    loses its sink, so an FB in the unkey's window may be that write's."""
+    link = _FakeSerialCivLink()
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._civ_get_timeout = 0.2
+    await radio.connect()
+    try:
+        await radio._send_civ_raw(
+            build_civ_frame(radio._radio_addr, CONTROLLER_ADDR, 0x0F, data=b"\x01"),
+            wait_response=False,
+        )
+        result = await _force_receive(radio)
+    finally:
+        await radio.disconnect()
+
+    assert result is ActuationResult.UNCERTAIN
+
+
 @pytest.mark.asyncio
 async def test_force_release_overtakes_queued_abort_without_preempting_active() -> None:
     entered = asyncio.Event()

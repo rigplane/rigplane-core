@@ -8,6 +8,7 @@ import pytest
 from rigplane.backends.rigctld_client.radio import RigctldClientRadio
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.profiles import resolve_radio_profile
+from rigplane.core.civ import CivRequestTracker
 from rigplane.core.state_store import StateStore
 from rigplane.core.types import CivFrame
 from rigplane.runtime.managed_tx_composition import (
@@ -71,6 +72,10 @@ class _IcomActuator(_DelayedWire):
             },
         )()
         self._radio_addr = 0x94
+        # ``CoreRadio.actuate`` distrusts the unkey's answer while the tracker
+        # holds another write's unclaimed answer (MOR-2860); none here does.
+        self._civ_request_tracker = CivRequestTracker()
+        self._civ_get_timeout = 2.0
 
     async def _send_civ_raw(
         self,
