@@ -83,6 +83,9 @@ features = [
     # Tone / FM
     "repeater_tone",
     "tsql",
+    # MOR-2930: simplex / DUP− / DUP+ over 0F (guide p.3); 0F has no ARS code,
+    # so no "repeater_shift_ars".
+    "repeater_shift",
     "dtcs",
     "csql",
     "voice_tx",      # wfview: Voice TX 0x28 (Max=8) — D-STAR voice; not on IC-7300.rig
@@ -140,6 +143,8 @@ polling_only = [
     "global.tx_state.ptt",
     "global.operator_controls.tuner_status",
     "global.tx_state.split",
+    # MOR-2930: read by the same 0F query as split.
+    "receiver.main.operator_controls.repeater_shift",
     # MOR-2915: the TX-aux levels and panel knobs rigs/ic7300.toml polls
     # (MOR-1452, MOR-2425); v3 reads only a declared field
     # (core/acquisition_scheduler.py: AcquisitionScheduler._availability_for).
@@ -201,6 +206,7 @@ command_response_observable = [
     "global.operator_controls.compressor_level",
     "global.tx_state.ptt",
     "global.operator_controls.tuner_status",
+    "receiver.main.operator_controls.repeater_shift",
     "global.tx_state.split",
     "global.tx_state.vox_on",
     "global.tx_state.monitor_on",
@@ -846,6 +852,11 @@ get_scan = [0x0E]
 set_scan = [0x0E]
 get_split = [0x0F]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3
 set_split = [0x0F]
+# MOR-2930: the repeater shift direction rides the same command. p.3 reads
+# 11 = DUP−, 12 = DUP+ and sets 10 = simplex, 11 = DUP−, 12 = DUP+
+# (commands/vfo.py: set_repeater_shift, parse_repeater_shift_response).
+get_repeater_shift = [0x0F]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3
+set_repeater_shift = [0x0F]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3
 
 # ── Tuning ──
 get_tuning_step = [0x10]

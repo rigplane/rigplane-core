@@ -32,6 +32,7 @@ from rigplane.commands import (
     parse_frequency_response,
     parse_level_response,
     parse_mode_response,
+    parse_repeater_shift_response,
     parse_rit_frequency_response,
     parse_tone_freq_response,
     parse_tsql_freq_response,
@@ -2871,6 +2872,24 @@ class CivRuntime:
                     frame=frame,
                 )
             )
+            # The same byte carries the repeater shift direction (MOR-2930),
+            # published only where the profile declares the shift getter.
+            shift = parse_repeater_shift_response(frame.data)
+            command_map = self._host._profile.command_map
+            if (
+                shift is not None
+                and command_map is not None
+                and command_map.has("get_repeater_shift")
+            ):
+                observations.append(
+                    self._observation(
+                        FieldPath.receiver(
+                            receiver_id, "operator_controls", "repeater_shift"
+                        ),
+                        int(shift),
+                        frame=frame,
+                    )
+                )
         elif frame.command == 0x10 and frame.data:
             # Tuning step: device step index (0-8), BCD nibble-pair byte.
             # Reuse the exact decode of ``_handle_10`` / ``get_tuning_step``;

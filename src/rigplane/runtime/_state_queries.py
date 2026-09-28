@@ -59,6 +59,7 @@ _RECEIVER_CONTROL_GETTERS = {
     "agc_time_constant": "get_agc_time_constant",
     "tone_freq": "get_tone_freq",
     "tsql_freq": "get_tsql_freq",
+    "repeater_shift": "get_repeater_shift",
 }
 _GLOBAL_METER_GETTERS = {
     "power": "get_power_meter",
