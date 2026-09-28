@@ -64,6 +64,7 @@
       {#key presentation}
         <section data-testid={`${presentation}-filter-composition`}>
           {#if presentation === 'standard'}
+            {#if handles.standardMode}{@render handles.standardMode()}{/if}
             {#if handles.standardDataMode}{@render handles.standardDataMode()}{/if}
           {:else if presentation === 'grouped'}
             {@render handles.mode()}{@render handles.filter()}{@render handles.shape()}{@render handles.dataMode()}

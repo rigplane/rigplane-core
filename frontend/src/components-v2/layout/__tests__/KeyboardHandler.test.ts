@@ -1103,6 +1103,88 @@ describe('KeyboardHandler', () => {
       keyup('Alt');
       expect(document.body.dataset.shortcutHints).toBeUndefined();
     });
+
+    // MOR-2793 review leftover (Medium): a held Alt auto-repeats its keydown
+    // after a chord. Without `altHoldBlocked` staying set through the rest of
+    // that hold, the auto-repeat would start a fresh hint timer.
+    it('keeps the hints suppressed when held Alt auto-repeats after a chord', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: chordConfig, onAction });
+
+      keydown('Alt');
+      keydown('ArrowUp', { altKey: true });
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+      // Auto-repeat of the still-held Alt (same key, no intervening keyup).
+      keydown('Alt', { altKey: true });
+      vi.advanceTimersByTime(ALT_HINTS_DELAY_MS * 10);
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+      expect(onAction).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ action: 'adjust_af_level' }),
+      );
+
+      keyup('Alt');
+      keydown('Alt');
+      vi.advanceTimersByTime(ALT_HINTS_DELAY_MS);
+      expect(document.body.dataset.shortcutHints).toBe('true');
+    });
+
+    // MOR-2793 review leftover (Low): hints only for Alt alone — Shift (or
+    // Ctrl/Meta) held first, then Alt, must not reveal them after a pause.
+    it('never reveals the hints when Alt is not the only held modifier', () => {
+      mountHandler({ config: chordConfig });
+
+      keydown('Shift');
+      keydown('Alt', { altKey: true, shiftKey: true });
+      vi.advanceTimersByTime(ALT_HINTS_DELAY_MS * 10);
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+      keyup('Alt');
+      keyup('Shift');
+
+      keydown('Control');
+      keydown('Alt', { altKey: true, ctrlKey: true });
+      vi.advanceTimersByTime(ALT_HINTS_DELAY_MS * 10);
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+      keyup('Alt');
+      keyup('Control');
+
+      keydown('Meta');
+      keydown('Alt', { altKey: true, metaKey: true });
+      vi.advanceTimersByTime(ALT_HINTS_DELAY_MS * 10);
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+    });
+
+    // MOR-2793 review leftover (Low): flipping `enabled` to false mid-hold
+    // must clear the scheduled hint timer, not leave it armed.
+    it('clears the pending hint timer when enabled goes false mid-hold', () => {
+      const enabledState = writable(true);
+      const live = fromStore(enabledState);
+      const target = document.createElement('div');
+      document.body.appendChild(target);
+      const component = mount(KeyboardHandler, {
+        target,
+        props: {
+          config: chordConfig,
+          onAction: vi.fn(),
+          get enabled() { return live.current; },
+        },
+      });
+      components.push(component);
+      flushSync();
+
+      keydown('Alt');
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+      enabledState.set(false);
+      flushSync();
+      vi.advanceTimersByTime(ALT_HINTS_DELAY_MS * 10);
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+
+      keyup('Alt');
+      enabledState.set(true);
+      flushSync();
+      keydown('Alt');
+      vi.advanceTimersByTime(ALT_HINTS_DELAY_MS);
+      expect(document.body.dataset.shortcutHints).toBe('true');
+    });
   });
 
   // MOR-1449 — rigs/_keyboard-default.toml used to bind the bare "Tab" key
