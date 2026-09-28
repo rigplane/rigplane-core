@@ -173,6 +173,13 @@ async def test_ws_missing_origin_accepted(
         "a:b:c",  # unbracketed multi-colon
         "[::1:8470",  # unterminated bracket
         "host:",  # empty port
+        "router.lan:80",  # .lan is conventional, not reserved
+        "evil.lan",
+        "X.LAN",  # refusal is case-insensitive
+        "localhost:80:90",  # multi-colon, not a bare IPv6 literal
+        "mymac:abc",  # non-numeric port tail
+        "127.0.0.1:99999999",  # port tail longer than 5 digits
+        "my_mac:8470",  # underscore fails the single-label pattern
     ],
 )
 async def test_ws_foreign_or_malformed_host_refused_with_421(
@@ -199,11 +206,12 @@ async def test_ws_foreign_or_malformed_host_refused_with_421(
         "192.168.55.77:8099",  # IPv4 literal
         "[::1]:8470",  # bracketed IPv6 with port
         "[::1]",
+        "::1",  # bare IPv6 literal
         "localhost:8470",
         "LOCALHOST:8470",  # single-label match is case-insensitive
+        "localhost.:8470",  # trailing dot stripped before every check
         "stand77:8470",  # bare single-label hostname
         "x.local.",  # trailing dot ignored on local suffixes
-        "X.LAN:8470",  # suffix match is case-insensitive
         "rack.home.arpa:8470",
         "box.internal",
         None,  # missing Host header
@@ -262,7 +270,20 @@ async def test_ws_allowed_host_name_still_refused_without_flag() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "host",
-    ["evil.example", "evil.example:8099", "", "a:b:c", "stand77.msmsoft.net"],
+    [
+        "evil.example",
+        "evil.example:8099",
+        "",
+        "a:b:c",
+        "stand77.msmsoft.net",
+        "router.lan:80",
+        "evil.lan",
+        "X.LAN",
+        "localhost:80:90",
+        "mymac:abc",
+        "127.0.0.1:99999999",
+        "my_mac:8470",
+    ],
 )
 async def test_http_foreign_or_malformed_host_refused_with_421(host: str) -> None:
     srv = _make_srv()
@@ -278,7 +299,9 @@ async def test_http_foreign_or_malformed_host_refused_with_421(host: str) -> Non
     [
         "192.168.55.77:8099",
         "[::1]:8470",
+        "::1",
         "localhost:8470",
+        "localhost.:8470",
         "stand77:8470",
         "x.local.",
         None,  # missing Host header
