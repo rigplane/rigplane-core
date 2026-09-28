@@ -210,9 +210,16 @@ class RigctldClientObservationPoller:
         Reuse the transport's own ``connect()`` — the same open path
         startup uses — rather than a second reconnect mechanism; both
         loops may race here, and its lifecycle lock plus the ``connected``
-        short-circuit make that safe.
+        short-circuit make that safe. An *intentional* disconnect
+        (``RigctldClientRadio.disconnect``, e.g. the operator's
+        ``/api/v1/radio/disconnect``) is never undone here: the radio's
+        ``_intentional_disconnect`` flag — the IcomRadio idiom — makes
+        this return without reopening; the next ``connect()`` clears the
+        flag and polling resumes.
         """
 
+        if self._radio._intentional_disconnect:
+            return
         transport = self._radio._transport
         if transport.connected:
             return
@@ -713,6 +720,10 @@ class RigctldClientRadio:
         # backend's tally. On the 3rd unanswered read the adapter records
         # the declared-command defect that ends startup.
         self._critical_read_timeouts: dict[FieldPath, int] = {}
+        # The same intentional-disconnect idiom as IcomRadio: set by
+        # disconnect(), cleared by connect(), checked by the poller's
+        # reconnect so an operator's disconnect is never undone.
+        self._intentional_disconnect = False
         self._physical_write_result_callback: (
             Callable[[PhysicalWriteReadbackResult], None] | None
         ) = None
@@ -740,9 +751,11 @@ class RigctldClientRadio:
 
     async def connect(self) -> None:
         await self._transport.connect()
+        self._intentional_disconnect = False
         await self._probe_vfo_support()
 
     async def disconnect(self) -> None:
+        self._intentional_disconnect = True
         await self._transport.close()
 
     async def __aenter__(self) -> "RigctldClientRadio":

@@ -449,7 +449,7 @@ class RigctldClientObservationAdapter:
         query rigctld never answered — counts toward that path's
         consecutive-unread tally (any answer resets it), so the 3rd
         unanswered read records the declared-command defect that ends
-        startup; the same record a refused read leaves. A
+        startup. A
         ``RadioConnectionError`` never counts: link quality — the
         connection a timeout closes, or a plain drop such as rigctld
         restarting — reaches the backend as a transport error and must not
@@ -508,8 +508,8 @@ class RigctldClientObservationAdapter:
         unanswered read of the radio. Non-critical paths are not counted
         — the web gate's own 10 s deadline already stops them from
         blocking. On the attempt that reaches
-        ``_CRITICAL_READ_TIMEOUT_ATTEMPTS`` the same
-        :class:`DeclaredCommandDefect` a refused read records is recorded
+        ``_CRITICAL_READ_TIMEOUT_ATTEMPTS`` a
+        :class:`DeclaredCommandDefect` is recorded
         for that one path, naming the field and the rigctld command the
         radio never answered; the startup gate aborts on it. Later records
         keep only the first (``AcquisitionScheduler.record_startup_defect``).
@@ -535,9 +535,8 @@ class RigctldClientObservationAdapter:
 
         The recording is what the startup gate reads: it checks the
         scheduler's record before and during its wait, so the unanswered
-        read that reaches the attempt limit refuses the bind — the same
-        record and abort path a refused or unparseable read already uses;
-        no second failure mechanism is added.
+        read that reaches the attempt limit refuses the bind; no second
+        failure mechanism is added.
         """
 
         defect = DeclaredCommandDefect(
