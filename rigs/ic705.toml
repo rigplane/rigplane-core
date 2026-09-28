@@ -2,9 +2,9 @@
 # This file defines the IC-705 radio profile in TOML format.
 # See _schema.md for field documentation.
 #
-# Source of truth: references/wfview/rigs/IC-705.rig (v2.10)
-# Cross-check: IC-7300.rig / IC-7610.rig (differences called out in NOTE comments)
-# docs/research/ic705-research.md
+# Sources: references/wfview/rigs/IC-705.rig (v2.10), not vendored in this
+# repo. Rows marked "source:" and `{ absent = ... }` rows cite the IC-705
+# CI-V Reference Guide by page.
 #
 # Non-CI-V features: built-in GPS, Bluetooth, and WiFi are hardware/UI managed.
 # [radio].has_wifi reflects WiFi; no separate CI-V opcodes for GPS/BT in wfview IC-705.rig.
@@ -48,31 +48,14 @@ features = [
     # RF front end
     "attenuator",
     "preamp",
-    # NOTE: no "digisel" capability (0x16 0x4E DIGI-SEL toggle) on IC-705 —
-    # wfview's IC-705.rig only exposes DIGI-SEL Shift (0x14 0x13, see
-    # get_digisel_shift/set_digisel_shift in [commands] below), never the
-    # 0x16 0x4E on/off command this capability string gates. Declaring
-    # "digisel" here made IcomRadio.set_preamp(level>0) run a get_digisel()
-    # pre-flight that sent an unanswerable 0x16 0x4E frame and blocked for
-    # a full CI-V timeout on every call (MOR-1540). Provenance: wfview/
-    # hamlib-doc-sourced (repo's ic705-research.md is no longer vendored
-    # here) — IC-705 is NOT on the live bench, so this is doc-level
-    # confidence, not live-validated.
-    # "digisel_shift" IS real on IC-705 (0x14 0x13 cmd29 level — see
-    # get_digisel_shift/set_digisel_shift in [commands] below) and is a
-    # distinct CI-V command from the 0x16 0x4E toggle above. Web/API
-    # callers were rejected at the control-handler layer because it gated
-    # set_digisel_shift on the shared "digisel" tag, which IC-705
-    # deliberately omits (MOR-1544).
-    "digisel_shift",
-    # Antenna
-    "antenna",
-    "rx_antenna",    # wfview: RX Antenna 0x16 0x53 (IC-7300.rig omits this command)
+    # No DIGI-SEL, antenna select, RX antenna, APF or drive gain: neither
+    # IC-705 CI-V guide edition has a 0x16 0x4E, 0x14 0x13, 0x12, 0x16 0x53,
+    # 0x16 0x32, 0x14 0x05 or 0x14 0x14 row (MOR-1540, MOR-2917; see the
+    # `{ absent = ... }` rows in [commands]).
     # DSP / Noise
     "nb",
     "nr",
     "notch",
-    "apf",
     "twin_peak",
     # Filter
     "pbt",
@@ -84,7 +67,6 @@ features = [
     "vox",
     "compressor",
     "monitor",
-    "drive_gain",    # wfview IC-705: 0x14 0x14 (not in IC-7300.rig)
     "ssb_tx_bw",
     # CW
     "cw",
@@ -271,14 +253,10 @@ values = [0x01, 0x02, 0x03, 0x12, 0x13, 0x22, 0x23, 0x24]
 values = [0xD0, 0xD3]
 
 [antenna]
-# CI-V 0x12: single antenna path; RX antenna separate command 0x16 0x53
+# One antenna connector; no 0x12 antenna-select or 0x16 0x53 RX-antenna row
+# in the IC-705 CI-V guide (MOR-2917).
 tx_count = 1
-has_rx_ant = true
-
-[apf]
-# CI-V 0x16 0x32: wfview Max=3 (WIDE/MID/NAR style); 0x14 0x05 APF Type Level also present on IC-705
-values = [0, 1, 2, 3]
-labels = { "0" = "OFF", "1" = "WIDE", "2" = "MID", "3" = "NAR" }
+has_rx_ant = false
 
 [notch]
 # Manual Notch Width (0x16 0x57) exists on IC-705 -- IC-705 CI-V Reference
@@ -700,9 +678,8 @@ set_tuning_step = [0x10]
 # ── RF front end ──
 get_attenuator = [0x11]
 set_attenuator = [0x11]
-# NOTE: IC-7300.rig has no DIGI-SEL Shift; IC-705 has 0x14 0x13.
-get_digisel_shift = [0x14, 0x13]
-set_digisel_shift = [0x14, 0x13]
+get_digisel_shift = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.3-4: 0x14 family has no 0x13; the guide has no DIGI-SEL" }
+set_digisel_shift = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.3-4: 0x14 family has no 0x13; the guide has no DIGI-SEL" }
 get_digisel = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.4: 0x16 family has no 0x4E" }
 set_digisel = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.4: 0x16 family has no 0x4E" }
 get_speech = [0x13]
@@ -717,8 +694,8 @@ get_squelch = [0x14, 0x03]
 set_squelch = [0x14, 0x03]
 get_af_mute = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020): no 'mute' occurrence anywhere in the 29-page guide (no 1A 09 row)" }
 set_af_mute = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020): no 'mute' occurrence anywhere in the 29-page guide (no 1A 09 row)" }
-get_apf_type_level = [0x14, 0x05]
-set_apf_type_level = [0x14, 0x05]
+get_apf_type_level = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.3: 0x14 family has no 0x05" }
+set_apf_type_level = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.3: 0x14 family has no 0x05" }
 get_nr_level = [0x14, 0x06]
 set_nr_level = [0x14, 0x06]
 get_pbt_inner = [0x14, 0x07]
@@ -739,8 +716,8 @@ get_break_in_delay = [0x14, 0x0F]
 set_break_in_delay = [0x14, 0x0F]
 get_nb_level = [0x14, 0x12]
 set_nb_level = [0x14, 0x12]
-get_drive_gain = [0x14, 0x14]
-set_drive_gain = [0x14, 0x14]
+get_drive_gain = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.4: 0x14 family has no 0x14" }
+set_drive_gain = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.4: 0x14 family has no 0x14" }
 get_monitor_gain = [0x14, 0x15]
 set_monitor_gain = [0x14, 0x15]
 get_vox_gain = [0x14, 0x16]
@@ -782,8 +759,8 @@ get_agc = [0x16, 0x12]
 set_agc = [0x16, 0x12]
 get_nb = [0x16, 0x22]
 set_nb = [0x16, 0x22]
-get_audio_peak_filter = [0x16, 0x32]
-set_audio_peak_filter = [0x16, 0x32]
+get_audio_peak_filter = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.4: 0x16 family has no 0x32" }
+set_audio_peak_filter = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.4: 0x16 family has no 0x32" }
 get_nr = [0x16, 0x40]
 set_nr = [0x16, 0x40]
 get_auto_notch = [0x16, 0x41]
@@ -806,8 +783,8 @@ get_twin_peak_filter = [0x16, 0x4F]
 set_twin_peak_filter = [0x16, 0x4F]
 get_dial_lock = [0x16, 0x50]
 set_dial_lock = [0x16, 0x50]
-get_rx_antenna = [0x16, 0x53]
-set_rx_antenna = [0x16, 0x53]
+get_rx_antenna = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.4: 0x16 family has no 0x53; one antenna connector" }
+set_rx_antenna = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.4: 0x16 family has no 0x53; one antenna connector" }
 get_rx_antenna_ant2 = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020): no 0x12 sub-function row for a second RX antenna -- single antenna connector" }
 set_rx_antenna_ant2 = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020): no 0x12 sub-function row for a second RX antenna -- single antenna connector" }
 get_filter_shape = [0x16, 0x56]
@@ -938,9 +915,9 @@ set_command_error_fa = [0xFA]
 get_command_ok_fb = [0xFB]
 set_command_ok_fb = [0xFB]
 
-# ── Antenna (0x12) — after overrides merge; base from IC-7300 class ──
-get_antenna = [0x12]
-set_antenna = [0x12]
+# ── Antenna (0x12) ──
+get_antenna = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.3: no 0x12 row; one antenna connector" }
+set_antenna = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.3: no 0x12 row; one antenna connector" }
 
 # ── Scan alias (same opcode as get_scan) ──
 scan_start = [0x0E]
