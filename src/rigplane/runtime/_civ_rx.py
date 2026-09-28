@@ -2420,6 +2420,32 @@ class CivRuntime:
                         frame=frame,
                     )
                 )
+                # MOR-2503: a fixed-width mode has no width readback (the
+                # CI-V 1A 03 table has no FM row), but the profile declares
+                # each slot's width. Publishing the declared slot width here
+                # — marked ``declared``, never ``confirmed`` — lets the
+                # passband draw without inventing a width for modes that
+                # declare none (the measured 1A 03 path above is untouched
+                # and still wins whenever the radio answers it).
+                profile = getattr(self._host, "_profile", None)
+                declared = (
+                    profile.declared_filter_width(mode_val.name, int(filt))
+                    if profile is not None
+                    else None
+                )
+                if declared is not None:
+                    observations.append(
+                        self._observation(
+                            self._freq_mode_path(
+                                receiver_id=receiver_id,
+                                slot_override=slot_override,
+                                name="filter_width",
+                            ),
+                            declared,
+                            frame=frame,
+                            quality=("declared",),
+                        )
+                    )
         elif frame.command == 0x25 and len(frame.data) >= 6:
             relative = (
                 getattr(self._host._profile, "vfo_readback", "none")

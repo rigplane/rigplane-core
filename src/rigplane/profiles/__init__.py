@@ -660,6 +660,31 @@ class RadioProfile:
 
         return bcd_encode_value(payload_value, byte_count=1)
 
+    def declared_filter_width(
+        self, mode: str | None, filter_num: int | None, *, data_mode: int = 0
+    ) -> int | None:
+        """Profile-declared width of one filter slot in a fixed-width mode.
+
+        MOR-2503: a ``fixed = true`` mode (FM on the IC-7300/7610/9700, WFM
+        and DV on the IC-705) has no width readback — the CI-V ``1A 03``
+        table has no FM row — but the profile declares each slot's width in
+        ``defaults``. The width of the selected slot is then profile data,
+        not an observation: ``defaults[filter_num - 1]``.
+
+        Returns ``None`` — and the caller must publish nothing rather than
+        invent a width — when the mode resolves to no rule, the rule is not
+        fixed, ``defaults`` is empty (X6200 AM/FM), or the slot is outside
+        the declared table.
+        """
+        if filter_num is None or filter_num < 1:
+            return None
+        rule = self.resolve_filter_rule(mode, data_mode=data_mode)
+        if rule is None or not rule.fixed:
+            return None
+        if filter_num > len(rule.defaults):
+            return None
+        return rule.defaults[filter_num - 1]
+
     def admitted_filter_width(self, mode: str | None, width_hz: int) -> int | None:
         """The on-table width a ``set_filter_width`` write will land on.
 
