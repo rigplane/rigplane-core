@@ -648,9 +648,9 @@ class UsbAudioDriver:
         )
         # MOR-1573: count of submitted-but-unfinished operations on the
         # driver-owned pool (MOR-2892 widened this from opens only to every
-        # bounded off-loop PortAudio call — probes, stops, enumeration; the
-        # unawaited late-handle closes submitted by ``_close_late_stream``
-        # remain uncounted, as before). An abandoned (timed-out or cancelled)
+        # bounded off-loop PortAudio call — probes, stops, enumeration,
+        # including the unawaited late-handle closes submitted by
+        # ``_close_late_stream``). An abandoned (timed-out or cancelled)
         # call stays counted until its future actually resolves, so this
         # tracks REAL worker-pool pressure, not just calls currently being
         # awaited.
@@ -727,14 +727,23 @@ class UsbAudioDriver:
 
     @property
     def duplex_mode(self) -> Literal["full", "exclusive"]:
-        """USB duplex policy for the resolved RX/TX pair (lazy, read-only).
+        """USB duplex policy for the resolved RX/TX pair (pure cache read).
 
-        Resolves devices via the normal selection path on first access; see
-        :func:`resolve_usb_duplex_mode` for the policy itself.
+        MOR-2892: resolving devices is PortAudio enumeration and must
+        stay off the event loop, so the property never resolves — it
+        only reads the selection cache warmed by the bounded start paths
+        (:meth:`start_rx`/:meth:`start_tx`/:meth:`start_duplex`). A cold
+        cache (before the first start, or right after
+        :meth:`set_serial_port`) returns ``"full"`` — the same safe
+        default the backend's ``audio_duplex_mode`` already degrades to.
+        The exclusive topology is still enforced on every start: the
+        bounded resolution there re-checks the resolved pair, and the
+        RX → duplex handoff (:meth:`_start_tx_exclusive`) keeps an
+        rx-first sequence safe on an exclusive device.
         """
         rx, tx = self._selected_rx, self._selected_tx
         if rx is None or tx is None:
-            rx, tx = self._ensure_selected_devices()
+            return "full"
         return resolve_usb_duplex_mode(rx, tx)
 
     @property
@@ -1146,11 +1155,15 @@ class UsbAudioDriver:
         that thread (MOR-1438, F2): a wedged device can block its close
         exactly as it blocked its open. So the close itself is driven
         through the same off-loop helper (:func:`_drive_stream_open`) as
-        the original open, never awaited directly here. The caller already
-        gave up and moved on (timeout or cancellation), so a late-arriving
-        handle would otherwise hold the OS device open forever — the
-        ResourceDemand handle-identity lesson applies here too: a handle
-        nobody stops leaks a binding.
+        the original open, never awaited directly here, and submitted
+        via :meth:`_submit_tracked` so a wedged late close is COUNTED
+        against the pool's saturation bound like every other bounded
+        operation (MOR-2892 — it previously went through a raw
+        ``run_in_executor`` and occupied a worker uncounted). The caller
+        already gave up and moved on (timeout or cancellation), so a
+        late-arriving handle would otherwise hold the OS device open
+        forever — the ResourceDemand handle-identity lesson applies here
+        too: a handle nobody stops leaks a binding.
 
         MOR-1573: an abandoned open that later resolves with an EXCEPTION
         (as opposed to a late-but-successful open) previously returned
@@ -1174,10 +1187,7 @@ class UsbAudioDriver:
             "— closing the late handle instead of leaking it",
             direction.upper(),
         )
-        loop = asyncio.get_running_loop()
-        close_future = loop.run_in_executor(
-            self._open_executor, _drive_stream_open, stream.stop()
-        )
+        close_future = self._submit_tracked(lambda: _drive_stream_open(stream.stop()))
 
         def _on_close_done(done_future: "asyncio.Future[None]") -> None:
             if done_future.cancelled():
@@ -1525,24 +1535,31 @@ class UsbAudioDriver:
         legs to ONE duplex stream via :meth:`_start_tx_exclusive` instead
         of opening a second OutputStream on that device. Separate-device
         (``full``) behaviour below is unchanged.
+
+        MOR-2892: ``duplex_mode`` is a pure cache read, so the devices
+        are resolved through the bounded off-loop path BEFORE the policy
+        is consulted — the decision never triggers on-loop enumeration,
+        and a cold cache cannot silently take the two-stream path on an
+        exclusive device.
         """
-        if self.duplex_mode == "exclusive":
+        selected_rx, selected_tx = await self._run_portaudio_bounded(
+            self._ensure_selected_devices,
+            what="device enumeration",
+            direction="tx",
+        )
+        if resolve_usb_duplex_mode(selected_rx, selected_tx) == "exclusive":
             await self._start_tx_exclusive(
                 sample_rate=sample_rate,
                 channels=channels,
                 frame_ms=frame_ms,
                 allow_sample_rate_fallback=allow_sample_rate_fallback,
+                selected=(selected_rx, selected_tx),
             )
             return
         async with self._tx_lock:
             if self.tx_running:
                 raise AudioAlreadyStartedError("TX stream already started.")
 
-            _, selected_tx = await self._run_portaudio_bounded(
-                self._ensure_selected_devices,
-                what="device enumeration",
-                direction="tx",
-            )
             sr = self._config.sample_rate if sample_rate is None else sample_rate
             ch = self._config.channels if channels is None else channels
             fm = self._config.frame_ms if frame_ms is None else frame_ms
@@ -1631,6 +1648,7 @@ class UsbAudioDriver:
         channels: int | None,
         frame_ms: int | None,
         allow_sample_rate_fallback: bool,
+        selected: tuple[UsbAudioDevice, UsbAudioDevice],
     ) -> None:
         """Arm TX on an exclusive same-device CODEC as ONE duplex stream (MOR-546).
 
@@ -1645,6 +1663,10 @@ class UsbAudioDriver:
         logged, never raised; a cancel propagates) before the original
         TX failure reaches the caller. Audio only — no PTT/TX command is
         involved here.
+
+        *selected* is the already-resolved device pair from
+        :meth:`start_tx`'s bounded enumeration (MOR-2892) — reusing it
+        keeps the exclusive arm at exactly ONE enumeration per start.
         """
         async with self._rx_lock, self._tx_lock:
             if self.tx_running:
@@ -1661,6 +1683,7 @@ class UsbAudioDriver:
                     channels=channels,
                     frame_ms=frame_ms,
                     allow_sample_rate_fallback=allow_sample_rate_fallback,
+                    selected=selected,
                 )
             except BaseException:
                 # The failed arm already stopped plain RX — hand a
@@ -1677,6 +1700,7 @@ class UsbAudioDriver:
         channels: int | None,
         frame_ms: int | None,
         allow_sample_rate_fallback: bool,
+        selected: tuple[UsbAudioDevice, UsbAudioDevice] | None = None,
     ) -> None:
         """Open the single full-duplex stream; caller holds BOTH locks.
 
@@ -1684,12 +1708,19 @@ class UsbAudioDriver:
         entry point, so the driver-owned :attr:`_rx_callback` (None = TX
         armed without RX demand — frames drain) survives every later
         handoff (MOR-546).
+
+        *selected* carries an already-resolved device pair when the
+        caller just ran the bounded enumeration (the exclusive
+        :meth:`start_tx` arm, MOR-2892); ``None`` resolves here as
+        before (e.g. :meth:`start_duplex`).
         """
-        selected_rx, selected_tx = await self._run_portaudio_bounded(
-            self._ensure_selected_devices,
-            what="device enumeration",
-            direction="duplex",
-        )
+        if selected is None:
+            selected = await self._run_portaudio_bounded(
+                self._ensure_selected_devices,
+                what="device enumeration",
+                direction="duplex",
+            )
+        selected_rx, selected_tx = selected
         if selected_rx.index != selected_tx.index:
             raise AudioDriverLifecycleError(
                 "Duplex stream requires RX and TX on the SAME device "
