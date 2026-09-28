@@ -2458,6 +2458,14 @@ async def test_silent_startup_scan_seed_and_echo_never_count_as_radio_observatio
         timeout=0.1,
         _enumerate_serial_ports_fn=lambda: [],
     )
+    radio._SERIAL_WATCHDOG_INTERVAL_S = 0.005  # type: ignore[attr-defined]
+    _orig_reconnect = radio.soft_reconnect
+
+    async def _slow_reconnect() -> None:
+        await asyncio.sleep(2.0)
+        await _orig_reconnect()
+
+    radio.soft_reconnect = _slow_reconnect  # type: ignore[method-assign]
     await radio.connect()
     store = radio.state_store
     poller = RadioPoller(
