@@ -128,10 +128,11 @@ For non-async code, use the synchronous `IcomRadio` wrapper:
 ```python
 from rigplane.sync import IcomRadio
 
-radio = IcomRadio(config)
-snapshot = radio.prepare_ic705_data_profile(frequency_hz=145_500_000)
-# ... operate ...
-radio.restore_ic705_data_profile(snapshot)
+# The sync wrapper takes the host and a CI-V address (0xA4 is the IC-705).
+with IcomRadio("192.168.1.100", username="u", password="p", radio_addr=0xA4) as radio:
+    snapshot = radio.prepare_ic705_data_profile(frequency_hz=145_500_000)
+    # ... operate ...
+    radio.restore_ic705_data_profile(snapshot)
 ```
 
 ## IC-705 Convenience Helper (Backward Compatible)

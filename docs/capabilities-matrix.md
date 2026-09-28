@@ -64,7 +64,7 @@ has_ant_memory = false
 | DIGI-SEL | ✅ | ❌ | 0x16 0x4E | `digisel` in features |
 | IP+ | ✅ | ✅ | 0x16 0x65 | `ip_plus` in features |
 
-**IC-7610 ATT:** CI-V reference shows 16 discrete values: 0/3/6/9/12/15/18/21/24/27/30/33/36/39/42/45 dB. Each sent as its dB value (e.g. 0x00=OFF, 0x03=3dB, 0x06=6dB, ..., 0x45=45dB). The current TOML `[0, 6, 12, 18]` is **WRONG** — must be updated to full range.
+**IC-7610 ATT:** CI-V reference shows 16 discrete values: 0/3/6/9/12/15/18/21/24/27/30/33/36/39/42/45 dB. Each sent as its dB value (e.g. 0x00=OFF, 0x03=3dB, 0x06=6dB, ..., 0x45=45dB).
 **IC-7300 ATT:** Only 0x00=OFF, 0x20=ON (20 dB). Binary toggle.
 **IC-7300 IP+:** Advanced Manual (11a) p.19-4 documents `0x16 0x65` as IP+ on/off.
 
@@ -190,10 +190,10 @@ main_sub_tracking, tx_inhibit, dpd, lcd_backlight
 |-----------|---------|---------|-------|-------|--------|-------------|
 | Protocol | CI-V | CI-V | Yaesu CAT | CI-V | Kenwood CAT | `[protocol]` |
 | CI-V addr | 0x98 | 0x94 | — | 0x70 | — | `[radio] civ_addr` |
-| ATT values | [0,3,...,45] (16) | [0, 20] | [0,1,2,3] | [0, 1] | [0, 1] | `[attenuator]` |
+| ATT values | [0,3,...,45] (16) | [0, 20] | [0, 1] | [0, 1] | [0, 1] | `[attenuator]` |
 | ATT style | stepped | toggle | selector | toggle | toggle | `[controls.attenuator]` |
 | PRE values | [0, 1, 2] | [0, 1, 2] | [0, 1, 2] | [0, 1] | [0, 1] | `[preamp]` |
-| AGC modes | [1, 2, 3] | [1, 2, 3] | — | — | — | `[agc]` |
+| AGC modes | [1, 2, 3] | [1, 2, 3] | [0, 1, 2, 3, 4] | — | — | `[agc]` |
 | NB style | toggle+level | toggle+level | level_is_toggle | — | — | `[controls.nb]` |
 | NR style | toggle+level | toggle+level | level_is_toggle | — | — | `[controls.nr]` |
 | TX antennas | 2 | 1 | 1 | 1 | 1 | `[antenna] tx_count` |

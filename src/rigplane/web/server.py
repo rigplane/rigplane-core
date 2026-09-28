@@ -123,6 +123,7 @@ from .runtime_helpers import (  # noqa: TID251
     radio_ready,
     runtime_capabilities,
     snapshot_field_status_inputs,
+    store_has_radio_observation,
 )
 from .tx_safety_view import build_tx_safety_payload  # noqa: TID251
 from .websocket import (  # noqa: TID251
@@ -165,6 +166,7 @@ class _ClassifyRadioHealthFn(Protocol):
         *,
         server_reachable: bool = True,
         now_monotonic: float | None = None,
+        served_with_silent_link: bool = False,
     ) -> dict[str, Any]: ...
 
 
@@ -985,6 +987,11 @@ class WebServer:
         self.monitor_mute: MonitorMuteState = MonitorMuteState()
         self._health_signature: tuple[object, ...] | None = None
         self._health_since_monotonic: float = time.monotonic()
+        # MOR-2841: set once the startup gate released for a completely
+        # silent link; ``_build_radio_health`` combines it with the gate's
+        # own no-radio-observation predicate on every publish, so the
+        # served-silent verdict clears at the radio's first answer.
+        self._served_with_silent_link: bool = False
         # Audio bridge (virtual device integration)
         self._audio_bridge: "AudioBridge | None" = None
         # AudioSession whose liveness events are forwarded to WS (MOR-581)
@@ -2219,6 +2226,10 @@ class WebServer:
             self._radio,
             server_reachable=True,
             now_monotonic=now,
+            served_with_silent_link=(
+                self._served_with_silent_link
+                and not store_has_radio_observation(self.command_state_store)
+            ),
         )
         signature = (
             health.get("serverReachable"),

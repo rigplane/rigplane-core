@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING, Any, cast
 from ..core.acquisition_scheduler import resolve_available_when
 from ..core.state_acquisition_policy import RadioAcquisitionProfile
 from ..core.state_pipeline_contracts import FieldFamily, FieldScope, FieldPath, VfoSlot
-from ..core.state_store import FieldSnapshot, FreshnessState, StateSnapshot
+from ..core.state_store import (
+    FieldSnapshot,
+    FreshnessState,
+    StateSnapshot,
+    StateStore,
+)
 from ..core.tx_target import TxTarget, tx_target_from_dict, validate_tx_target
 from ..profiles import RadioProfile, resolve_radio_profile
 from ..radio_protocol import (
@@ -29,6 +34,7 @@ __all__ = [
     "runtime_capabilities",
     "radio_ready",
     "classify_radio_health",
+    "store_has_radio_observation",
     "build_public_state_payload",
     "build_public_state_payload_from_snapshot",
     "snapshot_field_status_inputs",
@@ -862,11 +868,28 @@ def _civ_stats(radio: Any) -> dict[str, Any]:
     return stats if isinstance(stats, dict) else {}
 
 
+def store_has_radio_observation(store: "StateStore") -> bool:
+    """Whether *store* holds any field the radio itself produced.
+
+    The startup gate's own "no field observed from the radio" computation
+    (``web/web_startup.py: _link_answers_nothing``, MOR-2841), kept here so
+    the gate and :meth:`WebServer._build_radio_health` share one predicate:
+    a locally reconciled structural fact (``local_reconcile`` source, e.g.
+    the single-receiver topology's ``active`` written at construction) is
+    not a radio answer and does not break the silence.
+    """
+
+    return any(
+        field.source.source != "local_reconcile" for field in store.snapshot().fields
+    )
+
+
 def classify_radio_health(
     radio: "Radio | None",
     *,
     server_reachable: bool = True,
     now_monotonic: float | None = None,
+    served_with_silent_link: bool = False,
 ) -> dict[str, Any]:
     """Classify server/radio health from runtime evidence.
 
@@ -875,7 +898,15 @@ def classify_radio_health(
     ``server_unreachable``. Radio classification is intentionally conservative:
     short CI-V gaps are ``delayed``, longer gaps are ``stalled``, and
     ``radio_powered_off_likely`` requires prior availability plus repeated
-    timeout/recovery evidence.
+    timeout/recovery evidence — or ``served_with_silent_link``: the startup
+    gate released for a completely silent link (MOR-2841) and the store still
+    holds no radio observation. The caller recomputes the observation half
+    from the gate's own predicate on every call, so the verdict clears at the
+    radio's first answer. While it holds, the verdict is ``stalled`` /
+    ``radio_powered_off_likely`` whatever the live link state reports — the
+    stand (2026-09-28) showed the serial watchdog reopening a present-but-
+    silent port back to ``CONNECTED``, which the live-state branches would
+    misreport as ``ready``.
     """
     now = time.monotonic() if now_monotonic is None else now_monotonic
     if not server_reachable:
@@ -912,6 +943,22 @@ def classify_radio_health(
     stats = _civ_stats(radio)
     last_error = getattr(radio, "last_error", None)
     last_error_value = last_error if isinstance(last_error, str) else None
+
+    if served_with_silent_link:
+        # MOR-2841: the startup gate already decided this link answers
+        # nothing, so this precedes the ready branch — the watchdog's
+        # reopen makes the live state (and ``radio_ready``) say
+        # connected/ready again within seconds on a present-but-silent
+        # port. ``radioLink`` keeps reporting the live link; only the
+        # verdict is held until the radio actually answers.
+        return {
+            "serverReachable": True,
+            "radioLink": radio_link,
+            "readiness": "stalled",
+            "likelyCause": "radio_powered_off_likely",
+            "sinceMs": 0,
+            "lastError": last_error_value,
+        }
 
     if ready:
         return {
