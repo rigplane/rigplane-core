@@ -1507,10 +1507,13 @@
     display: none;
   }
 
-  /* ── Spectrum ── */
+  /* ── Spectrum ──
+     MOR-2816: the box grew from 220px to 260px so the one-row scrolling
+     toolbar's own 44-64px band leaves the panorama (spectrum + waterfall)
+     at least 190 CSS px at the 375px portrait width. */
   .m-spectrum {
-    height: 220px;
-    min-height: 180px;
+    height: 260px;
+    min-height: 254px;
     border-bottom: 1px solid var(--v2-border-darker, #222);
   }
 
@@ -1857,12 +1860,18 @@
     min-height: 16px;
   }
 
-  /* The shared spectrum toolbar and its groups pin their own heights;
-     let them grow around the 44px buttons instead of clipping them. */
+  /* The shared spectrum toolbar: ONE row that scrolls horizontally —
+     the 16px/44px floors made a wrapping toolbar 4-5 rows tall and
+     ate the panorama box. The row keeps its own 44-64px band above the
+     fixed-height spectrum area, so the panorama is untouched by it. */
   .m-layout :global(.spectrum-toolbar) {
     height: auto;
     min-height: 44px;
-    flex-wrap: wrap;
+    max-height: 64px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
   }
 
   .m-layout :global(.toolbar-group),
@@ -1871,5 +1880,18 @@
   .m-layout :global(.toolbar-group-d) {
     height: auto;
     min-height: 44px;
+    flex-shrink: 0;
+  }
+
+  .m-layout :global(.toolbar-separator),
+  .m-layout :global(.toolbar-sub-separator) {
+    flex-shrink: 0;
+  }
+
+  /* The FAB's label span (PTT / TX LOCK) is not a button element, so the
+     button font floor above never reached it — it keeps its own 16px
+     floor inside the unchanged 72px FAB. */
+  .m-layout :global(.ptt-fab-label) {
+    font-size: max(16px, 1em) !important;
   }
 </style>
