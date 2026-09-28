@@ -2195,20 +2195,26 @@ async def test_silent_link_serves_even_after_the_reconnect_reopens_the_port(
     await radio.connect()
 
     frame = build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, _CMD_FREQ_GET)
-    for _ in range(radio._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD):
-        with pytest.raises(RigplaneTimeoutError):
-            await radio._send_civ_raw(frame, wait_response=True)
-    assert await _wait_until(
-        lambda: radio.conn_state == RadioConnectionState.RECONNECTING,
-        timeout_s=2.0,
-    )
-    # ...and the reopen: connect call #2 succeeds on the silent port, so
-    # the state machine is back to CONNECTED before the gate ever decides.
-    assert await _wait_until(
-        lambda: link.connect_calls >= 2
-        and radio.conn_state == RadioConnectionState.CONNECTED,
-        timeout_s=2.0,
-    )
+    with caplog.at_level(logging.ERROR, logger="rigplane.backends._icom_serial_base"):
+        for _ in range(radio._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD):
+            with pytest.raises(RigplaneTimeoutError):
+                await radio._send_civ_raw(frame, wait_response=True)
+        # ...and the reopen: connect call #2 succeeds on the silent port, so
+        # the state machine is back to CONNECTED before the gate ever
+        # decides. (The transient RECONNECTING window lasts one watchdog
+        # tick ~5 ms — too short to poll for; the link-down ERROR record
+        # below is its durable witness.)
+        assert await _wait_until(
+            lambda: link.connect_calls >= 2
+            and radio.conn_state == RadioConnectionState.CONNECTED,
+            timeout_s=2.0,
+        )
+    link_down_errors = [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.ERROR and "link-down" in r.getMessage()
+    ]
+    assert len(link_down_errors) == 1
     await radio._stop_civ_data_watchdog()  # freeze the raced instant
 
     # Phase B — the gate decides three failed critical reads in, exactly
