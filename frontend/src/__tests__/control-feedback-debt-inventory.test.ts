@@ -8,7 +8,7 @@ const wrap = (markup: string, script = '') => `<script>${script}</script>${marku
 // file (`scanRepository`). That machine-speed scan exceeded vitest's default
 // 5 s testTimeout on a saturated CI runner (MOR-2809): quick 36360700079
 // reported 7383 ms for this case (6265 ms of scan before the 5 s default
-// fired). Green whole-file runs are 1524–3293 ms across the last quick runs.
+// fired).
 // The budget is a per-test ceiling for machine speed, not a behaviour bound;
 // 30 s leaves ~4× margin over the measured saturated duration.
 const REPO_SCAN_TIMEOUT_MS = 30_000;
