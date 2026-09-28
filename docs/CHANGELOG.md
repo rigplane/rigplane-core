@@ -34,9 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in English, Russian and Japanese instead of playing silence. The
   flag rides the existing `audio_session` event as `rxSilent`, and a
   page that connects after the silence edge still sees it: the current
-  value arrives on the control WebSocket right after `hello`. The USB
-  driver's silence watchdog owns detection; a LAN radio reports false.
-  The first non-zero frame clears the flag.
+  value arrives on the control WebSocket after `hello` and the initial
+  state. The USB driver's silence watchdog owns detection; a LAN radio
+  reports false. The first non-zero frame clears the flag.
 
 - **The phone keeps the scope controls in a SCOPE chip tab
   (MOR-2851).** Nothing is drawn above the panorama any more. The
@@ -60,9 +60,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The S-meter on top is the receiver's own compact meter, following
   the receiver the header shows. Every portrait button has a label of
   at least 16 px and a touch height of at least 44 px; labels wrap
-  rather than clip. The spectrum toolbar stays one horizontally
-  scrolling row, and the panorama keeps at least 190 px at a 375 px
+  rather than clip. The panorama keeps at least 190 px at a 375 px
   width.
+
+- **The package declares `Development Status :: 4 - Beta` instead of
+  `5 - Production/Stable` (MOR-2897).** The classifier on PyPI
+  matches a beta release.
 
 ### Fixed
 
@@ -178,10 +181,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shape (MOR-2733).** With MAIN in a mode that has no DSP filter shape
   — RTTY on the live radio — the radio refuses the filter-shape read
   with a bare negative acknowledgement, and startup waited on that one
-  field until the connection was dropped. Both receivers' filter-shape
-  paths are now startup-optional: the server completes startup without
-  them, keeps polling the field, and takes its value from the radio's
-  answer when one arrives.
+  field indefinitely. Both receivers' filter-shape paths are now
+  startup-optional: the server completes startup without them, keeps
+  polling the field, and takes its value from the radio's answer when
+  one arrives.
 
 - **The legacy DSP panel lights no notch width until one is read, and
   draws none on a radio without one (MOR-2735).** The WIDE / MID / NAR
@@ -229,15 +232,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   startup with a named error (MOR-2757).** Consecutive unanswered
   reads of a safety-critical field are counted, and any answer
   resets the count. On the third unanswered read startup aborts,
-  naming the field and the CAT command the radio never answered. A
-  refused read is still retried once, as before. The rigctld client
-  ends startup after three unanswered critical reads. PTT, frequency
-  and mode reads that time out three times in a row record a declared
-  defect and refuse the startup bind, matching the Yaesu path. A
-  connection drop never counts, so a link loss cannot build the
-  defect, and a successful read resets the tally. A read timeout no
-  longer ends polling for good: the poller reopens the transport
-  before the next cycle. An operator disconnect stays disconnected.
+  naming the field, and for every field but PTT also the CAT command
+  the radio never answered. A refused read is still retried once, as
+  before. The rigctld client ends startup after three unanswered
+  critical reads. PTT, frequency and mode reads that time out three
+  times in a row record a declared defect and refuse the startup bind,
+  matching the Yaesu path. A connection drop never counts, so a link
+  loss cannot build the defect, and a successful read resets the
+  tally. A read timeout no longer ends polling for good: the poller
+  reopens the transport before the next cycle. An operator disconnect
+  stays disconnected.
 
 - **On a single-receiver radio the active receiver reads MAIN from
   startup and survives reconnects (MOR-2784).** The server publishes
@@ -248,9 +252,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   waterfall clicks. Single-receiver radios are the IC-705, IC-7300,
   TX-500, X6100 and X6200.
 
-- **The filter Hz unit follows the locale (MOR-1687).** The filter
-  width and passband value and its announcements no longer hard-code
-  `Hz`. In Russian they read `Гц`; English and Japanese keep `Hz`.
+- **Plain-hertz filter width text follows the locale in the sidebar
+  and phone filter panel (MOR-1687).** It reads `Гц` in Russian and
+  `Hz` in English and Japanese. Kilohertz forms such as `2.4kHz`, and
+  the Standard face's filter surface, still show `Hz`.
 
 - **The station-meter bars honour forced-colors like the S-meter
   (MOR-1250).** Under Windows High Contrast Mode the bars repaint
@@ -290,11 +295,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keyboard mid-hold clears the scheduled timer.
 
 - **On the single composition, an unavailable receiver's select is
-  disabled with its reason (MOR-1342).** The unsliced VFO surface
-  applies the same per-receiver operational disable the cockpit
-  strips derive; the LCD face mounts this composition directly. The
-  select of a receiver that is not available right now is disabled
-  and names the reason; the transmit key stays enabled.
+  disabled with its reason (MOR-1342, MOR-1347).** The unsliced VFO
+  surface applies the same per-receiver operational disable the
+  cockpit strips derive; the LCD face mounts this composition
+  directly. The select of a receiver that is not available right now
+  is disabled and names the reason; the transmit key stays enabled.
 
 - **Fixed-width modes publish the profile's declared width for the
   selected slot (MOR-2503).** In a fixed-width mode the radio
@@ -372,8 +377,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   FORCE_RECEIVE now settles only on an answer that can be attributed
   to it: FB accepts, FA rejects, silence stays uncertain. Uncertain
   and rejected releases keep the release debt and retry. Every release
-  is logged, with a warning when it is not confirmed. The PTT-on path
-  is unchanged.
+  is logged, with a warning when the answer stays uncertain. The PTT-on
+  path is unchanged.
 
 - **A silent serial CI-V link with polls outstanding declares
   link-down and parks TX (MOR-2861).** The watchdog no longer treats a
@@ -404,13 +409,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MOR-2881).** Every HTTP route and WebSocket upgrade runs a Host
   allowlist before any handler: IP literals, simple local labels, and
   names ending in `.localhost`, `.local`, `.home.arpa` or `.internal`.
-  Anything else gets 421. `--allowed-host NAME` (repeatable) on `web`
-  admits more names. A present Origin on the four WebSocket upgrades
-  must be same-origin and pass the Host rule, otherwise 403 before the
-  upgrade; a missing Origin is admitted. The same rule covers POST,
-  PUT, PATCH, DELETE and the state-changing GET `/clearcache`. The
-  diagnose routes' separate Origin check and its loopback skip are
-  gone.
+  Any other present value gets 421; a request without a `Host` header
+  is admitted. `--allowed-host NAME` (repeatable) on `web` admits more
+  names. A present Origin on the four WebSocket upgrades must be
+  same-origin and pass the Host rule, otherwise 403 before the upgrade;
+  a missing Origin is admitted. The same rule covers POST, PUT, PATCH,
+  DELETE and the state-changing GET `/clearcache`. The diagnose routes'
+  separate Origin check and its loopback skip are gone.
 
 ## [3.0.0b9] — 2026-09-27
 

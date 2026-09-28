@@ -23,7 +23,7 @@ authors = [
 ]
 keywords = ["rigplane", "ham-radio", "amateur-radio", "transceiver", "icom", "yaesu", "xiegu", "lab599", "ci-v", "cat", "rigctld", "ic-7610", "ic-7300", "ic-705", "ftx-1"]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Topic :: Communications :: Ham Radio",
