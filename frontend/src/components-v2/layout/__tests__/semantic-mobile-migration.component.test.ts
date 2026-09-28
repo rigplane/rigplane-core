@@ -196,7 +196,11 @@ import { hasTx, getScopeSource, getCapabilities, hasDualReceiver } from '$lib/st
 import { radio } from '$lib/stores/radio.svelte';
 import { deriveModInputTxGuardProps } from '$lib/runtime/adapters/mod-input-tx-guard.svelte';
 import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
-import { topologyFixtures } from '../../../semantic/fixtures/topologies';
+import {
+  topologyFixtures, withTxAux, withMeters, withRxAudio, withModeFilter,
+  withFilterPassband, withDsp, withRfFrontEnd, withBand, withRitXit,
+  withAntenna, withCwKeyer, withScan, withScopeControls, withScopeDisplay,
+} from '../../../semantic/fixtures/topologies';
 
 const RX: ManagedTxState = Object.freeze({
   phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
@@ -410,42 +414,84 @@ describe('MOR-2662 — the phone shows only the active VFO', () => {
 //     same view model — and the in-card seat is gone.
 // ---------------------------------------------------------------------------
 describe('MOR-2816 — the phone deck mounts only its declared zone', () => {
-  // The optional surfaces the bare single-composition path used to render
-  // below the deck on a fully-populated view model. Each landmark must be
-  // GONE; the two required surfaces must still render.
+  // The optional surfaces the bare single-composition path renders below
+  // the deck on a fully-populated view model. Each landmark must be GONE;
+  // the two required surfaces must still render.
   const OPTIONAL_SURFACE_LANDMARKS = [
-    'rx-audio-surface', 'mode-surface', 'filter-surface', 'dsp-surface',
+    'rx-audio-surface', 'filter-surface', 'dsp-surface',
     'rf-front-end-surface', 'band-surface', 'antenna-surface',
     'ritxit-scan-surface', 'cw-keyer-surface', 'tx-aux-surface', 'meters-surface',
-    'scope-display-surface', 'scope-controls-surface', 'memory-surface',
+    'scope-display-surface', 'scope-controls-surface',
   ] as const;
+
+  // The base topology fixtures carry NO optional groups, so the base mock
+  // would make every landmark assertion below pass vacuously. Compose every
+  // optional group onto `1/single` — the radio the owner measured on
+  // 2026-09-27 had every one of these surfaces rendering bare.
+  const fullyLoadedView = withScopeDisplay(withScopeControls(withScan(
+    withCwKeyer(withAntenna(withRitXit(withBand(withRfFrontEnd(
+      withDsp(withFilterPassband(withModeFilter(
+        withRxAudio(withMeters(withTxAux(topologyFixtures['1/single'])))))))))))));
 
   // Kills: any optional surface regressing onto the phone's bare path —
   // the unstyled control block the owner measured on 2026-09-27.
   it('renders no optional surface below the deck; VFO and RX/TX still render', () => {
-    const t = mountMobile();
-    for (const landmark of OPTIONAL_SURFACE_LANDMARKS) {
-      expect(t.querySelectorAll(`[data-testid="${landmark}"]`), landmark).toHaveLength(0);
+    const restore = vi.mocked(toRadioViewModel).getMockImplementation();
+    vi.mocked(toRadioViewModel).mockReturnValue(fullyLoadedView);
+    try {
+      const t = mountMobile();
+      for (const landmark of OPTIONAL_SURFACE_LANDMARKS) {
+        expect(t.querySelectorAll(`[data-testid="${landmark}"]`), landmark).toHaveLength(0);
+      }
+      expect(t.querySelectorAll('[data-testid="vfo-surface"]')).toHaveLength(1);
+      expect(t.querySelectorAll('[data-testid="rx-tx-surface"]')).toHaveLength(1);
+    } finally {
+      vi.mocked(toRadioViewModel).mockImplementation(restore ?? (() => topologyFixtures['1/single']));
     }
-    expect(t.querySelectorAll('[data-testid="vfo-surface"]')).toHaveLength(1);
-    expect(t.querySelectorAll('[data-testid="rx-tx-surface"]')).toHaveLength(1);
   });
 
   // Kills: a second meter implementation, or the hoisted bar keeping a twin
   // in the VFO card's receiver-indicator block. The bar under the header is
   // the SAME receiver meter the card carried — same view model, one mount —
-  // and the card's in-card seat is withheld.
+  // and the card's in-card seat is withheld. The view carries the
+  // receiver-indicator group so the in-card seat WOULD render without the
+  // withholding option (no vacuous pass).
   it('hoists the receiver S-meter to the bar under the header, leaving no in-card meter', () => {
-    const t = mountMobile();
-    const bar = t.querySelector('.m-smeter-bar');
-    expect(bar).not.toBeNull();
-    // The bar sits inside the one semantic mount, before the scroll deck.
-    expect(bar!.closest('[data-testid="semantic-radio-surfaces"]')).not.toBeNull();
-    const content = t.querySelector('.m-content')!;
-    expect(bar!.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // The in-card seat the VFO surface's MAIN block used to carry is gone.
-    expect(t.querySelectorAll('[data-testid="receiver-s-meter"]')).toHaveLength(0);
-    expect(t.querySelectorAll('[data-testid="receiver-s-meter-unknown"]')).toHaveLength(0);
+    const indicatorField = <T>(value: T) => ({
+      reading: { status: 'known' as const, value },
+      availability: { structural: true, operational: true },
+    });
+    const cardMeterView = {
+      ...topologyFixtures['1/single'],
+      receiverIndicators: [{
+        receiver: 'MAIN' as const,
+        availability: { structural: true, operational: true },
+        sMeter: {
+          ...indicatorField(0),
+          source: {
+            providerGeneration: 1, scope: 'receiver' as const, receiver: 'MAIN' as const,
+            path: 'main.sMeter',
+          },
+        },
+        bandwidthHz: indicatorField(2400),
+      }],
+    };
+    const restore = vi.mocked(toRadioViewModel).getMockImplementation();
+    vi.mocked(toRadioViewModel).mockReturnValue(cardMeterView);
+    try {
+      const t = mountMobile();
+      const bar = t.querySelector('.m-smeter-bar');
+      expect(bar).not.toBeNull();
+      // The bar sits inside the one semantic mount, before the scroll deck.
+      expect(bar!.closest('[data-testid="semantic-radio-surfaces"]')).not.toBeNull();
+      const content = t.querySelector('.m-content')!;
+      expect(bar!.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      // The in-card seat the VFO surface's MAIN block used to carry is gone.
+      expect(t.querySelectorAll('[data-testid="receiver-s-meter"]')).toHaveLength(0);
+      expect(t.querySelectorAll('[data-testid="receiver-s-meter-unknown"]')).toHaveLength(0);
+    } finally {
+      vi.mocked(toRadioViewModel).mockImplementation(restore ?? (() => topologyFixtures['1/single']));
+    }
     // The presentation option reaches the shared wiring — an option, never
     // a fork: the shell passes `vfoMeter="external"` the way it passes
     // `vfoTiles="active"`, and the hoisted bar keeps the card meter's own
