@@ -132,6 +132,20 @@ async def _wait_until(predicate, *, timeout_s: float = 1.0) -> bool:  # type: ig
     return bool(predicate())
 
 
+async def _silence_clock_reset_gap(radio) -> None:  # type: ignore[no-untyped-def]
+    """Quiet gap between timed-out commands (MOR-2861 silence path).
+
+    The silence clock survives the tick that consumes a command-timeout
+    delta (a timeout is itself silence evidence), so back-to-back timed-out
+    commands would let it run continuously across their windows and declare
+    at 2 x answer window + one tick — before the consecutive-timeout
+    threshold the MOR-1440 tests pin. Sleeping past two watchdog ticks
+    lets one tick see nothing outstanding and clear the clock, keeping each
+    command's accrued silence below the limit.
+    """
+    await asyncio.sleep(radio._SERIAL_WATCHDOG_INTERVAL_S * 3)
+
+
 class _FakeSerialCivLink:
     def __init__(
         self,
@@ -656,10 +670,12 @@ async def test_serial_link_down_detected_when_healthy_flag_stays_stuck_true(
             await radio._send_civ_raw(frame, wait_response=True)
         assert link.healthy is True
         assert radio.conn_state == RadioConnectionState.CONNECTED
+        await _silence_clock_reset_gap(radio)
 
         for _ in range(radio._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD - 1):
             with pytest.raises(RigplaneTimeoutError):
                 await radio._send_civ_raw(frame, wait_response=True)
+            await _silence_clock_reset_gap(radio)
 
         assert await _wait_until(
             lambda: radio.conn_state == RadioConnectionState.RECONNECTING,
@@ -697,6 +713,7 @@ async def test_serial_link_down_propagates_to_web_radio_health() -> None:
     for _ in range(radio._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD):
         with pytest.raises(RigplaneTimeoutError):
             await radio._send_civ_raw(frame, wait_response=True)
+        await _silence_clock_reset_gap(radio)
     assert await _wait_until(
         lambda: radio.conn_state == RadioConnectionState.RECONNECTING, timeout_s=2.0
     )
@@ -729,6 +746,7 @@ async def test_serial_link_down_stops_audio_capture() -> None:
     for _ in range(radio._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD):
         with pytest.raises(RigplaneTimeoutError):
             await radio._send_civ_raw(frame, wait_response=True)
+        await _silence_clock_reset_gap(radio)
     assert await _wait_until(
         lambda: radio.conn_state == RadioConnectionState.RECONNECTING, timeout_s=2.0
     )
@@ -1048,6 +1066,7 @@ async def test_serial_link_down_while_ptt_active_parks_managed_tx_safely() -> No
     for _ in range(radio._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD):
         with pytest.raises(RigplaneTimeoutError):
             await radio._send_civ_raw(frame, wait_response=True)
+        await _silence_clock_reset_gap(radio)
     assert await _wait_until(
         lambda: radio.conn_state == RadioConnectionState.RECONNECTING, timeout_s=2.0
     )
@@ -1258,6 +1277,7 @@ async def test_serial_link_down_settles_after_successful_reconnect_same_node(
         for _ in range(threshold):
             with pytest.raises(RigplaneTimeoutError):
                 await radio._send_civ_raw(frame, wait_response=True)
+            await _silence_clock_reset_gap(radio)
 
         assert await _wait_until(
             lambda: radio.conn_state == RadioConnectionState.RECONNECTING,
