@@ -2206,3 +2206,84 @@ class TestRemainingPortPreflight:
         captured = capsys.readouterr()
         assert str(occupied_rigctld_port) in captured.err
         assert "lsof" in captured.err.lower()
+
+
+class TestListenFlag:
+    """MOR-2954: --listen is the listen address on web/serve/station.
+
+    The subcommand --host stays as a deprecated alias; the global --host
+    (the radio's address) is untouched.
+    """
+
+    @pytest.mark.parametrize(
+        ("command", "dest"),
+        [("web", "web_host"), ("serve", "serve_host"), ("station", "web_host")],
+    )
+    def test_listen_sets_listen_address(self, command, dest):
+        p = _build_parser()
+        with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+            args = p.parse_args([command, "--listen", "127.0.0.1"])
+        assert getattr(args, dest) == "127.0.0.1"
+        assert mock_stderr.getvalue() == ""
+
+    @pytest.mark.parametrize(
+        ("command", "dest"),
+        [("web", "web_host"), ("serve", "serve_host"), ("station", "web_host")],
+    )
+    def test_legacy_host_sets_listen_address_and_warns(self, command, dest):
+        p = _build_parser()
+        with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+            args = p.parse_args([command, "--host", "127.0.0.1"])
+        assert getattr(args, dest) == "127.0.0.1"
+        err = mock_stderr.getvalue()
+        assert "--listen" in err
+        assert "deprecat" in err.lower()
+        assert len(err.strip().splitlines()) == 1
+
+    @pytest.mark.parametrize(
+        ("command", "default"),
+        [("web", "0.0.0.0"), ("serve", "0.0.0.0"), ("station", "127.0.0.1")],
+    )
+    def test_global_host_sets_radio_address_without_warning(self, command, default):
+        p = _build_parser()
+        with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+            args = p.parse_args(["--host", "192.168.1.50", command])
+        assert args.host == "192.168.1.50"
+        dest = "serve_host" if command == "serve" else "web_host"
+        assert getattr(args, dest) == default
+        assert mock_stderr.getvalue() == ""
+
+    @pytest.mark.parametrize(
+        ("command", "dest"),
+        [("web", "web_host"), ("serve", "serve_host"), ("station", "web_host")],
+    )
+    @pytest.mark.parametrize(
+        "argv_tail",
+        [
+            ["--listen", "127.0.0.1", "--host", "0.0.0.0"],
+            ["--host", "0.0.0.0", "--listen", "127.0.0.1"],
+        ],
+    )
+    def test_listen_wins_when_both_given(self, command, dest, argv_tail):
+        p = _build_parser()
+        with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+            args = p.parse_args([command, *argv_tail])
+        assert getattr(args, dest) == "127.0.0.1"
+        err = mock_stderr.getvalue()
+        assert "--listen" in err
+        assert "wins" in err
+
+    @pytest.mark.parametrize("command", ["web", "serve", "station"])
+    def test_help_shows_listen_and_deprecated_host(self, command, capsys):
+        p = _build_parser()
+        with pytest.raises(SystemExit) as exc_info:
+            p.parse_args([command, "--help"])
+        assert exc_info.value.code == 0
+        out = capsys.readouterr().out
+        assert "--listen" in out
+        host_line = next(
+            line
+            for line in out.splitlines()
+            if line.strip().startswith("--host ") or line.strip().startswith("--host\t")
+        )
+        assert "deprecat" in host_line.lower()
