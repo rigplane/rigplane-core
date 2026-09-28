@@ -2141,8 +2141,13 @@ async def test_silent_link_serves_instead_of_failing_startup(
     ]
     assert len(warnings) == 1
     assert "no field observed" in warnings[0].getMessage()
-    # The store stayed empty: nothing fabricated a reading.
-    assert server.command_state_store.snapshot().fields == ()
+    # Nothing fabricated a reading: every store field is a locally
+    # reconciled structural fact, not a radio observation (the
+    # single-receiver topology's `active` lands at construction).
+    assert all(
+        field.source.source == "local_reconcile"
+        for field in server.command_state_store.snapshot().fields
+    )
 
 
 @pytest.mark.asyncio

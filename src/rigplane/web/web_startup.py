@@ -217,17 +217,23 @@ def _radio_link_down(server: WebServer) -> bool:
 
 
 def _link_answers_nothing(server: WebServer) -> bool:
-    """Whether the link is completely silent: no field ever observed, link down.
+    """Whether the link is completely silent: no radio observation, link down.
 
     MOR-2841 (owner decision, 2026-09-28 09:00 EDT, option (a)): a radio
     that answers NOTHING is the powered-off rig, not a half-working one —
-    zero observed store fields plus the backend's link-down detector is
-    the evidence pair that separates it from a radio that answers some
+    zero observations from the radio plus the backend's link-down detector
+    is the evidence pair that separates it from a radio that answers some
     reads but leaves one safety-critical path unanswered (which still
-    fails startup through MOR-2749's named defect).
+    fails startup through MOR-2749's named defect). Locally reconciled
+    structural facts (``local_reconcile`` sources, e.g. the single-receiver
+    topology's ``active``) are not radio answers and do not break the
+    silence — ``_publish_single_receiver_topology`` writes one at
+    ``WebServer`` construction, before the radio is ever asked anything.
     """
 
-    return not server.command_state_store.snapshot().fields and _radio_link_down(server)
+    fields = server.command_state_store.snapshot().fields
+    radio_observed = any(field.source.source != "local_reconcile" for field in fields)
+    return not radio_observed and _radio_link_down(server)
 
 
 def _serve_with_silent_link() -> None:
