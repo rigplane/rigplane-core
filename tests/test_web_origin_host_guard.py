@@ -307,7 +307,9 @@ async def test_http_refused_host_checked_before_route_semantics() -> None:
     """Even an unknown path gets 421 (not 404) when the Host is foreign."""
     srv = _make_srv()
     writer = _MemoryWriter()
-    await srv._handle_http(writer, "GET", "/api/v1/nonexistent", {"host": "evil.example"})
+    await srv._handle_http(
+        writer, "GET", "/api/v1/nonexistent", {"host": "evil.example"}
+    )
     assert bytes(writer.buffer).startswith(b"HTTP/1.1 421 ")
 
 

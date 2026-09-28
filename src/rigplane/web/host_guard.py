@@ -50,9 +50,9 @@ MISDIRECTED_BODY = json.dumps(
 ).encode("ascii")
 
 #: Body every refused (403) WebSocket upgrade answers with.
-ORIGIN_FORBIDDEN_BODY = json.dumps(
-    {"error": "forbidden: origin not allowed"}
-).encode("ascii")
+ORIGIN_FORBIDDEN_BODY = json.dumps({"error": "forbidden: origin not allowed"}).encode(
+    "ascii"
+)
 
 
 def _normalized_extra_hosts(extra_hosts: Collection[str]) -> frozenset[str]:
@@ -146,9 +146,7 @@ def origin_matches_host(
     if not request_host:
         return False
     lowered = origin.lower()
-    return any(
-        lowered == f"{scheme}://{request_host}".lower() for scheme in schemes
-    )
+    return any(lowered == f"{scheme}://{request_host}".lower() for scheme in schemes)
 
 
 def websocket_origin_allowed(
