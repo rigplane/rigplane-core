@@ -544,9 +544,73 @@ async def test_managed_actuator_uses_canonical_rigctld_outcomes(
                 else ActuationResult.UNCERTAIN
             )
             assert result.result is expected
-            assert server.commands_seen == [command]
+            # MOR-2862: a confirmed FORCE_RECEIVE also reads ``t`` back.
+            expected_commands = (
+                ["T 0", "t"]
+                if operation is ActuationOperation.FORCE_RECEIVE
+                and reply == b"RPRT 0\n"
+                else [command]
+            )
+            assert server.commands_seen == expected_commands
         finally:
             await transport.close()
+
+
+async def _actuate_force_receive(
+    server: FakeRigctldServer,
+    *,
+    timeout: float = 5.0,
+) -> ActuationResult:
+    transport = RigctldTransport(host=server.host, port=server.port, timeout=timeout)
+    radio = RigctldClientRadio(host=server.host, transport=transport)
+    await transport.connect()
+    try:
+        return await radio.actuate(
+            EffectToken(7, 3, "unkey"),
+            ActuationOperation.FORCE_RECEIVE,
+            is_current=lambda: True,
+        )
+    finally:
+        await transport.close()
+
+
+async def test_force_receive_confirms_the_unkey_with_a_ptt_readback() -> None:
+    """MOR-2862: the same actuation reads ``t`` back after ``T 0``; only a
+    read that says receive confirms the release."""
+    state = fake_rigctld.FakeRigctldState(ptt=1)
+    async with FakeRigctldServer(state=state) as server:
+        result = await _actuate_force_receive(server)
+
+    assert result is ActuationResult.ACCEPTED
+    assert server.commands_seen == ["T 0", "t"]
+    assert state.ptt == 0
+
+
+async def test_force_receive_readback_saying_tx_is_uncertain() -> None:
+    behavior = FakeRigctldBehavior(malformed_responses={"t": b"1\n"})
+    async with FakeRigctldServer(behavior=behavior) as server:
+        result = await _actuate_force_receive(server)
+
+    assert result is ActuationResult.UNCERTAIN
+    assert server.commands_seen == ["T 0", "t"]
+
+
+async def test_force_receive_readback_timeout_is_uncertain() -> None:
+    behavior = FakeRigctldBehavior(command_delays={"t": 5})
+    async with FakeRigctldServer(behavior=behavior) as server:
+        result = await _actuate_force_receive(server, timeout=0.2)
+
+    assert result is ActuationResult.UNCERTAIN
+    assert server.commands_seen == ["T 0", "t"]
+
+
+async def test_force_receive_malformed_readback_is_uncertain() -> None:
+    behavior = FakeRigctldBehavior(malformed_responses={"t": b"zig\n"})
+    async with FakeRigctldServer(behavior=behavior) as server:
+        result = await _actuate_force_receive(server)
+
+    assert result is ActuationResult.UNCERTAIN
+    assert server.commands_seen == ["T 0", "t"]
 
 
 async def test_controlled_authority_replacement_keeps_debt_after_late_on_rprt(
