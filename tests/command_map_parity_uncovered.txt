@@ -34,7 +34,7 @@ census	frames_identical	0
 census	hardcode_only_builders	0
 census	profile_builder_map_gaps	0
 census	profiles	8
-census	public_builders	241
+census	public_builders	244
 census	sites_compared	0
 cat-only	FTX-1	128
 requires-map	antenna.py:get_antenna_1
@@ -191,6 +191,9 @@ requires-map	mode.py:set_filter_width
 requires-map	mode.py:set_main_sub_tracking
 requires-map	mode.py:set_mode
 requires-map	mode.py:set_ssb_tx_bandwidth
+requires-map	power.py:get_max_tx_power_battery
+requires-map	power.py:get_max_tx_power_external
+requires-map	power.py:get_power_source
 requires-map	power.py:get_powerstat
 requires-map	power.py:power_off
 requires-map	power.py:power_on

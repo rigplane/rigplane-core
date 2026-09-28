@@ -8,9 +8,9 @@
 # require review. Not manual completeness or execution evidence.
 # Regenerate, do not hand-edit.
 census	civ_profiles	6
-census	distinct_gap_keys	145
-census	profile_key_gaps	327
-census	public_builders	241
+census	distinct_gap_keys	148
+census	profile_key_gaps	342
+census	public_builders	244
 gap	get_acc1_mod_level	X6100,X6200
 gap	get_af_mute	IC-7300,X6100,X6200
 gap	get_agc_time_constant	X6100,X6200
@@ -40,6 +40,8 @@ gap	get_lan_mod_level	IC-7300,X6100,X6200
 gap	get_main_sub_band	IC-7300,X6100,X6200
 gap	get_main_sub_tracking	IC-7300,X6100,X6200
 gap	get_manual_notch_width	X6100,X6200
+gap	get_max_tx_power_battery	IC-7300,IC-7610,IC-9700,X6100,X6200
+gap	get_max_tx_power_external	IC-7300,IC-7610,IC-9700,X6100,X6200
 gap	get_memory_mode	IC-705,IC-7300,IC-7610,IC-9700
 gap	get_monitor	X6100,X6200
 gap	get_nb_depth	X6100,X6200
@@ -48,6 +50,7 @@ gap	get_notch_filter	X6100,X6200
 gap	get_overflow_status	X6100,X6200
 gap	get_pbt_inner	X6100,X6200
 gap	get_pbt_outer	X6100,X6200
+gap	get_power_source	IC-7300,IC-7610,IC-9700,X6100,X6200
 gap	get_powerstat	IC-705,IC-7300,IC-7610,X6100,X6200
 gap	get_quick_dual_watch	IC-7300,X6100,X6200
 gap	get_quick_split	X6100,X6200
