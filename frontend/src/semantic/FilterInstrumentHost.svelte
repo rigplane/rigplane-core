@@ -2,6 +2,7 @@
   import { onDestroy, type Snippet } from 'svelte';
   import { HardwareButton } from '$lib/Button';
   import { t } from '$lib/i18n';
+  import { getShortcutHint, joinShortcutHints } from '../components-v2/layout/shortcut-hints';
   import { bindChoiceInstrument, usable } from '../primitives/control-instruments/control-instrument-behavior';
   import ControlInstrumentRendererHost from '../primitives/control-instruments/ControlInstrumentRendererHost.svelte';
   import {
@@ -70,6 +71,17 @@
     field: modeFilter?.currentMode, choices: modeFilter?.modeChoices ?? [],
     invoke: (value) => onModeChange?.(value),
   }));
+  // Same hint hosts ModePanel/FilterPanel expose (MOR-2793): the Standard
+  // face suppresses those panels, so the instrument buttons carry the
+  // `data-shortcut-hint` the KeyboardHandler CSS keys on.
+  function modeShortcut(mode: string): string | null {
+    return getShortcutHint('mode_select', (binding) => binding.params?.mode === mode);
+  }
+  const dataShortcut = (): string | null => getShortcutHint('cycle_data_mode');
+  const cycleFilterShortcut = (): string | null => joinShortcutHints(
+    getShortcutHint('cycle_filter'),
+    getShortcutHint('cycle_filter', (binding) => Number(binding.params?.step ?? 0) === -1),
+  );
   const filterBehavior = bindChoiceInstrument(() => ({
     field: modeFilter?.currentFilter,
     choices: (modeFilter?.filterChoices ?? []).map((_choice, index) => index + 1),
@@ -127,6 +139,7 @@
       <div class="filter-choice-group" data-testid="filter-mode" data-disabled-reason={reason(modeFilter.currentMode)}>
         {#each modeFilter.modeChoices as choice (choice)}<button type="button" class="filter-choice"
           data-testid={`filter-mode-${choice}`} aria-pressed={modeBehavior.available && modeBehavior.isSelected(choice)}
+          data-shortcut-hint={modeShortcut(choice) ?? undefined} title={modeShortcut(choice) ?? undefined}
           disabled={!modeBehavior.available} onclick={() => modeBehavior.invoke(choice)}>{choice}</button>{/each}
       </div>
     {/if}
@@ -139,6 +152,7 @@
         data-filter-status={pendingFilter !== null ? 'pending' : 'confirmed'} aria-describedby={pendingFilter !== null ? pendingId : undefined}>
         {#each modeFilter.filterChoices as choice, index (choice)}<button type="button" class="filter-choice"
           data-testid={`filter-select-${index + 1}`} aria-pressed={filterBehavior.available && filterBehavior.isSelected(index + 1)}
+          data-shortcut-hint={cycleFilterShortcut() ?? undefined} title={cycleFilterShortcut() ?? undefined}
           data-pending={pendingFilter === index + 1} disabled={!filterBehavior.available}
           onclick={() => filterBehavior.invoke(index + 1)}>{choice}</button>{/each}
         {#if pendingFilter !== null}<span id={pendingId} class="sr-only">{t('core.filter.select.pendingAnnouncement')}</span>{/if}
@@ -176,6 +190,7 @@
         {#if filterPassband.dataModeChoices.length > 1}
           {#each filterPassband.dataModeChoices as choice (choice.value)}<button type="button" class="filter-choice"
             data-testid={`filter-data-mode-${choice.value}`} aria-pressed={dataBehavior.available && dataBehavior.isSelected(choice.value)}
+            data-shortcut-hint={dataShortcut() ?? undefined} title={dataShortcut() ?? undefined}
             data-pending={pendingDataMode === choice.value} disabled={!dataBehavior.available}
             onclick={() => dataBehavior.invoke(choice.value)}>{choice.label ?? (choice.value === 0 ? 'OFF' : `D${choice.value}`)}</button>{/each}
         {/if}
@@ -197,6 +212,8 @@
             <HardwareButton
               active={modeBehavior.available && modeBehavior.isSelected(choice)}
               disabled={!modeBehavior.available} indicator="edge-left" color="cyan"
+              title={modeShortcut(choice)}
+              shortcutHint={modeShortcut(choice)}
               onclick={() => modeBehavior.invoke(choice)}
             >{choice}</HardwareButton>
           </span>
@@ -222,6 +239,8 @@
               <HardwareButton
                 active={dataBehavior.available && dataBehavior.isSelected(choice.value)}
                 disabled={!dataBehavior.available} indicator="edge-left" color="cyan"
+                title={dataShortcut()}
+                shortcutHint={dataShortcut()}
                 armed={isPending} describedBy={isPending ? pendingDataModeId : undefined}
                 onclick={() => dataBehavior.invoke(choice.value)}
               >{choice.label ?? (choice.value === 0 ? 'OFF' : `D${choice.value}`)}</HardwareButton>

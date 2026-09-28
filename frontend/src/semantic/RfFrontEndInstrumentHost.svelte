@@ -29,6 +29,7 @@
   import DualParamRenderer from '../components-v2/controls/value-control/DualParamRenderer.svelte';
   import { ValueControl } from '../components-v2/controls/value-control';
   import AttenuatorControl from '../components-v2/controls/AttenuatorControl.svelte';
+  import { getShortcutHint } from '../components-v2/layout/shortcut-hints';
   import type {
     DualParamIssuedStatusPresentation,
     DualParamIssuedStatusSnapshot,
@@ -417,6 +418,10 @@
   const attenuatorChoices = (): readonly number[] => rf?.attValues ?? [];
   const preampChoiceText = (value: number): string => value === 0 ? 'OFF' : `P${value}`;
   const attenuatorChoiceText = (value: number): string => value === 0 ? 'OFF' : `${value} dB`;
+  // Same hint hosts RfFrontEnd exposes (MOR-2793).
+  const rfGainShortcut = (): string | null => getShortcutHint('adjust_rf_gain');
+  const attShortcut = (): string | null => getShortcutHint('cycle_att');
+  const preShortcut = (): string | null => getShortcutHint('cycle_preamp');
   const preampBehavior = bindChoiceInstrument<number>(() => ({
     field: rf?.preamp, choices: preampChoices(), blocked: preMutex !== null,
     invoke: (level) => onPreChange?.(level),
@@ -573,6 +578,8 @@
             variant={hardware ? 'hardware-illuminated' : 'modern'}
             accentColor={hardware ? 'var(--v2-accent-cyan-alt)' : 'var(--v2-accent-cyan)'}
             displayFn={(value) => valueText(value, (v) => rawToPercent(field, v))} issuedStatusPresentation={scalarIssuedStatuses[field]}
+            shortcutHint={field === 'rfGain' ? rfGainShortcut() : undefined}
+            title={field === 'rfGain' ? rfGainShortcut() ?? undefined : undefined}
           />
         {/key}
       </div>
@@ -596,6 +603,7 @@
       <div
         class="rf-front-end-row" role="radiogroup" aria-label="Preamp"
         data-testid="rf-front-end-preamp"
+        data-shortcut-hint={preShortcut() ?? undefined} title={preShortcut() ?? undefined}
         data-observed={usable(rf.preamp)}
         data-disabled-reason={preampDisabledReason()?.code}
         data-preamp-status={pendingPreamp !== null ? 'pending' : 'confirmed'}
@@ -610,6 +618,7 @@
             <button
               type="button" role="radio" class="rf-front-end-choice"
               data-testid={`rf-front-end-preamp-${value}`}
+              data-shortcut-hint={preShortcut() ?? undefined}
               aria-checked={preampBehavior.isSelected(value)}
               data-pending={pendingPreamp === value}
               disabled={!preampBehavior.available}
@@ -653,6 +662,7 @@
         class="rf-front-end-row" role={compact ? undefined : 'radiogroup'} aria-label="Attenuator"
         data-testid="rf-front-end-attenuator"
         data-observed={usable(rf.attenuator)}
+        data-shortcut-hint={attShortcut() ?? undefined} title={attShortcut() ?? undefined}
         data-disabled-reason={attenuatorDisabledReason()?.code}
         aria-describedby={attenuatorDisabledReason() === undefined ? undefined : attenuatorMutexId}
       >
@@ -665,6 +675,8 @@
               onchange={(value) => attenuatorBehavior.invoke(value)}
               testIdPrefix="rf-front-end-attenuator"
               ariaLabel="Attenuator"
+              shortcutHint={attShortcut()}
+              title={attShortcut()}
             />
           </fieldset>
         {:else}
@@ -673,6 +685,7 @@
               <button
                 type="button" role="radio" class="rf-front-end-choice"
                 data-testid={`rf-front-end-attenuator-${value}`}
+                data-shortcut-hint={attShortcut() ?? undefined}
                 aria-checked={attenuatorBehavior.isSelected(value)}
                 disabled={!attenuatorBehavior.available || attenuatorDisabledReason() !== undefined}
                 onclick={() => attenuatorBehavior.invoke(value)}

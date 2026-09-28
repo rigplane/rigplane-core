@@ -16,6 +16,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { bindActionInstrument, bindToggleInstrument } from '../primitives/control-instruments/control-instrument-behavior';
+  import { getShortcutHint } from '../components-v2/layout/shortcut-hints';
   import ControlInstrumentRendererHost from '../primitives/control-instruments/ControlInstrumentRendererHost.svelte';
   import {
     createActionRendererSeat, createToggleRendererSeat,
@@ -54,6 +55,10 @@
     availability: ritXit ? groupAvailability : undefined,
     blocked: !activeKnown, invoke: () => onClear?.(),
   }));
+  // Same hint hosts RitXitPanel exposes (MOR-2793).
+  const ritShortcut = (): string | null => getShortcutHint('toggle_rit');
+  const xitShortcut = (): string | null => getShortcutHint('toggle_xit');
+  const clearShortcut = (): string | null => getShortcutHint('clear_rit_xit');
 
   const ritSeat = createToggleRendererSeat(() => ({
     context: rendererContext ?? null, field: ritXit?.ritActive, blocked: !activeKnown,
@@ -84,6 +89,8 @@
     {:else}
       <button type="button" data-testid={`ritxit-${kind}-toggle`}
         aria-pressed={behavior.confirmed} disabled={!behavior.available}
+        data-shortcut-hint={(kind === 'rit' ? ritShortcut() : xitShortcut()) ?? undefined}
+        title={(kind === 'rit' ? ritShortcut() : xitShortcut()) ?? undefined}
         onclick={() => behavior.invoke()}>{label}</button>
     {/if}
   {/if}
@@ -98,6 +105,7 @@
       />{/key}{/key}
     {:else}
       <button type="button" data-testid="ritxit-clear" disabled={!clearAction.available}
+        data-shortcut-hint={clearShortcut() ?? undefined} title={clearShortcut() ?? undefined}
         onclick={() => clearAction.invoke()}>CLEAR</button>
     {/if}
   {/if}

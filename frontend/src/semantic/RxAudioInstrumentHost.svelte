@@ -4,6 +4,7 @@
   import { LAN_MOD_INPUT_SOURCE } from '$lib/radio/mod-input';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
   import { ValueControl } from '../components-v2/controls/value-control';
+  import { getShortcutHint } from '../components-v2/layout/shortcut-hints';
   import {
     bindAbsoluteChoiceInstrument, bindActionInstrument, bindChoiceInstrument, usable,
   } from '../primitives/control-instruments/control-instrument-behavior';
@@ -455,6 +456,8 @@
 </script>
 
 {#snippet afLevelControl(hardware: boolean, receiver?: AfReceiverKey)}
+  <!-- Same AF hint host RxAudioPanel exposes (MOR-2793). -->
+  {@const afShortcut = getShortcutHint('adjust_af_level')}
   <ValueControl
     {...feedbackIntegratedControl}
     binding={receiver === undefined ? afLevelBinding : receiverAfBindings[receiver]}
@@ -462,6 +465,8 @@
     showLabel={false} showValue={false} compact={true}
     variant={hardware ? 'hardware-illuminated' : 'modern'}
     accentColor={hardware ? 'var(--v2-accent-cyan-alt)' : 'var(--v2-accent-cyan)'}
+    shortcutHint={afShortcut}
+    title={afShortcut ?? undefined}
   />
 {/snippet}
 {#snippet afLevel()}{@render afLevelControl(false)}{/snippet}

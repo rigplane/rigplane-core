@@ -196,7 +196,12 @@
       return;
     }
 
-    if (event.key === 'Alt' && keyboardConfig.altHints) {
+    // Hints only for Alt/Option ALONE: a modifier already held when Alt goes
+    // down (Shift-first then Option, Ctrl+Alt, Meta+Alt) is a chord, not a
+    // hint hold. Auto-repeat of a suppressed hold is covered by
+    // `altHoldBlocked` below.
+    if (event.key === 'Alt' && keyboardConfig.altHints
+      && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
       if (!altHoldBlocked && altHintTimer === null && document.body.dataset.shortcutHints !== 'true') {
         altHintTimer = setTimeout(() => {
           altHintTimer = null;
@@ -242,6 +247,12 @@
   function handleVisibilityChange(): void {
     if (document.visibilityState === 'hidden') clearAltHold();
   }
+
+  // MOR-2793: disabling mid-hold must cancel the scheduled hint timer, not
+  // leave it armed to paint hints over a disabled keyboard surface.
+  $effect(() => {
+    if (!enabled) clearAltHold();
+  });
 
   onDestroy(() => {
     clearLeaderState();

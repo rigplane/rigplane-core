@@ -14,7 +14,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { proxy } from 'svelte/internal/client';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 import type { Capabilities, KeyboardConfig } from '$lib/types/capabilities';
-import { topologyFixtures, withFilterPassband, withModeFilter, withRitXit } from './fixtures/topologies';
+import { topologyFixtures, withFilterPassband, withModeFilter, withRitXit } from '../fixtures/topologies';
 import type { RadioViewModel } from '../radio-view-model';
 import FilterInstrumentHostFixture from './fixtures/FilterInstrumentHostFixture.svelte';
 import RitXitScanInstrumentHostFixture from './fixtures/RitXitScanInstrumentHostFixture.svelte';
