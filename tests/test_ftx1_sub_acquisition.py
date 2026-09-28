@@ -37,6 +37,7 @@ _RIGS_DIR = Path(__file__).parents[1] / "rigs"
 _SUB_FREQ = FieldPath.active("sub", "freq_mode", "freq_hz")
 _SUB_MODE = FieldPath.active("sub", "freq_mode", "mode")
 _SUB_FILTER_WIDTH = FieldPath.active("sub", "freq_mode", "filter_width")
+_MAIN_FILTER_WIDTH = FieldPath.active("main", "freq_mode", "filter_width")
 _SUB_S_METER = FieldPath.receiver("sub", "meters", "s_meter")
 _SUB_AF = FieldPath.receiver("sub", "operator_controls", "af_level")
 _SUB_RF = FieldPath.receiver("sub", "operator_controls", "rf_gain")
@@ -184,7 +185,41 @@ async def test_sub_state_is_acquired_in_single_receive() -> None:
     # clause. MAIN's NARROW reads off (``NA00``), so MAIN's width is read.
     with pytest.raises(KeyError):
         snapshot.field(_SUB_FILTER_WIDTH)
+    # Priming resolves the SUB clause in this pass, so no ``SH1;`` goes out
+    # and the width stays withheld behind the narrow-ON declaration, not
+    # behind an unresolved clause.
+    commands = [call.args[0] for call in radio._transport.query.await_args_list]
+    assert "SH1;" not in commands
+    # MAIN's NARROW reads off (``NA00``), so MAIN's width is read (USB
+    # Table 5 code 20 → 3000 Hz).
+    assert snapshot.field(_MAIN_FILTER_WIDTH).value == 3000
     assert snapshot.field(_SUB_S_METER).value == -36
+
+
+@pytest.mark.asyncio
+async def test_sub_width_is_read_in_the_same_pass_when_narrow_reports_off() -> None:
+    """MOR-2803 priming: with SUB's NARROW unobserved and reporting OFF
+    (``NA10``), the medium pass primes the toggle first
+    (``_prime_narrow_clause``) and reads SUB's width in that same pass —
+    the clause resolves, so the width is not withheld behind an unobserved
+    clause until the slow lane observes the toggle."""
+
+    radio = _bench_radio()
+    answers = {**_CAT_ANSWERS, "NA1;": "NA10"}
+    radio._transport.query = AsyncMock(side_effect=lambda command: answers[command])
+    store = _single_receive_store()
+    radio._state_store = store
+
+    adapter = YaesuObservationAdapter.from_radio(radio)
+    for observation in await adapter.poll_medium():
+        store.apply(observation)
+
+    snapshot = store.snapshot()
+    assert snapshot.field(_SUB_NARROW).value is False
+    # USB Table 5 code 14 → 2450 Hz, read in this pass.
+    assert snapshot.field(_SUB_FILTER_WIDTH).value == 2450
+    commands = [call.args[0] for call in radio._transport.query.await_args_list]
+    assert "SH1;" in commands
 
 
 @pytest.mark.asyncio
