@@ -998,6 +998,7 @@ class _TcpRigctldServer:
         self.silent = silent
         self.drop = drop
         self.t_requests = 0
+        self.t_commands = 0
         self.t_connection_ids: set[int] = set()
         self.connections = 0
         self._conn_serial = 0
@@ -1026,6 +1027,8 @@ class _TcpRigctldServer:
                 if not line:
                     return
                 command = line.decode("ascii").rstrip("\r\n")
+                if command == "t":
+                    self.t_commands += 1
                 if command == self.silent:
                     # Never answer: the real transport's read timeout fires,
                     # closing the connection from the client side.
@@ -1151,7 +1154,7 @@ async def test_rigctld_gate_is_unchanged_when_the_server_answers_everything() ->
                 scheduler.unobserved_startup_paths(_observed_paths(server, scheduler))
                 == ()
             )
-            assert fake.t_requests >= 1
+            assert fake.t_commands >= 1
             await server.stop()
     finally:
         await radio.disconnect()
