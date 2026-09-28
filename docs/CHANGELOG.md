@@ -394,6 +394,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   intent is keyed or a fresh observed PTT is ON. A frame after key
   release, or while the observation is stale, is dropped and counted.
 
+- **A field carries `command_response` or `poll_response` only when
+  the radio answered (MOR-2893).** The connect-time scan seed and the
+  fire-and-forget ScanStart, ScanStop and ScanSetResume echoes still
+  write their values, but as `local_reconcile`: CI-V 0x0E is set-only,
+  so those fields were never radio-confirmed. The sync facade's
+  expected-value echo after fire-and-forget CI-V setters takes the same
+  label. Writers that parse a real answer are unchanged, so a directed
+  ACK still records `command_response`. On a silent link `/api/v1/state`
+  no longer shows `scanning` and `scanResumeMode` with
+  `command_response`, and that fake observation no longer clears the
+  "radio probably off" verdict.
+
+- **`/api/v1/info` answers on the rigctld backend instead of dropping
+  the connection (MOR-2899).** With a radio whose model matches no
+  RigPlane profile — the external rigctld client's default "External
+  rigctld" — the endpoint used to close the socket with no HTTP answer.
+  It now answers 200 with the radio's own model name and the capability
+  tags, and omits every profile-derived key. Any exception that escapes
+  an HTTP handler is answered with `500 {"error":"internal server
+  error"}` and logged with its route at ERROR; the client gets no
+  exception text.
+
+- **A radio that answers nothing at startup no longer stops the server
+  (MOR-2841).** The startup gate releases with one WARNING naming the
+  radio-not-answering state, and the listener binds. A silent link is
+  zero radio observations plus a durable record that the serial
+  link-down detector fired since connect; the record survives the
+  watchdog's soft reconnect of a present-but-silent port. Nothing is
+  fabricated: `radioHealth` keeps reporting `radio_powered_off_likely`
+  until the radio's first observation, whatever the live link state
+  reports in between. The power-off overlay shows "Radio does not
+  answer — it may be switched off" and offers Power ON when
+  `/api/v1/capabilities` publishes `powerOnCommand` — true only where
+  the profile declares `power_on`; otherwise it says "This radio
+  cannot be powered on from RigPlane." Transmit stays refused while
+  the safety-critical fields are unobserved. A radio that answers some
+  reads but leaves a safety-critical path unanswered still fails
+  startup with the named MOR-2749 error.
+
 ### Security
 
 - **A rigctld connection whose first line is an HTTP request line is
@@ -662,13 +701,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   percent of that raw span, in raw units. Squelch has no keyboard
   step; it moves only from its slider.
 
-- **The hardware validator skips an unreadable filter width
-  (MOR-2519).** If `get_filter_width` returns no width, the filter-width
-  set check is SKIP with a reason, and no write is attempted. That is
-  the FTX-1 in C4FM, whose code 00 is outside the width table.
-  `get_filter_width` is typed `int | None` for that answer. The profile
-  schema documents `[filters].first_code` and no longer lists a
-  `[filters].style` field the loader does not read.
+- **The hardware validator skips an unreadable filter width, and a
+  table Reset takes the radio's own default (MOR-2519).** If
+  `get_filter_width` returns no width, the filter-width set check is
+  SKIP with a reason, and no write is attempted. That is the FTX-1 in
+  C4FM, whose code 00 is outside the width table. `get_filter_width`
+  is typed `int | None` for that answer. The profile schema documents
+  `[filters].first_code` and no longer lists a `[filters].style` field
+  the loader does not read. FilterPanel's table-branch Reset now
+  returns the width to the radio's own mode-dependent default through
+  the shared `reset_filter_width` handler instead of writing a
+  hard-coded 3200 Hz. The reset key stays visible because it also
+  owns the IF-shift reset, and a radio without the
+  `filter_width_radio_default` capability dispatches no width write.
 
 - **On a Yaesu radio whose NB or NR level is also the switch, off and
   on restore the operator's level (MOR-2632).** Off reads the live
