@@ -3088,6 +3088,7 @@ class WebServer:
         self,
         *,
         on_started: Callable[[], None] | None = None,
+        on_shutdown_signal: Callable[[], None] | None = None,
     ) -> None:
         """Start and block until cancelled.  Handles SIGTERM/SIGINT gracefully.
 
@@ -3096,6 +3097,7 @@ class WebServer:
         the ``Web UI:`` line never advertises a URL that is not accepting
         yet (pinned by
         ``test_web_ui_banner_prints_only_after_the_server_reports_started``).
+        ``on_shutdown_signal`` runs once, on the first SIGTERM/SIGINT.
         """
         await self.start()
         assert self._server is not None
@@ -3114,6 +3116,8 @@ class WebServer:
             if _signal_count == 1:
                 logger.info("received shutdown signal")
                 stop_event.set()
+                if on_shutdown_signal is not None:
+                    on_shutdown_signal()
             elif _signal_count == 2:
                 logger.info("second signal — cancelling all tasks")
                 for task in asyncio.all_tasks(loop):

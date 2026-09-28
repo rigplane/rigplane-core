@@ -112,6 +112,11 @@ class ShutdownResult(StrEnum):
 
 _ProviderRetirement = Callable[[int], Awaitable[None]]
 
+# Defaults of ManagedTxAuthority's attempt_timeout_seconds and
+# retry_delay_seconds.
+ATTEMPT_TIMEOUT_S: float = 3.0
+RETRY_DELAY_S: float = 1.0
+
 
 def _log_release_attempt(settled: ActuationSettled) -> None:
     """Log one settled FORCE_RECEIVE; an UNCERTAIN one also warns (MOR-2860)."""
@@ -139,8 +144,8 @@ class ManagedTxAuthority:
         provider_generation: int | None,
         clock: Callable[[], float] | None = None,
         wakeup: _Wakeup | None = None,
-        attempt_timeout_seconds: float = 3.0,
-        retry_delay_seconds: float = 1.0,
+        attempt_timeout_seconds: float = ATTEMPT_TIMEOUT_S,
+        retry_delay_seconds: float = RETRY_DELAY_S,
     ) -> None:
         if not 0 < attempt_timeout_seconds < float("inf") or not 0 < (
             retry_delay_seconds
