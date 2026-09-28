@@ -79,9 +79,7 @@ class _PowerOffAckCivLink(_FakeSerialCivLink):
     async def send(self, frame: bytes) -> None:
         payload = bytes(frame)
         if payload[4:-1] == b"\x18\x00":
-            self.queue_response(
-                bytes((0xFE, 0xFE, payload[3], payload[2], 0xFB, 0xFD))
-            )
+            self.queue_response(bytes((0xFE, 0xFE, payload[3], payload[2], 0xFB, 0xFD)))
         await super().send(frame)
 
 
@@ -110,9 +108,7 @@ async def test_silent_serial_startup_writes_no_radio_confirmed_source() -> None:
     scanning = store.snapshot().field(FieldPath.global_("slow_state", "scanning"))
     assert scanning.value is False
     assert scanning.source.source == "local_reconcile"
-    resume = store.snapshot().field(
-        FieldPath.global_("slow_state", "scan_resume_mode")
-    )
+    resume = store.snapshot().field(FieldPath.global_("slow_state", "scan_resume_mode"))
     assert resume.source.source == "local_reconcile"
 
     await radio.disconnect()
