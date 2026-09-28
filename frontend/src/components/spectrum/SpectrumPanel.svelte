@@ -1009,10 +1009,11 @@
         Viewer {scopeDemandOn ? 'ON' : 'OFF'}
       </button>
     </div>
-  {/if}
-  <!-- MOR-2851: `hideToolbar` (portrait phone only) draws nothing above the
-       panorama — the controls live in the phone's SCOPE chip tab instead. -->
-  {#if !hideToolbar}
+  <!-- MOR-2851: `hideToolbar` (portrait phone only) suppresses the toolbar
+       for non-audio sources — the controls live in the phone's SCOPE chip
+       tab instead. An audio-FFT source keeps its original no-toolbar
+       branch. -->
+  {:else if !hideToolbar}
     <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} {scopeStatusIndicator} />
   {/if}
   <div

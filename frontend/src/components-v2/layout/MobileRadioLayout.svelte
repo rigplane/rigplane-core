@@ -824,13 +824,18 @@
       <section class="m-section" id="m-chip-panel-scope" role="tabpanel">
         <CollapsiblePanel title="SCOPE" panelId="m-scope-chip" collapsible={false}>
           <!-- MOR-2851: one row of screen keys. VIEW drives the same managed
-               scope demand the toolbar's VIEW key drove; AVG / PEAK / BANDS
-               toggle the layout-level state bound into the portrait
-               SpectrumPanel. No STEP key — the bottom tuning bar owns it. -->
+               scope demand the toolbar's VIEW key drove, and renders only
+               when a managed scope region exists — without one there is
+               nothing to demand, so the key would be a dead control. AVG /
+               PEAK / BANDS toggle the layout-level state bound into the
+               portrait SpectrumPanel. No STEP key — the bottom tuning bar
+               owns it. -->
           <div class="m-scope-keys">
-            <ScopeFlatKey label="VIEW" testid="scope-key-view"
-              lit={managedScopeRegion?.demanded ?? true}
-              onclick={() => managedScopeRegion?.setDemand(!(managedScopeRegion?.demanded ?? true))} />
+            {#if managedScopeRegion}
+              <ScopeFlatKey label="VIEW" testid="scope-key-view"
+                lit={managedScopeRegion.demanded}
+                onclick={() => { const region = managedScopeRegion; if (region) region.setDemand(!region.demanded); }} />
+            {/if}
             <ScopeFlatKey label="AVG" testid="scope-key-avg"
               lit={scopeAvg} onclick={() => (scopeAvg = !scopeAvg)} />
             <ScopeFlatKey label="PEAK" testid="scope-key-peak"
