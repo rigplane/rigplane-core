@@ -12,14 +12,14 @@ Two guards against a web page running in the operator's browser:
   missing ``Origin`` is admitted (non-browser clients; the Pro
   supervisor's proxy sends none on its WebSocket leg).
 
-The Origin-check-on-HTTP-routes half is deferred to MOR-2881 until Pro
-stops forwarding the browser's Origin upstream (MOR-2877).
+The Origin-check-on-HTTP-routes half is deferred to MOR-2881.
 """
 
 from __future__ import annotations
 
 import ipaddress
 import json
+import re
 import urllib.parse
 from collections.abc import Collection
 
@@ -32,13 +32,19 @@ __all__ = [
 ]
 
 # Special-use / local-only name suffixes admitted by the allowlist.
+# ``.lan`` is deliberately absent: it is conventional, not reserved.
 _LOCAL_NAME_SUFFIXES = (
     ".localhost",
     ".local",
-    ".lan",
     ".home.arpa",
     ".internal",
 )
+
+# A Host port tail must be 1-5 ASCII digits (mirrors Pro's final rule).
+_PORT_TAIL_RE = re.compile(r"[0-9]{1,5}")
+
+# A single-label host must match this after lowercasing (mirrors Pro).
+_SINGLE_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")
 
 # A Host host-part may never contain these (defence-in-depth on top of
 # the port/bracket parsing below).
@@ -64,10 +70,11 @@ def _normalized_extra_hosts(extra_hosts: Collection[str]) -> frozenset[str]:
 def _split_port(raw_host: str) -> str | None:
     """Return the lowercase host part of a raw ``Host`` header value.
 
-    The port is stripped; IPv6 literals arrive in brackets
-    (``[::1]:8470``) and lose them. Returns ``None`` for empty or
-    malformed values (bad port, unterminated bracket, forbidden
-    characters, embedded colon).
+    The port is stripped; a port tail must be 1-5 ASCII digits. IPv6
+    literals may arrive bare (``::1``) or bracketed with a port
+    (``[::1]:8470``) and lose their brackets. Any other value with more
+    than one colon is malformed. Returns ``None`` for empty or malformed
+    values (bad port, unterminated bracket, forbidden characters).
     """
     value = raw_host.strip()
     if not value:
@@ -77,15 +84,22 @@ def _split_port(raw_host: str) -> str | None:
         if end < 0:
             return None
         host = value[1:end]
-        rest = value[end + 1 :]
-        if rest and (not rest.startswith(":") or not rest[1:].isdigit()):
+        tail = value[end + 1 :]
+        if tail and not (tail.startswith(":") and _PORT_TAIL_RE.fullmatch(tail[1:])):
             return None
         if not host:
             return None
         return host.lower()
+    if value.count(":") > 1:
+        # Several colons: only a valid bare IPv6 literal is allowed.
+        try:
+            ipaddress.ip_address(value)
+        except ValueError:
+            return None
+        return value.lower()
     if ":" in value:
         host, _, port = value.rpartition(":")
-        if ":" in host or not port.isdigit():
+        if not _PORT_TAIL_RE.fullmatch(port):
             return None
     else:
         host = value
@@ -95,22 +109,26 @@ def _split_port(raw_host: str) -> str | None:
 
 
 def _host_name_allowed(name: str, extra_hosts: frozenset[str]) -> bool:
-    """Admission rule for an already port-stripped, lowercased host."""
-    if not name:
+    """Admission rule for an already port-stripped, lowercased host.
+
+    Trailing dots are stripped before every check, so ``localhost.`` is
+    ``localhost``.
+    """
+    host = name.rstrip(".")
+    if not host:
         return False
     try:
-        ipaddress.ip_address(name)
+        ipaddress.ip_address(host)
         return True
     except ValueError:
         pass
-    if "." not in name:
+    if "." not in host:
         # Single-label name: ``localhost``, bare hostnames.
-        return True
-    stripped = name[:-1] if name.endswith(".") else name
+        return _SINGLE_LABEL_RE.fullmatch(host) is not None
     for suffix in _LOCAL_NAME_SUFFIXES:
-        if len(stripped) > len(suffix) and stripped.endswith(suffix):
+        if len(host) > len(suffix) and host.endswith(suffix):
             return True
-    return name in extra_hosts
+    return host in extra_hosts
 
 
 def host_header_allowed(

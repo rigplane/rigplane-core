@@ -52,14 +52,14 @@ check_origin_or_loopback`.
 Without an application credential, the listener itself is the boundary, so
 every HTTP route and every WebSocket upgrade now runs a Host allowlist before
 any handler. The RAW `Host` request header is checked — never a value derived
-from the bind address or a server name. After stripping the port (bracketed
-IPv6 such as `[::1]:8470` is handled), the host part is admitted when it is:
+from the bind address or a server name. After lowercasing, stripping trailing
+dots and the port (bracketed IPv6 such as `[::1]:8470` is handled; a port tail
+must be 1-5 ASCII digits), the host part is admitted when it is:
 
 - an IP literal, IPv4 or IPv6;
-- a single-label name with no dot, compared case-insensitively (this includes
-  `localhost` and bare hostnames);
-- a name ending in `.localhost`, `.local`, `.lan`, `.home.arpa` or
-  `.internal`, compared case-insensitively, with one trailing dot ignored;
+- a single-label name matching `[a-z0-9]([a-z0-9-]*[a-z0-9])?`;
+- a name ending in `.localhost`, `.local`, `.home.arpa` or `.internal`,
+  compared case-insensitively;
 - a name passed via the repeatable `--allowed-host NAME` flag on the `web`
   command (`WebConfig.allowed_hosts`).
 
@@ -90,10 +90,7 @@ loopback-bind skip. Pinned by
 `tests/test_web_origin_host_guard.py: test_ws_foreign_origin_refused_before_upgrade`,
 `test_ws_same_origin_accepted` and `test_ws_missing_origin_accepted`.
 
-The Origin check on ordinary HTTP routes is deferred to MOR-2881: the Pro
-supervisor forwards the browser's `Origin` on its HTTP leg, so core admits an
-HTTP request with a foreign `Origin` as long as its `Host` passes the
-allowlist. Pinned by
+The Origin check on ordinary HTTP routes is deferred to MOR-2881. Pinned by
 `tests/test_web_origin_host_guard.py: test_http_foreign_origin_with_allowed_host_still_accepted`.
 
 The `authRequired` runtime and station fields remain Boolean and are now `false`

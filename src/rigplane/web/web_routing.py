@@ -53,8 +53,7 @@ async def dispatch_http_request(
     _send_response = _server_mod._send_response
 
     # MOR-2880: Host allowlist before any handler, on every HTTP route.
-    # The Origin check for HTTP routes is deferred to MOR-2881 (Pro
-    # forwards the browser's Origin on its HTTP leg until MOR-2877).
+    # The Origin check for HTTP routes is deferred to MOR-2881.
     raw_host = (headers or {}).get("host")
     if not host_header_allowed(raw_host, server._config.allowed_hosts):
         server._log_refused_request("http host", path, headers or {})
