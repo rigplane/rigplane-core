@@ -476,7 +476,7 @@ describe('MobileRadioLayout structure', () => {
         const facts = [...meta.querySelectorAll('[data-indicator-fact]')];
         expect(facts.map((node) => node.textContent?.trim())).toEqual(['BW 500 Hz', 'AGC SLOW', 'NB', 'NR']);
         expect(meta.querySelector('[data-indicator-fact="nb"]')?.getAttribute('data-state')).toBe('on');
-        expect(meta.querySelector('.m-smeter-bar')?.getAttribute('data-receiver')).toBe('SUB');
+        expect(t.querySelector('.m-smeter-bar')?.getAttribute('data-receiver')).toBe('SUB');
       } finally {
         vi.mocked(getCapabilities).mockReturnValue(previous);
         vi.mocked(hasDualReceiver).mockReturnValue(false);
