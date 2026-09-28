@@ -10,7 +10,7 @@
  *   5. teardown unsubscribes exactly once and stays inert afterwards.
  */
 import { readFileSync } from 'node:fs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { ManagedAppTxHarness, type ManagedAppTxServerSnapshot } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
@@ -392,72 +392,124 @@ describe('App composition — one host above the presentation boundary', () => {
 
 // ---------------------------------------------------------------------------
 // MOR-1240 — while the radio is powered off, the desktop status bar stays
-// usable; the phone layout has no status bar and keeps the full-screen
-// overlay.
+// usable; a layout without a status bar keeps the full-screen overlay.
 // ---------------------------------------------------------------------------
 describe('MOR-1240 — the powered-off overlay leaves the desktop status bar usable', () => {
   const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8');
-  const cssOf = (rel: string) =>
-    (read(rel).match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '').replace(/\/\*[\s\S]*?\*\//g, '');
-  const hasUncoveredClass = () => powerEl()?.classList.contains('leave-status-bar') ?? false;
 
-  function mountHostWith(props: Record<string, unknown>) {
+  // jsdom does no layout and has no ResizeObserver, so each test stubs the
+  // bar's `getBoundingClientRect` and a fake ResizeObserver that the test
+  // fires by hand — the same idiom ScaledStage.isolated.test.ts uses.
+  class FakeResizeObserver {
+    static instances: FakeResizeObserver[] = [];
+    readonly callback: ResizeObserverCallback;
+    observe = vi.fn();
+    disconnect = vi.fn();
+    constructor(callback: ResizeObserverCallback) {
+      this.callback = callback;
+      FakeResizeObserver.instances.push(this);
+    }
+  }
+
+  let barRect = { bottom: 0 };
+
+  function mountBar() {
+    const bar = document.createElement('div');
+    bar.setAttribute('data-status-bar', '');
+    bar.getBoundingClientRect = () =>
+      ({ bottom: barRect.bottom, top: 0, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) }) as unknown as DOMRect;
+    document.body.appendChild(bar);
+    return bar;
+  }
+
+  function mountHost() {
     const target = document.createElement('div');
     document.body.appendChild(target);
-    const instance = mount(AppGlobalHost, { target, props });
+    const instance = mount(AppGlobalHost, { target });
     flushSync();
     return instance;
   }
 
-  // This Vitest/jsdom config injects no component <style> and jsdom does no
-  // layout, so a real hit-test (`document.elementFromPoint` at a control's
-  // centre) is impossible here. The class pin plus the CSS source pin below
-  // are the equivalent: the class selects the rule, the rule's `top` is what
-  // keeps the bar uncovered in a real browser — the same source-pin idiom
-  // PeerSplitLayout.component.test.ts uses for its CSS.
-  it('starts the overlay below the status bar strip while keeping its Power ON action', async () => {
+  beforeEach(() => {
+    FakeResizeObserver.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('starts the overlay below the bar\'s real bottom edge, rounded up to a whole pixel', () => {
     h.radioPowerOn = false;
-    h.powerOn.mockResolvedValue(undefined);
-    const instance = mountHostWith({ uncoverStatusBar: true });
+    barRect = { bottom: 33.4 };
+    mountBar();
+    const instance = mountHost();
+
+    expect(powerEl()?.style.top).toBe('34px');
+
+    unmount(instance);
+  });
+
+  it('follows the bar when a later rect change moves it down', () => {
+    h.radioPowerOn = false;
+    barRect = { bottom: 33.4 };
+    mountBar();
+    const instance = mountHost();
+    expect(powerEl()?.style.top).toBe('34px');
+
+    // A link-lost row appears above the bar and pushes it down.
+    barRect = { bottom: 47.6 };
+    FakeResizeObserver.instances.at(-1)?.callback([], {} as ResizeObserver);
+    flushSync();
+    expect(powerEl()?.style.top).toBe('48px');
+
+    unmount(instance);
+  });
+
+  it('keeps the full-screen overlay when no [data-status-bar] element exists', () => {
+    h.radioPowerOn = false;
+    const instance = mountHost();
 
     expect(powerEl()).not.toBeNull();
-    expect(hasUncoveredClass()).toBe(true);
+    expect(powerEl()?.style.top).toBe('');
+
+    unmount(instance);
+  });
+
+  it('keeps its Power ON action and tears the observers down on power-on', async () => {
+    h.radioPowerOn = false;
+    h.powerOn.mockResolvedValue(undefined);
+    mountBar();
+    const instance = mountHost();
+
     powerEl()?.querySelector<HTMLButtonElement>('.power-on-btn')?.click();
     await settle();
     expect(h.powerOn).toHaveBeenCalledTimes(1);
 
-    unmount(instance);
-  });
-
-  it('keeps the full-screen overlay when the layout hosts no status bar', () => {
-    h.radioPowerOn = false;
-    const instance = mountHostWith({});
-
-    expect(powerEl()).not.toBeNull();
-    expect(hasUncoveredClass()).toBe(false);
+    h.radioPowerOn = true;
+    h.notifyRuntime();
+    flushSync();
+    expect(FakeResizeObserver.instances.at(-1)?.disconnect).toHaveBeenCalled();
+    expect(powerEl()).toBeNull();
 
     unmount(instance);
   });
 
-  // The uncovered strip must be exactly the status bar's height: too small
-  // and the overlay still eats the bar's bottom edge, too large and it opens
-  // a hole above it.
-  it('pins the uncovered top edge to the StatusBar strip height', () => {
-    const barHeight = cssOf('../components-v2/layout/StatusBar.svelte')
-      .match(/\.status-bar\s*\{([^}]*)\}/)?.[1]
-      .match(/height:\s*([^;]+);/)?.[1].trim();
-    expect(barHeight).toBe('28px');
-    const uncovered = cssOf('../AppGlobalHost.svelte')
-      .match(/\.power-off-overlay\.leave-status-bar\s*\{([^}]*)\}/)?.[1];
-    expect(uncovered).toContain(`top: ${barHeight}`);
+  // The DOM contract the overlay relies on: StatusBar's own root carries
+  // `data-status-bar`, and the phone layout composes no StatusBar at all —
+  // so it can never grow a `top` cut by accident.
+  it('pins the bar contract: StatusBar\'s root is [data-status-bar]; the phone layout mounts none', () => {
+    expect(read('../components-v2/layout/StatusBar.svelte'))
+      .toMatch(/<div class="status-bar" data-status-bar=""/);
+    expect(read('../components-v2/layout/MobileRadioLayout.svelte'))
+      .not.toMatch(/StatusBar\.svelte/);
   });
 
-  it('App uncovers the bar on the desktop layout and restores the full-screen overlay on the phone layout', async () => {
+  it('App follows the bar: full-screen on the phone layout, which mounts no bar', async () => {
     h.radioPowerOn = false;
     const instance = mountAt(App);
     await settle();
     flushSync();
-    expect(hasUncoveredClass()).toBe(true); // desktop-v2
 
     const resize = async (width: number) => {
       Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
@@ -466,11 +518,14 @@ describe('MOR-1240 — the powered-off overlay leaves the desktop status bar usa
       await settle();
       flushSync();
     };
+
+    // The desktop stub in this harness mounts no bar: the overlay stays
+    // full-screen until a layout actually provides one.
+    expect(powerEl()?.style.top).toBe('');
     await resize(390);
     expect(document.querySelector('.layout-stub')?.getAttribute('data-skin')).toBe('mobile');
-    expect(hasUncoveredClass()).toBe(false);
-    await resize(1200);
-    expect(hasUncoveredClass()).toBe(true);
+    expect(document.querySelector('[data-status-bar]')).toBeNull();
+    expect(powerEl()?.style.top).toBe('');
 
     unmount(instance);
   });
