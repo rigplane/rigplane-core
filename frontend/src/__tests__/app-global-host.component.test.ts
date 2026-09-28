@@ -21,6 +21,8 @@ const h = vi.hoisted(() => ({
   offMessage: vi.fn(),
   powerOn: vi.fn(),
   radioPowerOn: null as boolean | null,
+  radioHealth: null as { radioLink: string; likelyCause?: string } | null,
+  powerOnCommand: true,
   ptt: false,
   notifyRuntime: () => {},
   runtime: undefined as unknown,
@@ -40,8 +42,9 @@ vi.mock('$lib/runtime', async () => {
     // `ptt` is deliberately readable here: it is the non-authoritative echo
     // the TX indication must NOT be wired to.
     get state() { subscribe(); return { stateRevision: 1, freshnessRevision: 1, observationSeq: 1, ptt: h.ptt }; },
-    get caps() { subscribe(); return { tx: true, capabilities: ['tx'] }; },
+    get caps() { subscribe(); return { tx: true, capabilities: ['tx'], powerOnCommand: h.powerOnCommand }; },
     get radioPowerOn() { subscribe(); return h.radioPowerOn; },
+    get radioHealth() { subscribe(); return h.radioHealth; },
     get system() { return { powerOn: h.powerOn }; },
     // MOR-1312 slice 12B (rebase fix): `SemanticRadioSurfaces`'s scope-display
     // snapshot (the FIFTH adapter argument) reads these two directly; this
@@ -156,10 +159,12 @@ const txEl = () => document.querySelector('[data-testid="global-tx-indication"]'
 const faultEl = () => document.querySelector('[data-testid="global-tx-fault"]');
 const powerEl = () => document.querySelector<HTMLElement>('[data-testid="global-power-off"]');
 
-beforeEach(() => {
+  beforeEach(() => {
   vi.clearAllMocks();
   txHarness = new ManagedAppTxHarness({ stale: true });
   h.radioPowerOn = null;
+  h.radioHealth = null;
+  h.powerOnCommand = true;
   h.ptt = false;
   document.body.innerHTML = '';
   // MOR-1240: a failed earlier test may leave the edge property behind.
@@ -240,6 +245,69 @@ describe('AppGlobalHost — standalone, with no layout mounted', () => {
     h.notifyRuntime();
     flushSync();
     expect(powerEl()).not.toBeNull();
+    unmount(instance);
+  });
+
+  // MOR-2841 (round 3): a radio that answers nothing at startup gets the
+  // existing powered-off overlay — no second overlay, no fabricated
+  // powerOn=false. The signal is the server's own verdict,
+  // radioHealth.likelyCause 'radio_powered_off_likely' — held from the
+  // gate's silent release until the radio's first observation, even while
+  // the live link state says 'connected' (the watchdog reopens the silent
+  // port within seconds, which the round-2 radioLink condition never saw).
+  it('shows the power-off overlay with Power ON while the radio does not answer', () => {
+    h.radioHealth = { radioLink: 'connected', likelyCause: 'radio_powered_off_likely' };
+    const instance = mountAt(AppGlobalHost);
+
+    const overlay = powerEl();
+    expect(overlay).not.toBeNull();
+    expect(overlay?.getAttribute('data-state')).toBe('not-answering');
+    expect(overlay?.querySelector('.power-off-label')?.textContent)
+      .toBe('core.overlay.poweredOff.notAnsweringLabel');
+    expect(overlay?.querySelector('.power-on-btn')).not.toBeNull();
+
+    unmount(instance);
+  });
+
+  // The overlay follows the state out: once the radio answers, the server
+  // clears the cause and powerOn is observed — normal RX, no overlay.
+  it('drops the not-answering overlay once the radio answers', () => {
+    h.radioHealth = { radioLink: 'connected', likelyCause: 'radio_powered_off_likely' };
+    const instance = mountAt(AppGlobalHost);
+    expect(powerEl()).not.toBeNull();
+
+    h.radioPowerOn = true;
+    h.radioHealth = { radioLink: 'connected', likelyCause: 'unknown' };
+    h.notifyRuntime();
+    flushSync();
+    expect(powerEl()).toBeNull();
+
+    unmount(instance);
+  });
+
+  // A known-off radio without a CI-V power-on command (X6100/X6200 shape)
+  // gets the plain "cannot power on from here" sentence, not a dead button.
+  it('replaces the Power ON action with a plain sentence when the profile has no power_on', () => {
+    h.powerOnCommand = false;
+    h.radioHealth = { radioLink: 'connected', likelyCause: 'radio_powered_off_likely' };
+    const instance = mountAt(AppGlobalHost);
+
+    const overlay = powerEl();
+    expect(overlay?.querySelector('.power-on-btn')).toBeNull();
+    expect(overlay?.querySelector('.power-off-hint')?.textContent)
+      .toBe('core.overlay.poweredOff.noRemotePowerOn');
+
+    unmount(instance);
+  });
+
+  // Normal RX must stay overlay-free even while the not-answering cause
+  // lingers: powerOn was observed true, so the radio had answered — the
+  // cause alone, whatever the link state, must not bring the overlay back.
+  it('does not show the not-answering overlay when power is observed on, whatever the link state', () => {
+    h.radioPowerOn = true;
+    h.radioHealth = { radioLink: 'reconnecting', likelyCause: 'radio_powered_off_likely' };
+    const instance = mountAt(AppGlobalHost);
+    expect(powerEl()).toBeNull();
     unmount(instance);
   });
 });

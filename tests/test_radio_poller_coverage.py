@@ -6528,10 +6528,11 @@ async def test_tx_target_stays_known_across_several_ttl_periods_on_healthy_radio
 # same "no confirming read, apply from the command's own known value" idiom
 # ``_read_mod_input``/``_apply_global_control_observation`` already use for
 # other global menu items the continuous poller cannot track), labelled
-# honestly as ``command_response`` (not ``poll_response``) since it is a
-# commanded value, not a radio readback. Owner ruling (MOR-1495): the UI
-# renders this plainly — no "commanded, not confirmed" marker — but the
-# SourceMetadata itself stays honest about provenance.
+# ``local_reconcile`` — never ``command_response`` or ``poll_response``
+# (MOR-2893) — since CI-V 0x0E has no read command and the radio never
+# answered anything. Owner ruling (MOR-1495): the UI renders this plainly —
+# no "commanded, not confirmed" marker — but the SourceMetadata itself stays
+# honest about provenance.
 # ---------------------------------------------------------------------------
 
 

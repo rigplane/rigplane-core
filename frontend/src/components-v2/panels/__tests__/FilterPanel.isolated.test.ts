@@ -36,6 +36,7 @@ const mockProps = {
 const mockHandlers = {
   onFilterChange: vi.fn(),
   onFilterWidthChange: vi.fn(),
+  onFilterWidthReset: vi.fn(),
   onFilterShapeChange: vi.fn(),
   onFilterPresetChange: vi.fn(),
   onFilterDefaults: vi.fn(),
@@ -249,6 +250,7 @@ beforeEach(() => {
   });
   mockHandlers.onFilterChange = vi.fn();
   mockHandlers.onFilterWidthChange = vi.fn();
+  mockHandlers.onFilterWidthReset = vi.fn();
   mockHandlers.onFilterShapeChange = vi.fn();
   mockHandlers.onFilterPresetChange = vi.fn();
   mockHandlers.onFilterDefaults = vi.fn();
@@ -554,7 +556,11 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
       .find((button) => button.textContent?.trim() === 'Reset')!;
     (reset as HTMLButtonElement).click();
 
-    expect(mockHandlers.onFilterWidthChange).toHaveBeenCalledExactlyOnceWith(3200);
+    // MOR-2519: the compound Reset takes the radio-default width path
+    // (MOR-2535 handler), not a hardcoded Hz write and not the scalar's
+    // own policy reset (table[0]).
+    expect(mockHandlers.onFilterWidthReset).toHaveBeenCalledOnce();
+    expect(mockHandlers.onFilterWidthChange).not.toHaveBeenCalled();
     expect(mockHandlers.onIfShiftChange).toHaveBeenCalledExactlyOnceWith(0);
   });
 
