@@ -433,6 +433,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reads but leaves a safety-critical path unanswered still fails
   startup with the named MOR-2749 error.
 
+- **A filter-width table Reset takes the radio's own default
+  (MOR-2519).** The filter panel's table-branch Reset returns the width
+  to the radio's own mode-dependent default through the shared
+  `reset_filter_width` handler instead of writing a hard-coded 3200 Hz.
+  The reset key stays visible because it also owns the IF-shift reset,
+  and a radio without the `filter_width_radio_default` capability
+  dispatches no width write.
+
 ### Security
 
 - **A rigctld connection whose first line is an HTTP request line is
@@ -701,19 +709,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   percent of that raw span, in raw units. Squelch has no keyboard
   step; it moves only from its slider.
 
-- **The hardware validator skips an unreadable filter width, and a
-  table Reset takes the radio's own default (MOR-2519).** If
-  `get_filter_width` returns no width, the filter-width set check is
-  SKIP with a reason, and no write is attempted. That is the FTX-1 in
-  C4FM, whose code 00 is outside the width table. `get_filter_width`
-  is typed `int | None` for that answer. The profile schema documents
-  `[filters].first_code` and no longer lists a `[filters].style` field
-  the loader does not read. FilterPanel's table-branch Reset now
-  returns the width to the radio's own mode-dependent default through
-  the shared `reset_filter_width` handler instead of writing a
-  hard-coded 3200 Hz. The reset key stays visible because it also
-  owns the IF-shift reset, and a radio without the
-  `filter_width_radio_default` capability dispatches no width write.
+- **The hardware validator skips an unreadable filter width
+  (MOR-2519).** If `get_filter_width` returns no width, the filter-width
+  set check is SKIP with a reason, and no write is attempted. That is
+  the FTX-1 in C4FM, whose code 00 is outside the width table.
+  `get_filter_width` is typed `int | None` for that answer. The profile
+  schema documents `[filters].first_code` and no longer lists a
+  `[filters].style` field the loader does not read.
 
 - **On a Yaesu radio whose NB or NR level is also the switch, off and
   on restore the operator's level (MOR-2632).** Off reads the live
