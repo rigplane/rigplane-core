@@ -48,41 +48,16 @@
   // follows the same rule, reusing ConfirmDialog's error state.
   let powerOnFailed = $state<string | null>(null);
 
-  // MOR-1240: while powered off, the overlay's top edge follows the layout's
-  // real status bar — the `[data-status-bar]` element (StatusBar.svelte's
-  // root) — so the bar stays visible and clickable. A layout without a bar
-  // (phone, dual-receiver-cockpit, flagship-probe) mounts no such element
-  // and keeps the full-screen overlay; no per-layout list exists here.
-  // The measured `getBoundingClientRect().bottom` already accounts for
-  // layout padding/gap rows and any stage transform; the ResizeObserver and
-  // the window listener keep the edge current, and both are torn down on
-  // destroy or power-on with the effect cleanup.
-  let overlayTop = $state<number | null>(null);
-
-  $effect(() => {
-    if (runtime.radioPowerOn !== false) {
-      overlayTop = null;
-      return;
-    }
-    const measure = () => {
-      const bar = document.querySelector<HTMLElement>('[data-status-bar]');
-      overlayTop = bar === null ? null : Math.ceil(bar.getBoundingClientRect().bottom);
-    };
-    measure();
-    window.addEventListener('resize', measure);
-    let observer: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== 'undefined') {
-      const bar = document.querySelector<HTMLElement>('[data-status-bar]');
-      if (bar) {
-        observer = new ResizeObserver(measure);
-        observer.observe(bar);
-      }
-    }
-    return () => {
-      window.removeEventListener('resize', measure);
-      observer?.disconnect();
-    };
-  });
+  // MOR-1240: while powered off, the overlay's top edge follows the
+  // layout's real status bar through CSS alone: StatusBar publishes its
+  // bottom edge as a document-level custom property
+  // (`--rp-status-bar-bottom`, see StatusBar.svelte) while mounted, and the
+  // overlay consumes it with `top: var(--rp-status-bar-bottom, 0px)`. A
+  // layout without a bar (phone, dual-receiver-cockpit, flagship-probe)
+  // never sets the property, so the fallback keeps the overlay full-screen
+  // with no per-layout list here. The host measures nothing: a host-side
+  // lookup raced the lazily loaded presentation and missed bar moves that
+  // resize nothing (the link-lost row above the bar).
 
   async function handlePowerOn(): Promise<void> {
     try {
@@ -116,7 +91,7 @@
   {#if runtime.radioPowerOn === false}
     <div
       class="power-off-overlay"
-      style:top={overlayTop === null ? null : `${overlayTop}px`}
+      style:top="var(--rp-status-bar-bottom, 0px)"
       role="dialog"
       aria-modal="true"
       data-testid="global-power-off"
@@ -216,6 +191,9 @@
     background: var(--danger, #b91c1c);
   }
 
+  /* `inset: 0` keeps the overlay full-screen; the inline `top` (the only
+     MOR-1240 edge) starts it below a mounted status bar via the
+     document-level `--rp-status-bar-bottom` StatusBar publishes. */
   .power-off-overlay {
     position: fixed;
     inset: 0;

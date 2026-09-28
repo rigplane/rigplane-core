@@ -162,6 +162,8 @@ beforeEach(() => {
   h.radioPowerOn = null;
   h.ptt = false;
   document.body.innerHTML = '';
+  // MOR-1240: a failed earlier test may leave the edge property behind.
+  document.documentElement.style.removeProperty('--rp-status-bar-bottom');
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1200 });
   Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 });
   h.onMessage.mockReturnValue(h.offMessage);
