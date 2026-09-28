@@ -56,6 +56,7 @@ from .backend import (
     TxStream,
 )
 from .session import AudioSession, AudioSessionState, RxSubscription, TxLease
+from .usb_driver import bounded_portaudio_pool
 
 if TYPE_CHECKING:
     from concurrent.futures import Executor
@@ -93,6 +94,13 @@ FRAME_MS = 20
 SAMPLES_PER_FRAME = SAMPLE_RATE * FRAME_MS // 1000  # 960
 BYTES_PER_SAMPLE = 2  # s16le
 FRAME_BYTES = SAMPLES_PER_FRAME * CHANNELS * BYTES_PER_SAMPLE  # 1920
+
+# Default per-call await bound for the bridge's PortAudio work on the
+# shared pool (MOR-2892 review round 1). Mirrors UsbAudioDriver's default
+# ``capture_open_timeout`` — the same stuck-OS-audio-call class, the
+# same bound. This is NOT a second pool bound: the worker count and the
+# saturation counter live on the shared ``bounded_portaudio_pool``.
+_BRIDGE_PORTAUDIO_TIMEOUT_S = 8.0
 
 # Virtual loopback device name candidates for auto-detection.
 # The RigPlane driver is first: other platforms' loopbacks follow in their
@@ -210,11 +218,12 @@ def _candidate_matches(name: str, search: str) -> bool:
     return search.lower() in name.lower()
 
 
-def _find_device_in_backend(
+async def _find_device_in_backend(
     backend: AudioBackend,
     name: str | None,
     *,
     direction: str = "playback",
+    timeout: float = _BRIDGE_PORTAUDIO_TIMEOUT_S,
 ) -> AudioDeviceInfo | None:
     """Find a virtual loopback device using the backend's device list.
 
@@ -224,13 +233,26 @@ def _find_device_in_backend(
         direction: ``"playback"`` (RX leg writes here — needs output
             channels) or ``"capture"`` (TX leg reads here — needs input
             channels).
+        timeout: Per-call await bound for the enumeration.
 
     The search is direction-aware: an explicit name still resolves to the
     first device whose name matches *and* which serves the direction, and
     auto-detection walks the candidate list in order, picking the first
     match per direction. A single bidirectional loopback matches both.
+
+    The listing itself runs on the shared bounded PortAudio pool, never
+    on the event loop (MOR-2892 review round 1): on the real backend it
+    is ``sd.query_devices()``, which a stuck OS audio call can wedge
+    exactly like the driver's enumeration. On exceeding the bound the
+    lookup raises :class:`AudioCaptureOpenTimeoutError` with one
+    operator-readable warning.
     """
-    devices = backend.list_devices()
+    devices: list[AudioDeviceInfo] = await bounded_portaudio_pool.run_bounded(
+        backend.list_devices,
+        what="device enumeration",
+        direction="bridge",
+        timeout=timeout,
+    )
     search_names = [name] if name else list(_LOOPBACK_CANDIDATES)
 
     for search in search_names:
@@ -274,6 +296,10 @@ class AudioBridge:
         max_retries: Maximum reconnect attempts (0 = infinite).
         retry_base_delay: Initial backoff delay in seconds.
         retry_max_delay: Maximum backoff delay in seconds.
+        portaudio_timeout: Per-call await bound for device enumeration
+            and stream start/stop on the shared bounded PortAudio pool
+            (MOR-2892). A stuck OS audio call fails the bridge request
+            after this long instead of freezing the event loop.
         on_state_changed: Callback fired on every state transition.
         tx_gate: Optional async predicate. ``None`` (the default) always
             sends, which is what the standalone bridge CLI relies on. A
@@ -298,6 +324,7 @@ class AudioBridge:
         max_retries: int = 5,
         retry_base_delay: float = 1.0,
         retry_max_delay: float = 30.0,
+        portaudio_timeout: float = _BRIDGE_PORTAUDIO_TIMEOUT_S,
         on_state_changed: Callable[[BridgeStateChange], None] | None = None,
         on_metrics: Callable[[BridgeMetrics], None] | None = None,
         tx_gate: Callable[[], Awaitable[bool]] | None = None,
@@ -318,6 +345,7 @@ class AudioBridge:
         self._max_retries = max_retries
         self._retry_base_delay = retry_base_delay
         self._retry_max_delay = retry_max_delay
+        self._portaudio_timeout = portaudio_timeout
         self._on_state_changed = on_state_changed
         self._reconnect_task: asyncio.Task[None] | None = None
         self._reconnect_attempt: int = 0
@@ -496,8 +524,11 @@ class AudioBridge:
         # The RigPlane cable is a single loop (Output → Input): resolve the
         # RX-playback (output) and TX-capture (input) devices separately —
         # they may be two ends of the same cable.
-        dev = _find_device_in_backend(
-            self._backend, self._device_name, direction="playback"
+        dev = await _find_device_in_backend(
+            self._backend,
+            self._device_name,
+            direction="playback",
+            timeout=self._portaudio_timeout,
         )
         if dev is None:
             searched = (
@@ -520,8 +551,11 @@ class AudioBridge:
         # candidate list for the input direction (the cable's other end).
         tx_dev_id = dev_id
         if self._tx_device_name:
-            explicit = _find_device_in_backend(
-                self._backend, self._tx_device_name, direction="capture"
+            explicit = await _find_device_in_backend(
+                self._backend,
+                self._tx_device_name,
+                direction="capture",
+                timeout=self._portaudio_timeout,
             )
             if explicit is None:
                 logger.warning(
@@ -532,8 +566,11 @@ class AudioBridge:
             else:
                 tx_dev_id = explicit.id
         elif dev.input_channels <= 0:
-            auto_tx = _find_device_in_backend(
-                self._backend, self._device_name, direction="capture"
+            auto_tx = await _find_device_in_backend(
+                self._backend,
+                self._device_name,
+                direction="capture",
+                timeout=self._portaudio_timeout,
             )
             if auto_tx is not None:
                 tx_dev_id = auto_tx.id
@@ -702,7 +739,16 @@ class AudioBridge:
                 channels=self._channels,
                 frame_ms=self._frame_ms,
             )
-            await self._rx_stream.start()
+            # Stream starts are blocking OS device opens on the real
+            # backend — run them on the shared bounded pool (MOR-2892),
+            # never on the loop.
+            await bounded_portaudio_pool.open_stream_bounded(
+                self._rx_stream,
+                self._rx_stream.start(),
+                direction="bridge",
+                what="playback open",
+                timeout=self._portaudio_timeout,
+            )
 
         # --- TX path: device input → radio (capture) ---
         if tx_armed:
@@ -711,7 +757,13 @@ class AudioBridge:
                 # The single duplex stream serves BOTH playback (write) and
                 # capture (start callback). Starting it arms both directions.
                 assert self._duplex_stream is not None
-                await self._duplex_stream.start(self._on_tx_capture)
+                await bounded_portaudio_pool.open_stream_bounded(
+                    self._duplex_stream,
+                    self._duplex_stream.start(self._on_tx_capture),
+                    direction="bridge",
+                    what="duplex open",
+                    timeout=self._portaudio_timeout,
+                )
             else:
                 self._tx_stream = self._backend.open_rx(
                     tx_dev_id,
@@ -719,7 +771,13 @@ class AudioBridge:
                     channels=self._channels,
                     frame_ms=self._frame_ms,
                 )
-                await self._tx_stream.start(self._on_tx_capture)
+                await bounded_portaudio_pool.open_stream_bounded(
+                    self._tx_stream,
+                    self._tx_stream.start(self._on_tx_capture),
+                    direction="bridge",
+                    what="capture open",
+                    timeout=self._portaudio_timeout,
+                )
             self._tx_task = asyncio.create_task(self._tx_loop())
 
         # Start the RX playback loop last so the streams above are live.
@@ -762,17 +820,30 @@ class AudioBridge:
             await self._tx_lease.release()
             self._tx_lease = None
 
+        # A real ``stream.stop()`` is a synchronous Pa_StopStream +
+        # Pa_CloseStream pair — run every stop on the shared bounded pool
+        # (MOR-2892), never on the loop. A stuck stop fails this leg's
+        # teardown after the bound (one pool warning) while the rest of
+        # the teardown still runs.
         if self._tx_stream is not None:
             self._sync_capture_health_metrics()
             try:
-                await self._tx_stream.stop()
+                await bounded_portaudio_pool.stop_stream_bounded(
+                    self._tx_stream,
+                    direction="bridge",
+                    timeout=self._portaudio_timeout,
+                )
             except Exception:
                 logger.debug("%s: TX stream stop error", self._label, exc_info=True)
             self._tx_stream = None
 
         if self._rx_stream is not None:
             try:
-                await self._rx_stream.stop()
+                await bounded_portaudio_pool.stop_stream_bounded(
+                    self._rx_stream,
+                    direction="bridge",
+                    timeout=self._portaudio_timeout,
+                )
             except Exception:
                 logger.debug("%s: RX stream stop error", self._label, exc_info=True)
             self._rx_stream = None
@@ -781,7 +852,11 @@ class AudioBridge:
         if self._duplex_stream is not None:
             self._sync_capture_health_metrics()
             try:
-                await self._duplex_stream.stop()
+                await bounded_portaudio_pool.stop_stream_bounded(
+                    self._duplex_stream,
+                    direction="bridge",
+                    timeout=self._portaudio_timeout,
+                )
             except Exception:
                 logger.debug("%s: duplex stream stop error", self._label, exc_info=True)
             self._duplex_stream = None

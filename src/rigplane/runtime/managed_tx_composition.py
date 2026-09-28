@@ -61,7 +61,9 @@ class ManagedTxCompositionPort(Protocol):
 
     async def transport_unavailable(self, identity: object) -> None: ...
 
-    def validate_state_store(self, store: StateStore) -> None: ...
+    def validate_state_store(
+        self, store: StateStore, *, transport_pending: bool = False
+    ) -> None: ...
 
     async def shutdown(self, termination: asyncio.Event) -> ShutdownResult: ...
 
@@ -204,13 +206,19 @@ class ManagedTxComposition:
             self._poison_active()
             await self._join_transition_locked()
 
-    def validate_state_store(self, store: StateStore) -> None:
+    def validate_state_store(
+        self, store: StateStore, *, transport_pending: bool = False
+    ) -> None:
         if self._state_store is not store:
             raise RuntimeError("managed TX StateStore identity mismatch")
         generation = int(store.provider_generation)
         active = self._active_provider
         if self._observation_generation != generation:
             raise RuntimeError("managed TX observation generation mismatch")
+        if transport_pending and self._live_transport_identity is None:
+            # MOR-2876: the caller reports that the radio's port is not open,
+            # so there is no transport for a provider to stand on yet.
+            return
         if active is None or active.observation_generation != generation:
             raise RuntimeError("managed TX provider is not current")
 

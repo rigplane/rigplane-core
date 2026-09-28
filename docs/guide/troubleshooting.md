@@ -143,17 +143,6 @@ Do not spam reconnect requests from frontend automation loops.
 1. Verify behavior in a browser/platform with MediaSession support.
 2. Use on-screen controls as fallback (expected behavior on unsupported browsers).
 
-### Mobile v2 gestures are not available
-
-**Symptom:** Swipe-to-dismiss bottom sheets and touch-first mobile layout are missing.
-
-**Cause:** UI version defaults to v1 unless v2 is selected.
-
-**Fixes:**
-
-1. Open Web UI with `?ui=v2` query parameter.
-2. Keep v2 selected in localStorage for subsequent sessions.
-
 ## Command Issues
 
 ### SWR/ALC always returns 0
@@ -243,8 +232,8 @@ packets each iteration.
 
 **Symptom:** log lines like:
 
-- `UDP error [peer=192.168.55.40:50002] (#1): ...`
-- `UDP error [peer=192.168.55.40:50001] (#100, suppressed 96): ...`
+- `UDP error [peer=192.168.1.50:50002] (#1): ...`
+- `UDP error [peer=192.168.1.50:50001] (#100, suppressed 96): ...`
 
 **What changed:** transport logs now include the remote endpoint in each UDP error
 line. This helps distinguish which logical channel is failing.
@@ -353,7 +342,7 @@ failure.
 
 ```bash
 export ICOM_AUDIO_SAMPLE_RATE=16000
-uv run rigplane --host 192.168.55.40 --user USER --pass-file .rigplane-pass web
+uv run rigplane --model IC-7610 --host 192.168.1.50 --user USER --pass-file .rigplane-pass web
 ```
 
 16 kHz stereo PCM fits a 20 ms frame in one UDP packet and is usually adequate
@@ -370,7 +359,7 @@ VPN paths.
 4. For WireGuard, remember to budget for outer IP/UDP/WireGuard overhead. The
    correct value depends on the WAN path; cellular/CGNAT/cloud paths often need
    smaller MTUs than a normal Ethernet LAN.
-5. Re-run `rigplane audio probe --candidate-cooldown 35 --retry-rejected 1`
+5. Re-run `rigplane --model IC-7610 audio probe --candidate-cooldown 35 --retry-rejected 1`
    after changing MTU and confirm packet counts are stable.
 
 ## Network Voice TX Is Noise, a Squeal, or Silent (IC-7610 MOD Input)

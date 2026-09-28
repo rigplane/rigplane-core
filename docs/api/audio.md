@@ -16,9 +16,6 @@ High-level PCM APIs are available for both RX and TX.
 | Low-level Opus (current) | `start_audio_rx_opus`, `stop_audio_rx_opus`, `start_audio_tx_opus`, `push_audio_tx_opus`, `stop_audio_tx_opus`, `start_audio_opus`, `stop_audio_opus` |
 | High-level PCM | `start_audio_rx_pcm`, `stop_audio_rx_pcm`, `start_audio_tx_pcm`, `push_audio_tx_pcm`, `stop_audio_tx_pcm` |
 
-Deprecated aliases still work during the deprecation window (two minor releases):
-`start_audio_rx`, `stop_audio_rx`, `start_audio_tx`, `push_audio_tx`, `stop_audio_tx`, `start_audio`, `stop_audio`.
-
 ## AudioStream
 
 ::: rigplane.audio.lan_stream.AudioStream
@@ -175,7 +172,7 @@ they explicitly simulate playback.
 future high-level PCM APIs.
 
 - Module: `rigplane._audio_transcoder` (internal, no stability guarantee yet)
-- Backend: optional `opuslib` (`pip install rigplane[audio]`)
+- Backend: `opuslib`, a core dependency (the `audio` extra is an empty alias kept for compatibility)
 - Typed failures:
   - `AudioCodecBackendError` for missing backend
   - `AudioFormatError` for invalid PCM/Opus frame formats
@@ -376,7 +373,7 @@ config = LanBackendConfig(
     username="u",
     password="p",
     model="IC-7610",
-    audio_codec=AudioCodec.PCM_1CH_16BIT,  # default
+    audio_codec=AudioCodec.PCM_1CH_16BIT,
     audio_sample_rate=48000,
 )
 async with create_radio(config) as radio:
@@ -385,7 +382,7 @@ async with create_radio(config) as radio:
 
 ### Capability Introspection
 
-Use the capability API to inspect negotiated client-side audio options and defaults. The same API is available on the **Radio** returned by `create_radio` and on **IcomRadio** (legacy):
+Use the capability API to inspect negotiated client-side audio options and defaults:
 
 ```python
 from rigplane import create_radio, get_audio_capabilities, LanBackendConfig
@@ -398,8 +395,6 @@ print(caps.supported_sample_rates_hz)
 print(caps.supported_channels)
 print(caps.default_codec, caps.default_sample_rate_hz, caps.default_channels)
 ```
-
-For legacy LAN-only code, `IcomRadio.audio_capabilities()` returns the same structure.
 
 Deterministic default selection rules:
 
@@ -414,17 +409,7 @@ Deterministic default selection rules:
 
 ## Migration
 
-Use the explicit `_opus` methods now:
-
-| Deprecated alias | Replacement |
-|------------------|-------------|
-| `start_audio_rx` | `start_audio_rx_opus` |
-| `stop_audio_rx` | `stop_audio_rx_opus` |
-| `start_audio_tx` | `start_audio_tx_opus` |
-| `push_audio_tx` | `push_audio_tx_opus` |
-| `stop_audio_tx` | `stop_audio_tx_opus` |
-| `start_audio` | `start_audio_opus` |
-| `stop_audio` | `stop_audio_opus` |
+The unsuffixed aliases (`start_audio_rx`, `push_audio_tx`, `start_audio`, …) were removed; use the `_opus` names above.
 
 For RX PCM, migrate callback-side decoding to the built-in API:
 
