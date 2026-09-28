@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import logging
+import os
 import pathlib
+import signal
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -830,6 +833,89 @@ def test_shutdown_signal_handler_falls_back_when_loop_does_not_support_signals(
     ]
     calls[0][1](server_module._signal.SIGTERM, None)  # type: ignore[operator]
     assert triggered == 1
+
+
+@pytest.mark.asyncio
+async def test_first_signal_bounds_shutdown_when_a_step_never_completes(
+    monkeypatch, caplog
+) -> None:
+    """MOR-2875: the first SIGTERM must end shutdown within the stated bound.
+
+    ``stop()`` here never completes on its own — the stand hang of
+    2026-09-28, where the process sat idle after «web server stopped» until
+    a human-sent second signal cancelled everything. The bound watchdog must
+    cancel every still-pending task (logging each by name) so the first
+    signal alone unwinds the shutdown.
+    """
+    monkeypatch.setattr(server_module, "_FIRST_SIGNAL_SHUTDOWN_BOUND_S", 0.3)
+    monkeypatch.setattr(server_module, "_SHUTDOWN_BOUND_FORCED_EXIT_GRACE_S", 10.0)
+    srv = WebServer(None, WebConfig(host="127.0.0.1", port=0, discovery=False))
+
+    async def never_completing_stop() -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(srv, "stop", never_completing_stop)
+
+    with (
+        patch(
+            "rigplane.web.web_startup.asyncio.start_server",
+            new=AsyncMock(return_value=_FakeAsyncServer()),
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        serve_task = asyncio.create_task(srv.serve_forever())
+        await asyncio.sleep(0.05)
+        t0 = time.monotonic()
+        os.kill(os.getpid(), signal.SIGTERM)
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait({serve_task}, timeout=5.0)
+        # The watchdog cancels every pending task — this test task's await
+        # included; that cancellation is the bound firing. Give the unwound
+        # serve task a moment to finish, then require it finished fast.
+        await asyncio.wait({serve_task}, timeout=2.0)
+        assert serve_task.done()
+        assert serve_task.cancelled() or serve_task.exception() is None
+    elapsed = time.monotonic() - t0
+    assert elapsed < 3.0
+    bound_warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if "cancelling" in record.getMessage() and "bound" in record.getMessage()
+    ]
+    assert bound_warnings, "the bound must log the cancellation by task name"
+    assert "never_completing_stop" in bound_warnings[0]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_bound_forces_exit_when_cancellation_is_ignored(
+    monkeypatch, caplog
+) -> None:
+    """MOR-2875: a task that survives the bound's cancellations must not
+    keep the process alive past the forced-exit grace."""
+    exits: list[int] = []
+    monkeypatch.setattr(server_module.os, "_exit", lambda code: exits.append(code))
+    release = asyncio.Event()
+
+    async def uncancellable_loiter() -> None:
+        while not release.is_set():
+            try:
+                await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                continue
+
+    loiter = asyncio.create_task(uncancellable_loiter())
+    watchdog = asyncio.create_task(
+        server_module._enforce_first_signal_shutdown_bound(0.15, 0.15)
+    )
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.sleep(5.0)
+        release.set()
+        await asyncio.gather(loiter, watchdog, return_exceptions=True)
+    assert exits == [1]
+    assert any(
+        "uncancellable_loiter" in record.getMessage() for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio
