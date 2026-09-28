@@ -431,7 +431,7 @@ describe('MOR-2816 — the phone deck mounts only its declared zone', () => {
   const fullyLoadedView = withScopeDisplay(withScopeControls(withScan(
     withCwKeyer(withAntenna(withRitXit(withBand(withRfFrontEnd(
       withDsp(withFilterPassband(withModeFilter(
-        withRxAudio(withMeters(withTxAux(topologyFixtures['1/single'])))))))))))));
+        withRxAudio(withMeters(withTxAux(topologyFixtures['1/single']))))))))))))));
 
   // Kills: any optional surface regressing onto the phone's bare path —
   // the unstyled control block the owner measured on 2026-09-27.
