@@ -976,8 +976,7 @@ class RigctldClientRadio:
         except Exception:
             return ActuationResult.UNCERTAIN
         return (
-            ActuationResult.ACCEPTED if not transmitting
-            else ActuationResult.UNCERTAIN
+            ActuationResult.ACCEPTED if not transmitting else ActuationResult.UNCERTAIN
         )
 
     async def read_transmit_state(self) -> TxStateReading:

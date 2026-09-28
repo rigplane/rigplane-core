@@ -859,9 +859,7 @@ class YaesuCatRadio:
             raise CommandError(f"Command {cmd_name!r} has no read template")
 
         read_cmd = format_command(spec.read, **params) if params else spec.read
-        raw = await self._transport.query(
-            read_cmd, is_current=is_current, tier=tier
-        )
+        raw = await self._transport.query(read_cmd, is_current=is_current, tier=tier)
 
         parser = self._parsers.get(cmd_name)
         if parser is None:
@@ -1177,8 +1175,7 @@ class YaesuCatRadio:
         except Exception:
             return ActuationResult.UNCERTAIN
         return (
-            ActuationResult.ACCEPTED if not transmitting
-            else ActuationResult.UNCERTAIN
+            ActuationResult.ACCEPTED if not transmitting else ActuationResult.UNCERTAIN
         )
 
     def _warn_ptt_unrecognised(self, state: str) -> None:
