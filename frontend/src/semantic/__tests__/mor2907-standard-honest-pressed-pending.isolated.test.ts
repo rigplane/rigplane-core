@@ -280,11 +280,16 @@ describe('MOR-2907 F3 — the wiring seam passes each armed signal to its host',
   });
 
   it('passes pendingMode, pendingAgcMode and pendingAtt at the three host mounts', () => {
-    const filterMount = SOURCE.split('<FilterInstrumentHost')[1]!.split('>')[0]!;
-    expect(filterMount).toContain('{pendingMode}');
-    const dspMount = SOURCE.split('<DspInstrumentHost')[1]!.split('>')[0]!;
-    expect(dspMount).toContain('{pendingAgcMode}');
-    const rfMount = SOURCE.split('<RfFrontEndInstrumentHost')[1]!.split('>')[0]!;
-    expect(rfMount).toContain('{pendingAtt}');
+    // The mounts carry `=>` arrow props, so a naive `.split('>')[0]` would
+    // truncate at the first arrow — slice to the opening tag's own `\n  >`
+    // close instead (the style all three mounts use).
+    const mountChunk = (tag: string) => {
+      const start = SOURCE.indexOf(`<${tag}`);
+      const end = SOURCE.indexOf('\n  >', start);
+      return SOURCE.slice(start, end);
+    };
+    expect(mountChunk('FilterInstrumentHost')).toContain('{pendingMode}');
+    expect(mountChunk('DspInstrumentHost')).toContain('{pendingAgcMode}');
+    expect(mountChunk('RfFrontEndInstrumentHost')).toContain('{pendingAtt}');
   });
 });
