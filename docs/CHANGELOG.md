@@ -52,6 +52,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bandwidth chip keeps the unit's case (`BW 2400 Hz`). The other
   indicator-row appearances are unchanged.
 
+- **Filter Shape SHARP/SOFT gets the shared choice feedback on both
+  seats (MOR-1689).** The `set_filter_shape` command now runs through
+  one lifecycle shared by the semantic FilterInstrumentHost snippet and
+  the FilterPanel settings modal. Each seat's buttons carry
+  `data-command-phase` and `aria-busy`, a status sentence names the
+  requested shape, and each transition makes one polite live
+  announcement. While a change is pending the confirmed shape stays
+  selected and the requested one is marked separately. A radio without
+  the filter-shape capability renders and dispatches nothing.
+
+- **The phone header readout shows the in-flight tune target
+  (MOR-2911).** While a tune is pending, the phone frequency readout
+  shows the target digits as the desktop does, and the confirmed
+  frequency returns when the radio confirms, refuses or the request
+  times out.
+
 ### Changed
 
 - **The phone portrait layout drops the VFO / RX-TX deck and scrolls
@@ -254,8 +270,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Plain-hertz filter width text follows the locale in the sidebar
   and phone filter panel (MOR-1687).** It reads `Гц` in Russian and
-  `Hz` in English and Japanese. Kilohertz forms such as `2.4kHz`, and
-  the Standard face's filter surface, still show `Hz`.
+  `Hz` in English and Japanese. Kilohertz forms such as `2.4kHz` still
+  show `Hz`.
 
 - **The station-meter bars honour forced-colors like the S-meter
   (MOR-1250).** Under Windows High Contrast Mode the bars repaint
@@ -441,6 +457,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a radio without the `filter_width_radio_default` capability
   dispatches no width write.
 
+- **The Standard face takes its hertz unit from the i18n catalog
+  (MOR-2905).** The filter surface's exact width and its passband
+  announcements, the RIT/XIT offset, the TX-target line and the
+  BW/RIT/XIT chips read the unit from the shared `core.filter.unit.hz`
+  catalog key: `Гц` in Russian instead of a literal `Hz`. English and
+  Japanese text is unchanged.
+
+- **The IC-705 meter scales and band-stack codes come from its CI-V
+  guide (MOR-2916).** The profile calibrated only SWR, so the S-meter,
+  Po, ALC, COMP, Vd and Id published raw bytes flagged uncalibrated.
+  Their scales now come from the guide's meter rows — Vd and Id differ
+  from the IC-7300's — and Po is stated in watts of the 10 W rating.
+  2200m, 630m and 60m, which have no band-stack code of their own, no
+  longer send the undocumented code 00 that fell back to the 2200m
+  default; they jump straight to their default frequency, and Air
+  takes the guide's code 12.
+
+- **The IC-705 declares absent the commands its CI-V guide does not
+  document (MOR-2917).** The profile still carried drive gain,
+  DIGI-SEL shift, APF level, audio peak filter, RX antenna and antenna
+  select from wfview's IC-705 rig, so the TX surface drew a Drive Gain
+  control and the CW keyer an APF control that were never observed and
+  stayed disabled for the session. Those declarations are gone; the
+  radio has one antenna connector and no antenna select.
+
+- **The IC-705 acquires the fields its v3 controls show (MOR-2915).**
+  The profile still carried its 2.x acquisition membership, so filter
+  width, PBT, the NR/NB level, notch, RIT, the CW keyer setpoints,
+  VOX/monitor, the mic and VOX gains and the tone and TSQL frequencies
+  were never read. The reads the CI-V guide documents are now declared:
+  fourteen polled panel knobs and TX-aux levels plus fifteen menu
+  settings read on demand. The web layer serves the IC-705's manual
+  notch width, and the four TX meters poll at 0.25 s.
+
+- **The legacy RIT/XIT and PBT panels follow the Standard track-reset
+  and arrow rulings (MOR-2909).** A double-click on the RIT/XIT track
+  sends nothing and CLEAR stays the reset; the arrow keys step by the
+  domain's raw step at once, with no debounce. A double-click on a PBT
+  lane sends no per-lane command: the lane's default is null, the
+  bipolar policy's reset returns the domain's default instead of
+  inventing 0, and the PBT reset goes only through the Reset button.
+  A click on the track still sets the position, as on the Standard
+  face.
+
+- **Every web-reachable PortAudio call runs off the event loop,
+  bounded (MOR-2892).** A pending macOS microphone-permission prompt
+  used to block the RX relay's format probe on the event-loop thread
+  and freeze the whole server — HTTP, WebSockets, the PTT release path
+  and the watchdogs — until SIGKILL. The format probe, device
+  enumeration, serial-port topology resolution and the stop/close paths
+  now run on the driver's worker pool, bounded by `capture_open_timeout`
+  (8 s default); when the bound is exceeded the audio request fails
+  with one warning while HTTP and WebSockets keep answering.
+
+- **The portrait PTT button lives in the fixed bottom tuning strip
+  (MOR-2874).** It no longer floats over the scrolling content, so no
+  scrolling control can sit under it at any scroll position. It stays
+  72×72 px, and the phone's 16 px label and 44 px touch floors now
+  reach it through the layout.
+
 ### Security
 
 - **A rigctld connection whose first line is an HTTP request line is
@@ -463,6 +539,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a missing Origin is admitted. The same rule covers POST, PUT, PATCH,
   DELETE and the state-changing GET `/clearcache`. The diagnose routes'
   separate Origin check and its loopback skip are gone.
+
+### Documentation
+
+- **The published 3.0 documentation is corrected against the code, and
+  rigplane.dev serves two versions (no ticket).** The getting-started,
+  installation, CLI, configuration, radio, command, radio-setup,
+  troubleshooting, migration and security pages, the API reference
+  pages and the internal skin guide were checked against the code and
+  rewritten where they described behaviour that does not exist: CLI
+  examples that talk to a radio over the lan or serial backend now
+  name its model, and LAN discovery results are listed by IP. The
+  migration guide gains a section saying the `lan` and `serial`
+  backends need an explicit radio model — before 3.0 a missing model
+  fell back to the IC-7610 profile. The site is published as two
+  documentation versions, 2.11 and 3.0, with a version selector.
 
 ## [3.0.0b9] — 2026-09-27
 
