@@ -780,9 +780,16 @@ async def test_silent_link_with_ready_session_declares_link_down(
 
     with caplog.at_level(logging.ERROR, logger="rigplane.backends._icom_serial_base"):
         now["t"] += silence_limit + 1.0
-        assert await _wait_until(
+        tripped = await _wait_until(
             lambda: radio.conn_state == RadioConnectionState.RECONNECTING,
             timeout_s=2.0,
+        )
+        tracker = radio._civ_request_tracker  # noqa: SLF001
+        assert tripped, (
+            f"link-down never fired; pending={tracker.pending_count} "
+            f"response_pending={tracker.response_pending_count} "
+            f"silence_started={radio._civ_silence_started_monotonic} "  # noqa: SLF001
+            f"timeouts={tracker.timeout_count}"
         )
 
     error_lines = [

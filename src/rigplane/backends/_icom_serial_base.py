@@ -291,9 +291,8 @@ class _IcomSerialRadioBase(CoreRadio):
         self._civ_silence_started_monotonic: float | None = None
         self._civ_silence_time_source: Callable[[], float] = time.monotonic
         self._civ_link_down_note = ""
-        self._serial_link_down_silence_timeout_s = _derive_link_down_silence_timeout(
-            self._profile,
-            self._civ_get_timeout,
+        self._serial_link_down_silence_timeout_s = (
+            _derive_link_down_silence_timeout(self._profile, self._civ_get_timeout)
         )
         # MOR-1440 review round 2: identity of the transport the above two
         # baselines were last measured against. Every (re)connect installs a
