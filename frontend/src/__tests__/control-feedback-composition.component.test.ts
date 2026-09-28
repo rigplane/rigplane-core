@@ -156,11 +156,15 @@ function skinFor(kind: Presentation): SkinId {
   return kind === 'narrow-mobile' ? 'mobile' : 'desktop-v2';
 }
 
-function render(kind: Presentation): void {
+function render(kind: Presentation, phoneCapsOverride?: Capabilities): void {
   // The phone mount needs its table catalog in place before the layout
   // resolves the FilterPanel's width rule; a fresh state revision (above
-  // beforeEach's) keeps the re-set monotonic within one test.
-  expect(setCapabilities(kind === 'narrow-mobile' ? phoneCaps() : liveCaps())).toBe(true);
+  // beforeEach's) keeps the re-set monotonic within one test. The PBT
+  // block below passes a NON-table phone caps: the chip FilterPanel's
+  // table branch carries no PBT rows, so the phone's real PBT control is
+  // the non-table panel.
+  const phone = phoneCapsOverride ?? phoneCaps();
+  expect(setCapabilities(kind === 'narrow-mobile' ? phone : liveCaps())).toBe(true);
   expect(setRadioState(liveState(9))).toBe(true);
   target = document.createElement('div');
   document.body.appendChild(target);
@@ -364,7 +368,7 @@ describe('one PBT inner lifecycle is bounded and equivalent on desktop, narrow m
   it.each(['desktop', 'narrow-mobile', 'workspace-selected'] as const)(
     '%s: a pending set_pbt_inner reads submitted and busy with the confirmed value canonical',
     (kind) => {
-      render(kind);
+      render(kind, liveCaps());
       dispatchRadioIntent({ name: 'set_pbt_inner', params: { value: dragRaw, receiver: 0 } });
       flushSync();
 
@@ -381,7 +385,7 @@ describe('one PBT inner lifecycle is bounded and equivalent on desktop, narrow m
   it.each(['desktop', 'narrow-mobile', 'workspace-selected'] as const)(
     '%s: a drag dispatches exactly one committed set_pbt_inner, never a per-move stream',
     (kind) => {
-      render(kind);
+      render(kind, liveCaps());
       const control = pbtInnerControl();
       if (control instanceof HTMLInputElement) {
         // The native-range seat: every intermediate `input` stays a local

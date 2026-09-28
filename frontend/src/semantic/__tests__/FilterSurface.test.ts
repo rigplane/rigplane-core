@@ -1089,11 +1089,13 @@ describe('passband scalar feedback (MOR-1687 part 1)', () => {
       expect(input.getAttribute('aria-busy')).toBe('true');
       expect(input.value).toBe('600');
       expect(input.disabled).toBe(false);
-      // MOR-1691: the visible number follows the operator's requested value
-      // (draft -> pending target) — it never claims confirmation: the row's
-      // marker for that is the input's own command phase/aria-busy above,
-      // and canonical truth still comes only from the readback.
-      expect(s.output(`filter-${field}`)!.textContent).toBe('600');
+      // MOR-1691: the PBT rows' visible number follows the operator's
+      // requested value (draft -> pending target) — it never claims
+      // confirmation: the row's marker for that is the input's own command
+      // phase/aria-busy above, and canonical truth still comes only from
+      // the readback. The IF-shift row's readout stays canonical (its own
+      // long-tail ticket owns that row's number).
+      expect(s.output(`filter-${field}`)!.textContent).toBe(field === 'ifShift' ? '0' : '600');
     }, {}, { [feedbackKey]: passbandFeedback(control, PENDING) } as PendingProps);
   });
 
@@ -1198,7 +1200,11 @@ describe('passband scalar feedback (MOR-1687 part 1)', () => {
       });
       expect(input.value).toBe('600');
       expect(input.dataset.commandPhase).toBe('submitted');
-      expect(target.querySelector<HTMLElement>(`[data-testid="filter-${field}"] output`)!.textContent).toBe('25');
+      // MOR-1691: the PBT number holds the operator's requested value with
+      // the thumb (draft -> pending target); the IF-shift readout keeps its
+      // own confirmed/reading text.
+      expect(target.querySelector<HTMLElement>(`[data-testid="filter-${field}"] output`)!.textContent)
+        .toBe(field === 'ifShift' ? '25' : '600');
       // Readback confirms: the thumb and the readout end on the confirmed Hz.
       flushSync(() => {
         feedbackState.set('feedback', passbandFeedback(control, {
