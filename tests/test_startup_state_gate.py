@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
@@ -2205,8 +2206,10 @@ async def test_silent_link_serves_even_after_the_reconnect_reopens_the_port(
         # tick ~5 ms — too short to poll for; the link-down ERROR record
         # below is its durable witness.)
         assert await _wait_until(
-            lambda: link.connect_calls >= 2
-            and radio.conn_state == RadioConnectionState.CONNECTED,
+            lambda: (
+                link.connect_calls >= 2
+                and radio.conn_state == RadioConnectionState.CONNECTED
+            ),
             timeout_s=2.0,
         )
     link_down_errors = [
@@ -2244,6 +2247,80 @@ async def test_silent_link_serves_even_after_the_reconnect_reopens_the_port(
     assert len(warnings) == 1
 
     await radio.disconnect()
+
+
+async def _served_silent_server_with_reopened_port() -> tuple[WebServer, IcomRadio]:
+    """The round-3 stand shape: the gate served silently, then the watchdog
+    reopened the present-but-silent port — the live state (and
+    ``radio_ready``) say connected/ready again while the radio has still
+    answered nothing (the 2026-09-28 pty check on mini .77)."""
+
+    from rigplane.runtime._connection_state import RadioConnectionState
+
+    PTT = FieldPath.global_("tx_state", "ptt")
+    scheduler = AcquisitionScheduler(profile=_critical_wait_profile())
+    server = WebServer(IcomRadio("192.168.1.100", model="IC-7300"), _gated_config())
+    radio = _silent_link_radio(server, scheduler)
+
+    clock = _GateClock(stop_at=6.0)
+    clock.on_tick = _re_read_without_answer(scheduler, PTT)
+    with _fake_gate_clock(clock):
+        await _await_initial_state_acquisition(server, sweep=True)
+
+    # The raced instant after the reopen: the transport is back, the CI-V
+    # stream counts as healthy, and a fresh-enough liveness tick makes the
+    # session count as ready — the exact input the live-state health read
+    # misreported as ``connected``/``ready``.
+    radio._conn_state = RadioConnectionState.CONNECTED
+    radio._civ_transport = object()
+    radio._civ_stream_ready = True
+    radio._civ_recovering = False
+    radio._last_civ_data_received = time.monotonic()
+    return server, radio
+
+
+@pytest.mark.asyncio
+async def test_served_silent_link_publishes_not_answering_after_reconnect() -> None:
+    """MOR-2841 (round 3): the reopened silent port must not read as healthy.
+
+    After the gate served in the radio-not-answering state AND the link has
+    reconnected (``radioLink`` 'connected', the session even counting as
+    ready), the published ``radioHealth`` still reports ``stalled`` plus
+    ``radio_powered_off_likely`` — the gate's silent-release decision, not
+    the live link state, owns the verdict.
+    """
+
+    server, radio = await _served_silent_server_with_reopened_port()
+
+    assert radio.radio_ready is True  # not vacuous: live evidence says ready
+
+    health = server._build_radio_health()
+    assert health["radioLink"] == "connected"
+    assert health["readiness"] == "stalled"
+    assert health["likelyCause"] == "radio_powered_off_likely"
+
+
+@pytest.mark.asyncio
+async def test_first_radio_observation_clears_the_not_answering_verdict() -> None:
+    """MOR-2841 (round 3): the verdict clears at the radio's first answer.
+
+    The served-silent mark is durable, but the health builder re-reads the
+    gate's own no-radio-observation predicate on every publish: one radio
+    observation in the store ends the powered-off verdict, and the healthy
+    session is reported normally again.
+    """
+
+    server, radio = await _served_silent_server_with_reopened_port()
+    server.command_state_store.apply(
+        _observation(FieldPath.global_("tx_state", "ptt"), False, at=time.monotonic())
+    )
+
+    assert server._served_with_silent_link is True  # the mark itself stays
+
+    health = server._build_radio_health()
+    assert health["radioLink"] == "connected"
+    assert health["readiness"] == "ready"
+    assert health["likelyCause"] == "unknown"
 
 
 @pytest.mark.asyncio

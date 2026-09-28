@@ -21,7 +21,7 @@ const h = vi.hoisted(() => ({
   offMessage: vi.fn(),
   powerOn: vi.fn(),
   radioPowerOn: null as boolean | null,
-  radioHealth: null as { radioLink: string } | null,
+  radioHealth: null as { radioLink: string; likelyCause?: string } | null,
   powerOnCommand: true,
   ptt: false,
   notifyRuntime: () => {},
@@ -248,13 +248,15 @@ describe('AppGlobalHost — standalone, with no layout mounted', () => {
     unmount(instance);
   });
 
-  // MOR-2841 (owner decision 2026-09-28, option (a)): a radio that answers
-  // nothing at startup gets the existing powered-off overlay — no second
-  // overlay, no fabricated powerOn=false. The signal is the connection
-  // state the server already publishes: radioHealth.radioLink
-  // 'reconnecting' while powerOn is unknown.
+  // MOR-2841 (round 3): a radio that answers nothing at startup gets the
+  // existing powered-off overlay — no second overlay, no fabricated
+  // powerOn=false. The signal is the server's own verdict,
+  // radioHealth.likelyCause 'radio_powered_off_likely' — held from the
+  // gate's silent release until the radio's first observation, even while
+  // the live link state says 'connected' (the watchdog reopens the silent
+  // port within seconds, which the round-2 radioLink condition never saw).
   it('shows the power-off overlay with Power ON while the radio does not answer', () => {
-    h.radioHealth = { radioLink: 'reconnecting' };
+    h.radioHealth = { radioLink: 'connected', likelyCause: 'radio_powered_off_likely' };
     const instance = mountAt(AppGlobalHost);
 
     const overlay = powerEl();
@@ -267,15 +269,15 @@ describe('AppGlobalHost — standalone, with no layout mounted', () => {
     unmount(instance);
   });
 
-  // The overlay follows the state out: once the radio answers, powerOn is
-  // observed and the reconnecting link recovers — normal RX, no overlay.
+  // The overlay follows the state out: once the radio answers, the server
+  // clears the cause and powerOn is observed — normal RX, no overlay.
   it('drops the not-answering overlay once the radio answers', () => {
-    h.radioHealth = { radioLink: 'reconnecting' };
+    h.radioHealth = { radioLink: 'connected', likelyCause: 'radio_powered_off_likely' };
     const instance = mountAt(AppGlobalHost);
     expect(powerEl()).not.toBeNull();
 
     h.radioPowerOn = true;
-    h.radioHealth = { radioLink: 'connected' };
+    h.radioHealth = { radioLink: 'connected', likelyCause: 'unknown' };
     h.notifyRuntime();
     flushSync();
     expect(powerEl()).toBeNull();
@@ -287,7 +289,7 @@ describe('AppGlobalHost — standalone, with no layout mounted', () => {
   // gets the plain "cannot power on from here" sentence, not a dead button.
   it('replaces the Power ON action with a plain sentence when the profile has no power_on', () => {
     h.powerOnCommand = false;
-    h.radioHealth = { radioLink: 'reconnecting' };
+    h.radioHealth = { radioLink: 'connected', likelyCause: 'radio_powered_off_likely' };
     const instance = mountAt(AppGlobalHost);
 
     const overlay = powerEl();
@@ -298,12 +300,12 @@ describe('AppGlobalHost — standalone, with no layout mounted', () => {
     unmount(instance);
   });
 
-  // Normal RX must stay overlay-free even while the link is mid-reconnect:
-  // powerOn was observed true, so the reconnect is a transient gap, not
-  // the silent powered-off startup state.
-  it('does not show the not-answering overlay for a transient reconnect with power observed on', () => {
+  // Normal RX must stay overlay-free even while the not-answering cause
+  // lingers: powerOn was observed true, so the radio had answered — the
+  // cause alone, whatever the link state, must not bring the overlay back.
+  it('does not show the not-answering overlay when power is observed on, whatever the link state', () => {
     h.radioPowerOn = true;
-    h.radioHealth = { radioLink: 'reconnecting' };
+    h.radioHealth = { radioLink: 'reconnecting', likelyCause: 'radio_powered_off_likely' };
     const instance = mountAt(AppGlobalHost);
     expect(powerEl()).toBeNull();
     unmount(instance);
