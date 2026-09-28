@@ -101,6 +101,8 @@
   "core.settings.workspace.importRejectedTitle": "Import rejected",
 
   "core.overlay.poweredOff.label": "Radio is powered off",
+  "core.overlay.poweredOff.notAnsweringLabel": "Radio does not answer — it may be switched off",
+  "core.overlay.poweredOff.noRemotePowerOn": "This radio cannot be powered on from RigPlane.",
   "core.overlay.poweredOff.powerOnButton": "Power ON",
   "core.overlay.poweredOff.failedPowerOn": "Failed to power on: {detail}",
   "core.overlay.scopeDisconnected": "Scope disconnected — reconnecting…",

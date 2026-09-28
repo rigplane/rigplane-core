@@ -22,6 +22,7 @@ import {
   isReconnecting,
   getRadioStatus,
   getRadioPowerOn,
+  getRadioHealth,
 } from '$lib/stores/connection.svelte';
 import { isRxSilent } from '$lib/stores/rx-silence.svelte';
 import {
@@ -44,7 +45,7 @@ import type { ScopeController, ScopeSource } from './scope-controller.svelte';
 import { PresentationResourceHost } from './resource-host';
 import type { ResourceHealth, ResourceLease } from './resource-demand';
 import { createSubscriber } from 'svelte/reactivity';
-import type { ServerState } from '$lib/types/state';
+import type { RadioHealthPublic, ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { WsIncoming } from '$lib/types/protocol';
 import type { ConnectionState } from '$lib/transport/ws-client';
@@ -221,6 +222,9 @@ class FrontendRuntime {
   get connectionReconnecting(): boolean { return isReconnecting(); }
   get radioStatus(): string { return getRadioStatus(); }
   get radioPowerOn(): boolean | null { return getRadioPowerOn(); }
+  /** MOR-2841: the published radio health — the UI's honest "not answering"
+   *  signal (radioLink 'reconnecting' while powerOn is unknown). */
+  get radioHealth(): RadioHealthPublic | null { return getRadioHealth(); }
 
   /**
    * Connection snapshot (for contexts that need all fields at once).

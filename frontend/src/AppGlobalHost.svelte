@@ -59,6 +59,24 @@
   // lookup raced the lazily loaded presentation and missed bar moves that
   // resize nothing (the link-lost row above the bar).
 
+  // MOR-2841 (owner decision 2026-09-28, option (a)): a radio that answers
+  // nothing at startup is the powered-off rig, and the server now serves in
+  // a radio-not-answering state instead of aborting. The UI learns "not
+  // answering" from the connection state the server already publishes —
+  // radioHealth.radioLink 'reconnecting' while powerOn is unknown (never
+  // observed) — so no reading is fabricated for the overlay. powerOn
+  // known-true or known-false keeps its existing meanings.
+  let radioNotAnswering = $derived(
+    runtime.radioPowerOn === null
+      && runtime.radioHealth?.radioLink === 'reconnecting',
+  );
+  let overlayVisible = $derived(runtime.radioPowerOn === false || radioNotAnswering);
+  // The Power ON action exists only where the profile binds a CI-V
+  // power-on command (`power_on` in rigs/*.toml, published as
+  // capabilities.powerOnCommand). Elsewhere the operator gets the plain
+  // "cannot power on from here" sentence instead of a dead button.
+  let powerOnCommand = $derived(runtime.caps?.powerOnCommand === true);
+
   async function handlePowerOn(): Promise<void> {
     try {
       await runtime.system.powerOn();
@@ -88,24 +106,37 @@
     </div>
   {/if}
 
-  {#if runtime.radioPowerOn === false}
+  {#if overlayVisible}
     <div
       class="power-off-overlay"
       style:top="var(--rp-status-bar-bottom, 0px)"
       role="dialog"
       aria-modal="true"
       data-testid="global-power-off"
-      aria-label={t('core.overlay.poweredOff.label')}
+      data-state={radioNotAnswering ? 'not-answering' : 'powered-off'}
+      aria-label={t(
+        radioNotAnswering
+          ? 'core.overlay.poweredOff.notAnsweringLabel'
+          : 'core.overlay.poweredOff.label',
+      )}
     >
       <div class="power-off-content">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
           <line x1="12" y1="2" x2="12" y2="12" />
         </svg>
-        <span class="power-off-label">{t('core.overlay.poweredOff.label')}</span>
-        <button class="power-on-btn" onclick={handlePowerOn}>
-          {t('core.overlay.poweredOff.powerOnButton')}
-        </button>
+        <span class="power-off-label">{t(
+          radioNotAnswering
+            ? 'core.overlay.poweredOff.notAnsweringLabel'
+            : 'core.overlay.poweredOff.label',
+        )}</span>
+        {#if powerOnCommand}
+          <button class="power-on-btn" onclick={handlePowerOn}>
+            {t('core.overlay.poweredOff.powerOnButton')}
+          </button>
+        {:else if radioNotAnswering}
+          <span class="power-off-hint">{t('core.overlay.poweredOff.noRemotePowerOn')}</span>
+        {/if}
       </div>
     </div>
   {/if}
@@ -239,5 +270,12 @@
   .power-on-btn:hover {
     background: rgba(40, 160, 40, 0.4);
     border-color: rgba(40, 160, 40, 0.8);
+  }
+
+  .power-off-hint {
+    max-width: 32ch;
+    font-size: 13px;
+    text-align: center;
+    color: var(--v2-text-dim, #888);
   }
 </style>

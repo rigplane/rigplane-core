@@ -3831,6 +3831,13 @@ class WebServer:
             "audioTxRoute": tx_audio.route,
             "audioTxRequiredModInputSource": tx_audio.required_mod_input_source,
             "capabilities": sorted(caps),
+            # MOR-2841: whether the profile binds a CI-V power-on command
+            # (``power_on`` in ``rigs/*.toml``) — the fact that gates the
+            # power-off overlay's Power ON action. ``power_control`` alone
+            # does not: X6100/X6200 declare it for the RF-power level while
+            # leaving ``power_on`` undeclared (a level-only profile, see
+            # ``RadioProfile.infers_power_on_from_liveness``).
+            "powerOnCommand": profile.supports_command("power_on"),
             "receivers": profile.receiver_count,
             "vfoScheme": profile.vfo_scheme,
             "vfoReadback": profile.vfo_readback,
