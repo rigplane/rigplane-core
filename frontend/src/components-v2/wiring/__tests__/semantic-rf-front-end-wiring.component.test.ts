@@ -1466,7 +1466,10 @@ describe('MOR-1693: the combined RF/SQL knob behaves identically on the semantic
     flushSync();
     expect(snap()).toMatchObject({
       groupPhase: { rf: 'submitted', sql: 'idle' },
-      targets: { rf: '0.5', sql: '' },
+      // 128 is the dispatched raw level for the 0.23 leg stop (pinned by the
+      // canonical-position test above); the lane target is the descriptor's
+      // normalized level/255, and the untouched SQL lane renders ''.
+      targets: { rf: String(128 / 255), sql: '' },
       values: { rf: '50%', sql: '0%' },
       thumb: 0.23,
       aria: { text: 'RF 50%, squelch 0%', busy: 'true', disabled: 'false' },
