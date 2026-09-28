@@ -256,6 +256,13 @@ class _IcomSerialRadioBase(CoreRadio):
         # mark from the outgoing transport — see
         # ``_civ_watchdog_rebaseline``.
         self._civ_watchdog_last_transport: object | None = None
+        # MOR-2841: durable record that the link-down detector has fired at
+        # least once. The RECONNECTING state it announces is transient — the
+        # watchdog's soft_reconnect can reopen a present-but-silent port
+        # within seconds and return to CONNECTED (stand evidence,
+        # 2026-09-28) — while the fact that the radio answered nothing
+        # survives for the web startup gate to read.
+        self._civ_link_down_ever_declared = False
 
     # ------------------------------------------------------------------
     # Backend identity
@@ -1194,6 +1201,7 @@ class _IcomSerialRadioBase(CoreRadio):
             self._civ_consecutive_timeouts,
         )
         self._conn_state = RadioConnectionState.RECONNECTING
+        self._civ_link_down_ever_declared = True
         self._civ_stream_ready = False
         self._civ_recovering = True
         self._civ_consecutive_timeouts = 0

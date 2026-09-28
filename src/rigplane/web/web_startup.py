@@ -200,20 +200,29 @@ def _abort_on_startup_defect(scheduler: AcquisitionScheduler) -> None:
 
 
 def _radio_link_down(server: WebServer) -> bool:
-    """Whether the backend's link-down detector has fired (MOR-2841).
+    """Whether the backend's link answers nothing (MOR-2841).
 
     The serial watchdog's consecutive-timeout detector
     (``backends/_icom_serial_base.py: _declare_serial_link_down``) is the
     one signal that distinguishes "the radio answers nothing" from "the
-    radio answers some reads but refuses one": it forces the connection
-    state machine to ``RECONNECTING`` and keeps retrying. Read through the
-    same ``conn_state`` attribute ``classify_radio_health`` reads, so this
-    cannot drift from the health the server already publishes.
+    radio answers some reads but refuses one". Read two ways, so the
+    answer cannot depend on the connection state at the instant of the
+    question: through the same ``conn_state`` attribute
+    ``classify_radio_health`` reads, and through the backend's durable
+    ``_civ_link_down_ever_declared`` record. The state alone is
+    transient — stand evidence (2026-09-28): the watchdog reopened the
+    present-but-silent port two seconds after declaring link-down, the
+    gate decided four seconds later against CONNECTED, and the
+    MOR-2749 abort won — so what the gate needs is that the detector
+    fired, not the state it momentarily set.
     """
 
-    conn_state = getattr(server._radio, "conn_state", None)
+    radio = server._radio
+    conn_state = getattr(radio, "conn_state", None)
     value = getattr(conn_state, "value", conn_state)
-    return isinstance(value, str) and value == "reconnecting"
+    return (isinstance(value, str) and value == "reconnecting") or bool(
+        getattr(radio, "_civ_link_down_ever_declared", False)
+    )
 
 
 def _link_answers_nothing(server: WebServer) -> bool:
@@ -341,7 +350,10 @@ async def _await_initial_state_acquisition(
       that gap is MOR-2757; and
     * MOR-2841 (owner decision, 2026-09-28 09:00 EDT, option (a)): a link
       that answers NOTHING — zero fields observed and the backend's
-      link-down detector fired (connection state ``RECONNECTING``) — is a
+      link-down detector fired (connection state ``RECONNECTING``, or its
+      durable ``_civ_link_down_ever_declared`` record when the reconnect
+      cycle has already reopened the silent port back to ``CONNECTED``) —
+      is a
       powered-off radio, not a half-working server. The gate releases
       with one WARNING naming the radio-not-answering state and the
       listener binds; nothing fabricates a reading, the UI learns "not
