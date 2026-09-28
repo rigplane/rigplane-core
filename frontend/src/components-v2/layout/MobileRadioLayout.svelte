@@ -859,8 +859,20 @@
           </div>
           <!-- The radio's scope controls: the existing semantic surface, the
                same `instruments.scopeControls` the desktop composition hosts
-               — never a second scope-controls implementation. -->
-          {@render instruments.scopeControls()}
+               — never a second scope-controls implementation.
+               MOR-2895: the explicit `true` (allowBare) is required. With no
+               argument the snippet inherits `allowBareSurfaces`, which is
+               FALSE in this hosted mount (children defined and App resolves
+               a surface plan for the mobile layout), and the mobile manifest
+               declares no `scopeControls` zone — `zoned()` therefore
+               rendered NOTHING here, while the toolbar-less phone had no
+               other home for SPAN / REF / CTR-FIX / HOLD (owner, 2026-09-28
+               14:37 EDT). The same explicit-bare channel RadioLayout's
+               semantic deck content uses; the surface keeps the desktop
+               toolbar's own handlers and facts. -->
+          <div class="m-scope-controls">
+            {@render instruments.scopeControls(true)}
+          </div>
         </CollapsiblePanel>
       </section>
     {:else if activeChipId === 'scan'}
@@ -1622,6 +1634,59 @@
   }
 
   .m-scope-keys :global(.scope-flat-key) {
+    min-width: 72px;
+    padding: 0 12px;
+  }
+
+  /* ── Semantic scope controls in the SCOPE tab (MOR-2895) ──
+     The desktop toolbar's radio-held row (ScopeControlsSurface) in its
+     native flat-key grammar. The portrait button floors above
+     (`.m-layout :global(button)`) already give every key a 16px font and a
+     44px box; here only the row geometry and the NON-button labels live
+     (MOR-2816: rows may wrap, labels are never clipped). The surface's own
+     narrow-width hide-bands (which fold REF/HOLD/MAIN-SUB into More,
+     measured for 22px keys) are switched off: with wrapping rows every
+     control stays directly visible — the owner asked for Reference and Span
+     on this tab — and the More panel keeps only its native extras (full
+     mode, EDGE, CENTRE, RBW, SPEED, DUAL, During TX, VBW narrow). */
+  .m-scope-controls {
+    padding: 0 10px 10px;
+  }
+
+  .m-scope-controls :global(.scope-controls-row) {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  .m-scope-controls :global(.scope-controls-row > [data-overflow]) {
+    display: inline-flex !important;
+  }
+
+  .m-scope-controls :global(.scope-more-overflow) {
+    display: none !important;
+  }
+
+  /* Labels and stepper values are not buttons, so the button floors never
+     reach them — they keep their own 16px floor here. */
+  .m-scope-controls :global(.scope-name),
+  .m-scope-controls :global(.scope-finite-name) {
+    font-size: 16px;
+  }
+
+  .m-scope-controls :global(.scope-step-value),
+  .m-scope-controls :global(.scope-finite-slot),
+  .m-scope-controls :global(.scope-finite-value) {
+    font-size: 16px;
+    height: 44px;
+  }
+
+  .m-scope-controls :global(.scope-step-key) {
+    width: 44px;
+    height: 44px;
+    font-size: 18px;
+  }
+
+  .m-scope-controls :global(.scope-flat-key) {
     min-width: 72px;
     padding: 0 12px;
   }
