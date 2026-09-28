@@ -8,6 +8,7 @@
     ReceiverFrequencyMount, ReceiverInstrumentHandles, ReceiverSMeterRenderer,
     ReceiverVfoAppearance,
   } from '../../../../semantic/ReceiverInstrumentHost.svelte';
+  import type { VfoFactKind as FixtureVfoFactKind } from '../../../../semantic/VfoIndicatorRow.svelte';
   import type { TxAuxFiniteHandles } from '../../../../semantic/tx-aux-finite';
   import type { VfoOperationHandles } from '../../../../semantic/VfoOperationSeatHost.svelte';
   import type { BandControlLayout } from '../../../../semantic/band-instruments';
@@ -50,9 +51,11 @@
   const frequency = createRawSnippet<[mount?: ReceiverFrequencyMount]>(() => ({ render: () => '' }));
   const meter = createRawSnippet<[renderer?: ReceiverSMeterRenderer]>(() => ({ render: () => '' }));
   const operations = createRawSnippet<[appearance: ReceiverVfoAppearance]>(() => ({ render: () => '' }));
+  const facts = createRawSnippet<[facts: readonly FixtureVfoFactKind[]]>(() => ({ render: () => '' }));
   const receiverInstruments = {
     mainFrequency: frequency, subFrequency: frequency,
     mainSMeter: meter, subSMeter: meter,
+    mainFacts: facts, subFacts: facts,
     frequencyTunable: () => true,
     vfoOperations: operations,
   } satisfies ReceiverInstrumentHandles;
