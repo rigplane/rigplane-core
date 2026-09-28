@@ -2178,7 +2178,11 @@ async def test_silent_link_serves_even_after_the_reconnect_reopens_the_port(
     from rigplane.commands import _CMD_FREQ_GET
     from rigplane.exceptions import TimeoutError as RigplaneTimeoutError
     from rigplane.runtime._connection_state import RadioConnectionState
-    from test_icom7610_serial_radio import _FakeSerialCivLink, _wait_until
+    from test_icom7610_serial_radio import (
+        _FakeSerialCivLink,
+        _silence_clock_reset_gap,
+        _wait_until,
+    )
 
     # Phase A — the stand sequence through the real backend: silent link,
     # link-down fires, and the reconnect REOPENS the silent port.
@@ -2200,6 +2204,13 @@ async def test_silent_link_serves_even_after_the_reconnect_reopens_the_port(
         for _ in range(radio._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD):
             with pytest.raises(RigplaneTimeoutError):
                 await radio._send_civ_raw(frame, wait_response=True)
+            # MOR-2861 (merge of #3866): back-to-back timed-out commands run
+            # the silence clock continuously across their answer windows and
+            # declare link-down at 2 x window + one watchdog tick — mid-send,
+            # before the consecutive-timeout threshold this phase pins. The
+            # quiet gap between sends is the same idiom the MOR-2861 suite
+            # uses (``_silence_clock_reset_gap``).
+            await _silence_clock_reset_gap(radio)
         # ...and the reopen: connect call #2 succeeds on the silent port, so
         # the state machine is back to CONNECTED before the gate ever
         # decides. (The transient RECONNECTING window lasts one watchdog

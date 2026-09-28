@@ -35,7 +35,10 @@ from ..startup_checks import assert_radio_startup_ready
 from .discovery import DiscoveryResponder, RadioInfo  # noqa: TID251
 from .dx_cluster import DXClusterClient  # noqa: TID251
 from .radio_poller import RadioPoller  # noqa: TID251
-from .runtime_helpers import runtime_capabilities  # noqa: TID251
+from .runtime_helpers import (  # noqa: TID251
+    runtime_capabilities,
+    store_has_radio_observation,
+)
 
 if TYPE_CHECKING:
     from ..runtime.managed_tx_composition import ManagedTxCompositionPort
@@ -238,24 +241,32 @@ def _link_answers_nothing(server: WebServer) -> bool:
     topology's ``active``) are not radio answers and do not break the
     silence — ``_publish_single_receiver_topology`` writes one at
     ``WebServer`` construction, before the radio is ever asked anything.
+    The observed-half is the shared
+    :func:`runtime_helpers.store_has_radio_observation` predicate — the one
+    ``WebServer._build_radio_health`` re-reads so the served-silent verdict
+    clears at the radio's first answer.
     """
 
-    fields = server.command_state_store.snapshot().fields
-    radio_observed = any(field.source.source != "local_reconcile" for field in fields)
+    radio_observed = store_has_radio_observation(server.command_state_store)
     return not radio_observed and _radio_link_down(server)
 
 
-def _serve_with_silent_link() -> None:
+def _serve_with_silent_link(server: WebServer) -> None:
     """Release the startup gate for a completely silent link (MOR-2841).
 
     One WARNING names the state; the watchdog keeps retrying the link and
     the poller keeps asking, so when the radio starts answering (for
     example after Power ON from the UI) acquisition completes normally.
-    Nothing here fabricates a reading: the store stays empty and the UI
-    learns "not answering" from the connection state the server already
-    publishes (``radioHealth.radioLink == "reconnecting"``).
+    Nothing here fabricates a reading: the store stays empty, and the
+    durable ``_served_with_silent_link`` mark is what the published
+    ``radioHealth`` holds onto — ``classify_radio_health`` keeps reporting
+    ``stalled`` / ``radio_powered_off_likely`` until the radio's first
+    observation, whatever the live link state does in between (the stand,
+    2026-09-28: the watchdog reopened the silent port to ``CONNECTED``
+    within seconds, and the live-state read called that ``ready``).
     """
 
+    server._served_with_silent_link = True
     logger.warning(
         "startup gate: the radio is not answering (link down, no field "
         "observed); serving in a radio-not-answering state — it may be "
@@ -356,10 +367,12 @@ async def _await_initial_state_acquisition(
       is a
       powered-off radio, not a half-working server. The gate releases
       with one WARNING naming the radio-not-answering state and the
-      listener binds; nothing fabricates a reading, the UI learns "not
-      answering" from the connection state the server already publishes,
-      and transmit stays refused while the safety-critical fields are
-      unobserved (the managed TX authority's provider stays not-ready).
+      listener binds; nothing fabricates a reading, the published
+      ``radioHealth`` keeps reporting ``stalled`` /
+      ``radio_powered_off_likely`` until the radio's first observation
+      (whatever the live link state does in between), and transmit stays
+      refused while the safety-critical fields are unobserved (the
+      managed TX authority's provider stays not-ready).
 
     Before that decision there was no serve-anyway timeout: every declared,
     non-``tx_only`` path held the listener open forever.
@@ -439,7 +452,7 @@ async def _await_initial_state_acquisition(
                 # starts answering acquisition completes normally. A
                 # radio that answered SOME reads still fails below.
                 if _link_answers_nothing(server):
-                    _serve_with_silent_link()
+                    _serve_with_silent_link(server)
                     return
                 _record_critical_startup_defect(server, scheduler, path)
                 _abort_on_startup_defect(scheduler)

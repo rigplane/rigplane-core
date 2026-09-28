@@ -61,14 +61,18 @@
 
   // MOR-2841 (owner decision 2026-09-28, option (a)): a radio that answers
   // nothing at startup is the powered-off rig, and the server now serves in
-  // a radio-not-answering state instead of aborting. The UI learns "not
-  // answering" from the connection state the server already publishes —
-  // radioHealth.radioLink 'reconnecting' while powerOn is unknown (never
-  // observed) — so no reading is fabricated for the overlay. powerOn
-  // known-true or known-false keeps its existing meanings.
+  // a radio-not-answering state instead of aborting. The server's own
+  // verdict is radioHealth.likelyCause 'radio_powered_off_likely' — held
+  // from the gate's silent release until the radio's first observation,
+  // whatever the live link state does in between (the watchdog reopens the
+  // silent port to 'connected' within seconds, which round 2's
+  // radioLink 'reconnecting' condition never saw). The overlay follows
+  // that cause while power is not known ON, so Power ON stays reachable;
+  // no reading is fabricated for the overlay. powerOn known-true or
+  // known-false keeps its existing meanings.
   let radioNotAnswering = $derived(
-    runtime.radioPowerOn === null
-      && runtime.radioHealth?.radioLink === 'reconnecting',
+    runtime.radioPowerOn !== true
+      && runtime.radioHealth?.likelyCause === 'radio_powered_off_likely',
   );
   let overlayVisible = $derived(runtime.radioPowerOn === false || radioNotAnswering);
   // The Power ON action exists only where the profile binds a CI-V
