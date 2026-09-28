@@ -30,7 +30,6 @@ from rigplane.diagnostics import _discovery
 from rigplane.web.handlers.diagnostics import (
     PREVIEW_TTL_SECONDS,
     DiagnosticsHandler,
-    check_origin_or_loopback,
 )
 from rigplane.web.server import WebConfig, WebServer
 
@@ -181,40 +180,99 @@ async def _do_preview(
 
 
 # ---------------------------------------------------------------------------
-# Origin helper
+# Origin rule (dispatch level, MOR-2881)
 # ---------------------------------------------------------------------------
 
 
-def test_origin_helper_loopback_skip() -> None:
-    allowed, reason = check_origin_or_loopback(None, "127.0.0.1", 8080)
-    assert allowed is True
-    assert "loopback" in reason
+@pytest.mark.asyncio
+async def test_cross_origin_send_blocked(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A foreign Origin on POST /api/v1/diagnose/send → 403 before the handler.
+
+    Routed through ``_handle_http`` because MOR-2881 moved the same-origin
+    rule from the handler into ``dispatch_http_request``. The bogus
+    preview_id would yield 404 ``preview_not_found`` if the handler ran,
+    so anything other than the 403 guard refusal means the rule broke.
+    """
+    _register_test_contributor()
+    _stub_dirs(monkeypatch, tmp_path)
+    srv = _make_server()
+    try:
+        body = json.dumps({"preview_id": "does-not-exist", "consent": True}).encode()
+        writer = _FakeWriter()
+        await srv._handle_http(
+            writer,  # type: ignore[arg-type]
+            "POST",
+            "/api/v1/diagnose/send",
+            _post_headers(
+                body,
+                origin="http://evil.example",
+                host="127.0.0.1:8080",
+                **{"x-diagnostic-csrf": "irrelevant-if-origin-refused"},
+            ),
+            _make_reader(body),
+            None,
+        )
+        assert writer.response_status == 403
+        assert writer.response_json["error"] == "forbidden: origin not allowed"
+    finally:
+        await srv._diagnostics.stop()
 
 
-def test_origin_helper_match_exact() -> None:
-    allowed, _ = check_origin_or_loopback(
-        "http://192.168.1.5:8080", "192.168.1.5", 8080
-    )
-    assert allowed is True
+@pytest.mark.asyncio
+async def test_loopback_bind_foreign_origin_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Bind 127.0.0.1 + foreign Origin → 403: the old per-handler loopback
+    skip is gone; the one rule has no loopback exception."""
+    _register_test_contributor()
+    _stub_dirs(monkeypatch, tmp_path)
+    srv = _make_server(host="127.0.0.1")
+    try:
+        body = json.dumps({"preview_id": "does-not-exist"}).encode()
+        writer = _FakeWriter()
+        await srv._handle_http(
+            writer,  # type: ignore[arg-type]
+            "POST",
+            "/api/v1/diagnose/save",
+            _post_headers(
+                body,
+                origin="http://evil.example",
+                host="127.0.0.1:8080",
+            ),
+            _make_reader(body),
+            None,
+        )
+        assert writer.response_status == 403
+        assert writer.response_json["error"] == "forbidden: origin not allowed"
+    finally:
+        await srv._diagnostics.stop()
 
 
-def test_origin_helper_localhost_alias() -> None:
-    allowed, _ = check_origin_or_loopback("http://localhost:8080", "192.168.1.5", 8080)
-    assert allowed is True
-
-
-def test_origin_helper_mismatch() -> None:
-    allowed, reason = check_origin_or_loopback(
-        "http://evil.example", "192.168.1.5", 8080
-    )
-    assert allowed is False
-    assert reason == "origin_mismatch"
-
-
-def test_origin_helper_missing() -> None:
-    allowed, reason = check_origin_or_loopback(None, "192.168.1.5", 8080)
-    assert allowed is False
-    assert reason == "origin_missing"
+@pytest.mark.asyncio
+async def test_loopback_bind_no_origin_admitted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Bind 127.0.0.1, no Origin, Host 127.0.0.1:<port> — the shape of a
+    Pro-proxied request — is admitted through the dispatch-level rule."""
+    _register_test_contributor()
+    _stub_dirs(monkeypatch, tmp_path)
+    srv = _make_server(host="127.0.0.1")
+    try:
+        body = json.dumps({"description": "test"}).encode()
+        writer = _FakeWriter()
+        await srv._handle_http(
+            writer,  # type: ignore[arg-type]
+            "POST",
+            "/api/v1/diagnose/preview",
+            _post_headers(body, host="127.0.0.1:8080"),  # no origin
+            _make_reader(body),
+            None,
+        )
+        assert writer.response_status == 200, writer.response_body
+    finally:
+        await srv._diagnostics.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -448,61 +506,6 @@ async def test_delete_cleans_up_session(
 
 
 @pytest.mark.asyncio
-async def test_cross_origin_send_blocked(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Non-loopback bind + foreign Origin → 403 origin_mismatch."""
-    _register_test_contributor()
-    _stub_dirs(monkeypatch, tmp_path)
-    srv = _make_server(host="192.168.1.10")
-    try:
-        preview = await _do_preview(srv)
-        body = json.dumps(
-            {"preview_id": preview["preview_id"], "consent": True}
-        ).encode()
-        writer = _FakeWriter()
-        await srv._handle_diagnose_send(
-            writer,  # type: ignore[arg-type]
-            headers=_post_headers(
-                body,
-                **{
-                    "x-diagnostic-csrf": preview["csrf_token"],
-                    "origin": "http://evil.example",
-                },
-            ),
-            reader=_make_reader(body),
-        )
-        assert writer.response_status == 403
-        assert writer.response_json["error"] == "origin_mismatch"
-    finally:
-        await srv._diagnostics.stop()
-
-
-@pytest.mark.asyncio
-async def test_loopback_bind_skips_origin_check(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Bind 127.0.0.1 + missing Origin → request is allowed."""
-    _register_test_contributor()
-    _stub_dirs(monkeypatch, tmp_path)
-    srv = _make_server(host="127.0.0.1")
-    try:
-        preview = await _do_preview(srv)
-        body = json.dumps({"preview_id": preview["preview_id"]}).encode()
-        writer = _FakeWriter()
-        await srv._handle_diagnose_save(
-            writer,  # type: ignore[arg-type]
-            headers=_post_headers(
-                body, **{"x-diagnostic-csrf": preview["csrf_token"]}
-            ),  # no origin
-            reader=_make_reader(body),
-        )
-        assert writer.response_status == 200
-    finally:
-        await srv._diagnostics.stop()
-
-
-@pytest.mark.asyncio
 async def test_loopback_bind_still_requires_csrf(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -682,154 +685,6 @@ async def test_delete_with_wrong_csrf_blocked(
         assert writer.response_status == 403
         # Session is still there.
         assert preview["preview_id"] in srv._diagnostics._sessions
-    finally:
-        await srv._diagnostics.stop()
-
-
-@pytest.mark.asyncio
-async def test_wildcard_bind_with_host_header_allows_matching_origin(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Server bound to 0.0.0.0 + matching Host/Origin → allowed."""
-    _register_test_contributor()
-    _stub_dirs(monkeypatch, tmp_path)
-    srv = _make_server(host="0.0.0.0")
-    try:
-        preview = await _do_preview(srv)
-        body = json.dumps({"preview_id": preview["preview_id"]}).encode()
-        writer = _FakeWriter()
-        await srv._handle_diagnose_save(
-            writer,  # type: ignore[arg-type]
-            headers=_post_headers(
-                body,
-                **{
-                    "x-diagnostic-csrf": preview["csrf_token"],
-                    "host": "192.168.1.5:8080",
-                    "origin": "http://192.168.1.5:8080",
-                },
-            ),
-            reader=_make_reader(body),
-        )
-        assert writer.response_status == 200, writer.response_body
-    finally:
-        await srv._diagnostics.stop()
-
-
-@pytest.mark.asyncio
-async def test_wildcard_bind_with_host_header_blocks_mismatched_origin(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Server bound to 0.0.0.0 + Host=192.168.1.5 + Origin=evil → 403."""
-    _register_test_contributor()
-    _stub_dirs(monkeypatch, tmp_path)
-    srv = _make_server(host="0.0.0.0")
-    try:
-        preview = await _do_preview(srv)
-        body = json.dumps(
-            {"preview_id": preview["preview_id"], "consent": True}
-        ).encode()
-        writer = _FakeWriter()
-        await srv._handle_diagnose_send(
-            writer,  # type: ignore[arg-type]
-            headers=_post_headers(
-                body,
-                **{
-                    "x-diagnostic-csrf": preview["csrf_token"],
-                    "host": "192.168.1.5:8080",
-                    "origin": "http://evil.example",
-                },
-            ),
-            reader=_make_reader(body),
-        )
-        assert writer.response_status == 403
-        assert writer.response_json["error"] == "origin_mismatch"
-    finally:
-        await srv._diagnostics.stop()
-
-
-@pytest.mark.asyncio
-async def test_wildcard_bind_loopback_host_skips_origin(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Server bound to 0.0.0.0 + Host=127.0.0.1 (no Origin) → allowed."""
-    _register_test_contributor()
-    _stub_dirs(monkeypatch, tmp_path)
-    srv = _make_server(host="0.0.0.0")
-    try:
-        preview = await _do_preview(srv)
-        body = json.dumps({"preview_id": preview["preview_id"]}).encode()
-        writer = _FakeWriter()
-        await srv._handle_diagnose_save(
-            writer,  # type: ignore[arg-type]
-            headers=_post_headers(
-                body,
-                **{
-                    "x-diagnostic-csrf": preview["csrf_token"],
-                    "host": "127.0.0.1:8080",
-                },
-            ),  # no origin
-            reader=_make_reader(body),
-        )
-        assert writer.response_status == 200, writer.response_body
-    finally:
-        await srv._diagnostics.stop()
-
-
-@pytest.mark.asyncio
-async def test_wildcard_bind_no_host_header_blocks(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Server bound to 0.0.0.0 with no Host header → 403 host_header_missing."""
-    _register_test_contributor()
-    _stub_dirs(monkeypatch, tmp_path)
-    srv = _make_server(host="0.0.0.0")
-    try:
-        preview = await _do_preview(srv)
-        body = json.dumps(
-            {"preview_id": preview["preview_id"], "consent": True}
-        ).encode()
-        writer = _FakeWriter()
-        await srv._handle_diagnose_send(
-            writer,  # type: ignore[arg-type]
-            headers=_post_headers(
-                body,
-                **{
-                    "x-diagnostic-csrf": preview["csrf_token"],
-                    "origin": "http://192.168.1.5:8080",
-                },
-            ),  # no host
-            reader=_make_reader(body),
-        )
-        assert writer.response_status == 403
-        assert writer.response_json["error"] == "host_header_missing"
-    finally:
-        await srv._diagnostics.stop()
-
-
-@pytest.mark.asyncio
-async def test_origin_missing_returns_distinct_code(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Non-loopback bind with no Origin → 403 with code 'origin_missing'."""
-    _register_test_contributor()
-    _stub_dirs(monkeypatch, tmp_path)
-    srv = _make_server(host="192.168.1.10")
-    try:
-        preview = await _do_preview(srv)
-        body = json.dumps(
-            {"preview_id": preview["preview_id"], "consent": True}
-        ).encode()
-        writer = _FakeWriter()
-        await srv._handle_diagnose_send(
-            writer,  # type: ignore[arg-type]
-            headers=_post_headers(
-                body,
-                **{"x-diagnostic-csrf": preview["csrf_token"]},
-            ),  # no origin, no host
-            reader=_make_reader(body),
-        )
-        assert writer.response_status == 403
-        assert writer.response_json["error"] == "origin_missing"
     finally:
         await srv._diagnostics.stop()
 

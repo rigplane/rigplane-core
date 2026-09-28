@@ -1,12 +1,12 @@
-"""Host allowlist and WebSocket Origin guard contracts (MOR-2880).
+"""Host allowlist and Origin guard contracts (MOR-2880, MOR-2881).
 
-Pins the two guards added to the web server:
+Pins the guards of the web server:
 
 - a Host-header allowlist enforced on every WebSocket upgrade and every
   HTTP route before any handler (421 on refusal), and
-- a same-origin ``Origin`` rule on the four WebSocket upgrades only
-  (403 on refusal, no loopback exception), while HTTP routes still
-  accept a foreign Origin with an allowed Host (MOR-2881 deferral).
+- a same-origin ``Origin`` rule on the four WebSocket upgrades and on
+  every state-changing HTTP request (403 on refusal, no loopback
+  exception). Read-only ``GET``/``HEAD`` routes admit any ``Origin``.
 """
 
 from __future__ import annotations
@@ -337,23 +337,127 @@ async def test_http_refused_host_checked_before_route_semantics() -> None:
 
 
 # ---------------------------------------------------------------------------
-# MOR-2881 deferral: no Origin rule on HTTP routes yet
+# HTTP Origin rule on state-changing requests (MOR-2881)
 # ---------------------------------------------------------------------------
+
+#: POST /api/v1/commands with no radio configured answers 503 ``no_radio``
+#: from the handler — proof the request REACHED it rather than being
+#: refused by a guard.
+_HANDLER_REACHED_STATUS_LINE = b"HTTP/1.1 503 "
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
 @pytest.mark.parametrize(
-    "origin", ["https://evil.example", "http://127.0.0.1:9999", "null"]
+    "origin",
+    [
+        "https://evil.example",
+        "http://127.0.0.1:9999",  # right host, wrong port
+        "null",  # browsers' opaque origin
+    ],
 )
-async def test_http_foreign_origin_with_allowed_host_still_accepted(
-    origin: str,
+@pytest.mark.parametrize("bind_host", ["0.0.0.0", "127.0.0.1", "192.168.55.77"])
+async def test_http_state_changing_foreign_origin_refused(
+    method: str, origin: str, bind_host: str
 ) -> None:
+    """A foreign Origin on a state-changing request → 403, before any handler.
+
+    Inverts the #3871 deferral pin: with an allowed Host such a request
+    used to be admitted; the same-origin rule now covers every
+    state-changing HTTP request with no loopback exception.
+    """
+    srv = _make_srv(host=bind_host)
+    writer = _MemoryWriter()
+    await srv._handle_http(
+        writer,
+        method,
+        "/api/v1/commands",
+        {"origin": origin, "host": "127.0.0.1:8470"},
+    )
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 403 ")
+    assert json.loads(_response_body(writer)) == {
+        "error": "forbidden: origin not allowed"
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tls,scheme", [(False, "http"), (True, "https")])
+async def test_http_state_changing_same_origin_admitted(
+    tls: bool, scheme: str
+) -> None:
+    """A same-origin Origin reaches the route handler (503, not 403/421)."""
+    srv = _make_srv(tls=tls)
+    writer = _MemoryWriter()
+    await srv._handle_http(
+        writer,
+        "POST",
+        "/api/v1/commands",
+        {"origin": f"{scheme}://127.0.0.1:8470", "host": "127.0.0.1:8470"},
+    )
+    assert bytes(writer.buffer).startswith(_HANDLER_REACHED_STATUS_LINE)
+
+
+@pytest.mark.asyncio
+async def test_http_state_changing_missing_origin_admitted() -> None:
+    """No Origin with Host 127.0.0.1:<port> — the Pro-proxied request
+    shape — is admitted and reaches the route handler."""
+    srv = _make_srv()
+    writer = _MemoryWriter()
+    await srv._handle_http(
+        writer, "POST", "/api/v1/commands", {"host": "127.0.0.1:8470"}
+    )
+    assert bytes(writer.buffer).startswith(_HANDLER_REACHED_STATUS_LINE)
+
+
+@pytest.mark.asyncio
+async def test_http_origin_checked_before_route_semantics() -> None:
+    """Even an unknown path gets 403 (not 404/405) when the Origin is
+    foreign and the method is state-changing."""
+    srv = _make_srv()
+    writer = _MemoryWriter()
+    await srv._handle_http(
+        writer,
+        "POST",
+        "/api/v1/nonexistent",
+        {"origin": "https://evil.example", "host": "127.0.0.1:8470"},
+    )
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 403 ")
+
+
+@pytest.mark.asyncio
+async def test_http_clearcache_foreign_origin_refused() -> None:
+    """GET /clearcache changes client state (Clear-Site-Data wipes the
+    browser's storage for this origin), so the rule covers it too."""
+    srv = _make_srv()
+    writer = _MemoryWriter()
+    await srv._handle_http(
+        writer,
+        "GET",
+        "/clearcache",
+        {"origin": "https://evil.example", "host": "127.0.0.1:8470"},
+    )
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 403 ")
+
+
+@pytest.mark.asyncio
+async def test_http_clearcache_missing_origin_admitted() -> None:
+    """GET /clearcache without an Origin (typed URL, same-origin link)
+    still clears."""
+    srv = _make_srv()
+    writer = _MemoryWriter()
+    await srv._handle_http(writer, "GET", "/clearcache", {"host": "127.0.0.1:8470"})
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 200 ")
+
+
+@pytest.mark.asyncio
+async def test_http_read_only_get_foreign_origin_still_admitted() -> None:
+    """Scope boundary: read-only GET routes admit a foreign Origin."""
     srv = _make_srv()
     writer = _MemoryWriter()
     await srv._handle_http(
         writer,
         "GET",
         "/api/v1/info",
-        {"origin": origin, "host": "127.0.0.1:8470"},
+        {"origin": "https://evil.example", "host": "127.0.0.1:8470"},
     )
     assert bytes(writer.buffer).startswith(b"HTTP/1.1 200 ")
