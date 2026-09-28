@@ -362,6 +362,19 @@ test('portrait buttons carry 16px labels and 44px touch targets (MOR-2816)', asy
   await auditPortrait(page, info, 'rf');
   await page.getByRole('tab', { name: 'SCOPE', exact: true }).click();
   await expect(page.locator('#m-chip-panel-scope')).toBeVisible();
+  // MOR-2895: the desktop toolbar's radio-held row now lives in this tab —
+  // the audit below must find and measure its keys, not only the four
+  // screen keys. The mock radio declares no dual_rx, so MAIN/SUB stays
+  // honestly absent; the mock leaves the scope leaves unread, so the row
+  // renders unlit with empty reserved values.
+  const scopePanel = page.locator('#m-chip-panel-scope');
+  await expect(scopePanel.locator('[data-testid="scope-controls-surface"]')).toBeVisible();
+  await expect(scopePanel.locator('[data-testid="scope-mode-row-0"]')).toBeVisible();
+  await expect(scopePanel.locator('[data-testid="scope-mode-row-1"]')).toBeVisible();
+  await expect(scopePanel.locator('[data-testid="scope-span"]')).toBeVisible();
+  await expect(scopePanel.locator('[data-testid="scope-ref"]')).toBeVisible();
+  await expect(scopePanel.locator('[data-testid="scope-hold"]')).toBeVisible();
+  await expect(scopePanel.locator('[data-testid="scope-more"]')).toBeVisible();
   await auditPortrait(page, info, 'scope');
   expect(writes).toEqual([]);
 });
