@@ -670,8 +670,10 @@ describe('receiver facts handles (MOR-2852)', () => {
   function factsPublication(): Publication {
     const pub = publication();
     (pub.caps as Capabilities).capabilities = ['dual_rx', 'filter_width', 'agc', 'nb', 'nr'];
+    (pub.caps as Capabilities).agcModes = [0, 1, 2];
+    (pub.caps as Capabilities).agcLabels = { 0: 'OFF', 1: 'FAST', 2: 'SLOW' };
     const s = pub.state as ServerState;
-    s.main = { ...s.main, filterWidth: 2400, agc: 0, nb: false, nr: false };
+    s.main = { ...s.main, filterWidth: 2400, agc: 1, nb: false, nr: true };
     s.sub = { ...s.sub, filterWidth: 500, agc: 2, nb: true, nr: true };
     s.fieldStatus = Object.assign({ ...s.fieldStatus }, {
       'main.filterWidth': available(), 'main.agc': available(), 'main.nb': available(), 'main.nr': available(),
@@ -699,11 +701,13 @@ describe('receiver facts handles (MOR-2852)', () => {
     const entries = (owner: HTMLElement) => [...owner.querySelectorAll('[data-indicator-fact]')]
       .map((node) => [node.getAttribute('data-indicator-fact'), node.textContent]);
     expect(entries(mainSection)).toEqual([
-      ['bandwidth', 'BW 2400 Hz'], ['agc', 'AGC 0'], ['nb', 'NB'], ['nr', 'NR'],
+      ['bandwidth', 'BW 2400 Hz'], ['agc', 'AGC FAST'], ['nb', 'NB'], ['nr', 'NR'],
     ]);
     expect(entries(subSection).map(([fact]) => fact)).toEqual(['bandwidth', 'agc', 'nb', 'nr']);
+    expect(entries(subSection).map((entry) => entry[1]).join(' ')).toContain('AGC SLOW');
     expect(subSection.querySelector('[data-indicator-fact="nb"]')?.getAttribute('data-state')).toBe('on');
     expect(subSection.querySelector('[data-indicator-fact="nr"]')?.getAttribute('data-state')).toBe('on');
+    expect(mainSection.querySelector('[data-indicator-fact="nb"]')?.getAttribute('data-state')).toBe('off');
   });
 
   it('exposes no subFacts without a sub owner', () => {

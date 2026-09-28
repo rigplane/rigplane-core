@@ -416,6 +416,7 @@ describe('MobileRadioLayout structure', () => {
       freqRanges: [], modes: ['USB', 'LSB'], filters: ['FIL1', 'FIL2'],
       receivers, vfoScheme: receivers === 2 ? 'main_sub' : 'single',
       capabilities: ['dual_rx', 'filter_width', 'agc', 'nb', 'nr'],
+      agcModes: [0, 1, 2],
       agcLabels: { 0: 'OFF', 1: 'FAST', 2: 'SLOW' },
     } as unknown as Capabilities);
     const seen = () => ({ observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 1 });
