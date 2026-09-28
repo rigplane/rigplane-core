@@ -527,11 +527,9 @@ export function runAssertions(
   // zone-free invariants: no positive `tabindex` reorders the natural tab
   // sequence, and every VFO control precedes the RX/TX authority (true on
   // both layouts — `SINGLE_COMPOSITION`/`DUAL_ZONES` both order `vfo` before
-  // `rxTx`). FINDING (measured, not assumed): "ends at rx-tx" does NOT hold on
-  // the reference layout — `RxAudioSurface` mounts AFTER `<RxTxSurface>`
-  // (`SemanticRadioSurfaces.svelte`'s `zoned('rxAudio', …)` runs after the
-  // `singleOrder` loop) — real shipped behavior, not asserted here since the
-  // reference layout never promised it; worth a follow-up ticket.
+  // `rxTx`). MOR-1347 additionally keeps the RX/TX authority last on the
+  // zone-less direct mount (after every optional surface such as rx-audio),
+  // pinned by `semantic-rx-audio-wiring.component.test.ts`.
   {
     const seq = controls();
     const noPositiveTabindex = seq.every((el) => Number(el.getAttribute('tabindex') ?? '0') <= 0);

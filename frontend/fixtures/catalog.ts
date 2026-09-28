@@ -853,31 +853,6 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
  *     is false).
  */
 /**
- * MOR-1085 FINDING (see the report): the reference/single composition's
- * `vfoSurface()` snippet never passes a `disabled` prop to `<VfoSurface>` —
- * only the dual composition's per-strip wiring does
- * (`disabled={!isOperationalStrip(view, receiverId)}`). `selectDisabled`
- * (`VfoSurface.svelte`) is `selectable && (vfo.slot.kind === 'unknown' ||
- * disabled)`, so on the reference layout the MOR-1256 two-level gate never
- * engages: a structurally-dual, operationally-degraded receiver's select
- * stays fully enabled there today, verified against the actual capture
- * (`3 enabled / 0 disabled`, not the cockpit's `1/2`). This is real,
- * pre-existing production behavior this ticket observes, not a bug this
- * catalog papers over — the two ids below are exactly the fixtures whose
- * `dual_rx`-unavailable capability makes the cockpit disable a select; their
- * reference twins keep the HEALTHY-baseline gating numbers instead of
- * inheriting the cockpit's.
- */
-const REFERENCE_SELECT_GATING_OVERRIDE: Readonly<Record<string, Pick<Expectation,
-  'selectsEnabled' | 'selectsDisabled'>>> = {
-  // MOR-2467: 2 receiver-level tiles on `dual-rx-unavailable` — MAIN active
-  // (no select), SUB's select enabled (the reference wiring never passes the
-  // strip `disabled` prop).
-  'dual-rx-unavailable': { selectsEnabled: 1, selectsDisabled: 0 },
-  'topology-2-ab-shared-unsupported-controls': { selectsEnabled: 1, selectsDisabled: 0 },
-};
-
-/**
  * MOR-2153 review: `f: Fixture` alone made `{ ...f.expect, … }` below
  * unsound the moment `expect` became optional on `Fixture` — the spread's
  * inferred type carries every `Expectation` field as possibly `undefined`
@@ -901,7 +876,10 @@ function toReferenceFixture(f: Fixture & { expect: Expectation }): Fixture {
       zones: [], strips: 0, stripReceivers: [], stripOperational: [], stripActive: [],
       zonedComposition: false,
       rxAudioSurfacePresent: f.caps() !== null,
-      ...REFERENCE_SELECT_GATING_OVERRIDE[f.id],
+      // MOR-1342: the reference wiring now passes the same per-receiver
+      // operational disable as the cockpit strips, so the reference twins
+      // inherit `selectsEnabled`/`selectsDisabled` from the source fixture
+      // instead of overriding them.
     },
   };
 }
