@@ -10,6 +10,7 @@ const VALUES = {
   compressorLevel: 120,
   monitorGain: 160,
 } as const;
+const RF_POWER = 0.5;
 const COMMANDS = {
   micGain: 'set_mic_gain',
   driveGain: 'set_drive_gain',
@@ -31,8 +32,11 @@ const fresh = (marker = 1) => ({
 function connectedState(providerGeneration = 3): ServerState {
   return {
     stateContractVersion: 1, providerGeneration, active: 'MAIN', main: {}, sub: {},
-    ...VALUES,
-    fieldStatus: Object.fromEntries(FIELDS.map((field) => [field, fresh()])),
+    ...VALUES, powerLevel: RF_POWER,
+    fieldStatus: {
+      ...Object.fromEntries(FIELDS.map((field) => [field, fresh()])),
+      powerLevel: fresh(),
+    },
   } as unknown as ServerState;
 }
 function connectedCaps(providerGeneration = 3): Capabilities {
@@ -396,5 +400,102 @@ describe('TxPanel unread TX level value display (MOR-2658)', () => {
     const text = target.textContent ?? '';
     expect(text).not.toContain('—');
     expect(text).not.toMatch(/unknown/i);
+  });
+});
+
+// ── RF power (MOR-2910) ─────────────────────────────────────────────────────
+// The TX LEVELS modal's RF power lane adopts the shared command-feedback
+// scalar (`getRfPowerControlFeedback`, normalized scale) like its four raw
+// siblings above: requested/confirmed/error status, aria-busy while pending,
+// and dispatch through the shared scalar policy.
+describe('TxPanel RF power command-feedback wiring (MOR-2910)', () => {
+  function rfSlider(): HTMLElement {
+    return target.querySelector<HTMLElement>('[aria-label="RF Power"]')!;
+  }
+
+  function rfValue(): string {
+    const header = [...target.querySelectorAll('.vc-header')]
+      .find((entry) => entry.querySelector('.vc-label')?.textContent === 'RF Power');
+    return header?.querySelector('.vc-value')?.textContent ?? '';
+  }
+
+  function beginRfPower(id: string, level: number): CommandLifecycle {
+    return commands.beginCommand({
+      id, name: 'set_rf_power', params: { level }, originalEpoch: 1, timeoutMs: 5_000,
+    });
+  }
+
+  it('projects the requested RF power target with busy state over canonical truth', () => {
+    render();
+    openSettings();
+    beginRfPower('rf-power', 0.75);
+    flushSync();
+
+    expect(rfSlider().dataset.commandPhase).toBe('submitted');
+    expect(rfSlider().getAttribute('aria-busy')).toBe('true');
+    expect(rfSlider().getAttribute('aria-valuenow')).toBe('0.5');
+    expect(rfValue()).toBe('50%');
+    const descriptionId = rfSlider().getAttribute('aria-describedby')!;
+    expect(target.querySelector(`#${descriptionId}`)?.textContent).toContain('75%');
+  });
+
+  it('exposes a terminal error, then confirms only on exact fresh readback', () => {
+    render();
+    openSettings();
+    const failed = beginRfPower('rf-power-failed', 0.75);
+    commands.failCommand(failed.id, 1, 1, 'radio refused');
+    flushSync();
+    expect(rfSlider().dataset.commandPhase).toBe('failed');
+    expect(rfSlider().getAttribute('aria-busy')).toBe('false');
+    expect(rfValue()).toBe('50%');
+    expect(target.textContent).toContain('radio refused');
+
+    const command = beginRfPower('rf-power-confirm', 0.75);
+    commands.acknowledgeCommand(command.id, 1, 1);
+    const next = {
+      ...connectedState(), powerLevel: 0.75,
+      fieldStatus: { ...connectedState().fieldStatus, powerLevel: fresh(2) },
+    } as ServerState;
+    canonical.state = next;
+    for (const listener of radioListeners) listener(next);
+    flushSync();
+    expect(rfSlider().dataset.commandPhase).toBe('confirmed');
+    expect(rfSlider().getAttribute('aria-valuenow')).toBe('0.75');
+    expect(rfValue()).toBe('75%');
+  });
+
+  it('consumes a hidden terminal transition and retains it without replay on reopen', () => {
+    render();
+    const command = beginRfPower('rf-power-hidden', 0.75);
+    commands.failCommand(command.id, 1, 1, 'closed rf failure');
+    flushSync();
+    expect(target.querySelector('[aria-label="RF Power"]')).toBeNull();
+
+    openSettings();
+    const first = target
+      .querySelector('[aria-label="RF Power"]')!
+      .closest('.vc-hbar')!
+      .querySelector('[data-control-feedback-status]')?.textContent;
+    expect(rfSlider().dataset.commandPhase).toBe('failed');
+    expect(first).toContain('closed rf failure');
+    closeSettings();
+    openSettings();
+    const retained = target
+      .querySelector('[aria-label="RF Power"]')!
+      .closest('.vc-hbar')!
+      .querySelectorAll('[data-control-feedback-status]');
+    expect(retained).toHaveLength(1);
+    expect(retained[0]?.textContent).toBe(first);
+  });
+
+  it('routes RF power gestures through the existing handler under the shared policy', () => {
+    vi.useFakeTimers();
+    render();
+    openSettings();
+    rfSlider().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(50);
+    expect(handlers.onRfPowerChange).toHaveBeenCalledExactlyOnceWith(0.51);
+    expect(handlers.onMicGainChange).not.toHaveBeenCalled();
+    vi.useRealTimers();
   });
 });
