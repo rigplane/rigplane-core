@@ -61,6 +61,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   getCapabilities: vi.fn(() => null),
   capabilitiesMatchGeneration: vi.fn(() => false),
   getControlRange: vi.fn(() => null),
+  getKeyboardConfig: vi.fn(() => null),
 }));
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: {

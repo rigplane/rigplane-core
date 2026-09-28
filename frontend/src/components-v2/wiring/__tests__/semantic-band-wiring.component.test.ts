@@ -85,6 +85,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   capabilitiesMatchGeneration: vi.fn(() => true),
   getCapabilities: vi.fn(() => h.caps),
   getControlRange: vi.fn(() => null),
+  getKeyboardConfig: vi.fn(() => null),
   getSmeterCalibration: vi.fn(() => null),
   getSmeterRedline: vi.fn(() => null),
   getScopeSource: vi.fn(() => null),
