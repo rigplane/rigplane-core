@@ -253,7 +253,9 @@ jobs:
           npm run lint
           npm run i18n:check
           npm run check
-          npx vitest run
+          # Several quick jobs share one CI host; uncapped workers
+          # oversubscribe it and turn timing budgets into flaky timeouts (MOR-2830).
+          npx vitest run --maxWorkers=5
           npm run build
           rm -f ../src/rigplane/web/static
           mkdir -p ../src/rigplane/web/static
@@ -362,7 +364,9 @@ jobs:
           # Capture pytest's exit code via PIPESTATUS, extract the summary
           # (still needed for the badge, including on failure), then exit
           # with pytest's code so failing tests fail the step.
-          uv run pytest tests/ -n auto --tb=short --timeout=300 --timeout-method=thread \
+          # Several quick jobs share one CI host; uncapped workers
+          # oversubscribe it and turn timing budgets into flaky timeouts (MOR-2830).
+          uv run pytest tests/ -n auto --maxprocesses 5 --tb=short --timeout=300 --timeout-method=thread \
             | tee pytest-output.txt
           rc=${PIPESTATUS[0]}
           SUMMARY=$(tail -1 pytest-output.txt)
