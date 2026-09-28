@@ -189,6 +189,7 @@
   "core.toast.audioBridgeStopped": "オーディオブリッジを停止しました",
   "core.toast.commandRefusedLinkDegraded": "コマンドは送信されませんでした — トランシーバーとの通信が低下しています",
   "core.toast.commandExecutionFailed": "コマンドを実行できませんでした: {reason}",
+  "core.toast.commandLinkLost": "無線機への接続が中断されたため、コマンドはキャンセルされました。もう一度お試しください。",
   "core.toast.txAudioServerUnavailable": "TX オーディオを利用できません — サーバーが送信の開始を拒否しました",
   "core.toast.txAudioMicPermissionDenied": "マイクへのアクセスが拒否されました — TX オーディオを開始できません",
   "core.toast.txAudioCaptureUnsupported": "このブラウザーはマイクのキャプチャに対応していません",

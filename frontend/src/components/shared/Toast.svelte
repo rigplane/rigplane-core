@@ -84,6 +84,9 @@
    */
   function renderToast(toast: ToastItem): string {
     if (toast.code) {
+      if (isProviderInvalidation(toast.code, toast.params)) {
+        return t('core.toast.commandLinkLost');
+      }
       return messageFromReasonCode(toast.code, toast.params);
     }
     return toast.message;
@@ -104,6 +107,24 @@
   function isLinkLossTermination(code?: string, params?: MessageParams): boolean {
     if (code !== 'commandExecutionFailed' || !params) return false;
     return params['reason'] === LINK_LOSS_TERMINATION_REASON;
+  }
+
+  /**
+   * MOR-2846: internal fencing reasons that end an in-flight command at
+   * (or around) a provider-generation change — the USB-vanish/reconnect
+   * class. They are stable server-side literals, never localized there;
+   * the operator sees one plain localized message instead of the internal
+   * reason string interpolated into `core.toast.commandExecutionFailed`.
+   */
+  const PLAIN_INVALIDATION_REASONS = new Set([
+    LINK_LOSS_TERMINATION_REASON,
+    'command invalidated during provider generation change',
+    'command invalidated during execution',
+  ]);
+
+  function isProviderInvalidation(code?: string, params?: MessageParams): boolean {
+    if (code !== 'commandExecutionFailed' || !params) return false;
+    return typeof params['reason'] === 'string' && PLAIN_INVALIDATION_REASONS.has(params['reason']);
   }
 
   onMount(() => {
