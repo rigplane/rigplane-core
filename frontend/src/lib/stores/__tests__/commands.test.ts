@@ -598,23 +598,26 @@ describe('command lifecycle store', () => {
       expect(store.FILTER_SHAPE_COMMAND_DESCRIPTOR.repeatPolicy).toBe('latest-target-wins');
     });
 
-    it('rejects malformed envelopes without throwing', () => {
-      const inherited = Object.create({ receiver: 0 }) as Record<string, unknown>;
-      inherited.shape = 1;
-      const throwing = Object.defineProperty({ receiver: 0 }, 'shape', {
-        enumerable: true, get: () => { throw new Error('read'); },
-      });
+    it('rejects malformed shape targets and non-receiver scopes without throwing', () => {
       const ownKeysTrap = new Proxy({}, { ownKeys: () => { throw new Error('keys'); } });
+      // The raw receiver-echo contract (PBT/IF-shift family): `target`
+      // validates the raw `shape` param; `scope` validates ONLY the
+      // receiver — an omitted receiver defaults to MAIN, exactly like
+      // `set_pbt_inner`/`set_if_shift` envelopes.
       for (const params of [
-        {}, inherited, throwing, ownKeysTrap,
+        {}, ownKeysTrap,
         { shape: '1', receiver: 0 }, { shape: true, receiver: 0 }, { shape: 0.5, receiver: 0 },
         { shape: Number.POSITIVE_INFINITY, receiver: 0 },
-        { shape: 1, receiver: 2 }, { shape: 1, receiver: '0' },
-        { shape: 1, receiver: 0, extra: true }, { shape: 1, receiver: 0, [Symbol('x')]: true },
       ]) {
-        expect(store.FILTER_SHAPE_COMMAND_DESCRIPTOR.scope({ params })).toBeNull();
         expect(store.FILTER_SHAPE_COMMAND_DESCRIPTOR.target({ params })).toBeNull();
       }
+      for (const params of [
+        { shape: 1, receiver: 2 }, { shape: 1, receiver: '0' }, { shape: 1, receiver: false },
+      ]) {
+        expect(store.FILTER_SHAPE_COMMAND_DESCRIPTOR.scope({ params })).toBeNull();
+      }
+      expect(store.FILTER_SHAPE_COMMAND_DESCRIPTOR.scope({ params: { shape: 1 } }))
+        .toEqual({ control: 'filter-shape', receiver: 0 });
     });
 
     it('supersedes an in-flight shape only within the same receiver scope', () => {

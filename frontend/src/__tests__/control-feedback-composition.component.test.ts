@@ -353,11 +353,13 @@ const SHAPE_TARGET = 1; // SOFT
 function shapeControl(kind: Presentation): HTMLButtonElement | null {
   if (kind === 'narrow-mobile') {
     // The phone's shape buttons live in the chip FilterPanel's settings
-    // modal, behind the sheet's ⚙ trigger.
+    // modal, behind the sheet's ⚙ trigger. The SOFT button is selected by
+    // label — the same target the desktop leg's `filter-shape-1` names.
     const gear = target.querySelector<HTMLButtonElement>('button[aria-label="Open filter settings"]');
     gear!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     flushSync();
-    return target.querySelector<HTMLButtonElement>('.shape-section .shape-button');
+    return Array.from(target.querySelectorAll<HTMLButtonElement>('.shape-section .shape-button'))
+      .find((el) => el.textContent?.trim() === 'SOFT') ?? null;
   }
   return target.querySelector<HTMLButtonElement>('[data-testid="filter-shape-1"]');
 }
