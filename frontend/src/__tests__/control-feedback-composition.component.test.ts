@@ -1,11 +1,19 @@
 /**
  * MOR-1703 — one Filter Width lifecycle DTO, three live presentations.
  *
- * Desktop (`desktop-v2`), narrow mobile (`mobile`) and a workspace that
- * keeps the filter zone selected all mount through the same composition
- * root. A pending `set_filter_width` must land as the same phase, busy,
- * target and live status on each, and keyboard/pointer must dispatch the
- * same intent. Canonical ARIA stays the confirmed width.
+ * Desktop (`desktop-v2`) and a workspace that keeps the filter zone
+ * selected mount the semantic `FilterSurface`; the narrow mobile (`mobile`)
+ * phone mounts its REAL width control since MOR-2816 removed the bare
+ * FilterSurface seat — the chip FilterPanel (`MobileRadioLayout`'s filter
+ * sheet, opened from the essentials chip's "More…" trigger), whose table
+ * catalog mounts the same feedback-integrated `ValueControl` hbar the
+ * desktop row's input mirrors. A pending `set_filter_width` must land as
+ * the same phase, busy, target and live status on each, and keyboard or
+ * pointer input must dispatch the same intent. Canonical ARIA stays the
+ * confirmed width. The live STATUS sentence is each mount's own emitter
+ * (the desktop row prints the projector status, the phone row prints the
+ * catalog announcement), so the expectation is per-kind while the phase,
+ * busy and canonical ARIA stay byte-identical.
  *
  * Isolated pool by name (`*.component.test.ts`).
  */
@@ -84,6 +92,20 @@ function liveCaps(): Capabilities {
   } as unknown as Capabilities;
 }
 
+// The phone's real width control is the chip FilterPanel's TABLE-mode hbar,
+// so the phone mount pins a table catalog (the FTX-1-style capability
+// shape). The table keeps the confirmed 2400, the keyboard step target 2450
+// and the pending target 3000 as genuine catalog choices, and minHz/maxHz
+// match the table ends the width rule validates.
+function phoneCaps(): Capabilities {
+  return {
+    ...liveCaps(),
+    filterConfig: {
+      USB: { defaults: [2400], fixed: false, minHz: 1800, maxHz: 3000, stepHz: 1, table: [1800, 2400, 2450, 3000] },
+    },
+  } as unknown as Capabilities;
+}
+
 function liveState(seq = 3): ServerState {
   const slot = { freqHz: 14250000, mode: 'USB', filterNum: 1, dataMode: 0 };
   const receiver = {
@@ -131,6 +153,10 @@ function skinFor(kind: Presentation): SkinId {
 }
 
 function render(kind: Presentation): void {
+  // The phone mount needs its table catalog in place before the layout
+  // resolves the FilterPanel's width rule.
+  expect(setCapabilities(kind === 'narrow-mobile' ? phoneCaps() : liveCaps())).toBe(true);
+  expect(setRadioState(liveState())).toBe(true);
   target = document.createElement('div');
   document.body.appendChild(target);
   const context = new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () => planFor(kind)]]);
@@ -140,16 +166,38 @@ function render(kind: Presentation): void {
     context,
   });
   flushSync();
+  if (kind === 'narrow-mobile') openPhoneFilterSheet();
+}
+
+// MOR-2816: the phone's FilterPanel lives inside the filter BottomSheet,
+// opened by the essentials chip's "More…" trigger — the sheet mounts
+// nothing until it opens, so the lifecycle is proven on the OPENED sheet.
+function openPhoneFilterSheet(): void {
+  const more = Array.from(target.querySelectorAll<HTMLButtonElement>('button'))
+    .find((button) => (button.textContent ?? '').trim() === 'More…');
+  if (more === undefined) throw new Error('phone filter sheet trigger not found');
+  more.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  flushSync();
 }
 
 function widthControl(): HTMLElement | null {
+  // MOR-2816: the phone seat is the chip FilterPanel's table-mode width
+  // row (`data-filter-width-lifecycle`); the desktop/workspace seat stays
+  // the semantic FilterSurface's `filter-width` row.
+  const phone = target.querySelector<HTMLElement>(
+    '[data-filter-width-lifecycle] input, [data-filter-width-lifecycle] [role="slider"]',
+  );
+  if (phone !== null) return phone;
   const row = target.querySelector<HTMLElement>('[data-testid="filter-width"]');
   return row?.querySelector<HTMLElement>('input, [role="slider"]') ?? null;
 }
 
 function snapshot() {
   const control = widthControl();
-  const live = target.querySelector('[data-testid="filter-width"] [data-control-feedback-status]');
+  const live = target.querySelector<HTMLElement>(
+    '[data-testid="filter-width"] [data-control-feedback-status],'
+    + ' [data-filter-width-lifecycle] [data-control-feedback-status]',
+  );
   return {
     mounted: control !== null,
     phase: control?.getAttribute('data-command-phase') ?? null,
@@ -183,6 +231,16 @@ afterEach(() => {
 });
 
 describe('one Filter Width lifecycle is equivalent on desktop, narrow mobile and a workspace-selected mount (MOR-1703)', () => {
+  // The live STATUS sentence is each mount's own emitter: the desktop row
+  // prints the projector status ('Submitting: <target>'), the phone's chip
+  // FilterPanel prints the catalog announcement with its kHz-formatted
+  // target. The phase, busy and canonical ARIA above stay identical.
+  const LIVE_STATUS: Readonly<Record<Presentation, string>> = {
+    desktop: 'Submitting: 3000',
+    'narrow-mobile': 'Filter width 3kHz requested; not yet confirmed by the radio.',
+    'workspace-selected': 'Submitting: 3000',
+  };
+
   it.each(['desktop', 'narrow-mobile', 'workspace-selected'] as const)(
     '%s: pending phase, busy, confirmed ARIA and live status match the shared DTO',
     (kind) => {
@@ -203,7 +261,7 @@ describe('one Filter Width lifecycle is equivalent on desktop, narrow mobile and
       // width tests already accepted ("Submitting: 3000"), not the catalog
       // sentence. A non-English locale is pinned separately below.
       expect(getLocale()).toBe('en-US');
-      expect(seen.live).toBe('Submitting: 3000');
+      expect(seen.live).toBe(LIVE_STATUS[kind]);
     },
   );
 
@@ -216,9 +274,19 @@ describe('one Filter Width lifecycle is equivalent on desktop, narrow mobile and
       expect(control, kind).not.toBeNull();
       control!.focus();
       h.commands.mockClear();
-      if (control instanceof HTMLInputElement) control.value = '2450';
-      control!.dispatchEvent(new Event('input', { bubbles: true }));
-      vi.advanceTimersByTime(200);
+      if (control instanceof HTMLInputElement) {
+        control.value = '2450';
+        control.dispatchEvent(new Event('input', { bubbles: true }));
+      } else {
+        // MOR-2816: the phone's table-mode hbar has no native input — the
+        // catalog's next choice above the confirmed 2400 is 2450, the same
+        // target the desktop row types, so the three mounts still dispatch
+        // one identical intent.
+        control!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      }
+      // 500ms covers the phone path's stacked debounces (the scalar's 50ms
+      // keyboard debounce, then the handler's own 200ms write debounce).
+      vi.advanceTimersByTime(500);
       flushSync();
       dispatched.push(h.commands.mock.calls.map(([name, params]) => [name, params]));
       unmount(component!);
@@ -245,7 +313,10 @@ describe('structural feedback survives locale, forced-colors and reduced-motion 
     expect(seen.phase).toBe('submitted');
     expect(seen.busy).toBe('true');
     expect(seen.canonical).toBe(String(CONFIRMED_HZ));
-    expect(seen.live).toBe('Запрошена ширина фильтра 3000; радио ещё не подтвердило её.');
+    // The phone emitter formats the target through its kHz formatter
+    // ('3kHz'), where the removed FilterSurface seat printed the raw
+    // number — same pending width, same sentence family.
+    expect(seen.live).toBe('Запрошена ширина фильтра 3kHz; радио ещё не подтвердило её.');
   });
 
   it('keeps forced-colors and reduced-motion as structural rules beside the phase attribute', () => {
