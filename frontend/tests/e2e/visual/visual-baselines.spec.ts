@@ -131,29 +131,25 @@ for (const spec of COCKPIT) {
   });
 }
 
-/** MOR-2364 → MOR-2425/R41: the freshness cue is gone, but the one-line phone
- *  fit it had to preserve is still the claim — and no cue may come back.
- *  MOR-2662 (owner ruling 2026-09-26): the phone shows only ONE VFO — the
- *  active one — so this now pins the mobile layout's own deck (the
- *  `mobile-witness` harness), one tile, still on one line. */
-test('VFO phone tiles fit on one line and paint no freshness cue', async ({ page }) => {
+/** MOR-2364 → MOR-2425/R41 → MOR-2816 (owner ruling 2026-09-28): the
+ *  portrait VFO / RX-TX deck block is REMOVED — the active VFO lives in
+ *  the header, its controls in the chip tabs — so the phone mounts no VFO
+ *  deck at all. This retires the old one-line tile pin (the deck it
+ *  measured is gone) and pins the removal instead: no VFO tile, no VFO
+ *  surface, and still no freshness cue. */
+test('the portrait phone renders no VFO deck and no freshness cue', async ({ page }) => {
   await page.setViewportSize(PHONE);
   await page.goto('/fixtures/mobile-witness.html?fixture=topology-2-main-sub', { waitUntil: 'load' });
   await page.waitForSelector('body[data-harness-ready="true"]');
   await page.evaluate(() => document.fonts.ready);
-  const result = await page.evaluate(() => {
-    const tiles = [...document.querySelectorAll<HTMLElement>('[data-vfo-tile]')];
-    const lines = tiles.flatMap((tile) =>
-      [...tile.querySelectorAll('.vfo-role, .vfo-mode, .vfo-select')].map((el) => {
-        const range = document.createRange(); range.selectNodeContents(el);
-        return new Set([...range.getClientRects()].map((box) => box.top)).size;
-      }));
-    return { lines, tiles: tiles.length,
-      cues: document.querySelectorAll('[data-vfo-stale-cue]').length };
-  });
-  expect(result.tiles).toBe(1);
+  const result = await page.evaluate(() => ({
+    tiles: document.querySelectorAll('[data-vfo-tile]').length,
+    surfaces: document.querySelectorAll('[data-testid="vfo-surface"]').length,
+    cues: document.querySelectorAll('[data-vfo-stale-cue]').length,
+  }));
+  expect(result.tiles).toBe(0);
+  expect(result.surfaces).toBe(0);
   expect(result.cues).toBe(0);
-  expect(result.lines.every((count) => count === 1)).toBe(true);
 });
 
 /** MOR-2656 — the phone one-line test on the IC-7300/IC-705 shape (ONE

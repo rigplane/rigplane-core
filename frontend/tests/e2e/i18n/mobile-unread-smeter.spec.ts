@@ -35,6 +35,30 @@ function radioState(sMeter: number | null): ServerState {
     alcMeter: 0.5,
     main: { ...mockState.main, sMeter },
     sub: mockState.sub ? { ...mockState.sub, sMeter } : mockState.sub,
+    // MOR-2816: the hoisted bar reads through the semantic receiver-host
+    // path, which consumes the observation contract — not the raw leaf the
+    // retired value-fed strip read. Without a `fieldStatus` entry the
+    // adapter reports the field not-observed
+    // (`display-observation.ts` qualifyEvidence) and an unqualified domain
+    // (`radio-view-model-adapter.ts` meterValueDomain), so even a read
+    // value renders as unread. The real backend always publishes these
+    // entries (`web/state_schema.py` FieldStatusPublic), so the fixture
+    // models one: observed, fresh, and quality-calibrated.
+    fieldStatus: {
+      'main.sMeter': sMeterFieldStatus('main.sMeter'),
+      'sub.sMeter': sMeterFieldStatus('sub.sMeter'),
+    },
+  };
+}
+
+function sMeterFieldStatus(storePath: 'main.sMeter' | 'sub.sMeter') {
+  return {
+    storePath,
+    observed: true,
+    freshness: 'fresh' as const,
+    availability: 'available' as const,
+    lastObservedMonotonic: 0,
+    quality: ['calibrated'],
   };
 }
 
@@ -123,13 +147,17 @@ test('an unread S-meter draws no reading on the phone S-meter or the TX dock S r
   const unread = await observe(page, 'unread', outputPath);
 
   // A read S-meter at S9 (0 dB relative to S9) lights the bar, so the
-  // lit-segment probe works in this setup.
-  expect(read.smeter).toMatchObject({ label: 'S meter S9, \u221273 dBm', sUnit: 'S9', dbm: '\u221273 dBm' });
+  // lit-segment probe works in this setup. MOR-2816: the hoisted bar is the
+  // compact `vfo-wide` face (the migration pin's ruling), whose readout is
+  // ONE 13px line — the S-unit — with no dBm line (pinned by
+  // `LinearSMeter.mockup-v8.test.ts`); its accessible name carries the
+  // S-unit only, so `dbm` probes no node at all (null), not an empty one.
+  expect(read.smeter).toMatchObject({ label: 'S meter S9', sUnit: 'S9', dbm: null });
   expect(read.smeter.litSegments).toBeGreaterThan(0);
   expect(read.txDockS.value).toBe('S9');
   expect(Number.parseFloat(read.txDockS.fill ?? '')).toBeGreaterThan(0);
 
-  expect(unread.smeter).toMatchObject({ label: 'S meter', sUnit: '', dbm: '', litSegments: 0 });
+  expect(unread.smeter).toMatchObject({ label: 'S meter', sUnit: '', dbm: null, litSegments: 0 });
   expect(unread.txDockS).toMatchObject({ value: '', fill: '0%' });
 
   // The first reading changes neither box's size or horizontal position.
