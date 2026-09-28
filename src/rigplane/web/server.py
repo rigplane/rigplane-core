@@ -96,6 +96,12 @@ from .handlers import (  # noqa: TID251
 )
 from .handlers.audio import browser_tx_audio_facts  # noqa: TID251
 from .handlers.control import _consume_normalized_level_unit  # noqa: TID251
+from .host_guard import (  # noqa: TID251
+    MISDIRECTED_BODY,
+    ORIGIN_FORBIDDEN_BODY,
+    host_header_allowed,
+    websocket_origin_allowed,
+)
 from .managed_tx_view import build_managed_tx_view  # noqa: TID251
 from .transport.webrtc import webrtc_available  # noqa: TID251
 from .radio_poller import (  # noqa: TID251
@@ -138,6 +144,10 @@ if TYPE_CHECKING:
 __all__ = ["WebConfig", "WebServer", "run_web_server"]
 
 logger = logging.getLogger(__name__)
+
+# MOR-2880: minimum spacing between refusal WARNINGs, so a page
+# hammering the port cannot flood the log.
+_REFUSAL_LOG_WINDOW_SECONDS = 10.0
 
 
 class _RuntimeCapabilitiesFn(Protocol):
@@ -717,6 +727,10 @@ class WebConfig:
     # PCM16↔Opus switching on detected slow/lossy links. Off (default) =
     # static MOR-584 per-connection codecs, never switched mid-stream.
     audio_adaptive_egress: bool = False
+    # Extra Host-header names admitted by the Host allowlist (MOR-2880),
+    # e.g. the stands' *.msmsoft.net names (MOR-2868). Repeatable via
+    # the CLI's --allowed-host flag.
+    allowed_hosts: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.auth_token:
@@ -859,6 +873,9 @@ class WebServer:
         self._server: asyncio.Server | None = None
         self._stopping = False
         self._runtime_started_at = time.monotonic()
+        # MOR-2880: throttled refusal-log state — one WARNING per window.
+        self._refusal_log_monotonic = -math.inf
+        self._suppressed_refusals = 0
         self._runtime_log_path: str | None = None
         self._runtime_rigctld_addr: str | None = None
         self._runtime_last_error: str | None = None
@@ -3248,6 +3265,31 @@ class WebServer:
     # ------------------------------------------------------------------
     # HTTP handlers
     # ------------------------------------------------------------------
+
+    def _log_refused_request(
+        self, kind: str, path: str, headers: Mapping[str, str]
+    ) -> None:
+        """One throttled WARNING per Host/Origin refusal (MOR-2880).
+
+        Names the path, Origin and Host. Refusals inside the window are
+        counted, not logged, so a page hammering the port cannot flood
+        the log; the count surfaces with the next logged warning.
+        """
+        now = time.monotonic()
+        if now - self._refusal_log_monotonic < _REFUSAL_LOG_WINDOW_SECONDS:
+            self._suppressed_refusals += 1
+            return
+        suppressed = self._suppressed_refusals
+        self._refusal_log_monotonic = now
+        self._suppressed_refusals = 0
+        logger.warning(
+            "web: refused %s on %s Origin=%r Host=%r%s",
+            kind,
+            _redact_token_in_path(path),
+            headers.get("origin"),
+            headers.get("host"),
+            f" (suppressed {suppressed} earlier refusals)" if suppressed else "",
+        )
 
     async def _handle_http(
         self,
@@ -6283,6 +6325,35 @@ class WebServer:
         headers: dict[str, str],
         query: dict[str, list[str]] | None = None,
     ) -> None:
+        # MOR-2880: refuse foreign Hosts (421) and foreign Origins (403)
+        # BEFORE the upgrade handshake — never a loopback exception.
+        raw_host = headers.get("host")
+        if not host_header_allowed(raw_host, self._config.allowed_hosts):
+            self._log_refused_request("websocket host", path, headers)
+            await _send_response(
+                writer,
+                421,
+                "Misdirected Request",
+                MISDIRECTED_BODY,
+                {"Content-Type": "application/json"},
+            )
+            return
+        origin = headers.get("origin")
+        if origin is not None:
+            scheme = "https" if self._config.tls else "http"
+            if not websocket_origin_allowed(
+                origin, raw_host, scheme, self._config.allowed_hosts
+            ):
+                self._log_refused_request("websocket origin", path, headers)
+                await _send_response(
+                    writer,
+                    403,
+                    "Forbidden",
+                    ORIGIN_FORBIDDEN_BODY,
+                    {"Content-Type": "application/json"},
+                )
+                return
+
         ws_key = headers.get("sec-websocket-key", "")
         if not ws_key:
             await _send_response(writer, 400, "Bad Request", b"Missing key", {})

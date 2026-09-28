@@ -46,6 +46,8 @@ from rigplane.diagnostics import (
 )
 from rigplane.diagnostics.upload import _resolve_endpoint  # noqa: TID251
 
+from ..host_guard import origin_matches_host  # noqa: TID251
+
 __all__ = ["DiagnosticsHandler"]
 
 logger = logging.getLogger(__name__)
@@ -123,13 +125,11 @@ def check_origin_or_loopback(
             return (True, "loopback_via_wildcard_bind")
         if not origin:
             return (False, "origin_missing")
-        expected = {
-            f"http://{request_host}",
-            f"https://{request_host}",
-            f"http://{host_no_port}:{bound_port}",
-            f"https://{host_no_port}:{bound_port}",
-        }
-        if origin in expected:
+        # Same-origin comparison shared with the WebSocket Origin guard
+        # (MOR-2880): the request's own Host header, either scheme.
+        if origin_matches_host(origin, request_host) or origin_matches_host(
+            origin, f"{host_no_port}:{bound_port}"
+        ):
             return (True, "matched_via_host_header")
         return (False, "origin_mismatch")
 

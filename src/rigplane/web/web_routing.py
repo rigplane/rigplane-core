@@ -21,6 +21,8 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
+from .host_guard import MISDIRECTED_BODY, host_header_allowed  # noqa: TID251
+
 if TYPE_CHECKING:
     from .server import WebServer  # noqa: TID251
 
@@ -49,6 +51,21 @@ async def dispatch_http_request(
     from . import server as _server_mod  # noqa: TID251
 
     _send_response = _server_mod._send_response
+
+    # MOR-2880: Host allowlist before any handler, on every HTTP route.
+    # The Origin check for HTTP routes is deferred to MOR-2881 (Pro
+    # forwards the browser's Origin on its HTTP leg until MOR-2877).
+    raw_host = (headers or {}).get("host")
+    if not host_header_allowed(raw_host, server._config.allowed_hosts):
+        server._log_refused_request("http host", path, headers or {})
+        await _send_response(
+            writer,
+            421,
+            "Misdirected Request",
+            MISDIRECTED_BODY,
+            {"Content-Type": "application/json"},
+        )
+        return
 
     if path == "/healthz":
         if method not in ("GET", "HEAD"):
