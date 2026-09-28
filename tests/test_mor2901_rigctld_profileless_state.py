@@ -173,7 +173,9 @@ async def test_mor2012_unidentified_profile_driven_radio_still_refuses() -> None
     backend declares no provider-owned state (the Icom serial/LAN shape)
     keeps the loud refusal — the profile-less path must not reach it, so
     the public state build still raises and the route answers 500."""
-    radio = SimpleNamespace(model="Mystery Rig", backend_id="icom_serial")
+    radio = SimpleNamespace(
+        model="Mystery Rig", backend_id="icom_serial", capabilities=set()
+    )
     server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     with pytest.raises(ValueError):
         server._build_public_state_from_snapshot(  # noqa: SLF001

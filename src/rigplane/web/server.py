@@ -131,7 +131,11 @@ from .websocket import (  # noqa: TID251
     make_accept_key,
     negotiate_deflate,
 )
-from ..radio_protocol import CivTransactionCapable, StateStoreCapable
+from ..radio_protocol import (
+    CivTransactionCapable,
+    ProviderOwnedStateCapable,
+    StateStoreCapable,
+)
 
 if TYPE_CHECKING:
     from rigplane.audio.bridge import AudioBridge
@@ -1104,6 +1108,28 @@ class WebServer:
             return resolve_radio_profile()  # raises: nothing identifies the radio
         return profile
 
+    def _get_profile_unless_provider_owned(self) -> "RadioProfile | None":
+        """Resolve the profile, or None on a provider-owned backend.
+
+        Decision (b) of 2026-09-28 (MOR-2901): a backend that declares
+        provider-owned state (the external rigctld client) reports its
+        capabilities and every observed value itself, so the web layer
+        serves it profile-less instead of refusing -- every profile-derived
+        field becomes unavailable, nothing is fabricated. Backends without
+        the marker keep the MOR-2012 resolve-or-refuse behavior: the
+        ``ValueError`` propagates and an unidentified radio refuses aloud.
+        """
+        try:
+            return self._get_profile()
+        except ValueError:
+            if isinstance(self._radio, ProviderOwnedStateCapable):
+                logger.debug(
+                    "profile unresolved; provider-owned backend serves "
+                    "with no profile"
+                )
+                return None
+            raise
+
     def _projected_runtime_capabilities(self) -> set[str]:
         """Return runtime tags with VFO primitives trusted only from a profile,
         ``af_level_sub`` only from the radio's own admission (MOR-2579), and
@@ -1421,8 +1447,14 @@ class WebServer:
         data_mode = self._active_primary_freq_mode_value(snapshot, "data_mode")
         if not isinstance(data_mode, int):
             data_mode = 0
-        profile = self._get_profile()
-        rule = profile.resolve_filter_rule(mode, data_mode=data_mode)
+        # A provider-owned backend (external rigctld, MOR-2901) resolves to
+        # no profile and therefore to no filter rule: unknown bandwidth.
+        profile = self._get_profile_unless_provider_owned()
+        rule = (
+            profile.resolve_filter_rule(mode, data_mode=data_mode)
+            if profile is not None
+            else None
+        )
         if rule is not None and rule.max_hz is not None:
             self._audio_fft_scope.set_mode_bandwidth(rule.max_hz)
         else:
@@ -1828,10 +1860,19 @@ class WebServer:
         ):
             return copy.deepcopy(self._cached_public_state_payload)
         public_state_seq = self._public_state_seq_for_key(cache_key)
-        profile = self._get_profile()
+        profile = self._get_profile_unless_provider_owned()
         # A profile with no ``[state_acquisition]`` block (``rigs/tx500.toml``)
-        # passes neither, and every unobserved entry stays ``missing``.
-        acquisition = profile.state_acquisition
+        # passes neither, and every unobserved entry stays ``missing``. A
+        # provider-owned backend (external rigctld, MOR-2901) has no profile
+        # at all: same effect — only what the backend itself reported is
+        # served, and the receiver topology comes from its own ``dual_rx``
+        # admission (the ``_serve_info`` ``maxReceivers`` formula).
+        acquisition = profile.state_acquisition if profile is not None else None
+        receiver_count = (
+            profile.receiver_count
+            if profile is not None
+            else (2 if "dual_rx" in self._projected_runtime_capabilities() else 1)
+        )
         availability: Mapping[FieldPath, bool | None] | None = None
         declared: Collection[FieldPath] | None = None
         if acquisition is not None:
@@ -1839,7 +1880,7 @@ class WebServer:
         payload = _build_public_state_payload_from_snapshot_impl(
             snapshot,
             radio=self._radio,
-            receiver_count=profile.receiver_count,
+            receiver_count=receiver_count,
             availability=availability,
             declared=declared,
             updated_at=updated_at,
@@ -1848,7 +1889,7 @@ class WebServer:
             audio_clients=len(self._audio_broadcaster._clients),
             radio_health=health,
             health_revision=self._health_revision,
-            monitor_mute=self.monitor_mute.public(profile.receiver_count),
+            monitor_mute=self.monitor_mute.public(receiver_count),
         )
         payload["publicStateSeq"] = public_state_seq
         payload["stateContractVersion"] = 1
@@ -2149,7 +2190,11 @@ class WebServer:
                 default=baseline_dict[attr],
                 legacy_key=attr,
             )
-        if self._get_profile().receiver_count > 1:
+        # A provider-owned backend (external rigctld, MOR-2901) resolves to
+        # no profile: treat it as the single receiver its ``dual_rx``-less
+        # capabilities describe rather than raising.
+        profile = self._get_profile_unless_provider_owned()
+        if profile is not None and profile.receiver_count > 1:
             append_receiver_snapshot("1", "sub", state.sub, baseline.sub)
         for observation in observations:
             self.command_state_store.apply(observation)
@@ -3813,8 +3858,11 @@ class WebServer:
                 result["meterRedlines"] = mr
             if result:
                 return result
-        # Fallback to profile
-        profile = self._get_profile()
+        # Fallback to profile. A provider-owned backend (external rigctld,
+        # MOR-2901) has none: no calibration keys are fabricated.
+        profile = self._get_profile_unless_provider_owned()
+        if profile is None:
+            return result
         mc = getattr(profile, "meter_calibrations", None)
         if mc:
             result["meterCalibrations"] = mc
@@ -3850,29 +3898,13 @@ class WebServer:
         model: str = (
             _raw_model if isinstance(_raw_model, str) else self._config.radio_model
         )
-        profile = self._get_profile()
+        # A provider-owned backend (external rigctld, MOR-2901) resolves to
+        # no profile: the payload keeps only what the backend itself
+        # reports, and every profile-derived key is absent — never
+        # fabricated and never borrowed from another rig's profile.
+        profile = self._get_profile_unless_provider_owned()
 
-        freq_ranges = [
-            {
-                "start": r.start,
-                "end": r.end,
-                "label": r.label,
-                **({"repeater": True} if r.repeater else {}),
-                "bands": [
-                    {
-                        "name": b.name,
-                        "start": b.start,
-                        "end": b.end,
-                        "default": b.default,
-                        **({"bsrCode": b.bsr_code} if b.bsr_code is not None else {}),
-                    }
-                    for b in r.bands
-                ],
-            }
-            for r in profile.freq_ranges
-        ]
-
-        payload = {
+        payload: dict[str, Any] = {
             "stateContractVersion": 1,
             "providerGeneration": snapshot.provider_generation,
             "model": model,
@@ -3883,53 +3915,11 @@ class WebServer:
             "audioTxRoute": tx_audio.route,
             "audioTxRequiredModInputSource": tx_audio.required_mod_input_source,
             "capabilities": sorted(caps),
-            "receivers": profile.receiver_count,
-            "vfoScheme": profile.vfo_scheme,
-            "vfoReadback": profile.vfo_readback,
-            "freqRanges": freq_ranges,
-            **(
-                {"ctcssTones": list(profile.ctcss_tones_centihz)}
-                if profile.ctcss_tones_centihz
-                else {}
+            "receivers": (
+                profile.receiver_count
+                if profile is not None
+                else (2 if "dual_rx" in caps else 1)
             ),
-            "modes": list(profile.modes),
-            "filters": list(profile.filters),
-            "filterWidthMin": profile.filter_width_min,
-            "filterWidthMax": profile.filter_width_max,
-            "filterConfig": _serialize_filter_config(profile),
-            "attValues": list(profile.att_values) if profile.att_values else [0],
-            "attLabels": profile.att_labels if profile.att_labels else {},
-            "preValues": list(profile.pre_values) if profile.pre_values else [0],
-            "preLabels": profile.pre_labels if profile.pre_labels else {},
-            "agcModes": list(profile.agc_modes) if profile.agc_modes else [],
-            "agcLabels": profile.agc_labels if profile.agc_labels else {},
-            "agcReadback": _serialize_agc_readback(profile),
-            "scanTypeValues": (
-                list(profile.scan_type_values)
-                if profile.scan_type_values is not None
-                else []
-            ),
-            "scanResumeValues": (
-                list(profile.scan_resume_values)
-                if profile.scan_resume_values is not None
-                else []
-            ),
-            "notchWidthChoices": _serialize_choices(
-                profile.notch_width_values, profile.notch_width_labels
-            ),
-            "breakInChoices": _serialize_choices(
-                profile.break_in_modes, profile.break_in_labels
-            ),
-            "rfSqlControlModel": profile.rf_sql_control_model,
-            "dataModeCount": profile.data_mode_count,
-            "dataModeLabels": (
-                profile.data_mode_labels if profile.data_mode_labels else {}
-            ),
-            "dataModeInputs": [
-                {"value": value, "label": label}
-                for value, label in (profile.data_mode_inputs or ())
-            ],
-            "keyboard": _serialize_keyboard_config(profile),
             "scopeSource": (
                 "hardware"
                 if self._hardware_scope_available
@@ -3952,21 +3942,101 @@ class WebServer:
                 "jitterFloorMs": get_audio_rx_jitter_floor_ms(),
                 "jitterCeilingMs": get_audio_rx_jitter_ceiling_ms(),
             },
-            "antennas": profile.antenna_tx_count,
-            "hasRxAntenna": profile.antenna_has_rx_ant,
-            "webrtc": {
-                "available": webrtc_available(),
-                "enabled": self._config.webrtc_enabled,
-            },
-            **({"controls": profile.controls} if profile.controls else {}),
-            "txBands": [
+        }
+        if profile is not None:
+            freq_ranges = [
+                {
+                    "start": r.start,
+                    "end": r.end,
+                    "label": r.label,
+                    **({"repeater": True} if r.repeater else {}),
+                    "bands": [
+                        {
+                            "name": b.name,
+                            "start": b.start,
+                            "end": b.end,
+                            "default": b.default,
+                            **(
+                                {"bsrCode": b.bsr_code}
+                                if b.bsr_code is not None
+                                else {}
+                            ),
+                        }
+                        for b in r.bands
+                    ],
+                }
+                for r in profile.freq_ranges
+            ]
+            payload.update(
+                {
+                    "vfoScheme": profile.vfo_scheme,
+                    "vfoReadback": profile.vfo_readback,
+                    "freqRanges": freq_ranges,
+                    **(
+                        {"ctcssTones": list(profile.ctcss_tones_centihz)}
+                        if profile.ctcss_tones_centihz
+                        else {}
+                    ),
+                    "modes": list(profile.modes),
+                    "filters": list(profile.filters),
+                    "filterWidthMin": profile.filter_width_min,
+                    "filterWidthMax": profile.filter_width_max,
+                    "filterConfig": _serialize_filter_config(profile),
+                    "attValues": (
+                        list(profile.att_values) if profile.att_values else [0]
+                    ),
+                    "attLabels": profile.att_labels if profile.att_labels else {},
+                    "preValues": (
+                        list(profile.pre_values) if profile.pre_values else [0]
+                    ),
+                    "preLabels": profile.pre_labels if profile.pre_labels else {},
+                    "agcModes": (
+                        list(profile.agc_modes) if profile.agc_modes else []
+                    ),
+                    "agcLabels": profile.agc_labels if profile.agc_labels else {},
+                    "agcReadback": _serialize_agc_readback(profile),
+                    "scanTypeValues": (
+                        list(profile.scan_type_values)
+                        if profile.scan_type_values is not None
+                        else []
+                    ),
+                    "scanResumeValues": (
+                        list(profile.scan_resume_values)
+                        if profile.scan_resume_values is not None
+                        else []
+                    ),
+                    "notchWidthChoices": _serialize_choices(
+                        profile.notch_width_values, profile.notch_width_labels
+                    ),
+                    "breakInChoices": _serialize_choices(
+                        profile.break_in_modes, profile.break_in_labels
+                    ),
+                    "rfSqlControlModel": profile.rf_sql_control_model,
+                    "dataModeCount": profile.data_mode_count,
+                    "dataModeLabels": (
+                        profile.data_mode_labels if profile.data_mode_labels else {}
+                    ),
+                    "dataModeInputs": [
+                        {"value": value, "label": label}
+                        for value, label in (profile.data_mode_inputs or ())
+                    ],
+                    "keyboard": _serialize_keyboard_config(profile),
+                    "antennas": profile.antenna_tx_count,
+                    "hasRxAntenna": profile.antenna_has_rx_ant,
+                }
+            )
+            if profile.controls:
+                payload["controls"] = profile.controls
+            payload["txBands"] = [
                 {"name": b.name, "start": b.start, "end": b.end}
                 for fr in profile.freq_ranges
                 for b in fr.bands
-            ]
-            or None,
-            **self._get_meter_cal_payload(),
+            ] or None
+        payload["webrtc"] = {
+            "available": webrtc_available(),
+            "enabled": self._config.webrtc_enabled,
         }
+        payload.update(self._get_meter_cal_payload())
         if self.command_state_store.provider_generation != snapshot.provider_generation:
             if _delivery_attempt + 1 < _DELIVERY_EPOCH_ATTEMPTS:
                 await self._serve_capabilities(

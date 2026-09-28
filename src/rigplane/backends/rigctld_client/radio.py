@@ -697,6 +697,12 @@ def _is_external_rigctld_readback(source: SourceMetadata) -> bool:
 class RigctldClientRadio:
     """Minimal Radio implementation backed by external Hamlib ``rigctld``."""
 
+    # Provider-owned state contract (MOR-2901): this backend reports its
+    # capabilities and every observed value itself, so the web layer may
+    # serve it with no RigPlane profile. Backends without this marker keep
+    # the MOR-2012 resolve-or-refuse path for unidentified radios.
+    has_provider_owned_state: bool = True
+
     def __init__(
         self,
         *,
