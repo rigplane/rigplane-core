@@ -148,6 +148,41 @@ test('one scroll container and the S-meter above the scope toolbar (MOR-2816)', 
   expect(writes).toEqual([]);
 });
 
+// MOR-2852 — the meta row shows mode, filter, then BW/AGC/NB/NR chips, and at
+// a 360 px wide phone the whole row must stay on ONE line with no fact clipped.
+test('360 px portrait keeps the meta facts on one line, nothing clipped (MOR-2852)', async ({ page }, info) => {
+  const writes = await prepare(page);
+  await page.setViewportSize({ width: 360, height: 844 });
+  await page.goto('/');
+  await settled(page);
+  const measured = await page.evaluate(() => {
+    const row = document.querySelector<HTMLElement>('.m-vfo-meta');
+    if (!row) throw new Error('the .m-vfo-meta row is missing');
+    const facts = Array.from(row.querySelectorAll<HTMLElement>('[data-indicator-fact]'))
+      .map((node) => ({
+        fact: node.getAttribute('data-indicator-fact'),
+        right: node.getBoundingClientRect().right,
+        scrollW: node.scrollWidth,
+        clientW: node.clientWidth,
+      }));
+    return {
+      scrollW: row.scrollWidth,
+      clientW: row.clientWidth,
+      lineHeight: row.getBoundingClientRect().height,
+      facts,
+    };
+  });
+  writeFileSync(info.outputPath('mor-2852-meta.json'), JSON.stringify(measured, null, 2));
+  await info.attach('meta', { body: JSON.stringify(measured), contentType: 'application/json' });
+  expect(measured.scrollW).toBeLessThanOrEqual(measured.clientW + 1);
+  expect(measured.facts.map((f) => f.fact)).toEqual(['bandwidth', 'agc', 'nb', 'nr']);
+  for (const fact of measured.facts) {
+    expect.soft(fact.right, `${fact.fact} in viewport`).toBeLessThanOrEqual(360);
+    expect.soft(fact.scrollW, `${fact.fact} not clipped`).toBeLessThanOrEqual(fact.clientW + 1);
+  }
+  expect(writes).toEqual([]);
+});
+
 // MOR-2816 (owner ruling 2026-09-28): the portrait VFO / RX-TX deck block is
 // gone — no VFO or RX/TX surface, no KEY/UNKEY TRANSMITTER, no TX target
 // line between the panorama and the chip row. The hoisted S-meter and the one

@@ -409,6 +409,95 @@ describe('MobileRadioLayout structure', () => {
     expect(mountMobile().querySelector('.m-settings-btn')).not.toBeNull();
   });
 
+  // MOR-2852 — the meta row carries the receiver facts (BW/AGC/NB/NR) for the
+  // receiver the header shows, reached through the hosted instruments.
+  describe('meta row receiver facts (MOR-2852)', () => {
+    const capsFacts = (receivers = 2): Capabilities => ({
+      freqRanges: [], modes: ['USB', 'LSB'], filters: ['FIL1', 'FIL2'],
+      receivers, vfoScheme: receivers === 2 ? 'main_sub' : 'single',
+      capabilities: ['dual_rx', 'filter_width', 'agc', 'nb', 'nr'],
+      agcLabels: { 0: 'OFF', 1: 'FAST', 2: 'SLOW' },
+    } as unknown as Capabilities);
+    const seen = () => ({ observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 1 });
+    function receiverFacts(active: 'MAIN' | 'SUB', caps: Capabilities) {
+      vi.mocked(hasDualReceiver).mockReturnValue(caps.receivers === 2);
+      (radio as unknown as { current: ServerState | null }).current = {
+        active: active, providerGeneration: 1,
+        main: {
+          freqHz: 14_250_000, mode: 'USB', filter: 0, dataMode: 0, activeSlot: 'A', sMeter: -12,
+          vfoA: {}, vfoB: {}, filterWidth: 2400, agc: 1, nb: false, nr: false,
+        } as unknown,
+        ...(caps.receivers === 2 ? {
+          sub: {
+            freqHz: 7_100_000, mode: 'LSB', filter: 1, dataMode: 0, activeSlot: 'A', sMeter: -12,
+            vfoA: {}, vfoB: {}, filterWidth: 500, agc: 2, nb: true, nr: true,
+          } as unknown,
+        } : {}),
+        connection: {} as ServerState['connection'],
+        fieldStatus: {
+          'main.filterWidth': seen(), 'main.agc': seen(), 'main.nb': seen(), 'main.nr': seen(),
+          ...('SUB' === active || caps.receivers === 2 ? {
+            'sub.filterWidth': seen(), 'sub.agc': seen(), 'sub.nb': seen(), 'sub.nr': seen(),
+          } : {}),
+        } as ServerState['fieldStatus'],
+      } as unknown as ServerState;
+      vi.mocked(getCapabilities).mockReturnValue(caps);
+    }
+
+    it('shows the MAIN receiver facts after mode and filter in the meta row', () => {
+      const previous = getCapabilities(); const caps = capsFacts();
+      receiverFacts('MAIN', caps);
+      try {
+        const t = mountMobile();
+        const meta = t.querySelector('.m-vfo-meta')!;
+        expect(meta).not.toBeNull();
+        expect(meta.querySelector('.m-vfo-mode')?.textContent).toBe('USB');
+        expect(meta.querySelector('.m-vfo-filter')?.textContent).toBe('FIL1');
+        const facts = [...meta.querySelectorAll('[data-indicator-fact]')];
+        expect(facts.map((node) => node.getAttribute('data-indicator-fact')))
+          .toEqual(['bandwidth', 'agc', 'nb', 'nr']);
+        expect(facts.map((node) => node.textContent?.trim()))
+          .toEqual(['BW 2400 Hz', 'AGC FAST', 'NB', 'NR']);
+        expect(meta.querySelector('[data-indicator-fact="nb"]')?.getAttribute('data-state')).toBe('off');
+      } finally {
+        vi.mocked(getCapabilities).mockReturnValue(previous);
+        vi.mocked(hasDualReceiver).mockReturnValue(false);
+      }
+    });
+
+    it('switches the facts with the receiver the header shows', () => {
+      const previous = getCapabilities(); const caps = capsFacts();
+      receiverFacts('SUB', caps);
+      try {
+        const t = mountMobile();
+        const meta = t.querySelector('.m-vfo-meta')!;
+        const facts = [...meta.querySelectorAll('[data-indicator-fact]')];
+        expect(facts.map((node) => node.textContent?.trim())).toEqual(['BW 500 Hz', 'AGC SLOW', 'NB', 'NR']);
+        expect(meta.querySelector('[data-indicator-fact="nb"]')?.getAttribute('data-state')).toBe('on');
+        expect(meta.querySelector('.m-smeter-bar')?.getAttribute('data-receiver')).toBe('SUB');
+      } finally {
+        vi.mocked(getCapabilities).mockReturnValue(previous);
+        vi.mocked(hasDualReceiver).mockReturnValue(false);
+      }
+    });
+
+    it('the facts are display-only — bare spans, no clickable control', () => {
+      const previous = getCapabilities(); const caps = capsFacts();
+      receiverFacts('MAIN', caps);
+      try {
+        const t = mountMobile();
+        const meta = t.querySelector('.m-vfo-meta')!;
+        const nodes = [...meta.querySelectorAll<HTMLElement>('[data-indicator-fact]')];
+        expect(nodes).toHaveLength(4);
+        expect(nodes.every((node) => node.tagName === 'SPAN')).toBe(true);
+        expect(nodes[0].closest('button')).toBeNull();
+      } finally {
+        vi.mocked(getCapabilities).mockReturnValue(previous);
+        vi.mocked(hasDualReceiver).mockReturnValue(false);
+      }
+    });
+  });
+
   // MOR-2511 — this suite's module-level `hasSpectrum` mock returns false, so
   // both orientations here are the no-spectrum case: no panorama slot renders
   // at all, and nothing substitutes the amber LCD cockpit in its place.

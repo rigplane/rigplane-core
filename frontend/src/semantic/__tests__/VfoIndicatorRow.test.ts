@@ -510,3 +510,121 @@ describe('RF gain display observation', () => {
     });
   });
 });
+
+// MOR-2852 — the phone meta row's facts subset. Chips draws ONLY the listed
+// receiver facts, in the listed order: no receiver header, no S-meter, no
+// radio-wide section. Every existing appearance stays byte-identical above.
+describe('chips appearance (MOR-2852) — the phone meta facts', () => {
+  it('draws exactly the requested facts, in order, with no header and no S-meter', () => {
+    const root = render({ indicator: indicator(), appearance: 'chips', facts: ['bandwidth', 'agc', 'nb', 'nr'] });
+    const row = root.querySelector('[data-testid="vfo-indicator-row"]')!;
+    expect(row.getAttribute('data-indicator-appearance')).toBe('chips');
+    expect(row.querySelector('header')).toBeNull();
+    expect(row.querySelectorAll('[data-testid="receiver-s-meter"]')).toHaveLength(0);
+    // Notch/ATT/P.AMP/IP+/DIGI-SEL are structurally present in the fixture
+    // yet must not render: only the listed subset does.
+    const facts = [...row.querySelectorAll('[data-indicator-fact]')];
+    expect(facts.map((node) => node.getAttribute('data-indicator-fact')))
+      .toEqual(['bandwidth', 'agc', 'nb', 'nr']);
+    // The radio-wide singleton section is not part of chips either.
+    expect(root.querySelectorAll('[data-testid="vfo-shared-indicators"]')).toHaveLength(0);
+  });
+
+  it('follows the requested order and subset, omitting unlisted facts', () => {
+    const root = render({ indicator: indicator(), appearance: 'chips', facts: ['nr', 'bandwidth'] });
+    const facts = [...root.querySelectorAll('[data-indicator-fact]')];
+    expect(facts.map((node) => node.getAttribute('data-indicator-fact'))).toEqual(['nr', 'bandwidth']);
+  });
+
+  it('renders NB/NR as the bare label with on/off/unknown state, never ON/OFF text', () => {
+    const root = render({ indicator: indicator({ nbActive: known(true), nrActive: known(false) }),
+      appearance: 'chips', facts: ['bandwidth', 'agc', 'nb', 'nr'] });
+    const nb = root.querySelector<HTMLElement>('[data-indicator-fact="nb"]')!;
+    const nr = root.querySelector<HTMLElement>('[data-indicator-fact="nr"]')!;
+    expect(nb.getAttribute('data-state')).toBe('on');
+    expect(nb.textContent).toBe('NB');
+    expect(nr.textContent).toBe('NR');
+    expect(nr.getAttribute('data-state')).toBe('off');
+    for (const node of [nb, nr]) expect(node.textContent).not.toMatch(/ON|OFF/);
+    // Each NB/NR slot reserves exactly the label (its text never changes).
+    expect(nb.style.minInlineSize).toBe('2ch');
+    expect(nr.style.minInlineSize).toBe('2ch');
+  });
+
+  it('marks an unread NB/NR dimmed as `unknown` while keeping the bare label', () => {
+    const root = render({ indicator: indicator({ nbActive: unknown<boolean>(), nrActive: unknown<boolean>() }),
+      appearance: 'chips', facts: ['nb', 'nr'] });
+    for (const fact of ['nb', 'nr'] as const) {
+      const node = root.querySelector<HTMLElement>(`[data-indicator-fact="${fact}"]`)!;
+      expect(node.getAttribute('data-state')).toBe('unknown');
+      expect(node.textContent).toBe(fact.toUpperCase());
+      expect(node.textContent).not.toContain('—');
+    }
+  });
+
+  it('keeps BW and AGC texts/rules identical to the existing appearances', () => {
+    const root = render({ indicator: indicator({ bandwidthHz: known(2400), agcMode: known('SLOW') }),
+      appearance: 'chips', facts: ['bandwidth', 'agc'] });
+    expect(root.querySelector('[data-indicator-fact="bandwidth"]')?.textContent?.trim()).toBe('BW 2400 Hz');
+    expect(root.querySelector('[data-indicator-fact="agc"]')?.textContent?.trim()).toBe('AGC SLOW');
+  });
+
+  it('dimmed-label-only unread BW and AGC, reserving the same slot', () => {
+    const root = render({ indicator: indicator({ bandwidthHz: unknown(), agcMode: unknown() }),
+      appearance: 'chips', facts: ['bandwidth', 'agc'] });
+    const bw = root.querySelector<HTMLElement>('[data-indicator-fact="bandwidth"]')!;
+    const agc = root.querySelector<HTMLElement>('[data-indicator-fact="agc"]')!;
+    expect(bw.textContent?.trim()).toBe('BW');
+    expect(agc.textContent?.trim()).toBe('AGC');
+    expect(bw.textContent).not.toContain('—');
+    expect(agc.textContent).not.toContain('—');
+    expect(bw.style.minInlineSize).toBe(`${FACT_SLOT_RESERVATIONS.bandwidth}ch`);
+    expect(agc.style.minInlineSize).toBe(`${FACT_SLOT_RESERVATIONS.agc}ch`);
+  });
+
+  it('omits a structurally absent fact but keeps the requested ones', () => {
+    const root = render({ indicator: indicator({
+      bandwidthHz: unknown(false), agcMode: known(1),
+      nbActive: unknown(false), nrActive: known(true),
+    }),
+      appearance: 'chips', facts: ['bandwidth', 'agc', 'nb', 'nr'] });
+    const facts = [...root.querySelectorAll('[data-indicator-fact]')];
+    expect(facts.map((node) => node.getAttribute('data-indicator-fact'))).toEqual(['agc', 'nr']);
+  });
+
+  it.each(['on', 'unknown'] as const)('keeps NB/NR slot width identical in the %s state', (stateName) => {
+    const field = stateName === 'on' ? known(true) : unknown<boolean>();
+    const root = render({ indicator: indicator({ nbActive: field, nrActive: field }),
+      appearance: 'chips', facts: ['nb', 'nr'] });
+    for (const fact of ['nb', 'nr'] as const) {
+      expect(root.querySelector<HTMLElement>(`[data-indicator-fact="${fact}"]`)!.style.minInlineSize).toBe('2ch');
+    }
+  });
+
+  it.each(['bw known', 'bw unread'] as const)('holds the BW slot at one width (%s)', (_label) => {
+    const field = _label === 'bw known' ? known(2400) : unknown<number>();
+    const root = render({ indicator: indicator({ bandwidthHz: field }),
+      appearance: 'chips', facts: ['bandwidth'] });
+    expect(root.querySelector<HTMLElement>('[data-indicator-fact="bandwidth"]')!.style.minInlineSize)
+      .toBe(`${FACT_SLOT_RESERVATIONS.bandwidth}ch`);
+  });
+
+  it('lights NB/NR on with the cyan edge-left bar, never colour alone', () => {
+    const source = readFileSync('src/semantic/VfoIndicatorRow.svelte', 'utf8');
+    const lit = source.match(/\[data-indicator-appearance='chips'\][^/]*\[data-state='on'\]::before\s*\{([^}]*)}/s);
+    expect(lit, 'chips on-state bar rule').not.toBeNull();
+    expect(lit![1]).toMatch(/left:\s*0/);
+    expect(lit![1]).toMatch(/width:\s*2px/);
+    expect(lit![1]).toMatch(/var\(--v2-accent-cyan/);
+  });
+
+  it('an existing appearance still renders its header, receiver name and S-meter', () => {
+    for (const appearance of ['semantic', 'sdr', 'standard'] as const) {
+      if (component) unmount(component);
+      component = null;
+      const root = render({ indicator: indicator(), appearance });
+      expect(root.querySelector('header strong')?.textContent).toBe('MAIN');
+      expect(root.querySelectorAll('[data-testid="receiver-s-meter"]')).toHaveLength(1);
+    }
+  });
+});

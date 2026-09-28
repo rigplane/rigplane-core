@@ -17,6 +17,7 @@ import Fixture, {
   FIXTURE_LEVEL_SOURCE_SHA256, FIXTURE_SIGNAL_SOURCE_SHA256,
   FIXTURE_TARBALL_SHA256, fixtureMeterAppearance,
 } from './fixtures/ReceiverInstrumentHostFixture.svelte';
+import FactsFixture from './fixtures/ReceiverInstrumentHostFactsFixture.svelte';
 import AlternateFrequencyReadoutHarness, {
   clearRetainedInteractions, retainedInteractions,
 } from '../../primitives/frequency/__tests__/AlternateFrequencyReadoutHarness.svelte';
@@ -654,11 +655,79 @@ describe('ReceiverInstrumentHost', () => {
       slot: { kind: 'slotted', id: 'A' }, frequencyHz: 1,
     } as const;
 
+  it('builds the Po lower-scale descriptor for the TX-target receiver only', () => {
+    const structuralPower = {
+      presence: 'present',
+      reading: { status: 'known', value: 100 },
+      display: { state: 'current', value: 100 },
+      availability: { structural: true, operational: true },
+      relevant: true,
+      domain: { kind: 'engineering', unit: 'w' },
+      source: null,
+    } as unknown as MetersViewModel['power'];
+    const meters = {
+      power: structuralPower, rfState: 'transmitting',
+    } as unknown as MetersViewModel;
+    const knownMain = {
+      status: 'known', receiver: 'MAIN',
+      slot: { kind: 'slotted', id: 'A' }, frequencyHz: 1,
+    } as const;
+
     expect(buildPowerLowerScale(meters, knownMain, 'transmitting', 'MAIN')).toBeDefined();
     expect(buildPowerLowerScale(meters, knownMain, 'transmitting', 'SUB')).toBeUndefined();
     expect(buildPowerLowerScale(
       meters, { status: 'unknown', reason: 'not-observed' }, 'transmitting', 'MAIN',
     )).toBeUndefined();
     expect(buildPowerLowerScale(undefined, knownMain, 'transmitting', 'MAIN')).toBeUndefined();
+  });
+});
+
+// MOR-2852 — the phone meta row reaches the receiver facts through the
+// host's mainFacts / subFacts handles, the same pattern as mainSMeter/subSMeter.
+describe('receiver facts handles (MOR-2852)', () => {
+  function factsPublication(): Publication {
+    const pub = publication();
+    (pub.caps as Capabilities).capabilities = ['dual_rx', 'filter_width', 'agc', 'nb', 'nr'];
+    pub.state.main = { ...pub.state.main, filterWidth: 2400, agc: 0, nb: false, nr: false };
+    pub.state.sub = { ...pub.state.sub, filterWidth: 500, agc: 2, nb: true, nr: true };
+    pub.state.fieldStatus = {
+      ...pub.state.fieldStatus,
+      'main.filterWidth': available(), 'main.agc': available(), 'main.nb': available(), 'main.nr': available(),
+      'sub.filterWidth': available(), 'sub.agc': available(), 'sub.nb': available(), 'sub.nr': available(),
+    };
+    return pub;
+  }
+  function mountFacts(publisher: Publisher): HTMLElement {
+    const target = document.createElement('div'); document.body.appendChild(target);
+    components.push(mount(FactsFixture, {
+      target, props: { subscribeControlAuthority: publisher.subscribe } as never,
+    }));
+    flushSync(); return target;
+  }
+
+  it('mainFacts renders the MAIN entry, subFacts the SUB entry', () => {
+    const publisher = new Publisher(factsPublication());
+    const root = mountFacts(publisher);
+    const mainSection = root.querySelector<HTMLElement>('[data-facts-owner="MAIN"]')!;
+    const subSection = root.querySelector<HTMLElement>('[data-facts-owner="SUB"]')!;
+    expect(mainSection.querySelector('[data-indicator-receiver]')?.getAttribute('data-indicator-receiver'))
+      .toBe('MAIN');
+    expect(subSection.querySelector('[data-indicator-receiver]')?.getAttribute('data-indicator-receiver'))
+      .toBe('SUB');
+    const entries = (owner: HTMLElement) => [...owner.querySelectorAll('[data-indicator-fact]')]
+      .map((node) => [node.getAttribute('data-indicator-fact'), node.textContent]);
+    expect(entries(mainSection)).toEqual([
+      ['bandwidth', 'BW 2400 Hz'], ['agc', 'AGC 0'], ['nb', 'NB'], ['nr', 'NR'],
+    ]);
+    expect(entries(subSection).map(([fact]) => fact)).toEqual(['bandwidth', 'agc', 'nb', 'nr']);
+    expect(subSection.querySelector('[data-indicator-fact="nb"]')?.getAttribute('data-state')).toBe('on');
+    expect(subSection.querySelector('[data-indicator-fact="nr"]')?.getAttribute('data-state')).toBe('on');
+  });
+
+  it('exposes no subFacts without a sub owner', () => {
+    const publisher = new Publisher(publication({ receivers: 1 }));
+    const root = mountFacts(publisher);
+    expect(root.querySelector('[data-facts-owner="SUB"]')).toBeNull();
+    expect(root.querySelector('[data-facts-owner="MAIN"]')).not.toBeNull();
   });
 });
