@@ -715,7 +715,7 @@ describe('mobile managed TX intent routing', () => {
     const t = mountMobile();
     expect(t.querySelectorAll('[data-testid="rx-tx-key"]')).toHaveLength(0);
     expect(t.querySelectorAll('[data-testid="rx-tx-unkey"]')).toHaveLength(0);
-    expect(t.body.textContent).not.toContain('TX target');
+    expect(t.textContent).not.toContain('TX target');
     expect(tx.transmitOn).not.toHaveBeenCalled();
     expect(tx.pttOn).not.toHaveBeenCalled();
     expect(tx.pttOff).not.toHaveBeenCalled();
