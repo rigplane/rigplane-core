@@ -2762,6 +2762,45 @@ async def test_http_connect_and_power_on_leave_the_port_retry_running(
 
 
 @pytest.mark.asyncio
+async def test_power_on_still_reconnects_a_silent_port_that_opened_before() -> None:
+    """MOR-2841's Power ON keeps reconnecting first, as on main.
+
+    A silent radio's backend cycles link-down, reopen, link-down. In the gap
+    between a link-down and the reopen the control link is down, so the
+    power-on route reconnects before sending power-on. That port has opened
+    before, so the missing-port refusal does not apply.
+    """
+
+    from test_icom7610_serial_radio import _FakeSerialCivLink
+    from test_web_server_coverage import _FakeWriter, _reader_with, _response_json
+
+    radio = _fast_retry_serial_radio("/dev/ttyUSB0", _FakeSerialCivLink())
+    await radio.connect()
+    # The route's own reconnect is under test, so the watchdog must not reopen
+    # the port first.
+    await radio._stop_civ_data_watchdog()
+    await radio._declare_serial_link_down()
+    assert radio.control_connected is False
+    radio.set_powerstat = AsyncMock()
+    server = WebServer(radio, _gated_config())
+
+    writer = _FakeWriter()
+    power_on = b'{"state": "on"}'
+    try:
+        await server._handle_radio_control(
+            "/api/v1/radio/power",
+            writer,
+            headers={"content-length": str(len(power_on))},
+            reader=_reader_with(power_on),
+        )
+        assert _response_json(writer) == (200, {"status": "ok", "power": "on"})
+        assert radio.connected is True
+        radio.set_powerstat.assert_awaited_once_with(True)
+    finally:
+        await radio.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_tx_returns_after_the_late_first_open(tmp_path: Path) -> None:
     """Transmit is refused without a port and follows the normal rules after.
 
