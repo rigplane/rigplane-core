@@ -193,6 +193,116 @@ async function checkLandscapeUnkey(page: Page, info: TestInfo, stage: string) {
   expect.soft(geometry.rect.right, stage).toBeLessThanOrEqual(geometry.viewport.width);
 }
 
+// MOR-2816 (owner ruling 2026-09-28 00:27 EDT): every visible button in the
+// PORTRAIT phone layout — chip tabs, chip panels, the spectrum toolbar, the
+// tuning strip — carries a label of at least 16px, a touch height of at least
+// 44px, and is not clipped. Glyph-only buttons keep a 44px hit area and a
+// glyph of at least 16px. Landscape is measured but deliberately unchanged.
+type ButtonAudit = {
+  label: string;
+  className: string;
+  font: number;
+  width: number;
+  height: number;
+  clipped: boolean;
+  glyphs: { width: number; height: number }[];
+};
+
+function auditScript(): ButtonAudit[] {
+  const root = document.querySelector('.m-layout, .m-landscape');
+  if (!root) throw new Error('phone root not found');
+  const audited: ButtonAudit[] = [];
+  for (const el of Array.from(root.querySelectorAll<HTMLElement>('button, [role="button"]'))) {
+    const style = getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden') continue;
+    const rects = el.getClientRects();
+    if (rects.length === 0) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) continue;
+    const text = (el.textContent ?? '').trim();
+    const glyphs = Array.from(el.querySelectorAll('svg')).map((svg) => {
+      const r = svg.getBoundingClientRect();
+      return { width: r.width, height: r.height };
+    });
+    audited.push({
+      label: text.slice(0, 24) || (glyphs.length ? '(glyph)' : '(empty)'),
+      className: el.getAttribute('class')?.slice(0, 48) ?? '',
+      font: parseFloat(style.fontSize),
+      width: rect.width,
+      height: rect.height,
+      clipped: el.scrollWidth > el.clientWidth + 1,
+      glyphs,
+    });
+  }
+  return audited;
+}
+
+function fontHistogram(buttons: ButtonAudit[]) {
+  const histogram: Record<string, number> = {};
+  for (const b of buttons) histogram[b.font] = (histogram[b.font] ?? 0) + 1;
+  return histogram;
+}
+
+async function auditPortrait(page: Page, info: TestInfo, stage: string) {
+  const buttons = await page.evaluate(auditScript);
+  console.log(`MOR-2816 portrait ${stage} histogram: ${JSON.stringify(fontHistogram(buttons))}`);
+  await info.attach(`portrait-${stage}-audit`, {
+    body: JSON.stringify(buttons, null, 2), contentType: 'application/json',
+  });
+  expect(buttons.length, `${stage}: buttons found`).toBeGreaterThan(0);
+  for (const b of buttons) {
+    const name = `${stage} "${b.label}" (${b.className})`;
+    expect.soft(b.font, `${name} font-size`).toBeGreaterThanOrEqual(16);
+    expect.soft(b.height, `${name} height`).toBeGreaterThanOrEqual(44);
+    expect.soft(b.clipped, `${name} clipped`).toBe(false);
+    // Glyph-only buttons: the glyph itself keeps the 16px floor.
+    if (!b.label || b.label === '(glyph)') {
+      for (const g of b.glyphs) {
+        expect.soft(g.width, `${name} glyph width`).toBeGreaterThanOrEqual(16);
+        expect.soft(g.height, `${name} glyph height`).toBeGreaterThanOrEqual(16);
+      }
+    }
+  }
+}
+
+test('portrait buttons carry 16px labels and 44px touch targets (MOR-2816)', async ({ page }, info) => {
+  const writes = await prepare(page);
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.goto('/');
+  await settled(page);
+  await expect(page.locator('.m-layout')).toBeVisible();
+  // ESSENTIALS is the default active chip; audit it, then the RF chip panel.
+  await auditPortrait(page, info, 'essentials');
+  await page.getByRole('tab', { name: 'RF', exact: true }).click();
+  await expect(page.locator('#m-chip-panel-rf')).toBeVisible();
+  await auditPortrait(page, info, 'rf');
+  expect(writes).toEqual([]);
+});
+
+// Landscape is MEASURED only (owner ruling: portrait-only change) — the
+// numbers are reported, nothing is asserted and nothing is changed there.
+test('landscape button label sizes measured, report only (MOR-2816)', async ({ page }, info) => {
+  await prepare(page);
+  await page.setViewportSize({ width: 812, height: 375 });
+  await page.goto('/');
+  await settled(page);
+  await expect(page.locator('.m-landscape')).toBeVisible();
+  const buttons = await page.evaluate(auditScript);
+  const measured = {
+    count: buttons.length,
+    histogram: fontHistogram(buttons),
+    heights: buttons.reduce<Record<string, number>>((acc, b) => {
+      acc[b.height] = (acc[b.height] ?? 0) + 1;
+      return acc;
+    }, {}),
+  };
+  console.log(`MOR-2816 landscape measured: ${JSON.stringify(measured)}`);
+  await info.attach('landscape-measured', {
+    body: JSON.stringify({ measured, buttons }, null, 2), contentType: 'application/json',
+  });
+  expect(measured.count).toBeGreaterThan(0);
+});
+
 for (const [width, height] of [[390, 844], [430, 932]]) {
   test(`portrait shows no deck; landscape unkey stays reachable at ${width}x${height}`, async ({ page }, info) => {
     const writes = await prepare(page);
