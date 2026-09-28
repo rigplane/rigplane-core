@@ -34,6 +34,8 @@ precedence](https://learn.chatgpt.com/docs/config-file/config-basic#configuratio
 and [Codex subagent model selection](https://learn.chatgpt.com/docs/agent-configuration/subagents).
 The app request fields must be checked against its current callable schema.
 
+Do not use Grok (`xai/grok-*` through the msm-ai / DigitalOcean route) for workers or reviewers: the owner ruled on 2026-09-27 that it is too expensive.
+
 Delegate one bounded problem requiring stronger reasoning when that is cheaper than expanding the root context. Select Medium or High directly when ambiguity or consequence warrants it; do not require a failed lower-effort attempt first. A build failure alone does not justify model escalation: distinguish code, specification, environment, tool, and test failures.
 
 Routing defaults, subject to observed quality and current availability:
