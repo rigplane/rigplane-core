@@ -25,11 +25,23 @@
     getFilterHandlers,
     getFilterArmed,
     getFilterShapeArmed,
+    getFilterShapeControlFeedback,
     getFilterWidthControlFeedback,
     getIfShiftControlFeedback,
     getPbtInnerHzControlFeedback,
     getPbtOuterHzControlFeedback,
   } from '$lib/runtime/adapters/panel-adapters';
+  import {
+    projectControlFeedbackPresentation,
+    type ControlFeedbackPresentationInput,
+  } from '../../primitives/control-feedback/control-feedback-presentation';
+
+  // MOR-1689: the panel's SHARP/SOFT choice catalog — one definition for
+  // the settings-modal buttons and the live status's target description.
+  const FILTER_SHAPE_CHOICES = [
+    { value: 0, label: 'SHARP' },
+    { value: 1, label: 'SOFT' },
+  ] as const;
 
   const handlers = getFilterHandlers();
   let p = $derived(deriveFilterProps());
@@ -44,6 +56,40 @@
   // sole selection source; armed only marks the SHARP/SOFT button the
   // pending command is racing toward.
   let filterShapeArmed = $derived(getFilterShapeArmed());
+  // MOR-1689 leg 2: the SAME lifecycle through the full MOR-1687 projection
+  // — the structural phase for the actual buttons and a
+  // transition-deduplicated polite live status naming the requested target.
+  // Consulted only while the radio has a `filter_shape` capability, so an
+  // FTX-1-shaped mount never reads the lifecycle at all.
+  let filterShapeFeedback = $derived(
+    p.hasFilterShape === true ? getFilterShapeControlFeedback() : null,
+  );
+  const describeShapeTarget = (target: number): string =>
+    FILTER_SHAPE_CHOICES.find(choice => choice.value === target)?.label ?? String(target);
+  let shapeAnnouncedTransitionIds: readonly string[] = [];
+  let shapeLive = $state<Readonly<{ transitionId: string; text: string }> | null>(null);
+  $effect(() => {
+    const feedback: Readonly<ControlFeedbackPresentationInput<number>> | null = filterShapeFeedback;
+    if (feedback === null) {
+      shapeAnnouncedTransitionIds = [];
+      shapeLive = null;
+      return;
+    }
+    if (feedback.busy !== true || feedback.transitionId === null || feedback.target === null) {
+      shapeLive = null;
+      return;
+    }
+    const presentation = projectControlFeedbackPresentation(
+      feedback, { announcedTransitionIds: shapeAnnouncedTransitionIds }, describeShapeTarget,
+    );
+    shapeAnnouncedTransitionIds = presentation.state.announcedTransitionIds;
+    if (presentation.politeAnnouncement !== null) {
+      shapeLive = {
+        transitionId: presentation.politeAnnouncement.transitionId,
+        text: `${describeShapeTarget(feedback.target)}: ${t('core.filter.select.pendingAnnouncement')}`,
+      };
+    }
+  });
   let filterWidthFeedback = $derived(getFilterWidthControlFeedback());
   const filterArmedIdBase = $props.id();
 
@@ -775,10 +821,18 @@
       {/each}
 
       {#if hasFilterShape}
-        <div class="shape-section">
+        <!-- MOR-1689: the shared choice seam on the actual interactive
+             elements — every shape button carries the lifecycle's
+             data-command-phase, the section carries aria-busy for the
+             in-flight control, and a transition-deduplicated polite live
+             region names the requested target. data-armed/italic stay the
+             secondary channel, never the only indication. -->
+        {@const shapePhase = filterShapeFeedback?.phase}
+        {@const shapeBusy = filterShapeFeedback?.busy === true}
+        <div class="shape-section" data-command-phase={shapePhase} aria-busy={shapeBusy}>
           <div class="shape-title">Shape</div>
           <div class="shape-buttons">
-            {#each [{ value: 0, label: 'SHARP' }, { value: 1, label: 'SOFT' }] as shapeChoice}
+            {#each FILTER_SHAPE_CHOICES as shapeChoice}
               {@const isShapeArmed = filterShapeArmed.armed && filterShapeArmed.value === shapeChoice.value}
               {@const shapeArmedId = `${filterArmedIdBase}-shape-${shapeChoice.value}`}
               <button
@@ -789,6 +843,7 @@
                   ? '--control-accent:var(--v2-accent-cyan); --control-active-text:var(--v2-text-white)'
                   : '--control-accent:var(--v2-accent-green-bright); --control-active-text:var(--v2-bg-darkest)'}
                 data-armed={isShapeArmed ? 'true' : undefined}
+                data-command-phase={shapePhase}
                 aria-busy={isShapeArmed}
                 aria-describedby={isShapeArmed ? shapeArmedId : undefined}
                 onclick={() => onFilterShapeChange?.(shapeChoice.value)}
@@ -800,6 +855,10 @@
               {/if}
             {/each}
           </div>
+          {#if shapeLive !== null}{#key shapeLive.transitionId}
+            <span class="sr-only" role="status" aria-live="polite" aria-atomic="true"
+              data-filter-shape-live>{shapeLive.text}</span>
+          {/key}{/if}
         </div>
       {/if}
 

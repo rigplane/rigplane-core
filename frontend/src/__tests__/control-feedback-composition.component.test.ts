@@ -458,6 +458,6 @@ describe('Filter Shape structural feedback survives locale, forced-colors and re
     const pendingRule = style.slice(style.indexOf('[data-pending'), style.indexOf('\n', style.indexOf('[data-pending')));
     expect(pendingRule).toContain('text-decoration');
     const panel = readFileSync('src/components-v2/panels/FilterPanel.svelte', 'utf8');
-    expect(panel).toContain('data-command-phase={filterShapeFeedback.phase');
+    expect(panel).toContain('data-command-phase={shapePhase');
   });
 });
