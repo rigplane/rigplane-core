@@ -233,10 +233,11 @@ def _record_critical_startup_defect(
 ) -> None:
     """Record the defect that ends startup for an unanswered critical path.
 
-    The same :class:`DeclaredCommandDefect` record a Yaesu backend leaves on
-    the scheduler when a declared read cannot answer — the gate's existing
-    abort path (``_abort_on_startup_defect``) picks it up; no second
-    failure mechanism is added.
+    The same :class:`DeclaredCommandDefect` record the Yaesu CAT and
+    rigctld client backends leave on the scheduler when a declared read
+    cannot answer — the gate's existing abort path
+    (``_abort_on_startup_defect``) picks it up; no second failure
+    mechanism is added.
     """
 
     defect = DeclaredCommandDefect(

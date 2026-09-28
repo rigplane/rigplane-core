@@ -194,7 +194,32 @@ class RigctldClientObservationPoller:
                 raise
             except Exception:
                 logger.warning("rigctld-client observation poll failed", exc_info=True)
+                await self._reconnect_transport()
             await asyncio.sleep(interval)
+
+    async def _reconnect_transport(self) -> None:
+        """Reopen the transport a failed poll cycle left closed (MOR-2757).
+
+        A read timeout retires the connection
+        (``RigctldTransport._read_line`` → ``_close_connection``), and
+        nothing else in production reopens it — the reconnect loops in
+        ``runtime/radio_reconnect.py`` are Icom-only and the HTTP
+        ``/api/v1/radio/connect`` endpoint is operator-triggered — so
+        without this the next cycle would fail in ``_write_line`` without
+        ever querying rigctld again: one timeout ended polling for good.
+        Reuse the transport's own ``connect()`` — the same open path
+        startup uses — rather than a second reconnect mechanism; both
+        loops may race here, and its lifecycle lock plus the ``connected``
+        short-circuit make that safe.
+        """
+
+        transport = self._radio._transport
+        if transport.connected:
+            return
+        try:
+            await transport.connect()
+        except Exception:
+            logger.warning("rigctld-client transport reconnect failed", exc_info=True)
 
     async def _poll_medium(self) -> None:
         from .observations import RigctldClientObservationAdapter

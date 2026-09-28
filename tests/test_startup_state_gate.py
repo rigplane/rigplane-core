@@ -1142,15 +1142,20 @@ async def test_rigctld_gate_is_unchanged_when_the_server_answers_everything() ->
     try:
         with patch("rigplane.web.web_startup.asyncio.start_server", new=_bind):
             await asyncio.wait_for(server.start(), timeout=10.0)
+            # Store-backed asserts run before stop(): the fallback-store
+            # teardown this radio takes (no ``state_store`` capability)
+            # ends the provider epoch and clears the store.
+            assert binds == ["bind"]
+            assert scheduler.startup_defect is None
+            assert (
+                scheduler.unobserved_startup_paths(_observed_paths(server, scheduler))
+                == ()
+            )
+            assert fake.t_requests >= 1
             await server.stop()
     finally:
         await radio.disconnect()
         await fake.stop()
-
-    assert binds == ["bind"]
-    assert scheduler.startup_defect is None
-    assert scheduler.unobserved_startup_paths(_observed_paths(server, scheduler)) == ()
-    assert fake.t_requests >= 1
 
 
 @pytest.mark.asyncio

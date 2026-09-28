@@ -26,7 +26,6 @@ from rigplane.core.state_pipeline_contracts import (
     startup_critical_path,
 )
 from rigplane.core.tx_observation import OBSERVED_PTT_PATH, normalize_observed_ptt
-from rigplane.exceptions import ConnectionError as RadioConnectionError
 from rigplane.exceptions import TimeoutError as RadioTimeoutError
 
 Clock = Callable[[], float]
@@ -446,20 +445,24 @@ class RigctldClientObservationAdapter:
     ) -> _T:
         """Read one safety-critical path, counting an unanswered attempt.
 
-        MOR-2757: a read that dies with the transport's unanswered-read
-        failures — the read timeout, or the connection error the transport
-        raises once that timeout has closed the connection — counts toward
-        that path's consecutive-unread tally (any answer resets it), so
-        the 3rd unanswered read records the declared-command defect that
-        ends startup; the same record a refused read leaves. The re-raise
-        keeps the poller's cycle-failure path unchanged. A read the radio
-        *answers* — even with a malformed line — is an answer, not an
-        unanswered attempt, and does not count.
+        MOR-2757: only the transport's unanswered-read timeout — a real
+        query rigctld never answered — counts toward that path's
+        consecutive-unread tally (any answer resets it), so the 3rd
+        unanswered read records the declared-command defect that ends
+        startup; the same record a refused read leaves. A
+        ``RadioConnectionError`` never counts: link quality — the
+        connection a timeout closes, or a plain drop such as rigctld
+        restarting — reaches the backend as a transport error and must not
+        build a ``DeclaredCommandDefect``, the same line the Yaesu CAT
+        backend holds (#3829 counts only ``CatTimeoutError``). The
+        re-raise keeps the poller's cycle-failure path unchanged. A read
+        the radio *answers* — even with a malformed line — is an answer,
+        not an unanswered attempt, and does not count.
         """
 
         try:
             value = await read()
-        except (RadioTimeoutError, RadioConnectionError) as exc:
+        except RadioTimeoutError as exc:
             self._count_unanswered_critical_reads(label, exc, path, command=command)
             raise
         self._note_critical_read_answers(path)
@@ -498,10 +501,13 @@ class RigctldClientObservationAdapter:
     ) -> None:
         """Count one unanswered read of a safety-critical path (MOR-2757).
 
-        The medium poll cycle re-issues every read each interval, so one
-        unanswered read per cycle is one unanswered attempt. Non-critical
-        paths are not counted — the web gate's own 10 s deadline already
-        stops them from blocking. On the attempt that reaches
+        The medium poll cycle re-issues every read each interval — the
+        poller reopens the transport a timeout closed
+        (``RigctldClientObservationPoller._reconnect_transport``) before
+        the next cycle — so one unanswered read per cycle is one real
+        unanswered read of the radio. Non-critical paths are not counted
+        — the web gate's own 10 s deadline already stops them from
+        blocking. On the attempt that reaches
         ``_CRITICAL_READ_TIMEOUT_ATTEMPTS`` the same
         :class:`DeclaredCommandDefect` a refused read records is recorded
         for that one path, naming the field and the rigctld command the
