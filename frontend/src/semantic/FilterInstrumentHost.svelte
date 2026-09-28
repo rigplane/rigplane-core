@@ -17,6 +17,7 @@
   interface ExistingProps {
     view: RadioViewModel | null;
     pendingFilter?: number | null;
+    pendingMode?: string | null;
     pendingFilterShape?: number | null;
     pendingDataMode?: number | null;
     pendingModInput?: number | null;
@@ -34,7 +35,8 @@
   type Props = ExistingProps & RendererSelection;
 
   let {
-    view, pendingFilter = null, pendingFilterShape = null, pendingDataMode = null, pendingModInput = null,
+    view, pendingFilter = null, pendingMode = null, pendingFilterShape = null, pendingDataMode = null,
+    pendingModInput = null,
     onModeChange, onFilterChange, onFilterShapeChange, onDataModeChange, onModInputChange,
     finiteAppearance, rendererContext, children,
   }: Props = $props();
@@ -101,6 +103,7 @@
   const modeSeat = createChoiceRendererSeat<FilterFiniteChoiceValue>(() => ({
     context: rendererContext ?? null, field: modeFilter?.currentMode, label: 'Mode',
     options: (modeFilter?.modeChoices ?? []).map(value => ({ value, label: value })),
+    requested: requested(pendingMode),
     invoke: value => onModeChange?.(value as string),
   }), { selectionRequiresAvailability: true });
   const filterSeat = createChoiceRendererSeat<FilterFiniteChoiceValue>(() => ({
@@ -206,16 +209,27 @@
       {@render external(modeSeat)}
     {:else}
       <div class="standard-choice-grid" data-testid="standard-mode-choices"
-        role="group" aria-label="Mode" data-disabled-reason={reason(modeFilter.currentMode)}>
+        role="radiogroup" aria-label="Mode" data-disabled-reason={reason(modeFilter.currentMode)}>
         {#each standardModeChoices as choice (choice)}
-          <span data-testid={`standard-mode-${choice}`}>
+          <!-- MOR-2907 F7: the mode keys expose the confirmed selection —
+               the same radio vocabulary `agcKeys` (DspInstrumentHost) uses;
+               per-option false is the accepted choice-group form (ADR
+               addendum 2026-09-02 item 3). MOR-2907 F3: the pending target
+               rides the SAME armed seat/vocabulary `standardDataMode`'s
+               keys below use — display-only, never the selection source. -->
+          {@const isPending = pendingMode === choice}
+          {@const modeArmedId = `${pendingId}-mode-${choice}`}
+          <span data-testid={`standard-mode-${choice}`} data-pending={isPending}>
             <HardwareButton
               active={modeBehavior.available && modeBehavior.isSelected(choice)}
               disabled={!modeBehavior.available} indicator="edge-left" color="cyan"
+              role="radio" ariaChecked={modeBehavior.isSelected(choice)}
+              armed={isPending} describedBy={isPending ? modeArmedId : undefined}
               title={modeShortcut(choice)}
               shortcutHint={modeShortcut(choice)}
               onclick={() => modeBehavior.invoke(choice)}
             >{choice}</HardwareButton>
+            {#if isPending}<span id={modeArmedId} class="sr-only">{t('core.modePanel.pendingAnnouncement')}</span>{/if}
           </span>
         {/each}
       </div>

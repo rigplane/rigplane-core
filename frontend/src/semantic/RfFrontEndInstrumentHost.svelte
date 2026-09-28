@@ -81,6 +81,7 @@
     subscribeControlAuthority: SubscribeRfFrontEndAuthority;
     onLevelChange?: (field: RfFrontEndLevelField, value: number) => void;
     pendingPreamp?: number | null;
+    pendingAtt?: number | null;
     onPreChange?: (level: number) => void;
     onAttChange?: (db: number) => void;
     onDigiSelToggle?: (on: boolean) => void;
@@ -104,7 +105,8 @@
 
   let {
     presentation, subscribeControlAuthority, onLevelChange,
-    pendingPreamp = null, onPreChange, onAttChange, onDigiSelToggle, onIpPlusToggle,
+    pendingPreamp = null, pendingAtt = null,
+    onPreChange, onAttChange, onDigiSelToggle, onIpPlusToggle,
     finiteAppearance, rendererContext, children,
   }: Props = $props();
   let published = $state.raw<RfFrontEndAuthorityPublication | null>(null);
@@ -120,6 +122,7 @@
   const pendingPreampId = `${preampId}-pending`;
   const preampMutexId = `${preampId}-mutex`;
   const attenuatorMutexId = `${preampId}-att-mutex`;
+  const pendingAttId = `${preampId}-att-pending`;
 
   const safeGeneration = (value: unknown): value is number =>
     typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
@@ -479,6 +482,9 @@
         value, label: attenuatorChoiceText(value),
         ...(reason === undefined ? {} : { disabledReason: reason }),
       })),
+      ...(pendingAtt === null ? {} : {
+        requested: { kind: 'requested-target' as const, target: pendingAtt },
+      }),
       invoke: (db) => onAttChange?.(db),
     };
   });
@@ -664,7 +670,11 @@
         data-observed={usable(rf.attenuator)}
         data-shortcut-hint={attShortcut() ?? undefined} title={attShortcut() ?? undefined}
         data-disabled-reason={attenuatorDisabledReason()?.code}
-        aria-describedby={attenuatorDisabledReason() === undefined ? undefined : attenuatorMutexId}
+        data-att-status={pendingAtt !== null ? 'pending' : 'confirmed'}
+        aria-describedby={[
+          attenuatorDisabledReason() === undefined ? null : attenuatorMutexId,
+          pendingAtt === null ? null : pendingAttId,
+        ].filter(Boolean).join(' ') || undefined}
       >
         <span class="rf-front-end-row-label">ATT</span>
         {#if compact}
@@ -672,6 +682,7 @@
             <AttenuatorControl
               values={[...rf.attValues]}
               selected={rf.attenuator.reading.status === 'known' ? rf.attenuator.reading.value : Number.NaN}
+              pendingValue={pendingAtt}
               onchange={(value) => attenuatorBehavior.invoke(value)}
               testIdPrefix="rf-front-end-attenuator"
               ariaLabel="Attenuator"
@@ -709,6 +720,9 @@
         {/if}
         {#if attenuatorDisabledReason()}
           <p id={attenuatorMutexId} data-testid="rf-front-end-attenuator-mutex-reason">{reasonLabel(attenuatorDisabledReason()!.code)}</p>
+        {/if}
+        {#if pendingAtt !== null}
+          <span id={pendingAttId} class="sr-only">{t('core.rfFrontEnd.att.pendingAnnouncement')}</span>
         {/if}
       </div>
     {/if}
