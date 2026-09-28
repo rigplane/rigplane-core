@@ -18,8 +18,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import (
+    AsyncIterator,
+    Callable,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
@@ -27,6 +34,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from rigplane.backends._icom_serial_base import _IcomSerialRadioBase
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.core.acquisition_scheduler import (
     AcquisitionRequest,
@@ -2482,3 +2490,399 @@ async def test_silent_startup_scan_seed_and_echo_never_count_as_radio_observatio
     assert store_has_radio_observation(store) is False
 
     await radio.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# MOR-2876: a serial port that cannot be opened at startup serves a
+# radio-not-connected state while the backend keeps retrying the port
+# ---------------------------------------------------------------------------
+
+
+def _port_missing_error(device: str) -> BaseException:
+    """The error pyserial raises when the device node does not exist."""
+
+    import serial
+
+    return serial.SerialException(
+        f"[Errno 2] could not open port {device}: "
+        f"[Errno 2] No such file or directory: '{device}'"
+    )
+
+
+def _fast_retry_serial_radio(device: str, link: object) -> _IcomSerialRadioBase:
+    from rigplane.backends.icom7610 import Icom7610SerialRadio
+
+    radio = Icom7610SerialRadio(
+        device=device,
+        civ_link=link,
+        # Hermetic on any host: no OS enumeration, so no real port is probed.
+        _enumerate_serial_ports_fn=lambda: [],
+    )
+    # Short retry spacing, so a port that appears is reopened within the
+    # test's bounded waits instead of after the production backoff cap.
+    radio._SERIAL_WATCHDOG_INTERVAL_S = 0.005
+    radio._SERIAL_WATCHDOG_RETRY_S = 0.005
+    radio._SERIAL_WATCHDOG_RETRY_MAX_S = 0.01
+    return radio
+
+
+@asynccontextmanager
+async def _served_through_cli(radio: object) -> AsyncIterator[WebServer]:
+    """Run ``rigplane web`` through the real ``cli/__init__.py: _run``.
+
+    Yields the ``WebServer`` once its ``start()`` has returned, then stops
+    it and requires exit code 0. ``serve_forever`` is replaced by start /
+    wait / stop so no signal handler is installed, and the listener bind is
+    faked.
+    """
+
+    from rigplane.cli import _build_parser, _run
+    from test_icom7610_serial_radio import _wait_until
+
+    served: list[WebServer] = []
+    release = asyncio.Event()
+
+    async def _serve_forever(self: WebServer, *, on_started: object = None) -> None:
+        await self.start()
+        served.append(self)
+        await release.wait()
+        await self.stop()
+
+    async def _bind(*_args: object, **_kwargs: object) -> _FakeAsyncServer:
+        return _FakeAsyncServer()
+
+    args = _build_parser().parse_args(
+        ["--host", "1.2.3.4", "web", "--no-rigctld", "--no-discovery"]
+    )
+    args.web_bridge = None
+    with (
+        patch("rigplane.cli.create_radio", return_value=radio),
+        patch("rigplane.cli.check_ports_available"),
+        patch("rigplane.web.web_startup.asyncio.start_server", new=_bind),
+        patch.object(WebServer, "serve_forever", _serve_forever),
+    ):
+        run = asyncio.create_task(_run(args))
+        try:
+            await _wait_until(lambda: bool(served) or run.done(), timeout_s=10.0)
+            assert served, (
+                f"rigplane web exited with {run.result()} instead of serving"
+                if run.done()
+                else "rigplane web did not finish starting"
+            )
+            yield served[0]
+        finally:
+            release.set()
+            rc = await asyncio.wait_for(run, timeout=10.0)
+    assert rc == 0
+
+
+def _startup_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "rigplane.web.web_startup"
+        and record.levelno >= logging.WARNING
+    ]
+
+
+@pytest.mark.asyncio
+async def test_missing_serial_port_serves_not_connected_instead_of_exiting(
+    caplog: pytest.LogCaptureFixture, tmp_path: Path
+) -> None:
+    """``rigplane web`` with a missing port serves, then recovers the port.
+
+    Before the port exists: one WARNING names the not-connected state, the
+    port path and the open error; health reports ``radio_not_connected``;
+    transmit is refused; nothing is fabricated. When the port appears, the
+    backend's existing watchdog reopens it; while the radio stays silent
+    the verdict is MOR-2841's ``radio_powered_off_likely``, and the radio's
+    first answer clears it.
+    """
+
+    from rigplane.runtime.managed_tx_state import ManagedTxOutcome
+    from rigplane.web.runtime_helpers import store_has_radio_observation
+    from test_icom7610_serial_radio import (
+        _FakeSerialCivLink,
+        _freq_response_frame,
+        _wait_until,
+    )
+
+    device = str(tmp_path / "cu.usbserial-1420")
+    link = _FakeSerialCivLink(fail_connect=_port_missing_error(device))
+    radio = _fast_retry_serial_radio(device, link)
+
+    with caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"):
+        async with _served_through_cli(radio) as server:
+            composition = radio._managed_tx_composition
+            assert composition is not None
+            # The port keeps being retried by the backend's own watchdog.
+            assert await _wait_until(lambda: link.connect_calls >= 3, timeout_s=5.0)
+
+            warnings = _startup_warnings(caplog)
+            assert len(warnings) == 1
+            assert "not connected" in warnings[0]
+            assert device in warnings[0]
+            assert "could not open port" in warnings[0]
+            assert "not answering" not in warnings[0]
+            assert "Power ON" not in warnings[0]
+            assert server._served_with_silent_link is False
+
+            health = server._build_radio_health()
+            assert health["likelyCause"] == "radio_not_connected"
+            assert store_has_radio_observation(server.command_state_store) is False
+            snapshot = await composition.authority.snapshot()
+            assert snapshot.provider_generation is None
+            assert await composition.authority.transmit_on() is (
+                ManagedTxOutcome.REJECTED
+            )
+
+            # The port appears; the radio behind it stays silent for now.
+            link._fail_connect = None
+            assert await _wait_until(
+                lambda: composition._active_provider is not None, timeout_s=5.0
+            )
+            # Stop the watchdog now that it has reopened the port: a link-down
+            # it could declare on this silent link would park transmit and
+            # move the state under the assertions below.
+            await radio._stop_civ_data_watchdog()
+            assert radio.connected is True
+            health = server._build_radio_health()
+            assert health["likelyCause"] == "radio_powered_off_likely"
+
+            link.queue_response(_freq_response_frame(14_074_000))
+            assert await _wait_until(
+                lambda: store_has_radio_observation(server.command_state_store),
+                timeout_s=5.0,
+            )
+            health = server._build_radio_health()
+            assert health["readiness"] == "ready"
+            assert health["likelyCause"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_present_but_silent_port_still_serves_not_answering(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Contrast pin: an open but silent port stays MOR-2841's state.
+
+    Same entry point as the missing-port test. The port opens and the
+    radio answers nothing, so the gate's silent release decides, not the
+    missing-port release: health is ``radio_powered_off_likely``, never
+    ``radio_not_connected``.
+    """
+
+    from test_icom7610_serial_radio import _FakeSerialCivLink
+
+    link = _FakeSerialCivLink()  # opens fine, answers no read
+    radio = _fast_retry_serial_radio("/dev/ttyUSB0", link)
+    # The watchdog must not declare link-down on its own before the startup
+    # assert on a loaded runner: that would abort startup for a reason this
+    # test is not about. The detector's durable record stands in for it.
+    radio._SERIAL_WATCHDOG_INTERVAL_S = 3600.0
+    radio._civ_link_down_ever_declared = True
+
+    # One failed read decides a critical path, so the gate reaches the
+    # MOR-2841 decision on its first pass instead of after real timeouts.
+    with (
+        patch.object(web_startup, "_STARTUP_GATE_CRITICAL_ATTEMPTS", 1),
+        caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"),
+    ):
+        async with _served_through_cli(radio) as server:
+            warnings = _startup_warnings(caplog)
+            assert len(warnings) == 1
+            assert "not answering" in warnings[0]
+            assert "not connected" not in warnings[0]
+            assert server._served_without_port is False
+            health = server._build_radio_health()
+            assert health["likelyCause"] == "radio_powered_off_likely"
+
+
+@pytest.mark.asyncio
+async def test_tx_returns_after_the_late_first_open(tmp_path: Path) -> None:
+    """Transmit is refused without a port and follows the normal rules after.
+
+    The server session serves a port that cannot be opened without marking
+    any transport ready. When the port appears, the watchdog's
+    ``soft_reconnect`` re-arms the mounted composition on the new transport
+    (``rearm_managed_tx`` -> ``transport_ready``), the same path a runtime
+    reconnect takes, and a key is accepted.
+    """
+
+    from rigplane.cli import _ManagedTxRadioSession
+    from rigplane.runtime.managed_tx_composition import (
+        ManagedTxComposition,
+        install_managed_tx_composition,
+    )
+    from rigplane.runtime.managed_tx_state import ManagedTxOutcome
+    from test_icom7610_serial_radio import _FakeSerialCivLink, _wait_until
+
+    device = str(tmp_path / "cu.usbserial-1420")
+    link = _FakeSerialCivLink(fail_connect=_port_missing_error(device))
+    radio = _fast_retry_serial_radio(device, link)
+    composition = ManagedTxComposition(radio, config_path=tmp_path / "managed-tx.json")
+    install_managed_tx_composition(radio, composition)
+    store = StateStore()
+    store.begin_provider_generation()
+    await composition.bind_state_store(store)  # as cli: _cmd_web does
+    session = _ManagedTxRadioSession(radio, composition)
+
+    assert await session.__aenter__() is radio
+    try:
+        assert composition._live_transport_identity is None
+        assert (await composition.authority.snapshot()).provider_generation is None
+        assert await composition.authority.transmit_on() is ManagedTxOutcome.REJECTED
+
+        link._fail_connect = None
+        assert await _wait_until(
+            lambda: composition._active_provider is not None, timeout_s=5.0
+        )
+        # Stop the watchdog now that it has reopened the port: a link-down on
+        # this silent link would park the provider before the key below.
+        await radio._stop_civ_data_watchdog()
+        assert composition._active_provider is not None
+        assert composition._active_provider.transport_identity is radio._civ_transport
+        keyed = await composition.authority.submit_ptt(True, "late-open-owner")
+        assert keyed.outcome is ManagedTxOutcome.ACCEPTED
+        await keyed.wait_settlement()
+    finally:
+        await session.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_only_a_port_open_failure_is_retried_on_the_server_path(
+    tmp_path: Path,
+) -> None:
+    """``connect()`` keeps its contract; the session serves only an OSError.
+
+    A plain ``connect()`` still raises and leaves no background task. The
+    server session retries only an open failure (pyserial's
+    ``SerialException`` is an ``OSError``); a missing dependency still
+    fails startup.
+    """
+
+    from rigplane.cli import _ManagedTxRadioSession
+    from rigplane.exceptions import ConnectionError as RigplaneConnectionError
+    from rigplane.runtime._connection_state import RadioConnectionState
+    from rigplane.runtime.managed_tx_composition import (
+        ManagedTxComposition,
+        install_managed_tx_composition,
+    )
+    from test_icom7610_serial_radio import _FakeSerialCivLink
+
+    device = str(tmp_path / "cu.usbserial-1420")
+    radio = _fast_retry_serial_radio(
+        device, _FakeSerialCivLink(fail_connect=_port_missing_error(device))
+    )
+    with pytest.raises(RigplaneConnectionError, match="Failed to connect serial"):
+        await radio.connect()
+    assert radio.conn_state == RadioConnectionState.DISCONNECTED
+    assert getattr(radio, "_civ_data_watchdog_task", None) is None
+
+    radio = _fast_retry_serial_radio(
+        device,
+        _FakeSerialCivLink(fail_connect=ImportError("pyserial-asyncio is required")),
+    )
+    composition = ManagedTxComposition(radio, config_path=tmp_path / "managed-tx.json")
+    install_managed_tx_composition(radio, composition)
+    with pytest.raises(RigplaneConnectionError, match="pyserial-asyncio"):
+        await _ManagedTxRadioSession(radio, composition).__aenter__()
+    assert radio.conn_state == RadioConnectionState.DISCONNECTED
+    assert getattr(radio, "_civ_data_watchdog_task", None) is None
+    await composition.shutdown(asyncio.Event())
+
+
+@pytest.mark.asyncio
+async def test_a_never_connected_radio_opens_no_other_serial_port(
+    tmp_path: Path,
+) -> None:
+    """No sibling-port search before the radio has ever connected.
+
+    This host runs more than one radio: while the configured path is
+    missing, the retry must not open (or even enumerate) another port.
+    """
+
+    from rigplane.backends.discovery import SerialPortCandidate
+    from rigplane.backends.icom7610 import Icom7610SerialRadio
+    from rigplane.exceptions import ConnectionError as RigplaneConnectionError
+    from test_icom7610_serial_radio import _FakeSerialCivLink
+
+    device = str(tmp_path / "cu.usbserial-1420")  # never created
+    sibling = tmp_path / "cu.usbserial-9931"  # matches the derived glob
+    sibling.write_text("")
+    enumerated: list[None] = []
+    probed: list[str] = []
+
+    def _enumerate() -> list[SerialPortCandidate]:
+        enumerated.append(None)
+        return [SerialPortCandidate(device=str(sibling), description="", hwid=None)]
+
+    async def _probe(port: str) -> int | None:
+        probed.append(port)
+        return None
+
+    radio = Icom7610SerialRadio(
+        device=device,
+        civ_link=_FakeSerialCivLink(fail_connect=_port_missing_error(device)),
+        _enumerate_serial_ports_fn=_enumerate,
+        _civ_identity_probe=_probe,
+    )
+    with pytest.raises(RigplaneConnectionError):
+        await radio.connect()
+    with pytest.raises(RigplaneConnectionError, match="Failed to reconnect serial"):
+        await radio.soft_reconnect()
+
+    assert probed == []
+    assert enumerated == []
+    await radio.disconnect()
+
+
+def test_every_likely_cause_the_classifier_returns_is_in_the_public_schema() -> None:
+    """MOR-2919: ``likelyCause`` never leaves the published contract.
+
+    The emitted set is read from ``classify_radio_health``'s own source:
+    every ``"likelyCause"`` value in a dict literal it builds, following a
+    local name to the expressions assigned to it. A value the walk cannot
+    resolve fails the test instead of being skipped.
+    """
+
+    import ast
+    import inspect
+    import textwrap
+    import typing
+
+    from rigplane.web.runtime_helpers import classify_radio_health
+    from rigplane.web.state_schema import RadioHealthPublic
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(classify_radio_health)))
+    assigned: dict[str, list[ast.expr]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    assigned.setdefault(target.id, []).append(node.value)
+
+    def causes(node: ast.expr) -> set[str]:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return {node.value}
+        if isinstance(node, ast.IfExp):
+            return causes(node.body) | causes(node.orelse)
+        if isinstance(node, ast.Name) and node.id in assigned:
+            return set().union(*(causes(value) for value in assigned[node.id]))
+        raise AssertionError(f"cannot resolve a likelyCause from {ast.dump(node)}")
+
+    emitted: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values):
+                if isinstance(key, ast.Constant) and key.value == "likelyCause":
+                    emitted |= causes(value)
+
+    # Not vacuous: one value reached through each resolution rule — a
+    # constant, a conditional, and a local name.
+    assert {
+        "server_unreachable",
+        "radio_not_responding",
+        "radio_remote_control_unreachable",
+    } <= emitted
+    annotation = RadioHealthPublic.model_fields["likelyCause"].annotation
+    assert emitted <= set(typing.get_args(annotation))
