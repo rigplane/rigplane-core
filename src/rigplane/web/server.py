@@ -201,6 +201,66 @@ def _install_shutdown_signal_handlers(
             _signal.signal(sig, lambda _signum, _frame: on_signal())
 
 
+# MOR-2875: hard ceiling on the whole graceful-shutdown sequence that the
+# first SIGTERM starts.  The stand hangs of 2026-09-28 sat after «web server
+# stopped» — inside the rigctld stop gather, the post-timeout managed-TX
+# composition wait, or the radio disconnect — and only a second, human-sent
+# signal (whose handler cancels every task) ended them.  These constants
+# give the FIRST signal that ladder on its own: after
+# ``_FIRST_SIGNAL_SHUTDOWN_BOUND_S`` every still-pending task is cancelled
+# and logged by name (the second signal's action, taken autonomously), and
+# after ``_SHUTDOWN_BOUND_FORCED_EXIT_GRACE_S`` more the process is
+# force-exited (the third signal's action).  The bound leaves room for the
+# bounded safety steps of a graceful stop to finish first: the TX-safety
+# drain (2 s), scope restore (1 s), managed-TX composition shutdown (3 s)
+# and the serial teardown watchdog (5 s) sum to ~13 s, inside the 15 s
+# bound.  A loop blocked inside a synchronous call cannot run this coroutine
+# at all — that is MOR-2892's failure mode and stays out of scope here.
+_FIRST_SIGNAL_SHUTDOWN_BOUND_S: float = 15.0
+_SHUTDOWN_BOUND_FORCED_EXIT_GRACE_S: float = 3.0
+
+
+def _describe_pending_task(task: asyncio.Task[Any]) -> str:
+    coro_name = getattr(task.get_coro(), "__qualname__", None) or "?"
+    return f"{task.get_name()} [{coro_name}]"
+
+
+async def _enforce_first_signal_shutdown_bound(
+    bound_s: float,
+    forced_exit_grace_s: float,
+) -> None:
+    """End the graceful shutdown by force when the bound expires (MOR-2875).
+
+    Armed by :meth:`WebServer.serve_forever` when the first SIGTERM/SIGINT
+    arrives.  Sleeps ``bound_s``; if the shutdown sequence is still holding
+    tasks open then, cancels every other pending task and logs each by
+    name, and — if the process is somehow still alive ``forced_exit_grace_s``
+    later — force-exits, mirroring the ladder the repeated-signal handler
+    already uses (cancel, then ``os._exit``).
+    """
+    await asyncio.sleep(bound_s)
+    loop = asyncio.get_running_loop()
+    current = asyncio.current_task()
+    pending = [task for task in asyncio.all_tasks(loop) if task is not current]
+    if not pending:
+        # Nothing left to cancel: the sequence is unwinding on its own.
+        return
+    logger.warning(
+        "shutdown exceeded its %.1fs bound — cancelling %d pending task(s): %s",
+        bound_s,
+        len(pending),
+        ", ".join(_describe_pending_task(task) for task in pending),
+    )
+    for task in pending:
+        task.cancel()
+    await asyncio.sleep(forced_exit_grace_s)
+    logger.warning(
+        "shutdown still unfinished %.1fs after the bound's cancellations — forced exit",
+        forced_exit_grace_s,
+    )
+    os._exit(1)
+
+
 _DEFAULT_STATIC_DIR = pathlib.Path(__file__).parent / "static"
 # Sentinel default for WebConfig.radio_model. Deliberately not a real rig
 # model: callers (CLI) inject the connected radio's model, and an
@@ -3113,6 +3173,15 @@ class WebServer:
             _signal_count += 1
             if _signal_count == 1:
                 logger.info("received shutdown signal")
+                # MOR-2875: bound the whole graceful sequence this signal
+                # starts, so the first signal alone always ends the process
+                # even when a shutdown await never completes.
+                loop.create_task(
+                    _enforce_first_signal_shutdown_bound(
+                        _FIRST_SIGNAL_SHUTDOWN_BOUND_S,
+                        _SHUTDOWN_BOUND_FORCED_EXIT_GRACE_S,
+                    )
+                )
                 stop_event.set()
             elif _signal_count == 2:
                 logger.info("second signal — cancelling all tasks")

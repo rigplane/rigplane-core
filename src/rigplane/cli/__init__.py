@@ -4308,7 +4308,10 @@ def main() -> None:
             loop = asyncio.new_event_loop()
             try:
                 exit_code = loop.run_until_complete(_run(args))
-            except KeyboardInterrupt:
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                # MOR-2875: the first-signal shutdown bound cancels the
+                # stuck shutdown awaits; end with the conventional signal
+                # exit code instead of an unhandled CancelledError traceback.
                 exit_code = 130
             finally:
                 signal.signal(signal.SIGTERM, signal.SIG_IGN)

@@ -897,10 +897,15 @@ async def test_shutdown_bound_forces_exit_when_cancellation_is_ignored(
     release = asyncio.Event()
 
     async def uncancellable_loiter() -> None:
-        while not release.is_set():
+        # Survives the bound's one cancellation round (that is the point),
+        # but gives up after a bounded survival so a RED run cannot hang
+        # pytest's task teardown waiting for it.
+        survived = 0
+        while not release.is_set() and survived < 40:
             try:
                 await asyncio.sleep(0.05)
             except asyncio.CancelledError:
+                survived += 1
                 continue
 
     loiter = asyncio.create_task(uncancellable_loiter())
