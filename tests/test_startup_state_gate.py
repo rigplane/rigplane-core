@@ -2697,6 +2697,27 @@ async def test_present_but_silent_port_still_serves_not_answering(
             assert health["likelyCause"] == "radio_powered_off_likely"
 
 
+def test_only_a_recorded_open_failure_makes_reconnecting_a_missing_port() -> None:
+    """The missing-port decision needs the backend's recorded open failure.
+
+    ``RECONNECTING`` alone is also MOR-2841's link-down state on an open
+    port, and a failed plain ``connect()`` rests ``DISCONNECTED``: neither
+    is served as a missing port.
+    """
+
+    from rigplane.runtime._connection_state import RadioConnectionState
+    from test_icom7610_serial_radio import _FakeSerialCivLink
+
+    radio = _fast_retry_serial_radio("/dev/ttyUSB0", _FakeSerialCivLink())
+    server = SimpleNamespace(_radio=radio)
+    radio._conn_state = RadioConnectionState.RECONNECTING  # link-down declared
+    assert web_startup._serial_port_unopened(server) is False
+    radio.last_error = "Failed to reconnect serial session on /dev/ttyUSB0: gone"
+    assert web_startup._serial_port_unopened(server) is True
+    radio._conn_state = RadioConnectionState.DISCONNECTED
+    assert web_startup._serial_port_unopened(server) is False
+
+
 @pytest.mark.asyncio
 async def test_tx_returns_after_the_late_first_open(tmp_path: Path) -> None:
     """Transmit is refused without a port and follows the normal rules after.
