@@ -1402,11 +1402,12 @@ describe('passband dispatch is bounded and committed on release (MOR-1691)', () 
         // The observation moves out from under the draft (reading evidence
         // retires it): the number follows the confirmed truth again.
         const current = viewState.get('view')!;
-        viewState.set('view', { ...current, filterPassband: { ...current.filterPassband!, [field]: {
+        const passband = current.filterPassband!;
+        viewState.set('view', { ...current, filterPassband: { ...passband, [field]: {
           reading: { status: 'known', value: 175 },
           availability: { structural: true, operational: true },
           display: { state: 'current', value: 175 },
-        } as typeof current.filterPassband!.pbtInner } });
+        } as typeof passband.pbtInner } });
         flushSync();
         expect(spy).not.toHaveBeenCalled();
         expect(target.querySelector(`[data-testid="filter-${field}"] output`)!.textContent).toBe('175');
