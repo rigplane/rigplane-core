@@ -125,7 +125,6 @@
   "core.settings.workspace.importRejectedTitle": "インポートは拒否されました",
 
   "core.overlay.poweredOff.label": "トランシーバーの電源が切れています",
-  "core.overlay.poweredOff.hint": "ステータスバーの ON ボタンで電源を入れてください",
   "core.overlay.poweredOff.powerOnButton": "電源 ON",
   "core.overlay.poweredOff.failedPowerOn": "電源を入れられませんでした: {detail}",
   "core.overlay.scopeDisconnected": "スコープが切断されました — 再接続中…",

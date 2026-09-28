@@ -100,7 +100,6 @@
   "core.settings.workspace.importRejectedTitle": "Импорт отклонён",
 
   "core.overlay.poweredOff.label": "Трансивер выключен",
-  "core.overlay.poweredOff.hint": "Используйте кнопку ON в строке состояния, чтобы включить питание",
   "core.overlay.poweredOff.powerOnButton": "Включить",
   "core.overlay.poweredOff.failedPowerOn": "Не удалось включить: {detail}",
   "core.overlay.scopeDisconnected": "Панорама отключена — переподключение…",

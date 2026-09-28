@@ -18,7 +18,12 @@
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import { t } from '$lib/i18n';
 
-  let { showTxIndication = true }: { showTxIndication?: boolean } = $props();
+  let {
+    showTxIndication = true,
+    // MOR-1240: true on a layout that hosts a StatusBar — the powered-off
+    // overlay starts below the bar's strip so its controls stay reachable.
+    uncoverStatusBar = false,
+  }: { showTxIndication?: boolean; uncoverStatusBar?: boolean } = $props();
 
   // The App-owned TX controller (MOR-1008/MOR-982) is the ONLY legitimate
   // source for this lamp. Radio-state PTT is a command/readback echo that can
@@ -78,6 +83,7 @@
   {#if runtime.radioPowerOn === false}
     <div
       class="power-off-overlay"
+      class:leave-status-bar={uncoverStatusBar}
       role="dialog"
       aria-modal="true"
       data-testid="global-power-off"
@@ -186,6 +192,13 @@
     justify-content: center;
     background: rgba(0, 0, 0, 0.85);
     backdrop-filter: blur(6px);
+  }
+
+  /* MOR-1240: the uncovered top edge equals StatusBar.svelte's own
+     `.status-bar` height (28px), so the bar's controls stay visible and
+     clickable under this overlay while the radio is powered off. */
+  .power-off-overlay.leave-status-bar {
+    top: 28px;
   }
 
   .power-off-content {

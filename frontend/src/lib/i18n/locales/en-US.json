@@ -101,7 +101,6 @@
   "core.settings.workspace.importRejectedTitle": "Import rejected",
 
   "core.overlay.poweredOff.label": "Radio is powered off",
-  "core.overlay.poweredOff.hint": "Use the ON button in the status bar to power up",
   "core.overlay.poweredOff.powerOnButton": "Power ON",
   "core.overlay.poweredOff.failedPowerOn": "Failed to power on: {detail}",
   "core.overlay.scopeDisconnected": "Scope disconnected — reconnecting…",

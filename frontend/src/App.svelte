@@ -96,6 +96,12 @@
   let presentation = $state<CommittedPresentation | null>(null);
   let committedLayoutId = $derived<string | null>(presentation?.layoutId ?? null);
 
+  // MOR-1240: layouts that host no StatusBar and therefore keep the
+  // full-screen power-off overlay. `mobile` is the phone layout; the other
+  // two compose their own top chrome without StatusBar.svelte. A new layout
+  // that mounts no StatusBar belongs here.
+  const STATUS_BAR_LESS_LAYOUTS = new Set(['mobile', 'dual-receiver-cockpit', 'flagship-probe']);
+
   // MOR-1082 rides the SAME effect and the same gate rather than adding a
   // second one: `[data-density]` carries the resolved density (the workspace
   // override clamped by the ACTIVE language's own DensityClamp) on the same
@@ -421,8 +427,12 @@
 {#if demoMode !== 'control-buttons' && !backendError}
   <!-- Global feedback / power-health / authoritative TX indication live here,
        as siblings of the presentation, so switching layout or skin never
-       recreates or duplicates them (MOR-1059). -->
-  <AppGlobalHost showTxIndication={committedLayoutId !== 'desktop-v2'} />
+       recreates or duplicates them (MOR-1059). MOR-1240: only layouts that
+       host no StatusBar keep the full-screen power-off overlay. -->
+  <AppGlobalHost
+    showTxIndication={committedLayoutId !== 'desktop-v2'}
+    uncoverStatusBar={!STATUS_BAR_LESS_LAYOUTS.has(committedLayoutId ?? '')}
+  />
   <LocalExtensionsHost />
 {/if}
 
