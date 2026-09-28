@@ -20,7 +20,10 @@ import type { ServerState } from '../../../src/lib/types/state';
  * content of the one scroller only the VISIBLE part counts: a row
  * scrolled out of the scroller's clipped box is not a visible
  * neighbour, so candidate rects are intersected with the scroller's
- * viewport box before the PTT box is compared against them.
+ * viewport box before the PTT box is compared against them. The
+ * candidate count itself is floored: a query that has gone stale and
+ * measures nothing would trivially find zero offenders, so the test
+ * refuses to pass on an empty measurement.
  */
 
 const workspace = {
@@ -177,6 +180,15 @@ test('no visible interactive element ever sits under the PTT button (MOR-2874)',
       const measured = await page.evaluate(clearanceScript);
       writeFileSync(info.outputPath(`mor-2874-${viewport.width}-${stage}.json`),
         JSON.stringify(measured, null, 2));
+      // An empty measurement must not pass: a stale element query would
+      // find zero candidates and therefore trivially zero offenders.
+      // The fixed chrome alone keeps six candidates at every stage and
+      // viewport (the SETUP header button plus the five tuning-strip
+      // buttons, all outside the scroller), and any visible screenful
+      // of the dense single-panel content adds several more — so ten
+      // is a realistic floor, while a broken query stays at zero.
+      expect(measured.candidates, `${size} ${stage}: the measurement must see real interactive elements`)
+        .toBeGreaterThanOrEqual(10);
       // MOR-2816 floor kept: PTT stays large and inside the viewport.
       expect.soft(measured.ptt.width, `${size} ${stage}: PTT width`).toBeGreaterThanOrEqual(44);
       expect.soft(measured.ptt.height, `${size} ${stage}: PTT height`).toBeGreaterThanOrEqual(44);
