@@ -3326,8 +3326,7 @@ class WebServer:
             profile = self._resolve_profile_if_identified()
         except ValueError:
             logger.debug(
-                "info: radio model resolves to no profile; "
-                "serving neutral defaults",
+                "info: radio model resolves to no profile; serving neutral defaults",
                 exc_info=True,
             )
             profile = None
