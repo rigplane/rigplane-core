@@ -82,6 +82,7 @@
   let pbtDomain = $derived(p.pbtDomain ?? { min: -1200, max: 1200, step: 25 });
   const onFilterChange = handlers.onFilterChange;
   const onFilterWidthChange = handlers.onFilterWidthChange;
+  const onFilterWidthReset = handlers.onFilterWidthReset;
   const onFilterShapeChange = handlers.onFilterShapeChange;
   const onFilterPresetChange = handlers.onFilterPresetChange;
   const onFilterDefaults = handlers.onFilterDefaults;
@@ -525,8 +526,12 @@
     // reset remains. Pinned by 'the table-branch Reset button resets IF
     // shift but emits no width write' in FilterPanel.ftx1-table5.isolated.test.ts.
     if (!filterConfig?.fixed) {
-      const defaultWidth = 3200;
-      onFilterWidthChange(defaultWidth);
+      // MOR-2519: no radio value in shared code — the Reset returns the
+      // width to the RADIO's own mode-dependent default through the
+      // MOR-2535 radio-default handler (`reset_filter_width`, gated on the
+      // profile's `filter_width_radio_default` capability), never a
+      // hardcoded Hz constant. Pinned by the MOR-2519 Reset tests there.
+      onFilterWidthReset?.();
     }
     onIfShiftChange(0);
   }
