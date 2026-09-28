@@ -37,7 +37,7 @@ RigPlane capabilities through an external `rigctld` process.
 !!! tip "USB Serial Setup"
     See the **[IC-7610 USB Serial Backend Setup Guide](ic7610-usb-setup.md)** for step-by-step instructions on using the serial backend (macOS-first).
     For IC-7610 USB operation, set **Menu → Set → Connectors → CI-V → CI-V USB Port**
-    to the CI-V option (`Link to [CI-V]`), not `[REMOTE]`.
+    to `Unlink from [REMOTE]` (the radio's default), not `Link to [REMOTE]`.
 
 ### IC-7300
 
@@ -74,7 +74,7 @@ visible on both radios. VFO labels switch to "VFO A" / "VFO B" automatically.
 - **Protocol:** Yaesu CAT (text)
 - **Connectivity:** USB serial
 - **Rig profile:** `rigs/ftx1.toml`
-- **Features:** 17 modes (incl. C4FM), dual RX, ATT 4 levels, 2m/70cm/HF
+- **Features:** 17 modes (incl. C4FM), dual RX, ATT on/off, 2m/70cm/HF
 - **VFO scheme:** `ab_shared` (2 receivers, 1 VFO)
 - **Backends:** Serial (Yaesu CAT) — full working backend
 - **Web UI:** Full spectrum/waterfall via Audio FFT Scope, controls, audio RX/TX
@@ -99,7 +99,7 @@ broader coverage than maintaining a bespoke backend for each dialect.
 - **Rig profile:** `rigs/x6100.toml`
 - **Features:** HF + 6m, QRP 8W, built-in ATU, WiFi
 - **VFO scheme:** `ab`
-- **Status:** Profile only. May work with CI-V backend (untested); also a Hamlib assisted-discovery candidate.
+- **Status:** Profile only; the serial backend refuses it. Also a Hamlib assisted-discovery candidate.
 
 ### Xiegu X6200
 
@@ -110,9 +110,10 @@ broader coverage than maintaining a bespoke backend for each dialect.
 - **Features:** HF + 6m, QRP, single receiver, VFO A/B, audio controls, PTT,
   split, VOX, compressor, CW, RIT/XIT, tuner, meters, tones, data mode, scan,
   dial lock, AGC
-- **Not advertised:** CI-V power control and spectrum scope; the documented
+- **Not advertised:** remote power on/off and spectrum scope; the documented
   X6200 CI-V command envelope does not include those IC-705-style commands.
-- **Status:** Native profile and CLI preset are present. Discovery includes
+  RF power level control is advertised.
+- **Status:** A native profile is present. Discovery includes
   X6200-vs-IC-705 disambiguation because both radios can report CI-V address
   `0xA4`. First-party maintainer hardware validation is still pending; hardware
   reports are welcome.
@@ -133,18 +134,16 @@ maintainer has not yet completed first-party hardware validation in this repo.
 ### IC-705
 
 - **CI-V Address:** `0xA4`
-- **Connectivity:** LAN (WiFi) + USB serial (CI-V)
+- **Connectivity:** LAN (WiFi/Ethernet) + USB serial (CI-V)
 - **VFO scheme:** Single receiver (portable transceiver)
 - **Rig profile:** `rigs/ic705.toml`
-- **Validated features (2.x):** LAN connect/disconnect, reconnect, frequency,
-  mode, PTT, and audio path integrations on the WiFi backend
-- **Status:** Community-validated on LAN/WiFi with 2.x; not yet validated on
-  3.0. First-party maintainer hardware validation is still pending.
-- **Connecting over WiFi:** pass `--model IC-705`. LAN discovery finds the
-  radio's IP address but not its model.
+- **Validated features:** LAN connect/disconnect, reconnect, frequency, mode,
+  PTT, and audio path integrations on the WiFi backend
+- **Status:** Community-validated on LAN/WiFi. First-party maintainer hardware
+  validation is still pending.
 
-!!! tip "Setup Guide"
-    **[IC-705 USB Serial Backend Setup](ic705-usb-setup.md)** — Step-by-step USB configuration
+!!! tip "Setup Guides"
+    - **[IC-705 USB Serial Backend Setup](ic705-usb-setup.md)** — Step-by-step USB configuration
 
 ### IC-9700
 
@@ -164,21 +163,6 @@ maintainer has not yet completed first-party hardware validation in this repo.
 !!! tip "Setup Guide"
     **[IC-9700 USB Serial & LAN Setup](ic9700-usb-setup.md)** — Setup guide covering
     serial USB and LAN Ethernet configuration.
-
-## Should Work (Untested)
-
-These radios use the same Icom LAN protocol and should work out of the box. Community testing and reports welcome!
-
-### IC-7851
-
-- **CI-V Address:** `0x8E`
-- **Connectivity:** Ethernet (built-in)
-
-### IC-R8600
-
-- **CI-V Address:** `0x96`
-- **Connectivity:** Ethernet (built-in)
-- **Notes:** Receiver only — PTT/TX commands will be rejected.
 
 ## Using Presets
 
@@ -223,12 +207,10 @@ In brief:
 5. For CI-V radios: update `[commands]` section.
 6. Run `uv run pytest tests/test_rig_loader.py tests/test_rig_multi_vendor.py -v` to validate.
 
-The library is CI-V address agnostic — any radio that speaks the Icom LAN protocol should
-work. If you test with a new model:
-
-1. Connect with the model's default CI-V address
-2. Verify basic operations (frequency, mode, meters)
-3. [Open an issue](https://github.com/rigplane/rigplane-core/issues) or PR with your rig file
+A radio needs a rig profile: without a profile, `model` or a `radio_addr` that
+matches a loaded profile, RigPlane raises `ValueError` rather than drive it as
+another rig. [Open an issue](https://github.com/rigplane/rigplane-core/issues)
+or PR with your rig file.
 
 ### Finding Your Radio's CI-V Address
 

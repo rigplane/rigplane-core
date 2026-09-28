@@ -9,12 +9,8 @@ Low-level CI-V command encoding and decoding. Most users should use the high-lev
 ## `cmd_map` is required
 
 Every command builder takes `cmd_map` as a **required, keyword-only** parameter — there is no
-hardcoded fallback path. Checked directly against every non-underscore function defined in
-`src/rigplane/commands/*.py` (excluding `_frame.py`): 244 distinct builder functions require
-`cmd_map` (256 counting names re-exported twice for backward compatibility, e.g.
-`antenna.py: get_antenna` aliasing `get_antenna_1`); the remaining 33 exported functions are
-`parse_*` response decoders, which take no `cmd_map` because they decode a frame the radio
-already sent, with nothing left to look up.
+hardcoded fallback path. The `parse_*` response decoders take no `cmd_map`: they decode a frame
+the radio already sent, with nothing left to look up.
 
 Calling a builder without a real map — `cmd_map` omitted, or passed explicitly as `None` —
 raises `TypeError` rather than silently building a wrong frame. Both shapes are handled by

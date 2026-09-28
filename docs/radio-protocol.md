@@ -400,8 +400,8 @@ async with radio:
 ### IC-7610 USB Hardware Note
 
 For the IC-7610 serial backend, set **Menu → Set → Connectors → CI-V → CI-V USB
-Port** to the CI-V option (`Link to [CI-V]`), not `[REMOTE]`. `[REMOTE]` blocks
-serial CI-V control and was confirmed on live hardware in issue `#146`.
+Port** to `Unlink from [REMOTE]` (the radio's default), not `Link to [REMOTE]`.
+`Link to [REMOTE]` blocked serial CI-V control on live hardware in issue `#146`.
 
 ### Default Backend Selection
 

@@ -106,6 +106,10 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   getFilterHandlers: () => filterHandlers,
   getFilterArmed: () => ({ armed: false, value: null }),
   getFilterShapeArmed: () => ({ armed: false, value: null }),
+  // MOR-1689 leg 2: this suite opens the settings modal with
+  // `hasFilterShape: true`, so the panel consults the shape feedback —
+  // the honest mock is the same idle projection the width row gets.
+  getFilterShapeControlFeedback: () => idleFeedback('filter-shape'),
   getFilterWidthControlFeedback: () => idleFeedback('filter-width'),
   getPbtInnerHzControlFeedback: () => idleFeedback('pbt-inner'),
   getPbtOuterHzControlFeedback: () => idleFeedback('pbt-outer'),

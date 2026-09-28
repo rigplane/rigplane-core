@@ -22,18 +22,10 @@ graph LR
     A[CAT Client\nWSJT-X / fldigi] -->|TCP 4532| B[RigctldServer]
     B --> C[RigctldHandler]
     C -->|CI-V| D[Radio]
-    E[RadioPoller] -->|background| D
-    E -->|updates| F[StateCache]
-    C -->|reads| F
-    B --> G[CircuitBreaker]
-    G --> E
 ```
 
 `RigctldServer` owns the TCP listener and per-client tasks. `RigctldHandler`
-dispatches parsed commands to the **Radio** instance. `RadioPoller` runs in the background
-and keeps `StateCache` warm so reads can be served without waiting for a CI-V
-round-trip. `CircuitBreaker` prevents cascading failures when the radio stops
-responding.
+dispatches parsed commands to the **Radio** instance.
 
 For timeout values, cache TTL semantics, and connection/readiness state, see
 [Reliability semantics](../internals/reliability-semantics.md).
@@ -45,7 +37,7 @@ For timeout values, cache TTL semantics, and connection/readiness state, see
 ### Standalone rigctld server (`rigplane serve`)
 
 ```bash
-rigplane --host 192.168.1.10 --user admin --password secret serve
+rigplane --model IC-7610 --host 192.168.1.10 --user admin --pass-file ~/.rigplane-pass serve
 ```
 
 Options:
@@ -61,6 +53,7 @@ Options:
 | `--log-level LEVEL` | `INFO` | Logging verbosity |
 | `--audit-log PATH` | disabled | Path for JSONL audit log |
 | `--rate-limit N` | unlimited | Max commands/second per client |
+| `--preset NAME` | — | Apply a named preset (`hamradio`, `digimode`, `serial`, `headless`); user flags override preset values |
 
 ### Embedded in the web server (`rigplane web`)
 
@@ -68,8 +61,8 @@ The `web` command starts the rigctld server on port 4532 by default alongside th
 HTTP UI. Disable it with `--no-rigctld`, or change the port with `--rigctld-port`.
 
 ```bash
-rigplane --host 192.168.1.10 web --rigctld-port 4533
-rigplane --host 192.168.1.10 web --no-rigctld
+rigplane --model IC-7610 --host 192.168.1.10 web --rigctld-port 4533
+rigplane --model IC-7610 --host 192.168.1.10 web --no-rigctld
 ```
 
 ### Embedded in Python
@@ -131,9 +124,7 @@ Equivalent to calling `start()` on entry and `stop()` on exit.
 async def start(self) -> None
 ```
 
-Start the TCP listener, initialise the command handler, and wire up the
-`RadioPoller` and `CircuitBreaker`. The poller is started lazily on first
-client connection.
+Start the TCP listener and initialise the command handler.
 
 #### `stop()`
 
@@ -141,8 +132,7 @@ client connection.
 async def stop(self) -> None
 ```
 
-Cancel all active client tasks, stop the poller, and close the TCP listener.
-Idempotent.
+Close the listener and cancel all active client tasks.
 
 #### `serve_forever()`
 
@@ -161,8 +151,9 @@ Call `start()` then block until cancelled or `stop()` is called.
 def circuit_breaker_state(self) -> CircuitState | None
 ```
 
-Current state of the internal circuit breaker, or `None` if not yet initialised
-(before `start()` is called).
+State of the circuit breaker injected through the constructor's
+`_circuit_breaker` test hook, or `None` when none was injected. The server
+does not create one.
 
 ---
 
@@ -186,6 +177,8 @@ RigctldConfig(
     max_line_length: int = 1024,
     poll_interval: float = 0.2,
     wsjtx_compat: bool = False,
+    wsjtx_data_mode: int | None = None,
+    wsjtx_data_mod_input: int | None = None,
     command_rate_limit: float | None = None,
 )
 ```
@@ -200,8 +193,10 @@ RigctldConfig(
 | `command_timeout` | `float` | `2.0` | Per-command CI-V timeout in seconds |
 | `cache_ttl` | `float` | `0.2` | Maximum age (seconds) for cached frequency/mode values |
 | `max_line_length` | `int` | `1024` | Maximum bytes per command line (OOM guard) |
-| `poll_interval` | `float` | `0.2` | Background poll interval in seconds |
+| `poll_interval` | `float` | `0.2` | Unused: no code reads this field |
 | `wsjtx_compat` | `bool` | `False` | Auto-enable DATA mode on first client connect |
+| `wsjtx_data_mode` | `int \| None` | `None` | Explicit DATA sub-mode for packet modes |
+| `wsjtx_data_mod_input` | `int \| None` | `None` | Optional DATAx modulation source |
 | `command_rate_limit` | `float \| None` | `None` | Max commands/second per client; `None` = unlimited |
 
 ---
@@ -221,7 +216,12 @@ frequency/mode cache, and translates rigplane exceptions to Hamlib error codes.
 RigctldHandler(
     radio: Radio,
     config: RigctldConfig,
-    cache: StateCache | None = None,
+    *,
+    state_store: StateStore | None = None,
+    state_model_service: StateModelService | None = None,
+    managed_tx_authority: ManagedTxAuthority | None = None,
+    command_queue: CommandQueue | None = None,
+    command_service: CommandService | None = None,
 )
 ```
 
@@ -229,7 +229,9 @@ RigctldHandler(
 |-----------|------|-------------|
 | `radio` | `Radio` | Connected radio instance (from `create_radio`) |
 | `config` | `RigctldConfig` | Server configuration |
-| `cache` | `StateCache \| None` | Shared state cache; creates a private one if omitted |
+| `state_store` | `StateStore \| None` | State store for reads; if omitted, the radio's own store when it has one, else a private one |
+| `state_model_service` | `StateModelService \| None` | Optional state model service |
+| `managed_tx_authority`, `command_queue`, `command_service` | | Managed-transmit wiring; pass all three or none (`ValueError` otherwise) |
 
 ### Methods
 
@@ -292,16 +294,16 @@ the handler in the dispatch table, and translates exceptions:
 | `STRENGTH` | S-meter in dBm (−54 to +60) | −54 … +60 |
 | `RFPOWER` | Normalised RF power | 0.0 … 1.0 |
 | `SWR` | SWR ratio | 1.0 … 5.0 |
-| `AF`, `RF`, `NR`, `NB`, `COMP`, `MICGAIN`, `MONITOR_GAIN` | Normalised float | 0.0 … 1.0 |
+| `AF`, `RF`, `SQL`, `NR`, `NB`, `COMP`, `MICGAIN`, `MONITOR_GAIN` | Normalised float | 0.0 … 1.0 |
 | `RFPOWER_METER`, `COMP_METER`, `ID_METER`, `VD_METER` | Normalised float | 0.0 … 1.0 |
 | `KEYSPD` | Key speed (WPM) | radio-dependent int |
 | `CWPITCH` | CW pitch (Hz) | radio-dependent int |
 | `PREAMP` | Preamp level in dB | 0 / 12 / 20 |
-| `ATT` | Attenuator in dB | 0 / 6 / 12 / 18 |
+| `ATT` | Attenuator in dB | the profile's attenuator values (e.g. 0–45 in 3 dB steps on the IC-7610) |
 
 **Writable levels** for `set_level`:
 
-`RFPOWER`, `AF`, `RF`, `NR`, `NB`, `COMP`, `MICGAIN`, `MONITOR_GAIN`,
+`RFPOWER`, `AF`, `RF`, `SQL`, `NR`, `NB`, `COMP`, `MICGAIN`, `MONITOR_GAIN`,
 `KEYSPD`, `CWPITCH`, `PREAMP`, `ATT`.
 
 **Function names** for `get_func` / `set_func`:
@@ -353,8 +355,9 @@ Behavior details:
 from rigplane.rigctld.circuit_breaker import CircuitBreaker, CircuitState
 ```
 
-State-machine circuit breaker wrapping CI-V command execution. Prevents
-cascading failures when the radio stops responding.
+State-machine circuit breaker wrapping CI-V command execution. `RigctldServer`
+uses one only when it is injected through its `_circuit_breaker` test hook; the
+server does not create one.
 
 ### States
 
@@ -434,9 +437,8 @@ Record a failed command. Increments the counter (CLOSED) or re-opens (HALF_OPEN)
 from rigplane.rigctld.state_cache import StateCache
 ```
 
-Last-known radio state with per-field monotonic timestamps. Shared between
-`RigctldHandler` (reads) and `RadioPoller` (writes). Not thread-safe; all
-access must occur on the same asyncio event loop.
+Last-known radio state with per-field monotonic timestamps. Not thread-safe;
+all access must occur on the same asyncio event loop.
 
 ### Cached Fields
 
@@ -554,6 +556,7 @@ Frozen dataclass representing a parsed client command.
 | `long_cmd` | `str` | Long-form name (e.g. `'get_freq'`) |
 | `args` | `tuple[str, ...]` | String arguments |
 | `is_set` | `bool` | `True` for write/set commands |
+| `vfo_arg` | `str \| None` | Leading VFO label (`VFOA`/`VFOB`/`currVFO`) sent under Hamlib `chk_vfo=1`, stripped from `args`; else `None` |
 
 ### `RigctldResponse`
 

@@ -95,8 +95,7 @@ Parsed CI-V frame.
 from rigplane import AudioCapabilities
 ```
 
-Stable audio capability structure returned by `get_audio_capabilities()` (and by
-`IcomRadio.audio_capabilities()` for legacy use).
+Stable audio capability structure returned by `get_audio_capabilities()`.
 
 | Field | Type | Description |
 |-------|------|-------------|

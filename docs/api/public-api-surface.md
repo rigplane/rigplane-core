@@ -146,7 +146,7 @@ available directly via `from rigplane import …`.
 - `__version__`
 - `create_radio`
 - `BackendConfig`, `LanBackendConfig`, `SerialBackendConfig`,
-  `YaesuCatBackendConfig`
+  `YaesuCatBackendConfig`, `RigctldBackendConfig`
 
 **Capability protocols (from `rigplane.radio_protocol`)**
 
@@ -160,7 +160,8 @@ available directly via `from rigplane import …`.
   `RigctldRoutable`, `RecoverableConnection`
 - `DspControlCapable`, `AntennaControlCapable`, `CwControlCapable`,
   `VoiceControlCapable`
-- `SystemControlCapable`, `RepeaterControlCapable`, `AdvancedControlCapable`
+- `SystemControlCapable`, `RepeaterControlCapable`, `RepeaterShiftCapable`,
+  `AdvancedControlCapable`
 - `RitXitCapable`, `MemoryCapable`
 - `SplitCapable` (new in v0.19)
 - `UsbAudioCapable` (new in v0.19)
