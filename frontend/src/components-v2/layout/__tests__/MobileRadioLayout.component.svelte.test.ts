@@ -724,6 +724,26 @@ describe('MobileRadioLayout SCOPE chip tab (MOR-2851)', () => {
     }
   });
 
+  it('renders no VIEW key when no managed scope region exists', () => {
+    const restore = withSpectrumRadio();
+    try {
+      // A spectrum without a hardware scope source leaves
+      // `managedScopeRegion` undefined — VIEW would be a dead control.
+      vi.mocked(getScopeSource).mockReturnValue(null);
+      const t = mountMobile();
+      scopeChip(t)!.click();
+      flushSync();
+      const panel = t.querySelector('#m-chip-panel-scope')!;
+      expect(panel.querySelector('[data-testid="scope-key-view"]')).toBeNull();
+      // AVG / PEAK / BANDS are layout-owned state and stay.
+      for (const key of ['avg', 'peak', 'bands']) {
+        expect(panel.querySelector(`[data-testid="scope-key-${key}"]`)).not.toBeNull();
+      }
+    } finally {
+      restore();
+    }
+  });
+
   it('VIEW drives the managed scope demand with the negation', () => {
     const restore = withSpectrumRadio();
     try {
