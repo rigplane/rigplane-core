@@ -139,6 +139,7 @@ class _FakeSerialCivLink:
         fail_connect_calls: set[int] | None = None,
         fail_connect_calls_exc: BaseException | None = None,
         lifecycle_events: list[tuple[str, object | None]] | None = None,
+        ptt_off_answer: int | None = 0xFB,
     ) -> None:
         self._fail_connect = fail_connect
         self._fail_connect_calls = set(fail_connect_calls or set())
@@ -153,6 +154,7 @@ class _FakeSerialCivLink:
         self._responses_by_send: dict[int, list[bytes]] = {}
         self.device_history: list[str] = []
         self.lifecycle_events = lifecycle_events
+        self._ptt_off_answer = ptt_off_answer
 
     def set_device(self, device: str) -> None:
         self.device_history.append(device)
@@ -187,6 +189,13 @@ class _FakeSerialCivLink:
         send_no = len(self.sent_frames)
         for response in self._responses_by_send.pop(send_no, []):
             self._responses.put_nowait(response)
+        # ``CoreRadio.actuate`` waits for the answer to the ``1C 00 00`` unkey
+        # (MOR-2860): FB by default, else ``ptt_off_answer`` (FA, or ``None``
+        # for no answer at all).
+        if self._ptt_off_answer is not None and payload[4:-1] == b"\x1c\x00\x00":
+            self._responses.put_nowait(
+                bytes((0xFE, 0xFE, payload[3], payload[2], self._ptt_off_answer, 0xFD))
+            )
 
     async def send_written(
         self, frame: bytes, *, is_current: Callable[[], bool] | None = None

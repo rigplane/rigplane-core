@@ -8,12 +8,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from rigplane.backends.icom7610 import Icom7610SerialRadio
 from rigplane.backends.icom7610.drivers.serial_session import SerialCivTransport
 from rigplane.command_map import CommandMap
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.commands.bound import BoundCommands
 from rigplane.commands.commander import IcomCommander, Priority
 from rigplane.core.exceptions import ConnectionError
+from rigplane.core.types import CivFrame
 from rigplane.runtime.managed_tx_effect_lane import ManagedTxActuator
 from rigplane.runtime.managed_tx_state import (
     AbortOperation,
@@ -22,6 +24,7 @@ from rigplane.runtime.managed_tx_state import (
     EffectToken,
 )
 from rigplane.runtime.radio import IcomRadio
+from test_icom7610_serial_radio import _FakeSerialCivLink
 from test_serial_civ_link import _FakeWriter, _cleanup_writes, _make_link
 
 
@@ -115,7 +118,11 @@ async def test_release_and_abort_operations_use_profile_bytes_at_strict_priority
     priority: Priority,
 ) -> None:
     radio = _profile_bound_radio()
-    radio._send_civ_raw = AsyncMock(return_value=None)
+    radio._send_civ_raw = AsyncMock(
+        return_value=CivFrame(
+            to_addr=CONTROLLER_ADDR, from_addr=radio._radio_addr, command=0xFB
+        )
+    )
 
     def current() -> bool:
         return True
@@ -126,11 +133,41 @@ async def test_release_and_abort_operations_use_profile_bytes_at_strict_priority
     call = radio._send_civ_raw.await_args
     frame = parse_civ_frame(call.args[0])
     assert (frame.command, frame.sub, frame.data) == expected
+    # MOR-2860: only the unkey waits for the radio's answer.
     assert call.kwargs == {
         "priority": priority,
-        "wait_response": False,
+        "wait_response": operation is ActuationOperation.FORCE_RECEIVE,
         "is_current": current,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        (0xFB, ActuationResult.ACCEPTED),
+        (0xFA, ActuationResult.REJECTED),
+        (None, ActuationResult.UNCERTAIN),
+    ],
+    ids=["fb", "fa", "no-answer"],
+)
+async def test_force_receive_settles_on_the_radio_answer(
+    answer: int | None, expected: ActuationResult
+) -> None:
+    link = _FakeSerialCivLink(ptt_off_answer=answer)
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._civ_get_timeout = 0.2
+    await radio.connect()
+    try:
+        result = await radio.actuate(
+            _token(), ActuationOperation.FORCE_RECEIVE, is_current=lambda: True
+        )
+        sent = list(link.sent_frames)
+    finally:
+        await radio.disconnect()
+
+    assert result is expected
+    assert sent == [bytes(radio._commands.ptt_off(to_addr=radio._radio_addr))]
 
 
 @pytest.mark.asyncio
