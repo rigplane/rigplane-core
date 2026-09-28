@@ -70,12 +70,13 @@ _STARTUP_GATE_NON_CRITICAL_DEADLINE_SECONDS = 10.0
 #: failed reads — the initial fetch plus consecutive answer-window timeouts
 #: recorded by the scheduler's consecutive-timeout accounting — fails
 #: startup through the scheduler's declared-command defect record. The
-#: timeouts are recorded only where the web poller reports answer-window
-#: timeouts (the ``sweep=True`` branch, the Icom ``RadioPoller``). The Yaesu
-#: CAT backend counts its own unanswered critical reads at its read sites
-#: (``backends/yaesu_cat/observations.py``, MOR-2757); on the rigctld client
-#: and the legacy ``StatePollable`` branches an unanswered critical path
-#: still waits — that gap is MOR-2757.
+#: timeouts are recorded where each backend reports answer-window
+#: timeouts — the ``sweep=True`` branch (the Icom ``RadioPoller``) and the
+#: Yaesu CAT and rigctld client backends at their own read sites
+#: (``backends/yaesu_cat/observations.py``,
+#: ``backends/rigctld_client/observations.py``, MOR-2757); on the legacy
+#: ``StatePollable`` branch an unanswered critical path still waits — that
+#: gap is MOR-2757.
 _STARTUP_GATE_CRITICAL_ATTEMPTS = 3
 
 
@@ -274,13 +275,13 @@ async def _await_initial_state_acquisition(
       scheduler's consecutive-timeout accounting) fails startup with an
       error naming the field and the command, through the same
       :class:`DeclaredCommandDefect` record a backend leaves on the
-      scheduler. The scheduler accounting is fed only where the web
-      poller reports answer-window timeouts — the ``sweep=True`` branch,
-      the Icom ``RadioPoller``. The Yaesu CAT backend counts its own
-      unanswered critical reads at its read sites and records the same
-      defect there (MOR-2757); on the rigctld client and the legacy
-      ``StatePollable`` branches an unanswered critical path still
-      waits — that gap is MOR-2757.
+      scheduler. The scheduler accounting is fed where the web poller
+      reports answer-window timeouts — the ``sweep=True`` branch, the
+      Icom ``RadioPoller``. The Yaesu CAT and rigctld client backends
+      count their own unanswered critical reads at their read sites and
+      record the same defect there (MOR-2757); on the legacy
+      ``StatePollable`` branch an unanswered critical path still waits —
+      that gap is MOR-2757.
 
     Before that decision there was no serve-anyway timeout: every declared,
     non-``tx_only`` path held the listener open forever.

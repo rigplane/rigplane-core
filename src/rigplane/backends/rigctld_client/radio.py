@@ -682,6 +682,12 @@ class RigctldClientRadio:
         self._model = model or "External rigctld"
         self._state = RadioState()
         self._vfo_supported = False
+        # MOR-2757: consecutive unanswered reads per safety-critical path,
+        # kept by the observation adapter (rebuilt every poll cycle) across
+        # cycles — the same "state lives on the radio" idiom as the Yaesu
+        # backend's tally. On the 3rd unanswered read the adapter records
+        # the declared-command defect that ends startup.
+        self._critical_read_timeouts: dict[FieldPath, int] = {}
         self._physical_write_result_callback: (
             Callable[[PhysicalWriteReadbackResult], None] | None
         ) = None

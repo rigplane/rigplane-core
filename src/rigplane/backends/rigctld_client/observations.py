@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, TypeVar
 
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionScheduler,
+    DeclaredCommandDefect,
+)
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
@@ -19,10 +23,25 @@ from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     FieldScope,
     Observation,
+    startup_critical_path,
 )
 from rigplane.core.tx_observation import OBSERVED_PTT_PATH, normalize_observed_ptt
+from rigplane.exceptions import ConnectionError as RadioConnectionError
+from rigplane.exceptions import TimeoutError as RadioTimeoutError
 
 Clock = Callable[[], float]
+_T = TypeVar("_T")
+
+#: MOR-2749 (owner decision, 2026-09-27 14:20 EDT) / MOR-2757: a
+#: safety-critical path (:func:`startup_critical_path`) the radio has not
+#: answered after this many consecutive reads ends startup through the
+#: declared-command defect record — the same number the web gate's
+#: ``_STARTUP_GATE_CRITICAL_ATTEMPTS`` (``web/web_startup.py``) carries for
+#: the Icom sweep branch and the Yaesu CAT backend carries at its own read
+#: sites (``backends/yaesu_cat/observations.py``); the backends cannot
+#: import the web layer, so the owner's number is spelled out here with
+#: this cross-reference.
+_CRITICAL_READ_TIMEOUT_ATTEMPTS = 3
 
 __all__ = [
     "RigctldClientObservationAdapter",
@@ -252,7 +271,7 @@ class RigctldClientObservationAdapter:
         radio = self._require_radio()
         return self._observation(
             _PTT,
-            await radio.get_ptt(),
+            await self._read_critical("ptt", radio.get_ptt, _PTT, command="t"),
             native_id="t",
         )
 
@@ -274,13 +293,15 @@ class RigctldClientObservationAdapter:
         radio = self._require_radio()
         return self._observation(
             _FREQ,
-            await radio.get_freq(),
+            await self._read_critical("freq", radio.get_freq, _FREQ, command="f"),
             native_id="f",
         )
 
     async def read_mode(self) -> tuple[Observation, Observation]:
         radio = self._require_radio()
-        mode, filter_width = await radio.get_mode()
+        mode, filter_width = await self._read_critical(
+            "mode", radio.get_mode, _MODE, command="m"
+        )
         adapter = self._adapter()
         return (
             adapter.observation(_MODE, mode, native_id="m"),
@@ -414,6 +435,115 @@ class RigctldClientObservationAdapter:
         if self.radio is None:
             raise ValueError("radio is required for backend read observations")
         return self.radio
+
+    async def _read_critical(
+        self,
+        label: str,
+        read: Callable[[], Awaitable[_T]],
+        path: FieldPath,
+        *,
+        command: str,
+    ) -> _T:
+        """Read one safety-critical path, counting an unanswered attempt.
+
+        MOR-2757: a read that dies with the transport's unanswered-read
+        failures — the read timeout, or the connection error the transport
+        raises once that timeout has closed the connection — counts toward
+        that path's consecutive-unread tally (any answer resets it), so
+        the 3rd unanswered read records the declared-command defect that
+        ends startup; the same record a refused read leaves. The re-raise
+        keeps the poller's cycle-failure path unchanged. A read the radio
+        *answers* — even with a malformed line — is an answer, not an
+        unanswered attempt, and does not count.
+        """
+
+        try:
+            value = await read()
+        except (RadioTimeoutError, RadioConnectionError) as exc:
+            self._count_unanswered_critical_reads(label, exc, path, command=command)
+            raise
+        self._note_critical_read_answers(path)
+        return value
+
+    def _critical_read_timeout_counts(self) -> dict[FieldPath, int] | None:
+        """Return the radio's unanswered-critical-read tally, if it has one.
+
+        The tally lives on the radio (``_critical_read_timeouts``) because
+        this adapter is rebuilt every poll cycle while the count must span
+        cycles — the same ``_poll_warned_fields`` idiom the Yaesu backend
+        uses. A radio object that carries no tally (test doubles) simply
+        does not count: the pre-MOR-2757 behaviour.
+        """
+
+        counts = getattr(self.radio, "_critical_read_timeouts", None)
+        if isinstance(counts, dict):
+            return counts
+        return None
+
+    def _note_critical_read_answers(self, path: FieldPath) -> None:
+        """Reset the unanswered tally of the *path* that just answered."""
+
+        counts = self._critical_read_timeout_counts()
+        if counts is None:
+            return
+        counts.pop(path, None)
+
+    def _count_unanswered_critical_reads(
+        self,
+        label: str,
+        exc: Exception,
+        path: FieldPath,
+        *,
+        command: str,
+    ) -> None:
+        """Count one unanswered read of a safety-critical path (MOR-2757).
+
+        The medium poll cycle re-issues every read each interval, so one
+        unanswered read per cycle is one unanswered attempt. Non-critical
+        paths are not counted — the web gate's own 10 s deadline already
+        stops them from blocking. On the attempt that reaches
+        ``_CRITICAL_READ_TIMEOUT_ATTEMPTS`` the same
+        :class:`DeclaredCommandDefect` a refused read records is recorded
+        for that one path, naming the field and the rigctld command the
+        radio never answered; the startup gate aborts on it. Later records
+        keep only the first (``AcquisitionScheduler.record_startup_defect``).
+        """
+
+        counts = self._critical_read_timeout_counts()
+        if counts is None or not startup_critical_path(path):
+            return
+        count = counts.get(path, 0) + 1
+        counts[path] = count
+        if count >= _CRITICAL_READ_TIMEOUT_ATTEMPTS:
+            self._record_declared_defect(label, exc, path, command=command)
+
+    def _record_declared_defect(
+        self,
+        label: str,
+        exc: Exception,
+        path: FieldPath,
+        *,
+        command: str,
+    ) -> None:
+        """Record the defect for a declared read the radio never answered.
+
+        The recording is what the startup gate reads: it checks the
+        scheduler's record before and during its wait, so the unanswered
+        read that reaches the attempt limit refuses the bind — the same
+        record and abort path a refused or unparseable read already uses;
+        no second failure mechanism is added.
+        """
+
+        defect = DeclaredCommandDefect(
+            label=label,
+            paths=(path,),
+            command=command,
+            frame="",
+            detail=str(exc),
+        )
+        scheduler = getattr(self.radio, "_acquisition_scheduler", None)
+        if isinstance(scheduler, AcquisitionScheduler):
+            scheduler.record_startup_defect(defect)
 
 
 def _normalize_command_path(path: FieldPath) -> FieldPath:
