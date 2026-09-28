@@ -18,7 +18,7 @@
  * Isolated pool by name (`*.component.test.ts`).
  */
 import { readFileSync } from 'node:fs';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { FieldStatus, ServerState } from '$lib/types/state';
@@ -229,6 +229,24 @@ beforeEach(() => {
   resetCommandLifecycle();
   expect(setCapabilities(liveCaps())).toBe(true);
   expect(setRadioState(liveState())).toBe(true);
+});
+
+// jsdom carries no pointer-capture API at all. The per-element mocks in the
+// pointer-drag tests cover the control itself; the phone sheet's own drag
+// tracking also calls capture on its root when the slider's bubbling
+// pointerdown reaches it, so the Element API gets a file-wide stub, removed
+// again after the file's run.
+beforeAll(() => {
+  if (!Element.prototype.setPointerCapture) {
+    Element.prototype.setPointerCapture = vi.fn();
+    Element.prototype.releasePointerCapture = vi.fn();
+    Element.prototype.hasPointerCapture = vi.fn(() => false);
+  }
+});
+afterAll(() => {
+  delete (Element.prototype as { setPointerCapture?: unknown }).setPointerCapture;
+  delete (Element.prototype as { releasePointerCapture?: unknown }).releasePointerCapture;
+  delete (Element.prototype as { hasPointerCapture?: unknown }).hasPointerCapture;
 });
 
 afterEach(() => {
