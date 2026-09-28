@@ -508,6 +508,22 @@ describe('MOR-2816 — the phone deck mounts only its declared zone', () => {
     expect(mobileLayoutSource).toContain('vfoMeter="external"');
     expect(mobileLayoutSource).toContain('variant="vfo-wide"');
   });
+
+  // Kills: the hoisted bar showing the wrong receiver on a dual-receiver
+  // radio — it follows the ACTIVE receiver, the same receiver the header
+  // reads (the retired value-fed strip's contract, MOR-2511).
+  it('the hoisted bar follows the active receiver on a dual-receiver radio', () => {
+    const restore = vi.mocked(toRadioViewModel).getMockImplementation();
+    vi.mocked(toRadioViewModel).mockReturnValue(topologyFixtures['2/main_sub']);
+    radio.current = { active: 'SUB' } as unknown as ServerState;
+    try {
+      const t = mountMobile();
+      expect(t.querySelector('.m-smeter-bar')?.getAttribute('data-receiver')).toBe('SUB');
+    } finally {
+      radio.current = null;
+      vi.mocked(toRadioViewModel).mockImplementation(restore ?? (() => topologyFixtures['1/single']));
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
