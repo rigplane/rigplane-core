@@ -789,7 +789,9 @@ async def test_silent_link_with_ready_session_declares_link_down(
             f"link-down never fired; pending={tracker.pending_count} "
             f"response_pending={tracker.response_pending_count} "
             f"silence_started={radio._civ_silence_started_monotonic} "  # noqa: SLF001
-            f"timeouts={tracker.timeout_count}"
+            f"timeouts={tracker.timeout_count} "
+            f"debug={getattr(radio, '_civ_silence_debug', None)} "  # noqa: SLF001
+            f"limit={getattr(radio, '_serial_link_down_silence_timeout_s', None)}"  # noqa: SLF001
         )
 
     error_lines = [

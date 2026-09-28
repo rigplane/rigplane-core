@@ -1255,6 +1255,11 @@ class _IcomSerialRadioBase(CoreRadio):
         silence_started = self._civ_silence_started_monotonic
         if silence_started is not None:
             elapsed = now - silence_started
+            # TEMP DEBUG (MOR-2861): expose the comparator for the focused run.
+            self._civ_silence_debug = (
+                f"now={now} started={silence_started} "
+                f"elapsed={elapsed} limit={self._serial_link_down_silence_timeout_s}"
+            )
             if elapsed >= self._serial_link_down_silence_timeout_s:
                 self._civ_link_down_note = (
                     "polls outstanding and no CI-V frame parsed for "
