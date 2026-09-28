@@ -470,7 +470,7 @@ describe('MOR-2816 — the phone deck mounts only its declared zone', () => {
           ...indicatorField(0),
           source: {
             providerGeneration: 1, scope: 'receiver' as const, receiver: 'MAIN' as const,
-            path: 'main.sMeter',
+            path: 'main.sMeter' as const,
           },
         },
         bandwidthHz: indicatorField(2400),
