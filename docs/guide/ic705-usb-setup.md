@@ -30,13 +30,11 @@ This guide shows how to control the IC-705 via **USB serial CI-V + USB audio dev
 
 | Setting | Value | Why |
 |---------|-------|-----|
-| **CI-V USB Baud Rate** | `115200` | Recommended for scope/waterfall |
 | **CI-V Address** | `0xA4` (IC-705 default) | Library auto-detects from profile |
 
 !!! note "Baud Rate"
     - `115200` baud is recommended for scope/waterfall capability
     - Lower baud rates (19200, 9600) work for basic control (freq, mode, PTT) but scope/waterfall is disabled by a guardrail due to high packet rate
-    - CI-V baud rate IS significant on IC-705 — it must match between radio and library
 
 !!! info "IC-705 Single Receiver"
     The IC-705 has a single receiver, unlike the IC-7610's dual receiver. The library automatically enforces this via the IC-705 profile — operations on `receiver=1` will fail with `CommandError`.
@@ -242,7 +240,7 @@ ls -l /dev/cu.*
 | Feature | IC-705 | IC-7610 | Notes |
 |---------|--------|---------|-------|
 | **Receiver count** | 1 | 2 | IC-705 single receiver only |
-| **Command 29 (sub RX)** | ❌ No | ✅ Yes | IC-705 profile: `command_29` not in capabilities |
+| **Command 29 (sub RX)** | ❌ No | ✅ Yes | |
 | **CI-V Address** | `0xA4` | `0x98` | Auto-detected from profile |
 | **Baud rates** | 115200 recommended | 115200 recommended | Lower rates work but disable scope |
 | **Audio codec** | PCM 1ch 16bit | PCM 1ch/2ch 16bit | |

@@ -72,8 +72,9 @@ Look for:
 
 ### "Scope over serial requires baudrate >= 115200"
 
-**Symptom:** `CommandError` on `enable_scope()` / `capture_scope_frame()` with a low
-serial baudrate.
+**Symptom:** on the IC-7610, `CommandError` on `enable_scope()` / `capture_scope_frame()`
+with a low serial baudrate. The IC-705, IC-7300 and IC-9700 raise
+`ConnectionError: Scope unavailable at <baud> baud (minimum 115200)` instead.
 
 **Cause:** Scope/waterfall CI-V traffic over serial is high-rate; low baud can starve
 regular command responses. The serial backend enforces a deterministic guardrail.
@@ -85,7 +86,9 @@ regular command responses. The serial backend enforces a deterministic guardrail
    - Python API: `SerialBackendConfig(..., model="IC-7610", allow_low_baud_scope=True)` when using `create_radio(config)`
    - Env var: `ICOM_SERIAL_SCOPE_ALLOW_LOW_BAUD=1`
 
-When override is used, the backend logs a warning because timeout risk increases.
+When override is used, the IC-7610 backend logs a warning because timeout risk increases.
+The IC-705, IC-7300 and IC-9700 backends log a warning the first time they refuse the
+scope, and none when the override is set.
 
 ### Connection drops after ~30 seconds
 
@@ -494,9 +497,9 @@ rigplane --list-audio-devices --json
 pip install rigplane
 ```
 
-### "Scope unavailable at … baud (minimum 115200)"
+### "Scope over serial requires baudrate >= 115200"
 
-**Symptom:** `ConnectionError` when calling `enable_scope()` or `capture_scope_frame()` on serial backend with baud < 115200.
+**Symptom:** `CommandError` when calling `enable_scope()` or `capture_scope_frame()` on serial backend with baud < 115200.
 
 **Cause:** Scope CI-V traffic is high-rate (~225 packets/sec on LAN). Lower serial baud rates cannot sustain this without starving command responses. The serial backend enforces a deterministic guardrail.
 
@@ -512,6 +515,7 @@ pip install rigplane
    ```python
     config = SerialBackendConfig(..., model="IC-7610", allow_low_baud_scope=True)
    ```
+   The library will log a warning about increased timeout risk.
 
 ### Serial CI-V commands time out under load
 

@@ -257,7 +257,7 @@ The web UI will show:
 - Frequency/mode control
 - Meters (S-meter, power, SWR during TX)
 - RX audio streaming to browser
-- TX audio from browser microphone (if USB audio TX is enabled)
+- TX audio from browser microphone
 
 ### rigctld with Serial Backend
 
@@ -330,9 +330,9 @@ ls -l /dev/cu.usbserial-*
 2. Use exact device name from the list (case-sensitive)
 3. If still not visible, disconnect/reconnect USB cable
 
-### "Scope unavailable at … baud (minimum 115200)"
+### "Scope over serial requires baudrate >= 115200"
 
-**Symptom**: `ConnectionError` when calling `enable_scope()` or `capture_scope_frame()` with baud rate < 115200.
+**Symptom**: `CommandError` when calling `enable_scope()` or `capture_scope_frame()` with baud rate < 115200.
 
 **Cause**: Scope/waterfall CI-V traffic is high-rate (~225 packets/sec on LAN). Lower serial baud rates cannot sustain this rate without starving command responses.
 
@@ -346,6 +346,7 @@ ls -l /dev/cu.usbserial-*
    ```bash
    export ICOM_SERIAL_SCOPE_ALLOW_LOW_BAUD=1
    ```
+   Library will log a warning about timeout risk.
 
 ### "CI-V response timed out" on serial
 
