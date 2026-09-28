@@ -179,6 +179,30 @@ describe('MOR-1240 — StatusBar publishes its bottom edge (--rp-status-bar-bott
     expect(bottomEdge()).toBe('');
   });
 
+  it('keeps a same-value remount\'s value — ownership is by token, not by value', () => {
+    // Two skins with identical geometry publish the SAME string: a
+    // cleanup that compares the published value would mistake the new
+    // bar's value for the old one's and wipe it.
+    renderStatusBar();
+    expect(bottomEdge()).toBe('34px');
+
+    // Overlap: the new bar mounts BEFORE the old one is destroyed.
+    renderStatusBar();
+    expect(bottomEdge()).toBe('34px');
+    const first = instances.shift()!;
+    unmount(first);
+    targets.shift()!.remove();
+    expect(bottomEdge()).toBe('34px');
+
+    // Sequential: the old bar is destroyed BEFORE the new one mounts.
+    const second = instances.shift()!;
+    unmount(second);
+    targets.shift()!.remove();
+    expect(bottomEdge()).toBe('');
+    renderStatusBar();
+    expect(bottomEdge()).toBe('34px');
+  });
+
   it('republishes when the link-lost row appears — a real state flip, no observer callback', () => {
     setWsConnected(true);
     flushSync();
