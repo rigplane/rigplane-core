@@ -927,11 +927,14 @@ class RigctldClientRadio:
         is_current: Callable[[], bool] | None = None,
         urgent: bool = False,
     ) -> bool:
-        line = (
-            await self._transport.query(
-                "t", response_lines=1, is_current=is_current, urgent=urgent
-            )
-        )[0]
+        if is_current is None and not urgent:
+            line = (await self._transport.query("t", response_lines=1))[0]
+        else:
+            line = (
+                await self._transport.query(
+                    "t", response_lines=1, is_current=is_current, urgent=urgent
+                )
+            )[0]
         if line not in {"0", "1"}:
             raise CommandError(f"External rigctld returned malformed PTT: {line!r}.")
         return line == "1"

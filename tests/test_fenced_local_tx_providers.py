@@ -12,7 +12,6 @@ import pytest
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.backends.yaesu_cat.transport import CatTransportError
 from rigplane.commands.commander import Priority
-from rigplane.core.priority_exchange import ExchangeTier
 from rigplane.core.types import CivFrame
 from rigplane.runtime.managed_tx_composition import (
     ManagedTxComposition,
@@ -156,9 +155,7 @@ async def test_unmanaged_calls_keep_native_writes_and_guard_generic_tuner() -> N
     assert tuner_call.kwargs["is_current"]() is True
     radio._transport.stats.reconnects += 1
     assert tuner_call.kwargs["is_current"]() is False
-    radio._transport.query.assert_awaited_once_with(
-        "AC;", is_current=None, tier=ExchangeTier.ORDINARY
-    )
+    radio._transport.query.assert_awaited_once_with("AC;")
     assert radio._transport.write.await_args_list[0].args[0].startswith("KY ")
     assert tuner_call.args == ("AC103;",)
 

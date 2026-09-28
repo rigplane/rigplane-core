@@ -859,7 +859,12 @@ class YaesuCatRadio:
             raise CommandError(f"Command {cmd_name!r} has no read template")
 
         read_cmd = format_command(spec.read, **params) if params else spec.read
-        raw = await self._transport.query(read_cmd, is_current=is_current, tier=tier)
+        if is_current is None and tier is ExchangeTier.ORDINARY:
+            raw = await self._transport.query(read_cmd)
+        else:
+            raw = await self._transport.query(
+                read_cmd, is_current=is_current, tier=tier
+            )
 
         parser = self._parsers.get(cmd_name)
         if parser is None:
@@ -1218,7 +1223,10 @@ class YaesuCatRadio:
         *is_current* and *tier* pass through to :meth:`_query` (MOR-2862)
         for the managed confirming read; ordinary callers use the defaults.
         """
-        result = await self._query("get_ptt", is_current=is_current, tier=tier)
+        if is_current is None and tier is ExchangeTier.ORDINARY:
+            result = await self._query("get_ptt")
+        else:
+            result = await self._query("get_ptt", is_current=is_current, tier=tier)
         return str(result["state"])
 
     async def read_ptt(
@@ -1253,7 +1261,10 @@ class YaesuCatRadio:
         Returns:
             ``True`` if transmitting, ``False`` if receiving.
         """
-        state = await self.read_ptt_token(is_current=is_current, tier=tier)
+        if is_current is None and tier is ExchangeTier.ORDINARY:
+            state = await self.read_ptt_token()
+        else:
+            state = await self.read_ptt_token(is_current=is_current, tier=tier)
         return self._interpret_ptt_token(state)
 
     def _interpret_ptt_token(self, state: str) -> bool:
