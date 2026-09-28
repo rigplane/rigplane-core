@@ -474,6 +474,15 @@ describe('MOR-2816 — the phone deck mounts only its declared zone', () => {
           },
         },
         bandwidthHz: indicatorField(2400),
+        agcMode: indicatorField(0),
+        nbActive: indicatorField(false),
+        nrActive: indicatorField(false),
+        notchMode: indicatorField<'off' | 'auto' | 'manual'>('off'),
+        attenuator: indicatorField(0),
+        preamp: indicatorField(0),
+        rfGain: indicatorField(0),
+        digiSel: indicatorField(false),
+        ipPlus: indicatorField(false),
       }],
     };
     const restore = vi.mocked(toRadioViewModel).getMockImplementation();
