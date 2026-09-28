@@ -34,6 +34,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.core.radio_protocol import ScopeCapable
 from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
 from rigplane.web import server as server_module
@@ -397,13 +398,17 @@ class _ManagedTxStateNotifyRadio(_StateNotifyRadio):
         super().__init__(*args, **kwargs)
         self.managed_tx_port = _FakeManagedTxPort()
         self._managed_tx_composition = self.managed_tx_port
-        # ScopeCapable protocol attrs so the reconnect recovery pass can
-        # queue the scope re-enable against this radio.
+        # ``capabilities`` carries the "scope" tag that runtime_capabilities
+        # starts from, and the reconnect recovery pass calls ``on_scope_data``.
+        # The class itself is registered as a ScopeCapable virtual subclass
+        # (below) because on Python 3.12+ isinstance() checks Protocol
+        # members with inspect.getattr_static(), which a MagicMock's dynamic
+        # attributes do not satisfy.
         self.capabilities = {"scope"}
         self.on_scope_data = MagicMock()
-        self.scope_stream = MagicMock()
-        self.enable_scope = AsyncMock()
-        self.disable_scope = AsyncMock()
+
+
+ScopeCapable.register(_ManagedTxStateNotifyRadio)
 
 
 @pytest.mark.asyncio
