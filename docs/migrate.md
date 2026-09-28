@@ -4,7 +4,7 @@ description: "Migrate RigPlane 2.11.1 consumers to Core 3.0 beta, with historica
 
 # Migrating to RigPlane Core 3.0 beta
 
-The initial package target is `3.0.0b1`. This is a major-version migration with
+This is a major-version migration with
 selected compatibility aliases, not a promise that every 2.x consumer works
 unchanged. Core includes the browser SDR interface; Pro packaging and its
 release are a later, separate scope.
@@ -116,9 +116,8 @@ differ; the historical root field is not a reliable alias for either one.
 With fresh MAIN/SUB observations, the witnessed values were respectively 37
 and 192, with `fieldStatus` reporting `observed: true` and
 `availability: "available"`. With no SUB observation, the response still
-contained `sub.notchFilter: 0`, but its metadata was `observed: false`,
-`freshness: "unknown"`, `availability: "missing"`. That zero is not observed
-telemetry. A single-receiver IC-7300 fixture omitted both `sub` and its field
+contained `sub.notchFilter: null`, with metadata `observed: false`,
+`freshness: "unknown"`, `availability: "missing"`. A single-receiver IC-7300 fixture omitted both `sub` and its field
 metadata. Preserve freshness/status information in the display and apply
 capability checks; do not infer receiver availability from a numeric default.
 Stop reading `txFreqMonitor`; replacing it with `txTarget` or a constant false
@@ -208,7 +207,7 @@ not an installation smoke test. Parser and lifecycle sources:
 The host contract uses numeric version `2` and an explicit
 manifest declaration `host_api: "2.0"`. Old `"1.0"` and missing declarations
 must be rejected, rather than interpreted as evidence of compatibility. This
-version decision is separate from Python `3.0.0b1` and HTTP contract version 1.
+version decision is separate from the Python package version and HTTP contract version 1.
 The manifest schema itself stays at `version: 1`. Migrate the commands before
 declaring the new host contract:
 
@@ -243,7 +242,7 @@ sent PTT through `sendCommand` must migrate its TX integration to the canonical
 ownership flow above, not rename its command through this non-TX facade.
 
 Sources: `frontend/src/lib/local-extensions/host-api.ts: installLocalExtensionHostApi`;
-`frontend/src/lib/runtime/commands/radio-intents.ts: dispatchRadioIntent`.
+`frontend/src/lib/runtime/commands/radio-intents.ts: dispatchRadioIntentWithResult`.
 
 ## Custom profiles and rigctld diagnostics
 
@@ -317,8 +316,8 @@ from rigplane import IcomRadio, LanBackendConfig, create_radio
 | PyPI package | `icom-lan` | `rigplane` | `icom-lan` frozen at v1.1.0; no future releases under the old name |
 | Python import path | `icom_lan.*` | `rigplane.*` | `icom_lan.*` still importable, emits `DeprecationWarning` |
 | CLI binary | `icom-lan` | `rigplane` | `icom-lan` retained as deprecated alias of `rigplane` |
-| Exception class | `IcomLanError` | `RigplaneError` | Re-exported from `icom_lan` under both names |
-| Env vars | `ICOM_LAN_REPORT_ENDPOINT`, `ICOM_LAN_DISABLE_DIAGNOSTIC_LOGGING`, `ICOM_LAN_LOG_DIR` | `RIGPLANE_REPORT_ENDPOINT`, `RIGPLANE_DISABLE_DIAGNOSTIC_LOGGING`, `RIGPLANE_LOG_DIR` | Old names still honoured for one major release |
+| Exception class | `IcomLanError` | `RigplaneError` | None: `icom_lan` has no `IcomLanError`; catch `RigplaneError` |
+| Env vars | `ICOM_LAN_REPORT_ENDPOINT`, `ICOM_LAN_DISABLE_DIAGNOSTIC_LOGGING`, `ICOM_LAN_LOG_DIR` | `RIGPLANE_REPORT_ENDPOINT`, `RIGPLANE_DISABLE_DIAGNOSTIC_LOGGING`, `RIGPLANE_LOG_DIR` | None: only the `RIGPLANE_*` names are read |
 | LAN discovery wire | `b"ICOM_LAN_DISCOVER\n"` | `b"RIGPLANE_DISCOVER\n"` | Server accepts both request tokens |
 | Diagnostic bundle | `icom-lan-bundle-v1` | `rigplane-bundle-v2` (default) | Triage service accepts both for at least 12 months |
 | Docs site | `morozsm.github.io/icom-lan/` | `rigplane.dev` | Old GitHub Pages URL still redirects |
@@ -332,8 +331,7 @@ date). Move to canonical names when convenient.
 Vendor identifiers stay vendor identifiers — they describe hardware, not the
 product brand. Nothing changes here.
 
-- **Vendor classes**: `IcomRadio`, `IcomBackend`, `IcomCommander`,
-  `Icom7610Profile`, `YaesuRadio`, `YaesuCatRadio`, etc.
+- **Vendor classes**: `IcomRadio`, `IcomCommander`, `YaesuCatRadio`, etc.
 - **Backend directories**: `src/rigplane/backends/icom7610/`,
   `…/yaesu_cat/`, etc.
 - **Vendor-config env vars**: `ICOM_HOST`, `ICOM_USER`, `ICOM_PASS`,

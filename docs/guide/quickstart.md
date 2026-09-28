@@ -60,19 +60,19 @@ async def main():
     )
     async with create_radio(config) as radio:
         # Read current state
-        freq = await radio.get_frequency()
+        freq = await radio.get_freq()
         mode, _ = await radio.get_mode()
         s_meter = await radio.get_s_meter()
         print(f"{freq/1e6:.3f} MHz  {mode}  S={s_meter}")
 
         # Tune to 20m FT8
-        await radio.set_frequency(14_074_000)
+        await radio.set_freq(14_074_000)
         await radio.set_mode("USB")
 
 asyncio.run(main())
 ```
 
-For LAN-only scripts you can still use **`IcomRadio(host, username=..., password=...)`** — see [API Reference](../api/radio.md).
+For LAN-only scripts you can still use **`IcomRadio(host, username=..., password=..., model=...)`**; without `model`, `profile` or a known `radio_addr` it raises `ValueError` — see [API Reference](../api/radio.md).
 
 ## 4. Discover Radios
 
@@ -83,7 +83,7 @@ rigplane discover
 ```
 
 ```
-Scanning for Icom radios (3s LAN + serial)...
+Scanning for radios (3s LAN + serial)...
 
 Found 1 radio with 2 connection methods:
 

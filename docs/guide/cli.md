@@ -17,7 +17,8 @@ All commands accept these options:
 | `--host` | `ICOM_HOST` | auto-discover | Radio IP address (LAN backend). If omitted, discovers radio via UDP broadcast. |
 | `--control-port` | `ICOM_PORT` | `50001` | Radio UDP control port (`--port` is a deprecated alias) |
 | `--user` | `ICOM_USER` | `""` | Username (LAN backend) |
-| `--pass` | `ICOM_PASS` | `""` | Password (LAN backend) |
+| `--pass` | `ICOM_PASS` | `""` | Password (LAN backend). Deprecated, as is its alias `--password`: the value shows in the process list and shell history. Use `ICOM_PASS` or `--pass-file`. |
+| `--pass-file` | — | — | Read the password from the first line of a file |
 | `--timeout` | — | `5.0` | Timeout in seconds |
 | `--json` | — | `false` | Emit JSON when supported by the selected command |
 | `--backend` | — | auto | Backend type: `lan`, `serial`, `yaesu-cat`, or `rigctld`. Auto-inferred from `--serial-port` if set. |
@@ -67,7 +68,6 @@ Use `--preset` with `web` or `serve` commands for common scenarios:
 | `hamradio` | Audio bridge + rigctld |
 | `digimode` | Audio bridge + rigctld + WSJT-X compatibility |
 | `serial` | Serial backend (auto-detect port) |
-| `headless` | rigctld only (no web UI) |
 
 ```bash
 rigplane web --preset digimode          # Full digital mode setup
@@ -237,7 +237,7 @@ rigplane mode CW
 rigplane mode LSB
 ```
 
-Available modes: `LSB`, `USB`, `AM`, `CW`, `RTTY`, `FM`, `WFM`, `CW_R`, `RTTY_R`, `DV`
+Available modes: `LSB`, `USB`, `AM`, `CW`, `RTTY`, `FM`, `WFM`, `CW_R`, `RTTY_R`, `PSK`, `PSK_R`, `DV`
 
 ### `power`
 
@@ -472,7 +472,10 @@ rigplane tuner
 
 ### `levels`
 
-Get or set radio levels (AF, RF, squelch, etc.).
+Get or set DSP and audio levels, each 0–255: noise reduction (`--nr`), noise
+blanker (`--nb`), microphone gain (`--mic-gain`), drive gain (`--drive-gain`)
+and speech compressor (`--comp-level`). `--receiver 1` selects the sub
+receiver.
 
 ```bash
 rigplane levels
@@ -524,8 +527,6 @@ Send CW text via the radio's built-in keyer.
 rigplane cw "CQ CQ DE KN4KYD K"
 ```
 
-The text is sent in chunks of up to 30 characters. Supports A–Z, 0–9, and standard prosigns.
-
 ### `power-on` / `power-off`
 
 Remote power control.
@@ -554,7 +555,7 @@ rigplane discover --hamlib-validate --rigctld-host 127.0.0.1
 ```
 
 ```
-Scanning for Icom radios (3s LAN + serial)...
+Scanning for radios (3s LAN + serial)...
 
 Found 1 radio with 2 connection methods:
 
@@ -798,9 +799,8 @@ rigplane station --port 0
 Core clients that can reach the web listener need no application credential.
 Remove the retired `--auth-token` and `--auth-token-file` flags from existing
 `web` and `station` launch commands: either flag now fails during argument
-parsing, before radio startup, without reading a token file. The environment
-variable `RIGPLANE_AUTH_TOKEN` is ignored (`src/rigplane/cli/__init__.py:
-_reject_retired_auth_option`, `_cmd_web`). For Python callers,
+parsing, before radio startup, without reading a token file
+(`src/rigplane/cli/__init__.py: _reject_retired_auth_option`). For Python callers,
 `WebConfig.auth_token` must be omitted or empty; nonempty values raise
 `ValueError` (`src/rigplane/web/server.py: WebConfig.__post_init__`).
 
@@ -943,12 +943,14 @@ If `ICOM_PID_FILE` is unset or empty, no PID file is written. This avoids PID-fi
 
     Find the duplicate with `systemctl list-unit-files --state=enabled`, then disable one unit.
 
-## Daemon Logging and Rotation (`web` / `serve`)
+## Daemon Logging and Rotation (`web` / `serve` / `station`)
 
-`web` and `serve` are long-running commands, so the CLI enables file logging by default
+`web`, `serve` and `station` are long-running commands, so the CLI enables file logging by default
 to preserve diagnostics across reconnects/restarts.
 
-- Default file path: `logs/rigplane.log`
+- Default file path: `rigplane.log` (`rigplane-managed.log` under `--managed`) in
+  the `logs` folder of the per-user cache directory: `~/Library/Caches/rigplane/logs/`
+  on macOS, `~/.cache/rigplane/logs/` on Linux. `RIGPLANE_LOG_DIR` replaces that folder.
 - Handler type: Python `RotatingFileHandler`
 - Rotation defaults: `50_000_000` bytes per file, `5` backups
 
@@ -956,7 +958,7 @@ You can tune this behavior with environment variables:
 
 | Variable | Default | Meaning |
 |---|---:|---|
-| `ICOM_LOG_FILE` | `logs/rigplane.log` (for `web`/`serve`) | Log file path. Set to `off`, `none`, or `-` to disable file logging entirely. |
+| `ICOM_LOG_FILE` | `rigplane.log` in the folder above (for `web`/`serve`/`station`) | Log file path. Set to `off`, `none`, or `-` to disable file logging entirely. |
 | `ICOM_LOG_MAX_BYTES` | `50000000` | Rotate when file reaches this size (bytes). |
 | `ICOM_LOG_BACKUP_COUNT` | `5` | Number of rotated files to keep. Set `0` to disable rotation. |
 | `ICOM_DEBUG` | unset | Enables debug-level logging and also enables file logging if `ICOM_LOG_FILE` is not disabled. |
