@@ -11,6 +11,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from _caps import FULL_ICOM_CAPS
+from test_radio import MockTransport
+
+from rigplane.commands import CONTROLLER_ADDR
 from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
     AcquisitionScheduler,
@@ -6539,3 +6542,76 @@ async def test_get_mode_emits_no_bool_data_mode_or_number_filter_width() -> None
             assert obs.value not in (1, 2, 3), (
                 f"get_mode wrote a filter NUMBER into filter_width: {obs.value!r}"
             )
+
+
+# ---------------------------------------------------------------------------
+# MOR-2823: FM legacy filter-width cache must not hold the raw 1A 03 index
+# ---------------------------------------------------------------------------
+
+
+def _fm_legacy_cache_radio() -> tuple[IcomRadio, MockTransport]:
+    """IC-7300 on a silent transport, in FM with FIL2 selected.
+
+    The mode cache is primed directly (``update_mode``), so no CI-V frame
+    has flowed and the StateStore holds no observation yet — the state in
+    which ``\\m`` answers from the mode-cache fallback path.
+    """
+    transport = MockTransport()
+    radio = IcomRadio("192.168.1.100", timeout=0.05, model="IC-7300")
+    radio._ctrl_transport = transport  # type: ignore[attr-defined]
+    radio._civ_transport = transport  # type: ignore[attr-defined]
+    radio._connected = True  # type: ignore[attr-defined]
+    radio.state_cache.update_mode("FM", 2)
+    radio._radio_state.main.mode = "FM"  # type: ignore[attr-defined]
+    return radio, transport
+
+
+def _fm_width_answer(radio: IcomRadio) -> CivFrame:
+    """A 1A 03 answer in FM whose BCD payload decodes to raw index 0."""
+    return CivFrame(
+        to_addr=CONTROLLER_ADDR,
+        from_addr=radio._radio_addr,  # type: ignore[attr-defined]
+        command=0x1A,
+        sub=0x03,
+        data=bytes([0x00]),
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_mode_before_first_observation_reports_no_fm_raw_index() -> None:
+    """MOR-2823: before the first observation, ``\\m`` in FM reports the
+    handler table's passband for the selected slot, never a raw 1A 03 index.
+
+    The passband comes from ``_FILTER_TO_PASSBAND`` in
+    ``rigctld/handler.py`` — not from the profile (MOR-2838 tracks making
+    that table profile- or state-driven). With FIL2 selected the table
+    answers ``FM 2400``. Before the fix the legacy ``_state_cache``
+    fallback held the raw BCD index 0 from a FM ``1A 03`` answer, and that
+    index reached ``_filter_to_passband`` as a filter number, answering
+    ``FM 0``.
+    """
+    radio, _transport = _fm_legacy_cache_radio()
+    radio._civ_runtime._update_state_cache_from_frame(  # noqa: SLF001
+        _fm_width_answer(radio)
+    )
+
+    handler = RigctldHandler(radio, RigctldConfig())
+    resp = await handler.execute(get_cmd("get_mode"))
+
+    assert resp.ok
+    assert resp.values == ["FM", "2400"]
+
+
+def test_fm_legacy_cache_holds_no_raw_index() -> None:
+    """MOR-2823: the legacy cache itself keeps no raw index in FM.
+
+    After a FM ``1A 03`` answer, ``_state_cache.filter_width`` still holds
+    the mode cache's filter number (2), not the raw BCD index the answer
+    decodes to (0) — a fixed-width mode's index maps to no Hz (MOR-2503).
+    """
+    radio, _transport = _fm_legacy_cache_radio()
+    radio._civ_runtime._update_state_cache_from_frame(  # noqa: SLF001
+        _fm_width_answer(radio)
+    )
+
+    assert radio.state_cache.filter_width != 0
