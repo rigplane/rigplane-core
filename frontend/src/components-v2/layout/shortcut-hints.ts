@@ -6,10 +6,15 @@ export function getShortcutHint(
   action: string,
   predicate?: Parameters<typeof findBindingByAction>[2],
 ): string | null {
-  // Namespace access: several unit tests mock `capabilities.svelte` with a
-  // partial export set and no `getKeyboardConfig`. Optional call keeps those
-  // mocks from throwing when a panel asks for a hint.
-  const config = capabilities.getKeyboardConfig?.() ?? null;
+  // Several unit tests mock `capabilities.svelte` with a partial export set
+  // and no `getKeyboardConfig`; vitest's mock proxy throws on the property
+  // access itself, so catch and treat that as "no keyboard config".
+  let config = null;
+  try {
+    config = capabilities.getKeyboardConfig?.() ?? null;
+  } catch {
+    config = null;
+  }
   const binding = findBindingByAction(config, action, predicate);
   return binding ? formatShortcut(binding) : null;
 }
