@@ -3583,13 +3583,32 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 return ActuationResult.REJECTED
         except CommandError:
             return ActuationResult.REJECTED
-        await self._send_civ_raw(
-            civ,
-            priority=priority,
-            wait_response=False,
-            is_current=is_current,
-        )
-        return ActuationResult.ACCEPTED
+        if operation is not ActuationOperation.FORCE_RECEIVE:
+            await self._send_civ_raw(
+                civ,
+                priority=priority,
+                wait_response=False,
+                is_current=is_current,
+            )
+            return ActuationResult.ACCEPTED
+        # MOR-2860: the unkey settles on the radio's answer, which
+        # ``_civ_rx.py: CivRuntime._execute_civ_raw`` waits for up to
+        # ``_civ_get_timeout`` from the send. FB is ACCEPTED and FA is
+        # REJECTED; no answer is UNCERTAIN, which keeps the release owed
+        # (``managed_tx_state.py: _settle``).
+        try:
+            reply = await self._send_civ_raw(
+                civ,
+                priority=priority,
+                wait_response=True,
+                is_current=is_current,
+            )
+        except TimeoutError:
+            return ActuationResult.UNCERTAIN
+        acknowledged = None if reply is None else parse_ack_nak(reply)
+        if acknowledged is None:
+            return ActuationResult.UNCERTAIN
+        return ActuationResult.ACCEPTED if acknowledged else ActuationResult.REJECTED
 
     async def read_transmit_state(self) -> TxStateReading:
         """One solicited CI-V transmit-state observation.
