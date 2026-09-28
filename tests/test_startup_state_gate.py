@@ -2525,8 +2525,7 @@ def _fast_retry_serial_radio(device: str, link: object) -> _IcomSerialRadioBase:
     radio._SERIAL_WATCHDOG_RETRY_MAX_S = 0.01
     # The fake link answers no poll: once the port opens, the watchdog would
     # declare link-down on that silence, parking transmit and reopening the
-    # port under the assertions at a moment that depends on runner load. No
-    # test here is about link-down, so its evidence never crosses.
+    # port under the assertions at a moment that depends on runner load.
     radio._serial_civ_timeout_evidence_crossed_threshold = lambda: False
     return radio
 
@@ -2802,12 +2801,7 @@ async def test_power_on_still_reconnects_a_silent_port_that_opened_before() -> N
 
 @pytest.mark.asyncio
 async def test_power_on_is_refused_only_while_a_never_opened_port_is_retried() -> None:
-    """Power-on reconnects first, as on main, unless a never-opened port is retried.
-
-    A port that opened and has since vanished, and a never-opened port that
-    nothing retries (a plain ``connect()`` failed), are both outside the
-    missing-port state. There the reconnect fails and power-on is still sent.
-    """
+    """Power-on reconnects first, as on main, unless a never-opened port is retried."""
 
     from rigplane.exceptions import ConnectionError as RigplaneConnectionError
     from test_icom7610_serial_radio import _FakeSerialCivLink
