@@ -3,10 +3,16 @@
    * ESSENTIALS panel — mobile IA chip-scroll default-active content (#839).
    * 90%-of-the-time controls: VFO ops, MODE quick, FILTER quick, AUDIO, DSP toggles.
    */
+  import { onDestroy } from 'svelte';
   import { HardwareButton } from '$lib/Button';
   import { ValueControl } from '../controls/value-control';
   import { normalizedPercentDisplay } from '../../primitives/scalar/value-control-core';
   import { finiteValue, valueText } from '../../primitives/reading-text';
+  import { getAfLevelControlFeedback } from '$lib/runtime/adapters/panel-adapters';
+  import {
+    createContinuousScalar,
+    createHBarContinuousScalarPolicy,
+  } from '../../primitives/scalar/continuous-scalar.svelte';
 
   interface Props {
     vfoOps: { splitActive?: boolean };
@@ -66,6 +72,28 @@
   function formatAfLevelDisplay(v: number): string {
     return valueText(finiteValue(v), normalizedPercentDisplay);
   }
+
+  // MOR-2910: the AF level rides the shared command-feedback scalar —
+  // requested/confirmed/error through the binding, dispatch through the
+  // shared hbar policy. The request still leaves through the panel's
+  // existing onAfLevelChange prop handler.
+  let afLevelFeedback = $derived(getAfLevelControlFeedback());
+  const afLevelBinding = createContinuousScalar(
+    () => ({
+      evidence: 'command-feedback', feedback: afLevelFeedback, command: 'set_af_level',
+      domain: { min: 0, max: 1, step: 0.01, defaultValue: null, fineStepDivisor: 10 },
+      enabled: afLevelFeedback.availability === 'available',
+      request: onAfLevelChange,
+    }),
+    createHBarContinuousScalarPolicy({
+      preview: 'optimistic', debounceMs: 50, describeTarget: normalizedPercentDisplay,
+    }),
+  );
+  const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
+
+  onDestroy(() => {
+    afLevelBinding.destroy();
+  });
 </script>
 
 <div class="m-essentials">
@@ -137,15 +165,12 @@
 
   <!-- AF level -->
   <ValueControl
+    {...feedbackIntegratedControl}
     label="AF Level"
-    value={rxAudio.afLevel}
-    min={0}
-    max={1}
-    step={0.01}
+    binding={afLevelBinding}
     renderer="hbar"
     displayFn={formatAfLevelDisplay}
     accentColor="var(--v2-accent-cyan-alt)"
-    onChange={onAfLevelChange}
     variant="hardware-illuminated"
   />
 
