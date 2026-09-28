@@ -1303,10 +1303,16 @@ describe('MOR-1693: the combined RF/SQL knob behaves identically on the semantic
     };
   };
 
-  /** Exact intents only — command ids are generated per dispatch. */
-  const commandsSince = (mark: number) => h.sentCommands.slice(mark).map(
-    ({ name, params, originalEpoch }) => ({ name, params, originalEpoch }),
-  );
+  /** Exact intents only — command ids are generated per dispatch. Scoped to
+   *  the knob's own intents: the scenario's synthetic ArrowLeft/ArrowRight
+   *  also resolve as the GLOBAL tune shortcut, and the singleton tuning
+   *  accumulator emits that first leaked step synchronously — order noise
+   *  from face chrome, not knob behavior, so the full stream would compare
+   *  unequal across faces for reasons outside this ticket. */
+  const KNOB_INTENTS = new Set(['set_rf_gain', 'set_squelch']);
+  const commandsSince = (mark: number) => h.sentCommands.slice(mark)
+    .filter(({ name }) => KNOB_INTENTS.has(name))
+    .map(({ name, params, originalEpoch }) => ({ name, params, originalEpoch }));
 
   const pointer = (type: 'pointerdown' | 'pointermove' | 'pointerup', x: number,
     pointerType: 'mouse' | 'touch', pointerId: number) =>
@@ -1447,7 +1453,7 @@ describe('MOR-1693: the combined RF/SQL knob behaves identically on the semantic
     // Pre-gesture: confirmed center, nothing pending.
     expect(snap()).toMatchObject({
       integration: 'command-feedback',
-      groupPhase: { rf: null, sql: null },
+      groupPhase: { rf: 'idle', sql: 'idle' },
       values: { rf: '100%', sql: '0%' },
       thumb: 0.5,
       aria: { now: '50', text: 'RF 100%, squelch 0%', busy: 'false', disabled: 'false' },
@@ -1459,7 +1465,7 @@ describe('MOR-1693: the combined RF/SQL knob behaves identically on the semantic
     level('rf-sql').input(0.23);
     flushSync();
     expect(snap()).toMatchObject({
-      groupPhase: { rf: 'submitted', sql: null },
+      groupPhase: { rf: 'submitted', sql: 'idle' },
       targets: { rf: '0.5', sql: '' },
       values: { rf: '50%', sql: '0%' },
       thumb: 0.23,
