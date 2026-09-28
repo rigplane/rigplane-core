@@ -208,7 +208,7 @@ was opened (MOR-2425 description intentionally not read).
 ### Required whole-path mechanism audit — **NO**
 
 No audit under `.claude/audits/` covers the whole instrument program. The directory
-holds 42 archived, point-in-time reports, each pinned to one revision or one diff
+holds archived, point-in-time reports, each pinned to one revision or one diff
 (`.claude/audits/README.md`: "Each report pins the exact revision it audited"); the
 closest in scope are `2026-09-26-mechanism-audit-frontend.md` (scoped to one diff,
 MOR-2478) and the per-slice MOR-2688/MOR-2704 audits. A whole-program audit remains
