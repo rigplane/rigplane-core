@@ -255,7 +255,7 @@ jobs:
           npm run check
           # Several quick jobs share one CI host; uncapped workers
           # oversubscribe it and turn timing budgets into flaky timeouts (MOR-2830).
-          npx vitest run --maxWorkers=5
+          npx vitest run --maxWorkers=4
           npm run build
           rm -f ../src/rigplane/web/static
           mkdir -p ../src/rigplane/web/static
@@ -366,7 +366,7 @@ jobs:
           # with pytest's code so failing tests fail the step.
           # Several quick jobs share one CI host; uncapped workers
           # oversubscribe it and turn timing budgets into flaky timeouts (MOR-2830).
-          uv run pytest tests/ -n auto --maxprocesses 5 --tb=short --timeout=300 --timeout-method=thread \
+          uv run pytest tests/ -n auto --maxprocesses 4 --tb=short --timeout=300 --timeout-method=thread \
             | tee pytest-output.txt
           rc=${PIPESTATUS[0]}
           SUMMARY=$(tail -1 pytest-output.txt)
