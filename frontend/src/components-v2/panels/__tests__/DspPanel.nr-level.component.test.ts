@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 
 import type { Capabilities, ControlDomain } from '$lib/types/capabilities';
-import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
 
 const handlers = {
   onNrModeChange: vi.fn(),
@@ -16,15 +15,17 @@ const handlers = {
 const runtimeState = vi.hoisted(() => ({
   state: null as Record<string, unknown> | null,
   caps: null as Capabilities | null,
+  // MOR-2910: the NR-level lane now reads command feedback, so the harness
+  // keeps a qualified connected session (the projection cases below drive
+  // unread/stale shapes through the state fixtures instead).
+  session: { state: 'connected' as 'connected' | 'disconnected', epoch: 1 },
 }));
 
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: {
     get state() { return runtimeState.state; },
     get caps() { return runtimeState.caps; },
-    get controlSession() {
-      return { state: 'disconnected', epoch: -1 } satisfies ControlSessionSnapshot;
-    },
+    get controlSession() { return runtimeState.session; },
   },
 }));
 
