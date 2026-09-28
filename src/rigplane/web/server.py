@@ -163,6 +163,7 @@ class _ClassifyRadioHealthFn(Protocol):
         server_reachable: bool = True,
         now_monotonic: float | None = None,
         served_with_silent_link: bool = False,
+        served_without_port: bool = False,
     ) -> dict[str, Any]: ...
 
 
@@ -988,6 +989,10 @@ class WebServer:
         # own no-radio-observation predicate on every publish, so the
         # served-silent verdict clears at the radio's first answer.
         self._served_with_silent_link: bool = False
+        # MOR-2876: set once startup served while the radio's serial port
+        # could not be opened; ``_build_radio_health`` combines it with the
+        # same no-radio-observation predicate.
+        self._served_without_port: bool = False
         # Audio bridge (virtual device integration)
         self._audio_bridge: "AudioBridge | None" = None
         # AudioSession whose liveness events are forwarded to WS (MOR-581)
@@ -2178,14 +2183,13 @@ class WebServer:
     def _build_radio_health(self) -> dict[str, Any]:
         """Build radio health and advance the health revision on transitions."""
         now = time.monotonic()
+        observed = store_has_radio_observation(self.command_state_store)
         health = _classify_radio_health_impl(
             self._radio,
             server_reachable=True,
             now_monotonic=now,
-            served_with_silent_link=(
-                self._served_with_silent_link
-                and not store_has_radio_observation(self.command_state_store)
-            ),
+            served_with_silent_link=self._served_with_silent_link and not observed,
+            served_without_port=self._served_without_port and not observed,
         )
         signature = (
             health.get("serverReachable"),

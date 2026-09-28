@@ -238,6 +238,7 @@ export interface RadioHealthPublic {
     | "radio_network_lost"
     | "radio_not_responding"
     | "radio_powered_off_likely"
+    | "radio_not_connected"
     | "unknown";
   sinceMs: number;
   lastError: string | null;
