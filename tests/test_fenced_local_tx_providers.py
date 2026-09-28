@@ -12,6 +12,7 @@ import pytest
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.backends.yaesu_cat.transport import CatTransportError
 from rigplane.commands.commander import Priority
+from rigplane.core.priority_exchange import ExchangeTier
 from rigplane.core.types import CivFrame
 from rigplane.runtime.managed_tx_composition import (
     ManagedTxComposition,
@@ -26,11 +27,17 @@ from rigplane.runtime.managed_tx_state import (
 from rigplane.runtime.radio import CoreRadio
 
 
+async def _answer_query(command: str, *args: object, **kwargs: object) -> str:
+    """Answer the PTT read-back as a receiving radio; keep the AC answer."""
+    del args, kwargs
+    return "TX0" if command == "TX;" else "AC101"
+
+
 def _fenced_radio(fence: TxAbortFence | None) -> YaesuCatRadio:
     radio = YaesuCatRadio("/dev/null", tx_abort_fence=fence)
     transport = radio._transport
     transport._connected = True
-    transport.query = AsyncMock(return_value="AC101")
+    transport.query = AsyncMock(side_effect=_answer_query)
     transport.flush_rx = AsyncMock(return_value=0)
     transport._drain_responses = AsyncMock(return_value=0)
     transport._raw_write = AsyncMock()
@@ -149,7 +156,9 @@ async def test_unmanaged_calls_keep_native_writes_and_guard_generic_tuner() -> N
     assert tuner_call.kwargs["is_current"]() is True
     radio._transport.stats.reconnects += 1
     assert tuner_call.kwargs["is_current"]() is False
-    radio._transport.query.assert_awaited_once_with("AC;")
+    radio._transport.query.assert_awaited_once_with(
+        "AC;", is_current=None, tier=ExchangeTier.ORDINARY
+    )
     assert radio._transport.write.await_args_list[0].args[0].startswith("KY ")
     assert tuner_call.args == ("AC103;",)
 

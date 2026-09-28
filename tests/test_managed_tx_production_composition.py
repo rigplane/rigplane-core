@@ -138,6 +138,18 @@ async def test_yaesu_install_shares_runner_and_poison_suppresses_queued_cw_chunk
             wire.append(payload)
 
     radio._write = delayed_write
+
+    async def read_ptt_after_unkey(
+        *,
+        is_current: Callable[[], bool] | None = None,
+        tier: object = None,
+    ) -> bool:
+        # MOR-2862: the confirming read answers like a radio that
+        # accepted the unkey — receiving.
+        del is_current, tier
+        return False
+
+    radio.read_ptt = read_ptt_after_unkey  # type: ignore[method-assign]
     composition = ManagedTxComposition(radio, config_path=tmp_path / "managed-tx.json")
     install_managed_tx_composition(radio, composition)
 
