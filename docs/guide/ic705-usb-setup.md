@@ -9,7 +9,6 @@ This guide shows how to control the IC-705 via **USB serial CI-V + USB audio dev
 ## Why Use the Serial Backend?
 
 - **No network required** — direct USB connection
-- **Lower latency** — no UDP/network overhead
 - **Simpler setup** — no IP config, username, or password
 - **Field operation** — works without WiFi/Ethernet
 - **Portable operation** — ideal for IC-705's portable/QRP use case
@@ -18,9 +17,13 @@ This guide shows how to control the IC-705 via **USB serial CI-V + USB audio dev
 
 - IC-705 portable transceiver (HF/VHF/UHF)
 - micro-USB cable (the IC-705 has a `[microUSB]` port)
-- macOS computer (tested on Ventura+ arm64/Intel)
+- macOS computer
 
 ## Radio Configuration
+
+The IC-705 CI-V Reference Guide (p.2) says to set the radio's CI-V address,
+data communication speed and transceive function in Set mode, and refers to
+the IC-705 instruction manual for those settings.
 
 !!! note "Two USB serial ports"
     Over USB the IC-705 presents two serial ports. CI-V uses the first one,
@@ -30,11 +33,11 @@ This guide shows how to control the IC-705 via **USB serial CI-V + USB audio dev
 
 | Setting | Value | Why |
 |---------|-------|-----|
-| **CI-V Address** | `0xA4` (IC-705 default) | Library auto-detects from profile |
+| **CI-V Address** | `0xA4` (IC-705 default) | RigPlane reads it from the IC-705 profile (`--model IC-705`) |
 
 !!! note "Baud Rate"
     - `115200` baud is recommended for scope/waterfall capability
-    - Lower baud rates (19200, 9600) work for basic control (freq, mode, PTT) but scope/waterfall is disabled by a guardrail due to high packet rate
+    - Below `115200`, scope/waterfall is disabled by a guardrail due to high packet rate
 
 !!! info "IC-705 Single Receiver"
     The IC-705 has a single receiver, unlike the IC-7610's dual receiver. The library automatically enforces this via the IC-705 profile — operations on `receiver=1` will fail with `CommandError`.
@@ -64,13 +67,8 @@ pip install rigplane
 
 ```bash
 # List serial devices
-ls -l /dev/cu.usbserial-*
-
-# Example output:
-# /dev/cu.usbserial-IC705123
+ls -l /dev/cu.*
 ```
-
-The IC-705 typically appears as `/dev/cu.usbserial-*` where the suffix may include "IC705" or the radio's serial number.
 
 You can also use `rigplane discover --serial-only` to list USB serial candidates and identify likely supported radios:
 
@@ -78,10 +76,8 @@ You can also use `rigplane discover --serial-only` to list USB serial candidates
 rigplane discover --serial-only
 ```
 
-```
-IC-705:
-  • Serial: /dev/cu.usbserial-IC705123 (115200 baud)
-```
+The examples below use `/dev/cu.usbserial-IC705123`; replace it with the
+IC-705's CI-V port.
 
 ### 4. Find USB Audio Devices
 
@@ -241,8 +237,8 @@ ls -l /dev/cu.*
 |---------|--------|---------|-------|
 | **Receiver count** | 1 | 2 | IC-705 single receiver only |
 | **Command 29 (sub RX)** | ❌ No | ✅ Yes | |
-| **CI-V Address** | `0xA4` | `0x98` | Auto-detected from profile |
-| **Baud rates** | 115200 recommended | 115200 recommended | Lower rates work but disable scope |
+| **CI-V Address** | `0xA4` | `0x98` | From the `--model` profile |
+| **Baud rates** | 115200 recommended | 115200 recommended | Lower rates disable scope |
 | **Audio codec** | PCM 1ch 16bit | PCM 1ch/2ch 16bit | |
 | **Scope** | Single stream | Dual stream | IC-705 single receiver = single scope |
 | **USB connector** | micro-USB | USB-B | Different cables |
@@ -252,13 +248,11 @@ ls -l /dev/cu.*
 
 | | LAN (UDP) | Serial (USB) |
 |-|-----------|--------------|
-| **Connection** | Ethernet/WiFi | USB cable |
-| **Setup** | IP config, username, password | Plug and play |
-| **Latency** | ~10-50ms | ~5-20ms |
+| **Connection** | WiFi | USB cable |
+| **Setup** | IP address, username, password, `--model IC-705` | Serial port, `--model IC-705` |
 | **Field operation** | Requires network | Direct connection |
-| **Audio** | Opus over LAN | USB audio devices |
+| **Audio** | Over the LAN link | USB audio devices |
 | **Scope** | UDP stream | USB serial stream |
-| **Production status** | ✅ Stable (M1-M4) | ✅ Stable (M3, IC-7610 parity) |
 
 ## See Also
 
@@ -267,10 +261,11 @@ ls -l /dev/cu.*
 - [Troubleshooting](troubleshooting.md) — Common issues and solutions
 - [Backend Capabilities](radios.md) — Full capability matrix
 
-## Hardware Procurement Status
+## Validation Status
 
-!!! warning "Development Hardware"
-    **Hardware validation of the IC-705 serial backend is pending.**
+!!! warning "Not yet validated on 3.0"
+    The IC-705 is community-validated on RigPlane 2.x over WiFi. It has not
+    yet been validated on 3.0.
 
 ## Get the Packaged Desktop App
 
