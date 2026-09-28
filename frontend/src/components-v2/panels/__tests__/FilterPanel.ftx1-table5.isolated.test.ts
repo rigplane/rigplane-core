@@ -36,6 +36,7 @@ const mockProps = {
 const mockHandlers = {
   onFilterChange: vi.fn(),
   onFilterWidthChange: vi.fn(),
+  onFilterWidthReset: vi.fn(),
   onFilterShapeChange: vi.fn(),
   onFilterPresetChange: vi.fn(),
   onFilterDefaults: vi.fn(),
@@ -109,6 +110,7 @@ beforeEach(() => {
   components = [];
   setLocale('en-US');
   mockHandlers.onFilterWidthChange = vi.fn();
+  mockHandlers.onFilterWidthReset = vi.fn();
   mockHandlers.onIfShiftChange = vi.fn();
   setProps({
     currentMode: 'USB',
@@ -221,6 +223,38 @@ describe('MOR-1679 FTX-1 fixed-width modes are not operable', () => {
     flushSync();
     expect(mockHandlers.onFilterWidthChange).not.toHaveBeenCalled();
     expect(mockHandlers.onIfShiftChange).toHaveBeenCalledWith(0);
+  });
+});
+
+describe('MOR-2519 table-branch Reset takes the radio-default width path', () => {
+  it('a non-fixed table mode resets through the radio-default handler, never a hardcoded 3200 width write', () => {
+    const t = mountPanel();
+    const reset = Array.from(t.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Reset');
+    if (!reset) throw new Error('Reset button did not mount');
+    reset.click();
+    flushSync();
+    expect(mockHandlers.onFilterWidthReset).toHaveBeenCalledTimes(1);
+    expect(mockHandlers.onIfShiftChange).toHaveBeenCalledWith(0);
+    expect(mockHandlers.onFilterWidthChange).not.toHaveBeenCalled();
+  });
+
+  it('the radio-default handler needs no profile Hz constant: SSB and CW branches dispatch the identical reset', () => {
+    for (const mode of ['SSB', 'CW-U'] as const) {
+      mockHandlers.onFilterWidthReset.mockClear();
+      mockHandlers.onIfShiftChange.mockClear();
+      setProps({ currentMode: mode, filterConfig: (ftx1FilterConfig[mode] ?? null) as FilterModeConfig | null });
+      const t = mountPanel();
+      const reset = Array.from(t.querySelectorAll('button'))
+        .find((button) => button.textContent?.trim() === 'Reset');
+      if (!reset) throw new Error('Reset button did not mount');
+      reset.click();
+      flushSync();
+      expect(mockHandlers.onFilterWidthReset).toHaveBeenCalledTimes(1);
+      components.forEach((component) => unmount(component));
+      components = [];
+      document.body.innerHTML = '';
+    }
   });
 });
 

@@ -679,7 +679,7 @@ def test_global_rx_antenna_1_registered_as_writable_slow_state_bool() -> None:
     The per-connector RX-ANT toggle for ANT1 is decoded from the 0x12 0x00 data
     byte and promoted to a backend-neutral slow-state bool, matching how it is
     already projected/consumed (``_GLOBAL_SLOW_STATE_FIELDS`` → ``rxAntenna1``).
-    Writable because ``set_rx_antenna_ant1`` exists. Only the IC-7610/IC-705 ship
+    Writable because ``set_rx_antenna_ant1`` exists. Only the IC-7610 ships
     the RX-ANT path; backends without it leave the field ``missing``.
     """
     path = FieldPath.global_("slow_state", "rx_antenna_1")
@@ -696,7 +696,7 @@ def test_global_rx_antenna_2_registered_as_writable_slow_state_bool() -> None:
     The per-connector RX-ANT toggle for ANT2 is decoded from the 0x12 0x01 data
     byte and promoted to a backend-neutral slow-state bool, matching how it is
     already projected/consumed (``_GLOBAL_SLOW_STATE_FIELDS`` → ``rxAntenna2``).
-    Writable because ``set_rx_antenna_ant2`` exists. Only the IC-7610/IC-705 ship
+    Writable because ``set_rx_antenna_ant2`` exists. Only the IC-7610 ships
     the RX-ANT path; backends without it leave the field ``missing``.
     """
     path = FieldPath.global_("slow_state", "rx_antenna_2")

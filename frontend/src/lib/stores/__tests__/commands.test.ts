@@ -361,7 +361,7 @@ describe('command lifecycle store', () => {
         'set_compressor_level', 'set_monitor_gain', 'set_nb_level', 'set_nb_width',
         'set_nr_level', 'set_nb_depth',
         'set_notch_filter', 'set_manual_notch_width', 'set_agc_time_constant',
-        'set_pbt_inner', 'set_pbt_outer', 'set_if_shift',
+        'set_pbt_inner', 'set_pbt_outer', 'set_if_shift', 'set_filter_shape',
       ]);
       expect(rfMain).toEqual({ control: 'rf-gain', receiver: 0 });
       expect(rfSub).toEqual({ control: 'rf-gain', receiver: 1 });
@@ -506,7 +506,7 @@ describe('command lifecycle store', () => {
         'set_compressor_level', 'set_monitor_gain', 'set_nb_level', 'set_nb_width',
         'set_nr_level', 'set_nb_depth',
         'set_notch_filter', 'set_manual_notch_width', 'set_agc_time_constant',
-        'set_pbt_inner', 'set_pbt_outer', 'set_if_shift',
+        'set_pbt_inner', 'set_pbt_outer', 'set_if_shift', 'set_filter_shape',
       ]);
       const pitchScope = store.CW_PITCH_COMMAND_DESCRIPTOR.scope({ params: { value: 640 } })!;
       const speedScope = store.KEY_SPEED_COMMAND_DESCRIPTOR.scope({ params: { speed: 27 } })!;
@@ -570,6 +570,104 @@ describe('command lifecycle store', () => {
       emitState(observed(target, 6));
       expect(status()).toBe('confirmed');
       emitState(observed(target, 7, 'stale'));
+      expect(status()).toBe('confirmed');
+    });
+  });
+
+  // MOR-1689: Filter Shape (SHARP/SOFT) rides the same raw receiver-echo
+  // descriptor shape the PBT/IF-shift family established — one descriptor,
+  // registered once, exact raw equality against `main/sub.filterShape`.
+  describe('Filter Shape state-backed descriptor (MOR-1689)', () => {
+    it('registers exact receiver scopes, fields, raw targets, and canonical values', () => {
+      expect(store.getStateBackedCommandDescriptor('set_filter_shape'))
+        .toBe(store.FILTER_SHAPE_COMMAND_DESCRIPTOR);
+      const main = store.FILTER_SHAPE_COMMAND_DESCRIPTOR.scope({ params: { shape: 1, receiver: 0 } })!;
+      const sub = store.FILTER_SHAPE_COMMAND_DESCRIPTOR.scope({ params: { shape: 0, receiver: 1 } })!;
+      const omitted = store.FILTER_SHAPE_COMMAND_DESCRIPTOR.scope({ params: { shape: 1 } })!;
+      expect(main).toEqual({ control: 'filter-shape', receiver: 0 });
+      expect(sub).toEqual({ control: 'filter-shape', receiver: 1 });
+      expect(omitted).toEqual({ control: 'filter-shape', receiver: 0 });
+      expect(store.FILTER_SHAPE_COMMAND_DESCRIPTOR.fieldPath(main)).toBe('main.filterShape');
+      expect(store.FILTER_SHAPE_COMMAND_DESCRIPTOR.fieldPath(sub)).toBe('sub.filterShape');
+      expect(store.FILTER_SHAPE_COMMAND_DESCRIPTOR.target({ params: { shape: 1, receiver: 0 } })).toBe(1);
+      expect(store.FILTER_SHAPE_COMMAND_DESCRIPTOR.confirmed({
+        main: { filterShape: 0 }, sub: { filterShape: 1 },
+      } as never, sub)).toBe(1);
+      expect(store.FILTER_SHAPE_COMMAND_DESCRIPTOR.matches(1, 1)).toBe(true);
+      expect(store.FILTER_SHAPE_COMMAND_DESCRIPTOR.matches(0, 1)).toBe(false);
+      expect(store.FILTER_SHAPE_COMMAND_DESCRIPTOR.repeatPolicy).toBe('latest-target-wins');
+    });
+
+    it('rejects malformed shape targets and non-receiver scopes without throwing', () => {
+      const ownKeysTrap = new Proxy({}, { ownKeys: () => { throw new Error('keys'); } });
+      // The raw receiver-echo contract (PBT/IF-shift family): `target`
+      // validates the raw `shape` param; `scope` validates ONLY the
+      // receiver — an omitted receiver defaults to MAIN, exactly like
+      // `set_pbt_inner`/`set_if_shift` envelopes.
+      for (const params of [
+        {}, ownKeysTrap,
+        { shape: '1', receiver: 0 }, { shape: true, receiver: 0 }, { shape: 0.5, receiver: 0 },
+        { shape: Number.POSITIVE_INFINITY, receiver: 0 },
+      ]) {
+        expect(store.FILTER_SHAPE_COMMAND_DESCRIPTOR.target({ params })).toBeNull();
+      }
+      for (const params of [
+        { shape: 1, receiver: 2 }, { shape: 1, receiver: '0' }, { shape: 1, receiver: false },
+      ]) {
+        expect(store.FILTER_SHAPE_COMMAND_DESCRIPTOR.scope({ params })).toBeNull();
+      }
+      expect(store.FILTER_SHAPE_COMMAND_DESCRIPTOR.scope({ params: { shape: 1 } }))
+        .toEqual({ control: 'filter-shape', receiver: 0 });
+    });
+
+    it('supersedes an in-flight shape only within the same receiver scope', () => {
+      const first = store.beginCommand({
+        id: 'shape-first', name: 'set_filter_shape', params: { shape: 0, receiver: 0 }, originalEpoch: 7,
+      });
+      const sub = store.beginCommand({
+        id: 'shape-sub', name: 'set_filter_shape', params: { shape: 1, receiver: 1 }, originalEpoch: 7,
+      });
+      // A different intent on the same receiver (filter SELECTION) must not
+      // supersede a shape command, and vice versa — both can be in flight.
+      store.beginCommand({
+        id: 'filter-after', name: 'set_filter', params: { filter: 2, receiver: 0 }, originalEpoch: 7,
+      });
+      expect(store.isCommandLifecycleSuperseded(first)).toBe(false);
+      expect(store.isCommandLifecycleSuperseded(sub)).toBe(false);
+      const reversal = store.beginCommand({
+        id: 'shape-second', name: 'set_filter_shape', params: { shape: 1, receiver: 0 }, originalEpoch: 7,
+      });
+      expect(store.isCommandLifecycleSuperseded(first)).toBe(true);
+      expect(store.isCommandLifecycleSuperseded(reversal)).toBe(false);
+      expect(store.isCommandLifecycleSuperseded(sub)).toBe(false);
+    });
+
+    it('confirms only on a newer filterShape observation equal to the target past the ACK marker', () => {
+      const observed = (value: number | null, marker: number, freshness: 'fresh' | 'stale' = 'fresh') => ({
+        stateContractVersion: 1, providerGeneration: 3,
+        main: { filterShape: value }, sub: {},
+        fieldStatus: { 'main.filterShape': {
+          storePath: 'fixture', observed: true, freshness,
+          availability: 'available', lastObservedMonotonic: marker,
+        } },
+      } as unknown as ServerState);
+      emitState(observed(0, 4));
+      store.beginCommand({
+        id: 'shape-confirm', name: 'set_filter_shape', params: { shape: 1, receiver: 0 }, originalEpoch: 7,
+      });
+      store.acknowledgeCommand('shape-confirm', 7, 7);
+      const status = () => store.getCommandLifecycle('shape-confirm', 7)?.status;
+      expect(status()).toBe('acknowledged');
+      // The pre-command marker reading the target is not a confirmation…
+      emitState(observed(1, 4));
+      expect(status()).toBe('acknowledged');
+      // …nor is a NEWER observation holding the old value (delayed readback).
+      emitState(observed(0, 5));
+      expect(status()).toBe('acknowledged');
+      // Only a qualifying fresh canonical observation confirms.
+      emitState(observed(1, 6));
+      expect(status()).toBe('confirmed');
+      emitState(observed(1, 7, 'stale'));
       expect(status()).toBe('confirmed');
     });
   });

@@ -600,7 +600,9 @@ for (const [width, height] of [[390, 844], [430, 932]]) {
     const cdp = await page.context().newCDPSession(page);
     await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 44, bottom: 34 } });
     await expect(page.locator('.m-tuning-strip')).toHaveCSS('padding-bottom', '34px');
-    await expect(page.locator('.m-tuning-strip')).toHaveCSS('height', '86px');
+    // MOR-2874: the strip grew from 52px to 76px to host the PTT FAB
+    // (72px + 2px clearance) as a fixed sibling outside the scroller.
+    await expect(page.locator('.m-tuning-strip')).toHaveCSS('height', '110px');
     expect(writes).toEqual([]);
   });
 }

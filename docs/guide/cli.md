@@ -17,7 +17,8 @@ All commands accept these options:
 | `--host` | `ICOM_HOST` | auto-discover | Radio IP address (LAN backend). If omitted, discovers radio via UDP broadcast. |
 | `--control-port` | `ICOM_PORT` | `50001` | Radio UDP control port (`--port` is a deprecated alias) |
 | `--user` | `ICOM_USER` | `""` | Username (LAN backend) |
-| `--pass` | `ICOM_PASS` | `""` | Password (LAN backend) |
+| `--pass` | `ICOM_PASS` | `""` | Password (LAN backend). Deprecated, as is its alias `--password`: the value shows in the process list and shell history. Use `ICOM_PASS` or `--pass-file`. |
+| `--pass-file` | — | — | Read the password from the first line of a file |
 | `--timeout` | — | `5.0` | Timeout in seconds |
 | `--json` | — | `false` | Emit JSON when supported by the selected command |
 | `--backend` | — | auto | Backend type: `lan`, `serial`, `yaesu-cat`, or `rigctld`. Auto-inferred from `--serial-port` if set. |
@@ -27,11 +28,13 @@ All commands accept these options:
 | `--rx-device` | `ICOM_USB_RX_DEVICE` | auto | USB audio RX device name (serial/CAT profiles with audio support) |
 | `--tx-device` | `ICOM_USB_TX_DEVICE` | auto | USB audio TX device name (serial/CAT profiles with audio support) |
 | — | `ICOM_AUDIO_SAMPLE_RATE` | profile/default | LAN audio sample-rate override (`8000`, `16000`, `24000`, or `48000`) |
+| `--model` | — | — | Radio model (e.g. `IC-7610`), resolved from `rigs/*.toml`. The `lan` and `serial` backends refuse to start without it; on `lan`, a `--radio-addr` that matches a profile also works. |
+| `--radio-addr` | — | from the profile | CI-V address override (hex or decimal) |
 | `--list-audio-devices` | — | — | List USB audio devices and exit |
 | `--version` | — | — | Print version and exit |
 
 !!! tip "Zero-config startup"
-    If you have a single radio on the network, just run `rigplane web` — it auto-discovers the radio via LAN broadcast. No `--host` needed.
+    If you have a single radio on the network, run `rigplane --model IC-7610 web` (with your radio's model) — it auto-discovers the radio via LAN broadcast. No `--host` needed.
 
     For permanent setups, set environment variables in your shell profile:
 
@@ -67,11 +70,10 @@ Use `--preset` with `web` or `serve` commands for common scenarios:
 | `hamradio` | Audio bridge + rigctld |
 | `digimode` | Audio bridge + rigctld + WSJT-X compatibility |
 | `serial` | Serial backend (auto-detect port) |
-| `headless` | rigctld only (no web UI) |
 
 ```bash
-rigplane web --preset digimode          # Full digital mode setup
-rigplane web --preset hamradio          # General ham radio setup
+rigplane --model IC-7610 web --preset digimode          # Full digital mode setup
+rigplane --model IC-7610 web --preset hamradio          # General ham radio setup
 ```
 
 User-provided flags override preset values: `--preset digimode --bridge "MyDevice"` uses your device name.
@@ -86,11 +88,11 @@ rigplane supports four backends: **LAN** (default), **serial** (USB CI-V),
 
 ```bash
 # Auto-discover radio on LAN
-rigplane status
+rigplane --model IC-7610 status
 
 # Explicit IP
-rigplane --host 192.168.55.40 status
-rigplane --backend lan status
+rigplane --model IC-7610 --host 192.168.55.40 status
+rigplane --model IC-7610 --backend lan status
 ```
 
 ### Serial backend
@@ -113,7 +115,7 @@ rigplane --model IC-7610 status    # auto-infers --backend serial
 ### Yaesu CAT backend
 
 ```bash
-# Connects via Yaesu CAT serial protocol (for example FTX-1 / FT-710 profiles)
+# Connects via Yaesu CAT serial protocol (for example the FTX-1)
 rigplane --backend yaesu-cat --serial-port /dev/tty.usbserial-FTX1 status
 rigplane --backend yaesu-cat --serial-port /dev/tty.usbserial-FTX1 freq
 ```
@@ -186,15 +188,15 @@ rigplane --json discover               # Stable setup-wizard JSON
 Show radio status (frequency, mode, S-meter, power).
 
 ```bash
-rigplane status
-rigplane status --json
+rigplane --model IC-7610 status
+rigplane --model IC-7610 status --json
 ```
 
 ```
-Frequency:    14,074,000 Hz  (14.074000 MHz)
-Mode:         USB
-S-meter:      42
-Power:        50
+Frequency:   14,074,000 Hz  (14.074000 MHz)
+Mode:      USB
+S-meter:   42
+Power:     50
 ```
 
 JSON output:
@@ -215,12 +217,12 @@ Get or set the operating frequency.
 
 ```bash
 # Get current frequency
-rigplane freq
+rigplane --model IC-7610 freq
 
 # Set frequency (multiple formats)
-rigplane freq 14074000      # Hz
-rigplane freq 14074k        # kHz
-rigplane freq 14.074m       # MHz
+rigplane --model IC-7610 freq 14074000      # Hz
+rigplane --model IC-7610 freq 14074k        # kHz
+rigplane --model IC-7610 freq 14.074m       # MHz
 ```
 
 ### `mode`
@@ -229,15 +231,15 @@ Get or set the operating mode.
 
 ```bash
 # Get current mode
-rigplane mode
+rigplane --model IC-7610 mode
 
 # Set mode
-rigplane mode USB
-rigplane mode CW
-rigplane mode LSB
+rigplane --model IC-7610 mode USB
+rigplane --model IC-7610 mode CW
+rigplane --model IC-7610 mode LSB
 ```
 
-Available modes: `LSB`, `USB`, `AM`, `CW`, `RTTY`, `FM`, `WFM`, `CW_R`, `RTTY_R`, `DV`
+Available modes: `LSB`, `USB`, `AM`, `CW`, `RTTY`, `FM`, `WFM`, `CW_R`, `RTTY_R`, `PSK`, `PSK_R`, `DV`
 
 ### `power`
 
@@ -245,10 +247,10 @@ Get or set the RF power level (0–255).
 
 ```bash
 # Get current power
-rigplane power
+rigplane --model IC-7610 power
 
 # Set power level
-rigplane power 128
+rigplane --model IC-7610 power 128
 ```
 
 !!! note "Power Scale"
@@ -259,8 +261,8 @@ rigplane power 128
 Read all available meters.
 
 ```bash
-rigplane meter
-rigplane meter --json
+rigplane --model IC-7610 meter
+rigplane --model IC-7610 meter --json
 ```
 
 ```
@@ -280,8 +282,8 @@ Show rigplane audio capability metadata and deterministic defaults.
 ```bash
 rigplane audio caps
 rigplane audio caps --json
-rigplane audio caps --stats
-rigplane audio caps --json --stats
+rigplane --model IC-7610 audio caps --stats
+rigplane --model IC-7610 audio caps --json --stats
 ```
 
 Text output includes:
@@ -320,9 +322,9 @@ JSON output example:
 Capture RX audio to a 16-bit PCM WAV file.
 
 ```bash
-rigplane audio rx --out rx.wav --seconds 10
-rigplane audio rx --out rx.wav --seconds 10 --sample-rate 48000 --channels 1
-rigplane audio rx --out rx.wav --json
+rigplane --model IC-7610 audio rx --out rx.wav --seconds 10
+rigplane --model IC-7610 audio rx --out rx.wav --seconds 10 --sample-rate 48000 --channels 1
+rigplane --model IC-7610 audio rx --out rx.wav --json
 ```
 
 ### `audio tx`
@@ -330,9 +332,9 @@ rigplane audio rx --out rx.wav --json
 Transmit a WAV file (`16-bit PCM`, matching sample rate/channels).
 
 ```bash
-rigplane audio tx --in tx.wav
-rigplane audio tx --in tx.wav --sample-rate 48000 --channels 1
-rigplane audio tx --in tx.wav --json
+rigplane --model IC-7610 audio tx --in tx.wav
+rigplane --model IC-7610 audio tx --in tx.wav --sample-rate 48000 --channels 1
+rigplane --model IC-7610 audio tx --in tx.wav --json
 ```
 
 ### `audio loopback`
@@ -340,9 +342,9 @@ rigplane audio tx --in tx.wav --json
 Run a quick RX-to-TX PCM loopback window.
 
 ```bash
-rigplane audio loopback --seconds 10
-rigplane audio loopback --seconds 10 --sample-rate 48000 --channels 1
-rigplane audio loopback --json
+rigplane --model IC-7610 audio loopback --seconds 10
+rigplane --model IC-7610 audio loopback --seconds 10 --sample-rate 48000 --channels 1
+rigplane --model IC-7610 audio loopback --json
 ```
 
 ### Shared audio flags (`rx`/`tx`/`loopback`)
@@ -358,17 +360,20 @@ Get or set the attenuator level.
 
 ```bash
 # Get current attenuation
-rigplane att
-rigplane att --json
+rigplane --model IC-7610 att
+rigplane --model IC-7610 att --json
 
 # Set level in dB (0–45, 3 dB steps)
-rigplane att 18
-rigplane att 0
+rigplane --model IC-7610 att 18
+rigplane --model IC-7610 att 0
 
 # Toggle shortcuts
-rigplane att on     # Sets 18 dB
-rigplane att off    # Sets 0 dB
+rigplane --model IC-7300 att on     # The profile's only non-zero step (20 dB on the IC-7300)
+rigplane --model IC-7610 att off    # Sets 0 dB
 ```
+
+`att on` needs a profile with exactly one non-zero attenuator step; on a radio
+with several steps, such as the IC-7610, it is refused, so set a dB value.
 
 ```
 Attenuator: 18 dB
@@ -393,14 +398,14 @@ Get or set the preamplifier level.
 
 ```bash
 # Get current preamp level
-rigplane preamp
-rigplane preamp --json
+rigplane --model IC-7610 preamp
+rigplane --model IC-7610 preamp --json
 
 # Set level
-rigplane preamp 0     # Off
-rigplane preamp 1     # PREAMP 1
-rigplane preamp 2     # PREAMP 2
-rigplane preamp off   # Same as 0
+rigplane --model IC-7610 preamp 0     # Off
+rigplane --model IC-7610 preamp 1     # PREAMP 1
+rigplane --model IC-7610 preamp 2     # PREAMP 2
+rigplane --model IC-7610 preamp off   # Same as 0
 ```
 
 ```
@@ -422,13 +427,13 @@ Get or set antenna selection.
 
 ```bash
 # Get current antenna state
-rigplane antenna
+rigplane --model IC-7610 antenna
 
 # Set antenna
-rigplane antenna --ant1 on
-rigplane antenna --ant2 on
-rigplane antenna --rx-ant1 on
-rigplane antenna --rx-ant2 off
+rigplane --model IC-7610 antenna --ant1 on
+rigplane --model IC-7610 antenna --ant2 on
+rigplane --model IC-7610 antenna --rx-ant1 on
+rigplane --model IC-7610 antenna --rx-ant2 off
 ```
 
 | Flag | Default | Description |
@@ -443,7 +448,7 @@ rigplane antenna --rx-ant2 off
 Get or set the radio's internal date.
 
 ```bash
-rigplane date
+rigplane --model IC-7610 date
 ```
 
 ### `time`
@@ -451,7 +456,7 @@ rigplane date
 Get or set the radio's internal time.
 
 ```bash
-rigplane time
+rigplane --model IC-7610 time
 ```
 
 ### `dualwatch`
@@ -459,7 +464,7 @@ rigplane time
 Get or set dual watch mode.
 
 ```bash
-rigplane dualwatch
+rigplane --model IC-7610 dualwatch
 ```
 
 ### `tuner`
@@ -467,15 +472,18 @@ rigplane dualwatch
 Control the antenna tuner.
 
 ```bash
-rigplane tuner
+rigplane --model IC-7610 tuner
 ```
 
 ### `levels`
 
-Get or set radio levels (AF, RF, squelch, etc.).
+Get or set DSP and audio levels, each 0–255: noise reduction (`--nr`), noise
+blanker (`--nb`), microphone gain (`--mic-gain`), drive gain (`--drive-gain`)
+and speech compressor (`--comp-level`). `--receiver 1` selects the sub
+receiver.
 
 ```bash
-rigplane levels
+rigplane --model IC-7610 levels
 ```
 
 ### `ptt`
@@ -483,7 +491,7 @@ rigplane levels
 Key or unkey the transmitter.
 
 ```bash
-rigplane ptt on
+rigplane --model IC-7610 ptt on
 ```
 
 `ptt on` keys the rig and **blocks**, holding the key for as long as the command runs. Press Ctrl-C to unkey and exit; SIGTERM and SIGHUP do the same. The exit code says which one ended the hold — `130` (Ctrl-C / SIGINT), `143` (SIGTERM), `129` (SIGHUP) — while a signal arriving before the key completes skips the key entirely, so the rig never transmits.
@@ -491,7 +499,7 @@ rigplane ptt on
 For a timed or scripted transmission, use `--for` instead of waiting on a signal:
 
 ```bash
-rigplane ptt --for 10
+rigplane --model IC-7610 ptt --for 10
 ```
 
 This keys the rig, holds for 10 seconds, then unkeys on its own and exits `0` — `on` is implied by `--for`, so it doesn't need to be written out.
@@ -499,7 +507,7 @@ This keys the rig, holds for 10 seconds, then unkeys on its own and exits `0` �
 Either way, the unkey on the way out is bounded to 5 seconds. If it fails or hangs past that, the command exits `1` and warns that the radio may still be transmitting.
 
 ```bash
-rigplane ptt off
+rigplane --model IC-7610 ptt off
 ```
 
 `ptt off` unkeys immediately and returns promptly — it never holds the key the way `ptt on` does, and a forced unkey is bounded at 5 seconds, so it always gets the chance to run. Use it to recover a rig left keyed by a crash, a killed process, or an older rigplane build: when no TX lease of this invocation's own matches — the normal case for a rig some *other* process keyed — it escalates to an operator-forced unkey instead of giving up, and says so on stderr.
@@ -521,18 +529,16 @@ The refusal worth calling out is a busy radio. If another TX session holds a *li
 Send CW text via the radio's built-in keyer.
 
 ```bash
-rigplane cw "CQ CQ DE KN4KYD K"
+rigplane --model IC-7610 cw "CQ CQ DE KN4KYD K"
 ```
-
-The text is sent in chunks of up to 30 characters. Supports A–Z, 0–9, and standard prosigns.
 
 ### `power-on` / `power-off`
 
 Remote power control.
 
 ```bash
-rigplane power-on
-rigplane power-off
+rigplane --model IC-7610 power-on
+rigplane --model IC-7610 power-off
 ```
 
 !!! warning
@@ -554,7 +560,7 @@ rigplane discover --hamlib-validate --rigctld-host 127.0.0.1
 ```
 
 ```
-Scanning for Icom radios (3s LAN + serial)...
+Scanning for radios (3s LAN + serial)...
 
 Found 1 radio with 2 connection methods:
 
@@ -702,19 +708,19 @@ coverage.
 
 ```bash
 # Basic rigctld server on default port 4532
-rigplane serve
+rigplane --model IC-7610 serve
 
 # Custom port, read-only, max 5 clients
-rigplane serve --port 4533 --read-only --max-clients 5
+rigplane --model IC-7610 serve --port 4533 --read-only --max-clients 5
 
 # Write every command to an audit log
-rigplane serve --audit-log /var/log/icom-audit.jsonl
+rigplane --model IC-7610 serve --audit-log /var/log/icom-audit.jsonl
 
 # Rate-limit to 10 commands/sec per client, verbose debug logs
-rigplane serve --rate-limit 10 --log-level DEBUG
+rigplane --model IC-7610 serve --rate-limit 10 --log-level DEBUG
 
 # WSJT-X preset (enables DATA mode automatically on first connect)
-rigplane serve --wsjtx-compat
+rigplane --model IC-7610 serve --wsjtx-compat
 ```
 
 | Option | Default | Description |
@@ -756,29 +762,29 @@ Start the all-in-one server: Web UI + optional audio bridge + rigctld.
 
 ```bash
 # Web UI only (auto-discovers radio)
-rigplane web
+rigplane --model IC-7610 web
 
 # Use a preset for common scenarios
-rigplane web --preset digimode          # Bridge + rigctld + WSJT-X compat
-rigplane web --preset hamradio          # Bridge + rigctld
+rigplane --model IC-7610 web --preset digimode          # Bridge + rigctld + WSJT-X compat
+rigplane --model IC-7610 web --preset hamradio          # Bridge + rigctld
 
 # Web UI + audio bridge + rigctld (recommended for WSJT-X)
-rigplane web --bridge "RigPlane Virtual Cable Output"
+rigplane --model IC-7610 web --bridge "RigPlane Virtual Cable Output"
 
 # Web UI + WSJT-X compatibility on embedded rigctld
-rigplane web --bridge --wsjtx-compat
+rigplane --model IC-7610 web --bridge --wsjtx-compat
 
 # Web UI + bridge (RX only, no TX from virtual device)
-rigplane web --bridge "RigPlane Virtual Cable Output" --bridge-rx-only
+rigplane --model IC-7610 web --bridge "RigPlane Virtual Cable Output" --bridge-rx-only
 
 # Disable rigctld (enabled by default on :4532)
-rigplane web --no-rigctld
+rigplane --model IC-7610 web --no-rigctld
 
 # Custom ports
-rigplane web --port 9090 --rigctld-port 4533
+rigplane --model IC-7610 web --port 9090 --rigctld-port 4533
 
 # Managed local runtime for a supervising desktop app
-rigplane station --port 0
+rigplane --model IC-7610 station --port 0
 ```
 
 | Option | Default | Description |
@@ -798,9 +804,10 @@ rigplane station --port 0
 Core clients that can reach the web listener need no application credential.
 Remove the retired `--auth-token` and `--auth-token-file` flags from existing
 `web` and `station` launch commands: either flag now fails during argument
-parsing, before radio startup, without reading a token file. The environment
-variable `RIGPLANE_AUTH_TOKEN` is ignored (`src/rigplane/cli/__init__.py:
-_reject_retired_auth_option`, `_cmd_web`). For Python callers,
+parsing, before radio startup, without reading a token file
+(`src/rigplane/cli/__init__.py: _reject_retired_auth_option`). The environment
+variable `RIGPLANE_AUTH_TOKEN`, which 2.11 read, is no longer read anywhere in
+`src/`. For Python callers,
 `WebConfig.auth_token` must be omitted or empty; nonempty values raise
 `ValueError` (`src/rigplane/web/server.py: WebConfig.__post_init__`).
 
@@ -812,7 +819,7 @@ and enables embedded rigctld on loopback for local
 clients such as RigPlane Pro.
 
 ```bash
-rigplane station --port 0
+rigplane --model IC-7610 station --port 0
 ```
 
 `station` shares the radio connection flags from the top-level CLI, including
@@ -849,13 +856,13 @@ Route radio audio to/from a virtual audio device (RigPlane Virtual Cable, Loopba
 
 ```bash
 # List available audio devices
-rigplane audio bridge --list-devices
+rigplane --model IC-7610 audio bridge --list-devices
 
 # Start bridge
-rigplane audio bridge --device "RigPlane Virtual Cable Output"
+rigplane --model IC-7610 audio bridge --device "RigPlane Virtual Cable Output"
 
 # RX only (no TX from virtual device)
-rigplane audio bridge --device "RigPlane Virtual Cable Output" --rx-only
+rigplane --model IC-7610 audio bridge --device "RigPlane Virtual Cable Output" --rx-only
 ```
 
 The TX capture path preserves real-time latency by dropping the oldest queued
@@ -886,26 +893,26 @@ Requires optional dependency: `pip install rigplane[scope]`
 
 ```bash
 # Combined spectrum + waterfall (50 frames, ~3 seconds)
-rigplane scope
+rigplane --model IC-7610 scope
 
 # Spectrum only (1 frame, fast)
-rigplane scope --spectrum-only
+rigplane --model IC-7610 scope --spectrum-only
 
 # Custom output and frame count
-rigplane scope --output waterfall.png --frames 100
+rigplane --model IC-7610 scope --output waterfall.png --frames 100
 
 # Grayscale theme
-rigplane scope --theme grayscale
+rigplane --model IC-7610 scope --theme grayscale
 
 # Wider image
-rigplane scope --width 1200
+rigplane --model IC-7610 scope --width 1200
 
 # Raw JSON data (no Pillow needed)
-rigplane scope --json
-rigplane scope --spectrum-only --json
+rigplane --model IC-7610 scope --json
+rigplane --model IC-7610 scope --spectrum-only --json
 
 # Custom capture timeout
-rigplane scope --capture-timeout 20
+rigplane --model IC-7610 scope --capture-timeout 20
 ```
 
 | Option | Default | Description |
@@ -925,7 +932,7 @@ For daemon-like commands (`web`, `serve`), you can opt in to writing a PID file 
 ```bash
 # Enable PID file for web/serve (e.g. in systemd or a wrapper script)
 export ICOM_PID_FILE=/var/run/rigplane.pid
-rigplane web
+rigplane --model IC-7610 web
 
 # Graceful shutdown
 kill $(cat /var/run/rigplane.pid)
@@ -943,12 +950,14 @@ If `ICOM_PID_FILE` is unset or empty, no PID file is written. This avoids PID-fi
 
     Find the duplicate with `systemctl list-unit-files --state=enabled`, then disable one unit.
 
-## Daemon Logging and Rotation (`web` / `serve`)
+## Daemon Logging and Rotation (`web` / `serve` / `station`)
 
-`web` and `serve` are long-running commands, so the CLI enables file logging by default
+`web`, `serve` and `station` are long-running commands, so the CLI enables file logging by default
 to preserve diagnostics across reconnects/restarts.
 
-- Default file path: `logs/rigplane.log`
+- Default file path: `rigplane.log` (`rigplane-managed.log` under `--managed`) in
+  the `logs` folder of the per-user cache directory: `~/Library/Caches/rigplane/logs/`
+  on macOS, `~/.cache/rigplane/logs/` on Linux. `RIGPLANE_LOG_DIR` replaces that folder.
 - Handler type: Python `RotatingFileHandler`
 - Rotation defaults: `50_000_000` bytes per file, `5` backups
 
@@ -956,7 +965,7 @@ You can tune this behavior with environment variables:
 
 | Variable | Default | Meaning |
 |---|---:|---|
-| `ICOM_LOG_FILE` | `logs/rigplane.log` (for `web`/`serve`) | Log file path. Set to `off`, `none`, or `-` to disable file logging entirely. |
+| `ICOM_LOG_FILE` | `rigplane.log` in the folder above (for `web`/`serve`/`station`) | Log file path. Set to `off`, `none`, or `-` to disable file logging entirely. |
 | `ICOM_LOG_MAX_BYTES` | `50000000` | Rotate when file reaches this size (bytes). |
 | `ICOM_LOG_BACKUP_COUNT` | `5` | Number of rotated files to keep. Set `0` to disable rotation. |
 | `ICOM_DEBUG` | unset | Enables debug-level logging and also enables file logging if `ICOM_LOG_FILE` is not disabled. |
@@ -964,16 +973,16 @@ You can tune this behavior with environment variables:
 ```bash
 # Custom log location (systemd/container-friendly)
 export ICOM_LOG_FILE=/var/log/rigplane/daemon.log
-rigplane web
+rigplane --model IC-7610 web
 
 # Smaller files with more backups
 export ICOM_LOG_MAX_BYTES=10000000
 export ICOM_LOG_BACKUP_COUNT=10
-rigplane serve
+rigplane --model IC-7610 serve
 
 # Explicitly disable file logs (stdout/stderr only)
 export ICOM_LOG_FILE=off
-rigplane web
+rigplane --model IC-7610 web
 ```
 
 ## Flag Reference
@@ -996,7 +1005,7 @@ These flags apply to **every** command and must come before the subcommand name.
 rigplane --version
 
 # Connect to a radio on a non-default port
-rigplane --control-port 50002 status
+rigplane --model IC-7610 --control-port 50002 status
 
 # Specify radio model explicitly
 rigplane --model IC-7300 --backend serial --serial-port /dev/cu.usbserial-XXX status
@@ -1017,25 +1026,25 @@ rigplane --model IC-7300 --backend serial --serial-port /dev/cu.usbserial-XXX st
 
 ```bash
 # Log every command to a JSONL audit trail
-rigplane serve --audit-log /var/log/icom-audit.jsonl
+rigplane --model IC-7610 serve --audit-log /var/log/icom-audit.jsonl
 
 # Tighten cache for faster state sync
-rigplane serve --cache-ttl 0.05
+rigplane --model IC-7610 serve --cache-ttl 0.05
 
 # Verbose debug logging
-rigplane serve --log-level DEBUG
+rigplane --model IC-7610 serve --log-level DEBUG
 
 # Limit to 3 simultaneous clients
-rigplane serve --max-clients 3
+rigplane --model IC-7610 serve --max-clients 3
 
 # Drop commands faster than 10/sec per client
-rigplane serve --rate-limit 10
+rigplane --model IC-7610 serve --rate-limit 10
 
 # Prevent accidental frequency/mode changes
-rigplane serve --read-only
+rigplane --model IC-7610 serve --read-only
 
 # Enable WSJT-X compatibility preset
-rigplane serve --wsjtx-compat
+rigplane --model IC-7610 serve --wsjtx-compat
 ```
 
 ### `proxy` flags
@@ -1073,13 +1082,13 @@ rigplane proxy --radio 192.168.1.100 --listen 10.8.0.1
 
 ```bash
 # Bidirectional bridge: RX into the cable Output end, TX captured from the Input end
-rigplane web --bridge "RigPlane Virtual Cable Output" --bridge-tx-device "RigPlane Virtual Cable Input"
+rigplane --model IC-7610 web --bridge "RigPlane Virtual Cable Output" --bridge-tx-device "RigPlane Virtual Cable Input"
 
 # Serve a custom-built web UI from a local directory
-rigplane web --static-dir /opt/icom-ui/dist
+rigplane --model IC-7610 web --static-dir /opt/icom-ui/dist
 
 # Connect to a DX cluster and show spot overlays on the waterfall
-rigplane web --dx-cluster dxc.nc7j.com:7373 --callsign KN4KYD
+rigplane --model IC-7610 web --dx-cluster dxc.nc7j.com:7373 --callsign KN4KYD
 ```
 
 ## Exit Codes
@@ -1093,15 +1102,15 @@ rigplane web --dx-cluster dxc.nc7j.com:7373 --callsign KN4KYD
 
 ```bash
 # Monitor frequency in a loop
-watch -n 1 rigplane freq --json
+watch -n 1 rigplane --model IC-7610 freq --json
 
 # Quick band change
-rigplane freq 7.074m && rigplane mode USB
+rigplane --model IC-7610 freq 7.074m && rigplane --model IC-7610 mode USB
 
 # Check RF chain setup
-rigplane att && rigplane preamp
+rigplane --model IC-7610 att && rigplane --model IC-7610 preamp
 
 # Script-friendly JSON output
-FREQ=$(rigplane freq --json | jq -r '.frequency_hz')
+FREQ=$(rigplane --model IC-7610 freq --json | jq -r '.frequency_hz')
 echo "Currently on $FREQ Hz"
 ```

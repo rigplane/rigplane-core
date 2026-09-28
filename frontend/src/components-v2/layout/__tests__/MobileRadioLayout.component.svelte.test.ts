@@ -1341,6 +1341,24 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
   const fabEl = (t: HTMLElement) => t.querySelector<HTMLButtonElement>('.ptt-fab')!;
   const stripEl = (t: HTMLElement) => t.querySelector<HTMLButtonElement>('.m-ls-ptt')!;
   const landscapeUnkeyEl = (t: HTMLElement) => t.querySelector<HTMLButtonElement>('.m-ls-unkey')!;
+
+  // MOR-2874: the portrait FAB must live in the fixed tuning strip — its
+  // own reserved place in the bottom chrome, OUTSIDE the one scroller —
+  // so no scrolling control can ever sit under it at any scroll position.
+  // The full geometric acceptance (box vs every visible interactive
+  // element at top/middle/bottom of the scroll, 375×812 and 360 px) is
+  // the Playwright spec tests/e2e/i18n/mobile-ptt-clearance.spec.ts; this
+  // jsdom companion pins the construction that makes it hold.
+  it('mounts the PTT FAB inside the fixed tuning strip, outside the scroller (MOR-2874)', () => {
+    const t = mountMobile();
+    const fab = fabEl(t);
+    const strip = t.querySelector<HTMLElement>('.m-tuning-strip')!;
+    const scroller = t.querySelector<HTMLElement>('.m-content')!;
+    expect(strip).not.toBeNull();
+    expect(scroller).not.toBeNull();
+    expect(strip.contains(fab)).toBe(true);
+    expect(scroller.contains(fab)).toBe(false);
+  });
   function pointer(el: Element, type: string, init: PointerEventInit = {}) {
     el.dispatchEvent(new PointerEvent(type, {
       bubbles: true, pointerId: 1, clientX: 0, clientY: 0, ...init,

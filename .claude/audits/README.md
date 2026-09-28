@@ -1,7 +1,8 @@
 # Mechanism-audit reports
 
 Archived, point-in-time outputs of the `auditor` role running the
-`.claude/skills/mechanism-audit/SKILL.md` method. Each report pins the exact
+`.claude/skills/mechanism-audit/SKILL.md` method. Evidence files an archived
+audit rests on are kept beside it. Each report pins the exact
 revision it audited in its own header; citations inside a report (including
 `file:line` forms used where no symbol encloses the evidence) are frozen at
 that revision and are not maintained. These files live under `.claude/` rather
@@ -12,6 +13,28 @@ evidence about one commit and must quote it verbatim. Like `agents/`,
 public repository** — never put session notes, baselines, or anything with
 internal identifiers here; untracked working notes belong in the ignored
 remainder of `.claude/`.
+
+## 2026-09-28 — MOR-2215 final whole-path audit, instrument inventory, and census
+
+The final whole-path mechanism audit of the frontend instrument layer, with
+the two evidence files it rests on: the instrument and live-consumer
+inventory at the same revision, and the MOR-2215 / MOR-2425 acceptance
+census. The audit pins its revision (`3c19f5c9`) and labels its claims as
+observation or inference.
+
+- [2026-09-28-mechanism-audit-mor2215-final.md](2026-09-28-mechanism-audit-mor2215-final.md)
+  — the frontend instrument layer at `3c19f5c9`: deletions D1–D10 and
+  findings F1–F9; F7 and F3 unconditionally block MOR-2215 closure on the
+  Standard path, the rest unless the owner has scoped the mobile/LCD legacy
+  hosts out.
+- [2026-09-28-mor2215-instrument-inventory.md](2026-09-28-mor2215-instrument-inventory.md)
+  — the instrument and live-consumer inventory at `3c19f5c9`: 57 instrument
+  rows and 17 surface rows, 74 mapped in total, each with its live consumers
+  and proof.
+- [2026-09-28-mor2215-mor2425-acceptance-census.md](2026-09-28-mor2215-mor2425-acceptance-census.md)
+  — the acceptance census at `3c19f5c9`: MOR-2425 MET on all six lines;
+  MOR-2215 MET on five, PARTLY on the inventory and review lines, with its
+  whole-program audit then not present.
 
 ## 2026-09-27 — MOR-2688 slices S3–S4c, and the MOR-2704 design audit
 

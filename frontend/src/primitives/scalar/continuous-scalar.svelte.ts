@@ -352,7 +352,12 @@ export function createBipolarContinuousScalarPolicy(
       const increment = bipolarLatticeCompatible(requested, domain) ? requested : domain.step;
       return bipolarKeyboardStep(current, event.key, increment, domain);
     },
-    reset: (domain) => domain.defaultValue ?? 0,
+    // MOR-2535/MOR-2909: a null defaultValue means NO reset candidate —
+    // `applyCandidate` refuses a null, so `lease.reset()` dispatches
+    // nothing (the same doctrine the native-range policy documents).
+    // Falling back to 0 would invent a per-lane 0 Hz default the domain
+    // never declared — the MOR-2909 F1 hazard on the legacy PBT lanes.
+    reset: (domain) => domain.defaultValue,
     dispatch: (source) => source === 'keyboard' || source === 'reset' ? debounce : 'immediate',
     dispatchesCanonical: (source, context, domain) => source === 'wheel'
       || (source === 'keyboard' && domain?.keyboardStep !== undefined
