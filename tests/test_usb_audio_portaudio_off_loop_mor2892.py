@@ -65,6 +65,19 @@ def _warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
     ]
 
 
+@pytest.fixture(autouse=True)
+def _no_coreaudio_uid_map(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the fake-backend paths off real CoreAudio (macOS test hosts).
+
+    ``_devices_from_backend`` enriches devices via ``_get_uid_map()`` — on
+    a macOS test host that is a REAL CoreAudio mach call whose latency is
+    unrelated to what these tests measure, and since MOR-2892 it runs
+    inside the bounded (here 0.05 s) enumeration window, turning host
+    jitter into flaky "device enumeration" timeouts. Neutralize it.
+    """
+    monkeypatch.setattr("rigplane.audio.usb_driver._get_uid_map", lambda: {})
+
+
 class _Ticker:
     """Counts event-loop ticks while the PortAudio call under test is stuck."""
 

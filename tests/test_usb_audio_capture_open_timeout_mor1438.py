@@ -77,8 +77,20 @@ def _warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
     return [
         r
         for r in caplog.records
-        if r.name == _LOGGER_NAME and r.levelno == logging.WARNING
+        if r.name == _LOGGER_NAME and r.levelno >= logging.WARNING
     ]
+
+
+@pytest.fixture(autouse=True)
+def _no_coreaudio_uid_map(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the fake-backend paths off real CoreAudio (macOS test hosts).
+
+    Since MOR-2892 the start path's device enumeration runs inside the
+    same bounded (here 0.05 s) window as the open; on a macOS test host
+    ``_get_uid_map()`` is a real CoreAudio mach call whose jitter would
+    flake these timeout assertions. Neutralize it.
+    """
+    monkeypatch.setattr("rigplane.audio.usb_driver._get_uid_map", lambda: {})
 
 
 @pytest.mark.timeout(10)
