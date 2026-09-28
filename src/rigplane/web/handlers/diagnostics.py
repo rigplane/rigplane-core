@@ -6,8 +6,10 @@ Routes ``/api/v1/diagnose/{preview,send,save}`` and
 Implements:
 - Preview-bound CSRF token (single-use for ``send``; reusable for
   ``save`` and ``delete`` until expiry).
-- Same-origin check (skipped on loopback bind — the loopback boundary is
-  the security boundary).
+- Origin: no per-handler check — these routes are POST/DELETE, so the
+  dispatch-level same-Origin rule (MOR-2881,
+  :func:`rigplane.web.web_routing.dispatch_http_request`) covers them
+  before any handler runs.
 - Background sweeper that purges expired previews every 60s.
 - API auth inheritance: the existing top-level token check in
   :func:`rigplane.web.web_routing.dispatch_http_request` already gates
@@ -78,81 +80,6 @@ class _PreviewSession:
         if now is None:
             now = int(time.time())
         return now - self.created_at_unix > PREVIEW_TTL_SECONDS
-
-
-def check_origin_or_loopback(
-    origin: str | None,
-    bound_host: str,
-    bound_port: int,
-    request_host: str | None = None,
-) -> tuple[bool, str]:
-    """Validate the request ``Origin`` header.
-
-    Returns ``(allowed, reason)``. The reason string doubles as a
-    machine-readable error code surfaced to the client on failure.
-
-    Three modes:
-
-    1. **Loopback bind** (``127.0.0.1`` / ``::1`` / ``localhost``) —
-       the loopback boundary is itself the security boundary. Skip the
-       check entirely (dev tools sometimes omit ``Origin``).
-    2. **Wildcard bind** (``0.0.0.0`` / ``::``) — the server listens on
-       all interfaces, so the bind address can't anchor an ``expected
-       origin`` set. Use the request's ``Host`` header (the address the
-       browser actually connected to) instead. A loopback ``Host``
-       means the browser is on the same machine and we trust it.
-    3. **Specific bind** — match ``Origin`` against
-       ``http(s)://<bound_host>:<bound_port>`` plus loopback aliases (so
-       a localhost frontend can talk to a ``192.168.x.x`` bind in dev).
-    """
-    # 1. Loopback bind = security boundary is loopback itself
-    if bound_host in ("127.0.0.1", "::1", "localhost"):
-        return (True, "loopback_bind_skips_origin_check")
-
-    # 2. Wildcard bind: anchor on the Host header instead of bound_host
-    if bound_host in ("0.0.0.0", "::"):
-        if not request_host:
-            return (False, "host_header_missing")
-        # Strip port from Host (may or may not be present)
-        if ":" in request_host and not request_host.startswith("["):
-            host_no_port = request_host.rsplit(":", 1)[0]
-        else:
-            host_no_port = request_host
-        # Loopback Host = browser is on the same machine
-        if host_no_port in ("127.0.0.1", "::1", "localhost", "[::1]"):
-            return (True, "loopback_via_wildcard_bind")
-        if not origin:
-            return (False, "origin_missing")
-        expected = {
-            f"http://{request_host}",
-            f"https://{request_host}",
-            f"http://{host_no_port}:{bound_port}",
-            f"https://{host_no_port}:{bound_port}",
-        }
-        if origin in expected:
-            return (True, "matched_via_host_header")
-        return (False, "origin_mismatch")
-
-    # 3. Specific bind: exact match on bound_host:bound_port + loopback aliases
-    if not origin:
-        return (False, "origin_missing")
-    expected = {
-        f"http://{bound_host}:{bound_port}",
-        f"https://{bound_host}:{bound_port}",
-    }
-    if origin in expected:
-        return (True, "matched")
-    if origin.startswith("http://localhost:") or origin.startswith(
-        "https://localhost:"
-    ):
-        return (True, "matched_localhost")
-    if origin.startswith("http://127.0.0.1:") or origin.startswith(
-        "https://127.0.0.1:"
-    ):
-        return (True, "matched_loopback_v4")
-    if origin.startswith("http://[::1]:") or origin.startswith("https://[::1]:"):
-        return (True, "matched_loopback_v6")
-    return (False, "origin_mismatch")
 
 
 def _coerce_str_list(value: Any) -> list[str]:

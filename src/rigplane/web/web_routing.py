@@ -21,6 +21,13 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
+from .host_guard import (  # noqa: TID251
+    MISDIRECTED_BODY,
+    ORIGIN_FORBIDDEN_BODY,
+    host_header_allowed,
+    same_origin_allowed,
+)
+
 if TYPE_CHECKING:
     from .server import WebServer  # noqa: TID251
 
@@ -49,6 +56,44 @@ async def dispatch_http_request(
     from . import server as _server_mod  # noqa: TID251
 
     _send_response = _server_mod._send_response
+
+    # MOR-2880: Host allowlist before any handler, on every HTTP route.
+    raw_host = (headers or {}).get("host")
+    if not host_header_allowed(raw_host, server._config.allowed_hosts):
+        server._log_refused_request("http host", path, headers or {})
+        await _send_response(
+            writer,
+            421,
+            "Misdirected Request",
+            MISDIRECTED_BODY,
+            {"Content-Type": "application/json"},
+        )
+        return
+
+    # MOR-2881: the same Origin rule as the WebSocket upgrades, on every
+    # state-changing request, before any handler. A missing Origin is
+    # admitted (non-browser clients; Pro's proxy sends none on its HTTP
+    # leg); a present one must be same-origin with the request and its
+    # host must pass the Host rule above. GET /clearcache is covered
+    # too: it changes client state (Clear-Site-Data wipes the browser's
+    # storage for this origin) though it is a GET.
+    origin = (headers or {}).get("origin")
+    if origin is not None and (
+        method in ("POST", "PUT", "PATCH", "DELETE") or path == "/clearcache"
+    ):
+        scheme = "https" if server._config.tls else "http"
+        if not same_origin_allowed(
+            origin, raw_host, scheme, server._config.allowed_hosts
+        ):
+            server._log_refused_request("http origin", path, headers or {})
+            await _send_response(
+                writer,
+                403,
+                "Forbidden",
+                ORIGIN_FORBIDDEN_BODY,
+                {"Content-Type": "application/json"},
+            )
+            return
 
     if path == "/healthz":
         if method not in ("GET", "HEAD"):

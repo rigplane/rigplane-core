@@ -1455,6 +1455,17 @@ def _build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Enable the gated WebRTC transport entrypoint (requires the [webrtc] extra)",
     )
+    web_p.add_argument(
+        "--allowed-host",
+        dest="allowed_hosts",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Admit this Host header name in addition to the local allowlist "
+            "(repeatable, e.g. stand77.msmsoft.net)"
+        ),
+    )
 
     station_p = sub.add_parser(
         "station",
@@ -3807,6 +3818,9 @@ async def _cmd_web(
 
     config_kwargs["discovery"] = getattr(args, "web_discovery", True)
     config_kwargs["webrtc_enabled"] = getattr(args, "webrtc_enabled", False)
+    allowed_hosts = getattr(args, "allowed_hosts", None)
+    if allowed_hosts:
+        config_kwargs["allowed_hosts"] = tuple(allowed_hosts)
     # R59/MOR-2425: a radio that cannot name itself is left unnamed. Omitting
     # the key keeps WebConfig's ``_RADIO_MODEL_UNSPECIFIED`` sentinel, which
     # the server already treats as "nothing identifies the radio"

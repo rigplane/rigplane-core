@@ -41,11 +41,71 @@ omit `WebConfig.auth_token` or leave it empty; a nonempty value raises
 
 Radio login credentials, bind selection and TLS options retain their existing
 roles. Diagnostic send/save/delete requests still use preview-bound
-`X-Diagnostic-CSRF`; diagnostic submission still requires consent. Diagnostic
-Origin checks apply to those diagnostic handlers, not globally to ordinary
-commands or WebSocket upgrades. See `src/rigplane/web/server.py:
-WebServer._handle_diagnose_send` and `src/rigplane/web/handlers/diagnostics.py:
-check_origin_or_loopback`.
+`X-Diagnostic-CSRF`; diagnostic submission still requires consent. The
+diagnostic routes no longer carry their own Origin check: the
+state-changing-request Origin rule below (MOR-2881) covers them, and the old
+per-handler `check_origin_or_loopback` with its loopback skip is gone. See
+`src/rigplane/web/web_routing.py: dispatch_http_request` and
+`src/rigplane/web/handlers/diagnostics.py: DiagnosticsHandler`.
+
+### Host allowlist, Origin guards (MOR-2880, MOR-2881)
+
+Without an application credential, the listener itself is the boundary, so
+every HTTP route and every WebSocket upgrade now runs a Host allowlist before
+any handler. The RAW `Host` request header is checked — never a value derived
+from the bind address or a server name. After lowercasing, stripping trailing
+dots and the port (bracketed IPv6 such as `[::1]:8470` is handled; a port tail
+must be 1-5 ASCII digits), the host part is admitted when it is:
+
+- an IP literal, IPv4 or IPv6;
+- a single-label name matching `[a-z0-9]([a-z0-9-]*[a-z0-9])?`;
+- a name ending in `.localhost`, `.local`, `.home.arpa` or `.internal`,
+  compared case-insensitively;
+- a name passed via the repeatable `--allowed-host NAME` flag on the `web`
+  command (`WebConfig.allowed_hosts`).
+
+A MISSING `Host` header is admitted. Everything else — including empty or
+malformed values — gets `421` with the JSON body
+`{"error": "misdirected request: host not allowed"}`. A refused WebSocket
+upgrade gets its `421` before the `101` handshake. See
+`src/rigplane/web/host_guard.py: host_header_allowed`,
+`src/rigplane/web/web_routing.py: dispatch_http_request` and
+`src/rigplane/web/server.py: WebServer._handle_websocket`; refusals log one
+throttled WARNING naming the path, Origin and Host
+(`src/rigplane/web/server.py: WebServer._log_refused_request`). Pinned by
+`tests/test_web_origin_host_guard.py: test_ws_foreign_or_malformed_host_refused_with_421`,
+`test_ws_local_hosts_accepted`, `test_http_foreign_or_malformed_host_refused_with_421`,
+`test_http_local_hosts_accepted` and `test_ws_allowed_host_flag_admits_configured_name`.
+
+The four WebSocket upgrades (`/api/v1/ws`, `/api/v1/scope`,
+`/api/v1/audio-scope`, `/api/v1/audio`) and every state-changing HTTP
+request — `POST`, `PUT`, `PATCH` or `DELETE` on any path, plus `GET
+/clearcache`, which wipes the browser's storage for this origin via its
+`Clear-Site-Data` response — enforce the same same-origin `Origin` rule
+with no loopback exception: a missing `Origin` is admitted (non-browser
+clients; the Pro supervisor's proxy sends none on either leg), while a
+present one must be same-origin with the request — scheme, host and
+port — and its host must pass the Host allowlist, or the request is
+refused with `403` and the JSON body
+`{"error": "forbidden: origin not allowed"}` before any handler or
+upgrade runs. Read-only `GET`/`HEAD` routes admit any `Origin`. The one
+comparison lives in `src/rigplane/web/host_guard.py: origin_matches_host`
+behind `src/rigplane/web/host_guard.py: same_origin_allowed`, applied by
+`src/rigplane/web/web_routing.py: dispatch_http_request` (HTTP requests)
+and `src/rigplane/web/server.py: WebServer._handle_websocket`
+(upgrades). Pinned by `tests/test_web_origin_host_guard.py:
+test_ws_foreign_origin_refused_before_upgrade`,
+`test_ws_same_origin_accepted`, `test_ws_missing_origin_accepted`,
+`test_http_state_changing_foreign_origin_refused`,
+`test_http_state_changing_same_origin_admitted`,
+`test_http_state_changing_missing_origin_admitted`,
+`test_http_origin_checked_before_route_semantics`,
+`test_http_clearcache_foreign_origin_refused`,
+`test_http_clearcache_missing_origin_admitted` and
+`test_http_read_only_get_foreign_origin_still_admitted`, plus
+`tests/test_web_diagnostics.py: test_cross_origin_send_blocked`,
+`test_loopback_bind_foreign_origin_refused` and
+`test_loopback_bind_no_origin_admitted`.
 
 The `authRequired` runtime and station fields remain Boolean and are now `false`
 (`src/rigplane/web/server.py: WebServer._serve_runtime`,
