@@ -177,14 +177,42 @@ class RigctldTransport:
                 )
             _LOGGER.debug("rigctld transport: drained %d stale bytes", len(chunk))
 
-    async def query(self, command: str, *, response_lines: int) -> list[str]:
-        """Send a command and read a fixed number of response lines."""
+    async def query(
+        self,
+        command: str,
+        *,
+        response_lines: int,
+        is_current: Callable[[], bool] | None = None,
+        urgent: bool = False,
+    ) -> list[str]:
+        """Send a command and read a fixed number of response lines.
+
+        *is_current* and *urgent* (MOR-2862) are honoured the same way
+        :meth:`command` honours them: the exchange rides the urgent
+        admission tier and the currency guard is checked before the
+        command bytes are sent. Ordinary reads leave both at their
+        defaults.
+        """
         if response_lines <= 0:
             raise ValueError("response_lines must be > 0")
 
-        async with self._exchange() as (reader, writer):
+        entry_reader, entry_writer = self._reader, self._writer
+        async with self._exchange(urgent=urgent) as (reader, writer):
+
+            def read_is_current() -> bool:
+                return (
+                    reader is entry_reader
+                    and writer is entry_writer
+                    and self._reader is reader
+                    and self._writer is writer
+                    and is_current is not None
+                    and is_current()
+                )
+
+            guard = read_is_current if is_current is not None else None
+            self._require_write_currency(guard)
             await self._drain_stale(command, reader, writer)
-            await self._write_line(command, reader, writer)
+            await self._write_line(command, reader, writer, is_current=guard)
             lines: list[str] = []
             for _ in range(response_lines):
                 line = await self._read_line(command, reader, writer)

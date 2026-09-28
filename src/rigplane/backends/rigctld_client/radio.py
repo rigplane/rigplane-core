@@ -917,12 +917,24 @@ class RigctldClientRadio:
             )
 
     async def get_ptt(self) -> bool:
-        line = (await self._transport.query("t", response_lines=1))[0]
-        if line not in {"0", "1"}:
-            raise CommandError(f"External rigctld returned malformed PTT: {line!r}.")
-        ptt = line == "1"
+        ptt = await self._read_ptt()
         self._state.ptt = ptt
         return ptt
+
+    async def _read_ptt(
+        self,
+        *,
+        is_current: Callable[[], bool] | None = None,
+        urgent: bool = False,
+    ) -> bool:
+        line = (
+            await self._transport.query(
+                "t", response_lines=1, is_current=is_current, urgent=urgent
+            )
+        )[0]
+        if line not in {"0", "1"}:
+            raise CommandError(f"External rigctld returned malformed PTT: {line!r}.")
+        return line == "1"
 
     async def set_ptt(self, on: bool) -> None:
         await self._set_ptt(on)
@@ -946,13 +958,27 @@ class RigctldClientRadio:
         is_current: Callable[[], bool],
     ) -> ActuationResult:
         if operation in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON):
-            on = True
-        elif operation is ActuationOperation.FORCE_RECEIVE:
-            on = False
-        else:
+            await self._set_ptt(True, is_current=is_current, urgent=False)
+            return ActuationResult.ACCEPTED
+        if operation is not ActuationOperation.FORCE_RECEIVE:
             return ActuationResult.REJECTED
-        await self._set_ptt(on, is_current=is_current, urgent=not on)
-        return ActuationResult.ACCEPTED
+        # MOR-2862: ``RPRT 0`` answers from the daemon, not from the
+        # radio, so ACCEPTED after the write alone would mean only
+        # "written". The same actuation reads ``t`` back once, on the
+        # unkey's own urgency and currency; only a read that says
+        # receive confirms the unkey. TX, silence, a malformed answer,
+        # or a raised read is UNCERTAIN, which keeps the release owed
+        # (``managed_tx_state.py: _settle``). A refused write keeps
+        # propagating for the lane to normalize, as today.
+        await self._set_ptt(False, is_current=is_current, urgent=True)
+        try:
+            transmitting = await self._read_ptt(is_current=is_current, urgent=True)
+        except Exception:
+            return ActuationResult.UNCERTAIN
+        return (
+            ActuationResult.ACCEPTED if not transmitting
+            else ActuationResult.UNCERTAIN
+        )
 
     async def read_transmit_state(self) -> TxStateReading:
         """One solicited transmit-state observation.
