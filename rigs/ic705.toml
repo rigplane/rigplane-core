@@ -198,7 +198,10 @@ stream_like_meters = [
     "global.meters.vd",
     "global.meters.id",
 ]
-# MOR-2915: the same membership as rigs/ic7300.toml. The menu settings
+# MOR-2915: the membership rigs/ic7300.toml declares, less
+# receiver.main.operator_controls.agc_time_constant: declaring it shows the
+# AGC-T control, and its seconds come from a frontend table that does not
+# match this radio's 1A 04 table (guide p.19; MOR-2921). The menu settings
 # after "split" are read on demand through their field_policies below.
 command_response_observable = [
     "receiver.main.active.freq_mode.freq_hz",
@@ -232,7 +235,6 @@ command_response_observable = [
     "receiver.main.operator_toggles.manual_notch",
     "receiver.main.operator_controls.notch_filter",
     "receiver.main.operator_controls.manual_notch_width",
-    "receiver.main.operator_controls.agc_time_constant",
     "global.operator_controls.rit_freq",
     "global.tx_state.rit_on",
     "global.tx_state.rit_tx",
@@ -344,13 +346,6 @@ reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_controls.filter_shape"]
-reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
-cadence_seconds = 25.0
-freshness_ttl_seconds = "never"
-reconciliation_priority = "command_response"
-adaptive_decay = false
-
-[state_acquisition.field_policies."receiver.main.operator_controls.agc_time_constant"]
 reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"

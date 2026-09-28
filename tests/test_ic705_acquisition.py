@@ -82,12 +82,6 @@ _ON_DEMAND: dict[FieldPath, tuple[int, int | None, bytes]] = {
         0x06,
         b"",
     ),
-    # p.5: 1A 04 AGC time constant.
-    _p("receiver.main.operator_controls.agc_time_constant"): (
-        0x1A,
-        0x04,
-        b"",
-    ),
     # p.14: 21 01 RIT, 21 02 dTX; 1B 00 tone, 1B 01 TSQL frequency.
     _p("global.tx_state.rit_on"): (0x21, 0x01, b""),
     _p("global.tx_state.rit_tx"): (0x21, 0x02, b""),
@@ -136,3 +130,13 @@ def test_the_scheduler_primes_every_on_demand_field(profile) -> None:
         for request in scheduler.prime_unobserved(observed_paths=()):
             requested.update(request.paths)
     assert set(_ON_DEMAND) <= requested
+
+
+def test_agc_time_constant_stays_undeclared(profile) -> None:
+    """Declaring the field makes the web layer serve the AGC-T control, whose
+    seconds come from a frontend table that does not match the IC-705's
+    1A 04 table (guide p.19). MOR-2921 moves that table into the profile."""
+    path = _p("receiver.main.operator_controls.agc_time_constant")
+    acquisition = profile.state_acquisition
+    assert acquisition.capability_for(path).is_unavailable is True
+    assert path not in acquisition.field_policies
