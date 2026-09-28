@@ -2052,3 +2052,186 @@ async def test_gate_is_unchanged_when_every_declared_path_answers() -> None:
     assert clock.now == 0.0
     assert scheduler.startup_defect is None
     assert scheduler.unobserved_startup_paths(_observed_paths(server, scheduler)) == ()
+
+
+# ---------------------------------------------------------------------------
+# MOR-2841: a radio that answers NOTHING serves; a radio that answers some
+# reads but not a critical one still fails (unchanged, above)
+# ---------------------------------------------------------------------------
+
+
+def _silent_link_radio(server: WebServer, scheduler: AcquisitionScheduler) -> IcomRadio:
+    """A never-connected radio whose link-down detector has fired.
+
+    The backend's serial watchdog (``_declare_serial_link_down``) forces
+    the connection state to ``RECONNECTING`` on consecutive CI-V timeouts —
+    the state a powered-off IC-7300 on an open serial port produces. The
+    scheduler is attached after ``WebServer`` construction, mirroring
+    ``test_never_answered_critical_path_fails_startup_after_three_attempts``.
+    """
+
+    from rigplane.runtime._connection_state import RadioConnectionState
+
+    radio = server._radio
+    assert isinstance(radio, IcomRadio)
+    radio._acquisition_scheduler = scheduler
+    radio._INITIAL_STATE_GAP_LAN = radio._INITIAL_STATE_GAP_SERIAL = 0.05
+    radio._conn_state = RadioConnectionState.RECONNECTING
+    return radio
+
+
+def _re_read_without_answer(
+    scheduler: AcquisitionScheduler, PTT: FieldPath
+) -> Callable[[float], None]:
+    from rigplane.core.acquisition_scheduler import AcquisitionPriority
+
+    def _tick(now: float) -> None:
+        scheduler.ensure_fresh(
+            (PTT,),
+            max_age=1e-9,
+            priority=AcquisitionPriority.BACKGROUND,
+            reason="startup-gate",
+        )
+        for request in scheduler.pending_requests():
+            scheduler.record_acquisition_failure(
+                request,
+                reason="acquisition_request_timeout",
+                failed_paths=request.paths,
+                now=now,
+                link_healthy=False,
+            )
+
+    return _tick
+
+
+@pytest.mark.asyncio
+async def test_silent_link_serves_instead_of_failing_startup(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-2841 (a): zero fields observed + link down = powered-off radio.
+
+    The same three failed reads that end startup through the named defect
+    (see ``test_never_answered_critical_path_fails_startup_after_three_attempts``,
+    unchanged) release the gate instead when the link answers NOTHING: one
+    WARNING names the radio-not-answering state, no defect is recorded, and
+    the wait returns so the listener binds.
+    """
+
+    import logging
+
+    PTT = FieldPath.global_("tx_state", "ptt")
+    scheduler = AcquisitionScheduler(profile=_critical_wait_profile())
+    server = WebServer(IcomRadio("192.168.1.100", model="IC-7300"), _gated_config())
+    _silent_link_radio(server, scheduler)
+    assert scheduler.unobserved_startup_paths(()) == (PTT,)
+
+    clock = _GateClock(stop_at=6.0)
+    clock.on_tick = _re_read_without_answer(scheduler, PTT)
+    with caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"):
+        with _fake_gate_clock(clock):
+            # Returns instead of raising: no RuntimeError, and no
+            # _GateWindowClosed either (the gate released before 6 s).
+            await _await_initial_state_acquisition(server, sweep=True)
+
+    assert scheduler.startup_defect is None
+    warnings = [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and "not answering" in r.getMessage()
+    ]
+    assert len(warnings) == 1
+    assert "no field observed" in warnings[0].getMessage()
+    # The store stayed empty: nothing fabricated a reading.
+    assert server.command_state_store.snapshot().fields == ()
+
+
+@pytest.mark.asyncio
+async def test_silent_link_then_radio_answers_completes_acquisition() -> None:
+    """MOR-2841: Power ON mid-wait — acquisition completes normally.
+
+    The radio answers nothing at first, then starts answering (the shape
+    after Power ON): the critical observation lands, the link recovers, and
+    the gate completes with its normal completion line — not the silent
+    release, not the named defect.
+    """
+
+    from rigplane.runtime._connection_state import RadioConnectionState
+
+    PTT = FieldPath.global_("tx_state", "ptt")
+    scheduler = AcquisitionScheduler(profile=_critical_wait_profile())
+    server = WebServer(IcomRadio("192.168.1.100", model="IC-7300"), _gated_config())
+    radio = _silent_link_radio(server, scheduler)
+
+    def _tick(now: float) -> None:
+        if now < 0.1:
+            # Still silent: re-reads that never answer.
+            _re_read_without_answer(scheduler, PTT)(now)
+            return
+        # The radio starts answering (for example after Power ON): the
+        # critical observation lands and the link recovers.
+        radio._conn_state = RadioConnectionState.CONNECTED
+        server.command_state_store.apply(_observation(PTT, False, at=now))
+
+    clock = _GateClock(stop_at=3.0)
+    clock.on_tick = _tick
+    with _fake_gate_clock(clock):
+        await _await_initial_state_acquisition(server, sweep=True)
+
+    assert scheduler.startup_defect is None
+    assert scheduler.unobserved_startup_paths(_observed_paths(server, scheduler)) == ()
+
+
+@pytest.mark.asyncio
+async def test_silent_link_tx_refused_while_provider_not_ready() -> None:
+    """MOR-2841: transmit stays refused while the radio answers nothing.
+
+    Reuses the managed TX authority's own refusal — no new refusal code.
+    The arming PTT probe (``0x1C 00``, the same safety-critical read the
+    gate waits on) never answers on a silent link, so the provider stays
+    not-ready and every key answers ``NOT_READY``
+    (``core/tx_safety.py: request_on``; the full wiring is pinned by
+    ``test_a_rig_that_never_answers_ptt_stays_managed_and_refuses_tx``).
+    """
+
+    from rigplane.core.tx_safety import TxOutcome, TxOwner, TxSafetySupervisor, TxSource
+
+    supervisor = TxSafetySupervisor()
+    transition = supervisor.replace_provider(0, ready=False)
+    assert transition.outcome is TxOutcome.APPLIED
+
+    key = supervisor.request_on(TxOwner(TxSource.SDK, "session"))
+
+    assert key.outcome is TxOutcome.NOT_READY
+    assert key.snapshot.lease_id is None
+    assert key.snapshot.provider_ready is False
+
+
+@pytest.mark.asyncio
+async def test_powerstat_on_reaches_the_backend_power_on_path() -> None:
+    """MOR-2841: Power ON from the served-not-answering state is not refused.
+
+    With the gate released and the listener bound, the web ``set_powerstat``
+    command reaches the backend's power-on path (``radio.set_powerstat`` →
+    the CI-V ``0x18`` power-on frame) on a profile that declares
+    ``power_on`` — IC-7300 does; nothing at the poller layer refuses it.
+    """
+
+    from unittest.mock import AsyncMock
+
+    from rigplane.rigctld.state_cache import StateCache
+    from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetPowerstat
+
+    profile = resolve_radio_profile(model="IC-7300")
+    assert profile.supports_command("power_on")
+    radio = MagicMock()
+    radio.profile = profile
+    radio.model = profile.model
+    radio.capabilities = set(profile.capabilities)
+    radio._radio_state = RadioState()
+    radio.managed_tx = None
+    radio.set_powerstat = AsyncMock()
+    poller = RadioPoller(radio, StateCache(), CommandQueue())
+
+    await poller._execute(SetPowerstat(True))  # noqa: SLF001
+
+    radio.set_powerstat.assert_awaited_once_with(True)
