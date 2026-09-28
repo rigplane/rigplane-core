@@ -243,7 +243,7 @@ import { MOD_INPUT_SOURCES } from '$lib/radio/mod-input';
 import {
   radio, subscribeRadioState,
 } from '$lib/stores/radio.svelte';
-import { beginCommand, confirmCommand, failCommand, getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
+import { acknowledgeCommand, beginCommand, confirmCommand, failCommand, getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import { getTxPermit } from '$lib/utils/tx-permit';
 import { toVfoProps, type VfoStateProps } from '$lib/runtime/props/panel-props';
 
@@ -1042,6 +1042,13 @@ describe('mobile header shows the in-flight tune target (MOR-2911)', () => {
     expect(pendingEcho(t)).toBe('14260100');
     // The confirmed frequency stays the sole arithmetic/display base.
     expect(t.querySelector('[data-testid="freq-echo"]')?.textContent).toBe('14074000');
+
+    // The real wire sequence: a transport ack first — which deliberately
+    // STAYS pending (MOR-1478: an ack is not a confirming observation) —
+    // then the radio's own confirmation clears the target.
+    acknowledgeCommand(command.id, command.originalEpoch, command.originalEpoch);
+    flushSync();
+    expect(pendingEcho(t)).toBe('14260100');
 
     confirmCommand(command.id, command.originalEpoch, command.originalEpoch);
     flushSync();
