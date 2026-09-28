@@ -53,6 +53,8 @@ When `--host` is omitted (LAN backend), rigplane sends a UDP broadcast to find r
 - **Multiple radios** → lists them, asks you to specify `--host`
 - **No radios** → error with troubleshooting hints
 
+LAN discovery finds the radio's IP address but not its model, so name the model as well, for example `rigplane --model IC-7610 status`.
+
 Similarly, when `--backend serial` is set without `--serial-port`, serial ports are scanned automatically.
 
 The `--backend` flag is auto-inferred:
@@ -546,7 +548,7 @@ rigplane --model IC-7610 power-off
 
 ### `discover`
 
-Discover Icom radios on LAN and USB serial ports. Results are grouped by radio identity — the same physical radio connected via both LAN and USB appears as one entry with two connection methods. Optional Hamlib flags add assisted discovery and read-only validation for external `rigctld` provider setup.
+Discover Icom radios on LAN and USB serial ports. Results are grouped by model and CI-V address. A LAN result has neither, so it is listed under its IP address, apart from the same radio's USB entry. Optional Hamlib flags add assisted discovery and read-only validation for external `rigctld` provider setup.
 
 ```bash
 rigplane discover                   # LAN + serial
@@ -559,25 +561,17 @@ rigplane --json discover --serial --hamlib-candidates
 rigplane discover --hamlib-validate --rigctld-host 127.0.0.1
 ```
 
+For an IC-7610 connected by both LAN and USB, and an IC-705 on USB:
+
 ```
 Scanning for radios (3s LAN + serial)...
 
-Found 1 radio with 2 connection methods:
+Found 3 radios with 3 connection methods:
 
+192.168.1.50:
+  • LAN: 192.168.1.50
 IC-7610:
-  • LAN: 192.168.55.40
   • Serial: /dev/cu.usbserial-11320 (19200 baud)
-```
-
-Multiple radios:
-
-```
-Found 2 radios with 3 connection methods:
-
-IC-7610:
-  • LAN: 192.168.55.40
-  • Serial: /dev/cu.usbserial-11320 (19200 baud)
-
 IC-705:
   • Serial: /dev/cu.usbserial-54321 (115200 baud)
 ```
