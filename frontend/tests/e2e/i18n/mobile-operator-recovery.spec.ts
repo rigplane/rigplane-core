@@ -490,6 +490,12 @@ test('SCOPE More menu clears the tuning bar; lit items share the NB chip cyan (M
     await info.attach(`mor-2895-more-${width}`, { body: JSON.stringify(audit), contentType: 'application/json' });
     const stage = `${width} px`;
     expect(audit.items.length, `${stage}: More items found`).toBeGreaterThan(0);
+    // MOR-2895 round 3 (review item 2): the WHOLE panel box — not just its
+    // items — ends above the strip's live top edge (padding included).
+    expect(audit.panel.bottom, `${stage}: More panel bottom above the tuning bar`)
+      .toBeLessThanOrEqual(audit.strip.top);
+    expect(audit.panel.top, `${stage}: More panel top inside the viewport`)
+      .toBeGreaterThanOrEqual(0);
     for (const item of audit.items) {
       const name = `${stage} "${item.label}" (${item.testid})`;
       expect.soft(item.top, `${name} top in viewport`).toBeGreaterThanOrEqual(0);
