@@ -298,7 +298,15 @@ from .scope import (
 from .cw import send_cw, stop_cw
 
 # --- power.py ---
-from .power import get_powerstat, parse_powerstat, power_off, power_on
+from .power import (
+    get_max_tx_power_battery,
+    get_max_tx_power_external,
+    get_power_source,
+    get_powerstat,
+    parse_powerstat,
+    power_off,
+    power_on,
+)
 
 # --- speech.py ---
 from .speech import get_speech, speech
@@ -739,6 +747,9 @@ __all__ = [
     # Power/status
     "get_powerstat",
     "parse_powerstat",
+    "get_power_source",
+    "get_max_tx_power_battery",
+    "get_max_tx_power_external",
     "get_transceiver_id",
     "get_xfc_status",
     "set_xfc_status",

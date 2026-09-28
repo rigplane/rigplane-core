@@ -77,6 +77,7 @@ _GLOBAL_TX_STATE_GETTERS = {
     "vox_on": "get_vox",
     "split": "get_split",
     "dual_watch": "get_dual_watch",
+    "power_source": "get_power_source",
     # MOR-2540: the radio's own "read transmit frequency" read (CI-V 1C 03).
     # Only profiles that declare ``get_tx_target`` in [commands] resolve a
     # query (from_getter returns None otherwise), so derivation radios
@@ -86,6 +87,8 @@ _GLOBAL_TX_STATE_GETTERS = {
 }
 _GLOBAL_CONTROL_GETTERS = {
     "rit_freq": "get_rit_frequency",
+    "max_tx_power_battery_w": "get_max_tx_power_battery",
+    "max_tx_power_external_w": "get_max_tx_power_external",
     "vox_delay": "get_vox_delay",
     "tuner_status": "get_tuner_status",
     "break_in": "get_break_in",

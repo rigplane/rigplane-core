@@ -658,9 +658,18 @@ _CTL_MEM_VOX_DELAY_PREFIX = b"\x02\x92"
 # 0x1A/0x05 menu replies observed into state (MOR-2975). The control number
 # is profile data: the reply resolves through the profile's reverse index to
 # the getter it answers (``CivRuntime._ctl_mem_getter``), and the getter names
-# the field and its BCD width here.
-_CTL_MEM_OBSERVED_GETTERS: dict[str, tuple[FieldPath, int]] = {
-    "get_vox_delay": (FieldPath.global_("operator_controls", "vox_delay"), 1),
+# the field, its BCD width and, for a transmit power ceiling setting, the
+# power source whose [power.ceilings_w] table turns the code into watts
+# (MOR-2973).
+_POWER_SOURCE_PATH = FieldPath.global_("tx_state", "power_source")
+_POWER_CEILING_PATHS = {
+    "battery": FieldPath.global_("operator_controls", "max_tx_power_battery_w"),
+    "external": FieldPath.global_("operator_controls", "max_tx_power_external_w"),
+}
+_CTL_MEM_OBSERVED_GETTERS: dict[str, tuple[FieldPath, int, str | None]] = {
+    "get_vox_delay": (FieldPath.global_("operator_controls", "vox_delay"), 1, None),
+    "get_max_tx_power_battery": (_POWER_CEILING_PATHS["battery"], 1, "battery"),
+    "get_max_tx_power_external": (_POWER_CEILING_PATHS["external"], 1, "external"),
 }
 
 # CI-V data watchdog (wfview icomudpcivdata::watchdog)
@@ -2738,18 +2747,33 @@ class CivRuntime:
         ):
             # A menu level the profile declares a getter for: BCD after the
             # 2-byte control number, the decode ``_handle_1a`` uses (MOR-459,
-            # MOR-2975).
-            path, bcd_bytes = observed
+            # MOR-2975); a ceiling setting's code becomes watts through the
+            # profile's table, None for a code the table lacks (MOR-2973).
+            path, bcd_bytes, ceiling_source = observed
+            level = parse_level_response(
+                frame,
+                command=0x1A,
+                sub=0x05,
+                prefix=bytes(frame.data[:2]),
+                bcd_bytes=bcd_bytes,
+            )
+            reading: int | float | None = level
+            if ceiling_source is not None:
+                ceilings = self._host._profile.power_ceilings_w or {}
+                reading = ceilings.get(ceiling_source, {}).get(level)
+            observations.append(self._observation(path, reading, frame=frame))
+        elif (
+            frame.command == 0x1A
+            and frame.sub == 0x0B
+            and len(frame.data) == 1
+            and self._host._profile.power_sources is not None
+        ):
+            # The power source (MOR-2973): the profile's [power.sources]
+            # names the code; None for a code it does not list.
             observations.append(
                 self._observation(
-                    path,
-                    parse_level_response(
-                        frame,
-                        command=0x1A,
-                        sub=0x05,
-                        prefix=bytes(frame.data[:2]),
-                        bcd_bytes=bcd_bytes,
-                    ),
+                    _POWER_SOURCE_PATH,
+                    self._host._profile.power_sources.get(frame.data[0]),
                     frame=frame,
                 )
             )
@@ -3215,7 +3239,30 @@ class CivRuntime:
             value = int(round(value))
         elif meter_key == "alc":
             value = value / 100.0
+        elif meter_key == "power":
+            value = self._power_in_watts_of_the_ceiling(value)
         return value, ("confirmed", "calibrated")
+
+    def _power_in_watts_of_the_ceiling(self, watts: float) -> float:
+        """Scale a Po reading to the current transmit power ceiling (MOR-2973).
+
+        The profile's Po table is in watts at ``[power].max_watts``; a profile
+        with [power.ceilings_w] reaches Po 100 % at the ceiling of the source
+        the radio runs on, so the reading is ``watts * ceiling / max_watts``.
+        Unscaled while the source or its ceiling is unknown.
+        """
+        profile = self._host._profile
+        if not profile.power_ceilings_w or not profile.max_watts:
+            return watts
+        snapshot = self._host._state_store.snapshot()
+        try:
+            source = snapshot.field(_POWER_SOURCE_PATH).value
+            ceiling = snapshot.field(_POWER_CEILING_PATHS[source]).value
+        except KeyError:
+            return watts
+        if ceiling is None:
+            return watts
+        return float(watts * ceiling / profile.max_watts)
 
     # ------------------------------------------------------------------
     # Per-command handlers for _update_radio_state_from_frame.

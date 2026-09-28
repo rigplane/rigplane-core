@@ -1438,6 +1438,18 @@ def _global_specs() -> tuple[FieldSpec, ...]:
         spec(FieldPath.global_("tx_state", "observed_ptt"), "str"),
         spec(FieldPath.global_("tx_state", "ptt"), "bool", writable=True),
         spec(FieldPath.global_("tx_state", "power_on"), "bool", writable=True),
+        # MOR-2973: the power source and each source's transmit power ceiling.
+        spec(FieldPath.global_("tx_state", "power_source"), "str"),
+        spec(
+            FieldPath.global_("operator_controls", "max_tx_power_battery_w"),
+            "float",
+            unit="w",
+        ),
+        spec(
+            FieldPath.global_("operator_controls", "max_tx_power_external_w"),
+            "float",
+            unit="w",
+        ),
         spec(FieldPath.global_("tx_state", "rit_on"), "bool", writable=True),
         spec(FieldPath.global_("tx_state", "rit_tx"), "bool", writable=True),
         spec(FieldPath.global_("tx_state", "dial_lock"), "bool", writable=True),

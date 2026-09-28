@@ -679,6 +679,8 @@ class RigConfig:
     state_acquisition: RadioAcquisitionProfile | None = None
     tx_policy: TxPolicy = field(default_factory=TxPolicy)
     ctcss_tones_centihz: tuple[int, ...] | None = None
+    power_sources: dict[int, str] | None = None
+    power_ceilings_w: dict[str, dict[int, float]] | None = None
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -840,6 +842,16 @@ class RigConfig:
             agc_auto_mode=self.agc_auto_mode,
             agc_auto_speed_labels=self.agc_auto_speed_labels,
             ctcss_tones_centihz=self.ctcss_tones_centihz,
+            power_sources=(
+                None if self.power_sources is None else dict(self.power_sources)
+            ),
+            power_ceilings_w=(
+                None
+                if self.power_ceilings_w is None
+                else {
+                    name: dict(table) for name, table in self.power_ceilings_w.items()
+                }
+            ),
             break_in_modes=self.break_in_modes,
             break_in_labels=self.break_in_labels,
             notch_width_values=self.notch_width_values,
@@ -1117,6 +1129,103 @@ def _resolve_ctcss_table(
             f"{filename}: unknown CTCSS table {table_name!r} in "
             f"{DEFAULT_CTCSS_TABLES_PROFILE_NAME}"
         ) from exc
+
+
+# The neutral names a profile's [power.sources] may map its codes to.
+_POWER_SOURCE_NAMES = frozenset({"external", "battery"})
+
+
+def _parse_power_ceilings(
+    filename: str, power_section: Any, max_watts: int | None
+) -> tuple[dict[int, str] | None, dict[str, dict[int, float]] | None]:
+    """Parse [power.sources] and [power.ceilings_w] (MOR-2973).
+
+    ``sources`` maps the radio's power-source code to a neutral name;
+    ``ceilings_w`` maps each named source to its ceiling setting codes in
+    watts. Both or neither; each source needs its ceiling table; watts are
+    positive and no higher than ``max_watts``.
+    """
+    if not isinstance(power_section, dict):
+        return None, None
+    sources_raw = power_section.get("sources")
+    ceilings_raw = power_section.get("ceilings_w")
+    if sources_raw is None and ceilings_raw is None:
+        return None, None
+    if not isinstance(sources_raw, dict) or not isinstance(ceilings_raw, dict):
+        raise RigLoadError(
+            f"{filename}: [power.sources] and [power.ceilings_w] come together"
+        )
+    if max_watts is None:
+        raise RigLoadError(f"{filename}: [power.ceilings_w] needs [power].max_watts")
+    sources: dict[int, str] = {}
+    for raw_code, name in sources_raw.items():
+        code = _power_table_code(filename, "sources", raw_code)
+        if name not in _POWER_SOURCE_NAMES:
+            raise RigLoadError(
+                f"{filename}: [power.sources].{raw_code} = {name!r} is not one of "
+                f"{sorted(_POWER_SOURCE_NAMES)}"
+            )
+        sources[code] = name
+    ceilings: dict[str, dict[int, float]] = {}
+    for name, table in ceilings_raw.items():
+        if name not in sources.values() or not isinstance(table, dict) or not table:
+            raise RigLoadError(
+                f"{filename}: [power.ceilings_w.{name}] must be a non-empty table "
+                "for a source named in [power.sources]"
+            )
+        ceilings[name] = {}
+        for raw_code, watts in table.items():
+            code = _power_table_code(filename, f"ceilings_w.{name}", raw_code)
+            if (
+                isinstance(watts, bool)
+                or not isinstance(watts, (int, float))
+                or not 0 < watts <= max_watts
+            ):
+                raise RigLoadError(
+                    f"{filename}: [power.ceilings_w.{name}].{raw_code} = {watts!r} "
+                    f"is not a wattage in (0, {max_watts}]"
+                )
+            ceilings[name][code] = float(watts)
+    missing = sorted(set(sources.values()) - set(ceilings))
+    if missing:
+        raise RigLoadError(f"{filename}: [power.ceilings_w] has no table for {missing}")
+    return sources, ceilings
+
+
+def _require_power_tables(
+    filename: str, commands: dict[str, CommandSpec], sources: dict[int, str] | None
+) -> None:
+    """Refuse a declared power getter whose reply no table names (MOR-2973).
+
+    A source named in [power.sources] has its [power.ceilings_w] table
+    (``_parse_power_ceilings``), so naming it covers its ceiling getter.
+    """
+    declared = {
+        name
+        for name, spec in commands.items()
+        if not isinstance(spec, AbsentCommandSpec)
+    }
+    if "get_power_source" in declared and sources is None:
+        raise RigLoadError(f"{filename}: get_power_source needs [power.sources]")
+    named = set(sources.values()) if sources else set()
+    for source in sorted(_POWER_SOURCE_NAMES - named):
+        getter = f"get_max_tx_power_{source}"
+        if getter in declared:
+            raise RigLoadError(
+                f"{filename}: {getter} needs {source!r} in [power.sources]"
+            )
+
+
+def _power_table_code(filename: str, table: str, raw_code: str) -> int:
+    try:
+        code = int(raw_code)
+    except ValueError as exc:
+        raise RigLoadError(
+            f"{filename}: [power.{table}] key {raw_code!r} is not a code"
+        ) from exc
+    if not 0 <= code <= 0xFF:
+        raise RigLoadError(f"{filename}: [power.{table}] code {code} is not one byte")
+    return code
 
 
 def _parse_command_value(
@@ -2799,6 +2908,10 @@ def load_rig(path: Path) -> RigConfig:
             if max_watts_raw <= 0:
                 raise RigLoadError(f"{filename}: [power].max_watts must be > 0")
             max_watts = max_watts_raw
+    power_sources, power_ceilings_w = _parse_power_ceilings(
+        filename, power_section, max_watts
+    )
+    _require_power_tables(filename, commands, power_sources)
 
     state_acquisition = _parse_state_acquisition(
         filename,
@@ -2866,6 +2979,8 @@ def load_rig(path: Path) -> RigConfig:
         agc_auto_mode=agc_auto_mode,
         agc_auto_speed_labels=agc_auto_speed_labels,
         ctcss_tones_centihz=ctcss_tones_centihz,
+        power_sources=power_sources,
+        power_ceilings_w=power_ceilings_w,
         break_in_modes=break_in_modes,
         break_in_labels=break_in_labels,
         notch_width_values=notch_width_values,
