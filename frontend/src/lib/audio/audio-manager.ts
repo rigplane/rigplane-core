@@ -43,6 +43,7 @@ const TX_START_SILENT_REASONS = new Set([
 const TX_START_REASON_CODES: Readonly<Record<string, string>> = {
   'TX MIC: permission denied': 'txAudioMicPermissionDenied',
   'TX MIC: microphone capture not supported': 'txAudioCaptureUnsupported',
+  'TX MIC: insecure context': 'txAudioInsecureContext',
   'TX MIC: PCM capture not supported': 'txAudioCaptureUnsupported',
 };
 

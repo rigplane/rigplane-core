@@ -169,6 +169,13 @@ export class TxMic {
   async start(): Promise<string | null> {
     if (this._active) return null;
 
+    // Plain HTTP (non-localhost) hides getUserMedia entirely, so check the
+    // connection before blaming the browser (MOR-2845): the operator can act
+    // on "open the --tls address", not on "get another browser".
+    if (typeof window !== 'undefined' && window.isSecureContext === false) {
+      return 'TX MIC: insecure context';
+    }
+
     const getUserMedia = TxMic.getUserMedia();
     if (!getUserMedia || !TxMic.supported()) {
       return 'TX MIC: microphone capture not supported';
