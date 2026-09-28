@@ -1322,8 +1322,8 @@ describe('MOR-1693: the combined RF/SQL knob behaves identically on the semantic
     h.caps = liveCaps(true, 'combined');
     h.state = centeredState();
     acceptedState = acceptedStoreState(h.state as ServerState);
-    expect(setRadioState(acceptedState)).toBe(true);
     expect(setCapabilities(h.caps as Capabilities)).toBe(true);
+    expect(setRadioState(acceptedState)).toBe(true);
     renderHostedFace(skinId);
     const obs: Record<string, unknown> = { baseline: snap() };
 
@@ -1387,8 +1387,8 @@ describe('MOR-1693: the combined RF/SQL knob behaves identically on the semantic
     h.caps = liveCaps(true, 'combined');
     h.state = centeredState();
     acceptedState = acceptedStoreState(h.state as ServerState);
-    expect(setRadioState(acceptedState)).toBe(true);
     expect(setCapabilities(h.caps as Capabilities)).toBe(true);
+    expect(setRadioState(acceptedState)).toBe(true);
     renderHostedFace('sdr-test');
 
     // Center on already-confirmed center: NEITHER command — the
@@ -1427,8 +1427,8 @@ describe('MOR-1693: the combined RF/SQL knob behaves identically on the semantic
     h.caps = liveCaps(true, 'combined');
     h.state = centeredState();
     acceptedState = acceptedStoreState(h.state as ServerState);
-    expect(setRadioState(acceptedState)).toBe(true);
     expect(setCapabilities(h.caps as Capabilities)).toBe(true);
+    expect(setRadioState(acceptedState)).toBe(true);
     renderHostedFace('sdr-test');
 
     // Pre-gesture: confirmed center, nothing pending.
