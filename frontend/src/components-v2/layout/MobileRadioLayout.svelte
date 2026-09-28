@@ -709,12 +709,12 @@
 
   <!-- ═══ SEMANTIC BODY (MOR-2816) ═══
        ONE mount hosts the whole portrait body. The hosted `children`
-       composition means the mount renders ONLY what this snippet places:
-       the phone's declared zone (portrait-deck = vfo + rxTx, per
-       mobile-declarations.ts) mounts in the deck below, and no optional
-       surface can render bare beside it — the chip tabs are the one place
-       for controls (owner ruling, 2026-09-27). -->
-  <SemanticRadioSurfaces scopeManaged vfoTiles="active" vfoMeter="external"
+       composition means the mount renders ONLY what this snippet places —
+       the chip tabs are the one place for controls (owner rulings,
+       2026-09-27 and 2026-09-28), so the portrait-deck zone's vfo + rxTx
+       surfaces render NOWHERE on the phone: the header carries the active
+       VFO, the chips carry its controls, and the FAB / TX chip carry TX. -->
+  <SemanticRadioSurfaces scopeManaged
     bind:managedScopeRegion={managedScopeRegion} suppressModInputTxWarning>
     {#snippet children(instruments: InstrumentComposition)}
       <!-- The receiver the header reads — the hoisted meter follows it, the
@@ -733,8 +733,8 @@
            into the retired strip's slot — the same component (LinearSMeter,
            compact vfo-wide, the Po lower scale), fed by the same view model
            through the mount's receiverInstruments handles, so there is no
-           second meter implementation. `vfoMeter="external"` above keeps
-           the card from drawing its twin. -->
+           second meter implementation. Since the 2026-09-28 ruling removed
+           the VFO card itself, this bar is the phone's only S-meter. -->
       <div class="m-smeter-bar" data-receiver={meterReceiver}>
         {#if meterReceiver === 'SUB'}
           {@render instruments.receiverInstruments.subSMeter!(hoistedMeterFrame)}
@@ -758,19 +758,15 @@
           </section>
         {/if}
 
-        <!-- The semantic deck and PTT gesture both use the single App-root managed
-             intent facade; the deck adds no transport or authority. -->
-        <section class="m-semantic-deck">
-          <!-- MOR-1245 — this shell mounts its OWN fixed-position copy below
-               (`.m-mod-input-warning`, both orientations), so the shared
-               wiring's instance suppresses itself. The mounting tests pin one
-               rendered banner per orientation. -->
-          {@render instruments.vfo('semantic')}
-          {@render instruments.rxTx()}
-          <!-- MOR-1784: the TX-fault reset stays reachable behind the RX/TX
-               surface — rxTx is a required surface of the phone's zone. -->
-          {@render instruments.txFaultRecovery()}
-        </section>
+        <!-- MOR-2816 (owner ruling 2026-09-28): the portrait VFO / RX-TX deck
+             block is removed — the active VFO lives in the header, its
+             controls in the chip tabs, TX in the FAB and the TX chip. The
+             only tenant left is the MOR-1784 TX-fault recovery: one short
+             line the shared wiring renders only while a fault is active,
+             directly above the chip row. No new mechanism — the existing
+             txFaultRecovery path, and the PTT gesture keeps using the single
+             App-root managed intent facade. -->
+        {@render instruments.txFaultRecovery()}
 
         <!-- Chip-scroll IA nav (#839) -->
     <MobileChipBar
@@ -1509,16 +1505,6 @@
 
   .m-content::-webkit-scrollbar {
     display: none;
-  }
-
-  /* ── Semantic deck (MOR-1094) ── */
-  /* The surfaces declare `height: 100%`, which inside the scrolling
-     `.m-content` would resolve to the full viewport. An auto-height wrapper
-     resolves that percentage to `auto` and keeps the deck the size of its
-     content, above the chip bar. Same slot idiom as the LCD control column. */
-  .m-semantic-deck {
-    padding: 6px 8px;
-    border-bottom: 1px solid var(--v2-border-darker, #222);
   }
 
   /* ── Spectrum ── */
