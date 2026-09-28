@@ -1062,7 +1062,7 @@
      unveiled; that root is reached only when the active manifest declares no
      `vfo` surface, and the manifests of the two skins that mount this shell
      (`desktop-v2`, `sdr-test`) both declare it. */
-  :global(.radio-layout[data-link-fault] > *:not(.status-bar-frame, .status-bar, .control-link-lost, .receiver-deck)),
+  :global(.radio-layout[data-link-fault] > *:not(.status-bar, .control-link-lost, .receiver-deck)),
   :global(.radio-layout[data-link-fault] > .receiver-deck > *) {
     filter: saturate(0.08) contrast(0.5) brightness(0.62);
   }
@@ -1085,7 +1085,7 @@
         "left   center right"
         "dock   dock   dock";
     }
-    .radio-layout.semantic-deck:not(.desktop-control-face) > :global(.status-bar-frame) { grid-area: status; }
+    .radio-layout.semantic-deck:not(.desktop-control-face) > :global(.status-bar) { grid-area: status; }
     .radio-layout.semantic-deck:not(.desktop-control-face) > .receiver-deck { grid-area: deck; }
     .radio-layout.semantic-deck:not(.desktop-control-face) > .bottom-dock { grid-area: dock; }
     /* Flatten content-row so its children become direct grid items. */
@@ -1115,9 +1115,8 @@
   }
   .desktop-control-face > .receiver-deck,
   .desktop-control-face :global(.semantic-surfaces) { display: contents; }
-  /* MOR-1240: StatusBar renders one frame containing the link-lost row and
-     the bar, so the frame spans the two rows those used to occupy. */
-  .desktop-control-face > :global(.status-bar-frame) { grid-area: 1 / 1 / 3 / -1; }
+  .desktop-control-face > :global(.control-link-lost) { grid-area: 1 / 1 / 2 / -1; }
+  .desktop-control-face > :global(.status-bar) { grid-area: 2 / 1 / 3 / -1; }
   .desktop-control-face :global([data-zone-id='receiver-deck']) { grid-area: 3 / 1 / 4 / -1; }
   .desktop-control-face :global(.desktop-controls-left) { grid-area: 4 / 1 / 5 / 2; }
   .desktop-control-face :global(.desktop-controls-center) {

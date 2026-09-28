@@ -392,16 +392,22 @@
   // anywhere.
   const BOTTOM_EDGE_PROPERTY = '--rp-status-bar-bottom';
 
-  // The wrapper is the frame under observation: it contains both the
-  // link-lost row and the bar, so its box changes whenever either grows.
-  let frameEl: HTMLElement | undefined = $state();
+  // Ownership is by token, not by value: two skins can publish the same
+  // bottom string, so the published value can never decide whose cleanup
+  // may remove the property. Each instance mints its own token; whoever
+  // published last owns the property, and a destroying instance removes
+  // it only while it is still the owner.
+  let owner: symbol | null = null;
+  const mine = Symbol('status-bar-bottom-edge');
   let barEl: HTMLElement | undefined = $state();
-  let publishedBottomEdge: string | null = null;
 
   function publishBottomEdge(): void {
     if (!barEl) return;
-    publishedBottomEdge = `${Math.ceil(barEl.getBoundingClientRect().bottom)}px`;
-    document.documentElement.style.setProperty(BOTTOM_EDGE_PROPERTY, publishedBottomEdge);
+    owner = mine;
+    document.documentElement.style.setProperty(
+      BOTTOM_EDGE_PROPERTY,
+      `${Math.ceil(barEl.getBoundingClientRect().bottom)}px`,
+    );
   }
 
   // Mount and every appearance/disappearance of the link-lost row (which
@@ -415,189 +421,185 @@
     window.addEventListener('resize', publishBottomEdge);
     let observer: ResizeObserver | null = null;
     // jsdom has no ResizeObserver; the guard keeps the publish path testable.
-    if (typeof ResizeObserver !== 'undefined' && frameEl) {
+    if (typeof ResizeObserver !== 'undefined' && barEl) {
       observer = new ResizeObserver(() => publishBottomEdge());
-      observer.observe(frameEl);
+      observer.observe(barEl);
     }
     return () => {
       window.removeEventListener('resize', publishBottomEdge);
       observer?.disconnect();
-      // Remove only the value THIS instance wrote: on a skin switch the
-      // next bar may already have published its own edge, and wiping the
-      // property then would re-cover the new bar's strip.
-      if (
-        publishedBottomEdge !== null
-        && document.documentElement.style.getPropertyValue(BOTTOM_EDGE_PROPERTY) === publishedBottomEdge
-      ) {
+      // Remove the property only while THIS instance still owns it: on a
+      // skin switch the next bar may already have published its own edge,
+      // and wiping the property then would re-cover the new bar's strip.
+      if (owner === mine) {
         document.documentElement.style.removeProperty(BOTTOM_EDGE_PROPERTY);
+        owner = null;
       }
     };
   });
 
 </script>
 
-<div class="status-bar-frame" bind:this={frameEl}>
-  {#if controlState === 'disconnected'}
-    <div class="control-link-lost">{t('core.statusbar.controlLinkLost')}</div>
-  {/if}
-  <!-- MOR-1240: the frame above publishes `--rp-status-bar-bottom` while
-       mounted; AppGlobalHost's powered-off overlay consumes it in CSS. -->
-  <div class="status-bar" bind:this={barEl}>
-    <div class="status-indicators">
-      <span class="indicator" role="status" title={radioHealthLabel ? t('core.statusbar.indicator.radioWithReason', { state: radioState, reason: radioHealthLabel }) : t('core.statusbar.indicator.radio', { state: radioState })} style="--indicator-color: {stateColor(radioIndicatorState)}">
+{#if controlState === 'disconnected'}
+  <div class="control-link-lost">{t('core.statusbar.controlLinkLost')}</div>
+{/if}
+<!-- MOR-1240: this bar publishes `--rp-status-bar-bottom` while mounted;
+     AppGlobalHost's powered-off overlay consumes it in CSS. -->
+<div class="status-bar" bind:this={barEl}>
+  <div class="status-indicators">
+    <span class="indicator" role="status" title={radioHealthLabel ? t('core.statusbar.indicator.radioWithReason', { state: radioState, reason: radioHealthLabel }) : t('core.statusbar.indicator.radio', { state: radioState })} style="--indicator-color: {stateColor(radioIndicatorState)}">
+      <span class="indicator-dot"></span>
+      <Radio size={12} color="currentColor" strokeWidth={2.5} />
+    </span>
+    <span class="indicator" role="status" title={t('core.statusbar.indicator.control', { state: controlState })} style="--indicator-color: {stateColor(controlState)}">
+      <span class="indicator-dot"></span>
+      <Cable size={12} color="currentColor" strokeWidth={2.5} />
+    </span>
+    {#if badLink}
+      <span class="indicator" role="status" data-testid="bad-link-chip" title={t('core.statusbar.badLink.tooltip')} style="--indicator-color: {stateColor('degraded')}">
         <span class="indicator-dot"></span>
-        <Radio size={12} color="currentColor" strokeWidth={2.5} />
+        <Unplug size={12} color="currentColor" strokeWidth={2.5} />
+        <span class="bad-link-label">{t('core.statusbar.badLink.label')}</span>
       </span>
-      <span class="indicator" role="status" title={t('core.statusbar.indicator.control', { state: controlState })} style="--indicator-color: {stateColor(controlState)}">
+    {/if}
+    {#if hasAnyScope() && !declared.has('scopeDisplay')}
+      <span class="indicator" role="status" title={t('core.statusbar.indicator.scope', { state: scopeState })} style="--indicator-color: {stateColor(scopeState)}">
         <span class="indicator-dot"></span>
-        <Cable size={12} color="currentColor" strokeWidth={2.5} />
+        <Activity size={12} color="currentColor" strokeWidth={2.5} />
       </span>
-      {#if badLink}
-        <span class="indicator" role="status" data-testid="bad-link-chip" title={t('core.statusbar.badLink.tooltip')} style="--indicator-color: {stateColor('degraded')}">
-          <span class="indicator-dot"></span>
-          <Unplug size={12} color="currentColor" strokeWidth={2.5} />
-          <span class="bad-link-label">{t('core.statusbar.badLink.label')}</span>
+    {/if}
+    {#if hasAudio()}
+      <span class="indicator" role="status" title={t('core.statusbar.indicator.audio', { state: audioState })} style="--indicator-color: {stateColor(audioState)}">
+        <span class="indicator-dot"></span>
+        <Volume2 size={12} color="currentColor" strokeWidth={2.5} />
+      </span>
+      {#if txCodecFallback}
+        <span class="indicator tx-codec-fallback" role="status" data-testid="tx-codec-fallback" title={t('core.statusbar.txCodecFallback.tooltip')} style="--indicator-color: {stateColor('degraded')}">
+          <span class="codec-fallback-label">{t('core.statusbar.txCodecFallback.label')}</span>
         </span>
       {/if}
-      {#if hasAnyScope() && !declared.has('scopeDisplay')}
-        <span class="indicator" role="status" title={t('core.statusbar.indicator.scope', { state: scopeState })} style="--indicator-color: {stateColor(scopeState)}">
-          <span class="indicator-dot"></span>
-          <Activity size={12} color="currentColor" strokeWidth={2.5} />
-        </span>
+    {/if}
+    <span class="indicator" role="status" title={t('core.statusbar.indicator.http', { state: httpState })} style="--indicator-color: {stateColor(httpState)}">
+      <span class="indicator-dot"></span>
+      <ArrowDownUp size={12} color="currentColor" strokeWidth={2.5} />
+      {#if httpState === 'disconnected'}
+        <span class="http-lost-label">{t('core.statusbar.offline')}</span>
       {/if}
-      {#if hasAudio()}
-        <span class="indicator" role="status" title={t('core.statusbar.indicator.audio', { state: audioState })} style="--indicator-color: {stateColor(audioState)}">
-          <span class="indicator-dot"></span>
-          <Volume2 size={12} color="currentColor" strokeWidth={2.5} />
-        </span>
-        {#if txCodecFallback}
-          <span class="indicator tx-codec-fallback" role="status" data-testid="tx-codec-fallback" title={t('core.statusbar.txCodecFallback.tooltip')} style="--indicator-color: {stateColor('degraded')}">
-            <span class="codec-fallback-label">{t('core.statusbar.txCodecFallback.label')}</span>
-          </span>
-        {/if}
-      {/if}
-      <span class="indicator" role="status" title={t('core.statusbar.indicator.http', { state: httpState })} style="--indicator-color: {stateColor(httpState)}">
-        <span class="indicator-dot"></span>
-        <ArrowDownUp size={12} color="currentColor" strokeWidth={2.5} />
-        {#if httpState === 'disconnected'}
-          <span class="http-lost-label">{t('core.statusbar.offline')}</span>
-        {/if}
-      </span>
-    </div>
-  
-    <div class="status-info">
-      {#if nowPlaying}
-        <button type="button" class="now-playing" onclick={() => (nowPlayingExpanded = !nowPlayingExpanded)} onkeydown={(e) => { if (e.key === 'Escape') nowPlayingExpanded = false; }} aria-expanded={nowPlayingExpanded} aria-haspopup="dialog">
-          <span class="np-icon">📻</span>
-          <span class="np-station">{nowPlaying.station}</span>
-          <span class="np-lang">{nowPlaying.city ? `${nowPlaying.city}, ${nowPlaying.state}` : nowPlaying.language_name}</span>
-          {#if nowPlaying.on_air}<span class="np-live">{t('core.statusbar.nowPlaying.live')}</span>{/if}
-        </button>
-        {#if nowPlayingExpanded}
+    </span>
+  </div>
+
+  <div class="status-info">
+    {#if nowPlaying}
+      <button type="button" class="now-playing" onclick={() => (nowPlayingExpanded = !nowPlayingExpanded)} onkeydown={(e) => { if (e.key === 'Escape') nowPlayingExpanded = false; }} aria-expanded={nowPlayingExpanded} aria-haspopup="dialog">
+        <span class="np-icon">📻</span>
+        <span class="np-station">{nowPlaying.station}</span>
+        <span class="np-lang">{nowPlaying.city ? `${nowPlaying.city}, ${nowPlaying.state}` : nowPlaying.language_name}</span>
+        {#if nowPlaying.on_air}<span class="np-live">{t('core.statusbar.nowPlaying.live')}</span>{/if}
+      </button>
+      {#if nowPlayingExpanded}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div class="np-backdrop" onclick={() => (nowPlayingExpanded = false)} onkeydown={(e) => { if (e.key === 'Escape') nowPlayingExpanded = false; }}>
           <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="np-backdrop" onclick={() => (nowPlayingExpanded = false)} onkeydown={(e) => { if (e.key === 'Escape') nowPlayingExpanded = false; }}>
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="np-detail" role="dialog" tabindex="-1" aria-modal="true" aria-label={t('core.statusbar.nowPlaying.dialogLabel')} onclick={(e) => e.stopPropagation()} onkeydown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); nowPlayingExpanded = false; } }}>
-              <div class="np-detail-header">
-                <span>📻 {nowPlaying.station}</span>
-                <button class="np-close" onclick={() => (nowPlayingExpanded = false)}>✕</button>
-              </div>
-              <div class="np-detail-grid">
-                <span class="np-label">{t('core.statusbar.nowPlaying.frequency')}</span><span>{nowPlaying.freq_khz} kHz</span>
-                {#if nowPlaying.city}
-                  <span class="np-label">{t('core.statusbar.nowPlaying.location')}</span><span>{nowPlaying.city}, {nowPlaying.state}</span>
-                {/if}
-                <span class="np-label">{t('core.statusbar.nowPlaying.language')}</span><span>{nowPlaying.language_name}</span>
-                {#if !nowPlaying.city}
-                  <span class="np-label">{t('core.statusbar.nowPlaying.country')}</span><span>{nowPlaying.country}</span>
-                  <span class="np-label">{t('core.statusbar.nowPlaying.target')}</span><span>{nowPlaying.target}</span>
-                {/if}
-                {#if nowPlaying.time_str !== 'local'}
-                  <span class="np-label">{t('core.statusbar.nowPlaying.schedule')}</span><span>{nowPlaying.time_str} UTC {nowPlaying.days || '(daily)'}</span>
-                {/if}
-                <span class="np-label">{t('core.statusbar.nowPlaying.band')}</span><span>{nowPlaying.band}</span>
-                {#if nowPlaying.remarks}
-                  <span class="np-label">{t('core.statusbar.nowPlaying.details')}</span><span>{nowPlaying.remarks}</span>
-                {/if}
-                {#if nowPlaying.source}
-                  <span class="np-label">{t('core.statusbar.nowPlaying.source')}</span><span class="np-source">{nowPlaying.source}</span>
-                {/if}
-              </div>
+          <div class="np-detail" role="dialog" tabindex="-1" aria-modal="true" aria-label={t('core.statusbar.nowPlaying.dialogLabel')} onclick={(e) => e.stopPropagation()} onkeydown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); nowPlayingExpanded = false; } }}>
+            <div class="np-detail-header">
+              <span>📻 {nowPlaying.station}</span>
+              <button class="np-close" onclick={() => (nowPlayingExpanded = false)}>✕</button>
+            </div>
+            <div class="np-detail-grid">
+              <span class="np-label">{t('core.statusbar.nowPlaying.frequency')}</span><span>{nowPlaying.freq_khz} kHz</span>
+              {#if nowPlaying.city}
+                <span class="np-label">{t('core.statusbar.nowPlaying.location')}</span><span>{nowPlaying.city}, {nowPlaying.state}</span>
+              {/if}
+              <span class="np-label">{t('core.statusbar.nowPlaying.language')}</span><span>{nowPlaying.language_name}</span>
+              {#if !nowPlaying.city}
+                <span class="np-label">{t('core.statusbar.nowPlaying.country')}</span><span>{nowPlaying.country}</span>
+                <span class="np-label">{t('core.statusbar.nowPlaying.target')}</span><span>{nowPlaying.target}</span>
+              {/if}
+              {#if nowPlaying.time_str !== 'local'}
+                <span class="np-label">{t('core.statusbar.nowPlaying.schedule')}</span><span>{nowPlaying.time_str} UTC {nowPlaying.days || '(daily)'}</span>
+              {/if}
+              <span class="np-label">{t('core.statusbar.nowPlaying.band')}</span><span>{nowPlaying.band}</span>
+              {#if nowPlaying.remarks}
+                <span class="np-label">{t('core.statusbar.nowPlaying.details')}</span><span>{nowPlaying.remarks}</span>
+              {/if}
+              {#if nowPlaying.source}
+                <span class="np-label">{t('core.statusbar.nowPlaying.source')}</span><span class="np-source">{nowPlaying.source}</span>
+              {/if}
             </div>
           </div>
-        {/if}
+        </div>
       {/if}
-    </div>
-  
-    <div class="status-controls">
-      {#if showManagedTotControl}
-        <ManagedTotStatusControl />
-      {/if}
+    {/if}
+  </div>
+
+  <div class="status-controls">
+    {#if showManagedTotControl}
+      <ManagedTotStatusControl />
+    {/if}
+    <button
+      type="button"
+      class="control-btn report-btn"
+      onclick={() => (reportOpen = true)}
+      title={t('core.statusbar.report.tooltip')}
+      aria-label={t('core.statusbar.report.tooltip')}
+    >
+      <Bug size={14} strokeWidth={2} />
+      <span class="btn-label">{t('core.statusbar.report.button')}</span>
+    </button>
+    {#if onSettings}
       <button
         type="button"
-        class="control-btn report-btn"
-        onclick={() => (reportOpen = true)}
-        title={t('core.statusbar.report.tooltip')}
-        aria-label={t('core.statusbar.report.tooltip')}
+        class="control-btn settings-btn"
+        onclick={onSettings}
+        title={t('core.statusbar.settings.tooltip')}
+        aria-label={t('core.statusbar.settings.tooltip')}
       >
-        <Bug size={14} strokeWidth={2} />
-        <span class="btn-label">{t('core.statusbar.report.button')}</span>
+        <Settings size={14} strokeWidth={2} />
       </button>
-      {#if onSettings}
-        <button
-          type="button"
-          class="control-btn settings-btn"
-          onclick={onSettings}
-          title={t('core.statusbar.settings.tooltip')}
-          aria-label={t('core.statusbar.settings.tooltip')}
-        >
-          <Settings size={14} strokeWidth={2} />
-        </button>
+    {/if}
+    <label class="skin-switcher" title={t('core.statusbar.skin.selectorLabel')}>
+      {#if layoutMode === 'lcd-cockpit' || layoutMode === 'lcd-scope'}
+        <Tv size={14} strokeWidth={2} aria-hidden="true" />
+      {:else}
+        <Monitor size={14} strokeWidth={2} aria-hidden="true" />
       {/if}
-      <label class="skin-switcher" title={t('core.statusbar.skin.selectorLabel')}>
-        {#if layoutMode === 'lcd-cockpit' || layoutMode === 'lcd-scope'}
-          <Tv size={14} strokeWidth={2} aria-hidden="true" />
-        {:else}
-          <Monitor size={14} strokeWidth={2} aria-hidden="true" />
-        {/if}
-        <span class="sr-only">{t('core.statusbar.skin.srLabel')}</span>
-        <select
-          class="skin-select"
-          aria-label={t('core.statusbar.skin.selectorLabel')}
-          value={layoutMode}
-          onchange={handleSkinChange}
-        >
-          {#each skinOptions as opt (opt.value)}
-            <option value={opt.value}>{opt.label}</option>
-          {/each}
-        </select>
-      </label>
-      <ThemePicker />
+      <span class="sr-only">{t('core.statusbar.skin.srLabel')}</span>
+      <select
+        class="skin-select"
+        aria-label={t('core.statusbar.skin.selectorLabel')}
+        value={layoutMode}
+        onchange={handleSkinChange}
+      >
+        {#each skinOptions as opt (opt.value)}
+          <option value={opt.value}>{opt.label}</option>
+        {/each}
+      </select>
+    </label>
+    <ThemePicker />
+    <button
+      type="button"
+      class="control-btn"
+      onclick={handleConnectionToggle}
+      title={connectionTooltip}
+    >
+      <Unplug size={14} strokeWidth={2} />
+      <span class="btn-label">{controlState === 'connected' ? t('core.statusbar.connection.actionDisconnect') : t('core.statusbar.connection.actionConnect')}</span>
+    </button>
+    {#if powerControlSupported}
       <button
         type="button"
-        class="control-btn"
-        onclick={handleConnectionToggle}
-        title={connectionTooltip}
+        class="control-btn power-toggle-btn"
+        class:is-on={radioPowerOn === true}
+        class:power-unknown={radioPowerOn === null}
+        disabled={radioPowerOn === null}
+        onclick={handlePowerToggle}
+        title={powerTooltip || undefined}
+        aria-label={radioPowerOn === null ? undefined : powerTooltip}
       >
-        <Unplug size={14} strokeWidth={2} />
-        <span class="btn-label">{controlState === 'connected' ? t('core.statusbar.connection.actionDisconnect') : t('core.statusbar.connection.actionConnect')}</span>
+        <Power size={14} strokeWidth={2} />
+        <span class="btn-label">{powerLabel}</span>
       </button>
-      {#if powerControlSupported}
-        <button
-          type="button"
-          class="control-btn power-toggle-btn"
-          class:is-on={radioPowerOn === true}
-          class:power-unknown={radioPowerOn === null}
-          disabled={radioPowerOn === null}
-          onclick={handlePowerToggle}
-          title={powerTooltip || undefined}
-          aria-label={radioPowerOn === null ? undefined : powerTooltip}
-        >
-          <Power size={14} strokeWidth={2} />
-          <span class="btn-label">{powerLabel}</span>
-        </button>
-      {/if}
-    </div>
+    {/if}
   </div>
 </div>
 
