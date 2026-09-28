@@ -154,9 +154,10 @@ function skinFor(kind: Presentation): SkinId {
 
 function render(kind: Presentation): void {
   // The phone mount needs its table catalog in place before the layout
-  // resolves the FilterPanel's width rule.
+  // resolves the FilterPanel's width rule; a fresh state revision (above
+  // beforeEach's) keeps the re-set monotonic within one test.
   expect(setCapabilities(kind === 'narrow-mobile' ? phoneCaps() : liveCaps())).toBe(true);
-  expect(setRadioState(liveState())).toBe(true);
+  expect(setRadioState(liveState(9))).toBe(true);
   target = document.createElement('div');
   document.body.appendChild(target);
   const context = new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () => planFor(kind)]]);
@@ -170,11 +171,13 @@ function render(kind: Presentation): void {
 }
 
 // MOR-2816: the phone's FilterPanel lives inside the filter BottomSheet,
-// opened by the essentials chip's "More…" trigger — the sheet mounts
+// opened by the essentials chip's FILTER row's "More…" trigger (the second
+// "More…" button — the mode row carries one too) — the sheet mounts
 // nothing until it opens, so the lifecycle is proven on the OPENED sheet.
 function openPhoneFilterSheet(): void {
-  const more = Array.from(target.querySelectorAll<HTMLButtonElement>('button'))
-    .find((button) => (button.textContent ?? '').trim() === 'More…');
+  const triggers = Array.from(target.querySelectorAll<HTMLButtonElement>('button'))
+    .filter((button) => (button.textContent ?? '').trim() === 'More…');
+  const more = triggers.at(-1);
   if (more === undefined) throw new Error('phone filter sheet trigger not found');
   more.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   flushSync();
@@ -294,7 +297,6 @@ describe('one Filter Width lifecycle is equivalent on desktop, narrow mobile and
       document.body.innerHTML = '';
       resetCommandLifecycle();
       resetRadioState();
-      expect(setRadioState(liveState(kind === 'desktop' ? 4 : kind === 'narrow-mobile' ? 5 : 6))).toBe(true);
     }
     expect(dispatched[0]).toEqual(dispatched[1]);
     expect(dispatched[1]).toEqual(dispatched[2]);
