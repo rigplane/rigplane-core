@@ -106,11 +106,12 @@
    *  number. MOR-2688: the empty-display rule is `readingText`'s predicate,
    *  `reading.status === 'known'`; the finite guard stays in the formatter. */
   const signedOffset = (f: RitXitField<number>): string =>
-    readingText(f, (v) => Number.isFinite(v) ? `${v > 0 ? '+' : ''}${v} Hz` : '');
+    readingText(f, (v) => Number.isFinite(v) ? `${v > 0 ? '+' : ''}${v} ${t('core.filter.unit.hz')}` : '');
 </script>
 
 <script lang="ts">
   import { onDestroy } from 'svelte';
+  import { t } from '$lib/i18n';
   import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
   import { exactDecimalNumber } from '$lib/types/exact-decimal';
   import type { ControlDomain } from '$lib/types/capabilities';

@@ -25,7 +25,7 @@ import {
   viewBlockedLabel,
   type KeyBlockedReason, type TxAuthoritySnapshot,
 } from '../rx-tx-surface';
-import { t } from '$lib/i18n';
+import { t, getLocale, setLocale } from '$lib/i18n';
 
 const IDS: readonly TopologyFixtureId[] = ['1/single', '1/ab', '2/ab_shared', '2/main_sub'];
 /** The only fixture whose permit is 'allowed' AND whose txTarget is known. */
@@ -500,6 +500,17 @@ describe('unknown TX target', () => {
       expect(t.textContent).not.toContain('14250000Hz');
       expect(t.textContent).not.toContain('unslotted');
     });
+  });
+
+  it('MOR-2905: the TX-target unit follows the locale — the Russian line reads Гц', () => {
+    const previous = getLocale();
+    setLocale('ru-RU');
+    try {
+      withSurface(topologyFixtures['2/main_sub'], IDLE_RX, () => {
+        const t = target.querySelector('[data-testid="rx-tx-target"]') as HTMLElement;
+        expect(t.textContent?.trim()).toBe('TX target: MAIN · 14250000\u00A0Гц');
+      });
+    } finally { setLocale(previous); }
   });
 
   it('MOR-2705: a slotted target names only its slot id, still separated', () => {
