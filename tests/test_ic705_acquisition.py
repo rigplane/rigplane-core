@@ -76,11 +76,7 @@ _ON_DEMAND: dict[FieldPath, tuple[int, int | None, bytes]] = {
     # p.14: 1A 05 0359 VOX delay.
     _p("global.operator_controls.vox_delay"): (0x1A, 0x05, b"\x03\x59"),
     # p.15: 26 00 selected VFO mode and filter; p.14: 1A 06 DATA mode.
-    _p("receiver.main.active.freq_mode.filter_num"): (
-        0x26,
-        0x00,
-        b"",
-    ),
+    _p("receiver.main.active.freq_mode.filter_num"): (0x26, None, b"\x00"),
     _p("receiver.main.active.freq_mode.data_mode"): (
         0x1A,
         0x06,

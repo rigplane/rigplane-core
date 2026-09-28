@@ -258,10 +258,14 @@ supported_controls = [
 # StateFreshnessService.tick discard the last TX values on dekey. They keep
 # their stream_like_meters membership and coalescing window, so the stream
 # meter cadence class (tests/test_state_acquisition_policy.py) binds them to
-# <=0.4s: 0.2s/2.0s only ever fires while the key is down. The S-meter
+# <=0.4s: 0.25s/2.0s only ever fires while the key is down. The S-meter
 # stays the unconditional RX meter.
+# MOR-2915: 0.25 s, the IC-7610's cadence since MOR-2590 and the TX meter
+# class's nominal; at 0.2 s the four took 20 of the 30 q/s the scheduler
+# fits into a USB serial link, and the added panel reads no longer fit in
+# transmit (tests/test_acquisition_budget_fit.py).
 [state_acquisition.field_policies."global.meters.power"]
-cadence_seconds = 0.2
+cadence_seconds = 0.25
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
@@ -271,7 +275,7 @@ available_when = [
 ]
 
 [state_acquisition.field_policies."global.meters.swr"]
-cadence_seconds = 0.2
+cadence_seconds = 0.25
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
@@ -281,7 +285,7 @@ available_when = [
 ]
 
 [state_acquisition.field_policies."global.meters.alc"]
-cadence_seconds = 0.2
+cadence_seconds = 0.25
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
@@ -291,7 +295,7 @@ available_when = [
 ]
 
 [state_acquisition.field_policies."global.meters.comp"]
-cadence_seconds = 0.2
+cadence_seconds = 0.25
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2

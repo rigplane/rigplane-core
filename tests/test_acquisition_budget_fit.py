@@ -300,7 +300,7 @@ def test_ic7610_serial_receive_explicit_demand_under_the_budget_does_not_stretch
 
 
 def test_ic705_transmit_at_the_serial_budget_stretches_but_not_to_the_ceiling() -> None:
-    """IC-705 transmit at 40 q/s: 20 q/s of explicit meters, classes stretch.
+    """IC-705 transmit at 40 q/s: 16 q/s of explicit meters, classes stretch.
 
     The 30 q/s limit is above the explicit demand, so classes do stretch,
     and below the nominal window, so the fit closes on the limit before
@@ -308,7 +308,7 @@ def test_ic705_transmit_at_the_serial_budget_stretches_but_not_to_the_ceiling() 
     """
 
     acquisition = _CIV_ACQUISITION["IC-705"]
-    assert _explicit_hz(acquisition, tx=True) == pytest.approx(20.0)
+    assert _explicit_hz(acquisition, tx=True) == pytest.approx(16.0)
 
     cadences = _window_cadences(acquisition, _SERIAL_BUDGET_HZ, tx=True)
 
@@ -321,7 +321,7 @@ def test_ic705_transmit_at_the_serial_budget_stretches_but_not_to_the_ceiling() 
 
 
 def test_ic705_transmit_under_the_lan_budget_stays_at_its_start() -> None:
-    """IC-705 transmit at 100 q/s: the 20 q/s of explicit meters fit, so nothing stretches."""
+    """IC-705 transmit at 100 q/s: the 16 q/s of explicit meters fit, so nothing stretches."""
 
     acquisition = _CIV_ACQUISITION["IC-705"]
     cadences = _window_cadences(acquisition, _LAN_BUDGET_HZ, tx=True)
