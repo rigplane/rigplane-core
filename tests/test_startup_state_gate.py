@@ -2458,7 +2458,22 @@ async def test_silent_startup_scan_seed_and_echo_never_count_as_radio_observatio
         timeout=0.1,
         _enumerate_serial_ports_fn=lambda: [],
     )
+    # MOR-2918 MUTATION v3 (throwaway): fast watchdog ticks declare the
+    # link down inside Leg 1, and the stalled rebuild below holds the
+    # teardown->rebuild window open so Leg 2 must hit ``_check_connected``.
+    radio._SERIAL_WATCHDOG_INTERVAL_S = 0.005
     await radio.connect()
+
+    _real_link_connect = link.connect
+
+    async def _slow_rebuild_connect() -> None:
+        # ``soft_reconnect`` rebuilds via ``_serial_session.connect()`` →
+        # this fake cable's ``connect``; stall only the rebuild (the initial
+        # connect above already ran unpatched).
+        await asyncio.sleep(2.0)
+        await _real_link_connect()
+
+    link.connect = _slow_rebuild_connect  # type: ignore[method-assign]
     store = radio.state_store
     poller = RadioPoller(
         radio, CommandQueue(), radio_state=radio._radio_state, state_store=store
