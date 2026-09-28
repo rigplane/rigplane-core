@@ -1253,6 +1253,16 @@ describe('persistent RF front-end composition across a real Standard->SDR plan s
  * intents and the gesture-local draft feedback. */
 
 describe('MOR-1693: the combined RF/SQL knob behaves identically on the semantic (desktop-v2) and SDR (sdr-test) faces', () => {
+  /** The radio store is revision-monotonic: re-delivering a centered
+   *  snapshot at the same (or an older) revision reads as stale and
+   *  `setRadioState` refuses it. Reset both stores first so every mount —
+   *  including the second face in the parity test — starts from the
+   *  identical epoch, mirroring `beforeEach`. */
+  function resetStoresForFace(): void {
+    resetRadioState();
+    clearCapabilities();
+  }
+
   /** Knob "at rest": RF max, SQL min — the center invariant, so every drag
    *  below starts from the already-pinned canonical position. */
   const centeredState = (): ServerState => {
@@ -1321,6 +1331,7 @@ describe('MOR-1693: the combined RF/SQL knob behaves identically on the semantic
   function observeFace(skinId: 'desktop-v2' | 'sdr-test'): Record<string, unknown> {
     h.caps = liveCaps(true, 'combined');
     h.state = centeredState();
+    resetStoresForFace();
     acceptedState = acceptedStoreState(h.state as ServerState);
     expect(setCapabilities(h.caps as Capabilities)).toBe(true);
     expect(setRadioState(acceptedState)).toBe(true);
@@ -1386,6 +1397,7 @@ describe('MOR-1693: the combined RF/SQL knob behaves identically on the semantic
   it('SDR face pins: the four canonical knob positions dispatch the established raw intents, bounded per step', () => {
     h.caps = liveCaps(true, 'combined');
     h.state = centeredState();
+    resetStoresForFace();
     acceptedState = acceptedStoreState(h.state as ServerState);
     expect(setCapabilities(h.caps as Capabilities)).toBe(true);
     expect(setRadioState(acceptedState)).toBe(true);
@@ -1426,6 +1438,7 @@ describe('MOR-1693: the combined RF/SQL knob behaves identically on the semantic
   it('SDR face pins: thumb and values follow the gesture-local draft immediately, pending target on the element', () => {
     h.caps = liveCaps(true, 'combined');
     h.state = centeredState();
+    resetStoresForFace();
     acceptedState = acceptedStoreState(h.state as ServerState);
     expect(setCapabilities(h.caps as Capabilities)).toBe(true);
     expect(setRadioState(acceptedState)).toBe(true);
