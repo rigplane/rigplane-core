@@ -25,8 +25,10 @@ Over USB the FTX-1 shows two serial ports:
 | Standard COM Port | CAT-2 | TX control (PTT, CW keying, digital modes) or CAT |
 
 CAT-1 runs at 38400 bps from the factory (**OPERATION SETTING → GENERAL →
-CAT-1 RATE**, 4800 to 115200 bps). The `yaesu-cat` backend also defaults to
-38400; if you change CAT-1 RATE, pass the same rate with `--serial-baud`.
+CAT-1 RATE**: 4800, 9600, 19200, 38400 or 115200 bps). The `yaesu-cat` backend
+also defaults to 38400; if you change CAT-1 RATE, pass the same rate with
+`--serial-baud`. Each of the five presets in the **PRESET** menu has its own
+CAT-1 RATE as well.
 
 To find the port, run:
 
@@ -45,8 +47,10 @@ names from `rigplane --list-audio-devices`.
 
 To transmit audio from the computer (Web UI voice or digital modes), set
 **MOD SOURCE** to **USB** in the **RADIO SETTING** menu for each mode group
-you transmit in (MODE SSB, MODE AM, MODE FM, MODE DATA and so on). The
-choices are MIC, USB, Bluetooth and AUTO.
+you transmit in: MODE SSB, MODE AM, MODE FM and MODE DATA each have one, with
+the choices MIC, USB, Bluetooth and AUTO. Each preset in the **PRESET** menu
+has its own MOD SOURCE, with the choices MIC, USB, REAR (the RTTY/DATA jack)
+and AUTO.
 
 ## CLI
 
