@@ -501,21 +501,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A click on the track still sets the position, as on the Standard
   face.
 
-- **Every web-reachable PortAudio call runs off the event loop,
-  bounded (MOR-2892).** A pending macOS microphone-permission prompt
-  used to block the RX relay's format probe on the event-loop thread
-  and freeze the whole server — HTTP, WebSockets, the PTT release path
-  and the watchdogs — until SIGKILL. The format probe, device
-  enumeration, serial-port topology resolution and the stop/close paths
-  now run on the driver's worker pool, bounded by `capture_open_timeout`
-  (8 s default); when the bound is exceeded the audio request fails
-  with one warning while HTTP and WebSockets keep answering.
+- **Every PortAudio call the USB audio driver reaches runs off the
+  event loop, bounded (MOR-2892).** A pending macOS
+  microphone-permission prompt used to block the RX relay's format probe
+  on the event-loop thread and freeze the whole server — HTTP,
+  WebSockets, the PTT release path and the watchdogs — until SIGKILL.
+  The format probe, device enumeration, serial-port topology resolution
+  and the stop/close paths now run on the driver's worker pool, bounded
+  by `capture_open_timeout` (8 s default); when the bound is exceeded
+  the audio request fails with one warning while HTTP and WebSockets
+  keep answering.
 
 - **The portrait PTT button lives in the fixed bottom tuning strip
   (MOR-2874).** It no longer floats over the scrolling content, so no
   scrolling control can sit under it at any scroll position. It stays
-  72×72 px, and the phone's 16 px label and 44 px touch floors now
-  reach it through the layout.
+  72×72 px, and the phone's 44 px touch floor now reaches it through
+  the layout.
 
 ### Security
 
@@ -553,7 +554,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migration guide gains a section saying the `lan` and `serial`
   backends need an explicit radio model — before 3.0 a missing model
   fell back to the IC-7610 profile. The site is published as two
-  documentation versions, 2.11 and 3.0, with a version selector.
+  documentation versions, 2.11 and 3.0, with a version selector. A
+  follow-up pass checked the Python API, web API and Web UI pages —
+  the radio, audio, command-catalog and web API references, and the
+  web UI, diagnostic-reports, audio-recipes and troubleshooting guides
+  — against the code and corrected them where they were wrong.
 
 ## [3.0.0b9] — 2026-09-27
 
