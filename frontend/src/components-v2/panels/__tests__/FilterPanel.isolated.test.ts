@@ -898,6 +898,58 @@ describe('PBT sliders visibility', () => {
       expect(mockHandlers.onPbtInnerChange).toHaveBeenCalledExactlyOnceWith(stepHz);
     });
   });
+
+  // MOR-1691: the dispatch count is bounded and deterministic for pointer
+  // and touch gestures — no unbounded per-pixel CAT write stream. A bipolar
+  // pointer drag holds every intermediate candidate as the gesture-local
+  // draft (thumb AND visible number follow it) and dispatches exactly ONE
+  // request when the gesture ends.
+  describe('PBT pointer dispatch is bounded: one committed request per drag (MOR-1691)', () => {
+    const dragPointer = (t: HTMLElement, clientXs: number[]) => {
+      const control = t.querySelector<HTMLElement>('[role="slider"][aria-label="PBT Inner"]')!;
+      const frame = control.closest<HTMLElement>('.vc-bipolar')!;
+      control.setPointerCapture = vi.fn();
+      control.hasPointerCapture = vi.fn(() => true);
+      control.releasePointerCapture = vi.fn();
+      vi.spyOn(frame, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 100 } as DOMRect);
+      control.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true, clientX: clientXs[0], pointerId: 3,
+      }));
+      for (const clientX of clientXs) {
+        control.dispatchEvent(new PointerEvent('pointermove', {
+          bubbles: true, clientX, pointerId: 3,
+        }));
+        flushSync();
+      }
+      return control;
+    };
+
+    it('holds every pointer move as the draft and dispatches once on pointerup', () => {
+      const t = mountPanel({
+        hasPbt: true, pbtInner: 0, pbtOuter: 0,
+        pbtDomain: { min: -1200, max: 1200, step: 50, origin: 0 },
+      });
+      // The track spans 0..100 px over -1200..1200 (step 50): the committed
+      // pointerup at x=75 lands on 600 Hz; the intermediates only draft.
+      const control = dragPointer(t, [10, 40, 75]);
+      expect(mockHandlers.onPbtInnerChange).not.toHaveBeenCalled();
+
+      control.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 3 }));
+      flushSync();
+      expect(mockHandlers.onPbtInnerChange).toHaveBeenCalledExactlyOnceWith(600);
+    });
+
+    it('discards the deferred candidate on pointercancel', () => {
+      const t = mountPanel({
+        hasPbt: true, pbtInner: 0, pbtOuter: 0,
+        pbtDomain: { min: -1200, max: 1200, step: 50, origin: 0 },
+      });
+      const control = dragPointer(t, [10, 50, 75]);
+      control.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 3 }));
+      flushSync();
+      expect(mockHandlers.onPbtInnerChange).not.toHaveBeenCalled();
+    });
+  });
 });
 
 /**

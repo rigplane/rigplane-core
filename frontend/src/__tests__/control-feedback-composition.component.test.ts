@@ -61,6 +61,7 @@ import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.sve
 import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
 import { getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import { dispatchRadioIntent } from '$lib/runtime/commands/radio-intents';
+import { measuredPbtHzToRaw } from '$lib/radio/filter-controls';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 import { desktopV2Layout, mobileLayout } from '../presentation/layouts/declarations';
 import { readWorkspace } from '../presentation/workspace/contract';
@@ -81,11 +82,12 @@ function liveCaps(): Capabilities {
   return {
     stateContractVersion: 1, providerGeneration: PROVIDER_GENERATION,
     model: 'fixture', scope: false, audio: false, tx: false,
-    capabilities: ['filter_width'],
+    capabilities: ['filter_width', 'pbt'],
     receivers: 1, vfoScheme: 'single',
     freqRanges: [], modes: ['USB'], filters: ['FIL1'],
     filterWidthMin: 50, filterWidthMax: 3600,
-    filterConfig: { USB: { defaults: [2400], fixed: false, minHz: 50, maxHz: 3600, stepHz: 50 } },
+    controls: { pbt_inner: { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: 1200 } },
+    filterConfig: { USB: { defaults: [2400], fixed: false, minHz: 50, maxHz: 3600, stepHz: 50, pbtStepHz: 50 } },
     audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
     webrtc: { available: false, enabled: false },
     txBands: [], scopeSource: null, audioFftAvailable: false,
@@ -110,7 +112,7 @@ function liveState(seq = 3): ServerState {
   const slot = { freqHz: 14250000, mode: 'USB', filterNum: 1, dataMode: 0 };
   const receiver = {
     ...slot, vfoA: slot, vfoB: { ...slot, freqHz: 14300000 }, activeSlot: 'A', filter: 1,
-    filterWidth: CONFIRMED_HZ,
+    filterWidth: CONFIRMED_HZ, pbtInner: 128, pbtOuter: 128,
     sMeter: -12, att: 0, preamp: 0, nb: false, nr: false,
     afLevel: 0.4, rfGain: 0.75, squelch: 0.1,
   };
@@ -128,6 +130,8 @@ function liveState(seq = 3): ServerState {
       'main.filter': fresh,
       'main.filterWidth': fresh,
       'main.freqHz': fresh,
+      'main.pbtInner': fresh,
+      'main.pbtOuter': fresh,
     },
   } as unknown as ServerState;
 }
@@ -330,4 +334,87 @@ describe('structural feedback survives locale, forced-colors and reduced-motion 
     expect(widthRule).toContain('@media (prefers-reduced-motion: reduce)');
     expect(widthRule).not.toContain('font-style');
   });
+});
+
+// MOR-1691: the same PBT-inner lifecycle DTO and the same bounded dispatch
+// on the desktop row (semantic FilterSurface), the narrow-mobile chip
+// FilterPanel's bipolar control, and a workspace-selected mount. A drag is
+// ONE committed request — never a per-move stream — and the pending target
+// shows as submitted/busy everywhere while the confirmed value stays the
+// canonical truth.
+describe('one PBT inner lifecycle is bounded and equivalent on desktop, narrow mobile and a workspace-selected mount (MOR-1691)', () => {
+  const DRAG_HZ = 500;
+  // The committed raw comes from the ONE measured-lattice conversion.
+  const dragRaw = measuredPbtHzToRaw(DRAG_HZ, CONFIRMED_HZ, 50)!;
+  const setPbtInnerCalls = () => h.commands.mock.calls
+    .filter(([name]) => name === 'set_pbt_inner')
+    .map(([, params]) => params);
+
+  /** The PBT-inner interactive element: the semantic row's native range on
+   * desktop/workspace, the chip FilterPanel's bipolar slider in the opened
+   * phone sheet. */
+  function pbtInnerControl(): HTMLElement {
+    const desktop = target.querySelector<HTMLElement>('[data-testid="filter-pbtInner"] input');
+    if (desktop !== null) return desktop;
+    const phone = target.querySelector<HTMLElement>('[role="slider"][aria-label="PBT Inner"]');
+    if (phone === null) throw new Error('PBT inner control not found on this mount');
+    return phone;
+  }
+
+  it.each(['desktop', 'narrow-mobile', 'workspace-selected'] as const)(
+    '%s: a pending set_pbt_inner reads submitted and busy with the confirmed value canonical',
+    (kind) => {
+      render(kind);
+      dispatchRadioIntent({ name: 'set_pbt_inner', params: { value: dragRaw, receiver: 0 } });
+      flushSync();
+
+      const command = getCommandLifecycles().find((candidate) => candidate.name === 'set_pbt_inner');
+      expect(command?.status).toBe('pending');
+      expect(command?.params).toMatchObject({ value: dragRaw, receiver: 0 });
+
+      const control = pbtInnerControl();
+      expect(control.getAttribute('data-command-phase')).toBe('submitted');
+      expect(control.getAttribute('aria-busy')).toBe('true');
+    },
+  );
+
+  it.each(['desktop', 'narrow-mobile', 'workspace-selected'] as const)(
+    '%s: a drag dispatches exactly one committed set_pbt_inner, never a per-move stream',
+    (kind) => {
+      render(kind);
+      const control = pbtInnerControl();
+      if (control instanceof HTMLInputElement) {
+        // The native-range seat: every intermediate `input` stays a local
+        // draft; the `change` (the release) commits once.
+        for (const hz of [0, 100, 200, 300, DRAG_HZ]) {
+          control.value = String(hz);
+          control.dispatchEvent(new Event('input', { bubbles: true }));
+          flushSync();
+          expect(setPbtInnerCalls()).toHaveLength(0);
+        }
+        control.dispatchEvent(new Event('change', { bubbles: true }));
+        flushSync();
+      } else {
+        // The phone's bipolar slider: pointer moves draft, pointerup commits.
+        const frame = control.closest<HTMLElement>('.vc-bipolar')!;
+        control.setPointerCapture = vi.fn();
+        control.hasPointerCapture = vi.fn(() => true);
+        control.releasePointerCapture = vi.fn();
+        vi.spyOn(frame, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 100 } as DOMRect);
+        control.dispatchEvent(new PointerEvent('pointerdown', {
+          bubbles: true, clientX: 10, pointerId: 5,
+        }));
+        for (const clientX of [30, 50, 71]) {
+          control.dispatchEvent(new PointerEvent('pointermove', {
+            bubbles: true, clientX, pointerId: 5,
+          }));
+          flushSync();
+          expect(setPbtInnerCalls()).toHaveLength(0);
+        }
+        control.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 5 }));
+        flushSync();
+      }
+      expect(setPbtInnerCalls()).toEqual([{ value: dragRaw, receiver: 0 }]);
+    },
+  );
 });

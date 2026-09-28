@@ -510,6 +510,7 @@ describe('IF-shift range and step come from the profile domain (MOR-1681)', () =
       const input = s.input('filter-ifShift')!;
       input.value = '20';
       input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
       flushSync();
       expect(onIfShiftChange).toHaveBeenCalledExactlyOnceWith(20);
     }, { onIfShiftChange });
@@ -731,6 +732,7 @@ describe('level fields emit the raw value, unrescaled', () => {
       expect(input.step).toBe(String(step));
       input.value = String(max);
       input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
       flushSync();
       expect(spy).toHaveBeenCalledExactlyOnceWith(max);
     }, { [passbandHandlers[field]]: spy });
@@ -770,9 +772,11 @@ describe('level fields emit the raw value, unrescaled', () => {
         const step = Number(input.step);
         expect(step).toBe(50);
         // jsdom applies no native arrow-key stepping; this is the same
-        // current + step change the browser makes for ArrowRight.
+        // current + step change the browser makes for ArrowRight, committed
+        // by the `change` event a real keystroke follows its `input` with.
         input.value = String(Number(input.value) + step);
         input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
         flushSync();
         expect(spy).toHaveBeenCalledExactlyOnceWith(50);
       }, { [handler]: spy });
@@ -801,6 +805,7 @@ describe('level fields emit the raw value, unrescaled', () => {
       expect(input.value).toBe('-1200');
       input.value = '100';
       input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
       flushSync();
       expect(onIfShiftChange).not.toHaveBeenCalled();
     }, { onIfShiftChange });
@@ -1077,14 +1082,18 @@ describe('passband scalar feedback (MOR-1687 part 1)', () => {
     pbtInner: 'PBT inner', pbtOuter: 'PBT outer', ifShift: 'IF shift',
   } as const;
 
-  it.each(ROWS)('%s: shows the pending target on the thumb, marked unconfirmed, canonical readout untouched', (field, _handler, control, feedbackKey) => {
+  it.each(ROWS)('%s: shows the pending target on the thumb and the unconfirmed number, marked unconfirmed by the command phase', (field, _handler, control, feedbackKey) => {
     withSurface(base(), (s) => {
       const input = s.input(`filter-${field}`)!;
       expect(input.dataset.commandPhase).toBe('submitted');
       expect(input.getAttribute('aria-busy')).toBe('true');
       expect(input.value).toBe('600');
       expect(input.disabled).toBe(false);
-      expect(s.output(`filter-${field}`)!.textContent).toBe('0');
+      // MOR-1691: the visible number follows the operator's requested value
+      // (draft -> pending target) — it never claims confirmation: the row's
+      // marker for that is the input's own command phase/aria-busy above,
+      // and canonical truth still comes only from the readback.
+      expect(s.output(`filter-${field}`)!.textContent).toBe('600');
     }, {}, { [feedbackKey]: passbandFeedback(control, PENDING) } as PendingProps);
   });
 
@@ -1176,6 +1185,7 @@ describe('passband scalar feedback (MOR-1687 part 1)', () => {
       expect(input.value).toBe('0');
       input.value = '600';
       input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
       flushSync();
       expect(spy).toHaveBeenCalledExactlyOnceWith(600);
       // The dispatched command mints a fresh lifecycle id and a stale
@@ -1255,6 +1265,7 @@ describe('passband scalar feedback (MOR-1687 part 1)', () => {
       expect(input.dataset.commandPhase).toBeUndefined();
       input.value = '600';
       input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
       flushSync();
       expect(spy).toHaveBeenCalledExactlyOnceWith(600);
     }, { [handler]: spy }, {
@@ -1263,6 +1274,139 @@ describe('passband scalar feedback (MOR-1687 part 1)', () => {
       }),
     } as PendingProps);
   });
+});
+
+// ── 5a'. Passband dispatch is bounded: one committed request per gesture ────
+
+/**
+ * MOR-1691 acceptance: the dispatch count is bounded and deterministic for
+ * pointer, touch, and keyboard gestures — no unbounded per-pixel CAT write
+ * stream. A native range drag fires `input` at every intermediate position
+ * and exactly ONE `change` at the release (pointer, touch, and a committed
+ * keyboard step alike), so the rows hold every `input` as the gesture-local
+ * draft — thumb AND visible number follow it — and dispatch once on the
+ * `change` commit.
+ */
+describe('passband dispatch is bounded and committed on release (MOR-1691)', () => {
+  const DRAG = [50, 100, 150, 200, 250, 300];
+  const boundedHandlers: Record<FilterPassbandLevelField, keyof Handlers> = {
+    ifShift: 'onIfShiftChange', pbtInner: 'onPbtInnerChange', pbtOuter: 'onPbtOuterChange',
+  };
+
+  it.each(FILTER_PASSBAND_LEVELS)(
+    '%s: holds every intermediate input as the draft and dispatches once on change',
+    (field, _label, _min, _max, _step) => {
+      const spy = vi.fn();
+      withSurface(base(), (s) => {
+        const input = s.input(`filter-${field}`)!;
+        for (const value of DRAG) {
+          input.value = String(value);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          flushSync();
+          expect(spy).not.toHaveBeenCalled();
+          // The thumb follows the local draft without claiming radio
+          // confirmation.
+          expect(input.value).toBe(String(value));
+        }
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        flushSync();
+        expect(spy).toHaveBeenCalledExactlyOnceWith(DRAG.at(-1));
+      }, { [boundedHandlers[field]]: spy });
+    },
+  );
+
+  it.each([['pbtInner', 'onPbtInnerChange'], ['pbtOuter', 'onPbtOuterChange']] as const)(
+    '%s: the visible number follows the local draft through the whole gesture',
+    (field, handler) => {
+      const spy = vi.fn();
+      withSurface(base(), (s) => {
+        const input = s.input(`filter-${field}`)!;
+        for (const value of DRAG) {
+          input.value = String(value);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          flushSync();
+          expect(s.output(`filter-${field}`)!.textContent).toBe(String(value));
+        }
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        flushSync();
+        expect(spy).toHaveBeenCalledExactlyOnceWith(DRAG.at(-1));
+        expect(s.output(`filter-${field}`)!.textContent).toBe(String(DRAG.at(-1)));
+      }, { [handler]: spy });
+    },
+  );
+
+  it.each([['pbtInner', 'onPbtInnerChange'], ['pbtOuter', 'onPbtOuterChange']] as const)(
+    '%s: one committed keyboard step dispatches exactly one command',
+    (field, handler) => {
+      const spy = vi.fn();
+      withSurface(base(), (s) => {
+        const input = s.input(`filter-${field}`)!;
+        // A real ArrowRight fires input then change, once.
+        input.value = String(Number(input.value) + Number(input.step));
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        flushSync();
+        expect(spy).not.toHaveBeenCalled();
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        flushSync();
+        expect(spy).toHaveBeenCalledExactlyOnceWith(25);
+      }, { [handler]: spy });
+    },
+  );
+
+  it.each([['pbtInner', 'onPbtInnerChange'], ['pbtOuter', 'onPbtOuterChange']] as const)(
+    '%s: a second gesture after a committed one dispatches its own single command',
+    (field, handler) => {
+      const spy = vi.fn();
+      withSurface(base(), (s) => {
+        const input = s.input(`filter-${field}`)!;
+        for (const value of [100, 200]) {
+          input.value = String(value);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        flushSync();
+        for (const value of [300, 400]) {
+          input.value = String(value);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        flushSync();
+        expect(spy.mock.calls).toEqual([[200], [400]]);
+      }, { [handler]: spy });
+    },
+  );
+
+  it.each([['pbtInner', 'onPbtInnerChange'], ['pbtOuter', 'onPbtOuterChange']] as const)(
+    '%s: the number returns to the confirmed value when the readback moves underneath an uncommitted draft',
+    (field, handler) => {
+      const spy = vi.fn();
+      const viewState = new SvelteMap<string, RadioViewModel>([['view', base()]]);
+      const component = mount(FilterInstrumentHostFixture, { target, props: {
+        get view() { return viewState.get('view')!; },
+        renderSurface: true,
+        get [handler]() { return spy; },
+      } as ComponentProps<typeof FilterInstrumentHostFixture> });
+      try {
+        flushSync();
+        const input = target.querySelector<HTMLInputElement>(`[data-testid="filter-${field}"] input`)!;
+        input.value = '600';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        flushSync();
+        expect(target.querySelector(`[data-testid="filter-${field}"] output`)!.textContent).toBe('600');
+        // The observation moves out from under the draft (reading evidence
+        // retires it): the number follows the confirmed truth again.
+        const current = viewState.get('view')!;
+        viewState.set('view', { ...current, filterPassband: { ...current.filterPassband!, [field]: {
+          reading: { status: 'known', value: 175 },
+          availability: { structural: true, operational: true },
+          display: { state: 'current', value: 175 },
+        } as typeof current.filterPassband!.pbtInner } });
+        flushSync();
+        expect(spy).not.toHaveBeenCalled();
+        expect(target.querySelector(`[data-testid="filter-${field}"] output`)!.textContent).toBe('175');
+      } finally { unmount(component); }
+    },
+  );
 });
 
 // ── 5b. Unknown PBT is indeterminate, never an endpoint-shaped range ───────
@@ -1304,6 +1448,7 @@ describe('unknown PBT has no fabricated numeric semantics (MOR-1705)', () => {
       expect(s.group(`filter-${field}`)!.dataset.presentation).toBe('confirmed');
       input.value = '100';
       input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
       flushSync();
       expect(onChange).toHaveBeenCalledExactlyOnceWith(100);
     }, { [handler]: onChange });
@@ -1569,7 +1714,7 @@ describe('explicit PBT display (MOR-1692)', () => {
       expect(input.getAttribute('aria-describedby')).toBeNull();
       expect(group.querySelector('[data-stale-cue]')).toBeNull();
       expect(group.textContent).not.toContain('†');
-      input.value = '900'; input.dispatchEvent(new Event('input', { bubbles: true })); flushSync();
+      input.value = '900'; input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new Event('change', { bubbles: true })); flushSync();
       expect(onChange).toHaveBeenCalledWith(900);
     }, { [field === 'pbtInner' ? 'onPbtInnerChange' : 'onPbtOuterChange']: onChange });
   });
