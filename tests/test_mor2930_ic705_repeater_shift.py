@@ -39,6 +39,9 @@ from test_radio import MockTransport, _wrap_civ_in_udp
 IC705_PATH = Path(__file__).resolve().parent.parent / "rigs" / "ic705.toml"
 IC705_ADDR = 0xA4
 SHIFT_PATH = FieldPath.parse("receiver.main.operator_controls.repeater_shift")
+# CI-V observations name the receiver by number, as
+# ``test_civ_rx_coverage.py`` reads ``receiver.0.operator_controls.att``.
+SHIFT_OBSERVED = FieldPath.receiver("0", "operator_controls", "repeater_shift")
 
 _SET_CODES = [
     pytest.param(RepeaterShiftDirection.SIMPLEX, 0x10, id="simplex-10"),
@@ -184,7 +187,7 @@ def test_0f_reply_publishes_the_shift(transport, byte, direction) -> None:
     radio = _radio(transport)
     _observe_0f(radio, byte, IC705_ADDR)
     snapshot = radio._state_store.snapshot()
-    assert snapshot.field(SHIFT_PATH).value == int(direction)
+    assert snapshot.field(SHIFT_OBSERVED).value == int(direction)
     assert snapshot.field("global.tx_state.split").value is (byte == 0x01)
 
 
@@ -193,7 +196,7 @@ def test_a_profile_without_the_shift_getter_publishes_no_shift(transport) -> Non
     radio = _radio(transport, model="IC-7610")
     _observe_0f(radio, 0x11, 0x98)
     snapshot = radio._state_store.snapshot()
-    shift = {field.path: field for field in snapshot.fields}.get(SHIFT_PATH)
+    shift = {field.path: field for field in snapshot.fields}.get(SHIFT_OBSERVED)
     assert shift is None or shift.value is None
     assert snapshot.field("global.tx_state.split").value is False
 

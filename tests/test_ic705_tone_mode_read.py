@@ -50,13 +50,6 @@ def test_profile_without_tone_squelch_type_ignores_16_5d() -> None:
     radio._connected = False
 
 
-def test_ic705_declares_no_repeater_shift() -> None:
-    profile = get_radio_profile("IC-705")
-    assert "repeater_shift" not in profile.capabilities
-    assert not profile.command_map.has("get_repeater_shift")
-    assert not profile.command_map.has("set_repeater_shift")
-
-
 def test_ic705_tone_poll_uses_tone_squelch_type() -> None:
     profile = get_radio_profile("IC-705")
     resolve = acquisition_query_resolver_for_profile(profile)
