@@ -1764,7 +1764,7 @@
     session: runtime.controlSession,
     view: canonicalView,
     controlModel: rfSqlControlModel,
-    rfSqlFeedback,
+    rfSqlFeedback: undefined,
   });
   let pendingNb = $derived(activeReceiverIndex === null ? null : getPendingNbOn(activeReceiverIndex));
   let pendingNr = $derived(activeReceiverIndex === null ? null : getPendingNrOn(activeReceiverIndex));
