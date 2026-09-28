@@ -433,7 +433,11 @@ export const nativeRangeContinuousScalarPolicy: Readonly<ContinuousScalarPolicy>
 const nativeRangeCommitOnReleasePolicy: ContinuousScalarPolicy = {
   ...nativeRangePolicy,
   name: 'native-range-commit-on-release',
-  dispatch: () => 'on-release',
+  // Only the gesture sources defer to the release commit — reset (the
+  // IF-shift double-click), wheel and keyboard keep the base immediate
+  // contract, since no release gesture would ever hand their candidate
+  // to `request`.
+  dispatch: (source) => source === 'native-input' || source === 'pointer' ? 'on-release' : 'immediate',
 };
 export const nativeRangeCommitOnReleaseContinuousScalarPolicy: Readonly<ContinuousScalarPolicy> =
   Object.freeze(nativeRangeCommitOnReleasePolicy);
@@ -467,14 +471,16 @@ type LocalCommandRequest = Readonly<{
 /** A candidate held by an `'on-release'` dispatch mode until its gesture
  * commits (`endPointer`/`nativeChange`) — MOR-1691. Carries the exact
  * validity context the debounced timer path uses, so a release after an
- * authority change or renderer replacement stays inert. */
+ * authority change or renderer replacement stays inert. The source is the
+ * `ScalarSource` the policy deferred; the on-release policies select it
+ * only for the gesture sources, the only ones with a release commit. */
 type PendingRelease = Readonly<{
   candidate: number;
   authority: AuthorityIdentity;
   generation: number;
   renderer: number;
   isCurrent: () => boolean;
-  source: 'pointer' | 'native-input';
+  source: ScalarSource;
 }>;
 
 function authorityOf(input: Readonly<ContinuousScalarInput>): AuthorityIdentity {
@@ -778,7 +784,7 @@ export function createContinuousScalar(
 
   /** Hands an `'on-release'` candidate held for `source` to the same
    * validated dispatch path the debounced timer uses (MOR-1691). A stale
-   * generation, an replaced renderer or a changed authority leaves it
+   * generation, a replaced renderer or a changed authority leaves it
    * inert; no pending candidate is a no-op. */
   function commitRelease(source: PendingRelease['source']): void {
     const pending = pendingRelease;

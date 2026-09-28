@@ -2005,4 +2005,16 @@ describe('on-release dispatch (MOR-1691)', () => {
     expect(request).toHaveBeenCalledExactlyOnceWith(50);
     vi.useRealTimers();
   });
+
+  it('keeps the native-range reset immediate: the default dispatches with no release gesture', () => {
+    const { scalar, request } = readingSetup(nativeRangeCommitOnReleaseContinuousScalarPolicy, {
+      domain: PASSBAND_DOMAIN, reading: { status: 'known', value: 500 },
+    });
+    const lease = scalar.attachRenderer();
+    lease.reset();
+    expect(request).toHaveBeenCalledExactlyOnceWith(0);
+    // The reset left no deferred candidate behind for a later commit.
+    lease.nativeChange();
+    expect(request).toHaveBeenCalledTimes(1);
+  });
 });
