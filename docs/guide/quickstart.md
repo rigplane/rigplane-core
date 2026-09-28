@@ -1,10 +1,10 @@
 ---
-description: Get your first RigPlane connection to an Icom radio over LAN in under five minutes — credentials, discovery, and a basic frequency read in Python.
+description: Get a first RigPlane connection to a radio over LAN or USB — credentials, the CLI, a basic frequency read in Python, and discovery.
 ---
 
 # Quick Start
 
-Get your first connection in under 5 minutes.
+Connect to a radio over LAN or USB.
 
 ## 1. Set Credentials
 
@@ -76,7 +76,57 @@ asyncio.run(main())
 
 For LAN-only scripts you can still use **`IcomRadio(host, username=..., password=..., model=...)`**; without `model`, `profile` or a known `radio_addr` it raises `ValueError` — see [API Reference](../api/radio.md).
 
-## 4. Discover Radios
+## 4. USB Radios
+
+A radio on a USB cable needs no credentials; name its serial port instead.
+`rigplane discover --serial-only` (below) finds the port.
+
+**IC-7300** — `--serial-port` selects the Icom serial backend:
+
+```bash
+rigplane --model IC-7300 --serial-port /dev/cu.usbserial-XXXX status
+
+# Web UI on http://localhost:8080
+rigplane --model IC-7300 --serial-port /dev/cu.usbserial-XXXX web
+```
+
+```python
+import asyncio
+from rigplane import create_radio, SerialBackendConfig
+
+async def main():
+    config = SerialBackendConfig(device="/dev/cu.usbserial-XXXX", model="IC-7300")
+    async with create_radio(config) as radio:
+        print(await radio.get_freq())
+
+asyncio.run(main())
+```
+
+**FTX-1** — name the Yaesu CAT backend:
+
+```bash
+rigplane --backend yaesu-cat --serial-port /dev/cu.usbserial-XXXX status
+
+# Web UI on http://localhost:8080
+rigplane --backend yaesu-cat --serial-port /dev/cu.usbserial-XXXX web
+```
+
+```python
+import asyncio
+from rigplane import create_radio, YaesuCatBackendConfig
+
+async def main():
+    config = YaesuCatBackendConfig(device="/dev/cu.usbserial-XXXX")
+    async with create_radio(config) as radio:
+        print(await radio.get_freq())
+
+asyncio.run(main())
+```
+
+Radio settings and audio: [IC-7300 USB Setup](ic7300-usb-setup.md),
+[FTX-1 USB Setup](ftx1-usb-setup.md).
+
+## 5. Discover Radios
 
 Don't know your radio's IP — or want to find USB-connected radios too? Use unified discovery:
 

@@ -99,6 +99,7 @@ nav:
           - IC-705 USB Serial: guide/ic705-usb-setup.md
           - IC-7300 USB Serial: guide/ic7300-usb-setup.md
           - IC-9700 USB & LAN: guide/ic9700-usb-setup.md
+          - FTX-1 USB Serial: guide/ftx1-usb-setup.md
           - opuslib macOS Fix: opuslib-macos-fix.md
       - Radio Profiles: guide/profiles.md
       - WSJT-X / Digital Modes: guide/wsjtx-setup.md

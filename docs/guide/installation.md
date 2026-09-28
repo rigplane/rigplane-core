@@ -17,11 +17,8 @@ pip install rigplane
 ```
 
 While RigPlane 3.0 is in beta, `pip install rigplane` installs the latest 2.x
-release. `--pre` lets pip pick the newest release, betas included:
-
-```bash
-pip install --pre rigplane
-```
+release. No 3.0 build is on PyPI yet; to run 3.0, [install from
+source](#install-from-source).
 
 The prebuilt wheel includes the Web UI and does not require Node.js or npm.
 If pip must build from a source distribution instead, follow the source-build
