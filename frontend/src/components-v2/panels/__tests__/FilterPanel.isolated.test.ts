@@ -907,6 +907,48 @@ describe('PBT sliders visibility', () => {
 });
 
 /**
+ * MOR-2909 (MOR-2215 audit F1) — the PBT track double-click sends nothing:
+ * no per-lane `set_pbt_inner`/`set_pbt_outer` 0 Hz reset, and no position
+ * command rides the gesture (MOR-2535 ruling: the reset gesture lives on
+ * the row's label/value cell or the Reset button, never on the range
+ * track; the legacy panel has no label/value cells, so the Reset button is
+ * the one dispatch site). Both lanes mount AWAY from 0 so a per-lane 0 Hz
+ * reset would be observable on the wire.
+ */
+describe('PBT track double-click sends nothing (MOR-2909, MOR-2535 ruling)', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  function pbtTrack(target: HTMLElement, lane: 'PBT Inner' | 'PBT Outer'): HTMLElement {
+    const labels = Array.from(target.querySelectorAll('.vc-label')).map((el) => el.textContent);
+    const sliders = target.querySelectorAll<HTMLElement>('[role="slider"]');
+    return sliders[labels.indexOf(lane)];
+  }
+
+  it('a double-click on either PBT lane track sends no command — no per-lane reset', () => {
+    const t = mountPanel({ hasPbt: true, pbtInner: 500, pbtOuter: -300 });
+    pbtTrack(t, 'PBT Inner').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    pbtTrack(t, 'PBT Outer').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    flushSync();
+    vi.advanceTimersByTime(60);
+
+    expect(mockHandlers.onPbtInnerChange).not.toHaveBeenCalled();
+    expect(mockHandlers.onPbtOuterChange).not.toHaveBeenCalled();
+    expect(mockHandlers.onPbtReset).not.toHaveBeenCalled();
+  });
+
+  it('the reset goes only through onPbtReset — the Reset button, never the per-lane handlers', () => {
+    const t = mountPanel({ hasPbt: true, pbtInner: 500, pbtOuter: -300 });
+    t.querySelector<HTMLButtonElement>('.filter-actions .pbt-reset-button')!.click();
+    flushSync();
+
+    expect(mockHandlers.onPbtReset).toHaveBeenCalledExactlyOnceWith();
+    expect(mockHandlers.onPbtInnerChange).not.toHaveBeenCalled();
+    expect(mockHandlers.onPbtOuterChange).not.toHaveBeenCalled();
+  });
+});
+
+/**
  * MOR-1494: capability-absent controls must be HIDDEN, not shown dead.
  * IC-7300 (PBT-only, no `if_shift` command) previously rendered the IF
  * Shift slider permanently disabled with a PBT-derived stand-in value.

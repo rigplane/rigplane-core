@@ -270,7 +270,9 @@ describe('RitXitPanel component', () => {
     vi.advanceTimersByTime(60);
     slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
     vi.advanceTimersByTime(60);
-    expect(mockHandlers.onRitOffsetChange.mock.calls).toEqual([[50], [0]]);
+    // MOR-2909: the arrows step by the domain's raw_step (1 Hz here), as
+    // Standard's offsetPolicy does — never the legacy hardcoded 50.
+    expect(mockHandlers.onRitOffsetChange.mock.calls).toEqual([[1], [0]]);
   });
 
   it('fails closed for an exact domain with an invalid current value or unavailable encoding', () => {
@@ -282,7 +284,65 @@ describe('RitXitPanel component', () => {
     const target = mountPanel({ ritDomain: exactRitDomain, ritActive: false, xitActive: true, xitOffset: 0 });
     target.querySelector<HTMLElement>('[role="slider"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
     vi.advanceTimersByTime(60);
-    expect(mockHandlers.onXitOffsetChange).toHaveBeenCalledWith(50);
+    // MOR-2909: one raw_step (1 Hz), not the legacy hardcoded 50.
+    expect(mockHandlers.onXitOffsetChange).toHaveBeenCalledWith(1);
+  });
+});
+
+/**
+ * MOR-2909 (MOR-2215 audit F1) — the legacy host follows the Standard
+ * rulings from MOR-2524 slice 2a / MOR-2727: a double-click on the offset
+ * track sends no reset (CLEAR stays the reset), and the arrows step by the
+ * domain's raw_step immediately, exactly as `RitXitScanSurface`'s
+ * `offsetPolicy` (debounceMs: 0, `reset` refuses) does.
+ */
+describe('RitXitPanel — track reset and arrow policy follow Standard (MOR-2909)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('a double-click on the offset track sends no command — CLEAR stays the reset', () => {
+    const target = mountPanel({ ritActive: true, ritOffset: 500 });
+    target.querySelector<HTMLElement>('[role="slider"]')!
+      .dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    flushSync();
+    vi.advanceTimersByTime(60);
+
+    expect(mockHandlers.onRitOffsetChange).not.toHaveBeenCalled();
+    expect(mockHandlers.onXitOffsetChange).not.toHaveBeenCalled();
+    expect(mockHandlers.onClear).not.toHaveBeenCalled();
+  });
+
+  it('a double-click on the offset track sends no command in XIT-leading mode either', () => {
+    const target = mountPanel({ ritActive: false, xitActive: true, xitOffset: -500 });
+    target.querySelector<HTMLElement>('[role="slider"]')!
+      .dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    flushSync();
+    vi.advanceTimersByTime(60);
+
+    expect(mockHandlers.onXitOffsetChange).not.toHaveBeenCalled();
+  });
+
+  it('arrows dispatch immediately, with no keyboard debounce, as Standard does', () => {
+    const target = mountPanel({ ritActive: true, ritOffset: 0 });
+    target.querySelector<HTMLElement>('[role="slider"]')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    flushSync();
+    // No advanceTimersByTime: Standard's offsetPolicy rides debounceMs: 0,
+    // so the command must already be on the wire.
+    expect(mockHandlers.onRitOffsetChange).toHaveBeenCalledExactlyOnceWith(50);
+  });
+
+  it('without a domain the arrows keep the legacy 50 Hz fallback step', () => {
+    const target = mountPanel({ ritActive: true, ritOffset: 0 });
+    target.querySelector<HTMLElement>('[role="slider"]')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    flushSync();
+    expect(mockHandlers.onRitOffsetChange).toHaveBeenCalledExactlyOnceWith(50);
   });
 });
 
