@@ -520,6 +520,23 @@ describe('MobileRadioLayout structure', () => {
   });
 });
 
+// MOR-2949 — the tune strip is icon-only, so each of its four buttons needs
+// an accessible name from the i18n catalog: direction plus step or fast.
+// Strip order: [-10, -1, +1, +10].
+describe('tune strip buttons have accessible names (MOR-2949)', () => {
+  it('names each tune button with its direction and step size', () => {
+    const t = mountMobile();
+    const labels = [...t.querySelectorAll<HTMLButtonElement>('.m-tuning-strip .m-tune-btn')]
+      .map((btn) => btn.getAttribute('aria-label'));
+    expect(labels).toEqual([
+      'Tune down fast',
+      'Tune down one step',
+      'Tune up one step',
+      'Tune up fast',
+    ]);
+  });
+});
+
 // MOR-2240 — phone-landscape must consume the full viewport width, and every
 // scalar the mobile path mounts must render through a formatter (percent/dB),
 // never the raw normalized float the bench caught on the AF slider.
