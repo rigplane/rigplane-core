@@ -1052,7 +1052,7 @@ class TestReceiverDeclaredControlTags:
     declared acquisition paths as the fact. ``supports_command`` admission is
     not the fact here: it under-admits (FTX-1 declares
     ``receiver.main.operator_controls.preamp`` with no receiver-admitted
-    write) and over-admits (IC-9700/IC-705 declare the 0x1A 04 command pair
+    write) and over-admits (IC-9700 declares the 0x1A 04 command pair
     without declaring the polled field). The radio-wide ``attenuator``/
     ``preamp`` capability is likewise not the fact: tx500/x6100/x6200 declare
     the command with no polled MAIN field. Real radios on the bundled
@@ -1084,7 +1084,15 @@ class TestReceiverDeclaredControlTags:
                 },
             ),
             ("ic9700", {"attenuator_main", "preamp_main"}),
-            ("ic705", {"attenuator_main", "preamp_main"}),
+            (
+                "ic705",
+                {
+                    "attenuator_main",
+                    "preamp_main",
+                    "agc_time_constant",
+                    "manual_notch_width",
+                },
+            ),
             ("ftx1", {"attenuator_main", "preamp_main"}),
             ("tx500", set()),
             ("x6100", set()),
@@ -1105,14 +1113,13 @@ class TestReceiverDeclaredControlTags:
         assert projected_receiver_control_tags(radio) == frozenset(expected)
 
     def test_command_declarations_alone_do_not_project_the_agc_time_tags(self):
-        """IC-9700 and IC-705 declare get/set_agc_time_constant without
-        declaring the polled field; admission would light a control that
-        never reads."""
+        """IC-9700 declares get/set_agc_time_constant without declaring the
+        polled field; admission would light a control that never reads."""
         from rigplane.rig_loader import load_rig
         from rigplane.runtime.radio import CoreRadio
         from rigplane.web.runtime_helpers import projected_receiver_control_tags
 
-        for rig in ("ic9700", "ic705"):
+        for rig in ("ic9700",):
             config = load_rig(_RIGS_DIR / f"{rig}.toml")
             radio = CoreRadio("127.0.0.1", profile=config.to_profile())
             assert radio.profile.supports_command("set_agc_time_constant")
@@ -1121,13 +1128,13 @@ class TestReceiverDeclaredControlTags:
     def test_width_values_and_commands_alone_do_not_project_the_notch_width_tag(
         self,
     ):
-        """MOR-2726: IC-9700 and IC-705 declare ``set_manual_notch_width``
-        and ``[notch] width_values`` without declaring the polled field."""
+        """MOR-2726: IC-9700 declares ``set_manual_notch_width`` and
+        ``[notch] width_values`` without declaring the polled field."""
         from rigplane.rig_loader import load_rig
         from rigplane.runtime.radio import CoreRadio
         from rigplane.web.runtime_helpers import projected_receiver_control_tags
 
-        for rig in ("ic9700", "ic705"):
+        for rig in ("ic9700",):
             config = load_rig(_RIGS_DIR / f"{rig}.toml")
             radio = CoreRadio("127.0.0.1", profile=config.to_profile())
             assert radio.profile.supports_command("set_manual_notch_width")
