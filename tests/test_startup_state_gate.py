@@ -970,159 +970,120 @@ def _rigctld_critical_profile() -> RadioAcquisitionProfile:
     )
 
 
-class _RigctldCriticalPoller:
-    """Drives the real rigctld adapter's medium lane.
+class _TcpRigctldServer:
+    """A fake external rigctld served over real TCP (MOR-2757).
 
-    One cycle reads every medium-lane field; a cycle-level failure is
-    retried on the next interval — what
-    ``RigctldClientObservationPoller._run_loop`` does with it. The PTT
-    error branch publishes the unknown observed-PTT observation and
-    re-raises, like ``_poll_medium`` does.
+    ``silent="t"``: answers every command except that one — the real
+    ``RigctldTransport._read_line`` then times out and closes the
+    connection exactly as production does, so every counted attempt is a
+    real request that reached rigctld. ``drop=True``: accepts each
+    connection and closes it on the first command — a plain link drop
+    (rigctld restarting) with no unanswered read at all.
     """
 
-    def __init__(
-        self,
-        callback: Callable[[Sequence[Observation]], None],
-        radio: "_RigctldCriticalRadio",
-    ) -> None:
-        self._callback = callback
-        self._radio = radio
-        self._stopped = asyncio.Event()
+    _ANSWERS = {
+        "f": ("14074000",),
+        "m": ("USB", "2400"),
+        "v": ("VFOA",),
+        "t": ("0",),
+        "l RF": ("128",),
+        "l AF": ("128",),
+        "l PREAMP": ("0",),
+        "l ATT": ("0",),
+        "u NB": ("0",),
+        "u NR": ("0",),
+    }
+
+    def __init__(self, *, silent: str | None = None, drop: bool = False) -> None:
+        self.silent = silent
+        self.drop = drop
+        self.t_requests = 0
+        self.t_connection_ids: set[int] = set()
+        self.connections = 0
+        self._conn_serial = 0
+        self._server: asyncio.AbstractServer | None = None
+        self.host = "127.0.0.1"
+        self.port = 0
 
     async def start(self) -> None:
-        from rigplane.backends.rigctld_client.observations import (
-            RigctldClientObservationAdapter,
-        )
-
-        while not self._stopped.is_set():
-            adapter = RigctldClientObservationAdapter(
-                self._radio,  # type: ignore[arg-type]
-                profile=self._radio._acquisition_scheduler._profile,  # type: ignore[attr-defined]
-            )
-            try:
-                observations = list(await adapter.read_freq_mode_controls())
-                ptt = await adapter.read_ptt()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logging.getLogger(__name__).warning(
-                    "fake rigctld medium poll cycle failed", exc_info=True
-                )
-            else:
-                observed_ptt = adapter.observed_ptt_observation(
-                    ptt.value, timestamp_monotonic=ptt.timestamp_monotonic
-                )
-                self._callback([*observations, ptt, observed_ptt])
-            await asyncio.sleep(0.001)
+        self._server = await asyncio.start_server(self._serve, self.host, 0)
+        self.port = self._server.sockets[0].getsockname()[1]
 
     async def stop(self) -> None:
-        self._stopped.set()
-        await asyncio.sleep(0)
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
 
-    def bind_provider_generation(self, *, capture: object, advance: object) -> None:
-        return None
+    async def _serve(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        conn = self._conn_serial
+        self._conn_serial += 1
+        self.connections += 1
+        try:
+            while True:
+                line = await reader.readline()
+                if not line:
+                    return
+                command = line.decode("ascii").rstrip("\r\n")
+                if command == self.silent:
+                    # Never answer: the real transport's read timeout fires,
+                    # closing the connection from the client side.
+                    self.t_requests += 1
+                    self.t_connection_ids.add(conn)
+                    continue
+                if self.drop:
+                    return
+                for reply in self._ANSWERS.get(command, ("0",)):
+                    writer.write(f"{reply}\n".encode("ascii"))
+                await writer.drain()
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except (ConnectionError, OSError):
+                pass
 
-    def bind_managed_tx_authority(self, _authority: object) -> None:
-        return None
 
+def _real_rigctld_radio(fake: _TcpRigctldServer) -> "RigctldClientRadio":  # noqa: F821
+    """A real rigctld-client radio on the fake TCP server, gate-ready.
 
-class _RigctldCriticalRadio:
-    """A fake external rigctld on the observation (``sweep=False``) path.
-
-    Answers every safety-critical read except the one ``never_answers``
-    command, which raises the transport's unanswered-read timeout — what
-    ``RigctldTransport._read_line`` raises on a server that stays silent
-    (MOR-2757).
+    The unresolvable model keeps ``WebServer._bootstrap_state_acquisition``
+    from replacing the scheduler the test attaches, and the real
+    ``RigctldTransport`` (0.05 s timeout) is what times out on the silent
+    ``t`` — the production close-on-timeout path the old fake-radio tests
+    bypassed (MOR-2757 review).
     """
 
-    backend_id = "rigctld"
-    # Unresolvable model: WebServer must keep the scheduler this fake
-    # attaches, not bootstrap its own.
-    model = "FAKE-RIGCTLD"
-    capabilities = {"tx"}
-    connected = control_connected = radio_ready = True
+    from rigplane.backends.rigctld_client.radio import RigctldClientRadio
 
-    def __init__(self, *, never_answers: str | None = None) -> None:
-        self.radio_state = RadioState()
-        self._state_store = StateStore()
-        self._acquisition_scheduler = AcquisitionScheduler(
-            profile=_rigctld_critical_profile()
-        )
-        self._critical_read_timeouts: dict[FieldPath, int] = {}
-        self._vfo_supported = False
-        self._INITIAL_STATE_GAP_SERIAL = 0.005
-        self._never_answers = never_answers
-        self.ptt_reads = 0
-
-    @property
-    def state_store(self) -> StateStore:
-        return self._state_store
-
-    def supports_command(self, _command: str) -> bool:
-        return False
-
-    def create_observation_poller(
-        self, *, callback: Callable[[Sequence[Observation]], None], **_kwargs: object
-    ) -> object:
-        return _RigctldCriticalPoller(callback, self)
-
-    async def get_freq(self, receiver: int = 0) -> int:
-        return 14_074_000
-
-    async def get_mode(self, receiver: int = 0) -> tuple[str, int | None]:
-        return "USB", 2400
-
-    async def get_rf_gain(self, receiver: int = 0) -> int:
-        return 128
-
-    async def get_af_level(self, receiver: int = 0) -> int:
-        return 128
-
-    async def get_ptt(self) -> bool:
-        from rigplane.exceptions import TimeoutError as RadioTimeoutError
-
-        self.ptt_reads += 1
-        if self._never_answers == "t":
-            raise RadioTimeoutError(
-                "External rigctld command 't' timed out after 0.1s."
-            )
-        return False
-
-    async def get_vfo_slot(self, receiver: int = 0) -> str:
-        return "A"
-
-    # -- what ``cli/__init__.py: _run`` needs before it reaches the gate ----
-
-    async def __aenter__(self) -> "_RigctldCriticalRadio":
-        return self
-
-    async def __aexit__(self, *_exc: object) -> None:
-        return None
-
-    async def actuate(
-        self, _token: object, _operation: object, *, is_current: Callable[[], bool]
-    ) -> object:
-        from rigplane.runtime.managed_tx_state import ActuationResult
-
-        return ActuationResult.ACCEPTED if is_current() else ActuationResult.REJECTED
-
-    async def set_ptt(self, _on: bool) -> None:
-        return None
+    radio = RigctldClientRadio(
+        host=fake.host,
+        port=fake.port,
+        timeout=0.05,
+        model="FAKE-RIGCTLD-TCP",
+    )
+    radio._acquisition_scheduler = AcquisitionScheduler(
+        profile=_rigctld_critical_profile()
+    )
+    return radio
 
 
 @pytest.mark.asyncio
-async def test_rigctld_unanswered_critical_read_fails_startup_after_three_attempts() -> (
-    None
-):
-    """MOR-2757 (a): a fake external rigctld that never answers ``t`` ends startup.
+async def test_rigctld_unanswered_ptt_ends_startup_after_exactly_three_reads() -> None:
+    """MOR-2757 (a): a rigctld that never answers ``t`` ends startup after 3 reads.
 
-    The ``t`` read is the PTT path's own read. Three medium cycles with no
-    answer reach the owner's attempt limit (MOR-2749, 2026-09-27), and the
-    same declared-command defect record a refused read leaves on the
-    scheduler refuses the bind — naming the field and the command. Before
-    MOR-2757 nothing counted these reads, so the gate waited forever.
+    The ``t`` read is the PTT path's own read, through the real transport
+    against a real TCP server. A read timeout closes the connection, so
+    the poller must reconnect before the next cycle: exactly three real
+    requests for ``t`` reach rigctld — each on its own connection — and
+    the third records the declared-command defect that refuses the bind,
+    naming the field and the command.
     """
-    radio = _RigctldCriticalRadio(never_answers="t")
+    fake = _TcpRigctldServer(silent="t")
+    await fake.start()
+    radio = _real_rigctld_radio(fake)
+    await radio.connect()
     server = WebServer(radio, _gated_config())
     scheduler = radio._acquisition_scheduler
     binds: list[str] = []
@@ -1131,10 +1092,14 @@ async def test_rigctld_unanswered_critical_read_fails_startup_after_three_attemp
         binds.append("bind")
         return _FakeAsyncServer()
 
-    with patch("rigplane.web.web_startup.asyncio.start_server", new=_bind):
-        with pytest.raises(RuntimeError) as caught:
-            await asyncio.wait_for(server.start(), timeout=10.0)
-        await server.stop()
+    try:
+        with patch("rigplane.web.web_startup.asyncio.start_server", new=_bind):
+            with pytest.raises(RuntimeError) as caught:
+                await asyncio.wait_for(server.start(), timeout=15.0)
+            await server.stop()
+    finally:
+        await radio.disconnect()
+        await fake.stop()
 
     assert binds == []
     message = str(caught.value)
@@ -1144,21 +1109,28 @@ async def test_rigctld_unanswered_critical_read_fails_startup_after_three_attemp
     assert "command 't'" in message
     assert scheduler.startup_defect is not None
     assert scheduler.startup_defect.command == "t"
-    # >= 3 pins "not sooner": an abort on the first attempt would stop the
-    # reads at 1. The poller keeps cycling until the gate's next poll sees
-    # the defect, so a 4th read can land first — that is fine.
-    assert radio.ptt_reads >= 3
+    # Exactly three real requests for ``t`` reached the server — no more:
+    # the limit is pinned, not merely reached. Connection drops in between
+    # (a timeout closes the connection) never count as unanswered reads.
+    assert fake.t_requests == 3
+    # Each ``t`` arrived on its own connection: the poller reconnected the
+    # transport between attempts, so three counts mean three asks of the
+    # radio (MOR-2757 review, reconnect pin).
+    assert len(fake.t_connection_ids) == 3
 
 
 @pytest.mark.asyncio
-async def test_rigctld_gate_is_unchanged_when_the_fake_answers_everything() -> None:
-    """MOR-2757 (b): a fake external rigctld that answers everything opens.
+async def test_rigctld_gate_is_unchanged_when_the_server_answers_everything() -> None:
+    """MOR-2757: a rigctld server that answers everything opens as before.
 
     The same radio with ``t`` answering: no count ever reaches the limit,
     no defect is recorded, and the listener binds once every medium-lane
     path is observed — the pre-MOR-2757 behaviour.
     """
-    radio = _RigctldCriticalRadio()
+    fake = _TcpRigctldServer()
+    await fake.start()
+    radio = _real_rigctld_radio(fake)
+    await radio.connect()
     server = WebServer(radio, _gated_config())
     scheduler = radio._acquisition_scheduler
     binds: list[str] = []
@@ -1167,14 +1139,58 @@ async def test_rigctld_gate_is_unchanged_when_the_fake_answers_everything() -> N
         binds.append("bind")
         return _FakeAsyncServer()
 
-    with patch("rigplane.web.web_startup.asyncio.start_server", new=_bind):
-        await asyncio.wait_for(server.start(), timeout=10.0)
-        await server.stop()
+    try:
+        with patch("rigplane.web.web_startup.asyncio.start_server", new=_bind):
+            await asyncio.wait_for(server.start(), timeout=10.0)
+            await server.stop()
+    finally:
+        await radio.disconnect()
+        await fake.stop()
 
     assert binds == ["bind"]
     assert scheduler.startup_defect is None
     assert scheduler.unobserved_startup_paths(_observed_paths(server, scheduler)) == ()
-    assert radio.ptt_reads >= 1
+    assert fake.t_requests >= 1
+
+
+@pytest.mark.asyncio
+async def test_rigctld_connection_drop_never_builds_a_declared_defect() -> None:
+    """MOR-2757 (b): a dropped connection is link quality, not a defect.
+
+    A server that accepts each connection and closes it on the first
+    command — rigctld restarting, with no unanswered read at all — must
+    never build a ``DeclaredCommandDefect``: that type is a product
+    defect, and link quality reaches the backend as a transport error
+    (``core/acquisition_scheduler.py: DeclaredCommandDefect``). The real
+    poller runs several failing cycles, reconnecting between them; the
+    critical-read tally stays empty.
+    """
+    from rigplane.backends.rigctld_client.radio import (
+        RigctldClientObservationPoller,
+    )
+
+    fake = _TcpRigctldServer(drop=True)
+    await fake.start()
+    radio = _real_rigctld_radio(fake)
+    scheduler = radio._acquisition_scheduler
+    poller = RigctldClientObservationPoller(
+        radio,
+        lambda _observations: None,
+        medium_interval=0.05,
+        slow_interval=1.0,
+    )
+    try:
+        await poller.start()
+        await asyncio.sleep(0.5)
+    finally:
+        await poller.stop()
+        await radio.disconnect()
+        await fake.stop()
+
+    assert scheduler.startup_defect is None
+    assert radio._critical_read_timeouts == {}
+    # The cycles really ran against a dropping server and reconnected.
+    assert fake.connections >= 3
 
 
 # ---------------------------------------------------------------------------
