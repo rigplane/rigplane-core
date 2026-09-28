@@ -45,7 +45,7 @@ or bandwidth-constrained tunnel paths:
 
 ```bash
 export ICOM_AUDIO_SAMPLE_RATE=16000
-uv run rigplane --host 192.168.55.40 --user USER --pass-file .rigplane-pass web
+uv run rigplane --model IC-7610 --host 192.168.55.40 --user USER --pass-file .rigplane-pass web
 ```
 
 Explicit API or CLI/env overrides take precedence over profile defaults. If no
@@ -417,7 +417,7 @@ pip install rigplane
 # macOS: the RigPlane Virtual Audio Driver ships with RigPlane Pro
 
 # Start everything
-rigplane --host 192.168.1.100 --user USER --pass PASS \
+rigplane --model IC-7610 --host 192.168.1.100 --user USER --pass-file .rigplane-pass \
     web --bridge "RigPlane Virtual Cable Output" --bridge-tx-device "RigPlane Virtual Cable Input"
 
 # WSJT-X settings:

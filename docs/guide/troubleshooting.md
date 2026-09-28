@@ -342,7 +342,7 @@ failure.
 
 ```bash
 export ICOM_AUDIO_SAMPLE_RATE=16000
-uv run rigplane --host 192.168.55.40 --user USER --pass-file .rigplane-pass web
+uv run rigplane --model IC-7610 --host 192.168.55.40 --user USER --pass-file .rigplane-pass web
 ```
 
 16 kHz stereo PCM fits a 20 ms frame in one UDP packet and is usually adequate
@@ -359,7 +359,7 @@ VPN paths.
 4. For WireGuard, remember to budget for outer IP/UDP/WireGuard overhead. The
    correct value depends on the WAN path; cellular/CGNAT/cloud paths often need
    smaller MTUs than a normal Ethernet LAN.
-5. Re-run `rigplane audio probe --candidate-cooldown 35 --retry-rejected 1`
+5. Re-run `rigplane --model IC-7610 audio probe --candidate-cooldown 35 --retry-rejected 1`
    after changing MTU and confirm packet counts are stable.
 
 ## Network Voice TX Is Noise, a Squeal, or Silent (IC-7610 MOD Input)
