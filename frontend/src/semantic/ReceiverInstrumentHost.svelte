@@ -17,6 +17,10 @@
     readonly subFrequency?: Snippet<[mount?: ReceiverFrequencyMount]>;
     readonly mainSMeter: Snippet<[renderer?: ReceiverSMeterRenderer]>;
     readonly subSMeter?: Snippet<[renderer?: ReceiverSMeterRenderer]>;
+    /** MOR-2852: the phone meta row's receiver facts (BW/AGC/NB/NR chips),
+     *  `sub` only when a SUB owner exists — the same rule as `subSMeter`. */
+    readonly mainFacts: Snippet<[facts: readonly VfoFactKind[]]>;
+    readonly subFacts?: Snippet<[facts: readonly VfoFactKind[]]>;
     readonly frequencyTunable: (receiver: 'MAIN' | 'SUB') => boolean;
     readonly vfoOperations: Snippet<[appearance: ReceiverVfoAppearance]>;
     /**
@@ -90,8 +94,9 @@
   import { projectSignalMeter } from '../components-v2/meters/smeter-scale';
   import { observationValue } from '../primitives/reading-text';
   import type {
-    MeterReading, RadioViewModel, ReceiverSMeterField, VfoViewModel,
+    MeterReading, RadioViewModel, ReceiverIndicatorViewModel, ReceiverSMeterField, VfoViewModel,
   } from './radio-view-model';
+  import VfoIndicatorRow, { type VfoFactKind } from './VfoIndicatorRow.svelte';
 
   type ReceiverAuthorityPublication = Readonly<{
     state: ServerState | null; caps: Capabilities | null;
@@ -160,6 +165,14 @@
     model: RadioViewModel | null, receiver: ReceiverId,
   ): ReceiverSMeterField | undefined {
     return model?.receiverIndicators?.find((item) => item.receiver === receiver)?.sMeter;
+  }
+
+  /** MOR-2852: the receiver's whole indicator entry, for the meta-facts
+   *  snippets below — same lookup the meter takes, without narrowing. */
+  function receiverIndicator(
+    model: RadioViewModel | null, receiver: ReceiverId,
+  ): ReceiverIndicatorViewModel | undefined {
+    return model?.receiverIndicators?.find((item) => item.receiver === receiver);
   }
 
   function activeRecord(model: RadioViewModel | null, receiver: ReceiverId): VfoViewModel | null {
@@ -441,10 +454,22 @@
   {/if}
 {/snippet}
 
+{#snippet mainFacts(facts: readonly VfoFactKind[])}
+  {#if mainOwner !== null}
+    <VfoIndicatorRow indicator={receiverIndicator(mainOwner.model, 'MAIN')} appearance="chips" {facts} />
+  {/if}
+{/snippet}
+
+{#snippet subFacts(facts: readonly VfoFactKind[])}
+  {#if subOwner !== null}
+    <VfoIndicatorRow indicator={receiverIndicator(subOwner.model, 'SUB')} appearance="chips" {facts} />
+  {/if}
+{/snippet}
+
 {#if subOwner === null}
-  {@render children({ mainFrequency, mainSMeter, frequencyTunable, powerLowerScaleFor, vfoOperations })}
+  {@render children({ mainFrequency, mainSMeter, mainFacts, frequencyTunable, powerLowerScaleFor, vfoOperations })}
 {:else}
   {@render children({
-    mainFrequency, subFrequency, mainSMeter, subSMeter, frequencyTunable, powerLowerScaleFor, vfoOperations,
+    mainFrequency, subFrequency, mainSMeter, subSMeter, mainFacts, subFacts, frequencyTunable, powerLowerScaleFor, vfoOperations,
   })}
 {/if}

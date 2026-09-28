@@ -26,6 +26,7 @@
   import type { MeterSource } from '../panels/meter-utils';
   import KeyboardHandler from './KeyboardHandler.svelte';
   import SemanticRadioSurfaces from '../wiring/SemanticRadioSurfaces.svelte';
+  import type { VfoFactKind } from '../../semantic/VfoIndicatorRow.svelte';
   import type { ManagedScopeRegion } from '$lib/runtime/adapters/scope-display-projection';
   import type { InstrumentComposition } from '../wiring/instrument-composition';
   import MobileChipBar from './mobile-chip-bar.svelte';
@@ -151,6 +152,8 @@
     width: receiverDeckWidth,
     overrides: {},
   }));
+  // MOR-2852: the meta row's chips order and subset, frozen.
+  const metaFacts: readonly VfoFactKind[] = ['bandwidth', 'agc', 'nb', 'nr'];
 
   // ── Modals ──
   // Renamed from settingsOpen for #841 — this sheet now holds only
@@ -692,19 +695,6 @@
         <span>{t('core.mobile.sheet.setup')}</span>
       </button>
     </div>
-    <div class="m-vfo-meta">
-      <span class="m-vfo-mode">{activeVfo.mode}</span>
-      <span class="m-vfo-filter">{activeVfo.filter}</span>
-      {#if ritXit.ritActive}
-        <span class="m-vfo-rit" title="RIT offset">
-          RIT {formatOffsetDisplay(ritXit.ritOffset)}
-        </span>
-      {:else if ritXit.xitActive}
-        <span class="m-vfo-rit" title="XIT offset">
-          XIT {formatOffsetDisplay(ritXit.xitOffset)}
-        </span>
-      {/if}
-    </div>
   </header>
 
   <!-- ═══ SEMANTIC BODY (MOR-2816) ═══
@@ -717,8 +707,9 @@
   <SemanticRadioSurfaces scopeManaged
     bind:managedScopeRegion={managedScopeRegion} suppressModInputTxWarning>
     {#snippet children(instruments: InstrumentComposition)}
-      <!-- The receiver the header reads — the hoisted meter follows it, the
-           same way the retired value-fed strip followed the active VFO. -->
+      <!-- The receiver the header reads — the hoisted meter and the
+           facts both follow it, the way the retired value-fed strip
+           followed the active VFO. -->
       {@const meterReceiver = activeReceiver === 'SUB' && instruments.receiverInstruments.subSMeter
         ? 'SUB'
         : 'MAIN'}
@@ -727,6 +718,29 @@
           lowerScale={instruments.receiverInstruments.powerLowerScaleFor?.(meterReceiver)}
           variant="vfo-wide" />
       {/snippet}
+
+      <!-- MOR-2852: the meta row lives inside this hosted snippet — only
+           here do `instruments.receiverInstruments` exist. It keeps its
+           old spot under the frequency: same bg, same gaps, followed by
+           the S-meter bar exactly as before the move. -->
+      <div class="m-vfo-meta">
+        <span class="m-vfo-mode">{activeVfo.mode}</span>
+        <span class="m-vfo-filter">{activeVfo.filter}</span>
+        {#if ritXit.ritActive}
+          <span class="m-vfo-rit" title="RIT offset">
+            RIT {formatOffsetDisplay(ritXit.ritOffset)}
+          </span>
+        {:else if ritXit.xitActive}
+          <span class="m-vfo-rit" title="XIT offset">
+            XIT {formatOffsetDisplay(ritXit.xitOffset)}
+          </span>
+        {/if}
+        {#if activeReceiver === 'SUB' && instruments.receiverInstruments.subFacts}
+          {@render instruments.receiverInstruments.subFacts(metaFacts)}
+        {:else}
+          {@render instruments.receiverInstruments.mainFacts(metaFacts)}
+        {/if}
+      </div>
 
       <!-- ═══ S-METER BAR (MOR-2816) ═══
            The receiver meter the VFO card's block used to carry, hoisted
@@ -1339,9 +1353,11 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
-    padding: 8px 10px 4px;
+    /* MOR-2852: the meta row left the header for the hosted snippet — the
+       bottom rule moved with it; the padding-bottom is the meta row's own
+       top gap now, so the header's one-hundred percent parity stays. */
+    padding: 8px 10px 2px;
     background: var(--v2-bg-card, #111);
-    border-bottom: 1px solid var(--v2-border-panel, #333);
     z-index: 10;
   }
 
@@ -1425,9 +1441,14 @@
   }
 
   .m-vfo-meta {
+    /* MOR-2852: the row moved out of the header with its old look: same
+       background, same bottom rule, the 2px header gap before it. */
     display: flex;
     align-items: center;
     gap: 8px;
+    padding: 0 10px 4px;
+    background: var(--v2-bg-card, #111);
+    border-bottom: 1px solid var(--v2-border-panel, #333);
     font-family: 'Roboto Mono', monospace;
     font-size: 11px;
     font-weight: 700;
