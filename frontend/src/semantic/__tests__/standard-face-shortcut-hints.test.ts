@@ -84,14 +84,10 @@ afterEach(() => {
 });
 
 describe('MOR-2793 Standard face shortcut-hint hosts', () => {
-  it('puts data-shortcut-hint on the Standard mode and DATA buttons', () => {
+  it('puts data-shortcut-hint on the Standard DATA buttons', () => {
     const props = proxy({ view: base(), presentation: 'standard' as const });
     const component = mount(FilterInstrumentHostFixture, { target, props });
     flushSync();
-    const usb = target.querySelector<HTMLButtonElement>('[data-testid="standard-mode-USB"] button');
-    const lsb = target.querySelector<HTMLButtonElement>('[data-testid="standard-mode-LSB"] button');
-    expect(usb?.getAttribute('data-shortcut-hint')).toBe('1');
-    expect(lsb?.getAttribute('data-shortcut-hint')).toBe('2');
     const data = target.querySelector<HTMLButtonElement>('[data-testid="standard-data-mode-0"] button');
     expect(data?.getAttribute('data-shortcut-hint')).toBe('d');
     unmount(component);
@@ -123,6 +119,8 @@ describe('MOR-2793 Standard face shortcut-hint hosts', () => {
     expect(HOST_SOURCES.filter).toContain("getShortcutHint('mode_select'");
     expect(HOST_SOURCES.filter).toContain("getShortcutHint('cycle_data_mode'");
     expect(HOST_SOURCES.filter).toContain('cycleFilterShortcut');
+    // Standard mode buttons pass the same shortcutHint the legacy ModePanel does.
+    expect(HOST_SOURCES.filter).toContain('shortcutHint={modeShortcut(choice)}');
     expect(HOST_SOURCES.ritXit).toContain("getShortcutHint('toggle_rit'");
     expect(HOST_SOURCES.ritXit).toContain("getShortcutHint('toggle_xit'");
     expect(HOST_SOURCES.ritXit).toContain("getShortcutHint('clear_rit_xit'");

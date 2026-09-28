@@ -1,4 +1,4 @@
-import { getKeyboardConfig } from '$lib/stores/capabilities.svelte';
+import * as capabilities from '$lib/stores/capabilities.svelte';
 
 import { findBindingByAction, formatShortcut } from './keyboard-map';
 
@@ -6,7 +6,11 @@ export function getShortcutHint(
   action: string,
   predicate?: Parameters<typeof findBindingByAction>[2],
 ): string | null {
-  const binding = findBindingByAction(getKeyboardConfig(), action, predicate);
+  // Namespace access: several unit tests mock `capabilities.svelte` with a
+  // partial export set and no `getKeyboardConfig`. Optional call keeps those
+  // mocks from throwing when a panel asks for a hint.
+  const config = capabilities.getKeyboardConfig?.() ?? null;
+  const binding = findBindingByAction(config, action, predicate);
   return binding ? formatShortcut(binding) : null;
 }
 
