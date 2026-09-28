@@ -47,43 +47,6 @@ _TWO_CHANNEL_CODECS = {
 _ICOM_SERIAL_CIV_MIN_INTERVAL_MS = 25.0
 _NON_ICOM_SERIAL_CIV_MIN_INTERVAL_MS = 50.0
 _SERIAL_SCOPE_MIN_BAUD = 115200
-# Fallback "slowest declared cadence" for a hand-built profile that declares
-# no acquisition policies (matches the ``AcquisitionPolicy`` default of
-# 5.0 s). Loaded profiles always supply their own.
-_SERIAL_LINK_DOWN_FALLBACK_CADENCE_S = 5.0
-
-
-def _derive_link_down_silence_timeout(
-    profile: "RadioProfile | None",
-    answer_window_s: float,
-) -> float:
-    """Serial link-down silence limit N (MOR-2861): the longest believable
-    "polls outstanding, no frame parsed" interval a healthy link can show.
-
-    N = (slowest declared poll cadence across the profile's acquisition
-    policies) + (two answer windows). The cadence term covers a radio polled
-    very slowly (e.g. the IC-7300's 25 s ``tx_target`` reads): between two
-    polls nothing may be outstanding, and an outstanding poll on a healthy
-    radio resolves within one answer window, so a frozen-rx interval longer
-    than slowest-cadence + window means at least one full cadence cycle was
-    skipped. The second window is the safety margin for watchdog-tick phase
-    (0.2 s ticks against an asynchronous RX pump) so the slowest declared
-    cadence can never trip it. Counted cadences come from the profile's
-    ``state_acquisition`` default policy and every explicit field policy;
-    a profile with none falls back to ``_SERIAL_LINK_DOWN_FALLBACK_CADENCE_S``.
-    """
-    acquisition = getattr(profile, "state_acquisition", None)
-    cadences: list[float] = []
-    if acquisition is not None:
-        policies = [
-            acquisition.default_policy,
-            *acquisition.field_policies.values(),
-        ]
-        cadences = [
-            p.cadence_seconds for p in policies if p.cadence_seconds is not None
-        ]
-    slowest = max(cadences) if cadences else _SERIAL_LINK_DOWN_FALLBACK_CADENCE_S
-    return slowest + 2.0 * answer_window_s
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -286,15 +249,12 @@ class _IcomSerialRadioBase(CoreRadio):
         self._civ_watchdog_last_seen_timeouts = 0
         self._civ_watchdog_last_seen_rx_packets = 0
         # MOR-2861: second evidence path — a silent link (polls outstanding,
-        # ``rx_packet_count`` frozen) longer than the profile-derived silence
-        # limit. The clock source is a seam so tests can drive a fake clock.
+        # ``rx_packet_count`` frozen) longer than the silence limit
+        # (``_serial_link_down_silence_limit_s``). The clock source is a
+        # seam so tests can drive a fake clock.
         self._civ_silence_started_monotonic: float | None = None
         self._civ_silence_time_source: Callable[[], float] = time.monotonic
         self._civ_link_down_note = ""
-        self._serial_link_down_silence_timeout_s = _derive_link_down_silence_timeout(
-            self._profile,
-            self._civ_get_timeout,
-        )
         # MOR-1440 review round 2: identity of the transport the above two
         # baselines were last measured against. Every (re)connect installs a
         # *brand-new* ``SerialCivTransport`` (see
@@ -1174,6 +1134,24 @@ class _IcomSerialRadioBase(CoreRadio):
         self._civ_silence_started_monotonic = None
         self._civ_watchdog_last_transport = self._civ_transport
 
+    def _serial_link_down_silence_limit_s(self) -> float:
+        """Serial link-down silence limit N (MOR-2861): the longest
+        believable "polls outstanding, no frame parsed" interval a healthy
+        link can show.
+
+        N = two answer windows (``_civ_get_timeout``) + one watchdog tick
+        (``_SERIAL_WATCHDOG_INTERVAL_S``) — about 4.2 s at the 2.0 s answer
+        window. No cadence term: the silence clock only runs while a waiter
+        younger than one answer window is outstanding (nothing outstanding
+        clears it; ``CivRequestTracker.response_pending_count`` ignores
+        older waiters), so a slow poll cadence — with idle gaps between
+        polls — can never run the clock. Two full windows of continuously
+        fresh polls outstanding with ``rx_packet_count`` frozen means the
+        link is down; the extra tick covers watchdog-tick phase against the
+        asynchronous RX pump.
+        """
+        return 2.0 * self._civ_get_timeout + float(self._SERIAL_WATCHDOG_INTERVAL_S)
+
     def _serial_civ_timeout_evidence_crossed_threshold(self) -> bool:
         """Track consecutive CI-V command timeouts as live-link evidence.
 
@@ -1203,12 +1181,16 @@ class _IcomSerialRadioBase(CoreRadio):
         fire-and-forget polls and scope GETs cancelled at the 0.2 s answer
         window never produce a tracker timeout, so the timeout counter alone
         misses a link that has simply stopped answering (2026-09-28 IC-7300
-        incident). If polls are outstanding
-        (``CivRequestTracker.response_pending_count`` — GET response waiters
-        plus the keyed response sinks of fire-and-forget reads, not the bare
-        ACK sinks of set-type sends) and ``rx_packet_count`` has not advanced
-        for the profile-derived silence limit
-        (``_serial_link_down_silence_timeout_s``), the link is declared down.
+        incident). If fresh polls are outstanding
+        (``CivRequestTracker.response_pending_count`` with
+        ``max_age_s=_civ_get_timeout`` — GET response waiters plus the keyed
+        response sinks of fire-and-forget reads, each younger than one
+        answer window, and not the bare ACK sinks of set-type sends) and
+        ``rx_packet_count`` has not advanced for the silence limit
+        (``_serial_link_down_silence_limit_s``), the link is declared down.
+        A waiter older than the answer window is a lost poll, not evidence
+        that the radio still owes us data, so it neither starts nor holds
+        the silence clock.
         """
         if self._civ_transport is not self._civ_watchdog_last_transport:
             self._civ_watchdog_rebaseline()
@@ -1221,13 +1203,14 @@ class _IcomSerialRadioBase(CoreRadio):
             self._civ_watchdog_last_seen_rx_packets
         )
         now = self._civ_silence_time_source()
+        pending = tracker.response_pending_count(
+            now_monotonic=now,
+            max_age_s=self._civ_get_timeout,
+        )
         if rx_advanced:
             self._civ_consecutive_timeouts = 0
             self._civ_silence_started_monotonic = None
-        elif (
-            tracker.response_pending_count > 0
-            and self._civ_silence_started_monotonic is None
-        ):
+        elif pending > 0 and self._civ_silence_started_monotonic is None:
             # First frozen tick with polls outstanding: start the silence
             # clock. (Timeout deltas deliberately do NOT reset it — a tracked
             # command timeout is itself proof of silence, the two evidence
@@ -1237,7 +1220,7 @@ class _IcomSerialRadioBase(CoreRadio):
             self._civ_consecutive_timeouts += (
                 total - self._civ_watchdog_last_seen_timeouts
             )
-        elif tracker.response_pending_count == 0:
+        elif pending == 0:
             # Nothing outstanding: a quiet link is idle, not down.
             self._civ_silence_started_monotonic = None
 
@@ -1253,11 +1236,11 @@ class _IcomSerialRadioBase(CoreRadio):
         silence_started = self._civ_silence_started_monotonic
         if silence_started is not None:
             elapsed = now - silence_started
-            if elapsed >= self._serial_link_down_silence_timeout_s:
+            limit_s = self._serial_link_down_silence_limit_s()
+            if elapsed >= limit_s:
                 self._civ_link_down_note = (
                     "polls outstanding and no CI-V frame parsed for "
-                    f"{elapsed:.1f}s (silence limit "
-                    f"{self._serial_link_down_silence_timeout_s:.1f}s)"
+                    f"{elapsed:.1f}s (silence limit {limit_s:.1f}s)"
                 )
                 return True
         return False

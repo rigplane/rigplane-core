@@ -132,8 +132,12 @@ class CivRequestTracker:
         """Number of unresolved pending requests."""
         return len(self._ack_waiters) + len(self._response_waiters)
 
-    @property
-    def response_pending_count(self) -> int:
+    def response_pending_count(
+        self,
+        *,
+        now_monotonic: float,
+        max_age_s: float,
+    ) -> int:
         """Waiters expecting a data response: tracked GETs + keyed poll sinks.
 
         MOR-2861: the serial link-death watchdog uses this as its "polls are
@@ -144,10 +148,19 @@ class CivRequestTracker:
         waiters and keyed poll sinks (a read dispatched fire-and-forget, the
         web poller's BACKGROUND shape) resolve within the answer window when
         the radio answers, so their presence while no frame parses is the
-        honest "the radio owes us data" evidence.
+        honest "the radio owes us data" evidence — but only while younger
+        than ``max_age_s``: a waiter older than the answer window is a lost
+        poll (its answer had a full window to arrive), not evidence the
+        radio still owes us data, so it must not hold the watchdog's
+        silence clock until the 10 s stale cleanup retires it.
         """
-        return len(self._response_waiters) + sum(
-            1 for waiter in self._ack_waiters if waiter.response_key is not None
+        cutoff = now_monotonic - max_age_s
+        return sum(
+            1 for w in self._response_waiters if w.created_monotonic > cutoff
+        ) + sum(
+            1
+            for waiter in self._ack_waiters
+            if waiter.response_key is not None and waiter.created_monotonic > cutoff
         )
 
     @property
