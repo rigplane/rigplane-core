@@ -200,16 +200,6 @@
      * other mount byte-identical; the dual strips composition never reads it.
      */
     vfoTiles?: 'all' | 'active';
-    /**
-     * MOR-2816 (owner ruling 2026-09-27), forwarded to the single
-     * composition's `VfoSurface` the same way `vfoTiles` is (MOR-2662):
-     * `'external'` withholds the VFO surface's in-card receiver-meter seats
-     * — the caller renders the meter itself through the `children`
-     * composition's `receiverInstruments` handles (the phone's bar under
-     * the frequency header). Default `'card'` keeps every other mount
-     * byte-identical; the dual composition never reads it.
-     */
-    vfoMeter?: 'card' | 'external';
     /** MOR-1245 — set by a shell that mounts its OWN fixed-position
      *  `ModInputTxWarning` (MobileRadioLayout, both orientations), so the
      *  `txAdjacentAlerts` instance suppresses itself and the preflight
@@ -254,7 +244,7 @@
    * `zoneOwning()` returns non-null on both faces.
    */
   let {
-    children: hostedChildren, externalPresentation = null, strips = 'single', stripBy = 'receiver', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', vfoTiles = 'all', vfoMeter = 'card', suppressModInputTxWarning = false, bandPermitCaption = true, displayFrameSource, readonlyDisplay, scopeManaged = false, managedScopeRegion = $bindable(),
+    children: hostedChildren, externalPresentation = null, strips = 'single', stripBy = 'receiver', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', vfoTiles = 'all', suppressModInputTxWarning = false, bandPermitCaption = true, displayFrameSource, readonlyDisplay, scopeManaged = false, managedScopeRegion = $bindable(),
   }: Props = $props();
 
   /**
@@ -2252,7 +2242,6 @@
         viewModel={view}
         {appearance}
         {vfoTiles}
-        {vfoMeter}
         operationInput={vfoOperationInput ?? undefined}
         {operationControls}
         onSelectVfo={selectVfo}
