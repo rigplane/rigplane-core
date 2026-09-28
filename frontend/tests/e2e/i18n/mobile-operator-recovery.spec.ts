@@ -148,82 +148,71 @@ test('one scroll container and the S-meter above the scope toolbar (MOR-2816)', 
   expect(writes).toEqual([]);
 });
 
-async function checkUnkey(page: Page, info: TestInfo, stage: string, landscape: boolean, tab = true) {
-  const unkey = page.locator('[data-testid="rx-tx-unkey"], .m-ls-unkey');
+// MOR-2816 (owner ruling 2026-09-28): the portrait VFO / RX-TX deck block is
+// gone — no VFO or RX/TX surface, no KEY/UNKEY TRANSMITTER, no TX target
+// line between the panorama and the chip row. The hoisted S-meter and the one
+// scroller stay (pinned by the geometry test above).
+async function checkPortraitMinimal(page: Page) {
+  await expect(page.getByTestId('vfo-surface')).toHaveCount(0);
+  await expect(page.getByTestId('rx-tx-surface')).toHaveCount(0);
+  await expect(page.locator('[data-testid="rx-tx-key"], [data-testid="rx-tx-unkey"]')).toHaveCount(0);
+  await expect(page.getByText(/TX target/)).toHaveCount(0);
+  await expect(page.locator('.m-smeter-bar')).toBeVisible();
+  await expect(page.getByTestId('semantic-radio-surfaces')).toHaveCount(1);
+}
+
+// The only unkey left is the landscape strip's (MOR-2816). MOR-2347's pin
+// still holds: landscape hosts exactly ONE SemanticRadioSurfaces in its
+// spectrum slot and renders no deck surfaces there.
+async function checkLandscapeUnkey(page: Page, info: TestInfo, stage: string) {
+  const unkey = page.locator('.m-ls-unkey');
   await expect(unkey).toHaveCount(1);
-  // MOR-2347's pin: the full semantic deck lives only in portrait; landscape
-  // never mounts one. MOR-2442 keeps that — landscape hosts exactly ONE
-  // SemanticRadioSurfaces in its spectrum slot (hosted through the `children`
-  // snippet), and it
-  // renders no deck surfaces there. Portrait still mounts exactly one.
-  const surfaces = page.getByTestId('semantic-radio-surfaces');
-  await expect(surfaces).toHaveCount(1);
-  if (landscape) {
-    const hosted = page.locator('.m-ls-spectrum [data-testid="semantic-radio-surfaces"]');
-    await expect(hosted).toHaveCount(1);
-    await expect(hosted.getByTestId('rx-tx-surface')).toHaveCount(0);
-  }
+  const hosted = page.locator('.m-ls-spectrum [data-testid="semantic-radio-surfaces"]');
+  await expect(hosted).toHaveCount(1);
+  await expect(hosted.getByTestId('rx-tx-surface')).toHaveCount(0);
   await expect(unkey).toBeEnabled();
-  if (tab) {
-    // Tab to the existing recovery control without activating any control.
-    await page.locator('body').click({ position: { x: 1, y: 1 } });
-    for (let index = 0; index < 100; index++) {
-      await page.keyboard.press('Tab');
-      if (await unkey.evaluate((el) => el === document.activeElement)) break;
-    }
-  } else {
-    await unkey.evaluate((el) => (el as HTMLElement).blur());
-    await unkey.focus();
+  await page.locator('body').click({ position: { x: 1, y: 1 } });
+  for (let index = 0; index < 100; index++) {
+    await page.keyboard.press('Tab');
+    if (await unkey.evaluate((el) => el === document.activeElement)) break;
   }
   await expect(unkey).toBeFocused();
   await page.screenshot({ path: info.outputPath(`${stage}.png`) });
   const geometry = await unkey.evaluate((el) => {
     const rect = el.getBoundingClientRect();
-    const dock = document.querySelector('.m-tuning-strip')?.getBoundingClientRect();
-    const content = document.querySelector('.m-content')?.getBoundingClientRect();
+    const viewport = { width: innerWidth, height: innerHeight };
     const points = [[rect.x + rect.width / 2, rect.y + rect.height / 2],
       [rect.left + 10, rect.top + rect.height / 2], [rect.right - 10, rect.top + rect.height / 2]];
-    return { rect: rect.toJSON(), dock: dock?.toJSON(), content: content?.toJSON(),
-      viewport: { width: innerWidth, height: innerHeight },
+    return { rect: rect.toJSON(), viewport,
       hits: points.map(([x, y]) => el.contains(document.elementFromPoint(x, y))) };
   });
   writeFileSync(info.outputPath(`${stage}.json`), JSON.stringify(geometry, null, 2));
   await info.attach(stage, { body: JSON.stringify(geometry), contentType: 'application/json' });
   expect.soft(geometry.hits, stage).toEqual([true, true, true]);
-  expect.soft(geometry.rect.top, stage).toBeGreaterThanOrEqual(geometry.content?.top ?? 0);
-  expect.soft(geometry.rect.bottom, stage).toBeLessThanOrEqual(geometry.dock?.top ?? geometry.viewport.height);
   expect.soft(geometry.rect.left, stage).toBeGreaterThanOrEqual(0);
   expect.soft(geometry.rect.right, stage).toBeLessThanOrEqual(geometry.viewport.width);
-  if (geometry.content && geometry.dock) {
-    expect.soft(geometry.content.bottom, stage).toBeLessThanOrEqual(geometry.dock.top);
-    expect.soft(geometry.dock.bottom, stage).toBeLessThanOrEqual(geometry.viewport.height);
-  }
 }
 
 for (const [width, height] of [[390, 844], [430, 932]]) {
-  test(`Unkey stays reachable through scrolling and rotation at ${width}x${height}`, async ({ page }, info) => {
+  test(`portrait shows no deck; landscape unkey stays reachable at ${width}x${height}`, async ({ page }, info) => {
     const writes = await prepare(page);
     await page.setViewportSize({ width, height });
     await page.goto('/');
     await settled(page);
-    await checkUnkey(page, info, 'focus-only', false, false);
-    await checkUnkey(page, info, 'portrait', false);
-    await page.locator('.m-content').evaluate((el) => { el.scrollTop = el.scrollHeight; });
-    await checkUnkey(page, info, 'scrolled', false);
+    await checkPortraitMinimal(page);
     await page.setViewportSize({ width: height, height: width });
     await expect(page.locator('.m-landscape')).toBeVisible();
-    await checkUnkey(page, info, 'landscape', true);
+    await checkLandscapeUnkey(page, info, 'landscape');
     await page.evaluate(async () => {
       if (document.fullscreenElement) await document.exitFullscreen();
     });
     await page.setViewportSize({ width, height });
     await expect(page.locator('.m-layout')).toBeVisible();
-    await checkUnkey(page, info, 'rotated-back', false);
+    await checkPortraitMinimal(page);
     const cdp = await page.context().newCDPSession(page);
     await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 44, bottom: 34 } });
     await expect(page.locator('.m-tuning-strip')).toHaveCSS('padding-bottom', '34px');
     await expect(page.locator('.m-tuning-strip')).toHaveCSS('height', '86px');
-    await checkUnkey(page, info, 'safe-area', false, false);
     expect(writes).toEqual([]);
   });
 }

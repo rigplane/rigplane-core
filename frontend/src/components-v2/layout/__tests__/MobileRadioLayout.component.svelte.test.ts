@@ -327,8 +327,10 @@ describe('MobileRadioLayout structure', () => {
     } as unknown as ServerState;
     try {
       const t = mountMobile();
-      const deck = t.querySelector('.m-semantic-deck')!;
-      expect(deck.querySelector('[data-testid="rx-audio-mod-select"]')).toBeNull();
+      // MOR-2816: the deck block is gone — there is no deck element at all;
+      // the selector has no surface to ride on.
+      expect(t.querySelector('.m-semantic-deck')).toBeNull();
+      expect(t.querySelector('[data-testid="rx-audio-mod-select"]')).toBeNull();
       // The bare rx-audio surface that carried the selector is gone with it
       // — no optional surface renders below the deck at all.
       expect(t.querySelectorAll('[data-testid="rx-audio-surface"]')).toHaveLength(0);
@@ -901,7 +903,11 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
   it('keeps the landscape-only Unkey control out of portrait presentation', () => {
     const t = mountMobile();
     expect(t.querySelector('.m-ls-unkey')).toBeNull();
-    expect(t.querySelector('.m-semantic-deck')).not.toBeNull();
+    // MOR-2816: the portrait deck is gone, so neither landscape Unkey nor the
+    // deck's own KEY/UNKEY pair renders in portrait.
+    expect(t.querySelector('[data-testid="rx-tx-unkey"]')).toBeNull();
+    expect(t.querySelector('[data-testid="rx-tx-key"]')).toBeNull();
+    expect(t.querySelector('.m-semantic-deck')).toBeNull();
   });
 
   it('unavailable double tap emits no transmit_on and releases the WS PTT', () => {
