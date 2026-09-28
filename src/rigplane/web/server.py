@@ -3318,7 +3318,19 @@ class WebServer:
         # §8.1 Q5 covers resolve_radio_profile and radio construction, not
         # this): this endpoint must keep serving with neutral defaults for
         # every profile-derived field instead of calling the resolver.
-        profile = self._resolve_profile_if_identified()
+        # A backend that names itself with a model no profile matches (the
+        # external rigctld client's default "External rigctld") reaches the
+        # resolver's refusal: the profile is then simply a field that
+        # backend cannot supply, reported as unavailable (MOR-2899).
+        try:
+            profile = self._resolve_profile_if_identified()
+        except ValueError:
+            logger.debug(
+                "info: radio model resolves to no profile; "
+                "serving neutral defaults",
+                exc_info=True,
+            )
+            profile = None
         raw_connected = (
             getattr(self._radio, "connected", False) if self._radio else False
         )
