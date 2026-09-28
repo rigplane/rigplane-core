@@ -1230,7 +1230,9 @@ class ControlHandler:
                 encode_json({"type": "event", "name": "audio_session", "data": data})
             )
         except BaseException as exc:
-            logger.debug("control: failed to send audio_session snapshot", exc_info=True)
+            logger.debug(
+                "control: failed to send audio_session snapshot", exc_info=True
+            )
             if isinstance(exc, asyncio.CancelledError):
                 raise
 
