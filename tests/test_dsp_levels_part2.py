@@ -21,14 +21,11 @@ bind_default_addr_globals(globals(), to_addr=IC_7610_ADDR)
 
 # commands/levels.py migrated onto the bound command map in MOR-2006 Steps
 # 5..N (module 2): get_/set_digisel_shift now require cmd_map. Every case
-# in TestDigiselShift below targets IC-7610 (the bound default) except
-# test_get_digisel_shift_custom_addresses, which overrides to_addr=0xA4
-# (IC-705) explicitly -- that one case gets the IC-705 map to match. Both
-# profiles declare the same [0x14, 0x13] wire tuple (no menu address, no
-# divergence row), so every expected literal below is unchanged.
+# in TestDigiselShift below uses the IC-7610 map, the only shipped profile
+# that declares [0x14, 0x13] (MOR-2917 declared it absent on the IC-705);
+# test_get_digisel_shift_custom_addresses overrides both addresses.
 RIG_DIR = Path(__file__).resolve().parents[1] / "rigs"
 _IC7610_CMD_MAP = load_rig(RIG_DIR / "ic7610.toml").to_command_map()
-_IC705_CMD_MAP = load_rig(RIG_DIR / "ic705.toml").to_command_map()
 
 # CI-V frame constants
 _PREAMBLE = b"\xfe\xfe"
@@ -196,7 +193,7 @@ class TestDigiselShift:
 
     def test_get_digisel_shift_custom_addresses(self) -> None:
         frame = commands.get_digisel_shift(
-            to_addr=0xA4, from_addr=0xE1, cmd_map=_IC705_CMD_MAP
+            to_addr=0xA4, from_addr=0xE1, cmd_map=_IC7610_CMD_MAP
         )
         assert frame[2] == 0xA4
         assert frame[3] == 0xE1

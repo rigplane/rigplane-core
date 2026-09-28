@@ -50,7 +50,55 @@ async def dispatch_http_request(
     Mirrors the original :meth:`WebServer._handle_http` body verbatim — the
     method now delegates here so the public API and route semantics are
     preserved.
+
+    An exception that escapes any handler is answered with a 500 and logged
+    with its route (MOR-2899): the connection is never dropped silently.
+    The 500 body names no internals — any remote client can reach this net.
     """
+    # Lazy import: keeps test patches of ``rigplane.web.server._send_response``
+    # effective (binding lookup goes through the module).
+    from . import server as _server_mod  # noqa: TID251
+
+    try:
+        await _dispatch_http_request(
+            server, writer, method, path, headers, reader, query
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception(
+            "web: unhandled exception in HTTP handler for %s %s",
+            method,
+            _server_mod._redact_token_in_path(path),
+        )
+        try:
+            await _server_mod._send_response(
+                writer,
+                500,
+                "Internal Server Error",
+                b'{"error":"internal server error"}',
+                {"Content-Type": "application/json"},
+            )
+        except Exception:
+            # The client may already be gone, or a response may already be
+            # on the wire; nothing left to deliver.
+            logger.debug(
+                "web: could not deliver the 500 response for %s",
+                _server_mod._redact_token_in_path(path),
+                exc_info=True,
+            )
+
+
+async def _dispatch_http_request(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None = None,
+    reader: asyncio.StreamReader | None = None,
+    query: dict[str, list[str]] | None = None,
+) -> None:
+    """The route table itself; called only by :func:`dispatch_http_request`."""
     # Lazy import: keeps test patches of ``rigplane.web.server._send_response``
     # effective (binding lookup goes through the module).
     from . import server as _server_mod  # noqa: TID251

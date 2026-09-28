@@ -100,6 +100,8 @@
   "core.settings.workspace.importRejectedTitle": "Импорт отклонён",
 
   "core.overlay.poweredOff.label": "Трансивер выключен",
+  "core.overlay.poweredOff.notAnsweringLabel": "Трансивер не отвечает — возможно, он выключен",
+  "core.overlay.poweredOff.noRemotePowerOn": "Этот трансивер нельзя включить из RigPlane.",
   "core.overlay.poweredOff.powerOnButton": "Включить",
   "core.overlay.poweredOff.failedPowerOn": "Не удалось включить: {detail}",
   "core.overlay.scopeDisconnected": "Панорама отключена — переподключение…",

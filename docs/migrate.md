@@ -4,7 +4,7 @@ description: "Migrate RigPlane 2.11.1 consumers to Core 3.0 beta, with historica
 
 # Migrating to RigPlane Core 3.0 beta
 
-The initial package target is `3.0.0b1`. This is a major-version migration with
+This is a major-version migration with
 selected compatibility aliases, not a promise that every 2.x consumer works
 unchanged. Core includes the browser SDR interface; Pro packaging and its
 release are a later, separate scope.
@@ -38,13 +38,37 @@ candidate witness before it becomes a tested compatibility claim.
 | EXT1 | Extension command boolean | Report the actual client transport boolean through the canonical intent path; false may leave an offline command queued. |
 | EXT2 | Permissive extension command/parameter dispatch | Use strict non-TX intents with required parameters and receiver. |
 | EXT3 | Host numeric `1`, manifest `host_api: "1.0"` or omission | Host `2`, explicit `host_api: "2.0"`; reject old or omitted declarations. Manifest schema remains `version: 1`. |
-| CLI1 | `ptt on && sleep 10 && ptt off` | Use `rigplane ptt --for 10`; the command owns the hold and release. |
+| CLI1 | `ptt on && sleep 10 && ptt off` | Use `rigplane --model <MODEL> ptt --for 10`; the command owns the hold and release. |
 | CLI2 | Other CLI inventory, entrypoints, Python/dependencies/extras | Preserve audited inventory except the retired application-token options below; package metadata changes to the beta version. |
 | CFG1 | Tone-capable custom profile without a table | Declare a supported named `[ctcss]` table. |
 | WIRE1 | Empty successful response after raw timeout | Handle `RPRT -5` as an error. |
 | WIRE2 | Raw `w` in read-only mode | Handle `RPRT -22`, including for raw reads; use structured reads. |
 | WIRE3 | General rigctld framing and structured operations | Preserve audited wire shape; representative fake-provider witnesses remain required. |
 | OUT1 | Private internals, arbitrary external profiles, blanket 2.x emulation | No compatibility promise; Pro release and external-consumer census are outside this scope. |
+
+## The radio model is required
+
+2.11 fell back to the IC-7610 profile when no model was given. 3.0 does not
+guess. On the `lan` backend, a command without `--model` (or a `--radio-addr`
+that matches a loaded profile) stops with:
+
+```text
+Error: Cannot resolve a radio profile: no profile, model, or matching radio_addr identifies the radio. Pass an explicit profile= or model= — rigplane no longer guesses a default rig.
+```
+
+On the `serial` backend, a command without `--model` stops with:
+
+```text
+Error: Serial backend needs an explicit radio model: pass --model (e.g. --model IC-7300); rigplane does not guess a default rig.
+```
+
+In Python, `LanBackendConfig` and `IcomRadio` need `model=`, `profile=` or a
+matching `radio_addr=`, and `SerialBackendConfig` needs `model=`. Add
+`--model` to scripts and service units that ran without it. The
+`yaesu-cat` and `rigctld` backends run without it.
+
+Sources: `src/rigplane/profiles/__init__.py: resolve_radio_profile`;
+`src/rigplane/backends/factory.py: create_radio`.
 
 ## Application-token removal
 
@@ -116,9 +140,8 @@ differ; the historical root field is not a reliable alias for either one.
 With fresh MAIN/SUB observations, the witnessed values were respectively 37
 and 192, with `fieldStatus` reporting `observed: true` and
 `availability: "available"`. With no SUB observation, the response still
-contained `sub.notchFilter: 0`, but its metadata was `observed: false`,
-`freshness: "unknown"`, `availability: "missing"`. That zero is not observed
-telemetry. A single-receiver IC-7300 fixture omitted both `sub` and its field
+contained `sub.notchFilter: null`, with metadata `observed: false`,
+`freshness: "unknown"`, `availability: "missing"`. A single-receiver IC-7300 fixture omitted both `sub` and its field
 metadata. Preserve freshness/status information in the display and apply
 capability checks; do not infer receiver availability from a numeric default.
 Stop reading `txFreqMonitor`; replacing it with `txTarget` or a constant false
@@ -194,7 +217,7 @@ For scripts, replace sequential leave-keyed shell commands:
 ```bash
 # Old sequencing no longer describes the command lifecycle:
 # rigplane ptt on && sleep 10 && rigplane ptt off
-rigplane ptt --for 10
+rigplane --model IC-7610 ptt --for 10
 ```
 
 Supply your usual connection options. `ptt on` remains alive until interruption
@@ -208,7 +231,7 @@ not an installation smoke test. Parser and lifecycle sources:
 The host contract uses numeric version `2` and an explicit
 manifest declaration `host_api: "2.0"`. Old `"1.0"` and missing declarations
 must be rejected, rather than interpreted as evidence of compatibility. This
-version decision is separate from Python `3.0.0b1` and HTTP contract version 1.
+version decision is separate from the Python package version and HTTP contract version 1.
 The manifest schema itself stays at `version: 1`. Migrate the commands before
 declaring the new host contract:
 
@@ -243,7 +266,7 @@ sent PTT through `sendCommand` must migrate its TX integration to the canonical
 ownership flow above, not rename its command through this non-TX facade.
 
 Sources: `frontend/src/lib/local-extensions/host-api.ts: installLocalExtensionHostApi`;
-`frontend/src/lib/runtime/commands/radio-intents.ts: dispatchRadioIntent`.
+`frontend/src/lib/runtime/commands/radio-intents.ts: dispatchRadioIntentWithResult`.
 
 ## Custom profiles and rigctld diagnostics
 
@@ -317,8 +340,8 @@ from rigplane import IcomRadio, LanBackendConfig, create_radio
 | PyPI package | `icom-lan` | `rigplane` | `icom-lan` frozen at v1.1.0; no future releases under the old name |
 | Python import path | `icom_lan.*` | `rigplane.*` | `icom_lan.*` still importable, emits `DeprecationWarning` |
 | CLI binary | `icom-lan` | `rigplane` | `icom-lan` retained as deprecated alias of `rigplane` |
-| Exception class | `IcomLanError` | `RigplaneError` | Re-exported from `icom_lan` under both names |
-| Env vars | `ICOM_LAN_REPORT_ENDPOINT`, `ICOM_LAN_DISABLE_DIAGNOSTIC_LOGGING`, `ICOM_LAN_LOG_DIR` | `RIGPLANE_REPORT_ENDPOINT`, `RIGPLANE_DISABLE_DIAGNOSTIC_LOGGING`, `RIGPLANE_LOG_DIR` | Old names still honoured for one major release |
+| Exception class | `IcomLanError` | `RigplaneError` | None: `icom_lan` has no `IcomLanError`; catch `RigplaneError` |
+| Env vars | `ICOM_LAN_REPORT_ENDPOINT`, `ICOM_LAN_DISABLE_DIAGNOSTIC_LOGGING`, `ICOM_LAN_LOG_DIR` | `RIGPLANE_REPORT_ENDPOINT`, `RIGPLANE_DISABLE_DIAGNOSTIC_LOGGING`, `RIGPLANE_LOG_DIR` | None: only the `RIGPLANE_*` names are read |
 | LAN discovery wire | `b"ICOM_LAN_DISCOVER\n"` | `b"RIGPLANE_DISCOVER\n"` | Server accepts both request tokens |
 | Diagnostic bundle | `icom-lan-bundle-v1` | `rigplane-bundle-v2` (default) | Triage service accepts both for at least 12 months |
 | Docs site | `morozsm.github.io/icom-lan/` | `rigplane.dev` | Old GitHub Pages URL still redirects |
@@ -332,8 +355,7 @@ date). Move to canonical names when convenient.
 Vendor identifiers stay vendor identifiers — they describe hardware, not the
 product brand. Nothing changes here.
 
-- **Vendor classes**: `IcomRadio`, `IcomBackend`, `IcomCommander`,
-  `Icom7610Profile`, `YaesuRadio`, `YaesuCatRadio`, etc.
+- **Vendor classes**: `IcomRadio`, `IcomCommander`, `YaesuCatRadio`, etc.
 - **Backend directories**: `src/rigplane/backends/icom7610/`,
   `…/yaesu_cat/`, etc.
 - **Vendor-config env vars**: `ICOM_HOST`, `ICOM_USER`, `ICOM_PASS`,

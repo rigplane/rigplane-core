@@ -9,6 +9,10 @@
     createChoiceRendererSeat, type FiniteControlAppearance, type FiniteRendererContext,
   } from '../primitives/control-instruments/control-instrument-renderer.svelte';
   import {
+    projectControlFeedbackPresentation,
+    type ControlFeedbackPresentationInput,
+  } from '../primitives/control-feedback/control-feedback-presentation';
+  import {
     FILTER_SHAPES, type FilterFiniteChoiceValue, type FilterInstrumentHandles,
   } from './filter-instruments';
   import { readingText } from '../primitives/reading-text';
@@ -20,6 +24,11 @@
     pendingFilterShape?: number | null;
     pendingDataMode?: number | null;
     pendingModInput?: number | null;
+    /** MOR-1689: the shape choice's full command-feedback projection — the
+     *  structural `ControlFeedbackPresentationInput` subset, fed by the
+     *  wiring layer exactly the way CwKeyerSurface receives its feedback
+     *  inputs (semantic hosts never import the adapter layer). */
+    filterShapeFeedback?: Readonly<ControlFeedbackPresentationInput<number>>;
     onModeChange?: (mode: string) => void;
     onFilterChange?: (filter: number) => void;
     onFilterShapeChange?: (shape: number) => void;
@@ -35,7 +44,7 @@
 
   let {
     view, pendingFilter = null, pendingFilterShape = null, pendingDataMode = null, pendingModInput = null,
-    onModeChange, onFilterChange, onFilterShapeChange, onDataModeChange, onModInputChange,
+    filterShapeFeedback, onModeChange, onFilterChange, onFilterShapeChange, onDataModeChange, onModInputChange,
     finiteAppearance, rendererContext, children,
   }: Props = $props();
 
@@ -124,6 +133,47 @@
   onDestroy(() => {
     modeSeat.destroy(); filterSeat.destroy(); shapeSeat.destroy(); dataSeat.destroy();
   });
+
+  // MOR-1689: the shape choice's structural feedback presentation — phase
+  // attributes for the interactive elements, a status sentence naming the
+  // requested target, and ONE polite announcement per lifecycle transition
+  // (the announced ids live in a plain closure, not reactive state: the
+  // dedup ledger must not itself retrigger the effect that writes it).
+  // `busy` is read from the presentation's own aria-busy derivation — the
+  // structural input deliberately omits a separate busy field.
+  const describeShapeTarget = (target: number): string =>
+    FILTER_SHAPES.find(([value]) => value === target)?.[1] ?? String(target);
+  let shapeAnnouncedTransitionIds: readonly string[] = [];
+  let shapeAnnouncement = $state<Readonly<{ transitionId: string; message: string }> | null>(null);
+  let shapeStatusText = $state<string | null>(null);
+  let shapeBusy = $state(false);
+  $effect(() => {
+    const feedback = filterShapeFeedback;
+    if (feedback === undefined) {
+      shapeAnnouncedTransitionIds = [];
+      shapeAnnouncement = null;
+      shapeStatusText = null;
+      shapeBusy = false;
+      return;
+    }
+    const presentation = projectControlFeedbackPresentation(
+      feedback, { announcedTransitionIds: shapeAnnouncedTransitionIds }, describeShapeTarget,
+    );
+    shapeAnnouncedTransitionIds = presentation.state.announcedTransitionIds;
+    shapeStatusText = presentation.currentStatus;
+    shapeBusy = presentation.attributes['aria-busy'] === 'true';
+    // A transition's announcement stands until the control goes idle — a
+    // terminal outcome (failed/superseded/…) is heard exactly once, and an
+    // unrelated state churn must not erase a still-relevant message.
+    if (feedback.phase === 'idle' || feedback.phase === 'unavailable') {
+      shapeAnnouncement = null;
+    } else if (presentation.politeAnnouncement !== null) {
+      shapeAnnouncement = {
+        transitionId: presentation.politeAnnouncement.transitionId,
+        message: presentation.politeAnnouncement.message,
+      };
+    }
+  });
 </script>
 
 {#snippet external(seat: typeof modeSeat)}
@@ -166,14 +216,25 @@
       <!-- MOR-1689: same pending affordance the filter() snippet above uses —
            data-pending on the in-flight choice only, a group announcement
            while one is in flight, and the confirmed filterShape reading as
-           the sole selection source. -->
+           the sole selection source — PLUS the shared choice seam's
+           structural feedback: the lifecycle's data-command-phase and
+           aria-busy on the actual buttons, the status sentence naming the
+           requested target, and a transition-deduplicated polite live
+           region. Italic stays a secondary channel, never the only one. -->
+      {@const shapePhase = filterShapeFeedback?.phase}
       <div class="filter-choice-group" data-testid="filter-shape" data-disabled-reason={reason(filterPassband.filterShape)}
+        data-command-phase={shapePhase}
+        aria-busy={shapeBusy}
         aria-describedby={pendingFilterShape !== null ? pendingFilterShapeId : undefined}>
         {#each FILTER_SHAPES as [value, label] (value)}<button type="button" class="filter-choice"
           data-testid={`filter-shape-${value}`} aria-pressed={shapeBehavior.available && shapeBehavior.isSelected(value)}
           data-pending={pendingFilterShape === value} disabled={!shapeBehavior.available}
+          data-command-phase={shapePhase}
+          aria-busy={shapeBusy}
           onclick={() => shapeBehavior.invoke(value)}>{label}</button>{/each}
-        {#if pendingFilterShape !== null}<span id={pendingFilterShapeId} class="sr-only">{t('core.filter.select.pendingAnnouncement')}</span>{/if}
+        {#if pendingFilterShape !== null}<span id={pendingFilterShapeId} class="sr-only">{shapeStatusText ?? t('core.filter.select.pendingAnnouncement')}</span>{/if}
+        {#if shapeAnnouncement !== null}{#key shapeAnnouncement.transitionId}<span class="sr-only" role="status" aria-live="polite" aria-atomic="true"
+          data-control-feedback-status data-filter-shape-live>{shapeAnnouncement.message}</span>{/key}{/if}
       </div>
     {/if}
   {/if}
@@ -289,7 +350,9 @@
   .filter-readout output, .filter-choice-group output { min-width: 4ch; font-variant-numeric: tabular-nums; }
   .filter-choice[aria-pressed='true'] { font-weight: 700; }
   .filter-choice:disabled { cursor: not-allowed; }
-  .filter-choice[data-pending='true'] { font-style: italic; opacity: 0.75; }
+  /* MOR-1689: underline is the structural pending channel that survives
+     forced-colors; italic/opacity stay secondary, never the only signal. */
+  .filter-choice[data-pending='true'] { font-style: italic; opacity: 0.75; text-decoration: underline; }
   .standard-data-block { display: flex; flex-direction: column; gap: 0.5rem; }
   .standard-mod-input { display: grid; grid-template-columns: 1fr minmax(0, 1fr); align-items: center; gap: 0.75rem; }
   .standard-mod-input select { min-width: 0; }
@@ -298,6 +361,19 @@
   .standard-choice-grid > span > :global(button) { width: 100%; min-width: 0; min-height: 36px; }
   .standard-section-label { color: var(--v2-text-dim); font-family: 'Roboto Mono', monospace;
     font-size: 12px; font-weight: 700; letter-spacing: 0.08em; }
+  /* MOR-1689: the shape choice's structural feedback rules — same doctrine
+     as FilterSurface's width row (structure only, a design language owns
+     colour). */
+  @media (forced-colors: active) {
+    .filter-choice-group[data-testid='filter-shape'] [data-control-feedback-status] {
+      forced-color-adjust: none;
+      color: CanvasText;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .filter-choice-group[data-testid='filter-shape'],
+    .filter-choice-group[data-testid='filter-shape'] * { transition: none; animation: none; }
+  }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
     overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 </style>

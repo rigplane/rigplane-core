@@ -36,6 +36,7 @@ const mockProps = {
 const mockHandlers = {
   onFilterChange: vi.fn(),
   onFilterWidthChange: vi.fn(),
+  onFilterWidthReset: vi.fn(),
   onFilterShapeChange: vi.fn(),
   onFilterPresetChange: vi.fn(),
   onFilterDefaults: vi.fn(),
@@ -50,9 +51,30 @@ const mockHandlers = {
 // (covered by `mor1536-armed-adoption.isolated.test.ts`).
 const unarmed = { armed: false, value: null };
 // MOR-1689: filter-shape's own armed fact — a DIFFERENT intent
-// (`set_filter_shape`) than filter selection's `set_filter` above, same
+// (`set_filter_shape`) than filter selection (`set_filter`) above, same
 // shape as `unarmed` (parity with ModePanel's DATA-mode armed mock).
 const shapeArmed: { armed: boolean; value: number | null } = { armed: false, value: null };
+// MOR-1689 leg 2: the full shape command-feedback projection the panel's
+// shape buttons consume for `data-command-phase` and the deduplicated live
+// status. Same mutation-before-mount pattern as `shapeArmed` above.
+const shapeFeedback: {
+  confirmed: number | null;
+  target: number | null;
+  requestedTarget: number | null;
+  phase: 'unavailable' | 'idle' | 'submitted' | 'queued' | 'dispatched'
+  | 'awaiting-confirmation' | 'confirmed' | 'failed' | 'timed-out' | 'cancelled' | 'superseded';
+  busy: boolean;
+  availability: 'available' | 'unavailable';
+  outcome: { phase: 'confirmed' | 'failed' | 'timed-out' | 'cancelled' | 'superseded'; error?: string } | null;
+  lifecycleId: string | null;
+  transitionId: string | null;
+} = {
+  confirmed: 0, target: null, requestedTarget: null, phase: 'idle', busy: false,
+  availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
+};
+function setShapeFeedback(overrides: Partial<typeof shapeFeedback>): void {
+  Object.assign(shapeFeedback, overrides);
+}
 const widthLifecycle = {
   confirmed: 2400,
   target: null as number | null,
@@ -144,6 +166,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   getFilterHandlers: () => mockHandlers,
   getFilterArmed: () => unarmed,
   getFilterShapeArmed: () => shapeArmed,
+  getFilterShapeControlFeedback: () => shapeFeedback,
   getFilterWidthControlFeedback: () => feedbackOverride.get('value') ?? feedbackFromLifecycle(),
   getPbtInnerHzControlFeedback: () => passbandOverride.get('inner')
     ?? passbandFeedback('pbt-inner', mockProps.pbtInner ?? 0),
@@ -222,6 +245,10 @@ beforeEach(() => {
   components = [];
   shapeArmed.armed = false;
   shapeArmed.value = null;
+  setShapeFeedback({
+    confirmed: 0, target: null, requestedTarget: null, phase: 'idle', busy: false,
+    availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
+  });
   setLocale('en-US');
   setMockProps({
     currentMode: 'USB',
@@ -249,6 +276,7 @@ beforeEach(() => {
   });
   mockHandlers.onFilterChange = vi.fn();
   mockHandlers.onFilterWidthChange = vi.fn();
+  mockHandlers.onFilterWidthReset = vi.fn();
   mockHandlers.onFilterShapeChange = vi.fn();
   mockHandlers.onFilterPresetChange = vi.fn();
   mockHandlers.onFilterDefaults = vi.fn();
@@ -554,7 +582,11 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
       .find((button) => button.textContent?.trim() === 'Reset')!;
     (reset as HTMLButtonElement).click();
 
-    expect(mockHandlers.onFilterWidthChange).toHaveBeenCalledExactlyOnceWith(3200);
+    // MOR-2519: the compound Reset takes the radio-default width path
+    // (MOR-2535 handler), not a hardcoded Hz write and not the scalar's
+    // own policy reset (table[0]).
+    expect(mockHandlers.onFilterWidthReset).toHaveBeenCalledOnce();
+    expect(mockHandlers.onFilterWidthChange).not.toHaveBeenCalled();
     expect(mockHandlers.onIfShiftChange).toHaveBeenCalledExactlyOnceWith(0);
   });
 
@@ -949,6 +981,48 @@ describe('PBT sliders visibility', () => {
       flushSync();
       expect(mockHandlers.onPbtInnerChange).not.toHaveBeenCalled();
     });
+  });
+});
+
+/**
+ * MOR-2909 (MOR-2215 audit F1) — the PBT track double-click sends nothing:
+ * no per-lane `set_pbt_inner`/`set_pbt_outer` 0 Hz reset, and no position
+ * command rides the gesture (MOR-2535 ruling: the reset gesture lives on
+ * the row's label/value cell or the Reset button, never on the range
+ * track; the legacy panel has no label/value cells, so the Reset button is
+ * the one dispatch site). Both lanes mount AWAY from 0 so a per-lane 0 Hz
+ * reset would be observable on the wire.
+ */
+describe('PBT track double-click sends nothing (MOR-2909, MOR-2535 ruling)', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  function pbtTrack(target: HTMLElement, lane: 'PBT Inner' | 'PBT Outer'): HTMLElement {
+    const labels = Array.from(target.querySelectorAll('.vc-label')).map((el) => el.textContent);
+    const sliders = target.querySelectorAll<HTMLElement>('[role="slider"]');
+    return sliders[labels.indexOf(lane)];
+  }
+
+  it('a double-click on either PBT lane track sends no command — no per-lane reset', () => {
+    const t = mountPanel({ hasPbt: true, pbtInner: 500, pbtOuter: -300 });
+    pbtTrack(t, 'PBT Inner').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    pbtTrack(t, 'PBT Outer').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    flushSync();
+    vi.advanceTimersByTime(60);
+
+    expect(mockHandlers.onPbtInnerChange).not.toHaveBeenCalled();
+    expect(mockHandlers.onPbtOuterChange).not.toHaveBeenCalled();
+    expect(mockHandlers.onPbtReset).not.toHaveBeenCalled();
+  });
+
+  it('the reset goes only through onPbtReset — the Reset button, never the per-lane handlers', () => {
+    const t = mountPanel({ hasPbt: true, pbtInner: 500, pbtOuter: -300 });
+    t.querySelector<HTMLButtonElement>('.filter-actions .pbt-reset-button')!.click();
+    flushSync();
+
+    expect(mockHandlers.onPbtReset).toHaveBeenCalledExactlyOnceWith();
+    expect(mockHandlers.onPbtInnerChange).not.toHaveBeenCalled();
+    expect(mockHandlers.onPbtOuterChange).not.toHaveBeenCalled();
   });
 });
 
@@ -1497,6 +1571,88 @@ describe('filter shape pending feedback (MOR-1689)', () => {
 
     expect(document.querySelectorAll('.shape-section .shape-button[data-armed]')).toHaveLength(0);
     expect(document.querySelectorAll('.shape-section .shape-button[aria-busy="true"]')).toHaveLength(0);
+  });
+});
+
+/**
+ * MOR-1689 leg 2 — the shared choice seam on the ACTUAL interactive
+ * element: every shape button carries the control's `data-command-phase`,
+ * the section wrapper carries `aria-busy` for the whole in-flight control,
+ * and a transition-deduplicated polite live region names the requested
+ * target (`data-filter-shape-live`). The italic/underline armed marker is
+ * secondary — never the only indication.
+ */
+describe('filter shape command-phase feedback (MOR-1689)', () => {
+  const shapeButton = (label: string): HTMLButtonElement | undefined =>
+    Array.from(document.querySelectorAll<HTMLButtonElement>('.shape-section .shape-button'))
+      .find((el) => el.textContent?.trim() === label);
+  const liveRegion = (): HTMLElement | null =>
+    document.querySelector<HTMLElement>('[data-filter-shape-live]');
+
+  function openSettings(): void {
+    const t = mountPanel();
+    (t.querySelector('.settings-button') as HTMLButtonElement).click();
+    flushSync();
+  }
+
+  it('puts the lifecycle phase on every shape button and busy on the section while a shape is in flight', () => {
+    setShapeFeedback({
+      phase: 'submitted', busy: true, target: 1, requestedTarget: 1,
+      lifecycleId: '7:shape-1', transitionId: '7:shape-1:submitted',
+    });
+    openSettings();
+
+    expect(shapeButton('SHARP')!.getAttribute('data-command-phase')).toBe('submitted');
+    expect(shapeButton('SOFT')!.getAttribute('data-command-phase')).toBe('submitted');
+    const section = document.querySelector<HTMLElement>('.shape-section')!;
+    expect(section.getAttribute('data-command-phase')).toBe('submitted');
+    expect(section.getAttribute('aria-busy')).toBe('true');
+  });
+
+  it('announces the requested target once per transition through the polite live region', () => {
+    setShapeFeedback({
+      phase: 'submitted', busy: true, target: 1, requestedTarget: 1,
+      lifecycleId: '7:shape-1', transitionId: '7:shape-1:submitted',
+    });
+    openSettings();
+
+    const region = liveRegion();
+    expect(region).not.toBeNull();
+    expect(region!.getAttribute('role')).toBe('status');
+    expect(region!.getAttribute('aria-live')).toBe('polite');
+    expect(region!.textContent).toContain('SOFT');
+    expect(document.querySelectorAll('[data-filter-shape-live]')).toHaveLength(1);
+  });
+
+  it('keeps the canonical selection truthful while the phase is in flight', () => {
+    // Both seams of the same in-flight `set_filter_shape` lifecycle: the
+    // MOR-1519 armed fact marks the requested choice, the MOR-1687
+    // projection carries the phase — selection itself stays canonical.
+    shapeArmed.armed = true;
+    shapeArmed.value = 1;
+    setShapeFeedback({
+      confirmed: 0, phase: 'awaiting-confirmation', busy: true, target: 1, requestedTarget: 1,
+      lifecycleId: '7:shape-1', transitionId: '7:shape-1:acknowledged',
+    });
+    openSettings();
+
+    expect(shapeButton('SHARP')!.classList.contains('active')).toBe(true);
+    expect(shapeButton('SOFT')!.classList.contains('active')).toBe(false);
+    expect(shapeButton('SOFT')!.dataset.armed).toBe('true');
+    expect(shapeButton('SHARP')!.dataset.armed).toBeUndefined();
+  });
+
+  it('renders no live region and an idle phase once the radio confirmed', () => {
+    setShapeFeedback({
+      confirmed: 1, phase: 'confirmed', busy: false, target: null, requestedTarget: 1,
+      outcome: { phase: 'confirmed' }, lifecycleId: '7:shape-1', transitionId: '7:shape-1:confirmed',
+    });
+    openSettings();
+
+    expect(shapeButton('SHARP')!.getAttribute('data-command-phase')).toBe('confirmed');
+    expect(shapeButton('SOFT')!.getAttribute('data-command-phase')).toBe('confirmed');
+    expect(document.querySelector<HTMLElement>('.shape-section')!.getAttribute('aria-busy')).toBe('false');
+    expect(liveRegion()).toBeNull();
   });
 });
 

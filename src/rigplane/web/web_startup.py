@@ -35,7 +35,10 @@ from ..startup_checks import assert_radio_startup_ready
 from .discovery import DiscoveryResponder, RadioInfo  # noqa: TID251
 from .dx_cluster import DXClusterClient  # noqa: TID251
 from .radio_poller import RadioPoller  # noqa: TID251
-from .runtime_helpers import runtime_capabilities  # noqa: TID251
+from .runtime_helpers import (  # noqa: TID251
+    runtime_capabilities,
+    store_has_radio_observation,
+)
 
 if TYPE_CHECKING:
     from ..runtime.managed_tx_composition import ManagedTxCompositionPort
@@ -199,6 +202,79 @@ def _abort_on_startup_defect(scheduler: AcquisitionScheduler) -> None:
     )
 
 
+def _radio_link_down(server: WebServer) -> bool:
+    """Whether the backend's link answers nothing (MOR-2841).
+
+    The serial watchdog's consecutive-timeout detector
+    (``backends/_icom_serial_base.py: _declare_serial_link_down``) is the
+    one signal that distinguishes "the radio answers nothing" from "the
+    radio answers some reads but refuses one". Read two ways, so the
+    answer cannot depend on the connection state at the instant of the
+    question: through the same ``conn_state`` attribute
+    ``classify_radio_health`` reads, and through the backend's durable
+    ``_civ_link_down_ever_declared`` record. The state alone is
+    transient — stand evidence (2026-09-28): the watchdog reopened the
+    present-but-silent port two seconds after declaring link-down, the
+    gate decided four seconds later against CONNECTED, and the
+    MOR-2749 abort won — so what the gate needs is that the detector
+    fired, not the state it momentarily set.
+    """
+
+    radio = server._radio
+    conn_state = getattr(radio, "conn_state", None)
+    value = getattr(conn_state, "value", conn_state)
+    return (isinstance(value, str) and value == "reconnecting") or bool(
+        getattr(radio, "_civ_link_down_ever_declared", False)
+    )
+
+
+def _link_answers_nothing(server: WebServer) -> bool:
+    """Whether the link is completely silent: no radio observation, link down.
+
+    MOR-2841 (owner decision, 2026-09-28 09:00 EDT, option (a)): a radio
+    that answers NOTHING is the powered-off rig, not a half-working one —
+    zero observations from the radio plus the backend's link-down detector
+    is the evidence pair that separates it from a radio that answers some
+    reads but leaves one safety-critical path unanswered (which still
+    fails startup through MOR-2749's named defect). Locally reconciled
+    structural facts (``local_reconcile`` sources, e.g. the single-receiver
+    topology's ``active``) are not radio answers and do not break the
+    silence — ``_publish_single_receiver_topology`` writes one at
+    ``WebServer`` construction, before the radio is ever asked anything.
+    The observed-half is the shared
+    :func:`runtime_helpers.store_has_radio_observation` predicate — the one
+    ``WebServer._build_radio_health`` re-reads so the served-silent verdict
+    clears at the radio's first answer.
+    """
+
+    radio_observed = store_has_radio_observation(server.command_state_store)
+    return not radio_observed and _radio_link_down(server)
+
+
+def _serve_with_silent_link(server: WebServer) -> None:
+    """Release the startup gate for a completely silent link (MOR-2841).
+
+    One WARNING names the state; the watchdog keeps retrying the link and
+    the poller keeps asking, so when the radio starts answering (for
+    example after Power ON from the UI) acquisition completes normally.
+    Nothing here fabricates a reading: the store stays empty, and the
+    durable ``_served_with_silent_link`` mark is what the published
+    ``radioHealth`` holds onto — ``classify_radio_health`` keeps reporting
+    ``stalled`` / ``radio_powered_off_likely`` until the radio's first
+    observation, whatever the live link state does in between (the stand,
+    2026-09-28: the watchdog reopened the silent port to ``CONNECTED``
+    within seconds, and the live-state read called that ``ready``).
+    """
+
+    server._served_with_silent_link = True
+    logger.warning(
+        "startup gate: the radio is not answering (link down, no field "
+        "observed); serving in a radio-not-answering state — it may be "
+        "switched off. Power ON from the UI stays available; transmit "
+        "stays refused until the safety-critical fields are observed."
+    )
+
+
 def _startup_path_command(server: WebServer, path: FieldPath) -> str:
     """Return the CI-V wire form the radio would read *path* with.
 
@@ -282,7 +358,21 @@ async def _await_initial_state_acquisition(
       count their own unanswered critical reads at their read sites and
       record the same defect there (MOR-2757); on the legacy
       ``StatePollable`` branch an unanswered critical path still waits —
-      that gap is MOR-2757.
+      that gap is MOR-2757; and
+    * MOR-2841 (owner decision, 2026-09-28 09:00 EDT, option (a)): a link
+      that answers NOTHING — zero fields observed and the backend's
+      link-down detector fired (connection state ``RECONNECTING``, or its
+      durable ``_civ_link_down_ever_declared`` record when the reconnect
+      cycle has already reopened the silent port back to ``CONNECTED``) —
+      is a
+      powered-off radio, not a half-working server. The gate releases
+      with one WARNING naming the radio-not-answering state and the
+      listener binds; nothing fabricates a reading, the published
+      ``radioHealth`` keeps reporting ``stalled`` /
+      ``radio_powered_off_likely`` until the radio's first observation
+      (whatever the live link state does in between), and transmit stays
+      refused while the safety-critical fields are unobserved (the
+      managed TX authority's provider stays not-ready).
 
     Before that decision there was no serve-anyway timeout: every declared,
     non-``tx_only`` path held the listener open forever.
@@ -352,6 +442,18 @@ async def _await_initial_state_acquisition(
                 1 + scheduler.consecutive_request_timeouts(path)
                 >= _STARTUP_GATE_CRITICAL_ATTEMPTS
             ):
+                # MOR-2841 (owner decision, 2026-09-28 09:00 EDT, option
+                # (a)): a link that answers NOTHING — zero fields
+                # observed and the backend's link-down detector fired —
+                # is a powered-off radio, not a half-working server. The
+                # gate releases with one WARNING naming the state instead
+                # of recording the MOR-2749 defect; the watchdog keeps
+                # retrying and the poller keeps asking, so when the radio
+                # starts answering acquisition completes normally. A
+                # radio that answered SOME reads still fails below.
+                if _link_answers_nothing(server):
+                    _serve_with_silent_link(server)
+                    return
                 _record_critical_startup_defect(server, scheduler, path)
                 _abort_on_startup_defect(scheduler)
         if sweep:

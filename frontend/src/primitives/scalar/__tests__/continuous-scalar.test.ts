@@ -438,6 +438,33 @@ describe('continuous scalar source policies', () => {
     expect(policy.wheel(0, { direction: 1, fine: true }, compact)).toBe(0.5);
   });
 
+  it('refuses a Bipolar reset when the domain declares no default (MOR-2535/MOR-2909)', () => {
+    vi.useFakeTimers();
+    const policy = createBipolarContinuousScalarPolicy({ debounceMs: 50 });
+    // MOR-2535 doctrine (the native-range policy documents it): a null
+    // defaultValue means NO reset candidate — `applyCandidate` refuses a
+    // null, so `lease.reset()` dispatches nothing. Falling back to 0 would
+    // invent a per-lane 0 Hz default the domain never declared — the exact
+    // MOR-2909 F1 hazard on the legacy PBT lanes.
+    const none = readingSetup(policy, {
+      domain: { min: -1200, max: 1200, step: 50, defaultValue: null, fineStepDivisor: 10 },
+      reading: { status: 'known', value: 500 },
+    });
+    none.scalar.attachRenderer().reset();
+    vi.advanceTimersByTime(60);
+    expect(none.request).not.toHaveBeenCalled();
+
+    // An explicitly declared default stays the reset target, 0 included.
+    const zero = readingSetup(policy, {
+      domain: { min: -1200, max: 1200, step: 50, defaultValue: 0, fineStepDivisor: 10 },
+      reading: { status: 'known', value: 500 },
+    });
+    zero.scalar.attachRenderer().reset();
+    vi.advanceTimersByTime(60);
+    expect(zero.request).toHaveBeenCalledExactlyOnceWith(0);
+    vi.useRealTimers();
+  });
+
   it('makes native input immediate and tokenless without wheel or key reinterpretation', () => {
     const { scalar, request } = readingSetup(nativeRangeContinuousScalarPolicy, {
       reading: { status: 'known', value: 2_450 },

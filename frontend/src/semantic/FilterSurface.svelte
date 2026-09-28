@@ -242,7 +242,9 @@
     // MOR-2667: an unread value renders empty — never a `'--- Hz'`
     // placeholder (the only caller passes a finite canonical reading; the
     // empty guard keeps the placeholder family out of the file).
-    return Number.isFinite(value) ? `${value} Hz` : '';
+    // MOR-2905: the unit comes from the one `core.filter.unit.hz` catalog
+    // key — «Гц» in ru — the same key the sidebar FilterPanel formats with.
+    return Number.isFinite(value) ? `${value} ${t('core.filter.unit.hz')}` : '';
   }
   function formatWidthAnnouncementText(
     feedback: Readonly<CommandScalarFeedback>,
@@ -453,9 +455,9 @@
     // value the message needs is unread, the announcement is skipped
     // entirely (see `nextPassbandAnnouncement`).
     const target = feedback.requestedTarget !== null && Number.isFinite(feedback.requestedTarget)
-      ? `${feedback.requestedTarget} Hz` : null;
+      ? `${feedback.requestedTarget} ${t('core.filter.unit.hz')}` : null;
     const confirmed = feedback.confirmed !== null && Number.isFinite(feedback.confirmed)
-      ? `${feedback.confirmed} Hz` : null;
+      ? `${feedback.confirmed} ${t('core.filter.unit.hz')}` : null;
     let message: string;
     switch (phase) {
       case 'submitted':

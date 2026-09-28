@@ -12,6 +12,7 @@
 -->
 <script lang="ts">
   import '../components-v2/controls/control-button.css';
+  import { t } from '$lib/i18n';
   import { renderSlot } from './design-language-renderers';
   import type { RadioViewModel } from './radio-view-model';
   import {
@@ -140,7 +141,7 @@
   {#if known}
     <p class:sr-only={standard} data-testid="rx-tx-target" data-target="known"
       data-receiver={receiver} data-slot={slot}>
-      TX target: {receiver}{slotText} · {frequencyHz !== null ? `${frequencyHz}\u00A0Hz` : ''}
+      TX target: {receiver}{slotText} · {frequencyHz !== null ? `${frequencyHz}\u00A0${t('core.filter.unit.hz')}` : ''}
     </p>
   {:else}
     <p class:sr-only={standard} data-testid="rx-tx-target" data-target="unknown" data-reason={reason}>

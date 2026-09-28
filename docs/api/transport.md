@@ -36,7 +36,15 @@ No parameters — the transport is configured via `connect()`.
 ### `connect()`
 
 ```python
-async def connect(self, host: str, port: int) -> None
+async def connect(
+    self,
+    host: str,
+    port: int,
+    *,
+    local_host: str | None = None,
+    local_port: int = 0,
+    sock: socket.socket | None = None,
+) -> None
 ```
 
 Open UDP connection and perform discovery handshake.
@@ -45,6 +53,9 @@ Open UDP connection and perform discovery handshake.
 |-----------|------|-------------|
 | `host` | `str` | Radio IP address |
 | `port` | `int` | UDP port number |
+| `local_host` | `str \| None` | Local interface IP to bind to; omitted keeps the default bind |
+| `local_port` | `int` | Local UDP port to bind to (`0` = random) |
+| `sock` | `socket.socket \| None` | Pre-bound UDP socket to reuse; `local_host`/`local_port` are ignored when it is given |
 
 **Raises:** `TimeoutError` if discovery fails after 10 attempts.
 
@@ -59,7 +70,9 @@ Close the UDP connection and stop background tasks (ping, retransmit).
 ### `send_tracked()`
 
 ```python
-async def send_tracked(self, data: bytes) -> None
+async def send_tracked(
+    self, data: bytes, *, is_current: Callable[[], bool] | None = None
+) -> None
 ```
 
 Send a packet with automatic sequence number assignment and tracking for retransmission.

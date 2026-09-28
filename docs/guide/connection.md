@@ -60,7 +60,7 @@ The radio responds with an **auth response** (0x60 bytes) containing:
 - Session **token** (4 bytes) — used for all subsequent authenticated packets
 - **Token request ID** — must be echoed back
 - Connection type string (e.g., "FTTH")
-- Error code (0 = success)
+- Error code (`0xFEFFFFFF` or `0xFFFFFFFF` means the login failed)
 
 The client then sends a **token acknowledgement** (0x40 bytes) to confirm.
 
@@ -166,7 +166,7 @@ from rigplane.exceptions import (
 config = LanBackendConfig(host="192.168.1.100", username="u", password="p", model="IC-7610")
 try:
     async with create_radio(config) as radio:
-        freq = await radio.get_frequency()
+        freq = await radio.get_freq()
 except ConnectionError as e:
     print(f"Can't reach radio: {e}")
 except AuthenticationError as e:
