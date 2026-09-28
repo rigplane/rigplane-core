@@ -1077,8 +1077,10 @@ Canonical full state payload for web consumers (camelCase keys).
 |---|---|
 | `server_unreachable` | Browser/client cannot reach the web or proxy server. The server normally cannot emit this for itself; clients derive it from HTTP/WS failures. |
 | `radio_network_lost` | Server is reachable, but the radio link is disconnected or reconnecting. |
+| `radio_remote_control_unreachable` | Server is reachable and the radio link is disconnected or reconnecting, but the radio's control socket is open and has collected repeated UDP errors: the radio's host is up while its remote-control server does not accept the session, for example right after a power cycle (`src/rigplane/runtime/radio.py: CoreRadio.remote_control_unreachable`). |
 | `radio_not_responding` | Radio link still exists, but CI-V/control data is delayed or stalled. |
-| `radio_powered_off_likely` | Server is reachable, the radio was previously available, and repeated timeout/recovery evidence suggests the hardware is off or unreachable. |
+| `radio_powered_off_likely` | Server is reachable and the radio is probably off or unreachable. Either the radio was available and repeated timeout/recovery evidence has built up, or the server started with no answer from the radio and none has arrived since: on a link that answered nothing, or on a serial port that opened only after startup (`src/rigplane/web/runtime_helpers.py: classify_radio_health`). |
+| `radio_not_connected` | Server is reachable. It started while the radio's serial port could not be opened, the latest attempt to open the port failed, and the radio has not answered since. The backend keeps retrying the port until the radio is disconnected from the UI or API (`src/rigplane/backends/_icom_serial_base.py: _IcomSerialRadioBase.start_reconnect_recovery`). |
 | `unknown` | Insufficient evidence or healthy/ready state. |
 
 ## `GET /api/v1/capabilities`
