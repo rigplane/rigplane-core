@@ -664,7 +664,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--backend",
         choices=["lan", "serial", "yaesu-cat", "rigctld"],
         default=None,
-        help="Backend type: lan (default), serial, yaesu-cat, or rigctld. Auto-inferred from --serial-port if set.",
+        help=(
+            "Backend type: lan, serial, yaesu-cat, or rigctld. "
+            "Inferred from the model when omitted "
+            "(civ: serial with --serial-port else lan; "
+            "yaesu_cat: yaesu-cat); without --model, "
+            "inferred from --serial-port."
+        ),
     )
     p.add_argument(
         "--serial-port",
@@ -1657,11 +1663,11 @@ def _rigs_dir() -> Path:
 
 def _resolve_model(
     args: argparse.Namespace,
-) -> tuple[int | None, str | None, int | None]:
+) -> tuple[int | None, str | None, int | None, str | None]:
     """Resolve radio_addr and model name from --model / --radio-addr flags.
 
     Returns:
-        (radio_addr, model_name, default_baud) — each may be None.
+        (radio_addr, model_name, default_baud, protocol_type) — each may be None.
     """
     from rigplane.rig_loader import discover_available_rigs
 
@@ -1669,7 +1675,7 @@ def _resolve_model(
     radio_addr: int | None = getattr(args, "radio_addr", None)
 
     if model_name is None:
-        return radio_addr, None, None
+        return radio_addr, None, None, None
 
     rigs = discover_available_rigs(_rigs_dir())
 
@@ -1691,7 +1697,12 @@ def _resolve_model(
     if radio_addr is None:
         radio_addr = matched.civ_addr
 
-    return radio_addr, matched.model, matched.default_baud
+    return (
+        radio_addr,
+        matched.model,
+        matched.default_baud,
+        getattr(matched, "protocol_type", None),
+    )
 
 
 def _find_port_pid(port: int) -> str | None:
@@ -1760,20 +1771,33 @@ async def _build_backend_config(
     """Build typed backend config from parsed CLI args.
 
     Runs auto-discovery when host / serial-port is not provided.
-    Infers backend type from --serial-port when --backend is not set.
+    Infers backend type from the model's protocol when --backend is not set.
     """
-    radio_addr, model_name, model_default_baud = _resolve_model(args)
+    radio_addr, model_name, model_default_baud, protocol_type = _resolve_model(args)
 
     # Infer backend from context when not explicitly set.
     backend = getattr(args, "backend", None)
     serial_port = getattr(args, "serial_port", "")
     if backend is None:
-        if serial_port:
-            backend = "serial"
+        if model_name is None:
+            backend = "serial" if serial_port else "lan"
+        elif protocol_type == "yaesu_cat":
+            backend = "yaesu-cat"
+        elif protocol_type == "civ":
+            backend = "serial" if serial_port else "lan"
         else:
-            backend = "lan"
+            raise ValueError(
+                f"Model {model_name!r} uses protocol {protocol_type!r}, "
+                "which no backend supports"
+            )
 
     if backend == "yaesu-cat":
+        host = getattr(args, "host", _HOST_NOT_SET)
+        if host and host != _HOST_NOT_SET:
+            print(
+                "Warning: --host is ignored when --backend yaesu-cat is used.",
+                file=sys.stderr,
+            )
         device = serial_port
         if not device:
             device, discovered_baud = await _auto_discover_serial()
