@@ -9,6 +9,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { moduleEdges, runtimeImportEdges } from '../../__tests__/runtime-imports';
 import {
   finiteValue, observationValue, readingText, readingValue, valueText,
   type ValueObservation,
@@ -38,15 +39,13 @@ describe('readingText (MOR-2688)', () => {
     expect(readingText(known(false))).toBe('false');
   });
 
-  /** The "no runtime import" pin, modelled on `semantic/pressed-of.test.ts`:
-   *  surfaces that pass their WHOLE field object to this rule must never
-   *  acquire a runtime edge into whatever a field import could reach. */
-  it('has no runtime import', () => {
+  /** The "no runtime import" pin (MOR-2719): surfaces that pass their WHOLE
+   *  field object to this rule must never acquire a runtime edge into
+   *  whatever a field import could reach. */
+  it('has no runtime import edge — plain, re-export, dynamic or require', () => {
     const source = readFileSync('src/primitives/reading-text.ts', 'utf8');
-    const statements = [...source.matchAll(/^import\b[^;]*;/gm)].map((m) => m[0]);
-    expect(statements.length).toBeGreaterThan(0);
-    for (const statement of statements) expect(statement.startsWith('import type ')).toBe(true);
-    for (const forbidden of ['import(', 'require(']) expect(source).not.toContain(forbidden);
+    expect(moduleEdges('reading-text.ts', source).length).toBeGreaterThan(0);
+    expect(runtimeImportEdges('reading-text.ts', source)).toEqual([]);
   });
 });
 

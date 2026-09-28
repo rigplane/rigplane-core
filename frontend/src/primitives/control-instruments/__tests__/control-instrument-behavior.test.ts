@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
+import { runtimeImportEdges } from '../../../__tests__/runtime-imports';
 import {
   bindAbsoluteChoiceInstrument, bindActionInstrument, bindChoiceInstrument, bindToggleInstrument,
   usable,
@@ -229,17 +230,14 @@ describe('usable — the field-level admission gate', () => {
     else throw new Error('a fully available known field must be usable');
   });
 
-  /** The "no runtime import" pin, modelled on `reading-text.test.ts` and
-   *  `pressed-of.test.ts`: semantic surfaces receive whole field objects and
-   *  must never gain a runtime edge through this module. Type-only imports
-   *  stay allowed. */
-  it('has no runtime import', () => {
+  /** The "no runtime import" pin (MOR-2719): semantic surfaces receive whole
+   *  field objects and must never gain a runtime edge through this module.
+   *  Type-only imports stay allowed. */
+  it('has no runtime import edge — plain, re-export, dynamic or require', () => {
     const source = readFileSync(
       'src/primitives/control-instruments/control-instrument-behavior.ts',
       'utf8',
     );
-    const statements = [...source.matchAll(/^import\b[^;]*;/gm)].map((m) => m[0]);
-    for (const statement of statements) expect(statement.startsWith('import type ')).toBe(true);
-    for (const forbidden of ['import(', 'require(']) expect(source).not.toContain(forbidden);
+    expect(runtimeImportEdges('control-instrument-behavior.ts', source)).toEqual([]);
   });
 });

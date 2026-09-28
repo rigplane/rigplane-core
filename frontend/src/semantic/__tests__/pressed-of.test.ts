@@ -20,6 +20,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { moduleEdges, runtimeImportEdges } from '../../__tests__/runtime-imports';
 import { pressedOf } from '../pressed-of';
 import type { Availability, TxAuxField } from '../radio-view-model';
 
@@ -56,16 +57,15 @@ describe('pressedOf (MOR-1358)', () => {
    *  its "imports nothing but the fact contract" allow-list was widened to
    *  admit `./pressed-of`. That allow-list regexes `CwKeyerSurface.svelte`'s
    *  OWN specifiers only — it cannot see one level down — so the premise the
-   *  widening rests on ("pure, dependency-free, imports only a type") was
-   *  unpinned. This is that pin. Kills: any value import added here, which
-   *  would become a runtime edge from the safety-critical surface into
-   *  whatever it reaches (the TX controller, the transport, the permit
-   *  utility) without any existing test noticing. */
-  it('has no runtime import — the safety allow-lists that name it depend on this', () => {
+   * widening rests on ("pure, dependency-free, imports only a type") was
+   * unpinned. This is that pin. Kills: any runtime edge added here — a value
+   * import, a re-export, a dynamic import, a require — which would become a
+   * runtime edge from the safety-critical surface into whatever it reaches
+   * (the TX controller, the transport, the permit utility) without any
+   * existing test noticing. */
+  it('has no runtime import edge — the safety allow-lists that name it depend on this', () => {
     const source = readFileSync('src/semantic/pressed-of.ts', 'utf8');
-    const statements = [...source.matchAll(/^import\b[^;]*;/gm)].map((m) => m[0]);
-    expect(statements.length).toBeGreaterThan(0);
-    for (const statement of statements) expect(statement.startsWith('import type ')).toBe(true);
-    for (const forbidden of ['import(', 'require(']) expect(source).not.toContain(forbidden);
+    expect(moduleEdges('pressed-of.ts', source).length).toBeGreaterThan(0);
+    expect(runtimeImportEdges('pressed-of.ts', source)).toEqual([]);
   });
 });

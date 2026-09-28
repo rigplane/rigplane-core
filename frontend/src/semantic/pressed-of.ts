@@ -27,7 +27,7 @@
  * contract" allow-list now names `./pressed-of`; that allow-list only scans
  * `CwKeyerSurface`'s own specifiers, so the purity of this file is what makes
  * the widened allow-list sound. It is pinned by `pressed-of.test.ts`'s
- * `'has no runtime import'` case — do not add a value import here.
+ * `'has no runtime import edge'` case — do not add a value import here.
  */
 import type { AtuStatus, TxAuxField } from './radio-view-model';
 
