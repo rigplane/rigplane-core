@@ -126,6 +126,7 @@ class CivRequestTracker:
         self._ack_backlog_hits = 0
         self._ack_backlog_drops = 0
         self._ack_orphans = 0
+        self._ack_unclaimed_at: float | None = None
 
     @property
     def pending_count(self) -> int:
@@ -155,6 +156,20 @@ class CivRequestTracker:
     def note_timeout(self) -> None:
         """Record one timeout in tracker statistics."""
         self._timeout_count += 1
+
+    @property
+    def ack_unclaimed_at(self) -> float | None:
+        """Monotonic time a write's ACK/NAK was last left unclaimed, if ever.
+
+        An ACK/NAK frame names no command and ``resolve`` hands it to the
+        first eligible waiter, so a write whose answer was left unclaimed can
+        still settle a later write's waiter (MOR-2860).
+        """
+        return self._ack_unclaimed_at
+
+    def note_ack_unclaimed(self) -> None:
+        """Record that a write's ACK/NAK can still arrive with no waiter."""
+        self._ack_unclaimed_at = time.monotonic()
 
     def snapshot_stats(self) -> dict[str, int]:
         """Return tracker counters for monitoring."""
@@ -260,6 +275,9 @@ class CivRequestTracker:
             Number of dropped sink entries.
         """
         before = len(self._ack_waiters)
+        # A sink without ``response_key`` belongs to a write, answered by FB/FA.
+        if any(w.future is None and w.response_key is None for w in self._ack_waiters):
+            self.note_ack_unclaimed()
         self._ack_waiters = [w for w in self._ack_waiters if w.future is not None]
         return before - len(self._ack_waiters)
 

@@ -3595,7 +3595,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # ``_civ_rx.py: CivRuntime._execute_civ_raw`` waits for up to
         # ``_civ_get_timeout`` from the send. FB is ACCEPTED and FA is
         # REJECTED; no answer is UNCERTAIN, which keeps the release owed
-        # (``managed_tx_state.py: _settle``).
+        # (``managed_tx_state.py: _settle``). FB/FA name no command, so an
+        # answer is also UNCERTAIN when another write's answer was left
+        # unclaimed within one ``_civ_get_timeout`` before this attempt.
+        started = time.monotonic()
         try:
             reply = await self._send_civ_raw(
                 civ,
@@ -3606,7 +3609,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         except TimeoutError:
             return ActuationResult.UNCERTAIN
         acknowledged = None if reply is None else parse_ack_nak(reply)
-        if acknowledged is None:
+        unclaimed = self._civ_request_tracker.ack_unclaimed_at
+        if acknowledged is None or (
+            unclaimed is not None and unclaimed >= started - self._civ_get_timeout
+        ):
             return ActuationResult.UNCERTAIN
         return ActuationResult.ACCEPTED if acknowledged else ActuationResult.REJECTED
 
