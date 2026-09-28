@@ -65,6 +65,20 @@ def _observations(radio: IcomRadio, frame: CivFrame) -> list:
     return radio._civ_runtime._observations_from_frame(frame)  # noqa: SLF001
 
 
+def _width_frame(
+    index: int,
+    *,
+    from_addr: int = IC_7610_ADDR,
+) -> CivFrame:
+    return CivFrame(
+        to_addr=CONTROLLER_ADDR,
+        from_addr=from_addr,
+        command=0x1A,
+        sub=0x03,
+        data=bytes([index]),
+    )
+
+
 @pytest.mark.parametrize(
     ("filter_num", "expected_hz"),
     [(1, 15000), (2, 10000), (3, 7000)],
@@ -147,3 +161,34 @@ def test_profile_declared_filter_width_rule() -> None:
     x6200 = resolve_radio_profile(model="X6200")
     assert x6200.declared_filter_width("AM", 1) is None
     assert x6200.declared_filter_width("FM", 1) is None
+
+
+def test_ic7610_fm_1a03_answer_publishes_no_raw_index() -> None:
+    """A non-NG 1A 03 answer in FM maps to no Hz — no raw-index overwrite.
+
+    The scheduler still polls 1A 03 in FM (no ``available_when`` gates
+    ``filter_width`` on mode), so a radio that answers anyway would reach
+    ``_decode_filter_width`` with a fixed FM rule — which has no
+    ``segments`` — and publish the raw BCD index over the declared width.
+    """
+    radio = _radio("IC-7610")
+    radio._radio_state.main.mode = "FM"  # type: ignore[attr-defined]
+    observations = _observations(radio, _width_frame(0x15))
+
+    assert not [obs for obs in observations if obs.path == _FILTER_WIDTH]
+
+
+def test_ic7610_usb_1a03_answer_still_publishes_measured_hz() -> None:
+    """USB keeps the measured 1A 03 path: the index maps through segments."""
+    from rigplane.commands import filter_index_to_hz
+
+    radio = _radio("IC-7610")
+    radio._radio_state.main.mode = "USB"  # type: ignore[attr-defined]
+    observations = _observations(radio, _width_frame(0x15))
+
+    rule = resolve_radio_profile(model="IC-7610").resolve_filter_rule("USB")
+    expected = filter_index_to_hz(15, segments=rule.segments)  # type: ignore[arg-type]
+    widths = [obs for obs in observations if obs.path == _FILTER_WIDTH]
+    assert len(widths) == 1
+    assert widths[0].value == expected
+    assert widths[0].quality == ("confirmed",)

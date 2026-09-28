@@ -2425,8 +2425,7 @@ class CivRuntime:
                 # each slot's width. Publishing the declared slot width here
                 # — marked ``declared``, never ``confirmed`` — lets the
                 # passband draw without inventing a width for modes that
-                # declare none (the measured 1A 03 path above is untouched
-                # and still wins whenever the radio answers it).
+                # declare none.
                 profile = getattr(self._host, "_profile", None)
                 declared = (
                     profile.declared_filter_width(mode_val.name, int(filt))
