@@ -125,6 +125,43 @@ function errorMessages(): string[] {
   );
 }
 
+describe('Toast — plain invalidation message (MOR-2846)', () => {
+  /**
+   * The internal fencing literals that terminate an in-flight command at
+   * (or around) a provider-generation change:
+   *   - "provider generation invalidated" — `server.py:
+   *     _on_provider_generation` → `terminate_active_commands`;
+   *   - "command invalidated during provider generation change" and
+   *     "command invalidated during execution" — `command_service.py`
+   *     `CommandExecutionInvalidatedError` (same USB-vanish class).
+   * All three must render one plain operator message, never the internal
+   * reason, in every locale — pinned here in en-US.
+   */
+  const INVALIDATION_REASONS = [
+    'provider generation invalidated',
+    'command invalidated during provider generation change',
+    'command invalidated during execution',
+  ];
+
+  it.each(INVALIDATION_REASONS)('renders a plain message, never the internal reason %j', (reason) => {
+    app = mount(Toast, { target: host });
+    flushSync();
+
+    dispatchNotification({
+      level: 'error',
+      message: `Command failed: ${reason}`,
+      category: 'command',
+      code: 'commandExecutionFailed',
+      params: { reason },
+    });
+    flushSync();
+
+    expect(errorMessages()).toEqual([
+      'Connection to the radio was interrupted; the command was cancelled. Try again.',
+    ]);
+  });
+});
+
 describe('Toast — link-loss termination suppression (MOR-2241)', () => {
   it('produces no per-command toast for N link-loss terminations while disconnected', () => {
     app = mount(Toast, { target: host });
