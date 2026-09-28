@@ -78,10 +78,18 @@
     radioWide?: RadioWideIndicatorsViewModel;
     continuitySession?: MeterContinuitySession | null;
     sMeter?: Snippet;
+    /**
+     * MOR-2816 (owner ruling 2026-09-27): `true` withholds the whole
+     * in-card S-meter seat — the caller renders the receiver meter itself
+     * through the wiring's `receiverInstruments` handles (the phone's bar
+     * under the frequency header), so the card must not keep a twin.
+     * Defaults to `false`: every other caller renders the seat as before.
+     */
+    hideSMeter?: boolean;
   }
 
   let {
-    indicator, radioWide, appearance = 'semantic', children, slotLabel, continuitySession, sMeter,
+    indicator, radioWide, appearance = 'semantic', children, slotLabel, continuitySession, sMeter, hideSMeter = false,
   }: Props = $props();
 
   /** MOR-2671: uncertain reads `TX` as well — the distinction from confirmed TX is the
@@ -199,6 +207,9 @@
     {/if}
   </header>
 
+  <!-- MOR-2816: `hideSMeter` withholds the whole seat, including the
+       unknown-reading placeholder — the caller renders the meter elsewhere. -->
+  {#if !hideSMeter}
   <div class="s-meter" data-testid="receiver-s-meter" data-receiver={indicator.receiver}>
     {#if finiteValue(readingValue(indicator.sMeter)) !== null}
       {@const sMeterValue = finiteValue(readingValue(indicator.sMeter))}
@@ -216,6 +227,7 @@
       ></div>
     {/if}
   </div>
+  {/if}
 
   {#if children}{@render children()}{/if}
 

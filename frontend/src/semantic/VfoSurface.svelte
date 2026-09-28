@@ -217,6 +217,15 @@
      * every existing caller renders the full list, byte-for-byte as before.
      */
     vfoTiles?: 'all' | 'active';
+    /**
+     * MOR-2816 (owner ruling 2026-09-27): the receiver-meter seat. The
+     * default `'card'` renders each receiver instrument's S-meter in its
+     * in-card seat, byte-identical to before this option existed.
+     * `'external'` withholds every in-card seat — the caller renders the
+     * meter itself through the wiring's `receiverInstruments` handles (the
+     * phone's bar under the frequency header), so the card carries no twin.
+     */
+    vfoMeter?: 'card' | 'external';
   }
 
   let {
@@ -250,6 +259,7 @@
     operationInput,
     operationControls,
     vfoTiles = 'all',
+    vfoMeter = 'card',
   }: Props = $props();
 
   /**
@@ -1037,7 +1047,7 @@
       class:instrument-active={viewModel.vfos.some((vfo) => vfo.receiver === receiver && vfo.isActive)}
       aria-label={`${receiver} instrument`}>
       <VfoIndicatorRow indicator={receiverIndicators.find((item) => item.receiver === receiver)} {appearance}
-        slotLabel={instrumentSlot(receiver)} {continuitySession}
+        slotLabel={instrumentSlot(receiver)} {continuitySession} hideSMeter={vfoMeter === 'external'}
         sMeter={receiverInstruments === undefined ? undefined : hostedMeter}>
         <div class="freq-stack">
           {#each viewModel.vfos as vfo, i (vfo.receiver + ':' + i)}
@@ -1116,7 +1126,7 @@
           sValue={indicator?.sMeter.availability.operational && indicator.sMeter.reading.status === 'known'
             && Number.isFinite(indicator.sMeter.reading.value) ? indicator.sMeter.reading.value : null}
           sMeter={receiverInstruments === undefined || (fixed && !fixed.isActiveSlot) ? undefined : hostedMeter}
-          meterPresent={(fixed === undefined || fixed.isActiveSlot) && (indicator?.sMeter.availability.structural ?? false)}
+          meterPresent={(fixed === undefined || fixed.isActiveSlot) && (indicator?.sMeter.availability.structural ?? false) && vfoMeter === 'card'}
           meterOperational={indicator?.sMeter.availability.operational ?? false}
           meterSource={indicator?.sMeter.source}
           {continuitySession}
@@ -1190,7 +1200,7 @@
             {#snippet hostedMeter()}
               {#if meterHandle}{@render meterHandle(hostedMeterFrame)}{/if}
             {/snippet}
-            <VfoIndicatorRow {indicator} {continuitySession}
+            <VfoIndicatorRow {indicator} {continuitySession} hideSMeter={vfoMeter === 'external'}
               sMeter={receiverInstruments === undefined ? undefined : hostedMeter} />
           {/each}
         </div>

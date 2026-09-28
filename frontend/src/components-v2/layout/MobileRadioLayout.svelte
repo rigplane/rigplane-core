@@ -6,6 +6,9 @@
   import SpectrumPanel from '../../components/spectrum/SpectrumPanel.svelte';
   import FrequencyDisplay from '../display/FrequencyDisplay.svelte';
   import LinearSMeter from '../meters/LinearSMeter.svelte';
+  // MOR-2816: the hoisted bar renders the card meter's own face — the same
+  // frame contract the VFO surface's receiver instruments hand their meter.
+  import type { SignalMeterFrame } from '../meters/signal-meter-motion.svelte';
   import CollapsiblePanel from '../controls/CollapsiblePanel.svelte';
   import BottomSheet from '../controls/BottomSheet.svelte';
   import BandSelector from '../controls/BandSelector.svelte';
@@ -704,37 +707,72 @@
     </div>
   </header>
 
-  <!-- ═══ S-METER BAR ═══ -->
-  <div class="m-smeter-bar">
-    <LinearSMeter value={finiteValue(activeVfo.sValue)} compact label="" />
-  </div>
+  <!-- ═══ SEMANTIC BODY (MOR-2816) ═══
+       ONE mount hosts the whole portrait body. The hosted `children`
+       composition means the mount renders ONLY what this snippet places:
+       the phone's declared zone (portrait-deck = vfo + rxTx, per
+       mobile-declarations.ts) mounts in the deck below, and no optional
+       surface can render bare beside it — the chip tabs are the one place
+       for controls (owner ruling, 2026-09-27). -->
+  <SemanticRadioSurfaces scopeManaged vfoTiles="active" vfoMeter="external"
+    bind:managedScopeRegion={managedScopeRegion} suppressModInputTxWarning>
+    {#snippet children(instruments: InstrumentComposition)}
+      <!-- The receiver the header reads — the hoisted meter follows it, the
+           same way the retired value-fed strip followed the active VFO. -->
+      {@const meterReceiver = activeReceiver === 'SUB' && instruments.receiverInstruments.subSMeter
+        ? 'SUB'
+        : 'MAIN'}
+      {#snippet hoistedMeterFrame(frame: SignalMeterFrame)}
+        <LinearSMeter {frame} compact
+          lowerScale={instruments.receiverInstruments.powerLowerScaleFor?.(meterReceiver)}
+          variant="vfo-wide" />
+      {/snippet}
 
-  <!-- ═══ SCROLLABLE CONTENT ═══ -->
-  <main class="m-content">
+      <!-- ═══ S-METER BAR (MOR-2816) ═══
+           The receiver meter the VFO card's block used to carry, hoisted
+           into the retired strip's slot — the same component (LinearSMeter,
+           compact vfo-wide, the Po lower scale), fed by the same view model
+           through the mount's receiverInstruments handles, so there is no
+           second meter implementation. `vfoMeter="external"` above keeps
+           the card from drawing its twin. -->
+      <div class="m-smeter-bar" data-receiver={meterReceiver}>
+        {#if meterReceiver === 'SUB'}
+          {@render instruments.receiverInstruments.subSMeter!(hoistedMeterFrame)}
+        {:else}
+          {@render instruments.receiverInstruments.mainSMeter(hoistedMeterFrame)}
+        {/if}
+      </div>
 
-    <!-- Spectrum / Waterfall — MOR-2511: absent entirely on a radio without
-         a spectrum; pinned by the no-spectrum orientation tests in
-         MobileRadioLayout.component.svelte.test.ts. -->
-    {#if hasSpectrum()}
-      <section class="m-spectrum">
-        <SpectrumPanel hideAutoStepToggle={true}
-          scopeProjection={managedScopeRegion?.projection}
-          scopeDemanded={managedScopeRegion?.demanded ?? true}
-          onScopeDemandChange={managedScopeRegion?.setDemand} />
-      </section>
-    {/if}
+      <!-- ═══ SCROLLABLE CONTENT ═══ -->
+      <main class="m-content">
 
-    <!-- The semantic deck and PTT gesture both use the single App-root managed
-         intent facade; the deck adds no transport or authority. -->
-    <section class="m-semantic-deck">
-      <!-- MOR-1245 — this shell mounts its OWN fixed-position copy below
-           (`.m-mod-input-warning`, both orientations), so the shared
-           wiring's instance suppresses itself. The mounting tests pin one
-           rendered banner per orientation. -->
-      <SemanticRadioSurfaces scopeManaged vfoTiles="active" bind:managedScopeRegion={managedScopeRegion} suppressModInputTxWarning />
-    </section>
+        <!-- Spectrum / Waterfall — MOR-2511: absent entirely on a radio without
+             a spectrum; pinned by the no-spectrum orientation tests in
+             MobileRadioLayout.component.svelte.test.ts. -->
+        {#if hasSpectrum()}
+          <section class="m-spectrum">
+            <SpectrumPanel hideAutoStepToggle={true}
+              scopeProjection={managedScopeRegion?.projection}
+              scopeDemanded={managedScopeRegion?.demanded ?? true}
+              onScopeDemandChange={managedScopeRegion?.setDemand} />
+          </section>
+        {/if}
 
-    <!-- Chip-scroll IA nav (#839) -->
+        <!-- The semantic deck and PTT gesture both use the single App-root managed
+             intent facade; the deck adds no transport or authority. -->
+        <section class="m-semantic-deck">
+          <!-- MOR-1245 — this shell mounts its OWN fixed-position copy below
+               (`.m-mod-input-warning`, both orientations), so the shared
+               wiring's instance suppresses itself. The mounting tests pin one
+               rendered banner per orientation. -->
+          {@render instruments.vfo('semantic')}
+          {@render instruments.rxTx()}
+          <!-- MOR-1784: the TX-fault reset stays reachable behind the RX/TX
+               surface — rxTx is a required surface of the phone's zone. -->
+          {@render instruments.txFaultRecovery()}
+        </section>
+
+        <!-- Chip-scroll IA nav (#839) -->
     <MobileChipBar
       chips={mobileChips}
       activeId={activeChipId}
@@ -859,6 +897,8 @@
       </section>
     {/if}
   </main>
+    {/snippet}
+  </SemanticRadioSurfaces>
 
   <!-- ═══ TUNING STRIP ═══ -->
   <nav class="m-tuning-strip">
@@ -1447,7 +1487,11 @@
 
   .m-smeter-bar {
     flex-shrink: 0;
-    padding: 2px 4px;
+    /* MOR-2816 (owner, 2026-09-27): the CONTAINER alone is tightened —
+       padding only. The bar, its scale numerals and its text keep the
+       sizes the VFO card's block drew («просто контейнер ужать, не саму
+       полосу S-метра»). */
+    padding: 0 4px;
     background: var(--v2-bg-darker, #0a0a14);
     border-bottom: 1px solid var(--v2-border-darker, #1a1a2e);
   }
