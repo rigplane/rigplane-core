@@ -2068,6 +2068,7 @@ async def test_sql_type_receiver_failure_names_only_its_own_side() -> None:
     assert [str(path) for path in scheduler.startup_defect.paths] == [
         "receiver.sub.operator_toggles.repeater_tone",
         "receiver.sub.operator_toggles.repeater_tsql",
+        "receiver.sub.operator_controls.tone_squelch_type",
     ]
     assert radio.read_sql_type.await_args_list == [call(0), call(1)]
     assert by_path["receiver.main.operator_toggles.repeater_tone"] is True
@@ -2858,6 +2859,7 @@ _DEFECT_ROWS: tuple[tuple[str, str, int | None, str, tuple[str, ...]], ...] = (
         (
             "receiver.main.operator_toggles.repeater_tone",
             "receiver.main.operator_toggles.repeater_tsql",
+            "receiver.main.operator_controls.tone_squelch_type",
         ),
     ),
     (

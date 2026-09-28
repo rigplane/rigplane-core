@@ -1771,8 +1771,9 @@ def test_ic7300_activation_does_not_change_ftx1_acquisition_contract() -> None:
     assert acquisition.provider == "yaesu_cat"
     # MOR-2111 tone half: +4 SUB tone fields (repeater_tone/tsql toggles,
     # tone_freq/tsql_freq controls) on top of the previous 69/64.
-    assert len(acquisition.capabilities) == 73
-    assert len(acquisition.field_policies) == 68
+    # MOR-2969: +2 tone_squelch_type (MAIN, SUB), each with a field policy.
+    assert len(acquisition.capabilities) == 75
+    assert len(acquisition.field_policies) == 70
     assert acquisition.default_policy.cadence_seconds == 2.0
     assert acquisition.default_policy.freshness_ttl_seconds == 8.0
 
@@ -1785,6 +1786,11 @@ def test_ic7300_activation_does_not_change_ftx1_acquisition_contract() -> None:
     assert acquisition.capability_for(sub_tone).can_poll is True
     assert acquisition.policy_for(sub_tone).cadence_seconds == 1.0
     assert acquisition.policy_for(sub_tone).freshness_ttl_seconds == 2.0
+
+    sub_type = FieldPath.receiver("sub", "operator_controls", "tone_squelch_type")
+    assert acquisition.capability_for(sub_type).can_poll is True
+    assert acquisition.policy_for(sub_type).cadence_seconds == 1.0
+    assert acquisition.policy_for(sub_type).freshness_ttl_seconds == 2.0
 
 
 def test_non_polling_field_policies_declare_no_freshness_expiry() -> None:
