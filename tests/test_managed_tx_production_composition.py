@@ -324,6 +324,37 @@ async def test_observation_generation_drift_poisons_before_listener(tmp_path) ->
     await composition.shutdown(asyncio.Event())
 
 
+@pytest.mark.asyncio
+async def test_pending_transport_passes_validation_but_mismatches_still_fail(
+    tmp_path,
+) -> None:
+    """MOR-2876: no provider can exist while the radio's port is not open.
+
+    With ``transport_pending`` the missing provider is accepted, but only
+    after the store identity and observation generation checks, which
+    still fail in that state. Without it, the same state is still refused
+    (``test_installed_radio_requires_exact_port_and_active_event_before_listener``).
+    """
+
+    composition = ManagedTxComposition(
+        RecordingActuator(), config_path=tmp_path / "managed-tx.json"
+    )
+    store = StateStore()
+    store.begin_provider_generation()
+    await composition.bind_state_store(store)
+
+    composition.validate_state_store(store, transport_pending=True)
+    with pytest.raises(RuntimeError, match="provider is not current"):
+        composition.validate_state_store(store)
+    with pytest.raises(RuntimeError, match="StateStore identity mismatch"):
+        composition.validate_state_store(StateStore(), transport_pending=True)
+    # Stands in for a generation change the composition has not seen yet.
+    composition._observation_generation = store.provider_generation + 1
+    with pytest.raises(RuntimeError, match="observation generation mismatch"):
+        composition.validate_state_store(store, transport_pending=True)
+    await composition.shutdown(asyncio.Event())
+
+
 _ROOT = Path(__file__).parents[1]
 
 

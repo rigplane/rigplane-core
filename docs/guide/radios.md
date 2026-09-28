@@ -80,6 +80,10 @@ visible on both radios. VFO labels switch to "VFO A" / "VFO B" automatically.
 - **Web UI:** Full spectrum/waterfall via Audio FFT Scope, controls, audio RX/TX
 - **Audio:** USB audio RX/TX supported; Audio FFT Scope provides real-time IF waterfall
 
+!!! tip "Setup Guide"
+    **[FTX-1 USB Setup](ftx1-usb-setup.md)** — the CAT port and rate, radio
+    settings for USB audio, and the CLI, Web UI and Python entry points.
+
 !!! tip "Yaesu CAT Backend"
     The FTX-1 uses the Yaesu CAT text protocol over USB serial.
     Full frequency, mode, PTT, and audio control is working.

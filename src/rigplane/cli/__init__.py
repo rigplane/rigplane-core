@@ -101,6 +101,9 @@ from rigplane.cli._convert import (  # noqa: E402
     add_subparser as _add_convert_subparser,
     run as _run_convert,
 )
+from rigplane.core.exceptions import (  # noqa: E402
+    ConnectionError as RigplaneConnectionError,
+)
 from rigplane.core.radio_protocol import (  # noqa: E402
     ManagedTxApi,
     PrivilegedTxApi,
@@ -1920,7 +1923,19 @@ class _ManagedTxRadioSession:
         self._shutdown_task: asyncio.Task[None] | None = None
 
     async def __aenter__(self) -> Any:
-        entered = await self._radio.__aenter__()
+        try:
+            entered = await self._radio.__aenter__()
+        except RigplaneConnectionError as exc:
+            # MOR-2876: a serial port that cannot be opened (pyserial's
+            # SerialException is an OSError) does not end web/station, and
+            # neither does an open that times out (TimeoutError is an OSError
+            # on Python 3.11+): the backend's watchdog retries the port from
+            # its next tick. No transport is marked ready here.
+            recover = getattr(self._radio, "start_reconnect_recovery", None)
+            if not isinstance(exc.__cause__, OSError) or not callable(recover):
+                raise
+            recover()
+            return self._radio
         if not bool(getattr(entered, "managed_tx_transport_lifecycle_owned", False)):
             await self._composition.transport_ready(entered)
         return entered

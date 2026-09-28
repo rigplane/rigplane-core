@@ -163,6 +163,7 @@ class _ClassifyRadioHealthFn(Protocol):
         server_reachable: bool = True,
         now_monotonic: float | None = None,
         served_with_silent_link: bool = False,
+        served_without_port: bool = False,
     ) -> dict[str, Any]: ...
 
 
@@ -988,6 +989,10 @@ class WebServer:
         # own no-radio-observation predicate on every publish, so the
         # served-silent verdict clears at the radio's first answer.
         self._served_with_silent_link: bool = False
+        # MOR-2876: set once startup served while the radio's serial port
+        # could not be opened; ``_build_radio_health`` combines it with the
+        # same no-radio-observation predicate.
+        self._served_without_port: bool = False
         # Audio bridge (virtual device integration)
         self._audio_bridge: "AudioBridge | None" = None
         # AudioSession whose liveness events are forwarded to WS (MOR-581)
@@ -2178,14 +2183,13 @@ class WebServer:
     def _build_radio_health(self) -> dict[str, Any]:
         """Build radio health and advance the health revision on transitions."""
         now = time.monotonic()
+        observed = store_has_radio_observation(self.command_state_store)
         health = _classify_radio_health_impl(
             self._radio,
             server_reachable=True,
             now_monotonic=now,
-            served_with_silent_link=(
-                self._served_with_silent_link
-                and not store_has_radio_observation(self.command_state_store)
-            ),
+            served_with_silent_link=self._served_with_silent_link and not observed,
+            served_without_port=self._served_without_port and not observed,
         )
         signature = (
             health.get("serverReachable"),
@@ -5526,6 +5530,21 @@ class WebServer:
     ) -> None:
         """Handle POST /api/v1/radio/{disconnect,connect,power,cw/send,cw/stop}."""
         radio = self._radio
+
+        async def refuse_while_recovering() -> None:
+            # MOR-2876: the WebSocket ``radio_connect`` handler's refusal. On a
+            # serial port the recovery loop is retrying, a failed ``connect()``
+            # rests the radio DISCONNECTED, which the watchdog never retries.
+            await self._send_json(
+                writer,
+                409,
+                "Conflict",
+                {
+                    "error": "backend_recovering",
+                    "message": "backend is already managing radio recovery",
+                },
+            )
+
         if radio is None:
             body = json.dumps(
                 {"error": "no_radio", "message": "No radio configured"},
@@ -5550,6 +5569,9 @@ class WebServer:
                 self.command_state_store.begin_provider_generation()
                 resp = {"status": "disconnected"}
             elif path == "/api/v1/radio/connect":
+                if self._control_handler_for()._backend_recovering():  # noqa: SLF001
+                    await refuse_while_recovering()
+                    return
                 poller = self._radio_poller
                 generation = (
                     poller._vfo_connection_generation()
@@ -5622,6 +5644,15 @@ class WebServer:
                 if power_state == "on" and not getattr(
                     radio, "control_connected", False
                 ):
+                    from .web_startup import _serial_port_unopened  # noqa: TID251
+
+                    # Only while the port has never opened: MOR-2841's silent
+                    # radio has opened it, and keeps this reconnect.
+                    if _serial_port_unopened(self) and not getattr(
+                        radio, "_has_connected_once", False
+                    ):
+                        await refuse_while_recovering()
+                        return
                     # Radio is off → reconnect transport first, then send power-on CI-V
                     logger.info("power-on: radio disconnected, reconnecting first")
                     try:

@@ -45,7 +45,7 @@ or bandwidth-constrained tunnel paths:
 
 ```bash
 export ICOM_AUDIO_SAMPLE_RATE=16000
-uv run rigplane --host 192.168.55.40 --user USER --pass-file .rigplane-pass web
+uv run rigplane --model IC-7610 --host 192.168.1.50 --user USER --pass-file .rigplane-pass web
 ```
 
 Explicit API or CLI/env overrides take precedence over profile defaults. If no
@@ -103,7 +103,7 @@ a dummy load or another controlled no-radiate configuration.
 ```bash
 export RIGPLANE_HW_IC7610_AUDIO=1
 export RIGPLANE_HW_ALLOW_TX=1
-export RIGPLANE_HW_ICOM_HOST=192.168.55.40
+export RIGPLANE_HW_ICOM_HOST=192.168.1.50
 export RIGPLANE_HW_ICOM_USER=YOUR_USER
 export RIGPLANE_HW_ICOM_PASS_FILE=.rigplane-pass
 
@@ -417,7 +417,7 @@ pip install rigplane
 # macOS: the RigPlane Virtual Audio Driver ships with RigPlane Pro
 
 # Start everything
-rigplane --host 192.168.1.100 --user USER --pass PASS \
+rigplane --model IC-7610 --host 192.168.1.100 --user USER --pass-file .rigplane-pass \
     web --bridge "RigPlane Virtual Cable Output" --bridge-tx-device "RigPlane Virtual Cable Input"
 
 # WSJT-X settings:
@@ -450,21 +450,14 @@ re-chunked into fixed 20 ms PCM frames before transmit.
 
 ## Heavy usage and deployment
 
-The audio bridge runs the TX path (reading from the virtual device and sending to the radio) in a thread, using the event loop’s default thread pool via `run_in_executor`. Under heavy load or with **multiple bridge instances or many concurrent clients** (e.g. web UI + rigctld + bridge in one process), that shared pool can become a bottleneck.
+With **multiple bridge instances or many concurrent clients** in one process
+(e.g. web UI + rigctld + bridge), they share that process's CPU and I/O.
 
 **Recommendations:**
 
-1. **Tuning:** Pass a dedicated `ThreadPoolExecutor` for TX I/O so bridge traffic does not compete with other work:
-   ```python
-   from concurrent.futures import ThreadPoolExecutor
-   executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bridge-tx")
-    bridge = AudioBridge(radio, device_name="RigPlane Virtual Cable Output", tx_executor=executor)
-   ```
-   You can use `max_workers=1` or `2`; the bridge only runs one TX read at a time.
+1. **Deployment:** For heavy scenarios, run the bridge in a **separate process** (e.g. a dedicated `rigplane --model <MODEL> web --bridge ...` instance or a small script that only runs the bridge).
 
-2. **Deployment:** For heavy scenarios, run the bridge in a **separate process** (e.g. a dedicated `rigplane web --bridge ...` instance or a small script that only runs the bridge). That isolates CPU and I/O and avoids contention with web/rigctld in the same process.
-
-3. **Scale:** Prefer **one bridge (and ideally one radio connection) per process** when you need stable low-latency audio; limit the number of simultaneous bridge clients if they share the same executor or process.
+2. **Scale:** Prefer **one bridge (and ideally one radio connection) per process** when you need stable low-latency audio.
 
 ---
 

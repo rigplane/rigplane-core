@@ -57,7 +57,7 @@ boundary:
 
 ## Rate limiting
 
-`set_*` commands over WebSocket are physically enqueued at most once per 50 ms per client, per command name. Commands arriving before the interval expires are coalesced with last-value-wins semantics (MOR-1427) rather than dropped: the newest frame in the window always survives to the next paced enqueue. Any frame it replaces before that flush receives an immediate ACK with `{"superseded": true}` and is never enqueued; the surviving frame gets the normal enqueue ACK at the pacing boundary. HTTP endpoints are not throttled at this layer.
+`set_*` commands over WebSocket are physically enqueued at most once per 50 ms per client, per command name plus receiver (and, for a few selector commands such as `set_filter`, the selected target). Commands arriving before the interval expires are coalesced with last-value-wins semantics (MOR-1427) rather than dropped: the newest frame in the window always survives to the next paced enqueue. Any frame it replaces before that flush receives an immediate ACK with `{"superseded": true}` and is never enqueued; the surviving frame gets the normal enqueue ACK at the pacing boundary. HTTP endpoints are not throttled at this layer.
 
 ## Batch eligibility rules
 
@@ -386,7 +386,7 @@ Check `GET /api/v1/capabilities` before building model-specific batches. The
 
 - **Stable:** all commands not listed as experimental below.
 - **Experimental:** `cw_auto_tune` (requires audio relay; FFT peak detection; fails if RX audio is inactive). `get_quick_split`, `set_quick_split`, `get_quick_dual_watch`, `set_quick_dual_watch` — the underlying command/runtime layer reads and writes the real persistent menu toggle (MOR-2007; WS wiring MOR-2045); prefer `quick_split` / `quick_dualwatch` for the composite front-panel-emulating trigger, which is unaffected.
-- **Deprecated aliases (kept for backwards compatibility):** `select_vfo`, `set_power`, `set_squelch`, `set_ipplus`, `set_attenuator`, `set_comp`, `set_compressor`. Use the canonical names listed above in new code.
+- **Deprecated aliases (kept for backwards compatibility):** `select_vfo`, `set_power`, `set_squelch`, `set_ipplus`, `set_attenuator`, `set_compressor`. Use the canonical names listed above in new code.
 
 ---
 
