@@ -1501,6 +1501,15 @@
     color: var(--v2-text-muted, #888);
   }
 
+  /* MOR-2873: the row's uppercase transform must not capitalize the
+     filter-width unit — the BW chip's source text already reads
+     `BW 2400 Hz` (VfoIndicatorRow), so resetting the transform on that
+     chip alone keeps the unit's case while mode, filter, RIT/XIT and
+     the other chips keep the row's look. */
+  .m-vfo-meta :global([data-indicator-fact='bandwidth']) {
+    text-transform: none;
+  }
+
   .m-vfo-mode {
     color: var(--v2-accent-cyan, #22d3ee);
     padding: 2px 8px;
