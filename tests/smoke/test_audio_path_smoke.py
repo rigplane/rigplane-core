@@ -53,6 +53,7 @@ import numpy as np
 import pytest
 from _order_sensitive_radios import ExclusiveUsbRadio, LanLikeRadio
 from test_icom7610_serial_radio import _FakeSerialCivLink
+from test_managed_tx_web_projection import _GatePort, _gate_authority
 
 from rigplane.audio import AudioPacket
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
@@ -565,6 +566,11 @@ async def test_session_lifecycle_via_bridge_and_web_tx_lease(
     The bridge declares RX demand and the web ``/api/v1/audio`` TX handler
     acquires a TX lease — both on the SAME radio-owned AudioSession
     singleton (MOR-579/580), never on private per-consumer sessions.
+
+    The web TX gate (MOR-2870) only lets a browser frame reach the radio
+    while the managed TX authority is keyed, exactly as production wires
+    it — so the scenario keys ``ptt_down("web")`` before expecting radio
+    TX frames and releases the key afterwards.
     """
     radio = usb_rig.radio
     session = radio.audio_session
@@ -577,6 +583,10 @@ async def test_session_lifecycle_via_bridge_and_web_tx_lease(
         backend=FakeAudioBackend([_LOOPBACK]),
     )
     await bridge.start()
+    # Production wiring (MOR-2870): without a managed TX authority the web
+    # gate stays closed and browser TX frames are dropped, not sent.
+    managed = _gate_authority()
+    web_server._production_managed_tx_port = _GatePort(managed)  # type: ignore[assignment]
     try:
         # Bridge demand landed on the radio-owned singleton: RX_ONLY.
         assert session.state is AudioSessionState.RX_ONLY
@@ -594,7 +604,10 @@ async def test_session_lifecycle_via_bridge_and_web_tx_lease(
             )
             assert await _wait_for(lambda: session.state is AudioSessionState.RX_TX)
 
-            # A browser TX frame reaches the radio through the lease.
+            # Key the managed authority the way production does (the web
+            # browser's own PTT press) — only then may a browser TX frame
+            # pass the gate and reach the radio through the lease.
+            await managed.ptt_down("web")
             tx_frame = encode_audio_frame(
                 MSG_TYPE_AUDIO_TX, AUDIO_CODEC_PCM16, 0, 480, 1, 20, _LOUD_PCM
             )
@@ -602,6 +615,7 @@ async def test_session_lifecycle_via_bridge_and_web_tx_lease(
             assert await _wait_for(lambda: usb_rig.radio_tx_frames() > 0), (
                 "web TX audio never reached the radio TX stream"
             )
+            await managed.ptt_up("web")
 
             await _ws_send_text(
                 writer, json.dumps({"type": "audio_stop", "direction": "tx"})
@@ -613,6 +627,7 @@ async def test_session_lifecycle_via_bridge_and_web_tx_lease(
         finally:
             await _close_writer(writer)
     finally:
+        await managed.close()
         await bridge.stop()
 
     assert session.state is AudioSessionState.IDLE
