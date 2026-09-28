@@ -37,6 +37,8 @@
   // the literal "NaN%". MOR-2668: an unread level renders '' (unlit LCD
   // segment) in HBarRenderer's reserved `.vc-value` box (MOR-2657), the
   // `TxAuxScalarHost.formatValue` shape — never a dash, never "NaN".
+  // MOR-2910: the confirmed reading now arrives through the shared AF
+  // command-feedback lane; this guard still owns the non-finite → '' mapping.
   function formatAfLevelDisplay(v: number): string {
     return valueText(finiteValue(v), normalizedPercentDisplay);
   }

@@ -68,7 +68,9 @@
   // readout would render the literal "NaN%" on the default-active mobile
   // chip. MOR-2668: an unread level renders '' (unlit LCD segment) in
   // HBarRenderer's reserved `.vc-value` box (MOR-2657). Same shape as
-  // `RxAudioPanel.svelte`'s guard for this exact field.
+  // `RxAudioPanel.svelte`'s guard for this exact field. MOR-2910: the
+  // confirmed reading now arrives through the shared AF command-feedback
+  // lane; this guard still owns the non-finite → '' mapping.
   function formatAfLevelDisplay(v: number): string {
     return valueText(finiteValue(v), normalizedPercentDisplay);
   }
