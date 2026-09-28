@@ -47,6 +47,43 @@ _TWO_CHANNEL_CODECS = {
 _ICOM_SERIAL_CIV_MIN_INTERVAL_MS = 25.0
 _NON_ICOM_SERIAL_CIV_MIN_INTERVAL_MS = 50.0
 _SERIAL_SCOPE_MIN_BAUD = 115200
+# Fallback "slowest declared cadence" for a hand-built profile that declares
+# no acquisition policies (matches the ``AcquisitionPolicy`` default of
+# 5.0 s). Loaded profiles always supply their own.
+_SERIAL_LINK_DOWN_FALLBACK_CADENCE_S = 5.0
+
+
+def _derive_link_down_silence_timeout(
+    profile: "RadioProfile | None",
+    answer_window_s: float,
+) -> float:
+    """Serial link-down silence limit N (MOR-2861): the longest believable
+    "polls outstanding, no frame parsed" interval a healthy link can show.
+
+    N = (slowest declared poll cadence across the profile's acquisition
+    policies) + (two answer windows). The cadence term covers a radio polled
+    very slowly (e.g. the IC-7300's 25 s ``tx_target`` reads): between two
+    polls nothing may be outstanding, and an outstanding poll on a healthy
+    radio resolves within one answer window, so a frozen-rx interval longer
+    than slowest-cadence + window means at least one full cadence cycle was
+    skipped. The second window is the safety margin for watchdog-tick phase
+    (0.2 s ticks against an asynchronous RX pump) so the slowest declared
+    cadence can never trip it. Counted cadences come from the profile's
+    ``state_acquisition`` default policy and every explicit field policy;
+    a profile with none falls back to ``_SERIAL_LINK_DOWN_FALLBACK_CADENCE_S``.
+    """
+    acquisition = getattr(profile, "state_acquisition", None)
+    cadences: list[float] = []
+    if acquisition is not None:
+        policies = [
+            acquisition.default_policy,
+            *acquisition.field_policies.values(),
+        ]
+        cadences = [p.cadence_seconds for p in policies if p.cadence_seconds is not None]
+    slowest = (
+        max(cadences) if cadences else _SERIAL_LINK_DOWN_FALLBACK_CADENCE_S
+    )
+    return slowest + 2.0 * answer_window_s
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -248,6 +285,16 @@ class _IcomSerialRadioBase(CoreRadio):
         self._civ_consecutive_timeouts = 0
         self._civ_watchdog_last_seen_timeouts = 0
         self._civ_watchdog_last_seen_rx_packets = 0
+        # MOR-2861: second evidence path — a silent link (polls outstanding,
+        # ``rx_packet_count`` frozen) longer than the profile-derived silence
+        # limit. The clock source is a seam so tests can drive a fake clock.
+        self._civ_silence_started_monotonic: float | None = None
+        self._civ_silence_time_source: Callable[[], float] = time.monotonic
+        self._civ_link_down_note = ""
+        self._serial_link_down_silence_timeout_s = _derive_link_down_silence_timeout(
+            self._profile,
+            self._civ_get_timeout,
+        )
         # MOR-1440 review round 2: identity of the transport the above two
         # baselines were last measured against. Every (re)connect installs a
         # *brand-new* ``SerialCivTransport`` (see
@@ -1034,7 +1081,10 @@ class _IcomSerialRadioBase(CoreRadio):
                     self._civ_stream_ready = True
                     self._civ_recovering = False
                     self._conn_state = RadioConnectionState.CONNECTED
-                    self._last_civ_data_received = time.monotonic()
+                    # MOR-2861: do NOT re-stamp ``_last_civ_data_received``
+                    # here — a session that merely reads ready provides no
+                    # liveness evidence; only a CI-V frame the RX pump
+                    # actually parsed may stamp it (``_civ_rx.py``).
                     consecutive_failures = 0
                     continue
 
@@ -1119,6 +1169,9 @@ class _IcomSerialRadioBase(CoreRadio):
         )
         self._civ_watchdog_last_seen_timeouts = self._civ_request_tracker.timeout_count
         self._civ_consecutive_timeouts = 0
+        # MOR-2861: the silence evidence clock resets here too — a swapped-in
+        # transport must not inherit an accrued silent interval.
+        self._civ_silence_started_monotonic = None
         self._civ_watchdog_last_transport = self._civ_transport
 
     def _serial_civ_timeout_evidence_crossed_threshold(self) -> bool:
@@ -1145,28 +1198,72 @@ class _IcomSerialRadioBase(CoreRadio):
         MOR-1440 review round 2 (B1): a (re)connect can swap in a brand-new
         transport between ticks. If it has, re-baseline against it instead
         of judging this tick — see :meth:`_civ_watchdog_rebaseline`.
+
+        MOR-2861, second evidence path — silent link with polls outstanding:
+        fire-and-forget polls and scope GETs cancelled at the 0.2 s answer
+        window never produce a tracker timeout, so the timeout counter alone
+        misses a link that has simply stopped answering (2026-09-28 IC-7300
+        incident). If polls are outstanding
+        (``CivRequestTracker.response_pending_count`` — GET response waiters
+        plus the keyed response sinks of fire-and-forget reads, not the bare
+        ACK sinks of set-type sends) and ``rx_packet_count`` has not advanced
+        for the profile-derived silence limit
+        (``_serial_link_down_silence_timeout_s``), the link is declared down.
         """
         if self._civ_transport is not self._civ_watchdog_last_transport:
             self._civ_watchdog_rebaseline()
             return False
 
-        total = self._civ_request_tracker.timeout_count
+        tracker = self._civ_request_tracker
+        total = tracker.timeout_count
         rx_count = getattr(self._civ_transport, "rx_packet_count", None)
         rx_advanced = isinstance(rx_count, int) and rx_count > (
             self._civ_watchdog_last_seen_rx_packets
         )
+        now = self._civ_silence_time_source()
         if rx_advanced:
             self._civ_consecutive_timeouts = 0
+            self._civ_silence_started_monotonic = None
+        elif (
+            tracker.response_pending_count > 0
+            and self._civ_silence_started_monotonic is None
+        ):
+            # First frozen tick with polls outstanding: start the silence
+            # clock. (Timeout deltas deliberately do NOT reset it — a tracked
+            # command timeout is itself proof of silence, the two evidence
+            # paths race and whichever threshold crosses first reports.)
+            self._civ_silence_started_monotonic = now
         elif total > self._civ_watchdog_last_seen_timeouts:
             self._civ_consecutive_timeouts += (
                 total - self._civ_watchdog_last_seen_timeouts
             )
+        elif tracker.response_pending_count == 0:
+            # Nothing outstanding: a quiet link is idle, not down.
+            self._civ_silence_started_monotonic = None
+
         self._civ_watchdog_last_seen_timeouts = total
         if isinstance(rx_count, int):
             self._civ_watchdog_last_seen_rx_packets = rx_count
-        return (
-            self._civ_consecutive_timeouts >= self._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD
-        )
+        if (
+            self._civ_consecutive_timeouts
+            >= self._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD
+        ):
+            self._civ_link_down_note = (
+                f"{self._civ_consecutive_timeouts} consecutive CI-V command "
+                "timeout(s) with no response"
+            )
+            return True
+        silence_started = self._civ_silence_started_monotonic
+        if silence_started is not None:
+            elapsed = now - silence_started
+            if elapsed >= self._serial_link_down_silence_timeout_s:
+                self._civ_link_down_note = (
+                    "polls outstanding and no CI-V frame parsed for "
+                    f"{elapsed:.1f}s (silence limit "
+                    f"{self._serial_link_down_silence_timeout_s:.1f}s)"
+                )
+                return True
+        return False
 
     async def _declare_serial_link_down(self) -> None:
         """Force the state machine to link-down on consecutive CI-V timeouts.
@@ -1187,11 +1284,10 @@ class _IcomSerialRadioBase(CoreRadio):
         nothing to restart the recovery loop.
         """
         logger.error(
-            "rigplane (%s): serial link-down on %s — %d consecutive CI-V "
-            "command timeout(s) with no response; marking connection reconnecting",
+            "rigplane (%s): serial link-down on %s — %s; marking connection reconnecting",
             self.model,
             self._serial_device,
-            self._civ_consecutive_timeouts,
+            self._civ_link_down_note,
         )
         self._conn_state = RadioConnectionState.RECONNECTING
         self._civ_stream_ready = False

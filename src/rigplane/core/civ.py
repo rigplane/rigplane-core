@@ -133,6 +133,24 @@ class CivRequestTracker:
         return len(self._ack_waiters) + len(self._response_waiters)
 
     @property
+    def response_pending_count(self) -> int:
+        """Waiters expecting a data response: tracked GETs + keyed poll sinks.
+
+        MOR-2861: the serial link-death watchdog uses this as its "polls are
+        outstanding" signal. Plain ACK sinks of fire-and-forget *set* sends
+        (``response_key is None``) are excluded: on a healthy but quiet radio
+        they would linger until stale-TTL cleanup (10 s) and make pending
+        read true long after the last real poll resolved. GET response
+        waiters and keyed poll sinks (a read dispatched fire-and-forget, the
+        web poller's BACKGROUND shape) resolve within the answer window when
+        the radio answers, so their presence while no frame parses is the
+        honest "the radio owes us data" evidence.
+        """
+        return len(self._response_waiters) + sum(
+            1 for waiter in self._ack_waiters if waiter.response_key is not None
+        )
+
+    @property
     def ack_sink_count(self) -> int:
         """Number of fire-and-forget ACK sink waiters currently tracked."""
         return sum(1 for w in self._ack_waiters if w.future is None)
