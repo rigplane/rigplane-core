@@ -457,7 +457,7 @@ describe('MOR-1240 — the powered-off overlay leaves the desktop status bar usa
   it('pins the edge contract: StatusBar publishes it; AppGlobalHost only consumes it in CSS; the phone layout mounts no bar', () => {
     const statusBar = read('../components-v2/layout/StatusBar.svelte');
     expect(statusBar).toMatch(/--rp-status-bar-bottom/);
-    expect(statusBar).toMatch(/setProperty\(BOTTOM_EDGE_PROPERTY/);
+    expect(statusBar).toMatch(/setProperty\(\s*BOTTOM_EDGE_PROPERTY/);
     expect(statusBar).not.toMatch(/data-status-bar/);
 
     const host = read('../AppGlobalHost.svelte');
