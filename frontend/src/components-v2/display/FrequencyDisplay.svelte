@@ -32,7 +32,7 @@
     get pendingDisplayHz() { return pendingDisplayHz; },
     disabled: true,
     context: {},
-    receiver,
+    get receiver() { return receiver; },
     minFreq: 0,
     maxFreq: 999_000_000,
   });
