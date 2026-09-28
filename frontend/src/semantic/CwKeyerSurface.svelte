@@ -424,8 +424,7 @@
       >
         <div class="cw-keyer-row" role="group" aria-label="Break-in">
           {#if standard}
-            <!-- MOR-2797: the row's visible label, the same treatment the
-                 pitch/speed rows get (CW PITCH, KEYER SPEED) — the FTX-1's
+            <!-- MOR-2797: the row's visible label — the FTX-1's
                  OFF/ON domain left this row as a lone 'ON' button that read
                  as "something is on", not as break-in. Upper-case comes from
                  the stylesheet, never from upper-casing the catalog text. -->
