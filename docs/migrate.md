@@ -49,12 +49,17 @@ candidate witness before it becomes a tested compatibility claim.
 ## The radio model is required
 
 2.11 fell back to the IC-7610 profile when no model was given. 3.0 does not
-guess. The `lan` and `serial` backends need `--model` (on `lan`, a
-`--radio-addr` that matches a loaded profile also works); without it the
-command stops with:
+guess. On the `lan` backend, a command without `--model` (or a `--radio-addr`
+that matches a loaded profile) stops with:
 
 ```text
 Error: Cannot resolve a radio profile: no profile, model, or matching radio_addr identifies the radio. Pass an explicit profile= or model= — rigplane no longer guesses a default rig.
+```
+
+On the `serial` backend, a command without `--model` stops with:
+
+```text
+Error: Serial backend needs an explicit radio model: pass --model (e.g. --model IC-7300); rigplane does not guess a default rig.
 ```
 
 In Python, `LanBackendConfig` and `IcomRadio` need `model=`, `profile=` or a

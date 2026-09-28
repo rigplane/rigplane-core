@@ -1102,7 +1102,7 @@ rigplane --model IC-7610 web --dx-cluster dxc.nc7j.com:7373 --callsign KN4KYD
 
 ```bash
 # Monitor frequency in a loop
-watch -n 1 rigplane freq --json
+watch -n 1 rigplane --model IC-7610 freq --json
 
 # Quick band change
 rigplane --model IC-7610 freq 7.074m && rigplane --model IC-7610 mode USB
@@ -1111,6 +1111,6 @@ rigplane --model IC-7610 freq 7.074m && rigplane --model IC-7610 mode USB
 rigplane --model IC-7610 att && rigplane --model IC-7610 preamp
 
 # Script-friendly JSON output
-FREQ=$(rigplane freq --json | jq -r '.frequency_hz')
+FREQ=$(rigplane --model IC-7610 freq --json | jq -r '.frequency_hz')
 echo "Currently on $FREQ Hz"
 ```
