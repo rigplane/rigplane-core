@@ -18,6 +18,7 @@ import asyncio
 import datetime
 import inspect
 import logging
+import re
 import time
 from collections.abc import Coroutine, Sequence
 from typing import TYPE_CHECKING, Any, cast
@@ -75,6 +76,19 @@ __all__ = ["RigctldServer", "run_rigctld_server"]
 # ``test_external_cat_session_stands_the_cadence_down_but_not_a_user_read``.
 _POLICY_CADENCE_REASON = "policy-cadence"
 _MAX_PENDING_CLIENT_RESPONSES = 64
+
+# MOR-2890: cross-protocol HTTP guard. A web page can issue a no-cors POST
+# to the rigctld port; without this check the request line and headers each
+# earn an ENIMPL and the body line after them executes as a rigctld command
+# (``T 1`` keys the transmitter). A first non-blank line shaped like an
+# HTTP request line therefore closes the connection before anything is
+# parsed or executed. Real rigctld clients (WSJT-X, fldigi, ``rigctl``)
+# never send such a line; the same pattern as Pro's MOR-2888.
+_HTTP_REQUEST_LINE_RE = re.compile(rb"^[A-Z]+ \S+ HTTP/\d(\.\d)?$")
+# One WARNING per refused connection, but rate-limited per peer so a page
+# hammering the port with fresh connections cannot flood the log.
+_HTTP_REFUSAL_LOG_WINDOW_S = 10.0
+_HTTP_REFUSAL_LOG_MAX_PEERS = 128
 
 
 class _ManagedPttReady(asyncio.Future[None]):
@@ -228,6 +242,9 @@ class RigctldServer:
         self._state_diagnostics = getattr(radio, "_state_diagnostics", None)
         # Per-client sliding window for rate limiting: client_id → timestamps
         self._rate_windows: dict[int, list[float]] = {}
+        # MOR-2890: peer host → monotonic time of its last logged HTTP
+        # refusal; throttles the per-connection WARNING below.
+        self._http_refusal_logged_at: dict[str, float] = {}
         # prevent GC of fire-and-forget tasks
         self._bg_tasks: set[asyncio.Task[Any]] = set()
 
@@ -956,6 +973,32 @@ class RigctldServer:
     # Connection management
     # ------------------------------------------------------------------
 
+    def _warn_http_refusal(self, peer_host: str, peername: str) -> None:
+        """Log one throttled WARNING for a refused HTTP-looking connection.
+
+        Each refused connection logs at most once by construction (the
+        guard closes the connection on its first matching line); the
+        per-peer window is what keeps a browser re-dialing the port from
+        flooding the log.
+        """
+        now = time.monotonic()
+        last = self._http_refusal_logged_at.get(peer_host)
+        if last is not None and now - last < _HTTP_REFUSAL_LOG_WINDOW_S:
+            return
+        if len(self._http_refusal_logged_at) >= _HTTP_REFUSAL_LOG_MAX_PEERS:
+            self._http_refusal_logged_at = {
+                host: at
+                for host, at in self._http_refusal_logged_at.items()
+                if now - at < _HTTP_REFUSAL_LOG_WINDOW_S
+            }
+        self._http_refusal_logged_at[peer_host] = now
+        logger.warning(
+            "refused HTTP-looking request on rigctld port from %s "
+            "(cross-protocol guard, MOR-2890); closing connection, "
+            "no command executed",
+            peername,
+        )
+
     def _accept_client(
         self,
         reader: asyncio.StreamReader,
@@ -1064,6 +1107,8 @@ class RigctldServer:
         response_tasks: set[asyncio.Task[None]] = set()
         ptt_revocation = asyncio.Event()
         graceful_quit = False
+        # MOR-2890: the HTTP guard inspects only the first non-blank line.
+        first_command_line = True
 
         def response_task_done(task: asyncio.Task[None]) -> None:
             response_tasks.discard(task)
@@ -1135,6 +1180,12 @@ class RigctldServer:
 
                 if not raw:
                     continue  # skip blank lines
+
+                if first_command_line:
+                    first_command_line = False
+                    if _HTTP_REQUEST_LINE_RE.match(raw):
+                        self._warn_http_refusal(str(peer[0]), session.peername)
+                        break
 
                 logger.debug("client #%d → %r", client_id, raw)
 
