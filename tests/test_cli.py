@@ -24,6 +24,7 @@ from rigplane.backends.config import (
     LanBackendConfig,
     RigctldBackendConfig,
     SerialBackendConfig,
+    YaesuCatBackendConfig,
 )
 
 
@@ -967,6 +968,164 @@ class TestBuildBackendConfig:
         config = await _build_backend_config(args)
         assert isinstance(config, SerialBackendConfig)
         assert config.device == "/dev/tty.usb0"
+
+
+class TestBackendInferenceFromModel:
+    """MOR-2926: --backend omitted follows the model's [protocol] type."""
+
+    async def test_ftx1_infers_yaesu_cat(self):
+        p = _build_parser()
+        args = p.parse_args(
+            ["--model", "FTX-1", "--serial-port", "/dev/ttyUSB0", "status"]
+        )
+        config = await _build_backend_config(args)
+        assert isinstance(config, YaesuCatBackendConfig)
+        assert config.device == "/dev/ttyUSB0"
+        assert config.model == "FTX-1"
+
+    async def test_ftx1_web_infers_yaesu_cat(self):
+        p = _build_parser()
+        args = p.parse_args(
+            ["--model", "FTX-1", "--serial-port", "/dev/ttyUSB0", "web"]
+        )
+        config = await _build_backend_config(args)
+        assert isinstance(config, YaesuCatBackendConfig)
+        assert config.device == "/dev/ttyUSB0"
+
+    async def test_icom_serial_inference_unchanged(self):
+        p = _build_parser()
+        args = p.parse_args(
+            ["--model", "IC-7300", "--serial-port", "/dev/ttyUSB0", "status"]
+        )
+        config = await _build_backend_config(args)
+        assert isinstance(config, SerialBackendConfig)
+        assert config.model == "IC-7300"
+
+    async def test_icom_lan_inference_unchanged(self):
+        p = _build_parser()
+        args = p.parse_args(["--model", "IC-7300", "--host", "1.2.3.4", "status"])
+        config = await _build_backend_config(args)
+        assert isinstance(config, LanBackendConfig)
+        assert config.model == "IC-7300"
+
+    async def test_no_model_keeps_serial_inference(self):
+        p = _build_parser()
+        args = p.parse_args(["--serial-port", "/dev/ttyUSB0", "status"])
+        config = await _build_backend_config(args)
+        assert isinstance(config, SerialBackendConfig)
+
+    async def test_no_model_keeps_lan_default(self):
+        p = _build_parser()
+        args = p.parse_args(["--host", "1.2.3.4", "status"])
+        config = await _build_backend_config(args)
+        assert isinstance(config, LanBackendConfig)
+
+    async def test_unsupported_protocol_refused(self):
+        p = _build_parser()
+        args = p.parse_args(
+            ["--model", "TX-500", "--serial-port", "/dev/ttyUSB0", "status"]
+        )
+        with pytest.raises(ValueError, match="kenwood_cat"):
+            await _build_backend_config(args)
+
+    async def test_unsupported_protocol_message_names_no_backend(self):
+        p = _build_parser()
+        args = p.parse_args(
+            ["--model", "TX-500", "--serial-port", "/dev/ttyUSB0", "status"]
+        )
+        with pytest.raises(ValueError, match="no backend supports"):
+            await _build_backend_config(args)
+
+    async def test_missing_protocol_refused(self, monkeypatch):
+        from types import SimpleNamespace
+
+        fake = SimpleNamespace(
+            id="fake_1",
+            model="FAKE-1",
+            civ_addr=0x01,
+            default_baud=9600,
+            protocol_type=None,
+        )
+        monkeypatch.setattr(
+            "rigplane.profiles.rig_loader.discover_available_rigs",
+            lambda _d: {"FAKE-1": fake},
+        )
+        p = _build_parser()
+        args = p.parse_args(
+            ["--model", "FAKE-1", "--serial-port", "/dev/ttyUSB0", "status"]
+        )
+        with pytest.raises(ValueError, match="no backend supports"):
+            await _build_backend_config(args)
+
+    async def test_inferred_yaesu_ignores_host_with_warning(self):
+        p = _build_parser()
+        args = p.parse_args(
+            [
+                "--model",
+                "FTX-1",
+                "--serial-port",
+                "/dev/ttyUSB0",
+                "--host",
+                "1.2.3.4",
+                "status",
+            ]
+        )
+        with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+            config = await _build_backend_config(args)
+        assert isinstance(config, YaesuCatBackendConfig)
+        err = mock_stderr.getvalue()
+        assert "--host is ignored" in err
+        assert "yaesu-cat" in err
+
+    async def test_explicit_backend_wins_over_model(self):
+        p = _build_parser()
+        args = p.parse_args(
+            [
+                "--model",
+                "FTX-1",
+                "--serial-port",
+                "/dev/ttyUSB0",
+                "--backend",
+                "serial",
+                "status",
+            ]
+        )
+        config = await _build_backend_config(args)
+        assert isinstance(config, SerialBackendConfig)
+
+    async def test_explicit_lan_wins_over_yaesu_model(self):
+        p = _build_parser()
+        args = p.parse_args(
+            ["--model", "FTX-1", "--host", "1.2.3.4", "--backend", "lan", "status"]
+        )
+        config = await _build_backend_config(args)
+        assert isinstance(config, LanBackendConfig)
+
+    async def test_rigctld_stays_explicit(self):
+        p = _build_parser()
+        args = p.parse_args(
+            ["--model", "FTX-1", "--host", "1.2.3.4", "--backend", "rigctld", "status"]
+        )
+        config = await _build_backend_config(args)
+        assert isinstance(config, RigctldBackendConfig)
+
+    async def test_inferred_yaesu_default_baud(self):
+        p = _build_parser()
+        args = p.parse_args(
+            ["--model", "FTX-1", "--serial-port", "/dev/ttyUSB0", "status"]
+        )
+        config = await _build_backend_config(args)
+        assert isinstance(config, YaesuCatBackendConfig)
+        assert config.baudrate == 38400
+
+    def test_backend_help_mentions_model_inference(self):
+        p = _build_parser()
+        for action in p._actions:
+            if action.dest == "backend":
+                assert "inferred from the model" in action.help.lower()
+                break
+        else:
+            pytest.fail("--backend argument not found in parser")
 
 
 class TestAutoDiscovery:
