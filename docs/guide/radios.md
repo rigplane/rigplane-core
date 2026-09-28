@@ -99,7 +99,7 @@ broader coverage than maintaining a bespoke backend for each dialect.
 - **Rig profile:** `rigs/x6100.toml`
 - **Features:** HF + 6m, QRP 8W, built-in ATU, WiFi
 - **VFO scheme:** `ab`
-- **Status:** Profile only. May work with CI-V backend (untested); also a Hamlib assisted-discovery candidate.
+- **Status:** Profile only; the serial backend refuses it. Also a Hamlib assisted-discovery candidate.
 
 ### Xiegu X6200
 
@@ -113,7 +113,7 @@ broader coverage than maintaining a bespoke backend for each dialect.
 - **Not advertised:** remote power on/off and spectrum scope; the documented
   X6200 CI-V command envelope does not include those IC-705-style commands.
   RF power level control is advertised.
-- **Status:** Native profile and CLI preset are present. Discovery includes
+- **Status:** A native profile is present. Discovery includes
   X6200-vs-IC-705 disambiguation because both radios can report CI-V address
   `0xA4`. First-party maintainer hardware validation is still pending; hardware
   reports are welcome.
