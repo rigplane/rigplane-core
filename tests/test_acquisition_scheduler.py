@@ -4233,13 +4233,18 @@ def test_startup_domain_drops_a_field_its_condition_contradicts() -> None:
     )
 
 
-def test_startup_domain_drops_a_field_whose_condition_is_unobserved() -> None:
+def test_startup_domain_keeps_a_field_whose_condition_is_unobserved() -> None:
+    """MOR-2803: unknown counts as available — an unread clause source keeps
+    the conditional field outstanding instead of silently dropping it from
+    the startup gate (mirrors the ``_due_poll_groups`` ``None`` rule)."""
+
     scheduler = _fm_absent_scheduler()
     availability = resolve_available_when(scheduler._profile, StateSnapshot.empty())
 
     assert availability == {_AVAIL_TARGET: None}
     assert scheduler.unobserved_startup_paths((), availability=availability) == (
         _AVAIL_MODE,
+        _AVAIL_TARGET,
     )
 
 

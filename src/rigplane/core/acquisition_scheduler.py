@@ -1435,12 +1435,15 @@ class AcquisitionScheduler:
         The domain is every pollable capability plus every explicit
         ``field_policies`` key, minus paths not required at startup, paths
         whose resolved policy carries ``tx_only``, and paths
-        ``availability`` maps to ``False`` or ``None``.
+        ``availability`` maps to ``False``.
 
         ``availability`` carries what :func:`resolve_available_when` made of
         each conditional field's declared clauses. A path it omits is
-        unconditional and keeps its membership; ``None`` (no clause source
-        observed yet) excludes the same way ``False`` does.
+        unconditional and keeps its membership. MOR-2803: ``None`` (a clause
+        source nobody has observed yet) keeps the path outstanding the same
+        way ``_due_poll_groups`` never skips a ``None`` resolution (MOR-2748)
+        — unknown counts as available, so an unread clause source cannot
+        silently drop a declared field from the startup gate.
 
         Unlike :meth:`has_unobserved_policy_fields`, this does not exclude
         cadence-owned paths: a path :meth:`due_requests` will poll is still
@@ -1458,7 +1461,7 @@ class AcquisitionScheduler:
                     if path not in observed
                     and profile.capability_for(path).startup_required
                     and not profile.policy_for(path).tx_only
-                    and availability.get(path, True) is True
+                    and availability.get(path, True) is not False
                 ),
                 key=str,
             )

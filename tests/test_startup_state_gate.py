@@ -481,7 +481,7 @@ class _RecordingScheduler:
         return tuple(
             path
             for path in self._required
-            if path not in observed and availability.get(path, True) is True
+            if path not in observed and availability.get(path, True) is not False
         )
 
     def prime_unobserved(

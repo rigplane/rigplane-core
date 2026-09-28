@@ -1982,18 +1982,21 @@ class YaesuObservationAdapter:
         return bool(capability.can_poll)
 
     def _available(self, path: FieldPath) -> bool:
-        """Return False while a declared clause is contradicted or unobserved.
+        """Return False only while a declared clause is contradicted.
 
         The ``available_when`` clauses are resolved against a
         :class:`StateStore` attached to the radio as ``_state_store``; with
-        none attached the read proceeds unchanged.
+        none attached the read proceeds unchanged. MOR-2803: an unresolved
+        clause (``None`` — its source field has not been observed yet) counts
+        as available, mirroring ``AcquisitionScheduler._due_poll_groups``
+        (MOR-2748): an unread NARROW must not withhold the width read.
         """
 
         store = getattr(self.radio, "_state_store", None)
         if not isinstance(store, StateStore):
             return True
         availability = resolve_available_when(self.profile, store.snapshot())
-        return availability.get(path, True) is True
+        return availability.get(path, True) is not False
 
     def _has_runtime_capability(self, capability: str) -> bool:
         raw: object = getattr(self.radio, "capabilities", set())
