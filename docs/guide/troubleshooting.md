@@ -232,8 +232,8 @@ packets each iteration.
 
 **Symptom:** log lines like:
 
-- `UDP error [peer=192.168.55.40:50002] (#1): ...`
-- `UDP error [peer=192.168.55.40:50001] (#100, suppressed 96): ...`
+- `UDP error [peer=192.168.1.50:50002] (#1): ...`
+- `UDP error [peer=192.168.1.50:50001] (#100, suppressed 96): ...`
 
 **What changed:** transport logs now include the remote endpoint in each UDP error
 line. This helps distinguish which logical channel is failing.
@@ -342,7 +342,7 @@ failure.
 
 ```bash
 export ICOM_AUDIO_SAMPLE_RATE=16000
-uv run rigplane --model IC-7610 --host 192.168.55.40 --user USER --pass-file .rigplane-pass web
+uv run rigplane --model IC-7610 --host 192.168.1.50 --user USER --pass-file .rigplane-pass web
 ```
 
 16 kHz stereo PCM fits a 20 ms frame in one UDP packet and is usually adequate

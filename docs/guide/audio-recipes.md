@@ -45,7 +45,7 @@ or bandwidth-constrained tunnel paths:
 
 ```bash
 export ICOM_AUDIO_SAMPLE_RATE=16000
-uv run rigplane --model IC-7610 --host 192.168.55.40 --user USER --pass-file .rigplane-pass web
+uv run rigplane --model IC-7610 --host 192.168.1.50 --user USER --pass-file .rigplane-pass web
 ```
 
 Explicit API or CLI/env overrides take precedence over profile defaults. If no
@@ -103,7 +103,7 @@ a dummy load or another controlled no-radiate configuration.
 ```bash
 export RIGPLANE_HW_IC7610_AUDIO=1
 export RIGPLANE_HW_ALLOW_TX=1
-export RIGPLANE_HW_ICOM_HOST=192.168.55.40
+export RIGPLANE_HW_ICOM_HOST=192.168.1.50
 export RIGPLANE_HW_ICOM_USER=YOUR_USER
 export RIGPLANE_HW_ICOM_PASS_FILE=.rigplane-pass
 
