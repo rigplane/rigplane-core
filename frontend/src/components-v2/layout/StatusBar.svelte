@@ -382,7 +382,10 @@
 {#if controlState === 'disconnected'}
   <div class="control-link-lost">{t('core.statusbar.controlLinkLost')}</div>
 {/if}
-<div class="status-bar">
+<!-- MOR-1240: `data-status-bar` is the stable DOM contract AppGlobalHost's
+     powered-off overlay uses to find the bar and start below its real
+     viewport box. -->
+<div class="status-bar" data-status-bar="">
   <div class="status-indicators">
     <span class="indicator" role="status" title={radioHealthLabel ? t('core.statusbar.indicator.radioWithReason', { state: radioState, reason: radioHealthLabel }) : t('core.statusbar.indicator.radio', { state: radioState })} style="--indicator-color: {stateColor(radioIndicatorState)}">
       <span class="indicator-dot"></span>
