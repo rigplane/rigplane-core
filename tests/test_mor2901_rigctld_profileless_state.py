@@ -137,6 +137,22 @@ async def test_api_capabilities_serves_200_without_profile_derived_keys() -> Non
         assert key not in payload, key
 
 
+@pytest.mark.asyncio
+async def test_api_capabilities_omit_power_on_command_without_profile() -> None:
+    """``powerOnCommand`` is derived from the profile, so the profile-less
+    rigctld path omits it: MOR-2841 added the key to the profile-present
+    path only, and the MOR-2901 correction must not leak it into the
+    backend-reported payload."""
+    server = _profileless_rigctld_server()
+    writer = _MemoryWriter()
+    await server._handle_http(  # noqa: SLF001
+        writer, "GET", "/api/v1/capabilities", {"host": "localhost:8470"}
+    )
+    status, payload = _status_and_json(writer)
+    assert status == 200
+    assert "powerOnCommand" not in payload
+
+
 def test_control_ws_state_envelope_flows_without_closing() -> None:
     """The control WebSocket state path survives a profile-less rigctld
     radio: the registration baseline and a broadcast delta are both
