@@ -11,6 +11,7 @@
     presentation?: 'grouped' | 'independent' | 'standard';
     renderSurface?: boolean;
     pendingFilter?: number | null;
+    pendingMode?: string | null;
     pendingDataMode?: number | null;
     pendingModInput?: number | null;
     filterWidthFeedback?: Readonly<CommandScalarFeedback>;
@@ -33,7 +34,7 @@
   }
   let {
     view, presentation = 'grouped', renderSurface = false,
-    pendingFilter = null, pendingDataMode = null, pendingModInput = null, filterWidthFeedback,
+    pendingFilter = null, pendingMode = null, pendingDataMode = null, pendingModInput = null, filterWidthFeedback,
     ifShiftFeedback, pbtInnerFeedback, pbtOuterFeedback,
     finiteAppearance, rendererContext = null, onModeChange, onFilterChange,
     onDataModeChange, onModInputChange, onFilterWidthChange, onFilterShapeChange,
@@ -49,7 +50,7 @@
   <div data-slot="data-mode">{@render handles.dataMode()}</div>
 {/snippet}
 
-<FilterInstrumentHost {view} {pendingFilter} {pendingDataMode} {pendingModInput} {onModeChange} {onFilterChange}
+<FilterInstrumentHost {view} {pendingFilter} {pendingMode} {pendingDataMode} {pendingModInput} {onModeChange} {onFilterChange}
   {onFilterShapeChange} {onDataModeChange} {onModInputChange} {...selection}>
   {#snippet children(handles: FilterInstrumentHandles)}
     {#if renderSurface && view !== null}
@@ -64,6 +65,7 @@
       {#key presentation}
         <section data-testid={`${presentation}-filter-composition`}>
           {#if presentation === 'standard'}
+            {#if handles.standardMode}{@render handles.standardMode()}{/if}
             {#if handles.standardDataMode}{@render handles.standardDataMode()}{/if}
           {:else if presentation === 'grouped'}
             {@render handles.mode()}{@render handles.filter()}{@render handles.shape()}{@render handles.dataMode()}
