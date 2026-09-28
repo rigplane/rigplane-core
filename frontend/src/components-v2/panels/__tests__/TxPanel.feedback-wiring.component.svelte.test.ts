@@ -406,7 +406,7 @@ describe('TxPanel unread TX level value display (MOR-2658)', () => {
 // ── RF power (MOR-2910) ─────────────────────────────────────────────────────
 // The TX LEVELS modal's RF power lane adopts the shared command-feedback
 // scalar (`getRfPowerControlFeedback`, normalized scale) like its four raw
-// siblings above: requested/confirmed/error status, aria-busy while pending,
+// siblings above: admitted/confirmed/error status, aria-busy while pending,
 // and dispatch through the shared scalar policy.
 describe('TxPanel RF power command-feedback wiring (MOR-2910)', () => {
   function rfSlider(): HTMLElement {
@@ -425,13 +425,18 @@ describe('TxPanel RF power command-feedback wiring (MOR-2910)', () => {
     });
   }
 
-  it('projects the requested RF power target with busy state over canonical truth', () => {
+  // The RF lane keys off the SERVER-ADMITTED target
+  // (`RF_POWER_COMMAND_DESCRIPTOR.scope`/`target` read `admittedTarget`, never
+  // the request params): a begun-but-unacknowledged command stays invisible
+  // (`idle`), and only the ack carries the 0.75 the lane projects.
+  it('projects the admitted RF power target with busy state over canonical truth', () => {
     render();
     openSettings();
-    beginRfPower('rf-power', 0.75);
+    const command = beginRfPower('rf-power', 0.75);
+    commands.acknowledgeCommand(command.id, 1, 1, 0.75);
     flushSync();
 
-    expect(rfSlider().dataset.commandPhase).toBe('submitted');
+    expect(rfSlider().dataset.commandPhase).toBe('awaiting-confirmation');
     expect(rfSlider().getAttribute('aria-busy')).toBe('true');
     expect(rfSlider().getAttribute('aria-valuenow')).toBe('0.5');
     expect(rfValue()).toBe('50%');
@@ -443,6 +448,7 @@ describe('TxPanel RF power command-feedback wiring (MOR-2910)', () => {
     render();
     openSettings();
     const failed = beginRfPower('rf-power-failed', 0.75);
+    commands.acknowledgeCommand(failed.id, 1, 1, 0.75);
     commands.failCommand(failed.id, 1, 1, 'radio refused');
     flushSync();
     expect(rfSlider().dataset.commandPhase).toBe('failed');
@@ -451,7 +457,7 @@ describe('TxPanel RF power command-feedback wiring (MOR-2910)', () => {
     expect(target.textContent).toContain('radio refused');
 
     const command = beginRfPower('rf-power-confirm', 0.75);
-    commands.acknowledgeCommand(command.id, 1, 1);
+    commands.acknowledgeCommand(command.id, 1, 1, 0.75);
     const next = {
       ...connectedState(), powerLevel: 0.75,
       fieldStatus: { ...connectedState().fieldStatus, powerLevel: fresh(2) },
@@ -467,6 +473,7 @@ describe('TxPanel RF power command-feedback wiring (MOR-2910)', () => {
   it('consumes a hidden terminal transition and retains it without replay on reopen', () => {
     render();
     const command = beginRfPower('rf-power-hidden', 0.75);
+    commands.acknowledgeCommand(command.id, 1, 1, 0.75);
     commands.failCommand(command.id, 1, 1, 'closed rf failure');
     flushSync();
     expect(target.querySelector('[aria-label="RF Power"]')).toBeNull();
