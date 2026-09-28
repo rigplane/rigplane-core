@@ -108,6 +108,7 @@ from rigplane.core.radio_protocol import (  # noqa: E402
 )
 from rigplane.core.tx_safety import TxOutcome, TxOwner, TxSource  # noqa: E402
 from rigplane.core.types import Mode, get_audio_capabilities  # noqa: E402
+from rigplane.profiles import resolve_radio_profile  # noqa: E402
 from rigplane.runtime.managed_tx_effect_lane import ManagedTxActuator  # noqa: E402
 from rigplane.runtime.managed_tx_composition import (  # noqa: E402
     ManagedTxComposition,
@@ -2340,6 +2341,17 @@ async def _cmd_audio_probe(config: BackendConfig, args: argparse.Namespace) -> i
 
     if not isinstance(config, LanBackendConfig):
         print("Error: audio probe requires a LAN backend.", file=sys.stderr)
+        return 1
+    # Each attempt builds a radio from this config; without a resolvable
+    # profile every candidate would be recorded as failed (MOR-2952).
+    try:
+        resolve_radio_profile(
+            profile=config.profile,
+            model=config.model,
+            radio_addr=config.radio_addr,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         return 1
     duration_s = float(getattr(args, "duration", 1.0))
     if duration_s <= 0:
