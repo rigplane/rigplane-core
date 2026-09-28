@@ -769,8 +769,8 @@ async def test_silent_link_with_ready_session_declares_link_down(
     assert radio._civ_request_tracker.timeout_count == 0
 
     # Fake clock: jump straight past the derived silence limit instead of
-    # waiting real seconds (``getattr`` fallback keeps this RED-safe on the
-    # pre-fix code, which has no such attribute).
+    # waiting real seconds (``getattr`` fallbacks keep this RED-safe on the
+    # pre-fix code, which has no such attributes).
     now = {"t": time.monotonic()}
     radio._civ_silence_time_source = lambda: now["t"]  # type: ignore[attr-defined]
     silence_limit = getattr(radio, "_serial_link_down_silence_timeout_s", 10.0)
@@ -778,21 +778,21 @@ async def test_silent_link_with_ready_session_declares_link_down(
     managed_tx = _FakeManagedTxRuntime()
     radio._managed_tx_runtime = managed_tx  # type: ignore[assignment]
 
+    # The silence clock must start while the fake clock still reads t0: the
+    # watchdog needs at least one evidence tick (polls outstanding, rx frozen)
+    # BEFORE the jump, otherwise the clock would start on the already-jumped
+    # value and elapsed could never reach the limit.
+    assert await _wait_until(
+        lambda: getattr(radio, "_civ_silence_started_monotonic", None) is not None,
+        timeout_s=2.0,
+    ), "watchdog never started the silence clock with polls outstanding"
+
     with caplog.at_level(logging.ERROR, logger="rigplane.backends._icom_serial_base"):
         now["t"] += silence_limit + 1.0
-        tripped = await _wait_until(
+        assert await _wait_until(
             lambda: radio.conn_state == RadioConnectionState.RECONNECTING,
             timeout_s=2.0,
-        )
-        tracker = radio._civ_request_tracker  # noqa: SLF001
-        assert tripped, (
-            f"link-down never fired; pending={tracker.pending_count} "
-            f"response_pending={tracker.response_pending_count} "
-            f"silence_started={radio._civ_silence_started_monotonic} "  # noqa: SLF001
-            f"timeouts={tracker.timeout_count} "
-            f"debug={getattr(radio, '_civ_silence_debug', None)} "  # noqa: SLF001
-            f"limit={getattr(radio, '_serial_link_down_silence_timeout_s', None)}"  # noqa: SLF001
-        )
+        ), "silent link with polls outstanding never declared link-down"
 
     error_lines = [
         r

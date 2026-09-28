@@ -745,6 +745,10 @@ async def test_civ_link_healthy_reports_false_on_a_silent_serial_link() -> None:
     stayed True forever on a dead link (the 2026-09-28 IC-7300 incident).
     With the re-stamp removed, the timestamp ages past
     ``_civ_ready_idle_timeout`` and the gate must answer False.
+
+    The watchdog interval is pinned well below the idle timeout so the
+    pre-fix re-stamp would keep the gate green deterministically (with the
+    0.2 s default interval the RED side degenerates into a tick-phase race).
     """
     from test_icom7610_serial_radio import _FakeSerialCivLink
 
@@ -752,11 +756,12 @@ async def test_civ_link_healthy_reports_false_on_a_silent_serial_link() -> None:
 
     link = _FakeSerialCivLink(fail_connect_calls=set(range(2, 100)))
     radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
-    radio._civ_ready_idle_timeout = 0.05
+    radio._SERIAL_WATCHDOG_INTERVAL_S = 0.005
+    radio._civ_ready_idle_timeout = 0.15
     await radio.connect()
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
 
-    await asyncio.sleep(0.3)
+    await asyncio.sleep(0.45)
     assert poller._civ_link_healthy(now=time.monotonic()) is False  # noqa: SLF001
 
     await radio.disconnect()
