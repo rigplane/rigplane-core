@@ -1987,9 +1987,16 @@ class CivRuntime:
                 # filter_width RadioState mirror is now observation-backed
                 # (MOR-437); only the private executor _state_cache fallback
                 # (main receiver) is kept here, reusing the identical decode.
-                decoded_width = self._decode_filter_width(frame)
-                if getattr(frame, "receiver", None) in (None, 0x00):
-                    host._state_cache.filter_width = decoded_width
+                # MOR-2823: a fixed-width mode's answer decodes to a raw
+                # index, not Hz (MOR-2503) — skip it exactly as
+                # ``_observations_from_frame`` does, so the cache keeps the
+                # last decoded value instead of a raw index that rigctld
+                # ``\m`` would map through its passband table.
+                if not self._fixed_filter_width_mode(frame) and frame.receiver in (
+                    None,
+                    0x00,
+                ):
+                    host._state_cache.filter_width = self._decode_filter_width(frame)
             elif frame.command == 0x07 and frame.data and len(frame.data) >= 2:
                 sub07 = frame.data[0]
                 val07 = frame.data[1]
