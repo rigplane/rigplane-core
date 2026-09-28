@@ -47,6 +47,55 @@ commands or WebSocket upgrades. See `src/rigplane/web/server.py:
 WebServer._handle_diagnose_send` and `src/rigplane/web/handlers/diagnostics.py:
 check_origin_or_loopback`.
 
+### Host allowlist and WebSocket Origin guard (MOR-2880)
+
+Without an application credential, the listener itself is the boundary, so
+every HTTP route and every WebSocket upgrade now runs a Host allowlist before
+any handler. The RAW `Host` request header is checked — never a value derived
+from the bind address or a server name. After stripping the port (bracketed
+IPv6 such as `[::1]:8470` is handled), the host part is admitted when it is:
+
+- an IP literal, IPv4 or IPv6;
+- a single-label name with no dot, compared case-insensitively (this includes
+  `localhost` and bare hostnames);
+- a name ending in `.localhost`, `.local`, `.lan`, `.home.arpa` or
+  `.internal`, compared case-insensitively, with one trailing dot ignored;
+- a name passed via the repeatable `--allowed-host NAME` flag on the `web`
+  command (`WebConfig.allowed_hosts`).
+
+A MISSING `Host` header is admitted. Everything else — including empty or
+malformed values — gets `421` with the JSON body
+`{"error": "misdirected request: host not allowed"}`. A refused WebSocket
+upgrade gets its `421` before the `101` handshake. See
+`src/rigplane/web/host_guard.py: host_header_allowed`,
+`src/rigplane/web/web_routing.py: dispatch_http_request` and
+`src/rigplane/web/server.py: WebServer._handle_websocket`; refusals log one
+throttled WARNING naming the path, Origin and Host
+(`src/rigplane/web/server.py: WebServer._log_refused_request`). Pinned by
+`tests/test_web_origin_host_guard.py: test_ws_foreign_or_malformed_host_refused_with_421`,
+`test_ws_local_hosts_accepted`, `test_http_foreign_or_malformed_host_refused_with_421`,
+`test_http_local_hosts_accepted` and `test_ws_allowed_host_flag_admits_configured_name`.
+
+The four WebSocket upgrades (`/api/v1/ws`, `/api/v1/scope`,
+`/api/v1/audio-scope`, `/api/v1/audio`) additionally enforce a same-origin
+`Origin` rule with no loopback exception: a missing `Origin` is admitted
+(non-browser clients; the Pro supervisor's proxy sends none on its WebSocket
+leg), while a present one must be same-origin with the request — scheme, host
+and port — and its host must pass the Host allowlist, or the upgrade is
+refused with `403` before it happens. The same-origin comparison is shared
+with the diagnostic routes' check via
+`src/rigplane/web/host_guard.py: origin_matches_host`;
+`src/rigplane/web/handlers/diagnostics.py: check_origin_or_loopback` keeps its
+loopback-bind skip. Pinned by
+`tests/test_web_origin_host_guard.py: test_ws_foreign_origin_refused_before_upgrade`,
+`test_ws_same_origin_accepted` and `test_ws_missing_origin_accepted`.
+
+The Origin check on ordinary HTTP routes is deferred to MOR-2881: the Pro
+supervisor forwards the browser's `Origin` on its HTTP leg, so core admits an
+HTTP request with a foreign `Origin` as long as its `Host` passes the
+allowlist. Pinned by
+`tests/test_web_origin_host_guard.py: test_http_foreign_origin_with_allowed_host_still_accepted`.
+
 The `authRequired` runtime and station fields remain Boolean and are now `false`
 (`src/rigplane/web/server.py: WebServer._serve_runtime`,
 `WebServer._station_readiness_payload`).
