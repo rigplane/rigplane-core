@@ -53,6 +53,8 @@ When `--host` is omitted (LAN backend), rigplane sends a UDP broadcast to find r
 - **Multiple radios** → lists them, asks you to specify `--host`
 - **No radios** → error with troubleshooting hints
 
+LAN discovery finds the radio's IP address but not its model, so name the model as well, for example `rigplane --model IC-7610 status`.
+
 Similarly, when `--backend serial` is set without `--serial-port`, serial ports are scanned automatically.
 
 The `--backend` flag is auto-inferred:

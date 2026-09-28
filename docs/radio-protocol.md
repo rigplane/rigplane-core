@@ -280,19 +280,14 @@ assert isinstance(YaesuRadio("/dev/ttyUSB0"), Radio)
 
 ### Existing Code (LAN Backend)
 
-If you're currently using `IcomRadio` directly, **no changes are required**:
+Pass the radio's model to `IcomRadio`:
 
 ```python
 from rigplane import IcomRadio
 
-# This still works (LAN backend, backward compatible)
-async with IcomRadio("192.168.1.100", username="user", password="pass") as radio:
+async with IcomRadio("192.168.1.100", username="user", password="pass", model="IC-7610") as radio:
     freq = await radio.get_frequency()
 ```
-
-`IcomRadio` remains the **backward-compatible LAN adapter** built on the shared
-IC-7610 core. All existing code, scripts, and integrations continue to work
-without modification.
 
 ### New Code (Backend Factory)
 
@@ -326,15 +321,15 @@ async with radio:
 
 ### CLI Backward Compatibility
 
-Default behavior is **unchanged** (LAN):
+Name the radio's model with `--model`:
 
 ```bash
-# Default: LAN backend (same as before)
-rigplane status
-rigplane freq 14.074m
+# Default: LAN backend
+rigplane --model IC-7610 status
+rigplane --model IC-7610 freq 14.074m
 
 # Explicit LAN backend
-rigplane --backend lan status
+rigplane --model IC-7610 --backend lan status
 
 # New: Serial backend
 rigplane --backend serial --model IC-7610 --serial-port /dev/cu.usbserial-111120 status
@@ -346,13 +341,13 @@ Web UI and rigctld now support backend selection via CLI flags. Default is LAN f
 
 ```bash
 # Web UI: LAN backend (default)
-rigplane web
+rigplane --model IC-7610 web
 
 # Web UI: Serial backend
 rigplane --backend serial --model IC-7610 --serial-port /dev/cu.usbserial-111120 web
 
 # rigctld: LAN backend (default)
-rigplane serve
+rigplane --model IC-7610 serve
 
 # rigctld: Serial backend
 rigplane --backend serial --model IC-7610 --serial-port /dev/cu.usbserial-111120 serve
@@ -390,10 +385,10 @@ async with radio:
 
 ### Migration Checklist
 
-- [x] **Existing LAN code**: No changes required — `IcomRadio` still works
+- [x] **Existing LAN code**: Pass the radio's `model=` to `IcomRadio`
 - [x] **New backend-agnostic code**: Use `create_radio(config)` factory
-- [x] **CLI**: Default unchanged (LAN); add `--backend serial` for serial
-- [x] **Web/rigctld**: Default unchanged (LAN); add `--backend serial` for serial
+- [x] **CLI**: Name the model with `--model`; add `--backend serial` for serial
+- [x] **Web/rigctld**: Name the model with `--model`; add `--backend serial` for serial
 - [x] **Capability-specific code**: Use `isinstance(radio, AudioCapable)` checks
 - [x] **Tests**: Use `Radio` protocol for mocks, not concrete `IcomRadio`
 
