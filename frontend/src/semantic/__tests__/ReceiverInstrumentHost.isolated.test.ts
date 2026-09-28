@@ -694,7 +694,7 @@ describe('receiver facts handles (MOR-2852)', () => {
       ...pub.state.fieldStatus,
       'main.filterWidth': available(), 'main.agc': available(), 'main.nb': available(), 'main.nr': available(),
       'sub.filterWidth': available(), 'sub.agc': available(), 'sub.nb': available(), 'sub.nr': available(),
-    };
+    } as ServerState['fieldStatus'];
     return pub;
   }
   function mountFacts(publisher: Publisher): HTMLElement {
