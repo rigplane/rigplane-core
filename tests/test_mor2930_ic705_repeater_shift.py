@@ -93,7 +93,9 @@ def _sent_frames(transport: MockTransport) -> list[CivFrame]:
 
 @pytest.mark.parametrize(("direction", "code"), _SET_CODES)
 def test_set_frame_carries_the_guide_code(ic705_map, direction, code) -> None:
-    frame = parse_civ_frame(set_repeater_shift(direction, IC705_ADDR, cmd_map=ic705_map))
+    frame = parse_civ_frame(
+        set_repeater_shift(direction, IC705_ADDR, cmd_map=ic705_map)
+    )
     assert (frame.command, frame.sub, frame.data) == (0x0F, None, bytes([code]))
 
 
