@@ -7,6 +7,9 @@
   with an 8 px margin; any scroll while open closes it (one capture-phase
   listener). Round 4, measured in Chromium: inside the container-type surface
   and the LCD column, `fixed` places in viewport coordinates — no top layer.
+  MOR-2895 (owner, 2026-09-28): the panel opens DOWN only when it fits below
+  the key; otherwise it opens UP above the key, so on the portrait phone it
+  never reaches under the fixed bottom tuning bar.
 
   Close semantics, per the ticket: outside click lands on a fixed transparent
   backdrop (z-index 999, the existing popover scheme —
@@ -37,7 +40,17 @@
     const rect = anchor.getBoundingClientRect();
     const { offsetWidth: w, offsetHeight: h } = panel;
     const left = Math.max(8, Math.min(rect.right - w, window.innerWidth - 8 - w));
-    const top = Math.max(8, Math.min(rect.bottom, window.innerHeight - 8 - h));
+    // MOR-2895 (owner, 2026-09-28 15:10 EDT): open DOWN only while the whole
+    // panel fits between the key and the viewport's bottom margin. On the
+    // portrait phone the ⋯ key sits just above the fixed bottom tuning bar,
+    // and the old always-down clamp buried the panel's tail (During TX, VBW
+    // narrow) under that bar. No room below ⇒ open UP, flush 8 px above the
+    // key; when the panel fits neither way the old top-clamped downward
+    // placement stays (the panel's max-height keeps it scrollable).
+    const roomBelow = window.innerHeight - 8 - h;
+    const top = rect.bottom <= roomBelow
+      ? rect.bottom
+      : Math.max(8, Math.min(rect.top - 8 - h, roomBelow));
     Object.assign(panel.style, { left: `${left}px`, top: `${top}px` });
   }
 
@@ -87,6 +100,10 @@
     gap: 6px;
     min-width: 240px;
     max-width: calc(100vw - 16px);
+    /* MOR-2895: a panel taller than the viewport (short windows, the phone's
+       44px rows) scrolls instead of spilling past either margin. */
+    max-height: calc(100vh - 16px);
+    overflow-y: auto;
     padding: 8px;
     background: var(--v2-bg-darkest, #0a0a0f);
     border: 1px solid var(--v2-border, #2a2a3e);

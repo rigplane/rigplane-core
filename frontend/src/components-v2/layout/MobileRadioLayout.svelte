@@ -1686,10 +1686,20 @@
     font-size: 18px;
   }
 
-  .m-scope-controls :global(.scope-flat-key) {
-    min-width: 72px;
-    padding: 0 12px;
-  }
+   .m-scope-controls :global(.scope-flat-key) {
+     min-width: 72px;
+     padding: 0 12px;
+   }
+
+   /* MOR-2895: the More panel's rows may wrap on the phone — the 16px/44px
+      button floors make the four-key MODE row wider than the panel at a
+      360 px viewport, and `nowrap` there would push items past the panel's
+      and the viewport's right edge. The panel is a DOM descendant of this
+      tab, so the override reaches it despite its fixed positioning. */
+   .m-scope-controls :global(.scope-more-row) {
+     flex-wrap: wrap;
+     row-gap: 8px;
+   }
 
   /* ── TX compact section ── */
   .m-tx-compact {

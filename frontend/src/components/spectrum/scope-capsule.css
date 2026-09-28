@@ -71,7 +71,8 @@
 }
 
 /* Colour reset 1 of 2. ScopeFlatKey.svelte's scoped colour rules — the
- * base lamp red and the `[data-lit='false']` unlit colour, (0,2,0)/(0,3,0)
+ * base lit colour (the cyan accent, MOR-2895) and the `[data-lit='false']`
+ * unlit colour, (0,2,0)/(0,3,0)
  * — outrank the family's base colour, which sits in `:where()` at
  * (0,1,0). One selector at (0,3,1) restores the family idle token for
  * EVERY key (each renders data-lit="true|false"; the plain eibi-key button

@@ -103,17 +103,19 @@
     letter-spacing: 0.03em;
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
-    color: var(--vfo-lamp-color, var(--dl-vfo-red-text, var(--dl-vfo-red, #e2362c)));
+    /* MOR-2895 (owner, 2026-09-28 15:11 EDT): the lit colour is the existing
+       cyan on-state accent — the same --v2-accent-cyan the phone's NB/NR
+       chip bar lights with — never the flat lamp red the unhosted grammar
+       carried before ("we have no red there"). Unlit stays the subdued
+       label colour below; the hosted row is untouched (scope-capsule.css
+       resets this rule's colour for the family face). */
+    color: var(--v2-accent-cyan, #00d4ff);
     cursor: pointer;
   }
 
   .scope-flat-key[data-lit='false'] {
     color: var(--dl-vfo-unlit-text, var(--v2-text-muted, #5a6875));
     font-weight: 400;
-  }
-
-  .scope-flat-key[data-lit='true'] {
-    text-shadow: var(--dl-vfo-red-glow, none);
   }
 
   /* Hover brightens the text only — lamp grammar, never chrome. */
