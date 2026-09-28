@@ -211,6 +211,8 @@ describe('Toast — link-loss termination suppression (MOR-2241)', () => {
     dispatchNotification(linkLossTermination());
     flushSync();
 
-    expect(errorMessages()).toEqual(['Command failed: provider generation invalidated']);
+    expect(errorMessages()).toEqual([
+      'Connection to the radio was interrupted; the command was cancelled. Try again.',
+    ]);
   });
 });
