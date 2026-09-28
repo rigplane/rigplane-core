@@ -527,10 +527,29 @@ async def test_server_gate_opens_when_observed_ptt_is_on() -> None:
         await managed.close()
 
 
-async def test_server_gate_stays_open_without_managed_tx() -> None:
+async def test_server_gate_is_closed_when_observed_ptt_is_unknown() -> None:
+    managed = _gate_authority()
+    try:
+        server = _gate_server(managed)
+        server.command_state_store.apply_current(
+            Observation(
+                path=OBSERVED_PTT_PATH,
+                value=ObservedPtt.ON,
+                source=_SOURCE,
+                timestamp_monotonic=time.monotonic(),
+                max_age=0.05,
+            )
+        )
+        await asyncio.sleep(0.15)
+        assert await server._bridge_tx_gate_open() is False
+    finally:
+        await managed.close()
+
+
+async def test_server_gate_is_closed_without_managed_tx() -> None:
     server = _gate_server(None)
     _observe_ptt(server, ObservedPtt.OFF)
-    assert await server._bridge_tx_gate_open() is True
+    assert await server._bridge_tx_gate_open() is False
 
 
 async def test_managed_key_makes_the_tx_hint_true_without_observed_ptt() -> None:
