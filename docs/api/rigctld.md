@@ -193,7 +193,7 @@ RigctldConfig(
 | `command_timeout` | `float` | `2.0` | Per-command CI-V timeout in seconds |
 | `cache_ttl` | `float` | `0.2` | Maximum age (seconds) for cached frequency/mode values |
 | `max_line_length` | `int` | `1024` | Maximum bytes per command line (OOM guard) |
-| `poll_interval` | `float` | `0.2` | Background poll interval in seconds |
+| `poll_interval` | `float` | `0.2` | Unused: no code reads this field |
 | `wsjtx_compat` | `bool` | `False` | Auto-enable DATA mode on first client connect |
 | `wsjtx_data_mode` | `int \| None` | `None` | Explicit DATA sub-mode for packet modes |
 | `wsjtx_data_mod_input` | `int \| None` | `None` | Optional DATAx modulation source |
@@ -437,9 +437,8 @@ Record a failed command. Increments the counter (CLOSED) or re-opens (HALF_OPEN)
 from rigplane.rigctld.state_cache import StateCache
 ```
 
-Last-known radio state with per-field monotonic timestamps. Shared between
-`RigctldHandler` (reads) and `RadioPoller` (writes). Not thread-safe; all
-access must occur on the same asyncio event loop.
+Last-known radio state with per-field monotonic timestamps. Not thread-safe;
+all access must occur on the same asyncio event loop.
 
 ### Cached Fields
 
