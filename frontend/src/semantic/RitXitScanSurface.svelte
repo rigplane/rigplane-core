@@ -78,6 +78,8 @@
   import { pressedOf } from './pressed-of';
   import { readingText, readingValue } from '../primitives/reading-text';
   import { usable } from '../primitives/control-instruments/control-instrument-behavior';
+  import { createBipolarContinuousScalarPolicy } from '../primitives/scalar/continuous-scalar.svelte';
+  import type { ContinuousScalarPolicy } from '../primitives/scalar/continuous-scalar.svelte';
 
   /** O2 — v2's own legacy `RitXitPanel` bounds, verbatim. */
   export const OFFSET_MIN = -9999;
@@ -100,25 +102,42 @@
   export type RitXitScanSurfacePart = 'all' | 'rit-xit' | 'scan';
   const hex = (value: number): string => value.toString(16).padStart(2, '0');
 
+  /** MOR-2524/MOR-2727: the offset is the shared bipolar fader. Its policy
+   *  steps an arrow by `keyboardStep` on a lattice centred on `defaultValue`
+   *  (`bipolarKeyboardStep`), so from the origin one press and its reverse
+   *  give one step and the origin again — also without a profile domain,
+   *  where the pointer counts 50 Hz steps from OFFSET_MIN and zero is off
+   *  that lattice (MOR-1677). Arrows dispatch at once, with no debounce.
+   *  `reset` refuses: a double-click on the track sends no reset, CLEAR
+   *  resets the offset.
+   *
+   *  MOR-2909: exported so the legacy `RitXitPanel` host rides the SAME
+   *  policy object — shared, never copied (no new policy). */
+  export const offsetPolicy: Readonly<ContinuousScalarPolicy> = Object.freeze({
+    ...createBipolarContinuousScalarPolicy({ debounceMs: 0 }),
+    reset: () => null,
+  });
+
   const isOn = (f: RitXitField<boolean>): boolean => f.reading.status === 'known' && f.reading.value === true;
   /** MOR-2653: every readout renders EMPTY in its reserved slot when
    *  unread — never a placeholder dash, and never a unit without its
    *  number. MOR-2688: the empty-display rule is `readingText`'s predicate,
    *  `reading.status === 'known'`; the finite guard stays in the formatter. */
   const signedOffset = (f: RitXitField<number>): string =>
-    readingText(f, (v) => Number.isFinite(v) ? `${v > 0 ? '+' : ''}${v} Hz` : '');
+    readingText(f, (v) => Number.isFinite(v) ? `${v > 0 ? '+' : ''}${v} ${t('core.filter.unit.hz')}` : '');
 </script>
 
 <script lang="ts">
   import { onDestroy } from 'svelte';
+  import { t } from '$lib/i18n';
   import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
   import { exactDecimalNumber } from '$lib/types/exact-decimal';
   import type { ControlDomain } from '$lib/types/capabilities';
   import { ValueControl } from '../components-v2/controls/value-control';
   import { bindToggleInstrument } from '../primitives/control-instruments/control-instrument-behavior';
   import {
-    createBipolarContinuousScalarPolicy, createContinuousScalar,
-    type ContinuousScalarInput, type ContinuousScalarPolicy,
+    createContinuousScalar,
+    type ContinuousScalarInput,
   } from '../primitives/scalar/continuous-scalar.svelte';
   import type {
     RitXitScanInstrumentHandles, RitXitScanInstrumentLayout,
@@ -221,18 +240,10 @@
     if (xitLeads) onXitOffsetChange?.(raw); else onRitOffsetChange?.(raw);
   }
 
-  /** MOR-2524/MOR-2727: the offset is the shared bipolar fader. Its policy
-   *  steps an arrow by `keyboardStep` on a lattice centred on `defaultValue`
-   *  (`bipolarKeyboardStep`), so from the origin one press and its reverse
-   *  give one step and the origin again — also without a profile domain,
-   *  where the pointer counts 50 Hz steps from OFFSET_MIN and zero is off
-   *  that lattice (MOR-1677). Arrows dispatch at once, with no debounce.
-   *  `reset` refuses: a double-click on the track sends no reset, CLEAR
-   *  resets the offset. */
-  const offsetPolicy: Readonly<ContinuousScalarPolicy> = Object.freeze({
-    ...createBipolarContinuousScalarPolicy({ debounceMs: 0 }),
-    reset: () => null,
-  });
+  /** MOR-2524/MOR-2727 (see the module script's `offsetPolicy`): the
+   *  domain rides the radio's own lattice — `keyboardStep` IS the raw
+   *  step, so an arrow moves one `raw_step` at a time (50 Hz only as the
+   *  no-domain legacy fallback). */
   function offsetInput(): Readonly<ContinuousScalarInput> {
     const step = ritDomain?.raw_step ?? OFFSET_STEP;
     return {

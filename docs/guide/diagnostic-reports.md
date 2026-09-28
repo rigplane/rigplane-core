@@ -45,18 +45,17 @@ rigplane diagnose --upload
 ```
 
 The CLI walks you through a description prompt, optional issue URL,
-optional contact fields, then prints a preview (file list + total size +
-destination URL) and asks for final consent. The default keystroke at
+optional contact fields, then prints a preview (bundle path, size in
+bytes and destination URL) and asks for final consent. The default keystroke at
 the consent prompt **saves locally** — pressing Enter never transmits
 anything; only an explicit `y` triggers upload.
 
 ### Web UI
 
-Open the Web UI, then **Settings → Diagnostics → "Send diagnostic
-report"**. A dialog walks through the same flow:
+Open the Web UI and click **Report** in the status bar (tooltip "Send
+diagnostic report"). A dialog walks through the same flow:
 
-1. Form — description, optional issue URL, optional contact fields,
-   category include/exclude.
+1. Form — description, optional issue URL, optional contact fields.
 2. Preview — file tree, sizes, redactions applied, the endpoint URL
    that will receive the bundle, and an "I understand" checkbox.
 3. Result — a `support_url` you can paste into a GitHub issue, or a
@@ -276,7 +275,7 @@ through `setuptools` entry points.
 
 - Linux: `~/.cache/rigplane/logs/`
 - macOS: `~/Library/Caches/rigplane/logs/`
-- Windows: `%LOCALAPPDATA%\rigplane\Cache\logs\`
+- Windows: `%LOCALAPPDATA%\rigplane\rigplane\Cache\logs\`
 
 If this directory cannot be created (read-only home, sandboxed runtime,
 permission-denied) the diagnostic logger silently disables itself —
@@ -310,16 +309,9 @@ locally on rate-limit, so you don't lose the report.
 The triage endpoint rejects bundles larger than **25 MiB**. The
 default rotating log cap is 15 MiB, so you'll usually be fine, but a
 long-running session that triggers many tracebacks plus a verbose
-extension contributor can push you over. Mitigations:
-
-```bash
-# Drop the logs category — keeps state, radio, errors, dependencies
-rigplane diagnose --upload --exclude logs
-
-# Or split: send state-only first, then logs separately
-rigplane diagnose --output state.zip --exclude logs
-rigplane diagnose --output logs.zip --include logs
-```
+extension contributor can push you over. `--include` and `--exclude` do
+not shrink the bundle yet: the CLI warns that filtering is not implemented
+and still runs every contributor.
 
 ### Forbidden content rejected (422)
 
@@ -347,8 +339,8 @@ Two things to check:
 rigplane diagnose
   [--upload]                    # send after preview (default: save only)
   [--output PATH]               # default: ~/rigplane-report-<timestamp>.zip
-  [--include CATEGORY ...]      # repeatable; default: all
-  [--exclude CATEGORY ...]      # repeatable
+  [--include CATEGORY ...]      # repeatable; filtering not implemented yet
+  [--exclude CATEGORY ...]      # repeatable; filtering not implemented yet
   [--description TEXT]          # bypass interactive prompt
   [--issue-ref URL]             # bypass interactive prompt
   [--email EMAIL]               # bypass interactive prompt (opt-in)
@@ -362,8 +354,8 @@ rigplane diagnose
 | ---------------- | --------------------------------------- | ------------------------------------------------------------------ |
 | `--upload`       | absent → save locally                   | Required to transmit. Combined with `--no-confirm` for headless.   |
 | `--output`       | `~/rigplane-report-<timestamp>.zip`     | The bundle is always written to this path, upload or no upload.    |
-| `--include`      | all categories                          | Repeatable. Mutually narrows: `--include radio --include logs`.    |
-| `--exclude`      | none                                    | Repeatable. Removes a category from the default-all set.           |
+| `--include`      | all categories                          | Repeatable. Accepted but not implemented yet: the CLI warns and still runs every contributor. |
+| `--exclude`      | none                                    | Repeatable. Accepted but not implemented yet: same warning, full bundle. |
 | `--description`  | interactive prompt                      | Free text — explain what you were doing when the bug occurred.     |
 | `--issue-ref`    | interactive prompt                      | Optional GitHub URL or issue number for context.                   |
 | `--email`        | not collected                           | Opt-in. If set, the maintainer can reach you about the report.     |

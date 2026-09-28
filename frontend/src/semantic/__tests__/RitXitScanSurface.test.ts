@@ -17,6 +17,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getLocale, setLocale } from '$lib/i18n';
 import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
 import RitXitScanSurface, {
   DF_SPANS, OFFSET_MAX, OFFSET_MIN, OFFSET_STEP, RESUME_MODES, SCAN_TYPES,
@@ -208,6 +209,17 @@ describe('unread facts render honestly, never fabricated', () => {
     expect(r.text('xit-offset-value')).toBe('+250 Hz');
     expect(r.text('ritxit-offset-value')).toBe('250');
     r.dispose();
+  });
+
+  it('renders the known offset with the Russian hertz unit through the catalog (ru-RU, MOR-2905)', () => {
+    const previous = getLocale();
+    setLocale('ru-RU');
+    try {
+      const r = render(withRx({ ritOffset: known(250), xitOffset: known(250) }));
+      expect(r.text('rit-offset-value')).toBe('+250 Гц');
+      expect(r.text('xit-offset-value')).toBe('+250 Гц');
+      r.dispose();
+    } finally { setLocale(previous); }
   });
 
   // F3 (fix round, verify-MOR-1308 M6/M7): activeReceiver stays KNOWN here —

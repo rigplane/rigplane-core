@@ -412,9 +412,9 @@ export const DSP_COMMAND_DESCRIPTORS = Object.freeze({
   ),
 }) satisfies Readonly<Record<DspCommandFeedbackField, StateBackedCommandDescriptor<number>>>;
 
-type RawReceiverEchoField = 'pbtInner' | 'pbtOuter' | 'ifShift';
-type RawReceiverEchoParam = 'value' | 'offset';
-type RawReceiverEchoIntent = 'set_pbt_inner' | 'set_pbt_outer' | 'set_if_shift';
+type RawReceiverEchoField = 'pbtInner' | 'pbtOuter' | 'ifShift' | 'filterShape';
+type RawReceiverEchoParam = 'value' | 'offset' | 'shape';
+type RawReceiverEchoIntent = 'set_pbt_inner' | 'set_pbt_outer' | 'set_if_shift' | 'set_filter_shape';
 
 /**
  * Mirrors `FILTER_WIDTH_COMMAND_DESCRIPTOR`'s exact-raw-equality shape
@@ -466,6 +466,17 @@ export const PBT_OUTER_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> 
 export const IF_SHIFT_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> =
   rawReceiverEchoCommandDescriptor('set_if_shift', 'if-shift', 'ifShift', 'offset');
 
+/**
+ * MOR-1689 — Filter Shape (SHARP/SOFT) rides the same raw receiver-echo
+ * descriptor shape: `set_filter_shape`'s `shape` param is already raw, the
+ * echo populates `main/sub.filterShape`, and confirmation is exact raw
+ * equality. Registered so `beginCommand`'s latest-target-wins supersession
+ * and the ACK observation boundary apply to shape clicks exactly as they do
+ * for every other state-backed control.
+ */
+export const FILTER_SHAPE_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> =
+  rawReceiverEchoCommandDescriptor('set_filter_shape', 'filter-shape', 'filterShape', 'shape');
+
 export const STATE_BACKED_COMMAND_DESCRIPTORS: ReadonlyMap<RadioIntentName, StateBackedCommandDescriptor<unknown>> =
   new Map([
     [FILTER_WIDTH_COMMAND_DESCRIPTOR.intentName, FILTER_WIDTH_COMMAND_DESCRIPTOR],
@@ -486,6 +497,7 @@ export const STATE_BACKED_COMMAND_DESCRIPTORS: ReadonlyMap<RadioIntentName, Stat
     [PBT_INNER_COMMAND_DESCRIPTOR.intentName, PBT_INNER_COMMAND_DESCRIPTOR],
     [PBT_OUTER_COMMAND_DESCRIPTOR.intentName, PBT_OUTER_COMMAND_DESCRIPTOR],
     [IF_SHIFT_COMMAND_DESCRIPTOR.intentName, IF_SHIFT_COMMAND_DESCRIPTOR],
+    [FILTER_SHAPE_COMMAND_DESCRIPTOR.intentName, FILTER_SHAPE_COMMAND_DESCRIPTOR],
   ]);
 export const getStateBackedCommandDescriptor = (intentName: string): StateBackedCommandDescriptor<unknown> | undefined =>
   (STATE_BACKED_COMMAND_DESCRIPTORS as ReadonlyMap<string, StateBackedCommandDescriptor<unknown>>).get(intentName);

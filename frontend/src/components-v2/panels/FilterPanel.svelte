@@ -25,11 +25,23 @@
     getFilterHandlers,
     getFilterArmed,
     getFilterShapeArmed,
+    getFilterShapeControlFeedback,
     getFilterWidthControlFeedback,
     getIfShiftControlFeedback,
     getPbtInnerHzControlFeedback,
     getPbtOuterHzControlFeedback,
   } from '$lib/runtime/adapters/panel-adapters';
+  import {
+    projectControlFeedbackPresentation,
+    type ControlFeedbackPresentationInput,
+  } from '../../primitives/control-feedback/control-feedback-presentation';
+
+  // MOR-1689: the panel's SHARP/SOFT choice catalog — one definition for
+  // the settings-modal buttons and the live status's target description.
+  const FILTER_SHAPE_CHOICES = [
+    { value: 0, label: 'SHARP' },
+    { value: 1, label: 'SOFT' },
+  ] as const;
 
   const handlers = getFilterHandlers();
   let p = $derived(deriveFilterProps());
@@ -44,6 +56,47 @@
   // sole selection source; armed only marks the SHARP/SOFT button the
   // pending command is racing toward.
   let filterShapeArmed = $derived(getFilterShapeArmed());
+  // MOR-1689 leg 2: the SAME lifecycle through the full MOR-1687 projection
+  // — the structural phase for the actual buttons and a
+  // transition-deduplicated polite live status naming the requested target.
+  // Consulted only while the radio has a `filter_shape` capability, so an
+  // FTX-1-shaped mount never reads the lifecycle at all.
+  let filterShapeFeedback = $derived(
+    p.hasFilterShape === true ? getFilterShapeControlFeedback() : null,
+  );
+  const describeShapeTarget = (target: number): string =>
+    FILTER_SHAPE_CHOICES.find(choice => choice.value === target)?.label ?? String(target);
+  let shapeAnnouncedTransitionIds: readonly string[] = [];
+  let shapeLive = $state<Readonly<{ transitionId: string; text: string }> | null>(null);
+  let shapeBusy = $state(false);
+  $effect(() => {
+    const feedback: Readonly<ControlFeedbackPresentationInput<number>> | null = filterShapeFeedback;
+    if (feedback === null) {
+      shapeAnnouncedTransitionIds = [];
+      shapeLive = null;
+      shapeBusy = false;
+      return;
+    }
+    const presentation = projectControlFeedbackPresentation(
+      feedback, { announcedTransitionIds: shapeAnnouncedTransitionIds }, describeShapeTarget,
+    );
+    shapeAnnouncedTransitionIds = presentation.state.announcedTransitionIds;
+    shapeBusy = presentation.attributes['aria-busy'] === 'true';
+    // Phone emitter doctrine (MOR-1703 width precedent): the localized
+    // pending family announces while the control is in flight, exactly once
+    // per transition; terminal outcomes stay the semantic host's projector
+    // messages. An unchanged transition must not erase the standing text.
+    if (!shapeBusy) {
+      shapeLive = null;
+      return;
+    }
+    if (presentation.politeAnnouncement !== null && feedback.target !== null) {
+      shapeLive = {
+        transitionId: presentation.politeAnnouncement.transitionId,
+        text: `${describeShapeTarget(feedback.target)}: ${t('core.filter.select.pendingAnnouncement')}`,
+      };
+    }
+  });
   let filterWidthFeedback = $derived(getFilterWidthControlFeedback());
   const filterArmedIdBase = $props.id();
 
@@ -325,7 +378,13 @@
       command,
       domain: {
         min: pbtDomain.min, max: pbtDomain.max, step: pbtDomain.step,
-        defaultValue: 0, fineStepDivisor: 10,
+        // MOR-2535/MOR-2909 (the semantic FilterSurface's `passbandInput`
+        // doctrine): the PBT lanes declare NO lease-level default, so a
+        // null here keeps `lease.reset()` a no-op — a track double-click
+        // sends nothing. The reset is the ATOMIC `onPbtReset` dispatch
+        // site (the Reset button); the legacy panel has no label/value
+        // cells to carry the gesture.
+        defaultValue: null, fineStepDivisor: 10,
       },
       request,
     };
@@ -780,10 +839,17 @@
       {/each}
 
       {#if hasFilterShape}
-        <div class="shape-section">
+        <!-- MOR-1689: the shared choice seam on the actual interactive
+             elements — every shape button carries the lifecycle's
+             data-command-phase, the section carries aria-busy for the
+             in-flight control, and a transition-deduplicated polite live
+             region names the requested target. data-armed/italic stay the
+             secondary channel, never the only indication. -->
+        {@const shapePhase = filterShapeFeedback?.phase}
+        <div class="shape-section" data-command-phase={shapePhase} aria-busy={shapeBusy}>
           <div class="shape-title">Shape</div>
           <div class="shape-buttons">
-            {#each [{ value: 0, label: 'SHARP' }, { value: 1, label: 'SOFT' }] as shapeChoice}
+            {#each FILTER_SHAPE_CHOICES as shapeChoice}
               {@const isShapeArmed = filterShapeArmed.armed && filterShapeArmed.value === shapeChoice.value}
               {@const shapeArmedId = `${filterArmedIdBase}-shape-${shapeChoice.value}`}
               <button
@@ -794,6 +860,7 @@
                   ? '--control-accent:var(--v2-accent-cyan); --control-active-text:var(--v2-text-white)'
                   : '--control-accent:var(--v2-accent-green-bright); --control-active-text:var(--v2-bg-darkest)'}
                 data-armed={isShapeArmed ? 'true' : undefined}
+                data-command-phase={shapePhase}
                 aria-busy={isShapeArmed}
                 aria-describedby={isShapeArmed ? shapeArmedId : undefined}
                 onclick={() => onFilterShapeChange?.(shapeChoice.value)}
@@ -805,6 +872,10 @@
               {/if}
             {/each}
           </div>
+          {#if shapeLive !== null}{#key shapeLive.transitionId}
+            <span class="sr-only" role="status" aria-live="polite" aria-atomic="true"
+              data-filter-shape-live>{shapeLive.text}</span>
+          {/key}{/if}
         </div>
       {/if}
 

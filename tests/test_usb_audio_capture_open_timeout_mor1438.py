@@ -77,8 +77,20 @@ def _warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
     return [
         r
         for r in caplog.records
-        if r.name == _LOGGER_NAME and r.levelno == logging.WARNING
+        if r.name == _LOGGER_NAME and r.levelno >= logging.WARNING
     ]
+
+
+@pytest.fixture(autouse=True)
+def _no_coreaudio_uid_map(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the fake-backend paths off real CoreAudio (macOS test hosts).
+
+    Since MOR-2892 the start path's device enumeration runs inside the
+    same bounded (here 0.05 s) window as the open; on a macOS test host
+    ``_get_uid_map()`` is a real CoreAudio mach call whose jitter would
+    flake these timeout assertions. Neutralize it.
+    """
+    monkeypatch.setattr("rigplane.audio.usb_driver._get_uid_map", lambda: {})
 
 
 @pytest.mark.timeout(10)
@@ -403,17 +415,25 @@ async def test_pool_saturation_fails_fast_instead_of_queuing(
         )
 
         # "Fails fast" is asserted as behaviour, not as a stopwatch reading.
-        # The fail-fast path never reaches the pool: it closes the open
-        # coroutine instead of submitting it, so the probe's handle is never
-        # started -- whereas an open that QUEUED behind the wedged workers is
-        # started as soon as one of them frees.
+        # The fail-fast path never reaches the pool: no work item is
+        # submitted, so the start never progresses to creating a stream
+        # handle -- whereas an open that QUEUED behind the wedged workers
+        # creates (and starts) one as soon as a worker frees.
         #
         # Release the pool and wait for it to DRAIN -- every wedged open
-        # completes and its abandoned handle is closed -- before reading the
-        # probe. Draining is what gives the read its meaning: a queued probe
-        # sits ahead of those closes in the same FIFO pool, so once all eight
-        # closes have landed, a queued probe would necessarily have started.
-        probe = backend.rx_streams[len(wedged)]
+        # completes and its abandoned handle is closed -- before reading
+        # the stream list. Draining is what gives the read its meaning: a
+        # queued start sits ahead of those closes in the same FIFO pool,
+        # so once all eight closes have landed, a queued start would
+        # necessarily have created its handle.
+        #
+        # MOR-2892 note: the start path now submits device enumeration and
+        # format-probe calls to the same driver-owned pool before the open,
+        # so a saturated pool fails the next start at its FIRST submission
+        # -- no new stream handle is created at all. Before MOR-2892 this
+        # asserted ``probe.started_count == 0`` on the freshly created (but
+        # never started) handle; the stronger invariant now is that no
+        # additional handle exists.
         gate.set()
         loop = asyncio.get_event_loop()
         deadline = loop.time() + 10.0
@@ -426,10 +446,10 @@ async def test_pool_saturation_fails_fast_instead_of_queuing(
             "pool never drained -- the wedged opens' handles were not closed, "
             "so nothing can be concluded about the probe open"
         )
-        assert probe.started_count == 0, (
-            "saturated pool must fail WITHOUT handing the open to a worker; "
-            "this handle was started, so the open queued behind the wedged "
-            "workers instead of failing fast"
+        assert backend.rx_streams[len(wedged) :] == [], (
+            "saturated pool must fail WITHOUT handing anything to a worker; "
+            "an extra stream handle was created, so the start queued behind "
+            "the wedged workers instead of failing fast"
         )
     finally:
         gate.set()  # release every stuck worker so the pool can drain

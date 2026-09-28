@@ -565,11 +565,14 @@ class TestYaesuExclusiveDuplexTx:
             rx_audio_channel="left",
         )
         radio = YaesuCatRadio(device="/dev/cu.fake", audio_driver=driver)
-        assert radio.audio_duplex_mode == "exclusive"
-        assert radio.audio_setup_order == "atomic"
         session = radio.audio_session
 
         sub = await session.subscribe_rx("web-audio")
+        # MOR-2892: duplex_mode is a pure cache read — the pair resolves
+        # on the bounded start path (here: subscribe_rx → start_rx), so
+        # the descriptor is read AFTER the first start, not before.
+        assert radio.audio_duplex_mode == "exclusive"
+        assert radio.audio_setup_order == "atomic"
         try:
             assert session.state is AudioSessionState.RX_ONLY
             assert len(backend.rx_streams) == 1
@@ -634,11 +637,12 @@ class TestYaesuExclusiveDuplexTx:
             backend=backend,
         )
         radio = YaesuCatRadio(device="/dev/cu.fake", audio_driver=driver)
-        assert radio.audio_duplex_mode == "full"
-        assert radio.audio_setup_order == "rx_first"
         session = radio.audio_session
 
         sub = await session.subscribe_rx("web-audio")
+        # Read after the first start warmed the selection cache (MOR-2892).
+        assert radio.audio_duplex_mode == "full"
+        assert radio.audio_setup_order == "rx_first"
         try:
             assert len(backend.rx_streams) == 1
             lease = await session.acquire_tx("web-tx")

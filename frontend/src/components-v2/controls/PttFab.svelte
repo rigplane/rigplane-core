@@ -1,11 +1,18 @@
 <!--
-  PttFab — guarded sticky floating-action button for mobile PTT.
+  PttFab — guarded PTT button for mobile PTT.
 
-  Sits above the tuning strip (bottom-right), out of the thumb-path for
-  tuning drag. Implements layered anti-accidental-TX guards per
+  Lives in the portrait tuning strip (MobileRadioLayout's fixed bottom
+  bar, OUTSIDE the one phone scroller): its own reserved place where no
+  scrolling control can ever sit under it at any scroll position
+  (MOR-2874; the floating-over-the-scroller placement it replaced drew
+  the button over the MUTE key of the ESSENTIALS grid in the approved
+  portrait baseline). The host owns placement — a gap-separated flex
+  sibling of the tuning keys; this component owns the look and the
+  layered anti-accidental-TX guards per
   docs/plans/2026-04-18-mobile-ia.md §5:
 
-    1. Spatial isolation — FAB lives outside tuning strip (primary).
+    1. Spatial isolation — the strip is fixed chrome outside the
+       scroller; nothing scrolls under the button (MOR-2874).
     2. Press-and-hold minimum 50ms — `pointerdown` must persist at least
        50ms before `onDown()` is invoked. Prevents tap-through from
        scroll gestures.
@@ -170,9 +177,8 @@
 
 <style>
   .ptt-fab {
-    position: fixed;
-    right: 12px;
-    bottom: calc(52px + env(safe-area-inset-bottom, 0px) + 12px);
+    /* In-flow inside the portrait tuning strip (MOR-2874): the host
+       places it; this block owns only the button's own look. */
     width: 72px;
     height: 72px;
     border-radius: 50%;
@@ -187,7 +193,6 @@
     font-family: 'Roboto Mono', monospace;
     font-weight: 700;
     letter-spacing: 0.1em;
-    z-index: 100;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
     user-select: none;
     touch-action: none;  /* block scroll / pinch on the FAB itself */

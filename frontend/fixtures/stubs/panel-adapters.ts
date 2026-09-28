@@ -209,6 +209,21 @@ export function getFilterShapeArmed(): { armed: false; value: null } {
   return { armed: false, value: null };
 }
 
+/** MOR-1689 — `SemanticRadioSurfaces.svelte` also imports the Filter Shape
+ *  command-feedback projection (same MOR-1271/MOR-1320 module-resolution
+ *  lesson as `getFilterShapeArmed` above). The offline fixture has no
+ *  shape command authority, so the honest answer is the same unavailable
+ *  shape every other feedback stub here returns. */
+export function getFilterShapeControlFeedback() {
+  return Object.freeze({
+    confirmed: null, target: null, requestedTarget: null,
+    phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
+    outcome: null, lifecycleId: null, transitionId: null, sessionEpoch: 1,
+    scope: Object.freeze({ control: 'filter-shape', receiver: 0 as const }),
+    repeatPolicy: 'latest-target-wins' as const,
+  });
+}
+
 /**
  * MOR-2425 — `SemanticRadioSurfaces.svelte` now also imports
  * `deriveMemoryPanelProps`/`getMemoryHandlers` unconditionally (same
