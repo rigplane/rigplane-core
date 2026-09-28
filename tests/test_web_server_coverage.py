@@ -391,8 +391,8 @@ class _FakeManagedTxPort:
 class _ManagedTxStateNotifyRadio(_StateNotifyRadio):
     """StateNotifyCapable radio with a managed TX composition installed."""
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
         self.managed_tx_port = _FakeManagedTxPort()
         self._managed_tx_composition = self.managed_tx_port
         # ScopeCapable protocol attrs so the reconnect recovery pass can
