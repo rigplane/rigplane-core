@@ -6330,7 +6330,12 @@ class WebServer:
                 return
             handler = ScopeHandler(ws, self._radio, server=self, audio_mode=True)
         elif path == "/api/v1/audio":
-            handler = AudioHandler(ws, self._radio, self._audio_broadcaster)
+            handler = AudioHandler(
+                ws,
+                self._radio,
+                self._audio_broadcaster,
+                tx_gate=self._bridge_tx_gate_open,
+            )
         else:
             await ws.close(1008, "unknown channel")
             return

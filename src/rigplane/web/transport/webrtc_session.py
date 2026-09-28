@@ -263,7 +263,16 @@ class WebRtcSessionManager:
             broadcaster = (
                 self._server._audio_broadcaster if self._server is not None else None
             )
-            handler = AudioHandler(conn, self._radio, broadcaster)
+            handler = AudioHandler(
+                conn,
+                self._radio,
+                broadcaster,
+                tx_gate=(
+                    self._server._bridge_tx_gate_open  # noqa: SLF001
+                    if self._server is not None
+                    else None
+                ),
+            )
         else:
             logger.info("WebRTC: ignoring unknown data channel %r", label)
             return
