@@ -69,8 +69,15 @@ function caps(nrLevel?: unknown): Capabilities {
 }
 
 function state(raw: number | undefined, nrLevelStatus: 'available' | 'missing' | 'stale' = 'available') {
+  // MOR-2932: the NR-level lane now reads qualified command feedback, so the
+  // harness carries generation identity plus observed evidence. The unread
+  // and stale variants stay unobserved — that is what keeps their sliders
+  // unrendered (MOR-1735).
+  const seen = { observed: true, lastObservedMonotonic: 1 };
   return {
     active: 'MAIN',
+    stateContractVersion: 1,
+    providerGeneration: 0,
     main: {
       nr: true,
       ...(raw === undefined ? {} : { nrLevel: raw }),
@@ -84,12 +91,18 @@ function state(raw: number | undefined, nrLevelStatus: 'available' | 'missing' |
     },
     sub: {},
     fieldStatus: {
-      'main.nr': { availability: 'available', freshness: 'fresh' },
-      'main.nrLevel': { availability: nrLevelStatus, freshness: nrLevelStatus === 'stale' ? 'stale' : 'fresh' },
-      'main.nb': { availability: 'available', freshness: 'fresh' },
-      'main.autoNotch': { availability: 'available', freshness: 'fresh' },
-      'main.manualNotch': { availability: 'available', freshness: 'fresh' },
-      'main.agcTimeConstant': { availability: 'available', freshness: 'fresh' },
+      active: { availability: 'available', freshness: 'fresh', ...seen },
+      'main.nr': { availability: 'available', freshness: 'fresh', ...seen },
+      'main.nrLevel': {
+        availability: nrLevelStatus,
+        freshness: nrLevelStatus === 'stale' ? 'stale' : 'fresh',
+        observed: nrLevelStatus === 'available',
+        lastObservedMonotonic: 1,
+      },
+      'main.nb': { availability: 'available', freshness: 'fresh', ...seen },
+      'main.autoNotch': { availability: 'available', freshness: 'fresh', ...seen },
+      'main.manualNotch': { availability: 'available', freshness: 'fresh', ...seen },
+      'main.agcTimeConstant': { availability: 'available', freshness: 'fresh', ...seen },
     },
   };
 }

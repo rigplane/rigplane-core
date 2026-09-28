@@ -143,6 +143,19 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
     lifecycleId: null, transitionId: null, providerGeneration: null, sessionEpoch: -1,
     scope: { control: field, receiver: 0 as const }, repeatPolicy: 'latest-target-wins' as const,
   }),
+  // MOR-2932: NR level and NB depth project through unchanged — this file
+  // asserts neither lane (its DspPanel cases never open the NR/NB modals).
+  projectDspControlFeedbackToDisplay: <T,>(_field: string, feedback: T) => feedback,
+}));
+
+// MOR-2932: DspPanel reads caps for the NR/NB display projection; this
+// file's assertions never depend on them.
+vi.mock('$lib/runtime/frontend-runtime', () => ({
+  runtime: {
+    get state() { return null; },
+    get caps() { return null; },
+    get controlSession() { return { state: 'disconnected', epoch: -1 }; },
+  },
 }));
 
 import AgcPanel from '../AgcPanel.svelte';
