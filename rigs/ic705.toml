@@ -468,7 +468,12 @@ sub_select = [0x01]
 swap_ab = [0xB0]
 equal_ab = [0xA0]
 
-# ── Frequency Ranges (BSR from wfview IC-705.rig Bands\*) ───────
+# ── Frequency Ranges ─────────────────────────────────────────────
+# bsr_code: the band code of CI-V 1A 01, IC-705 CI-V Reference Guide
+# (A7560-8EX-1, Jul.2020) p.18: 01..09 = 1.9..28 MHz, 10 = 50, 11 = WFM,
+# 12 = Air, 13 = 144, 14 = 430, 15 = GENE ("other than above"), written
+# as its number (6m = 0x0A = 10). 2200m, 630m and 60m have no code of their
+# own, so they carry none and their band button tunes default_hz directly.
 
 [[freq_ranges.ranges]]
 label = "HF"
@@ -480,14 +485,12 @@ name = "2200m"
 start_hz = 135_000
 end_hz = 138_000
 default_hz = 136_000
-bsr_code = 0x00
 
 [[freq_ranges.ranges.bands]]
 name = "630m"
 start_hz = 472_000
 end_hz = 479_000
 default_hz = 475_000
-bsr_code = 0x00
 
 [[freq_ranges.ranges.bands]]
 name = "160m"
@@ -508,7 +511,6 @@ name = "60m"
 start_hz = 5_250_000
 end_hz = 5_450_000
 default_hz = 5_357_000
-bsr_code = 0x00
 
 [[freq_ranges.ranges.bands]]
 name = "40m"
@@ -593,7 +595,7 @@ name = "Air"
 start_hz = 108_000_000
 end_hz = 137_000_000
 default_hz = 121_500_000
-bsr_code = 0x00
+bsr_code = 0x0C
 
 [[freq_ranges.ranges]]
 label = "2m"
@@ -1140,6 +1142,107 @@ label = "3.0"
 raw = 240
 actual = 6.0
 label = "6.0+"
+
+# Meter scales below: the rows of the IC-705 CI-V Reference Guide command
+# table, p.4 (A7560-8EX-1, Jul.2020; same rows in A7560-8EX-6, Jan.2023),
+# pinned by tests/test_rig_ic705.py::TestMeterScalesFromTheCivGuide.
+# 15 02 S-meter: 0000=S0, 0120=S9, 0241=S9+60 dB, stated in dB relative to
+# S9 as in rigs/ic7300.toml (S0 = -54).
+[meters.s_meter]
+redline_raw = 120
+
+[[meters.s_meter.calibration]]
+raw = 0
+actual = -54.0
+label = "S0"
+
+[[meters.s_meter.calibration]]
+raw = 120
+actual = 0.0
+label = "S9"
+
+[[meters.s_meter.calibration]]
+raw = 241
+actual = 60.0
+label = "S9+60"
+
+# 15 11 Po: 0000=0%, 0143=50%, 0213=100%. Stated in watts of the 10 W
+# rating ([power].max_watts): an inference from the percentages, not a
+# measurement. No row above 0213 is printed, so readings stop at 10 W.
+[[meters.power.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.power.calibration]]
+raw = 143
+actual = 5.0
+label = "5"
+
+[[meters.power.calibration]]
+raw = 213
+actual = 10.0
+label = "10"
+
+# 15 13 ALC: 0000=Minimum, 0120=Maximum, in the 0-100 convention of
+# rigs/ic7300.toml's [meters.alc].
+[[meters.alc.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.alc.calibration]]
+raw = 120
+actual = 100.0
+label = "100"
+
+# 15 14 COMP: 0000=0 dB, 0130=15 dB, 0210=25.5 dB.
+[[meters.comp.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.comp.calibration]]
+raw = 130
+actual = 15.0
+label = "15"
+
+[[meters.comp.calibration]]
+raw = 210
+actual = 25.5
+label = "25.5"
+
+# 15 15 Vd: 0000=0 V, 0075=5 V, 0241=16 V.
+[[meters.vd.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.vd.calibration]]
+raw = 75
+actual = 5.0
+label = "5"
+
+[[meters.vd.calibration]]
+raw = 241
+actual = 16.0
+label = "16"
+
+# 15 16 Id: 0000=0 A, 0121=2 A, 0241=4 A.
+[[meters.id.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.id.calibration]]
+raw = 121
+actual = 2.0
+label = "2"
+
+[[meters.id.calibration]]
+raw = 241
+actual = 4.0
+label = "4"
 
 [tx_policy]
 # Not bench-measured — inherited (MOR-1947). The backend factory routes IC-705 onto Ic705SerialRadio.
