@@ -102,6 +102,52 @@ test('saved mobile theme survives cold entry, reload and desktop round trip', as
   expect(writes).toEqual([]);
 });
 
+// MOR-2816 (owner, 2026-09-27): the phone is minimal — one scroll container,
+// and the receiver S-meter sits in the old strip's slot above the scope
+// toolbar. Measured against the iPhone 13 profile's portrait viewport.
+test('one scroll container and the S-meter above the scope toolbar (MOR-2816)', async ({ page }, info) => {
+  const writes = await prepare(page);
+  await page.setViewportSize({ width: 390, height: 664 });
+  await page.goto('/');
+  await settled(page);
+  const geometry = await page.evaluate(() => {
+    const scrollers: string[] = [];
+    for (const el of Array.from(document.querySelectorAll<HTMLElement>('*'))) {
+      if (el.scrollHeight <= el.clientHeight + 1) continue;
+      const style = getComputedStyle(el);
+      if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
+        scrollers.push(`${el.tagName.toLowerCase()}${el.classList[0] ? `.${el.classList[0]}` : ''}`);
+      }
+    }
+    const doc = document.scrollingElement as HTMLElement;
+    const bar = document.querySelector('.m-smeter-bar')?.getBoundingClientRect();
+    const toolbar = document.querySelector('.spectrum-toolbar')?.getBoundingClientRect();
+    const header = document.querySelector('.m-vfo-bar')?.getBoundingClientRect();
+    return {
+      documentScrolls: doc.scrollHeight > doc.clientHeight + 1,
+      documentScrollHeight: doc.scrollHeight,
+      documentClientHeight: doc.clientHeight,
+      scrollers,
+      bar: bar?.toJSON(),
+      toolbar: toolbar?.toJSON(),
+      header: header?.toJSON(),
+    };
+  });
+  writeFileSync(info.outputPath('mor-2816-geometry.json'), JSON.stringify(geometry, null, 2));
+  await info.attach('geometry', { body: JSON.stringify(geometry), contentType: 'application/json' });
+  // One scroll container: the document does not scroll, and exactly one
+  // element — main.m-content — does.
+  expect(geometry.documentScrolls).toBe(false);
+  expect(geometry.scrollers).toEqual(['main.m-content']);
+  // The S-meter sits between the frequency header and the scope toolbar.
+  expect(geometry.bar).toBeDefined();
+  expect(geometry.toolbar).toBeDefined();
+  expect(geometry.header).toBeDefined();
+  expect(geometry.bar!.bottom).toBeLessThanOrEqual(geometry.toolbar!.top);
+  expect(geometry.header!.bottom).toBeLessThanOrEqual(geometry.bar!.top);
+  expect(writes).toEqual([]);
+});
+
 async function checkUnkey(page: Page, info: TestInfo, stage: string, landscape: boolean, tab = true) {
   const unkey = page.locator('[data-testid="rx-tx-unkey"], .m-ls-unkey');
   await expect(unkey).toHaveCount(1);

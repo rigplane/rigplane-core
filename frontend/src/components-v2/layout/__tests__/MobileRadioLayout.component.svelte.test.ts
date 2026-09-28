@@ -304,7 +304,15 @@ afterEach(() => {
 });
 
 describe('MobileRadioLayout structure', () => {
-  it('offers the common MOD-input selector in portrait without navigation or TX activity (MOR-2366)', () => {
+  // MOR-2366 offered the MOD-input selector through the BARE rx-audio
+  // surface the zero-prop deck mount rendered below the deck. MOR-2816
+  // (owner, 2026-09-27: «По вопросу один, согласен») removes that unstyled
+  // block — the chip tabs are the one place for controls — so the selector
+  // is gone with it; the fixed MOD-input banner's one-click "Set LAN"
+  // remedy (MOR-617) remains the operator's path. This test now pins the
+  // superseded contract: same radio facts, no selector, no navigation or
+  // TX activity stirred by mounting.
+  it('offers no in-deck MOD-input selector in portrait (MOR-2366 superseded by MOR-2816)', () => {
     const oldCaps = getCapabilities();
     vi.mocked(getCapabilities).mockReturnValue({
       ...oldCaps, model: 'fixture', receivers: 1, vfoScheme: 'ab',
@@ -320,25 +328,18 @@ describe('MobileRadioLayout structure', () => {
     try {
       const t = mountMobile();
       const deck = t.querySelector('.m-semantic-deck')!;
-      const select = deck.querySelector<HTMLSelectElement>('[data-testid="rx-audio-mod-select"]');
-      expect(select).not.toBeNull();
-      expect(select!.disabled).toBe(false);
-      expect([...select!.options].map((option) => option.text))
-        .toEqual(MOD_INPUT_SOURCES.map((option) => option.label));
+      expect(deck.querySelector('[data-testid="rx-audio-mod-select"]')).toBeNull();
+      // The bare rx-audio surface that carried the selector is gone with it
+      // — no optional surface renders below the deck at all.
+      expect(t.querySelectorAll('[data-testid="rx-audio-surface"]')).toHaveLength(0);
       expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
-      expect(t.querySelectorAll('[data-testid="rx-audio-surface"]')).toHaveLength(1);
       const navigation = [...t.querySelectorAll('.m-chip')].map((chip) => chip.textContent);
       const listeners = tx.listenerCount();
-      select!.value = '3';
-      select!.dispatchEvent(new Event('change', { bubbles: true }));
-      flushSync();
-      expect(radioIntentSpy).toHaveBeenCalledExactlyOnceWith(3);
-      expect(select!.value).toBe('5');
-      expect([...t.querySelectorAll('.m-chip')].map((chip) => chip.textContent)).toEqual(navigation);
       expect(t.querySelectorAll('[id^="m-chip-panel-"]')).toHaveLength(1);
       expect(tx.listenerCount()).toBe(listeners);
       expect(tx.trace()).toEqual([]);
       expect(wsFrameSpy).not.toHaveBeenCalled();
+      expect([...t.querySelectorAll('.m-chip')].map((chip) => chip.textContent)).toEqual(navigation);
     } finally {
       vi.mocked(getCapabilities).mockReturnValue(oldCaps);
     }
@@ -745,7 +746,9 @@ describe('mobile header follows the active receiver (MOR-2511)', () => {
     // MOR-2662 (owner ruling 2026-09-26): the phone shows only ONE VFO — the
     // active one — so the other receiver's frequency is gone from the header.
     expect(t.querySelector('.m-vfo-sub')).toBeNull();
-    expect(t.querySelector('.m-smeter-bar')?.textContent).toBe('7');
+    // MOR-2816: the hoisted S-meter bar follows the ACTIVE receiver too —
+    // the same receiver the header reads.
+    expect(t.querySelector('.m-smeter-bar')?.getAttribute('data-receiver')).toBe('SUB');
     rotate(true);
     expect(t.querySelector('[data-testid="freq-echo"]')?.textContent).toBe('14200400');
   });
@@ -757,7 +760,8 @@ describe('mobile header follows the active receiver (MOR-2511)', () => {
     expect(t.querySelector('.m-vfo-mode')?.textContent).toBe('USB');
     // MOR-2662: same ruling, the mirrored direction — no SUB frequency either.
     expect(t.querySelector('.m-vfo-sub')).toBeNull();
-    expect(t.querySelector('.m-smeter-bar')?.textContent).toBe('3');
+    // MOR-2816: the hoisted S-meter bar follows the ACTIVE receiver — MAIN.
+    expect(t.querySelector('.m-smeter-bar')?.getAttribute('data-receiver')).toBe('MAIN');
   });
 
   it('tunes the active receiver: a +1 step with SUB active dispatches receiver 1', () => {

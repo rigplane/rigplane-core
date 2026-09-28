@@ -317,11 +317,15 @@ describe('semantic VFO / RX-TX adoption in the mobile shell', () => {
   // Kills: mounting the surfaces inside a chip panel. Chip panels are
   // destroyed and recreated on every chip tap, and this subtree holds a TX
   // lease source — churning it would churn a TX identity (MOR-1086 doctrine).
-  it('mounts them in the scrollable deck, not inside a chip panel', () => {
+  // MOR-2816: the mount now HOSTS the whole portrait body (the S-meter slot
+  // above the scroll deck and `main.m-content` inside it), so the invariant
+  // is stated from the same two facts the old form stated: never inside a
+  // chip panel, and the scroll deck lives inside the one mount.
+  it('mounts them outside every chip panel, hosting the scroll deck (MOR-2816)', () => {
     const t = mountMobile();
     const surfaces = t.querySelector('[data-testid="semantic-radio-surfaces"]')!;
-    expect(t.querySelector('.m-content')!.contains(surfaces)).toBe(true);
     expect(surfaces.closest('.m-section')).toBeNull();
+    expect(t.querySelector('.m-content')!.closest('[data-testid="semantic-radio-surfaces"]')).toBe(surfaces);
   });
 
   // Kills: adding a second copy of the wiring (one per orientation, or one
@@ -394,6 +398,60 @@ describe('MOR-2662 — the phone shows only the active VFO', () => {
   // never a fork of the shared surface.
   it('passes the one-tile presentation option to the shared wiring', () => {
     expect(mobileLayoutSource).toContain('vfoTiles="active"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1d. MOR-2816 (owner ruling 2026-09-27) — the portrait deck mounts ONLY its
+//     declared zone (portrait-deck = vfo + rxTx). No optional surface renders
+//     bare below the deck: the chip tabs are the one place for controls. The
+//     receiver S-meter the VFO surface's MAIN block carried is hoisted into
+//     the bar under the frequency header — the same component, fed by the
+//     same view model — and the in-card seat is gone.
+// ---------------------------------------------------------------------------
+describe('MOR-2816 — the phone deck mounts only its declared zone', () => {
+  // The optional surfaces the bare single-composition path used to render
+  // below the deck on a fully-populated view model. Each landmark must be
+  // GONE; the two required surfaces must still render.
+  const OPTIONAL_SURFACE_LANDMARKS = [
+    'rx-audio-surface', 'mode-surface', 'filter-surface', 'dsp-surface',
+    'rf-front-end-surface', 'band-surface', 'antenna-surface',
+    'ritxit-scan-surface', 'cw-keyer-surface', 'tx-aux-surface', 'meters-surface',
+    'scope-display-surface', 'scope-controls-surface', 'memory-surface',
+  ] as const;
+
+  // Kills: any optional surface regressing onto the phone's bare path —
+  // the unstyled control block the owner measured on 2026-09-27.
+  it('renders no optional surface below the deck; VFO and RX/TX still render', () => {
+    const t = mountMobile();
+    for (const landmark of OPTIONAL_SURFACE_LANDMARKS) {
+      expect(t.querySelectorAll(`[data-testid="${landmark}"]`), landmark).toHaveLength(0);
+    }
+    expect(t.querySelectorAll('[data-testid="vfo-surface"]')).toHaveLength(1);
+    expect(t.querySelectorAll('[data-testid="rx-tx-surface"]')).toHaveLength(1);
+  });
+
+  // Kills: a second meter implementation, or the hoisted bar keeping a twin
+  // in the VFO card's receiver-indicator block. The bar under the header is
+  // the SAME receiver meter the card carried — same view model, one mount —
+  // and the card's in-card seat is withheld.
+  it('hoists the receiver S-meter to the bar under the header, leaving no in-card meter', () => {
+    const t = mountMobile();
+    const bar = t.querySelector('.m-smeter-bar');
+    expect(bar).not.toBeNull();
+    // The bar sits inside the one semantic mount, before the scroll deck.
+    expect(bar!.closest('[data-testid="semantic-radio-surfaces"]')).not.toBeNull();
+    const content = t.querySelector('.m-content')!;
+    expect(bar!.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The in-card seat the VFO surface's MAIN block used to carry is gone.
+    expect(t.querySelectorAll('[data-testid="receiver-s-meter"]')).toHaveLength(0);
+    expect(t.querySelectorAll('[data-testid="receiver-s-meter-unknown"]')).toHaveLength(0);
+    // The presentation option reaches the shared wiring — an option, never
+    // a fork: the shell passes `vfoMeter="external"` the way it passes
+    // `vfoTiles="active"`, and the hoisted bar keeps the card meter's own
+    // face (the same compact `vfo-wide` variant the card rendered).
+    expect(mobileLayoutSource).toContain('vfoMeter="external"');
+    expect(mobileLayoutSource).toContain('variant="vfo-wide"');
   });
 });
 
