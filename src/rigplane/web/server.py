@@ -2965,23 +2965,22 @@ class WebServer:
     async def _bridge_tx_gate_open(self) -> bool:
         """Whether the bridge may push captured audio to the radio.
 
-        Fail-open. Closed only when a managed transmit authority exists, holds
-        no keyed transmission, and observed PTT is exactly OFF. A keyed
-        transmission is an intent other than receive: PTT or transmit. Anything
-        unknown — no authority, a snapshot that cannot be read, observed PTT
-        that is not exactly OFF — sends.
+        Fail-closed (MOR-2863). Open only when the managed TX intent is
+        keyed — RigPlane itself keyed the rig — or a fresh observed PTT
+        is exactly ON. Everything else closes the gate: unknown or stale
+        observation, no authority, or a snapshot that cannot be read.
         """
         authority = self._managed_tx_authority()
         if authority is None:
-            return True
+            return False
         try:
             projection = await authority.snapshot()
             observed = project_observed_ptt(self.command_state_store.snapshot())
         except Exception:
-            logger.debug("audio-bridge: TX gate failed open", exc_info=True)
-            return True
+            logger.debug("audio-bridge: TX gate failed closed", exc_info=True)
+            return False
         keyed = projection.state.intent.kind is not ManagedTxIntentKind.RX
-        return keyed or observed is not ObservedPtt.OFF
+        return keyed or observed is ObservedPtt.ON
 
     async def start_audio_bridge(
         self,
@@ -6338,7 +6337,12 @@ class WebServer:
                 return
             handler = ScopeHandler(ws, self._radio, server=self, audio_mode=True)
         elif path == "/api/v1/audio":
-            handler = AudioHandler(ws, self._radio, self._audio_broadcaster)
+            handler = AudioHandler(
+                ws,
+                self._radio,
+                self._audio_broadcaster,
+                tx_gate=self._bridge_tx_gate_open,
+            )
         else:
             await ws.close(1008, "unknown channel")
             return

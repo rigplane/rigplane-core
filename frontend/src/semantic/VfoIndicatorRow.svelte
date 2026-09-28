@@ -4,6 +4,11 @@
   ANT/TUNE/RIT/XIT facts and DUAL actions belong to slice 2.
 -->
 <script module lang="ts">
+  /** MOR-2852: the phone meta row's fact vocabulary — the subset the 'chips'
+   *  appearance can draw. Exported for the ReceiverInstrumentHost handle
+   *  handles, whose `mainFacts`/`subFacts` snippets re-expose this type. */
+  export type VfoFactKind = 'bandwidth' | 'agc' | 'nb' | 'nr';
+
   // MOR-2644 correction 3 (owner rule 2026-09-21: the layout never moves):
   // every fact reserves the width of its widest lit text, the same way RFG
   // does (`min-inline-size` in `ch`, `box-sizing: content-box`). Unread,
@@ -72,7 +77,10 @@
 
   interface Props {
     indicator?: ReceiverIndicatorViewModel;
-    appearance?: 'semantic' | 'sdr' | 'standard';
+    appearance?: 'semantic' | 'sdr' | 'standard' | 'chips';
+    /** MOR-2852: with `appearance="chips"` — the receiver facts to draw, in
+     *  that order. Other appearances ignore it and render exactly as before. */
+    facts?: readonly VfoFactKind[];
     children?: Snippet;
     slotLabel?: string;
     radioWide?: RadioWideIndicatorsViewModel;
@@ -81,7 +89,7 @@
   }
 
   let {
-    indicator, radioWide, appearance = 'semantic', children, slotLabel, continuitySession, sMeter,
+    indicator, radioWide, appearance = 'semantic', facts, children, slotLabel, continuitySession, sMeter,
   }: Props = $props();
 
   /** MOR-2671: uncertain reads `TX` as well — the distinction from confirmed TX is the
@@ -172,32 +180,69 @@
 
 </script>
 
+{#snippet factSpan(fact: VfoFactKind)}
+  {#if indicator}
+    {#if fact === 'bandwidth' && indicator.bandwidthHz.availability.structural}
+      <span class="fact" data-indicator-fact="bandwidth" data-state={indicator.bandwidthHz.reading.status}
+        style:min-inline-size={`${bandwidthReservationCh}ch`}>BW {readingText(indicator.bandwidthHz, (v) => `${String(v)} Hz`)}</span>
+    {:else if fact === 'agc' && indicator.agcMode.availability.structural}
+      <span class="fact" data-indicator-fact="agc" data-state={indicator.agcMode.reading.status}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS.agc}ch`}>AGC{readingText(indicator.agcMode, (v) => ` ${String(v)}`)}</span>
+    {:else if fact === 'nb' && indicator.nbActive.availability.structural}
+      <!-- MOR-2852: NB/NR chips drop ON/OFF — the label; the state lives in data-state. -->
+      <span class="fact" data-indicator-fact="nb" data-state={booleanState(indicator.nbActive)}
+        style:min-inline-size="2ch">NB</span>
+    {:else if fact === 'nr' && indicator.nrActive.availability.structural}
+      <span class="fact" data-indicator-fact="nr" data-state={booleanState(indicator.nrActive)}
+        style:min-inline-size="2ch">NR</span>
+    {/if}
+  {/if}
+{/snippet}
+
 {#if indicator}
-<section
-  class="indicator-row"
-  data-indicator-appearance={appearance}
-  data-testid="vfo-indicator-row"
-  data-indicator-receiver={indicator.receiver}
-  data-indicator-operational={indicator.availability.operational}
-  aria-label={`${indicator.receiver} receiver indicators`}
->
-  <header>
-    <strong>{indicator.receiver}</strong>
-    {#if indicator.bandwidthHz.availability.structural}
-      <span
-        class="fact"
-        data-indicator-fact="bandwidth"
-        data-state={indicator.bandwidthHz.reading.status}
-        style:min-inline-size={`${bandwidthReservationCh}ch`}
-      >BW {readingText(indicator.bandwidthHz, (v) => `${String(v)} Hz`)}</span>
-    {/if}
-    {#if appearance === 'standard'}
-      <span class="header-badges"><span class="fact">BAR</span><span
-        class="fact"
-        data-empty={slotLabel == null ? 'true' : undefined}
-      >{slotLabel ?? ''}</span></span>
-    {/if}
-  </header>
+  <!-- MOR-2852: the chips appearance carries ONLY the listed facts — no
+       receiver header, no S-meter, no radio-wide section. -->
+  {#if appearance === 'chips'}
+    <section
+      class="indicator-row"
+      data-indicator-appearance="chips"
+      data-testid="vfo-indicator-row"
+      data-indicator-receiver={indicator.receiver}
+      data-indicator-operational={indicator.availability.operational}
+      aria-label={`${indicator.receiver} receiver indicators`}
+    >
+      <div class="facts chips" aria-label={`${indicator.receiver} receiver facts`}>
+        {#each facts ?? [] as fact (fact)}
+          {@render factSpan(fact)}
+        {/each}
+      </div>
+    </section>
+  {:else}
+    <section
+      class="indicator-row"
+      data-indicator-appearance={appearance}
+      data-testid="vfo-indicator-row"
+      data-indicator-receiver={indicator.receiver}
+      data-indicator-operational={indicator.availability.operational}
+      aria-label={`${indicator.receiver} receiver indicators`}
+    >
+      <header>
+        <strong>{indicator.receiver}</strong>
+        {#if indicator.bandwidthHz.availability.structural}
+          <span
+            class="fact"
+            data-indicator-fact="bandwidth"
+            data-state={indicator.bandwidthHz.reading.status}
+            style:min-inline-size={`${bandwidthReservationCh}ch`}
+          >BW {readingText(indicator.bandwidthHz, (v) => `${String(v)} Hz`)}</span>
+        {/if}
+        {#if appearance === 'standard'}
+          <span class="header-badges"><span class="fact">BAR</span><span
+            class="fact"
+            data-empty={slotLabel == null ? 'true' : undefined}
+          >{slotLabel ?? ''}</span></span>
+        {/if}
+      </header>
 
   <div class="s-meter" data-testid="receiver-s-meter" data-receiver={indicator.receiver}>
     {#if finiteValue(readingValue(indicator.sMeter)) !== null}
@@ -284,11 +329,12 @@
     {/if}
   </div>
 </section>
+{/if}
 {:else if children}
   {@render children()}
 {/if}
 
-{#if radioWide}
+{#if radioWide && appearance !== 'chips'}
   <section
     class="indicator-row shared-indicators"
     data-indicator-appearance={appearance}
@@ -359,6 +405,21 @@
   .rf-lamp[data-indicator-rf='uncertain'] { border-style: dashed; }
   .fact[data-state='on'], .fact[data-state='known'] { color: var(--v2-text-primary, #e8e8e8); }
   .fact[data-state='off'], .fact[data-state='unknown'] { color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55)); }
+  /* MOR-2852: the chips appearance lights ON with the phone's lit-key
+     vocabulary — the cyan edge bar on the left, never colour alone. The bar
+     is pseudo-element geometry, so it survives forced-colors and never
+     shifts the reserved slot. */
+  .indicator-row[data-indicator-appearance='chips'] .fact { position: relative; }
+  [data-indicator-appearance='chips'] .fact[data-state='on']::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 2px;
+    bottom: 2px;
+    width: 2px;
+    border-radius: 0 2px 2px 0;
+    background: var(--v2-accent-cyan, #22d3ee);
+  }
   /* Owner ruling 2026-09-23: the RFG fact keeps its slot whether or not it
      prints. The widest lit text is `RFG 99%` (7 characters in this mono
      face); the reservation (8, in FACT_SLOT_RESERVATIONS) stays
@@ -416,6 +477,14 @@
      reservation (min-inline-size) holds the inline size only; the global
      border-box model holds the block size, so the 1px top and bottom
      borders stay inside the 30px min-height. */
+
+  /* MOR-2852: the chips appearance is a bare inline strip — no panel
+     chrome — so the phone meta row owns the one-line, unclipped box. The
+     sdr/standard faces de-panel the same way below for their own cases. */
+  .indicator-row[data-indicator-appearance='chips'] {
+    padding: 0; border: 0; background: transparent; border-radius: 0; gap: 0;
+  }
+  .indicator-row[data-indicator-appearance='chips'] .facts { flex-wrap: nowrap; gap: 5px; }
 
   .indicator-row[data-indicator-appearance='sdr'], .indicator-row[data-indicator-appearance='standard'] {
     padding: 0; border: 0; background: transparent; border-radius: 0; gap: 6px;

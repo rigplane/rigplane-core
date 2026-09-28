@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -1671,3 +1672,84 @@ async def test_change_subscription_is_lifecycle_safe() -> None:
     assert await managed.ptt_up("owner-a") is ManagedTxOutcome.ACCEPTED
     assert changes == [], "unsubscribed listeners must not be invoked"
     await managed.close()
+
+
+_AUTHORITY_LOGGER = "rigplane.runtime.managed_tx_authority"
+
+
+def _authority_log(caplog: pytest.LogCaptureFixture) -> list[tuple[str, str]]:
+    return [
+        (record.levelname, record.getMessage())
+        for record in caplog.records
+        if record.name == _AUTHORITY_LOGGER
+    ]
+
+
+@pytest.mark.asyncio
+async def test_uncertain_release_is_retried_until_accepted_and_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    managed, clock, _, _, _, lane = authority(seconds=None)
+    await managed._stop_scheduler(managed._scheduler_task)
+    try:
+        assert await managed.ptt_down("owner") is ManagedTxOutcome.ACCEPTED
+        lane.results.extend((ActuationResult.UNCERTAIN, ActuationResult.ACCEPTED))
+        with caplog.at_level(logging.INFO, logger=_AUTHORITY_LOGGER):
+            assert await managed.ptt_up("owner") is ManagedTxOutcome.ACCEPTED
+            assert (await managed.snapshot()).state.release_required
+            assert managed._retry_due is not None
+            clock.now = managed._retry_due
+            await managed._process_due()
+
+        first, second = (
+            effect.token.attempt_id
+            for effect in lane.effects
+            if effect.operation is ActuationOperation.FORCE_RECEIVE
+        )
+        assert not (await managed.snapshot()).state.release_required
+        assert _authority_log(caplog) == [
+            ("INFO", f"managed TX release attempt {first}: force_receive uncertain"),
+            (
+                "WARNING",
+                f"managed TX release attempt {first}: force_receive not confirmed"
+                " (uncertain)",
+            ),
+            ("INFO", f"managed TX release attempt {second}: force_receive accepted"),
+        ]
+    finally:
+        await managed.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confirmed", [True, False], ids=["confirmed", "unconfirmed"])
+async def test_shutdown_logs_whether_its_release_was_confirmed(
+    caplog: pytest.LogCaptureFixture, confirmed: bool
+) -> None:
+    managed, _, _, _, _, lane = authority(seconds=None)
+    if not confirmed:
+        lane.results.append(ActuationResult.UNCERTAIN)
+    termination = asyncio.Event()
+    with caplog.at_level(logging.INFO, logger=_AUTHORITY_LOGGER):
+        shutdown = asyncio.create_task(
+            managed.shutdown(
+                retire_provider=lambda _: asyncio.sleep(0), termination=termination
+            )
+        )
+        release = await asyncio.wait_for(lane.started.get(), 1)
+        if not confirmed:
+            termination.set()
+        result = await asyncio.wait_for(shutdown, 1)
+
+    assert release.operation is ActuationOperation.FORCE_RECEIVE
+    assert result is (
+        ShutdownResult.DRAINED if confirmed else ShutdownResult.TERMINATED
+    )
+    assert [line for line in _authority_log(caplog) if "shutdown" in line[1]] == [
+        ("INFO", "managed TX shutdown: force_receive accepted; release drained")
+        if confirmed
+        else (
+            "WARNING",
+            "managed TX shutdown: terminated before an accepted force_receive"
+            " drained the release",
+        )
+    ]

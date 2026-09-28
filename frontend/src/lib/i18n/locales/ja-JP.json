@@ -209,6 +209,7 @@
   "core.mobile.chips.label": "モバイルセクション",
   "core.mobile.chip.essentials": "ESSENTIALS",
   "core.mobile.chip.band": "BAND",
+  "core.mobile.chip.scope": "SCOPE",
   "core.mobile.chip.scan": "SCAN",
   "core.mobile.chip.rf": "RF",
   "core.mobile.chip.dsp": "DSP",

@@ -236,7 +236,7 @@ vi.mock('$lib/runtime/props/panel-props', async (importOriginal) => {
 
 import MobileRadioLayout from '../MobileRadioLayout.svelte';
 import mobileLayoutSource from '../MobileRadioLayout.svelte?raw';
-import { hasTx, hasDualReceiver, getCapabilities } from '$lib/stores/capabilities.svelte';
+import { hasTx, hasDualReceiver, hasSpectrum, getCapabilities, getScopeSource } from '$lib/stores/capabilities.svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import { MOD_INPUT_SOURCES } from '$lib/radio/mod-input';
@@ -407,6 +407,97 @@ describe('MobileRadioLayout structure', () => {
 
   it('renders settings button', () => {
     expect(mountMobile().querySelector('.m-settings-btn')).not.toBeNull();
+  });
+
+  // MOR-2852 — the meta row carries the receiver facts (BW/AGC/NB/NR) for the
+  // receiver the header shows, reached through the hosted instruments.
+  describe('meta row receiver facts (MOR-2852)', () => {
+    const capsFacts = (receivers = 2): Capabilities => ({
+      freqRanges: [], modes: ['USB', 'LSB'], filters: ['FIL1', 'FIL2'], stateContractVersion: 1,
+      providerGeneration: 1,
+      receivers, vfoScheme: receivers === 2 ? 'main_sub' : 'single',
+      capabilities: ['dual_rx', 'filter_width', 'agc', 'nb', 'nr'],
+      agcModes: [0, 1, 2],
+      agcLabels: { 0: 'OFF', 1: 'FAST', 2: 'SLOW' },
+    } as unknown as Capabilities);
+    const seen = () => ({ observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 1 });
+    function receiverFacts(active: 'MAIN' | 'SUB', caps: Capabilities) {
+      vi.mocked(hasDualReceiver).mockReturnValue(caps.receivers === 2);
+      (radio as unknown as { current: ServerState | null }).current = {
+        active: active, providerGeneration: 1,
+        main: {
+          freqHz: 14_250_000, mode: 'USB', filter: 0, dataMode: 0, activeSlot: 'A', sMeter: -12,
+          vfoA: {}, vfoB: {}, filterWidth: 2400, agc: 1, nb: false, nr: false,
+        } as unknown,
+        ...(caps.receivers === 2 ? {
+          sub: {
+            freqHz: 7_100_000, mode: 'LSB', filter: 1, dataMode: 0, activeSlot: 'A', sMeter: -12,
+            vfoA: {}, vfoB: {}, filterWidth: 500, agc: 2, nb: true, nr: true,
+          } as unknown,
+        } : {}),
+        connection: {} as ServerState['connection'],
+        fieldStatus: {
+          'main.filterWidth': seen(), 'main.agc': seen(), 'main.nb': seen(), 'main.nr': seen(),
+          ...('SUB' === active || caps.receivers === 2 ? {
+            'sub.filterWidth': seen(), 'sub.agc': seen(), 'sub.nb': seen(), 'sub.nr': seen(),
+          } : {}),
+        } as unknown as ServerState['fieldStatus'],
+      } as unknown as ServerState;
+      vi.mocked(getCapabilities).mockReturnValue(caps);
+    }
+
+    it('shows the MAIN receiver facts after mode and filter in the meta row', () => {
+      const previous = getCapabilities(); const caps = capsFacts();
+      receiverFacts('MAIN', caps);
+      try {
+        const t = mountMobile();
+        const meta = t.querySelector('.m-vfo-meta')!;
+        expect(meta).not.toBeNull();
+        expect(meta.querySelector('.m-vfo-mode')?.textContent).toBe('USB');
+        expect(meta.querySelector('.m-vfo-filter')?.textContent).toBe('FIL1');
+        const facts = [...meta.querySelectorAll('[data-indicator-fact]')];
+        expect(facts.map((node) => node.getAttribute('data-indicator-fact')))
+          .toEqual(['bandwidth', 'agc', 'nb', 'nr']);
+        expect(facts.map((node) => node.textContent?.trim()))
+          .toEqual(['BW 2400 Hz', 'AGC FAST', 'NB', 'NR']);
+        expect(meta.querySelector('[data-indicator-fact="nb"]')?.getAttribute('data-state')).toBe('off');
+      } finally {
+        vi.mocked(getCapabilities).mockReturnValue(previous);
+        vi.mocked(hasDualReceiver).mockReturnValue(false);
+      }
+    });
+
+    it('switches the facts with the receiver the header shows', () => {
+      const previous = getCapabilities(); const caps = capsFacts();
+      receiverFacts('SUB', caps);
+      try {
+        const t = mountMobile();
+        const meta = t.querySelector('.m-vfo-meta')!;
+        const facts = [...meta.querySelectorAll('[data-indicator-fact]')];
+        expect(facts.map((node) => node.textContent?.trim())).toEqual(['BW 500 Hz', 'AGC SLOW', 'NB', 'NR']);
+        expect(meta.querySelector('[data-indicator-fact="nb"]')?.getAttribute('data-state')).toBe('on');
+        expect(t.querySelector('.m-smeter-bar')?.getAttribute('data-receiver')).toBe('SUB');
+      } finally {
+        vi.mocked(getCapabilities).mockReturnValue(previous);
+        vi.mocked(hasDualReceiver).mockReturnValue(false);
+      }
+    });
+
+    it('the facts are display-only — bare spans, no clickable control', () => {
+      const previous = getCapabilities(); const caps = capsFacts();
+      receiverFacts('MAIN', caps);
+      try {
+        const t = mountMobile();
+        const meta = t.querySelector('.m-vfo-meta')!;
+        const nodes = [...meta.querySelectorAll<HTMLElement>('[data-indicator-fact]')];
+        expect(nodes).toHaveLength(4);
+        expect(nodes.every((node) => node.tagName === 'SPAN')).toBe(true);
+        expect(nodes[0].closest('button')).toBeNull();
+      } finally {
+        vi.mocked(getCapabilities).mockReturnValue(previous);
+        vi.mocked(hasDualReceiver).mockReturnValue(false);
+      }
+    });
   });
 
   // MOR-2511 — this suite's module-level `hasSpectrum` mock returns false, so
@@ -617,6 +708,150 @@ describe('MobileRadioLayout chip-scroll IA (#839)', () => {
     const t = mountMobile();
     const panels = t.querySelectorAll('[id^="m-chip-panel-"]');
     expect(panels.length).toBe(1);
+  });
+});
+
+// MOR-2851 — the portrait phone draws no toolbar above the panorama. The
+// panorama's view controls move to a SCOPE chip tab that exists exactly when
+// the radio has a spectrum (the same `hasSpectrum()` gate as the panorama
+// itself, MOR-2511). SpectrumPanel is stubbed here, so the panel-level
+// contract (toolbar hidden, values bound) is pinned through the stub's
+// recorded props; the toolbar's own rendering is pinned in
+// SpectrumPanel.component.test.ts.
+describe('MobileRadioLayout SCOPE chip tab (MOR-2851)', () => {
+  /** Back the capability mocks with a spectrum radio for one test. */
+  function withSpectrumRadio(): () => void {
+    const oldCaps = getCapabilities();
+    vi.mocked(hasSpectrum).mockReturnValue(true);
+    // The managed scope region (VIEW's demand) exists only for a hardware
+    // scope source — the same gate SemanticRadioSurfaces applies.
+    vi.mocked(getScopeSource).mockReturnValue('hardware');
+    vi.mocked(getCapabilities).mockReturnValue({
+      ...oldCaps, model: 'fixture', receivers: 1, vfoScheme: 'ab', capabilities: ['scope'],
+    } as Capabilities);
+    (radio as unknown as { current: { active?: 'MAIN' | 'SUB' } | null }).current = { active: 'MAIN' };
+    return () => {
+      vi.mocked(hasSpectrum).mockReturnValue(false);
+      vi.mocked(getScopeSource).mockReturnValue(null);
+      vi.mocked(getCapabilities).mockReturnValue(oldCaps);
+      (radio as unknown as { current: { active?: 'MAIN' | 'SUB' } | null }).current = null;
+    };
+  }
+
+  function scopeChip(t: HTMLElement): HTMLButtonElement | undefined {
+    return Array.from(t.querySelectorAll<HTMLButtonElement>('.m-chip'))
+      .find((chip) => chip.textContent?.trim() === 'SCOPE');
+  }
+
+  it('renders the SCOPE chip right after BAND only when the radio has a spectrum', () => {
+    const restore = withSpectrumRadio();
+    try {
+      const t = mountMobile();
+      const labels = Array.from(t.querySelectorAll('.m-chip')).map((chip) => chip.textContent?.trim());
+      expect(labels).toContain('SCOPE');
+      expect(labels.indexOf('BAND') + 1).toBe(labels.indexOf('SCOPE'));
+    } finally {
+      restore();
+    }
+    // MOR-2511 no-spectrum fixture: the chip is gone with the panorama.
+    const bare = mountMobile();
+    expect(bare.querySelector('.m-spectrum')).toBeNull();
+    expect(scopeChip(bare)).toBeUndefined();
+  });
+
+  it('hides the toolbar on the portrait panorama only (MOR-2851)', () => {
+    const restore = withSpectrumRadio();
+    try {
+      const t = mountMobile();
+      const portrait = t.querySelector<HTMLElement>('.spectrum-panel-stub')!;
+      expect(portrait.dataset.hideToolbar).toBe('true');
+      rotate(true);
+      const landscape = t.querySelector<HTMLElement>('.spectrum-panel-stub')!;
+      expect(landscape.dataset.hideToolbar).toBe('false');
+    } finally {
+      restore();
+      rotate(false);
+    }
+  });
+
+  it('opening SCOPE shows the four screen keys and the semantic scope-controls surface', () => {
+    const restore = withSpectrumRadio();
+    try {
+      const t = mountMobile();
+      scopeChip(t)!.click();
+      flushSync();
+      const panel = t.querySelector('#m-chip-panel-scope');
+      expect(panel).not.toBeNull();
+      for (const key of ['view', 'avg', 'peak', 'bands']) {
+        expect(panel!.querySelector(`[data-testid="scope-key-${key}"]`)).not.toBeNull();
+      }
+      // The radio's scope controls: the existing semantic surface, not a
+      // second implementation.
+      expect(panel!.querySelector('[data-testid="scope-controls-surface"]')).not.toBeNull();
+    } finally {
+      restore();
+    }
+  });
+
+  it('AVG / PEAK / BANDS clicks flip the values bound into SpectrumPanel', () => {
+    const restore = withSpectrumRadio();
+    try {
+      const t = mountMobile();
+      const stub = () => t.querySelector<HTMLElement>('.spectrum-panel-stub')!;
+      expect(stub().dataset.enableAvg).toBe('true');
+      expect(stub().dataset.enablePeakHold).toBe('true');
+      expect(stub().dataset.showBandPlan).toBe('true');
+      scopeChip(t)!.click();
+      flushSync();
+      for (const [key, attr] of [
+        ['avg', 'enableAvg'], ['peak', 'enablePeakHold'], ['bands', 'showBandPlan'],
+      ] as const) {
+        t.querySelector<HTMLButtonElement>(`[data-testid="scope-key-${key}"]`)!.click();
+        flushSync();
+        expect(stub().dataset[attr]).toBe('false');
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  it('renders no VIEW key when no managed scope region exists', () => {
+    const restore = withSpectrumRadio();
+    try {
+      // A spectrum without a hardware scope source leaves
+      // `managedScopeRegion` undefined — VIEW would be a dead control.
+      vi.mocked(getScopeSource).mockReturnValue(null);
+      const t = mountMobile();
+      scopeChip(t)!.click();
+      flushSync();
+      const panel = t.querySelector('#m-chip-panel-scope')!;
+      expect(panel.querySelector('[data-testid="scope-key-view"]')).toBeNull();
+      // AVG / PEAK / BANDS are layout-owned state and stay.
+      for (const key of ['avg', 'peak', 'bands']) {
+        expect(panel.querySelector(`[data-testid="scope-key-${key}"]`)).not.toBeNull();
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  it('VIEW drives the managed scope demand with the negation', () => {
+    const restore = withSpectrumRadio();
+    try {
+      const t = mountMobile();
+      const stub = () => t.querySelector<HTMLElement>('.spectrum-panel-stub')!;
+      expect(stub().dataset.scopeDemanded).toBe('true');
+      scopeChip(t)!.click();
+      flushSync();
+      t.querySelector<HTMLButtonElement>('[data-testid="scope-key-view"]')!.click();
+      flushSync();
+      expect(stub().dataset.scopeDemanded).toBe('false');
+      t.querySelector<HTMLButtonElement>('[data-testid="scope-key-view"]')!.click();
+      flushSync();
+      expect(stub().dataset.scopeDemanded).toBe('true');
+    } finally {
+      restore();
+    }
   });
 });
 

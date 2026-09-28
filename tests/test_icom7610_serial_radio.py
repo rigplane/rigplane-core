@@ -25,6 +25,7 @@ from rigplane.commands import (
     build_civ_frame,
     parse_civ_frame,
 )
+from rigplane.core.civ import CivRequestKey
 from rigplane.core.state_store import StateStore
 from rigplane.exceptions import CommandError, ConnectionError
 from rigplane.exceptions import TimeoutError as RigplaneTimeoutError
@@ -32,7 +33,7 @@ from rigplane.runtime.managed_tx_composition import (
     ManagedTxComposition,
     install_managed_tx_composition,
 )
-from rigplane.runtime.managed_tx_state import ManagedTxOutcome
+from rigplane.runtime.managed_tx_state import ActuationResult, ManagedTxOutcome
 from rigplane.types import AudioCodec
 from rigplane.types import bcd_encode
 
@@ -131,6 +132,20 @@ async def _wait_until(predicate, *, timeout_s: float = 1.0) -> bool:  # type: ig
     return bool(predicate())
 
 
+async def _silence_clock_reset_gap(radio) -> None:  # type: ignore[no-untyped-def]
+    """Quiet gap between timed-out commands (MOR-2861 silence path).
+
+    The silence clock survives the tick that consumes a command-timeout
+    delta (a timeout is itself silence evidence), so back-to-back timed-out
+    commands would let it run continuously across their windows and declare
+    at 2 x answer window + one tick — before the consecutive-timeout
+    threshold the MOR-1440 tests pin. Sleeping past two watchdog ticks
+    lets one tick see nothing outstanding and clear the clock, keeping each
+    command's accrued silence below the limit.
+    """
+    await asyncio.sleep(radio._SERIAL_WATCHDOG_INTERVAL_S * 3)
+
+
 class _FakeSerialCivLink:
     def __init__(
         self,
@@ -139,6 +154,7 @@ class _FakeSerialCivLink:
         fail_connect_calls: set[int] | None = None,
         fail_connect_calls_exc: BaseException | None = None,
         lifecycle_events: list[tuple[str, object | None]] | None = None,
+        ptt_off_answer: int | None = 0xFB,
     ) -> None:
         self._fail_connect = fail_connect
         self._fail_connect_calls = set(fail_connect_calls or set())
@@ -153,6 +169,7 @@ class _FakeSerialCivLink:
         self._responses_by_send: dict[int, list[bytes]] = {}
         self.device_history: list[str] = []
         self.lifecycle_events = lifecycle_events
+        self.ptt_off_answer = ptt_off_answer
 
     def set_device(self, device: str) -> None:
         self.device_history.append(device)
@@ -187,6 +204,21 @@ class _FakeSerialCivLink:
         send_no = len(self.sent_frames)
         for response in self._responses_by_send.pop(send_no, []):
             self._responses.put_nowait(response)
+        # ``CoreRadio.actuate`` waits for the answer to the ``1C 00 00`` unkey
+        # and distrusts it while another write's answer may be unclaimed
+        # (MOR-2860), so the managed TX writes are answered here: FB for PTT ON
+        # (``1C 00 01``), stop CW (``17 FF``) and tuner off (``1C 01 00``), and
+        # ``ptt_off_answer`` for the unkey (``None`` answers nothing).
+        answer = {
+            b"\x1c\x00\x01": 0xFB,
+            b"\x17\xff": 0xFB,
+            b"\x1c\x01\x00": 0xFB,
+            b"\x1c\x00\x00": self.ptt_off_answer,
+        }.get(payload[4:-1])
+        if answer is not None:
+            self._responses.put_nowait(
+                bytes((0xFE, 0xFE, payload[3], payload[2], answer, 0xFD))
+            )
 
     async def send_written(
         self, frame: bytes, *, is_current: Callable[[], bool] | None = None
@@ -448,6 +480,29 @@ async def test_serial_disconnect_retires_composition_before_transport_close(
     await composition.shutdown(asyncio.Event())
 
 
+@pytest.mark.asyncio
+async def test_idle_force_off_on_an_answering_radio_leaves_no_debt(tmp_path) -> None:
+    """MOR-2860: an idle ForceOff that the radio answers with FB owes nothing."""
+    link = _FakeSerialCivLink()
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    composition = ManagedTxComposition(radio, config_path=tmp_path / "managed-tx.json")
+    install_managed_tx_composition(radio, composition)
+    store = StateStore()
+    store.begin_provider_generation()
+    await composition.bind_state_store(store)
+    await radio.connect()
+    try:
+        assert await composition.authority.force_off() is ManagedTxOutcome.ACCEPTED
+        state = (await composition.authority.snapshot()).state
+    finally:
+        await radio.disconnect()
+        await composition.shutdown(asyncio.Event())
+
+    assert state.last_actuation is not None
+    assert state.last_actuation.result is ActuationResult.ACCEPTED
+    assert not state.release_required
+
+
 def test_serial_radio_rejects_unsupported_ptt_mode() -> None:
     with pytest.raises(ValueError, match="Unsupported serial PTT mode"):
         Icom7610SerialRadio(
@@ -655,10 +710,12 @@ async def test_serial_link_down_detected_when_healthy_flag_stays_stuck_true(
             await radio._send_civ_raw(frame, wait_response=True)
         assert link.healthy is True
         assert radio.conn_state == RadioConnectionState.CONNECTED
+        await _silence_clock_reset_gap(radio)
 
         for _ in range(radio._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD - 1):
             with pytest.raises(RigplaneTimeoutError):
                 await radio._send_civ_raw(frame, wait_response=True)
+            await _silence_clock_reset_gap(radio)
 
         assert await _wait_until(
             lambda: radio.conn_state == RadioConnectionState.RECONNECTING,
@@ -696,6 +753,7 @@ async def test_serial_link_down_propagates_to_web_radio_health() -> None:
     for _ in range(radio._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD):
         with pytest.raises(RigplaneTimeoutError):
             await radio._send_civ_raw(frame, wait_response=True)
+        await _silence_clock_reset_gap(radio)
     assert await _wait_until(
         lambda: radio.conn_state == RadioConnectionState.RECONNECTING, timeout_s=2.0
     )
@@ -728,11 +786,300 @@ async def test_serial_link_down_stops_audio_capture() -> None:
     for _ in range(radio._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD):
         with pytest.raises(RigplaneTimeoutError):
             await radio._send_civ_raw(frame, wait_response=True)
+        await _silence_clock_reset_gap(radio)
     assert await _wait_until(
         lambda: radio.conn_state == RadioConnectionState.RECONNECTING, timeout_s=2.0
     )
 
     assert usb_audio.rx_running is False
+
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_silent_link_with_ready_session_declares_link_down(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-2861: a merely-"ready" session with polls outstanding and no parsed
+    CI-V frame must be declared link-down (which parks managed TX).
+
+    Fixture shape mirrors the 2026-09-28 IC-7300 incident: the raw session
+    reads ready, ``rx_packet_count`` never advances, and the request tracker
+    records zero timeouts (fire-and-forget polls and scope GETs cancelled at
+    0.2 s never produce one). A fake clock advances artificial seconds while
+    a live poller is emulated: a fresh keyed sink (the web poller's
+    BACKGROUND shape) is re-dispatched well inside the answer window, so at
+    every watchdog tick a poll younger than the window is outstanding.
+
+    Tightened to the silence limit N = 2 x answer window + one watchdog
+    tick: no declaration below N, declaration just past it.
+    """
+    import logging
+
+    # Reconnect attempts fail (device never returns on the same path) so the
+    # link-down state does not self-heal mid-assertion.
+    link = _FakeSerialCivLink(fail_connect_calls=set(range(2, 100)))
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._SERIAL_WATCHDOG_INTERVAL_S = 0.005
+    await radio.connect()
+    assert radio.radio_ready is True
+
+    tracker = radio._civ_request_tracker
+
+    # Fake clock: jump artificial seconds instead of waiting real ones. Sink
+    # stamps are re-based onto the fake clock so waiter ages and the silence
+    # clock measure the same time.
+    now = {"t": time.monotonic()}
+    radio._civ_silence_time_source = lambda: now["t"]  # type: ignore[attr-defined]
+    window_s = radio._civ_get_timeout
+    silence_limit_s = 2.0 * window_s + radio._SERIAL_WATCHDOG_INTERVAL_S
+    poll_cadence_s = window_s / 2.0
+
+    def _dispatch_poll() -> None:
+        tracker.register_ack(
+            wait=False, response_key=CivRequestKey(command=0x03, sub=None)
+        )
+        tracker._ack_waiters[-1].created_monotonic = now["t"]
+
+    _dispatch_poll()
+    assert tracker.timeout_count == 0
+
+    managed_tx = _FakeManagedTxRuntime()
+    radio._managed_tx_runtime = managed_tx  # type: ignore[assignment]
+
+    # The silence clock must start while the fake clock still reads t0: the
+    # watchdog needs at least one evidence tick (polls outstanding, rx frozen)
+    # BEFORE time advances, otherwise elapsed could never reach the limit.
+    assert await _wait_until(
+        lambda: getattr(radio, "_civ_silence_started_monotonic", None) is not None,
+        timeout_s=2.0,
+    ), "watchdog never started the silence clock with polls outstanding"
+
+    started = now["t"]
+
+    with caplog.at_level(logging.ERROR, logger="rigplane.backends._icom_serial_base"):
+        # A live poller keeps polling the silent radio; step the clock to
+        # just below the limit. Below N the link must NOT be declared down.
+        while now["t"] - started < silence_limit_s - 2.0 * poll_cadence_s:
+            now["t"] += poll_cadence_s
+            _dispatch_poll()
+            await asyncio.sleep(0.02)
+        assert radio.conn_state == RadioConnectionState.CONNECTED, (
+            "link declared down below the silence limit "
+            f"({now['t'] - started:.1f}s < {silence_limit_s:.1f}s)"
+        )
+
+        # Cross N: silence with continuously fresh polls outstanding.
+        now["t"] = started + silence_limit_s + poll_cadence_s
+        _dispatch_poll()
+        assert await _wait_until(
+            lambda: radio.conn_state == RadioConnectionState.RECONNECTING,
+            timeout_s=2.0,
+        ), "silent link with polls outstanding never declared link-down"
+
+    error_lines = [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.ERROR and "link-down" in r.getMessage()
+    ]
+    assert len(error_lines) == 1, (
+        f"expected exactly one link-down ERROR line, got {len(error_lines)}"
+    )
+    assert managed_tx.ready_calls == [False]
+
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_polls_answered_within_window_do_not_declare_link_down(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-2861 negative: polls outstanding and answered within one answer
+    window, cycling far past the silence limit, must not declare link-down.
+
+    Each cycle dispatches a fresh keyed poll and parses its answer well
+    inside the window (the overlapping fire-and-forget pipeline the web
+    poller drives: the next read is dispatched before the previous waiter
+    is retired). The parsed frame must reset the silence clock; without
+    that reset, the clock started on an intra-cycle frozen tick would
+    accumulate across cycles and past the limit, declaring a link that
+    answers every poll within the window down.
+    """
+    import logging
+
+    link = _FakeSerialCivLink(fail_connect_calls=set(range(2, 100)))
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._SERIAL_WATCHDOG_INTERVAL_S = 0.005
+    await radio.connect()
+    assert radio.radio_ready is True
+
+    tracker = radio._civ_request_tracker
+    transport = radio._civ_transport
+
+    now = {"t": time.monotonic()}
+    radio._civ_silence_time_source = lambda: now["t"]  # type: ignore[attr-defined]
+    window_s = radio._civ_get_timeout
+    silence_limit_s = 2.0 * window_s + radio._SERIAL_WATCHDOG_INTERVAL_S
+    cadence_s = window_s / 2.0
+
+    def _dispatch_poll() -> int:
+        token = tracker.register_ack(
+            wait=False, response_key=CivRequestKey(command=0x03, sub=None)
+        )
+        tracker._ack_waiters[-1].created_monotonic = now["t"]
+        return token
+
+    with caplog.at_level(logging.ERROR, logger="rigplane.backends._icom_serial_base"):
+        previous: int | None = None
+        # Enough cycles that, without the parsed-frame reset, the clock
+        # accumulated across cycles would cross the silence limit.
+        cycles = int(silence_limit_s / cadence_s) + 2
+        for _ in range(cycles):
+            now["t"] += cadence_s
+            token = _dispatch_poll()
+            # Frozen-rx ticks with the fresh poll outstanding.
+            await asyncio.sleep(0.02)
+            # The radio answers well within the window: a CI-V frame parses.
+            transport.rx_packet_count += 1
+            # Retire the answered poll only after the next one is in flight.
+            if previous is not None:
+                assert tracker.unregister_ack_sink(previous) is True
+            previous = token
+            # Ticks with rx advanced: the parsed frame resets the clock.
+            await asyncio.sleep(0.02)
+        assert tracker.unregister_ack_sink(previous) is True
+
+        # The link goes quiet and is held past the silence limit.
+        now["t"] += silence_limit_s + 1.0
+        await asyncio.sleep(radio._SERIAL_WATCHDOG_INTERVAL_S * 10)
+
+        assert radio.conn_state == RadioConnectionState.CONNECTED, (
+            "healthy link with polls answered within the window was declared link-down"
+        )
+        error_lines = [
+            r
+            for r in caplog.records
+            if r.levelno >= logging.ERROR and "link-down" in r.getMessage()
+        ]
+        assert error_lines == [], (
+            f"healthy answered-poll link produced {len(error_lines)} "
+            "link-down ERROR line(s)"
+        )
+
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_silent_link_clock_clears_when_nothing_is_outstanding(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-2861 negative: a quiet link with nothing outstanding is idle,
+    not down — even held far past the silence limit.
+
+    The silence clock starts on one frozen tick with a poll outstanding,
+    then the poll's waiter is retired (its caller gave up), leaving nothing
+    outstanding. Without the "nothing outstanding clears the silence
+    clock" guard, the started clock would run to the limit and declare a
+    healthy, merely-quiet link down.
+    """
+    import logging
+
+    link = _FakeSerialCivLink(fail_connect_calls=set(range(2, 100)))
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._SERIAL_WATCHDOG_INTERVAL_S = 0.005
+    await radio.connect()
+    assert radio.radio_ready is True
+
+    tracker = radio._civ_request_tracker
+    now = {"t": time.monotonic()}
+    radio._civ_silence_time_source = lambda: now["t"]  # type: ignore[attr-defined]
+    silence_limit_s = 2.0 * radio._civ_get_timeout + radio._SERIAL_WATCHDOG_INTERVAL_S
+
+    token = tracker.register_ack(
+        wait=False, response_key=CivRequestKey(command=0x03, sub=None)
+    )
+    tracker._ack_waiters[-1].created_monotonic = now["t"]
+    assert await _wait_until(
+        lambda: getattr(radio, "_civ_silence_started_monotonic", None) is not None,
+        timeout_s=2.0,
+    ), "watchdog never started the silence clock with a poll outstanding"
+
+    # Nothing outstanding any more: the poll's caller retired its waiter.
+    assert tracker.unregister_ack_sink(token) is True
+
+    with caplog.at_level(logging.ERROR, logger="rigplane.backends._icom_serial_base"):
+        now["t"] += silence_limit_s + 5.0
+        await asyncio.sleep(radio._SERIAL_WATCHDOG_INTERVAL_S * 10)
+
+        assert radio.conn_state == RadioConnectionState.CONNECTED, (
+            "quiet link with nothing outstanding was declared link-down"
+        )
+        error_lines = [
+            r
+            for r in caplog.records
+            if r.levelno >= logging.ERROR and "link-down" in r.getMessage()
+        ]
+        assert error_lines == [], (
+            f"quiet healthy link produced {len(error_lines)} link-down ERROR line(s)"
+        )
+
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_lost_keyed_sink_alone_does_not_declare_link_down(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-2861 negative: one lost keyed sink on an otherwise quiet healthy
+    link, held past the silence limit, must not declare link-down.
+
+    A keyed fire-and-forget sink whose answer never comes lives in the
+    tracker until the 10 s stale cleanup. A waiter older than the answer
+    window is no longer evidence that the radio owes us data (its answer
+    had a full window to arrive), so the watchdog's pending count must
+    ignore it: after the window the link is merely quiet, and a quiet
+    link is not down. Held far past the limit — and past any slower
+    cadence-derived limit — the lone stale sink must not trip anything.
+    """
+    import logging
+
+    link = _FakeSerialCivLink(fail_connect_calls=set(range(2, 100)))
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._SERIAL_WATCHDOG_INTERVAL_S = 0.005
+    await radio.connect()
+    assert radio.radio_ready is True
+
+    tracker = radio._civ_request_tracker
+    now = {"t": time.monotonic()}
+    radio._civ_silence_time_source = lambda: now["t"]  # type: ignore[attr-defined]
+    silence_limit_s = 2.0 * radio._civ_get_timeout + radio._SERIAL_WATCHDOG_INTERVAL_S
+
+    tracker.register_ack(wait=False, response_key=CivRequestKey(command=0x03, sub=None))
+    tracker._ack_waiters[-1].created_monotonic = now["t"]
+    assert await _wait_until(
+        lambda: getattr(radio, "_civ_silence_started_monotonic", None) is not None,
+        timeout_s=2.0,
+    ), "watchdog never started the silence clock with a poll outstanding"
+
+    with caplog.at_level(logging.ERROR, logger="rigplane.backends._icom_serial_base"):
+        # The lone sink is never answered and never re-polled; the clock is
+        # held far past the silence limit (and past the old profile-derived
+        # limits of the pre-fix code).
+        now["t"] += silence_limit_s + 30.0
+        await asyncio.sleep(radio._SERIAL_WATCHDOG_INTERVAL_S * 10)
+
+        assert radio.conn_state == RadioConnectionState.CONNECTED, (
+            "one lost keyed sink on an otherwise quiet healthy link was "
+            "declared link-down"
+        )
+        error_lines = [
+            r
+            for r in caplog.records
+            if r.levelno >= logging.ERROR and "link-down" in r.getMessage()
+        ]
+        assert error_lines == [], (
+            f"lost-sink-only link produced {len(error_lines)} link-down ERROR line(s)"
+        )
 
     await radio.disconnect()
 
@@ -759,6 +1106,7 @@ async def test_serial_link_down_while_ptt_active_parks_managed_tx_safely() -> No
     for _ in range(radio._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD):
         with pytest.raises(RigplaneTimeoutError):
             await radio._send_civ_raw(frame, wait_response=True)
+        await _silence_clock_reset_gap(radio)
     assert await _wait_until(
         lambda: radio.conn_state == RadioConnectionState.RECONNECTING, timeout_s=2.0
     )
@@ -969,6 +1317,7 @@ async def test_serial_link_down_settles_after_successful_reconnect_same_node(
         for _ in range(threshold):
             with pytest.raises(RigplaneTimeoutError):
                 await radio._send_civ_raw(frame, wait_response=True)
+            await _silence_clock_reset_gap(radio)
 
         assert await _wait_until(
             lambda: radio.conn_state == RadioConnectionState.RECONNECTING,

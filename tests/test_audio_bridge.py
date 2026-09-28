@@ -1008,7 +1008,7 @@ async def test_opening_gate_drops_frames_queued_while_closed():
     assert bridge._tx_frames == 1
 
 
-async def test_failing_or_unknown_gate_lets_frames_through():
+async def test_failing_or_unknown_gate_drops_frames():
     radio = _bare_radio(push_audio_tx_pcm=AsyncMock())
 
     async def raising() -> bool:
@@ -1024,10 +1024,35 @@ async def test_failing_or_unknown_gate_lets_frames_through():
         bridge._tx_stream = types.SimpleNamespace(running=True)
         bridge._enqueue_tx(_loud_frame(1500))
         bridge._tx_task = asyncio.create_task(bridge._tx_loop())
-        await _run_tx_until(bridge, frames=1)
-        assert bridge._tx_frames == 1
-        assert bridge.metrics.tx_gate_suppressed == 0
-        radio.push_audio_tx_pcm.assert_awaited()
+        started = time.monotonic()
+        while bridge._tx_gate_suppressed < 1:
+            if time.monotonic() - started > 1.0:
+                raise AssertionError("gate did not drop the frame")
+            await asyncio.sleep(0)
+        bridge._running = False
+        await bridge._tx_task
+
+        assert bridge._tx_frames == 0
+        assert bridge.metrics.tx_gate_suppressed == 1
+        radio.push_audio_tx_pcm.assert_not_awaited()
+
+
+async def test_open_gate_passes_the_first_frame_immediately():
+    radio = _bare_radio(push_audio_tx_pcm=AsyncMock())
+
+    async def keyed() -> bool:
+        return True
+
+    bridge = AudioBridge(radio, tx_gate=keyed)
+    bridge._running = True
+    bridge._tx_stream = types.SimpleNamespace(running=True)
+    bridge._enqueue_tx(_loud_frame(1500))
+    bridge._tx_task = asyncio.create_task(bridge._tx_loop())
+    await _run_tx_until(bridge, frames=1)
+
+    assert bridge._tx_frames == 1
+    assert bridge.metrics.tx_gate_suppressed == 0
+    radio.push_audio_tx_pcm.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

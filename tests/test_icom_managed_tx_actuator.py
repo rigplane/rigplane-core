@@ -8,12 +8,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from rigplane.backends.icom7610 import Icom7610SerialRadio
 from rigplane.backends.icom7610.drivers.serial_session import SerialCivTransport
 from rigplane.command_map import CommandMap
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.commands.bound import BoundCommands
 from rigplane.commands.commander import IcomCommander, Priority
 from rigplane.core.exceptions import ConnectionError
+from rigplane.core.types import CivFrame
 from rigplane.runtime.managed_tx_effect_lane import ManagedTxActuator
 from rigplane.runtime.managed_tx_state import (
     AbortOperation,
@@ -22,6 +24,7 @@ from rigplane.runtime.managed_tx_state import (
     EffectToken,
 )
 from rigplane.runtime.radio import IcomRadio
+from test_icom7610_serial_radio import _FakeSerialCivLink
 from test_serial_civ_link import _FakeWriter, _cleanup_writes, _make_link
 
 
@@ -115,7 +118,11 @@ async def test_release_and_abort_operations_use_profile_bytes_at_strict_priority
     priority: Priority,
 ) -> None:
     radio = _profile_bound_radio()
-    radio._send_civ_raw = AsyncMock(return_value=None)
+    radio._send_civ_raw = AsyncMock(
+        return_value=CivFrame(
+            to_addr=CONTROLLER_ADDR, from_addr=radio._radio_addr, command=0xFB
+        )
+    )
 
     def current() -> bool:
         return True
@@ -126,11 +133,95 @@ async def test_release_and_abort_operations_use_profile_bytes_at_strict_priority
     call = radio._send_civ_raw.await_args
     frame = parse_civ_frame(call.args[0])
     assert (frame.command, frame.sub, frame.data) == expected
+    # MOR-2860: only the unkey waits for the radio's answer.
     assert call.kwargs == {
         "priority": priority,
-        "wait_response": False,
+        "wait_response": operation is ActuationOperation.FORCE_RECEIVE,
         "is_current": current,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        (0xFB, ActuationResult.ACCEPTED),
+        (0xFA, ActuationResult.REJECTED),
+        (None, ActuationResult.UNCERTAIN),
+    ],
+    ids=["fb", "fa", "no-answer"],
+)
+async def test_force_receive_settles_on_the_radio_answer(
+    answer: int | None, expected: ActuationResult
+) -> None:
+    link = _FakeSerialCivLink(ptt_off_answer=answer)
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._civ_get_timeout = 0.2
+    await radio.connect()
+    try:
+        result = await radio.actuate(
+            _token(), ActuationOperation.FORCE_RECEIVE, is_current=lambda: True
+        )
+        sent = list(link.sent_frames)
+    finally:
+        await radio.disconnect()
+
+    assert result is expected
+    assert sent == [bytes(radio._commands.ptt_off(to_addr=radio._radio_addr))]
+
+
+async def _force_receive(radio: IcomRadio) -> ActuationResult:
+    return await radio.actuate(
+        _token(), ActuationOperation.FORCE_RECEIVE, is_current=lambda: True
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_late_answer_to_a_timed_out_unkey_does_not_settle_the_next() -> None:
+    """MOR-2860: FB names no command, so an FB in the second unkey's window
+    may be the first one's late answer; one answer window later an FB counts
+    again."""
+    link = _FakeSerialCivLink(ptt_off_answer=None)
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._civ_get_timeout = 0.2
+    await radio.connect()
+    try:
+        results = [await _force_receive(radio)]
+        link.queue_response_on_send(
+            2, build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, 0xFB)
+        )
+        results.append(await _force_receive(radio))
+        await asyncio.sleep(radio._civ_get_timeout)
+        link.ptt_off_answer = 0xFB
+        results.append(await _force_receive(radio))
+    finally:
+        await radio.disconnect()
+
+    assert results == [
+        ActuationResult.UNCERTAIN,
+        ActuationResult.UNCERTAIN,
+        ActuationResult.ACCEPTED,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_unkey_after_a_dropped_write_sink_stays_uncertain() -> None:
+    """MOR-2860: a fire-and-forget write still unanswered when the unkey starts
+    loses its sink, so an FB in the unkey's window may be that write's."""
+    link = _FakeSerialCivLink()
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._civ_get_timeout = 0.2
+    await radio.connect()
+    try:
+        await radio._send_civ_raw(
+            build_civ_frame(radio._radio_addr, CONTROLLER_ADDR, 0x0F, data=b"\x01"),
+            wait_response=False,
+        )
+        result = await _force_receive(radio)
+    finally:
+        await radio.disconnect()
+
+    assert result is ActuationResult.UNCERTAIN
 
 
 @pytest.mark.asyncio

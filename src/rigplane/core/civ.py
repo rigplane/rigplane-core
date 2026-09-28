@@ -126,11 +126,43 @@ class CivRequestTracker:
         self._ack_backlog_hits = 0
         self._ack_backlog_drops = 0
         self._ack_orphans = 0
+        self._ack_unclaimed_at: float | None = None
 
     @property
     def pending_count(self) -> int:
         """Number of unresolved pending requests."""
         return len(self._ack_waiters) + len(self._response_waiters)
+
+    def response_pending_count(
+        self,
+        *,
+        now_monotonic: float,
+        max_age_s: float,
+    ) -> int:
+        """Waiters expecting a data response: tracked GETs + keyed poll sinks.
+
+        MOR-2861: the serial link-death watchdog uses this as its "polls are
+        outstanding" signal. Plain ACK sinks of fire-and-forget *set* sends
+        (``response_key is None``) are excluded: on a healthy but quiet radio
+        they would linger until stale-TTL cleanup (10 s) and make pending
+        read true long after the last real poll resolved. GET response
+        waiters and keyed poll sinks (a read dispatched fire-and-forget, the
+        web poller's BACKGROUND shape) resolve within the answer window when
+        the radio answers, so their presence while no frame parses is the
+        honest "the radio owes us data" evidence — but only while younger
+        than ``max_age_s``: a waiter older than the answer window is a lost
+        poll (its answer had a full window to arrive), not evidence the
+        radio still owes us data, so it must not hold the watchdog's
+        silence clock until the 10 s stale cleanup retires it.
+        """
+        cutoff = now_monotonic - max_age_s
+        return sum(
+            1 for w in self._response_waiters if w.created_monotonic > cutoff
+        ) + sum(
+            1
+            for waiter in self._ack_waiters
+            if waiter.response_key is not None and waiter.created_monotonic > cutoff
+        )
 
     @property
     def ack_sink_count(self) -> int:
@@ -155,6 +187,20 @@ class CivRequestTracker:
     def note_timeout(self) -> None:
         """Record one timeout in tracker statistics."""
         self._timeout_count += 1
+
+    @property
+    def ack_unclaimed_at(self) -> float | None:
+        """Monotonic time a write's ACK/NAK was last left unclaimed, if ever.
+
+        An ACK/NAK frame names no command and ``resolve`` hands it to the
+        first eligible waiter, so a write whose answer was left unclaimed can
+        still settle a later write's waiter (MOR-2860).
+        """
+        return self._ack_unclaimed_at
+
+    def note_ack_unclaimed(self) -> None:
+        """Record that a write's ACK/NAK can still arrive with no waiter."""
+        self._ack_unclaimed_at = time.monotonic()
 
     def snapshot_stats(self) -> dict[str, int]:
         """Return tracker counters for monitoring."""
@@ -260,6 +306,9 @@ class CivRequestTracker:
             Number of dropped sink entries.
         """
         before = len(self._ack_waiters)
+        # A sink without ``response_key`` belongs to a write, answered by FB/FA.
+        if any(w.future is None and w.response_key is None for w in self._ack_waiters):
+            self.note_ack_unclaimed()
         self._ack_waiters = [w for w in self._ack_waiters if w.future is not None]
         return before - len(self._ack_waiters)
 

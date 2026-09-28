@@ -1296,6 +1296,13 @@ class AudioHandler:
     Args:
         ws: Established WebSocket connection.
         radio: Radio protocol instance (may be None).
+        broadcaster: Optional RX audio broadcaster.
+        tx_gate: Optional async predicate — ``True`` means a browser TX
+            frame may reach the radio. The server passes its managed TX
+            predicate (``WebServer._bridge_tx_gate_open``, MOR-2863), so
+            mic audio flows only while RigPlane holds the key: managed
+            intent keyed or a fresh ``ObservedPtt.ON`` (MOR-2870). ``None``
+            leaves the handler ungated (direct-construction test doubles).
     """
 
     def __init__(
@@ -1303,10 +1310,12 @@ class AudioHandler:
         ws: Connection,
         radio: "Radio | None",
         broadcaster: "AudioBroadcaster | None" = None,
+        tx_gate: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         self._ws = ws
         self._radio = radio
         self._broadcaster = broadcaster
+        self._tx_gate = tx_gate
         self._rx_active = False
         self._tx_active = False
         # TX lease on the radio-owned AudioSession singleton (MOR-580,
@@ -1917,6 +1926,24 @@ class AudioHandler:
                 "audio: TX frame ignored (tx_active=False), size=%d", len(payload)
             )
             return
+        # MOR-2870: the web path gets the bridge's fail-closed rule — a
+        # browser frame reaches the rig only while RigPlane holds the key
+        # (managed intent keyed or a fresh ObservedPtt.ON). ``_tx_active``
+        # merely says the client started its stream; a late or lost
+        # ``audio_stop`` must never keep mic audio flowing on RF.
+        if self._tx_gate is not None:
+            try:
+                gate_open = await self._tx_gate() is True
+            except Exception:
+                logger.debug("audio: TX gate check failed closed", exc_info=True)
+                gate_open = False
+            if not gate_open:
+                self._warn_tx_throttled(
+                    "tx_gate_closed",
+                    "audio: TX frame dropped action=dropped_tx_gate_closed size=%d",
+                    len(payload),
+                )
+                return
         facts = self._tx_facts
         if facts is None and not self._radio:
             self._warn_tx_throttled(

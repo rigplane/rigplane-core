@@ -4,6 +4,9 @@
   import { hasTx, hasDualReceiver, hasAnyScope, hasSpectrum, receiverLabel } from '$lib/stores/capabilities.svelte';
   import { HardwareButton } from '$lib/Button';
   import SpectrumPanel from '../../components/spectrum/SpectrumPanel.svelte';
+  // MOR-2851: the SCOPE chip tab's four screen keys use the same flat-key
+  // component the semantic scope surface uses on mobile — no second grammar.
+  import ScopeFlatKey from '../../components/spectrum/ScopeFlatKey.svelte';
   import FrequencyDisplay from '../display/FrequencyDisplay.svelte';
   import LinearSMeter from '../meters/LinearSMeter.svelte';
   // MOR-2816: the hoisted bar renders the card meter's own face — the same
@@ -26,6 +29,7 @@
   import type { MeterSource } from '../panels/meter-utils';
   import KeyboardHandler from './KeyboardHandler.svelte';
   import SemanticRadioSurfaces from '../wiring/SemanticRadioSurfaces.svelte';
+  import type { VfoFactKind } from '../../semantic/VfoIndicatorRow.svelte';
   import type { ManagedScopeRegion } from '$lib/runtime/adapters/scope-display-projection';
   import type { InstrumentComposition } from '../wiring/instrument-composition';
   import MobileChipBar from './mobile-chip-bar.svelte';
@@ -81,6 +85,13 @@
   // forwards its region through the `children` snippet instead — this bind
   // never serves landscape.
   let managedScopeRegion = $state<ManagedScopeRegion | undefined>(undefined);
+
+  // MOR-2851: the three panorama view options the SCOPE chip tab owns. They
+  // bind into the portrait SpectrumPanel's `$bindable` props, so the phone
+  // layout — not the panel — holds them once the toolbar is hidden.
+  let scopeAvg = $state(true);
+  let scopePeakHold = $state(true);
+  let scopeBandPlan = $state(true);
 
   // ── VFO props ──
   let mainVfo = $derived(toVfoProps(radioState, 'main'));
@@ -151,6 +162,8 @@
     width: receiverDeckWidth,
     overrides: {},
   }));
+  // MOR-2852: the meta row's chips order and subset, frozen.
+  const metaFacts: readonly VfoFactKind[] = ['bandwidth', 'agc', 'nb', 'nr'];
 
   // ── Modals ──
   // Renamed from settingsOpen for #841 — this sheet now holds only
@@ -179,6 +192,10 @@
   const mobileChips = $derived([
     { id: 'essentials', label: t('core.mobile.chip.essentials') },
     { id: 'band', label: t('core.mobile.chip.band') },
+    // MOR-2851: the SCOPE tab carries the panorama's view keys and the
+    // semantic scope controls. It exists exactly when the radio has a
+    // spectrum — the same `hasSpectrum()` gate as the panorama itself.
+    ...(hasSpectrum() ? [{ id: 'scope', label: t('core.mobile.chip.scope') }] : []),
     { id: 'scan', label: t('core.mobile.chip.scan') },
     { id: 'rf', label: t('core.mobile.chip.rf') },
     // DSP chip carries the level/threshold controls that ESSENTIALS exposes
@@ -692,19 +709,6 @@
         <span>{t('core.mobile.sheet.setup')}</span>
       </button>
     </div>
-    <div class="m-vfo-meta">
-      <span class="m-vfo-mode">{activeVfo.mode}</span>
-      <span class="m-vfo-filter">{activeVfo.filter}</span>
-      {#if ritXit.ritActive}
-        <span class="m-vfo-rit" title="RIT offset">
-          RIT {formatOffsetDisplay(ritXit.ritOffset)}
-        </span>
-      {:else if ritXit.xitActive}
-        <span class="m-vfo-rit" title="XIT offset">
-          XIT {formatOffsetDisplay(ritXit.xitOffset)}
-        </span>
-      {/if}
-    </div>
   </header>
 
   <!-- ═══ SEMANTIC BODY (MOR-2816) ═══
@@ -717,8 +721,9 @@
   <SemanticRadioSurfaces scopeManaged
     bind:managedScopeRegion={managedScopeRegion} suppressModInputTxWarning>
     {#snippet children(instruments: InstrumentComposition)}
-      <!-- The receiver the header reads — the hoisted meter follows it, the
-           same way the retired value-fed strip followed the active VFO. -->
+      <!-- The receiver the header reads — the hoisted meter and the
+           facts both follow it, the way the retired value-fed strip
+           followed the active VFO. -->
       {@const meterReceiver = activeReceiver === 'SUB' && instruments.receiverInstruments.subSMeter
         ? 'SUB'
         : 'MAIN'}
@@ -727,6 +732,29 @@
           lowerScale={instruments.receiverInstruments.powerLowerScaleFor?.(meterReceiver)}
           variant="vfo-wide" />
       {/snippet}
+
+      <!-- MOR-2852: the meta row lives inside this hosted snippet — only
+           here do `instruments.receiverInstruments` exist. It keeps its
+           old spot under the frequency: same bg, same gaps, followed by
+           the S-meter bar exactly as before the move. -->
+      <div class="m-vfo-meta">
+        <span class="m-vfo-mode">{activeVfo.mode}</span>
+        <span class="m-vfo-filter">{activeVfo.filter}</span>
+        {#if ritXit.ritActive}
+          <span class="m-vfo-rit" title="RIT offset">
+            RIT {formatOffsetDisplay(ritXit.ritOffset)}
+          </span>
+        {:else if ritXit.xitActive}
+          <span class="m-vfo-rit" title="XIT offset">
+            XIT {formatOffsetDisplay(ritXit.xitOffset)}
+          </span>
+        {/if}
+        {#if activeReceiver === 'SUB' && instruments.receiverInstruments.subFacts}
+          {@render instruments.receiverInstruments.subFacts(metaFacts)}
+        {:else}
+          {@render instruments.receiverInstruments.mainFacts(metaFacts)}
+        {/if}
+      </div>
 
       <!-- ═══ S-METER BAR (MOR-2816) ═══
            The receiver meter the VFO card's block used to carry, hoisted
@@ -751,7 +779,8 @@
              MobileRadioLayout.component.svelte.test.ts. -->
         {#if hasSpectrum()}
           <section class="m-spectrum">
-            <SpectrumPanel hideAutoStepToggle={true}
+            <SpectrumPanel hideAutoStepToggle={true} hideToolbar={true}
+              bind:enableAvg={scopeAvg} bind:enablePeakHold={scopePeakHold} bind:showBandPlan={scopeBandPlan}
               scopeProjection={managedScopeRegion?.projection}
               scopeDemanded={managedScopeRegion?.demanded ?? true}
               onScopeDemandChange={managedScopeRegion?.setDemand} />
@@ -803,6 +832,35 @@
       <section class="m-section" id="m-chip-panel-band" role="tabpanel">
         <CollapsiblePanel title="BAND" panelId="m-band" collapsible={false}>
           <BandSelector />
+        </CollapsiblePanel>
+      </section>
+    {:else if activeChipId === 'scope'}
+      <section class="m-section" id="m-chip-panel-scope" role="tabpanel">
+        <CollapsiblePanel title="SCOPE" panelId="m-scope-chip" collapsible={false}>
+          <!-- MOR-2851: one row of screen keys. VIEW drives the same managed
+               scope demand the toolbar's VIEW key drove, and renders only
+               when a managed scope region exists — without one there is
+               nothing to demand, so the key would be a dead control. AVG /
+               PEAK / BANDS toggle the layout-level state bound into the
+               portrait SpectrumPanel. No STEP key — the bottom tuning bar
+               owns it. -->
+          <div class="m-scope-keys">
+            {#if managedScopeRegion}
+              <ScopeFlatKey label="VIEW" testid="scope-key-view"
+                lit={managedScopeRegion.demanded}
+                onclick={() => { const region = managedScopeRegion; if (region) region.setDemand(!region.demanded); }} />
+            {/if}
+            <ScopeFlatKey label="AVG" testid="scope-key-avg"
+              lit={scopeAvg} onclick={() => (scopeAvg = !scopeAvg)} />
+            <ScopeFlatKey label="PEAK" testid="scope-key-peak"
+              lit={scopePeakHold} onclick={() => (scopePeakHold = !scopePeakHold)} />
+            <ScopeFlatKey label="BANDS" testid="scope-key-bands"
+              lit={scopeBandPlan} onclick={() => (scopeBandPlan = !scopeBandPlan)} />
+          </div>
+          <!-- The radio's scope controls: the existing semantic surface, the
+               same `instruments.scopeControls` the desktop composition hosts
+               — never a second scope-controls implementation. -->
+          {@render instruments.scopeControls()}
         </CollapsiblePanel>
       </section>
     {:else if activeChipId === 'scan'}
@@ -1339,9 +1397,11 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
-    padding: 8px 10px 4px;
+    /* MOR-2852: the meta row left the header for the hosted snippet — the
+       bottom rule moved with it; the padding-bottom is the meta row's own
+       top gap now, so the header's one-hundred percent parity stays. */
+    padding: 8px 10px 2px;
     background: var(--v2-bg-card, #111);
-    border-bottom: 1px solid var(--v2-border-panel, #333);
     z-index: 10;
   }
 
@@ -1425,15 +1485,29 @@
   }
 
   .m-vfo-meta {
+    /* MOR-2852: the row moved out of the header with its old look: same
+       background, same bottom rule, the 2px header gap before it. */
     display: flex;
     align-items: center;
     gap: 8px;
+    padding: 0 10px 4px;
+    background: var(--v2-bg-card, #111);
+    border-bottom: 1px solid var(--v2-border-panel, #333);
     font-family: 'Roboto Mono', monospace;
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--v2-text-muted, #888);
+  }
+
+  /* MOR-2873: the row's uppercase transform must not capitalize the
+     filter-width unit — the BW chip's source text already reads
+     `BW 2400 Hz` (VfoIndicatorRow), so resetting the transform on that
+     chip alone keeps the unit's case while mode, filter, RIT/XIT and
+     the other chips keep the row's look. */
+  .m-vfo-meta :global([data-indicator-fact='bandwidth']) {
+    text-transform: none;
   }
 
   .m-vfo-mode {
@@ -1534,6 +1608,22 @@
     border-radius: 0;
     border-left: none;
     border-right: none;
+  }
+
+  /* ── SCOPE chip tab (MOR-2851) ──
+     One wrapping row of screen keys. The 16px font / 44px touch floors come
+     from the portrait button floors below (`.m-layout :global(button)`),
+     which already reach these keys; here only the row geometry lives. */
+  .m-scope-keys {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px 10px 2px;
+  }
+
+  .m-scope-keys :global(.scope-flat-key) {
+    min-width: 72px;
+    padding: 0 12px;
   }
 
   /* ── TX compact section ── */
@@ -1831,8 +1921,9 @@
 
   /* ── MOR-2816 (owner ruling 2026-09-28): portrait button floors ──
      Every visible button inside the PORTRAIT phone root — chip tabs,
-     chip panels, the spectrum toolbar mounted in .m-content, sheets and
-     modals opened from the phone — carries a label of at least 16px
+     chip panels (the SCOPE tab's screen keys and the semantic scope
+     controls included, MOR-2851), sheets and modals opened from the
+     phone — carries a label of at least 16px
      and a touch height of at least 44px. Rows may wrap or drop buttons
      per row; no label is clipped or ellipsised. Scoped to the portrait
      phone only: desktop, reference and LCD layouts and the .m-landscape
@@ -1866,33 +1957,9 @@
     min-height: 16px;
   }
 
-  /* The shared spectrum toolbar: ONE row that scrolls horizontally —
-     the 16px/44px floors made a wrapping toolbar 4-5 rows tall and
-     ate the panorama box. The row keeps its own 44-64px band above the
-     fixed-height spectrum area, so the panorama is untouched by it. */
-  .m-layout :global(.spectrum-toolbar) {
-    height: auto;
-    min-height: 44px;
-    max-height: 64px;
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  .m-layout :global(.toolbar-group),
-  .m-layout :global(.toolbar-group-b),
-  .m-layout :global(.toolbar-group-c),
-  .m-layout :global(.toolbar-group-d) {
-    height: auto;
-    min-height: 44px;
-    flex-shrink: 0;
-  }
-
-  .m-layout :global(.toolbar-separator),
-  .m-layout :global(.toolbar-sub-separator) {
-    flex-shrink: 0;
-  }
+  /* MOR-2851: the one-row scope-toolbar rules that used to live here are
+     gone with the toolbar itself — nothing renders above the panorama on
+     the portrait phone; its controls live in the SCOPE chip tab. */
 
   /* The FAB's label span (PTT / TX LOCK) is not a button element, so the
      button font floor above never reached it — it keeps its own 16px

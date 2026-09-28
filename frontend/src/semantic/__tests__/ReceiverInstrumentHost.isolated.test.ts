@@ -17,6 +17,7 @@ import Fixture, {
   FIXTURE_LEVEL_SOURCE_SHA256, FIXTURE_SIGNAL_SOURCE_SHA256,
   FIXTURE_TARBALL_SHA256, fixtureMeterAppearance,
 } from './fixtures/ReceiverInstrumentHostFixture.svelte';
+import FactsFixture from './fixtures/ReceiverInstrumentHostFactsFixture.svelte';
 import AlternateFrequencyReadoutHarness, {
   clearRetainedInteractions, retainedInteractions,
 } from '../../primitives/frequency/__tests__/AlternateFrequencyReadoutHarness.svelte';
@@ -660,5 +661,59 @@ describe('ReceiverInstrumentHost', () => {
       meters, { status: 'unknown', reason: 'not-observed' }, 'transmitting', 'MAIN',
     )).toBeUndefined();
     expect(buildPowerLowerScale(undefined, knownMain, 'transmitting', 'MAIN')).toBeUndefined();
+  });
+});
+
+// MOR-2852 — the phone meta row reaches the receiver facts through the
+// host's mainFacts / subFacts handles, the same pattern as mainSMeter/subSMeter.
+describe('receiver facts handles (MOR-2852)', () => {
+  function factsPublication(): Publication {
+    const pub = publication();
+    (pub.caps as Capabilities).capabilities = ['dual_rx', 'filter_width', 'agc', 'nb', 'nr'];
+    (pub.caps as Capabilities).agcModes = [0, 1, 2];
+    (pub.caps as Capabilities).agcLabels = { 0: 'OFF', 1: 'FAST', 2: 'SLOW' };
+    const s = pub.state as ServerState;
+    s.main = { ...s.main, filterWidth: 2400, agc: 1, nb: false, nr: true };
+    s.sub = { ...s.sub, filterWidth: 500, agc: 2, nb: true, nr: true };
+    s.fieldStatus = Object.assign({ ...s.fieldStatus }, {
+      'main.filterWidth': available(), 'main.agc': available(), 'main.nb': available(), 'main.nr': available(),
+      'sub.filterWidth': available(), 'sub.agc': available(), 'sub.nb': available(), 'sub.nr': available(),
+    }) as unknown as ServerState['fieldStatus'];
+    return pub;
+  }
+  function mountFacts(publisher: Publisher): HTMLElement {
+    const target = document.createElement('div'); document.body.appendChild(target);
+    components.push(mount(FactsFixture, {
+      target, props: { subscribeControlAuthority: publisher.subscribe } as never,
+    }));
+    flushSync(); return target;
+  }
+
+  it('mainFacts renders the MAIN entry, subFacts the SUB entry', () => {
+    const publisher = new Publisher(factsPublication());
+    const root = mountFacts(publisher);
+    const mainSection = root.querySelector<HTMLElement>('[data-facts-owner="MAIN"]')!;
+    const subSection = root.querySelector<HTMLElement>('[data-facts-owner="SUB"]')!;
+    expect(mainSection.querySelector('[data-indicator-receiver]')?.getAttribute('data-indicator-receiver'))
+      .toBe('MAIN');
+    expect(subSection.querySelector('[data-indicator-receiver]')?.getAttribute('data-indicator-receiver'))
+      .toBe('SUB');
+    const entries = (owner: HTMLElement) => [...owner.querySelectorAll('[data-indicator-fact]')]
+      .map((node) => [node.getAttribute('data-indicator-fact'), node.textContent]);
+    expect(entries(mainSection)).toEqual([
+      ['bandwidth', 'BW 2400 Hz'], ['agc', 'AGC FAST'], ['nb', 'NB'], ['nr', 'NR'],
+    ]);
+    expect(entries(subSection).map(([fact]) => fact)).toEqual(['bandwidth', 'agc', 'nb', 'nr']);
+    expect(entries(subSection).map((entry) => entry[1]).join(' ')).toContain('AGC SLOW');
+    expect(subSection.querySelector('[data-indicator-fact="nb"]')?.getAttribute('data-state')).toBe('on');
+    expect(subSection.querySelector('[data-indicator-fact="nr"]')?.getAttribute('data-state')).toBe('on');
+    expect(mainSection.querySelector('[data-indicator-fact="nb"]')?.getAttribute('data-state')).toBe('off');
+  });
+
+  it('exposes no subFacts without a sub owner', () => {
+    const publisher = new Publisher(publication({ receivers: 1 }));
+    const root = mountFacts(publisher);
+    expect(root.querySelector('[data-facts-owner="SUB"]')).toBeNull();
+    expect(root.querySelector('[data-facts-owner="MAIN"]')).not.toBeNull();
   });
 });

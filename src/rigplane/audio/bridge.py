@@ -277,8 +277,9 @@ class AudioBridge:
         on_state_changed: Callback fired on every state transition.
         tx_gate: Optional async predicate. ``None`` (the default) always
             sends, which is what the standalone bridge CLI relies on. A
-            gate is fail-open: it closes only when it returns ``False``.
-            ``True``, an exception, or anything else sends.
+            gate is fail-closed (MOR-2863): only an explicit ``True``
+            sends. ``False``, any other result, or an exception drops
+            the frame.
     """
 
     def __init__(
@@ -988,15 +989,15 @@ class AudioBridge:
             loop.call_soon_threadsafe(self._enqueue_tx, frame)
 
     async def _tx_gate_is_closed(self) -> bool:
-        """Fail-open: only an explicit ``False`` closes the gate."""
+        """Fail-closed (MOR-2863): only an explicit ``True`` opens the gate."""
         gate = self._tx_gate
         if gate is None:
             return False
         try:
-            closed = await gate() is False
+            closed = await gate() is not True
         except Exception:
-            logger.debug("%s: TX gate failed open", self._label, exc_info=True)
-            closed = False
+            logger.debug("%s: TX gate failed closed", self._label, exc_info=True)
+            closed = True
         if closed:
             self._tx_gate_was_closed = True
         return closed

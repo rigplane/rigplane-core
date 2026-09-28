@@ -1114,6 +1114,8 @@ class CivRuntime:
         if expect == "none":
             self.start_pump()
             await self._send_civ_frame_now(civ_frame, owner=owner)
+            # No waiter claims whatever FB/FA answers this frame.
+            self._host._civ_request_tracker.note_ack_unclaimed()
             return RawCivTransactionResult(status="sent")
 
         await self._drain_ack_sinks_before_blocking()
@@ -1165,6 +1167,8 @@ class CivRuntime:
                 frame = pending_waiters[0].result()
         except asyncio.TimeoutError:
             self._host._civ_request_tracker.note_timeout()
+            if expect == "ack":
+                self._host._civ_request_tracker.note_ack_unclaimed()
             logger.debug(
                 "CI-V transaction 0x%02X timed out",
                 request_key.command,
@@ -4140,6 +4144,7 @@ class CivRuntime:
         check_current()
 
         pending: "asyncio.Future[CivFrame] | None" = None
+        sent = False
         try:
             if expects_response:
                 pending = tracker.register_response(request_key)
@@ -4168,6 +4173,7 @@ class CivRuntime:
             check_current()
             pkt = self._wrap_civ(civ_frame)
             await transport.send_tracked(pkt, **guard)
+            sent = True
             check_current()
             self._host._last_civ_send_monotonic = time.monotonic()
             assert pending is not None
@@ -4204,3 +4210,10 @@ class CivRuntime:
                     pending.cancel()
                 elif not pending.cancelled():
                     pending.exception()
+                # A sent write left without its FB/FA may still be answered.
+                if (
+                    sent
+                    and not expects_response
+                    and (pending.cancelled() or pending.exception() is not None)
+                ):
+                    tracker.note_ack_unclaimed()

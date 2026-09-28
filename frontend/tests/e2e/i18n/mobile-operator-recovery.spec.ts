@@ -6,14 +6,36 @@ import type { ServerState } from '../../../src/lib/types/state';
 
 const workspace = { version: 1, layout: 'standard', designLanguage: 'studioline', theme: 'github-light' };
 const { sub: _unusedSub, ...singleReceiverState } = mockState;
+// MOR-2852: the meta row's BW/AGC/NB/NR chips are capability-gated
+// (`radio-view-model-adapter.ts` deriveReceiverIndicators) and a KNOWN
+// reading additionally requires observation evidence (`seen()`), so this
+// spec states both locally: the four capability tags, and fresh
+// `fieldStatus` entries for the `main.*` leaves the adapter reads — the
+// same pattern `mobile-unread-smeter.spec.ts` uses for its S-meter leaf.
+// The shared `./fixtures` mock deliberately declares neither: other specs
+// in this pack must keep seeing the chips structurally absent.
+function observedLeaf(leaf: string) {
+  return {
+    storePath: `main.${leaf}`, observed: true,
+    freshness: 'fresh' as const, availability: 'available' as const,
+    lastObservedMonotonic: 0,
+  };
+}
 const state = {
   ...singleReceiverState,
   main: { ...mockState.main, freqHz: 14_035_720, mode: 'CW', filter: 3,
     filterWidth: 150, unselectedVfo: { freqHz: 14_332_000, mode: 'USB', filterNum: 1, dataMode: 0 } },
+  fieldStatus: {
+    'main.filterWidth': observedLeaf('filterWidth'),
+    'main.agc': observedLeaf('agc'),
+    'main.nb': observedLeaf('nb'),
+    'main.nr': observedLeaf('nr'),
+  },
 } satisfies Omit<ServerState, 'sub'>;
 const capabilities = { ...mockCapabilities, model: 'IC-7300', receivers: 1,
   vfoScheme: 'ab', vfoReadback: 'selected_unselected', audioTx: true, audioTxRoute: 'usb',
-  audioTxRequiredModInputSource: null } satisfies Capabilities;
+  audioTxRequiredModInputSource: null,
+  capabilities: ['scope', 'audio', 'tx', 'filter_width', 'agc', 'nb', 'nr'] } satisfies Capabilities;
 const managedTransmit = {
   schemaVersion: 1, sampledAt: '2026-09-05T02:00:21.182Z',
   managedTransmit: { status: 'available', intent: { kind: 'rx' }, releaseRequired: false,
@@ -102,10 +124,11 @@ test('saved mobile theme survives cold entry, reload and desktop round trip', as
   expect(writes).toEqual([]);
 });
 
-// MOR-2816 (owner, 2026-09-27): the phone is minimal — one scroll container,
-// and the receiver S-meter sits in the old strip's slot above the scope
-// toolbar. Measured against the iPhone 13 profile's portrait viewport.
-test('one scroll container and the S-meter above the scope toolbar (MOR-2816)', async ({ page }, info) => {
+// MOR-2851 (owner, 2026-09-28): the phone draws NO toolbar above the panorama
+// — its controls moved to the SCOPE chip tab. The phone stays minimal: one
+// scroll container, and the receiver S-meter sits directly above the
+// panorama. Measured against the iPhone 13 profile's portrait viewport.
+test('no scope toolbar on the phone; the S-meter sits directly above the panorama (MOR-2851)', async ({ page }, info) => {
   const writes = await prepare(page);
   await page.setViewportSize({ width: 390, height: 664 });
   await page.goto('/');
@@ -122,6 +145,7 @@ test('one scroll container and the S-meter above the scope toolbar (MOR-2816)', 
     const doc = document.scrollingElement as HTMLElement;
     const bar = document.querySelector('.m-smeter-bar')?.getBoundingClientRect();
     const toolbar = document.querySelector('.spectrum-toolbar')?.getBoundingClientRect();
+    const panorama = document.querySelector('.spectrum-split-region')?.getBoundingClientRect();
     const header = document.querySelector('.m-vfo-bar')?.getBoundingClientRect();
     return {
       documentScrolls: doc.scrollHeight > doc.clientHeight + 1,
@@ -130,21 +154,68 @@ test('one scroll container and the S-meter above the scope toolbar (MOR-2816)', 
       scrollers,
       bar: bar?.toJSON(),
       toolbar: toolbar?.toJSON(),
+      panorama: panorama?.toJSON(),
       header: header?.toJSON(),
     };
   });
-  writeFileSync(info.outputPath('mor-2816-geometry.json'), JSON.stringify(geometry, null, 2));
+  writeFileSync(info.outputPath('mor-2851-geometry.json'), JSON.stringify(geometry, null, 2));
   await info.attach('geometry', { body: JSON.stringify(geometry), contentType: 'application/json' });
   // One scroll container: the document does not scroll, and exactly one
   // element — main.m-content — does.
   expect(geometry.documentScrolls).toBe(false);
   expect(geometry.scrollers).toEqual(['main.m-content']);
-  // The S-meter sits between the frequency header and the scope toolbar.
+  // MOR-2851: no toolbar renders above the panorama at all.
+  expect(geometry.toolbar).toBeUndefined();
+  // The S-meter sits directly above the panorama, below the frequency header.
   expect(geometry.bar).toBeDefined();
-  expect(geometry.toolbar).toBeDefined();
+  expect(geometry.panorama).toBeDefined();
   expect(geometry.header).toBeDefined();
-  expect(geometry.bar!.bottom).toBeLessThanOrEqual(geometry.toolbar!.top);
+  expect(geometry.bar!.bottom).toBeLessThanOrEqual(geometry.panorama!.top);
   expect(geometry.header!.bottom).toBeLessThanOrEqual(geometry.bar!.top);
+  expect(writes).toEqual([]);
+});
+
+// MOR-2852 — the meta row shows mode, filter, then BW/AGC/NB/NR chips, and at
+// a 360 px wide phone the whole row must stay on ONE line with no fact clipped.
+test('360 px portrait keeps the meta facts on one line, nothing clipped (MOR-2852)', async ({ page }, info) => {
+  const writes = await prepare(page);
+  await page.setViewportSize({ width: 360, height: 844 });
+  await page.goto('/');
+  await settled(page);
+  const measured = await page.evaluate(() => {
+    const row = document.querySelector<HTMLElement>('.m-vfo-meta');
+    if (!row) throw new Error('the .m-vfo-meta row is missing');
+    const facts = Array.from(row.querySelectorAll<HTMLElement>('[data-indicator-fact]'))
+      .map((node) => ({
+        fact: node.getAttribute('data-indicator-fact'),
+        // MOR-2873: a real browser applies `text-transform` to `innerText`,
+        // so this string pins each fact's rendered case (jsdom cannot).
+        text: node.innerText.trim(),
+        right: node.getBoundingClientRect().right,
+        scrollW: node.scrollWidth,
+        clientW: node.clientWidth,
+      }));
+    return {
+      scrollW: row.scrollWidth,
+      clientW: row.clientWidth,
+      lineHeight: row.getBoundingClientRect().height,
+      facts,
+    };
+  });
+  writeFileSync(info.outputPath('mor-2852-meta.json'), JSON.stringify(measured, null, 2));
+  await info.attach('meta', { body: JSON.stringify(measured), contentType: 'application/json' });
+  expect(measured.scrollW).toBeLessThanOrEqual(measured.clientW + 1);
+  expect(measured.facts.map((f) => f.fact)).toEqual(['bandwidth', 'agc', 'nb', 'nr']);
+  // MOR-2873: the meta row is styled `text-transform: uppercase`, but the
+  // filter-width unit must keep its source case: `… Hz`, not `… HZ`.
+  // The width itself is scenario data (the local mock and the private
+  // capture replay stage different values), so pin the case, not the
+  // number. Only a real browser sees this — jsdom applies no CSS.
+  expect(measured.facts.find((f) => f.fact === 'bandwidth')?.text).toMatch(/^BW \d+ Hz$/);
+  for (const fact of measured.facts) {
+    expect.soft(fact.right, `${fact.fact} in viewport`).toBeLessThanOrEqual(360);
+    expect.soft(fact.scrollW, `${fact.fact} not clipped`).toBeLessThanOrEqual(fact.clientW + 1);
+  }
   expect(writes).toEqual([]);
 });
 
@@ -283,62 +354,45 @@ test('portrait buttons carry 16px labels and 44px touch targets (MOR-2816)', asy
   await page.goto('/');
   await settled(page);
   await expect(page.locator('.m-layout')).toBeVisible();
-  // ESSENTIALS is the default active chip; audit it, then the RF chip panel.
+  // ESSENTIALS is the default active chip; audit it, then the RF chip panel,
+  // then the MOR-2851 SCOPE chip panel (view keys + semantic scope controls).
   await auditPortrait(page, info, 'essentials');
   await page.getByRole('tab', { name: 'RF', exact: true }).click();
   await expect(page.locator('#m-chip-panel-rf')).toBeVisible();
   await auditPortrait(page, info, 'rf');
+  await page.getByRole('tab', { name: 'SCOPE', exact: true }).click();
+  await expect(page.locator('#m-chip-panel-scope')).toBeVisible();
+  await auditPortrait(page, info, 'scope');
   expect(writes).toEqual([]);
 });
 
-// MOR-2816 (owner ruling 2026-09-28): the 16px/44px floors made the scope
-// toolbar wrap into 4-5 rows and eat the panorama box. On the PORTRAIT phone
-// the toolbar is ONE row that scrolls horizontally, and the panorama
-// (spectrum + waterfall split region) keeps at least 190 CSS px at 375x812.
-test('portrait scope toolbar is one scrolling row over a 190px panorama (MOR-2816)', async ({ page }, info) => {
+// MOR-2851 (owner, 2026-09-28): the scope toolbar is GONE from the portrait
+// phone — its controls live in the SCOPE chip tab. Nothing renders above the
+// panorama, which keeps at least 190 CSS px at 375x812.
+test('portrait panorama keeps its box with no toolbar above it (MOR-2851)', async ({ page }, info) => {
   const writes = await prepare(page);
   await page.setViewportSize({ width: 375, height: 812 });
   await page.goto('/');
   await settled(page);
   await expect(page.locator('.m-layout')).toBeVisible();
+  await expect(page.locator('.m-layout .spectrum-toolbar')).toHaveCount(0);
   const measured = await page.evaluate(() => {
     const root = document.querySelector<HTMLElement>('.m-layout');
-    const toolbar = root?.querySelector<HTMLElement>('.spectrum-toolbar');
     const panorama = root?.querySelector<HTMLElement>('.spectrum-split-region');
-    if (!root || !toolbar || !panorama) throw new Error('portrait scope surfaces not found');
-    const toolbarStyle = getComputedStyle(toolbar);
-    const buttons = Array.from(toolbar.querySelectorAll<HTMLElement>('button')).map((el) => {
-      const rect = el.getBoundingClientRect();
-      const fullyVisible = rect.left >= -1 && rect.right <= innerWidth + 1;
-      const reachableByScroll = toolbar.scrollWidth > toolbar.clientWidth + 1;
-      return { label: (el.textContent ?? '').trim().slice(0, 24), fullyVisible, reachableByScroll };
-    });
+    if (!root || !panorama) throw new Error('portrait scope surfaces not found');
     // The FAB mounts outside the .m-layout scroll root — query it directly.
     const ptt = document.querySelector<HTMLElement>('.ptt-fab-label');
     return {
-      toolbarHeight: toolbar.getBoundingClientRect().height,
-      toolbarOverflowX: toolbarStyle.overflowX,
-      toolbarWrap: toolbarStyle.flexWrap,
       panoramaHeight: panorama.getBoundingClientRect().height,
-      buttons,
       docScrollWidth: document.documentElement.scrollWidth,
       innerWidth,
       pttFont: ptt ? parseFloat(getComputedStyle(ptt).fontSize) : null,
     };
   });
-  writeFileSync(info.outputPath('mor-2816-toolbar.json'), JSON.stringify(measured, null, 2));
-  await info.attach('toolbar', { body: JSON.stringify(measured), contentType: 'application/json' });
-  // One button row: the 44px floor, at most 64px including padding.
-  expect(measured.toolbarHeight).toBeGreaterThanOrEqual(44);
-  expect(measured.toolbarHeight).toBeLessThanOrEqual(64);
-  expect(measured.toolbarWrap).toBe('nowrap');
-  expect(measured.toolbarOverflowX).toBe('auto');
+  writeFileSync(info.outputPath('mor-2851-panorama.json'), JSON.stringify(measured, null, 2));
+  await info.attach('panorama', { body: JSON.stringify(measured), contentType: 'application/json' });
   // The panorama keeps its box: at least 190 CSS px of spectrum + waterfall.
   expect(measured.panoramaHeight).toBeGreaterThanOrEqual(190);
-  // Every toolbar button is fully visible, or the toolbar scrolls to it.
-  for (const b of measured.buttons) {
-    expect.soft(b.fullyVisible || b.reachableByScroll, `toolbar button "${b.label}" reachable`).toBe(true);
-  }
   // No page-level horizontal overflow.
   expect(measured.docScrollWidth).toBeLessThanOrEqual(measured.innerWidth);
   // The FAB's PTT label carries the 16px floor too.

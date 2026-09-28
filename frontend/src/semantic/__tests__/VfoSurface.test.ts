@@ -29,6 +29,7 @@ import type {
   ReceiverFrequencyMount, ReceiverInstrumentHandles, ReceiverSMeterRenderer,
   ReceiverVfoAppearance,
 } from '../ReceiverInstrumentHost.svelte';
+import type { VfoFactKind } from '../VfoIndicatorRow.svelte';
 import {
   validateRadioViewModel, type RadioViewModel, type ReceiverId,
   type ReceiverIndicatorViewModel, type VfoSlot,
@@ -284,9 +285,11 @@ function hostedReceiverInstruments(): ReceiverInstrumentHandles {
   const meter = (receiver: ReceiverId) => createRawSnippet<[ReceiverSMeterRenderer?]>(() => ({
     render: () => `<span data-hosted-s-meter="${receiver}">${receiver} meter</span>`,
   }));
+  const facts = createRawSnippet<[facts: readonly VfoFactKind[]]>(() => ({ render: () => '' }));
   return {
     mainFrequency: frequency('MAIN'), subFrequency: frequency('SUB'),
     mainSMeter: meter('MAIN'), subSMeter: meter('SUB'),
+    mainFacts: facts, subFacts: facts,
     frequencyTunable: () => true,
     vfoOperations: createRawSnippet<[appearance: ReceiverVfoAppearance]>((appearance) => ({
       render: () => `<span data-hosted-vfo-operations="${appearance()}">VFO operations</span>`,

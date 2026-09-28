@@ -113,6 +113,22 @@ class ShutdownResult(StrEnum):
 _ProviderRetirement = Callable[[int], Awaitable[None]]
 
 
+def _log_release_attempt(settled: ActuationSettled) -> None:
+    """Log one settled FORCE_RECEIVE; an UNCERTAIN one also warns (MOR-2860)."""
+    attempt = settled.token.attempt_id
+    logger.info(
+        "managed TX release attempt %s: force_receive %s",
+        attempt,
+        settled.result.value,
+    )
+    if settled.result is ActuationResult.UNCERTAIN:
+        logger.warning(
+            "managed TX release attempt %s: force_receive not confirmed (%s)",
+            attempt,
+            settled.error or settled.result.value,
+        )
+
+
 class ManagedTxAuthority:
     def __init__(
         self,
@@ -731,12 +747,17 @@ class ManagedTxAuthority:
                     scheduler = self._scheduler_task
                 await self._stop_scheduler(scheduler)
                 await self._cancel_abort_cleanup()
+                logger.warning(
+                    "managed TX shutdown: terminated before an accepted "
+                    "force_receive drained the release"
+                )
                 return ShutdownResult.TERMINATED
 
             async with self._lock:
                 if not self._state_is_clean_locked():
                     raise RuntimeError("managed TX shutdown drain lost clean state")
                 generation = self._provider_generation
+            logger.info("managed TX shutdown: force_receive accepted; release drained")
             if generation is not None:
                 await retire_provider(generation)
             async with self._lock:
@@ -979,6 +1000,8 @@ class ManagedTxAuthority:
                     ),
                 ):
                     events.append(settled)
+                    if settled.operation is ActuationOperation.FORCE_RECEIVE:
+                        _log_release_attempt(settled)
                     if any(
                         settled.token == requested.token
                         and settled.operation is requested.operation
