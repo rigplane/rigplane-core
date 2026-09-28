@@ -143,17 +143,6 @@ Do not spam reconnect requests from frontend automation loops.
 1. Verify behavior in a browser/platform with MediaSession support.
 2. Use on-screen controls as fallback (expected behavior on unsupported browsers).
 
-### Mobile v2 gestures are not available
-
-**Symptom:** Swipe-to-dismiss bottom sheets and touch-first mobile layout are missing.
-
-**Cause:** UI version defaults to v1 unless v2 is selected.
-
-**Fixes:**
-
-1. Open Web UI with `?ui=v2` query parameter.
-2. Keep v2 selected in localStorage for subsequent sessions.
-
 ## Command Issues
 
 ### SWR/ALC always returns 0

@@ -450,21 +450,14 @@ re-chunked into fixed 20 ms PCM frames before transmit.
 
 ## Heavy usage and deployment
 
-The audio bridge runs the TX path (reading from the virtual device and sending to the radio) in a thread, using the event loop’s default thread pool via `run_in_executor`. Under heavy load or with **multiple bridge instances or many concurrent clients** (e.g. web UI + rigctld + bridge in one process), that shared pool can become a bottleneck.
+With **multiple bridge instances or many concurrent clients** in one process
+(e.g. web UI + rigctld + bridge), they share that process's CPU and I/O.
 
 **Recommendations:**
 
-1. **Tuning:** Pass a dedicated `ThreadPoolExecutor` for TX I/O so bridge traffic does not compete with other work:
-   ```python
-   from concurrent.futures import ThreadPoolExecutor
-   executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bridge-tx")
-    bridge = AudioBridge(radio, device_name="RigPlane Virtual Cable Output", tx_executor=executor)
-   ```
-   You can use `max_workers=1` or `2`; the bridge only runs one TX read at a time.
+1. **Deployment:** For heavy scenarios, run the bridge in a **separate process** (e.g. a dedicated `rigplane --model <MODEL> web --bridge ...` instance or a small script that only runs the bridge).
 
-2. **Deployment:** For heavy scenarios, run the bridge in a **separate process** (e.g. a dedicated `rigplane web --bridge ...` instance or a small script that only runs the bridge). That isolates CPU and I/O and avoids contention with web/rigctld in the same process.
-
-3. **Scale:** Prefer **one bridge (and ideally one radio connection) per process** when you need stable low-latency audio; limit the number of simultaneous bridge clients if they share the same executor or process.
+2. **Scale:** Prefer **one bridge (and ideally one radio connection) per process** when you need stable low-latency audio.
 
 ---
 
