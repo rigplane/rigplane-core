@@ -191,11 +191,15 @@ class _FakeSerialCivLink:
             self._responses.put_nowait(response)
         # ``CoreRadio.actuate`` waits for the answer to the ``1C 00 00`` unkey
         # and distrusts it while another write's answer may be unclaimed
-        # (MOR-2860), so both PTT writes are answered here: ``1C 00 01`` with
-        # FB, ``1C 00 00`` with ``ptt_off_answer`` (``None`` answers nothing).
-        answer = {b"\x1c\x00\x01": 0xFB, b"\x1c\x00\x00": self.ptt_off_answer}.get(
-            payload[4:-1]
-        )
+        # (MOR-2860), so the managed TX writes are answered here: FB for PTT ON
+        # (``1C 00 01``), stop CW (``17 FF``) and tuner off (``1C 01 00``), and
+        # ``ptt_off_answer`` for the unkey (``None`` answers nothing).
+        answer = {
+            b"\x1c\x00\x01": 0xFB,
+            b"\x17\xff": 0xFB,
+            b"\x1c\x01\x00": 0xFB,
+            b"\x1c\x00\x00": self.ptt_off_answer,
+        }.get(payload[4:-1])
         if answer is not None:
             self._responses.put_nowait(
                 bytes((0xFE, 0xFE, payload[3], payload[2], answer, 0xFD))
