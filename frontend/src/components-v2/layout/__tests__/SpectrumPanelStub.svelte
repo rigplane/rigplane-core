@@ -16,14 +16,19 @@
   let {
     hideScopeControls = false,
     hideAutoStepToggle = false,
+    hideToolbar = false,
+    enableAvg = $bindable(true),
+    enablePeakHold = $bindable(true),
+    showBandPlan = $bindable(true),
     scopeControls,
     scopeStatusIndicator,
     scopeProjection,
     scopeDemanded,
     onScopeDemandChange,
   }: {
-    hideScopeControls?: boolean; hideAutoStepToggle?: boolean; scopeControls?: Snippet;
-    scopeStatusIndicator?: Snippet;
+    hideScopeControls?: boolean; hideAutoStepToggle?: boolean; hideToolbar?: boolean;
+    enableAvg?: boolean; enablePeakHold?: boolean; showBandPlan?: boolean;
+    scopeControls?: Snippet; scopeStatusIndicator?: Snippet;
     // MOR-2442 — the managed projection/demand props, recorded the way the
     // contract fields above are, so layout tests prove who gets the
     // SemanticRadioSurfaces region without mounting the real panel.
@@ -36,6 +41,10 @@
   class="spectrum-panel spectrum-panel-stub"
   data-hide-scope-controls={hideScopeControls}
   data-hide-auto-step-toggle={hideAutoStepToggle}
+  data-hide-toolbar={hideToolbar}
+  data-enable-avg={enableAvg}
+  data-enable-peak-hold={enablePeakHold}
+  data-show-band-plan={showBandPlan}
   data-has-scope-controls={scopeControls !== undefined}
   data-managed-scope={scopeProjection !== undefined}
   data-scope-demanded={scopeDemanded ?? 'undefined'}

@@ -4,6 +4,9 @@
   import { hasTx, hasDualReceiver, hasAnyScope, hasSpectrum, receiverLabel } from '$lib/stores/capabilities.svelte';
   import { HardwareButton } from '$lib/Button';
   import SpectrumPanel from '../../components/spectrum/SpectrumPanel.svelte';
+  // MOR-2851: the SCOPE chip tab's four screen keys use the same flat-key
+  // component the semantic scope surface uses on mobile — no second grammar.
+  import ScopeFlatKey from '../../components/spectrum/ScopeFlatKey.svelte';
   import FrequencyDisplay from '../display/FrequencyDisplay.svelte';
   import LinearSMeter from '../meters/LinearSMeter.svelte';
   // MOR-2816: the hoisted bar renders the card meter's own face — the same
@@ -82,6 +85,13 @@
   // forwards its region through the `children` snippet instead — this bind
   // never serves landscape.
   let managedScopeRegion = $state<ManagedScopeRegion | undefined>(undefined);
+
+  // MOR-2851: the three panorama view options the SCOPE chip tab owns. They
+  // bind into the portrait SpectrumPanel's `$bindable` props, so the phone
+  // layout — not the panel — holds them once the toolbar is hidden.
+  let scopeAvg = $state(true);
+  let scopePeakHold = $state(true);
+  let scopeBandPlan = $state(true);
 
   // ── VFO props ──
   let mainVfo = $derived(toVfoProps(radioState, 'main'));
@@ -182,6 +192,10 @@
   const mobileChips = $derived([
     { id: 'essentials', label: t('core.mobile.chip.essentials') },
     { id: 'band', label: t('core.mobile.chip.band') },
+    // MOR-2851: the SCOPE tab carries the panorama's view keys and the
+    // semantic scope controls. It exists exactly when the radio has a
+    // spectrum — the same `hasSpectrum()` gate as the panorama itself.
+    ...(hasSpectrum() ? [{ id: 'scope', label: t('core.mobile.chip.scope') }] : []),
     { id: 'scan', label: t('core.mobile.chip.scan') },
     { id: 'rf', label: t('core.mobile.chip.rf') },
     // DSP chip carries the level/threshold controls that ESSENTIALS exposes
@@ -765,7 +779,8 @@
              MobileRadioLayout.component.svelte.test.ts. -->
         {#if hasSpectrum()}
           <section class="m-spectrum">
-            <SpectrumPanel hideAutoStepToggle={true}
+            <SpectrumPanel hideAutoStepToggle={true} hideToolbar={true}
+              bind:enableAvg={scopeAvg} bind:enablePeakHold={scopePeakHold} bind:showBandPlan={scopeBandPlan}
               scopeProjection={managedScopeRegion?.projection}
               scopeDemanded={managedScopeRegion?.demanded ?? true}
               onScopeDemandChange={managedScopeRegion?.setDemand} />
@@ -817,6 +832,35 @@
       <section class="m-section" id="m-chip-panel-band" role="tabpanel">
         <CollapsiblePanel title="BAND" panelId="m-band" collapsible={false}>
           <BandSelector />
+        </CollapsiblePanel>
+      </section>
+    {:else if activeChipId === 'scope'}
+      <section class="m-section" id="m-chip-panel-scope" role="tabpanel">
+        <CollapsiblePanel title="SCOPE" panelId="m-scope-chip" collapsible={false}>
+          <!-- MOR-2851: one row of screen keys. VIEW drives the same managed
+               scope demand the toolbar's VIEW key drove, and renders only
+               when a managed scope region exists — without one there is
+               nothing to demand, so the key would be a dead control. AVG /
+               PEAK / BANDS toggle the layout-level state bound into the
+               portrait SpectrumPanel. No STEP key — the bottom tuning bar
+               owns it. -->
+          <div class="m-scope-keys">
+            {#if managedScopeRegion}
+              <ScopeFlatKey label="VIEW" testid="scope-key-view"
+                lit={managedScopeRegion.demanded}
+                onclick={() => { const region = managedScopeRegion; if (region) region.setDemand(!region.demanded); }} />
+            {/if}
+            <ScopeFlatKey label="AVG" testid="scope-key-avg"
+              lit={scopeAvg} onclick={() => (scopeAvg = !scopeAvg)} />
+            <ScopeFlatKey label="PEAK" testid="scope-key-peak"
+              lit={scopePeakHold} onclick={() => (scopePeakHold = !scopePeakHold)} />
+            <ScopeFlatKey label="BANDS" testid="scope-key-bands"
+              lit={scopeBandPlan} onclick={() => (scopeBandPlan = !scopeBandPlan)} />
+          </div>
+          <!-- The radio's scope controls: the existing semantic surface, the
+               same `instruments.scopeControls` the desktop composition hosts
+               — never a second scope-controls implementation. -->
+          {@render instruments.scopeControls()}
         </CollapsiblePanel>
       </section>
     {:else if activeChipId === 'scan'}
@@ -1557,6 +1601,22 @@
     border-right: none;
   }
 
+  /* ── SCOPE chip tab (MOR-2851) ──
+     One wrapping row of screen keys. The 16px font / 44px touch floors come
+     from the portrait button floors below (`.m-layout :global(button)`),
+     which already reach these keys; here only the row geometry lives. */
+  .m-scope-keys {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px 10px 2px;
+  }
+
+  .m-scope-keys :global(.scope-flat-key) {
+    min-width: 72px;
+    padding: 0 12px;
+  }
+
   /* ── TX compact section ── */
   .m-tx-compact {
     display: flex;
@@ -1852,8 +1912,9 @@
 
   /* ── MOR-2816 (owner ruling 2026-09-28): portrait button floors ──
      Every visible button inside the PORTRAIT phone root — chip tabs,
-     chip panels, the spectrum toolbar mounted in .m-content, sheets and
-     modals opened from the phone — carries a label of at least 16px
+     chip panels (the SCOPE tab's screen keys and the semantic scope
+     controls included, MOR-2851), sheets and modals opened from the
+     phone — carries a label of at least 16px
      and a touch height of at least 44px. Rows may wrap or drop buttons
      per row; no label is clipped or ellipsised. Scoped to the portrait
      phone only: desktop, reference and LCD layouts and the .m-landscape
@@ -1887,33 +1948,9 @@
     min-height: 16px;
   }
 
-  /* The shared spectrum toolbar: ONE row that scrolls horizontally —
-     the 16px/44px floors made a wrapping toolbar 4-5 rows tall and
-     ate the panorama box. The row keeps its own 44-64px band above the
-     fixed-height spectrum area, so the panorama is untouched by it. */
-  .m-layout :global(.spectrum-toolbar) {
-    height: auto;
-    min-height: 44px;
-    max-height: 64px;
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  .m-layout :global(.toolbar-group),
-  .m-layout :global(.toolbar-group-b),
-  .m-layout :global(.toolbar-group-c),
-  .m-layout :global(.toolbar-group-d) {
-    height: auto;
-    min-height: 44px;
-    flex-shrink: 0;
-  }
-
-  .m-layout :global(.toolbar-separator),
-  .m-layout :global(.toolbar-sub-separator) {
-    flex-shrink: 0;
-  }
+  /* MOR-2851: the one-row scope-toolbar rules that used to live here are
+     gone with the toolbar itself — nothing renders above the panorama on
+     the portrait phone; its controls live in the SCOPE chip tab. */
 
   /* The FAB's label span (PTT / TX LOCK) is not a button element, so the
      button font floor above never reached it — it keeps its own 16px

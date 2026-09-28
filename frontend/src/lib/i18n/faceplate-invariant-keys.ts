@@ -36,6 +36,7 @@ export const FACEPLATE_INVARIANT_KEYS = [
   // ruled on and remain localized (see policy doc).
   'core.mobile.nav.tab.meters',
   'core.mobile.chip.band',
+  'core.mobile.chip.scope',
   'core.mobile.chip.scan',
   'core.mobile.chip.rf',
   'core.mobile.chip.dsp',

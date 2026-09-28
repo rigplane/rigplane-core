@@ -75,14 +75,26 @@
   // right end (the standalone status line row is gone). Both are pure
   // pass-throughs to `SpectrumToolbar`, no logic of their own.
   //
+  // MOR-2851: `hideToolbar` suppresses the whole unhosted `SpectrumToolbar`
+  // row above the panorama. Only the portrait phone passes it (`MobileRadioLayout`)
+  // — its controls move to the SCOPE chip tab; every other layout keeps the
+  // toolbar. Pure pass-through, no logic of its own.
+  //
+  // MOR-2851: `enableAvg`, `enablePeakHold` and `showBandPlan` were local
+  // `$state` and become `$bindable` props with unchanged defaults, so the
+  // phone layout can own them from its SCOPE chip tab. Callers that do not
+  // bind them behave exactly as before.
+  //
   // `colorRoles` is resolved over the defaults once, and the one resolved
   // record feeds the canvas renderer options, the CSS custom properties the
   // DOM overlay below reads, and the `data-scope-color-roles` JSON on the
   // panel root — one resolution for all three, pinned by `resolves the roles
   // once per mount for both the root attribute and the renderer options`.
-  let { hideSourceControls = false, hideScopeControls = false, hideAutoStepToggle = false, scopeControls,
+  let { hideSourceControls = false, hideScopeControls = false, hideAutoStepToggle = false, hideToolbar = false,
+    enableAvg = $bindable(true), enablePeakHold = $bindable(true), showBandPlan = $bindable(true), scopeControls,
     scopeStatusIndicator, scopeProjection, scopeDemanded = true, onScopeDemandChange, colorRoles }: {
-    hideSourceControls?: boolean; hideScopeControls?: boolean; hideAutoStepToggle?: boolean;
+    hideSourceControls?: boolean; hideScopeControls?: boolean; hideAutoStepToggle?: boolean; hideToolbar?: boolean;
+    enableAvg?: boolean; enablePeakHold?: boolean; showBandPlan?: boolean;
     scopeControls?: Snippet<[allowBare?: boolean, screenGroup?: Snippet]>;
     scopeStatusIndicator?: Snippet;
     scopeProjection?: ScopeDisplayProjection | null;
@@ -109,8 +121,6 @@
   let scopeLease: ReturnType<typeof runtime.acquireHardwareScope> | null = null;
   let scopePixels = $state<Uint8Array | null>(null);
   let sampledReceipt: number | null = null;
-  let enableAvg = $state(true);
-  let enablePeakHold = $state(true);
   let brtLevel = $state(0);
   let colorScheme = $state<ColorSchemeName>('classic');
   let spectrumPush: ((data: Uint8Array) => void) | null = null;
@@ -119,7 +129,6 @@
   let endFreq = $state(0);
   let frameScopeMode = $state(0);  // scope mode from binary frame header (authoritative)
   let fullscreen = $state(false);
-  let showBandPlan = $state(true);
   let showEiBi = $state(false);
   let hiddenLayers = $state<string[]>(
     typeof localStorage !== 'undefined'
@@ -1000,8 +1009,12 @@
         Viewer {scopeDemandOn ? 'ON' : 'OFF'}
       </button>
     </div>
-  {:else}
-  <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} {scopeStatusIndicator} />
+  <!-- MOR-2851: `hideToolbar` (portrait phone only) suppresses the toolbar
+       for non-audio sources — the controls live in the phone's SCOPE chip
+       tab instead. An audio-FFT source keeps its original no-toolbar
+       branch. -->
+  {:else if !hideToolbar}
+    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} {scopeStatusIndicator} />
   {/if}
   <div
     class="spectrum-split-region"

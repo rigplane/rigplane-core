@@ -1549,6 +1549,22 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
 // direct DOM check per direction is enough to prove the wire is connected —
 // SpectrumToolbar.component.test.ts owns the exhaustive fact-backed/
 // view-option split.
+// MOR-2851 — the portrait phone hides the whole toolbar above the panorama;
+// every other layout keeps it. Pure suppression: the panorama itself and the
+// panel's own behaviour are unchanged.
+describe('SpectrumPanel hideToolbar (MOR-2851)', () => {
+  it('renders the toolbar by default', () => {
+    const target = mountPanel();
+    expect(target.querySelector('.spectrum-toolbar')).not.toBeNull();
+  });
+
+  it('renders no toolbar with hideToolbar=true, keeping the panorama', () => {
+    const target = mountPanel({ hideToolbar: true });
+    expect(target.querySelector('.spectrum-toolbar')).toBeNull();
+    expect(target.querySelector('.spectrum-split-region')).not.toBeNull();
+  });
+});
+
 describe('SpectrumPanel hideScopeControls pass-through (MOR-1369, S6b-1)', () => {
   it('omitting the prop keeps the toolbar fact-backed half reachable (default false)', () => {
     const target = mountPanel();
