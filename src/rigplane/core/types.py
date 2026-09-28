@@ -163,6 +163,8 @@ class ToneSquelchType(StrEnum):
     TONE_T_DTCS_R = "tone_t_dtcs_r"
     DTCS_T_TSQL_R = "dtcs_t_tsql_r"
     TONE_T_TSQL_R = "tone_t_tsql_r"
+    PR_FREQ = "pr_freq"
+    REV_TONE = "rev_tone"
 
 
 _CTCSS_BOOLEANS_BY_TONE_SQUELCH_TYPE: dict[ToneSquelchType, tuple[bool, bool]] = {
