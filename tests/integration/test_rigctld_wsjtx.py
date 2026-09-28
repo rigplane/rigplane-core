@@ -406,6 +406,125 @@ class TestUnknownVfoBackwardsCompat:
 
 
 # ---------------------------------------------------------------------------
+# MOR-2890: HTTP cross-protocol guard
+# ---------------------------------------------------------------------------
+
+
+async def _close_writer(writer: asyncio.StreamWriter) -> None:
+    try:
+        writer.close()
+        await writer.wait_closed()
+    except Exception:
+        pass
+
+
+class TestHttpCrossProtocolGuard:
+    """A browser's no-cors POST to the rigctld port must not execute its body.
+
+    Without a guard the request line and each HTTP header earn an ENIMPL
+    and the body line after them runs as a rigctld command — ``T 1`` keys
+    the transmitter (MOR-2890). The server must instead close the
+    connection when the FIRST non-blank line looks like an HTTP request
+    line, before parsing or executing anything, while ordinary client
+    sessions keep working unchanged.
+    """
+
+    async def test_http_post_is_refused_and_never_keys_ptt(
+        self, ic7300_setup: tuple[RecordingMockRadio, RigctldServer]
+    ) -> None:
+        """The attacker's exact shape: request line, headers, blank line, ``T 1``.
+
+        The connection must close with no bytes answered and no PTT call
+        may reach the radio.
+        """
+        radio, server = ic7300_setup
+        reader, writer = await asyncio.open_connection(*_addr(server))
+        try:
+            writer.write(
+                b"POST / HTTP/1.1\r\n"
+                b"Host: 127.0.0.1:4532\r\n"
+                b"Content-Type: text/plain\r\n"
+                b"\r\n"
+                b"T 1\n"
+            )
+            await writer.drain()
+            try:
+                data = await asyncio.wait_for(reader.read(4096), timeout=2.0)
+            except ConnectionResetError:
+                data = b""
+            assert data == b""
+        finally:
+            await _close_writer(writer)
+
+        await asyncio.sleep(0.1)
+        assert all(name != "set_ptt" for name, _ in radio.calls)
+        assert radio._ptt is False  # noqa: SLF001
+
+    async def test_normal_session_still_works_as_before(
+        self, ic7300_setup: tuple[RecordingMockRadio, RigctldServer]
+    ) -> None:
+        """``\\dump_state``, ``f``, ``T 1``, ``T 0`` behave exactly as before."""
+        radio, server = ic7300_setup
+        reader, writer = await asyncio.open_connection(*_addr(server))
+        try:
+            writer.write(b"\\dump_state\n")
+            await writer.drain()
+            dump = bytearray()
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(reader.read(4096), timeout=0.3)
+                except asyncio.TimeoutError:
+                    break
+                if not chunk:
+                    break
+                dump += chunk
+            dump_lines = bytes(dump).decode().splitlines()
+            assert dump_lines[0] == "0"
+            assert dump_lines[1].isdigit()
+            assert len(dump) > 200
+
+            writer.write(b"f\n")
+            await writer.drain()
+            freq = await asyncio.wait_for(reader.read(4096), timeout=1.0)
+            assert freq == b"14074000\n"
+
+            writer.write(b"T 1\n")
+            await writer.drain()
+            assert await asyncio.wait_for(reader.read(4096), timeout=1.0) == b"RPRT 0\n"
+            writer.write(b"T 0\n")
+            await writer.drain()
+            assert await asyncio.wait_for(reader.read(4096), timeout=1.0) == b"RPRT 0\n"
+
+            ptt_calls = [args for name, args in radio.calls if name == "set_ptt"]
+            assert ptt_calls == [(True,), (False,)]
+        finally:
+            await _close_writer(writer)
+
+    async def test_lowercase_and_partial_request_lines_are_not_refused(
+        self, ic7300_setup: tuple[RecordingMockRadio, RigctldServer]
+    ) -> None:
+        """The pattern stays exact: lowercase or partial lines are not HTTP.
+
+        ``post / http/1.1`` and ``GET /`` must keep earning ENIMPL on a
+        still-open connection, and a following ``f`` must still answer.
+        """
+        radio, server = ic7300_setup
+        reader, writer = await asyncio.open_connection(*_addr(server))
+        try:
+            writer.write(b"post / http/1.1\nGET /\nf\n")
+            await writer.drain()
+            buf = b""
+            while b"14074000" not in buf:
+                chunk = await asyncio.wait_for(reader.read(4096), timeout=2.0)
+                if not chunk:
+                    break
+                buf += chunk
+            assert buf == b"RPRT -4\nRPRT -4\n14074000\n"
+        finally:
+            await _close_writer(writer)
+
+
+# ---------------------------------------------------------------------------
 # Real Hamlib chk_vfo=1 path — Variant A 1/5 (#1342)
 # ---------------------------------------------------------------------------
 #
