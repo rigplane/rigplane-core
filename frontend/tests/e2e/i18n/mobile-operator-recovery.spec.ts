@@ -301,7 +301,8 @@ test('portrait scope toolbar is one scrolling row over a 190px panorama (MOR-281
       const reachableByScroll = toolbar.scrollWidth > toolbar.clientWidth + 1;
       return { label: (el.textContent ?? '').trim().slice(0, 24), fullyVisible, reachableByScroll };
     });
-    const ptt = root.querySelector<HTMLElement>('.ptt-fab-label');
+    // The FAB mounts outside the .m-layout scroll root — query it directly.
+    const ptt = document.querySelector<HTMLElement>('.ptt-fab-label');
     return {
       toolbarHeight: toolbar.getBoundingClientRect().height,
       toolbarOverflowX: toolbarStyle.overflowX,

@@ -1890,8 +1890,10 @@
 
   /* The FAB's label span (PTT / TX LOCK) is not a button element, so the
      button font floor above never reached it — it keeps its own 16px
-     floor inside the unchanged 72px FAB. */
-  .m-layout :global(.ptt-fab-label) {
+     floor inside the unchanged 72px FAB. The FAB is the only PttFab mount
+     in the app (portrait phone only), so the bare anchor reaches exactly
+     its label span, which sits outside the .m-layout scroll root. */
+  :global(.ptt-fab-label) {
     font-size: max(16px, 1em) !important;
   }
 </style>
