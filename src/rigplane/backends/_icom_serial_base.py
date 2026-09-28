@@ -601,7 +601,7 @@ class _IcomSerialRadioBase(CoreRadio):
             return
         if not self._has_connected_once:
             # No identity was ever captured to match, and FALLBACK would
-            # probe every other enumerated port matching the glob.
+            # probe other enumerated ports matching the glob.
             return
         try:
             enumerated = self._enumerate_serial_ports_fn()

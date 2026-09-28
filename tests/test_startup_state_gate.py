@@ -2499,7 +2499,7 @@ async def test_silent_startup_scan_seed_and_echo_never_count_as_radio_observatio
 
 
 def _port_missing_error(device: str) -> BaseException:
-    """The error pyserial raises when the device node does not exist."""
+    """A pyserial error with the message a missing device node produces."""
 
     import serial
 
@@ -2700,9 +2700,9 @@ async def test_present_but_silent_port_still_serves_not_answering(
 def test_only_a_recorded_open_failure_makes_reconnecting_a_missing_port() -> None:
     """The missing-port decision needs the backend's recorded open failure.
 
-    ``RECONNECTING`` alone is also MOR-2841's link-down state on an open
-    port, and a failed plain ``connect()`` rests ``DISCONNECTED``: neither
-    is served as a missing port.
+    ``RECONNECTING`` alone is also the state MOR-2841's link-down detector
+    sets for a silent radio, and a failed plain ``connect()`` rests
+    ``DISCONNECTED``: neither is served as a missing port.
     """
 
     from rigplane.runtime._connection_state import RadioConnectionState
@@ -2722,8 +2722,8 @@ def test_only_a_recorded_open_failure_makes_reconnecting_a_missing_port() -> Non
 async def test_tx_returns_after_the_late_first_open(tmp_path: Path) -> None:
     """Transmit is refused without a port and follows the normal rules after.
 
-    The server session serves a port that cannot be opened without marking
-    any transport ready. When the port appears, the watchdog's
+    The server session enters without an open port and marks no transport
+    ready. When the port appears, the watchdog's
     ``soft_reconnect`` re-arms the mounted composition on the new transport
     (``rearm_managed_tx`` -> ``transport_ready``), the same path a runtime
     reconnect takes, and a key is accepted.
@@ -2773,12 +2773,12 @@ async def test_tx_returns_after_the_late_first_open(tmp_path: Path) -> None:
 async def test_only_a_port_open_failure_is_retried_on_the_server_path(
     tmp_path: Path,
 ) -> None:
-    """``connect()`` keeps its contract; the session serves only an OSError.
+    """``connect()`` keeps its contract; the session recovers only an OSError.
 
     A plain ``connect()`` still raises and leaves no background task. The
     server session retries only an open failure (pyserial's
     ``SerialException`` is an ``OSError``); a missing dependency still
-    fails startup.
+    raises from the session.
     """
 
     from rigplane.cli import _ManagedTxRadioSession
@@ -2818,7 +2818,7 @@ async def test_a_never_connected_radio_opens_no_other_serial_port(
 ) -> None:
     """No sibling-port search before the radio has ever connected.
 
-    This host runs more than one radio: while the configured path is
+    A host can run more than one radio: while the configured path is
     missing, the retry must not open (or even enumerate) another port.
     """
 
