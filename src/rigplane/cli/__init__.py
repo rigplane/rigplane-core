@@ -114,6 +114,7 @@ from rigplane.runtime.managed_tx_authority import (  # noqa: E402
     ShutdownResult,
 )
 from rigplane.runtime.managed_tx_effect_lane import ManagedTxActuator  # noqa: E402
+from rigplane.runtime.managed_tx_state import ActuationOperation  # noqa: E402
 from rigplane.runtime.managed_tx_composition import (  # noqa: E402
     ManagedTxComposition,
     ManagedTxCompositionPort,
@@ -1903,29 +1904,29 @@ async def _cmd_list_audio_devices(args: argparse.Namespace) -> int:
 
 
 # MOR-2875: _ShutdownBackstop's bound on a `web`/`station` shutdown after its
-# first SIGTERM/SIGINT is _first_signal_shutdown_bound_s(): the bounds of the
-# shutdown's steps, in the order the steps run, plus a margin.
-_SHUTDOWN_WEB_STOP_S: float = 16.0  # WebServer.stop
+# first SIGTERM/SIGINT is _first_signal_shutdown_bound_s(): the timed waits of
+# the shutdown's steps plus a margin.
 _MANAGED_TX_SHUTDOWN_DRAIN_S: float = ATTEMPT_TIMEOUT_S
 _MANAGED_TX_SHUTDOWN_SETTLE_S: float = ATTEMPT_TIMEOUT_S + RETRY_DELAY_S
-_SHUTDOWN_RADIO_DISCONNECT_S: float = 5.0  # radio.__aexit__
+_MANAGED_TX_SHUTDOWN_S: float = (
+    _MANAGED_TX_SHUTDOWN_DRAIN_S + _MANAGED_TX_SHUTDOWN_SETTLE_S
+)
 _SHUTDOWN_MARGIN_S: float = 2.0
 _SHUTDOWN_FORCED_EXIT_GRACE_S: float = 3.0
 
 
 def _first_signal_shutdown_bound_s() -> float:
-    from rigplane.rigctld.server import (
-        LISTENER_CLOSE_TIMEOUT_S,
-        SESSION_TX_HANDBACK_TIMEOUT_S,
-    )
+    from rigplane.backends._icom_serial_base import _IcomSerialRadioBase
+    from rigplane.rigctld.server import STOP_TIMEOUT_S as RIGCTLD_STOP_TIMEOUT_S
+    from rigplane.web.web_startup import WEB_STOP_TIMEOUT_S
 
+    # radio.__aexit__: the serial Icom disconnect's watchdog teardown.
+    radio_exit_s: float = _IcomSerialRadioBase._SERIAL_CIV_WATCHDOG_TEARDOWN_TIMEOUT_S
     return (
-        _SHUTDOWN_WEB_STOP_S
-        + SESSION_TX_HANDBACK_TIMEOUT_S
-        + LISTENER_CLOSE_TIMEOUT_S
-        + _MANAGED_TX_SHUTDOWN_DRAIN_S
-        + _MANAGED_TX_SHUTDOWN_SETTLE_S
-        + _SHUTDOWN_RADIO_DISCONNECT_S
+        WEB_STOP_TIMEOUT_S
+        + RIGCTLD_STOP_TIMEOUT_S
+        + _MANAGED_TX_SHUTDOWN_S
+        + radio_exit_s
         + _SHUTDOWN_MARGIN_S
     )
 
@@ -2017,9 +2018,33 @@ class _ShutdownBackstop:
         os._exit(130)
 
 
+def _unconfirmed_unkey(
+    composition: ManagedTxCompositionPort, session: str | None
+) -> str:
+    """The session, provider generation and release attempt a managed-TX
+    shutdown left unconfirmed, for its ERROR line (MOR-2875)."""
+    projection = composition.authority.snapshot_nowait()
+    effect = projection.state.pending_effect
+    last = projection.state.last_actuation
+    generation = projection.provider_generation
+    if effect is not None:
+        generation = effect.token.provider_generation
+        attempt = f"attempt {effect.token.attempt_id} {effect.operation} unanswered"
+    elif last is not None and last.operation is ActuationOperation.FORCE_RECEIVE:
+        attempt = f"attempt {last.attempt_id} {last.operation} {last.result}"
+    else:
+        attempt = "no release attempt"
+    error = projection.state.last_error
+    return (
+        f"session {session or 'none'}, provider generation {generation}, {attempt}"
+        + ("" if error is None else f" ({error})")
+    )
+
+
 async def _shutdown_managed_tx_composition(
     composition: ManagedTxCompositionPort,
 ) -> None:
+    session = composition.authority.snapshot_nowait().state.intent.owner_token
     termination = asyncio.Event()
     shutdown = asyncio.create_task(composition.shutdown(termination))
     try:
@@ -2034,15 +2059,18 @@ async def _shutdown_managed_tx_composition(
             )
         except TimeoutError:
             logger.error(
-                "managed TX shutdown: unkey not confirmed; still running %.1fs"
-                " after it was terminated",
+                "managed TX shutdown: unkey not confirmed, the rig may still be"
+                " keyed: %s; still running %.1fs after it was terminated",
+                _unconfirmed_unkey(composition, session),
                 _MANAGED_TX_SHUTDOWN_SETTLE_S,
             )
             return
     if result is ShutdownResult.TERMINATED:
         logger.error(
-            "managed TX shutdown: unkey not confirmed within %.1fs",
+            "managed TX shutdown: unkey not confirmed within %.1fs, the rig may"
+            " still be keyed: %s",
             _MANAGED_TX_SHUTDOWN_DRAIN_S,
+            _unconfirmed_unkey(composition, session),
         )
 
 
@@ -2073,9 +2101,7 @@ class _ManagedTxRadioSession:
             self._shutdown_task = task
             if self._backstop is not None:
                 self._backstop.protect(
-                    task,
-                    "managed TX shutdown",
-                    _MANAGED_TX_SHUTDOWN_DRAIN_S + _MANAGED_TX_SHUTDOWN_SETTLE_S,
+                    task, "managed TX shutdown", _MANAGED_TX_SHUTDOWN_S
                 )
         await asyncio.shield(task)
 
@@ -4170,24 +4196,19 @@ async def _cmd_web(
             await server.serve_forever(on_started=_banner)
         else:
             await server.serve_forever(
-                on_started=_banner, on_shutdown_signal=shutdown_backstop.arm
+                on_started=_banner,
+                on_shutdown_signal=shutdown_backstop.arm,
+                on_tx_release=shutdown_backstop.protect,
             )
     except asyncio.CancelledError:
         pass
     finally:
         if rigctld_server is not None:
-            from rigplane.rigctld.server import (
-                LISTENER_CLOSE_TIMEOUT_S,
-                SESSION_TX_HANDBACK_TIMEOUT_S,
-            )
+            from rigplane.rigctld.server import STOP_TIMEOUT_S
 
             stop = asyncio.ensure_future(rigctld_server.stop())
             if shutdown_backstop is not None:
-                shutdown_backstop.protect(
-                    stop,
-                    "rigctld stop",
-                    SESSION_TX_HANDBACK_TIMEOUT_S + LISTENER_CLOSE_TIMEOUT_S,
-                )
+                shutdown_backstop.protect(stop, "rigctld stop", STOP_TIMEOUT_S)
             await stop
     return 0
 

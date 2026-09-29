@@ -633,15 +633,24 @@ class ManagedTxAuthority:
 
     async def snapshot(self) -> ManagedTxProjection:
         async with self._lock:
-            deadline = self._tot_deadline_locked()
-            state = replace(self._state, tot_deadline_monotonic=deadline)
-            remaining = None if deadline is None else max(0.0, deadline - self._clock())
-            return ManagedTxProjection(
-                state,
-                self._config_store.config.timeout_seconds,
-                remaining,
-                self._provider_generation,
-            )
+            return self._projection_locked()
+
+    def snapshot_nowait(self) -> ManagedTxProjection:
+        """:meth:`snapshot` without the lock, for shutdown diagnostics that must
+        not wait on a stuck authority (MOR-2875); no ``await`` runs between
+        its reads."""
+        return self._projection_locked()
+
+    def _projection_locked(self) -> ManagedTxProjection:
+        deadline = self._tot_deadline_locked()
+        state = replace(self._state, tot_deadline_monotonic=deadline)
+        remaining = None if deadline is None else max(0.0, deadline - self._clock())
+        return ManagedTxProjection(
+            state,
+            self._config_store.config.timeout_seconds,
+            remaining,
+            self._provider_generation,
+        )
 
     def start_provider_unavailable(self) -> asyncio.Task[None]:
         """Invalidate provider authority before returning and own cleanup."""

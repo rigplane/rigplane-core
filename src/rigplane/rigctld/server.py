@@ -93,9 +93,12 @@ _HTTP_REFUSAL_LOG_MAX_PEERS = 128
 
 # MOR-2875: the bound on each wait for a departing session's managed-TX
 # handback (one ManagedTxAuthority attempt, plus its retry delay as slack),
-# and on stop()'s wait for the listener to close.
+# and on stop()'s wait for the listener to close. STOP_TIMEOUT_S sums the
+# waits of _release_session_tx (a second one follows a cancellation) and
+# stop() (pinned by test_stop_timeout_is_the_sum_of_its_timed_waits).
 SESSION_TX_HANDBACK_TIMEOUT_S: float = ATTEMPT_TIMEOUT_S + RETRY_DELAY_S
 LISTENER_CLOSE_TIMEOUT_S: float = 2.0
+STOP_TIMEOUT_S: float = 2 * SESSION_TX_HANDBACK_TIMEOUT_S + LISTENER_CLOSE_TIMEOUT_S
 
 
 class _ManagedPttReady(asyncio.Future[None]):
@@ -377,6 +380,11 @@ class RigctldServer:
                         timeout=SESSION_TX_HANDBACK_TIMEOUT_S,
                     )
                 except asyncio.CancelledError:
+                    logger.error(
+                        "session %s: managed TX handback cancelled a second time "
+                        "before it settled; unkey not confirmed",
+                        session_id,
+                    )
                     handback.cancel()
                     raise
         except TimeoutError:
