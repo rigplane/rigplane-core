@@ -27,6 +27,11 @@ rx_audio_channel = "left"
 
 [power]
 max_watts = 100
+# PC POWER CONTROL floor (FTX-1 CAT manual FTX-1_CAT_OM_ENG_2508-C, p.21):
+# P1=2 (SPA-1) spans 005-100 W (P1=1 field head 005-010 W), so the radio
+# refuses anything below 5 W -- PC2000; answered "?;" on the bench (MOR-2998).
+# The backend clamps a lower request up to this floor before the wire.
+min_watts = 5
 
 [capabilities]
 # NOTE: ``notch`` KEEPS the capability tag but intentionally declares NO
