@@ -134,15 +134,20 @@ Don't know your radio's IP — or want to find USB-connected radios too? Use uni
 rigplane discover
 ```
 
+For an IC-7610 connected by both LAN and USB:
+
 ```
 Scanning for radios (3s LAN + serial)...
 
-Found 1 radio with 2 connection methods:
+Found 2 radios with 2 connection methods:
 
-IC-7610:
+192.168.1.50:
   • LAN: 192.168.1.50
+IC-7610:
   • Serial: /dev/cu.usbserial-11320 (19200 baud)
 ```
+
+A LAN result carries no model name, so it is listed under its IP address, apart from the same radio's USB entry.
 
 The command scans both LAN (UDP broadcast) and USB serial ports in parallel. Use filters for targeted scans:
 

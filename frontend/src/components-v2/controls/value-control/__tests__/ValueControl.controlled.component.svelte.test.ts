@@ -285,6 +285,7 @@ function countViewReads(
     endPointer: (token) => lease.endPointer(token),
     cancelPointer: (token) => lease.cancelPointer(token),
     nativeInput: (candidate) => lease.nativeInput(candidate),
+    nativeChange: () => lease.nativeChange(),
     wheel: (event) => lease.wheel(event),
     key: (event) => lease.key(event),
     reset: () => lease.reset(),

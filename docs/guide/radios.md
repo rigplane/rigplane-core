@@ -138,13 +138,15 @@ maintainer has not yet completed first-party hardware validation in this repo.
 ### IC-705
 
 - **CI-V Address:** `0xA4`
-- **Connectivity:** LAN (WiFi/Ethernet) + USB serial (CI-V)
+- **Connectivity:** LAN (WiFi) + USB serial (CI-V)
 - **VFO scheme:** Single receiver (portable transceiver)
 - **Rig profile:** `rigs/ic705.toml`
-- **Validated features:** LAN connect/disconnect, reconnect, frequency, mode,
-  PTT, and audio path integrations on the WiFi backend
-- **Status:** Community-validated on LAN/WiFi. First-party maintainer hardware
-  validation is still pending.
+- **Validated features (2.x):** LAN connect/disconnect, reconnect, frequency,
+  mode, PTT, and audio path integrations on the WiFi backend
+- **Status:** Community-validated on LAN/WiFi with 2.x; not yet validated on
+  3.0. First-party maintainer hardware validation is still pending.
+- **Connecting over WiFi:** pass `--model IC-705`. LAN discovery finds the
+  radio's IP address but not its model.
 
 !!! tip "Setup Guides"
     - **[IC-705 USB Serial Backend Setup](ic705-usb-setup.md)** — Step-by-step USB configuration
