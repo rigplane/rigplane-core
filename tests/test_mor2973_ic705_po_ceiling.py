@@ -184,9 +184,10 @@ _EXTERNAL_ONLY = (
 )
 
 
-def _load(tmp_path: Path, power: str, commands: str = ""):
+def _load(tmp_path: Path, power: str, commands: str = "", overrides: str = ""):
     toml = _MINIMAL_TOML.replace("[commands]\n", f"{power}[commands]\n{commands}")
-    return load_rig(_write_toml(tmp_path, toml))
+    assert toml.endswith("[commands.overrides]\n")
+    return load_rig(_write_toml(tmp_path, toml + overrides))
 
 
 def test_power_tables_load_by_code(tmp_path: Path) -> None:
@@ -264,3 +265,27 @@ def test_power_table_errors(
 ) -> None:
     with pytest.raises(RigLoadError, match=match):
         _load(tmp_path, power, commands)
+
+
+@pytest.mark.parametrize(
+    ("power", "getter", "match"),
+    [
+        pytest.param(
+            _RATED,
+            "get_power_source = [0x1A, 0x0B]\n",
+            "get_power_source needs",
+            id="source-getter",
+        ),
+        pytest.param(
+            _RATED + _EXTERNAL_ONLY,
+            "get_max_tx_power_battery = [0x1A, 0x05, 0x00, 0x36]\n",
+            "get_max_tx_power_battery needs 'battery'",
+            id="ceiling-getter",
+        ),
+    ],
+)
+def test_a_read_declared_only_in_the_overrides_needs_its_table(
+    tmp_path: Path, power: str, getter: str, match: str
+) -> None:
+    with pytest.raises(RigLoadError, match=match):
+        _load(tmp_path, power, overrides=getter)
