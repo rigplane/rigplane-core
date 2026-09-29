@@ -19,10 +19,10 @@ body:
     id: connection
     attributes:
       label: Connection
-      description: "How you connect to the radio: USB or LAN."
+      description: "How you connect to the radio: USB, or over the network (LAN or Wi-Fi)."
       options:
         - USB
-        - LAN
+        - Network (LAN or Wi-Fi)
     validations:
       required: true
 
