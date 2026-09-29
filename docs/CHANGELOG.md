@@ -554,11 +554,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its watchdog's retry loop and the server serves a not-connected
   state; Yaesu models on `--backend serial` are unchanged, and every
   other startup failure still exits. Radio health reports
-  `radio_not_connected` with the port's open error until the radio
-  first answers, and transmit stays refused until the port opens.
+  `radio_not_connected` with the port's open error until the port
+  opens, then `radio_powered_off_likely` until the radio first
+  answers, and transmit stays refused until the port opens.
   While the backend retries a port that has never opened,
   `/api/v1/radio/connect` and the power-on path in `/api/v1/radio/power`
-  answer `409` with `backend_recovering`.
+  answer `409` with `backend_recovering`. The web UI's power-off
+  overlay covers this state with the label "Radio not connected — the
+  serial port did not open" and offers no Power ON button in it. Once
+  the port opens and the radio stays silent, the overlay becomes the
+  not-answering one — "Radio does not answer — it may be switched
+  off" — which offers the Power ON button.
 
 - **A DUP−/DUP+ readback no longer reads as split ON (MOR-2929).** The
   CI-V split command 0F answers 00 for split OFF, 01 for split ON, 11
