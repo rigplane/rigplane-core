@@ -152,6 +152,51 @@ describe('renderSpectrum', () => {
   });
 });
 
+describe('frequency label thinning (MOR-3011)', () => {
+  // 9px monospace advances ~0.6em per glyph; the mock reports the same
+  // widths the renderer measures, so the box math matches production.
+  const MONO_ADVANCE_PX = 9 * 0.6;
+  function createLabelCtx() {
+    const { ctx, log } = createMockCtx();
+    (ctx as unknown as { measureText: (t: string) => { width: number } }).measureText =
+      (t: string) => ({ width: t.length * MONO_ADVANCE_PX });
+    return { ctx, log };
+  }
+  const phoneOpts = (): SpectrumOptions => opts({ spanHz: 100_000, centerHz: 14_210_000 });
+  const boxes = (log: { fillText: [string, number, number][] }) =>
+    log.fillText.map(([text, x]) => {
+      const w = text.length * MONO_ADVANCE_PX;
+      return { text, left: x - w / 2, right: x + w / 2 };
+    });
+
+  it.each([360, 390])('draws non-overlapping labels at phone width %i', (width) => {
+    const { ctx, log } = createLabelCtx();
+    renderSpectrum(ctx, data50(), width, 200, phoneOpts());
+    const bs = boxes(log);
+    // Edge labels stay readable: the first and last grid frequencies are kept.
+    expect(bs.length).toBeGreaterThan(2);
+    expect(bs[0].text).toBe('14.160');
+    expect(bs[bs.length - 1].text).toBe('14.260');
+    for (let a = 0; a < bs.length; a++) {
+      for (let b = a + 1; b < bs.length; b++) {
+        expect(bs[a].right <= bs[b].left || bs[b].right <= bs[a].left).toBe(true);
+      }
+    }
+  });
+
+  it('keeps all eleven labels exactly as today at desktop width 1440', () => {
+    const { ctx, log } = createLabelCtx();
+    renderSpectrum(ctx, data50(), 1440, 400, phoneOpts());
+    expect(log.fillText.map(([t]) => t)).toEqual([
+      '14.160', '14.170', '14.180', '14.190', '14.200', '14.210',
+      '14.220', '14.230', '14.240', '14.250', '14.260',
+    ]);
+    expect(log.fillText.map(([, x]) => x)).toEqual(
+      Array.from({ length: 11 }, (_, i) => Math.min(Math.max((i / 10) * 1440, 20), 1420)),
+    );
+  });
+});
+
 describe('SpectrumRenderer', () => {
   let renderer: SpectrumRenderer;
   beforeEach(() => { renderer = new SpectrumRenderer(); });
