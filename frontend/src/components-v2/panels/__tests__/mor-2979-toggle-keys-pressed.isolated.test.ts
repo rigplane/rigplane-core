@@ -119,6 +119,10 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   getAutoNotchArmed: () => ({ armed: false, value: null }),
   getManualNotchArmed: () => ({ armed: false, value: null }),
   getDspControlFeedback: (field: string) => unavailableFeedback(field),
+  // MOR-2932: NR level and NB depth project through unchanged — this file
+  // asserts neither lane's conversion (covered with the real adapters in
+  // `DspPanel.component.test.ts`).
+  projectDspControlFeedbackToDisplay: <T,>(_field: string, feedback: T) => feedback,
   getAfLevelControlFeedback: () => idleFeedback('af-level'),
 }));
 

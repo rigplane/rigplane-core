@@ -296,7 +296,12 @@ describe('panel-adapters.ts derive*Props over the live ic7300 fixture (MOR-1562)
   });
 
   it('deriveScanProps: exact idle-scan reading', () => {
-    expect(deriveScanProps()).toEqual({ scanning: false, scanType: 0, scanResumeMode: 0 });
+    expect(IC7300_STATE.fieldStatus?.scanning?.observed).toBe(false);
+    // MOR-2979: STOP has no visibility gate, so the seam reports
+    // knownness — here `false`, the idle reading is not yet observed.
+    expect(deriveScanProps()).toEqual({
+      scanning: false, scanType: 0, scanResumeMode: 0, scanningKnown: false,
+    });
   });
 
   it('deriveCwProps: mode-gated APF/TPF disable + honest capability catalog for the live USB reading', () => {
@@ -322,7 +327,7 @@ describe('panel-adapters.ts derive*Props over the live ic7300 fixture (MOR-1562)
     expect(IC7300_STATE.fieldStatus?.ritTx?.observed).toBe(false);
     expect(deriveRitXitProps()).toEqual({
       ritActive: false, ritOffset: Number.NaN, xitActive: false, xitOffset: Number.NaN,
-      hasRit: false, hasXit: false,
+      hasRit: false, hasXit: false, ritKnown: false, xitKnown: false,
     });
   });
 });
