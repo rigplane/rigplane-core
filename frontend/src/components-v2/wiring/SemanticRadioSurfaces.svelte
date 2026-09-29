@@ -2791,13 +2791,14 @@
     which declared this zone in MOR-1370 (S6b-2). `sdr-test` also declares this zone; the remaining
     single-composition layouts (`mobile`/`lcd-*`) keep their existing bare path.
   -->
-  {#snippet scopeControlsSurface(screenGroup?: Snippet, rowTail?: Snippet)}
+  {#snippet scopeControlsSurface(screenGroup?: Snippet, rowTail?: Snippet, moreAsSheet = false)}
     {#if view?.scopeControls}
       <ScopeControlsSurface
         {...scopeFiniteRendererSelection}
         {view}
         moreScreen={screenGroup}
         {rowTail}
+        {moreAsSheet}
         onToggleChange={(field, next) => SCOPE_TOGGLE_INTENT[field](next)}
         onChoiceChange={(field, value) => SCOPE_CHOICE_INTENT[field](value)}
         onSpanChange={scopeIntents.onSpanChange}
@@ -2969,15 +2970,16 @@
   {#snippet hostedScopeDisplay(allowBare = allowBareSurfaces)}
     {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBare)}
   {/snippet}
-  {#snippet hostedScopeControls(allowBare = allowBareSurfaces, screenGroup?: Snippet, rowTail?: Snippet)}
+  {#snippet hostedScopeControls(allowBare = allowBareSurfaces, screenGroup?: Snippet, rowTail?: Snippet, moreAsSheet = false)}
     <!-- MOR-2545 PR2: the toolbar-hosted row hands its screen-only group in
          through the SECOND parameter, so `zoned()` (which renders its body
          argument-less) gets a closing snippet. MOR-2545 PR3: the row TAIL
          (STEP · BANDS · spacer · AVG/PEAK quick keys) rides the THIRD
          parameter into the one row, between the receiver capsule and the
-         [MORE ▾] key. -->
+         [MORE ▾] key. MOR-2987: the FOURTH parameter opts the ⋯ menu into
+         a BottomSheet (the phone layout); desktop callers omit it. -->
     {#snippet zonedBody()}
-      {@render scopeControlsSurface(screenGroup, rowTail)}
+      {@render scopeControlsSurface(screenGroup, rowTail, moreAsSheet)}
     {/snippet}
     {@render zoned('scopeControls', view?.scopeControls !== undefined, zonedBody, allowBare)}
   {/snippet}

@@ -21,7 +21,6 @@ vi.mock('../../meters/LinearSMeter.svelte', async () => {
   const s = await import('./fixtures/LinearSMeterEcho.svelte');
   return { default: s.default };
 });
-vi.mock('../controls/BottomSheet.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../controls/BandSelector.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/FilterPanel.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/RxAudioPanel.svelte', () => ({ default: function S() { return {}; } }));
@@ -60,7 +59,9 @@ vi.mock('./KeyboardHandler.svelte', () => ({ default: function S() { return {}; 
 // ../controls/PttFab.svelte is intentionally NOT mocked either: its layered
 // guards (50 ms hold, 8 px move-cancel, TX-permit two-step) are half of the
 // mobile PTT contract under test.
-vi.mock('$lib/Button', () => ({ HardwareButton: function S() { return {}; } }));
+// MOR-2987: $lib/Button stays REAL — the SCOPE ⋯ sheet's HardwareButton
+// keys must render for the intent/grammar pins below (the All-modes sheet
+// they copy never opens in this suite, so no other test notices).
 vi.mock('lucide-svelte', () => {
   const S = function () { return {}; };
   return { Settings: S, ChevronLeft: S, ChevronRight: S, ChevronsLeft: S, ChevronsRight: S, Mic: S, MicOff: S, Sliders: S, Radio: S };
@@ -983,7 +984,8 @@ describe('MobileRadioLayout SCOPE tab desktop-toolbar controls (MOR-2895)', () =
   function openMore(panel: HTMLElement): HTMLElement {
     panel.querySelector<HTMLButtonElement>('[data-testid="scope-more"]')!.click();
     flushSync();
-    return panel.querySelector('[data-testid="scope-more-panel"]')!;
+    // MOR-2987: the ⋯ menu is a BottomSheet, not the retired popover.
+    return panel.querySelector('[data-testid="scope-more-sheet"]')!;
   }
 
   it('mounts the semantic scope-controls surface under App\u2019s mobile surface plan', () => {
@@ -1049,7 +1051,7 @@ describe('MobileRadioLayout SCOPE tab desktop-toolbar controls (MOR-2895)', () =
     }
   });
 
-  it('the More panel carries the desktop More controls, each dispatching the desktop intent', () => {
+  it('the ⋯ sheet carries the desktop More controls, each dispatching the desktop intent', () => {
     const restore = withHardwareScopeRadio();
     try {
       const t = mountMobileWithAppPlan();
@@ -1138,9 +1140,9 @@ describe('MobileRadioLayout SCOPE tab desktop-toolbar controls (MOR-2895)', () =
       expect(flatKeySource).not.toContain('--v2-accent-cyan');
     });
 
-    it('the fixed More panel and the value digits are DOM descendants of the remapped container', () => {
+    it('the fixed ⋯ sheet and the value digits are DOM descendants of the remapped container', () => {
       // Custom properties inherit down the DOM tree, not the layout tree:
-      // the mapping reaches the More panel only because the panel is a DOM
+      // the mapping reaches the sheet only because the sheet is a DOM
       // descendant of #m-chip-panel-scope despite its position: fixed.
       const restore = withHardwareScopeRadio();
       try {
@@ -1160,11 +1162,11 @@ describe('MobileRadioLayout SCOPE tab desktop-toolbar controls (MOR-2895)', () =
       }
     });
 
-    it('the tuning strip declares its live box to fixed-position popovers (data-bottom-bar)', () => {
+    it('the tuning strip declares its live box to fixed-position surfaces (data-bottom-bar)', () => {
       const t = mountMobile();
-      // The More panel's flip-up decision measures the bar's ACTUAL top
-      // edge from the element (52 px today, 76 px under open PR #3879 /
-      // MOR-2874) — this attribute is what makes the strip measurable.
+      // The strip's ACTUAL top edge stays measurable from the element
+      // (MOR-2895's flip-up popover read it; MOR-2987's modal sheet layers
+      // above it instead) — this attribute is what declares the box.
       const bar = t.querySelector('.m-tuning-strip');
       expect(bar, 'the tuning strip renders').not.toBeNull();
       expect(bar!.hasAttribute('data-bottom-bar')).toBe(true);

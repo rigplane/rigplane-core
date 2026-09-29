@@ -875,9 +875,12 @@
                other home for SPAN / REF / CTR-FIX / HOLD (owner, 2026-09-28
                14:37 EDT). The same explicit-bare channel RadioLayout's
                semantic deck content uses; the surface keeps the desktop
-               toolbar's own handlers and facts. -->
+               toolbar's own handlers and facts.
+               MOR-2987: the fourth argument opts the ⋯ menu into a
+               BottomSheet (one labelled setting per row, pressable keys);
+               the desktop omits it and keeps the popover. -->
           <div class="m-scope-controls">
-            {@render instruments.scopeControls(true)}
+            {@render instruments.scopeControls(true, undefined, undefined, true)}
           </div>
         </CollapsiblePanel>
       </section>

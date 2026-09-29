@@ -111,6 +111,8 @@
   import { onDestroy } from 'svelte';
   import type { Snippet } from 'svelte';
   import { t } from '$lib/i18n';
+  import { HardwareButton } from '$lib/Button';
+  import BottomSheet from '../components-v2/controls/BottomSheet.svelte';
   import ScopeFlatKey from '../components/spectrum/ScopeFlatKey.svelte';
   import ScopeMorePanel from '../components/spectrum/ScopeMorePanel.svelte';
   import {
@@ -150,6 +152,13 @@
      * scope row) when the fact group is absent, so the controls survive.
      */
     rowTail?: Snippet;
+    /**
+     * MOR-2987 — the phone layout opts the ⋯ menu into a full-width
+     * BottomSheet (one labelled setting per row, HardwareButton keys)
+     * instead of the anchored popover. Default false: desktop keeps the
+     * popover exactly.
+     */
+    moreAsSheet?: boolean;
   }
   type RendererSelection =
     | { finiteAppearance?: undefined; rendererContext?: undefined }
@@ -157,7 +166,7 @@
   type Props = ExistingProps & RendererSelection;
   let {
     view, onToggleChange, onChoiceChange, onSpanChange, onSpeedChange, onRefChange,
-    moreScreen, rowTail, finiteAppearance, rendererContext,
+    moreScreen, rowTail, moreAsSheet = false, finiteAppearance, rendererContext,
   }: Props = $props();
 
   /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine). */
@@ -190,6 +199,8 @@
   let moreOpen = $state(false);
   let moreKeyEl = $state<HTMLElement | null>(null);
   let moreLabel = $derived(`${t('core.spectrum.more')} ▾`);
+  /** MOR-2987: the sheet title reuses the SCOPE chip label (faceplate-invariant). */
+  let sheetTitle = $derived(t('core.mobile.chip.scope'));
 
   function toggleInstrument(field: ScopeToggleField) {
     return bindToggleInstrument(() => ({
@@ -422,7 +433,107 @@
             title={hosted ? moreLabel : undefined} ariaExpanded={moreOpen} lit={moreOpen ? true : null}
             testid="scope-more" width={hosted ? undefined : '30px'}
             bind:element={moreKeyEl} onclick={() => { moreOpen = !moreOpen; }} />
-          {#if moreOpen}
+          {#if moreOpen && moreAsSheet}
+            <!-- MOR-2987 phone sheet: the same radio-held settings as the
+                 popover below, one labelled row per setting, All-modes
+                 HardwareButton grammar. No overflow copies: the phone row
+                 keeps every control visible. Same instruments (same intents)
+                 as the popover — presentation only. -->
+            <BottomSheet bind:open={moreOpen} title={sheetTitle} onclose={() => moreKeyEl?.focus()}>
+              <div class="scope-sheet" data-testid="scope-more-sheet">
+                {#if sc.mode.availability.structural}
+                  {@const sheetMode = choiceInstrument('mode', MODE_BUTTONS.map(([v]) => v))}
+                  <div class="scope-sheet-row" role="radiogroup" aria-label="Scope mode" data-testid="scope-mode">
+                    <span class="scope-sheet-label">MODE</span>
+                    <div class="scope-sheet-options">
+                      {#each MODE_BUTTONS as [v, label] (v)}
+                        <HardwareButton
+                          active={modeKnown !== undefined && modeKnown === v}
+                          disabled={!sheetMode.available}
+                          indicator="edge-left" color="cyan"
+                          role="radio" ariaChecked={modeKnown === undefined ? undefined : modeKnown === v}
+                          data={{ testid: `scope-mode-${v}` }}
+                          onclick={() => sheetMode.invoke(v)}
+                        >{label}</HardwareButton>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+
+                {#each MORE_CHOICES as [field, ariaLabel, shortName, options] (field)}
+                  {#if (field !== 'edge' || edgeApplicable) && sc[field].availability.structural}
+                    {@const sheetChoice = choiceInstrument(field, options.map(([v]) => v))}
+                    {@const sheetCurrent = valueOf(sc[field])}
+                    <div class="scope-sheet-row" role="radiogroup" aria-label={ariaLabel} data-testid={`scope-${field}`}>
+                      <span class="scope-sheet-label">{shortName}</span>
+                      <div class="scope-sheet-options">
+                        {#each options as [v, optLabel] (v)}
+                          <HardwareButton
+                            active={sheetCurrent !== undefined && sheetCurrent === v}
+                            disabled={!sheetChoice.available}
+                            indicator="edge-left" color="cyan"
+                            role="radio" ariaChecked={sheetCurrent === undefined ? undefined : sheetCurrent === v}
+                            data={{ testid: `scope-${field}-${v}` }}
+                            onclick={() => sheetChoice.invoke(v)}
+                          >{optLabel}</HardwareButton>
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+                {/each}
+
+                {#if sc.speed.availability.structural}
+                  {@const sheetSpeedDown = speedInstrument(-1)}
+                  {@const sheetSpeedUp = speedInstrument(1)}
+                  <div class="scope-sheet-row" data-testid="scope-speed">
+                    <span class="scope-sheet-label">SPEED</span>
+                    <div class="scope-sheet-options">
+                      <HardwareButton
+                        disabled={!sheetSpeedDown.available}
+                        indicator="edge-left" color="cyan"
+                        ariaLabel="Decrease scope speed"
+                        onclick={() => sheetSpeedDown.invoke()}
+                      >&#8249;</HardwareButton>
+                      <output class="scope-sheet-value" data-testid="scope-speed-value">{readingText(sc.speed, (speed) => SPEED_LABELS[speed] ?? '')}</output>
+                      <HardwareButton
+                        disabled={!sheetSpeedUp.available}
+                        indicator="edge-left" color="cyan"
+                        ariaLabel="Increase scope speed"
+                        onclick={() => sheetSpeedUp.invoke()}
+                      >&#8250;</HardwareButton>
+                    </div>
+                  </div>
+                {/if}
+
+                {#each MORE_TOGGLES as [field, label] (field)}
+                  {#if sc[field].availability.structural}
+                    {@const sheetToggle = toggleInstrument(field)}
+                    <div class="scope-sheet-row" data-testid={`scope-${field}-row`}>
+                      <span class="scope-sheet-label">{label}</span>
+                      <div class="scope-sheet-options">
+                        <HardwareButton
+                          active={sheetToggle.confirmed === true}
+                          disabled={!sheetToggle.available}
+                          indicator="edge-left" color="cyan"
+                          role={sheetToggle.confirmed === undefined ? undefined : 'switch'}
+                          ariaChecked={sheetToggle.confirmed === undefined ? undefined : sheetToggle.confirmed}
+                          data={{ testid: `scope-${field}` }}
+                          onclick={() => sheetToggle.invoke()}
+                        >{label}</HardwareButton>
+                      </div>
+                    </div>
+                  {/if}
+                {/each}
+
+                {#if moreScreen}
+                  <div class="scope-more-screen" data-testid="scope-more-screen">
+                    {@render moreScreen(() => { moreOpen = false; })}
+                  </div>
+                {/if}
+              </div>
+            </BottomSheet>
+          {/if}
+          {#if moreOpen && !moreAsSheet}
             <ScopeMorePanel onClose={() => { moreOpen = false; }} anchor={moreKeyEl}>
               {#snippet radioHeld()}
                 <!-- Narrow-width overflow copies, shown by the container queries below. -->
@@ -697,6 +808,58 @@
     margin-top: 4px;
     padding-top: 8px;
     border-top: 1px solid var(--v2-border, #2a2a3e);
+  }
+
+  /* MOR-2987 phone sheet: one setting per row — the label on the left,
+     every option on the right in ONE nowrap box (no wrapping at 360 px).
+     Labels are smaller uppercase secondary text, never buttons; options
+     are the All-modes HardwareButton grammar with their own 16px/44px
+     floors, so the sheet never depends on the host's button rules. */
+  .scope-sheet { display: flex; flex-direction: column; gap: 4px; padding: 8px 12px 12px; }
+  .scope-sheet-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: nowrap;
+    min-height: 52px;
+    padding: 4px 0;
+  }
+  .scope-sheet-label {
+    flex: none;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    color: var(--v2-text-secondary, #aaa);
+  }
+  .scope-sheet-options {
+    display: flex;
+    flex: 1;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: nowrap;
+    min-width: 0;
+  }
+  .scope-sheet-options :global(.v2-control-button) {
+    flex: 1 1 0;
+    min-width: 44px;
+    min-height: 44px;
+    font-size: 16px;
+    white-space: nowrap;
+  }
+  .scope-sheet-value {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 1 1 0;
+    min-width: 5ch;
+    min-height: 44px;
+    font-size: 16px;
+    font-variant-numeric: tabular-nums;
+    color: var(--v2-text-bright, #fff);
   }
 
   /* External finite appearance (pre-MOR-2545 stacked groups). */

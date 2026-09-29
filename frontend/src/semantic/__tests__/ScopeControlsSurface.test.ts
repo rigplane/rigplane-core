@@ -1027,7 +1027,7 @@ describe('phone More sheet (MOR-2987)', () => {
   function renderSheet(view: RadioViewModel, handlers: Handlers = {}) {
     const component = mount(ScopeControlsSurface, {
       target,
-      props: { view, ...handlers, moreAsSheet: true } as Record<string, unknown>,
+      props: { view, ...handlers, moreAsSheet: true },
     });
     flushSync();
     const q = (sel: string) => target.querySelector(sel) as HTMLElement | null;
