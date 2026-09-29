@@ -92,6 +92,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `5 - Production/Stable` (MOR-2897).** The classifier on PyPI
   matches a beta release.
 
+- **A passband drag sends one request, committed on release
+  (MOR-1691).** On the default skin's filter surface and on the v2
+  FilterPanel, the IF shift, PBT inner and PBT outer rows hold every
+  intermediate position of a pointer drag as a local draft and send
+  nothing to the radio while the drag lasts: exactly one command
+  leaves the row when the pointer is released, and a cancelled drag
+  sends nothing. During the drag the thumb follows the pointer, and on
+  the filter surface's PBT rows the visible number follows the draft,
+  then the pending target once the request is out, and the confirmed
+  readback only when neither exists — the input's command phase and
+  aria-busy stay the unconfirmed marker. Keyboard and reset still
+  dispatch at once on the filter surface, the panel keeps its 50 ms
+  debounce for keyboard and reset, and Filter Width keeps its
+  immediate dispatch.
+
 ### Fixed
 
 - **The segmentline and needle S-meters draw only what an uncalibrated
@@ -574,6 +589,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--model`, or a `--radio-addr` that a loaded profile declares, the
   probe runs as before.
 
+- **A VOX delay menu reply decodes at the active profile's own
+  control number (MOR-2975).** The shared CI-V decoder recognized a
+  1A 05 reply as a VOX delay only when its control number was the
+  IC-7610's 02 92 or the IC-7300's 01 91, whatever radio sent it:
+  the IC-705's and IC-9700's VOX delay readings never populated, and
+  a reply at the IC-705's own 01 91 — a scope FIX Edges setting —
+  would have been read as a VOX delay. The control number now
+  resolves through the active profile, so each radio decodes its
+  own — 02 92 on the IC-7610, 01 91 on the IC-7300, 03 59 on the
+  IC-705, 03 30 on the IC-9700 — and a control number the profile
+  does not map to that getter publishes nothing.
+
+- **The phone tune strip buttons carry accessible names
+  (MOR-2949).** The four icon-only buttons of the phone layout's
+  bottom tuning strip — the one-step and the fast key in each
+  direction — had no accessible name. Each now takes an aria-label
+  from the i18n catalog, localized in English, Russian and Japanese,
+  naming the direction and whether it is the one-step or the fast
+  key: a screen reader announces "Tune down fast", "Tune down one
+  step", "Tune up one step" and "Tune up fast". Nothing visual
+  changes.
+
 ### Security
 
 - **A rigctld connection whose first line is an HTTP request line is
@@ -620,7 +657,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   What's New in 3.0 page and an operating-away-from-home guide are
   added, and the beta limitations register is refreshed. The IC-705's
   README row, radios-page entry and USB setup guide are corrected
-  where the v3 profile fixes had made their prose false.
+  where the v3 profile fixes had made their prose false. The Quick
+  Start's `discover` sample is corrected to what the CLI really
+  prints — a LAN result is its own group under its IP address, apart
+  from the same radio's USB entry — and the CLI reference's discover
+  section now says serial discovery also finds Yaesu CAT radios,
+  grouped by the model ID the radio reports. The CLI reference's
+  examples no longer use the author's own bench address.
 
 ## [3.0.0b9] — 2026-09-27
 
