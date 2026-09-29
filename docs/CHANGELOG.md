@@ -84,15 +84,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reads as OFF, TONE, TSQL, DTCS or one of the four cross modes. The
   state gains `tone_squelch_type`, a string under each receiver's
   `operator_controls`, and the web payload carries `toneSquelchType`
-  for MAIN and SUB with its field status. Selector codes 03 (DTCS)
-  and 06-09 (the cross modes) used to read as unknown on both
-  `repeater_tone` and `repeater_tsql`; the booleans are now derived
-  from the type and stay unknown only where the type cannot express
-  them.
+  for MAIN and SUB with its field status.
 
 - **`web`, `serve` and `station` take `--listen` for the address the
-  server binds (MOR-2954).** The defaults are unchanged: 0.0.0.0 on
-  all three, and `station` keeps its managed 127.0.0.1 default.
+  server binds (MOR-2954).** The defaults are unchanged.
 
 ### Changed
 
