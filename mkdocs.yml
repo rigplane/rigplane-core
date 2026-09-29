@@ -85,7 +85,7 @@ nav:
   - Home: index.md
   - Getting Started:
       - Installation: guide/installation.md
-      - Migration from icom-lan: migrate.md
+      - Migrating to 3.0 beta: migrate.md
       - What's New in 3.0: whats-new.md
       - Quick Start: guide/quickstart.md
       - CLI Reference: guide/cli.md
