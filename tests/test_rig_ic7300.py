@@ -770,9 +770,7 @@ class TestUndocumentedReadsDeclaredAbsent:
     1E, 20 -- no RBW sub-command anywhere.
     """
 
-    def test_reads_are_declared_absent_citing_the_manual(
-        self, profile, cmdmap
-    ):
+    def test_reads_are_declared_absent_citing_the_manual(self, profile, cmdmap):
         for name in _MOR3012_ABSENT_READS:
             assert name in profile.absent_command_names, name
             source = profile.absent_command_sources[name]
@@ -780,9 +778,7 @@ class TestUndocumentedReadsDeclaredAbsent:
             assert not cmdmap.has(name), name
 
     @pytest.mark.parametrize("name", _MOR3012_ABSENT_READS)
-    def test_request_refuses_without_undeclared_warning(
-        self, profile, caplog, name
-    ):
+    def test_request_refuses_without_undeclared_warning(self, profile, caplog, name):
         """Asking for a declared-absent read refuses with the recorded
         manual source and never logs the state-3 undeclared WARNING."""
         radio = CoreRadio("127.0.0.1", profile=profile)
