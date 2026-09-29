@@ -79,10 +79,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The tone squelch type is read through the profile's code table
   (MOR-2955).** A profile can carry a `[tone_squelch_types]` table
-  mapping each selector code to a neutral type, and the only profile
-  given one is the IC-705's: its CI-V guide's `16 5D` selector now
-  reads as OFF, TONE, TSQL, DTCS or one of the four cross modes. The
-  state gains `tone_squelch_type`, a string under each receiver's
+  mapping each selector code to a neutral type. With the IC-705's
+  table, its CI-V guide's `16 5D` selector now reads as OFF, TONE,
+  TSQL, DTCS or one of the four cross modes. The state gains
+  `tone_squelch_type`, a string under each receiver's
   `operator_controls`, and the web payload carries `toneSquelchType`
   for MAIN and SUB with its field status.
 
@@ -141,6 +141,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   byte that maps to no direction fails the read with a command error,
   and a NAK answer fails the set with one; the web reaches the set
   through its existing `set_repeater_shift` dispatch entry, unchanged.
+
+- **The FTX-1 CT read publishes its tone squelch type through the
+  profile table (MOR-2969).** The FTX-1 profile gains a
+  `[tone_squelch_types]` table — its CAT `CT` "SQL TYPE" codes 0 to 5
+  map to off, tone, tsql, dtcs, pr_freq and rev_tone — and `pr_freq`
+  and `rev_tone` join the neutral type vocabulary. The CT read now
+  publishes the code's type under each receiver's
+  `operator_controls.tone_squelch_type`, on MAIN and SUB, riding the
+  same CT query and the two CTCSS booleans' own cadence and freshness.
+  The booleans are derived from the type through the same neutral rule
+  the IC-705's CI-V decode uses, so every code keeps the pair it
+  produced before. A profile that declares a `get_sql_type` read must
+  now carry the table, as a `get_tone_squelch_type` profile already
+  had to.
 
 ### Changed
 
@@ -720,6 +734,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pending notch target of `off` arms the key whose confirmed
   reading the click asked to leave.
 
+- **A `web` or `station` shutdown is bounded, so a hung await cannot
+  keep the process alive (MOR-2875).** A backstop in the CLI, armed by
+  the server's first SIGTERM or SIGINT and disarmed when the command
+  finishes, bounds the shutdown at the sum of its named waits: 16 s to
+  stop the web server, 10 s for rigctld, 3 s plus 4 s for the
+  managed-TX shutdown, 5 s for the radio's serial CI-V watchdog
+  teardown and a 2 s margin — 40 s in all. At the bound the backstop
+  first lets a protected TX release — the managed-TX shutdown, the
+  rigctld stop or the web PTT drain — finish inside its own bound; if
+  the shutdown still runs it logs the pending tasks with their await
+  chains, cancels the shutdown task, and if that is still running 3 s
+  later the process exits with code 130. The managed-TX shutdown
+  drains 3 s, then terminates and waits 4 s more; an unkey that stays
+  unconfirmed is logged at ERROR as "unkey not confirmed", naming the
+  session keyed at shutdown, the provider generation and the release
+  attempt, read without waiting on the authority. Each rigctld wait on
+  a departing session's TX handback now lasts at most 4 s — the wait
+  is abandoned, not the handback, with the same named ERROR — and its
+  stop() waits at most 2 s for the listener. Before, the managed-TX
+  termination and the rigctld handback were awaited without a bound,
+  so one hung await could keep the process alive indefinitely. A
+  shutdown that ends cancelled now exits with the signal's code 130
+  instead of a CancelledError traceback.
+
 ### Security
 
 - **A rigctld connection whose first line is an HTTP request line is
@@ -780,7 +818,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--host` after the subcommand; and the CLI reference now says the
   old spelling still works with a warning and loses to `--listen`
   when both are given. The What's New page gains a Command Line
-  section with the same facts.
+  section with the same facts. The backend-inference pass reaches the
+  guides: the Quick Start's USB section, the FTX-1 USB setup guide and
+  the CLI reference now start the FTX-1 with `--model FTX-1
+  --serial-port` and say `--backend yaesu-cat` does the same. The CLI
+  reference's `--backend` and `--serial-port` rows and its backend
+  section describe how the backend follows the model — `rigctld` is
+  never inferred — and say the serial port is auto-discovered for
+  `yaesu-cat` as for `serial`; its inference list drops the old
+  serial-port-else-`lan` rule, and the `lan`-is-the-default claims
+  leave the configuration page and the radio-protocol page, whose
+  Default Backend Selection table now names all four backend configs
+  for the Python API. The What's New page says the backend comes from
+  the radio's profile. The CLI reference's serial-baud rows are
+  corrected too: a port found by the USB scan keeps the rate the scan
+  found, and with `--serial-port` the `serial` backend uses the model
+  profile's `default_baud` — `115200` without a model — while
+  `yaesu-cat` keeps `38400`.
 
 ## [3.0.0b9] — 2026-09-27
 
