@@ -1115,14 +1115,17 @@ describe('phone More sheet (MOR-2987)', () => {
       expect(key.getAttribute('aria-checked')).toBeNull();
       expect(key.getAttribute('role')).toBe('radio');
     }
-    const toggle = r.el('scope-duringTx')!;
-    expect(toggle.hasAttribute('disabled')).toBe(true);
-    expect(toggle.getAttribute('data-active')).toBe('false');
-    expect(toggle.getAttribute('aria-checked')).toBeNull();
+    for (const side of ['off', 'on']) {
+      const key = r.el(`scope-duringTx-${side}`)!;
+      expect(key.hasAttribute('disabled')).toBe(true);
+      expect(key.getAttribute('data-active')).toBe('false');
+      expect(key.getAttribute('aria-checked')).toBeNull();
+      expect(key.getAttribute('role')).toBe('radio');
+    }
     r.dispose();
   });
 
-  it('toggles get labelled rows with a visible on/off state', () => {
+  it('toggles get labelled rows with an Off/On pair; the confirmed option is lit', () => {
     const r = renderSheet(withSc({ dual: known(true), duringTx: known(true), vbwNarrow: known(false) }));
     r.openMore();
     for (const [rowId, label, on] of [
@@ -1131,11 +1134,30 @@ describe('phone More sheet (MOR-2987)', () => {
     ] as const) {
       const row = r.el(rowId)!;
       expect(row.querySelector('.scope-sheet-label')!.textContent).toBe(label);
-      const key = row.querySelector('button')!;
-      expect(key.getAttribute('data-active')).toBe(String(on));
-      expect(key.getAttribute('role')).toBe('switch');
-      expect(key.getAttribute('aria-checked')).toBe(String(on));
+      const options = row.querySelector('.scope-sheet-options')!;
+      expect(options.getAttribute('role')).toBe('radiogroup');
+      const off = options.querySelector('button[data-testid$="-off"]')!;
+      const onKey = options.querySelector('button[data-testid$="-on"]')!;
+      expect(off.textContent).toBe('Off');
+      expect(onKey.textContent).toBe('On');
+      expect(off.getAttribute('data-active')).toBe(String(!on));
+      expect(onKey.getAttribute('data-active')).toBe(String(on));
+      expect(off.getAttribute('role')).toBe('radio');
+      expect(onKey.getAttribute('role')).toBe('radio');
+      expect(off.getAttribute('aria-checked')).toBe(String(!on));
+      expect(onKey.getAttribute('aria-checked')).toBe(String(on));
     }
+    r.dispose();
+  });
+
+  it('tapping the already-selected option dispatches nothing (two-position selector)', () => {
+    const onToggleChange = vi.fn();
+    const r = renderSheet(withSc({ duringTx: known(true) }), { onToggleChange });
+    r.openMore();
+    r.el('scope-duringTx-on')!.click(); flushSync();
+    expect(onToggleChange).not.toHaveBeenCalled();
+    r.el('scope-duringTx-off')!.click(); flushSync();
+    expect(onToggleChange).toHaveBeenCalledExactlyOnceWith('duringTx', false);
     r.dispose();
   });
 
@@ -1161,8 +1183,8 @@ describe('phone More sheet (MOR-2987)', () => {
     expect(onChoiceChange).toHaveBeenCalledWith('centerType', 1);
     r.el('scope-speed')!.querySelectorAll('button')[1]!.click(); flushSync();
     expect(onSpeedChange).toHaveBeenCalledOnce();
-    r.el('scope-duringTx')!.click(); flushSync();
-    expect(onToggleChange).toHaveBeenCalledWith('duringTx', expect.any(Boolean));
+    r.el('scope-duringTx-on')!.click(); flushSync();
+    expect(onToggleChange).toHaveBeenCalledWith('duringTx', true);
     r.dispose();
   });
 

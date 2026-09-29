@@ -527,7 +527,8 @@ test('SCOPE ⋯ sheet: full-width modal with one setting per row and pressable k
     expect(byId('scope-mode-0').active, `${stage}: CTR lit`).toBe('true');
     expect(byId('scope-mode-0').color, `${stage}: CTR cyan`).toBe('cyan');
     expect(byId('scope-mode-1').active, `${stage}: FIX unlit`).toBe('false');
-    expect(byId('scope-duringTx').active, `${stage}: During TX on`).toBe('true');
+    expect(byId('scope-duringTx-on').active, `${stage}: During TX on`).toBe('true');
+    expect(byId('scope-duringTx-off').active, `${stage}: During TX off unlit`).toBe('false');
     expect(audit.rows.find((r) => r.testid === 'scope-duringTx-row')!.label).toBe('During TX');
     // Dismiss through the backdrop; opening the menu writes nothing.
     await page.locator('.m-sheet-backdrop').click({ position: { x: 10, y: 10 } });

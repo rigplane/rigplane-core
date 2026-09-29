@@ -1074,14 +1074,15 @@ describe('MobileRadioLayout SCOPE tab desktop-toolbar controls (MOR-2895)', () =
       )!.click();
       flushSync();
       expect(scopeIntents.onSpeedChange).toHaveBeenCalledExactlyOnceWith(clampSpeed(SCOPE_READS.speed, 1));
-      // DUAL, During TX, VBW narrow.
-      more.querySelector<HTMLButtonElement>('[data-testid="scope-dual"]')!.click();
+      // DUAL, During TX, VBW narrow — Off/On pairs (MOR-2987 round 2);
+      // tapping On from a known-off state dispatches the same intent as before.
+      more.querySelector<HTMLButtonElement>('[data-testid="scope-dual-on"]')!.click();
       flushSync();
       expect(scopeIntents.onDualChange).toHaveBeenCalledExactlyOnceWith(true);
-      more.querySelector<HTMLButtonElement>('[data-testid="scope-duringTx"]')!.click();
+      more.querySelector<HTMLButtonElement>('[data-testid="scope-duringTx-on"]')!.click();
       flushSync();
       expect(scopeIntents.onDuringTxChange).toHaveBeenCalledExactlyOnceWith(true);
-      more.querySelector<HTMLButtonElement>('[data-testid="scope-vbwNarrow"]')!.click();
+      more.querySelector<HTMLButtonElement>('[data-testid="scope-vbwNarrow-on"]')!.click();
       flushSync();
       expect(scopeIntents.onVbwChange).toHaveBeenCalledExactlyOnceWith(true);
     } finally {
@@ -1184,7 +1185,7 @@ describe('MobileRadioLayout SCOPE tab desktop-toolbar controls (MOR-2895)', () =
       expect(panel.querySelector('[data-testid="scope-span"]')).not.toBeNull();
       expect(panel.querySelector('[data-testid="scope-receiver"]')).toBeNull();
       const more = openMore(panel);
-      expect(more.querySelector('[data-testid="scope-dual"]')).toBeNull();
+      expect(more.querySelector('[data-testid="scope-dual-row"]')).toBeNull();
     } finally {
       restore();
     }
