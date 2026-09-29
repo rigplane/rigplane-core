@@ -719,7 +719,7 @@ rigplane --model IC-7610 serve --wsjtx-compat
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--host` | `0.0.0.0` | Server listen address |
+| `--listen` | `0.0.0.0` | Server listen address |
 | `--port` | `4532` | Server TCP port |
 | `--read-only` | off | Reject all set commands and all raw `w` / `send_raw` frames (including reads) with `RPRT -22`; allow structured reads |
 | `--max-clients` | `10` | Maximum concurrent TCP clients |
@@ -783,7 +783,7 @@ rigplane --model IC-7610 station --port 0
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--host` | `0.0.0.0` | Web server bind address |
+| `--listen` | `0.0.0.0` | Web server bind address |
 | `--port` | `8080` | Web server port |
 | `--managed` | off | Use managed local defaults: loopback bind, embedded rigctld on loopback |
 | `--static-dir PATH` | — | Serve static files from a custom directory (default: built-in assets) |
@@ -794,6 +794,10 @@ rigplane --model IC-7610 station --port 0
 | `--rigctld-port` | `4532` | Rigctld listen port |
 | `--dx-cluster HOST:PORT` | — | Connect to DX cluster server for real-time spot overlays (opt-in) |
 | `--callsign CALL` | — | Your callsign for DX cluster login (required with `--dx-cluster`) |
+
+On `web`, `serve` and `station`, `--host` after the subcommand is a deprecated
+alias for `--listen`. It still works, but prints a warning; when both are
+given, `--listen` wins. `--host` before the subcommand is the radio's address.
 
 Core clients that can reach the web listener need no application credential.
 Remove the retired `--auth-token` and `--auth-token-file` flags from existing
@@ -1060,7 +1064,7 @@ rigplane proxy --radio 192.168.1.100 --listen 10.8.0.1
 
 | Flag | Command | Default | Description |
 |------|---------|---------|-------------|
-| `--host ADDR` | `web` | `0.0.0.0` | Bind Web UI server to a specific interface |
+| `--listen ADDR` | `web` | `0.0.0.0` | Bind Web UI server to a specific interface |
 | `--bridge-tx-device DEVICE` | `web` | *(none)* | Separate TX-only audio device for bidirectional bridge |
 | `--static-dir PATH` | `web` | *(built-in)* | Serve static web assets from a custom directory instead of the built-in UI |
 | `--dx-cluster HOST:PORT` | `web` | *(none)* | Connect to a DX cluster server for real-time spot overlays |
