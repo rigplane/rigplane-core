@@ -804,8 +804,9 @@ async def _stop_web_server(server: WebServer) -> None:
         drain = asyncio.ensure_future(
             radio_poller.drain_tx_safety_commands(timeout=_SHUTDOWN_TX_DRAIN_TIMEOUT_S)
         )
-        if server._on_tx_release is not None:
-            server._on_tx_release(drain, "web PTT drain", _SHUTDOWN_TX_DRAIN_TIMEOUT_S)
+        on_tx_release = getattr(server, "_on_tx_release", None)
+        if on_tx_release is not None:
+            on_tx_release(drain, "web PTT drain", _SHUTDOWN_TX_DRAIN_TIMEOUT_S)
         await drain
 
     # 10. Scope restoration is intentionally subordinate to the final unkey.
