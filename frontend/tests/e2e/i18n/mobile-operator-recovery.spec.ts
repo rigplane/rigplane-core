@@ -435,9 +435,40 @@ test('SCOPE ⋯ sheet: full-width modal with one setting per row and pressable k
       if (!sheetEl || !modal || !backdrop || !strip) {
         throw new Error('sheet, modal, backdrop or tuning strip not found');
       }
-      const lum = (rgb: string): number => {
-        const m = rgb.match(/rgba?\(([^)]+)\)/)?.[1].split(',').map(Number) ?? [0, 0, 0];
-        const [r, g, b] = m.slice(0, 3).map((v) => {
+      // MOR-2987 correction 2: a key paints its background as a
+      // `linear-gradient(...)` in `background-image`, so its own
+      // `backgroundColor` computes to transparent black. The effective
+      // background is the first usable layer: the key's own
+      // `backgroundColor` when its alpha > 0, else the gradient stop
+      // with the LOWEST contrast against the text, else the nearest
+      // ancestor with an opaque `backgroundColor`. Colours may
+      // serialize as `rgb()`/`rgba()` or `color(srgb …)`; anything
+      // else throws instead of silently reading as black.
+      const parseColor = (css: string): [number, number, number, number] => {
+        const s = css.trim();
+        const rgb = s.match(/^rgba?\(([^)]+)\)$/);
+        if (rgb) {
+          const [r, g, b, a] = rgb[1]!.split(',').map(Number);
+          const alpha = a === undefined ? 1 : a;
+          if ([r, g, b, alpha].some((v) => v === undefined || Number.isNaN(v!))) {
+            throw new Error(`unparseable colour: ${css}`);
+          }
+          return [r!, g!, b!, alpha!];
+        }
+        const srgb = s.match(/^color\(\s*srgb\s+([^)]+)\)$/);
+        if (srgb) {
+          const [channels, alpha] = srgb[1]!.split('/').map((part) => part.trim());
+          const [r, g, b] = channels!.split(/\s+/).map(Number);
+          const a = alpha === undefined || alpha === '' ? 1 : Number(alpha);
+          if ([r, g, b, a].some((v) => v === undefined || Number.isNaN(v!))) {
+            throw new Error(`unparseable colour: ${css}`);
+          }
+          return [r! * 255, g! * 255, b! * 255, a!];
+        }
+        throw new Error(`unparseable colour: ${css}`);
+      };
+      const lum = (css: string): number => {
+        const [r, g, b] = parseColor(css).slice(0, 3).map((v) => {
           const s = v / 255;
           return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
         });
@@ -447,11 +478,29 @@ test('SCOPE ⋯ sheet: full-width modal with one setting per row and pressable k
         const [hi, lo] = [lum(fg), lum(bg)].sort((a, b) => b - a);
         return (hi! + 0.05) / (lo! + 0.05);
       };
+      const effectiveBackground = (el: HTMLElement, fg: string): string => {
+        const style = getComputedStyle(el);
+        if (parseColor(style.backgroundColor)[3]! > 0) return style.backgroundColor;
+        const stops = style.backgroundImage.match(/rgba?\([^)]+\)|color\(\s*srgb\s+[^)]+\)/g) ?? [];
+        if (stops.length > 0) {
+          return stops.reduce((worst, stop) =>
+            (contrast(fg, stop) < contrast(fg, worst) ? stop : worst));
+        }
+        let ancestor = el.parentElement;
+        while (ancestor) {
+          const bg = getComputedStyle(ancestor).backgroundColor;
+          if (parseColor(bg)[3]! > 0) return bg;
+          ancestor = ancestor.parentElement;
+        }
+        throw new Error('no opaque background found for a sheet key');
+      };
       const rows = [...sheetEl.querySelectorAll<HTMLElement>('.scope-sheet-row')].map((row) => {
         const label = row.querySelector<HTMLElement>('.scope-sheet-label');
         const keys = [...row.querySelectorAll<HTMLElement>('button')].map((el) => {
           const rect = el.getBoundingClientRect();
           const style = getComputedStyle(el);
+          const fg = style.color;
+          const bg = effectiveBackground(el, fg);
           return {
             testid: el.getAttribute('data-testid') ?? el.getAttribute('aria-label') ?? '',
             top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right,
@@ -461,7 +510,10 @@ test('SCOPE ⋯ sheet: full-width modal with one setting per row and pressable k
             color: el.getAttribute('data-indicator-color'),
             border: parseFloat(style.borderTopWidth),
             role: el.getAttribute('role'), checked: el.getAttribute('aria-checked'),
-            contrast: contrast(style.color, style.backgroundColor),
+            fg, bg,
+            disabled: (el as HTMLButtonElement).disabled === true,
+            ariaDisabled: el.getAttribute('aria-disabled'),
+            contrast: contrast(fg, bg),
           };
         });
         return {
@@ -501,6 +553,9 @@ test('SCOPE ⋯ sheet: full-width modal with one setting per row and pressable k
       'scope-mode', 'scope-centerType', 'scope-rbw', 'scope-speed',
       'scope-duringTx-row', 'scope-vbwNarrow-row',
     ]);
+    // Inactive controls are exempt from the contrast floor; every skipped
+    // key must really be disabled (pinned by the single assertion below).
+    const skipped: string[] = [];
     for (const row of audit.rows) {
       const name = `${stage} ${row.testid}`;
       expect(row.label.length, `${name} labelled`).toBeGreaterThan(0);
@@ -518,10 +573,18 @@ test('SCOPE ⋯ sheet: full-width modal with one setting per row and pressable k
         expect.soft(key.surface, `${keyName} hardware outline`).toBe('hardware');
         expect.soft(key.border, `${keyName} visible border`).toBeGreaterThan(0);
         if (key.active !== 'true') {
-          expect.soft(key.contrast, `${keyName} unselected contrast`).toBeGreaterThanOrEqual(4.5);
+          if (key.disabled || key.ariaDisabled === 'true') {
+            skipped.push(key.testid);
+            continue;
+          }
+          expect.soft(key.contrast, `${keyName} unselected contrast (fg ${key.fg} on ${key.bg})`)
+            .toBeGreaterThanOrEqual(4.5);
         }
       }
     }
+    const skippedKeys = audit.rows.flatMap((r) => r.keys).filter((k) => skipped.includes(k.testid));
+    expect(skippedKeys.every((k) => k.disabled || k.ariaDisabled === 'true'),
+      `${stage}: every skipped key is really disabled`).toBe(true);
     // The All-modes grammar: selected keys lit cyan; toggles show their state.
     const byId = (id: string) => audit.rows.flatMap((r) => r.keys).find((k) => k.testid === id)!;
     expect(byId('scope-mode-0').active, `${stage}: CTR lit`).toBe('true');
