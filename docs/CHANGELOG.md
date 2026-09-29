@@ -77,6 +77,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already do. RF power shows its target once the server admits the
   command, as on the Standard face.
 
+- **The tone squelch type is read through the profile's code table
+  (MOR-2955).** A profile can carry a `[tone_squelch_types]` table
+  mapping each selector code to a neutral type, and the only profile
+  given one is the IC-705's: its CI-V guide's `16 5D` selector now
+  reads as OFF, TONE, TSQL, DTCS or one of the four cross modes. The
+  state gains `tone_squelch_type`, a string under each receiver's
+  `operator_controls`, and the web payload carries `toneSquelchType`
+  for MAIN and SUB with its field status. Selector codes 03 (DTCS)
+  and 06-09 (the cross modes) used to read as unknown on both
+  `repeater_tone` and `repeater_tsql`; the booleans are now derived
+  from the type and stay unknown only where the type cannot express
+  them.
+
+- **`web`, `serve` and `station` take `--listen` for the address the
+  server binds (MOR-2954).** The defaults are unchanged: 0.0.0.0 on
+  all three, and `station` keeps its managed 127.0.0.1 default.
+
 ### Changed
 
 - **The phone portrait layout drops the VFO / RX-TX deck and scrolls
@@ -106,6 +123,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dispatch at once on the filter surface, the panel keeps its 50 ms
   debounce for keyboard and reset, and Filter Width keeps its
   immediate dispatch.
+
+### Deprecated
+
+- **On `web`, `serve` and `station`, `--host` becomes a deprecated
+  alias for `--listen` (MOR-2954).** It prints one warning to stderr,
+  `Warning: --host is deprecated, use --listen instead`, and its value
+  still sets the bind address when `--listen` is absent. When both are
+  given, `--listen` wins in either order, and the warning adds
+  `(both given; --listen wins)`. The global `--host` — the radio's
+  address — and every other subcommand are unchanged.
 
 ### Fixed
 
