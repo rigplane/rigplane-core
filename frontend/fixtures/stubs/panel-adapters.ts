@@ -201,6 +201,18 @@ export function getDataModeArmed(): { armed: false; value: null } {
   return { armed: false, value: null };
 }
 
+export function getModeArmed(): { armed: false; value: null } {
+  return { armed: false, value: null };
+}
+
+export function getAgcArmed(): { armed: false; value: null } {
+  return { armed: false, value: null };
+}
+
+export function getAttenuatorArmed(): { armed: false; value: null } {
+  return { armed: false, value: null };
+}
+
 export function getModInputArmed(): { armed: false; value: null } {
   return { armed: false, value: null };
 }
