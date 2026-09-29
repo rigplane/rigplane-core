@@ -508,18 +508,33 @@
                 {#each MORE_TOGGLES as [field, label] (field)}
                   {#if sc[field].availability.structural}
                     {@const sheetToggle = toggleInstrument(field)}
+                    <!-- MOR-2987 round 2 (owner delegation 2026-09-03, option
+                         A): a toggle row is the same shape as MODE/CENTRE/RBW
+                         — the row label plus an Off/On pair, the confirmed
+                         option lit. Each key calls the toggle's own bare-flip
+                         `invoke()` only when it does NOT already match the
+                         confirmed value, so the already-selected option is a
+                         no-op like a physical two-position selector; no new
+                         command or state. -->
                     <div class="scope-sheet-row" data-testid={`scope-${field}-row`}>
                       <span class="scope-sheet-label">{label}</span>
-                      <div class="scope-sheet-options">
+                      <div class="scope-sheet-options" role="radiogroup" aria-label={label}>
+                        <HardwareButton
+                          active={sheetToggle.confirmed === false}
+                          disabled={!sheetToggle.available}
+                          indicator="edge-left" color="cyan" role="radio"
+                          ariaChecked={sheetToggle.confirmed === undefined ? undefined : sheetToggle.confirmed === false}
+                          data={{ testid: `scope-${field}-off` }}
+                          onclick={() => { if (sheetToggle.confirmed !== false) sheetToggle.invoke(); }}
+                        >{t('core.spectrum.toggleOff')}</HardwareButton>
                         <HardwareButton
                           active={sheetToggle.confirmed === true}
                           disabled={!sheetToggle.available}
-                          indicator="edge-left" color="cyan"
-                          role={sheetToggle.confirmed === undefined ? undefined : 'switch'}
-                          ariaChecked={sheetToggle.confirmed === undefined ? undefined : sheetToggle.confirmed}
-                          data={{ testid: `scope-${field}` }}
-                          onclick={() => sheetToggle.invoke()}
-                        >{label}</HardwareButton>
+                          indicator="edge-left" color="cyan" role="radio"
+                          ariaChecked={sheetToggle.confirmed === undefined ? undefined : sheetToggle.confirmed === true}
+                          data={{ testid: `scope-${field}-on` }}
+                          onclick={() => { if (sheetToggle.confirmed !== true) sheetToggle.invoke(); }}
+                        >{t('core.spectrum.toggleOn')}</HardwareButton>
                       </div>
                     </div>
                   {/if}

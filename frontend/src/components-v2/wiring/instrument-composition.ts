@@ -100,7 +100,9 @@ export interface InstrumentComposition {
   readonly memory: Snippet<[allowBare?: boolean, chrome?: PanelChrome]>;
   readonly repeater?: Snippet<[allowBare?: boolean, chrome?: PanelChrome]>;
   readonly scopeDisplay: Snippet<[allowBare?: boolean]>;
-  readonly scopeControls: Snippet<[allowBare?: boolean]>;
+  readonly scopeControls: Snippet<[
+    allowBare?: boolean, screenGroup?: Snippet, rowTail?: Snippet, moreAsSheet?: boolean,
+  ]>;
   readonly txFaultRecovery: Snippet;
   readonly modInputTxWarning: Snippet;
   readonly managedScope: ManagedScopeRegion | undefined;

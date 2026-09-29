@@ -342,5 +342,7 @@
   "core.rxTx.blocked.busy": "TX セッションがすでに進行中です",
   "core.rxTx.blocked.radioTransmitting": "無線機はすでに送信中です",
   "core.rxTx.blocked.rfStateUnknown": "無線機の RF 状態はまだ確認されていません",
-  "core.spectrum.more": "その他"
+  "core.spectrum.more": "その他",
+  "core.spectrum.toggleOff": "切",
+  "core.spectrum.toggleOn": "入"
 }
