@@ -564,7 +564,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serial port did not open" and offers no Power ON button in it. Once
   the port opens and the radio stays silent, the overlay becomes the
   not-answering one — "Radio does not answer — it may be switched
-  off" — which offers the Power ON button.
+  off".
 
 - **A DUP−/DUP+ readback no longer reads as split ON (MOR-2929).** The
   CI-V split command 0F answers 00 for split OFF, 01 for split ON, 11
