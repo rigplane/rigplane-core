@@ -3229,8 +3229,7 @@ class RadioPoller:
             case SetDigiselShift(level=level, receiver=rx):
                 self._refuse_unsupported_receiver(rx, operation="set_digisel_shift")
                 # Distinct capability from CAP_DIGISEL (0x16/0x4E toggle):
-                # DIGI-SEL Shift is 0x14/0x13 and IC-705 exposes it without
-                # the toggle (MOR-1544).
+                # DIGI-SEL Shift is 0x14/0x13 (MOR-1544).
                 if CAP_DIGISEL_SHIFT in self._caps:
                     await radio.set_digisel_shift(level, receiver=rx)
             case SetRefAdjust(value=value):

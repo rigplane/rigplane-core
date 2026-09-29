@@ -118,11 +118,10 @@ _OBSERVATION_MAX_AGE_SECONDS: dict[tuple[str, str, str], float] = {
     # MOR-2234 follow-up: declaring these observable in ``rigs/ic7300.toml``
     # left them with no entry here, so ``_observation`` gave them
     # ``max_age=None`` and ``state_store.py: StateStore.mark_stale_due``
-    # never aged them. IC-7300 no longer reaches these two rows — it declares
-    # a field policy for both — but ``rigs/ic705.toml`` and
-    # ``rigs/ic9700.toml`` bind ``get_tone_freq``/``get_tsql_freq`` with no
-    # ``field_policies`` table at all, and still do. Pinned by
-    # ``test_tone_and_tsql_freq_observations_fall_back_to_the_table``.
+    # never aged them. IC-7300 and IC-705 no longer reach these two rows —
+    # each declares a field policy for both — but ``rigs/ic9700.toml`` binds
+    # ``get_tone_freq``/``get_tsql_freq`` with no field policy for either.
+    # Pinned by ``test_tone_and_tsql_freq_observations_fall_back_to_the_table``.
     ("receiver", "operator_controls", "tone_freq"): 25.0,
     ("receiver", "operator_controls", "tsql_freq"): 25.0,
     ("global", "slow_state", "active"): 5.0,
@@ -2889,10 +2888,12 @@ class CivRuntime:
                     )
                 )
         elif frame.command == 0x0F and frame.data:
+            # 0F reads 00 = split OFF, 01 = split ON, 11 = DUP−, 12 = DUP+
+            # (IC-705 CI-V Reference Guide p.3): only 01 is split ON (MOR-2929).
             observations.append(
                 self._observation(
                     FieldPath.global_("tx_state", "split"),
-                    bool(frame.data[0]),
+                    frame.data[0] == 0x01,
                     frame=frame,
                 )
             )

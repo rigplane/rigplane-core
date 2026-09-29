@@ -422,6 +422,35 @@ class TestCapabilitiesEndpoint:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [
+            ("IC-7300", True),
+            ("X6200", False),
+        ],
+    )
+    async def test_capabilities_power_on_command_matches_profile(
+        self, model: str, expected: bool
+    ):
+        """powerOnCommand pins the profile's power_on declaration (MOR-2841):
+        present and equal to supports_command("power_on") — the fact that
+        gates the power-off overlay's Power ON action. The MOR-2901
+        profile-less rewrite must not drop it from the profile-present
+        path (MOR-2901 correction)."""
+        from rigplane.profiles import resolve_radio_profile
+
+        profile = resolve_radio_profile(model=model)
+        assert profile.supports_command("power_on") is expected
+        radio = _make_radio(model)
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+
+        await srv._serve_capabilities(writer)  # noqa: SLF001
+
+        data = _parse_json_body(writer)
+        assert data["powerOnCommand"] is expected
+
+    @pytest.mark.asyncio
     async def test_capabilities_reports_hardware_and_audio_scope_independently(self):
         """Audio FFT availability is not inferred from hardware scope support."""
         hardware_radio = _make_radio("IC-7610")

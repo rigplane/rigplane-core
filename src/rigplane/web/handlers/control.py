@@ -2767,8 +2767,7 @@ class ControlHandler:
                 level = int(params["level"])
                 rx = int(params.get("receiver", 0))
                 # Distinct from "digisel" (0x16/0x4E toggle): DIGI-SEL Shift
-                # is 0x14/0x13 and some profiles (IC-705) expose it without
-                # the toggle (MOR-1544).
+                # is 0x14/0x13 (MOR-1544).
                 self._ensure_capability("digisel_shift", "set_digisel_shift")
                 _refuse_unsupported_receiver(
                     self._radio, rx, operation="set_digisel_shift"

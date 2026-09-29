@@ -128,7 +128,12 @@ def _validate_managed_tx(server: WebServer) -> ManagedTxCompositionPort | None:
         raise RuntimeError("managed TX composition is not attached to Web")
     if attached is not installed:
         raise RuntimeError("managed TX composition identity mismatch")
-    attached.validate_state_store(server.command_state_store)
+    if _serial_port_unopened(server):
+        attached.validate_state_store(
+            server.command_state_store, transport_pending=True
+        )
+    else:
+        attached.validate_state_store(server.command_state_store)
     return cast("ManagedTxCompositionPort", attached)
 
 
@@ -275,6 +280,35 @@ def _serve_with_silent_link(server: WebServer) -> None:
     )
 
 
+def _serial_port_unopened(server: WebServer) -> bool:
+    """Whether the radio is retrying a serial port it could not open (MOR-2876).
+
+    The Icom serial backend records its latest failed port open in
+    ``last_error`` and clears it when an open succeeds; ``reconnecting`` is
+    the state its recovery loop retries from.
+    """
+
+    radio = server._radio
+    conn_state = getattr(radio, "conn_state", None)
+    value = getattr(conn_state, "value", conn_state)
+    return value == "reconnecting" and isinstance(
+        getattr(radio, "last_error", None), str
+    )
+
+
+def _serve_without_port(server: WebServer) -> None:
+    """Serve while the radio's serial port cannot be opened (MOR-2876)."""
+
+    server._served_without_port = True
+    logger.warning(
+        "startup gate: the radio is not connected (%s); serving in a "
+        "radio-not-connected state — check the USB cable. The port is "
+        "retried in the background; transmit is refused while no radio is "
+        "connected.",
+        getattr(server._radio, "last_error", None),
+    )
+
+
 def _startup_path_command(server: WebServer, path: FieldPath) -> str:
     """Return the CI-V wire form the radio would read *path* with.
 
@@ -377,6 +411,9 @@ async def _await_initial_state_acquisition(
     Before that decision there was no serve-anyway timeout: every declared,
     non-``tx_only`` path held the listener open forever.
 
+    A server that started while the radio's serial port could not be opened
+    (MOR-2876, ``_serve_without_port``) does not wait at all.
+
     ``sweep`` re-primes the scheduler while the gate is open. It is set only
     on the branch that builds a :class:`RadioPoller`, because that is the
     only web branch carrying an ``AcquisitionDrain`` to execute a primed
@@ -393,7 +430,7 @@ async def _await_initial_state_acquisition(
     ``test_never_answered_path_is_reprimed_once_per_reprime_interval``.
     """
 
-    if not server._config.await_initial_state:
+    if not server._config.await_initial_state or server._served_without_port:
         return
     scheduler = _acquisition_scheduler(server)
     if scheduler is None:
@@ -541,7 +578,10 @@ async def _start_web_server(
             key_path=server._config.tls_key or None,
         )
 
-    assert_radio_startup_ready(server._radio, component="web startup")
+    if _serial_port_unopened(server):
+        _serve_without_port(server)
+    else:
+        assert_radio_startup_ready(server._radio, component="web startup")
 
     managed_tx_authority = None if managed_tx is None else managed_tx.authority
     if managed_tx_authority is not None:
