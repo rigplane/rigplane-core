@@ -263,6 +263,19 @@ class _IcomSerialRadioBase(CoreRadio):
         # mark from the outgoing transport — see
         # ``_civ_watchdog_rebaseline``.
         self._civ_watchdog_last_transport: object | None = None
+        # MOR-2841: durable record that the link-down detector has fired at
+        # least once. The RECONNECTING state it announces is transient — the
+        # watchdog's soft_reconnect can reopen a present-but-silent port
+        # within seconds and return to CONNECTED (stand evidence,
+        # 2026-09-28) — while the fact that the radio answered nothing
+        # survives for the web startup gate to read.
+        self._civ_link_down_ever_declared = False
+        # MOR-2876: text of the latest failed port open; None once an open
+        # succeeds.
+        self.last_error: str | None = None
+        # MOR-2876: set once a port open succeeds; no sibling-port search
+        # before that (``_maybe_rediscover_serial_device``).
+        self._has_connected_once = False
 
     # ------------------------------------------------------------------
     # Backend identity
@@ -374,9 +387,12 @@ class _IcomSerialRadioBase(CoreRadio):
             self._conn_state = RadioConnectionState.DISCONNECTED
             self._civ_stream_ready = False
             self._civ_recovering = False
-            raise ConnectionError(
+            self.last_error = (
                 f"Failed to connect serial session on {self._serial_device}: {exc}"
-            ) from exc
+            )
+            raise ConnectionError(self.last_error) from exc
+        self.last_error = None
+        self._has_connected_once = True
 
         self._ctrl_transport = self._serial_session.control_transport  # type: ignore[assignment]
         self._civ_transport = self._serial_session.civ_transport  # type: ignore[assignment]
@@ -455,9 +471,12 @@ class _IcomSerialRadioBase(CoreRadio):
             self._conn_state = RadioConnectionState.RECONNECTING
             self._civ_stream_ready = False
             self._civ_recovering = True
-            raise ConnectionError(
+            self.last_error = (
                 f"Failed to reconnect serial session on {self._serial_device}: {exc}"
-            ) from exc
+            )
+            raise ConnectionError(self.last_error) from exc
+        self.last_error = None
+        self._has_connected_once = True
 
         self._ctrl_transport = self._serial_session.control_transport  # type: ignore[assignment]
         self._civ_transport = self._serial_session.civ_transport  # type: ignore[assignment]
@@ -492,6 +511,20 @@ class _IcomSerialRadioBase(CoreRadio):
                     "serial soft_reconnect: _on_reconnect callback failed",
                     exc_info=True,
                 )
+
+    def start_reconnect_recovery(self) -> None:
+        """Keep retrying the port after :meth:`connect` failed to open it.
+
+        Enters the state the serial watchdog recovers from — ``RECONNECTING``
+        with the watchdog running — so its ``soft_reconnect`` retries the
+        port with the existing backoff; :meth:`disconnect` stops it.
+        ``connect`` never starts this itself; the web/station session in
+        ``cli: _ManagedTxRadioSession`` does (MOR-2876).
+        """
+        self._conn_state = RadioConnectionState.RECONNECTING
+        self._civ_stream_ready = False
+        self._civ_recovering = True
+        self._start_civ_data_watchdog()
 
     # ------------------------------------------------------------------
     # Renumbered-node rediscovery (MOR-1453)
@@ -534,7 +567,8 @@ class _IcomSerialRadioBase(CoreRadio):
         macOS encodes the physical USB port in the device path
         (``/dev/cu.usbserial-1420``), so a replug renames the node and
         leaves ``soft_reconnect`` retrying a vanished path forever
-        (follow-up from MOR-1440). No-op while the configured path exists.
+        (follow-up from MOR-1440). No-op while the configured path exists,
+        and before the first successful port open (MOR-2876).
 
         Identity model (review round 2 design ruling): a CI-V address
         probe as *primary* signal was rejected -- a different radio can
@@ -564,6 +598,10 @@ class _IcomSerialRadioBase(CoreRadio):
           -- silent by design, matching initial discovery's own filter.
         """
         if os.path.exists(self._serial_device):
+            return
+        if not self._has_connected_once:
+            # No identity was ever captured to match, and FALLBACK would
+            # probe other enumerated ports matching the glob.
             return
         try:
             enumerated = self._enumerate_serial_ports_fn()
@@ -1270,6 +1308,7 @@ class _IcomSerialRadioBase(CoreRadio):
             self._civ_link_down_note,
         )
         self._conn_state = RadioConnectionState.RECONNECTING
+        self._civ_link_down_ever_declared = True
         self._civ_stream_ready = False
         self._civ_recovering = True
         self._civ_consecutive_timeouts = 0

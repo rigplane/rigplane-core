@@ -24,6 +24,9 @@ jobs:
         python-version: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v6
+        with:
+          # The test suite's monotonic comparison needs the parent commit; quick.yml and full.yml check out the same depth.
+          fetch-depth: 2
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0

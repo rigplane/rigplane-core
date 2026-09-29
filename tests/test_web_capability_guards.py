@@ -422,6 +422,35 @@ class TestCapabilitiesEndpoint:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [
+            ("IC-7300", True),
+            ("X6200", False),
+        ],
+    )
+    async def test_capabilities_power_on_command_matches_profile(
+        self, model: str, expected: bool
+    ):
+        """powerOnCommand pins the profile's power_on declaration (MOR-2841):
+        present and equal to supports_command("power_on") — the fact that
+        gates the power-off overlay's Power ON action. The MOR-2901
+        profile-less rewrite must not drop it from the profile-present
+        path (MOR-2901 correction)."""
+        from rigplane.profiles import resolve_radio_profile
+
+        profile = resolve_radio_profile(model=model)
+        assert profile.supports_command("power_on") is expected
+        radio = _make_radio(model)
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+
+        await srv._serve_capabilities(writer)  # noqa: SLF001
+
+        data = _parse_json_body(writer)
+        assert data["powerOnCommand"] is expected
+
+    @pytest.mark.asyncio
     async def test_capabilities_reports_hardware_and_audio_scope_independently(self):
         """Audio FFT availability is not inferred from hardware scope support."""
         hardware_radio = _make_radio("IC-7610")
@@ -1084,7 +1113,7 @@ class TestReceiverDeclaredControlTags:
                 },
             ),
             ("ic9700", {"attenuator_main", "preamp_main"}),
-            ("ic705", {"attenuator_main", "preamp_main"}),
+            ("ic705", {"attenuator_main", "preamp_main", "manual_notch_width"}),
             ("ftx1", {"attenuator_main", "preamp_main"}),
             ("tx500", set()),
             ("x6100", set()),
@@ -1121,13 +1150,13 @@ class TestReceiverDeclaredControlTags:
     def test_width_values_and_commands_alone_do_not_project_the_notch_width_tag(
         self,
     ):
-        """MOR-2726: IC-9700 and IC-705 declare ``set_manual_notch_width``
-        and ``[notch] width_values`` without declaring the polled field."""
+        """MOR-2726: IC-9700 declares ``set_manual_notch_width`` and
+        ``[notch] width_values`` without declaring the polled field."""
         from rigplane.rig_loader import load_rig
         from rigplane.runtime.radio import CoreRadio
         from rigplane.web.runtime_helpers import projected_receiver_control_tags
 
-        for rig in ("ic9700", "ic705"):
+        for rig in ("ic9700",):
             config = load_rig(_RIGS_DIR / f"{rig}.toml")
             radio = CoreRadio("127.0.0.1", profile=config.to_profile())
             assert radio.profile.supports_command("set_manual_notch_width")

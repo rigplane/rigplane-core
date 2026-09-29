@@ -1231,9 +1231,249 @@ describe('persistent RF front-end composition across a real Standard->SDR plan s
     expect(externalAttenuator()!.dataset.reading).toBe(beforeReading);
 
     // (iv) Only now: the stale pre-switch invocation is DETACHED — its named
-    // Standard seat was torn down when the layout moved to the grouped
-    // surface.
+    //      Standard seat was torn down when the layout moved to the grouped
+    //      surface.
     staleStandardAttenuator!(18);
     expect(h.att).toHaveBeenCalledTimes(1);
+  });
+});
+
+/* ── MOR-1693: mounted semantic↔SDR parity for the combined RF/SQL knob ──
+ *
+ * The acceptance line the owner's 2026-09-27 status check called out as not
+ * re-verified: mounted parity tests comparing the SEMANTIC presentation
+ * (`desktop-v2`'s Standard seat, the `hardware-illuminated` fader variant)
+ * and the SDR presentation (`sdr-test`'s grouped surface, the `modern`
+ * variant) of the SAME host-owned combined RF/SQL knob — for pointer, touch,
+ * keyboard, accessibility, and exact intent values. Both faces mount the one
+ * `RfFrontEndInstrumentHost` pair (the MOR-2425 RF-B witness above pins that
+ * identity); these tests pin that the two PRESENTATIONS of that one owner
+ * behave identically for every input modality, and that the SDR face — the
+ * MOR-1447 reference presentation — carries the exact already-pinned raw
+ * intents and the gesture-local draft feedback. */
+
+describe('MOR-1693: the combined RF/SQL knob behaves identically on the semantic (desktop-v2) and SDR (sdr-test) faces', () => {
+  /** The radio store is revision-monotonic: re-delivering a centered
+   *  snapshot at the same (or an older) revision reads as stale and
+   *  `setRadioState` refuses it. Reset both stores first so every mount —
+   *  including the second face in the parity test — starts from the
+   *  identical epoch, mirroring `beforeEach`. */
+  function resetStoresForFace(): void {
+    resetRadioState();
+    clearCapabilities();
+  }
+
+  /** Knob "at rest": RF max, SQL min — the center invariant, so every drag
+   *  below starts from the already-pinned canonical position. */
+  const centeredState = (): ServerState => {
+    const state = liveState(true);
+    (state as unknown as { main: { rfGain: number; squelch: number } }).main.rfGain = 1;
+    (state as unknown as { main: { rfGain: number; squelch: number } }).main.squelch = 0;
+    return state as ServerState;
+  };
+
+  const group = () => el('rf-sql')!;
+  const slider = () => group().querySelector<HTMLElement>('[role="slider"]')!;
+  const laneText = (lane: 'rf' | 'sql') =>
+    group().querySelector(`[data-testid="rf-front-end-rf-sql-${lane}-value"]`)!.textContent;
+
+  /** Everything the acceptance line names, off the ACTUAL interactive
+   *  element: pending target (`data-*-target`/`data-*-requested`), phase,
+   *  ARIA exposure, displayed lane values, and the thumb position. */
+  const snap = () => {
+    const s = slider();
+    return {
+      integration: group().dataset.feedbackIntegration ?? null,
+      groupPhase: { rf: group().dataset.rfCommandPhase ?? null, sql: group().dataset.sqlCommandPhase ?? null },
+      sliderPhase: { rf: s.dataset.rfCommandPhase ?? null, sql: s.dataset.sqlCommandPhase ?? null },
+      targets: { rf: s.dataset.rfTarget ?? null, sql: s.dataset.sqlTarget ?? null },
+      requested: { rf: s.dataset.rfRequested ?? null, sql: s.dataset.sqlRequested ?? null },
+      aria: {
+        role: s.getAttribute('role'),
+        label: s.getAttribute('aria-label'),
+        min: s.getAttribute('aria-valuemin'),
+        max: s.getAttribute('aria-valuemax'),
+        now: s.getAttribute('aria-valuenow'),
+        text: s.getAttribute('aria-valuetext'),
+        busy: s.getAttribute('aria-busy'),
+        disabled: s.getAttribute('aria-disabled'),
+      },
+      values: { rf: laneText('rf'), sql: laneText('sql') },
+      thumb: level('rf-sql').value(),
+    };
+  };
+
+  /** Exact intents only — command ids are generated per dispatch. Scoped to
+   *  the knob's own intents: the scenario's synthetic ArrowLeft/ArrowRight
+   *  also resolve as the GLOBAL tune shortcut, and the singleton tuning
+   *  accumulator emits that first leaked step synchronously — order noise
+   *  from face chrome, not knob behavior, so the full stream would compare
+   *  unequal across faces for reasons outside this ticket. */
+  const KNOB_INTENTS = new Set(['set_rf_gain', 'set_squelch']);
+  const commandsSince = (mark: number) => h.sentCommands.slice(mark)
+    .filter(({ name }) => KNOB_INTENTS.has(name))
+    .map(({ name, params, originalEpoch }) => ({ name, params, originalEpoch }));
+
+  const pointer = (type: 'pointerdown' | 'pointermove' | 'pointerup', x: number,
+    pointerType: 'mouse' | 'touch', pointerId: number) =>
+    new PointerEvent(type, { bubbles: true, clientX: x * 100, pointerId, pointerType });
+
+  function armSlider(): void {
+    const driver = level('rf-sql');
+    driver.frame.getBoundingClientRect = () => ({ left: 0, width: 100 } as DOMRect);
+    Object.assign(driver.slider, {
+      setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn(),
+    });
+  }
+
+  const step = (event: Event) => {
+    slider().dispatchEvent(event);
+    flushSync();
+  };
+
+  /** Mounts one face and drives the whole modality scenario. Returns the
+   *  per-step observation; leaves the tree unmounted and the command
+   *  lifecycle reset so the other face starts from the identical state. */
+  function observeFace(skinId: 'desktop-v2' | 'sdr-test'): Record<string, unknown> {
+    h.caps = liveCaps(true, 'combined');
+    h.state = centeredState();
+    resetStoresForFace();
+    acceptedState = acceptedStoreState(h.state as ServerState);
+    expect(setCapabilities(h.caps as Capabilities)).toBe(true);
+    expect(setRadioState(acceptedState)).toBe(true);
+    renderHostedFace(skinId);
+    const obs: Record<string, unknown> = { baseline: snap() };
+
+    // Pointer (mouse) drag: down on the left leg, sweep to hard left, sweep
+    // across center onto the right leg, release. Bounded by construction:
+    // each step dispatches at most one command per CHANGED lane.
+    let mark = h.sentCommands.length;
+    armSlider();
+    step(pointer('pointerdown', 0.23, 'mouse', 1));
+    obs.pointerDownLeftLeg = { snap: snap(), commands: commandsSince(mark) };
+    mark = h.sentCommands.length;
+    step(pointer('pointermove', 0, 'mouse', 1));
+    obs.pointerMoveHardLeft = { snap: snap(), commands: commandsSince(mark) };
+    mark = h.sentCommands.length;
+    step(pointer('pointermove', 0.77, 'mouse', 1));
+    obs.pointerMoveRightLeg = { snap: snap(), commands: commandsSince(mark) };
+    mark = h.sentCommands.length;
+    step(pointer('pointerup', 0.77, 'mouse', 1));
+    obs.pointerUp = { snap: snap(), commands: commandsSince(mark) };
+
+    // Pending target rides the interactive element until confirmation.
+    for (const command of h.sentCommands) acknowledgeSent(command);
+    flushSync();
+    obs.awaiting = snap();
+
+    observedMainLevels(h.state as ServerState, { rfGain: 1, squelch: 0.5 }, 7);
+    flushSync();
+    obs.confirmed = snap();
+
+    // Keyboard: one coarse step each way across the right leg.
+    mark = h.sentCommands.length;
+    step(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+    obs.keyboardLeft = { snap: snap(), commands: commandsSince(mark) };
+    mark = h.sentCommands.length;
+    step(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    obs.keyboardRight = { snap: snap(), commands: commandsSince(mark) };
+
+    // Touch: the same gesture path browsers deliver as pointerType 'touch'.
+    mark = h.sentCommands.length;
+    armSlider();
+    step(pointer('pointerdown', 0.23, 'touch', 2));
+    obs.touchDownLeftLeg = { snap: snap(), commands: commandsSince(mark) };
+    mark = h.sentCommands.length;
+    step(pointer('pointerup', 0.23, 'touch', 2));
+    obs.touchUp = { snap: snap(), commands: commandsSince(mark) };
+
+    unmount(component!);
+    component = null;
+    resetCommandLifecycle();
+    h.sentCommands.length = 0;
+    return obs;
+  }
+
+  it('matches pointer, touch, keyboard, accessibility, and exact intent values across the semantic and SDR faces', () => {
+    const semantic = observeFace('desktop-v2');
+    const sdr = observeFace('sdr-test');
+    expect(sdr).toEqual(semantic);
+  });
+
+  it('SDR face pins: the four canonical knob positions dispatch the established raw intents, bounded per step', () => {
+    h.caps = liveCaps(true, 'combined');
+    h.state = centeredState();
+    resetStoresForFace();
+    acceptedState = acceptedStoreState(h.state as ServerState);
+    expect(setCapabilities(h.caps as Capabilities)).toBe(true);
+    expect(setRadioState(acceptedState)).toBe(true);
+    renderHostedFace('sdr-test');
+
+    // Center on already-confirmed center: NEITHER command — the
+    // no-redundant-write pin, on the SDR face.
+    level('rf-sql').input(0.5);
+    flushSync();
+    expect(h.sentCommands).toHaveLength(0);
+
+    // Hard left: RF -> 0 only (SQL already at min).
+    level('rf-sql').input(0);
+    flushSync();
+    expect(commandsSince(0)).toEqual([
+      { name: 'set_rf_gain', params: { level: 0, receiver: 0 }, originalEpoch: 7 },
+    ]);
+
+    // Right leg: both lanes change — RF pinned back to max, SQL to half.
+    level('rf-sql').input(0.77);
+    flushSync();
+    expect(commandsSince(1)).toEqual([
+      { name: 'set_rf_gain', params: { level: 255, receiver: 0 }, originalEpoch: 7 },
+      { name: 'set_squelch', params: { level: 128, receiver: 0 }, originalEpoch: 7 },
+    ]);
+
+    // Back onto the left leg: RF changes, and the still-pending SQL target
+    // (0.5 from the right-leg stop) returns to min — both lanes dispatch.
+    level('rf-sql').input(0.23);
+    flushSync();
+    expect(commandsSince(3)).toEqual([
+      { name: 'set_rf_gain', params: { level: 128, receiver: 0 }, originalEpoch: 7 },
+      { name: 'set_squelch', params: { level: 0, receiver: 0 }, originalEpoch: 7 },
+    ]);
+    expect(h.sentCommands).toHaveLength(5);
+  });
+
+  it('SDR face pins: thumb and values follow the gesture-local draft immediately, pending target on the element', () => {
+    h.caps = liveCaps(true, 'combined');
+    h.state = centeredState();
+    resetStoresForFace();
+    acceptedState = acceptedStoreState(h.state as ServerState);
+    expect(setCapabilities(h.caps as Capabilities)).toBe(true);
+    expect(setRadioState(acceptedState)).toBe(true);
+    renderHostedFace('sdr-test');
+
+    // Pre-gesture: confirmed center, nothing pending.
+    expect(snap()).toMatchObject({
+      integration: 'command-feedback',
+      groupPhase: { rf: 'idle', sql: 'idle' },
+      values: { rf: '100%', sql: '0%' },
+      thumb: 0.5,
+      aria: { now: '50', text: 'RF 100%, squelch 0%', busy: 'false', disabled: 'false' },
+    });
+
+    // One gesture, before ANY readback: the thumb and both displayed values
+    // already sit at the gesture-local draft; the pending target and busy
+    // phase ride the interactive element itself.
+    level('rf-sql').input(0.23);
+    flushSync();
+    expect(snap()).toMatchObject({
+      groupPhase: { rf: 'submitted', sql: 'idle' },
+      // 128 is the dispatched raw level for the 0.23 leg stop (pinned by the
+      // canonical-position test above); the lane target is the descriptor's
+      // normalized level/255, and the untouched SQL lane renders ''.
+      targets: { rf: String(128 / 255), sql: '' },
+      values: { rf: '50%', sql: '0%' },
+      thumb: 0.23,
+      aria: { text: 'RF 50%, squelch 0%', busy: 'true', disabled: 'false' },
+    });
+    expect(h.sentCommands).toHaveLength(1);
   });
 });

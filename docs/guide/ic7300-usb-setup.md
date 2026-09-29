@@ -11,34 +11,31 @@ This guide shows how to control the IC-7300 via **USB serial CI-V + USB audio de
 - **No network required** — direct USB connection
 - **Lower latency** — no UDP/network overhead
 - **Simpler setup** — no IP config, username, or password
-- **Field operation** — works with battery-powered USB (e.g., Powerex)
 - **Alternative to LAN** — for users without Ethernet/WiFi on IC-7300
 
 ## Hardware Requirements
 
 - IC-7300 transceiver (HF/50 MHz)
-- Micro-USB cable (IC-7300 uses Micro-USB)
+- USB cable with a Type-B plug (the IC-7300 `[USB]` port is Type B)
 - macOS computer (tested on Ventura+ arm64/Intel)
 
 ## Radio Configuration
 
 !!! danger "Critical Setup Step"
-    On the IC-7300, navigate to **Menu → Set → Connectors → CI-V → CI-V USB Port** and set it to **`Link to [CI-V]`**, **NOT** `[REMOTE]`.
+    On the IC-7300, navigate to **Menu → Set → Connectors → CI-V → CI-V USB Port** and set it to **`Unlink from [REMOTE]`** (the radio's default), **NOT** `Link to [REMOTE]`.
 
-    - `Link to [CI-V]` — serial CI-V commands work (required for rigplane serial backend)
-    - `[REMOTE]` — RS-BA1 mode, serial CI-V is blocked
+    - `Unlink from [REMOTE]` — the `[USB]` and `[REMOTE]` CI-V ports work independently; the CI-V USB Baud Rate setting applies only in this mode
+    - `Link to [REMOTE]` — the `[USB]` and `[REMOTE]` CI-V ports are connected internally
 
-    This is the same critical setting as IC-7610 and IC-705.
+    The IC-7610 has the same setting.
 
 ### Recommended Radio Settings
 
 | Setting | Value | Why |
 |---------|-------|-----|
-| **CI-V USB Port** | `Link to [CI-V]` | ✅ Required — enables serial CI-V |
+| **CI-V USB Port** | `Unlink from [REMOTE]` | ✅ Required — the USB baud rate setting applies only in this mode |
 | **CI-V USB Baud Rate** | `115200` | Recommended for scope/waterfall |
 | **CI-V Address** | `0x94` (IC-7300 default) | Library auto-detects from profile |
-| **USB Audio TX** | Enabled | Allows browser/WSJT-X TX via USB audio |
-| **USB Audio RX** | Enabled | Exports RX audio to computer |
 
 !!! note "Baud Rate"
     - `115200` baud is recommended for scope/waterfall capability
@@ -53,7 +50,7 @@ This guide shows how to control the IC-7300 via **USB serial CI-V + USB audio de
 ### 1. Install rigplane
 
 ```bash
-pip install rigplane[serial]
+pip install rigplane
 ```
 
 ### 2. Connect USB and Verify Devices
@@ -68,39 +65,35 @@ ls /dev/cu.usbserial-* | head -5
 Check for audio devices exported by the radio:
 
 ```bash
-python -c "from rigplane.usb_audio_resolve import list_usb_audio_devices; import json; print(json.dumps(list_usb_audio_devices(), indent=2))"
+rigplane --list-audio-devices
 ```
 
-You should see input and output devices for the IC-7300:
-- **Input (RX)**: e.g., `"IC-7300 (In 1)"`
-- **Output (TX)**: e.g., `"IC-7300 (Out 1)"`
+An Icom radio's USB audio device is named `USB Audio CODEC`.
 
 ### 3. Connect via Python
 
 ```python
 import asyncio
-from rigplane import IcomRadio
+from rigplane import SerialBackendConfig, create_radio
 
 async def main():
-    # Create serial radio for IC-7300
-    radio = IcomRadio(backend="serial", model="IC-7300", serial_port="/dev/cu.usbserial-A602RVAV")
+    # Serial radio for IC-7300
+    config = SerialBackendConfig(device="/dev/cu.usbserial-A602RVAV", model="IC-7300")
 
-    async with radio:
+    async with create_radio(config) as radio:
         # Read frequency
-        freq = await radio.get_frequency()
+        freq = await radio.get_freq()
         print(f"Frequency: {freq / 1e6:.6f} MHz")
 
         # Set frequency
-        await radio.set_frequency(7_074_000)
+        await radio.set_freq(7_074_000)
 
         # Read mode
         mode, _ = await radio.get_mode()
         print(f"Mode: {mode}")
 
-        # Enable scope
+        # Enable scope; frames arrive through radio.on_scope_data(callback)
         await radio.enable_scope()
-
-        # Scope data is now available via radio.scope_data
 
 asyncio.run(main())
 ```
@@ -115,14 +108,14 @@ rigplane --backend serial --model IC-7300 --serial-port /dev/cu.usbserial-A602RV
 rigplane --backend serial --model IC-7300 --serial-port /dev/cu.usbserial-A602RVAV freq 7074000
 
 # Monitor metrics
-rigplane --backend serial --model IC-7300 --serial-port /dev/cu.usbserial-A602RVAV meters
+rigplane --backend serial --model IC-7300 --serial-port /dev/cu.usbserial-A602RVAV meter
 ```
 
 ### 5. Web UI
 
 ```bash
-rigplane web --backend serial --model IC-7300 --serial-port /dev/cu.usbserial-A602RVAV
-# Open http://localhost:8000
+rigplane --model IC-7300 --serial-port /dev/cu.usbserial-A602RVAV web
+# Open http://localhost:8080
 ```
 
 ## Supported Features
@@ -141,25 +134,8 @@ rigplane web --backend serial --model IC-7300 --serial-port /dev/cu.usbserial-A6
 
 ## Audio Subsystem
 
-IC-7300 exports USB audio devices that rigplane can use:
-
-```python
-# Receive audio from radio
-async def on_audio(pcm_data: bytes, sample_rate: int):
-    print(f"RX audio: {len(pcm_data)} bytes @ {sample_rate} Hz")
-
-async with radio:
-    radio.start_audio_rx(callback=on_audio)
-    await asyncio.sleep(5)
-    radio.stop_audio_rx()
-
-# Transmit audio to radio
-async with radio:
-    radio.start_audio_tx(sample_rate=16000, channels=1)
-    # Push 160ms of PCM data (2560 bytes @ 16kHz)
-    radio.push_audio(pcm_data)
-    radio.stop_audio_tx()
-```
+IC-7300 exports a USB audio device that rigplane can use. For RX/TX code, see
+[Audio Recipes](audio-recipes.md).
 
 ### WSJT-X Integration
 
@@ -168,7 +144,7 @@ On macOS, bridge rigplane audio to WSJT-X through the RigPlane Virtual Cable
 
 1. Start the audio bridge against the cable ends:
     ```bash
-    rigplane --model IC-7300 audio bridge --device "RigPlane Virtual Cable Output" --tx-device "RigPlane Virtual Cable Input"
+    rigplane --model IC-7300 --serial-port /dev/cu.usbserial-A602RVAV audio bridge --device "RigPlane Virtual Cable Output" --tx-device "RigPlane Virtual Cable Input"
     ```
 2. **WSJT-X settings**:
     - Input Device: "RigPlane Virtual Cable Input"
@@ -176,70 +152,47 @@ On macOS, bridge rigplane audio to WSJT-X through the RigPlane Virtual Cable
 
 ## Troubleshooting
 
-### "Device not found" Error
+### Serial Port Not Found
 
-```
-ConnectionError: failed to open serial port /dev/cu.usbserial-XXXXX
-```
-
-**Solution**: Verify USB cable connection and check `/dev/cu.usbserial-*` listing.
+**Solution**: Verify the USB cable connection and check the `/dev/cu.usbserial-*` listing.
 
 ### Low Baud Rate Warning
 
 ```
-WARNING: Scope disabled due to low baud rate (9600 < 115200 minimum)
+WARNING Scope disabled at low baud rate (9600 < 115200). Set allow_low_baud_scope=True to override or set ICOM_SERIAL_SCOPE_ALLOW_LOW_BAUD=1.
 ```
 
 **Solution**: Set **CI-V USB Baud Rate** to `115200` in radio menu → Set → Connectors.
 
 ### Audio Devices Not Found
 
-```
-WARNING: audio subsystem not detected; TX/RX disabled
-```
-
-**Solution**: Verify **USB Audio TX/RX** are enabled in radio settings. Check with:
+**Solution**: Check that the radio's `USB Audio CODEC` device is listed:
 ```bash
-python -c "from rigplane.usb_audio_resolve import list_usb_audio_devices; import json; print(json.dumps(list_usb_audio_devices(), indent=2))"
+rigplane --list-audio-devices
 ```
 
 ### CI-V Commands Timing Out
 
-```
-CommandError: timeout waiting for CI-V response
-```
-
-**Solution**: Verify **CI-V USB Port** is set to `Link to [CI-V]`, not `[REMOTE]`.
+**Solution**: Verify **CI-V USB Port** is set to `Unlink from [REMOTE]`, not `Link to [REMOTE]`.
 
 ## Performance Tuning
 
 ### Serial CI-V Pacing
 
-If commands are arriving too fast, adjust the minimum interval between CI-V commands:
+If commands are arriving too fast, raise the minimum interval between CI-V
+commands. The serial backend reads it when the radio object is created, so set
+it before starting:
 
-```python
-radio = IcomRadio(
-    backend="serial",
-    model="IC-7300",
-    serial_port="/dev/cu.usbserial-A602RVAV",
-)
-# Set 100ms minimum between CI-V commands (default is 25ms)
-import os
-os.environ["ICOM_SERIAL_CIV_MIN_INTERVAL_MS"] = "100"
+```bash
+# 100 ms minimum between CI-V commands (Icom default: 25 ms)
+export ICOM_SERIAL_CIV_MIN_INTERVAL_MS=100
+rigplane --model IC-7300 --serial-port /dev/cu.usbserial-A602RVAV web
 ```
-
-### Scope Baud Rate Tradeoff
-
-- **115200 baud**: Full scope resolution, ~50 spectra/sec
-- **57600 baud**: Reduced scope rate, more headroom for CI-V
-- **19200 baud**: Minimal scope rate, most headroom
 
 ## Hardware Notes
 
-- **Micro-USB connector**: Strain relief recommended for field use
-- **USB power**: IC-7300 can be powered via USB; use quality cable
+- **Power**: the IC-7300 takes 13.8 V DC through its `[DC 13.8 V]` socket, not USB power
 - **Cable length**: Keep under 3m to avoid signal integrity issues
-- **macOS driver**: No additional driver needed; built-in CDC ACM support
 
 ## See Also
 

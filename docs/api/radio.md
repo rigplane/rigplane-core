@@ -26,8 +26,10 @@ IcomRadio(
     password: str = "",
     radio_addr: int | None = None,
     timeout: float = 5.0,
-    audio_codec: AudioCodec | int = AudioCodec.PCM_1CH_16BIT,
-    audio_sample_rate: int = 48000,
+    audio_codec: AudioCodec | int = AudioCodec.PCM_2CH_16BIT,
+    audio_sample_rate: int | None = None,
+    audio_codec_explicit: bool | None = None,
+    audio_sample_rate_explicit: bool | None = None,
     auto_reconnect: bool = False,
     reconnect_delay: float = 2.0,
     reconnect_max_delay: float = 60.0,
@@ -51,29 +53,29 @@ IcomRadio(
 
 Additional optional parameters:
 
-- `audio_codec`, `audio_sample_rate` — audio stream configuration
+- `audio_codec`, `audio_sample_rate`, `audio_codec_explicit`, `audio_sample_rate_explicit` — audio stream configuration
 - `auto_reconnect`, `reconnect_delay`, `reconnect_max_delay`, `watchdog_timeout` — reconnect/watchdog behavior
 - `auto_recover_audio`, `on_audio_recovery` — audio recovery behavior
 - `cache_ttl_s` — per-field TTL overrides for fallback cache
-- `profile`, `model` — runtime profile/model selection for capability/routing behavior
+- `profile`, `model` — runtime profile/model selection for capability/routing behavior. Without `model`, `profile` or a `radio_addr` that matches a loaded profile, the constructor raises `ValueError`.
 
 ### Context Manager
 
 `IcomRadio` supports `async with` for automatic connection management:
 
 ```python
-async with IcomRadio("192.168.1.100", username="u", password="p") as radio:
-    freq = await radio.get_frequency()
+async with IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610") as radio:
+    freq = await radio.get_freq()
 # Disconnect happens automatically
 ```
 
 Equivalent to:
 
 ```python
-radio = IcomRadio("192.168.1.100", username="u", password="p")
+radio = IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610")
 await radio.connect()
 try:
-    freq = await radio.get_frequency()
+    freq = await radio.get_freq()
 finally:
     await radio.disconnect()
 ```
@@ -117,14 +119,16 @@ This is a backend-managed readiness contract: clients should treat
 
 ## Audio Capabilities
 
-### `audio_capabilities()`
+### `get_audio_capabilities()`
 
 ```python
-@staticmethod
-def audio_capabilities() -> AudioCapabilities
+from rigplane import get_audio_capabilities
+
+def get_audio_capabilities() -> AudioCapabilities
 ```
 
-Return the stable rigplane audio capability structure:
+A module-level function, not an `IcomRadio` method. Returns the stable rigplane
+audio capability structure:
 
 - `supported_codecs`
 - `supported_sample_rates_hz`
@@ -186,20 +190,20 @@ Cleanly disconnect from the radio. Closes the CI-V data stream and both UDP conn
 
 ## Frequency
 
-### `get_frequency()`
+### `get_freq()`
 
 ```python
-async def get_frequency(self) -> int
+async def get_freq(self, receiver: int = RECEIVER_MAIN, *, bypass_cache: bool = False) -> int
 ```
 
-Get the current operating frequency in **Hz**.
+Get the current operating frequency in **Hz** for `receiver` (0=MAIN, 1=SUB).
 
 **Returns:** `int` — frequency in Hz (e.g., `14074000`)
 
-### `set_frequency()`
+### `set_freq()`
 
 ```python
-async def set_frequency(self, freq_hz: int) -> None
+async def set_freq(self, freq_hz: int, receiver: int = 0) -> None
 ```
 
 Set the operating frequency.
@@ -207,8 +211,10 @@ Set the operating frequency.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `freq_hz` | `int` | Frequency in Hz |
+| `receiver` | `int` | 0=MAIN, 1=SUB |
 
-**Raises:** `CommandError` if the radio rejects the frequency.
+`get_frequency()` and `set_frequency()` are aliases of `get_freq()` and
+`set_freq()`, kept for existing callers.
 
 ---
 
@@ -217,7 +223,7 @@ Set the operating frequency.
 ### `get_mode()`
 
 ```python
-async def get_mode(self) -> tuple[str, int | None]
+async def get_mode(self, receiver: int = 0) -> tuple[str, int | None]
 ```
 
 Get the current operating mode.
@@ -227,7 +233,7 @@ Get the current operating mode.
 ### `get_mode_info()`
 
 ```python
-async def get_mode_info(self) -> tuple[Mode, int | None]
+async def get_mode_info(self, receiver: int = RECEIVER_MAIN) -> tuple[Mode, int | None]
 ```
 
 Get current mode and filter number (if radio reports filter in response).
@@ -235,8 +241,8 @@ Get current mode and filter number (if radio reports filter in response).
 ### `get_filter()` / `set_filter()`
 
 ```python
-async def get_filter(self) -> int | None
-async def set_filter(self, filter_width: int) -> None
+async def get_filter(self, receiver: int = 0) -> int | None
+async def set_filter(self, filter_width: int, receiver: int = 0) -> None
 ```
 
 Read/set current filter number (1-3) while preserving mode.
@@ -244,7 +250,7 @@ Read/set current filter number (1-3) while preserving mode.
 ### `set_mode()`
 
 ```python
-async def set_mode(self, mode: Mode | str, filter_width: int | None = None) -> None
+async def set_mode(self, mode: Mode | str, filter_width: int | None = None, receiver: int = 0) -> None
 ```
 
 Set the operating mode.
@@ -253,26 +259,24 @@ Set the operating mode.
 |-----------|------|-------------|
 | `mode` | `Mode \| str` | Mode enum or name string (`"USB"`, `"CW"`, etc.) |
 
-**Raises:** `CommandError` if the radio rejects the mode.
-
 ---
 
 ## Power
 
-### `get_power()`
+### `get_rf_power()`
 
 ```python
-async def get_power(self) -> int
+async def get_rf_power(self) -> int
 ```
 
 Get the RF power level.
 
 **Returns:** `int` — power level (0–255)
 
-### `set_power()`
+### `set_rf_power()`
 
 ```python
-async def set_power(self, level: int) -> None
+async def set_rf_power(self, level: int) -> None
 ```
 
 Set the RF power level.
@@ -280,6 +284,9 @@ Set the RF power level.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `level` | `int` | Power level 0–255 |
+
+`get_power()` and `set_power()` are aliases of `get_rf_power()` and
+`set_rf_power()`, kept for existing callers.
 
 ---
 
@@ -296,10 +303,19 @@ Read the S-meter value. **Returns:** `int` (0–255)
 ### `get_swr()`
 
 ```python
-async def get_swr(self) -> int
+async def get_swr(self) -> float
 ```
 
-Read the SWR meter value (TX only). **Returns:** `int` (0–255)
+Read the SWR as a calibrated ratio (>= 1.0), using the profile's
+`[[meters.swr.calibration]]` table (TX only). **Returns:** `float`
+
+### `get_swr_meter()`
+
+```python
+async def get_swr_meter(self) -> int
+```
+
+Read the raw SWR meter value (TX only). **Returns:** `int` (0–255)
 
 **Raises:** `TimeoutError` if not transmitting.
 
@@ -333,36 +349,42 @@ Toggle Push-To-Talk.
 
 ## VFO & Split
 
-### `select_vfo()`
+### `get_vfo_slot()` / `set_vfo_slot()`
 
 ```python
-async def select_vfo(self, vfo: str = "A") -> None
+async def get_vfo_slot(self, receiver: int = 0) -> str
+async def set_vfo_slot(self, slot: str, receiver: int = 0) -> None
 ```
 
-Select the active VFO.
+Read or select the active VFO slot (`"A"` or `"B"`) on `receiver`.
 
-| Value | Description |
-|-------|-------------|
-| `"A"` | VFO A |
-| `"B"` | VFO B |
-| `"MAIN"` | Main receiver (IC-7610) |
-| `"SUB"` | Sub receiver (IC-7610) |
-
-### `vfo_equalize()`
+### `select_receiver()`
 
 ```python
-async def vfo_equalize(self) -> None
+async def select_receiver(self, which: int | str) -> None
 ```
 
-Send the CI-V A=B command. On MAIN/SUB radios (e.g. IC-7610), practical semantics can differ from a literal MAIN→SUB copy depending on rig state.
+Make `which` (MAIN or SUB) the active receiver for subsequent commands.
 
-### `vfo_exchange()`
+### `swap_vfo_ab()` / `equalize_vfo_ab()`
 
 ```python
-async def vfo_exchange(self) -> None
+async def swap_vfo_ab(self, receiver: int = 0) -> None
+async def equalize_vfo_ab(self, receiver: int = 0) -> None
 ```
 
-Swap VFO A and VFO B.
+Swap VFO A and VFO B, or copy the active VFO to the inactive one, on
+`receiver`. `equalize_vfo_ab()` raises `CommandError` when the profile
+declares no A=B command.
+
+### `swap_main_sub()` / `equalize_main_sub()`
+
+```python
+async def swap_main_sub(self) -> None
+async def equalize_main_sub(self) -> None
+```
+
+Swap MAIN and SUB, or copy MAIN to SUB. Both require a dual-receiver profile.
 
 ### `set_split()`
 
@@ -390,7 +412,7 @@ Read attenuator level in dB (0, 3, 6, ..., 45).
 ### `get_attenuator()`
 
 ```python
-async def get_attenuator(self) -> bool
+async def get_attenuator(self, receiver: int = RECEIVER_MAIN) -> bool
 ```
 
 Read attenuator state as boolean (compatibility wrapper).
@@ -528,7 +550,13 @@ radio.on_scope_data(handle_scope)
 ### `enable_scope()`
 
 ```python
-async def enable_scope(self, *, output: bool = True) -> None
+async def enable_scope(
+    self,
+    *,
+    output: bool = True,
+    policy: ScopeCompletionPolicy | str = ScopeCompletionPolicy.VERIFY,
+    timeout: float = 5.0,
+) -> None
 ```
 
 Enable scope display and data output on the radio. Sends CI-V `0x27 0x10 0x01` (scope on) and `0x27 0x11 0x01` (data output on).
@@ -536,13 +564,18 @@ Enable scope display and data output on the radio. Sends CI-V `0x27 0x10 0x01` (
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `output` | `bool` | `True` | Also enable wave data output |
+| `policy` | `ScopeCompletionPolicy \| str` | `VERIFY` | Completion policy (strict, fast, verify) |
+| `timeout` | `float` | `5.0` | Verification timeout in seconds |
 
-**Raises:** `CommandError` if the radio rejects the command.
+**Raises:** `CommandError` if the radio rejects the command (strict policy);
+`TimeoutError` if verification times out (verify policy).
 
 ### `disable_scope()`
 
 ```python
-async def disable_scope(self) -> None
+async def disable_scope(
+    self, *, policy: ScopeCompletionPolicy | str = ScopeCompletionPolicy.FAST
+) -> None
 ```
 
 Disable scope data output. Sends CI-V `0x27 0x11 0x00`.
@@ -578,6 +611,8 @@ async def send_civ(
     data: bytes | None = None,
     *,
     wait_response: bool = True,
+    priority: Priority = Priority.NORMAL,
+    wait_dispatch: bool = True,
 ) -> CivFrame | None
 ```
 

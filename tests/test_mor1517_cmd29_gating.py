@@ -19,10 +19,9 @@ repeater_tsql, tone_freq, tsql_freq.
 IC-7300 declares no ``[cmd29]`` section at all (single receiver) -> every
 affected command must go out as a bare, unwrapped CI-V frame.
 IC-7610 declares cmd29 routes for most of these commands -> existing wrapped
-behavior must be unchanged for those. apf_type_level/digisel_shift are not
-reachable on IC-7300 (it doesn't declare those commands at all) but IC-705
-does declare them and also has no ``[cmd29]`` section, so IC-705 is used as
-the unwrapped case for those two. manual_notch_width (0x16/0x57) turns out to
+behavior must be unchanged for those. apf_type_level/digisel_shift are
+declared only by the IC-7610; the IC-705 declares both absent (MOR-2917), so
+its case below is a refusal that sends nothing. manual_notch_width (0x16/0x57) turns out to
 be absent from IC-7610's own cmd29 routes too, so it must be unwrapped on
 *both* profiles -- see TestManualNotchWidthGating.
 """
@@ -68,7 +67,6 @@ from rigplane.types import AudioPeakFilter, CivFrame, FilterShape
 
 _IC7300_ADDR = 0x94
 _IC7610_ADDR = 0x98
-_IC705_ADDR = 0xA4
 
 # commands/levels.py migrated onto the bound command map in MOR-2006 Steps
 # 5..N (module 2): pbt_inner/pbt_outer/nr_level/nb_level/apf_type_level/
@@ -86,7 +84,6 @@ _IC7300_CMD_MAP = _IC7300_RIG.to_command_map()
 _IC7300_CTCSS_DOMAIN = _IC7300_RIG.ctcss_tones_centihz
 assert _IC7300_CTCSS_DOMAIN is not None
 _IC7610_CMD_MAP = load_rig(RIG_DIR / "ic7610.toml").to_command_map()
-_IC705_CMD_MAP = load_rig(RIG_DIR / "ic705.toml").to_command_map()
 
 
 def _connected_icom(*, model: str) -> IcomRadio:
@@ -380,18 +377,16 @@ class TestNbLevelGating:
 
 
 class TestApfTypeLevelGating:
-    """IC-7300 marks apf_type_level absent, but IC-705 declares it (and has
-    no [cmd29] section) -- IC-705 is the unwrapped case here."""
+    """IC-7610 wraps apf_type_level in cmd29; the IC-705 declares it absent
+    (no 0x14 0x05 row in its CI-V guide, MOR-2917)."""
 
     @pytest.mark.asyncio
-    async def test_set_apf_type_level_unwrapped_on_ic705(self) -> None:
+    async def test_set_apf_type_level_refused_on_ic705(self) -> None:
         radio = _connected_icom(model="IC-705")
         mock = _mock_raw(radio)
-        await radio.set_apf_type_level(3, receiver=0)
-        expected = set_apf_type_level(
-            3, to_addr=_IC705_ADDR, receiver=0, command29=False, cmd_map=_IC705_CMD_MAP
-        )
-        assert _sent_civ(mock) == expected
+        with pytest.raises(CommandError, match="not supported by this radio"):
+            await radio.set_apf_type_level(3, receiver=0)
+        mock.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_set_apf_type_level_wrapped_on_ic7610(self) -> None:
@@ -405,17 +400,15 @@ class TestApfTypeLevelGating:
 
 
 class TestDigiselShiftGating:
-    """Same IC-705-vs-IC-7610 shape as apf_type_level."""
+    """Same shape as apf_type_level: no 0x14 0x13 row in the IC-705 guide."""
 
     @pytest.mark.asyncio
-    async def test_set_digisel_shift_unwrapped_on_ic705(self) -> None:
+    async def test_set_digisel_shift_refused_on_ic705(self) -> None:
         radio = _connected_icom(model="IC-705")
         mock = _mock_raw(radio)
-        await radio.set_digisel_shift(10, receiver=0)
-        expected = set_digisel_shift(
-            10, to_addr=_IC705_ADDR, receiver=0, command29=False, cmd_map=_IC705_CMD_MAP
-        )
-        assert _sent_civ(mock) == expected
+        with pytest.raises(CommandError, match="not supported by this radio"):
+            await radio.set_digisel_shift(10, receiver=0)
+        mock.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_set_digisel_shift_wrapped_on_ic7610(self) -> None:

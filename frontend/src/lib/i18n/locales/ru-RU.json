@@ -100,6 +100,8 @@
   "core.settings.workspace.importRejectedTitle": "Импорт отклонён",
 
   "core.overlay.poweredOff.label": "Трансивер выключен",
+  "core.overlay.poweredOff.notAnsweringLabel": "Трансивер не отвечает — возможно, он выключен",
+  "core.overlay.poweredOff.noRemotePowerOn": "Этот трансивер нельзя включить из RigPlane.",
   "core.overlay.poweredOff.powerOnButton": "Включить",
   "core.overlay.poweredOff.failedPowerOn": "Не удалось включить: {detail}",
   "core.overlay.scopeDisconnected": "Панорама отключена — переподключение…",
@@ -201,6 +203,10 @@
   "core.mobile.receiverSelector.label": "Выбор приёмника",
   "core.mobile.setupButton": "Setup",
   "core.mobile.closeStepPicker": "Закрыть выбор шага",
+  "core.mobile.tune.downFast": "Быстро перестроить вниз",
+  "core.mobile.tune.downStep": "Перестроить вниз на один шаг",
+  "core.mobile.tune.upStep": "Перестроить вверх на один шаг",
+  "core.mobile.tune.upFast": "Быстро перестроить вверх",
 
   "core.spectrum.autoStep.onTitle": "Авто-шаг включён — шаг перестройки следует за режимом работы. Нажмите, чтобы зафиксировать текущий шаг и отключить слежение.",
   "core.spectrum.autoStep.offTitle": "Авто-шаг выключен — шаг перестройки остаётся на ручном значении. Нажмите, чтобы снова включить и вернуться к шагу по умолчанию для текущего режима.",

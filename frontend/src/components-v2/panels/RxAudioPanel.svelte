@@ -1,9 +1,15 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { HardwareButton } from '$lib/Button';
   import { ValueControl } from '../controls/value-control';
   import { normalizedPercentDisplay } from '../../primitives/scalar/value-control-core';
   import { finiteValue, valueText } from '../../primitives/reading-text';
   import { deriveRxAudioProps, getRxAudioHandlers } from '$lib/runtime/adapters/audio-adapter';
+  import { getAfLevelControlFeedback } from '$lib/runtime/adapters/panel-adapters';
+  import {
+    createContinuousScalar,
+    createHBarContinuousScalarPolicy,
+  } from '../../primitives/scalar/continuous-scalar.svelte';
   import { buildMonitorOptions, formatMonitorStatus } from './audio-utils';
   import { getShortcutHint } from '../layout/shortcut-hints';
   import AudioRoutingControl from './AudioRoutingControl.svelte';
@@ -31,9 +37,32 @@
   // the literal "NaN%". MOR-2668: an unread level renders '' (unlit LCD
   // segment) in HBarRenderer's reserved `.vc-value` box (MOR-2657), the
   // `TxAuxScalarHost.formatValue` shape — never a dash, never "NaN".
+  // MOR-2910: the confirmed reading now arrives through the shared AF
+  // command-feedback lane; this guard still owns the non-finite → '' mapping.
   function formatAfLevelDisplay(v: number): string {
     return valueText(finiteValue(v), normalizedPercentDisplay);
   }
+
+  // MOR-2910: the AF level rides the shared command-feedback scalar —
+  // requested/confirmed/error through the binding, dispatch through the
+  // shared hbar policy. The mute gate stays the panel's own `enabled`.
+  let afLevelFeedback = $derived(getAfLevelControlFeedback());
+  const afLevelBinding = createContinuousScalar(
+    () => ({
+      evidence: 'command-feedback', feedback: afLevelFeedback, command: 'set_af_level',
+      domain: { min: 0, max: 1, step: 0.01, defaultValue: null, fineStepDivisor: 10 },
+      enabled: !isMuted && afLevelFeedback.availability === 'available',
+      request: handlers.onAfLevelChange,
+    }),
+    createHBarContinuousScalarPolicy({
+      preview: 'optimistic', debounceMs: 50, describeTarget: normalizedPercentDisplay,
+    }),
+  );
+  const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
+
+  onDestroy(() => {
+    afLevelBinding.destroy();
+  });
 </script>
 
 {#if props.hasAfLevel || props.hasLiveAudio}
@@ -52,19 +81,15 @@
         {/each}
       </div>
       <ValueControl
+        {...feedbackIntegratedControl}
         label="AF Level"
-        value={props.afLevel}
-        min={0}
-        max={1}
-        step={0.01}
+        binding={afLevelBinding}
         renderer="hbar"
         displayFn={formatAfLevelDisplay}
         accentColor="var(--v2-accent-cyan-alt)"
         shortcutHint={afShortcut}
         title={afShortcut}
-        disabled={isMuted}
-        onChange={handlers.onAfLevelChange}
-      variant="hardware-illuminated"
+        variant="hardware-illuminated"
       />
       <div class="output-indicator" class:audio-disconnected={showDisconnected}>
         {#if showDisconnected}{t('core.overlay.audioLinkLost')}{:else}{statusText}{/if}

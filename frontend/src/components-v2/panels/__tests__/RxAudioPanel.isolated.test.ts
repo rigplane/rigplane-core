@@ -36,6 +36,28 @@ vi.mock('$lib/runtime/adapters/audio-adapter', () => ({
   getRxAudioHandlers: () => mockHandlers,
 }));
 
+// MOR-2910: the AF level control reads the shared AF command-feedback lane.
+// The accessor is mocked with a hoisted mutable snapshot so the display
+// tests keep driving the confirmed reading, and the wiring tests below can
+// advance the feedback lifecycle without the real runtime.
+const afFeedback = vi.hoisted(() => ({ value: null as Record<string, unknown> | null }));
+const afFeedbackOf = (over: Record<string, unknown> = {}) => ({
+  confirmed: mockProps.afLevel, target: null, requestedTarget: null,
+  phase: 'idle' as const, busy: false, availability: 'available' as const,
+  outcome: null, lifecycleId: null, transitionId: null,
+  providerGeneration: 1, sessionEpoch: 1,
+  scope: { control: 'af-level', receiver: 0 as const },
+  repeatPolicy: 'latest-target-wins' as const, ...over,
+});
+vi.mock('$lib/runtime/frontend-runtime', () => ({ runtime: {
+  get state() { return null; },
+  get caps() { return null; },
+  get controlSession() { return { state: 'disconnected' as const, epoch: -1 }; },
+} }));
+vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
+  getAfLevelControlFeedback: () => afFeedback.value,
+}));
+
 // ---------------------------------------------------------------------------
 // buildMonitorOptions
 // ---------------------------------------------------------------------------
@@ -122,8 +144,12 @@ describe('formatMonitorStatus', () => {
 
 let components: ReturnType<typeof mount>[] = [];
 
-function mountPanel(overrides?: Partial<typeof mockProps>) {
+// The mocked AF accessor is a plain (non-reactive) snapshot, so lifecycle
+// cases stage their full feedback shape via `feedbackOver` BEFORE mounting
+// — a post-mount reassignment would never re-render.
+function mountPanel(overrides?: Partial<typeof mockProps>, feedbackOver?: Record<string, unknown>) {
   if (overrides) Object.assign(mockProps, overrides);
+  afFeedback.value = afFeedbackOf(feedbackOver ?? {});
   const t = document.createElement('div');
   document.body.appendChild(t);
   const component = mount(RxAudioPanel, { target: t });
@@ -325,5 +351,62 @@ describe('RxAudioPanel — no "NaN" leak for an unobserved AF level (MOR-1409 A1
     expect(minWidth).toBeGreaterThanOrEqual(widest);
     expect(rule![1]).toContain('tabular-nums');
     expect(source).toMatch(/\.vc-value:empty::before \{ content: '\\200b'; \}/);
+  });
+});
+
+// MOR-2910 — the AF level control consumes the shared command-feedback scalar
+// (`getAfLevelControlFeedback`): requested/confirmed/error through the
+// binding, aria-busy while a request is pending, dispatch through the shared
+// policy instead of a raw onChange debounce.
+describe('RxAudioPanel AF level command-feedback wiring (MOR-2910)', () => {
+  function afSlider(t: HTMLElement): HTMLElement {
+    return t.querySelector<HTMLElement>('[aria-label="AF Level"]')!;
+  }
+
+  it('projects the requested target with busy state over confirmed truth', () => {
+    const t = mountPanel({ hasAfLevel: true, hasLiveAudio: false, afLevel: 0.5 }, {
+      phase: 'awaiting-confirmation', busy: true, target: 0.75, requestedTarget: 0.75,
+    });
+
+    const slider = afSlider(t);
+    expect(slider.dataset.commandPhase).toBe('awaiting-confirmation');
+    expect(slider.getAttribute('aria-busy')).toBe('true');
+    expect(slider.getAttribute('aria-valuenow')).toBe('0.5');
+    expect(vcValueFor(t, 'AF Level')).toBe('50%');
+    const descriptionId = slider.getAttribute('aria-describedby')!;
+    expect(t.querySelector(`#${descriptionId}`)?.textContent).toContain('75%');
+  });
+
+  it('exposes a terminal error without replacing the confirmed reading', () => {
+    // `transitionId` carries the terminal transition the status span
+    // announces; without it the renderer has nothing to say.
+    const t = mountPanel({ hasAfLevel: true, hasLiveAudio: false, afLevel: 0.5 }, {
+      phase: 'failed', transitionId: 'mor-2910-af-failed',
+      outcome: { phase: 'failed', error: 'radio refused' },
+    });
+
+    const slider = afSlider(t);
+    expect(slider.dataset.commandPhase).toBe('failed');
+    expect(slider.getAttribute('aria-busy')).toBe('false');
+    expect(slider.getAttribute('aria-valuenow')).toBe('0.5');
+    expect(vcValueFor(t, 'AF Level')).toBe('50%');
+    expect(t.querySelector('[data-control-feedback-status]')?.textContent)
+      .toContain('radio refused');
+  });
+
+  it('dispatches through the shared policy into the existing handler', () => {
+    vi.useFakeTimers();
+    const t = mountPanel({ hasAfLevel: true, hasLiveAudio: false, afLevel: 0.5 });
+    afSlider(t).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(50);
+    expect(mockHandlers.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(0.51);
+    vi.useRealTimers();
+  });
+
+  it('fails closed when the feedback lane is unavailable', () => {
+    const t = mountPanel({ hasAfLevel: true, hasLiveAudio: false, afLevel: 0.5 }, {
+      phase: 'unavailable', availability: 'unavailable', confirmed: null, busy: false,
+    });
+    expect(afSlider(t).getAttribute('aria-disabled')).toBe('true');
   });
 });

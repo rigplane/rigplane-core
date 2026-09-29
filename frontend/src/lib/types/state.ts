@@ -236,8 +236,10 @@ export interface RadioHealthPublic {
   likelyCause:
     | "server_unreachable"
     | "radio_network_lost"
+    | "radio_remote_control_unreachable"
     | "radio_not_responding"
     | "radio_powered_off_likely"
+    | "radio_not_connected"
     | "unknown";
   sinceMs: number;
   lastError: string | null;

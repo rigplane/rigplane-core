@@ -1,8 +1,7 @@
 """MOR-1540: IC-705 must not over-declare the ``digisel`` capability.
 
 ``rigs/ic705.toml`` declared the ``"digisel"`` capability (0x16 0x4E DIGI-SEL
-toggle) with its own comment admitting IC-705 has no 0x16 0x4E command —
-only DIGI-SEL Shift (0x14 0x13, ``get_digisel_shift``/``set_digisel_shift``).
+toggle) with its own comment admitting IC-705 has no 0x16 0x4E command.
 Because ``IcomRadio.set_preamp(level>0)`` runs a DIGI-SEL pre-flight gated
 purely on ``"digisel" in self.capabilities``, and the CI-V builder for
 ``get_digisel``/``set_digisel`` unconditionally targets 0x16/0x4E regardless
@@ -60,10 +59,44 @@ class TestDigiselCapabilityRemoved:
         assert not cmdmap.has("get_digisel")
         assert not cmdmap.has("set_digisel")
 
-    def test_digisel_shift_commands_still_present(self, cmdmap) -> None:
-        """DIGI-SEL *Shift* (0x14 0x13) is real on IC-705 and must survive."""
-        assert cmdmap.has("get_digisel_shift")
-        assert cmdmap.has("set_digisel_shift")
+    def test_no_digisel_shift_commands(self, profile, cmdmap) -> None:
+        """MOR-2917: neither IC-705 CI-V guide edition has a 0x14 0x13 row."""
+        assert "digisel_shift" not in profile.capabilities
+        assert not cmdmap.has("get_digisel_shift")
+        assert not cmdmap.has("set_digisel_shift")
+
+
+class TestNoUndocumentedCommands:
+    """MOR-2917: wfview-derived commands with no row in either edition of the
+    IC-705 CI-V Reference Guide (A7560-8EX-1 pp.3-4, A7560-8EX-6 pp.3-4) are
+    declared absent, and the capability tags that advertised them are gone."""
+
+    @pytest.mark.parametrize(
+        ("tag", "commands"),
+        [
+            ("drive_gain", ("get_drive_gain", "set_drive_gain")),
+            (
+                "apf",
+                (
+                    "get_audio_peak_filter",
+                    "set_audio_peak_filter",
+                    "get_apf_type_level",
+                    "set_apf_type_level",
+                ),
+            ),
+            ("rx_antenna", ("get_rx_antenna", "set_rx_antenna")),
+            ("antenna", ("get_antenna", "set_antenna")),
+        ],
+    )
+    def test_tag_and_commands_absent(self, profile, cmdmap, tag, commands) -> None:
+        assert tag not in profile.capabilities
+        for name in commands:
+            assert not cmdmap.has(name)
+            assert name in profile.absent_command_names
+
+    def test_single_antenna_connector(self, profile) -> None:
+        assert profile.antenna_tx_count == 1
+        assert profile.antenna_has_rx_ant is False
 
 
 class TestPollerSkipsDigiselQuery:

@@ -1433,10 +1433,13 @@ class RadioPoller:
         radio has NO read command for at all (e.g. IC-7300 scan, CI-V 0x0E —
         CAT-audit confirmed SET-only, MOR-1495), so no follow-up GET can ever
         turn this into a genuine readback the way NB depth/width or the
-        MOD-input sources do. Labelled ``command_response`` — never
-        ``poll_response`` — so the StateStore's own provenance stays honest
-        about the fact that this value was never confirmed by the radio, even
-        though the owner-ruled web presentation shows it plainly with no
+        MOD-input sources do. Labelled ``local_reconcile`` — never
+        ``command_response`` or ``poll_response`` (MOR-2893): the radio never
+        answered anything, and a radio-confirmed source here would both lie
+        about the wire and clear the MOR-2841 "radio probably off" verdict
+        (``runtime_helpers.store_has_radio_observation`` counts every
+        non-``local_reconcile`` source as a radio answer). The owner-ruled web
+        presentation still shows the value plainly with no
         "commanded, not confirmed" marker (MOR-1495 ruling). A front-panel
         scan stop is invisible to the web until the operator presses STOP in
         the web — accepted limitation, not fixable without a read command.
@@ -1445,7 +1448,7 @@ class RadioPoller:
             path=FieldPath.global_(family, name),
             value=value,
             source=SourceMetadata(
-                source="command_response",
+                source="local_reconcile",
                 provider="web_poller",
                 native_id=f"{name}_command_echo",
                 command_source=source,
@@ -3226,8 +3229,7 @@ class RadioPoller:
             case SetDigiselShift(level=level, receiver=rx):
                 self._refuse_unsupported_receiver(rx, operation="set_digisel_shift")
                 # Distinct capability from CAP_DIGISEL (0x16/0x4E toggle):
-                # DIGI-SEL Shift is 0x14/0x13 and IC-705 exposes it without
-                # the toggle (MOR-1544).
+                # DIGI-SEL Shift is 0x14/0x13 (MOR-1544).
                 if CAP_DIGISEL_SHIFT in self._caps:
                     await radio.set_digisel_shift(level, receiver=rx)
             case SetRefAdjust(value=value):

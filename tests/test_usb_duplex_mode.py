@@ -1,9 +1,10 @@
 """Tests for the USB duplex-policy resolver (MOR-534, AudioTransport 1/12).
 
-Pure read-only policy: ``resolve_usb_duplex_mode`` plus the lazy
-``UsbAudioDriver.duplex_mode`` property. ``"exclusive"`` iff macOS AND
-RX/TX resolve to the same device index AND the device is a real CODEC
-(not a virtual loopback). Nothing consumes the policy yet.
+Pure read-only policy: ``resolve_usb_duplex_mode`` plus the
+``UsbAudioDriver.duplex_mode`` property (MOR-2892: a pure cache read —
+resolution happens only on the bounded start paths). ``"exclusive"``
+iff macOS AND RX/TX resolve to the same device index AND the device is
+a real CODEC (not a virtual loopback).
 """
 
 from __future__ import annotations
@@ -82,9 +83,43 @@ def test_resolver_shares_bridge_loopback_predicate(
     assert seen == [dev.name]
 
 
-def test_driver_duplex_mode_property_same_codec_macos(
+@pytest.mark.asyncio
+async def test_driver_duplex_mode_cold_cache_returns_safe_default() -> None:
+    """MOR-2892: a cold cache reads ``"full"`` without resolving.
+
+    ``duplex_mode`` is a pure cache read — resolution happens only on
+    the bounded start paths, so a fresh driver (and a cache cleared by
+    ``set_serial_port``) answers the ``"full"`` safe default. The
+    no-PortAudio-touch regression lives in
+    ``test_usb_audio_portaudio_off_loop_mor2892.py``.
+    """
+    backend = FakeAudioBackend(
+        [
+            AudioDeviceInfo(
+                id=AudioDeviceId(1),
+                name="USB Audio CODEC",
+                input_channels=2,
+                output_channels=2,
+            ),
+        ]
+    )
+    driver = UsbAudioDriver(backend=backend)
+
+    assert driver.duplex_mode == "full"
+    driver.set_serial_port("/dev/cu.usbserial-9931")
+    assert driver.duplex_mode == "full"
+
+
+@pytest.mark.asyncio
+async def test_driver_duplex_mode_warm_cache_reflects_resolved_pair(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """After a bounded start warmed the cache, the pure read answers.
+
+    ``start_rx`` resolves the pair through the bounded off-loop path
+    (MOR-2892); the subsequent property read reflects the resolved
+    same-CODEC policy without any further device work.
+    """
     _darwin(monkeypatch)
     backend = FakeAudioBackend(
         [
@@ -97,25 +132,11 @@ def test_driver_duplex_mode_property_same_codec_macos(
         ]
     )
     driver = UsbAudioDriver(backend=backend)
-    assert driver.duplex_mode == "exclusive"
-    # The lazy property resolves devices via the normal selection path.
-    assert driver.selected_rx_device is not None
-    assert driver.selected_tx_device is not None
 
-
-def test_driver_duplex_mode_property_loopback_macos(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _darwin(monkeypatch)
-    backend = FakeAudioBackend(
-        [
-            AudioDeviceInfo(
-                id=AudioDeviceId(1),
-                name="RigPlane Virtual Cable",
-                input_channels=2,
-                output_channels=2,
-            ),
-        ]
-    )
-    driver = UsbAudioDriver(backend=backend)
-    assert driver.duplex_mode == "full"
+    await driver.start_rx(lambda _frame: None)
+    try:
+        assert driver.duplex_mode == "exclusive"
+        assert driver.selected_rx_device is not None
+        assert driver.selected_tx_device is not None
+    finally:
+        await driver.stop_rx()

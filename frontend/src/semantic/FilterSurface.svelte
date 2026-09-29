@@ -109,7 +109,8 @@
     bindToggleInstrument,
   } from '../primitives/control-instruments/control-instrument-behavior';
   import {
-    createContinuousScalar, nativeRangeContinuousScalarPolicy,
+    createContinuousScalar, nativeRangeCommitOnReleaseContinuousScalarPolicy,
+    nativeRangeContinuousScalarPolicy,
     type CommandScalarFeedback, type ContinuousScalarInput,
     type ContinuousScalarRendererLease, type ContinuousScalarView,
   } from '../primitives/scalar/continuous-scalar.svelte';
@@ -241,7 +242,9 @@
     // MOR-2667: an unread value renders empty — never a `'--- Hz'`
     // placeholder (the only caller passes a finite canonical reading; the
     // empty guard keeps the placeholder family out of the file).
-    return Number.isFinite(value) ? `${value} Hz` : '';
+    // MOR-2905: the unit comes from the one `core.filter.unit.hz` catalog
+    // key — «Гц» in ru — the same key the sidebar FilterPanel formats with.
+    return Number.isFinite(value) ? `${value} ${t('core.filter.unit.hz')}` : '';
   }
   function formatWidthAnnouncementText(
     feedback: Readonly<CommandScalarFeedback>,
@@ -452,9 +455,9 @@
     // value the message needs is unread, the announcement is skipped
     // entirely (see `nextPassbandAnnouncement`).
     const target = feedback.requestedTarget !== null && Number.isFinite(feedback.requestedTarget)
-      ? `${feedback.requestedTarget} Hz` : null;
+      ? `${feedback.requestedTarget} ${t('core.filter.unit.hz')}` : null;
     const confirmed = feedback.confirmed !== null && Number.isFinite(feedback.confirmed)
-      ? `${feedback.confirmed} Hz` : null;
+      ? `${feedback.confirmed} ${t('core.filter.unit.hz')}` : null;
     let message: string;
     switch (phase) {
       case 'submitted':
@@ -515,14 +518,18 @@
     });
   }
 
-  /** The width row's lease/view plumbing, once per passband row. */
+  /** The width row's lease/view plumbing, once per passband row.
+   * MOR-1691: the passband rows commit ON RELEASE — every intermediate
+   * `input` of a drag stays the gesture-local draft (thumb and visible
+   * number follow it) and exactly one request leaves the row at the
+   * `change` commit, so a drag sends no per-move write stream. */
   function createPassbandRow(field: FilterPassbandLevelField): Readonly<{
     lease: ContinuousScalarRendererLease | null;
     view: Readonly<ContinuousScalarView>;
     announcement: IssuedAnnouncement | null;
   }> {
     const scalar = createContinuousScalar(
-      () => passbandInput(field), nativeRangeContinuousScalarPolicy,
+      () => passbandInput(field), nativeRangeCommitOnReleaseContinuousScalarPolicy,
     );
     let lease: ContinuousScalarRendererLease | null = $state(null);
     const initialView = untrack(() => scalar.view);
@@ -638,6 +645,7 @@
             data-command-phase={row.view.phase ?? undefined}
             aria-busy={row.view.busy}
             oninput={(event) => row.lease?.nativeInput(event.currentTarget.valueAsNumber)}
+            onchange={() => row.lease?.nativeChange()}
           />
           {/key}
       {/snippet}
@@ -677,6 +685,16 @@
           {#if field === 'pbtInner' || field === 'pbtOuter'}
             {@const display = pbtDisplay(filterPassband[field])}
             {@const measured = display.state === 'current' || display.state === 'stale'}
+            {@const row = passbandRows[field]}
+            <!-- MOR-1691: the visible number follows the operator's own
+                 value continuously — the gesture draft, then the pending
+                 target — and only ever the confirmed readback when neither
+                 exists. It never claims confirmation: the unconfirmed
+                 marker is the input's command phase/aria-busy, and the
+                 confirmed truth still arrives only through the readback. -->
+            {@const pendingTarget = row.view.busy && row.view.target !== null ? row.view.target : null}
+            {@const shownHz = row.view.draft ?? pendingTarget
+              ?? (measured && 'value' in display ? display.value : null)}
             <div
               class="filter-level" data-testid={`filter-${field}`} role="group" aria-label={label}
               data-disabled-reason={reasonOf(filterPassband[field])}
@@ -703,8 +721,9 @@
               <!-- svelte-ignore a11y_no_static_element_interactions -->
               <!-- MOR-2648: an unmeasured PBT renders an unlit box — empty
                    text, never a `—` dash; the `.pbt-value` box stays
-                   reserved. -->
-              <output class="pbt-value" aria-live="off" ondblclick={() => onPbtReset?.()}>{measured && 'value' in display ? display.value : ''}</output>
+                   reserved. MOR-1691: the shown number follows the draft /
+                   pending target above. -->
+              <output class="pbt-value" aria-live="off" ondblclick={() => onPbtReset?.()}>{shownHz ?? ''}</output>
               {@render passbandStatus(field)}
             </div>
           {:else}

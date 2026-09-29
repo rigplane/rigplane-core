@@ -125,6 +125,8 @@
   "core.settings.workspace.importRejectedTitle": "インポートは拒否されました",
 
   "core.overlay.poweredOff.label": "トランシーバーの電源が切れています",
+  "core.overlay.poweredOff.notAnsweringLabel": "トランシーバーが応答しません — 電源が切れている可能性があります",
+  "core.overlay.poweredOff.noRemotePowerOn": "このトランシーバーは RigPlane から電源を入れられません。",
   "core.overlay.poweredOff.powerOnButton": "電源 ON",
   "core.overlay.poweredOff.failedPowerOn": "電源を入れられませんでした: {detail}",
   "core.overlay.scopeDisconnected": "スコープが切断されました — 再接続中…",
@@ -226,6 +228,10 @@
   "core.mobile.receiverSelector.label": "受信機の選択",
   "core.mobile.setupButton": "Setup",
   "core.mobile.closeStepPicker": "ステップ選択を閉じる",
+  "core.mobile.tune.downFast": "高速で周波数を下げる",
+  "core.mobile.tune.downStep": "1ステップ下げる",
+  "core.mobile.tune.upStep": "1ステップ上げる",
+  "core.mobile.tune.upFast": "高速で周波数を上げる",
   "core.spectrum.autoStep.onTitle": "自動ステップはオン — ステップは運用モードに従います。クリックすると現在のステップを固定して追従を停止します。",
   "core.spectrum.autoStep.offTitle": "自動ステップはオフ — ステップは手動設定のままです。クリックすると再度オンになり、モードのデフォルトのステップに切り替わります。",
 

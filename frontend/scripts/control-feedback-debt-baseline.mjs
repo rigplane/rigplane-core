@@ -19,7 +19,6 @@ export const CONTROL_FEEDBACK_DEBT_BASELINE = Object.freeze([
   'src/components-v2/panels/FilterPanel.svelte::ValueControl::label::draftWidths[index] ?? visibleWidths[index] ?? factoryDefaults[index]',
   'src/components-v2/panels/FilterPanel.svelte::ValueControl::label::hzToTableIndex(draftWidths[index] ?? visibleWidths[index] ?? factoryDefaults[index])',
   'src/components-v2/panels/RfFrontEnd.svelte::ValueControl::RF Gain::rfGain',
-  'src/components-v2/panels/RitXitPanel.svelte::ValueControl::Offset::offsetValue',
   'src/components-v2/panels/RxAudioPanel.svelte::ValueControl::AF Level::props.afLevel',
   'src/components-v2/panels/TxPanel.svelte::ValueControl::Comp Level::compLevel',
   'src/components-v2/panels/TxPanel.svelte::ValueControl::Drive Gain::driveGain',

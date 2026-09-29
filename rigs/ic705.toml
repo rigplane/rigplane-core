@@ -2,9 +2,9 @@
 # This file defines the IC-705 radio profile in TOML format.
 # See _schema.md for field documentation.
 #
-# Source of truth: references/wfview/rigs/IC-705.rig (v2.10)
-# Cross-check: IC-7300.rig / IC-7610.rig (differences called out in NOTE comments)
-# docs/research/ic705-research.md
+# Sources: references/wfview/rigs/IC-705.rig (v2.10), not vendored in this
+# repo. Rows marked "source:" and `{ absent = ... }` rows cite the IC-705
+# CI-V Reference Guide by page.
 #
 # Non-CI-V features: built-in GPS, Bluetooth, and WiFi are hardware/UI managed.
 # [radio].has_wifi reflects WiFi; no separate CI-V opcodes for GPS/BT in wfview IC-705.rig.
@@ -48,31 +48,14 @@ features = [
     # RF front end
     "attenuator",
     "preamp",
-    # NOTE: no "digisel" capability (0x16 0x4E DIGI-SEL toggle) on IC-705 —
-    # wfview's IC-705.rig only exposes DIGI-SEL Shift (0x14 0x13, see
-    # get_digisel_shift/set_digisel_shift in [commands] below), never the
-    # 0x16 0x4E on/off command this capability string gates. Declaring
-    # "digisel" here made IcomRadio.set_preamp(level>0) run a get_digisel()
-    # pre-flight that sent an unanswerable 0x16 0x4E frame and blocked for
-    # a full CI-V timeout on every call (MOR-1540). Provenance: wfview/
-    # hamlib-doc-sourced (repo's ic705-research.md is no longer vendored
-    # here) — IC-705 is NOT on the live bench, so this is doc-level
-    # confidence, not live-validated.
-    # "digisel_shift" IS real on IC-705 (0x14 0x13 cmd29 level — see
-    # get_digisel_shift/set_digisel_shift in [commands] below) and is a
-    # distinct CI-V command from the 0x16 0x4E toggle above. Web/API
-    # callers were rejected at the control-handler layer because it gated
-    # set_digisel_shift on the shared "digisel" tag, which IC-705
-    # deliberately omits (MOR-1544).
-    "digisel_shift",
-    # Antenna
-    "antenna",
-    "rx_antenna",    # wfview: RX Antenna 0x16 0x53 (IC-7300.rig omits this command)
+    # No DIGI-SEL, antenna select, RX antenna, APF or drive gain: neither
+    # IC-705 CI-V guide edition has a 0x16 0x4E, 0x14 0x13, 0x12, 0x16 0x53,
+    # 0x16 0x32, 0x14 0x05 or 0x14 0x14 row (MOR-1540, MOR-2917; see the
+    # `{ absent = ... }` rows in [commands]).
     # DSP / Noise
     "nb",
     "nr",
     "notch",
-    "apf",
     "twin_peak",
     # Filter
     "pbt",
@@ -84,7 +67,6 @@ features = [
     "vox",
     "compressor",
     "monitor",
-    "drive_gain",    # wfview IC-705: 0x14 0x14 (not in IC-7300.rig)
     "ssb_tx_bw",
     # CW
     "cw",
@@ -158,6 +140,24 @@ polling_only = [
     "global.tx_state.ptt",
     "global.operator_controls.tuner_status",
     "global.tx_state.split",
+    # MOR-2915: the TX-aux levels and panel knobs rigs/ic7300.toml polls
+    # (MOR-1452, MOR-2425); v3 reads only a declared field
+    # (core/acquisition_scheduler.py: AcquisitionScheduler._availability_for).
+    # Getters: IC-705 CI-V guide pp.3-5 and p.14.
+    "global.operator_controls.mic_gain",
+    "global.operator_controls.monitor_gain",
+    "global.operator_controls.vox_gain",
+    "global.operator_controls.anti_vox_gain",
+    "receiver.main.active.freq_mode.filter_width",
+    "receiver.main.operator_controls.pbt_inner",
+    "receiver.main.operator_controls.pbt_outer",
+    "receiver.main.operator_controls.nr_level",
+    "receiver.main.operator_controls.nb_level",
+    "receiver.main.operator_controls.notch_filter",
+    "receiver.main.operator_controls.manual_notch_width",
+    "receiver.main.operator_toggles.auto_notch",
+    "receiver.main.operator_toggles.manual_notch",
+    "global.operator_controls.rit_freq",
     "scope_controls.global.display.receiver",
     "scope_controls.global.display.dual",
     "scope_controls.global.display.mode",
@@ -180,10 +180,53 @@ stream_like_meters = [
     "global.meters.vd",
     "global.meters.id",
 ]
+# MOR-2915: the membership rigs/ic7300.toml declares, less
+# receiver.main.operator_controls.agc_time_constant: declaring it shows the
+# AGC-T control, and its seconds come from a frontend table that does not
+# match this radio's 1A 04 table (guide p.19; MOR-2921). The menu settings
+# after "split" are read on demand through their field_policies below.
 command_response_observable = [
     "receiver.main.active.freq_mode.freq_hz",
     "receiver.main.active.freq_mode.mode",
+    "receiver.main.operator_controls.af_level",
+    "receiver.main.operator_controls.rf_gain",
+    "receiver.main.operator_controls.squelch",
+    "receiver.main.operator_controls.att",
+    "receiver.main.operator_controls.preamp",
+    "receiver.main.operator_controls.agc",
+    "receiver.main.operator_toggles.nb",
+    "receiver.main.operator_toggles.nr",
+    "global.operator_controls.power_level",
+    "global.tx_state.compressor_on",
+    "global.operator_controls.compressor_level",
     "global.tx_state.ptt",
+    "global.operator_controls.tuner_status",
+    "global.tx_state.split",
+    "global.tx_state.vox_on",
+    "global.tx_state.monitor_on",
+    "global.operator_controls.vox_delay",
+    "receiver.main.active.freq_mode.filter_width",
+    "receiver.main.active.freq_mode.filter_num",
+    "receiver.main.active.freq_mode.data_mode",
+    "receiver.main.operator_controls.filter_shape",
+    "receiver.main.operator_controls.pbt_inner",
+    "receiver.main.operator_controls.pbt_outer",
+    "receiver.main.operator_controls.nr_level",
+    "receiver.main.operator_controls.nb_level",
+    "receiver.main.operator_toggles.auto_notch",
+    "receiver.main.operator_toggles.manual_notch",
+    "receiver.main.operator_controls.notch_filter",
+    "receiver.main.operator_controls.manual_notch_width",
+    "global.operator_controls.rit_freq",
+    "global.tx_state.rit_on",
+    "global.tx_state.rit_tx",
+    "global.operator_controls.break_in",
+    "global.operator_controls.break_in_delay",
+    "global.operator_controls.key_speed",
+    "global.operator_controls.cw_pitch",
+    "receiver.main.operator_toggles.twin_peak_filter",
+    "receiver.main.operator_controls.tone_freq",
+    "receiver.main.operator_controls.tsql_freq",
 ]
 supported_controls = [
     "receiver.main.active.freq_mode.freq_hz",
@@ -199,10 +242,14 @@ supported_controls = [
 # StateFreshnessService.tick discard the last TX values on dekey. They keep
 # their stream_like_meters membership and coalescing window, so the stream
 # meter cadence class (tests/test_state_acquisition_policy.py) binds them to
-# <=0.4s: 0.2s/2.0s only ever fires while the key is down. The S-meter
+# <=0.4s: 0.25s/2.0s only ever fires while the key is down. The S-meter
 # stays the unconditional RX meter.
+# MOR-2915: 0.25 s, the IC-7610's cadence since MOR-2590 and the TX meter
+# class's nominal; at 0.2 s the four took 20 of the 30 q/s the scheduler
+# fits into a USB serial link, and the added panel reads no longer fit in
+# transmit (tests/test_acquisition_budget_fit.py).
 [state_acquisition.field_policies."global.meters.power"]
-cadence_seconds = 0.2
+cadence_seconds = 0.25
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
@@ -212,7 +259,7 @@ available_when = [
 ]
 
 [state_acquisition.field_policies."global.meters.swr"]
-cadence_seconds = 0.2
+cadence_seconds = 0.25
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
@@ -222,7 +269,7 @@ available_when = [
 ]
 
 [state_acquisition.field_policies."global.meters.alc"]
-cadence_seconds = 0.2
+cadence_seconds = 0.25
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
@@ -232,7 +279,7 @@ available_when = [
 ]
 
 [state_acquisition.field_policies."global.meters.comp"]
-cadence_seconds = 0.2
+cadence_seconds = 0.25
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
@@ -240,6 +287,115 @@ tx_only = true
 available_when = [
     { field = "global.tx_state.ptt", equals = true },
 ]
+
+# MOR-2915: the menu settings rigs/ic7300.toml reads on demand (MOR-1483,
+# MOR-1491..1493, MOR-2234). prime_unobserved reads only field_policies
+# paths, so each needs an entry; the "never" TTL keeps a read value until
+# the next observation.
+[state_acquisition.field_policies."global.tx_state.vox_on"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.monitor_on"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.vox_delay"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.active.freq_mode.filter_num"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.active.freq_mode.data_mode"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.filter_shape"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.rit_on"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.rit_tx"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.break_in"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.break_in_delay"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.key_speed"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.cw_pitch"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.twin_peak_filter"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.tone_freq"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.tsql_freq"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
 
 # ── Parameterized Capabilities ───────────────────────────────────
 
@@ -271,14 +427,10 @@ values = [0x01, 0x02, 0x03, 0x12, 0x13, 0x22, 0x23, 0x24]
 values = [0xD0, 0xD3]
 
 [antenna]
-# CI-V 0x12: single antenna path; RX antenna separate command 0x16 0x53
+# One antenna connector; no 0x12 antenna-select or 0x16 0x53 RX-antenna row
+# in the IC-705 CI-V guide (MOR-2917).
 tx_count = 1
-has_rx_ant = true
-
-[apf]
-# CI-V 0x16 0x32: wfview Max=3 (WIDE/MID/NAR style); 0x14 0x05 APF Type Level also present on IC-705
-values = [0, 1, 2, 3]
-labels = { "0" = "OFF", "1" = "WIDE", "2" = "MID", "3" = "NAR" }
+has_rx_ant = false
 
 [notch]
 # Manual Notch Width (0x16 0x57) exists on IC-705 -- IC-705 CI-V Reference
@@ -351,12 +503,11 @@ inputs = [
 
 [filters]
 list = ["FIL1", "FIL2", "FIL3"]
-# CI-V 0x1A 0x03: width is a 1-byte BCD index, not raw Hz.
-# wfview's funcFilterWidth handler (icomcommander.cpp:1131) decodes a single
-# BCD byte using the same segmented formula for all Icom rigs:
-#   non-AM: pass 0..10 → 50..550 Hz step 50; pass 11..40 → 700..3600 Hz step 100
-#   AM:     pass 0..49 → 200..10000 Hz step 200
-# Matches IC-7610 / IC-7300 (issue #1156).
+# CI-V 0x1A 0x03: width is a 1-byte BCD index, not raw Hz. IC-705 CI-V
+# Reference Guide (A7560-8EX-1, Jul.2020) p.19, "IF filter width settings":
+#   SSB/CW/RTTY 0..9 → 50..500 Hz step 50
+#   SSB/CW 10..40 → 600..3600 Hz step 100; RTTY 10..31 → 600..2700 Hz step 100
+#   AM 0..49 → 200..10000 Hz step 200
 encoding = "segmented_bcd_index"
 width_min_hz = 50
 width_max_hz = 10000
@@ -468,7 +619,12 @@ sub_select = [0x01]
 swap_ab = [0xB0]
 equal_ab = [0xA0]
 
-# ── Frequency Ranges (BSR from wfview IC-705.rig Bands\*) ───────
+# ── Frequency Ranges ─────────────────────────────────────────────
+# bsr_code: the band code of CI-V 1A 01, IC-705 CI-V Reference Guide
+# (A7560-8EX-1, Jul.2020) p.18: 01..09 = 1.9..28 MHz, 10 = 50, 11 = WFM,
+# 12 = Air, 13 = 144, 14 = 430, 15 = GENE ("other than above"), written
+# as its number (6m = 0x0A = 10). 2200m, 630m and 60m have no code of their
+# own, so they carry none and their band button tunes default_hz directly.
 
 [[freq_ranges.ranges]]
 label = "HF"
@@ -480,14 +636,12 @@ name = "2200m"
 start_hz = 135_000
 end_hz = 138_000
 default_hz = 136_000
-bsr_code = 0x00
 
 [[freq_ranges.ranges.bands]]
 name = "630m"
 start_hz = 472_000
 end_hz = 479_000
 default_hz = 475_000
-bsr_code = 0x00
 
 [[freq_ranges.ranges.bands]]
 name = "160m"
@@ -508,7 +662,6 @@ name = "60m"
 start_hz = 5_250_000
 end_hz = 5_450_000
 default_hz = 5_357_000
-bsr_code = 0x00
 
 [[freq_ranges.ranges.bands]]
 name = "40m"
@@ -593,7 +746,7 @@ name = "Air"
 start_hz = 108_000_000
 end_hz = 137_000_000
 default_hz = 121_500_000
-bsr_code = 0x00
+bsr_code = 0x0C
 
 [[freq_ranges.ranges]]
 label = "2m"
@@ -700,9 +853,8 @@ set_tuning_step = [0x10]
 # ── RF front end ──
 get_attenuator = [0x11]
 set_attenuator = [0x11]
-# NOTE: IC-7300.rig has no DIGI-SEL Shift; IC-705 has 0x14 0x13.
-get_digisel_shift = [0x14, 0x13]
-set_digisel_shift = [0x14, 0x13]
+get_digisel_shift = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.3-4: 0x14 family has no 0x13; the guide has no DIGI-SEL" }
+set_digisel_shift = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.3-4: 0x14 family has no 0x13; the guide has no DIGI-SEL" }
 get_digisel = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.4: 0x16 family has no 0x4E" }
 set_digisel = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.4: 0x16 family has no 0x4E" }
 get_speech = [0x13]
@@ -717,8 +869,8 @@ get_squelch = [0x14, 0x03]
 set_squelch = [0x14, 0x03]
 get_af_mute = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020): no 'mute' occurrence anywhere in the 29-page guide (no 1A 09 row)" }
 set_af_mute = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020): no 'mute' occurrence anywhere in the 29-page guide (no 1A 09 row)" }
-get_apf_type_level = [0x14, 0x05]
-set_apf_type_level = [0x14, 0x05]
+get_apf_type_level = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.3: 0x14 family has no 0x05" }
+set_apf_type_level = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.3: 0x14 family has no 0x05" }
 get_nr_level = [0x14, 0x06]
 set_nr_level = [0x14, 0x06]
 get_pbt_inner = [0x14, 0x07]
@@ -739,8 +891,8 @@ get_break_in_delay = [0x14, 0x0F]
 set_break_in_delay = [0x14, 0x0F]
 get_nb_level = [0x14, 0x12]
 set_nb_level = [0x14, 0x12]
-get_drive_gain = [0x14, 0x14]
-set_drive_gain = [0x14, 0x14]
+get_drive_gain = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.4: 0x14 family has no 0x14" }
+set_drive_gain = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.4: 0x14 family has no 0x14" }
 get_monitor_gain = [0x14, 0x15]
 set_monitor_gain = [0x14, 0x15]
 get_vox_gain = [0x14, 0x16]
@@ -782,8 +934,8 @@ get_agc = [0x16, 0x12]
 set_agc = [0x16, 0x12]
 get_nb = [0x16, 0x22]
 set_nb = [0x16, 0x22]
-get_audio_peak_filter = [0x16, 0x32]
-set_audio_peak_filter = [0x16, 0x32]
+get_audio_peak_filter = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.4: 0x16 family has no 0x32" }
+set_audio_peak_filter = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.4: 0x16 family has no 0x32" }
 get_nr = [0x16, 0x40]
 set_nr = [0x16, 0x40]
 get_auto_notch = [0x16, 0x41]
@@ -806,8 +958,8 @@ get_twin_peak_filter = [0x16, 0x4F]
 set_twin_peak_filter = [0x16, 0x4F]
 get_dial_lock = [0x16, 0x50]
 set_dial_lock = [0x16, 0x50]
-get_rx_antenna = [0x16, 0x53]
-set_rx_antenna = [0x16, 0x53]
+get_rx_antenna = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.4: 0x16 family has no 0x53; one antenna connector" }
+set_rx_antenna = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.4: 0x16 family has no 0x53; one antenna connector" }
 get_rx_antenna_ant2 = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020): no 0x12 sub-function row for a second RX antenna -- single antenna connector" }
 set_rx_antenna_ant2 = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020): no 0x12 sub-function row for a second RX antenna -- single antenna connector" }
 get_filter_shape = [0x16, 0x56]
@@ -938,9 +1090,9 @@ set_command_error_fa = [0xFA]
 get_command_ok_fb = [0xFB]
 set_command_ok_fb = [0xFB]
 
-# ── Antenna (0x12) — after overrides merge; base from IC-7300 class ──
-get_antenna = [0x12]
-set_antenna = [0x12]
+# ── Antenna (0x12) ──
+get_antenna = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.3: no 0x12 row; one antenna connector" }
+set_antenna = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.3: no 0x12 row; one antenna connector" }
 
 # ── Scan alias (same opcode as get_scan) ──
 scan_start = [0x0E]
@@ -1140,6 +1292,107 @@ label = "3.0"
 raw = 240
 actual = 6.0
 label = "6.0+"
+
+# Meter scales below: the rows of the IC-705 CI-V Reference Guide command
+# table, p.4 (A7560-8EX-1, Jul.2020; same rows in A7560-8EX-6, Jan.2023),
+# pinned by tests/test_rig_ic705.py::TestMeterScalesFromTheCivGuide.
+# 15 02 S-meter: 0000=S0, 0120=S9, 0241=S9+60 dB, stated in dB relative to
+# S9 as in rigs/ic7300.toml (S0 = -54).
+[meters.s_meter]
+redline_raw = 120
+
+[[meters.s_meter.calibration]]
+raw = 0
+actual = -54.0
+label = "S0"
+
+[[meters.s_meter.calibration]]
+raw = 120
+actual = 0.0
+label = "S9"
+
+[[meters.s_meter.calibration]]
+raw = 241
+actual = 60.0
+label = "S9+60"
+
+# 15 11 Po: 0000=0%, 0143=50%, 0213=100%. Stated in watts of the 10 W
+# rating ([power].max_watts): an inference from the percentages, not a
+# measurement. No row above 0213 is printed, so readings stop at 10 W.
+[[meters.power.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.power.calibration]]
+raw = 143
+actual = 5.0
+label = "5"
+
+[[meters.power.calibration]]
+raw = 213
+actual = 10.0
+label = "10"
+
+# 15 13 ALC: 0000=Minimum, 0120=Maximum, in the 0-100 convention of
+# rigs/ic7300.toml's [meters.alc].
+[[meters.alc.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.alc.calibration]]
+raw = 120
+actual = 100.0
+label = "100"
+
+# 15 14 COMP: 0000=0 dB, 0130=15 dB, 0210=25.5 dB.
+[[meters.comp.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.comp.calibration]]
+raw = 130
+actual = 15.0
+label = "15"
+
+[[meters.comp.calibration]]
+raw = 210
+actual = 25.5
+label = "25.5"
+
+# 15 15 Vd: 0000=0 V, 0075=5 V, 0241=16 V.
+[[meters.vd.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.vd.calibration]]
+raw = 75
+actual = 5.0
+label = "5"
+
+[[meters.vd.calibration]]
+raw = 241
+actual = 16.0
+label = "16"
+
+# 15 16 Id: 0000=0 A, 0121=2 A, 0241=4 A.
+[[meters.id.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.id.calibration]]
+raw = 121
+actual = 2.0
+label = "2"
+
+[[meters.id.calibration]]
+raw = 241
+actual = 4.0
+label = "4"
 
 [tx_policy]
 # Not bench-measured — inherited (MOR-1947). The backend factory routes IC-705 onto Ic705SerialRadio.

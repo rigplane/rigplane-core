@@ -52,7 +52,15 @@ export interface ReadingScalarInput extends ContinuousScalarInputBase {
 
 export type ContinuousScalarInput = CommandFeedbackScalarInput | ReadingScalarInput;
 export type ScalarSource = 'native-input' | 'pointer' | 'wheel' | 'keyboard' | 'reset';
-export type ScalarDispatchMode = 'immediate' | Readonly<{ debounceMs: number }>;
+/**
+ * When to hand the candidate to `request`. `'immediate'` dispatches on the
+ * event itself; `{debounceMs}` trailing-dispatches after that much event
+ * silence; `'on-release'` (MOR-1691) holds the candidate as the
+ * gesture-local draft and dispatches exactly once when the gesture commits
+ * — `endPointer` for a pointer drag, `nativeChange` for a native range's
+ * `change` event — so a drag streams no per-move requests.
+ */
+export type ScalarDispatchMode = 'immediate' | 'on-release' | Readonly<{ debounceMs: number }>;
 export interface ScalarStepInput { readonly direction: -1 | 1; readonly fine: boolean; readonly steps?: number }
 export interface ScalarKeyInput { readonly key: string; readonly fine: boolean }
 export interface ScalarDispatchContext {
@@ -123,6 +131,10 @@ export interface ContinuousScalarRendererLease {
   endPointer(token: number): void;
   cancelPointer(token: number): void;
   nativeInput(candidate: number): void;
+  /** MOR-1691: the native range's `change` commit — under an `'on-release'`
+   * dispatch mode this is what hands the held gesture candidate to
+   * `request`; under any other mode it is inert. */
+  nativeChange(): void;
   wheel(event: ScalarStepInput): void;
   key(event: ScalarKeyInput): boolean;
   reset(): void;
@@ -313,12 +325,18 @@ function bipolarKeyboardStep(
 export function createBipolarContinuousScalarPolicy(
   options: Readonly<{
     debounceMs: number;
+    /** MOR-1691: `'on-release'` bounds a pointer drag to one committed
+     * request (dispatch at `endPointer`); the default `'immediate'` keeps
+     * the H0 contract every existing consumer was accepted under. */
+    pointerDispatch?: 'immediate' | 'on-release';
     describeTarget?: (value: number) => string;
   }>,
 ): Readonly<ContinuousScalarPolicy> {
   const debounce = options.debounceMs > 0
     ? Object.freeze({ debounceMs: options.debounceMs })
     : 'immediate';
+  const pointerMode: ScalarDispatchMode = options.pointerDispatch === 'on-release'
+    ? 'on-release' : 'immediate';
   const policy: ContinuousScalarPolicy = {
     name: 'bipolar',
     preview: 'optimistic',
@@ -352,8 +370,15 @@ export function createBipolarContinuousScalarPolicy(
       const increment = bipolarLatticeCompatible(requested, domain) ? requested : domain.step;
       return bipolarKeyboardStep(current, event.key, increment, domain);
     },
-    reset: (domain) => domain.defaultValue ?? 0,
-    dispatch: (source) => source === 'keyboard' || source === 'reset' ? debounce : 'immediate',
+    // MOR-2535/MOR-2909: a null defaultValue means NO reset candidate —
+    // `applyCandidate` refuses a null, so `lease.reset()` dispatches
+    // nothing (the same doctrine the native-range policy documents).
+    // Falling back to 0 would invent a per-lane 0 Hz default the domain
+    // never declared — the MOR-2909 F1 hazard on the legacy PBT lanes.
+    reset: (domain) => domain.defaultValue,
+    dispatch: (source) => source === 'pointer'
+      ? pointerMode
+      : source === 'keyboard' || source === 'reset' ? debounce : 'immediate',
     dispatchesCanonical: (source, context, domain) => source === 'wheel'
       || (source === 'keyboard' && domain?.keyboardStep !== undefined
         && context !== undefined
@@ -404,6 +429,24 @@ const nativeRangePolicy: ContinuousScalarPolicy = {
 export const nativeRangeContinuousScalarPolicy: Readonly<ContinuousScalarPolicy> =
   Object.freeze(nativeRangePolicy);
 
+/** MOR-1691: the native-range contract with a BOUNDED dispatch — every
+ * `input` during a drag stays the gesture-local draft and exactly one
+ * request leaves the control at the `change` commit (a pointer drag, a
+ * touch drag and a committed keyboard step each end in exactly one
+ * `change`), so the radio sees no per-move write stream. The Filter Width
+ * row keeps the immediate singleton above (its own accepted contract). */
+const nativeRangeCommitOnReleasePolicy: ContinuousScalarPolicy = {
+  ...nativeRangePolicy,
+  name: 'native-range-commit-on-release',
+  // Only the gesture sources defer to the release commit — reset (the
+  // IF-shift double-click), wheel and keyboard keep the base immediate
+  // contract, since no release gesture would ever hand their candidate
+  // to `request`.
+  dispatch: (source) => source === 'native-input' || source === 'pointer' ? 'on-release' : 'immediate',
+};
+export const nativeRangeCommitOnReleaseContinuousScalarPolicy: Readonly<ContinuousScalarPolicy> =
+  Object.freeze(nativeRangeCommitOnReleasePolicy);
+
 export function createRenderedNativeRangeContinuousScalarPolicy(): Readonly<ContinuousScalarPolicy> {
   const policy: ContinuousScalarPolicy = {
     name: 'rendered-native-range',
@@ -429,6 +472,20 @@ type LocalCommandRequest = Readonly<{
   observedLifecycleId: string | null;
   dispatched: boolean;
   representedLifecycleId: string | null;
+}>;
+/** A candidate held by an `'on-release'` dispatch mode until its gesture
+ * commits (`endPointer`/`nativeChange`) — MOR-1691. Carries the exact
+ * validity context the debounced timer path uses, so a release after an
+ * authority change or renderer replacement stays inert. The source is the
+ * `ScalarSource` the policy deferred; the on-release policies select it
+ * only for the gesture sources, the only ones with a release commit. */
+type PendingRelease = Readonly<{
+  candidate: number;
+  authority: AuthorityIdentity;
+  generation: number;
+  renderer: number;
+  isCurrent: () => boolean;
+  source: ScalarSource;
 }>;
 
 function authorityOf(input: Readonly<ContinuousScalarInput>): AuthorityIdentity {
@@ -526,6 +583,7 @@ export function createContinuousScalar(
   };
   let localCommandRequest: LocalCommandRequest | null = null;
   let lastDispatch: Readonly<{ value: number; canonical: number }> | null = null;
+  let pendingRelease: PendingRelease | null = null;
   let destroyed = false;
 
   function clearTimers(): void {
@@ -544,6 +602,7 @@ export function createContinuousScalar(
     activeGesture = null;
     localCommandRequest = null;
     lastDispatch = null;
+    pendingRelease = null;
   }
 
   function reconcile(input: Readonly<ContinuousScalarInput>): void {
@@ -696,11 +755,17 @@ export function createContinuousScalar(
       draft = null;
       draftCanonical = null;
       localCommandRequest = null;
+      // A candidate suppressed here commits nothing — an earlier held
+      // release candidate from the same gesture is stale (MOR-1691).
+      pendingRelease = null;
       if (source !== 'pointer') interaction = 'idle';
       return true;
     }
     if (source === 'pointer' && lastDispatch !== null
-      && Object.is(normalized, lastDispatch.value)) return true;
+      && Object.is(normalized, lastDispatch.value)) {
+      pendingRelease = null;
+      return true;
+    }
     localCommandRequest = input.evidence === 'command-feedback'
       ? {
         observedLifecycleId: input.feedback.lifecycleId,
@@ -711,6 +776,8 @@ export function createContinuousScalar(
     const mode = policy.dispatch(source);
     if (mode === 'immediate') {
       dispatch(normalized, authority, generation, renderer, isCurrent);
+    } else if (mode === 'on-release') {
+      pendingRelease = { candidate: normalized, authority, generation, renderer, isCurrent, source };
     } else {
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
@@ -718,6 +785,17 @@ export function createContinuousScalar(
       }, mode.debounceMs);
     }
     return true;
+  }
+
+  /** Hands an `'on-release'` candidate held for `source` to the same
+   * validated dispatch path the debounced timer uses (MOR-1691). A stale
+   * generation, a replaced renderer or a changed authority leaves it
+   * inert; no pending candidate is a no-op. */
+  function commitRelease(source: PendingRelease['source']): void {
+    const pending = pendingRelease;
+    if (pending === null || pending.source !== source) return;
+    pendingRelease = null;
+    dispatch(pending.candidate, pending.authority, pending.generation, pending.renderer, pending.isCurrent);
   }
 
   function interactionBase(input: Readonly<ContinuousScalarInput>): number | null {
@@ -801,6 +879,9 @@ export function createContinuousScalar(
         if (activeGesture?.renderer !== renderer || activeGesture.token !== token) return;
         activeGesture = null;
         interaction = 'idle';
+        // MOR-1691: an on-release pointer candidate commits with the
+        // gesture's end — exactly one request per drag.
+        commitRelease('pointer');
         current();
       },
       cancelPointer(token: number): void {
@@ -810,6 +891,11 @@ export function createContinuousScalar(
       },
       nativeInput(candidate: number): void {
         applyCandidate(renderer, isCurrent, 'native-input', candidate);
+      },
+      nativeChange(): void {
+        if (!rendererIsCurrent(renderer, isCurrent)) return;
+        current();
+        commitRelease('native-input');
       },
       wheel(event: ScalarStepInput): void {
         if (!rendererIsCurrent(renderer, isCurrent)) return;
@@ -895,6 +981,7 @@ function inactiveRendererLease(
     endPointer: () => {},
     cancelPointer: () => {},
     nativeInput: () => {},
+    nativeChange: () => {},
     wheel: () => {},
     key: () => false,
     reset: () => {},

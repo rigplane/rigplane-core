@@ -8,6 +8,7 @@ import {
   createKnobContinuousScalarPolicy,
   createRenderedNativeRangeContinuousScalarPolicy,
   createContinuousScalarRendererSeat,
+  nativeRangeCommitOnReleaseContinuousScalarPolicy,
   nativeRangeContinuousScalarPolicy,
   type CommandScalarFeedback,
   type ContinuousScalarInput,
@@ -435,6 +436,33 @@ describe('continuous scalar source policies', () => {
     expect(policy.wheel(0, { direction: 1, fine: false }, compact)).toBe(5);
     expect(policy.wheel(0, { direction: 1, fine: false }, large)).toBe(44);
     expect(policy.wheel(0, { direction: 1, fine: true }, compact)).toBe(0.5);
+  });
+
+  it('refuses a Bipolar reset when the domain declares no default (MOR-2535/MOR-2909)', () => {
+    vi.useFakeTimers();
+    const policy = createBipolarContinuousScalarPolicy({ debounceMs: 50 });
+    // MOR-2535 doctrine (the native-range policy documents it): a null
+    // defaultValue means NO reset candidate — `applyCandidate` refuses a
+    // null, so `lease.reset()` dispatches nothing. Falling back to 0 would
+    // invent a per-lane 0 Hz default the domain never declared — the exact
+    // MOR-2909 F1 hazard on the legacy PBT lanes.
+    const none = readingSetup(policy, {
+      domain: { min: -1200, max: 1200, step: 50, defaultValue: null, fineStepDivisor: 10 },
+      reading: { status: 'known', value: 500 },
+    });
+    none.scalar.attachRenderer().reset();
+    vi.advanceTimersByTime(60);
+    expect(none.request).not.toHaveBeenCalled();
+
+    // An explicitly declared default stays the reset target, 0 included.
+    const zero = readingSetup(policy, {
+      domain: { min: -1200, max: 1200, step: 50, defaultValue: 0, fineStepDivisor: 10 },
+      reading: { status: 'known', value: 500 },
+    });
+    zero.scalar.attachRenderer().reset();
+    vi.advanceTimersByTime(60);
+    expect(zero.request).toHaveBeenCalledExactlyOnceWith(0);
+    vi.useRealTimers();
   });
 
   it('makes native input immediate and tokenless without wheel or key reinterpretation', () => {
@@ -1871,4 +1899,149 @@ describe('continuous scalar dispatch deduplication', () => {
       lease.pointer(token, 100);
       expect(setup.request.mock.calls).toEqual([[100]]);
     });
+});
+
+// ── MOR-1691: on-release dispatch bounds a gesture to one committed request ──
+//
+// The radio passband rows (PBT inner/outer, IF shift) must not stream one
+// intent per pointer move onto the CAT wire. A policy whose pointer/native
+// dispatch mode is 'on-release' holds every intermediate candidate as the
+// gesture-local draft and dispatches exactly ONE request when the gesture
+// commits: `endPointer` for a pointer drag, `nativeChange` for a native
+// range's `change` event. Cancellation discards the candidate; an authority
+// change between draft and release fences the commit.
+describe('on-release dispatch (MOR-1691)', () => {
+  const PASSBAND_DOMAIN: ScalarDomain = {
+    min: -1_200, max: 1_200, step: 50, defaultValue: 0, fineStepDivisor: 10,
+  };
+  const onReleaseBipolar = () => createBipolarContinuousScalarPolicy({
+    debounceMs: 50, pointerDispatch: 'on-release',
+  });
+
+  it('holds every pointer move as the draft and dispatches exactly one request on release', () => {
+    const { scalar, request } = readingSetup(onReleaseBipolar(), {
+      domain: PASSBAND_DOMAIN, reading: { status: 'known', value: 0 },
+    });
+    const lease = scalar.attachRenderer();
+    const token = lease.beginPointer()!;
+
+    for (const value of [50, 100, 150, 200, 250, 300]) {
+      lease.pointer(token, value);
+      expect(lease.view.displayed).toBe(value);
+      expect(lease.view.draft).toBe(value);
+    }
+    expect(request).not.toHaveBeenCalled();
+
+    lease.endPointer(token);
+    expect(request).toHaveBeenCalledExactlyOnceWith(300);
+
+    // A later gesture is its own committed request — the bounding is per
+    // gesture, not a one-shot latch.
+    const second = lease.beginPointer()!;
+    lease.pointer(second, 350);
+    lease.endPointer(second);
+    expect(request.mock.calls).toEqual([[300], [350]]);
+  });
+
+  it('discards the deferred candidate when the pointer gesture is cancelled', () => {
+    const { scalar, request } = readingSetup(onReleaseBipolar(), {
+      domain: PASSBAND_DOMAIN, reading: { status: 'known', value: 0 },
+    });
+    const lease = scalar.attachRenderer();
+    const token = lease.beginPointer()!;
+    lease.pointer(token, 300);
+    lease.cancelPointer(token);
+    expect(request).not.toHaveBeenCalled();
+
+    const next = lease.beginPointer()!;
+    lease.pointer(next, 100);
+    lease.endPointer(next);
+    expect(request).toHaveBeenCalledExactlyOnceWith(100);
+  });
+
+  it('keeps an endPointer with no deferred candidate inert', () => {
+    const { scalar, request } = readingSetup(onReleaseBipolar(), {
+      domain: PASSBAND_DOMAIN, reading: { status: 'known', value: 0 },
+    });
+    const lease = scalar.attachRenderer();
+    const token = lease.beginPointer()!;
+    lease.endPointer(token);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('suppresses a pointer release back onto the untouched canonical value', () => {
+    const { scalar, request } = readingSetup(onReleaseBipolar(), {
+      domain: PASSBAND_DOMAIN, reading: { status: 'known', value: 0 },
+    });
+    const lease = scalar.attachRenderer();
+    const token = lease.beginPointer()!;
+    lease.pointer(token, 200);
+    lease.pointer(token, 0);
+    lease.endPointer(token);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('native input defers to the change commit: one request per committed gesture', () => {
+    const { scalar, request } = readingSetup(nativeRangeCommitOnReleaseContinuousScalarPolicy, {
+      domain: PASSBAND_DOMAIN, reading: { status: 'known', value: 0 },
+    });
+    const lease = scalar.attachRenderer();
+
+    for (const value of [50, 100, 150, 200]) {
+      lease.nativeInput(value);
+      expect(lease.view.displayed).toBe(value);
+    }
+    expect(request).not.toHaveBeenCalled();
+
+    lease.nativeChange();
+    expect(request).toHaveBeenCalledExactlyOnceWith(200);
+  });
+
+  it('keeps a native change with no deferred candidate inert', () => {
+    const { scalar, request } = readingSetup(nativeRangeCommitOnReleaseContinuousScalarPolicy, {
+      domain: PASSBAND_DOMAIN, reading: { status: 'known', value: 0 },
+    });
+    const lease = scalar.attachRenderer();
+    lease.nativeChange();
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('fences the deferred commit when the command authority changes before release', () => {
+    const { scalar, request, update } = commandSetup(onReleaseBipolar(), {
+      domain: PASSBAND_DOMAIN,
+      feedback: feedback('idle', { confirmed: 0 }),
+    });
+    const lease = scalar.attachRenderer();
+    const token = lease.beginPointer()!;
+    lease.pointer(token, 300);
+    update({ feedback: feedback('idle', { confirmed: 0, sessionEpoch: 8 }) });
+    lease.endPointer(token);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('keeps the keyboard caller debounce unchanged under an on-release pointer', () => {
+    vi.useFakeTimers();
+    const { scalar, request } = readingSetup(onReleaseBipolar(), {
+      domain: PASSBAND_DOMAIN, reading: { status: 'known', value: 0 },
+    });
+    const lease = scalar.attachRenderer();
+    lease.key({ key: 'ArrowRight', fine: false });
+    vi.advanceTimersByTime(49);
+    expect(request).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(request).toHaveBeenCalledExactlyOnceWith(50);
+    vi.useRealTimers();
+  });
+
+  it('keeps the native-range reset immediate: the default dispatches with no release gesture', () => {
+    const { scalar, request } = readingSetup(nativeRangeCommitOnReleaseContinuousScalarPolicy, {
+      domain: PASSBAND_DOMAIN, reading: { status: 'known', value: 500 },
+    });
+    const lease = scalar.attachRenderer();
+    lease.reset();
+    expect(request).toHaveBeenCalledExactlyOnceWith(0);
+    // The reset left no deferred candidate behind for a later commit.
+    lease.nativeChange();
+    expect(request).toHaveBeenCalledTimes(1);
+  });
 });

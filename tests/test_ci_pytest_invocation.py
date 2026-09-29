@@ -31,6 +31,9 @@ equivalent effect expressed a different way (e.g. `-k 'not integration'`, a
 marker deselect, or a `pyproject.toml` `addopts` change) — those would need
 a matching assertion added here, or they would drift the same way this one
 did.
+
+Also pins that the `Run tests` job in each of those three workflows checks
+out with `fetch-depth` of at least 2.
 """
 
 from __future__ import annotations
@@ -51,6 +54,21 @@ _RUN_TESTS_STEP_RE = re.compile(
     r"^      - name: Run tests\n(.*?)(?=^      - name:|\Z)",
     re.DOTALL | re.MULTILINE,
 )
+
+# Job entries are `  name:` keys whose bodies run to the next sibling key.
+# Top-level `on:` keys share that shape but never contain `Run tests`.
+_JOB_RE = re.compile(
+    r"^  ([A-Za-z_][\w-]*):\n(.*?)(?=^  [A-Za-z_][\w-]*:|\Z)",
+    re.DOTALL | re.MULTILINE,
+)
+
+# The checkout step inside a job, from its `uses:` line to the next step.
+_CHECKOUT_STEP_RE = re.compile(
+    r"^      - uses: actions/checkout@.*?(?=^      - |\Z)",
+    re.DOTALL | re.MULTILINE,
+)
+
+_FETCH_DEPTH_RE = re.compile(r"fetch-depth:\s*(\d+)")
 
 
 def _pytest_invocations(workflow_name: str) -> list[str]:
@@ -98,3 +116,31 @@ def test_no_workflow_excludes_integration_tests() -> None:
             "line — likely a folded (`run: >`) or otherwise reshaped "
             "block scalar smuggling the flag back in"
         )
+
+
+def _run_tests_job_body(workflow_name: str) -> str:
+    text = (WORKFLOWS_DIR / workflow_name).read_text()
+    bodies = [body for _, body in _JOB_RE.findall(text) if "name: Run tests" in body]
+    assert bodies, (
+        f"no job with a `Run tests` step found in {workflow_name} — update "
+        "this pin if the workflow was restructured"
+    )
+    return bodies[0]
+
+
+def test_run_tests_job_checks_out_at_least_two_commits() -> None:
+    for workflow_name in WORKFLOW_FILES:
+        job_body = _run_tests_job_body(workflow_name)
+        checkouts = _CHECKOUT_STEP_RE.findall(job_body)
+        assert checkouts, (
+            f"no actions/checkout step in {workflow_name}'s `Run tests` job"
+        )
+        for checkout in checkouts:
+            depth_match = _FETCH_DEPTH_RE.search(checkout)
+            depth = int(depth_match.group(1)) if depth_match else None
+            assert depth is not None and depth >= 2, (
+                f"{workflow_name}'s `Run tests` job checkout has fetch-depth "
+                f"{depth!r} (None is the checkout default of 1) — the suite "
+                "includes a monotonic comparison against the parent commit, "
+                "which needs the parent in the checkout"
+            )

@@ -90,6 +90,8 @@ scripts/*
 !scripts/gen_field_status_fixture.py
 # And the control-domain contract vector generator is tracked (MOR-2477).
 !scripts/gen_control_domain_vectors.py
+# And the versioned docs site builder is tracked (MOR-2914).
+!scripts/build_versioned_docs.py
 # But CI scripts under .github/ are tracked.
 !.github/scripts/
 # And frontend tooling scripts (e.g. i18n lint) are tracked.

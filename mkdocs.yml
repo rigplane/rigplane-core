@@ -86,6 +86,7 @@ nav:
   - Getting Started:
       - Installation: guide/installation.md
       - Migration from icom-lan: migrate.md
+      - What's New in 3.0: whats-new.md
       - Quick Start: guide/quickstart.md
       - CLI Reference: guide/cli.md
       - Configuration: guide/configuration.md
@@ -99,11 +100,13 @@ nav:
           - IC-705 USB Serial: guide/ic705-usb-setup.md
           - IC-7300 USB Serial: guide/ic7300-usb-setup.md
           - IC-9700 USB & LAN: guide/ic9700-usb-setup.md
+          - FTX-1 USB Serial: guide/ftx1-usb-setup.md
           - opuslib macOS Fix: opuslib-macos-fix.md
       - Radio Profiles: guide/profiles.md
       - WSJT-X / Digital Modes: guide/wsjtx-setup.md
       - Audio Recipes: guide/audio-recipes.md
       - Web UI: guide/web-ui.md
+      - Operating Away From Home: guide/remote-operation.md
       - Diagnostic Reports: guide/diagnostic-reports.md
       - CI-V Commands: guide/commands.md
       - Troubleshooting: guide/troubleshooting.md
