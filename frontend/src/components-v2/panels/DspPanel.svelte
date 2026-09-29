@@ -59,6 +59,14 @@
     autoNotchChoicePending || manualNotchChoicePending || offNotchChoicePending,
   );
 
+  // MOR-2979: the NB/NR/NOTCH/A-NOTCH keys expose the confirmed on/off
+  // and stay disabled until observed (`toDspProps`), same seam as #3927's
+  // choice keys. The MOR-2932 scalar feedback below is untouched.
+  let nbKnown = $derived(p.nbKnown ?? true);
+  let nrKnown = $derived(p.nrKnown ?? true);
+  let manualNotchKnown = $derived(p.manualNotchKnown ?? true);
+  let autoNotchKnown = $derived(p.autoNotchKnown ?? true);
+
   let nrMode = $derived(p.nrMode);
   // MOR-1735: this fallback panel must render the same projection contract as
   // the semantic DSP surface.  The legacy shape is only retained for older
@@ -387,6 +395,8 @@
       <div class="dsp-btn-wrap" bind:this={nbAnchorEl}>
         <HardwareButton
           active={nbActive}
+          pressed={nbKnown ? nbActive : undefined}
+          disabled={!nbKnown}
           indicator="edge-left"
           color="orange"
           title="NB — click to toggle; long-press for settings"
@@ -403,6 +413,8 @@
       <div class="dsp-btn-wrap" bind:this={nrAnchorEl}>
         <HardwareButton
           active={nrActive}
+          pressed={nrKnown ? nrActive : undefined}
+          disabled={!nrKnown}
           indicator="edge-left"
           color="cyan"
           title="NR — click to toggle; long-press for settings"
@@ -420,6 +432,8 @@
       <div class="dsp-btn-wrap" bind:this={notchAnchorEl}>
         <HardwareButton
           active={notchMode === 'manual'}
+          pressed={manualNotchKnown ? notchMode === 'manual' : undefined}
+          disabled={!manualNotchKnown}
           indicator="edge-left"
           color="cyan"
           title="Manual Notch — click to toggle; long-press for settings"
@@ -442,6 +456,8 @@
       <div class="dsp-btn-wrap">
         <HardwareButton
           active={notchMode === 'auto'}
+          pressed={autoNotchKnown ? notchMode === 'auto' : undefined}
+          disabled={!autoNotchKnown}
           indicator="edge-left"
           color="green"
           title="Auto Notch"
@@ -525,7 +541,14 @@
     <div class="menu-title">Noise blanker</div>
     <div class="dsp-modal-block dsp-modal-row">
       <span class="dsp-modal-inline-label">NB</span>
-      <HardwareButton indicator="edge-left" active={nbActive} color="orange" onclick={() => onNbToggle(!nbActive)}>
+      <HardwareButton
+        indicator="edge-left"
+        active={nbActive}
+        pressed={nbKnown ? nbActive : undefined}
+        disabled={!nbKnown}
+        color="orange"
+        onclick={() => onNbToggle(!nbActive)}
+      >
         {nbActive ? 'ON' : 'OFF'}
       </HardwareButton>
     </div>

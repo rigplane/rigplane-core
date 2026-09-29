@@ -201,6 +201,9 @@ export function toVfoProps(
 
 export interface VfoOpsProps {
   splitActive: boolean;
+  /** Whether the `split` field is honestly observed — the SPLIT keys expose
+   *  the confirmed state and stay disabled until observed (MOR-2979). */
+  splitKnown: boolean;
   txVfo: 'main' | 'sub';
   dualWatch: boolean;
   mainSubTracking: boolean;
@@ -215,6 +218,10 @@ export function toVfoOpsProps(
 
   return {
     splitActive: split,
+    // MOR-2979: the SPLIT keys stay rendered (EssentialsPanel has no
+    // visibility gate), so the props must carry knownness — the field must
+    // be available AND present, never the collapsed `?? false`.
+    splitKnown: topFieldAvailable(state, 'split') && typeof state?.split === 'boolean',
     txVfo,
     dualWatch: state?.dualWatch ?? false,
     mainSubTracking: state?.mainSubTracking ?? false,
@@ -603,6 +610,10 @@ export interface RitXitProps {
   xitOffset: number;
   hasRit: boolean;
   hasXit: boolean;
+  /** Whether `ritOn`/`ritTx` are honestly observed — the RIT/XIT keys expose
+   *  the confirmed state and stay disabled until observed (MOR-2979). */
+  ritKnown: boolean;
+  xitKnown: boolean;
   /** Exact RIT control contract, when supplied by a normalized capability payload. */
   ritDomain: ControlDomain | null | undefined;
 }
@@ -643,6 +654,11 @@ export function toRitXitProps(
     xitOffset: ritFreqAvailable ? (state?.ritFreq ?? Number.NaN) : Number.NaN,
     hasRit: hasCap(caps, 'rit') && ritOnAvailable,
     hasXit: hasCap(caps, 'xit') && ritTxAvailable,
+    // MOR-2979: the keys stay rendered while `hasRit`/`hasXit` hold, so the
+    // props must carry knownness — available AND present, never the
+    // collapsed `?? false`.
+    ritKnown: ritOnAvailable && typeof state?.ritOn === 'boolean',
+    xitKnown: ritTxAvailable && typeof state?.ritTx === 'boolean',
   };
   Object.defineProperty(props, 'ritDomain', {
     value: validatedRitDomain(caps),
@@ -794,6 +810,13 @@ export interface DspProps {
   hasNotch: boolean;
   hasAutoNotch: boolean;
   hasAgcTime: boolean;
+  /** Whether `nb`/`nr`/`manualNotch`/`autoNotch` are honestly observed —
+   *  the NB/NR/NOTCH/A-NOTCH keys expose the confirmed state and stay
+   *  disabled until observed (MOR-2979). */
+  nbKnown: boolean;
+  nrKnown: boolean;
+  manualNotchKnown: boolean;
+  autoNotchKnown: boolean;
 }
 
 export function toDspProps(
@@ -866,6 +889,13 @@ export function toDspProps(
     hasAutoNotch: (hasCap(caps, 'notch') || caps === null) && autoNotchAvailable,
     hasAgcTime: activeFieldAvailable(state, 'agcTimeConstant'),
     hasManualNotchWidth: hasCap(caps, 'notch') && hasCap(caps, notchWidthTag),
+    // MOR-2979: the keys stay rendered while the `has*` gates hold, so the
+    // props must carry knownness — available AND present, never the
+    // collapsed `?? false` / `? 1 : 0` / `'off'`.
+    nbKnown: nbAvailable && typeof rx?.nb === 'boolean',
+    nrKnown: nrAvailable && typeof rx?.nr === 'boolean',
+    manualNotchKnown: manualNotchAvailable && typeof rx?.manualNotch === 'boolean',
+    autoNotchKnown: autoNotchAvailable && typeof rx?.autoNotch === 'boolean',
   };
 }
 
@@ -884,6 +914,11 @@ export interface TxProps {
   hasTx: boolean;
   hasTuner: boolean;
   hasMonitor: boolean;
+  /** VOX/COMP capability gates (capability only) — the keys stay rendered
+   *  while held and expose knownness via `voxAvailable`/`compAvailable`,
+   *  staying disabled until observed (MOR-2979). */
+  hasVox: boolean;
+  hasComp: boolean;
   txActiveAvailable: boolean;
   rfPowerAvailable: boolean;
   micGainAvailable: boolean;
@@ -932,6 +967,10 @@ export function toTxProps(
     hasTx: caps?.tx ?? false,
     hasTuner: hasCap(caps, 'tuner') && atuAvailable,
     hasMonitor: hasCap(caps, 'monitor') && monAvailable,
+    // MOR-2979: capability-only gates (like `ModeProps.hasDataMode`) — the
+    // VOX/COMP keys stay rendered while held, disabled until observed.
+    hasVox: hasCap(caps, 'vox'),
+    hasComp: hasCap(caps, 'compressor'),
     txActiveAvailable,
     rfPowerAvailable,
     micGainAvailable,
@@ -1226,6 +1265,9 @@ export interface ScanProps {
   scanning: boolean;
   scanType: number;
   scanResumeMode: number;
+  /** Whether `scanning` is honestly observed — the STOP key exposes the
+   *  confirmed state and stays disabled until observed (MOR-2979). */
+  scanningKnown: boolean;
 }
 
 export function toScanProps(state: ServerState | null): ScanProps {
@@ -1236,6 +1278,10 @@ export function toScanProps(state: ServerState | null): ScanProps {
       state?.scanResumeMode === undefined || state?.scanResumeMode === null
         ? Number.NaN
         : state.scanResumeMode & 0x0f,
+    // MOR-2979: STOP has no visibility gate (always rendered), so the props
+    // must carry knownness — available AND present, never the collapsed
+    // `?? false`.
+    scanningKnown: topFieldAvailable(state, 'scanning') && typeof state?.scanning === 'boolean',
   };
 }
 

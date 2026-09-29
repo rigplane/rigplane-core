@@ -44,6 +44,12 @@
   let preDisabledReason = $derived(p.preDisabledReason);
   let digiSel = $derived(p.digiSel);
   let ipPlus = $derived(p.ipPlus);
+  // MOR-2979: the ATT/DIGI-SEL/IP+ keys expose the confirmed on/off and stay
+  // disabled until observed — knownness rides the existing availability
+  // flags (`toRfFrontEndProps`), same seam as #3927's choice keys.
+  let attKnown = $derived(p.attAvailable ?? true);
+  let digiSelKnown = $derived(p.digiSelAvailable ?? true);
+  let ipPlusKnown = $derived(p.ipPlusAvailable ?? true);
   const onRfGainChange = handlers.onRfGainChange;
   const onSquelchChange = handlers.onSquelchChange;
   const onAttChange = handlers.onAttChange;
@@ -162,6 +168,8 @@
         {@const attArmedId = `${armedIdBase}-att`}
         <HardwareButton
           active={att > 0}
+          pressed={attKnown ? att > 0 : undefined}
+          disabled={!attKnown}
           indicator="edge-left"
           color="amber"
           title={attShortcut}
@@ -216,6 +224,8 @@
         {#if showDigiSel}
           <HardwareButton
             active={digiSel}
+            pressed={digiSelKnown ? digiSel : undefined}
+            disabled={!digiSelKnown}
             indicator="edge-left"
             color="green"
             onclick={() => onDigiSelToggle(!digiSel)}
@@ -226,6 +236,8 @@
         {#if showIpPlus}
           <HardwareButton
             active={ipPlus}
+            pressed={ipPlusKnown ? ipPlus : undefined}
+            disabled={!ipPlusKnown}
             indicator="edge-left"
             color="cyan"
             onclick={() => onIpPlusToggle(!ipPlus)}
