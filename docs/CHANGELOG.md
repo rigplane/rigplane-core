@@ -758,6 +758,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shutdown that ends cancelled now exits with code 130
   instead of a CancelledError traceback.
 
+- **The legacy DSP panel's NR level and NB depth sliders show command
+  feedback (MOR-2932).** The NR Level slider in the NR settings modal
+  and the NB Depth slider in the NB settings modal used to show the
+  reading alone; both now ride the shared command-feedback scalar for
+  `set_nr_level` and `set_nb_depth`, joining the NB level, NB width,
+  notch position and AGC time lanes. Raw DSP feedback is projected to
+  display units through the same adapter projection the semantic radio
+  surfaces already use for these two lanes. While a request is pending
+  the slider carries `aria-busy` and its description names the
+  requested target; when the radio confirms, the confirmed display
+  value lands, and an error keeps the confirmed reading and shows the
+  error text. Dispatch follows the shared 50 ms discrete policy, and a
+  lane whose feedback is unavailable keeps its slider disabled.
+
+- **The power-off overlay's label is centred on the phone and keeps a
+  side margin (MOR-2997).** The powered-off, not-answering and
+  not-connected labels share one element, which was left-aligned while
+  the icon above it was centred, and on the phone a wrapped line ran
+  to the screen edge. The label is now centred, and the overlay
+  content keeps the side margin the phone's mod-input warning uses —
+  `max(12px, env(safe-area-inset-*, 0px))` on each side, with
+  `max-width: 100%` — so a wrapped line never touches the edge. The
+  desktop one-line label is unchanged.
+
 ### Security
 
 - **A rigctld connection whose first line is an HTTP request line is
