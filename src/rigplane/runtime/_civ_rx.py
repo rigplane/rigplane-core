@@ -32,6 +32,7 @@ from rigplane.commands import (
     parse_frequency_response,
     parse_level_response,
     parse_mode_response,
+    parse_repeater_shift_response,
     parse_rit_frequency_response,
     parse_tone_freq_response,
     parse_tsql_freq_response,
@@ -71,7 +72,12 @@ from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.core.state_store import FreshnessState
 from rigplane.profiles.control_domain import decode_legacy_control
 from rigplane.scope import ScopeFrame
-from rigplane.core.types import CivFrame, Mode, bcd_decode
+from rigplane.core.types import (
+    CivFrame,
+    Mode,
+    bcd_decode,
+    ctcss_booleans_for_tone_squelch_type,
+)
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime._state_queries import tx_target_max_age
 from rigplane.runtime.meter_cal import interpolate_meter
@@ -459,18 +465,12 @@ _OBSERVABLE_CMD16_FIELDS = {
     0x46: ("global", "tx_state", "vox_on"),
 }
 
-# IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.4 and the English
-# CI-V guide p.4 both list 0x16 0x5D as one exclusive Tone squelch selector:
-# 00=OFF, 01=TONE, 02=TSQL, 03=DTCS, 06=DTCS (T), 07=TONE (T)/DTCS (R),
-# 08=DTCS (T)/TSQL (R), 09=TONE (T)/TSQL (R). Codes 03 and 06-09 are outside
-# the two-boolean vocabulary, same as FTX-1 CT codes 3/4/5 (MOR-2572):
-# publish None on both axes instead of inventing OFF.
+# 0x16 0x5D, the exclusive tone squelch selector (MOR-2573). What each code
+# means is the profile's [tone_squelch_types] table (MOR-2131); the decoder
+# publishes that type and derives the two CTCSS booleans from it, None on both
+# for a type they cannot express (core/types.py:
+# ctcss_booleans_for_tone_squelch_type).
 _TONE_SQUELCH_TYPE_SUB = 0x5D
-_TONE_SQUELCH_TYPE_BOOLS: dict[int, tuple[bool, bool]] = {
-    0x00: (False, False),
-    0x01: (True, False),
-    0x02: (True, True),
-}
 
 # 0x16 value sub-commands → (FieldPath spec, decode mode). ``raw`` keeps the
 # data byte verbatim (preamp), ``bcd_nibble`` decodes the BCD-nibble pair the
@@ -2620,16 +2620,23 @@ class CivRuntime:
                 and self._host._profile.command_map is not None
                 and self._host._profile.command_map.has("get_tone_squelch_type")
             ):
-                pair = _TONE_SQUELCH_TYPE_BOOLS.get(data[0])
-                derived: tuple[tuple[str, bool | None], ...] = (
-                    ("repeater_tone", None if pair is None else pair[0]),
-                    ("repeater_tsql", None if pair is None else pair[1]),
+                types = self._host._profile.tone_squelch_types or {}
+                tone_squelch_type = types.get(data[0])
+                tone, tsql = ctcss_booleans_for_tone_squelch_type(tone_squelch_type)
+                derived: tuple[tuple[str, str, bool | str | None], ...] = (
+                    ("operator_toggles", "repeater_tone", tone),
+                    ("operator_toggles", "repeater_tsql", tsql),
+                    (
+                        "operator_controls",
+                        "tone_squelch_type",
+                        None if tone_squelch_type is None else tone_squelch_type.value,
+                    ),
                 )
-                for name, derived_value in derived:
+                for family, name, derived_value in derived:
                     observations.append(
                         self._observation(
                             self._field_path(
-                                ("receiver", "operator_toggles", name),
+                                ("receiver", family, name),
                                 receiver_id=receiver_id,
                             ),
                             derived_value,
@@ -2897,6 +2904,24 @@ class CivRuntime:
                     frame=frame,
                 )
             )
+            # The same byte carries the repeater shift direction (MOR-2930),
+            # published only where the profile declares the shift getter.
+            shift = parse_repeater_shift_response(frame.data)
+            command_map = self._host._profile.command_map
+            if (
+                shift is not None
+                and command_map is not None
+                and command_map.has("get_repeater_shift")
+            ):
+                observations.append(
+                    self._observation(
+                        FieldPath.receiver(
+                            receiver_id, "operator_controls", "repeater_shift"
+                        ),
+                        int(shift),
+                        frame=frame,
+                    )
+                )
         elif frame.command == 0x10 and frame.data:
             # Tuning step: device step index (0-8), BCD nibble-pair byte.
             # Reuse the exact decode of ``_handle_10`` / ``get_tuning_step``;

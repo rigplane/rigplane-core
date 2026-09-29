@@ -310,6 +310,35 @@ describe('AppGlobalHost — standalone, with no layout mounted', () => {
     expect(powerEl()).toBeNull();
     unmount(instance);
   });
+
+  // MOR-2876: the server started while the radio's serial port could not be
+  // opened (radioHealth.likelyCause 'radio_not_connected'). The same overlay
+  // says so and offers no Power ON, even where the profile declares one:
+  // there is no port to send it through.
+  it('shows the not-connected overlay without Power ON while the serial port cannot be opened', () => {
+    h.radioHealth = { radioLink: 'reconnecting', likelyCause: 'radio_not_connected' };
+    const instance = mountAt(AppGlobalHost);
+
+    let overlay = powerEl();
+    expect(overlay?.getAttribute('data-state')).toBe('not-connected');
+    expect(overlay?.getAttribute('aria-label')).toBe('core.overlay.poweredOff.notConnectedLabel');
+    expect(overlay?.querySelector('.power-off-label')?.textContent)
+      .toBe('core.overlay.poweredOff.notConnectedLabel');
+    expect(h.powerOnCommand).toBe(true);
+    expect(overlay?.querySelector('.power-on-btn')).toBeNull();
+    expect(overlay?.querySelector('.power-off-hint')).toBeNull();
+
+    // The port opens but the radio stays silent: the server's verdict
+    // becomes MOR-2841's, and so does the overlay, Power ON included.
+    h.radioHealth = { radioLink: 'connected', likelyCause: 'radio_powered_off_likely' };
+    h.notifyRuntime();
+    flushSync();
+    overlay = powerEl();
+    expect(overlay?.getAttribute('data-state')).toBe('not-answering');
+    expect(overlay?.querySelector('.power-on-btn')).not.toBeNull();
+
+    unmount(instance);
+  });
 });
 
 describe('AppGlobalHost — authoritative TX source', () => {

@@ -50,8 +50,8 @@ const capture = process.env.RP_MOBILE_OBSERVED_CAPTURE
 
 test.use({ hasTouch: true, isMobile: true });
 
-async function prepare(page: Page) {
-  const selectedState = capture?.state.body ?? state;
+async function prepare(page: Page, stateOverride?: Omit<ServerState, 'sub'>) {
+  const selectedState = capture?.state.body ?? stateOverride ?? state;
   const writes: string[] = [];
   await page.addInitScript((value) => {
     if (!localStorage.getItem('rigplane:workspace')) {
@@ -362,7 +362,169 @@ test('portrait buttons carry 16px labels and 44px touch targets (MOR-2816)', asy
   await auditPortrait(page, info, 'rf');
   await page.getByRole('tab', { name: 'SCOPE', exact: true }).click();
   await expect(page.locator('#m-chip-panel-scope')).toBeVisible();
+  // MOR-2895: the desktop toolbar's radio-held row now lives in this tab —
+  // the audit below must find and measure its keys, not only the four
+  // screen keys. The mock radio declares no dual_rx, so MAIN/SUB stays
+  // honestly absent; the mock leaves the scope leaves unread, so the row
+  // renders unlit with empty reserved values.
+  const scopePanel = page.locator('#m-chip-panel-scope');
+  await expect(scopePanel.locator('[data-testid="scope-controls-surface"]')).toBeVisible();
+  await expect(scopePanel.locator('[data-testid="scope-mode-row-0"]')).toBeVisible();
+  await expect(scopePanel.locator('[data-testid="scope-mode-row-1"]')).toBeVisible();
+  await expect(scopePanel.locator('[data-testid="scope-span"]')).toBeVisible();
+  await expect(scopePanel.locator('[data-testid="scope-ref"]')).toBeVisible();
+  await expect(scopePanel.locator('[data-testid="scope-hold"]')).toBeVisible();
+  await expect(scopePanel.locator('[data-testid="scope-more"]')).toBeVisible();
   await auditPortrait(page, info, 'scope');
+  expect(writes).toEqual([]);
+});
+
+// MOR-2895 (owner, 2026-09-28 15:10 EDT, on the stand): the SCOPE tab's
+// second-level menu (the ⋯ key's More panel) opened straight down from the
+// key, and the fixed bottom tuning bar covered its tail — "During TX and
+// then nothing is visible". The panel must clear the bar: it opens UPWARD
+// once there is no room below the key. 15:11 EDT: lit keys use the existing
+// cyan on-state accent (the same --v2-accent-cyan the NB/NR chip bar lights
+// with), never the flat lamp red.
+const SCOPE_LEAVES = [
+  'mode', 'edge', 'span', 'speed', 'hold', 'refDb', 'dual', 'receiver',
+  'duringTx', 'centerType', 'vbwNarrow', 'rbw',
+] as const;
+
+function observedPath(path: string) {
+  return {
+    storePath: path, observed: true,
+    freshness: 'fresh' as const, availability: 'available' as const,
+    lastObservedMonotonic: 0,
+  };
+}
+
+// Every `scopeControls` leaf observed (During TX and VBW narrow ON) so the
+// More panel renders its full radio-held set with lit toggles to measure;
+// `main.nb = true` lights the header's NB chip for the accent comparison.
+const scopeReadState = {
+  ...state,
+  main: { ...state.main, nb: true },
+  scopeControls: {
+    receiver: 0, dual: false, mode: 0, span: 1, edge: 1, hold: true, refDb: -5,
+    speed: 1, duringTx: true, centerType: 1, vbwNarrow: true, rbw: 1, fixedEdge: null,
+  },
+  fieldStatus: {
+    ...state.fieldStatus,
+    ...Object.fromEntries(SCOPE_LEAVES.map((leaf) => [`scopeControls.${leaf}`, observedPath(`scopeControls.${leaf}`)])),
+  },
+} satisfies Omit<ServerState, 'sub'>;
+
+test('SCOPE More menu clears the tuning bar; lit items share the NB chip cyan (MOR-2895)', async ({ page }, info) => {
+  const writes = await prepare(page, scopeReadState);
+  for (const width of [375, 360]) {
+    await page.setViewportSize({ width, height: 812 });
+    await page.goto('/');
+    await settled(page);
+    await page.getByRole('tab', { name: 'SCOPE', exact: true }).click();
+    await expect(page.locator('#m-chip-panel-scope')).toBeVisible();
+    // The stand position the owner reported from: the tab scrolled to the
+    // bottom, where the ⋯ key sits lowest, right above the tuning bar.
+    await page.evaluate(() => {
+      const scroller = document.querySelector('.m-content');
+      if (!(scroller instanceof HTMLElement)) throw new Error('phone scroller not found');
+      scroller.scrollTop = scroller.scrollHeight;
+    });
+    await page.getByTestId('scope-more').click();
+    const panel = page.getByTestId('scope-more-panel');
+    await expect(panel).toBeVisible();
+    const audit = await page.evaluate(() => {
+      const panelEl = document.querySelector('[data-testid="scope-more-panel"]');
+      const strip = document.querySelector('.m-tuning-strip');
+      if (!(panelEl instanceof HTMLElement) || !(strip instanceof HTMLElement)) {
+        throw new Error('More panel or tuning strip not found');
+      }
+      // Every interactive item of the menu: buttons (keys, steppers).
+      const items = Array.from(panelEl.querySelectorAll<HTMLElement>('button'))
+        .filter((el) => getComputedStyle(el).display !== 'none' && el.getClientRects().length > 0)
+        .map((el) => {
+          const rect = el.getBoundingClientRect();
+          return {
+            label: (el.textContent ?? '').trim().slice(0, 24),
+            testid: el.getAttribute('data-testid') ?? '',
+            font: parseFloat(getComputedStyle(el).fontSize),
+            height: rect.height,
+            left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom,
+          };
+        });
+      const nbChip = document.querySelector('.m-vfo-meta .fact[data-indicator-fact="nb"][data-state="on"]');
+      const duringTx = document.querySelector('[data-testid="scope-duringTx"]');
+      // MOR-2895 round 2: the tab's own container remaps the lamp tokens.
+      // Computed custom properties stay raw token streams (hex), not
+      // resolved colors, so each token is resolved through a probe element
+      // INSIDE the tab — the same resolution path any key in the tab takes.
+      const scopeTab = document.querySelector('#m-chip-panel-scope');
+      let tabTokens: Record<string, string | null> | null = null;
+      if (scopeTab instanceof HTMLElement) {
+        const probe = document.createElement('div');
+        scopeTab.appendChild(probe);
+        const resolveColor = (token: string): string => {
+          probe.style.color = `var(${token})`;
+          return getComputedStyle(probe).color;
+        };
+        probe.style.textShadow = 'var(--dl-vfo-red-glow)';
+        tabTokens = {
+          lamp: resolveColor('--vfo-lamp-color'),
+          redText: resolveColor('--dl-vfo-red-text'),
+          red: resolveColor('--dl-vfo-red'),
+          glow: getComputedStyle(probe).textShadow,
+        };
+        probe.remove();
+      }
+      return {
+        viewport: { width: innerWidth, height: innerHeight },
+        panel: panelEl.getBoundingClientRect().toJSON(),
+        strip: strip.getBoundingClientRect().toJSON(),
+        items,
+        nbBar: nbChip ? getComputedStyle(nbChip, '::before').backgroundColor : null,
+        duringTxColor: duringTx ? getComputedStyle(duringTx).color : null,
+        tabTokens,
+      };
+    });
+    writeFileSync(info.outputPath(`mor-2895-more-${width}.json`), JSON.stringify(audit, null, 2));
+    await info.attach(`mor-2895-more-${width}`, { body: JSON.stringify(audit), contentType: 'application/json' });
+    const stage = `${width} px`;
+    expect(audit.items.length, `${stage}: More items found`).toBeGreaterThan(0);
+    // MOR-2895 round 3 (review item 2): the WHOLE panel box — not just its
+    // items — ends above the strip's live top edge (padding included).
+    expect(audit.panel.bottom, `${stage}: More panel bottom above the tuning bar`)
+      .toBeLessThanOrEqual(audit.strip.top);
+    expect(audit.panel.top, `${stage}: More panel top inside the viewport`)
+      .toBeGreaterThanOrEqual(0);
+    for (const item of audit.items) {
+      const name = `${stage} "${item.label}" (${item.testid})`;
+      expect.soft(item.top, `${name} top in viewport`).toBeGreaterThanOrEqual(0);
+      expect.soft(item.bottom, `${name} bottom in viewport`).toBeLessThanOrEqual(audit.viewport.height);
+      expect.soft(item.left, `${name} left in viewport`).toBeGreaterThanOrEqual(0);
+      expect.soft(item.right, `${name} right in viewport`).toBeLessThanOrEqual(audit.viewport.width);
+      // No item's box may cross into the fixed bottom tuning bar's box.
+      expect.soft(item.bottom, `${name} above the tuning bar`).toBeLessThanOrEqual(audit.strip.top);
+      // MOR-2816 floors reach the menu's items too.
+      expect.soft(item.height, `${name} height`).toBeGreaterThanOrEqual(44);
+      expect.soft(item.font, `${name} font-size`).toBeGreaterThanOrEqual(16);
+    }
+    // 15:11 EDT: the enabled item's colour IS the NB chip bar's accent.
+    expect(audit.nbBar, `${stage}: lit NB chip bar present`).not.toBeNull();
+    expect(audit.duringTxColor, `${stage}: lit During TX key present`).not.toBeNull();
+    expect(audit.duringTxColor, `${stage}: During TX uses the cyan accent`).toBe(audit.nbBar);
+    // Round 2: the remap lives on the tab's own container, so every lamp
+    // token resolves to the same cyan INSIDE the tab and the glow is gone —
+    // no element in the tab can resolve the flat lamp red. (ScopeFlatKey
+    // keeps the lamp grammar outside the tab; that is pinned at the
+    // component level in MobileRadioLayout.component.svelte.test.ts.)
+    expect(audit.tabTokens, `${stage}: the SCOPE tab container resolved its tokens`).not.toBeNull();
+    expect(audit.tabTokens!.lamp, `${stage}: --vfo-lamp-color resolves to the cyan accent`).toBe(audit.nbBar);
+    expect(audit.tabTokens!.redText, `${stage}: --dl-vfo-red-text resolves to the cyan accent`).toBe(audit.nbBar);
+    expect(audit.tabTokens!.red, `${stage}: --dl-vfo-red resolves to the cyan accent`).toBe(audit.nbBar);
+    expect(audit.tabTokens!.glow, `${stage}: no lamp glow inside the tab`).toBe('none');
+    await page.keyboard.press('Escape');
+    await expect(panel).toHaveCount(0);
+  }
   expect(writes).toEqual([]);
 });
 

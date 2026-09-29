@@ -525,6 +525,98 @@ describe('the More panel ([MORE ▾])', () => {
     }
   });
 
+  // MOR-2895 correction round 3 (review item 3): with NO declared bottom
+  // bar (desktop) the pre-MOR-2895 clamp is back — the panel stays BELOW
+  // the key, shifted up only far enough to fit. The up-flip belongs to
+  // the phone's bottom bar (next test), not to the desktop.
+  it('keeps the downward clamp when no bottom bar is declared (MOR-2895)', () => {
+    const realHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerHeight', { value: 812, configurable: true, writable: true });
+    // jsdom reports every box as 0 px tall; lend the panel a real height so
+    // the fit arithmetic has something to fit.
+    const realSize = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get: () => 300 });
+    const r = render(base());
+    try {
+      r.el('scope-more')!.getBoundingClientRect = () => ({ top: 700, bottom: 744, right: 700 }) as DOMRect;
+      r.openMore();
+      const panelEl = r.el('scope-more-panel')!;
+      expect(panelEl.style.top).toBe('504px'); // 812 − 8 − 300, clamped down — never flipped up
+      expect(panelEl.style.maxHeight).toBe(''); // no inline cap: the stylesheet's viewport cap applies
+    } finally {
+      r.dispose();
+      if (realSize) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', realSize);
+      Object.defineProperty(window, 'innerHeight', { value: realHeight, configurable: true, writable: true });
+    }
+  });
+
+  // MOR-2895 (owner, 2026-09-28 15:10 EDT): on the portrait phone the ⋯ key
+  // sits just above the fixed bottom tuning bar — opening down buried the
+  // panel's tail (During TX, VBW narrow) under that bar. No room below ⇒ the
+  // panel opens UP, flush 8 px above the key. Correction round 2: the flip
+  // decision must measure the fixed bottom bar's ACTUAL top edge (any
+  // [data-bottom-bar] element — the phone tuning strip declares itself),
+  // never a hard-coded height: that strip grew 52 → 76 px under merged PR
+  // #3879 (MOR-2874) and the panel must still clear it. The fixture below
+  // fits BELOW the key against the raw viewport bottom (424 + 300 ≤ 812 − 8)
+  // — only the measured bar flips it.
+  it('clears a declared bottom bar measured from the element, not the viewport bottom (MOR-2895)', () => {
+    const realHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerHeight', { value: 812, configurable: true, writable: true });
+    const realSize = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get: () => 300 });
+    const bar = document.createElement('div');
+    bar.setAttribute('data-bottom-bar', '');
+    bar.getBoundingClientRect = () =>
+      ({ top: 660, bottom: 812, left: 0, right: 390, width: 390, height: 152, x: 0, y: 660, toJSON: () => ({}) }) as DOMRect;
+    document.body.appendChild(bar);
+    const r = render(base());
+    try {
+      r.el('scope-more')!.getBoundingClientRect = () => ({ top: 380, bottom: 424, right: 700 }) as DOMRect;
+      r.openMore();
+      // Without the bar this opens DOWN at 424; with the bar's top at 660
+      // (minus the 8 px margin ⇒ room below = 352 < 424) it must open UP:
+      // 380 − 8 − 300 = 72, ending at 372 — clear of the bar.
+      expect(r.el('scope-more-panel')!.style.top).toBe('72px');
+    } finally {
+      r.dispose();
+      bar.remove();
+      if (realSize) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', realSize);
+      Object.defineProperty(window, 'innerHeight', { value: realHeight, configurable: true, writable: true });
+    }
+  });
+
+  // MOR-2895 correction round 3 (review item 2): a panel that fits NEITHER
+  // below nor above the key (landscape, the phone's 44px rows) pins to the
+  // top margin with its max-height capped at the MEASURED gap — the whole
+  // box ends above the strip's top and scrolls inside, never under the bar.
+  it('caps a tall panel at the measured bar gap and pins it to the top margin (MOR-2895)', () => {
+    const realHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerHeight', { value: 812, configurable: true, writable: true });
+    const realSize = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get: () => 700 });
+    const bar = document.createElement('div');
+    bar.setAttribute('data-bottom-bar', '');
+    bar.getBoundingClientRect = () =>
+      ({ top: 660, bottom: 812, left: 0, right: 390, width: 390, height: 152, x: 0, y: 660, toJSON: () => ({}) }) as DOMRect;
+    document.body.appendChild(bar);
+    const r = render(base());
+    try {
+      r.el('scope-more')!.getBoundingClientRect = () => ({ top: 380, bottom: 424, right: 700 }) as DOMRect;
+      r.openMore();
+      const panelEl = r.el('scope-more-panel')!;
+      expect(panelEl.style.top).toBe('8px'); // pinned to the top margin ...
+      // ... capped at the measured gap (660 − 8 margin − 8 top), so the box
+      // ends at 652 — above the strip — and scrolls inside.
+      expect(panelEl.style.maxHeight).toBe('644px');
+    } finally {
+      r.dispose();
+      bar.remove();
+      if (realSize) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', realSize);
+      Object.defineProperty(window, 'innerHeight', { value: realHeight, configurable: true, writable: true });
+    }
+  });
+
   it('registers its window keydown/resize/scroll listeners only while open (MOR-2514 keeps its Esc)', () => {
     const add = vi.spyOn(window, 'addEventListener');
     const remove = vi.spyOn(window, 'removeEventListener');

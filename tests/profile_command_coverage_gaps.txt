@@ -8,9 +8,9 @@
 # require review. Not manual completeness or execution evidence.
 # Regenerate, do not hand-edit.
 census	civ_profiles	6
-census	distinct_gap_keys	148
-census	profile_key_gaps	342
-census	public_builders	244
+census	distinct_gap_keys	150
+census	profile_key_gaps	352
+census	public_builders	246
 gap	get_acc1_mod_level	X6100,X6200
 gap	get_af_mute	IC-7300,X6100,X6200
 gap	get_agc_time_constant	X6100,X6200
@@ -55,6 +55,7 @@ gap	get_powerstat	IC-705,IC-7300,IC-7610,X6100,X6200
 gap	get_quick_dual_watch	IC-7300,X6100,X6200
 gap	get_quick_split	X6100,X6200
 gap	get_ref_adjust	IC-7300,X6100,X6200
+gap	get_repeater_shift	IC-7300,IC-7610,IC-9700,X6100,X6200
 gap	get_repeater_tone	X6100,X6200
 gap	get_repeater_tsql	X6100,X6200
 gap	get_rit_frequency	X6100,X6200
@@ -138,6 +139,7 @@ gap	set_pbt_outer	X6100,X6200
 gap	set_quick_dual_watch	IC-7300,X6100,X6200
 gap	set_quick_split	X6100,X6200
 gap	set_ref_adjust	IC-7300,X6100,X6200
+gap	set_repeater_shift	IC-7300,IC-7610,IC-9700,X6100,X6200
 gap	set_repeater_tone	X6100,X6200
 gap	set_repeater_tsql	X6100,X6200
 gap	set_rit_frequency	X6100,X6200

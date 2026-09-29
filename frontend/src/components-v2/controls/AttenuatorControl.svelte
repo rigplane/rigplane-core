@@ -15,6 +15,11 @@
     title?: string | null;
     testIdPrefix?: string;
     ariaLabel?: string;
+    /** MOR-2907 F3: the in-flight `set_attenuator` target, display only —
+     *  renders `data-armed` on the matching key (the shared armed seat
+     *  `control-button-armed.css` styles); `selected` stays the sole
+     *  selection source. */
+    pendingValue?: number | null;
   }
 
   let {
@@ -27,6 +32,7 @@
     title = null,
     testIdPrefix,
     ariaLabel = 'Attenuator',
+    pendingValue = null,
   }: Props = $props();
 
   let menuOpen = $state(false);
@@ -35,6 +41,8 @@
   let controlModel = $derived(buildAttControlModel(values, Object.keys(labels).length ? labels : undefined));
   let overflowSelected = $derived(controlModel.overflowOptions.some((option) => option.value === selected));
   let overflowLabel = $derived(getAttOverflowLabel(selected, controlModel.overflowOptions));
+  let overflowPending = $derived(pendingValue !== null
+    && controlModel.overflowOptions.some((option) => option.value === pendingValue));
   const menuId = $props.id();
 
   function handleQuickChange(value: string | number): void {
@@ -67,6 +75,7 @@
         role="radio" aria-checked={selected === option.value}
         data-testid={testIdPrefix === undefined ? undefined : `${testIdPrefix}-${option.value}`}
         data-active={selected === option.value}
+        data-armed={pendingValue === option.value || undefined}
         data-surface="hardware" data-indicator-style="edge-left" data-indicator-color="cyan"
         onclick={() => handleQuickChange(option.value)}
       >
@@ -81,6 +90,7 @@
         active={overflowSelected}
         indicator="edge-left"
         color="cyan"
+        armed={overflowPending}
         ariaLabel="More attenuator values"
         ariaExpanded={menuOpen}
         ariaControls={menuId}

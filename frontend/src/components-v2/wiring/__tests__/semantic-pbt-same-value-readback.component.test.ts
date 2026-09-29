@@ -13,7 +13,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { FieldStatus, ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
-import { measuredPbtRawToHz } from '$lib/radio/filter-controls';
+import { measuredPbtHzToRaw, measuredPbtRawToHz } from '$lib/radio/filter-controls';
 import { IC7300_CAPABILITIES } from '$lib/runtime/adapters/__tests__/fixtures/ic7300-profile';
 
 const WIDTH_HZ = 2400;
@@ -25,7 +25,7 @@ const CONFIRMED_HZ = measuredPbtRawToHz(CONFIRMED_RAW, WIDTH_HZ, STEP_HZ)!;
 const h = vi.hoisted(() => ({
   session: { state: 'connected' as const, epoch: 1 },
   listeners: new Set<(next: { state: string; epoch: number }) => void>(),
-  commands: vi.fn(() => true),
+  commands: vi.fn<(name: string, params?: Record<string, unknown>, id?: string) => boolean>(() => true),
   txController: null as ManagedAppTxController | null,
 }));
 vi.mock('$lib/transport/ws-client', async (importOriginal) => {
@@ -125,7 +125,11 @@ const readoutOf = (field: 'pbtInner' | 'pbtOuter'): string =>
 function drag(field: 'pbtInner' | 'pbtOuter', hz: number): void {
   const input = inputOf(field);
   input.value = String(hz);
+  // MOR-1691: a committed drag holds its intermediate inputs as drafts and
+  // dispatches once on the native `change` (the release).
   input.dispatchEvent(new Event('input', { bubbles: true }));
+  flushSync();
+  input.dispatchEvent(new Event('change', { bubbles: true }));
   flushSync();
 }
 
@@ -200,6 +204,70 @@ describe('same-value fresh PBT readback after a drag (MOR-1692 residual)', () =>
       expect(inputOf(field).value).toBe(String(DRAG_HZ));
       expect(inputOf(field).dataset.commandPhase).toBe('submitted');
       expect(h.commands).not.toHaveBeenCalled();
+    },
+  );
+});
+
+// MOR-1691: the dispatch count is bounded and deterministic — a pointer/touch
+// drag streams native `input` events at every intermediate position and ONE
+// `change` at the release, so every intermediate stays a gesture-local draft
+// (thumb AND visible number follow it) and exactly ONE command leaves the
+// surface, carrying the committed target.
+describe('a drag dispatches one committed command, not a per-move stream (MOR-1691)', () => {
+  it.each(['pbtInner', 'pbtOuter'] as const)(
+    '%s: every intermediate input stays local; the change commits exactly one command',
+    (field) => {
+      render();
+      const intent = field === 'pbtInner' ? 'set_pbt_inner' : 'set_pbt_outer';
+      const input = inputOf(field);
+      expect(readoutOf(field)).toBe(String(CONFIRMED_HZ));
+
+      for (const hz of [0, 100, 200, 300, DRAG_HZ]) {
+        input.value = String(hz);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        flushSync();
+        expect(h.commands).not.toHaveBeenCalled();
+        expect(input.value).toBe(String(hz));
+        expect(readoutOf(field)).toBe(String(hz));
+      }
+
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      flushSync();
+      const sent = h.commands.mock.calls.filter(([name]) => name === intent);
+      expect(sent).toHaveLength(1);
+      // The committed raw comes from the ONE measured-lattice conversion —
+      // never a hand-computed literal.
+      expect(sent[0]![1]).toEqual({
+        value: measuredPbtHzToRaw(DRAG_HZ, WIDTH_HZ, STEP_HZ), receiver: 0,
+      });
+      expect(readoutOf(field)).toBe(String(DRAG_HZ));
+    },
+  );
+
+  it.each(['pbtInner', 'pbtOuter'] as const)(
+    '%s: a second committed gesture dispatches its own single command',
+    (field) => {
+      render();
+      const intent = field === 'pbtInner' ? 'set_pbt_inner' : 'set_pbt_outer';
+      const input = inputOf(field);
+
+      input.value = String(DRAG_HZ);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      flushSync();
+      input.value = String(200);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      flushSync();
+
+      const sent = h.commands.mock.calls.filter(([name]) => name === intent);
+      expect(sent).toHaveLength(2);
+      expect(sent[0]![1]).toEqual({
+        value: measuredPbtHzToRaw(DRAG_HZ, WIDTH_HZ, STEP_HZ), receiver: 0,
+      });
+      expect(sent[1]![1]).toEqual({
+        value: measuredPbtHzToRaw(200, WIDTH_HZ, STEP_HZ), receiver: 0,
+      });
     },
   );
 });

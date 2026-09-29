@@ -20,6 +20,7 @@ from rigplane.commands._codec import (
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
+from rigplane.core.types import ToneSquelchType
 
 __all__ = [
     "ControlLookupPoint",
@@ -520,6 +521,10 @@ class RadioProfile:
     # capability or command, so this is domain metadata rather than write
     # authority. Appended to preserve the positional constructor contract.
     ctcss_tones_centihz: tuple[int, ...] | None = None
+    # The radio's tone squelch selector codes and the neutral type each one
+    # means, from the profile's ``[tone_squelch_types]`` table (MOR-2131).
+    # None when the profile declares no table. Appended for the same reason.
+    tone_squelch_types: dict[int, ToneSquelchType] | None = None
     # The radio's power sources and the transmit power ceiling each allows
     # (MOR-2973), from [power.sources] (source code -> name) and
     # [power.ceilings_w] (name -> setting code -> watts). None when the

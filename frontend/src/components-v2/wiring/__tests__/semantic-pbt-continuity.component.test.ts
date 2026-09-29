@@ -153,7 +153,10 @@ describe('mounted fractional PBT display (MOR-1692)', () => {
   it('never retains a drag target in place of the observed readback', () => {
     update(150, 2, 20.25); render(); const confirmed = value('pbtInner');
     const input = row().querySelector('input')!;
+    // MOR-1691: a committed drag is input-then-change; the intermediate
+    // inputs stay gesture-local drafts.
     input.value = '500'; input.dispatchEvent(new Event('input', { bubbles: true })); flushSync();
+    input.dispatchEvent(new Event('change', { bubbles: true })); flushSync();
     expect(h.commands).toHaveBeenCalled(); h.commands.mockClear();
     update(150, 3, 20.25, true);
     expect(value('pbtInner')).toBe(confirmed);

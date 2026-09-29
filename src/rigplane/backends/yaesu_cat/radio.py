@@ -831,7 +831,14 @@ class YaesuCatRadio:
         if not self._transport.connected:
             raise RadioConnectionError("Radio not connected — call connect() first")
 
-    async def _query(self, cmd_name: str, **params: Any) -> dict[str, Any]:
+    async def _query(
+        self,
+        cmd_name: str,
+        *,
+        is_current: Callable[[], bool] | None = None,
+        tier: ExchangeTier = ExchangeTier.ORDINARY,
+        **params: Any,
+    ) -> dict[str, Any]:
         """Send a read command and return the parsed response fields.
 
         The transport strips the trailing ``;`` from responses; we add it
@@ -841,6 +848,10 @@ class YaesuCatRadio:
         via :func:`format_command` (e.g. ``get_meter``'s ``"RM{type};"``).
         With no params the read template is sent verbatim, as most commands
         take no parameters in the read direction.
+
+        *is_current* and *tier* (MOR-2862) reach the transport untouched so
+        a managed confirming read can ride its own write's admission tier
+        and currency; ordinary callers leave both at their defaults.
         """
         self._require_connected()
         spec = self._get_spec(cmd_name)
@@ -848,7 +859,12 @@ class YaesuCatRadio:
             raise CommandError(f"Command {cmd_name!r} has no read template")
 
         read_cmd = format_command(spec.read, **params) if params else spec.read
-        raw = await self._transport.query(read_cmd)
+        if is_current is None and tier is ExchangeTier.ORDINARY:
+            raw = await self._transport.query(read_cmd)
+        else:
+            raw = await self._transport.query(
+                read_cmd, is_current=is_current, tier=tier
+            )
 
         parser = self._parsers.get(cmd_name)
         if parser is None:
@@ -1150,7 +1166,22 @@ class YaesuCatRadio:
             await self._write(command, is_current=is_current, tier=tier, **params)
         except CommandError:
             return ActuationResult.REJECTED
-        return ActuationResult.ACCEPTED
+        if operation is not ActuationOperation.FORCE_RECEIVE:
+            return ActuationResult.ACCEPTED
+        # MOR-2862: a Yaesu set is answered with silence, so ACCEPTED
+        # after the write alone would mean only "written". The same
+        # actuation reads the TX state back once, the way ``get_ptt``
+        # does, on the unkey's own tier and currency; only a read that
+        # says receive confirms the unkey. TX, silence, a malformed
+        # answer, or a raised read is UNCERTAIN, which keeps the release
+        # owed (``managed_tx_state.py: _settle``).
+        try:
+            transmitting = await self.read_ptt(is_current=is_current, tier=tier)
+        except Exception:
+            return ActuationResult.UNCERTAIN
+        return (
+            ActuationResult.ACCEPTED if not transmitting else ActuationResult.UNCERTAIN
+        )
 
     def _warn_ptt_unrecognised(self, state: str) -> None:
         """Warn-once-then-DEBUG diagnostic for an unrecognised TX token.
@@ -1170,7 +1201,12 @@ class YaesuCatRadio:
             self.model,
         )
 
-    async def read_ptt_token(self) -> str:
+    async def read_ptt_token(
+        self,
+        *,
+        is_current: Callable[[], bool] | None = None,
+        tier: ExchangeTier = ExchangeTier.ORDINARY,
+    ) -> str:
         """Read the raw ``TX;`` token -- no RX/TX interpretation, no mutation.
 
         The primitive :meth:`read_ptt` is built on. Exposes the parsed wire
@@ -1183,11 +1219,22 @@ class YaesuCatRadio:
         answer, :meth:`~rigplane.profiles.TxPolicy.attribution` for the
         vendor's per-value label (MOR-1941, §3.7 of the transmit-authority
         ADR).
+
+        *is_current* and *tier* pass through to :meth:`_query` (MOR-2862)
+        for the managed confirming read; ordinary callers use the defaults.
         """
-        result = await self._query("get_ptt")
+        if is_current is None and tier is ExchangeTier.ORDINARY:
+            result = await self._query("get_ptt")
+        else:
+            result = await self._query("get_ptt", is_current=is_current, tier=tier)
         return str(result["state"])
 
-    async def read_ptt(self) -> bool:
+    async def read_ptt(
+        self,
+        *,
+        is_current: Callable[[], bool] | None = None,
+        tier: ExchangeTier = ExchangeTier.ORDINARY,
+    ) -> bool:
         """Read the current PTT state without mutating legacy state.
 
         The Yaesu ``TX;`` answer is three-valued, not a plain boolean flag:
@@ -1214,7 +1261,10 @@ class YaesuCatRadio:
         Returns:
             ``True`` if transmitting, ``False`` if receiving.
         """
-        state = await self.read_ptt_token()
+        if is_current is None and tier is ExchangeTier.ORDINARY:
+            state = await self.read_ptt_token()
+        else:
+            state = await self.read_ptt_token(is_current=is_current, tier=tier)
         return self._interpret_ptt_token(state)
 
     def _interpret_ptt_token(self, state: str) -> bool:

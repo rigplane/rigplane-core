@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
@@ -148,10 +149,21 @@ const {
   onMainVfoClickSpy,
   onSubVfoClickSpy,
   radioIntentSpy,
+  scopeIntents,
 } = vi.hoisted(() => ({
   onMainVfoClickSpy: vi.fn(),
   onSubVfoClickSpy: vi.fn(),
   radioIntentSpy: vi.fn(),
+  // MOR-2895: the scope-controls family gets DISTINCT spies — clicking two
+  // different scope controls must be tellable apart, which the shared
+  // radioIntentSpy cannot do. Same factory the desktop toolbar binds through
+  // bindSemanticSurfaceHandlers().scopeControls.
+  scopeIntents: {
+    onModeChange: vi.fn(), onEdgeChange: vi.fn(), onSpanChange: vi.fn(),
+    onSpeedChange: vi.fn(), onHoldChange: vi.fn(), onRefChange: vi.fn(),
+    onDualChange: vi.fn(), onReceiverChange: vi.fn(), onDuringTxChange: vi.fn(),
+    onCenterTypeChange: vi.fn(), onVbwChange: vi.fn(), onRbwChange: vi.fn(),
+  },
 }));
 // MOR-1409 A13a: the layout now binds its handler families through
 // `lib/runtime/adapters/panel-adapters`, so this fixture re-points one level
@@ -192,11 +204,9 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
     makeAntennaHandlers: () => ({ onAntennaSelect: n }),
     makeScanHandlers: () => ({ onScanStart: n, onScanStop: n, onDfSpanChange: n, onResumeChange: n }),
     // MOR-1311 slice 11B: the scope-toolbar/popover intent vocabulary.
-    makeScopeControlsHandlers: () => ({
-      onModeChange: n, onEdgeChange: n, onSpanChange: n, onSpeedChange: n, onHoldChange: n,
-      onRefChange: n, onDualChange: n, onReceiverChange: n, onDuringTxChange: n,
-      onCenterTypeChange: n, onVbwChange: n, onRbwChange: n,
-    }),
+    // MOR-2895: distinct per-handler spies (see the hoisted block) so the
+    // SCOPE-tab tests can pin WHICH intent each control dispatches.
+    makeScopeControlsHandlers: () => ({ ...scopeIntents }),
   };
 });
 
@@ -239,6 +249,17 @@ import mobileLayoutSource from '../MobileRadioLayout.svelte?raw';
 import { hasTx, hasDualReceiver, hasSpectrum, getCapabilities, getScopeSource } from '$lib/stores/capabilities.svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+// MOR-2895: the surface-plan seam App uses to hand SemanticRadioSurfaces the
+// resolved plan — without it a standalone test mount renders the scope
+// surface bare (NO_PLAN) and never reproduces the production defect.
+import { mobileLayout } from '../../../presentation/layouts/declarations';
+import { readWorkspace } from '../../../presentation/workspace/contract';
+import {
+  resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY,
+} from '../../../presentation/workspace/resolution';
+import {
+  SPAN_LABELS, clampSpan, clampSpeed, clampRef,
+} from '../../../components/spectrum/spectrum-toolbar-logic';
 import { MOD_INPUT_SOURCES } from '$lib/radio/mod-input';
 import {
   radio, subscribeRadioState,
@@ -292,6 +313,7 @@ beforeEach(() => {
   meterBoundary.props = null;
   wsFrameSpy.mockClear();
   radioIntentSpy.mockClear();
+  for (const spy of Object.values(scopeIntents)) spy.mockClear();
   resetCommandLifecycle();
   onMainVfoClickSpy.mockClear();
   onSubVfoClickSpy.mockClear();
@@ -517,6 +539,23 @@ describe('MobileRadioLayout structure', () => {
     expect(t.querySelector('.amber-lcd')).toBeNull();
     // The VFO overlay survives without the stage element.
     expect(t.querySelector('.m-ls-overlay')).not.toBeNull();
+  });
+});
+
+// MOR-2949 — the tune strip is icon-only, so each of its four buttons needs
+// an accessible name from the i18n catalog: direction plus step or fast.
+// Strip order: [-10, -1, +1, +10].
+describe('tune strip buttons have accessible names (MOR-2949)', () => {
+  it('names each tune button with its direction and step size', () => {
+    const t = mountMobile();
+    const labels = [...t.querySelectorAll<HTMLButtonElement>('.m-tuning-strip .m-tune-btn')]
+      .map((btn) => btn.getAttribute('aria-label'));
+    expect(labels).toEqual([
+      'Tune down fast',
+      'Tune down one step',
+      'Tune up one step',
+      'Tune up fast',
+    ]);
   });
 });
 
@@ -849,6 +888,301 @@ describe('MobileRadioLayout SCOPE chip tab (MOR-2851)', () => {
       t.querySelector<HTMLButtonElement>('[data-testid="scope-key-view"]')!.click();
       flushSync();
       expect(stub().dataset.scopeDemanded).toBe('true');
+    } finally {
+      restore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MOR-2895 (owner, 2026-09-28 14:37 EDT): the SCOPE tab carries EVERY
+// desktop panorama-toolbar control except STEP. The radio-held half is the
+// ONE semantic surface the desktop toolbar hosts, dispatched through the
+// same makeScopeControlsHandlers() family SpectrumToolbar binds via
+// bindSemanticSurfaceHandlers().scopeControls (their handler→wire parity is
+// pinned in semantic-scope-controls-wiring.component.test.ts). The
+// surface-plan context below reproduces the App mount — with a plan
+// resolved for the mobile layout, `instruments.scopeControls()` with no
+// allowBare argument rendered NOTHING: the mobile manifest declares no
+// scopeControls zone and the hosted composition forbids the bare fallback.
+// ---------------------------------------------------------------------------
+describe('MobileRadioLayout SCOPE tab desktop-toolbar controls (MOR-2895)', () => {
+  const SCOPE_READS = {
+    mode: 0, edge: 2, span: 3, speed: 1, hold: false, refDb: -5, dual: false,
+    receiver: 0, duringTx: false, centerType: 0, vbwNarrow: false, rbw: 0,
+  } as const;
+
+  /** A hardware-scope radio with every scope leaf read. `dual_rx` makes the
+   *  receiver/SRC segment structural too, so every control draws. The state
+   *  is a FULL valid snapshot (both receivers, txTarget, connection): the
+   *  view-model guard runs in DEV, and `2/ab` — receivers: 2 with the 'ab'
+   *  scheme — is not a legal topology, so the guard throws inside the
+   *  wiring's projection effect and `view` stays null, silently unmounting
+   *  the surface (found the hard way, MOR-2895; the dual fixture mirrors
+   *  semantic-scope-controls-wiring's `liveState`, whose topology is
+   *  `2/main_sub`). */
+  function withHardwareScopeRadio(options: { dual?: boolean; mode?: number } = {}): () => void {
+    const dual = options.dual !== false;
+    const oldCaps = getCapabilities();
+    vi.mocked(hasSpectrum).mockReturnValue(true);
+    vi.mocked(getScopeSource).mockReturnValue('hardware');
+    vi.mocked(getCapabilities).mockReturnValue({
+      ...oldCaps, model: 'fixture', receivers: dual ? 2 : 1,
+      vfoScheme: dual ? 'main_sub' : 'ab',
+      capabilities: dual ? ['scope', 'dual_rx'] : ['scope'],
+    } as Capabilities);
+    const slot = (freqHz: number) => ({ freqHz, mode: 'USB' as const, filterNum: 1, dataMode: 0 });
+    const receiver = (freqHz: number) => ({
+      ...slot(freqHz), vfoA: slot(freqHz), vfoB: slot(freqHz + 50000),
+      activeSlot: 'A' as const, filter: 1, sMeter: 0,
+    });
+    const leaves = Object.keys(SCOPE_READS) as (keyof typeof SCOPE_READS)[];
+    (radio as unknown as { current: { active?: 'MAIN' | 'SUB' } | null }).current = {
+      revision: 1, stateRevision: 1, freshnessRevision: 1, observationSeq: 1,
+      updatedAt: '2026-09-28T00:00:00Z', tunerStatus: 0,
+      stateContractVersion: 1, providerGeneration: 31,
+      active: 'MAIN', split: false, dualWatch: false, ptt: false,
+      txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
+      main: receiver(14250000), sub: receiver(14300000),
+      connection: { rigConnected: true, radioReady: true, controlConnected: true },
+      scopeControls: { ...SCOPE_READS, ...(options.mode === undefined ? {} : { mode: options.mode }) },
+      fieldStatus: Object.fromEntries(leaves.map((leaf) => [`scopeControls.${leaf}`, {
+        storePath: `scopeControls.${leaf}`, observed: true,
+        freshness: 'fresh', availability: 'available',
+      }])),
+    } as never;
+    return () => {
+      vi.mocked(hasSpectrum).mockReturnValue(false);
+      vi.mocked(getScopeSource).mockReturnValue(null);
+      vi.mocked(getCapabilities).mockReturnValue(oldCaps);
+      (radio as unknown as { current: { active?: 'MAIN' | 'SUB' } | null }).current = null;
+    };
+  }
+
+  /** The App mount: the phone layout with the surface plan App resolves for
+   *  the active mobile manifest provided through the workspace context. */
+  function mountMobileWithAppPlan(): HTMLElement {
+    const plan = resolveSurfacePlan(mobileLayout, readWorkspace({ version: 1 }).workspace);
+    const t = document.createElement('div');
+    document.body.appendChild(t);
+    components.push(mount(MobileRadioLayout, {
+      target: t,
+      context: new Map([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]),
+    }));
+    flushSync();
+    return t;
+  }
+
+  function openScopePanel(t: HTMLElement): HTMLElement {
+    Array.from(t.querySelectorAll<HTMLButtonElement>('.m-chip'))
+      .find((chip) => chip.textContent?.trim() === 'SCOPE')!.click();
+    flushSync();
+    return t.querySelector('#m-chip-panel-scope')!;
+  }
+
+  function openMore(panel: HTMLElement): HTMLElement {
+    panel.querySelector<HTMLButtonElement>('[data-testid="scope-more"]')!.click();
+    flushSync();
+    return panel.querySelector('[data-testid="scope-more-panel"]')!;
+  }
+
+  it('mounts the semantic scope-controls surface under App\u2019s mobile surface plan', () => {
+    const restore = withHardwareScopeRadio();
+    try {
+      const t = mountMobileWithAppPlan();
+      const panel = openScopePanel(t);
+      // The production defect: with the plan resolved and no allowBare
+      // argument, zoned() rendered nothing here (owner, 2026-09-28). The
+      // wrapper assertion separates the two failure shapes: no wrapper means
+      // the call site broke; an empty wrapper means zoned() withheld the
+      // body (view null — e.g. a view-model guard throw in the projection
+      // effect).
+      const wrapper = panel.querySelector('.m-scope-controls');
+      expect(wrapper, 'the scope-controls mount wrapper renders').not.toBeNull();
+      expect(
+        panel.querySelector('[data-testid="scope-controls-surface"]'),
+        `the semantic surface renders inside the wrapper (wrapper children: ${wrapper?.childElementCount ?? 'n/a'})`,
+      ).not.toBeNull();
+    } finally {
+      restore();
+    }
+  });
+
+  it('the row carries the desktop row controls except STEP, each dispatching the desktop intent', () => {
+    const restore = withHardwareScopeRadio();
+    try {
+      const t = mountMobileWithAppPlan();
+      const panel = openScopePanel(t);
+      // No STEP anywhere in the tab: the bottom tuning bar owns it (owner,
+      // 2026-09-28 08:34 EDT).
+      expect(panel.textContent).not.toContain('STEP');
+      // CTR/FIX — the desktop mode segment.
+      panel.querySelector<HTMLButtonElement>('[data-testid="scope-mode-row-1"]')!.click();
+      flushSync();
+      expect(scopeIntents.onModeChange).toHaveBeenCalledExactlyOnceWith(1);
+      // SPAN — both steppers and the value.
+      expect(panel.querySelector('[data-testid="scope-span-value"]')!.textContent)
+        .toBe(SPAN_LABELS[SCOPE_READS.span]);
+      panel.querySelector<HTMLButtonElement>(
+        '[data-testid="scope-span"] button[aria-label="Decrease scope span"]',
+      )!.click();
+      flushSync();
+      expect(scopeIntents.onSpanChange).toHaveBeenCalledExactlyOnceWith(clampSpan(SCOPE_READS.span, -1));
+      // REF — both steppers and the value.
+      expect(panel.querySelector('[data-testid="scope-ref-value"]')!.textContent)
+        .toBe(String(SCOPE_READS.refDb));
+      panel.querySelector<HTMLButtonElement>(
+        '[data-testid="scope-ref"] button[aria-label="Increase scope reference"]',
+      )!.click();
+      flushSync();
+      expect(scopeIntents.onRefChange).toHaveBeenCalledExactlyOnceWith(clampRef(SCOPE_READS.refDb, 5));
+      // HOLD.
+      panel.querySelector<HTMLButtonElement>('[data-testid="scope-hold"]')!.click();
+      flushSync();
+      expect(scopeIntents.onHoldChange).toHaveBeenCalledExactlyOnceWith(true);
+      // SRC — the MAIN/SUB receiver segment, where the desktop shows it.
+      panel.querySelector<HTMLButtonElement>('[data-testid="scope-receiver-1"]')!.click();
+      flushSync();
+      expect(scopeIntents.onReceiverChange).toHaveBeenCalledExactlyOnceWith(1);
+    } finally {
+      restore();
+    }
+  });
+
+  it('the More panel carries the desktop More controls, each dispatching the desktop intent', () => {
+    const restore = withHardwareScopeRadio();
+    try {
+      const t = mountMobileWithAppPlan();
+      const panel = openScopePanel(t);
+      const more = openMore(panel);
+      // The full mode choice — S-C/S-F live only here, as on the desktop.
+      more.querySelector<HTMLButtonElement>('[data-testid="scope-mode-2"]')!.click();
+      flushSync();
+      expect(scopeIntents.onModeChange).toHaveBeenCalledExactlyOnceWith(2);
+      // CENTRE and RBW choices.
+      more.querySelector<HTMLButtonElement>('[data-testid="scope-centerType-1"]')!.click();
+      flushSync();
+      expect(scopeIntents.onCenterTypeChange).toHaveBeenCalledExactlyOnceWith(1);
+      more.querySelector<HTMLButtonElement>('[data-testid="scope-rbw-2"]')!.click();
+      flushSync();
+      expect(scopeIntents.onRbwChange).toHaveBeenCalledExactlyOnceWith(2);
+      // The sweep speed — both steppers and the value.
+      more.querySelector<HTMLButtonElement>(
+        '[data-testid="scope-speed"] button[aria-label="Increase scope speed"]',
+      )!.click();
+      flushSync();
+      expect(scopeIntents.onSpeedChange).toHaveBeenCalledExactlyOnceWith(clampSpeed(SCOPE_READS.speed, 1));
+      // DUAL, During TX, VBW narrow.
+      more.querySelector<HTMLButtonElement>('[data-testid="scope-dual"]')!.click();
+      flushSync();
+      expect(scopeIntents.onDualChange).toHaveBeenCalledExactlyOnceWith(true);
+      more.querySelector<HTMLButtonElement>('[data-testid="scope-duringTx"]')!.click();
+      flushSync();
+      expect(scopeIntents.onDuringTxChange).toHaveBeenCalledExactlyOnceWith(true);
+      more.querySelector<HTMLButtonElement>('[data-testid="scope-vbwNarrow"]')!.click();
+      flushSync();
+      expect(scopeIntents.onVbwChange).toHaveBeenCalledExactlyOnceWith(true);
+    } finally {
+      restore();
+    }
+  });
+
+  it('EDGE joins More for a FIX-mode radio and dispatches the desktop intent; SPAN folds', () => {
+    const restore = withHardwareScopeRadio({ mode: 1 });
+    try {
+      const t = mountMobileWithAppPlan();
+      const panel = openScopePanel(t);
+      // A READ inapplicable mode (FIX) folds SPAN away — the surface's own
+      // contract, identical to the desktop row.
+      expect(panel.querySelector('[data-testid="scope-span"]')).toBeNull();
+      const more = openMore(panel);
+      more.querySelector<HTMLButtonElement>('[data-testid="scope-edge-3"]')!.click();
+      flushSync();
+      expect(scopeIntents.onEdgeChange).toHaveBeenCalledExactlyOnceWith(3);
+    } finally {
+      restore();
+    }
+  });
+
+  // MOR-2895 correction round 2 (owner, 2026-09-28): the cyan on-state is
+  // scoped to the phone SCOPE tab's own container. The shared ScopeFlatKey
+  // keeps the flat lamp grammar everywhere else, so skins that set their own
+  // lamp colour (the LCD faces) keep it. This Vitest/jsdom config injects no
+  // component <style> (documented in PeerSplitLayout.component.test.ts, the
+  // #2968 pin), so the mapping is pinned on the layout's source and on the
+  // DOM tree it governs; the resolved cyan is proven in a real browser by
+  // the MOR-2895 e2e audit.
+  describe('MOR-2895 round 2 — no red inside the phone SCOPE tab, lamp grammar kept outside it', () => {
+    const layoutSource = readFileSync('src/components-v2/layout/MobileRadioLayout.svelte', 'utf8');
+    const flatKeySource = readFileSync('src/components/spectrum/ScopeFlatKey.svelte', 'utf8');
+
+    it('the SCOPE tab container remaps every red-capable lamp token onto the cyan accent', () => {
+      const rule = layoutSource.match(/#m-chip-panel-scope\s*\{[^}]*\}/)?.[0] ?? '';
+      expect(rule, 'a #m-chip-panel-scope rule exists').not.toBe('');
+      expect(rule).toContain('--vfo-lamp-color: var(--v2-accent-cyan');
+      expect(rule).toContain('--dl-vfo-red-text: var(--v2-accent-cyan');
+      expect(rule).toContain('--dl-vfo-red: var(--v2-accent-cyan');
+      expect(rule).toContain('--dl-vfo-red-glow: none');
+      // Scoped to the tab ONLY: the remap appears exactly once in the file,
+      // so no surface outside this tab (VFO lamps, other chip panels)
+      // inherits the override.
+      expect(layoutSource.match(/--vfo-lamp-color:/g) ?? []).toHaveLength(1);
+    });
+
+    it('the shared ScopeFlatKey reads the lamp tokens again — no cyan hardcoded into the key', () => {
+      expect(flatKeySource)
+        .toContain('color: var(--vfo-lamp-color, var(--dl-vfo-red-text, var(--dl-vfo-red, #e2362c)));');
+      expect(flatKeySource).toContain('text-shadow: var(--dl-vfo-red-glow, none);');
+      // RED on the round-1 head, which hardcoded --v2-accent-cyan here and
+      // deleted the glow rule.
+      expect(flatKeySource).not.toContain('--v2-accent-cyan');
+    });
+
+    it('the fixed More panel and the value digits are DOM descendants of the remapped container', () => {
+      // Custom properties inherit down the DOM tree, not the layout tree:
+      // the mapping reaches the More panel only because the panel is a DOM
+      // descendant of #m-chip-panel-scope despite its position: fixed.
+      const restore = withHardwareScopeRadio();
+      try {
+        const t = mountMobileWithAppPlan();
+        const panel = openScopePanel(t);
+        const more = openMore(panel);
+        expect(panel.id).toBe('m-chip-panel-scope');
+        expect(panel.contains(more)).toBe(true);
+        // The SPAN/REF value digits read the same lamp chain
+        // (.scope-step-value in ScopeControlsSurface.svelte), so the same
+        // container mapping covers them; the tab's own screen keys
+        // (VIEW/AVG/PEAK/BANDS) are ScopeFlatKey instances inside it too.
+        expect(panel.querySelector('.scope-step-value')).not.toBeNull();
+        expect(panel.querySelectorAll('.scope-flat-key').length).toBeGreaterThan(0);
+      } finally {
+        restore();
+      }
+    });
+
+    it('the tuning strip declares its live box to fixed-position popovers (data-bottom-bar)', () => {
+      const t = mountMobile();
+      // The More panel's flip-up decision measures the bar's ACTUAL top
+      // edge from the element (52 px today, 76 px under open PR #3879 /
+      // MOR-2874) — this attribute is what makes the strip measurable.
+      const bar = t.querySelector('.m-tuning-strip');
+      expect(bar, 'the tuning strip renders').not.toBeNull();
+      expect(bar!.hasAttribute('data-bottom-bar')).toBe(true);
+    });
+  });
+
+  it('a single-receiver radio draws no MAIN/SUB segment — unsupported is not drawn', () => {
+    const restore = withHardwareScopeRadio({ dual: false });
+    try {
+      const t = mountMobileWithAppPlan();
+      const panel = openScopePanel(t);
+      // The surface itself mounts (no vacuous pass): only the receiver
+      // segment is withheld — the structural gate, not the whole row.
+      expect(panel.querySelector('[data-testid="scope-controls-surface"]')).not.toBeNull();
+      expect(panel.querySelector('[data-testid="scope-span"]')).not.toBeNull();
+      expect(panel.querySelector('[data-testid="scope-receiver"]')).toBeNull();
+      const more = openMore(panel);
+      expect(more.querySelector('[data-testid="scope-dual"]')).toBeNull();
     } finally {
       restore();
     }

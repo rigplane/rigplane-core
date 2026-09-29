@@ -81,6 +81,10 @@
      *  seats do (MOR-2524). */
     surfaceFiniteLayout?: boolean;
     pendingPreamp?: number | null;
+    pendingAtt?: number | null;
+    /** Renders the attenuator seat the way the Standard face does
+     *  (RadioLayout's `attenuator(true)` compact branch). */
+    attenuatorCompact?: boolean;
     finiteAppearance?: FiniteControlAppearance<RfFrontEndFiniteChoiceValue>;
     rendererContext?: FiniteRendererContext | null;
     onPreampChange?: (level: number) => void;
@@ -92,6 +96,7 @@
   let {
     publication, view, subscribeControlAuthority, controlModel, rfSqlFeedback,
     layout = 'grouped', renderSurface = false, surfaceFiniteLayout = false, pendingPreamp = null,
+    pendingAtt = null, attenuatorCompact = false,
     finiteAppearance, rendererContext = null,
     onPreampChange, onAttenuatorChange, onLevelChange, onToggle,
   }: Props = $props();
@@ -111,7 +116,7 @@
 {/snippet}
 
 <RfFrontEndInstrumentHost
-  {presentation} {subscribeControlAuthority} {onLevelChange} {pendingPreamp}
+  {presentation} {subscribeControlAuthority} {onLevelChange} {pendingPreamp} {pendingAtt}
   onPreChange={onPreampChange} onAttChange={onAttenuatorChange}
   onDigiSelToggle={(next) => onToggle?.('digiSel', next)}
   onIpPlusToggle={(next) => onToggle?.('ipPlus', next)}
@@ -133,7 +138,7 @@
             <div data-slot="squelch">{@render handles.squelch()}</div>
           {/if}
           <div data-finite-slot="preamp">{@render handles.preamp()}</div>
-          <div data-finite-slot="attenuator">{@render handles.attenuator()}</div>
+          <div data-finite-slot="attenuator">{@render handles.attenuator(attenuatorCompact)}</div>
           <div data-finite-slot="digiSel">{@render handles.digiSel()}</div>
           <div data-finite-slot="ipPlus">{@render handles.ipPlus()}</div>
         </section>

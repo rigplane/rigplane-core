@@ -30,6 +30,7 @@ from rigplane.core.state_acquisition_policy import (
     ReconciliationPriority,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.types import ToneSquelchType
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.profiles.control_domain import (
     _on_control_lattice,
@@ -679,6 +680,7 @@ class RigConfig:
     state_acquisition: RadioAcquisitionProfile | None = None
     tx_policy: TxPolicy = field(default_factory=TxPolicy)
     ctcss_tones_centihz: tuple[int, ...] | None = None
+    tone_squelch_types: dict[int, ToneSquelchType] | None = None
     power_sources: dict[int, str] | None = None
     power_ceilings_w: dict[str, dict[int, float]] | None = None
 
@@ -842,6 +844,11 @@ class RigConfig:
             agc_auto_mode=self.agc_auto_mode,
             agc_auto_speed_labels=self.agc_auto_speed_labels,
             ctcss_tones_centihz=self.ctcss_tones_centihz,
+            tone_squelch_types=(
+                None
+                if self.tone_squelch_types is None
+                else dict(self.tone_squelch_types)
+            ),
             power_sources=(
                 None if self.power_sources is None else dict(self.power_sources)
             ),
@@ -1226,6 +1233,50 @@ def _power_table_code(filename: str, table: str, raw_code: str) -> int:
     if not 0 <= code <= 0xFF:
         raise RigLoadError(f"{filename}: [power.{table}] code {code} is not one byte")
     return code
+
+
+def _resolve_tone_squelch_types(
+    path: Path, data: dict[str, Any], commands: dict[str, CommandSpec]
+) -> dict[int, ToneSquelchType] | None:
+    """Parse ``[tone_squelch_types]``: selector code -> neutral type (MOR-2131).
+
+    A profile that declares ``get_tone_squelch_type``, in ``[commands]`` or
+    its overrides and not as absent, must carry the table, because the
+    decoder reads the code's meaning from it and nowhere else.
+    """
+    filename = path.name
+    section = data.get("tone_squelch_types")
+    if section is None:
+        selector = commands.get("get_tone_squelch_type")
+        if selector is not None and not isinstance(selector, AbsentCommandSpec):
+            raise RigLoadError(
+                f"{filename}: get_tone_squelch_type needs a [tone_squelch_types] table"
+            )
+        return None
+    if not isinstance(section, dict) or not section:
+        raise RigLoadError(
+            f"{filename}: [tone_squelch_types] must be a non-empty table"
+        )
+    table: dict[int, ToneSquelchType] = {}
+    for raw_code, raw_type in section.items():
+        try:
+            code = int(raw_code)
+        except ValueError as exc:
+            raise RigLoadError(
+                f"{filename}: [tone_squelch_types] key {raw_code!r} is not a code"
+            ) from exc
+        if not 0 <= code <= 0xFF:
+            raise RigLoadError(
+                f"{filename}: [tone_squelch_types] code {code} is not one byte"
+            )
+        try:
+            table[code] = ToneSquelchType(raw_type)
+        except ValueError as exc:
+            raise RigLoadError(
+                f"{filename}: [tone_squelch_types].{raw_code} = {raw_type!r} is not "
+                f"one of {sorted(t.value for t in ToneSquelchType)}"
+            ) from exc
+    return table
 
 
 def _parse_command_value(
@@ -2381,6 +2432,7 @@ def load_rig(path: Path) -> RigConfig:
         # Apply overrides
         for key, value in overrides.items():
             commands[key] = _parse_command_value(filename, key, value)
+    tone_squelch_types = _resolve_tone_squelch_types(path, data, commands)
 
     # Parse freq_ranges
     freq_ranges_data = data.get("freq_ranges", {}).get("ranges", [])
@@ -2979,6 +3031,7 @@ def load_rig(path: Path) -> RigConfig:
         agc_auto_mode=agc_auto_mode,
         agc_auto_speed_labels=agc_auto_speed_labels,
         ctcss_tones_centihz=ctcss_tones_centihz,
+        tone_squelch_types=tone_squelch_types,
         power_sources=power_sources,
         power_ceilings_w=power_ceilings_w,
         break_in_modes=break_in_modes,
