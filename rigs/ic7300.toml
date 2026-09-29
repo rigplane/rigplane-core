@@ -1014,6 +1014,9 @@ get_scope_during_tx = [0x27, 0x1B]
 get_scope_center_type = [0x27, 0x1C]
 get_scope_vbw = [0x27, 0x1D]
 get_scope_fixed_edge = [0x27, 0x1E]
+# MOR-3012: the 0x27 scope table documents no RBW sub-command anywhere
+# (pp.19-7/19-8: 00, 10-17, 19, 1A-1E, 20; 1C is center type, 1D is VBW).
+get_scope_rbw = { absent = "IC-7300 Advanced Manual 11a sec.19 command table pp.19-7/19-8: the 0x27 scope table runs 00, 10-17, 19, 1A-1E, 20 with no RBW sub-command (1C is center type, 1D is VBW)" }
 
 # ── Scan ──
 scan_start = [0x0E]
@@ -1193,6 +1196,11 @@ get_data_off_mod_input = [0x1A, 0x05, 0x00, 0x66]
 set_data_off_mod_input = [0x1A, 0x05, 0x00, 0x66]
 get_data1_mod_input = [0x1A, 0x05, 0x00, 0x67]
 set_data1_mod_input = [0x1A, 0x05, 0x00, 0x67]
+# MOR-3012: one DATA mode only -- 1A 05 documents just 0066 (MOD input
+# during DATA OFF) and 0067 (during DATA); no DATA2/DATA3 rows (0093/
+# 0094 there are Display Language and date setting).
+get_data2_mod_input = { absent = "IC-7300 Advanced Manual 11a sec.19 command table p.19-5: 1A 05 has only 0066 (MOD input during DATA OFF) and 0067 (during DATA); no DATA2 row (0093 there is Display Language)" }
+get_data3_mod_input = { absent = "IC-7300 Advanced Manual 11a sec.19 command table p.19-5: 1A 05 has only 0066 (MOD input during DATA OFF) and 0067 (during DATA); no DATA3 row (0094 there is date setting)" }
 get_civ_transceive = [0x1A, 0x05, 0x00, 0x71]
 set_civ_transceive = [0x1A, 0x05, 0x00, 0x71]
 # MOR-2118: measured 2026-09-01 14:39-14:41 UTC, remote testbed. Owner
