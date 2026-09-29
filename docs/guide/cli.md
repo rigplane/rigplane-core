@@ -40,7 +40,7 @@ All commands accept these options:
 
     ```bash
     # ~/.bashrc or ~/.zshrc
-    export ICOM_HOST=192.168.55.40
+    export ICOM_HOST=192.168.1.50
     export ICOM_USER=myuser
     export ICOM_PASS=mypass
     ```
@@ -52,6 +52,8 @@ When `--host` is omitted (LAN backend), rigplane sends a UDP broadcast to find r
 - **1 radio found** → uses it automatically, prints the IP
 - **Multiple radios** → lists them, asks you to specify `--host`
 - **No radios** → error with troubleshooting hints
+
+LAN discovery finds the radio's IP address but not its model, so name the model as well, for example `rigplane --model IC-7610 status`.
 
 Similarly, when `--backend serial` is set without `--serial-port`, serial ports are scanned automatically.
 
@@ -91,7 +93,7 @@ rigplane supports four backends: **LAN** (default), **serial** (USB CI-V),
 rigplane --model IC-7610 status
 
 # Explicit IP
-rigplane --model IC-7610 --host 192.168.55.40 status
+rigplane --model IC-7610 --host 192.168.1.50 status
 rigplane --model IC-7610 --backend lan status
 ```
 
@@ -546,7 +548,7 @@ rigplane --model IC-7610 power-off
 
 ### `discover`
 
-Discover Icom radios on LAN and USB serial ports. Results are grouped by radio identity — the same physical radio connected via both LAN and USB appears as one entry with two connection methods. Optional Hamlib flags add assisted discovery and read-only validation for external `rigctld` provider setup.
+Discover Icom radios on the LAN, and CI-V and Yaesu CAT radios on USB serial ports. Results are grouped by model and address: the CI-V address, or the model ID a Yaesu radio reports. A LAN result has neither, so it is listed under its IP address, apart from the same radio's USB entry. Optional Hamlib flags add assisted discovery and read-only validation for external `rigctld` provider setup.
 
 ```bash
 rigplane discover                   # LAN + serial
@@ -559,25 +561,17 @@ rigplane --json discover --serial --hamlib-candidates
 rigplane discover --hamlib-validate --rigctld-host 127.0.0.1
 ```
 
+For an IC-7610 connected by both LAN and USB, and an IC-705 on USB:
+
 ```
 Scanning for radios (3s LAN + serial)...
 
-Found 1 radio with 2 connection methods:
+Found 3 radios with 3 connection methods:
 
+192.168.1.50:
+  • LAN: 192.168.1.50
 IC-7610:
-  • LAN: 192.168.55.40
   • Serial: /dev/cu.usbserial-11320 (19200 baud)
-```
-
-Multiple radios:
-
-```
-Found 2 radios with 3 connection methods:
-
-IC-7610:
-  • LAN: 192.168.55.40
-  • Serial: /dev/cu.usbserial-11320 (19200 baud)
-
 IC-705:
   • Serial: /dev/cu.usbserial-54321 (115200 baud)
 ```
@@ -743,11 +737,11 @@ rigplane --model IC-7610 serve --wsjtx-compat
 Transparent UDP relay that forwards all radio traffic between a remote client and the physical radio. Useful for accessing a shack radio over a VPN without exposing the radio's IP directly.
 
 ```bash
-# Forward radio at 192.168.55.40 to all VPN clients
-rigplane proxy --radio 192.168.55.40
+# Forward radio at 192.168.1.50 to all VPN clients
+rigplane proxy --radio 192.168.1.50
 
 # Listen only on VPN interface, custom base port
-rigplane proxy --radio 192.168.55.40 --listen 10.8.0.1 --port 50010
+rigplane proxy --radio 192.168.1.50 --listen 10.8.0.1 --port 50010
 ```
 
 | Option | Default | Description |

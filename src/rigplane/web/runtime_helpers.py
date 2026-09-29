@@ -891,6 +891,7 @@ def classify_radio_health(
     server_reachable: bool = True,
     now_monotonic: float | None = None,
     served_with_silent_link: bool = False,
+    served_without_port: bool = False,
 ) -> dict[str, Any]:
     """Classify server/radio health from runtime evidence.
 
@@ -908,6 +909,11 @@ def classify_radio_health(
     stand (2026-09-28) showed the serial watchdog reopening a present-but-
     silent port back to ``CONNECTED``, which the live-state branches would
     misreport as ``ready``.
+
+    ``served_without_port`` (MOR-2876) is the same hold for a server that
+    started while the radio's serial port could not be opened: the verdict
+    is ``radio_not_connected`` while the latest port open failed
+    (``last_error`` set), otherwise ``radio_powered_off_likely``.
     """
     now = time.monotonic() if now_monotonic is None else now_monotonic
     if not server_reachable:
@@ -945,9 +951,20 @@ def classify_radio_health(
     last_error = getattr(radio, "last_error", None)
     last_error_value = last_error if isinstance(last_error, str) else None
 
-    if served_with_silent_link:
-        # MOR-2841: the startup gate already decided this link answers
-        # nothing, so this precedes the ready branch — the watchdog's
+    if served_without_port and last_error_value is not None:
+        return {
+            "serverReachable": True,
+            "radioLink": radio_link,
+            "readiness": "stalled",
+            "likelyCause": "radio_not_connected",
+            "sinceMs": 0,
+            "lastError": last_error_value,
+        }
+
+    if served_with_silent_link or served_without_port:
+        # MOR-2841: a link the startup gate served as silent, or (MOR-2876)
+        # a port that opened after a missing-port start, with no radio
+        # observation yet. This precedes the ready branch — the watchdog's
         # reopen makes the live state (and ``radio_ready``) say
         # connected/ready again within seconds on a present-but-silent
         # port. ``radioLink`` keeps reporting the live link; only the
@@ -1629,11 +1646,7 @@ def snapshot_field_status_inputs(
     ``declared`` is every ``field_policies`` key plus every capability path
     the profile does NOT mark unavailable
     (:attr:`~rigplane.core.state_acquisition_policy.FieldCapability.is_unavailable`,
-    which covers both ``unsupported`` and ``unknown``). ``field_policies``
-    alone would not do: ``rigs/ic705.toml`` has no
-    ``[state_acquisition.field_policies]`` table, so every one of the 133
-    entries this projection emits for it — ``main.freqHz`` included —
-    would read ``undeclared``.
+    which covers both ``unsupported`` and ``unknown``).
     """
 
     return resolve_available_when(acquisition, snapshot), declared_field_paths(

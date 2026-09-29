@@ -61,8 +61,9 @@ must be 1-5 ASCII digits), the host part is admitted when it is:
 - a single-label name matching `[a-z0-9]([a-z0-9-]*[a-z0-9])?`;
 - a name ending in `.localhost`, `.local`, `.home.arpa` or `.internal`,
   compared case-insensitively;
-- a name passed via the repeatable `--allowed-host NAME` flag on the `web`
-  command (`WebConfig.allowed_hosts`).
+- a dotted name passed via the repeatable `--allowed-host NAME` flag on the
+  `web` command (`WebConfig.allowed_hosts`); a single-label name is decided by
+  the pattern above alone.
 
 A MISSING `Host` header is admitted. Everything else — including empty or
 malformed values — gets `421` with the JSON body
@@ -119,7 +120,7 @@ These routes are part of the Pro/supervisor compatibility surface:
 
 | Method | Path | Purpose |
 |-------|------|---------|
-| `GET` | `/healthz` | Process/API liveness, no API token required |
+| `GET` | `/healthz` | Process/API liveness |
 | `GET` | `/readyz` | Station readiness, returns `503` until radio is ready |
 | `GET` | `/api/v1/runtime` | Process, bind, radio, rigctld, bridge, and diagnostic runtime status |
 | `GET` | `/api/v1/station` | Friendly station-server identity, readiness, and next-action status |
@@ -127,12 +128,14 @@ These routes are part of the Pro/supervisor compatibility surface:
 | `GET` | `/api/v1/state` | Canonical current state snapshot |
 | `GET` | `/api/v1/capabilities` | Full profile-backed capabilities |
 | `GET` | `/api/v1/audio/analysis` | Audio analysis snapshot when analyzer is active |
+| `GET` | `/api/v1/managed-transmit` | Managed transmit authority snapshot |
+| `POST` | `/api/v1/managed-transmit/command` | Submit a latched transmit or force-off intent |
+| `PUT` | `/api/v1/managed-transmit/tot` | Update the managed transmit time-out |
 | `GET` | `/api/v1/bridge` | Audio bridge status |
 | `POST` | `/api/v1/bridge` | Start audio bridge |
 | `DELETE` | `/api/v1/bridge` | Stop audio bridge |
 | `POST` | `/api/v1/commands` | Enqueue one structured radio command |
 | `POST` | `/api/v1/commands/batch` | Apply a stateless ordered command batch |
-| `POST` | `/api/v1/civ/transaction` | Send one scoped raw CI-V transaction with explicit response handling |
 
 ### Other Web UI Endpoints
 
@@ -156,11 +159,11 @@ These routes are part of the Pro/supervisor compatibility surface:
 |-------|------|---------|
 | `POST` | `/api/v1/radio/connect` | Connect/reconnect radio control path |
 | `POST` | `/api/v1/radio/disconnect` | Disconnect radio control path |
-| `POST` | `/api/v1/radio/power` | Power on/off via CI-V power control |
+| `POST` | `/api/v1/radio/power` | Power on/off (body `{"state": "on"}` or `{"state": "off"}`) through the backend's `set_powerstat` |
 | `POST` | `/api/v1/commands` | Enqueue one structured radio command |
 | `POST` | `/api/v1/commands/batch` | Apply a stateless ordered command batch |
 | `POST` | `/api/v1/civ/transaction` | Send one scoped raw CI-V transaction |
-| `POST` | `/api/v1/band-plan/config` | Change active region and reload band plans |
+| `POST` | `/api/v1/band-plan/config` | Change active region and reload band plans (only when running from a source checkout: the wheel does not include `band-plans/`) |
 | `POST` | `/api/v1/eibi/fetch` | Fetch/refresh EiBi dataset |
 
 ### WebSocket Routes
@@ -195,13 +198,14 @@ wire frames used by WebSockets:
 
 The gated transport routes are default-off. If `WebConfig.webrtc_enabled` is
 false, or `aiortc` is missing, they return HTTP `503` with
-`code: "webrtc_unavailable"`. The CLI enables the gate with `rigplane web
---webrtc`; programmatic callers set `WebConfig(webrtc_enabled=True)`.
+`code: "webrtc_unavailable"`. The CLI enables the gate with `rigplane --model <MODEL>
+web --webrtc`; programmatic callers set `WebConfig(webrtc_enabled=True)`.
 
-`/api/v1/info` exposes `capabilities.hasWebrtc`, and `/api/v1/capabilities`
-includes a `webrtc` metadata block. Treat these as optional dependency/audio
-feature-detection metadata; they do not prove the gated
-`/api/v1/transport/webrtc/*` routes are enabled.
+`/api/v1/info` exposes `capabilities.hasWebrtc` (aiortc importable and the
+radio has audio); it does not show whether the routes are enabled.
+`/api/v1/capabilities` includes a `webrtc` block whose `available` (aiortc
+importable) and `enabled` (`WebConfig.webrtc_enabled`) fields are the two
+conditions the `/api/v1/transport/webrtc/*` routes check.
 
 ### Structured Command Surface
 
@@ -238,7 +242,7 @@ Process liveness probe for local supervisors.
 {
   "status": "ok",
   "pid": 12345,
-  "version": "2.0.3"
+  "version": "3.0.0b9"
 }
 ```
 
@@ -262,9 +266,9 @@ Machine-readable runtime status for managed local supervisors and diagnostics.
 {
   "pid": 12345,
   "uptimeSeconds": 12.3,
-  "version": "2.0.3",
+  "version": "3.0.0b9",
   "bind": { "host": "127.0.0.1", "port": 8080 },
-  "logPath": "/Users/me/Library/Logs/rigplane.log",
+  "logPath": "/Users/me/Library/Caches/rigplane/logs/rigplane.log",
   "authRequired": false,
   "backend": "rigplane",
   "radio": {
@@ -296,8 +300,9 @@ Machine-readable runtime status for managed local supervisors and diagnostics.
 
 HTTP command envelope for automation clients that do not need WebSocket
 delivery. The command names and `params` match the `/api/v1/ws` command channel.
-The endpoint accepts the command into RigPlane's normal command queue and
-returns the same acknowledgement shape as the WebSocket command handler.
+The endpoint runs the command through the same `ControlHandler` path as the
+WebSocket command channel and returns that path's `result` object in an
+`{ok, name, result}` envelope (plus `id` when the request has one).
 
 Request:
 
@@ -370,8 +375,8 @@ Request:
 ```
 
 `command` and `sub` are byte values from `0` to `255`; `sub` may be omitted.
-`data` is an even-length compact hexadecimal string. `expect` is required by
-behavior, defaults to `"data"` for compatibility, and must be one of:
+`data` is an even-length compact hexadecimal string. `expect` is optional on this
+endpoint and defaults to `"data"`; when present it must be one of:
 
 | Value | Behavior |
 |-------|----------|
@@ -466,8 +471,8 @@ Stateless ordered batch apply for local automation. RigPlane does not store,
 name, schedule, or share batches in Core. Clients send the full sequence on
 each request.
 
-Use this endpoint when an external controller needs an all-or-reported-nothing
-profile switch: tune frequency, select mode/filter, adjust levels, switch
+Use this endpoint when an external controller needs one ordered profile
+switch: tune frequency, select mode/filter, adjust levels, switch
 audio/data state, recall memory, query model-specific CI-V state, or apply
 other supported operations as one ordered operation.
 
@@ -597,10 +602,10 @@ Successful response:
       "ok": true,
       "status": "response",
       "result": {
-        "frame": "FEFEE0981A050153FD",
+        "frame": "FEFEE0A21A05015301FD",
         "command": 26,
         "sub": 5,
-        "data": "0153"
+        "data": "015301"
       }
     },
     {
@@ -772,8 +777,8 @@ profile.
 ### Automation Examples
 
 Check capabilities before building model-specific batches. The capability
-payload tells clients which receivers, modes, filters, audio controls, memory
-operations, and feature toggles are available on the active radio:
+payload tells clients which receivers, modes, filters, audio controls, and
+feature toggles are available on the active radio:
 
 ```bash
 curl http://127.0.0.1:8080/api/v1/capabilities
@@ -889,7 +894,7 @@ Friendly station-server status for desktop supervisors and setup tools.
   "schema": "rigplane.station.status.v1",
   "service": "rigplane",
   "kind": "station_server",
-  "version": "2.0.3",
+  "version": "3.0.0b9",
   "displayName": "IC-7610",
   "instanceId": null,
   "baseUrl": "http://127.0.0.1:58421",
@@ -987,7 +992,7 @@ line as the startup contract instead of parsing the human-readable banner:
   "baseUrl": "http://127.0.0.1:58421",
   "healthUrl": "http://127.0.0.1:58421/healthz",
   "runtimeUrl": "http://127.0.0.1:58421/api/v1/runtime",
-  "logPath": "/Users/me/Library/Logs/rigplane.log"
+  "logPath": "/Users/me/Library/Caches/rigplane/logs/rigplane-managed.log"
 }
 ```
 
@@ -1000,7 +1005,7 @@ Version, model, capability summary, and connection metadata.
 ```json
 {
   "server": "rigplane",
-  "version": "0.18.0",
+  "version": "3.0.0b9",
   "proto": 1,
   "radio": "IC-7300",
   "model": "IC-7300",
@@ -1009,10 +1014,9 @@ Version, model, capability summary, and connection metadata.
     "hasAudio": true,
     "hasTx": true,
     "hasDualReceiver": false,
-    "hasTuner": false,
+    "hasTuner": true,
     "hasCw": true,
     "maxReceivers": 1,
-    "tags": ["audio", "cw", "meters", "scope", "tx"],
     "modes": ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "RTTY-R"],
     "filters": ["FIL1", "FIL2", "FIL3"],
     "vfoScheme": "ab",
@@ -1077,8 +1081,10 @@ Canonical full state payload for web consumers (camelCase keys).
 |---|---|
 | `server_unreachable` | Browser/client cannot reach the web or proxy server. The server normally cannot emit this for itself; clients derive it from HTTP/WS failures. |
 | `radio_network_lost` | Server is reachable, but the radio link is disconnected or reconnecting. |
+| `radio_remote_control_unreachable` | Server is reachable and the radio host answers, but its remote-control server is not listening; the link is disconnected or reconnecting. |
 | `radio_not_responding` | Radio link still exists, but CI-V/control data is delayed or stalled. |
-| `radio_powered_off_likely` | Server is reachable, the radio was previously available, and repeated timeout/recovery evidence suggests the hardware is off or unreachable. |
+| `radio_powered_off_likely` | Server is reachable and either the radio was previously available and repeated timeout/recovery evidence suggests it is off or unreachable, or the server started against a radio that has not answered at all. |
+| `radio_not_connected` | Server is reachable. It started while the radio's serial port could not be opened, the latest attempt to open the port failed, and the radio has not answered since. |
 | `unknown` | Insufficient evidence or healthy/ready state. |
 
 ## `GET /api/v1/capabilities`
@@ -1090,10 +1096,10 @@ Notable fields:
 | Field | Type | Notes |
 |------|------|-------|
 | `receivers` | `int` | Receiver count from active profile |
-| `vfoScheme` | `"ab"` \| `"main_sub"` | VFO label scheme |
+| `vfoScheme` | `"ab"` \| `"main_sub"` \| `"ab_shared"` \| `"single"` | VFO label scheme |
 | `freqRanges[].bands[].bsrCode` | `int` (optional) | Band Stack Register code for `set_band` |
 | `scopeSource` | `"hardware"` \| `"audio_fft"` \| `null` | Spectrum data source |
-| `scopeConfig.defaultSpan` | `int` | Hardware scope span or audio FFT bandwidth |
+| `scopeConfig.defaultSpan` | `int` | Audio FFT bandwidth in Hz (48000 if unset) when the audio FFT scope exists, otherwise the constant 500000 |
 | `audioConfig` | object | Web audio transport defaults |
 | `webrtc.available` | `bool` | Whether the optional `rigplane[webrtc]` backend is importable; this does not indicate that the default-off `WebConfig.webrtc_enabled` transport gate is enabled |
 
@@ -1153,8 +1159,9 @@ Error response:
 {"type":"response","id":"42","ok":false,"error":"command_failed","message":"..."}
 ```
 
-High-frequency `set_*` commands (same command name, same session, arriving
-faster than one per 50ms) are coalesced with last-value-wins semantics
+High-frequency `set_*` commands (same command name and receiver — and, for
+`set_filter`, `set_vfo`, `select_vfo` and `set_band`, the same target — on one
+session, arriving faster than one per 50ms; `set_vfo_freq` is exempt) are coalesced with last-value-wins semantics
 (MOR-1427) instead of being dropped. Only one physical enqueue happens per
 50ms pacing window: the newest frame in the window always survives to that
 enqueue, and any frame it replaces before flush is ACKed immediately with an
@@ -1236,8 +1243,9 @@ curl -X POST http://127.0.0.1:8080/api/v1/eibi/fetch \
 
 ## Modules
 
-- `server.py` — asyncio HTTP/WebSocket server, endpoint routing
-- `handlers.py` — control/scope/audio channel handlers
+- `server.py` — asyncio HTTP/WebSocket server and WebSocket channel routing
+- `web_routing.py` — HTTP route table (`dispatch_http_request`)
+- `handlers/` — control, scope, audio and diagnostics channel handlers (package: `control.py`, `scope.py`, `audio.py`, `diagnostics.py`)
 - `radio_poller.py` — state polling and command queue execution
 - `runtime_helpers.py` — canonical public state/capability shaping
 - `dx_cluster.py` — DX spot ingest and buffering

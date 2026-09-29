@@ -14,13 +14,13 @@ public interfaces, and operational workflows.
 
 ```bash
 # Default: bind all interfaces on port 8080
-rigplane web
+rigplane --model IC-7610 web
 
 # Explicit host/port
-rigplane web --host 0.0.0.0 --port 9090
+rigplane --model IC-7610 web --host 0.0.0.0 --port 9090
 
 # Managed local runtime on loopback
-rigplane station --port 0
+rigplane --model IC-7610 station --port 0
 ```
 
 Open `http://<server-ip>:8080` (or your custom port).
@@ -35,7 +35,10 @@ and the [MDN getUserMedia reference](https://developer.mozilla.org/en-US/docs/We
 
 For a remote browser, start the Web UI with Core TLS support using
 `--tls-cert` and `--tls-key` together. Use a certificate valid and trusted for
-the server hostname. The `--tls` option alone generates self-signed TLS and
+the server hostname. If that hostname contains a dot and does not end in
+`.localhost`, `.local`, `.home.arpa` or `.internal`, also pass
+`--allowed-host <hostname>`; otherwise the server answers
+`421 Misdirected Request`. The `--tls` option alone generates self-signed TLS and
 does not establish browser certificate trust. Install the [`tls` extra](installation.md#optional-dependencies) when needed, and open the resulting
 `https://` URL. A browser connected through an SSH loopback tunnel may instead
 use `http://localhost:<forwarded-port>` because loopback is a browser-trusted
@@ -48,7 +51,7 @@ or receive operation fails over HTTP.
 | Layer | Implementation | Notes |
 |------|----------------|-------|
 | HTTP + WebSocket server | Python asyncio | Pure asyncio, no external web framework |
-| WS handlers | Per-channel handlers | Control, scope, meters, and audio channels |
+| WS handlers | Per-channel handlers | Control, scope (hardware and audio-FFT), and audio channels |
 | Frontend app | Svelte + TypeScript | Built assets served from package by default |
 
 The backend manages reconnect and recovery when the radio link drops; scope enable is deferred until `radio_ready` is true.
@@ -106,7 +109,7 @@ options retain their existing roles.
 
 !!! note "Audio bridge control path"
     Runtime bridge activation is typically done from CLI flags
-    (`rigplane web --bridge ...` / `--bridge-rx-only`).
+    (`rigplane --model <MODEL> web --bridge ...` / `--bridge-rx-only`).
 
 ## WebSocket Channels
 
@@ -114,7 +117,7 @@ options retain their existing roles.
 |---------|-----------|--------------|---------|
 | `/api/v1/ws` | bidirectional | JSON text | Commands, responses, notifications, `state_update` stream |
 | `/api/v1/scope` | server -> client | Binary | Scope/waterfall frames |
-| `/api/v1/meters` | server -> client | Binary | Meter frames (`meters_start` / `meters_stop` control messages) |
+| `/api/v1/audio-scope` | server -> client | Binary | Audio-FFT scope frames (closed when the audio FFT scope is not available) |
 | `/api/v1/audio` | bidirectional | JSON + Binary | RX stream + TX uplink |
 
 ## Control Channel Workflow (`/api/v1/ws`)
@@ -141,14 +144,17 @@ The backend emits `state_update` in two shapes:
 {"type":"state_update","data":{"type":"full","data":{"main":{"freqHz":14074000}},"revision":1}}
 ```
 
-2. Delta update (only changed fields):
+2. Delta update. Each top-level key whose value changed carries its complete new
+   value (a frequency change resends the whole `main` object); keys that
+   disappeared are listed in `removed`:
 
 ```json
-{"type":"state_update","data":{"type":"delta","changed":{"main":{"freqHz":14074100}},"revision":2}}
+{"type":"state_update","data":{"type":"delta","changed":{"ptt":true},"revision":2}}
 ```
 
 Client integrations should support both formats. Assuming only full snapshots causes
-state drift when delta updates are enabled.
+state drift: the server sends deltas between full snapshots, and a full snapshot
+follows every 100 deltas and every provider-generation change.
 
 ### Connection control messages
 
@@ -440,7 +446,8 @@ Practical rule:
 
 1. Client enables RX:
    - `{"type":"audio_start","direction":"rx"}`
-2. Client requests PTT ON on control channel (`ptt: true`).
+2. Client requests PTT ON on the control channel:
+   `{"type":"cmd","id":"…","name":"ptt","params":{"state":true}}` (or `"name":"ptt_on"`).
 3. Client enables TX stream:
    - `{"type":"audio_start","direction":"tx"}`
    - then sends binary TX frames to `/api/v1/audio`.
@@ -449,9 +456,8 @@ Practical rule:
 
 ### Important constraints
 
-- Browser TX frames are ignored while PTT is OFF (frontend and backend both enforce this).
-- IC-7610 LAN behavior is effectively half-duplex for web audio flow: after TX ends,
-  RX is restarted explicitly by backend logic.
+- The backend drops browser TX frames unless RigPlane holds the key: a keyed
+  managed TX intent or an observed PTT ON.
 - If audio send blocks for too long, server closes stale audio WS path and client
   reconnect logic re-establishes the stream.
 
@@ -493,16 +499,19 @@ contracts.
 
 ## Frontend Runtime Workflow (Current Implementation)
 
-The browser app startup path is implemented in `frontend/src/App.svelte` and
-`frontend/src/lib/transport/http-client.ts`.
+The browser app startup path is implemented in `frontend/src/App.svelte`
+(`initMediaSession`, `runtime.bootstrap`) and
+`frontend/src/lib/runtime/frontend-runtime.ts` (`FrontendRuntime._doBootstrap`).
 
 ### Boot sequence
 
 1. Initialize the workspace-backed skin selector (see "Layout and skin resolution" below).
 2. Register MediaSession handlers (when API is available).
-3. Start HTTP polling loop for `/api/v1/state` (interval set to `1000ms` in app bootstrap).
-4. Fetch capabilities once from `/api/v1/capabilities`.
-5. Connect control WebSocket (`/api/v1/ws`) and subscribe to events.
+3. Fetch `/api/v1/info`.
+4. Subscribe to the capabilities store. The control WebSocket client loads
+   `/api/v1/capabilities` each time a full state reports a new provider generation.
+5. Connect the control WebSocket (`/api/v1/ws`), the only source of state, and
+   subscribe to the `events` stream.
 
 ### Runtime ownership (actual code paths)
 
@@ -513,7 +522,7 @@ The frontend keeps one behavior path and splits responsibilities by module:
 | Runtime read/write entry point | `frontend/src/lib/runtime/frontend-runtime.ts` | Exposes state, capabilities, connection snapshot, audio actions, and command send helpers. |
 | UI view-model mapping | `frontend/src/lib/runtime/adapters/` (`radio-view-model-adapter.ts`, `panel-adapters.ts`) | |
 | WS command dispatch | `frontend/src/lib/runtime/commands/panel-commands.ts` | |
-| HTTP system actions | `frontend/src/lib/runtime/system-controller.ts` via `runtime.system.*` | Owns radio connect/disconnect, power on/off, and EiBi identify calls. |
+| HTTP system actions | `frontend/src/lib/runtime/system-controller.ts` via `runtime.system.*` | Power on/off (`POST /api/v1/radio/power`) and EiBi identify (`GET /api/v1/eibi/identify`); `disconnect()` closes the browser's audio, WebSocket and MediaSession channels and `connect()` reopens the WebSocket and MediaSession ones; neither makes an HTTP call. |
 | Presentation composition and resource handover | `frontend/src/App.svelte`: `requestPresentation`, `acquireSwapBridge`; `frontend/src/lib/runtime/resource-demand.ts` | The bridge preserves already-demanded resources during a layout change; it does not create demand for an otherwise unused service. |
 | Browser TX facade and session cleanup | `frontend/src/lib/runtime/tx-controller/managed-app-host.ts`: `provideManagedAppTxHost` | App lifetime, outside replaceable skins; renders server-managed state and submits intents. |
 
@@ -540,15 +549,13 @@ otherwise the profile's default policy. It is emitted by
 (`AcquisitionScheduler.ensure_fresh` and `.prime_unobserved` also enqueue
 requests, outside this cadence).
 
-### State polling and conditional requests
+### Conditional requests on `/api/v1/state`
 
-- Polling uses `If-None-Match` with the previous `ETag`.
-- `304 Not Modified` is treated as a successful poll with no state payload.
-- The state `ETag` includes both `revision` and `healthRevision`. A
-  radio-health-only transition therefore returns `200` with a fresh payload even
-  when frequency/mode/meter state did not change.
-- On transient HTTP errors, cached ETag is cleared to force a fresh `200` response.
-- After repeated HTTP failures, the connection store marks HTTP as disconnected until recovery.
+The browser app does not poll `/api/v1/state`; its state arrives over `/api/v1/ws`.
+For HTTP clients, the server sends an `ETag` and answers a matching
+`If-None-Match` with `304 Not Modified`. The `ETag` includes the radio-health
+revision, so a radio-health-only transition returns `200` with a fresh payload
+even when frequency/mode/meter state did not change.
 
 ### MediaSession mappings (mobile/headset controls)
 
@@ -563,8 +570,8 @@ registered; only the volume-key tuning actions above are wired up.
 Implementation path: `frontend/src/lib/media/media-session.ts`.
 
 !!! note "Receiver routing in MediaSession tuning"
-    MediaSession tuning currently sends `set_freq` with `receiver: 0`
-    (MAIN receiver).
+    MediaSession tuning sends `set_freq` for the active receiver
+    (`receiver: 1` while SUB is active, otherwise `0`).
 
 ## Keyboard Shortcuts (Desktop)
 
@@ -628,7 +635,7 @@ and lazy-loaded through `skins/registry.ts`:
    - `lcd-scope` -> LCD Scope skin (IC-7300-style scope-dominant)
    - `standard` -> desktop-v2 skin
    - `sdr-test` -> SDR Screen test skin
-   - `peer-split`, `unified-instrument`, `panadapter-first` -> their respective LCD shell presentations
+   - `peer-split`, `unified-instrument`, `panadapter-first` -> their respective LCD shell presentations on a dual-receiver radio; on a single-receiver radio each falls back to `lcd-cockpit`
    - `dual-sdr-face` -> dual-receiver SDR instrument face
    - `auto` -> desktop-v2 unconditionally (MOR-1097 cutover); scope availability does not affect this resolution.
 
@@ -670,7 +677,7 @@ not restore pinned command names or preserved unknown fields. These operations
 use `importWorkspace`, `exportWorkspace` and `resetWorkspace` in
 `frontend/src/presentation/workspace/store.svelte.ts`.
 
-Schema versions 1–3 are readable by the current v1 reader. A lossy newer
+Schema versions 1–4 are readable by the current reader (schema version 2). A lossy newer
 document is held read-only for the session until explicit whole-document
 reset or a valid import; normal edits do not silently overwrite it. Legacy
 pre-workspace keys are retained. An older build reads those retained old
@@ -721,13 +728,13 @@ authority and observation boundary.
 ### Run with DX cluster overlays
 
 ```bash
-rigplane web --dx-cluster dxc.nc7j.com:7373 --callsign YOURCALL
+rigplane --model IC-7610 web --dx-cluster dxc.nc7j.com:7373 --callsign YOURCALL
 ```
 
 ### Run with custom UI assets
 
 ```bash
-rigplane web --static-dir /opt/icom-ui/dist
+rigplane --model IC-7610 web --static-dir /opt/icom-ui/dist
 ```
 
 ### Package cutover and rollback
@@ -753,16 +760,13 @@ curl http://127.0.0.1:8080/api/v1/info
 curl http://127.0.0.1:8080/api/v1/state
 ```
 
-### Verify v2 StatusBar system actions
+### Verify StatusBar system actions
 
-These are the HTTP calls used by `runtime.system.*` in `StatusBar.svelte` and
-`LcdLayout.svelte`:
+`runtime.system.powerOn()`/`powerOff()` in `StatusBar.svelte` call
+`POST /api/v1/radio/power`, and its now-playing lookup calls
+`GET /api/v1/eibi/identify`:
 
 ```bash
-# Trigger backend reconnect/disconnect
-curl -X POST http://127.0.0.1:8080/api/v1/radio/connect
-curl -X POST http://127.0.0.1:8080/api/v1/radio/disconnect
-
 # Remote power control
 curl -X POST http://127.0.0.1:8080/api/v1/radio/power \
   -H "Content-Type: application/json" \
@@ -775,13 +779,11 @@ curl -X POST http://127.0.0.1:8080/api/v1/radio/power \
 curl "http://127.0.0.1:8080/api/v1/eibi/identify?freq=14074000"
 ```
 
-If these endpoints return non-2xx, `runtime.system.*` raises the backend text
-as an error and UI actions show an alert with that message.
-
 ## Dynamic UI — Radio-Aware Controls
 
-The Web UI adapts to the active radio's capabilities. Capabilities are fetched once
-from `GET /api/v1/capabilities` on startup and cached in
+The Web UI adapts to the active radio's capabilities. Capabilities are fetched
+from `GET /api/v1/capabilities` each time the control WebSocket reports a new
+provider generation, and cached in
 `frontend/src/lib/stores/capabilities.svelte.ts`.
 
 ### VFO Labels
@@ -792,16 +794,6 @@ VFO button labels change based on the radio's VFO scheme:
 |-------|--------|----------------|----------------|
 | IC-7610 | `main_sub` | **MAIN** | **SUB** |
 | IC-7300 | `ab` | **VFO A** | **VFO B** |
-
-The `vfoLabel()` function in the capabilities store drives this:
-
-```typescript
-// Returns "MAIN" or "VFO A" depending on active profile
-vfoLabel('A')
-
-// Returns "SUB" or "VFO B"
-vfoLabel('B')
-```
 
 ### Capability-Based UI Guards
 
@@ -821,11 +813,6 @@ Use `hasCapability(name)` to check for a capability in Svelte components:
 
 ```typescript
 import { hasCapability } from '$lib/stores/capabilities.svelte';
-
-// In a Svelte component template:
-// {#if hasCapability('digisel')}
-//   <DigiSelControl />
-// {/if}
 ```
 
 ### State Endpoint and Receiver Count
@@ -841,14 +828,10 @@ const sub = state.sub ?? null;
 
 ## Common Pitfalls for Developers
 
-- **Capability-gated commands:** commands fail with `command_failed` if active profile
-  does not expose required capability (for example, `set_rf_gain` on unsupported radios).
 - **Receiver indexing:** many commands expect `receiver=0` (MAIN) or `receiver=1` (SUB)
   and validate against runtime profile receiver count.
 - **`sub` may be absent:** `GET /api/v1/state` omits `sub` for single-receiver radios —
   always guard with a null check.
-- **VFO commands:** use `select_vfo("A")` / `select_vfo("B")` regardless of scheme;
-  the backend translates to the correct CI-V codes for the active profile.
 - **Authoritative state source:** use `state_update` payloads as source of truth; optimistic
   UI updates can be overwritten by server state.
 - **Scope recovery behavior:** scope enable/re-enable is deferred until `radio_ready=true`;
@@ -857,11 +840,6 @@ const sub = state.sub ?? null;
   the current skins-based UI. Mobile interactions (sheet/panel swipe, touch-first
   PTT flow) are always active on a mobile-sized viewport; no query param or stored
   selection is required.
-- **Layout mode expectations:** workspace layout preference resolution is not
-  capability-aware; `auto` resolves to desktop-v2 unconditionally (MOR-1097 cutover), and scope
-  availability plays no part in it.
-- **System action error surfacing:** connect/disconnect/power actions in v2 call
-  `runtime.system.*` and surface backend HTTP errors directly in the UI.
 - **MediaSession availability:** headset/lock-screen controls are enabled only when
   `navigator.mediaSession` exists.
 

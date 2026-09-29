@@ -18,7 +18,7 @@
  * Isolated pool by name (`*.component.test.ts`).
  */
 import { readFileSync } from 'node:fs';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { FieldStatus, ServerState } from '$lib/types/state';
@@ -61,6 +61,7 @@ import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.sve
 import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
 import { getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import { dispatchRadioIntent } from '$lib/runtime/commands/radio-intents';
+import { measuredPbtHzToRaw } from '$lib/radio/filter-controls';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 import { desktopV2Layout, mobileLayout } from '../presentation/layouts/declarations';
 import { readWorkspace } from '../presentation/workspace/contract';
@@ -81,11 +82,12 @@ function liveCaps(): Capabilities {
   return {
     stateContractVersion: 1, providerGeneration: PROVIDER_GENERATION,
     model: 'fixture', scope: false, audio: false, tx: false,
-    capabilities: ['filter_width', 'filter_shape'],
+    capabilities: ['filter_width', 'filter_shape', 'pbt'],
     receivers: 1, vfoScheme: 'single',
     freqRanges: [], modes: ['USB'], filters: ['FIL1'],
     filterWidthMin: 50, filterWidthMax: 3600,
-    filterConfig: { USB: { defaults: [2400], fixed: false, minHz: 50, maxHz: 3600, stepHz: 50 } },
+    controls: { pbt_inner: { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: 1200 } },
+    filterConfig: { USB: { defaults: [2400], fixed: false, minHz: 50, maxHz: 3600, stepHz: 50, pbtStepHz: 50 } },
     audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
     webrtc: { available: false, enabled: false },
     txBands: [], scopeSource: null, audioFftAvailable: false,
@@ -110,7 +112,7 @@ function liveState(seq = 3): ServerState {
   const slot = { freqHz: 14250000, mode: 'USB', filterNum: 1, dataMode: 0 };
   const receiver = {
     ...slot, vfoA: slot, vfoB: { ...slot, freqHz: 14300000 }, activeSlot: 'A', filter: 1,
-    filterWidth: CONFIRMED_HZ, filterShape: 0,
+    filterWidth: CONFIRMED_HZ, filterShape: 0, pbtInner: 128, pbtOuter: 128,
     sMeter: -12, att: 0, preamp: 0, nb: false, nr: false,
     afLevel: 0.4, rfGain: 0.75, squelch: 0.1,
   };
@@ -129,6 +131,8 @@ function liveState(seq = 3): ServerState {
       'main.filterWidth': fresh,
       'main.filterShape': fresh,
       'main.freqHz': fresh,
+      'main.pbtInner': fresh,
+      'main.pbtOuter': fresh,
     },
   } as unknown as ServerState;
 }
@@ -153,15 +157,16 @@ function skinFor(kind: Presentation): SkinId {
   return kind === 'narrow-mobile' ? 'mobile' : 'desktop-v2';
 }
 
-function render(kind: Presentation, phoneShape = false): void {
+function render(kind: Presentation, phoneCapsOverride?: Capabilities): void {
   // The phone mount needs its table catalog in place before the layout
   // resolves the FilterPanel's width rule; a fresh state revision (above
-  // beforeEach's) keeps the re-set monotonic within one test. The shape
-  // describes pass `phoneShape`: the phone's shape buttons live in the chip
-  // FilterPanel's SETTINGS MODAL, which only the non-table (IC-7300-shaped)
-  // panel renders — the table-mode branch has no ⚙/modal at all, and an
-  // FTX-1-shaped table radio has no `filter_shape` to mount either way.
-  const phone = phoneShape ? liveCaps() : phoneCaps();
+  // beforeEach's) keeps the re-set monotonic within one test. Seats the
+  // table branch does not render take NON-table phone caps instead: the
+  // shape buttons (MOR-1689 — they live in the chip FilterPanel's settings
+  // modal, which only the non-table panel renders) and the PBT rows
+  // (MOR-1691 — the table branch carries no PBT rows, so the phone's real
+  // PBT control is the non-table panel).
+  const phone = phoneCapsOverride ?? phoneCaps();
   expect(setCapabilities(kind === 'narrow-mobile' ? phone : liveCaps())).toBe(true);
   expect(setRadioState(liveState(9))).toBe(true);
   target = document.createElement('div');
@@ -227,6 +232,24 @@ beforeEach(() => {
   resetCommandLifecycle();
   expect(setCapabilities(liveCaps())).toBe(true);
   expect(setRadioState(liveState())).toBe(true);
+});
+
+// jsdom carries no pointer-capture API at all. The per-element mocks in the
+// pointer-drag tests cover the control itself; the phone sheet's own drag
+// tracking also calls capture on its root when the slider's bubbling
+// pointerdown reaches it, so the Element API gets a file-wide stub, removed
+// again after the file's run.
+beforeAll(() => {
+  if (!Element.prototype.setPointerCapture) {
+    Element.prototype.setPointerCapture = vi.fn();
+    Element.prototype.releasePointerCapture = vi.fn();
+    Element.prototype.hasPointerCapture = vi.fn(() => false);
+  }
+});
+afterAll(() => {
+  delete (Element.prototype as { setPointerCapture?: unknown }).setPointerCapture;
+  delete (Element.prototype as { releasePointerCapture?: unknown }).releasePointerCapture;
+  delete (Element.prototype as { hasPointerCapture?: unknown }).hasPointerCapture;
 });
 
 afterEach(() => {
@@ -338,6 +361,89 @@ describe('structural feedback survives locale, forced-colors and reduced-motion 
   });
 });
 
+// MOR-1691: the same PBT-inner lifecycle DTO and the same bounded dispatch
+// on the desktop row (semantic FilterSurface), the narrow-mobile chip
+// FilterPanel's bipolar control, and a workspace-selected mount. A drag is
+// ONE committed request — never a per-move stream — and the pending target
+// shows as submitted/busy everywhere while the confirmed value stays the
+// canonical truth.
+describe('one PBT inner lifecycle is bounded and equivalent on desktop, narrow mobile and a workspace-selected mount (MOR-1691)', () => {
+  const DRAG_HZ = 500;
+  // The committed raw comes from the ONE measured-lattice conversion.
+  const dragRaw = measuredPbtHzToRaw(DRAG_HZ, CONFIRMED_HZ, 50)!;
+  const setPbtInnerCalls = () => h.commands.mock.calls
+    .filter(([name]) => name === 'set_pbt_inner')
+    .map(([, params]) => params);
+
+  /** The PBT-inner interactive element: the semantic row's native range on
+   * desktop/workspace, the chip FilterPanel's bipolar slider in the opened
+   * phone sheet. */
+  function pbtInnerControl(): HTMLElement {
+    const desktop = target.querySelector<HTMLElement>('[data-testid="filter-pbtInner"] input');
+    if (desktop !== null) return desktop;
+    const phone = target.querySelector<HTMLElement>('[role="slider"][aria-label="PBT Inner"]');
+    if (phone === null) throw new Error('PBT inner control not found on this mount');
+    return phone;
+  }
+
+  it.each(['desktop', 'narrow-mobile', 'workspace-selected'] as const)(
+    '%s: a pending set_pbt_inner reads submitted and busy with the confirmed value canonical',
+    (kind) => {
+      render(kind, liveCaps());
+      dispatchRadioIntent({ name: 'set_pbt_inner', params: { value: dragRaw, receiver: 0 } });
+      flushSync();
+
+      const command = getCommandLifecycles().find((candidate) => candidate.name === 'set_pbt_inner');
+      expect(command?.status).toBe('pending');
+      expect(command?.params).toMatchObject({ value: dragRaw, receiver: 0 });
+
+      const control = pbtInnerControl();
+      expect(control.getAttribute('data-command-phase')).toBe('submitted');
+      expect(control.getAttribute('aria-busy')).toBe('true');
+    },
+  );
+
+  it.each(['desktop', 'narrow-mobile', 'workspace-selected'] as const)(
+    '%s: a drag dispatches exactly one committed set_pbt_inner, never a per-move stream',
+    (kind) => {
+      render(kind, liveCaps());
+      const control = pbtInnerControl();
+      if (control instanceof HTMLInputElement) {
+        // The native-range seat: every intermediate `input` stays a local
+        // draft; the `change` (the release) commits once.
+        for (const hz of [0, 100, 200, 300, DRAG_HZ]) {
+          control.value = String(hz);
+          control.dispatchEvent(new Event('input', { bubbles: true }));
+          flushSync();
+          expect(setPbtInnerCalls()).toHaveLength(0);
+        }
+        control.dispatchEvent(new Event('change', { bubbles: true }));
+        flushSync();
+      } else {
+        // The phone's bipolar slider: pointer moves draft, pointerup commits.
+        const frame = control.closest<HTMLElement>('.vc-bipolar')!;
+        control.setPointerCapture = vi.fn();
+        control.hasPointerCapture = vi.fn(() => true);
+        control.releasePointerCapture = vi.fn();
+        vi.spyOn(frame, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 100 } as DOMRect);
+        control.dispatchEvent(new PointerEvent('pointerdown', {
+          bubbles: true, clientX: 10, pointerId: 5,
+        }));
+        for (const clientX of [30, 50, 71]) {
+          control.dispatchEvent(new PointerEvent('pointermove', {
+            bubbles: true, clientX, pointerId: 5,
+          }));
+          flushSync();
+          expect(setPbtInnerCalls()).toHaveLength(0);
+        }
+        control.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 5 }));
+        flushSync();
+      }
+      expect(setPbtInnerCalls()).toEqual([{ value: dragRaw, receiver: 0 }]);
+    },
+  );
+});
+
 // ---------------------------------------------------------------------------
 // MOR-1689 — the same equivalence for the Filter Shape SHARP/SOFT choices.
 // The desktop/workspace seat is the semantic `FilterInstrumentHost` shape
@@ -396,7 +502,7 @@ describe('one Filter Shape choice lifecycle is equivalent on desktop, narrow mob
   it.each(['desktop', 'narrow-mobile', 'workspace-selected'] as const)(
     '%s: pending phase, busy, canonical aria-pressed and live status match the shared DTO',
     (kind) => {
-      render(kind, true);
+      render(kind, liveCaps());
       dispatchRadioIntent({ name: 'set_filter_shape', params: { shape: SHAPE_TARGET, receiver: 0 } });
       flushSync();
 
@@ -419,7 +525,7 @@ describe('one Filter Shape choice lifecycle is equivalent on desktop, narrow mob
   it('keeps the shape choice intent identical across the three mounts', () => {
     const dispatched: unknown[] = [];
     for (const kind of ['desktop', 'narrow-mobile', 'workspace-selected'] as const) {
-      render(kind, true);
+      render(kind, liveCaps());
       const control = shapeControl(kind);
       expect(control, kind).not.toBeNull();
       control!.focus();
@@ -444,7 +550,7 @@ describe('one Filter Shape choice lifecycle is equivalent on desktop, narrow mob
 describe('Filter Shape structural feedback survives locale, forced-colors and reduced-motion (MOR-1689)', () => {
   it('announces the same pending shape in Russian without making color or motion the only signal', () => {
     setLocale('ru-RU');
-    render('narrow-mobile', true);
+    render('narrow-mobile', liveCaps());
     dispatchRadioIntent({ name: 'set_filter_shape', params: { shape: SHAPE_TARGET, receiver: 0 } });
     flushSync();
     const seen = shapeSnapshot('narrow-mobile');

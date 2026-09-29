@@ -243,7 +243,7 @@ import { MOD_INPUT_SOURCES } from '$lib/radio/mod-input';
 import {
   radio, subscribeRadioState,
 } from '$lib/stores/radio.svelte';
-import { getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
+import { acknowledgeCommand, beginCommand, confirmCommand, failCommand, getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import { getTxPermit } from '$lib/utils/tx-permit';
 import { toVfoProps, type VfoStateProps } from '$lib/runtime/props/panel-props';
 
@@ -517,6 +517,23 @@ describe('MobileRadioLayout structure', () => {
     expect(t.querySelector('.amber-lcd')).toBeNull();
     // The VFO overlay survives without the stage element.
     expect(t.querySelector('.m-ls-overlay')).not.toBeNull();
+  });
+});
+
+// MOR-2949 — the tune strip is icon-only, so each of its four buttons needs
+// an accessible name from the i18n catalog: direction plus step or fast.
+// Strip order: [-10, -1, +1, +10].
+describe('tune strip buttons have accessible names (MOR-2949)', () => {
+  it('names each tune button with its direction and step size', () => {
+    const t = mountMobile();
+    const labels = [...t.querySelectorAll<HTMLButtonElement>('.m-tuning-strip .m-tune-btn')]
+      .map((btn) => btn.getAttribute('aria-label'));
+    expect(labels).toEqual([
+      'Tune down fast',
+      'Tune down one step',
+      'Tune up one step',
+      'Tune up fast',
+    ]);
   });
 });
 
@@ -1010,6 +1027,70 @@ describe('mobile header follows the active receiver (MOR-2511)', () => {
     flushSync();
     expect(radioIntentSpy.mock.calls.length).toBe(callsBefore + 1);
     expect(radioIntentSpy.mock.lastCall).toEqual([14201400, 1, 'step']);
+  });
+});
+
+// MOR-2911 (MOR-2215 audit F5) — while a set_freq is in flight the phone
+// header's passive readout shows the pending target, sourced from the SAME
+// accessor the desktop's SemanticRadioSurfaces seam reads
+// (`getPendingFrequencyHz`), for the ACTIVE receiver only. Confirmed digits
+// return when the command resolves (radio confirms or refuses — both clear
+// the accessor). Driven through the real command-lifecycle store, not a
+// mocked accessor, so the reactive propagation is the thing under test.
+describe('mobile header shows the in-flight tune target (MOR-2911)', () => {
+  function pendingEcho(t: HTMLElement): string {
+    return t.querySelector('[data-testid="freq-pending-echo"]')?.textContent ?? '';
+  }
+
+  function beginSetFreq(id: string, freq: number, receiver: 0 | 1) {
+    return beginCommand({
+      id, name: 'set_freq', params: { freq, receiver }, originalEpoch: 9_291,
+    });
+  }
+
+  it('binds the pending set_freq target for the active MAIN receiver into the header readout', () => {
+    const t = mountMobile();
+    expect(pendingEcho(t)).toBe('');
+    expect(t.querySelector('[data-testid="freq-echo"]')?.textContent).toBe('14074000');
+
+    const command = beginSetFreq('mor-2911-main', 14_260_100, 0);
+    flushSync();
+
+    expect(pendingEcho(t)).toBe('14260100');
+    // The confirmed frequency stays the sole arithmetic/display base.
+    expect(t.querySelector('[data-testid="freq-echo"]')?.textContent).toBe('14074000');
+
+    // The real wire sequence: a transport ack first — which deliberately
+    // STAYS pending (MOR-1478: an ack is not a confirming observation) —
+    // then the radio's own confirmation clears the target.
+    acknowledgeCommand(command.id, command.originalEpoch, command.originalEpoch);
+    flushSync();
+    expect(pendingEcho(t)).toBe('14260100');
+
+    confirmCommand(command.id, command.originalEpoch, command.originalEpoch);
+    flushSync();
+    expect(pendingEcho(t)).toBe('');
+  });
+
+  it('tracks the SUB receiver pending target when SUB is the active receiver', () => {
+    (radio as unknown as { current: { active?: 'MAIN' | 'SUB' } | null }).current = { active: 'SUB' };
+    beginSetFreq('mor-2911-sub', 14_250_000, 1);
+    beginSetFreq('mor-2911-other-rx', 14_111_000, 0);
+    const t = mountMobile();
+
+    expect(pendingEcho(t)).toBe('14250000');
+  });
+
+  it('returns to confirmed when the radio refuses the command', () => {
+    const t = mountMobile();
+    const command = beginSetFreq('mor-2911-refused', 14_260_100, 0);
+    flushSync();
+    expect(pendingEcho(t)).toBe('14260100');
+
+    failCommand(command.id, command.originalEpoch, command.originalEpoch, 'radio refused');
+    flushSync();
+    expect(pendingEcho(t)).toBe('');
+    expect(t.querySelector('[data-testid="freq-echo"]')?.textContent).toBe('14074000');
   });
 });
 

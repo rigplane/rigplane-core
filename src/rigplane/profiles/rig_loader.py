@@ -1127,17 +1127,19 @@ def _resolve_ctcss_table(
 
 
 def _resolve_tone_squelch_types(
-    path: Path, data: dict[str, Any]
+    path: Path, data: dict[str, Any], commands: dict[str, CommandSpec]
 ) -> dict[int, ToneSquelchType] | None:
     """Parse ``[tone_squelch_types]``: selector code -> neutral type (MOR-2131).
 
-    A profile that declares ``get_tone_squelch_type`` must carry the table,
-    because the decoder reads the code's meaning from it and nowhere else.
+    A profile that declares ``get_tone_squelch_type``, in ``[commands]`` or
+    its overrides and not as absent, must carry the table, because the
+    decoder reads the code's meaning from it and nowhere else.
     """
     filename = path.name
     section = data.get("tone_squelch_types")
     if section is None:
-        if "get_tone_squelch_type" in data.get("commands", {}):
+        selector = commands.get("get_tone_squelch_type")
+        if selector is not None and not isinstance(selector, AbsentCommandSpec):
             raise RigLoadError(
                 f"{filename}: get_tone_squelch_type needs a [tone_squelch_types] table"
             )
@@ -2133,7 +2135,6 @@ def load_rig(path: Path) -> RigConfig:
             f"{sorted(VALID_RF_SQL_CONTROL_MODELS)}, got {rf_sql_control_model!r}"
         )
     ctcss_tones_centihz = _resolve_ctcss_table(path, data, features)
-    tone_squelch_types = _resolve_tone_squelch_types(path, data)
 
     # Validate [validation].write_only_controls — each entry must be a declared
     # capability. These route through the validate set-and-observe engine path
@@ -2322,6 +2323,7 @@ def load_rig(path: Path) -> RigConfig:
         # Apply overrides
         for key, value in overrides.items():
             commands[key] = _parse_command_value(filename, key, value)
+    tone_squelch_types = _resolve_tone_squelch_types(path, data, commands)
 
     # Parse freq_ranges
     freq_ranges_data = data.get("freq_ranges", {}).get("ranges", [])

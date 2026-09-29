@@ -101,6 +101,7 @@ def test_a_code_outside_the_table_publishes_an_unknown_type() -> None:
     snapshot = radio._state_store.snapshot()
     assert snapshot.field(TYPE_PATH).value is None
     assert snapshot.field("receiver.0.operator_toggles.repeater_tone").value is None
+    assert snapshot.field("receiver.0.operator_toggles.repeater_tsql").value is None
     radio._connected = False
 
 
@@ -132,6 +133,9 @@ def test_ic705_polls_the_type_through_16_5d() -> None:
         (ToneSquelchType.TONE, (True, False)),
         (ToneSquelchType.TSQL, (True, True)),
         (ToneSquelchType.DTCS, (None, None)),
+        (ToneSquelchType.DTCS_T, (None, None)),
+        (ToneSquelchType.TONE_T_DTCS_R, (None, None)),
+        (ToneSquelchType.DTCS_T_TSQL_R, (None, None)),
         (ToneSquelchType.TONE_T_TSQL_R, (None, None)),
         (None, (None, None)),
     ],
@@ -143,22 +147,37 @@ def test_ctcss_booleans_for_each_type(kind, pair) -> None:
 # ── Loader ───────────────────────────────────────────────────────────
 
 
-def _toml(*, selector: bool, table: str | None) -> str:
+# Where _toml declares the selector: under [commands], under its
+# overrides, or as absent.
+_SELECTORS = {
+    "commands": "get_tone_squelch_type = [0x16, 0x5D]\n\n[commands.overrides]",
+    "overrides": "[commands.overrides]\nget_tone_squelch_type = [0x16, 0x5D]",
+    "absent": (
+        'get_tone_squelch_type = { absent = "not on this radio" }\n\n'
+        "[commands.overrides]"
+    ),
+}
+
+
+def _toml(*, selector: str | None, table: str | None) -> str:
     text = _MINIMAL_TOML
-    if selector:
-        text = text.replace(
-            "[commands.overrides]",
-            "get_tone_squelch_type = [0x16, 0x5D]\n\n[commands.overrides]",
-        )
+    if selector is not None:
+        text = text.replace("[commands.overrides]", _SELECTORS[selector])
     if table is not None:
         text += f"\n[tone_squelch_types]\n{table}\n"
     return text
 
 
-def test_selector_without_a_table_refuses_to_load(tmp_path) -> None:
-    path = _write_toml(tmp_path, _toml(selector=True, table=None))
+@pytest.mark.parametrize("selector", ["commands", "overrides"])
+def test_selector_without_a_table_refuses_to_load(tmp_path, selector) -> None:
+    path = _write_toml(tmp_path, _toml(selector=selector, table=None))
     with pytest.raises(RigLoadError, match="needs a \\[tone_squelch_types\\] table"):
         load_rig(path)
+
+
+def test_an_absent_selector_needs_no_table(tmp_path) -> None:
+    path = _write_toml(tmp_path, _toml(selector="absent", table=None))
+    assert load_rig(path).to_profile().tone_squelch_types is None
 
 
 @pytest.mark.parametrize(
@@ -170,11 +189,11 @@ def test_selector_without_a_table_refuses_to_load(tmp_path) -> None:
     ],
 )
 def test_bad_table_refuses_to_load(tmp_path, table, message) -> None:
-    path = _write_toml(tmp_path, _toml(selector=True, table=table))
+    path = _write_toml(tmp_path, _toml(selector="commands", table=table))
     with pytest.raises(RigLoadError, match=message):
         load_rig(path)
 
 
 def test_no_selector_and_no_table_loads_without_a_table(tmp_path) -> None:
-    path = _write_toml(tmp_path, _toml(selector=False, table=None))
+    path = _write_toml(tmp_path, _toml(selector=None, table=None))
     assert load_rig(path).to_profile().tone_squelch_types is None

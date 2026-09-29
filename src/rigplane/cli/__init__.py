@@ -101,6 +101,9 @@ from rigplane.cli._convert import (  # noqa: E402
     add_subparser as _add_convert_subparser,
     run as _run_convert,
 )
+from rigplane.core.exceptions import (  # noqa: E402
+    ConnectionError as RigplaneConnectionError,
+)
 from rigplane.core.radio_protocol import (  # noqa: E402
     ManagedTxApi,
     PrivilegedTxApi,
@@ -108,6 +111,7 @@ from rigplane.core.radio_protocol import (  # noqa: E402
 )
 from rigplane.core.tx_safety import TxOutcome, TxOwner, TxSource  # noqa: E402
 from rigplane.core.types import Mode, get_audio_capabilities  # noqa: E402
+from rigplane.profiles import resolve_radio_profile  # noqa: E402
 from rigplane.runtime.managed_tx_effect_lane import ManagedTxActuator  # noqa: E402
 from rigplane.runtime.managed_tx_composition import (  # noqa: E402
     ManagedTxComposition,
@@ -1920,7 +1924,19 @@ class _ManagedTxRadioSession:
         self._shutdown_task: asyncio.Task[None] | None = None
 
     async def __aenter__(self) -> Any:
-        entered = await self._radio.__aenter__()
+        try:
+            entered = await self._radio.__aenter__()
+        except RigplaneConnectionError as exc:
+            # MOR-2876: a serial port that cannot be opened (pyserial's
+            # SerialException is an OSError) does not end web/station, and
+            # neither does an open that times out (TimeoutError is an OSError
+            # on Python 3.11+): the backend's watchdog retries the port from
+            # its next tick. No transport is marked ready here.
+            recover = getattr(self._radio, "start_reconnect_recovery", None)
+            if not isinstance(exc.__cause__, OSError) or not callable(recover):
+                raise
+            recover()
+            return self._radio
         if not bool(getattr(entered, "managed_tx_transport_lifecycle_owned", False)):
             await self._composition.transport_ready(entered)
         return entered
@@ -2340,6 +2356,15 @@ async def _cmd_audio_probe(config: BackendConfig, args: argparse.Namespace) -> i
 
     if not isinstance(config, LanBackendConfig):
         print("Error: audio probe requires a LAN backend.", file=sys.stderr)
+        return 1
+    try:
+        resolve_radio_profile(
+            profile=config.profile,
+            model=config.model,
+            radio_addr=config.radio_addr,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         return 1
     duration_s = float(getattr(args, "duration", 1.0))
     if duration_s <= 0:

@@ -11,8 +11,10 @@ skin's own code never special-cases which design language is active — see the
 
 This doc plus the two worked examples it names is meant to be enough:
 building a new skin should not require reading `.svelte` source outside
-`frontend/src/skins/sdr-test/`, `frontend/src/skins/lcd-cockpit/`, and the
-specific files each of those two entry points imports (named below). Reading
+`frontend/src/skins/sdr-test/`, `frontend/src/skins/lcd-cockpit/`, the
+specific files each of those two entry points imports (named below), and,
+for a skin with its own composition, one of the bespoke skins named under
+"Is a scaffold skin warranted?". Reading
 the `.ts` contract and test files this guide points at is expected and
 necessary — the restriction is on wandering through other skins' or panels'
 `.svelte` implementations for style cues.
@@ -34,9 +36,9 @@ restated shape drifts and a pointer does not.
 | `frontend/src/lib/runtime/adapters/radio-view-model-adapter.ts` | `toRadioViewModel` | The one function that produces a `RadioViewModel` from live state + capabilities. `SemanticRadioSurfaces.svelte` (below) runs its output through `validateRadioViewModel` in dev/test (MOR-2040), so a shape mismatch throws immediately instead of rendering garbage. |
 | `frontend/src/presentation/languages/contract.ts` | `DesignLanguageManifest`, `DesignLanguageTokens`, `RENDERER_SLOT_NAMES` | What a design language must declare: token groups and renderer slots. Activation is global and orthogonal to which skin is mounted — see `frontend/src/semantic/design-language-renderers.ts`'s header for the `[data-design-language]` mechanism. Neither worked example below registers a new design language. |
 | `frontend/src/presentation/languages/declarations.ts` | `studioline`, `fieldline`, `segmentline` | The three registered families — read as worked examples of the contract above, not as more contract. |
-| `frontend/src/presentation/languages/state-vocabulary.ts` | exported `RF_STATES`, `TX_SESSION_STATES`, `TX_ORIGINS`, `TX_TARGET_STATUSES`, plus the re-exported reason/fault types | The typed `data-*` visual-state vocabulary a design-language stylesheet keys off (landed MOR-2036). Read this before reverse-engineering value sets from `fieldline.css`/`studioline.css` — that module's own header explains why it exists and exactly what it does and does not cover yet. |
-| `frontend/src/presentation/layouts/contract.ts` | `LayoutManifest`, `SEMANTIC_SURFACE_NAMES`, `registerLayout`, `registerLayouts`, `getLayout`, `declaredSurfaces` | Which semantic surfaces a layout may mount, its topology/sizing declaration, and the registry every layout goes through. `registerLayouts` validates a whole batch before committing it; `registerLayout` delegates its single item to that path. A name in `SEMANTIC_SURFACE_NAMES` is *declarable*, not necessarily *mounted* — `frontend/src/presentation/layouts/__tests__/zone-ownership-coverage.test.ts`'s `RECORDED_REASONS` records every name no `desktop-v2` zone declares. |
-| `frontend/src/skins/registry.ts` | `SkinId`, `SKIN_LOADERS` (via `loadSkin`, `presentationHostMode`, `presentationResourcePlan`), `resolveSkinId` | The single place a built-in skin's loader, host kind and resource plan are declared together. `frontend/src/App.svelte` consumes them only through the existing functions. |
+| `frontend/src/presentation/languages/state-vocabulary.ts` | exported `RF_STATES`, `TX_SESSION_STATES`, `TX_TARGET_STATUSES`, plus the re-exported reason/fault types | The typed `data-*` visual-state vocabulary a design-language stylesheet keys off (landed MOR-2036). Read this before reverse-engineering value sets from `fieldline.css`/`studioline.css` — that module's own header explains why it exists and exactly what it does and does not cover yet. |
+| `frontend/src/presentation/layouts/contract.ts` | `LayoutManifest`, `SEMANTIC_SURFACE_NAMES`, `registerLayout`, `registerLayouts`, `getLayout`, `declaredSurfaces` | Which semantic surfaces a layout may mount, its topology/sizing declaration, and the registry every layout goes through. `registerLayouts` validates a whole batch before committing it; `registerLayout` delegates its single item to that path. A name in `SEMANTIC_SURFACE_NAMES` is *declarable*, not necessarily *mounted* — `frontend/src/presentation/layouts/__tests__/zone-ownership-coverage.test.ts`'s `RECORDED_REASONS` records, with a reason, every name no `desktop-v2` zone declares; it is empty now. |
+| `frontend/src/skins/registry.ts` | `SkinId`, `SKIN_LOADERS`, `getPresentationRecord`, `loadSkin`, `resolveSkinId` | The single place a built-in skin's loader, host kind and resource plan are declared together. `frontend/src/App.svelte` imports `getPresentationRecord`, `loadSkin` and `resolveSkinId` from it. |
 | `frontend/src/lib/runtime/props/panel-props.ts` and `frontend/src/lib/runtime/adapters/*` | e.g. `toVfoProps`, `toMeterProps`, `panel-adapters.ts`'s handlers | Pure state→props mappers and bound callbacks. A skin (or anything it mounts) reaches state and commands through these, never through stores or transport directly — see "What a skin may not import" below. |
 | `frontend/src/lib/runtime/index.ts` (re-exporting `frontend-runtime.ts`) | `runtime` | The one import that supplies the live `state`/`caps` the mappers above take as arguments. `components-v2/layout/RadioLayout.svelte` and `components-v2/layout/MobileRadioLayout.svelte` both import it from `$lib/runtime`, derive `radioState`/`caps` from `runtime.state`/`runtime.caps`; `MobileRadioLayout.svelte` calls `toMeterProps` the same way. `panel-adapters.ts`'s `deriveAmberCockpitProps` (used by `components-v2/panels/lcd/AmberCockpit.svelte`, which also calls `toMeterProps`) supplies `runtime.state`/`runtime.caps` one layer removed. |
 
@@ -79,8 +81,10 @@ layout-manifest registry to decide what it mounts — the `variant` prop picks
 between its own fixed compositions of the bespoke instrument components
 under `frontend/src/components-v2/panels/lcd/` (the "Amber" family: its own
 frequency display, S-meter, scope, etc., styled by that directory's own
-`lcd-vintage.css`, not by `presentation/languages/*`). If you are adding a
-third LCD variant, `LcdLayout.svelte` is where the branch lives. If you are
+`lcd-vintage.css`, not by `presentation/languages/*`). If you are adding
+another LCD variant (its `variant` prop already takes `cockpit`, `scope`,
+`peer-split`, `unified-instrument` and `panadapter-first`),
+`LcdLayout.svelte` is where the branch lives. If you are
 not, do not try to route a new skin through `LcdLayout` — write your own
 dedicated layout component instead; `frontend/src/skins/dual-receiver-cockpit/DualReceiverCockpit.svelte`
 is the existing precedent for that shape (its own registration is checked
@@ -95,18 +99,28 @@ Register one for your own skin too, whichever shape it takes.
 
 ### Is a scaffold skin warranted?
 
-No — decided in-ticket, not left implicit. There are two structurally
-different shapes in evidence: delegate into `RadioLayout`'s generic,
-manifest-driven mechanism (`sdr-test`, `desktop-v2`), or bring your own
-dedicated layout component, whether reused across variants the way
-`LcdLayout` is (`lcd-cockpit`, `lcd-scope`) or bespoke to one skin the way
-`DualReceiverCockpit.svelte` is. A generic scaffold would have to average
-over both shapes or pick one arbitrarily, and with only two shapes to
-generalize from, the rule of three doesn't clear: nothing here justifies a
-third, synthetic instance nobody has yet needed to copy. `sdr-test` already
-serves as the template for the minimal (first) shape; use it directly.
+No scaffold skin exists. The shapes in evidence: delegate into
+`RadioLayout`'s generic, manifest-driven mechanism (`sdr-test`,
+`desktop-v2`); delegate into `LcdLayout`'s variants (`lcd-cockpit`,
+`lcd-scope` and the three segmentline LCD skins); or compose your own, the way
+`frontend/src/skins/dual-receiver-cockpit/DualReceiverCockpit.svelte`,
+`frontend/src/skins/dual-sdr-face/DualSdrFaceSkin.svelte` and
+`frontend/src/skins/flagship-probe/FlagshipProbeSkin.svelte` do, none of
+which mounts `RadioLayout` or `LcdLayout`. The no-scaffold decision was made
+when `DualReceiverCockpit.svelte` was the only bespoke skin; with three now,
+revisit it with MOR-1101 before adding a fourth by copying. `sdr-test` remains
+the template for the minimal (delegate) shape.
 
 ## Wiring a new skin into the app
+
+How many files a skin touches depends mostly on how many semantic surfaces
+its manifest declares. The QA-only `flagship-probe` skin, which declares most
+of them, touched 27 files when it landed (5f9acdee, #3398: "8 code + 19
+census tables"). Four places fail silently rather than loudly, each described
+below: a mode missing from `CANONICAL_LAYOUT_MODES` (step 5), a missing
+`StatusBar.svelte` picker entry (step 5), a canonical mode with no
+`resolveSkinId` branch, which falls through to `DEFAULT_SKIN_ID` (step 5),
+and a `WIDTH_FOR` value that duplicates another skin's (step 2).
 
 Most files below are typed `Record<SkinId, ...>`, so skipping one is a
 compile error `npm run check` catches. A few instead pin a hand-listed
@@ -119,14 +133,12 @@ preference, and one of its links has no check behind it at all.
    add one record to `SKIN_LOADERS` with the matching `id`, the correct
    `kind`, its lazy `loader`, and `resources` (`[]` if the skin bridges no
    App-owned resource). The catalog is total over `SkinId`, so a missing key
-   or mismatched record id fails to compile. App reaches the fields only
-   through `loadSkin`, `presentationHostMode`, and
-   `presentationResourcePlan`.
+   or mismatched record id fails to compile. App reaches the records
+   through `getPresentationRecord` and `loadSkin`.
    `frontend/src/skins/__tests__/registry.test.ts` pins this file's
-   behaviour, and separately hand-mirrors the catalog resource entries in its
-   `EXPECTED_RESOURCE_PLAN` for its own assertions — also typed
-   `Record<SkinId, ...>`, so add your id there too or `npm run check` fails
-   on this file next.
+   behaviour with several tables typed `Record<SkinId, ...>`, among them
+   `EXPECTED_RESOURCE_PLAN` and `EXPECTED_HOST_MODE`; add your id to each or
+   `npm run check` fails on this file next.
 2. **`frontend/src/__tests__/presentation-switch-resources.component.test.ts`**:
    add your id to `SKIN_PLAN`, a hand-mirrored copy of the catalog's
    `resources`
@@ -138,6 +150,9 @@ preference, and one of its links has no check behind it at all.
    the other entries already use — `widthToSkin()` in that file picks a
    skin by exact width equality, so a duplicate resolves to whichever
    entry `Object.keys` visits first, not necessarily yours.
+   `frontend/src/__tests__/presentation-switch-tx.component.test.ts` keeps
+   its own `WIDTH_FOR` (`Record<SkinId, number>`) with the same exact-width
+   lookup, so the same two rules apply there.
 3. **A `LayoutManifest`**, registered via `registerLayout` from
    `frontend/src/presentation/layouts/contract.ts`, re-exported from
    `frontend/src/presentation/layouts/declarations.ts` (directly, or from
@@ -149,6 +164,15 @@ preference, and one of its links has no check behind it at all.
    `frontend/src/presentation/layouts/__tests__/registry.test.ts` and, by
    convention, a dedicated `<your-skin>-registration.test.ts` alongside
    `sdr-registration.test.ts`/`desktop-v2-registration.test.ts`.
+
+   A new layout also needs a design-language decision.
+   `frontend/src/presentation/languages/__tests__/layout-compatibility-inventory.test.ts`
+   (the MOR-2070 describe block) requires every layout manifest exported by
+   the layouts barrel either to be mentioned in a shipped design language's
+   `layoutCompatibility` (an entry with `compatible: true` or
+   `compatible: false` both count as a decision) or to carry a justified
+   entry in `LAYOUT_EXEMPTIONS` in that same file. A new layout with neither
+   fails that test, which names your layout id and both options.
 
    A related family of files also touches every registered manifest, for
    narrower purposes of their own, and each one fails loudly when it falls
@@ -200,14 +224,18 @@ preference, and one of its links has no check behind it at all.
      required keys — include it.
    - **`frontend/src/components-v2/layout/StatusBar.svelte`**: add your id
      to the `skinOptions` array, or the skin picker never offers it. This
-     site has no check at all: `skinOptions` is a plain array, not a
-     `Record`, and its own suite (`StatusBar.skin-options.test.ts`) only
-     pins that the QA-only id stays excluded and that the array keeps its
-     declared type. Skip this step and both commands below stay green
-     while your skin is unreachable from the picker.
+     site has no compile-time check: `skinOptions` is a plain array, not a
+     `Record`. Its suite (`StatusBar.skin-options.test.ts`) pins that the
+     QA-only id stays excluded, that the array keeps its declared type, and
+     that four production entries are present (`peer-split`,
+     `unified-instrument`, `panadapter-first`, `dual-sdr-face`); a new skin
+     is pinned only if you add it there. If you skip this step and add no
+     pin, every command below stays green while your skin is unreachable
+     from the picker.
    - **`frontend/src/skins/registry.ts`**: add a branch to `resolveSkinId`.
      Read its existing doc comment first — the resolution order there is
-     deliberate.
+     deliberate. A canonical mode with no branch falls through to
+     `DEFAULT_SKIN_ID` with no error.
 
    The first of these, `presentation/layout-mode.ts`, is not on "What a
    skin may not import" below's list at all — `FORBIDDEN_SKINS_IMPORTS`
@@ -254,25 +282,22 @@ every file under `src/skins/**` — `.svelte` and `.ts` alike. Route state
 through `lib/runtime/adapters/*` (see the contracts table above) and
 callback props instead.
 
-Nothing in `.github/` runs `eslint` on the frontend as a CI step —
-`npm run lint` exists but `.github/workflows/quick.yml`'s frontend block
-never calls it. The only thing that actually exercises this boundary in CI
-is `frontend/src/__tests__/architecture-boundaries.test.ts`, which
-instantiates a real `ESLint` and lints virtual fixture text against the
-live flat config, as an ordinary case inside `npx vitest run`. If you need
-to confirm your skin's imports are legal — or add a new ban — add or extend
-a fixture case there (search that file for `MOR-2039` for the existing
-skins fixtures); a rule with no fixture case is not actually checked
-anywhere.
+`.github/workflows/quick.yml`'s frontend block runs `npm run lint` (since
+b8bdcad2), so the ban applies to your real files in CI through the rule's
+`src/skins/**/*.svelte` and `src/skins/**/*.ts` globs.
+`frontend/src/__tests__/architecture-boundaries.test.ts` also instantiates a
+real `ESLint` and lints virtual fixture text against the live flat config
+inside `npx vitest run`; when you add a new ban, add a fixture case there too
+(search that file for `MOR-2039` for the existing skins fixtures).
 
 ## Proving it works
 
 ```
 cd frontend
+npm run lint      # eslint, including the skins import ban
 npm run check     # svelte-check + tsc — catches every missing SkinId-indexed entry above
-npx vitest run     # entrypoints, registry, layout registration, meter-contract, architecture-boundaries, and everything else
+npx vitest run    # entrypoints, registry, layout registration, meter-contract, architecture-boundaries, and everything else
 ```
 
-These are the same two commands `.github/workflows/quick.yml`'s frontend
-block runs (minus the i18n check, Playwright visual smoke, and build steps,
-which a new skin does not need to touch).
+`.github/workflows/quick.yml`'s frontend block runs these three, plus
+`npm run i18n:check` and `npm run build`.
