@@ -3586,7 +3586,20 @@ class TestFilterShapeDomainDeclaredOrCapabilityAbsent:
 
 
 class TestIc7300ManualOnlyCommands:
-    """MOR-2257: retain the 11a profile names, without negative markers."""
+    """MOR-2257: retain the 11a profile names, without negative markers --
+    except the three reads MOR-3012 found the section-19 command table
+    itself leaves undocumented (get_data2_mod_input, get_data3_mod_input,
+    get_scope_rbw): those are declared absent with a manual citation
+    instead of staying silent state-3 gaps."""
+
+    # MOR-3012: declared absent, still never wired.
+    _ABSENT_NAMES = frozenset(
+        {
+            "get_data2_mod_input",
+            "get_data3_mod_input",
+            "get_scope_rbw",
+        }
+    )
 
     _REMOVED_NAMES = frozenset(
         {
@@ -3596,9 +3609,7 @@ class TestIc7300ManualOnlyCommands:
             "set_antenna",
             "get_apf_type_level",
             "set_apf_type_level",
-            "get_data2_mod_input",
             "set_data2_mod_input",
-            "get_data3_mod_input",
             "set_data3_mod_input",
             "get_digisel",
             "set_digisel",
@@ -3622,7 +3633,6 @@ class TestIc7300ManualOnlyCommands:
             "set_ref_adjust",
             "get_rx_antenna_ant2",
             "set_rx_antenna_ant2",
-            "get_scope_rbw",
             "set_scope_rbw",
             "get_scope_marker_position",
             "set_scope_marker_position",
@@ -3633,11 +3643,19 @@ class TestIc7300ManualOnlyCommands:
     )
 
     def test_exact_retained_membership(self):
-        _assert_manual_only_membership(
-            "ic7300.toml",
-            322,
-            "8ca3056d69fb2c06d68b0f8b7f45d5bfb14c0d953605cbbc6c0d9eb489856d42",
-            self._REMOVED_NAMES,
+        config = load_rig(RIGS_DIR / "ic7300.toml")
+        profile = config.to_profile()
+        assert profile.absent_command_names == self._ABSENT_NAMES
+        assert frozenset(profile.absent_command_sources) == self._ABSENT_NAMES
+        assert not (config.commands.keys() & self._REMOVED_NAMES)
+        # 322 declared command names (MOR-2257's count) plus the three
+        # MOR-3012 absent markers that live alongside them in [commands].
+        assert len(config.commands) == 322 + len(self._ABSENT_NAMES)
+        assert len(profile.command_names) == 322
+        names = "\n".join(sorted(profile.command_names)).encode()
+        assert (
+            sha256(names).hexdigest()
+            == "8ca3056d69fb2c06d68b0f8b7f45d5bfb14c0d953605cbbc6c0d9eb489856d42"
         )
 
     def test_removed_names_have_no_callable_fallback(self):

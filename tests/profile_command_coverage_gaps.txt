@@ -9,7 +9,7 @@
 # Regenerate, do not hand-edit.
 census	civ_profiles	6
 census	distinct_gap_keys	147
-census	profile_key_gaps	337
+census	profile_key_gaps	334
 census	public_builders	243
 gap	get_acc1_mod_level	X6100,X6200
 gap	get_af_mute	IC-7300,X6100,X6200
@@ -25,8 +25,8 @@ gap	get_comp_meter	X6100,X6200
 gap	get_compressor_level	X6100,X6200
 gap	get_dash_ratio	X6100,X6200
 gap	get_data1_mod_input	X6100,X6200
-gap	get_data2_mod_input	IC-7300,X6100,X6200
-gap	get_data3_mod_input	IC-7300,X6100,X6200
+gap	get_data2_mod_input	X6100,X6200
+gap	get_data3_mod_input	X6100,X6200
 gap	get_data_mode	X6100,X6200
 gap	get_data_off_mod_input	X6100,X6200
 gap	get_digisel	IC-7300,X6100,X6200
@@ -67,7 +67,7 @@ gap	get_scope_fixed_edge	X6100,X6200
 gap	get_scope_hold	X6100,X6200
 gap	get_scope_main_sub	X6100,X6200
 gap	get_scope_mode	X6100,X6200
-gap	get_scope_rbw	IC-7300,X6100,X6200
+gap	get_scope_rbw	X6100,X6200
 gap	get_scope_ref	X6100,X6200
 gap	get_scope_single_dual	X6100,X6200
 gap	get_scope_span	X6100,X6200
