@@ -9,6 +9,7 @@
   let {
     active = false,
     disabled = false,
+    pressed,
     compact = false,
     indicator = 'dot',
     color = 'cyan',
@@ -36,6 +37,7 @@
 <ControlButton
   {active}
   {disabled}
+  {pressed}
   {compact}
   surface="hardware"
   indicatorStyle={indicator}

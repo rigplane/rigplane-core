@@ -17,6 +17,8 @@ export interface BaseButtonProps {
   active?: boolean;
   /** Disabled state */
   disabled?: boolean;
+  /** Confirmed pressed state; `undefined` omits `aria-pressed` for an unread reading (MOR-2978). */
+  pressed?: boolean;
   /** Compact size variant */
   compact?: boolean;
   /** Tooltip / accessible title */
