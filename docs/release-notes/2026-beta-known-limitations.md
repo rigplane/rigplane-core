@@ -32,10 +32,8 @@ that class of defect is release-blocking by definition and is not on this list.
 - **Manual Notch Width renders as a slider although the radio accepts only
   three values** (WIDE/MID/NAR). Positions between detents are quantized; the
   affordance suggests more precision than exists. (MOR-1685)
-- **Combined RF/SQL control does not track the gesture locally.** Values update
-  only after canonical radio readback (~1 s), which makes precise placement
-  awkward; the SDR-screen skin's rendering of the same control tracks
-  correctly. (MOR-1693)
+- **The combined RF/SQL control follows the gesture in software, but
+  the owner-present IC-7300 rerun is still pending.** (MOR-1693)
 - **Filter Shape and grouped Notch choices give no pending/accepted
   feedback.** The commands themselves dispatch and confirm correctly.
   (MOR-1689)
@@ -109,12 +107,12 @@ that class of defect is release-blocking by definition and is not on this list.
 
 ## Dual-receiver topology
 
-**Dual-receiver hardware certification is not part of this beta.** The bench
-holds an IC-7610 (returned 2026-09-14) and an FTX-1; the IC-7610's dual-watch,
-dual-scope and simultaneous MAIN/SUB audio-routing paths were not re-run for
-this beta and remain covered by automated profile fixtures and fail-closed
-tests only. What was accepted on hardware: single-receive SUB operation on the
-FTX-1 — frequency, mode, width, S-meter, AF/RF/squelch, repeater shift, NB/NR,
-notch, IF shift, NARROW and AGC read from the SUB receiver, and AGC and NB
-writes measured landing on SUB with MAIN unchanged (MOR-2511, 2026-09-18). Do
+**Dual-receiver hardware certification is not part of this beta.** The
+IC-7610's dual-watch, dual-scope and simultaneous MAIN/SUB audio-routing
+paths were not re-run for this beta and remain covered by automated
+profile fixtures and fail-closed tests only. What was accepted on
+hardware: single-receive SUB operation on the FTX-1 — frequency, mode,
+width, S-meter, AF/RF/squelch, repeater shift, NB/NR, notch, IF shift,
+NARROW and AGC read from the SUB receiver, and AGC and NB writes
+measured landing on SUB with MAIN unchanged (MOR-2511, 2026-09-18). Do
 not treat any other dual-receiver path as hardware-certified.
