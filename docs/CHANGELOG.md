@@ -92,12 +92,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `5 - Production/Stable` (MOR-2897).** The classifier on PyPI
   matches a beta release.
 
-- **A passband drag sends one request, committed on release
+- **A passband drag sends at most one request, on release
   (MOR-1691).** On the default skin's filter surface and on the v2
   FilterPanel, the IF shift, PBT inner and PBT outer rows hold every
   intermediate position of a pointer drag as a local draft and send
-  nothing to the radio while the drag lasts: exactly one command
-  leaves the row when the pointer is released, and a cancelled drag
+  nothing to the radio while the drag lasts: at most one command
+  leaves the row, when the pointer is released, and a cancelled drag
   sends nothing. During the drag the thumb follows the pointer, and on
   the filter surface's PBT rows the visible number follows the draft,
   then the pending target once the request is out, and the confirmed
