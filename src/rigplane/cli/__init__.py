@@ -2100,7 +2100,10 @@ class _ShutdownBackstop:
             "shutdown still running %.1fs after it was cancelled; forced exit",
             _SHUTDOWN_FORCED_EXIT_GRACE_S,
         )
-        _flush_stdio_before_forced_exit()
+        # No stdio flush here: _enforce runs on the event-loop thread, and a
+        # flush can block forever (full pipe with a stalled reader, or another
+        # thread holding the BufferedWriter lock), keeping the backstop from
+        # exiting (MOR-2875) and making later-signal escapes unreachable.
         os._exit(130)
 
 
