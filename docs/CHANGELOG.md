@@ -68,6 +68,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frequency returns when the radio confirms, refuses or the request
   times out.
 
+- **The legacy panels show scalar command feedback on RF power and AF
+  level lanes (MOR-2910).** The panels the phone and LCD skins share —
+  the TX panel's RF power lane and the AF level lanes of the RX audio
+  and essentials panels — now show requested, confirmed and error
+  through the shared scalar feedback, with `aria-busy` while a request
+  is pending, the same way their mic, drive, comp and mon lanes
+  already do. RF power shows its target once the server admits the
+  command, as on the Standard face.
+
 ### Changed
 
 - **The phone portrait layout drops the VFO / RX-TX deck and scrolls
@@ -501,8 +510,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A click on the track still sets the position, as on the Standard
   face.
 
-- **Every PortAudio call the USB audio driver reaches runs off the
-  event loop, bounded (MOR-2892).** A pending macOS
+- **The USB audio driver and the AudioBridge run their PortAudio calls
+  off the event loop, bounded (MOR-2892).** A pending macOS
   microphone-permission prompt used to block the RX relay's format probe
   on the event-loop thread and freeze the whole server — HTTP,
   WebSockets, the PTT release path and the watchdogs — until SIGKILL.
@@ -510,13 +519,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the stop/close paths now run on the driver's worker pool, bounded
   by `capture_open_timeout` (8 s default); when the bound is exceeded
   the audio request fails with one warning while HTTP and WebSockets
-  keep answering.
+  keep answering. The AudioBridge's device enumeration and its RX, TX
+  and duplex stream starts and stops, reached from `/api/v1/bridge`
+  and from the shutdown path, go through the same shared pool, and a
+  stuck call fails within the bound with one warning.
+  `find_loopback_device` and `list_audio_devices` stay synchronous;
+  only the CLI calls them, before serving.
 
 - **The portrait PTT button lives in the fixed bottom tuning strip
   (MOR-2874).** It no longer floats over the scrolling content, so no
   scrolling control can sit under it at any scroll position. It stays
   72×72 px, and the phone's 44 px touch floor now reaches it through
   the layout.
+
+- **`rigplane web` and `station` keep serving when the radio's serial
+  port cannot be opened (MOR-2876).** A missing or unopenable port used
+  to end the process at startup. On the CI-V serial backend family —
+  IC-7300, IC-705, IC-9700, IC-7610 and X6200 — the backend now enters
+  its watchdog's retry loop and the server serves a not-connected
+  state; Yaesu models on `--backend serial` are unchanged, and every
+  other startup failure still exits. Radio health reports
+  `radio_not_connected` with the port's open error until the radio
+  first answers, and transmit stays refused until the port opens.
+  While the backend retries a port that has never opened,
+  `/api/v1/radio/connect` and the power-on path in `/api/v1/radio/power`
+  answer `409` with `backend_recovering`.
+
+- **A DUP−/DUP+ readback no longer reads as split ON (MOR-2929).** The
+  CI-V split command 0F answers 00 for split OFF, 01 for split ON, 11
+  for DUP− and 12 for DUP+, but the shared CI-V observation decoder
+  and `get_split` read every non-zero byte as split ON. A radio
+  working a repeater in DUP− or DUP+ lit the SPLIT indicator and fed a
+  split fact to the TX-target rule. Split is now ON only for 01.
+
+- **The rigctld backend serves a profile-less projection of the radio
+  (MOR-2901).** A rigctld radio with no RigPlane profile — a Hamlib
+  radio with no bundled profile, started without `--model` — used to
+  be refused by the web layer as unidentified. The server now serves
+  `/api/v1/state`, `/api/v1/capabilities` and the WebSocket state from
+  what the backend itself reports and invents nothing: the
+  capabilities payload carries only backend-reported keys, and
+  profile-derived keys such as `powerOnCommand` are absent. Profiled
+  rigctld radios keep every key they had, and every other backend
+  still refuses an unidentified radio.
+
+- **`audio probe` refuses before probing when no radio profile
+  resolves (MOR-2952).** `rigplane --host <ip> audio probe` with no
+  `--model`, no profile and no `--radio-addr` that a loaded profile
+  declares used to run the candidates anyway, record the profile
+  refusal as a failed candidate and exit 0; the dry run exited 0 with
+  every candidate skipped. The command now resolves the profile first
+  and exits 1 with `Error: ...` on stderr before any candidate is
+  attempted — no artifact is written and nothing goes to stdout. With
+  `--model`, or a `--radio-addr` that a loaded profile declares, the
+  probe runs as before.
 
 ### Security
 
@@ -558,7 +614,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   follow-up pass checked the Python API, web API and Web UI pages —
   the radio, audio, command-catalog and web API references, and the
   web UI, diagnostic-reports, audio-recipes and troubleshooting guides
-  — against the code and corrected them where they were wrong.
+  — against the code and corrected them where they were wrong. A new
+  FTX-1 USB setup guide joins the radio-setup guides, and the Quick
+  Start gains USB radio examples for the IC-7300 and the FTX-1. A
+  What's New in 3.0 page and an operating-away-from-home guide are
+  added, and the beta limitations register is refreshed. The IC-705's
+  README row, radios-page entry and USB setup guide are corrected
+  where the v3 profile fixes had made their prose false.
 
 ## [3.0.0b9] — 2026-09-27
 
