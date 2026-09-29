@@ -1003,9 +1003,9 @@ describe('DspPanel NR-level / NB-depth command-feedback wiring (MOR-2910)', () =
   });
 
   it('routes NB-depth gestures through the shared policy handler', () => {
-    vi.useFakeTimers();
     const t = mountPanel({ nbActive: true });
     openLongPressModal(t, 'NB');
+    vi.useFakeTimers();
     nbDepthSlider(t).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     vi.advanceTimersByTime(50);
     expect(mockHandlers.onNbDepthChange).toHaveBeenCalledExactlyOnceWith(6);
