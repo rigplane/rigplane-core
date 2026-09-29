@@ -126,22 +126,26 @@ def test_ic705_polls_the_type_through_16_5d() -> None:
 # ── Neutral rule ─────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize(
-    ("kind", "pair"),
-    [
-        (ToneSquelchType.OFF, (False, False)),
-        (ToneSquelchType.TONE, (True, False)),
-        (ToneSquelchType.TSQL, (True, True)),
-        (ToneSquelchType.DTCS, (None, None)),
-        (ToneSquelchType.DTCS_T, (None, None)),
-        (ToneSquelchType.TONE_T_DTCS_R, (None, None)),
-        (ToneSquelchType.DTCS_T_TSQL_R, (None, None)),
-        (ToneSquelchType.TONE_T_TSQL_R, (None, None)),
-        (None, (None, None)),
-    ],
-)
+_NEUTRAL_RULE_CASES = [
+    (ToneSquelchType.OFF, (False, False)),
+    (ToneSquelchType.TONE, (True, False)),
+    (ToneSquelchType.TSQL, (True, True)),
+    (ToneSquelchType.DTCS, (None, None)),
+    (ToneSquelchType.DTCS_T, (None, None)),
+    (ToneSquelchType.TONE_T_DTCS_R, (None, None)),
+    (ToneSquelchType.DTCS_T_TSQL_R, (None, None)),
+    (ToneSquelchType.TONE_T_TSQL_R, (None, None)),
+    (None, (None, None)),
+]
+
+
+@pytest.mark.parametrize(("kind", "pair"), _NEUTRAL_RULE_CASES)
 def test_ctcss_booleans_for_each_type(kind, pair) -> None:
     assert ctcss_booleans_for_tone_squelch_type(kind) == pair
+
+
+def test_the_neutral_rule_cases_cover_every_type() -> None:
+    assert {kind for kind, _ in _NEUTRAL_RULE_CASES} == {*ToneSquelchType, None}
 
 
 # ── Loader ───────────────────────────────────────────────────────────
