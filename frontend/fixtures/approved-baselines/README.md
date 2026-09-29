@@ -2,7 +2,54 @@
 
 Tracked, reviewed screenshots compared by `npm run test:e2e:visual` (`playwright.visual.config.ts`, whose `testDir` runs every `*.spec.ts` under `tests/e2e/visual/`): `visual-baselines.spec.ts` for a representative slice of the MOR-1070/1085 fixture matrix, `gallery-baselines.spec.ts` (MOR-2219) for the `gallery-*` rows below, which preserve individual instrument looks rendered on the `?demo=control-buttons` page, and `spectrum-baselines.spec.ts` for the `spectrum-panel--managed-frame` row. Distinct from `frontend/fixtures-baselines/` (gitignored capture OUTPUT from `capture.mjs`/`capture-ptt.mjs`) — this directory is the APPROVED, committed comparison target.
 
-## Linux re-pin provenance — 2026-09-28 MOR-2978 choice keys disabled while unread (current)
+## Linux re-pin provenance — 2026-09-29 MOR-3008 S-meter ladder numerals (current)
+
+MOR-2790 (#3831, commit `a2da350f`): the IC-7300 S-meter draws the S-unit
+numerals its linear calibration places. The radio declares three knots (S0,
+S9, S9+60), so the scale showed only `9` and `+60`; it now draws
+`1 3 5 7 9 +20 +40 +60`, with the existing width thinning kept.
+
+The eleven PNGs below and `manifest.json` come from the Linux regeneration
+run
+[36571054059](https://github.com/rigplane/rigplane-core/actions/runs/36571054059)
+(`visual.yml` with `regenerate=true`) at source head
+`3653da0880d1f39b027e12898401a048f0049431` (`manifest.json` `commit`); the
+artifact `regenerated-baselines` was downloaded with `gh run download`. Of the
+32 PNGs in the artifact, 17 were byte-identical to the committed files, 4
+differed in bytes only with no pixel above 8/255
+(`gallery-valuecontrol-hbar.png`, `mobile-portrait--phone.png`,
+`ptt-idle--mobile.png`, `spectrum-panel--managed-frame.png`), and 11 differed
+by more than 8/255 in some pixel. All 11 were copied; the rest were left as
+committed. Every differing scene was inspected as an old-above-new crop
+(Pillow `ImageChops.difference`, changed region plus a 10 px margin): the only
+differing pixels are S-meter tick-label glyphs — the sparse `9` / `+60` row
+becomes the full `1 3 5 7 9 +20 +40 +60` row. In the two `--studioline`
+scenes the change spans three label strips (per-50px bands: y50–100, y100–150
+and y750–800 hold all 1098 changed pixels); in the other nine it is a single
+15 px strip. The CW break-in change (#3821) contributes no pixels here: every
+changed pixel sits in an S-meter label strip. Per copied scene: pixels
+differing by more than 8/255 in any channel against the previously committed
+PNG (Pillow `ImageChops.difference`, whole image), and the SHA-256 prefix of
+the copied file:
+
+| Scene | changed px | share | new SHA-256 (16) |
+|---|---:|---:|---|
+| `dual-main-sub--desktop--fieldline.png` | 772 | 0.08% | `3f282affade9e4da` |
+| `dual-main-sub--desktop--studioline--light.png` | 1098 | 0.11% | `ca60dde5effba39a` |
+| `dual-main-sub--desktop--studioline.png` | 1098 | 0.11% | `3167f86e3d436bc1` |
+| `dual-main-sub--desktop.png` | 772 | 0.08% | `8885ba1327bc12fe` |
+| `dual-main-sub--phone-portrait.png` | 772 | 0.25% | `cfff009335b38d02` |
+| `topology-1-single--desktop.png` | 386 | 0.04% | `c2c912020c397d75` |
+| `tx-phase-fault--desktop--fieldline.png` | 772 | 0.08% | `f4604a6c1148f1c0` |
+| `tx-phase-fault--desktop.png` | 772 | 0.08% | `1af75fdbaf651715` |
+| `tx-phase-rx--desktop.png` | 772 | 0.08% | `8885ba1327bc12fe` |
+| `tx-phase-tx--desktop--studioline.png` | 772 | 0.08% | `da8920579433e9b5` |
+| `tx-phase-tx--desktop.png` | 772 | 0.08% | `2e595ff154b80692` |
+
+## Linux re-pin provenance — 2026-09-28 MOR-2978 choice keys disabled while unread (superseded)
+
+Superseded by the 3653da08 pin above; its four scenes are byte-identical in
+run 36571054059 and were left as committed.
 
 MOR-2978 (part 1 of MOR-2912): the legacy mode, filter and antenna keys render
 `disabled` while their reading is unread. In the `panadapter-first` and
