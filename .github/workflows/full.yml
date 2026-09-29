@@ -218,8 +218,10 @@ jobs:
           cd frontend
           echo "version=$(node -p "require('./package-lock.json').packages['node_modules/@playwright/test'].version")" >> "$GITHUB_OUTPUT"
 
-      # Playwright's own browser cache, keyed on the lockfile-resolved
-      # @playwright/test version (frontend/package-lock.json) — this is what
+      # Playwright's own browser cache, keyed on the runner's OS and
+      # architecture and the lockfile-resolved @playwright/test version
+      # (frontend/package-lock.json). The pool mixes arm64 and x64 runners, and
+      # a cache saved on one architecture holds no browser for the other. This is what
       # "playwright install dominates" is about: a cache hit skips the
       # ~100-200MB chromium download entirely and turns this job's dominant
       # cost into the capture matrix run itself.
@@ -228,7 +230,7 @@ jobs:
         id: pw-cache
         with:
           path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ steps.pw.outputs.version }}
+          key: ${{ runner.os }}-${{ runner.arch }}-playwright-${{ steps.pw.outputs.version }}
 
       # Fails loud on its own: no `|| true` masking. A chromium download or
       # `npm ci` failure red-flags THIS step — reads as provisioning — and
