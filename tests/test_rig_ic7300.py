@@ -5,6 +5,7 @@ TDD: these tests were written FIRST, then the TOML was created to pass them.
 
 from __future__ import annotations
 
+import logging
 import tomllib
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -19,6 +20,15 @@ from rigplane.rig_loader import load_rig
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
 IC7300_PATH = RIGS_DIR / "ic7300.toml"
+
+# MOR-3012: reads the IC-7300 Advanced Manual 11a §19 command table does
+# not document, so a clean start must not log the undeclared-command
+# WARNING for them.
+_MOR3012_ABSENT_READS = (
+    "get_data2_mod_input",
+    "get_data3_mod_input",
+    "get_scope_rbw",
+)
 
 _WRONG_MANUAL_BINDINGS = {
     "get_scope_marker_position": (
@@ -741,3 +751,46 @@ class TestPaMeterCalibration:
         actual, calibrated = interpolate_meter(120, rig.meter_calibrations, "alc")
         assert calibrated is True
         assert actual == pytest.approx(100.0)
+
+
+# ── MOR-3012: undocumented reads declared absent ───────────────────
+
+
+class TestUndocumentedReadsDeclaredAbsent:
+    """MOR-3012: the three reads a clean IC-7300 start asks for but the
+    Advanced Manual 11a §19 command table does not document are declared
+    absent, so asking for them logs no "not declared ... and not recorded
+    as absent" WARNING.
+
+    Manual evidence (section 19 command table): 1A 05 has only 0066 (MOD
+    input connector during DATA OFF) and 0067 (... during DATA) -- one
+    DATA mode, no DATA2/DATA3 rows (0093/0094 are Display Language and
+    date setting there, not MOD input). The 0x27 scope table runs 00, 10,
+    11, 12, 13, 14, 15, 16, 17, 19, 1A, 1B, 1C (center type), 1D (VBW),
+    1E, 20 -- no RBW sub-command anywhere.
+    """
+
+    def test_reads_are_declared_absent_citing_the_manual(
+        self, profile, cmdmap
+    ):
+        for name in _MOR3012_ABSENT_READS:
+            assert name in profile.absent_command_names, name
+            source = profile.absent_command_sources[name]
+            assert "IC-7300" in source, name
+            assert not cmdmap.has(name), name
+
+    @pytest.mark.parametrize("name", _MOR3012_ABSENT_READS)
+    def test_request_refuses_without_undeclared_warning(
+        self, profile, caplog, name
+    ):
+        """Asking for a declared-absent read refuses with the recorded
+        manual source and never logs the state-3 undeclared WARNING."""
+        radio = CoreRadio("127.0.0.1", profile=profile)
+        builder = getattr(radio._commands, name)
+        kwargs: dict[str, object] = {"to_addr": 0x94}
+        if name == "get_scope_rbw":
+            kwargs["receiver"] = None
+        with caplog.at_level(logging.WARNING, logger="rigplane.runtime.radio"):
+            with pytest.raises(CommandError, match="declared absent by this profile"):
+                builder(**kwargs)
+        assert "not recorded as absent" not in caplog.text
