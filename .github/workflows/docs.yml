@@ -7,6 +7,7 @@ on:
       - 'docs/**'
       - 'mkdocs.yml'
       - 'src/rigplane/**'
+      - 'scripts/build_versioned_docs.py'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
@@ -19,11 +20,22 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+env:
+  # rigplane.dev serves one directory per documentation version: 3.0 from
+  # this checkout, 2.11 from its release tag (bump the tag here when a 2.11.x
+  # release changes its docs). The unversioned URLs redirect to the default
+  # version. See scripts/build_versioned_docs.py.
+  DOCS_DEFAULT_VERSION: "2.11"
+  DOCS_2_11_REF: v2.11.1
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+
+      - name: Fetch the 2.11 docs source
+        run: git fetch --no-tags --depth=1 origin tag "$DOCS_2_11_REF"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -36,11 +48,16 @@ jobs:
       - name: Set up Python
         run: uv python install 3.13
 
-      - name: Install dependencies
-        run: uv sync --extra dev
+      - name: Install the docs toolchain
+        run: uv sync --frozen --only-group dev
 
-      - name: Build docs
-        run: uv run mkdocs build --strict
+      - name: Build the versioned site
+        run: >-
+          uv run --no-sync python scripts/build_versioned_docs.py
+          --out site
+          --default "$DOCS_DEFAULT_VERSION"
+          --version 3.0 "3.0 (beta)" .
+          --version 2.11 2.11 "$DOCS_2_11_REF"
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v5
@@ -48,6 +65,9 @@ jobs:
           path: site/
 
   deploy:
+    # A manual run from any other branch builds and uploads the site for
+    # inspection, and publishes nothing.
+    if: github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     environment:
@@ -83,10 +103,24 @@ jobs:
 
           KEY = "4f4bcd28cb8d426ca58ec08b5035541e"
           HOST = "rigplane.dev"
+          ROOT = f"https://{HOST}/"
 
+          def locs(xml):
+              return re.findall(r"<loc>(.*?)</loc>", xml)
+
+          # The root sitemap indexes one sitemap per documentation version.
+          # Every versioned page also has an unversioned URL, which now
+          # redirects; submit it too, so engines re-crawl what they indexed.
+          urls = set()
           with open("sitemap.xml") as f:
-              urls = re.findall(r"<loc>(.*?)</loc>", f.read())
-          urls = [u for u in urls if u.startswith(f"https://{HOST}/")]
+              for sitemap in locs(f.read()):
+                  version_root = sitemap.rsplit("/", 1)[0] + "/"
+                  with urllib.request.urlopen(sitemap, timeout=30) as resp:
+                      for url in locs(resp.read().decode()):
+                          urls.add(url)
+                          if url.startswith(version_root):
+                              urls.add(ROOT + url[len(version_root):])
+          urls = sorted(u for u in urls if u.startswith(ROOT))
           if not urls:
               print("::warning::IndexNow: no rigplane.dev URLs in sitemap; skipping")
               sys.exit(0)

@@ -60,7 +60,7 @@ Full guides: [getting started](https://rigplane.dev/guide/quickstart/),
 | **Icom IC-7610**   | LAN, USB CI-V      | Stable, primary     | Dual receiver MAIN/SUB, full Capability surface |
 | **Icom IC-7300**   | USB CI-V           | Stable              | Single receiver, USB-only              |
 | **Yaesu FTX-1**    | USB CAT            | Stable              | 17 modes, VHF/UHF, C4FM, audio FFT scope |
-| Icom IC-705        | LAN (WiFi)         | Community-validated | CI-V `0xA4`                            |
+| Icom IC-705        | LAN (WiFi), USB CI-V | Community-validated on 2.x; not yet validated on 3.0 | CI-V `0xA4`, QRP 10 W |
 | Icom IC-9700       | LAN, USB CI-V      | Community-validated | VHF/UHF/SHF                            |
 | Xiegu X6100        | USB CI-V / Hamlib candidate | Profile only / assisted discovery planned | IC-705 compatible, QRP |
 | Lab599 TX-500      | USB Kenwood CAT / Hamlib candidate | Profile only / assisted discovery planned | QRP, minimal CAT |

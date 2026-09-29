@@ -63,7 +63,7 @@
     toBandSelectorProps, toRxAudioProps, toDspProps, toTxProps, toCwProps, toAntennaProps, toScanProps,
   } from '$lib/runtime/props/panel-props';
   import {
-    bindSemanticSurfaceHandlers, getPresetHandlers, getKeyboardHandlers,
+    bindSemanticSurfaceHandlers, getPresetHandlers, getKeyboardHandlers, getPendingFrequencyHz,
   } from '$lib/runtime/adapters/panel-adapters';
   import { getKeyboardConfig } from '$lib/stores/capabilities.svelte';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
@@ -146,6 +146,12 @@
   // readout names the other one. Pinned by MobileRadioLayout.component.svelte.test.ts,
   // describe "mobile header follows the active receiver (MOR-2511)".
   let activeVfo = $derived(activeReceiver === 'SUB' ? subVfo : mainVfo);
+  // MOR-2911 — the in-flight set_freq target for the ACTIVE receiver, read
+  // at this composition seam from the same accessor the desktop's
+  // SemanticRadioSurfaces seam reads (no second pending tracker). Passed to
+  // the header's passive readout as display-only pending truth; the
+  // confirmed frequency returns when the radio confirms or refuses.
+  let activePendingFrequencyHz = $derived(getPendingFrequencyHz(activeReceiver === 'SUB' ? 1 : 0));
   function selectReceiver(target: 'MAIN' | 'SUB') {
     if (target === 'MAIN') {
       vfoHandlers.onMainVfoClick?.();
@@ -585,7 +591,7 @@
   <div class="m-ls-overlay">
     <div class="m-ls-vfo">
       <span class="m-tx-indicator" data-rf={managedTxRf} style="background: {txIndicatorColor}"></span>
-      <FrequencyDisplay freq={activeVfo.freq} compact active />
+      <FrequencyDisplay freq={activeVfo.freq} pendingDisplayHz={activePendingFrequencyHz} compact active />
     </div>
     <div class="m-ls-quick-modes">
       {#each QUICK_MODES as m}
@@ -702,7 +708,7 @@
            their catalog titles. -->
       <span class="m-tx-indicator" data-rf={managedTxRf} style="background: {txIndicatorColor}" title={managedTxRf === 'unknown' ? undefined : txPermit === 'allowed' ? t('core.mobile.tx.allowed') : t('core.mobile.tx.notAllowedBand')}></span>
       <div class="m-vfo-freq" bind:this={vfoFreqElement}>
-        <FrequencyDisplay freq={activeVfo.freq} compact active />
+        <FrequencyDisplay freq={activeVfo.freq} pendingDisplayHz={activePendingFrequencyHz} compact active />
       </div>
       <button class="m-settings-btn" onclick={() => (setupOpen = true)} aria-label={t('core.mobile.setupButton')}>
         <Settings size={16} />
@@ -956,10 +962,10 @@
 
   <!-- ═══ TUNING STRIP ═══ -->
   <nav class="m-tuning-strip">
-    <button class="m-tune-btn m-tune-fast" onclick={() => tuneBy(-10)}>
+    <button class="m-tune-btn m-tune-fast" onclick={() => tuneBy(-10)} aria-label={t('core.mobile.tune.downFast')}>
       <ChevronsLeft size={18} />
     </button>
-    <button class="m-tune-btn" onclick={() => tuneBy(-1)}>
+    <button class="m-tune-btn" onclick={() => tuneBy(-1)} aria-label={t('core.mobile.tune.downStep')}>
       <ChevronLeft size={22} />
     </button>
     <div class="m-tune-step-wrapper">
@@ -988,12 +994,34 @@
         </div>
       {/if}
     </div>
-    <button class="m-tune-btn" onclick={() => tuneBy(1)}>
+    <button class="m-tune-btn" onclick={() => tuneBy(1)} aria-label={t('core.mobile.tune.upStep')}>
       <ChevronRight size={22} />
     </button>
-    <button class="m-tune-btn m-tune-fast" onclick={() => tuneBy(10)}>
+    <button class="m-tune-btn m-tune-fast" onclick={() => tuneBy(10)} aria-label={t('core.mobile.tune.upFast')}>
       <ChevronsRight size={18} />
     </button>
+
+    <!-- ═══ PTT (MOR-2874) ═══
+         The FAB lives IN the fixed tuning strip — its own reserved place
+         in the bottom chrome, OUTSIDE the one scroller — so no scrolling
+         control can ever sit under it at any scroll position (the
+         owner's 2026-09-28 ticket: the floating placement drew MUTE
+         half-hidden under the circle). Portrait only: this strip exists
+         only in the portrait branch, and landscape keeps its own
+         guarded `.m-ls-ptt` button (#843) — mounting the FAB there
+         would give two simultaneous TX controls (codex P1 on PR #928).
+         Layered guards (50 ms hold, 8 px move-cancel, haptics, TX
+         permit styling) live in the FAB component; server authority
+         owns TX. PTT stays large (72 px) and under the thumb
+         (MOR-2816). -->
+    {#if txCapable}
+      <PttFab
+        mode={pttMode}
+        txPermit={txPermit}
+        onDown={ptt?.fabDown ?? noPtt}
+        onUp={ptt?.fabUp ?? noPtt}
+      />
+    {/if}
   </nav>
 
   <!-- ═══ SETUP BOTTOM SHEET (#841 rename, SETUP-only content) ═══
@@ -1103,20 +1131,6 @@
   <div class="m-mod-input-warning">
     <ModInputTxWarning />
   </div>
-{/if}
-
-{#if txCapable && !isLandscape}
-  <!-- Guarded sticky PTT FAB (#840) — persistent 1-tap TX in portrait only.
-       Landscape has its own guarded `.m-ls-ptt` button (#843); mounting
-       FAB there would give two simultaneous TX controls (codex P1 on
-       PR #928). Layered guards (50 ms hold, 8 px move-cancel, haptics,
-       TX permit styling) live in the FAB component; server authority owns TX. -->
-  <PttFab
-    mode={pttMode}
-    txPermit={txPermit}
-    onDown={ptt?.fabDown ?? noPtt}
-    onUp={ptt?.fabUp ?? noPtt}
-  />
 {/if}
 
 <style>
@@ -1769,12 +1783,27 @@
     flex-shrink: 0;
     display: flex;
     align-items: stretch;
-    height: calc(52px + env(safe-area-inset-bottom, 0px));
+    /* MOR-2874: 76px hosts the 72px PTT FAB (2px clearance) as a fixed
+       flex sibling of the tuning keys — the FAB's own reserved place in
+       the bottom chrome, outside the one scroller, so nothing can ever
+       scroll under it. */
+    height: calc(76px + env(safe-area-inset-bottom, 0px));
     padding-bottom: env(safe-area-inset-bottom, 0px);
     background: var(--v2-bg-card, #111);
     border-top: 1px solid var(--v2-border-panel, #333);
     z-index: 100;
     gap: 1px;
+  }
+
+  /* MOR-2874: the FAB's placement in the strip is the host's business —
+     the component keeps its own 72px round look, the strip owns where it
+     sits. Gap-separated from the +10 key, 12px off the screen edge (the
+     inset the floating placement used), centered in the strip height. */
+  .m-tuning-strip :global(.ptt-fab) {
+    flex: 0 0 auto;
+    align-self: center;
+    margin-left: 12px;
+    margin-right: 12px;
   }
 
   .m-tune-btn {
@@ -1923,23 +1952,24 @@
      Every visible button inside the PORTRAIT phone root — chip tabs,
      chip panels (the SCOPE tab's screen keys and the semantic scope
      controls included, MOR-2851), sheets and modals opened from the
-     phone — carries a label of at least 16px
+     phone, and the PTT FAB in the tuning strip (MOR-2874 moved it
+     inside this root) — carries a label of at least 16px
      and a touch height of at least 44px. Rows may wrap or drop buttons
      per row; no label is clipped or ellipsised. Scoped to the portrait
      phone only: desktop, reference and LCD layouts and the .m-landscape
-     arrangement keep their own sizes. The floors also reach the two
-     button mounts that sit OUTSIDE the .m-layout scroll root — the
+     arrangement keep their own sizes. The floors also reach the one
+     button mount that still sits OUTSIDE the .m-layout root — the
      floating MOD-input warning banner (.m-mod-input-warning, whose own
-     labels were 11-12px) and the PTT FAB button — so no portrait phone
-     button escapes them. `!important` is required because
+     labels were 11-12px) — so no portrait phone button escapes them.
+     `!important` is required because
      the shared spectrum toolbar pins some button fonts at 8–9px and the
      global control-button face pins nowrap + overflow:hidden on the
      button itself, and `max(16px, 1em)` keeps any already-larger label
      (e.g. the sheet close glyph) at its own size. */
   .m-layout :global(button),
   .m-layout :global([role='button']),
-  .m-mod-input-warning :global(button),
-  :global(.ptt-fab) {
+  .m-mod-input-warning :global(button) {
+
     font-size: max(16px, 1em) !important;
     min-height: 44px !important;
     min-width: 44px;
@@ -1962,10 +1992,10 @@
      the portrait phone; its controls live in the SCOPE chip tab. */
 
   /* The FAB's label span (PTT / TX LOCK) is not a button element, so the
-     button font floor above never reached it — it keeps its own 16px
+     button font floor above never reaches it — it keeps its own 16px
      floor inside the unchanged 72px FAB. The FAB is the only PttFab mount
      in the app (portrait phone only), so the bare anchor reaches exactly
-     its label span, which sits outside the .m-layout scroll root. */
+     its label span. */
   :global(.ptt-fab-label) {
     font-size: max(16px, 1em) !important;
   }

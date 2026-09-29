@@ -9,19 +9,15 @@ IC-705 was rejected at the web layer even though
 ``CoreRadio.set_digisel_shift`` itself has no such capability check — it
 only requires the cmd29 route for 0x14/0x13, which IC-705 has.
 
-Fix: a distinct ``"digisel_shift"`` capability tag, declared in the TOML
-profiles whose ``[commands]`` table actually carries
-``get_digisel_shift``/``set_digisel_shift`` (IC-705, IC-7610), gating
+Fix: a distinct ``"digisel_shift"`` capability tag, gating
 ``set_digisel_shift`` at both the control-handler (web-socket command
 dispatch) and radio-poller (command execution) layers.
 
-TDD red-first: written against the unfixed code (before this ticket's
-edits to ``capabilities.py``, ``control.py``, ``radio_poller.py``,
-``rigs/ic705.toml``), the IC-705-acceptance tests below fail:
-``TestControlHandlerGate.test_ic705_set_digisel_shift_passes_web_gate`` and
-``TestPollerExecutionGate.test_ic705_poller_executes_digisel_shift`` raise
-``ValueError`` / silently skip because "digisel_shift" is not yet a known
-capability and IC-705 does not declare "digisel". After the fix, they pass.
+MOR-2917 then removed DIGI-SEL shift from ``rigs/ic705.toml``: neither
+edition of the IC-705 CI-V Reference Guide has a 0x14 0x13 row, so the
+IC-705 is now rejected like the IC-7300. No shipped profile declares the
+shift without the toggle any more, so the MOR-1544 case (shift passes, toggle
+refused) is exercised on the IC-7610's own capabilities minus ``"digisel"``.
 """
 
 from __future__ import annotations
@@ -55,18 +51,25 @@ class _QueueRecorder:
         self.items.append(item)
 
 
-def _profile_radio(model: str) -> SimpleNamespace:
+def _profile_radio(
+    model: str, *, without: frozenset[str] = frozenset()
+) -> SimpleNamespace:
     """A radio double whose capabilities come straight from the real TOML
     profile — not a hand-picked test fixture — so this exercises exactly
-    what ships to /api/v1/capabilities.
+    what ships to /api/v1/capabilities, less any tags named in ``without``.
     """
     profile = resolve_radio_profile(model=model)
     return SimpleNamespace(
-        capabilities=set(profile.capabilities),
+        capabilities=set(profile.capabilities) - without,
         profile=profile,
         set_digisel=AsyncMock(),
         set_digisel_shift=AsyncMock(),
     )
+
+
+def _shift_without_toggle_radio() -> SimpleNamespace:
+    """The IC-7610's capabilities without the 0x16 0x4E toggle tag."""
+    return _profile_radio("IC-7610", without=frozenset({"digisel"}))
 
 
 def _handler(radio: object, server: object) -> ControlHandler:
@@ -86,17 +89,24 @@ def _server() -> tuple[SimpleNamespace, _QueueRecorder]:
 
 class TestControlHandlerGate:
     @pytest.mark.asyncio
-    async def test_ic705_set_digisel_shift_passes_web_gate(self) -> None:
-        """IC-705 has get/set_digisel_shift [0x14, 0x13] in [commands] but no
-        digisel [0x16, 0x4E] toggle — the web gate must key off
-        "digisel_shift", not "digisel" (MOR-1544)."""
+    async def test_shift_without_toggle_passes_web_gate(self) -> None:
+        """The web gate keys off "digisel_shift", not "digisel" (MOR-1544)."""
         srv, q = _server()
-        h = _handler(_profile_radio("IC-705"), srv)
+        h = _handler(_shift_without_toggle_radio(), srv)
         result = await h._enqueue_command("set_digisel_shift", {"level": 128})
         assert result == {"level": 128, "receiver": 0}
         assert len(q.items) == 1
         assert isinstance(q.items[0], SetDigiselShift)
         assert q.items[0].level == 128
+
+    @pytest.mark.asyncio
+    async def test_ic705_set_digisel_shift_rejected(self) -> None:
+        """MOR-2917: the IC-705 declares no DIGI-SEL shift."""
+        srv, q = _server()
+        h = _handler(_profile_radio("IC-705"), srv)
+        with pytest.raises(ValueError, match="digisel_shift"):
+            await h._enqueue_command("set_digisel_shift", {"level": 128})
+        assert q.items == []
 
     @pytest.mark.asyncio
     async def test_ic7300_set_digisel_shift_rejected(self) -> None:
@@ -135,11 +145,19 @@ class TestControlHandlerGate:
 
 class TestPollerExecutionGate:
     @pytest.mark.asyncio
-    async def test_ic705_poller_executes_digisel_shift(self) -> None:
-        radio = _profile_radio("IC-705")
+    async def test_shift_without_toggle_poller_executes_digisel_shift(self) -> None:
+        radio = _shift_without_toggle_radio()
         poller = RadioPoller(radio, StateCache(), CommandQueue())
         await poller._execute(SetDigiselShift(level=200, receiver=0))  # noqa: SLF001
         radio.set_digisel_shift.assert_awaited_once_with(200, receiver=0)
+
+    @pytest.mark.asyncio
+    async def test_ic705_poller_skips_digisel_shift(self) -> None:
+        """MOR-2917: the IC-705 declares no DIGI-SEL shift."""
+        radio = _profile_radio("IC-705")
+        poller = RadioPoller(radio, StateCache(), CommandQueue())
+        await poller._execute(SetDigiselShift(level=200, receiver=0))  # noqa: SLF001
+        radio.set_digisel_shift.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_ic7300_poller_skips_digisel_shift(self) -> None:

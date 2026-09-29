@@ -1,5 +1,15 @@
 {% extends "base.html" %}
 
+{#- Material shows this banner on every version except extra.version.default,
+    which scripts/build_versioned_docs.py sets. Its link goes to the site
+    root, which redirects to the default version. -#}
+{% block outdated %}
+  RigPlane 3.0 is in beta.
+  <a href="{{ '../' ~ base_url }}">
+    <strong>Read the documentation for the current stable release.</strong>
+  </a>
+{% endblock %}
+
 {% block extrahead %}
   {{ super() }}
   {% set page_title = page.meta.title if page.meta and page.meta.title else (page.title | striptags ~ " - " ~ config.site_name if page.title and not page.is_homepage else config.site_name) %}

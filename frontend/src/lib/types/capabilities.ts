@@ -205,6 +205,12 @@ export interface Capabilities {
   audioTxRoute?: 'lan' | 'usb' | 'acc' | null;
   audioTxRequiredModInputSource?: number | null;
   capabilities: string[];
+  /** Whether the profile binds a CI-V power-on command (`power_on` in
+   *  rigs/*.toml, MOR-2841) — gates the power-off overlay's Power ON
+   *  action. `power_control` alone does not imply it: X6100/X6200 declare
+   *  the capability for the RF-power level only. Absent on older servers
+   *  (treated as unknown, not false). */
+  powerOnCommand?: boolean;
   receivers: number;
   vfoScheme: VfoScheme;
   /** Provider identity semantics; absent on older compatible servers. */

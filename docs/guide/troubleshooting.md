@@ -16,7 +16,7 @@ description: Troubleshooting RigPlane radio control — discovery timeouts, auth
 2. **Radio not on network** — ensure the radio is powered on and connected to your LAN
 3. **Firewall blocking UDP** — allow UDP ports 50001–50003
 4. **Different subnet** — the client and radio must be on the same subnet (or have routing configured)
-5. **Network Control disabled** — enable "Remote Control" in your radio's network settings
+5. **Network Control disabled** — enable **Network Control** in your radio's network settings (IC-7610: Menu → Set → Network → Network Control)
 
 **Debug:**
 
@@ -72,8 +72,9 @@ Look for:
 
 ### "Scope over serial requires baudrate >= 115200"
 
-**Symptom:** `CommandError` on `enable_scope()` / `capture_scope_frame()` with a low
-serial baudrate.
+**Symptom:** on the IC-7610, `CommandError` on `enable_scope()` / `capture_scope_frame()`
+with a low serial baudrate. The IC-705, IC-7300 and IC-9700 raise
+`ConnectionError: Scope unavailable at <baud> baud (minimum 115200)` instead.
 
 **Cause:** Scope/waterfall CI-V traffic over serial is high-rate; low baud can starve
 regular command responses. The serial backend enforces a deterministic guardrail.
@@ -85,7 +86,9 @@ regular command responses. The serial backend enforces a deterministic guardrail
    - Python API: `SerialBackendConfig(..., model="IC-7610", allow_low_baud_scope=True)` when using `create_radio(config)`
    - Env var: `ICOM_SERIAL_SCOPE_ALLOW_LOW_BAUD=1`
 
-When override is used, the backend logs a warning because timeout risk increases.
+When override is used, the IC-7610 backend logs a warning because timeout risk increases.
+The IC-705, IC-7300 and IC-9700 backends log a warning the first time they refuse the
+scope, and none when the override is set.
 
 ### Connection drops after ~30 seconds
 
@@ -105,7 +108,7 @@ The library sends pings every 500ms automatically. If the radio doesn't receive 
 Remove both retired flags from the service or supervisor launch arguments.
 They fail during argument parsing, before radio startup, and no token file is
 read (`src/rigplane/cli/__init__.py: _reject_retired_auth_option`).
-`RIGPLANE_AUTH_TOKEN` is ignored (`src/rigplane/cli/__init__.py: _cmd_web`).
+`RIGPLANE_AUTH_TOKEN`, which 2.11 read, is no longer read anywhere in `src/`.
 Python callers must omit `WebConfig.auth_token` or leave it empty
 (`src/rigplane/web/server.py: WebConfig.__post_init__`).
 
@@ -140,28 +143,7 @@ Do not spam reconnect requests from frontend automation loops.
 1. Verify behavior in a browser/platform with MediaSession support.
 2. Use on-screen controls as fallback (expected behavior on unsupported browsers).
 
-### Mobile v2 gestures are not available
-
-**Symptom:** Swipe-to-dismiss bottom sheets and touch-first mobile layout are missing.
-
-**Cause:** UI version defaults to v1 unless v2 is selected.
-
-**Fixes:**
-
-1. Open Web UI with `?ui=v2` query parameter.
-2. Keep v2 selected in localStorage for subsequent sessions.
-
 ## Command Issues
-
-### "Radio rejected set_frequency"
-
-**Symptom:** `CommandError: Radio rejected set_frequency(999999999)`
-
-The radio returned NAK (0xFA). Possible causes:
-
-- Frequency out of the radio's supported range
-- Radio is in a mode that doesn't allow frequency changes
-- VFO lock is enabled
 
 ### SWR/ALC always returns 0
 
@@ -171,7 +153,7 @@ These meters only report values during transmit. When receiving, they return 0.
 
 - Ensure the radio is in CW mode (`await radio.set_mode("CW")`)
 - Check that CW keying speed is set appropriately on the radio
-- Text must be ASCII A–Z, 0–9
+- Text must be ASCII; non-ASCII text raises `UnicodeEncodeError`
 
 ## Network Tips
 
@@ -237,7 +219,7 @@ Look for:
 
 ## CI-V Commands Timeout During Scope/Waterfall
 
-**Symptom:** `get_frequency()`, `get_power()` etc. return cached values or raise
+**Symptom:** `get_freq()`, `get_rf_power()` etc. return cached values or raise
 `TimeoutError` while scope/waterfall is active.
 
 **Cause:** Fixed in v0.8.0. In earlier versions, the RX pump processed one packet
@@ -250,8 +232,8 @@ packets each iteration.
 
 **Symptom:** log lines like:
 
-- `UDP error [peer=192.168.55.40:50002] (#1): ...`
-- `UDP error [peer=192.168.55.40:50001] (#100, suppressed 97): ...`
+- `UDP error [peer=192.168.1.50:50002] (#1): ...`
+- `UDP error [peer=192.168.1.50:50001] (#100, suppressed 96): ...`
 
 **What changed:** transport logs now include the remote endpoint in each UDP error
 line. This helps distinguish which logical channel is failing.
@@ -264,7 +246,7 @@ line. This helps distinguish which logical channel is failing.
 
 These are Icom's factory defaults and match the vast majority of deployments.
 If the radio's menu has been changed, or the client was started with a custom
-`--control-port` / `ICOM_PORT` (see `src/rigplane/cli.py`), the actual ports may
+`--control-port` / `ICOM_PORT` (see `src/rigplane/cli/__init__.py`), the actual ports may
 differ — CI-V and audio ports can also be reassigned by the radio's status
 report (see `src/rigplane/_control_phase.py`). In that case, substitute your
 session's ports in the filters below.
@@ -279,16 +261,17 @@ session's ports in the filters below.
 
 - First 3 UDP errors are logged individually.
 - After that, logs are throttled and emitted every 100th event
-  (`suppressed 97`) to avoid log storms.
+  (`suppressed 96` at the 100th) to avoid log storms.
 
 **Runbook:**
 
 ```bash
-# Keep only UDP diagnostics from the daemon log
-rg "UDP error|UDP connection lost" logs/rigplane.log
+# Keep only UDP diagnostics from the daemon log (macOS default path; see
+# "Daemon Logging and Rotation" in the CLI Reference for Linux and overrides)
+rg "UDP error|UDP connection lost" ~/Library/Caches/rigplane/logs/rigplane.log
 
 # Focus on CI-V channel failures only (replace 50002 if your session uses a custom CI-V port)
-rg "peer=.*:50002" logs/rigplane.log
+rg "peer=.*:50002" ~/Library/Caches/rigplane/logs/rigplane.log
 ```
 
 If only one peer/port is noisy, troubleshoot that path first (audio, CI-V, or
@@ -335,8 +318,12 @@ may stutter briefly during reconnection.
 
 **Cause:** Network jitter from VPN tunneling.
 
-**Solution:** v0.8.0+ uses a 200ms jitter buffer (up from 50ms). For very high
-latency connections, this may still be insufficient — consider a local deployment.
+**Solution:** The browser's RX player starts each schedule, and restarts after an
+underrun, a floor ahead of real time, and drops frames that would queue beyond
+a ceiling (defaults 50 ms and 300 ms; `frontend/src/lib/audio/rx-player.ts`).
+Raise them on the server with `ICOM_AUDIO_RX_JITTER_FLOOR_MS` and
+`ICOM_AUDIO_RX_JITTER_CEILING_MS`. For very high latency connections, this may
+still be insufficient — consider a local deployment.
 
 ## LAN Audio Breaks Over WireGuard or Other UDP Tunnels
 
@@ -355,7 +342,7 @@ failure.
 
 ```bash
 export ICOM_AUDIO_SAMPLE_RATE=16000
-uv run rigplane --host 192.168.55.40 --user USER --pass-file .rigplane-pass web
+uv run rigplane --model IC-7610 --host 192.168.1.50 --user USER --pass-file .rigplane-pass web
 ```
 
 16 kHz stereo PCM fits a 20 ms frame in one UDP packet and is usually adequate
@@ -372,7 +359,7 @@ VPN paths.
 4. For WireGuard, remember to budget for outer IP/UDP/WireGuard overhead. The
    correct value depends on the WAN path; cellular/CGNAT/cloud paths often need
    smaller MTUs than a normal Ethernet LAN.
-5. Re-run `rigplane audio probe --candidate-cooldown 35 --retry-rejected 1`
+5. Re-run `rigplane --model IC-7610 audio probe --candidate-cooldown 35 --retry-rejected 1`
    after changing MTU and confirm packet counts are stable.
 
 ## Network Voice TX Is Noise, a Squeal, or Silent (IC-7610 MOD Input)
@@ -439,13 +426,9 @@ Switching back to the hand mic later: set **DATA OFF MOD** back to `MIC`.
 ```bash
 # Install libopus via Homebrew
 brew install opus
-
-# Apply project patch for opuslib path detection
-python scripts/patch_opuslib_macos.py
 ```
 
-Then restart the app and retest TX audio. See detailed notes:
-`docs/opuslib-macos-fix.md`.
+Then restart the app and retest TX audio. See [macOS Opus Library Fix](../opuslib-macos-fix.md).
 
 ## Serial Backend Issues (IC-7610 USB)
 
@@ -469,38 +452,34 @@ ls -l /dev/ttyUSB*
 # Wait 5-10 seconds after power-on for device to appear
 ```
 
-### "CI-V USB Port must be set to CI-V, not REMOTE"
+### CI-V USB Port is linked to [REMOTE]
 
 **Symptom:** Serial connection opens, but CI-V commands fail with timeout or NAK.
 
-**Cause:** Radio's `CI-V USB Port` setting is in `[REMOTE]` mode (RS-BA1), not `Link to [CI-V]`.
+**Cause:** Radio's `CI-V USB Port` setting is `Link to [REMOTE]` instead of `Unlink from [REMOTE]`.
 
 **Solution:**
 1. On IC-7610: Menu → Set → Connectors → CI-V → **CI-V USB Port**
-2. Set to **`Link to [CI-V]`** (NOT `[REMOTE]`)
+2. Set to **`Unlink from [REMOTE]`** (NOT `Link to [REMOTE]`)
 3. Disconnect/reconnect USB cable
 4. Retry connection
 
 !!! danger "Critical Hardware Finding"
-    This was confirmed with live IC-7610 hardware validation (issue #146, 2026-03-06). `[REMOTE]` mode blocks serial CI-V commands. Use `Link to [CI-V]` for rigplane serial backend.
+    This was confirmed with live IC-7610 hardware validation (issue #146, 2026-03-06): with the USB port linked to `[REMOTE]`, serial CI-V commands are blocked.
 
-### "Audio device 'IC-7610 USB Audio' not found"
+### USB audio device not found
 
 **Symptom:** `AudioError` or `sounddevice` exception when starting audio.
 
 **Causes:**
-1. USB audio not enabled on radio
-2. Wrong device name
-3. sounddevice/numpy not installed
+1. Wrong device name (an Icom radio's USB audio device is named `USB Audio CODEC`)
+2. sounddevice/numpy not installed
 
 **Solutions:**
 ```bash
 # List available audio devices
 rigplane --list-audio-devices
 rigplane --list-audio-devices --json
-
-# Check radio settings:
-# Menu → Set → Connectors → USB Audio → USB Audio (RX/TX) → Enabled
 
 # Audio dependencies ship with the core install (since v0.19); the legacy
 # `[bridge]` extra still resolves but is now a no-op alias.
@@ -550,22 +529,18 @@ rigplane --backend serial --model IC-7610 status
 **Symptom:** Can hear radio RX audio, but transmit from computer does not work.
 
 **Causes:**
-1. Radio USB Audio TX not enabled
-2. PTT not activated
-3. Wrong TX device selected
+1. PTT not activated
+2. Wrong TX device selected
 
 **Solutions:**
 ```bash
-# Check radio setting:
-# Menu → Set → Connectors → USB Audio → USB Audio TX → Enabled
-
 # Verify TX device name matches RX
 rigplane --list-audio-devices
 
 # Explicitly set TX device
-rigplane --backend serial --model IC-7610 --tx-device "IC-7610 USB Audio" audio tx --in test.wav
+rigplane --backend serial --model IC-7610 --tx-device "USB Audio CODEC" audio tx --in test.wav
 
-# Ensure PTT is active during TX (library handles this automatically for audio tx)
+# Ensure PTT is active during TX
 ```
 
 ### Permission denied on /dev/cu.usbserial-*

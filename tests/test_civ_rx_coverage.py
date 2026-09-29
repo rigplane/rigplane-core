@@ -2818,22 +2818,15 @@ _VALUE_CONTROL_CASES = (
         30,
     ),
     # 0x1A 0x05 0x02 0x92 vox_delay: 1-byte BCD ctl-mem level (0-20) promoted to
-    # a global operator-control int (MOR-459). This is IC-7610's ctl-mem
-    # control number.
+    # a global operator-control int (MOR-459). 02 92 is where this fixture's
+    # IC-7610 profile declares get_vox_delay; the control number is resolved
+    # per profile (MOR-2975), pinned for four radios in
+    # tests/test_mor2975_ctl_mem_decode.py.
     (
         _make_frame(cmd=0x1A, sub=0x05, data=b"\x02\x92\x12"),
         "global.operator_controls.vox_delay",
         "voxDelay",
         12,
-    ),
-    # 0x1A 0x05 0x01 0x91 vox_delay (MOR-1483 leg 2): same field, IC-7300's
-    # ctl-mem control number — different per-model 2-byte prefix than the
-    # 0x02 0x92 case above, decoded through the same generic prefix match.
-    (
-        _make_frame(cmd=0x1A, sub=0x05, data=b"\x01\x91\x15"),
-        "global.operator_controls.vox_delay",
-        "voxDelay",
-        15,
     ),
     # 0x10 tuning_step: device step index (0-8), BCD nibble-pair byte 0x05 → 5;
     # NOT Hz. Promoted to a global slow-state int (MOR-461).
@@ -3636,7 +3629,7 @@ def test_tone_and_tsql_freq_observations_fall_back_to_the_table(
 ) -> None:
     """The table is what a path with no declared field policy still gets.
 
-    ``rigs/ic705.toml`` has no ``field_policies`` entry for these two paths
+    ``rigs/ic9700.toml`` has no ``field_policies`` entry for these two paths
     (its MOR-2540 entries cover only the four TX meters), so they reach
     ``_observation``'s
     ``_OBSERVATION_MAX_AGE_SECONDS`` fallback rather than a profile TTL —
@@ -3650,7 +3643,7 @@ def test_tone_and_tsql_freq_observations_fall_back_to_the_table(
 
     from rigplane.runtime._civ_rx import _OBSERVATION_MAX_AGE_SECONDS
 
-    profile = resolve_radio_profile(model="IC-705")
+    profile = resolve_radio_profile(model="IC-9700")
     radio._profile = profile  # noqa: SLF001
     assert profile.state_acquisition is not None
     stored = FieldPath.receiver("0", "operator_controls", name)

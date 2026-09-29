@@ -308,29 +308,29 @@ def _split_cable_backend() -> FakeAudioBackend:
     )
 
 
-def test_auto_detect_picks_cable_output_for_rx_and_input_for_tx():
+async def test_auto_detect_picks_cable_output_for_rx_and_input_for_tx():
     """Auto mode: RX playback → Output end, TX capture → Input end."""
     from rigplane.audio.bridge import _find_device_in_backend
 
     backend = _split_cable_backend()
-    rx_dev = _find_device_in_backend(backend, None, direction="playback")
-    tx_dev = _find_device_in_backend(backend, None, direction="capture")
+    rx_dev = await _find_device_in_backend(backend, None, direction="playback")
+    tx_dev = await _find_device_in_backend(backend, None, direction="capture")
     assert rx_dev is not None and rx_dev.name == "RigPlane Virtual Cable Output"
     assert tx_dev is not None and tx_dev.name == "RigPlane Virtual Cable Input"
 
 
-def test_input_only_device_is_never_chosen_for_rx_playback():
+async def test_input_only_device_is_never_chosen_for_rx_playback():
     """An input-only device must not serve the RX playback leg."""
     from rigplane.audio.bridge import _find_device_in_backend
 
     backend = _split_cable_backend()
-    rx_dev = _find_device_in_backend(backend, None, direction="playback")
+    rx_dev = await _find_device_in_backend(backend, None, direction="playback")
     assert rx_dev is not None
     assert rx_dev.output_channels > 0
     assert rx_dev.name != "Virtual Microphone"
 
 
-def test_explicit_tx_device_still_wins():
+async def test_explicit_tx_device_still_wins():
     """An explicit TX name resolves for the capture direction."""
     from rigplane.audio.bridge import _find_device_in_backend
 
@@ -350,11 +350,13 @@ def test_explicit_tx_device_still_wins():
             ),
         ]
     )
-    tx_dev = _find_device_in_backend(backend, "USB Microphone", direction="capture")
+    tx_dev = await _find_device_in_backend(
+        backend, "USB Microphone", direction="capture"
+    )
     assert tx_dev is not None and tx_dev.name == "USB Microphone"
 
 
-def test_bidirectional_loopback_serves_both_directions():
+async def test_bidirectional_loopback_serves_both_directions():
     """A single bidirectional loopback is picked for RX and TX alike."""
     from rigplane.audio.bridge import _find_device_in_backend
 
@@ -368,8 +370,8 @@ def test_bidirectional_loopback_serves_both_directions():
             ),
         ]
     )
-    rx_dev = _find_device_in_backend(backend, None, direction="playback")
-    tx_dev = _find_device_in_backend(backend, None, direction="capture")
+    rx_dev = await _find_device_in_backend(backend, None, direction="playback")
+    tx_dev = await _find_device_in_backend(backend, None, direction="capture")
     assert rx_dev is not None and rx_dev.name == "PipeWire Loopback"
     assert tx_dev is not None and tx_dev.name == "PipeWire Loopback"
 

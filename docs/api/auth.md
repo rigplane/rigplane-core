@@ -82,7 +82,7 @@ Parse a 0x60-byte login response.
 | `token` | `int` | Session token (4 bytes) |
 | `tok_request` | `int` | Token request ID |
 | `connection_type` | `str` | Connection type string (e.g., "FTTH") |
-| `error` | `int` | Raw error code (0 = success) |
+| `error` | `int` | Raw error code; `success` is false only for `0xFEFFFFFF` and `0xFFFFFFFF` |
 
 ### `parse_status_response()`
 
@@ -103,12 +103,12 @@ Parse a 0x50-byte status packet.
 
 ## Substitution Table
 
-The `PASSCODE_SEQUENCE` table (128 bytes) is derived from wfview's reverse engineering of Icom's credential obfuscation. Each character is mapped based on its position:
+The `PASSCODE_SEQUENCE` table (159 bytes) is derived from wfview's reverse engineering of Icom's credential obfuscation. Each character is mapped based on its position:
 
 ```python
-index = (ascii_value + position) % 127
-if index < 32:
-    index += 32  # Stay in printable range
+index = ascii_value + position
+if index > 126:
+    index = 32 + index % 127
 encoded_byte = PASSCODE_SEQUENCE[index]
 ```
 

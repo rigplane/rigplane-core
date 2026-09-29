@@ -26,22 +26,13 @@ that class of defect is release-blocking by definition and is not on this list.
 
 ## Receive-control feedback and precision
 
-- **PBT values can briefly blank or show a transient endpoint during
-  acquisition gaps.** The radio state is unaffected; the last confirmed values
-  return without intervention. (MOR-1692)
-- **Manual Notch Width renders as a slider although the radio accepts only
-  three values** (WIDE/MID/NAR). Positions between detents are quantized; the
-  affordance suggests more precision than exists. (MOR-1685)
+- **PBT values across acquisition gaps: the last confirmed value is kept in
+  software, but the owner-present IC-7300 observation is still pending.**
+  (MOR-1692)
 - **The combined RF/SQL control follows the gesture in software, but
   the owner-present IC-7300 rerun is still pending.** (MOR-1693)
-- **Filter Shape and grouped Notch choices give no pending/accepted
-  feedback.** The commands themselves dispatch and confirm correctly.
-  (MOR-1689)
-- **Notch mode choices (OFF/AUTO/MANUAL) show no pending state** while a
-  change is in flight. (MOR-1672)
-- **AF/RF/SQL slider steps do not always restore the exact original raw
-  value** after a reversible up/down step pair; drift is within one raw step.
-  (MOR-1676)
+- **Filter Shape and grouped Notch choices show pending feedback in software,
+  but the owner-present IC-7300 rerun is still pending.** (MOR-1689)
 - **IC-7300 has no APF.** Advanced Manual (11a) omits `16 32`, and a
   read-only remote-testbed GET NAK'd twice with documented `16 22` DATA as
   the adjacent control. Any build or profile advertising CW APF for IC-7300
@@ -49,9 +40,6 @@ that class of defect is release-blocking by definition and is not on this list.
 
 ## FTX-1 specific
 
-- **Filter-width (SH) codes and mode routing do not follow CAT 2508-C Table 5
-  in every mode**; the wrong width-table family can be offered for some modes.
-  (MOR-1679)
 - **Manual-notch position on the FTX-1 is shown as a position, not in Hz.**
   The radio's own display does the same; the CAT code range is bounded to
   001..320 since #3480/#3526. (MOR-1680, owner ruling 2026-09-17)
@@ -59,15 +47,10 @@ that class of defect is release-blocking by definition and is not on this list.
   software (20 Hz, 10 Hz to 1050 Hz, 0–10) but have not been re-run on the
   radio since the change.** (MOR-1681, MOR-1682, MOR-1678 — hardware rerun
   pending)
-- **The band picker omits 6 m, 2 m, and 70 cm** although the radio supports
-  them; use the frequency entry or the radio's own controls for those bands.
-  (MOR-1674)
 - **Attenuator and preamp cannot be set for the SUB receiver.** The FTX-1 CAT
   `RA`/`PA` commands have no SUB form; the controls are shown disabled with
   the hint "Not available on this receiver" while SUB is active. (MOR-2511,
   owner ruling 2026-09-17)
-- **NARROW cannot be switched from the web on either receiver.** The setting
-  is read and shown; no write intent exists yet. (MOR-2511 follow-up)
 
 ## rigctld write handling during transmit
 
