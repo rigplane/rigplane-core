@@ -187,6 +187,7 @@ async def _try_baud(
     Returns:
         :class:`CivProbeResult` on success, or ``None`` on timeout / bad data.
     """
+    logger.debug("probe_serial_civ: opening %s @ %d", port, baud)
     try:
         reader, writer = await open_serial_port(
             url=port, baudrate=baud, opener=_open_serial
@@ -241,8 +242,10 @@ async def _try_baud(
 
         return _parse_probe_response(port, baud, bytes(buf))
     finally:
+        logger.debug("probe_serial_civ: closing %s", port)
         writer.close()
         await writer.wait_closed()
+        logger.debug("probe_serial_civ: closed %s", port)
 
 
 def _parse_probe_response(port: str, baud: int, data: bytes) -> CivProbeResult | None:
@@ -335,6 +338,7 @@ async def probe_xiegu_model_id(
         ``True`` on a valid ``0x1D 0x19`` reply, ``False`` on NAK, timeout,
         unexpected data, or open failure.
     """
+    logger.debug("probe_xiegu_model_id: opening %s @ %d", port, baud)
     try:
         reader, writer = await open_serial_port(
             url=port, baudrate=baud, opener=_open_serial
@@ -378,8 +382,10 @@ async def probe_xiegu_model_id(
 
         return _is_xiegu_model_id_reply(port, bytes(buf))
     finally:
+        logger.debug("probe_xiegu_model_id: closing %s", port)
         writer.close()
         await writer.wait_closed()
+        logger.debug("probe_xiegu_model_id: closed %s", port)
 
 
 def _is_xiegu_model_id_reply(port: str, data: bytes) -> bool:
@@ -486,6 +492,7 @@ async def _try_yaesu_baud(
     factory: _YaesuTransportFactory,
 ) -> RadioDiscoveryResult | None:
     """Open *port* at *baud* via Yaesu CAT, send ``ID;``, return result or None."""
+    logger.debug("probe_serial_yaesu_cat: opening %s @ %d", port, baud)
     transport = factory(
         device=port, baudrate=baud, timeout=timeout, echo_suppression=True
     )
@@ -502,10 +509,12 @@ async def _try_yaesu_baud(
         logger.debug("probe_serial_yaesu_cat: timeout/error at %s @ %d", port, baud)
         return None
     finally:
+        logger.debug("probe_serial_yaesu_cat: closing %s", port)
         try:
             await transport.close()
         except Exception:
             pass
+        logger.debug("probe_serial_yaesu_cat: closed %s", port)
 
 
 def _parse_yaesu_id_response(
