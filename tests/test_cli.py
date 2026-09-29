@@ -468,7 +468,7 @@ class TestPasswordResolution:
 
         err = mock_stderr.getvalue()
         assert "do not combine 'discover' and 'web'" in err
-        assert "rigplane --model IC-7610 web --radio-host 192.168.55.40" in err
+        assert "rigplane --model IC-7610 web --radio-host 192.168.1.50" in err
 
     def test_web_help_does_not_print_error_hint(self):
         p = _build_parser()
