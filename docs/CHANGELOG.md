@@ -101,13 +101,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directly visible; labels and stepper values get the 16 px floor
   beside the keys' 16 px/44 px portrait floors. Lit keys inside the
   tab light the layout's cyan accent instead of red, with the lamp
-  glow off, and nothing outside the SCOPE tab changes colour. The
-  More panel now clears the fixed bottom tuning bar: the bar
-  declares itself with `data-bottom-bar`, and a panel that does not
-  fit between its key and the bar's measured top opens upward,
-  pinned to the top margin and capped to the measured gap —
-  scrolling inside — when it fits neither way; without a declared
-  bar the placement keeps the previous downward clamp.
+  glow off, and nothing outside the SCOPE tab changes colour.
 
 - **`--backend` is inferred from the radio's model when omitted
   (MOR-2926).** A `yaesu_cat` profile starts on `yaesu-cat`, so
@@ -782,6 +776,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max-width: 100%` — so a wrapped line never touches the edge. The
   desktop one-line label is unchanged.
 
+- **The Xiegu X6200 reads the controls its 2.x state sweep read
+  (MOR-3002).** The v3 poll follows the profile's declarations, and
+  the X6200's declared only frequency, mode and filter width beside
+  its S-meter and power meters, so the radio's other controls were
+  never read. The profile now polls ATT, AF level, RF gain, squelch,
+  preamp, AGC, NB, RF power, mic gain, monitor, PTT and tuner
+  status, and reads CW pitch and key speed on demand; each read is a
+  GET row of the X6200 CI-V implementation V1.0.6 Table 1, and the
+  first poll tick sends 16 queries where it sent 4. NR and COMP
+  on/off stay unread — V1.0.6 documents only their set commands.
+  The web capabilities now serve the X6200's `attenuator_main` and
+  `preamp_main` control tags. Not verified on hardware; the X6100
+  profile still declares the minimal set.
+
+- **The legacy choice keys expose the confirmed selection
+  (MOR-2978).** ControlButton and HardwareButton take a tri-state
+  `pressed`: true and false render `aria-pressed` "true" and
+  "false", and an unread reading omits the attribute rather than
+  deriving it from `active`. The desktop-v2 panels' choice keys —
+  the mode panel's mode and DATA keys, the AGC panel's keys, the
+  antenna panel's ANT1/ANT2 and RX ANT, and the filter panel's
+  FIL1–3 and SHARP/SOFT — now carry the confirmed selection and
+  render disabled while their reading is unread. `dataMode`,
+  `txAntenna`, `rxAnt` and `filterShape` are null while their field
+  is unobserved, where the props used to carry a fabricated OFF,
+  port 1, off and SHARP; `rxAnt` needs the port and the port's own
+  override both observed.
+
+- **POWER ON is sent without waiting for its acknowledgement.**
+  After POWER ON the radio can stop sending CI-V data for longer
+  than the 2 s answer window while it starts — about 3 s in the
+  reporter's IC-9700 log — so the wait ran out and the UI reported a
+  failure although the radio powered on. On the CI-V power path —
+  the profiles that declare the 0x18 commands: the IC-705, IC-7300,
+  IC-7610 and IC-9700 — `set_powerstat` now sends POWER ON once with
+  no response waiter and observes no power from an acknowledgement:
+  the retained state keeps the acknowledged OFF until the radio's
+  first CI-V answer after startup, which observes ON. POWER OFF
+  still waits for its acknowledgement and raises `CommandError`
+  when the radio NAKs it.
+
+- **The phone SCOPE ⋯ menu is a sheet with one setting per row
+  (MOR-2987).** The ⋯ key on the phone SCOPE tab now opens a
+  full-width modal sheet over a dimmed backdrop instead of the
+  anchored More panel; the desktop popover is unchanged. The sheet
+  carries one setting per row — MODE, EDGE for the FIX modes,
+  CENTRE, RBW, SPEED, and the on/off rows DUAL, During TX and VBW
+  narrow — through the same handlers and facts, with no new command
+  or scope state. An on/off row is its label plus two keys, Off and
+  On: the key matching the confirmed state is lit, while the state
+  is unread both keys are disabled and neither carries
+  `aria-checked`, and a key dispatches the toggle's existing intent
+  only when it does not already match the confirmed value, so
+  tapping the selected option does nothing. The Off and On labels
+  are localized in English, Russian and Japanese.
+
 ### Security
 
 - **A rigctld connection whose first line is an HTTP request line is
@@ -859,7 +909,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   corrected too: a port found by the USB scan keeps the rate the scan
   found, and with `--serial-port` the `serial` backend uses the model
   profile's `default_baud` — `115200` without a model — while
-  `yaesu-cat` keeps `38400`.
+  `yaesu-cat` keeps `38400`. The README's supported-radios table
+  gains the Xiegu X6200 — USB CI-V, `CI-V 0xA4`, 19200 baud, QRP
+  8 W — marked validated on 2.x hardware and not yet validated
+  on 3.0.
 
 ## [3.0.0b9] — 2026-09-27
 
