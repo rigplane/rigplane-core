@@ -135,6 +135,8 @@ _NEUTRAL_RULE_CASES = [
     (ToneSquelchType.TONE_T_DTCS_R, (None, None)),
     (ToneSquelchType.DTCS_T_TSQL_R, (None, None)),
     (ToneSquelchType.TONE_T_TSQL_R, (None, None)),
+    (ToneSquelchType.PR_FREQ, (None, None)),
+    (ToneSquelchType.REV_TONE, (None, None)),
     (None, (None, None)),
 ]
 
