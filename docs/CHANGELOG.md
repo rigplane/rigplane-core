@@ -124,6 +124,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--serial-port`, else `lan` — is unchanged. The `--backend` help
   text now says the backend is inferred from the model.
 
+- **The IC-705 reads and sets its repeater shift direction over the
+  CI-V split command 0F (MOR-2930).** The CI-V guide carries the duplex
+  direction on that command: setting writes 10 for simplex, 11 for DUP−
+  and 12 for DUP+, and a reply maps 00 and 01 to simplex, 11 to DUP−
+  and 12 to DUP+. The IC-705 profile declares the `repeater_shift`
+  capability and the `get_repeater_shift` and `set_repeater_shift`
+  keys, and polls `receiver.main.operator_controls.repeater_shift`
+  beside split; the other CI-V profiles — IC-7300, IC-7610, IC-9700,
+  X6100 and X6200 — declare neither key. A 0F observation now
+  publishes the direction under the receiver's `operator_controls`,
+  only where the profile declares the getter. `set_repeater_shift`
+  takes SIMPLEX, MINUS or PLUS only: any other direction, ARS
+  included, raises `ValueError` before anything is sent, and both
+  `CoreRadio` methods refuse an unsupported receiver first. A reply
+  byte that maps to no direction fails the read with a command error,
+  and a NAK answer fails the set with one; the web reaches the set
+  through its existing `set_repeater_shift` dispatch entry, unchanged.
+
 ### Changed
 
 - **The phone portrait layout drops the VFO / RX-TX deck and scrolls
@@ -754,7 +772,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the same radio's USB entry — and the CLI reference's discover
   section now says serial discovery also finds Yaesu CAT radios,
   grouped by the model ID the radio reports. The CLI reference's
-  examples no longer use the author's own bench address.
+  examples no longer use the author's own bench address. The
+  `--listen` pass reaches the guides: the CLI reference's `serve` and
+  `station` tables, its `web` flag table and the rigctld serve table
+  now say `--listen`; the Web UI example and the
+  operating-away-from-home guide pass `--listen` where they passed
+  `--host` after the subcommand; and the CLI reference now says the
+  old spelling still works with a warning and loses to `--listen`
+  when both are given. The What's New page gains a Command Line
+  section with the same facts.
 
 ## [3.0.0b9] — 2026-09-27
 
