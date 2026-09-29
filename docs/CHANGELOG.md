@@ -114,9 +114,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `rigplane --model FTX-1 --serial-port <port> web` no longer picks
   the Icom CI-V serial backend, and a `civ` profile still infers
   `serial` with `--serial-port` and `lan` otherwise. Any other
-  protocol, or none, is refused before any radio discovery with
+  protocol is refused before any radio discovery, with exit code 1
+  and an error naming the model and its protocol, such as
   `Error: Model 'TX-500' uses protocol 'kenwood_cat', which no
-  backend supports` and exit code 1. `--host` given with a
+  backend supports`. `--host` given with a
   `yaesu-cat` backend, explicit or inferred, is ignored with a
   warning. An explicit `--backend` still wins, `rigctld` is never
   inferred, and without `--model` the old inference — `serial` with
@@ -680,8 +681,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backend — the FTX-1's — and the external rigctld client now read
   the transmit state once inside the same actuation, the Yaesu
   `TX;` read and the rigctld `t` round trip after `T 0`, riding the
-  unkey's own exchange urgency and currency so the confirming read
-  is never queued behind ordinary polls. The unkey is ACCEPTED only
+  unkey's own exchange urgency and currency. The unkey is ACCEPTED only
   when that read says receive; a read that says TX, silence, a
   malformed answer or a raised read returns UNCERTAIN, which keeps
   the release debt for the existing RetryForceReceive pacing.
