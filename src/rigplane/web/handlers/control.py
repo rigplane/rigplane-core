@@ -279,6 +279,7 @@ def _level_for_power(value: Any, radio: Any) -> int:
         value,
         power_native_unit=getattr(radio, "native_power_unit", "raw_255"),
         power_max_watts=getattr(getattr(radio, "profile", None), "max_watts", None),
+        power_min_watts=getattr(getattr(radio, "profile", None), "min_watts", None),
     )
     return int(native)
 
@@ -1627,11 +1628,12 @@ class ControlHandler:
             if isinstance(receiver_count, int) and not isinstance(receiver_count, bool):
                 intent_params["receiver_count"] = receiver_count
         power_max_watts = None
+        power_min_watts = None
         power_native_unit = getattr(self._radio, "native_power_unit", "raw_255")
         if power_native_unit == "watts":
-            power_max_watts = getattr(
-                getattr(self._radio, "profile", None), "max_watts", None
-            )
+            profile = getattr(self._radio, "profile", None)
+            power_max_watts = getattr(profile, "max_watts", None)
+            power_min_watts = getattr(profile, "min_watts", None)
         descriptor = command_descriptor(name)
         if (
             descriptor is not None
@@ -1661,6 +1663,7 @@ class ControlHandler:
                 session_id=self._session_id if source == "websocket" else None,
                 power_native_unit=power_native_unit,
                 power_max_watts=power_max_watts,
+                power_min_watts=power_min_watts,
             )
         executor = (
             _ControlCommandExecutor(self, wait_for_completion=False)
