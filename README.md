@@ -12,13 +12,11 @@
 > [3.0 beta known limitations](https://github.com/rigplane/rigplane-core/blob/v3.0.0b10/docs/release-notes/2026-beta-known-limitations.md).
 > Testing the beta? [File a 3.0 beta report](https://github.com/rigplane/rigplane-core/issues/new?template=beta_report.yml).
 
-**rigplane** is a multi-vendor radio control library and Web UI — Python
-asyncio core plus a self-contained browser front-end. It has native providers
-for rich Icom CI-V and Yaesu CAT paths, and is moving long-tail serial CAT
-coverage toward a Hamlib-backed provider with assisted discovery. A
-capability-driven runtime renders the same Web UI and `rigctld`-compatible
-network bridge across every backend that honours the public `Radio` protocol.
-Tested in production against WSJT-X, fldigi, and JS8Call.
+**rigplane** is an open-source (MIT) Python asyncio library and web UI for
+Icom radios (LAN/USB) and the Yaesu FTX-1 (USB), with a rigctld server. It
+has native providers for Icom CI-V and Yaesu CAT paths. The rigctld server
+lets Hamlib-aware programs such as WSJT-X, fldigi and JS8Call control the
+radio.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/rigplane/rigplane-core/main/docs/screenshots/hero.png" alt="rigplane Web UI — IC-7610 dual-RX desktop with scope and waterfall" width="100%">
@@ -64,8 +62,8 @@ Full guides: [getting started](https://rigplane.dev/3.0/guide/quickstart/),
 | Icom IC-705        | LAN (WiFi), USB CI-V | Community-validated on 2.x; not yet validated on 3.0 | CI-V `0xA4`, QRP 10 W |
 | Icom IC-9700       | LAN, USB CI-V      | Reported by a user; not validated on 3.0 hardware | VHF/UHF/SHF                            |
 | Xiegu X6200        | USB CI-V           | Validated on 2.x hardware; not yet validated on 3.0 | CI-V `0xA4`, 19200 baud, QRP 8 W |
-| Xiegu X6100        | USB CI-V / Hamlib candidate | Profile only / assisted discovery planned | IC-705 compatible, QRP |
-| Lab599 TX-500      | USB Kenwood CAT / Hamlib candidate | Profile only / assisted discovery planned | QRP, minimal CAT |
+| Xiegu X6100        | USB CI-V / Hamlib candidate | Profile only; not validated on 3.0 hardware | IC-705 compatible, QRP |
+| Lab599 TX-500      | USB Kenwood CAT / Hamlib candidate | Profile only; not validated on 3.0 hardware | QRP, minimal CAT |
 
 Native radio capabilities are declared in `rigs/*.toml`. For long-tail serial
 CAT radios, the intended path is Hamlib-backed control underneath RigPlane's
