@@ -419,6 +419,12 @@
     "observed": false,
     "storePath": "receiver.main.operator_controls.tone_freq"
   },
+  "main.toneSquelchType": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.tone_squelch_type"
+  },
   "main.tsqlFreq": {
     "availability": "missing",
     "freshness": "unknown",
@@ -1024,6 +1030,12 @@
     "freshness": "unknown",
     "observed": false,
     "storePath": "receiver.sub.operator_controls.tone_freq"
+  },
+  "sub.toneSquelchType": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.tone_squelch_type"
   },
   "sub.tsqlFreq": {
     "availability": "missing",

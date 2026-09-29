@@ -101,6 +101,7 @@
 
   "core.overlay.poweredOff.label": "Трансивер выключен",
   "core.overlay.poweredOff.notAnsweringLabel": "Трансивер не отвечает — возможно, он выключен",
+  "core.overlay.poweredOff.notConnectedLabel": "Трансивер не подключён — последовательный порт не открылся",
   "core.overlay.poweredOff.noRemotePowerOn": "Этот трансивер нельзя включить из RigPlane.",
   "core.overlay.poweredOff.powerOnButton": "Включить",
   "core.overlay.poweredOff.failedPowerOn": "Не удалось включить: {detail}",

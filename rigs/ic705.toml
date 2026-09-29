@@ -137,6 +137,8 @@ polling_only = [
     "receiver.main.operator_toggles.nr",
     "receiver.main.operator_toggles.repeater_tone",
     "receiver.main.operator_toggles.repeater_tsql",
+    # MOR-2131: read by the same 16 5D query as the two booleans above.
+    "receiver.main.operator_controls.tone_squelch_type",
     "global.operator_controls.power_level",
     "global.tx_state.compressor_on",
     "global.operator_controls.compressor_level",
@@ -490,6 +492,20 @@ max_watts = 10
 
 [ctcss]
 table = "standard_50"
+
+# What each 16 5D tone squelch selector code means (MOR-2131). IC-705 CI-V
+# Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.4: 00=OFF,
+# 01=TONE, 02=TSQL, 03=DTCS, 06=DTCS (T), 07=TONE (T)/DTCS (R),
+# 08=DTCS (T)/TSQL (R), 09=TONE (T)/TSQL (R); no 04 or 05.
+[tone_squelch_types]
+0 = "off"
+1 = "tone"
+2 = "tsql"
+3 = "dtcs"
+6 = "dtcs_t"
+7 = "tone_t_dtcs_r"
+8 = "dtcs_t_tsql_r"
+9 = "tone_t_tsql_r"
 
 [modes]
 # wfview Modes: LSB, USB, AM, CW, RTTY, FM, CW-R, RTTY-R, DV, WFM

@@ -60,6 +60,7 @@ _RECEIVER_CONTROL_GETTERS = {
     "tone_freq": "get_tone_freq",
     "tsql_freq": "get_tsql_freq",
     "repeater_shift": "get_repeater_shift",
+    "tone_squelch_type": "get_tone_squelch_type",
 }
 _GLOBAL_METER_GETTERS = {
     "power": "get_power_meter",

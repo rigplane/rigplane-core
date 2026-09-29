@@ -91,8 +91,10 @@ The public health model separates:
 
 - **`server_unreachable`** — client-side server/proxy loss.
 - **`radio_network_lost`** — server reachable, radio link disconnected or reconnecting.
+- **`radio_remote_control_unreachable`** — server reachable, radio link disconnected or reconnecting, and the radio's open control socket has collected repeated UDP errors: the host is up but its remote-control server does not accept the session (`src/rigplane/runtime/radio.py: CoreRadio.remote_control_unreachable`).
 - **`radio_not_responding`** — radio link exists, but CI-V/control data is delayed or stalled.
-- **`radio_powered_off_likely`** — prior radio availability plus repeated timeout/recovery evidence indicates the radio is probably off or unreachable.
+- **`radio_powered_off_likely`** — the radio is probably off or unreachable: prior radio availability plus repeated timeout/recovery evidence, or a server start with no answer from the radio since, on a link that answered nothing or on a serial port that opened only after startup (`src/rigplane/web/runtime_helpers.py: classify_radio_health`).
+- **`radio_not_connected`** — the server started while the radio's serial port could not be opened, the latest attempt to open it failed, and the radio has not answered since (`src/rigplane/web/runtime_helpers.py: classify_radio_health`).
 - **`unknown`** — healthy/ready state or insufficient evidence.
 
 Temporary CI-V gaps are classified as `readiness: "delayed"` before they become
