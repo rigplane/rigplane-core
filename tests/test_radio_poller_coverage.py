@@ -567,7 +567,7 @@ async def test_x6200_scheduler_due_request_sends_civ_query_from_profile() -> Non
     _tick_cadence(poller)
     await poller._send_query()  # noqa: SLF001
 
-    assert radio.send_civ.await_count == 4
+    assert radio.send_civ.await_count == 16
     radio.send_civ.assert_any_await(
         0x25,
         sub=None,
@@ -600,6 +600,30 @@ async def test_x6200_scheduler_due_request_sends_civ_query_from_profile() -> Non
         priority=Priority.BACKGROUND,
         wait_dispatch=False,
     )
+    # MOR-3002: the reads the 2.x state sweep made, each a GET row of the
+    # X6200 CI-V implementation V1.0.6 Table 1.
+    for command, sub in (
+        (0x11, None),
+        (0x14, 0x01),
+        (0x14, 0x02),
+        (0x14, 0x03),
+        (0x16, 0x02),
+        (0x16, 0x12),
+        (0x16, 0x22),
+        (0x14, 0x0A),
+        (0x14, 0x0B),
+        (0x14, 0x15),
+        (0x1C, 0x00),
+        (0x1C, 0x01),
+    ):
+        radio.send_civ.assert_any_await(
+            command,
+            sub=sub,
+            data=b"",
+            wait_response=False,
+            priority=Priority.BACKGROUND,
+            wait_dispatch=False,
+        )
     assert scheduler.pending_requests()
 
 
