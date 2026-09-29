@@ -89,12 +89,15 @@ def _sent_frames(transport: MockTransport) -> list[CivFrame]:
 
 
 # ── Builders ─────────────────────────────────────────────────────────
+# to_addr goes by keyword: in a full run, tests/test_commands.py has already
+# rebound the package's builders with a default to_addr
+# (tests/_command_test_helpers.py: bind_default_addr_module).
 
 
 @pytest.mark.parametrize(("direction", "code"), _SET_CODES)
 def test_set_frame_carries_the_guide_code(ic705_map, direction, code) -> None:
     frame = parse_civ_frame(
-        set_repeater_shift(direction, IC705_ADDR, cmd_map=ic705_map)
+        set_repeater_shift(direction, to_addr=IC705_ADDR, cmd_map=ic705_map)
     )
     assert (frame.command, frame.sub, frame.data) == (0x0F, None, bytes([code]))
 
@@ -102,11 +105,11 @@ def test_set_frame_carries_the_guide_code(ic705_map, direction, code) -> None:
 @pytest.mark.parametrize("direction", [RepeaterShiftDirection.ARS, 4, True])
 def test_set_refuses_a_direction_with_no_code(ic705_map, direction) -> None:
     with pytest.raises(ValueError):
-        set_repeater_shift(direction, IC705_ADDR, cmd_map=ic705_map)
+        set_repeater_shift(direction, to_addr=IC705_ADDR, cmd_map=ic705_map)
 
 
 def test_read_frame_is_bare_0f(ic705_map) -> None:
-    frame = parse_civ_frame(get_repeater_shift(IC705_ADDR, cmd_map=ic705_map))
+    frame = parse_civ_frame(get_repeater_shift(to_addr=IC705_ADDR, cmd_map=ic705_map))
     assert (frame.command, frame.sub, frame.data) == (0x0F, None, b"")
 
 
