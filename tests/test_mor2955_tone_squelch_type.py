@@ -186,6 +186,21 @@ def test_an_absent_selector_needs_no_table(tmp_path) -> None:
     assert load_rig(path).to_profile().tone_squelch_types is None
 
 
+# The FTX-1's selector is its CAT CT read (rigs/ftx1.toml, MOR-2969).
+_CAT_SQL_TYPE_READ = (
+    'get_sql_type = { cat = { read = "CT{receiver};", '
+    'parse = "CT{receiver}{type};" } }'
+)
+
+
+def test_a_cat_sql_type_read_without_a_table_refuses_to_load(tmp_path) -> None:
+    text = _MINIMAL_TOML.replace(
+        "[commands.overrides]", f"{_CAT_SQL_TYPE_READ}\n\n[commands.overrides]"
+    )
+    with pytest.raises(RigLoadError, match="get_sql_type needs a"):
+        load_rig(_write_toml(tmp_path, text))
+
+
 @pytest.mark.parametrize(
     ("table", "message"),
     [
