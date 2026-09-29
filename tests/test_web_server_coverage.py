@@ -832,6 +832,70 @@ def test_shutdown_signal_handler_falls_back_when_loop_does_not_support_signals(
     assert triggered == 1
 
 
+async def test_stop_hands_its_ptt_drain_to_the_tx_release_hook(monkeypatch) -> None:
+    """MOR-2875: the shutdown's PTT drain reaches ``serve_forever``'s
+    ``on_tx_release`` with its own bound, so the CLI's shutdown bound can let
+    it finish."""
+    from rigplane.web.radio_poller import _SHUTDOWN_TX_DRAIN_TIMEOUT_S
+
+    handlers: list[object] = []
+    monkeypatch.setattr(
+        server_module,
+        "_install_shutdown_signal_handlers",
+        lambda _loop, on_signal: handlers.append(on_signal),
+    )
+    srv = WebServer(None, WebConfig(host="127.0.0.1", port=0, discovery=False))
+    drained = asyncio.Event()
+
+    class _Poller:
+        def stop(self) -> None:
+            pass
+
+        async def drain_tx_safety_commands(self, *, timeout: float) -> None:
+            drained.set()
+
+    releases: list[tuple[object, ...]] = []
+    with patch(
+        "rigplane.web.web_startup.asyncio.start_server",
+        new=AsyncMock(return_value=_FakeAsyncServer()),
+    ):
+        serve = asyncio.create_task(
+            srv.serve_forever(on_tx_release=lambda *args: releases.append(args))
+        )
+        while not handlers:
+            await asyncio.sleep(0)
+        srv._radio_poller = _Poller()
+        handlers[0]()  # type: ignore[operator]
+        await asyncio.wait_for(serve, 1.0)
+
+    ((drain, name, bound),) = releases
+    assert (name, bound) == ("web PTT drain", _SHUTDOWN_TX_DRAIN_TIMEOUT_S)
+    assert isinstance(drain, asyncio.Future) and drain.done() and drained.is_set()
+
+
+def test_web_stop_timeout_is_the_sum_of_its_timed_waits() -> None:
+    """MOR-2875: ``WEB_STOP_TIMEOUT_S`` sums the ``timeout=`` of every wait
+    ``_stop_web_server`` makes, each a named constant."""
+    import ast
+    import inspect
+
+    from rigplane.web import web_startup
+
+    timeouts = [
+        keyword.value
+        for node in ast.walk(ast.parse(inspect.getsource(web_startup._stop_web_server)))
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+        if keyword.arg == "timeout"
+    ]
+    assert timeouts and all(isinstance(value, ast.Name) for value in timeouts)
+    assert web_startup.WEB_STOP_TIMEOUT_S == sum(
+        getattr(web_startup, value.id)
+        for value in timeouts
+        if isinstance(value, ast.Name)
+    )
+
+
 async def test_first_signal_leaves_the_shutdown_bound_to_the_caller(
     monkeypatch,
 ) -> None:
