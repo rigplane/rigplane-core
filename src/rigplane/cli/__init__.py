@@ -435,7 +435,7 @@ def _print_common_cli_hint(argv: list[str]) -> None:
             "'web' can discover the radio's IP, but the model must be named; "
             "you can also pass the radio explicitly:\n"
             "  rigplane --model IC-7610 web\n"
-            "  rigplane --model IC-7610 web --radio-host 192.168.55.40 "
+            "  rigplane --model IC-7610 web --radio-host 192.168.1.50 "
             "--radio-user USER --radio-pass-file /path/to/password\n",
             file=sys.stderr,
         )
@@ -444,10 +444,10 @@ def _print_common_cli_hint(argv: list[str]) -> None:
     if _has_global_connection_options_after_command(argv):
         print(
             "\nHint: radio connection options normally go before the command:\n"
-            "  rigplane --model IC-7610 --backend lan --host 192.168.55.40 "
+            "  rigplane --model IC-7610 --backend lan --host 192.168.1.50 "
             "--user USER --pass-file /path/to/password web\n\n"
             "For the web UI, the more readable form is also supported:\n"
-            "  rigplane --model IC-7610 web --radio-host 192.168.55.40 "
+            "  rigplane --model IC-7610 web --radio-host 192.168.1.50 "
             "--radio-user USER --radio-pass-file /path/to/password\n",
             file=sys.stderr,
         )
@@ -619,7 +619,7 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog=(
             "examples:\n"
             "  rigplane --model IC-7610 web                    # discover radio IP, start web UI\n"
-            "  rigplane --model IC-7610 web --radio-host 192.168.55.40  # explicit radio IP\n"
+            "  rigplane --model IC-7610 web --radio-host 192.168.1.50  # explicit radio IP\n"
             "  rigplane --model IC-7610 web --preset digimode  # bridge + rigctld + WSJT-X compat\n"
             "  rigplane --model IC-7610 web --bridge           # web UI + audio bridge\n"
             "  rigplane --model IC-7610 serve                  # rigctld server only\n"
@@ -1608,7 +1608,7 @@ def _build_parser() -> argparse.ArgumentParser:
     proxy_p.add_argument(
         "--radio",
         required=True,
-        help="Radio IP address (e.g. 192.168.55.40)",
+        help="Radio IP address (e.g. 192.168.1.50)",
     )
     proxy_p.add_argument(
         "--listen",
