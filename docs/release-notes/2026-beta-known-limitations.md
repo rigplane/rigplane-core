@@ -43,10 +43,6 @@ that class of defect is release-blocking by definition and is not on this list.
 - **Manual-notch position on the FTX-1 is shown as a position, not in Hz.**
   The radio's own display does the same; the CAT code range is bounded to
   001..320 since #3480/#3526. (MOR-1680, owner ruling 2026-09-17)
-- **IF Shift, CW Pitch and NR level on the FTX-1 follow the CAT lattices in
-  software (20 Hz, 10 Hz to 1050 Hz, 0–10) but have not been re-run on the
-  radio since the change.** (MOR-1681, MOR-1682, MOR-1678 — hardware rerun
-  pending)
 - **Attenuator and preamp cannot be set for the SUB receiver.** The FTX-1 CAT
   `RA`/`PA` commands have no SUB form; the controls are shown disabled with
   the hint "Not available on this receiver" while SUB is active. (MOR-2511,
