@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import ExitStack, contextmanager
 from functools import partial
 from types import SimpleNamespace
@@ -953,6 +954,124 @@ class TestProbeSerialYaesuCat:
             "/dev/ttyUSB0", timeout=0.01, _transport_factory=factory
         )
         assert seen_bauds == [38400, 9600, 115200]
+
+
+# ---------------------------------------------------------------------------
+# Probe step markers (MOR-3040): DEBUG logging around open and close
+# ---------------------------------------------------------------------------
+
+
+def _captured_messages(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [record.getMessage() for record in caplog.records]
+
+
+def _marker_positions(messages: list[str], needles: list[str]) -> list[int]:
+    """Index of the first message containing each needle; -1 when absent."""
+    return [
+        next((i for i, message in enumerate(messages) if needle in message), -1)
+        for needle in needles
+    ]
+
+
+class TestProbeStepMarkers:
+    """MOR-3040: each probe logs opening/closing/closed around its port."""
+
+    @pytest.mark.asyncio
+    async def test_civ_marker_order_open_to_close(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Silent port: open succeeds, probe is written, the read times out,
+        # the writer closes — the full marker sequence must appear in order.
+        port = CivSerialPort(CivRadioFake("IC-7610"), silent=True)
+        with caplog.at_level(logging.DEBUG, logger="rigplane.backends.discovery"):
+            result = await probe_serial_civ(
+                "/dev/ttyUSB0",
+                baud_rates=[19200],
+                timeout=0.05,
+                _open_serial=port.opener,
+            )
+        assert result is None
+        messages = _captured_messages(caplog)
+        positions = _marker_positions(
+            messages,
+            [
+                "opening /dev/ttyUSB0 @ 19200",
+                "sent probe to /dev/ttyUSB0 @ 19200 baud",
+                "closing /dev/ttyUSB0",
+                "closed /dev/ttyUSB0",
+            ],
+        )
+        assert all(p != -1 for p in positions)
+        assert positions == sorted(positions)
+
+    @pytest.mark.asyncio
+    async def test_civ_failed_open_logs_no_close(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        async def _open(*, url: str, baudrate: int, **_kw: object):
+            raise OSError("Resource busy")
+
+        with caplog.at_level(logging.DEBUG, logger="rigplane.backends.discovery"):
+            result = await probe_serial_civ(
+                "/dev/ttyUSB0",
+                baud_rates=[19200],
+                timeout=0.05,
+                _open_serial=_open,
+            )
+        assert result is None
+        messages = _captured_messages(caplog)
+        opening, cannot_open = _marker_positions(
+            messages,
+            ["opening /dev/ttyUSB0 @ 19200", "cannot open /dev/ttyUSB0 @ 19200"],
+        )
+        assert opening != -1
+        assert cannot_open != -1
+        assert opening < cannot_open
+        assert not any(
+            "closing" in message or "closed" in message for message in messages
+        )
+
+    @pytest.mark.asyncio
+    async def test_xiegu_markers_around_open_and_close(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        port = CivSerialPort(CivRadioFake("X6200"), silent=True)
+        with caplog.at_level(logging.DEBUG, logger="rigplane.backends.discovery"):
+            result = await probe_xiegu_model_id(
+                "/dev/x", 19200, timeout=0.05, _open_serial=port.opener
+            )
+        assert result is False
+        messages = _captured_messages(caplog)
+        positions = _marker_positions(
+            messages, ["opening /dev/x @ 19200", "closing /dev/x", "closed /dev/x"]
+        )
+        assert all(p != -1 for p in positions)
+        assert positions == sorted(positions)
+
+    @pytest.mark.asyncio
+    async def test_yaesu_markers_around_open_and_close(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        factory = _make_yaesu_factory(None)  # query times out
+        with caplog.at_level(logging.DEBUG, logger="rigplane.backends.discovery"):
+            result = await probe_serial_yaesu_cat(
+                "/dev/ttyUSB0",
+                baud_rates=[38400],
+                timeout=0.05,
+                _transport_factory=factory,
+            )
+        assert result is None
+        messages = _captured_messages(caplog)
+        positions = _marker_positions(
+            messages,
+            [
+                "opening /dev/ttyUSB0 @ 38400",
+                "closing /dev/ttyUSB0",
+                "closed /dev/ttyUSB0",
+            ],
+        )
+        assert all(p != -1 for p in positions)
+        assert positions == sorted(positions)
 
 
 # ---------------------------------------------------------------------------
