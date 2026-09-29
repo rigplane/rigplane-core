@@ -5205,9 +5205,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def set_powerstat(self, on: bool) -> None:
         """Power the radio on or off (PowerControlCapable protocol).
 
-        Note: IC-7610 via LAN may NAK a power-on command while the radio
-        is still booting.  The command is fire-and-forget for power-on —
-        a NAK is logged but not raised, since the radio does power up.
+        After POWER ON, the radio can stop sending CI-V data for longer than
+        the 2 s answer window while it starts (about 3 s in the observed log),
+        so its acknowledgement cannot be relied on. POWER OFF still waits for
+        an acknowledgement and raises CommandError on a NAK.
         """
         self._check_connected()
         civ = (
@@ -5215,32 +5216,28 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             if on
             else self._commands.power_off(to_addr=self._radio_addr)
         )
+        if on:
+            await self._send_civ_raw(civ, wait_response=False)
+            return
+
         resp = await self._send_civ_expect(civ, label="set_powerstat")
         ack = parse_ack_nak(resp)
         if ack is False:
-            if on:
-                # IC-7610 may NAK power-on while booting — not a real error
-                import logging
-
-                logging.getLogger(__name__).warning(
-                    "Power ON got NAK (radio may still be booting — ignoring)"
-                )
-            else:
-                raise CommandError("Radio rejected power off")
+            raise CommandError("Radio rejected power off")
         if ack is True:
             # MOR-2544: the 0xFB ACK is the radio's own confirmation of the
             # new power state, so the provider observes it directly — built
             # with the same observation helper the CI-V receive path uses
             # (``CivRuntime._observation``), stamped with the store's live
             # provider generation and announced through the same change
-            # notification the receive path sends. A swallowed boot NAK
-            # (ack is False) or an ambiguous reply (ack is None) is not
-            # evidence and leaves the retained state untouched.
-            self._last_commanded_powerstat = on
+            # notification the receive path sends. A NAK (ack is False) or
+            # ambiguous reply (ack is None) is not evidence and leaves the
+            # retained state untouched.
+            self._last_commanded_powerstat = False
             observation = _replace_dataclass(
                 self._civ_runtime._observation(
                     FieldPath.global_("tx_state", "power_on"),
-                    on,
+                    False,
                     frame=resp,
                 ),
                 provider_generation=self._state_store.provider_generation,

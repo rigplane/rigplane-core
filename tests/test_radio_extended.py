@@ -526,8 +526,8 @@ class TestPowerControl:
     async def test_power_on(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        mock_transport.queue_response(_ack_response())
         await radio.power_control(True)
+        assert len(mock_transport.sent_packets) == 1
 
     @pytest.mark.asyncio
     async def test_power_off(
@@ -535,15 +535,6 @@ class TestPowerControl:
     ) -> None:
         mock_transport.queue_response(_ack_response())
         await radio.power_control(False)
-
-    @pytest.mark.asyncio
-    async def test_power_on_nak_tolerated(
-        self, radio: IcomRadio, mock_transport: MockTransport
-    ) -> None:
-        """Power ON with NAK is tolerated (IC-7610 may NAK while booting)."""
-        mock_transport.queue_response(_nak_response())
-        # Should NOT raise — power-on NAK is logged but not fatal
-        await radio.power_control(True)
 
     @pytest.mark.asyncio
     async def test_power_off_nak_raises(

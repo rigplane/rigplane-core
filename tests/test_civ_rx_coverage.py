@@ -6360,6 +6360,28 @@ async def test_power_on_inference_accepted_after_connect_advances_generation(
 
 
 @pytest.mark.asyncio
+async def test_powerstat_is_fire_and_forget_only_for_power_on(
+    radio: IcomRadio,
+) -> None:
+    send_raw = AsyncMock(return_value=None)
+    send_expect = AsyncMock(return_value=_make_frame(cmd=0xFB))
+
+    with (
+        patch.object(radio, "_send_civ_raw", send_raw),
+        patch.object(radio, "_send_civ_expect", send_expect),
+    ):
+        await radio.set_powerstat(True)
+        send_raw.assert_awaited_once()
+        assert send_raw.await_args.kwargs["wait_response"] is False
+        send_expect.assert_not_awaited()
+
+        send_raw.reset_mock()
+        await radio.set_powerstat(False)
+        send_raw.assert_not_awaited()
+        send_expect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_powerstat_ack_records_last_commanded_and_answers_clear_it(
     radio: IcomRadio,
 ) -> None:
@@ -6385,11 +6407,6 @@ async def test_powerstat_ack_records_last_commanded_and_answers_clear_it(
             await radio.set_powerstat(False)
     assert radio._last_commanded_powerstat is False  # noqa: SLF001
 
-    # A swallowed boot-time power-on NAK is not evidence either.
-    with patch.object(radio, "_send_civ_expect", AsyncMock(return_value=nak)):
-        await radio.set_powerstat(True)
-    assert radio._last_commanded_powerstat is False  # noqa: SLF001
-
     # The retained command survives every store-clearing generation advance.
     for reason in ("watchdog-timeout", "reconnect-attempt", "serial-soft-reconnect"):
         radio._civ_runtime.advance_generation(reason)  # noqa: SLF001
@@ -6406,14 +6423,10 @@ async def test_powerstat_ack_records_last_commanded_and_answers_clear_it(
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_reply_and_swallowed_nak_write_no_power_on_observation(
+async def test_fire_and_forget_power_on_writes_no_power_on_observation(
     radio: IcomRadio,
 ) -> None:
-    """MOR-2544: only the 0xFB ACK is power evidence for the store. An
-    ambiguous reply (neither 0xFB nor 0xFA) and a swallowed boot-time
-    power-on NAK write no ``power_on`` observation — the store field keeps
-    the value it had and the observation counter does not move.
-    """
+    """Dispatching POWER ON does not fabricate a provider observation."""
     with patch.object(
         radio, "_send_civ_expect", AsyncMock(return_value=_make_frame(cmd=0xFB))
     ):
@@ -6421,21 +6434,7 @@ async def test_ambiguous_reply_and_swallowed_nak_write_no_power_on_observation(
     before = radio._state_store.snapshot()  # noqa: SLF001
     assert before.field(_POWER_ON_PATH).value is False  # noqa: SLF001
 
-    # An ambiguous reply is not evidence.
-    with patch.object(
-        radio,
-        "_send_civ_expect",
-        AsyncMock(return_value=_make_frame(cmd=0x03, data=b"\x12\x34")),
-    ):
-        await radio.set_powerstat(True)
-    snapshot = radio._state_store.snapshot()  # noqa: SLF001
-    assert snapshot.field(_POWER_ON_PATH).value is False  # noqa: SLF001
-    assert snapshot.observation_seq == before.observation_seq  # noqa: SLF001
-
-    # A swallowed boot-time power-on NAK is not evidence either.
-    with patch.object(
-        radio, "_send_civ_expect", AsyncMock(return_value=_make_frame(cmd=0xFA))
-    ):
+    with patch.object(radio, "_send_civ_raw", AsyncMock(return_value=None)):
         await radio.set_powerstat(True)
     snapshot = radio._state_store.snapshot()  # noqa: SLF001
     assert snapshot.field(_POWER_ON_PATH).value is False  # noqa: SLF001
@@ -6451,8 +6450,8 @@ def _public_power_payload(radio: IcomRadio, *, receiver_count: int) -> dict[str,
     )
 
 
-async def _acked_power_command(radio: IcomRadio, on: bool) -> None:
-    """Run the real power command against a radio that answers 0xFB.
+async def _acknowledged_power_off(radio: IcomRadio) -> None:
+    """Run the real POWER OFF command against a radio that answers 0xFB.
 
     Calls ``IcomRadio.set_powerstat`` directly — the provider seam every
     command surface funnels into — so the ACKed power state lands in the
@@ -6462,7 +6461,7 @@ async def _acked_power_command(radio: IcomRadio, on: bool) -> None:
     with patch.object(
         radio, "_send_civ_expect", AsyncMock(return_value=_make_frame(cmd=0xFB))
     ):
-        await radio.set_powerstat(on)
+        await radio.set_powerstat(False)
 
 
 @pytest.mark.asyncio
@@ -6485,8 +6484,8 @@ async def test_power_cycle_through_public_payload_and_field_status(
     answers → ``powerOn: true``; ACKed power-off → ``false``; repeated
     ``advance_generation`` (watchdog / soft reconnect) with no answers →
     still ``false`` with a frontend-accepted ``fieldStatus.powerOn``; the
-    retained True is never published (a boot-time generation clear reads
-    unknown); ACKed power-on + first answer → ``true``.
+    POWER ON dispatch does not create an observation; the first answer after
+    startup publishes ``true``.
 
     RED at 3b4473cc: ``set_powerstat`` observed nothing from the ACK and the
     radio had no ``_last_commanded_powerstat`` (``AttributeError``), so the
@@ -6512,7 +6511,7 @@ async def test_power_cycle_through_public_payload_and_field_status(
 
     # ACKed power-off → the provider observes False from the ACK; the payload
     # flips immediately.
-    await _acked_power_command(radio, False)
+    await _acknowledged_power_off(radio)
     assert radio._last_commanded_powerstat is False  # noqa: SLF001
     payload = _public_power_payload(radio, receiver_count=receiver_count)
     assert payload["powerOn"] is False
@@ -6529,20 +6528,14 @@ async def test_power_cycle_through_public_payload_and_field_status(
     with pytest.raises(KeyError):
         radio._state_store.snapshot().field(_POWER_ON_PATH)  # noqa: SLF001
 
-    # ACKed power-on → the provider observes True from the ACK…
-    await _acked_power_command(radio, True)
-    assert radio._last_commanded_powerstat is True  # noqa: SLF001
-    payload = _public_power_payload(radio, receiver_count=receiver_count)
-    assert payload["powerOn"] is True
-
-    # …but the retained True is never published: a generation clear while the
-    # radio is still booting reads as an honest unknown again…
+    # POWER ON is dispatched without inventing an ACK-backed ON observation.
+    with patch.object(radio, "_send_civ_raw", AsyncMock(return_value=None)):
+        await radio.set_powerstat(True)
     radio._civ_runtime.advance_generation("watchdog-timeout")  # noqa: SLF001
     payload = _public_power_payload(radio, receiver_count=receiver_count)
-    assert payload["powerOn"] is None
+    assert payload["powerOn"] is False
 
-    # …and the first fresh answer clears the retained command and re-observes
-    # True through the rx path.
+    # The first fresh answer clears retained OFF and observes True.
     await _route_frame_at(radio, meter, 105.0)
     assert radio._last_commanded_powerstat is None  # noqa: SLF001
     payload = _public_power_payload(radio, receiver_count=receiver_count)
@@ -6685,7 +6678,7 @@ async def test_power_readback_overrides_liveness_and_clears_retained_command(
         is True
     )
 
-    await _acked_power_command(radio, False)
+    await _acknowledged_power_off(radio)
     assert radio._last_commanded_powerstat is False  # noqa: SLF001
 
     await _route_frame_at(radio, _make_frame(cmd=0x18, data=b"\x00"), 105.0)
