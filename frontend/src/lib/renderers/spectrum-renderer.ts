@@ -234,8 +234,11 @@ export function renderSpectrum(
     // from measureText, never from hard-coded pixels. Grid lines are unchanged.
     const LABEL_GAP_PX = 4;
     const labelX = (i: number) => clamp((i / V_LINES) * width, 20, width - 20);
+    // A real canvas always measures; without measureText there is nothing to
+    // thin against, so keep the legacy full draw instead of guessing.
+    const canMeasure = typeof ctx.measureText === 'function';
     const labelWidth = (text: string): number => {
-      if (typeof ctx.measureText !== 'function') return 0;
+      if (!canMeasure) return 0;
       const w = ctx.measureText(text).width;
       return typeof w === 'number' && Number.isFinite(w) ? w : 0;
     };
@@ -246,16 +249,19 @@ export function renderSpectrum(
       if (idx[idx.length - 1] !== V_LINES) idx.push(V_LINES);
       return idx;
     };
-    let stride = V_LINES;
-    for (let k = 1; k <= V_LINES; k++) {
-      let prevRight = -Infinity;
-      let fits = true;
-      for (const i of strideIndices(k)) {
-        const x = labelX(i);
-        if (x - widths[i] / 2 < prevRight + LABEL_GAP_PX) { fits = false; break; }
-        prevRight = x + widths[i] / 2;
+    let stride = 1;
+    if (canMeasure) {
+      stride = V_LINES;
+      for (let k = 1; k <= V_LINES; k++) {
+        let prevRight = -Infinity;
+        let fits = true;
+        for (const i of strideIndices(k)) {
+          const x = labelX(i);
+          if (x - widths[i] / 2 < prevRight + LABEL_GAP_PX) { fits = false; break; }
+          prevRight = x + widths[i] / 2;
+        }
+        if (fits) { stride = k; break; }
       }
-      if (fits) { stride = k; break; }
     }
     for (const i of strideIndices(stride)) {
       ctx.fillText(texts[i], labelX(i), height - 4);
