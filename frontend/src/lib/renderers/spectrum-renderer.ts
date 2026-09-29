@@ -224,10 +224,41 @@ export function renderSpectrum(
     ctx.fillStyle = textColor;
     ctx.font = '9px monospace';
     ctx.textAlign = 'center';
+    const texts: string[] = [];
     for (let i = 0; i <= V_LINES; i++) {
-      const hz = startHz + (i / V_LINES) * spanHz;
-      const x = (i / V_LINES) * width;
-      ctx.fillText((hz / 1e6).toFixed(3), clamp(x, 20, width - 20), height - 4);
+      texts.push(((startHz + (i / V_LINES) * spanHz) / 1e6).toFixed(3));
+    }
+    // MOR-3011: thin the labels to what the width holds. The stride is the
+    // smallest k whose clamped label boxes clear each other by LABEL_GAP_PX;
+    // the edge labels (0 and V_LINES) are always kept readable. Widths come
+    // from measureText, never from hard-coded pixels. Grid lines are unchanged.
+    const LABEL_GAP_PX = 4;
+    const labelX = (i: number) => clamp((i / V_LINES) * width, 20, width - 20);
+    const labelWidth = (text: string): number => {
+      if (typeof ctx.measureText !== 'function') return 0;
+      const w = ctx.measureText(text).width;
+      return typeof w === 'number' && Number.isFinite(w) ? w : 0;
+    };
+    const widths = texts.map(labelWidth);
+    const strideIndices = (k: number): number[] => {
+      const idx: number[] = [];
+      for (let i = 0; i <= V_LINES; i += k) idx.push(i);
+      if (idx[idx.length - 1] !== V_LINES) idx.push(V_LINES);
+      return idx;
+    };
+    let stride = V_LINES;
+    for (let k = 1; k <= V_LINES; k++) {
+      let prevRight = -Infinity;
+      let fits = true;
+      for (const i of strideIndices(k)) {
+        const x = labelX(i);
+        if (x - widths[i] / 2 < prevRight + LABEL_GAP_PX) { fits = false; break; }
+        prevRight = x + widths[i] / 2;
+      }
+      if (fits) { stride = k; break; }
+    }
+    for (const i of strideIndices(stride)) {
+      ctx.fillText(texts[i], labelX(i), height - 4);
     }
   }
 
