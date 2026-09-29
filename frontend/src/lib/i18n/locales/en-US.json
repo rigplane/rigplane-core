@@ -102,7 +102,7 @@
 
   "core.overlay.poweredOff.label": "Radio is powered off",
   "core.overlay.poweredOff.notAnsweringLabel": "Radio does not answer — it may be switched off",
-  "core.overlay.poweredOff.notConnectedLabel": "Radio not connected — check the USB cable",
+  "core.overlay.poweredOff.notConnectedLabel": "Radio not connected — the serial port did not open",
   "core.overlay.poweredOff.noRemotePowerOn": "This radio cannot be powered on from RigPlane.",
   "core.overlay.poweredOff.powerOnButton": "Power ON",
   "core.overlay.poweredOff.failedPowerOn": "Failed to power on: {detail}",

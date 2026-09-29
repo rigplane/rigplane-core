@@ -312,10 +312,9 @@ describe('AppGlobalHost — standalone, with no layout mounted', () => {
   });
 
   // MOR-2876: the server started while the radio's serial port could not be
-  // opened and keeps retrying it (radioHealth.likelyCause
-  // 'radio_not_connected'). The same overlay says so and offers no Power ON,
-  // even where the profile declares one: there is no port to send it
-  // through, and the server refuses power-on in that state.
+  // opened (radioHealth.likelyCause 'radio_not_connected'). The same overlay
+  // says so and offers no Power ON, even where the profile declares one:
+  // there is no port to send it through.
   it('shows the not-connected overlay without Power ON while the serial port cannot be opened', () => {
     h.radioHealth = { radioLink: 'reconnecting', likelyCause: 'radio_not_connected' };
     const instance = mountAt(AppGlobalHost);

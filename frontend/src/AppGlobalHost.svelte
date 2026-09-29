@@ -75,9 +75,8 @@
       && runtime.radioHealth?.likelyCause === 'radio_powered_off_likely',
   );
   // MOR-2876: the server started while the radio's serial port could not be
-  // opened and keeps retrying it ('radio_not_connected'). The same overlay
-  // says so, without Power ON: there is no port to send it through, and the
-  // server refuses power-on in that state.
+  // opened ('radio_not_connected'). The same overlay says so, without Power
+  // ON: there is no port to send it through.
   let radioNotConnected = $derived(
     runtime.radioPowerOn !== true
       && runtime.radioHealth?.likelyCause === 'radio_not_connected',
