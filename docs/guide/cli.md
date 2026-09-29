@@ -21,8 +21,8 @@ All commands accept these options:
 | `--pass-file` | — | — | Read the password from the first line of a file |
 | `--timeout` | — | `5.0` | Timeout in seconds |
 | `--json` | — | `false` | Emit JSON when supported by the selected command |
-| `--backend` | — | auto | Backend type: `lan`, `serial`, `yaesu-cat`, or `rigctld`. Auto-inferred from `--serial-port` if set. |
-| `--serial-port` | `ICOM_SERIAL_DEVICE` | auto-discover | Serial device path. If omitted with `--backend serial`, discovers via USB scan. |
+| `--backend` | — | from the model | Backend type: `lan`, `serial`, `yaesu-cat`, or `rigctld`. When omitted it follows the model's profile: a CI-V radio uses `serial` with `--serial-port` and `lan` without it; the FTX-1 uses `yaesu-cat`; a profile with another protocol is refused. Without `--model`: `serial` with `--serial-port`, else `lan`. `rigctld` must be named. |
+| `--serial-port` | `ICOM_SERIAL_DEVICE` | auto-discover | Serial device path. If omitted with the `serial` or `yaesu-cat` backend, discovers via USB scan. |
 | `--serial-baud` | `ICOM_SERIAL_BAUDRATE` | env or backend default | Serial baud (`115200` for `serial`, `38400` for `yaesu-cat` when env is unset) |
 | `--serial-ptt-mode` | `ICOM_SERIAL_PTT_MODE` | `civ` | Serial PTT mode (`civ` currently supported) |
 | `--rx-device` | `ICOM_USB_RX_DEVICE` | auto | USB audio RX device name (serial/CAT profiles with audio support) |
@@ -86,6 +86,10 @@ rigplane supports four backends: **LAN** (default), **serial** (USB CI-V),
 **yaesu-cat** (text CAT over serial), and **rigctld** (external Hamlib
 `rigctld` over TCP).
 
+Without `--backend`, the backend follows the model's profile, as the
+`--backend` option above describes; for a CI-V radio without `--serial-port`
+that is LAN.
+
 ### LAN backend (default)
 
 ```bash
@@ -117,9 +121,9 @@ rigplane --model IC-7610 status    # auto-infers --backend serial
 ### Yaesu CAT backend
 
 ```bash
-# Connects via Yaesu CAT serial protocol (for example the FTX-1)
-rigplane --backend yaesu-cat --serial-port /dev/tty.usbserial-FTX1 status
-rigplane --backend yaesu-cat --serial-port /dev/tty.usbserial-FTX1 freq
+# The FTX-1 profile selects the Yaesu CAT backend (--backend yaesu-cat does the same)
+rigplane --model FTX-1 --serial-port /dev/tty.usbserial-FTX1 status
+rigplane --model FTX-1 --serial-port /dev/tty.usbserial-FTX1 freq
 ```
 
 ### External rigctld backend
