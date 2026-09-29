@@ -62,6 +62,7 @@ Full guides: [getting started](https://rigplane.dev/guide/quickstart/),
 | **Yaesu FTX-1**    | USB CAT            | Stable              | 17 modes, VHF/UHF, C4FM, audio FFT scope |
 | Icom IC-705        | LAN (WiFi), USB CI-V | Community-validated on 2.x; not yet validated on 3.0 | CI-V `0xA4`, QRP 10 W |
 | Icom IC-9700       | LAN, USB CI-V      | Community-validated | VHF/UHF/SHF                            |
+| Xiegu X6200        | USB CI-V           | Validated on 2.x hardware; not yet validated on 3.0 | CI-V `0xA4`, 19200 baud, QRP 8 W |
 | Xiegu X6100        | USB CI-V / Hamlib candidate | Profile only / assisted discovery planned | IC-705 compatible, QRP |
 | Lab599 TX-500      | USB Kenwood CAT / Hamlib candidate | Profile only / assisted discovery planned | QRP, minimal CAT |
 

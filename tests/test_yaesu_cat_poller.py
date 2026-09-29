@@ -3251,7 +3251,9 @@ async def test_ftx1_web_receiver_selection_writes_once_and_waits_for_vs_readback
     ("requested", "native", "readback", "expected"),
     [
         (0.5, 50, "PC2050", 0.5),
-        (1, 1, "PC2001", 0.01),
+        # MOR-2998: below the 5 W profile floor the wire is clamped up, so
+        # the native-int case rides the floor itself (PC2001 is refused).
+        (5, 5, "PC2005", 0.05),
     ],
 )
 async def test_ftx1_power_readback_exactly_reconciles_native_target(

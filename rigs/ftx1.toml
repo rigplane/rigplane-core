@@ -27,6 +27,11 @@ rx_audio_channel = "left"
 
 [power]
 max_watts = 100
+# PC POWER CONTROL floor (FTX-1 CAT manual FTX-1_CAT_OM_ENG_2508-C, p.21):
+# P1=2 (SPA-1) spans 005-100 W (P1=1 field head 005-010 W), so the radio
+# refuses anything below 5 W -- PC2000; answered "?;" on the bench (MOR-2998).
+# The backend clamps a lower request up to this floor before the wire.
+min_watts = 5
 
 [capabilities]
 # NOTE: ``notch`` KEEPS the capability tag but intentionally declares NO
@@ -172,6 +177,9 @@ polling_only = [
     "receiver.main.operator_controls.tsql_freq",
     "receiver.sub.operator_toggles.repeater_tone",
     "receiver.sub.operator_toggles.repeater_tsql",
+    # MOR-2969: read by the same CT query as the two booleans.
+    "receiver.main.operator_controls.tone_squelch_type",
+    "receiver.sub.operator_controls.tone_squelch_type",
     "receiver.sub.operator_controls.tone_freq",
     "receiver.sub.operator_controls.tsql_freq",
     "receiver.main.operator_controls.repeater_shift",
@@ -658,6 +666,15 @@ freshness_ttl_seconds = 2.0
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 
+# MOR-2969: the tone squelch type rides the same CT read and cadence.
+[state_acquisition.field_policies."receiver.main.operator_controls.tone_squelch_type"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.tone_squelch_type"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
 # CTCSS tone frequency (MOR-458). The CAT ``CN`` "CTCSS TONE FREQUENCY" read
 # (FTX-1_CAT_OM_ENG_2508-C) is receiver-routed (P1=0 MAIN, P1=1 SUB) and maps
 # a 0-49 tone-chart index → Hz → centiHz onto the neutral tone_freq/tsql_freq
@@ -696,6 +713,19 @@ freshness_ttl_seconds = 2.0
 
 [ctcss]
 table = "standard_50"
+
+# What each CAT ``CT`` "SQL TYPE" P2 code means (MOR-2969): 0 OFF, 1 TONE
+# (CTCSS ENC), 2 TSQL (CTCSS ENC+DEC), 3 DCS, 4 PR FREQ, 5 REV TONE, as the
+# observation adapter documents them from FTX-1_CAT_OM_ENG_2508-C
+# (backends/yaesu_cat/observations.py, the CT comment block). Yaesu DCS is
+# the neutral "dtcs".
+[tone_squelch_types]
+0 = "off"
+1 = "tone"
+2 = "tsql"
+3 = "dtcs"
+4 = "pr_freq"
+5 = "rev_tone"
 
 [modes]
 list = [

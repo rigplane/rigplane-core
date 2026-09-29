@@ -30,6 +30,7 @@ from rigplane.core.state_acquisition_policy import (
     ReconciliationPriority,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.types import ToneSquelchType
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.profiles.control_domain import (
     _on_control_lattice,
@@ -630,6 +631,7 @@ class RigConfig:
     filter_width_radio_default_code: int | None = None
     filter_config: dict[str, FilterWidthRule] | None = None
     max_watts: int | None = None
+    min_watts: int | None = None
     data_mode_count: int = 0
     data_mode_labels: dict[str, str] | None = None
     data_mode_inputs: tuple[tuple[int, str], ...] | None = None
@@ -679,6 +681,7 @@ class RigConfig:
     state_acquisition: RadioAcquisitionProfile | None = None
     tx_policy: TxPolicy = field(default_factory=TxPolicy)
     ctcss_tones_centihz: tuple[int, ...] | None = None
+    tone_squelch_types: dict[int, ToneSquelchType] | None = None
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -830,6 +833,7 @@ class RigConfig:
             filter_width_radio_default_code=self.filter_width_radio_default_code,
             filter_config=self.filter_config,
             max_watts=self.max_watts,
+            min_watts=self.min_watts,
             att_values=self.att_values,
             att_labels=self.att_labels,
             pre_values=self.pre_values,
@@ -840,6 +844,11 @@ class RigConfig:
             agc_auto_mode=self.agc_auto_mode,
             agc_auto_speed_labels=self.agc_auto_speed_labels,
             ctcss_tones_centihz=self.ctcss_tones_centihz,
+            tone_squelch_types=(
+                None
+                if self.tone_squelch_types is None
+                else dict(self.tone_squelch_types)
+            ),
             break_in_modes=self.break_in_modes,
             break_in_labels=self.break_in_labels,
             notch_width_values=self.notch_width_values,
@@ -1117,6 +1126,57 @@ def _resolve_ctcss_table(
             f"{filename}: unknown CTCSS table {table_name!r} in "
             f"{DEFAULT_CTCSS_TABLES_PROFILE_NAME}"
         ) from exc
+
+
+# The reads whose reply code [tone_squelch_types] names: the Icom 16 5D
+# selector and the Yaesu CAT CT read (MOR-2969).
+_TONE_SQUELCH_TYPE_READS = ("get_tone_squelch_type", "get_sql_type")
+
+
+def _resolve_tone_squelch_types(
+    path: Path, data: dict[str, Any], commands: dict[str, CommandSpec]
+) -> dict[int, ToneSquelchType] | None:
+    """Parse ``[tone_squelch_types]``: selector code -> neutral type (MOR-2131).
+
+    A profile that declares a selector read in ``_TONE_SQUELCH_TYPE_READS``,
+    in ``[commands]`` or its overrides and not as absent, must carry the
+    table, because the decoder reads the code's meaning from it and nowhere
+    else.
+    """
+    filename = path.name
+    section = data.get("tone_squelch_types")
+    if section is None:
+        for name in _TONE_SQUELCH_TYPE_READS:
+            selector = commands.get(name)
+            if selector is not None and not isinstance(selector, AbsentCommandSpec):
+                raise RigLoadError(
+                    f"{filename}: {name} needs a [tone_squelch_types] table"
+                )
+        return None
+    if not isinstance(section, dict) or not section:
+        raise RigLoadError(
+            f"{filename}: [tone_squelch_types] must be a non-empty table"
+        )
+    table: dict[int, ToneSquelchType] = {}
+    for raw_code, raw_type in section.items():
+        try:
+            code = int(raw_code)
+        except ValueError as exc:
+            raise RigLoadError(
+                f"{filename}: [tone_squelch_types] key {raw_code!r} is not a code"
+            ) from exc
+        if not 0 <= code <= 0xFF:
+            raise RigLoadError(
+                f"{filename}: [tone_squelch_types] code {code} is not one byte"
+            )
+        try:
+            table[code] = ToneSquelchType(raw_type)
+        except ValueError as exc:
+            raise RigLoadError(
+                f"{filename}: [tone_squelch_types].{raw_code} = {raw_type!r} is not "
+                f"one of {sorted(t.value for t in ToneSquelchType)}"
+            ) from exc
+    return table
 
 
 def _parse_command_value(
@@ -2272,6 +2332,7 @@ def load_rig(path: Path) -> RigConfig:
         # Apply overrides
         for key, value in overrides.items():
             commands[key] = _parse_command_value(filename, key, value)
+    tone_squelch_types = _resolve_tone_squelch_types(path, data, commands)
 
     # Parse freq_ranges
     freq_ranges_data = data.get("freq_ranges", {}).get("ranges", [])
@@ -2788,6 +2849,7 @@ def load_rig(path: Path) -> RigConfig:
             rx_audio_channel = rx_channel_raw
 
     max_watts: int | None = None
+    min_watts: int | None = None
     power_section = data.get("power")
     if power_section is not None:
         if not isinstance(power_section, dict):
@@ -2799,6 +2861,15 @@ def load_rig(path: Path) -> RigConfig:
             if max_watts_raw <= 0:
                 raise RigLoadError(f"{filename}: [power].max_watts must be > 0")
             max_watts = max_watts_raw
+        if "min_watts" in power_section:
+            min_watts_raw = power_section["min_watts"]
+            if not isinstance(min_watts_raw, int) or isinstance(min_watts_raw, bool):
+                raise RigLoadError(f"{filename}: [power].min_watts must be an integer")
+            if min_watts_raw <= 0:
+                raise RigLoadError(f"{filename}: [power].min_watts must be > 0")
+            min_watts = min_watts_raw
+        if min_watts is not None and max_watts is not None and min_watts > max_watts:
+            raise RigLoadError(f"{filename}: [power].min_watts must be <= max_watts")
 
     state_acquisition = _parse_state_acquisition(
         filename,
@@ -2843,6 +2914,7 @@ def load_rig(path: Path) -> RigConfig:
         filter_width_radio_default_code=filter_width_radio_default_code,
         filter_config=filter_config,
         max_watts=max_watts,
+        min_watts=min_watts,
         vfo_scheme=scheme,
         vfo_readback=vfo_readback,
         tx_receiver_rule=tx_receiver_rule,
@@ -2866,6 +2938,7 @@ def load_rig(path: Path) -> RigConfig:
         agc_auto_mode=agc_auto_mode,
         agc_auto_speed_labels=agc_auto_speed_labels,
         ctcss_tones_centihz=ctcss_tones_centihz,
+        tone_squelch_types=tone_squelch_types,
         break_in_modes=break_in_modes,
         break_in_labels=break_in_labels,
         notch_width_values=notch_width_values,

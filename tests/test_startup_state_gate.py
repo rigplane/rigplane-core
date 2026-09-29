@@ -2466,6 +2466,10 @@ async def test_silent_startup_scan_seed_and_echo_never_count_as_radio_observatio
         timeout=0.1,
         _enumerate_serial_ports_fn=lambda: [],
     )
+    # MOR-2918: the CI log shows the serial link watchdog declaring link-down
+    # mid-test ("...with no response; marking connection reconnecting"), so
+    # hold it off for the test's lifetime: no tick, no declaration.
+    radio._SERIAL_WATCHDOG_INTERVAL_S = 3600.0
     await radio.connect()
     store = radio.state_store
     poller = RadioPoller(
@@ -2546,7 +2550,13 @@ async def _served_through_cli(radio: object) -> AsyncIterator[WebServer]:
     served: list[WebServer] = []
     release = asyncio.Event()
 
-    async def _serve_forever(self: WebServer, *, on_started: object = None) -> None:
+    async def _serve_forever(
+        self: WebServer,
+        *,
+        on_started: object = None,
+        on_shutdown_signal: object = None,
+        on_tx_release: object = None,
+    ) -> None:
         await self.start()
         served.append(self)
         await release.wait()

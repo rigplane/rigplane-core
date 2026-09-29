@@ -6,6 +6,9 @@
 
   const handlers = getAgcHandlers();
   let p = $derived(deriveAgcProps());
+  // MOR-2978: `NaN` is the unread sentinel (`toAgcProps`) — the keys expose
+  // the confirmed selection and stay disabled until an AGC mode is observed.
+  let agcKnown = $derived(!Number.isNaN(p.agcMode));
   let options = $derived(buildAgcOptions(p.agcModes, p.agcLabels));
   let showAgc = $derived(p.hasAgc ?? true);
   // MOR-1536: the freshest in-flight `set_agc` target, DISPLAY ONLY (see
@@ -24,6 +27,8 @@
         {@const armedId = `${armedIdBase}-${option.value}`}
         <HardwareButton
           active={p.agcMode === option.value}
+          pressed={agcKnown ? p.agcMode === option.value : undefined}
+          disabled={!agcKnown}
           indicator="edge-left"
           color="cyan"
           armed={isArmed}

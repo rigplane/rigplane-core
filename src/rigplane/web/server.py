@@ -196,6 +196,9 @@ _build_public_state_payload_from_snapshot_impl: _PublicStatePayloadFromSnapshotF
     build_public_state_payload_from_snapshot
 )
 
+# serve_forever's on_tx_release: (the release task, its name, its bound in s).
+_TxReleaseHook = Callable[["asyncio.Future[Any]", str, float], None]
+
 
 def _install_shutdown_signal_handlers(
     loop: asyncio.AbstractEventLoop,
@@ -879,6 +882,7 @@ class WebServer:
         )
         self._server: asyncio.Server | None = None
         self._stopping = False
+        self._on_tx_release: _TxReleaseHook | None = None
         self._runtime_started_at = time.monotonic()
         # MOR-2880: throttled refusal-log state — one WARNING per window.
         self._refusal_log_monotonic = -math.inf
@@ -3147,6 +3151,8 @@ class WebServer:
         self,
         *,
         on_started: Callable[[], None] | None = None,
+        on_shutdown_signal: Callable[[], None] | None = None,
+        on_tx_release: _TxReleaseHook | None = None,
     ) -> None:
         """Start and block until cancelled.  Handles SIGTERM/SIGINT gracefully.
 
@@ -3155,7 +3161,11 @@ class WebServer:
         the ``Web UI:`` line never advertises a URL that is not accepting
         yet (pinned by
         ``test_web_ui_banner_prints_only_after_the_server_reports_started``).
+        ``on_shutdown_signal`` runs once, on the first SIGTERM/SIGINT.
+        ``on_tx_release`` receives the shutdown's PTT drain task, its name and
+        its bound in seconds.
         """
+        self._on_tx_release = on_tx_release
         await self.start()
         assert self._server is not None
         if on_started is not None:
@@ -3173,6 +3183,8 @@ class WebServer:
             if _signal_count == 1:
                 logger.info("received shutdown signal")
                 stop_event.set()
+                if on_shutdown_signal is not None:
+                    on_shutdown_signal()
             elif _signal_count == 2:
                 logger.info("second signal — cancelling all tasks")
                 for task in asyncio.all_tasks(loop):

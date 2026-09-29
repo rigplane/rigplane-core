@@ -1660,8 +1660,10 @@ async def _post_level_series(
         ("set_af_level", "raw_255", [0, 128, 255]),
         ("set_rf_power", "raw_255", [0, 128, 255]),
         ("set_power", "raw_255", [0, 128, 255]),
-        ("set_rf_power", "watts", [0, 50, 100]),
-        ("set_power", "watts", [0, 50, 100]),
+        # MOR-2998: the FTX-1 profile floor (5 W) clamps the bottom of
+        # the range in admission — 0 rides up to 5.
+        ("set_rf_power", "watts", [5, 50, 100]),
+        ("set_power", "watts", [5, 50, 100]),
     ],
 )
 async def test_http_normalized_level_marker_reaches_native_effects(
@@ -1694,8 +1696,11 @@ async def test_http_normalized_level_marker_reaches_native_effects(
         ("set_af_level", "raw_255", [1, 255]),
         ("set_rf_power", "raw_255", [1, 255]),
         ("set_power", "raw_255", [1, 255]),
-        ("set_rf_power", "watts", [1, 100]),
-        ("set_power", "watts", [1, 100]),
+        # MOR-2998: an int below the FTX-1 floor rides up to 5 W in
+        # admission; the JSON-type dispatch itself (int = watts,
+        # float = normalized) is unchanged.
+        ("set_rf_power", "watts", [5, 100]),
+        ("set_power", "watts", [5, 100]),
     ],
 )
 async def test_http_untagged_level_json_type_compatibility(

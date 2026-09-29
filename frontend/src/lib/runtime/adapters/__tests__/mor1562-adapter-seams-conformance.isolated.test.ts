@@ -287,13 +287,21 @@ describe('panel-adapters.ts derive*Props over the live ic7300 fixture (MOR-1562)
 
   it('deriveAntennaProps: honest rx_antenna refusal — capability-not-declared', () => {
     expect(IC7300_CAPABILITIES.capabilities).not.toContain('rx_antenna');
+    // MOR-2978: this stand never observed txAntenna/rxAntenna1
+    // (`observed: false`, `availability: "missing"` in the fixture) — the
+    // old `?? 1` / `?? false` presented those defaults as confirmed.
     expect(deriveAntennaProps()).toEqual({
-      txAntenna: 1, rxAnt: false, antennaCount: 1, hasRxAntenna: false,
+      txAntenna: null, rxAnt: null, antennaCount: 1, hasRxAntenna: false,
     });
   });
 
   it('deriveScanProps: exact idle-scan reading', () => {
-    expect(deriveScanProps()).toEqual({ scanning: false, scanType: 0, scanResumeMode: 0 });
+    expect(IC7300_STATE.fieldStatus?.scanning?.observed).toBe(false);
+    // MOR-2979: STOP has no visibility gate, so the seam reports
+    // knownness — here `false`, the idle reading is not yet observed.
+    expect(deriveScanProps()).toEqual({
+      scanning: false, scanType: 0, scanResumeMode: 0, scanningKnown: false,
+    });
   });
 
   it('deriveCwProps: mode-gated APF/TPF disable + honest capability catalog for the live USB reading', () => {
@@ -319,7 +327,7 @@ describe('panel-adapters.ts derive*Props over the live ic7300 fixture (MOR-1562)
     expect(IC7300_STATE.fieldStatus?.ritTx?.observed).toBe(false);
     expect(deriveRitXitProps()).toEqual({
       ritActive: false, ritOffset: Number.NaN, xitActive: false, xitOffset: Number.NaN,
-      hasRit: false, hasXit: false,
+      hasRit: false, hasXit: false, ritKnown: false, xitKnown: false,
     });
   });
 });

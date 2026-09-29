@@ -35,8 +35,12 @@
 
   // Destructure for template readability
   let currentMode = $derived(p.currentMode);
+  // MOR-2978: `''` is the unread sentinel (MOR-2673) — the mode keys expose
+  // the confirmed selection and stay disabled until a mode is observed.
+  let modeKnown = $derived(currentMode !== '');
   let modes = $derived(p.modes);
   let dataMode = $derived(p.dataMode);
+  let dataModeKnown = $derived(dataMode !== null);
   let hasDataMode = $derived(p.hasDataMode);
   let dataModeCount = $derived(p.dataModeCount ?? 0);
   let dataModeLabels = $derived(p.dataModeLabels ?? { '0': 'OFF', '1': 'D1', '2': 'D2', '3': 'D3' });
@@ -91,6 +95,8 @@
              `armed`. -->
         <HardwareButton
           active={currentMode === mode}
+          pressed={modeKnown ? currentMode === mode : undefined}
+          disabled={!modeKnown}
           indicator="edge-left"
           color="cyan"
           title={modeShortcut(mode)}
@@ -110,14 +116,16 @@
     {#if hasDataMode && dataOptions.length === 2}
       {@const dataArmedId = `${dataModeIdBase}-toggle`}
       <HardwareButton
-        active={dataMode > 0}
+        active={(dataMode ?? 0) > 0}
+        pressed={dataMode === null ? undefined : dataMode > 0}
+        disabled={!dataModeKnown}
         indicator="edge-left"
         color="red"
         title={dataShortcut}
         shortcutHint={dataShortcut}
         armed={dataModeArmed.armed}
         describedBy={dataModeArmed.armed ? dataArmedId : undefined}
-        onclick={() => onDataModeChange(dataMode > 0 ? 0 : 1)}
+        onclick={() => onDataModeChange(dataMode !== null && dataMode > 0 ? 0 : 1)}
       >
         DATA
       </HardwareButton>
@@ -131,7 +139,9 @@
           {@const isDataArmed = dataModeArmed.armed && dataModeArmed.value === option.value}
           {@const dataArmedId = `${dataModeIdBase}-${option.value}`}
           <HardwareButton
-            active={dataMode === option.value}
+            active={(dataMode ?? 0) === option.value}
+            pressed={dataMode === null ? undefined : dataMode === option.value}
+            disabled={!dataModeKnown}
             indicator="edge-left"
             color="cyan"
             title={dataShortcut}

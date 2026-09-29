@@ -103,6 +103,11 @@
   let currentMode = $derived(p.currentMode);
   let currentFilter = $derived(p.currentFilter);
   let filterShape = $derived(p.filterShape);
+  // MOR-2978: `null` is the unread sentinel for both (`toFilterProps`) —
+  // the FIL and SHARP/SOFT keys expose the confirmed selection and stay
+  // disabled until observed.
+  let filterKnown = $derived(currentFilter !== null);
+  let shapeKnown = $derived(filterShape !== null);
   // MOR-1503: only radios with a REAL filter_shape command (Icom family,
   // e.g. IC-7300) show the SHARP/SOFT shape buttons. The FTX-1 declares
   // no `filter_shape` capability — rendering the buttons anyway is a dead
@@ -340,8 +345,13 @@
   let ifShiftFeedback = $derived(getIfShiftControlFeedback());
   let pbtInnerFeedback = $derived(getPbtInnerHzControlFeedback());
   let pbtOuterFeedback = $derived(getPbtOuterHzControlFeedback());
+  // MOR-1691: pointer drags commit ON RELEASE — every intermediate pointer
+  // candidate stays the gesture-local draft and exactly one request leaves
+  // the row at pointerup, bounding the dispatch count per gesture instead
+  // of streaming a per-move CAT write. Keyboard/reset keep their debounce.
   const passbandPolicy = createBipolarContinuousScalarPolicy({
-    debounceMs: 50, describeTarget: (value) => `${value} ${t('core.filter.unit.hz')}`,
+    debounceMs: 50, pointerDispatch: 'on-release',
+    describeTarget: (value) => `${value} ${t('core.filter.unit.hz')}`,
   });
   function passbandPendingTarget(feedback: Readonly<CommandScalarFeedback>): number | null {
     return feedback.busy && feedback.target !== null ? feedback.target : null;
@@ -669,6 +679,8 @@
           {@const filterArmedId = `${filterArmedIdBase}-${index + 1}`}
           <HardwareButton
             active={currentFilter === index + 1}
+            pressed={filterKnown ? currentFilter === index + 1 : undefined}
+            disabled={!filterKnown}
             indicator="edge-left"
             color="cyan"
             title={cycleFilterShortcut}
@@ -862,6 +874,8 @@
                 data-armed={isShapeArmed ? 'true' : undefined}
                 data-command-phase={shapePhase}
                 aria-busy={isShapeArmed}
+                aria-pressed={shapeKnown ? filterShape === shapeChoice.value : undefined}
+                disabled={!shapeKnown}
                 aria-describedby={isShapeArmed ? shapeArmedId : undefined}
                 onclick={() => onFilterShapeChange?.(shapeChoice.value)}
               >

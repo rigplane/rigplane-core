@@ -28,6 +28,7 @@ from rigplane.core.tx_observation import (
     normalize_observed_ptt,
 )
 from rigplane.core.tx_target import KnownTxTarget, TxTarget, UnknownTxTarget
+from rigplane.core.types import ctcss_booleans_for_tone_squelch_type
 from rigplane.runtime.meter_cal import interpolate_meter
 
 from .parser import CatFormatError, CatParseError
@@ -195,10 +196,12 @@ _CW_SPOT = FieldPath.global_("slow_state", "cw_spot")
 #   P2 code 2 (ENC ON / DEC ON,  "TSQL") -> repeater_tone=True,  repeater_tsql=True
 #   P2 codes 3/4/5 (DCS / PR FREQ / REV TONE) -> both None (observed, but the
 #       two-boolean vocabulary has no representation for them; publishing
-#       False would invent OFF while the radio is in DCS — MOR-2572). The
-#       store's existing "None = not known" semantics carry the value, so the
-#       web schema's ``bool | None`` and the frontend's ``boolOrUndef`` render
-#       it as an unlit tone-mode with no further change.
+#       False would invent OFF while the radio is in DCS — MOR-2572).
+# Since MOR-2969 the code's meaning comes from the profile's
+# [tone_squelch_types] table: the read publishes that type on
+# ``operator_controls.tone_squelch_type`` and derives the two booleans from it
+# (core/types.py: ctcss_booleans_for_tone_squelch_type), which gives the
+# mapping above.
 # Both paths are emitted every cycle (including the False/None derivations)
 # so the store always reflects current state. Per-receiver ``operator_toggles`` like
 # nb/nr/auto_notch, emitted in the slow-control lane; CT0 and CT1 are read
@@ -209,6 +212,12 @@ _MAIN_REPEATER_TONE = FieldPath.receiver("main", "operator_toggles", "repeater_t
 _MAIN_REPEATER_TSQL = FieldPath.receiver("main", "operator_toggles", "repeater_tsql")
 _SUB_REPEATER_TONE = FieldPath.receiver("sub", "operator_toggles", "repeater_tone")
 _SUB_REPEATER_TSQL = FieldPath.receiver("sub", "operator_toggles", "repeater_tsql")
+_MAIN_TONE_SQUELCH_TYPE = FieldPath.receiver(
+    "main", "operator_controls", "tone_squelch_type"
+)
+_SUB_TONE_SQUELCH_TYPE = FieldPath.receiver(
+    "sub", "operator_controls", "tone_squelch_type"
+)
 # CTCSS tone FREQUENCY (MOR-458). The FTX-1 CAT ``CN`` "CTCSS TONE FREQUENCY"
 # command (FTX-1_CAT_OM_ENG_2508-C) reports each receiver's tone (P1=0 MAIN,
 # P1=1 SUB, P2=0 CTCSS) as a 0-49 INDEX into the standard 50-tone EIA chart
@@ -1325,10 +1334,27 @@ class YaesuObservationAdapter:
         # SUB read rides the ``dual_rx`` capability. Each emission is gated
         # independently by per-field policy.
         if self._has_runtime_capability("sql_type"):
-            ct_routes = ((0, "main", _MAIN_REPEATER_TONE, _MAIN_REPEATER_TSQL),)
+            ct_routes = (
+                (
+                    0,
+                    "main",
+                    _MAIN_REPEATER_TONE,
+                    _MAIN_REPEATER_TSQL,
+                    _MAIN_TONE_SQUELCH_TYPE,
+                ),
+            )
             if self._has_runtime_capability("dual_rx"):
-                ct_routes += ((1, "sub", _SUB_REPEATER_TONE, _SUB_REPEATER_TSQL),)
-            for receiver, label, tone_path, tsql_path in ct_routes:
+                ct_routes += (
+                    (
+                        1,
+                        "sub",
+                        _SUB_REPEATER_TONE,
+                        _SUB_REPEATER_TSQL,
+                        _SUB_TONE_SQUELCH_TYPE,
+                    ),
+                )
+            types = self.radio.profile.tone_squelch_types or {}
+            for receiver, label, tone_path, tsql_path, type_path in ct_routes:
 
                 async def _remake_sql_type() -> int:
                     return await self.radio.read_sql_type(receiver)
@@ -1337,16 +1363,13 @@ class YaesuObservationAdapter:
                     f"{label}.sql_type",
                     self.radio.read_sql_type(receiver),
                     _remake_sql_type,
-                    paths=(tone_path, tsql_path),
+                    paths=(tone_path, tsql_path, type_path),
                 )
                 if ok and sql_type is not None:
-                    # CT codes 3/4/5 (DCS / PR FREQ / REV TONE) sit outside
-                    # the two-boolean vocabulary: publish None ("observed,
-                    # not known") on BOTH axes instead of an invented False
-                    # pair (MOR-2572).
-                    representable = sql_type in (0, 1, 2)
-                    tone_value = sql_type in (1, 2) if representable else None
-                    tsql_value = sql_type == 2 if representable else None
+                    tone_squelch_type = types.get(sql_type)
+                    tone_value, tsql_value = ctcss_booleans_for_tone_squelch_type(
+                        tone_squelch_type
+                    )
                     if self._can_poll(tone_path):
                         observations.append(
                             adapter.observation(
@@ -1360,6 +1383,16 @@ class YaesuObservationAdapter:
                             adapter.observation(
                                 tsql_path,
                                 tsql_value,
+                                native_id="read_sql_type",
+                            )
+                        )
+                    if self._can_poll(type_path):
+                        observations.append(
+                            adapter.observation(
+                                type_path,
+                                None
+                                if tone_squelch_type is None
+                                else tone_squelch_type.value,
                                 native_id="read_sql_type",
                             )
                         )

@@ -69,6 +69,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ..core.types import RepeaterShiftDirection
 from ._codec import _bcd_byte, bcd_encode_value
 from ._frame import (
     CONTROLLER_ADDR,
@@ -151,6 +152,71 @@ def get_split(
 ) -> bytes:
     """Build CI-V command to read split state (0x0F)."""
     return _build_from_map(cmd_map, "get_split", to_addr=to_addr, from_addr=from_addr)
+
+
+# Repeater shift direction rides the split command, 0F (MOR-2930). IC-705 CI-V
+# Reference Guide (A7560-8EX-1 and A7560-8EX-6) p.3: 0F sets 10 = simplex,
+# 11 = DUP−, 12 = DUP+, and reads 00/01 = split OFF/ON, 11 = DUP−, 12 = DUP+.
+_REPEATER_SHIFT_SET_CODES: dict[int, int] = {
+    RepeaterShiftDirection.SIMPLEX: 0x10,
+    RepeaterShiftDirection.MINUS: 0x11,
+    RepeaterShiftDirection.PLUS: 0x12,
+}
+_REPEATER_SHIFT_READBACK: dict[int, RepeaterShiftDirection] = {
+    0x00: RepeaterShiftDirection.SIMPLEX,
+    0x01: RepeaterShiftDirection.SIMPLEX,
+    0x11: RepeaterShiftDirection.MINUS,
+    0x12: RepeaterShiftDirection.PLUS,
+}
+
+
+@expose_command_key(lambda cmd_map: "get_repeater_shift")
+@require_cmd_map
+def get_repeater_shift(
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
+) -> bytes:
+    """Build CI-V command to read the repeater shift direction (0x0F)."""
+    return _build_from_map(
+        cmd_map, "get_repeater_shift", to_addr=to_addr, from_addr=from_addr
+    )
+
+
+@expose_command_key(lambda cmd_map: "set_repeater_shift")
+@require_cmd_map
+def set_repeater_shift(
+    direction: int,
+    to_addr: int,
+    from_addr: int = CONTROLLER_ADDR,
+    *,
+    cmd_map: CommandMap,
+) -> bytes:
+    """Set the repeater shift direction: SIMPLEX, MINUS or PLUS.
+
+    Raises ``ValueError`` for any other value. ``ARS`` is one: the guide's
+    0F rows have no automatic-repeater-shift code.
+    """
+    code = _REPEATER_SHIFT_SET_CODES.get(direction)
+    if isinstance(direction, bool) or code is None:
+        raise ValueError(f"no 0F code for repeater shift direction {direction!r}")
+    return _build_from_map(
+        cmd_map,
+        "set_repeater_shift",
+        to_addr=to_addr,
+        from_addr=from_addr,
+        data=bytes([code]),
+    )
+
+
+def parse_repeater_shift_response(data: bytes) -> RepeaterShiftDirection | None:
+    """Return the shift direction a 0F reply reports, or ``None``.
+
+    A split-ON reply (01) reports SIMPLEX, an inference from the table's
+    shape: the reply is one byte, so a radio reading split is not reading
+    duplex.
+    """
+    if not data:
+        return None
+    return _REPEATER_SHIFT_READBACK.get(data[0])
 
 
 @expose_command_key(lambda cmd_map: "get_tuning_step")

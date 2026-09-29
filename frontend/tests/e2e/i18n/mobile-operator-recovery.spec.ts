@@ -50,8 +50,8 @@ const capture = process.env.RP_MOBILE_OBSERVED_CAPTURE
 
 test.use({ hasTouch: true, isMobile: true });
 
-async function prepare(page: Page) {
-  const selectedState = capture?.state.body ?? state;
+async function prepare(page: Page, stateOverride?: Omit<ServerState, 'sub'>) {
+  const selectedState = capture?.state.body ?? stateOverride ?? state;
   const writes: string[] = [];
   await page.addInitScript((value) => {
     if (!localStorage.getItem('rigplane:workspace')) {
@@ -362,7 +362,241 @@ test('portrait buttons carry 16px labels and 44px touch targets (MOR-2816)', asy
   await auditPortrait(page, info, 'rf');
   await page.getByRole('tab', { name: 'SCOPE', exact: true }).click();
   await expect(page.locator('#m-chip-panel-scope')).toBeVisible();
+  // MOR-2895: the desktop toolbar's radio-held row now lives in this tab —
+  // the audit below must find and measure its keys, not only the four
+  // screen keys. The mock radio declares no dual_rx, so MAIN/SUB stays
+  // honestly absent; the mock leaves the scope leaves unread, so the row
+  // renders unlit with empty reserved values.
+  const scopePanel = page.locator('#m-chip-panel-scope');
+  await expect(scopePanel.locator('[data-testid="scope-controls-surface"]')).toBeVisible();
+  await expect(scopePanel.locator('[data-testid="scope-mode-row-0"]')).toBeVisible();
+  await expect(scopePanel.locator('[data-testid="scope-mode-row-1"]')).toBeVisible();
+  await expect(scopePanel.locator('[data-testid="scope-span"]')).toBeVisible();
+  await expect(scopePanel.locator('[data-testid="scope-ref"]')).toBeVisible();
+  await expect(scopePanel.locator('[data-testid="scope-hold"]')).toBeVisible();
+  await expect(scopePanel.locator('[data-testid="scope-more"]')).toBeVisible();
   await auditPortrait(page, info, 'scope');
+  expect(writes).toEqual([]);
+});
+
+// MOR-2987 (owner, 2026-09-28): the SCOPE tab's ⋯ menu was an anchored
+// popover with bare-text options ("unclear what to press"). It is now a
+// full-width BottomSheet: one labelled setting per row, pressable
+// HardwareButton keys (selected lit cyan), toggles with labelled rows.
+// The sheet is modal above the tuning strip (backdrop + higher z), inside
+// the viewport, with no wrapping at 360 px. MOR-2895's popover pose is
+// retired with the popover; the row controls it covered are pinned above.
+const SCOPE_LEAVES = [
+  'mode', 'edge', 'span', 'speed', 'hold', 'refDb', 'dual', 'receiver',
+  'duringTx', 'centerType', 'vbwNarrow', 'rbw',
+] as const;
+
+function observedPath(path: string) {
+  return {
+    storePath: path, observed: true,
+    freshness: 'fresh' as const, availability: 'available' as const,
+    lastObservedMonotonic: 0,
+  };
+}
+
+// Every `scopeControls` leaf observed (During TX and VBW narrow ON) so the
+// sheet renders its full radio-held set with lit toggles to measure;
+// `main.nb = true` lights the header's NB chip for the accent comparison.
+const scopeReadState = {
+  ...state,
+  main: { ...state.main, nb: true },
+  scopeControls: {
+    receiver: 0, dual: false, mode: 0, span: 1, edge: 1, hold: true, refDb: -5,
+    speed: 1, duringTx: true, centerType: 1, vbwNarrow: true, rbw: 1, fixedEdge: null,
+  },
+  fieldStatus: {
+    ...state.fieldStatus,
+    ...Object.fromEntries(SCOPE_LEAVES.map((leaf) => [`scopeControls.${leaf}`, observedPath(`scopeControls.${leaf}`)])),
+  },
+} satisfies Omit<ServerState, 'sub'>;
+
+test('SCOPE ⋯ sheet: full-width modal with one setting per row and pressable keys (MOR-2987)', async ({ page }, info) => {
+  const writes = await prepare(page, scopeReadState);
+  for (const width of [375, 360]) {
+    await page.setViewportSize({ width, height: 812 });
+    await page.goto('/');
+    await settled(page);
+    await page.getByRole('tab', { name: 'SCOPE', exact: true }).click();
+    await expect(page.locator('#m-chip-panel-scope')).toBeVisible();
+    await page.getByTestId('scope-more').click();
+    const sheet = page.getByTestId('scope-more-sheet');
+    await expect(sheet).toBeVisible();
+    await expect(page.getByTestId('scope-more-panel')).toHaveCount(0);
+    const audit = await page.evaluate(() => {
+      const sheetEl = document.querySelector<HTMLElement>('[data-testid="scope-more-sheet"]');
+      const modal = sheetEl?.closest<HTMLElement>('.m-sheet');
+      const backdrop = document.querySelector<HTMLElement>('.m-sheet-backdrop');
+      const strip = document.querySelector<HTMLElement>('.m-tuning-strip');
+      if (!sheetEl || !modal || !backdrop || !strip) {
+        throw new Error('sheet, modal, backdrop or tuning strip not found');
+      }
+      // MOR-2987 correction 2: a key paints its background as a
+      // `linear-gradient(...)` in `background-image`, so its own
+      // `backgroundColor` computes to transparent black. The effective
+      // background is the first usable layer: the key's own
+      // `backgroundColor` when its alpha > 0, else the gradient stop
+      // with the LOWEST contrast against the text, else the nearest
+      // ancestor with an opaque `backgroundColor`. Colours may
+      // serialize as `rgb()`/`rgba()` or `color(srgb …)`; anything
+      // else throws instead of silently reading as black.
+      const parseColor = (css: string): [number, number, number, number] => {
+        const s = css.trim();
+        const rgb = s.match(/^rgba?\(([^)]+)\)$/);
+        if (rgb) {
+          const [r, g, b, a] = rgb[1]!.split(',').map(Number);
+          const alpha = a === undefined ? 1 : a;
+          if ([r, g, b, alpha].some((v) => v === undefined || Number.isNaN(v!))) {
+            throw new Error(`unparseable colour: ${css}`);
+          }
+          return [r!, g!, b!, alpha!];
+        }
+        const srgb = s.match(/^color\(\s*srgb\s+([^)]+)\)$/);
+        if (srgb) {
+          const [channels, alpha] = srgb[1]!.split('/').map((part) => part.trim());
+          const [r, g, b] = channels!.split(/\s+/).map(Number);
+          const a = alpha === undefined || alpha === '' ? 1 : Number(alpha);
+          if ([r, g, b, a].some((v) => v === undefined || Number.isNaN(v!))) {
+            throw new Error(`unparseable colour: ${css}`);
+          }
+          return [r! * 255, g! * 255, b! * 255, a!];
+        }
+        throw new Error(`unparseable colour: ${css}`);
+      };
+      const lum = (css: string): number => {
+        const [r, g, b] = parseColor(css).slice(0, 3).map((v) => {
+          const s = v / 255;
+          return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+        });
+        return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+      };
+      const contrast = (fg: string, bg: string): number => {
+        const [hi, lo] = [lum(fg), lum(bg)].sort((a, b) => b - a);
+        return (hi! + 0.05) / (lo! + 0.05);
+      };
+      const effectiveBackground = (el: HTMLElement, fg: string): string => {
+        const style = getComputedStyle(el);
+        if (parseColor(style.backgroundColor)[3]! > 0) return style.backgroundColor;
+        const stops = style.backgroundImage.match(/rgba?\([^)]+\)|color\(\s*srgb\s+[^)]+\)/g) ?? [];
+        if (stops.length > 0) {
+          return stops.reduce((worst, stop) =>
+            (contrast(fg, stop) < contrast(fg, worst) ? stop : worst));
+        }
+        let ancestor = el.parentElement;
+        while (ancestor) {
+          const bg = getComputedStyle(ancestor).backgroundColor;
+          if (parseColor(bg)[3]! > 0) return bg;
+          ancestor = ancestor.parentElement;
+        }
+        throw new Error('no opaque background found for a sheet key');
+      };
+      const rows = [...sheetEl.querySelectorAll<HTMLElement>('.scope-sheet-row')].map((row) => {
+        const label = row.querySelector<HTMLElement>('.scope-sheet-label');
+        const keys = [...row.querySelectorAll<HTMLElement>('button')].map((el) => {
+          const rect = el.getBoundingClientRect();
+          const style = getComputedStyle(el);
+          const fg = style.color;
+          const bg = effectiveBackground(el, fg);
+          return {
+            testid: el.getAttribute('data-testid') ?? el.getAttribute('aria-label') ?? '',
+            top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right,
+            font: parseFloat(style.fontSize), height: rect.height,
+            active: el.getAttribute('data-active'), surface: el.getAttribute('data-surface'),
+            indicator: el.getAttribute('data-indicator-style'),
+            color: el.getAttribute('data-indicator-color'),
+            border: parseFloat(style.borderTopWidth),
+            role: el.getAttribute('role'), checked: el.getAttribute('aria-checked'),
+            fg, bg,
+            disabled: (el as HTMLButtonElement).disabled === true,
+            ariaDisabled: el.getAttribute('aria-disabled'),
+            contrast: contrast(fg, bg),
+          };
+        });
+        return {
+          testid: row.getAttribute('data-testid') ?? '',
+          label: label?.textContent ?? '',
+          labelFont: label ? parseFloat(getComputedStyle(label).fontSize) : 0,
+          tops: [...new Set(keys.map((k) => Math.round(k.top)))],
+          keys,
+        };
+      });
+      return {
+        viewport: { width: innerWidth, height: innerHeight },
+        sheet: modal.getBoundingClientRect().toJSON(),
+        sheetZ: getComputedStyle(modal).zIndex,
+        stripZ: getComputedStyle(strip).zIndex,
+        backdrop: getComputedStyle(backdrop).backgroundColor,
+        title: document.querySelector('.m-sheet-title')?.textContent ?? '',
+        rows,
+      };
+    });
+    writeFileSync(info.outputPath(`mor-2987-sheet-${width}.json`), JSON.stringify(audit, null, 2));
+    await info.attach(`mor-2987-sheet-${width}`, { body: JSON.stringify(audit), contentType: 'application/json' });
+    const stage = `${width} px`;
+    // A full-width modal: edge to edge, inside the viewport, above the strip.
+    expect(audit.title, `${stage}: sheet title`).toBe('SCOPE');
+    expect(audit.sheet.left, `${stage}: sheet reaches the left edge`).toBeLessThanOrEqual(1);
+    expect(audit.sheet.right, `${stage}: sheet reaches the right edge`)
+      .toBeGreaterThanOrEqual(audit.viewport.width - 1);
+    expect(audit.sheet.top, `${stage}: sheet top in viewport`).toBeGreaterThanOrEqual(0);
+    expect(audit.sheet.bottom, `${stage}: sheet bottom in viewport`)
+      .toBeLessThanOrEqual(audit.viewport.height);
+    expect(Number(audit.sheetZ), `${stage}: sheet layers above the tuning strip`)
+      .toBeGreaterThan(Number(audit.stripZ));
+    expect(audit.backdrop, `${stage}: visible backdrop, not transparent`).not.toBe('rgba(0, 0, 0, 0)');
+    // One setting per row; the mock radio has no dual_rx, so DUAL is honestly absent.
+    expect(audit.rows.map((r) => r.testid), `${stage}: one row per setting`).toEqual([
+      'scope-mode', 'scope-centerType', 'scope-rbw', 'scope-speed',
+      'scope-duringTx-row', 'scope-vbwNarrow-row',
+    ]);
+    // Inactive controls are exempt from the contrast floor; every skipped
+    // key must really be disabled (pinned by the single assertion below).
+    const skipped: string[] = [];
+    for (const row of audit.rows) {
+      const name = `${stage} ${row.testid}`;
+      expect(row.label.length, `${name} labelled`).toBeGreaterThan(0);
+      expect(row.labelFont, `${name} label distinct from 16px options`).toBeLessThan(16);
+      expect(row.tops, `${name} every option shares one line box`).toHaveLength(1);
+      expect(row.keys.length, `${name} has keys`).toBeGreaterThan(0);
+      for (const key of row.keys) {
+        const keyName = `${name} "${key.testid}"`;
+        expect.soft(key.top, `${keyName} top in viewport`).toBeGreaterThanOrEqual(0);
+        expect.soft(key.bottom, `${keyName} bottom in viewport`).toBeLessThanOrEqual(audit.viewport.height);
+        expect.soft(key.left, `${keyName} left in viewport`).toBeGreaterThanOrEqual(0);
+        expect.soft(key.right, `${keyName} right in viewport`).toBeLessThanOrEqual(audit.viewport.width);
+        expect.soft(key.height, `${keyName} height`).toBeGreaterThanOrEqual(44);
+        expect.soft(key.font, `${keyName} font-size`).toBeGreaterThanOrEqual(16);
+        expect.soft(key.surface, `${keyName} hardware outline`).toBe('hardware');
+        expect.soft(key.border, `${keyName} visible border`).toBeGreaterThan(0);
+        if (key.active !== 'true') {
+          if (key.disabled || key.ariaDisabled === 'true') {
+            skipped.push(key.testid);
+            continue;
+          }
+          expect.soft(key.contrast, `${keyName} unselected contrast (fg ${key.fg} on ${key.bg})`)
+            .toBeGreaterThanOrEqual(4.5);
+        }
+      }
+    }
+    const skippedKeys = audit.rows.flatMap((r) => r.keys).filter((k) => skipped.includes(k.testid));
+    expect(skippedKeys.every((k) => k.disabled || k.ariaDisabled === 'true'),
+      `${stage}: every skipped key is really disabled`).toBe(true);
+    // The All-modes grammar: selected keys lit cyan; toggles show their state.
+    const byId = (id: string) => audit.rows.flatMap((r) => r.keys).find((k) => k.testid === id)!;
+    expect(byId('scope-mode-0').active, `${stage}: CTR lit`).toBe('true');
+    expect(byId('scope-mode-0').color, `${stage}: CTR cyan`).toBe('cyan');
+    expect(byId('scope-mode-1').active, `${stage}: FIX unlit`).toBe('false');
+    expect(byId('scope-duringTx-on').active, `${stage}: During TX on`).toBe('true');
+    expect(byId('scope-duringTx-off').active, `${stage}: During TX off unlit`).toBe('false');
+    expect(audit.rows.find((r) => r.testid === 'scope-duringTx-row')!.label).toBe('During TX');
+    // Dismiss through the backdrop; opening the menu writes nothing.
+    await page.locator('.m-sheet-backdrop').click({ position: { x: 10, y: 10 } });
+    await expect(sheet).toHaveCount(0);
+  }
   expect(writes).toEqual([]);
 });
 

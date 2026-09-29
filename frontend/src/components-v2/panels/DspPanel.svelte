@@ -13,9 +13,10 @@
     isNrActive,
   } from './dsp-panel-logic';
 
+  import { runtime } from '$lib/runtime/frontend-runtime';
   import {
     deriveDspProps, getDspHandlers, getAutoNotchArmed, getManualNotchArmed,
-    getDspControlFeedback,
+    getDspControlFeedback, projectDspControlFeedbackToDisplay,
   } from '$lib/runtime/adapters/panel-adapters';
   import {
     createContinuousScalar,
@@ -59,6 +60,14 @@
     autoNotchChoicePending || manualNotchChoicePending || offNotchChoicePending,
   );
 
+  // MOR-2979: the NB/NR/NOTCH/A-NOTCH keys expose the confirmed on/off
+  // and stay disabled until observed (`toDspProps`), same seam as #3927's
+  // choice keys. The MOR-2932 scalar feedback below is untouched.
+  let nbKnown = $derived(p.nbKnown ?? true);
+  let nrKnown = $derived(p.nrKnown ?? true);
+  let manualNotchKnown = $derived(p.manualNotchKnown ?? true);
+  let autoNotchKnown = $derived(p.autoNotchKnown ?? true);
+
   let nrMode = $derived(p.nrMode);
   // MOR-1735: this fallback panel must render the same projection contract as
   // the semantic DSP surface.  The legacy shape is only retained for older
@@ -80,7 +89,6 @@
   );
   let nbActive = $derived(p.nbActive);
   let nbLevel = $derived(p.nbLevel);
-  let nbDepth = $derived(p.nbDepth ?? 0);
   let nbWidth = $derived(p.nbWidth ?? 0);
   // MOR-502: NB level scale — IC-7610 reports a 0-255 control range (percent
   // display); FTX-1 has none → native 0-10 raw integer (matches LCD skin).
@@ -127,6 +135,15 @@
   let nbWidthFeedback = $derived(getDspControlFeedback('nbWidth'));
   let notchPositionFeedback = $derived(getDspControlFeedback('notchFilter'));
   let agcTimeFeedback = $derived(getDspControlFeedback('agcTimeConstant'));
+  // MOR-2932: NR level and NB depth ride the shared command-feedback scalar
+  // like their Standard twins — raw feedback projected to display units
+  // through the same adapter pair the semantic host is fed with.
+  let nrLevelFeedback = $derived(projectDspControlFeedbackToDisplay(
+    'nrLevel', getDspControlFeedback('nrLevel'), runtime.caps,
+  ));
+  let nbDepthFeedback = $derived(projectDspControlFeedbackToDisplay(
+    'nbDepth', getDspControlFeedback('nbDepth'), runtime.caps,
+  ));
   const hbarPolicy = (describeTarget: (value: number) => string) =>
     createHBarContinuousScalarPolicy({ preview: 'optimistic', debounceMs: 50, describeTarget });
   const nbLevelBinding = createContinuousScalar(
@@ -168,6 +185,32 @@
       enabled: showAgcTime && agcTimeFeedback.availability === 'available', request: onAgcTimeChange,
     }),
     createDiscreteContinuousScalarPolicy({ debounceMs: 50, describeTarget: formatAgcTime }),
+  );
+  // MOR-2932: the NR domain is the projection's own (legacy 0..15 only when
+  // the radio publishes nothing); a null domain keeps the eager binding on
+  // the legacy range while the gate below renders no slider for it.
+  const nrLevelBinding = createContinuousScalar(
+    () => ({
+      evidence: 'command-feedback', feedback: nrLevelFeedback, command: 'set_nr_level',
+      domain: nrLevelDomain === null
+        ? { min: 0, max: 15, step: 1, defaultValue: null, fineStepDivisor: 10 }
+        : {
+          min: nrLevelDomain.min, max: nrLevelDomain.max, step: nrLevelDomain.step,
+          defaultValue: null, fineStepDivisor: 10,
+        },
+      enabled: showNr && nrLevelAdjustable && nrLevelFeedback.availability === 'available',
+      request: onNrLevelChange,
+    }),
+    createDiscreteContinuousScalarPolicy({ debounceMs: 50, describeTarget: String }),
+  );
+  const nbDepthBinding = createContinuousScalar(
+    () => ({
+      evidence: 'command-feedback', feedback: nbDepthFeedback, command: 'set_nb_depth',
+      domain: { min: 1, max: 10, step: 1, defaultValue: null, fineStepDivisor: 10 },
+      enabled: showNb && hasNbDepth && nbDepthFeedback.availability === 'available',
+      request: onNbDepthChange,
+    }),
+    createDiscreteContinuousScalarPolicy({ debounceMs: 50, describeTarget: String }),
   );
 
   type HBarDspLane = 'nbLevel' | 'nbWidth' | 'notchPosition';
@@ -284,19 +327,6 @@
     onNrModeChange(n);
   }
 
-  function handleNrLevelChange(value: number): void {
-    const domain = nrLevelDomain;
-    if (
-      !nrLevelAdjustable
-      || domain === null
-      || !Number.isSafeInteger(value)
-      || value < domain.min
-      || value > domain.max
-      || (value - domain.origin) % domain.step !== 0
-    ) return;
-    onNrLevelChange(value);
-  }
-
   function handleNotchModalMode(v: string | number): void {
     const m = v as 'off' | 'auto' | 'manual';
     onNotchModeChange(m);
@@ -325,6 +355,8 @@
       consumeHiddenStatus(notchPositionBinding, notchPositionStatus);
     }
     if (openModal !== 'agc') consumeHiddenStatus(agcTimeBinding);
+    if (openModal !== 'nr') consumeHiddenStatus(nrLevelBinding);
+    if (openModal !== 'nb' || !hasNbDepth) consumeHiddenStatus(nbDepthBinding);
   });
 
   onDestroy(() => {
@@ -332,6 +364,8 @@
     nbWidthBinding.destroy();
     notchPositionBinding.destroy();
     agcTimeBinding.destroy();
+    nrLevelBinding.destroy();
+    nbDepthBinding.destroy();
   });
 
   /* LONG_PRESS_MS imported from dsp-panel-logic */
@@ -387,6 +421,8 @@
       <div class="dsp-btn-wrap" bind:this={nbAnchorEl}>
         <HardwareButton
           active={nbActive}
+          pressed={nbKnown ? nbActive : undefined}
+          disabled={!nbKnown}
           indicator="edge-left"
           color="orange"
           title="NB — click to toggle; long-press for settings"
@@ -403,6 +439,8 @@
       <div class="dsp-btn-wrap" bind:this={nrAnchorEl}>
         <HardwareButton
           active={nrActive}
+          pressed={nrKnown ? nrActive : undefined}
+          disabled={!nrKnown}
           indicator="edge-left"
           color="cyan"
           title="NR — click to toggle; long-press for settings"
@@ -420,6 +458,8 @@
       <div class="dsp-btn-wrap" bind:this={notchAnchorEl}>
         <HardwareButton
           active={notchMode === 'manual'}
+          pressed={manualNotchKnown ? notchMode === 'manual' : undefined}
+          disabled={!manualNotchKnown}
           indicator="edge-left"
           color="cyan"
           title="Manual Notch — click to toggle; long-press for settings"
@@ -442,6 +482,8 @@
       <div class="dsp-btn-wrap">
         <HardwareButton
           active={notchMode === 'auto'}
+          pressed={autoNotchKnown ? notchMode === 'auto' : undefined}
+          disabled={!autoNotchKnown}
           indicator="edge-left"
           color="green"
           title="Auto Notch"
@@ -500,15 +542,12 @@
     {#if nrLevel !== null && nrLevelDomain !== null}
       {#if nrLevelAdjustable}
         <ValueControl
+          {...feedbackIntegratedControl}
           label="NR Level"
-          value={nrLevel}
-          min={nrLevelDomain.min}
-          max={nrLevelDomain.max}
-          step={nrLevelDomain.step}
+          binding={nrLevelBinding}
           renderer="discrete"
           tickStyle="notch"
           accentColor="var(--v2-accent-cyan)"
-          onChange={handleNrLevelChange}
           variant="hardware-illuminated"
         />
       {:else}
@@ -525,7 +564,14 @@
     <div class="menu-title">Noise blanker</div>
     <div class="dsp-modal-block dsp-modal-row">
       <span class="dsp-modal-inline-label">NB</span>
-      <HardwareButton indicator="edge-left" active={nbActive} color="orange" onclick={() => onNbToggle(!nbActive)}>
+      <HardwareButton
+        indicator="edge-left"
+        active={nbActive}
+        pressed={nbKnown ? nbActive : undefined}
+        disabled={!nbKnown}
+        color="orange"
+        onclick={() => onNbToggle(!nbActive)}
+      >
         {nbActive ? 'ON' : 'OFF'}
       </HardwareButton>
     </div>
@@ -541,15 +587,12 @@
     />
     {#if hasNbDepth}
       <ValueControl
+        {...feedbackIntegratedControl}
         label="NB Depth"
-        value={nbDepth}
-        min={1}
-        max={10}
-        step={1}
+        binding={nbDepthBinding}
         renderer="discrete"
         tickStyle="notch"
         accentColor="var(--v2-accent-orange)"
-        onChange={onNbDepthChange}
         variant="hardware-illuminated"
       />
     {/if}

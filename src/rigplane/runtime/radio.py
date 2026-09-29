@@ -161,6 +161,7 @@ from rigplane.commands import (
     parse_frequency_response,
     parse_level_response,
     parse_meter_response,
+    parse_repeater_shift_response,
     parse_rit_frequency_response,
     parse_system_date_response,
     parse_system_time_response,
@@ -207,6 +208,7 @@ from rigplane.core.types import (
     FilterShape,
     MemoryChannel,
     Mode,
+    RepeaterShiftDirection,
     ScopeCompletionPolicy,
     SsbTxBandwidth,
     get_audio_capabilities,
@@ -3945,6 +3947,34 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             return self._last_split
         return False
 
+    async def get_repeater_shift(self, receiver: int = 0) -> RepeaterShiftDirection:
+        """Read the repeater shift direction (CI-V ``0x0F``, MOR-2930)."""
+        self._check_connected()
+        self._require_receiver(receiver, operation="get_repeater_shift")
+        civ = self._commands.get_repeater_shift(to_addr=self._radio_addr)
+        resp = await self._send_civ_expect(civ, label="get_repeater_shift")
+        direction = parse_repeater_shift_response(resp.data)
+        if direction is None:
+            raise CommandError(
+                f"invalid repeater shift readback: {resp.data.hex() or 'empty'}"
+            )
+        return direction
+
+    async def set_repeater_shift(
+        self, direction: RepeaterShiftDirection | int, receiver: int = 0
+    ) -> None:
+        """Set the repeater shift direction (CI-V ``0x0F``, MOR-2930).
+
+        Only SIMPLEX, MINUS and PLUS have a code; any other direction, ARS
+        included, raises ``ValueError`` before anything is sent.
+        """
+        self._check_connected()
+        self._require_receiver(receiver, operation="set_repeater_shift")
+        civ = self._commands.set_repeater_shift(direction, to_addr=self._radio_addr)
+        resp = await self._send_civ_expect(civ, label="set_repeater_shift")
+        if parse_ack_nak(resp) is False:
+            raise CommandError(f"Radio rejected repeater shift {direction!r}")
+
     async def get_tuning_step(self) -> int:
         """Read the tuning step index (0-8, BCD-encoded per IC-7610, CI-V 0x10)."""
         self._check_connected()
@@ -5205,9 +5235,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def set_powerstat(self, on: bool) -> None:
         """Power the radio on or off (PowerControlCapable protocol).
 
-        Note: IC-7610 via LAN may NAK a power-on command while the radio
-        is still booting.  The command is fire-and-forget for power-on —
-        a NAK is logged but not raised, since the radio does power up.
+        After POWER ON, the radio can stop sending CI-V data for longer than
+        the 2 s answer window while it starts (about 3 s in the observed log),
+        so its acknowledgement cannot be relied on. POWER OFF still waits for
+        an acknowledgement and raises CommandError on a NAK.
         """
         self._check_connected()
         civ = (
@@ -5215,32 +5246,28 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             if on
             else self._commands.power_off(to_addr=self._radio_addr)
         )
+        if on:
+            await self._send_civ_raw(civ, wait_response=False)
+            return
+
         resp = await self._send_civ_expect(civ, label="set_powerstat")
         ack = parse_ack_nak(resp)
         if ack is False:
-            if on:
-                # IC-7610 may NAK power-on while booting — not a real error
-                import logging
-
-                logging.getLogger(__name__).warning(
-                    "Power ON got NAK (radio may still be booting — ignoring)"
-                )
-            else:
-                raise CommandError("Radio rejected power off")
+            raise CommandError("Radio rejected power off")
         if ack is True:
             # MOR-2544: the 0xFB ACK is the radio's own confirmation of the
             # new power state, so the provider observes it directly — built
             # with the same observation helper the CI-V receive path uses
             # (``CivRuntime._observation``), stamped with the store's live
             # provider generation and announced through the same change
-            # notification the receive path sends. A swallowed boot NAK
-            # (ack is False) or an ambiguous reply (ack is None) is not
-            # evidence and leaves the retained state untouched.
-            self._last_commanded_powerstat = on
+            # notification the receive path sends. A NAK (ack is False) or
+            # ambiguous reply (ack is None) is not evidence and leaves the
+            # retained state untouched.
+            self._last_commanded_powerstat = False
             observation = _replace_dataclass(
                 self._civ_runtime._observation(
                     FieldPath.global_("tx_state", "power_on"),
-                    on,
+                    False,
                     frame=resp,
                 ),
                 provider_generation=self._state_store.provider_generation,

@@ -20,6 +20,7 @@ from rigplane.commands._codec import (
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
+from rigplane.core.types import ToneSquelchType
 
 __all__ = [
     "ControlLookupPoint",
@@ -402,6 +403,9 @@ class RadioProfile:
     filter_width_radio_default_code: int | None = None
     filter_config: dict[str, FilterWidthRule] | None = None
     max_watts: int | None = None
+    # Lower bound of the ``PC`` power range in watts (MOR-2998). ``None``
+    # keeps today's behaviour: a request below the range is sent as-is.
+    min_watts: int | None = None
     att_values: tuple[int, ...] | None = None
     att_labels: dict[str, str] | None = None
     pre_values: tuple[int, ...] | None = None
@@ -520,6 +524,10 @@ class RadioProfile:
     # capability or command, so this is domain metadata rather than write
     # authority. Appended to preserve the positional constructor contract.
     ctcss_tones_centihz: tuple[int, ...] | None = None
+    # The radio's tone squelch selector codes and the neutral type each one
+    # means, from the profile's ``[tone_squelch_types]`` table (MOR-2131).
+    # None when the profile declares no table. Appended for the same reason.
+    tone_squelch_types: dict[int, ToneSquelchType] | None = None
 
     @property
     def vfo_swap_code(self) -> int | None:

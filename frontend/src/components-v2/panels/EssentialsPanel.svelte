@@ -15,14 +15,22 @@
   } from '../../primitives/scalar/continuous-scalar.svelte';
 
   interface Props {
-    vfoOps: { splitActive?: boolean };
+    // MOR-2979: `splitKnown`/`nbKnown`/`nrKnown`/`manualNotchKnown`/
+    // `autoNotchKnown` ride `toVfoOpsProps`/`toDspProps` — the SPLIT/NB/NR/
+    // NOTCH keys expose the confirmed on/off and stay disabled until
+    // observed, same seam as #3927's choice keys.
+    vfoOps: { splitActive?: boolean; splitKnown?: boolean };
     mode: { currentMode: string; modes: string[] };
     // MOR-2683: `currentFilter` is `null` while the filter reading has not
     // arrived (`toFilterProps`' unread sentinel) — `null` never equals a
     // real 1-based index, so no filter choice lights for an unread filter.
     filter: { currentFilter: number | null; filterLabels?: string[] };
     rxAudio: { monitorMode: string; afLevel: number };
-    dsp: { nbActive: boolean; nrMode: number; notchMode: string };
+    dsp: {
+      nbActive: boolean; nrMode: number; notchMode: string;
+      nbKnown?: boolean; nrKnown?: boolean;
+      manualNotchKnown?: boolean; autoNotchKnown?: boolean;
+    };
     quickModes: string[];
     onSplitToggle: () => void;
     onSwap: () => void;
@@ -93,6 +101,13 @@
   );
   const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
 
+  // MOR-2979: NOTCH reflects the manual/auto pair — known only when both
+  // strands are observed, never from a half-observed pair.
+  let splitKnown = $derived(vfoOps.splitKnown ?? true);
+  let nbKnown = $derived(dsp.nbKnown ?? true);
+  let nrKnown = $derived(dsp.nrKnown ?? true);
+  let notchKnown = $derived((dsp.manualNotchKnown ?? true) && (dsp.autoNotchKnown ?? true));
+
   onDestroy(() => {
     afLevelBinding.destroy();
   });
@@ -103,6 +118,8 @@
   <div class="m-row m-vfo-ops">
     <HardwareButton
       active={vfoOps.splitActive ?? false}
+      pressed={splitKnown ? (vfoOps.splitActive ?? false) : undefined}
+      disabled={!splitKnown}
       indicator="edge-left"
       color={vfoOps.splitActive ? 'yellow' : 'muted'}
       onclick={onSplitToggle}
@@ -180,6 +197,8 @@
   <div class="m-row">
     <HardwareButton
       active={dsp.nbActive}
+      pressed={nbKnown ? dsp.nbActive : undefined}
+      disabled={!nbKnown}
       indicator="edge-left"
       color={dsp.nbActive ? 'green' : 'muted'}
       onclick={() => onNbToggle(!dsp.nbActive)}
@@ -188,6 +207,8 @@
     </HardwareButton>
     <HardwareButton
       active={dsp.nrMode > 0}
+      pressed={nrKnown ? dsp.nrMode > 0 : undefined}
+      disabled={!nrKnown}
       indicator="edge-left"
       color={dsp.nrMode > 0 ? 'green' : 'muted'}
       onclick={() => onNrModeChange(dsp.nrMode > 0 ? 0 : 1)}
@@ -196,6 +217,8 @@
     </HardwareButton>
     <HardwareButton
       active={dsp.notchMode !== 'off'}
+      pressed={notchKnown ? dsp.notchMode !== 'off' : undefined}
+      disabled={!notchKnown}
       indicator="edge-left"
       color={dsp.notchMode !== 'off' ? 'green' : 'muted'}
       onclick={() => onNotchModeChange(dsp.notchMode !== 'off' ? 'off' : 'auto')}

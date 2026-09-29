@@ -20,6 +20,7 @@
     pendingNb?: boolean | null;
     pendingNr?: boolean | null;
     pendingNotch?: DspNotchMode | null;
+    pendingAgcMode?: number | null;
     onToggle?: (field: DspToggleField, next: boolean) => void;
     onNotchModeChange?: (mode: DspNotchMode) => void;
     onAgcModeChange?: (mode: number) => void;
@@ -34,6 +35,7 @@
 
   let {
     view, agcLabels = {}, pendingNb = null, pendingNr = null, pendingNotch = null,
+    pendingAgcMode = null,
     onToggle, onNotchModeChange, onAgcModeChange, settingsPanel = null, onOpenSettings,
     finiteAppearance, rendererContext, children,
   }: Props = $props();
@@ -64,6 +66,12 @@
   };
   const requestedNotch = () => pendingNotch === null
     ? undefined : { kind: 'requested-target' as const, target: pendingNotch };
+  /** MOR-2907 F3: the compact NOTCH/A-NOTCH toggle pair views the notch-mode
+   *  choice as two keys; a pending target arms the key the click targets —
+   *  `manual`/`auto` directly, and `off` the key whose confirmed reading the
+   *  click asked to leave (the exact inversion `compactNotch` invokes). */
+  const notchTogglePending = (mode: 'manual' | 'auto'): boolean =>
+    pendingNotch === mode || (pendingNotch === 'off' && notchBehavior.isSelected(mode));
   const nrSeat = createToggleRendererSeat(() => ({
     context: rendererContext ?? null, field: dsp?.nrActive, label: 'NR',
     requested: requested('nrActive'), invoke: (next) => onToggle?.('nrActive', next),
@@ -151,6 +159,9 @@
   const agcSeat = createChoiceRendererSeat<DspFiniteChoiceValue>(() => ({
     context: rendererContext ?? null, field: dsp?.agcMode, label: 'AGC mode',
     options: agcOptions.map(option => ({ value: option.value, label: option.label })),
+    ...(pendingAgcMode === null ? {} : {
+      requested: { kind: 'requested-target' as const, target: pendingAgcMode },
+    }),
     invoke: (mode) => onAgcModeChange?.(mode as number),
   }));
   onDestroy(() => {
@@ -195,9 +206,18 @@
   {#if current?.availability.structural}
     {@const available = kind === 'notch' ? notchBehavior.available
       : (kind === 'nr' ? nrBehavior.available : nbBehavior.available)}
-    {@const active = kind === 'notch'
-      ? notchBehavior.isSelected('manual')
-      : current.reading.status === 'known' && current.reading.value === true}
+    {@const behavior = kind === 'nr' ? nrBehavior : nbBehavior}
+    <!-- MOR-2907 F7: the pressed state comes from the same shared honest
+         forms `toggle()` and `notchToggle()` below already use — never a
+         re-derived reading comparison. Unread means no `aria-pressed`. -->
+    {@const pressed = kind === 'notch'
+      ? (notchBehavior.selected === undefined ? undefined : notchBehavior.isSelected('manual'))
+      : behavior.confirmed}
+    <!-- MOR-2907 F3: the pending marker `toggle()`/`notchMode()` render,
+         dropped by the compact keys before — display-only, the confirmed
+         reading stays the sole pressed state. -->
+    {@const pending = kind === 'notch' ? notchTogglePending('manual') : pendingOf(field) !== null}
+    {@const id = `${pendingId}-compact-${kind}`}
     <div class="compact-dsp-button" role="group" aria-label={`${label} control`}
       data-expanded={settingsPanel === kind}
       use:settingsHold={kind}>
@@ -207,9 +227,13 @@
           renderer={finiteAppearance.toggle}
         />{/key}{/key}
       {:else}
-        <button type="button" class="dsp-toggle" aria-pressed={active} disabled={!available}
+        <button type="button" class="dsp-toggle" data-testid={`dsp-compact-${kind}`}
+          aria-pressed={pressed} disabled={!available}
+          data-pending-status={pending ? 'pending' : 'confirmed'}
+          aria-describedby={pending ? id : undefined}
           title={`${label} — click to toggle; hold for settings`}
           onclick={() => kind === 'notch' ? compactNotch('manual') : compactToggle(field)}>{label}</button>
+        {#if pending}<span {id} class="sr-only">{t('core.dsp.pendingAnnouncement')}</span>{/if}
       {/if}
       <span class="dsp-settings-chevron">
         <HardwareButton compact={true} indicator="edge-left" active={settingsPanel === kind}
@@ -226,14 +250,20 @@
 {#snippet compactManualNotch()}{@render compactDspButton('notch', 'NOTCH')}{/snippet}
 {#snippet compactAutoNotch()}
   {#if dsp?.notchMode.availability.structural}
+    {@const pending = notchTogglePending('auto')}
+    {@const id = `${pendingId}-compact-autoNotch`}
     {#if finiteAppearance}
       {#key rendererContext}{#key finiteAppearance.toggle}<ControlInstrumentRendererHost
         seat={autoNotchSeat} renderer={finiteAppearance.toggle}
       />{/key}{/key}
     {:else}
-      <button type="button" class="dsp-toggle"
-        aria-pressed={notchBehavior.isSelected('auto')} disabled={!notchBehavior.available}
+      <button type="button" class="dsp-toggle" data-testid="dsp-compact-autoNotch"
+        aria-pressed={notchBehavior.selected === undefined ? undefined : notchBehavior.isSelected('auto')}
+        disabled={!notchBehavior.available}
+        data-pending-status={pending ? 'pending' : 'confirmed'}
+        aria-describedby={pending ? id : undefined}
         onclick={() => compactNotch('auto')}>A-NOTCH</button>
+      {#if pending}<span {id} class="sr-only">{t('core.dsp.pendingAnnouncement')}</span>{/if}
     {/if}
   {/if}
 {/snippet}
@@ -283,11 +313,17 @@
 {#snippet agcKeys()}
   {#each agcOptions as option (option.value)}
     {@const isAuto = option.value === dsp?.agcMode.autoMode}
+    <!-- MOR-2907 F3: the AGC key's own armed fact (set_agc), same seat and
+         vocabulary `standardDataMode`'s keys use — display-only; the
+         confirmed reading below stays the sole selection source. -->
+    {@const isArmed = pendingAgcMode === option.value}
+    {@const armedId = `${pendingId}-agcMode-${option.value}`}
     <div class="agc-key">
       <ControlButton surface="hardware" indicatorStyle="edge-left" indicatorColor="cyan"
         active={agcBehavior.isSelected(option.value)} disabled={!agcBehavior.available}
         data={{ testid: `dsp-agcMode-${option.value}` }}
         role="radio" ariaChecked={agcBehavior.isSelected(option.value)}
+        armed={isArmed} describedBy={isArmed ? armedId : undefined}
         ariaLabel={isAuto && dsp?.agcMode.autoSelectedSpeed
           ? `${option.label} ${dsp.agcMode.autoSelectedSpeed}` : option.label}
         onclick={() => agcBehavior.invoke(option.value)}>
@@ -296,6 +332,7 @@
           {#if isAuto}<span class="agc-auto-speed">{dsp?.agcMode.autoSelectedSpeed ?? ''}</span>{/if}
         </span>
       </ControlButton>
+      {#if isArmed}<span id={armedId} class="sr-only">{t('core.agcPanel.pendingAnnouncement')}</span>{/if}
     </div>
   {/each}
 {/snippet}

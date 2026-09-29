@@ -62,8 +62,15 @@
   let showTx = $derived(p.hasTx);
   let showTuner = $derived(p.hasTuner);
   let showMon = $derived(p.hasMonitor);
-  let showVox = $derived(p.voxAvailable ?? true);
-  let showComp = $derived(p.compAvailable ?? true);
+  // MOR-2979: VOX/COMP stay rendered on capability (`hasVox`/`hasComp`,
+  // like `ModeProps.hasDataMode`) — the keys expose the confirmed on/off
+  // and stay disabled until observed, same seam as #3927's choice keys.
+  let showVox = $derived(p.hasVox ?? (p.voxAvailable ?? true));
+  let showComp = $derived(p.hasComp ?? (p.compAvailable ?? true));
+  let atuKnown = $derived(p.atuAvailable ?? true);
+  let voxKnown = $derived(p.voxAvailable ?? true);
+  let compKnown = $derived(p.compAvailable ?? true);
+  let monKnown = $derived(p.monAvailable ?? true);
   let rfPowerAvailable = $derived(p.rfPowerAvailable ?? true);
   let micGainAvailable = $derived(p.micGainAvailable ?? true);
   let compLevelAvailable = $derived(p.compLevelAvailable ?? true);
@@ -309,6 +316,8 @@
       {#if showTuner}
         <HardwareButton
           active={atuActive}
+          pressed={atuKnown ? atuActive : undefined}
+          disabled={!atuKnown}
           indicator="edge-left"
           color={atuActive ? 'green' : 'gray'}
           onclick={onAtuToggle}
@@ -317,6 +326,8 @@
         </HardwareButton>
         <HardwareButton
           active={atuTuning}
+          pressed={atuKnown ? atuTuning : undefined}
+          disabled={!atuKnown}
           indicator="edge-left"
           color={atuTuning ? 'red' : 'gray'}
           onclick={onAtuTune}
@@ -326,17 +337,38 @@
       {/if}
 
       {#if showVox}
-        <HardwareButton active={voxActive} indicator="edge-left" color="amber" onclick={onVoxToggle}>
+        <HardwareButton
+          active={voxActive}
+          pressed={voxKnown ? voxActive : undefined}
+          disabled={!voxKnown}
+          indicator="edge-left"
+          color="amber"
+          onclick={onVoxToggle}
+        >
           VOX
         </HardwareButton>
       {/if}
       {#if showComp}
-        <HardwareButton active={compActive} indicator="edge-left" color="amber" onclick={onCompToggle}>
+        <HardwareButton
+          active={compActive}
+          pressed={compKnown ? compActive : undefined}
+          disabled={!compKnown}
+          indicator="edge-left"
+          color="amber"
+          onclick={onCompToggle}
+        >
           COMP{compActive && compLevel > 0 ? ` ${Math.round(compLevel / 2.55)}%` : ''}
         </HardwareButton>
       {/if}
       {#if showMon}
-        <HardwareButton active={monActive} indicator="edge-left" color="amber" onclick={onMonToggle}>
+        <HardwareButton
+          active={monActive}
+          pressed={monKnown ? monActive : undefined}
+          disabled={!monKnown}
+          indicator="edge-left"
+          color="amber"
+          onclick={onMonToggle}
+        >
           MON{monActive && monLevel > 0 ? ` ${Math.round(monLevel / 2.55)}%` : ''}
         </HardwareButton>
       {/if}

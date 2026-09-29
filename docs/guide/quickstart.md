@@ -78,10 +78,11 @@ For LAN-only scripts you can still use **`IcomRadio(host, username=..., password
 
 ## 4. USB Radios
 
-A radio on a USB cable needs no credentials; name its serial port instead.
+A radio on a USB cable needs no credentials: name its model and its serial
+port, and RigPlane picks the backend from the model's profile.
 `rigplane discover --serial-only` (below) finds the port.
 
-**IC-7300** — `--serial-port` selects the Icom serial backend:
+**IC-7300** (the Icom serial backend):
 
 ```bash
 rigplane --model IC-7300 --serial-port /dev/cu.usbserial-XXXX status
@@ -102,13 +103,13 @@ async def main():
 asyncio.run(main())
 ```
 
-**FTX-1** — name the Yaesu CAT backend:
+**FTX-1** (the Yaesu CAT backend):
 
 ```bash
-rigplane --backend yaesu-cat --serial-port /dev/cu.usbserial-XXXX status
+rigplane --model FTX-1 --serial-port /dev/cu.usbserial-XXXX status
 
 # Web UI on http://localhost:8080
-rigplane --backend yaesu-cat --serial-port /dev/cu.usbserial-XXXX web
+rigplane --model FTX-1 --serial-port /dev/cu.usbserial-XXXX web
 ```
 
 ```python

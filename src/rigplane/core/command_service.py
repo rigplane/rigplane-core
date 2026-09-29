@@ -983,8 +983,16 @@ def resolve_power_level_target(
     *,
     power_native_unit: str | None = None,
     power_max_watts: int | float | None = None,
+    power_min_watts: int | float | None = None,
 ) -> tuple[int, float]:
-    """Resolve the native power integer and its exact normalized readback."""
+    """Resolve the native power integer and its exact normalized readback.
+
+    On a watts-native radio with a valid max and a valid positive min,
+    the native value is clamped to ``[min, max]`` — normalized floats and
+    bare ints alike (MOR-2998: a profile floor such as the FTX-1's 5 W
+    lifts the bottom of the range off the refused 0 W write). A radio
+    without ``min_watts`` keeps today's behaviour exactly.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"level {value!r} must be an int or a normalized float")
 
@@ -998,11 +1006,21 @@ def resolve_power_level_target(
     )
     scale = float(power_max_watts) if watts_native and valid_max else 255.0
     upper = int(power_max_watts) if watts_native and valid_max else 255
+    valid_min = (
+        watts_native
+        and valid_max
+        and isinstance(power_min_watts, (int, float))
+        and not isinstance(power_min_watts, bool)
+        and power_min_watts > 0
+    )
+    lower = int(power_min_watts) if valid_min else 0
 
     if isinstance(value, float):
         if not (0.0 <= value <= 1.0):
             raise ValueError(f"level {value!r} is out of the normalized 0.0-1.0 domain")
-        native = max(0, min(upper, round(value * scale)))
+        native = max(lower, min(upper, round(value * scale)))
+    elif valid_min:
+        native = max(lower, min(upper, value))
     else:
         native = value
     return native, native / scale
@@ -1238,6 +1256,7 @@ def command_intent_from_request(
     timeout: float | None = 2.0,
     power_native_unit: str | None = None,
     power_max_watts: int | float | None = None,
+    power_min_watts: int | float | None = None,
 ) -> CommandIntent:
     """Normalize a production command request into a backend-neutral intent."""
 
@@ -1315,6 +1334,7 @@ def command_intent_from_request(
             raw_level,
             power_native_unit=power_native_unit,
             power_max_watts=power_max_watts,
+            power_min_watts=power_min_watts,
         )
     elif command_name == "set_split":
         normalized["split"] = bool(normalized.get("on", False))

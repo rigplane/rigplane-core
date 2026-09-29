@@ -26,6 +26,10 @@
   let xitOffset = $derived(p.xitOffset);
   let hasRit = $derived(p.hasRit);
   let hasXit = $derived(p.hasXit);
+  // MOR-2979: the RIT/XIT keys expose the confirmed on/off and stay disabled
+  // until observed (`toRitXitProps`), same seam as #3927's choice keys.
+  let ritKnown = $derived(p.ritKnown ?? true);
+  let xitKnown = $derived(p.xitKnown ?? true);
   let ritDomain = $derived(p.ritDomain);
   const onRitToggle = handlers.onRitToggle;
   const onXitToggle = handlers.onXitToggle;
@@ -115,13 +119,13 @@
     <div class="panel-body">
       {#if hasRit}
         <div class="row">
-          <HardwareButton indicator="dot" active={ritActive} color="cyan" onclick={onRitToggle} shortcutHint={ritShortcut} title={ritShortcut}>RIT</HardwareButton>
+          <HardwareButton indicator="dot" active={ritActive} pressed={ritKnown ? ritActive : undefined} disabled={!ritKnown} color="cyan" onclick={onRitToggle} shortcutHint={ritShortcut} title={ritShortcut}>RIT</HardwareButton>
           <span class="offset" class:active={ritActive}>{formatOffsetDisplay(ritOffset)}</span>
         </div>
       {/if}
       {#if hasXit}
         <div class="row">
-          <HardwareButton indicator="dot" active={xitActive} color="orange" onclick={onXitToggle} shortcutHint={xitShortcut} title={xitShortcut}>XIT</HardwareButton>
+          <HardwareButton indicator="dot" active={xitActive} pressed={xitKnown ? xitActive : undefined} disabled={!xitKnown} color="orange" onclick={onXitToggle} shortcutHint={xitShortcut} title={xitShortcut}>XIT</HardwareButton>
           <span class="offset" class:active={xitActive}>{formatOffsetDisplay(xitOffset)}</span>
         </div>
       {/if}

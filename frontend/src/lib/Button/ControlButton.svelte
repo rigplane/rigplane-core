@@ -18,6 +18,10 @@
   interface Props {
     active?: boolean;
     disabled?: boolean;
+    /** Confirmed pressed state (MOR-2978): true / false / undefined renders
+     *  `aria-pressed` "true" / "false" / absent. Never derived from `active`
+     *  — `active` collapses an unread reading to false. */
+    pressed?: boolean;
     compact?: boolean;
     surface?: ButtonSurface;
     indicatorStyle?: IndicatorStyle;
@@ -57,6 +61,7 @@
   let {
     active = false,
     disabled = false,
+    pressed,
     compact = false,
     surface = 'flat',
     indicatorStyle,
@@ -130,6 +135,7 @@
   data-armed={armed || undefined}
   role={role}
   aria-checked={ariaChecked}
+  aria-pressed={pressed}
   tabindex={tabindex}
   aria-describedby={describedBy}
   aria-label={ariaLabel}

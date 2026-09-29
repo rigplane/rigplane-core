@@ -310,6 +310,35 @@ describe('AppGlobalHost — standalone, with no layout mounted', () => {
     expect(powerEl()).toBeNull();
     unmount(instance);
   });
+
+  // MOR-2876: the server started while the radio's serial port could not be
+  // opened (radioHealth.likelyCause 'radio_not_connected'). The same overlay
+  // says so and offers no Power ON, even where the profile declares one:
+  // there is no port to send it through.
+  it('shows the not-connected overlay without Power ON while the serial port cannot be opened', () => {
+    h.radioHealth = { radioLink: 'reconnecting', likelyCause: 'radio_not_connected' };
+    const instance = mountAt(AppGlobalHost);
+
+    let overlay = powerEl();
+    expect(overlay?.getAttribute('data-state')).toBe('not-connected');
+    expect(overlay?.getAttribute('aria-label')).toBe('core.overlay.poweredOff.notConnectedLabel');
+    expect(overlay?.querySelector('.power-off-label')?.textContent)
+      .toBe('core.overlay.poweredOff.notConnectedLabel');
+    expect(h.powerOnCommand).toBe(true);
+    expect(overlay?.querySelector('.power-on-btn')).toBeNull();
+    expect(overlay?.querySelector('.power-off-hint')).toBeNull();
+
+    // The port opens but the radio stays silent: the server's verdict
+    // becomes MOR-2841's, and so does the overlay, Power ON included.
+    h.radioHealth = { radioLink: 'connected', likelyCause: 'radio_powered_off_likely' };
+    h.notifyRuntime();
+    flushSync();
+    overlay = powerEl();
+    expect(overlay?.getAttribute('data-state')).toBe('not-answering');
+    expect(overlay?.querySelector('.power-on-btn')).not.toBeNull();
+
+    unmount(instance);
+  });
 });
 
 describe('AppGlobalHost — authoritative TX source', () => {
@@ -592,5 +621,68 @@ describe('Layouts no longer own the App-global surfaces', () => {
       '../components-v2/layout/MobileRadioLayout.svelte',
     ].filter((rel) => mountsHost(read(rel)));
     expect(hostMounts).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MOR-2997 — on the phone (360/390 px) the shared power overlay label wrapped
+// onto two left-aligned lines starting at x = 0, while the icon stayed
+// centred. jsdom does no layout, so what is assertable here is the CSS
+// contract (the same source-read pin the MOR-1240 suite above uses): the
+// label is centred, and the content keeps wrapped lines off the screen edges
+// with the phone's usual overlay side inset, reused from MobileRadioLayout.
+// A real-browser geometry pin was considered and rejected: focused CI runs
+// only pytest/ruff/vitest, so a Playwright case would have no RED run.
+// ---------------------------------------------------------------------------
+describe('MOR-2997 — the phone power overlay label is centred with a side margin', () => {
+  const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8');
+  const host = () => read('../AppGlobalHost.svelte');
+
+  // Every overlay variant shares this label element (powered-off,
+  // not-answering, not-connected), so one centred rule covers all three.
+  it('centres the shared overlay label under the icon', () => {
+    expect(host()).toMatch(/\.power-off-label\s*\{[^}]*text-align:\s*center/);
+  });
+
+  it('keeps wrapped label lines off the screen edges with the phone side inset', () => {
+    const source = host();
+    expect(source).toMatch(
+      /\.power-off-content\s*\{[^}]*padding-left:\s*max\(12px, env\(safe-area-inset-left, 0px\)\)/,
+    );
+    expect(source).toMatch(
+      /\.power-off-content\s*\{[^}]*padding-right:\s*max\(12px, env\(safe-area-inset-right, 0px\)\)/,
+    );
+    expect(source).toMatch(/\.power-off-content\s*\{[^}]*max-width:\s*100%/);
+  });
+
+  // The inset is reused, not invented: MobileRadioLayout's floating phone
+  // overlay (.m-mod-input-warning) carries the same left/right pair.
+  it('reuses the inset from MobileRadioLayout instead of inventing a new value', () => {
+    const phone = read('../components-v2/layout/MobileRadioLayout.svelte');
+    expect(phone).toContain('max(12px, env(safe-area-inset-left, 0px))');
+    expect(phone).toContain('max(12px, env(safe-area-inset-right, 0px))');
+  });
+
+  // The longest shipped overlay label across the three locales — the string
+  // a 360 px check must size against.
+  it('names the longest shipped overlay label across the three locales', () => {
+    const keys = [
+      'core.overlay.poweredOff.label',
+      'core.overlay.poweredOff.notAnsweringLabel',
+      'core.overlay.poweredOff.notConnectedLabel',
+    ];
+    let longest = { locale: '', key: '', length: -1 };
+    for (const locale of ['en-US', 'ru-RU', 'ja-JP']) {
+      const catalog = JSON.parse(read(`../lib/i18n/locales/${locale}.json`)) as Record<string, string>;
+      for (const key of keys) {
+        const text = catalog[key];
+        if (text.length > longest.length) longest = { locale, key, length: text.length };
+      }
+    }
+    expect(longest).toEqual({
+      locale: 'ru-RU',
+      key: 'core.overlay.poweredOff.notConnectedLabel',
+      length: 58,
+    });
   });
 });

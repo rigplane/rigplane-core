@@ -9,6 +9,9 @@
   let scanning = $derived(p.scanning);
   let scanType = $derived(p.scanType);
   let scanResumeMode = $derived(p.scanResumeMode);
+  // MOR-2979: STOP exposes the confirmed scanning state and stays disabled
+  // until observed (`toScanProps`), same seam as #3927's choice keys.
+  let scanningKnown = $derived(p.scanningKnown ?? true);
   const onScanStart = handlers.onScanStart;
   const onScanStop = handlers.onScanStop;
   const onDfSpanChange = handlers.onDfSpanChange;
@@ -65,6 +68,8 @@
     <div class="button-group">
       <HardwareButton
         active={scanning}
+        pressed={scanningKnown ? scanning : undefined}
+        disabled={!scanningKnown}
         indicator="edge-left"
         color="red"
         onclick={onScanStop}

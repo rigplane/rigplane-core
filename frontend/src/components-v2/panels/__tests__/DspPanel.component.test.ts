@@ -113,14 +113,19 @@ function qualifiedState(marker = 1, providerGeneration = 3): ServerState {
   return {
     stateContractVersion: 1, providerGeneration, active: 'MAIN',
     main: {
-      nr: false, nb: mockProps.nbActive, nbLevel: mockProps.nbLevel,
+      // MOR-2910: raw CAT scale — legacy nr_level contract maps raw 0..255 to
+      // display 0..15, so raw 85 is display 5 (the `mockProps.nrLevel` value).
+      nr: false, nrLevel: 85, nb: mockProps.nbActive, nbLevel: mockProps.nbLevel,
       autoNotch: false, manualNotch: mockProps.notchMode === 'manual',
       notchFilter: mockProps.notchFreq, manualNotchWidth: mockProps.manualNotchWidth,
       agcTimeConstant: mockProps.agcTimeConstant,
     },
-    sub: {}, nbWidth: mockProps.nbWidth, observationSeq: marker,
+    // MOR-2910: raw CAT scale — the IC-7610 nb_depth band maps raw 0..9 to
+    // display 1..10, so raw 4 is display 5.
+    sub: {}, nbWidth: mockProps.nbWidth, nbDepth: 4, observationSeq: marker,
     fieldStatus: {
       'main.nr': fresh('main.nr', marker),
+      'main.nrLevel': fresh('main.nrLevel', marker),
       'main.nb': fresh('main.nb', marker),
       'main.nbLevel': fresh('main.nbLevel', marker),
       'main.autoNotch': fresh('main.autoNotch', marker),
@@ -129,9 +134,14 @@ function qualifiedState(marker = 1, providerGeneration = 3): ServerState {
       'main.manualNotchWidth': fresh('main.manualNotchWidth', marker),
       'main.agcTimeConstant': fresh('main.agcTimeConstant', marker),
       nbWidth: fresh('nbWidth', marker),
+      nbDepth: fresh('nbDepth', marker),
     },
   } as unknown as ServerState;
 }
+
+// The IC-7610 shipped nb_depth band (`rigs/ic7610.toml`): raw 0..9 keeps its
+// 1..10 display conversion (`notch-nb-depth-control-domain.isolated.test.ts`).
+const NB_DEPTH_RANGE = { raw_min: 0, raw_max: 9, raw_center: 0, display_min: 1, display_max: 10 };
 
 function qualifiedCaps(providerGeneration = 3): Capabilities {
   return {
@@ -141,7 +151,7 @@ function qualifiedCaps(providerGeneration = 3): Capabilities {
     audioConfig: { sampleRate: 48_000, channels: 1, codecs: ['pcm'] },
     webrtc: { available: false, enabled: false }, txBands: null,
     stateContractVersion: 1, providerGeneration,
-    controls: { nb_depth: {} },
+    controls: { nb_depth: NB_DEPTH_RANGE },
   } as unknown as Capabilities;
 }
 
@@ -258,7 +268,11 @@ describe('DspPanel component rendering', () => {
 describe('DspPanel Discrete facade mounts', () => {
   it.each([
     ['NR', 'Noise reduction settings', 'NR Level', 'onNrLevelChange', 6],
-    ['NB', 'Noise blanker settings', 'NB Depth', 'onNbDepthChange', 1],
+    // MOR-2910: NB Depth confirmed truth now arrives through the shared
+    // scalar feedback — raw 4 on the IC-7610 nb_depth band is display 5, so
+    // one ArrowRight step requests display 6 (was: a below-domain mockProps
+    // 0 clamped up to the old raw minimum 1).
+    ['NB', 'Noise blanker settings', 'NB Depth', 'onNbDepthChange', 6],
     ['AGC-T', 'AGC time settings', 'AGC Time', 'onAgcTimeChange', 1],
   ] as const)(
     'renders and dispatches the %s Discrete mount',
@@ -896,5 +910,106 @@ describe('DspPanel mobile notch dialog (MOR-1631)', () => {
     expect(modeButton(t, 'AUTO').dataset.active).toBe('false');
     expect(modeButton(t, 'AUTO').dataset.armed).toBe('true');
     expect(t.querySelector('[aria-label="Notch Position"]')).not.toBeNull();
+  });
+});
+
+// ── MOR-2910: NR level and NB depth adopt the shared command-feedback scalar
+// (`getDspControlFeedback` projected to display units, exactly the wiring
+// `SemanticRadioSurfaces.svelte` feeds `DspScalarHost`). Raw fixtures: legacy
+// nr_level 0..255 → display 0..15 (raw 85 = 5); nb_depth raw 0..9 → display
+// 1..10 (raw 4 = 5).
+describe('DspPanel NR-level / NB-depth command-feedback wiring (MOR-2910)', () => {
+  function nrLevelSlider(t: HTMLElement): HTMLElement {
+    return t.querySelector<HTMLElement>('[aria-label="NR Level"]')!;
+  }
+
+  function nbDepthSlider(t: HTMLElement): HTMLElement {
+    return t.querySelector<HTMLElement>('[aria-label="NB Depth"]')!;
+  }
+
+  // The discrete renderer exposes TWO ids (target description plus
+  // current status) while a command is in flight — read them all.
+  function describedTarget(t: HTMLElement, slider: HTMLElement): string {
+    const descriptionIds = slider.getAttribute('aria-describedby')!.split(' ');
+    return descriptionIds.map((id) => t.querySelector(`#${id}`)?.textContent ?? '').join(' ');
+  }
+
+  it('projects the NR-level requested target with busy state over confirmed truth', () => {
+    const t = mountPanel();
+    openLongPressModal(t, 'NR');
+    beginCommand({
+      id: 'mor-2910-nr', name: 'set_nr_level', params: { level: 102, receiver: 0 },
+      originalEpoch: 1, timeoutMs: 5_000,
+    });
+    flushSync();
+
+    const slider = nrLevelSlider(t);
+    expect(slider.dataset.commandPhase).toBe('submitted');
+    expect(slider.getAttribute('aria-busy')).toBe('true');
+    expect(slider.getAttribute('aria-valuenow')).toBe('5');
+    expect(describedTarget(t, slider)).toContain('6');
+
+    acknowledgeCommand('mor-2910-nr', 1, 1);
+    const next = qualifiedState(2);
+    next.main!.nrLevel = 102;
+    runtimeState.state = next;
+    runtimeState.notify();
+    flushSync();
+    expect(slider.dataset.commandPhase).toBe('confirmed');
+    expect(slider.getAttribute('aria-valuenow')).toBe('6');
+  });
+
+  it('keeps a terminal NR-level error visible without replacing confirmed truth', () => {
+    const t = mountPanel();
+    openLongPressModal(t, 'NR');
+    const command = beginCommand({
+      id: 'mor-2910-nr-failed', name: 'set_nr_level', params: { level: 102, receiver: 0 },
+      originalEpoch: 1, timeoutMs: 5_000,
+    });
+    failCommand(command.id, command.originalEpoch, 1, 'radio refused');
+    flushSync();
+
+    const slider = nrLevelSlider(t);
+    expect(slider.dataset.commandPhase).toBe('failed');
+    expect(slider.getAttribute('aria-busy')).toBe('false');
+    expect(slider.getAttribute('aria-valuenow')).toBe('5');
+    expect(slider.closest('.vc-discrete')?.querySelector('[data-control-feedback-status]')?.textContent)
+      .toContain('radio refused');
+  });
+
+  it('projects the NB-depth requested target on its display scale', () => {
+    const t = mountPanel({ nbActive: true });
+    openLongPressModal(t, 'NB');
+    beginCommand({
+      id: 'mor-2910-nb-depth', name: 'set_nb_depth', params: { level: 7 },
+      originalEpoch: 1, timeoutMs: 5_000,
+    });
+    flushSync();
+
+    const slider = nbDepthSlider(t);
+    expect(slider.dataset.commandPhase).toBe('submitted');
+    expect(slider.getAttribute('aria-busy')).toBe('true');
+    expect(slider.getAttribute('aria-valuenow')).toBe('5');
+    expect(describedTarget(t, slider)).toContain('8');
+
+    acknowledgeCommand('mor-2910-nb-depth', 1, 1);
+    const next = qualifiedState(2);
+    next.nbDepth = 7;
+    runtimeState.state = next;
+    runtimeState.notify();
+    flushSync();
+    expect(slider.dataset.commandPhase).toBe('confirmed');
+    expect(slider.getAttribute('aria-valuenow')).toBe('8');
+  });
+
+  it('routes NB-depth gestures through the shared policy handler', () => {
+    const t = mountPanel({ nbActive: true });
+    openLongPressModal(t, 'NB');
+    vi.useFakeTimers();
+    nbDepthSlider(t).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(50);
+    expect(mockHandlers.onNbDepthChange).toHaveBeenCalledExactlyOnceWith(6);
+    expect(mockHandlers.onNbLevelChange).not.toHaveBeenCalled();
+    vi.useRealTimers();
   });
 });

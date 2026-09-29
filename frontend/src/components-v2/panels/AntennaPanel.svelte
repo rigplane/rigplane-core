@@ -7,6 +7,10 @@
 
   let txAntenna = $derived(p.txAntenna);
   let rxAnt = $derived(p.rxAnt);
+  // MOR-2978: `null` is the unread sentinel for both (`toAntennaProps`) —
+  // the keys expose the confirmed selection and stay disabled until observed.
+  let txKnown = $derived(txAntenna !== null);
+  let rxKnown = $derived(rxAnt !== null);
   let antennaCount = $derived(p.antennaCount);
   let hasRxAntenna = $derived(p.hasRxAntenna);
   const onSelectAnt1 = handlers.onSelectAnt1;
@@ -21,6 +25,8 @@
       <div class="button-group">
         <HardwareButton
           active={txAntenna === 1}
+          pressed={txAntenna === null ? undefined : txAntenna === 1}
+          disabled={!txKnown}
           indicator="edge-left"
           color="cyan"
           onclick={onSelectAnt1}
@@ -29,6 +35,8 @@
         </HardwareButton>
         <HardwareButton
           active={txAntenna === 2}
+          pressed={txAntenna === null ? undefined : txAntenna === 2}
+          disabled={!txKnown}
           indicator="edge-left"
           color="cyan"
           onclick={onSelectAnt2}
@@ -43,7 +51,9 @@
         <span class="control-label">RX</span>
         <div class="button-group">
           <HardwareButton
-            active={rxAnt}
+            active={rxAnt ?? false}
+            pressed={rxAnt ?? undefined}
+            disabled={!rxKnown}
             indicator="edge-left"
             color="green"
             onclick={onToggleRxAnt}

@@ -37,7 +37,7 @@
     hideSourceControls?: boolean;
     hideScopeControls?: boolean;
     hideAutoStepToggle?: boolean;
-    scopeControls?: Snippet<[allowBare?: boolean, screenGroup?: Snippet, rowTail?: Snippet]>;
+    scopeControls?: Snippet<[allowBare?: boolean, screenGroup?: Snippet, rowTail?: Snippet, moreAsSheet?: boolean]>;
     /** MOR-2545 PR2 — the compact scope-display indicator, mounted at the
      *  row's right end (the standalone status line row is gone). Named
      * `scopeStatusIndicator` so no source pin can confuse it with the dead

@@ -126,6 +126,7 @@
 
   "core.overlay.poweredOff.label": "トランシーバーの電源が切れています",
   "core.overlay.poweredOff.notAnsweringLabel": "トランシーバーが応答しません — 電源が切れている可能性があります",
+  "core.overlay.poweredOff.notConnectedLabel": "トランシーバーが接続されていません — シリアルポートを開けませんでした",
   "core.overlay.poweredOff.noRemotePowerOn": "このトランシーバーは RigPlane から電源を入れられません。",
   "core.overlay.poweredOff.powerOnButton": "電源 ON",
   "core.overlay.poweredOff.failedPowerOn": "電源を入れられませんでした: {detail}",
@@ -341,5 +342,7 @@
   "core.rxTx.blocked.busy": "TX セッションがすでに進行中です",
   "core.rxTx.blocked.radioTransmitting": "無線機はすでに送信中です",
   "core.rxTx.blocked.rfStateUnknown": "無線機の RF 状態はまだ確認されていません",
-  "core.spectrum.more": "その他"
+  "core.spectrum.more": "その他",
+  "core.spectrum.toggleOff": "切",
+  "core.spectrum.toggleOn": "入"
 }

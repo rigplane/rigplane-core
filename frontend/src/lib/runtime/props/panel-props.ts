@@ -201,6 +201,9 @@ export function toVfoProps(
 
 export interface VfoOpsProps {
   splitActive: boolean;
+  /** Whether the `split` field is honestly observed — the SPLIT keys expose
+   *  the confirmed state and stay disabled until observed (MOR-2979). */
+  splitKnown: boolean;
   txVfo: 'main' | 'sub';
   dualWatch: boolean;
   mainSubTracking: boolean;
@@ -215,6 +218,10 @@ export function toVfoOpsProps(
 
   return {
     splitActive: split,
+    // MOR-2979: the SPLIT keys stay rendered (EssentialsPanel has no
+    // visibility gate), so the props must carry knownness — the field must
+    // be available AND present, never the collapsed `?? false`.
+    splitKnown: topFieldAvailable(state, 'split') && typeof state?.split === 'boolean',
     txVfo,
     dualWatch: state?.dualWatch ?? false,
     mainSubTracking: state?.mainSubTracking ?? false,
@@ -397,7 +404,10 @@ export function resolveFilterModeConfig(
 export interface FilterProps {
   currentMode: string;
   currentFilter: number | null;
-  filterShape: number;
+  /** Filter shape (0 SHARP / 1 SOFT), or `null` while the `filterShape`
+   *  field is unobserved — never the fabricated SHARP the old `?? 0`
+   *  lit (MOR-2978). */
+  filterShape: number | null;
   hasFilterShape: boolean;
   filterLabels: string[];
   filterWidth: number;
@@ -474,7 +484,10 @@ export function toFilterProps(
     // filter index). Arithmetic consumers must guard on `!= null`
     // (FilterPanel.svelte's `visibleWidths`).
     currentFilter: rx?.filter ?? null,
-    filterShape: rx?.filterShape ?? 0,
+    // MOR-2978: the SHARP/SOFT keys stay rendered while `hasFilterShape`
+    // holds (capability), so the props must carry knownness — gated exactly
+    // like `toAgcProps`' `agcMode`.
+    filterShape: activeFieldAvailable(state, 'filterShape') ? (rx?.filterShape ?? null) : null,
     // MOR-1503: whether the radio has a REAL filter_shape command of its
     // own (Icom family, e.g. IC-7300). The FTX-1 declares no
     // `filter_shape` capability, so FilterPanel.svelte uses THIS flag to
@@ -597,6 +610,10 @@ export interface RitXitProps {
   xitOffset: number;
   hasRit: boolean;
   hasXit: boolean;
+  /** Whether `ritOn`/`ritTx` are honestly observed — the RIT/XIT keys expose
+   *  the confirmed state and stay disabled until observed (MOR-2979). */
+  ritKnown: boolean;
+  xitKnown: boolean;
   /** Exact RIT control contract, when supplied by a normalized capability payload. */
   ritDomain: ControlDomain | null | undefined;
 }
@@ -637,6 +654,11 @@ export function toRitXitProps(
     xitOffset: ritFreqAvailable ? (state?.ritFreq ?? Number.NaN) : Number.NaN,
     hasRit: hasCap(caps, 'rit') && ritOnAvailable,
     hasXit: hasCap(caps, 'xit') && ritTxAvailable,
+    // MOR-2979: the keys stay rendered while `hasRit`/`hasXit` hold, so the
+    // props must carry knownness — available AND present, never the
+    // collapsed `?? false`.
+    ritKnown: ritOnAvailable && typeof state?.ritOn === 'boolean',
+    xitKnown: ritTxAvailable && typeof state?.ritTx === 'boolean',
   };
   Object.defineProperty(props, 'ritDomain', {
     value: validatedRitDomain(caps),
@@ -650,7 +672,9 @@ export function toRitXitProps(
 export interface ModeProps {
   currentMode: string;
   modes: string[];
-  dataMode: number;
+  /** Active receiver's DATA mode, or `null` while the `dataMode` field is
+   *  unobserved — never the fabricated OFF the old `?? 0` lit (MOR-2978). */
+  dataMode: number | null;
   hasDataMode: boolean;
   dataModeCount: number;
   dataModeLabels: Record<string, string>;
@@ -679,6 +703,9 @@ export function toModeProps(
   // the three explicit absence values while preserving the legacy no-entry
   // fallback; it does not establish observation evidence.
   const dataMode = rx?.dataMode;
+  // MOR-2978: the DATA keys stay rendered while `hasDataMode` holds (capability),
+  // so the props must carry knownness — gated exactly like `toAgcProps`' `agcMode`.
+  const dataModeAvailable = activeFieldAvailable(state, 'dataMode');
   const validDataGroup = Number.isSafeInteger(dataMode) && (dataMode as number) >= 0
     && (dataMode as number) <= (caps?.dataModeCount ?? -1);
   const modInputKey = validDataGroup ? modInputStateKey(dataMode as number) : null;
@@ -696,7 +723,7 @@ export function toModeProps(
     // `agcModes`/`toFilterProps`' `filterLabels` — unknown capabilities
     // means an empty, not invented, catalog.
     modes: caps?.modes ?? [],
-    dataMode: rx?.dataMode ?? 0,
+    dataMode: dataModeAvailable ? (rx?.dataMode ?? null) : null,
     hasDataMode: hasCap(caps, 'data_mode'),
     dataModeCount: caps?.dataModeCount ?? 0,
     dataModeLabels: caps?.dataModeLabels ?? { '0': 'OFF', '1': 'D1', '2': 'D2', '3': 'D3' },
@@ -783,6 +810,13 @@ export interface DspProps {
   hasNotch: boolean;
   hasAutoNotch: boolean;
   hasAgcTime: boolean;
+  /** Whether `nb`/`nr`/`manualNotch`/`autoNotch` are honestly observed —
+   *  the NB/NR/NOTCH/A-NOTCH keys expose the confirmed state and stay
+   *  disabled until observed (MOR-2979). */
+  nbKnown: boolean;
+  nrKnown: boolean;
+  manualNotchKnown: boolean;
+  autoNotchKnown: boolean;
 }
 
 export function toDspProps(
@@ -855,6 +889,13 @@ export function toDspProps(
     hasAutoNotch: (hasCap(caps, 'notch') || caps === null) && autoNotchAvailable,
     hasAgcTime: activeFieldAvailable(state, 'agcTimeConstant'),
     hasManualNotchWidth: hasCap(caps, 'notch') && hasCap(caps, notchWidthTag),
+    // MOR-2979: the keys stay rendered while the `has*` gates hold, so the
+    // props must carry knownness — available AND present, never the
+    // collapsed `?? false` / `? 1 : 0` / `'off'`.
+    nbKnown: nbAvailable && typeof rx?.nb === 'boolean',
+    nrKnown: nrAvailable && typeof rx?.nr === 'boolean',
+    manualNotchKnown: manualNotchAvailable && typeof rx?.manualNotch === 'boolean',
+    autoNotchKnown: autoNotchAvailable && typeof rx?.autoNotch === 'boolean',
   };
 }
 
@@ -873,6 +914,11 @@ export interface TxProps {
   hasTx: boolean;
   hasTuner: boolean;
   hasMonitor: boolean;
+  /** VOX/COMP capability gates (capability only) — the keys stay rendered
+   *  while held and expose knownness via `voxAvailable`/`compAvailable`,
+   *  staying disabled until observed (MOR-2979). */
+  hasVox: boolean;
+  hasComp: boolean;
   txActiveAvailable: boolean;
   rfPowerAvailable: boolean;
   micGainAvailable: boolean;
@@ -921,6 +967,10 @@ export function toTxProps(
     hasTx: caps?.tx ?? false,
     hasTuner: hasCap(caps, 'tuner') && atuAvailable,
     hasMonitor: hasCap(caps, 'monitor') && monAvailable,
+    // MOR-2979: capability-only gates (like `ModeProps.hasDataMode`) — the
+    // VOX/COMP keys stay rendered while held, disabled until observed.
+    hasVox: hasCap(caps, 'vox'),
+    hasComp: hasCap(caps, 'compressor'),
     txActiveAvailable,
     rfPowerAvailable,
     micGainAvailable,
@@ -1160,8 +1210,13 @@ export function toBandSelectorProps(
 /* ── Antenna ────────────────────────────────────────────────── */
 
 export interface AntennaProps {
-  txAntenna: number;
-  rxAnt: boolean;
+  /** Selected TX port, or `null` while unobserved — never the fabricated
+   *  port 1 the old `?? 1` lit (MOR-2978). */
+  txAntenna: number | null;
+  /** RX-antenna override on the observed port, or `null` while either the
+   *  port or the override is unobserved (MOR-2978 — the same "never derive
+   *  from a half-observed pair" rule `deriveAntenna` applies). */
+  rxAnt: boolean | null;
   antennaCount: number;
   hasRxAntenna: boolean;
 }
@@ -1170,11 +1225,18 @@ export function toAntennaProps(
   state: ServerState | null,
   caps: Capabilities | null,
 ): AntennaProps {
-  const txAntenna = state?.txAntenna ?? 1;
-  const rxAnt =
-    txAntenna === 2
-      ? (state?.rxAntenna2 ?? false)
-      : (state?.rxAntenna1 ?? false);
+  // MOR-2978: an unobserved port never silently resolves to port 1's
+  // reading, and `rxAnt` needs the port AND the port's override field
+  // honestly observed — `deriveAntenna`'s doctrine, in this file's idiom.
+  const txAntennaRaw = state?.txAntenna;
+  const txAntennaKnown = topFieldAvailable(state, 'txAntenna')
+    && txAntennaRaw !== undefined && txAntennaRaw !== null;
+  const txAntenna = txAntennaKnown ? txAntennaRaw : null;
+  const rxAntennaField = txAntennaRaw === 2 ? 'rxAntenna2' : 'rxAntenna1';
+  const rxAntennaRaw = txAntennaRaw === 2 ? state?.rxAntenna2 : state?.rxAntenna1;
+  const rxAnt = txAntennaKnown && topFieldAvailable(state, rxAntennaField)
+    && typeof rxAntennaRaw === 'boolean'
+    ? rxAntennaRaw : null;
 
   return {
     txAntenna,
@@ -1203,6 +1265,9 @@ export interface ScanProps {
   scanning: boolean;
   scanType: number;
   scanResumeMode: number;
+  /** Whether `scanning` is honestly observed — the STOP key exposes the
+   *  confirmed state and stays disabled until observed (MOR-2979). */
+  scanningKnown: boolean;
 }
 
 export function toScanProps(state: ServerState | null): ScanProps {
@@ -1213,6 +1278,10 @@ export function toScanProps(state: ServerState | null): ScanProps {
       state?.scanResumeMode === undefined || state?.scanResumeMode === null
         ? Number.NaN
         : state.scanResumeMode & 0x0f,
+    // MOR-2979: STOP has no visibility gate (always rendered), so the props
+    // must carry knownness — available AND present, never the collapsed
+    // `?? false`.
+    scanningKnown: topFieldAvailable(state, 'scanning') && typeof state?.scanning === 'boolean',
   };
 }
 

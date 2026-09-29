@@ -1084,6 +1084,7 @@ Canonical full state payload for web consumers (camelCase keys).
 | `radio_remote_control_unreachable` | Server is reachable and the radio host answers, but its remote-control server is not listening; the link is disconnected or reconnecting. |
 | `radio_not_responding` | Radio link still exists, but CI-V/control data is delayed or stalled. |
 | `radio_powered_off_likely` | Server is reachable and either the radio was previously available and repeated timeout/recovery evidence suggests it is off or unreachable, or the server started against a radio that has not answered at all. |
+| `radio_not_connected` | Server is reachable. It started while the radio's serial port could not be opened, the latest attempt to open the port failed, and the radio has not answered since. |
 | `unknown` | Insufficient evidence or healthy/ready state. |
 
 ## `GET /api/v1/capabilities`

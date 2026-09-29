@@ -54,22 +54,22 @@ and AUTO.
 
 ## CLI
 
-Name the backend: without `--backend yaesu-cat`, `--serial-port` selects the
-Icom serial backend.
+`--model FTX-1` selects the Yaesu CAT backend from the FTX-1 profile;
+`--backend yaesu-cat` does the same.
 
 ```bash
 # Status
-rigplane --backend yaesu-cat --serial-port /dev/cu.usbserial-XXXX status
+rigplane --model FTX-1 --serial-port /dev/cu.usbserial-XXXX status
 
 # Set frequency and mode
-rigplane --backend yaesu-cat --serial-port /dev/cu.usbserial-XXXX freq 14.074m
-rigplane --backend yaesu-cat --serial-port /dev/cu.usbserial-XXXX mode USB
+rigplane --model FTX-1 --serial-port /dev/cu.usbserial-XXXX freq 14.074m
+rigplane --model FTX-1 --serial-port /dev/cu.usbserial-XXXX mode USB
 ```
 
 ## Web UI
 
 ```bash
-rigplane --backend yaesu-cat --serial-port /dev/cu.usbserial-XXXX web
+rigplane --model FTX-1 --serial-port /dev/cu.usbserial-XXXX web
 # Then open http://localhost:8080
 ```
 
