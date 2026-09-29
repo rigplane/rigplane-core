@@ -26,7 +26,7 @@ Tested in production against WSJT-X, fldigi, and JS8Call.
 ## Quickstart
 
 ```bash
-pip install rigplane
+pip install --pre rigplane     # 3.0 is in beta; without --pre, pip installs 2.x
 rigplane --model IC-7610 web   # discovers the radio's IP on the LAN
 # open http://localhost:8080
 ```
