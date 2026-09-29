@@ -57,11 +57,14 @@ LAN discovery finds the radio's IP address but not its model, so name the model 
 
 Similarly, when `--backend serial` is set without `--serial-port`, serial ports are scanned automatically.
 
-The `--backend` flag is auto-inferred:
+When `--backend` is omitted, it is inferred. A serial port counts as given
+when `--serial-port` or `ICOM_SERIAL_DEVICE` is set.
 
-- `--serial-port` provided → infers `--backend serial`
-- `ICOM_SERIAL_DEVICE` set → infers `--backend serial`
-- Otherwise → `lan` (default)
+- With `--model`, from the model's profile: a CI-V radio gets `serial` when a
+  serial port is given and `lan` otherwise; the FTX-1 gets `yaesu-cat`; a
+  profile with another protocol is refused.
+- Without `--model`: `serial` when a serial port is given, `lan` otherwise.
+- `rigctld` is never inferred.
 
 ## Presets
 

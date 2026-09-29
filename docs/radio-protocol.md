@@ -337,7 +337,9 @@ rigplane --backend serial --model IC-7610 --serial-port /dev/cu.usbserial-111120
 
 ### Web UI and rigctld
 
-Web UI and rigctld now support backend selection via CLI flags. Default is LAN for backward compatibility.
+Web UI and rigctld now support backend selection via CLI flags. Without
+`--backend`, the backend follows the model's profile; for the IC-7610 in these
+examples that is LAN.
 
 ```bash
 # Web UI: LAN backend (default)
