@@ -59,6 +59,7 @@ from rigplane.rigctld.contract import (
     RigctldResponse,
 )
 from rigplane.rigctld.server import RigctldServer, run_rigctld_server
+import rigplane.rigctld.server as rigctld_server
 from rigplane.web.radio_poller import RadioPoller
 from rigplane.profiles import resolve_radio_profile
 from rigplane.types import Mode
@@ -2779,3 +2780,127 @@ class TestStateAcquisitionDrainPolicies:
                 "request was swallowed by the external-CAT stand-down"
             )
         assert len(filtered_ids) == len(pending) - len(cadence_only)
+
+
+# ---------------------------------------------------------------------------
+# MOR-2875: the shutdown waits carry their own bounds
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("cancelled", [False, True], ids=["waited", "cancelled-once"])
+async def test_a_handback_that_never_settles_is_waited_on_only_for_its_bound(
+    mock_radio: MagicMock,
+    cfg: RigctldConfig,
+    proto: MagicMock,
+    handler: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    cancelled: bool,
+) -> None:
+    monkeypatch.setattr(rigctld_server, "SESSION_TX_HANDBACK_TIMEOUT_S", 0.05)
+    started, never = asyncio.Event(), asyncio.Event()
+
+    async def release_session_tx(_session_id: str) -> None:
+        started.set()
+        await never.wait()
+
+    handler.release_session_tx = release_session_tx
+    srv = RigctldServer(mock_radio, cfg, _protocol=proto, _handler=handler)
+    teardown = asyncio.ensure_future(srv._release_session_tx("s1"))
+    await asyncio.wait_for(started.wait(), 1.0)
+    if cancelled:
+        teardown.cancel()  # stop() reaching the session mid-handback
+    # asyncio.wait, not wait_for: a timeout here must not cancel the teardown
+    # into its second, bounded wait and pass for the wrong reason.
+    done, _ = await asyncio.wait({teardown}, timeout=1.0)
+    never.set()  # the abandoned handback may finish now
+    await asyncio.sleep(0)
+
+    assert done == {teardown}
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert errors[0].startswith("session s1: managed TX handback did not settle")
+    assert errors[0].endswith("unkey not confirmed")
+
+
+async def test_a_handback_cancelled_twice_is_left_with_an_error_naming_the_session(
+    mock_radio: MagicMock,
+    cfg: RigctldConfig,
+    proto: MagicMock,
+    handler: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(rigctld_server, "SESSION_TX_HANDBACK_TIMEOUT_S", 5.0)
+    started, never = asyncio.Event(), asyncio.Event()
+    ends: list[str] = []
+
+    async def release_session_tx(_session_id: str) -> None:
+        started.set()
+        try:
+            await never.wait()
+        except asyncio.CancelledError:
+            ends.append("handback cancelled")
+            raise
+
+    handler.release_session_tx = release_session_tx
+    srv = RigctldServer(mock_radio, cfg, _protocol=proto, _handler=handler)
+    teardown = asyncio.ensure_future(srv._release_session_tx("s1"))
+    await asyncio.wait_for(started.wait(), 1.0)
+    teardown.cancel()  # the first cancellation: a second, bounded wait begins
+    await asyncio.sleep(0.05)
+    assert not teardown.done()
+    teardown.cancel()  # the second one ends the wait and the handback
+    done, _ = await asyncio.wait({teardown}, timeout=1.0)
+    await asyncio.sleep(0)
+
+    assert done == {teardown} and teardown.cancelled()
+    assert ends == ["handback cancelled"]
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert errors == [
+        "session s1: managed TX handback cancelled a second time before it"
+        " settled; unkey not confirmed"
+    ]
+
+
+async def test_stop_waits_for_a_listener_that_never_closes_only_for_its_bound(
+    mock_radio: MagicMock,
+    cfg: RigctldConfig,
+    proto: MagicMock,
+    handler: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(rigctld_server, "LISTENER_CLOSE_TIMEOUT_S", 0.05)
+
+    class _NeverClosingListener:
+        def close(self) -> None:
+            pass
+
+        async def wait_closed(self) -> None:
+            await asyncio.Event().wait()
+
+    srv = RigctldServer(mock_radio, cfg, _protocol=proto, _handler=handler)
+    srv._server = cast(Any, _NeverClosingListener())
+    await asyncio.wait_for(srv.stop(), 1.0)
+    assert srv._server is None
+
+
+def test_stop_timeout_is_the_sum_of_its_timed_waits() -> None:
+    """``STOP_TIMEOUT_S`` sums the ``timeout=`` of every wait in
+    ``_release_session_tx`` and ``stop()``."""
+    import ast
+    import inspect
+    import textwrap
+
+    timeouts = [
+        keyword.value
+        for method in (RigctldServer._release_session_tx, RigctldServer.stop)
+        for node in ast.walk(ast.parse(textwrap.dedent(inspect.getsource(method))))
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+        if keyword.arg == "timeout"
+    ]
+    assert timeouts and all(isinstance(value, ast.Name) for value in timeouts)
+    assert rigctld_server.STOP_TIMEOUT_S == sum(
+        getattr(rigctld_server, cast(ast.Name, value).id) for value in timeouts
+    )

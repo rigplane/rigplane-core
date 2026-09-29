@@ -53,6 +53,7 @@ from ..runtime._state_queries import (
     wire_parts_for_query,
 )
 from ..runtime._poller_types import CommandQueue
+from ..runtime.managed_tx_authority import ATTEMPT_TIMEOUT_S, RETRY_DELAY_S
 from ..startup_checks import assert_radio_startup_ready
 from . import audit as _audit  # noqa: TID251
 from .circuit_breaker import CircuitBreaker, CircuitState  # noqa: TID251
@@ -89,6 +90,15 @@ _HTTP_REQUEST_LINE_RE = re.compile(rb"^[A-Z]+ \S+ HTTP/\d(\.\d)?$")
 # hammering the port with fresh connections cannot flood the log.
 _HTTP_REFUSAL_LOG_WINDOW_S = 10.0
 _HTTP_REFUSAL_LOG_MAX_PEERS = 128
+
+# MOR-2875: the bound on each wait for a departing session's managed-TX
+# handback (one ManagedTxAuthority attempt, plus its retry delay as slack),
+# and on stop()'s wait for the listener to close. STOP_TIMEOUT_S sums the
+# waits of _release_session_tx (a second one follows a cancellation) and
+# stop() (pinned by test_stop_timeout_is_the_sum_of_its_timed_waits).
+SESSION_TX_HANDBACK_TIMEOUT_S: float = ATTEMPT_TIMEOUT_S + RETRY_DELAY_S
+LISTENER_CLOSE_TIMEOUT_S: float = 2.0
+STOP_TIMEOUT_S: float = 2 * SESSION_TX_HANDBACK_TIMEOUT_S + LISTENER_CLOSE_TIMEOUT_S
 
 
 class _ManagedPttReady(asyncio.Future[None]):
@@ -332,6 +342,11 @@ class RigctldServer:
         re-arms behind it, so it is a condition for the uncertain-shutdown
         diagnostics to surface (MOR-1015), not one that times itself out. The
         caller's teardown is written to close the socket either way.
+
+        Each wait on the handback lasts at most
+        ``SESSION_TX_HANDBACK_TIMEOUT_S`` (MOR-2875); past it the wait is
+        abandoned, not the handback, and the unconfirmed unkey is logged at
+        ERROR.
         """
         release = getattr(self._rig_handler, "release_session_tx", None)
         if release is None:
@@ -342,7 +357,9 @@ class RigctldServer:
                 return
             handback = asyncio.ensure_future(result)
             try:
-                await asyncio.shield(handback)
+                await asyncio.wait_for(
+                    asyncio.shield(handback), timeout=SESSION_TX_HANDBACK_TIMEOUT_S
+                )
             except asyncio.CancelledError:
                 # Shutdown reached this session mid-handback. Every other step
                 # of a teardown can be abandoned; this one cannot, and nothing
@@ -354,10 +371,29 @@ class RigctldServer:
                 # branch only while no release is pending. That state does not
                 # time itself out — it is for the uncertain-shutdown
                 # diagnostics to surface (MOR-1015). The release is in flight
-                # anyway and ``stop()`` gathers this task, so the wait is
-                # bounded by the handback itself. Swallowed rather than
+                # anyway, so it gets a second wait with the same bound; a
+                # second cancellation ends it. Swallowed rather than
                 # re-raised so the socket close below still runs (MOR-1014).
-                await handback
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(handback),
+                        timeout=SESSION_TX_HANDBACK_TIMEOUT_S,
+                    )
+                except asyncio.CancelledError:
+                    logger.error(
+                        "session %s: managed TX handback cancelled a second time "
+                        "before it settled; unkey not confirmed",
+                        session_id,
+                    )
+                    handback.cancel()
+                    raise
+        except TimeoutError:
+            logger.error(
+                "session %s: managed TX handback did not settle within %.1fs; "
+                "unkey not confirmed",
+                session_id,
+                SESSION_TX_HANDBACK_TIMEOUT_S,
+            )
         except Exception:
             logger.warning(
                 "session %s: managed TX release failed", session_id, exc_info=True
@@ -924,9 +960,17 @@ class RigctldServer:
             await asyncio.gather(*tasks, return_exceptions=True)
 
         if listener is not None:
-            # Prompt now: every handler has run its teardown and dropped its
-            # transport, so nothing is left for this to wait on.
-            await listener.wait_closed()
+            # Bounded (MOR-2875): since 3.12 a connection still open holds
+            # wait_closed() until it goes.
+            try:
+                await asyncio.wait_for(
+                    listener.wait_closed(), timeout=LISTENER_CLOSE_TIMEOUT_S
+                )
+            except TimeoutError:
+                logger.warning(
+                    "rigctld listener did not close within %.1fs; continuing",
+                    LISTENER_CLOSE_TIMEOUT_S,
+                )
 
         logger.info("rigctld stopped")
 

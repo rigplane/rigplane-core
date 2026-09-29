@@ -19,6 +19,10 @@ the IC-7610 profile. The FTX-1 on `--backend yaesu-cat` and an external rigctld
 on `--backend rigctld` run without it. See
 [The radio model is required](migrate.md#the-radio-model-is-required).
 
+With `--model` and no `--backend`, the backend comes from the radio's profile:
+`--model FTX-1 --serial-port …` starts the Yaesu CAT backend, and
+`--model IC-7300 --serial-port …` the Icom serial one.
+
 ## Readings Show Only What the Radio Reported
 
 - A reading the radio has not reported yet stays empty. The Web UI does not
@@ -60,6 +64,12 @@ on `--backend rigctld` run without it. See
 The Web UI's radio logic is shared, and a skin only decides how things look.
 With a source checkout you can build your own skin without changing the radio
 logic.
+
+## Command Line
+
+`web`, `serve` and `station` take `--listen` for the address the server
+listens on. `--host` after these commands still works but prints a
+deprecation warning; if both are given, `--listen` wins.
 
 ## For Library Users
 

@@ -1,9 +1,9 @@
 {
   "ticket": "MOR-1090",
-  "generatedAt": "2026-09-22T19:50:54.282Z",
-  "commit": "26c6798237f614e91f3d6b438b6be1d27d43a13a",
-  "commitShort": "26c67982",
-  "branch": "codex/mor-2509-r2-batch",
+  "generatedAt": "2026-09-29T02:43:11.692Z",
+  "commit": "04641e48e56770612e43b212411cac807db3fb28",
+  "commitShort": "04641e48",
+  "branch": "codex/mor-2978-legacy-choice-keys-pressed",
   "platform": "linux-arm64",
   "node": "v20.20.2",
   "playwright": "1.58.2",

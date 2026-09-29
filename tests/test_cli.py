@@ -5,6 +5,7 @@ import io
 import logging
 import signal
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import platformdirs
@@ -12,6 +13,7 @@ import pytest
 
 from rigplane.cli import (
     _HOST_NOT_SET,
+    _ShutdownBackstop,
     _build_backend_config,
     _build_parser,
     _finalize_ptt_args,
@@ -24,6 +26,18 @@ from rigplane.backends.config import (
     LanBackendConfig,
     RigctldBackendConfig,
     SerialBackendConfig,
+    YaesuCatBackendConfig,
+)
+from rigplane.runtime.managed_tx_authority import ManagedTxProjection, ShutdownResult
+from rigplane.runtime.managed_tx_state import (
+    ActuationDiagnostic,
+    ActuationOperation,
+    ActuationResult,
+    EffectToken,
+    ManagedTxEffect,
+    ManagedTxIntent,
+    ManagedTxState,
+    ReleasePlan,
 )
 
 
@@ -468,7 +482,7 @@ class TestPasswordResolution:
 
         err = mock_stderr.getvalue()
         assert "do not combine 'discover' and 'web'" in err
-        assert "rigplane --model IC-7610 web --radio-host 192.168.55.40" in err
+        assert "rigplane --model IC-7610 web --radio-host 192.168.1.50" in err
 
     def test_web_help_does_not_print_error_hint(self):
         p = _build_parser()
@@ -967,6 +981,164 @@ class TestBuildBackendConfig:
         config = await _build_backend_config(args)
         assert isinstance(config, SerialBackendConfig)
         assert config.device == "/dev/tty.usb0"
+
+
+class TestBackendInferenceFromModel:
+    """MOR-2926: --backend omitted follows the model's [protocol] type."""
+
+    async def test_ftx1_infers_yaesu_cat(self):
+        p = _build_parser()
+        args = p.parse_args(
+            ["--model", "FTX-1", "--serial-port", "/dev/ttyUSB0", "status"]
+        )
+        config = await _build_backend_config(args)
+        assert isinstance(config, YaesuCatBackendConfig)
+        assert config.device == "/dev/ttyUSB0"
+        assert config.model == "FTX-1"
+
+    async def test_ftx1_web_infers_yaesu_cat(self):
+        p = _build_parser()
+        args = p.parse_args(
+            ["--model", "FTX-1", "--serial-port", "/dev/ttyUSB0", "web"]
+        )
+        config = await _build_backend_config(args)
+        assert isinstance(config, YaesuCatBackendConfig)
+        assert config.device == "/dev/ttyUSB0"
+
+    async def test_icom_serial_inference_unchanged(self):
+        p = _build_parser()
+        args = p.parse_args(
+            ["--model", "IC-7300", "--serial-port", "/dev/ttyUSB0", "status"]
+        )
+        config = await _build_backend_config(args)
+        assert isinstance(config, SerialBackendConfig)
+        assert config.model == "IC-7300"
+
+    async def test_civ_lan_inference_unchanged(self):
+        p = _build_parser()
+        args = p.parse_args(["--model", "IC-7300", "--host", "1.2.3.4", "status"])
+        config = await _build_backend_config(args)
+        assert isinstance(config, LanBackendConfig)
+        assert config.model == "IC-7300"
+
+    async def test_no_model_keeps_serial_inference(self):
+        p = _build_parser()
+        args = p.parse_args(["--serial-port", "/dev/ttyUSB0", "status"])
+        config = await _build_backend_config(args)
+        assert isinstance(config, SerialBackendConfig)
+
+    async def test_no_model_keeps_lan_default(self):
+        p = _build_parser()
+        args = p.parse_args(["--host", "1.2.3.4", "status"])
+        config = await _build_backend_config(args)
+        assert isinstance(config, LanBackendConfig)
+
+    async def test_unsupported_protocol_refused(self):
+        p = _build_parser()
+        args = p.parse_args(
+            ["--model", "TX-500", "--serial-port", "/dev/ttyUSB0", "status"]
+        )
+        with pytest.raises(ValueError, match="kenwood_cat"):
+            await _build_backend_config(args)
+
+    async def test_unsupported_protocol_message_names_no_backend(self):
+        p = _build_parser()
+        args = p.parse_args(
+            ["--model", "TX-500", "--serial-port", "/dev/ttyUSB0", "status"]
+        )
+        with pytest.raises(ValueError, match="no backend supports"):
+            await _build_backend_config(args)
+
+    async def test_missing_protocol_refused(self, monkeypatch):
+        from types import SimpleNamespace
+
+        fake = SimpleNamespace(
+            id="fake_1",
+            model="FAKE-1",
+            civ_addr=0x01,
+            default_baud=9600,
+            protocol_type=None,
+        )
+        monkeypatch.setattr(
+            "rigplane.profiles.rig_loader.discover_available_rigs",
+            lambda _d: {"FAKE-1": fake},
+        )
+        p = _build_parser()
+        args = p.parse_args(
+            ["--model", "FAKE-1", "--serial-port", "/dev/ttyUSB0", "status"]
+        )
+        with pytest.raises(ValueError, match="no backend supports"):
+            await _build_backend_config(args)
+
+    async def test_inferred_yaesu_ignores_host_with_warning(self):
+        p = _build_parser()
+        args = p.parse_args(
+            [
+                "--model",
+                "FTX-1",
+                "--serial-port",
+                "/dev/ttyUSB0",
+                "--host",
+                "1.2.3.4",
+                "status",
+            ]
+        )
+        with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+            config = await _build_backend_config(args)
+        assert isinstance(config, YaesuCatBackendConfig)
+        err = mock_stderr.getvalue()
+        assert "--host is ignored" in err
+        assert "yaesu-cat" in err
+
+    async def test_explicit_backend_wins_over_model(self):
+        p = _build_parser()
+        args = p.parse_args(
+            [
+                "--model",
+                "FTX-1",
+                "--serial-port",
+                "/dev/ttyUSB0",
+                "--backend",
+                "serial",
+                "status",
+            ]
+        )
+        config = await _build_backend_config(args)
+        assert isinstance(config, SerialBackendConfig)
+
+    async def test_explicit_lan_wins_over_yaesu_model(self):
+        p = _build_parser()
+        args = p.parse_args(
+            ["--model", "FTX-1", "--host", "1.2.3.4", "--backend", "lan", "status"]
+        )
+        config = await _build_backend_config(args)
+        assert isinstance(config, LanBackendConfig)
+
+    async def test_rigctld_stays_explicit(self):
+        p = _build_parser()
+        args = p.parse_args(
+            ["--model", "FTX-1", "--host", "1.2.3.4", "--backend", "rigctld", "status"]
+        )
+        config = await _build_backend_config(args)
+        assert isinstance(config, RigctldBackendConfig)
+
+    async def test_inferred_yaesu_default_baud(self):
+        p = _build_parser()
+        args = p.parse_args(
+            ["--model", "FTX-1", "--serial-port", "/dev/ttyUSB0", "status"]
+        )
+        config = await _build_backend_config(args)
+        assert isinstance(config, YaesuCatBackendConfig)
+        assert config.baudrate == 38400
+
+    def test_backend_help_mentions_model_inference(self):
+        p = _build_parser()
+        for action in p._actions:
+            if action.dest == "backend":
+                assert "inferred from the model" in action.help.lower()
+                break
+        else:
+            pytest.fail("--backend argument not found in parser")
 
 
 class TestAutoDiscovery:
@@ -1994,8 +2166,10 @@ class TestProductionManagedTxComposition:
         assert radio.entered
         composition = radio._managed_tx_composition
         assert composition is not None
+        backstop = command.await_args.kwargs["shutdown_backstop"]
+        assert isinstance(backstop, _ShutdownBackstop)
         command.assert_awaited_once_with(
-            radio, args, managed_tx_composition=composition
+            radio, args, managed_tx_composition=composition, shutdown_backstop=backstop
         )
 
     @pytest.mark.asyncio
@@ -2091,6 +2265,350 @@ class TestProductionManagedTxComposition:
 
         candidate.shutdown.assert_awaited_once()
         radio.__aexit__.assert_not_awaited()
+
+
+class TestFirstSignalShutdownBound:
+    """MOR-2875: the bound on a web/station shutdown after its first signal."""
+
+    @staticmethod
+    def _record_exits(monkeypatch: pytest.MonkeyPatch, events: list[str]) -> None:
+        from rigplane import cli
+
+        monkeypatch.setattr(cli.os, "_exit", lambda code: events.append(f"exit {code}"))
+
+    @staticmethod
+    def _errors(caplog: pytest.LogCaptureFixture) -> list[str]:
+        return [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+
+    @staticmethod
+    def _composition(after: ManagedTxState, shutdown: Any) -> MagicMock:
+        """Keyed by session web-1 until ``shutdown`` starts, then *after*."""
+        keyed = ManagedTxState(
+            intent=ManagedTxIntent.ptt("web-1"),
+            release_plan=ReleasePlan.PTT_RELEASE,
+            tx_started_at_monotonic=1.0,
+        )
+        started: list[bool] = []
+
+        async def run(termination: Any) -> Any:
+            started.append(True)
+            return await shutdown(termination)
+
+        composition = MagicMock()
+        composition.shutdown = AsyncMock(side_effect=run)
+        composition.authority.snapshot_nowait.side_effect = lambda: ManagedTxProjection(
+            after if started else keyed, None, None, 4
+        )
+        return composition
+
+    @pytest.mark.asyncio
+    async def test_a_release_slower_than_the_bound_unkeys_before_the_bound_acts(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import asyncio
+
+        from rigplane.cli import _ManagedTxRadioSession
+
+        events: list[str] = []
+        self._record_exits(monkeypatch, events)
+
+        async def slow_unkey(_termination: asyncio.Event) -> None:
+            await asyncio.sleep(0.3)  # past the 0.1 s bound, inside its own
+            events.append("unkey")
+
+        radio = MagicMock()
+        radio.__aexit__ = AsyncMock(side_effect=lambda *_a: events.append("radio exit"))
+        composition = MagicMock()
+        composition.shutdown = AsyncMock(side_effect=slow_unkey)
+
+        async def shutdown_sequence() -> None:
+            await session.__aexit__(None, None, None)
+
+        shutdown = asyncio.create_task(shutdown_sequence())
+        backstop = _ShutdownBackstop(shutdown, bound_s=0.1)
+        session = _ManagedTxRadioSession(radio, composition, backstop)
+        backstop.arm()
+        await asyncio.wait({shutdown}, timeout=2.0)
+        await asyncio.wait({session._shutdown_task}, timeout=2.0)  # noqa: SLF001
+        backstop.disarm()
+
+        assert events == ["unkey", "radio exit"]
+        assert self._errors(caplog) == []
+
+    @pytest.mark.asyncio
+    async def test_the_forced_exit_waits_for_a_release_started_after_the_cancel(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+
+        from rigplane import cli
+
+        events: list[str] = []
+        self._record_exits(monkeypatch, events)
+        monkeypatch.setattr(cli, "_SHUTDOWN_FORCED_EXIT_GRACE_S", 0.05)
+        hang = asyncio.Event()
+
+        async def unkey() -> None:
+            await asyncio.sleep(0.3)
+            events.append("unkey")
+
+        async def shutdown_sequence() -> None:
+            try:
+                await hang.wait()  # a step that never finishes
+            finally:
+                release = asyncio.ensure_future(unkey())
+                backstop.protect(release, "unkey", 2.0)
+                await asyncio.shield(release)
+                await hang.wait()  # and a second one after the release
+
+        shutdown = asyncio.create_task(shutdown_sequence())
+        backstop = _ShutdownBackstop(shutdown, bound_s=0.1)
+        backstop.arm()
+        await asyncio.wait_for(backstop._clock, 2.0)  # noqa: SLF001
+        hang.set()
+        await asyncio.gather(shutdown, return_exceptions=True)
+
+        assert events == ["unkey", "exit 130"]
+
+    @pytest.mark.asyncio
+    async def test_the_forced_exit_waits_for_a_web_ptt_drain_started_after_the_cancel(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The web stop outlasts the bound, then resumes into its PTT drain,
+        which reaches the backstop through serve_forever's on_tx_release."""
+        import asyncio
+
+        from rigplane import cli
+        from rigplane.web import server as web_server
+        from rigplane.web.server import WebConfig, WebServer
+
+        events: list[str] = []
+        self._record_exits(monkeypatch, events)
+        monkeypatch.setattr(cli, "_SHUTDOWN_FORCED_EXIT_GRACE_S", 0.3)
+        handlers: list[object] = []
+        monkeypatch.setattr(
+            web_server,
+            "_install_shutdown_signal_handlers",
+            lambda _loop, on_signal: handlers.append(on_signal),
+        )
+        resume, hang = asyncio.Event(), asyncio.Event()
+
+        class _StuckDiscovery:  # a web stop step that outlasts the bound
+            async def stop(self) -> None:
+                await resume.wait()
+
+        class _Poller:
+            def stop(self) -> None:
+                pass
+
+            async def drain_tx_safety_commands(self, *, timeout: float) -> None:
+                await asyncio.sleep(0.5)
+                events.append("unkey")
+
+        srv = WebServer(None, WebConfig(host="127.0.0.1", port=0, discovery=False))
+
+        async def shutdown_sequence() -> None:
+            await srv.serve_forever(
+                on_shutdown_signal=backstop.arm, on_tx_release=backstop.protect
+            )
+            resume.set()  # serve_forever returns on the backstop's cancel
+            await hang.wait()  # a later step that never finishes
+
+        with patch(
+            "rigplane.web.web_startup.asyncio.start_server",
+            new=AsyncMock(
+                return_value=MagicMock(
+                    sockets=[MagicMock(getsockname=lambda: ("127.0.0.1", 0))],
+                    wait_closed=AsyncMock(),
+                )
+            ),
+        ):
+            shutdown = asyncio.create_task(shutdown_sequence())
+            backstop = _ShutdownBackstop(shutdown, bound_s=0.1)
+            while not handlers:
+                await asyncio.sleep(0)
+            srv._discovery = _StuckDiscovery()
+            srv._radio_poller = _Poller()
+            handlers[0]()  # the first SIGTERM
+            await asyncio.wait_for(backstop._clock, 2.0)  # noqa: SLF001
+            for _ in range(100):  # the drain outlives a wrong exit; let it end
+                if "unkey" in events:
+                    break
+                await asyncio.sleep(0.01)
+            hang.set()
+            await asyncio.gather(shutdown, return_exceptions=True)
+
+        assert events == ["unkey", "exit 130"]
+
+    @pytest.mark.asyncio
+    async def test_at_the_bound_pending_tasks_are_logged_and_the_shutdown_cancelled(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import asyncio
+
+        events: list[str] = []
+        self._record_exits(monkeypatch, events)
+
+        async def stuck_radio_disconnect() -> None:
+            await asyncio.Event().wait()
+
+        async def shutdown_sequence() -> None:
+            await stuck_radio_disconnect()
+
+        shutdown = asyncio.create_task(shutdown_sequence(), name="the-shutdown")
+        backstop = _ShutdownBackstop(shutdown, bound_s=0.1)
+        backstop.arm()
+        await asyncio.wait({shutdown}, timeout=2.0)
+        backstop.disarm()
+
+        assert shutdown.cancelled()
+        assert events == []
+        (report,) = self._errors(caplog)
+        assert "the-shutdown: " in report
+        assert "<locals>.shutdown_sequence -> " in report
+        assert "<locals>.stuck_radio_disconnect -> " in report
+
+    @pytest.mark.asyncio
+    async def test_the_clock_the_first_signal_starts_stops_when_the_shutdown_ends(
+        self,
+    ) -> None:
+        import asyncio
+
+        from rigplane.cli import _run
+
+        clocks: list[asyncio.Task[None]] = []
+
+        async def first_signal_then_stop(_radio, _args, **kwargs) -> int:
+            kwargs["shutdown_backstop"].arm()
+            clocks.extend(
+                t for t in asyncio.all_tasks() if t.get_name() == "shutdown-backstop"
+            )
+            return 0
+
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "web", "--no-rigctld"])
+        with (
+            patch(
+                "rigplane.cli.create_radio",
+                return_value=TestProductionManagedTxComposition._Radio(),
+            ),
+            patch("rigplane.cli.check_ports_available"),
+            patch("rigplane.cli._cmd_web", side_effect=first_signal_then_stop),
+        ):
+            assert await _run(args) == 0
+        await asyncio.sleep(0)
+        stopped = [clock.cancelled() for clock in clocks]
+        for clock in clocks:
+            clock.cancel()
+
+        assert stopped == [True]
+
+    @pytest.mark.asyncio
+    async def test_cmd_web_starts_the_clock_on_the_first_signal(self) -> None:
+        from rigplane.cli import _cmd_web
+
+        class FakeWebServer:
+            def __init__(self, _radio, _cfg) -> None:
+                pass
+
+            async def serve_forever(
+                self, *, on_started=None, on_shutdown_signal=None, on_tx_release=None
+            ) -> None:
+                on_started()
+                on_shutdown_signal()
+                hooks.append(on_tx_release)
+
+        hooks: list[object] = []
+        backstop = MagicMock()
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "web", "--no-rigctld"])
+        with patch("rigplane.web.server.WebServer", FakeWebServer):
+            assert await _cmd_web(AsyncMock(), args, shutdown_backstop=backstop) == 0
+
+        backstop.arm.assert_called_once_with()
+        assert hooks == [backstop.protect]
+
+    def test_the_bound_sums_the_step_bounds_and_a_margin(self) -> None:
+        from rigplane import cli
+        from rigplane.backends._icom_serial_base import _IcomSerialRadioBase
+        from rigplane.rigctld import server as rigctld
+        from rigplane.web import web_startup
+
+        steps = (
+            web_startup.WEB_STOP_TIMEOUT_S,
+            rigctld.STOP_TIMEOUT_S,
+            cli._MANAGED_TX_SHUTDOWN_S,
+            _IcomSerialRadioBase._SERIAL_CIV_WATCHDOG_TEARDOWN_TIMEOUT_S,
+        )
+        margin = cli._SHUTDOWN_MARGIN_S
+        assert margin > 0
+        assert cli._first_signal_shutdown_bound_s() == sum(steps) + margin
+
+    @pytest.mark.asyncio
+    async def test_a_managed_tx_shutdown_that_never_finishes_is_left_after_its_bound(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import asyncio
+
+        from rigplane import cli
+
+        monkeypatch.setattr(cli, "_MANAGED_TX_SHUTDOWN_DRAIN_S", 0.05)
+        monkeypatch.setattr(cli, "_MANAGED_TX_SHUTDOWN_SETTLE_S", 0.05)
+        terminated: list[bool] = []
+        release = asyncio.Event()
+
+        async def never_finishes(termination: asyncio.Event) -> None:
+            await termination.wait()
+            terminated.append(True)
+            await release.wait()  # still running after termination
+
+        pending = ManagedTxEffect(
+            ActuationOperation.FORCE_RECEIVE, EffectToken(4, 2, "9")
+        )
+        composition = self._composition(
+            ManagedTxState(
+                release_plan=ReleasePlan.FORCE_RELEASE, pending_effect=pending
+            ),
+            never_finishes,
+        )
+        await asyncio.wait_for(cli._shutdown_managed_tx_composition(composition), 1.0)
+        release.set()
+        await asyncio.sleep(0.01)
+
+        assert terminated == [True]
+        (error,) = self._errors(caplog)
+        assert error.startswith(
+            "managed TX shutdown: unkey not confirmed, the rig may still be keyed:"
+            " session web-1, provider generation 4, attempt 9 force_receive"
+            " unanswered; still running"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_terminated_managed_tx_shutdown_is_an_unconfirmed_unkey(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from rigplane import cli
+
+        async def terminated(_termination: Any) -> ShutdownResult:
+            return ShutdownResult.TERMINATED
+
+        last = ActuationDiagnostic(
+            ActuationOperation.FORCE_RECEIVE, ActuationResult.UNCERTAIN, "9"
+        )
+        composition = self._composition(
+            ManagedTxState(
+                release_plan=ReleasePlan.FORCE_RELEASE,
+                last_actuation=last,
+                last_error="attempt deadline expired",
+            ),
+            terminated,
+        )
+        await cli._shutdown_managed_tx_composition(composition)
+
+        (error,) = self._errors(caplog)
+        assert error.startswith("managed TX shutdown: unkey not confirmed within")
+        assert error.endswith(
+            "the rig may still be keyed: session web-1, provider generation 4,"
+            " attempt 9 force_receive uncertain (attempt deadline expired)"
+        )
 
 
 class TestRemainingPortPreflight:
@@ -2206,3 +2724,84 @@ class TestRemainingPortPreflight:
         captured = capsys.readouterr()
         assert str(occupied_rigctld_port) in captured.err
         assert "lsof" in captured.err.lower()
+
+
+class TestListenFlag:
+    """MOR-2954: --listen is the listen address on web/serve/station.
+
+    The subcommand --host stays as a deprecated alias; the global --host
+    (the radio's address) is untouched.
+    """
+
+    @pytest.mark.parametrize(
+        ("command", "dest"),
+        [("web", "web_host"), ("serve", "serve_host"), ("station", "web_host")],
+    )
+    def test_listen_sets_listen_address(self, command, dest):
+        p = _build_parser()
+        with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+            args = p.parse_args([command, "--listen", "127.0.0.1"])
+        assert getattr(args, dest) == "127.0.0.1"
+        assert mock_stderr.getvalue() == ""
+
+    @pytest.mark.parametrize(
+        ("command", "dest"),
+        [("web", "web_host"), ("serve", "serve_host"), ("station", "web_host")],
+    )
+    def test_legacy_host_sets_listen_address_and_warns(self, command, dest):
+        p = _build_parser()
+        with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+            args = p.parse_args([command, "--host", "127.0.0.1"])
+        assert getattr(args, dest) == "127.0.0.1"
+        err = mock_stderr.getvalue()
+        assert "--listen" in err
+        assert "deprecat" in err.lower()
+        assert len(err.strip().splitlines()) == 1
+
+    @pytest.mark.parametrize(
+        ("command", "default"),
+        [("web", "0.0.0.0"), ("serve", "0.0.0.0"), ("station", "127.0.0.1")],
+    )
+    def test_global_host_sets_radio_address_without_warning(self, command, default):
+        p = _build_parser()
+        with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+            args = p.parse_args(["--host", "192.168.1.50", command])
+        assert args.host == "192.168.1.50"
+        dest = "serve_host" if command == "serve" else "web_host"
+        assert getattr(args, dest) == default
+        assert mock_stderr.getvalue() == ""
+
+    @pytest.mark.parametrize(
+        ("command", "dest"),
+        [("web", "web_host"), ("serve", "serve_host"), ("station", "web_host")],
+    )
+    @pytest.mark.parametrize(
+        "argv_tail",
+        [
+            ["--listen", "127.0.0.1", "--host", "0.0.0.0"],
+            ["--host", "0.0.0.0", "--listen", "127.0.0.1"],
+        ],
+    )
+    def test_listen_wins_when_both_given(self, command, dest, argv_tail):
+        p = _build_parser()
+        with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+            args = p.parse_args([command, *argv_tail])
+        assert getattr(args, dest) == "127.0.0.1"
+        err = mock_stderr.getvalue()
+        assert "--listen" in err
+        assert "wins" in err
+
+    @pytest.mark.parametrize("command", ["web", "serve", "station"])
+    def test_help_shows_listen_and_deprecated_host(self, command, capsys):
+        p = _build_parser()
+        with pytest.raises(SystemExit) as exc_info:
+            p.parse_args([command, "--help"])
+        assert exc_info.value.code == 0
+        out = capsys.readouterr().out
+        assert "--listen" in out
+        host_line = next(
+            line
+            for line in out.splitlines()
+            if line.strip().startswith("--host ") or line.strip().startswith("--host\t")
+        )
+        assert "deprecat" in host_line.lower()

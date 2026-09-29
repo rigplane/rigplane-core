@@ -575,9 +575,12 @@
           data-testid="cw-keyer-apf" data-observed={usable(cw.apf)}
         >
           {#if standard}
+            <!-- MOR-2907 F7: the same honest form the break-in keys above
+                 use (MOR-2690) — `aria-pressed` only when the choice is
+                 KNOWN, never a fabricated "false" on an unread reading. -->
             <button
               type="button" class="cw-keyer-toggle" data-testid="cw-keyer-apf-on"
-              aria-pressed={apfChoice.isSelected(true)}
+              aria-pressed={apfChoice.selected === undefined ? undefined : apfChoice.isSelected(true)}
               aria-describedby={mutexed('apf') ? 'cw-keyer-apf-reason' : undefined}
               disabled={!apfChoice.available}
               onclick={() => apfChoice.invoke(!apfChoice.isSelected(true))}

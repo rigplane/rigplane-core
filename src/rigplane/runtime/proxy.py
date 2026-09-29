@@ -4,7 +4,7 @@ Forwards UDP packets between a remote client (e.g. wfview via VPN)
 and a local Icom radio, enabling remote access without protocol parsing.
 
 Usage:
-    rigplane proxy --radio 192.168.55.40 --listen 0.0.0.0
+    rigplane proxy --radio 192.168.1.50 --listen 0.0.0.0
 """
 
 import asyncio

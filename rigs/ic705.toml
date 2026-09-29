@@ -83,6 +83,9 @@ features = [
     # Tone / FM
     "repeater_tone",
     "tsql",
+    # MOR-2930: simplex / DUP− / DUP+ over 0F (guide p.3); 0F has no ARS code,
+    # so no "repeater_shift_ars".
+    "repeater_shift",
     "dtcs",
     "csql",
     "voice_tx",      # wfview: Voice TX 0x28 (Max=8) — D-STAR voice; not on IC-7300.rig
@@ -134,12 +137,16 @@ polling_only = [
     "receiver.main.operator_toggles.nr",
     "receiver.main.operator_toggles.repeater_tone",
     "receiver.main.operator_toggles.repeater_tsql",
+    # MOR-2131: read by the same 16 5D query as the two booleans above.
+    "receiver.main.operator_controls.tone_squelch_type",
     "global.operator_controls.power_level",
     "global.tx_state.compressor_on",
     "global.operator_controls.compressor_level",
     "global.tx_state.ptt",
     "global.operator_controls.tuner_status",
     "global.tx_state.split",
+    # MOR-2930: read by the same 0F query as split.
+    "receiver.main.operator_controls.repeater_shift",
     # MOR-2915: the TX-aux levels and panel knobs rigs/ic7300.toml polls
     # (MOR-1452, MOR-2425); v3 reads only a declared field
     # (core/acquisition_scheduler.py: AcquisitionScheduler._availability_for).
@@ -201,6 +208,7 @@ command_response_observable = [
     "global.operator_controls.compressor_level",
     "global.tx_state.ptt",
     "global.operator_controls.tuner_status",
+    "receiver.main.operator_controls.repeater_shift",
     "global.tx_state.split",
     "global.tx_state.vox_on",
     "global.tx_state.monitor_on",
@@ -484,6 +492,20 @@ max_watts = 10
 
 [ctcss]
 table = "standard_50"
+
+# What each 16 5D tone squelch selector code means (MOR-2131). IC-705 CI-V
+# Reference Guide (A7560-8EX-1, Jul.2020; A7560-8EX-6, Jan.2023) p.4: 00=OFF,
+# 01=TONE, 02=TSQL, 03=DTCS, 06=DTCS (T), 07=TONE (T)/DTCS (R),
+# 08=DTCS (T)/TSQL (R), 09=TONE (T)/TSQL (R); no 04 or 05.
+[tone_squelch_types]
+0 = "off"
+1 = "tone"
+2 = "tsql"
+3 = "dtcs"
+6 = "dtcs_t"
+7 = "tone_t_dtcs_r"
+8 = "dtcs_t_tsql_r"
+9 = "tone_t_tsql_r"
 
 [modes]
 # wfview Modes: LSB, USB, AM, CW, RTTY, FM, CW-R, RTTY-R, DV, WFM
@@ -845,6 +867,11 @@ get_scan = [0x0E]
 set_scan = [0x0E]
 get_split = [0x0F]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3
 set_split = [0x0F]
+# MOR-2930: the repeater shift direction rides the same command. p.3 reads
+# 11 = DUP−, 12 = DUP+ and sets 10 = simplex, 11 = DUP−, 12 = DUP+
+# (commands/vfo.py: set_repeater_shift, parse_repeater_shift_response).
+get_repeater_shift = [0x0F]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3
+set_repeater_shift = [0x0F]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3
 
 # ── Tuning ──
 get_tuning_step = [0x10]

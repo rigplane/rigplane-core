@@ -431,7 +431,14 @@ class YaesuCatTransport:
             if drained and self._debug_logging:
                 logger.debug("CAT: drained %d line(s) after write %r", drained, command)
 
-    async def query(self, command: str, *, timeout: float | None = None) -> str:
+    async def query(
+        self,
+        command: str,
+        *,
+        timeout: float | None = None,
+        is_current: Callable[[], bool] | None = None,
+        tier: ExchangeTier = ExchangeTier.ORDINARY,
+    ) -> str:
         """Send a GET command and return the matching response.
 
         Acquires the transport gate, flushes stale RX data, sends the
@@ -441,6 +448,12 @@ class YaesuCatTransport:
         Args:
             command: CAT command string (e.g. ``"FA;"``).
             timeout: Read timeout per attempt (default: instance timeout).
+            is_current: Managed-exchange currency check (MOR-2862), honoured
+                the same way :meth:`write` honours it — checked before the
+                command bytes are sent.
+            tier: Admission tier for the exchange gate. A managed
+                confirming read rides its own write's tier so it is never
+                queued behind ordinary polls.
 
         Returns:
             Response line (without trailing ``;``).
@@ -450,9 +463,9 @@ class YaesuCatTransport:
             CatTimeoutError: If no matching response within timeout.
             CatTransportError: On serial I/O failure.
         """
-        async with self._exchange_gate.exchange():
+        async with self._exchange_gate.exchange(tier=tier):
             await self.flush_rx()
-            await self._raw_write(command)
+            await self._raw_write(command, is_current=is_current)
             self._stats.queries += 1
 
             # Expected prefix: strip trailing digits from command body.

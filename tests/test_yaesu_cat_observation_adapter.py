@@ -253,6 +253,7 @@ class _SideEffectingYaesuRadio:
         self.profile = SimpleNamespace(
             max_watts=100,
             ctcss_tones_centihz=get_radio_profile("FTX-1").ctcss_tones_centihz,
+            tone_squelch_types=get_radio_profile("FTX-1").tone_squelch_types,
         )
         self.radio_state = RadioState()
         self.radio_state.main.freq = 1
@@ -905,8 +906,10 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
         # Gated on the ``sql_type`` cap; the SUB read rides ``dual_rx``.
         ("receiver.main.operator_toggles.repeater_tone", True),
         ("receiver.main.operator_toggles.repeater_tsql", False),
+        ("receiver.main.operator_controls.tone_squelch_type", "tone"),
         ("receiver.sub.operator_toggles.repeater_tone", True),
         ("receiver.sub.operator_toggles.repeater_tsql", False),
+        ("receiver.sub.operator_controls.tone_squelch_type", "tone"),
         # CTCSS tone frequency (MOR-458): per-receiver, each side's own
         # ``read_ctcss_tone_index(receiver)`` CAT ``CN`` read (CN00 then CN10,
         # MOR-2111) mapped index -> Hz -> centiHz. The FTX-1 has one CTCSS
@@ -1546,8 +1549,10 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         # MOR-2111).
         ("receiver.main.operator_toggles.repeater_tone", True),
         ("receiver.main.operator_toggles.repeater_tsql", False),
+        ("receiver.main.operator_controls.tone_squelch_type", "tone"),
         ("receiver.sub.operator_toggles.repeater_tone", True),
         ("receiver.sub.operator_toggles.repeater_tsql", False),
+        ("receiver.sub.operator_controls.tone_squelch_type", "tone"),
         # CTCSS tone freq (MOR-458): gated on the ``sql_type`` cap (present
         # here); each receiver's ``read_ctcss_tone_index`` (index 8 = 88.5 Hz)
         # maps to 8850 centiHz, emitted to BOTH tone_freq and tsql_freq, and
@@ -1838,7 +1843,7 @@ async def test_read_sql_type_is_a_pure_read() -> None:
 
 
 @pytest.mark.parametrize(
-    ("code", "expected_tone", "expected_tsql"),
+    ("code", "expected_tone", "expected_tsql", "expected_type"),
     [
         # CAT ``CT`` P2 "SQL TYPE" codes (FTX-1_CAT_OM_ENG_2508-C) → the two
         # independent axes defined by ``RepeaterControlCapable``: repeater_tone
@@ -1847,17 +1852,22 @@ async def test_read_sql_type_is_a_pure_read() -> None:
         # Codes 3/4/5 are outside the two-boolean vocabulary and publish None
         # ("observed, not known") — a False pair would invent OFF while the
         # radio is in DCS (MOR-2572).
-        (0, False, False),  # CTCSS OFF
-        (1, True, False),  # CTCSS ENC ON / DEC OFF ("TONE")
-        (2, True, True),  # CTCSS ENC ON / DEC ON ("TSQL")
-        (3, None, None),  # DCS — no neutral CTCSS-boolean representation
-        (4, None, None),  # PR FREQ — no neutral CTCSS-boolean representation
-        (5, None, None),  # REV TONE — no neutral CTCSS-boolean representation
+        # The type column is the profile's [tone_squelch_types] table
+        # (MOR-2969).
+        (0, False, False, "off"),  # CTCSS OFF
+        (1, True, False, "tone"),  # CTCSS ENC ON / DEC OFF ("TONE")
+        (2, True, True, "tsql"),  # CTCSS ENC ON / DEC ON ("TSQL")
+        (3, None, None, "dtcs"),  # DCS — no neutral CTCSS-boolean representation
+        (4, None, None, "pr_freq"),  # PR FREQ — no CTCSS-boolean representation
+        (5, None, None, "rev_tone"),  # REV TONE — no CTCSS-boolean representation
     ],
 )
 @pytest.mark.asyncio
 async def test_sql_type_code_maps_to_ctcss_booleans(
-    code: int, expected_tone: bool | None, expected_tsql: bool | None
+    code: int,
+    expected_tone: bool | None,
+    expected_tsql: bool | None,
+    expected_type: str,
 ) -> None:
     """MOR-457/MOR-2572: each ``CT`` P2 code derives the correct tone pair.
 
@@ -1880,6 +1890,8 @@ async def test_sql_type_code_maps_to_ctcss_booleans(
     assert by_path["receiver.main.operator_toggles.repeater_tsql"] is expected_tsql
     assert by_path["receiver.sub.operator_toggles.repeater_tone"] is expected_tone
     assert by_path["receiver.sub.operator_toggles.repeater_tsql"] is expected_tsql
+    assert by_path["receiver.main.operator_controls.tone_squelch_type"] == expected_type
+    assert by_path["receiver.sub.operator_controls.tone_squelch_type"] == expected_type
     # A single CT read per receiver feeds both derived booleans on that side.
     assert radio.read_sql_type.await_args_list == [call(0), call(1)]
 
@@ -2056,6 +2068,7 @@ async def test_sql_type_receiver_failure_names_only_its_own_side() -> None:
     assert [str(path) for path in scheduler.startup_defect.paths] == [
         "receiver.sub.operator_toggles.repeater_tone",
         "receiver.sub.operator_toggles.repeater_tsql",
+        "receiver.sub.operator_controls.tone_squelch_type",
     ]
     assert radio.read_sql_type.await_args_list == [call(0), call(1)]
     assert by_path["receiver.main.operator_toggles.repeater_tone"] is True
@@ -2455,8 +2468,10 @@ async def test_happy_path_slow_poll_unchanged_when_all_reads_succeed() -> None:
         ("receiver.sub.operator_controls.manual_notch_freq", 120),
         ("receiver.main.operator_toggles.repeater_tone", True),
         ("receiver.main.operator_toggles.repeater_tsql", False),
+        ("receiver.main.operator_controls.tone_squelch_type", "tone"),
         ("receiver.sub.operator_toggles.repeater_tone", True),
         ("receiver.sub.operator_toggles.repeater_tsql", False),
+        ("receiver.sub.operator_controls.tone_squelch_type", "tone"),
         ("receiver.main.operator_controls.tone_freq", 8850),
         ("receiver.main.operator_controls.tsql_freq", 8850),
         ("receiver.sub.operator_controls.tone_freq", 8850),
@@ -2844,6 +2859,7 @@ _DEFECT_ROWS: tuple[tuple[str, str, int | None, str, tuple[str, ...]], ...] = (
         (
             "receiver.main.operator_toggles.repeater_tone",
             "receiver.main.operator_toggles.repeater_tsql",
+            "receiver.main.operator_controls.tone_squelch_type",
         ),
     ),
     (

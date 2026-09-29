@@ -26,11 +26,17 @@ from rigplane.runtime.managed_tx_state import (
 from rigplane.runtime.radio import CoreRadio
 
 
+async def _answer_query(command: str, *args: object, **kwargs: object) -> str:
+    """Answer the PTT read-back as a receiving radio; keep the AC answer."""
+    del args, kwargs
+    return "TX0" if command == "TX;" else "AC101"
+
+
 def _fenced_radio(fence: TxAbortFence | None) -> YaesuCatRadio:
     radio = YaesuCatRadio("/dev/null", tx_abort_fence=fence)
     transport = radio._transport
     transport._connected = True
-    transport.query = AsyncMock(return_value="AC101")
+    transport.query = AsyncMock(side_effect=_answer_query)
     transport.flush_rx = AsyncMock(return_value=0)
     transport._drain_responses = AsyncMock(return_value=0)
     transport._raw_write = AsyncMock()

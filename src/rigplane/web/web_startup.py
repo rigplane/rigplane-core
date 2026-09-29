@@ -34,7 +34,7 @@ from ..runtime._state_queries import acquisition_query_resolver_for_profile
 from ..startup_checks import assert_radio_startup_ready
 from .discovery import DiscoveryResponder, RadioInfo  # noqa: TID251
 from .dx_cluster import DXClusterClient  # noqa: TID251
-from .radio_poller import RadioPoller  # noqa: TID251
+from .radio_poller import _SHUTDOWN_TX_DRAIN_TIMEOUT_S, RadioPoller  # noqa: TID251
 from .runtime_helpers import (  # noqa: TID251
     runtime_capabilities,
     store_has_radio_observation,
@@ -54,6 +54,25 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 _SHUTDOWN_SCOPE_RESTORE_TIMEOUT_S = 1.0
+# MOR-2875: the other timed waits of _stop_web_server, and their sum
+# (pinned against the timeouts _stop_web_server passes by
+# test_web_stop_timeout_is_the_sum_of_its_timed_waits).
+_STATE_POLLER_STOP_TIMEOUT_S = 2.0
+_AUDIO_RELAY_STOP_TIMEOUT_S = 2.0
+_WEBRTC_CLOSE_TIMEOUT_S = 2.0
+_DIAGNOSTICS_STOP_TIMEOUT_S = 2.0
+_LISTENER_CLOSE_TIMEOUT_S = 2.0
+_TASKS_FINISH_TIMEOUT_S = 3.0
+WEB_STOP_TIMEOUT_S: float = (
+    _STATE_POLLER_STOP_TIMEOUT_S
+    + _AUDIO_RELAY_STOP_TIMEOUT_S
+    + _WEBRTC_CLOSE_TIMEOUT_S
+    + _DIAGNOSTICS_STOP_TIMEOUT_S
+    + _LISTENER_CLOSE_TIMEOUT_S
+    + _TASKS_FINISH_TIMEOUT_S
+    + _SHUTDOWN_TX_DRAIN_TIMEOUT_S
+    + _SHUTDOWN_SCOPE_RESTORE_TIMEOUT_S
+)
 _MANAGED_TX_FALLBACK_ADVANCED_ATTR = "_production_managed_tx_fallback_advanced"
 
 #: Poll spacing for the startup gate on a radio that declares no
@@ -812,7 +831,9 @@ async def _stop_web_server(server: WebServer) -> None:
         if getattr(server._state_poller, "_uses_fallback_provider_generation", False):
             server.command_state_store.begin_provider_generation()
         try:
-            await asyncio.wait_for(server._state_poller.stop(), timeout=2.0)
+            await asyncio.wait_for(
+                server._state_poller.stop(), timeout=_STATE_POLLER_STOP_TIMEOUT_S
+            )
         except TimeoutError:
             logger.warning("state poller stop timed out")
         server._state_poller = None
@@ -826,21 +847,28 @@ async def _stop_web_server(server: WebServer) -> None:
 
     # 2. Stop audio relay (stops AudioBus subscription → stop_audio_rx_opus)
     try:
-        await asyncio.wait_for(server._audio_broadcaster._stop_relay(), timeout=2.0)
+        await asyncio.wait_for(
+            server._audio_broadcaster._stop_relay(),
+            timeout=_AUDIO_RELAY_STOP_TIMEOUT_S,
+        )
     except (TimeoutError, Exception) as exc:
         logger.warning("audio relay stop: %s", exc)
 
     # 2a. Tear down any live WebRTC transport sessions (A2.3 / MOR-307).
     if server._webrtc_sessions is not None:
         try:
-            await asyncio.wait_for(server._webrtc_sessions.close_all(), timeout=2.0)
+            await asyncio.wait_for(
+                server._webrtc_sessions.close_all(), timeout=_WEBRTC_CLOSE_TIMEOUT_S
+            )
         except (TimeoutError, Exception) as exc:
             logger.warning("webrtc session close: %s", exc)
         server._webrtc_sessions = None
 
     # 2b. Stop diagnostic preview sweeper and clean up any in-flight bundles.
     try:
-        await asyncio.wait_for(server._diagnostics.stop(), timeout=2.0)
+        await asyncio.wait_for(
+            server._diagnostics.stop(), timeout=_DIAGNOSTICS_STOP_TIMEOUT_S
+        )
     except (TimeoutError, Exception) as exc:
         logger.warning("diagnostics handler stop: %s", exc)
     if server._audio_bridge is not None:
@@ -885,9 +913,13 @@ async def _stop_web_server(server: WebServer) -> None:
     if server._server is not None:
         server._server.close()
         try:
-            await asyncio.wait_for(server._server.wait_closed(), timeout=2.0)
+            await asyncio.wait_for(
+                server._server.wait_closed(), timeout=_LISTENER_CLOSE_TIMEOUT_S
+            )
         except TimeoutError:
-            logger.warning("server.wait_closed() timed out after 2s")
+            logger.warning(
+                "server.wait_closed() timed out after %.0fs", _LISTENER_CLOSE_TIMEOUT_S
+            )
         server._server = None
     server._server_was_running = False
 
@@ -896,17 +928,28 @@ async def _stop_web_server(server: WebServer) -> None:
         try:
             await asyncio.wait_for(
                 asyncio.gather(*all_tasks, return_exceptions=True),
-                timeout=3.0,
+                timeout=_TASKS_FINISH_TIMEOUT_S,
             )
         except TimeoutError:
-            logger.warning("tasks did not finish in 3s, continuing shutdown")
+            logger.warning(
+                "tasks did not finish in %.0fs, continuing shutdown",
+                _TASKS_FINISH_TIMEOUT_S,
+            )
     server._bg_tasks.clear()
 
     # 9. Now — and only now — the teardown unkeys those client tasks enqueued on
     #    their way out are in the queue. Bounded, TX-safety only: this executes
-    #    pending PttOff entries and discards the rest (MOR-1181).
+    #    pending PttOff entries and discards the rest (MOR-1181). The drain is
+    #    handed to serve_forever's on_tx_release hook, if any, with its bound
+    #    (MOR-2875).
     if radio_poller is not None:
-        await radio_poller.drain_tx_safety_commands()
+        drain = asyncio.ensure_future(
+            radio_poller.drain_tx_safety_commands(timeout=_SHUTDOWN_TX_DRAIN_TIMEOUT_S)
+        )
+        on_tx_release = getattr(server, "_on_tx_release", None)
+        if on_tx_release is not None:
+            on_tx_release(drain, "web PTT drain", _SHUTDOWN_TX_DRAIN_TIMEOUT_S)
+        await drain
 
     # 10. Scope restoration is intentionally subordinate to the final unkey.
     # A queued DisableScope cannot complete once the poller is stopped (and may

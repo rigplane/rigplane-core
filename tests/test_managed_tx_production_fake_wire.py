@@ -106,6 +106,17 @@ class _YaesuActuator(_DelayedWire):
         if command == "set_ptt":
             await self.finish(params["state"] == "1", is_current)
 
+    async def read_ptt(
+        self,
+        *,
+        is_current: Callable[[], bool] | None = None,
+        tier: Any = None,
+    ) -> bool:
+        # MOR-2862: answer the in-actuation confirming read the way a
+        # radio would — the PTT state this fake last wrote.
+        del is_current, tier
+        return self.wire[-1] if self.wire else False
+
 
 class _RigctldActuator(_DelayedWire):
     actuate = RigctldClientRadio.actuate
@@ -119,6 +130,17 @@ class _RigctldActuator(_DelayedWire):
     ) -> None:
         del urgent
         await self.finish(on, is_current)
+
+    async def _read_ptt(
+        self,
+        *,
+        is_current: Callable[[], bool] | None = None,
+        urgent: bool = False,
+    ) -> bool:
+        # MOR-2862: answer the in-actuation confirming read the way the
+        # daemon would — the PTT state this fake last wrote.
+        del is_current, urgent
+        return self.wire[-1] if self.wire else False
 
 
 class _HttpWriter:

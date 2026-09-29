@@ -47,7 +47,9 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   getDspHandlers: () => mockHandlers,
   getAutoNotchArmed: () => unarmed,
   getManualNotchArmed: () => unarmed,
-  getDspControlFeedback: (field: 'nbLevel' | 'nbWidth' | 'notchFilter' | 'agcTimeConstant') => ({
+  getDspControlFeedback: (
+    field: 'nbLevel' | 'nbWidth' | 'notchFilter' | 'agcTimeConstant' | 'nrLevel' | 'nbDepth',
+  ) => ({
     confirmed: field === 'notchFilter' ? mockProps.notchFreq : mockProps[field],
     target: null, requestedTarget: null, phase: 'idle' as const,
     busy: false, availability: 'available' as const, outcome: null,
@@ -55,30 +57,50 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
     scope: {
       control: field === 'nbLevel' ? 'nb-level'
         : field === 'nbWidth' ? 'nb-width'
-          : field === 'notchFilter' ? 'notch-position' : 'agc-time',
+          : field === 'notchFilter' ? 'notch-position'
+            : field === 'nrLevel' ? 'nr-level'
+              : field === 'nbDepth' ? 'nb-depth' : 'agc-time',
       receiver: 0 as const,
     },
     repeatPolicy: 'latest-target-wins' as const,
     ...feedbackOverrides.get(field),
   }),
+  // MOR-2932: NR level and NB depth project through unchanged — this file
+  // asserts neither lane's conversion (covered with the real adapters in
+  // `DspPanel.component.test.ts`).
+  projectDspControlFeedbackToDisplay: <T,>(_field: string, feedback: T) => feedback,
+}));
+
+// MOR-2932: DspPanel reads caps for the NR/NB display projection; this
+// file's assertions never depend on them.
+vi.mock('$lib/runtime/frontend-runtime', () => ({
+  runtime: {
+    get state() { return null; },
+    get caps() { return null; },
+    get controlSession() { return { state: 'disconnected', epoch: -1 }; },
+  },
 }));
 
 import DspPanel from '../DspPanel.svelte';
 
 describe('MOR-2423 DSP scalar feedback wiring contract', () => {
-  it('adopts only the four leased scalar lanes and leaves manual notch width raw', () => {
+  it('adopts only the six leased scalar lanes and leaves manual notch width raw', () => {
     const source = readFileSync(path.resolve(process.cwd(), 'src/components-v2/panels/DspPanel.svelte'), 'utf8');
 
-    expect(source.match(/getDspControlFeedback\('/g)).toHaveLength(4);
+    expect(source.match(/getDspControlFeedback\('/g)).toHaveLength(6);
     expect(source).toContain("getDspControlFeedback('nbLevel')");
     expect(source).toContain("getDspControlFeedback('nbWidth')");
     expect(source).toContain("getDspControlFeedback('notchFilter')");
     expect(source).toContain("getDspControlFeedback('agcTimeConstant')");
+    expect(source).toContain("getDspControlFeedback('nrLevel')");
+    expect(source).toContain("getDspControlFeedback('nbDepth')");
     expect(source).not.toContain("getDspControlFeedback('manualNotchWidth')");
     expect(source).toContain("command: 'set_nb_level'");
     expect(source).toContain("command: 'set_nb_width'");
     expect(source).toContain("command: 'set_notch_filter'");
     expect(source).toContain("command: 'set_agc_time_constant'");
+    expect(source).toContain("command: 'set_nr_level'");
+    expect(source).toContain("command: 'set_nb_depth'");
     expect(source.match(/const view = binding\.view;/g)).toHaveLength(1);
     expect(source).not.toContain('notchToggleActive');
   });

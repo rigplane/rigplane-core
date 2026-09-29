@@ -30,6 +30,7 @@ from rigplane.core.state_acquisition_policy import (
     ReconciliationPriority,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.types import ToneSquelchType
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.profiles.control_domain import (
     _on_control_lattice,
@@ -679,6 +680,7 @@ class RigConfig:
     state_acquisition: RadioAcquisitionProfile | None = None
     tx_policy: TxPolicy = field(default_factory=TxPolicy)
     ctcss_tones_centihz: tuple[int, ...] | None = None
+    tone_squelch_types: dict[int, ToneSquelchType] | None = None
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -840,6 +842,11 @@ class RigConfig:
             agc_auto_mode=self.agc_auto_mode,
             agc_auto_speed_labels=self.agc_auto_speed_labels,
             ctcss_tones_centihz=self.ctcss_tones_centihz,
+            tone_squelch_types=(
+                None
+                if self.tone_squelch_types is None
+                else dict(self.tone_squelch_types)
+            ),
             break_in_modes=self.break_in_modes,
             break_in_labels=self.break_in_labels,
             notch_width_values=self.notch_width_values,
@@ -1117,6 +1124,57 @@ def _resolve_ctcss_table(
             f"{filename}: unknown CTCSS table {table_name!r} in "
             f"{DEFAULT_CTCSS_TABLES_PROFILE_NAME}"
         ) from exc
+
+
+# The reads whose reply code [tone_squelch_types] names: the Icom 16 5D
+# selector and the Yaesu CAT CT read (MOR-2969).
+_TONE_SQUELCH_TYPE_READS = ("get_tone_squelch_type", "get_sql_type")
+
+
+def _resolve_tone_squelch_types(
+    path: Path, data: dict[str, Any], commands: dict[str, CommandSpec]
+) -> dict[int, ToneSquelchType] | None:
+    """Parse ``[tone_squelch_types]``: selector code -> neutral type (MOR-2131).
+
+    A profile that declares a selector read in ``_TONE_SQUELCH_TYPE_READS``,
+    in ``[commands]`` or its overrides and not as absent, must carry the
+    table, because the decoder reads the code's meaning from it and nowhere
+    else.
+    """
+    filename = path.name
+    section = data.get("tone_squelch_types")
+    if section is None:
+        for name in _TONE_SQUELCH_TYPE_READS:
+            selector = commands.get(name)
+            if selector is not None and not isinstance(selector, AbsentCommandSpec):
+                raise RigLoadError(
+                    f"{filename}: {name} needs a [tone_squelch_types] table"
+                )
+        return None
+    if not isinstance(section, dict) or not section:
+        raise RigLoadError(
+            f"{filename}: [tone_squelch_types] must be a non-empty table"
+        )
+    table: dict[int, ToneSquelchType] = {}
+    for raw_code, raw_type in section.items():
+        try:
+            code = int(raw_code)
+        except ValueError as exc:
+            raise RigLoadError(
+                f"{filename}: [tone_squelch_types] key {raw_code!r} is not a code"
+            ) from exc
+        if not 0 <= code <= 0xFF:
+            raise RigLoadError(
+                f"{filename}: [tone_squelch_types] code {code} is not one byte"
+            )
+        try:
+            table[code] = ToneSquelchType(raw_type)
+        except ValueError as exc:
+            raise RigLoadError(
+                f"{filename}: [tone_squelch_types].{raw_code} = {raw_type!r} is not "
+                f"one of {sorted(t.value for t in ToneSquelchType)}"
+            ) from exc
+    return table
 
 
 def _parse_command_value(
@@ -2272,6 +2330,7 @@ def load_rig(path: Path) -> RigConfig:
         # Apply overrides
         for key, value in overrides.items():
             commands[key] = _parse_command_value(filename, key, value)
+    tone_squelch_types = _resolve_tone_squelch_types(path, data, commands)
 
     # Parse freq_ranges
     freq_ranges_data = data.get("freq_ranges", {}).get("ranges", [])
@@ -2866,6 +2925,7 @@ def load_rig(path: Path) -> RigConfig:
         agc_auto_mode=agc_auto_mode,
         agc_auto_speed_labels=agc_auto_speed_labels,
         ctcss_tones_centihz=ctcss_tones_centihz,
+        tone_squelch_types=tone_squelch_types,
         break_in_modes=break_in_modes,
         break_in_labels=break_in_labels,
         notch_width_values=notch_width_values,

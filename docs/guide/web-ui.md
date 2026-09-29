@@ -16,8 +16,8 @@ public interfaces, and operational workflows.
 # Default: bind all interfaces on port 8080
 rigplane --model IC-7610 web
 
-# Explicit host/port
-rigplane --model IC-7610 web --host 0.0.0.0 --port 9090
+# Explicit listen address and port
+rigplane --model IC-7610 web --listen 0.0.0.0 --port 9090
 
 # Managed local runtime on loopback
 rigplane --model IC-7610 station --port 0

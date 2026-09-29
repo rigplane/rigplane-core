@@ -161,6 +161,7 @@ from rigplane.commands import (
     parse_frequency_response,
     parse_level_response,
     parse_meter_response,
+    parse_repeater_shift_response,
     parse_rit_frequency_response,
     parse_system_date_response,
     parse_system_time_response,
@@ -207,6 +208,7 @@ from rigplane.core.types import (
     FilterShape,
     MemoryChannel,
     Mode,
+    RepeaterShiftDirection,
     ScopeCompletionPolicy,
     SsbTxBandwidth,
     get_audio_capabilities,
@@ -3944,6 +3946,34 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if self._last_split is not None:
             return self._last_split
         return False
+
+    async def get_repeater_shift(self, receiver: int = 0) -> RepeaterShiftDirection:
+        """Read the repeater shift direction (CI-V ``0x0F``, MOR-2930)."""
+        self._check_connected()
+        self._require_receiver(receiver, operation="get_repeater_shift")
+        civ = self._commands.get_repeater_shift(to_addr=self._radio_addr)
+        resp = await self._send_civ_expect(civ, label="get_repeater_shift")
+        direction = parse_repeater_shift_response(resp.data)
+        if direction is None:
+            raise CommandError(
+                f"invalid repeater shift readback: {resp.data.hex() or 'empty'}"
+            )
+        return direction
+
+    async def set_repeater_shift(
+        self, direction: RepeaterShiftDirection | int, receiver: int = 0
+    ) -> None:
+        """Set the repeater shift direction (CI-V ``0x0F``, MOR-2930).
+
+        Only SIMPLEX, MINUS and PLUS have a code; any other direction, ARS
+        included, raises ``ValueError`` before anything is sent.
+        """
+        self._check_connected()
+        self._require_receiver(receiver, operation="set_repeater_shift")
+        civ = self._commands.set_repeater_shift(direction, to_addr=self._radio_addr)
+        resp = await self._send_civ_expect(civ, label="set_repeater_shift")
+        if parse_ack_nak(resp) is False:
+            raise CommandError(f"Radio rejected repeater shift {direction!r}")
 
     async def get_tuning_step(self) -> int:
         """Read the tuning step index (0-8, BCD-encoded per IC-7610, CI-V 0x10)."""

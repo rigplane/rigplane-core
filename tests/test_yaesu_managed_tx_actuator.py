@@ -10,6 +10,7 @@ import pytest
 
 from rigplane.backends.yaesu_cat.parser import format_command
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+from rigplane.backends.yaesu_cat.transport import CatTimeoutError
 from rigplane.command_spec import CatCommandSpec
 from rigplane.core.priority_exchange import ExchangeTier
 from rigplane.runtime.managed_tx_effect_lane import ManagedTxActuator
@@ -60,6 +61,7 @@ async def test_managed_on_uses_profile_ptt_and_propagates_currency(
     operation: ActuationOperation,
 ) -> None:
     radio = _profile_radio()
+    radio._transport.query = AsyncMock()
 
     def current() -> bool:
         return True
@@ -72,6 +74,8 @@ async def test_managed_on_uses_profile_ptt_and_propagates_currency(
         is_current=current,
         tier=ExchangeTier.ORDINARY,
     )
+    # MOR-2862: an ON still returns right after the write, without a read.
+    radio._transport.query.assert_not_awaited()
     assert radio.radio_state.ptt is False
 
 
@@ -81,6 +85,7 @@ async def test_force_receive_uses_urgent_profile_ptt_without_claiming_observatio
 ):
     radio = _profile_radio()
     radio.radio_state.ptt = True
+    radio._transport.query = AsyncMock(return_value="TX0")
 
     def current() -> bool:
         return True
@@ -95,7 +100,51 @@ async def test_force_receive_uses_urgent_profile_ptt_without_claiming_observatio
         is_current=current,
         tier=ExchangeTier.FORCE_RELEASE,
     )
+    # MOR-2862: the confirming read rides the unkey's own tier and
+    # currency, so it is never queued behind ordinary polls.
+    radio._transport.query.assert_awaited_once_with(
+        "TX;", is_current=current, tier=ExchangeTier.FORCE_RELEASE
+    )
     assert radio.radio_state.ptt is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        ("TX0", ActuationResult.ACCEPTED),
+        ("TX1", ActuationResult.UNCERTAIN),
+        (None, ActuationResult.UNCERTAIN),
+        ("ZZ9", ActuationResult.UNCERTAIN),
+    ],
+    ids=["rx", "tx", "silent", "malformed"],
+)
+async def test_force_receive_settles_on_the_confirmed_ptt_readback(
+    reply: str | None, expected: ActuationResult
+) -> None:
+    """MOR-2862: a Yaesu set is answered with silence, so the unkey counts
+    as done only when the actuation's own read-back says receive."""
+    radio = _profile_radio()
+    if reply is None:
+        radio._transport.query = AsyncMock(
+            side_effect=CatTimeoutError("CAT read timed out", command="TX;")
+        )
+    else:
+        radio._transport.query = AsyncMock(return_value=reply)
+
+    def current() -> bool:
+        return True
+
+    result = await radio.actuate(
+        _token(), ActuationOperation.FORCE_RECEIVE, is_current=current
+    )
+
+    assert result is expected
+    radio._transport.write.assert_awaited_once_with(
+        format_command(_PROFILE_TEMPLATES["set_ptt"].write, state="0"),
+        is_current=current,
+        tier=ExchangeTier.FORCE_RELEASE,
+    )
 
 
 @pytest.mark.asyncio

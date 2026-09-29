@@ -174,6 +174,21 @@ meter_coalescing_window_seconds = 0.25
 polling_only = [
     "receiver.main.active.freq_mode.freq_hz",
     "receiver.main.active.freq_mode.mode",
+    # MOR-3002: reads the 2.x state sweep made before MOR-1983, restricted
+    # to GET rows of V1.0.6 Table 1 (11 p.5; 14 01/02/03/0A/0B/15 p.6;
+    # 16 02/12/22 p.7; 1C 00/01 p.9). v3 reads only a declared field.
+    "receiver.main.operator_controls.att",
+    "receiver.main.operator_controls.af_level",
+    "receiver.main.operator_controls.rf_gain",
+    "receiver.main.operator_controls.squelch",
+    "receiver.main.operator_controls.preamp",
+    "receiver.main.operator_controls.agc",
+    "receiver.main.operator_toggles.nb",
+    "global.operator_controls.power_level",
+    "global.operator_controls.mic_gain",
+    "global.operator_controls.monitor_gain",
+    "global.tx_state.ptt",
+    "global.operator_controls.tuner_status",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -183,6 +198,9 @@ command_response_observable = [
     "receiver.main.active.freq_mode.freq_hz",
     "receiver.main.active.freq_mode.mode",
     "receiver.main.active.freq_mode.filter_width",
+    # MOR-3002: read on demand (field policies below), V1.0.6 p.6.
+    "global.operator_controls.cw_pitch",
+    "global.operator_controls.key_speed",
 ]
 supported_controls = [
     "receiver.main.active.freq_mode.freq_hz",
@@ -201,6 +219,20 @@ external_cat_pause = "pause_polling"
 # entry -- without this, prime_unobserved() never reaches this path (it only
 # iterates field_policies), so it could never be observed at startup.
 [state_acquisition.field_policies."receiver.main.active.freq_mode.filter_width"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.cw_pitch"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.key_speed"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"

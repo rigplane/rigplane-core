@@ -345,8 +345,13 @@
   let ifShiftFeedback = $derived(getIfShiftControlFeedback());
   let pbtInnerFeedback = $derived(getPbtInnerHzControlFeedback());
   let pbtOuterFeedback = $derived(getPbtOuterHzControlFeedback());
+  // MOR-1691: pointer drags commit ON RELEASE — every intermediate pointer
+  // candidate stays the gesture-local draft and exactly one request leaves
+  // the row at pointerup, bounding the dispatch count per gesture instead
+  // of streaming a per-move CAT write. Keyboard/reset keep their debounce.
   const passbandPolicy = createBipolarContinuousScalarPolicy({
-    debounceMs: 50, describeTarget: (value) => `${value} ${t('core.filter.unit.hz')}`,
+    debounceMs: 50, pointerDispatch: 'on-release',
+    describeTarget: (value) => `${value} ${t('core.filter.unit.hz')}`,
   });
   function passbandPendingTarget(feedback: Readonly<CommandScalarFeedback>): number | null {
     return feedback.busy && feedback.target !== null ? feedback.target : null;

@@ -1083,8 +1083,8 @@ class TestReceiverDeclaredControlTags:
     ``receiver.main.operator_controls.preamp`` with no receiver-admitted
     write) and over-admits (IC-9700/IC-705 declare the 0x1A 04 command pair
     without declaring the polled field). The radio-wide ``attenuator``/
-    ``preamp`` capability is likewise not the fact: tx500/x6100/x6200 declare
-    the command with no polled MAIN field. Real radios on the bundled
+    ``preamp`` capability is likewise not the fact: tx500/x6100 declare the
+    command with no polled MAIN field. Real radios on the bundled
     profiles, not mocks."""
 
     @pytest.mark.parametrize(
@@ -1117,7 +1117,7 @@ class TestReceiverDeclaredControlTags:
             ("ftx1", {"attenuator_main", "preamp_main"}),
             ("tx500", set()),
             ("x6100", set()),
-            ("x6200", set()),
+            ("x6200", {"attenuator_main", "preamp_main"}),
         ],
     )
     def test_tags_follow_the_profile_declared_fields(self, rig, expected):

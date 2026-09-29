@@ -65,6 +65,7 @@
     getPendingRepeaterShift, getPendingRepeaterTone, getPendingToneFreq,
     getRepeaterHandlers,
     getSystemHandlers, getDataModeArmed, getModInputArmed, getFilterShapeArmed,
+    getModeArmed, getAgcArmed, getAttenuatorArmed,
     getFilterShapeControlFeedback,
     deriveMemoryPanelProps, getMemoryHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
@@ -1739,6 +1740,17 @@
   ) as unknown as TxAuxLevelFeedback);
   let dataModeArmed = $derived(getDataModeArmed());
   let pendingDataMode = $derived(dataModeArmed.armed ? dataModeArmed.value : null);
+  // MOR-2907 F3: the Standard face's mode/AGC/attenuator armed facts — the
+  // same ARMED-SIGNAL CONTRACT accessors the desktop-v2 panels (ModePanel/
+  // AgcPanel/RfFrontEnd) consume, fed to the semantic hosts the same way
+  // pendingDataMode above is. Display only: the confirmed reading stays the
+  // sole selection source inside each host.
+  let modeArmed = $derived(getModeArmed());
+  let pendingMode = $derived(modeArmed.armed ? modeArmed.value : null);
+  let agcArmed = $derived(getAgcArmed());
+  let pendingAgcMode = $derived(agcArmed.armed ? agcArmed.value : null);
+  let attArmed = $derived(getAttenuatorArmed());
+  let pendingAtt = $derived(attArmed.armed ? attArmed.value : null);
   // MOR-1689: Filter Shape's own pending target (set_filter_shape), fed to
   // FilterInstrumentHost the same way pendingDataMode above is — the
   // desktop-v2 shape buttons live there, not in the settings-modal
@@ -2060,6 +2072,7 @@
       handler({ ...publication, view: projectRadioView(publication.state, publication.caps, true) }))}
     onLevelChange={(field, value) => RF_FRONT_END_LEVEL_INTENT[field](value)}
     {pendingPreamp}
+    {pendingAtt}
     onPreChange={(level) => rfFrontEndIntents.onPreChange(level)}
     onAttChange={(db) => rfFrontEndIntents.onAttChange(db)}
     onDigiSelToggle={rfFrontEndIntents.onDigiSelToggle}
@@ -2069,7 +2082,7 @@
   {#snippet children(rfFrontEndInstruments)}
   {#snippet vfoInstrumentComposition(vfoOperations: VfoOperationHandles)}
   <FilterInstrumentHost
-    {...filterFiniteRendererSelection} {view} {pendingFilter} {pendingFilterShape} {pendingDataMode} {pendingModInput}
+    {...filterFiniteRendererSelection} {view} {pendingFilter} {pendingMode} {pendingFilterShape} {pendingDataMode} {pendingModInput}
     {filterShapeFeedback}
     onModeChange={filterIntents.onModeChange}
     onFilterChange={filterIntents.onFilterChange}
@@ -2119,7 +2132,7 @@
   >
   {#snippet children(cwKeyerInstruments)}
   <DspInstrumentHost
-    {...dspFiniteRendererSelection} {view} {agcLabels} {pendingNb} {pendingNr} {pendingNotch}
+    {...dspFiniteRendererSelection} {view} {agcLabels} {pendingNb} {pendingNr} {pendingNotch} {pendingAgcMode}
     onToggle={(field, next) => DSP_TOGGLE_INTENT[field](next)}
     onNotchModeChange={dspIntents.onNotchModeChange}
     onAgcModeChange={agcIntents.onAgcModeChange}

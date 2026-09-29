@@ -10,10 +10,13 @@ rigplane supports four backends selected via `--backend`:
 
 | Backend | Description |
 |---------|-------------|
-| `lan` (default) | Connects over UDP to the radio's LAN interface |
+| `lan` | Connects over UDP to the radio's LAN interface |
 | `serial` | Connects via USB CI-V serial port + USB audio devices |
 | `yaesu-cat` | Yaesu text CAT over a USB serial port |
 | `rigctld` | An external Hamlib `rigctld` process over TCP |
+
+Without `--backend`, the CLI picks the backend from the model's profile; see
+the `--backend` option in the [CLI reference](cli.md).
 
 ## LAN Backend Parameters
 

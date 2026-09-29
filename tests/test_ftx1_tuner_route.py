@@ -202,7 +202,8 @@ async def test_currency_change_prevents_write(change: str, boundary: str) -> Non
 
     if boundary == "reply":
 
-        async def query(_command: str) -> str:
+        async def query(_command: str, *args: object, **kwargs: object) -> str:
+            del args, kwargs
             invalidate()
             return "AC101"
 
@@ -223,7 +224,12 @@ async def test_force_receive_has_no_tuner_acquisition_dependency() -> None:
     entered = asyncio.Event()
     release = asyncio.Event()
 
-    async def query(_command: str) -> str:
+    async def query(command: str, *args: object, **kwargs: object) -> str:
+        del args, kwargs
+        # MOR-2862: the confirming PTT read rides its own admission tier,
+        # so it answers at once instead of waiting behind the tuner query.
+        if command == "TX;":
+            return "TX0"
         entered.set()
         await release.wait()
         return "AC101"
@@ -303,7 +309,8 @@ async def test_positive_ac_acquisition_is_inside_one_abort_fence() -> None:
     entered = asyncio.Event()
     release = asyncio.Event()
 
-    async def query(_command: str) -> str:
+    async def query(_command: str, *args: object, **kwargs: object) -> str:
+        del args, kwargs
         entered.set()
         await release.wait()
         return "AC101"

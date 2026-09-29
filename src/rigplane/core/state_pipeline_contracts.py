@@ -1358,6 +1358,10 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
             writable=True,
         ),
         spec(
+            FieldPath.receiver(receiver_id, "operator_controls", "tone_squelch_type"),
+            "str",
+        ),
+        spec(
             FieldPath.receiver(receiver_id, "operator_controls", "audio_peak_filter"),
             "int",
             writable=True,

@@ -44,7 +44,7 @@ Options:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--host HOST` | `0.0.0.0` | Listen address |
+| `--listen ADDR` | `0.0.0.0` | Listen address |
 | `--port PORT` | `4532` | TCP port |
 | `--read-only` | off | Reject all set commands and all raw `w` / `send_raw` frames (including reads) with `RPRT -22` |
 | `--max-clients N` | `10` | Maximum concurrent clients |
