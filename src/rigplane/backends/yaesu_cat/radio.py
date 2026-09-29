@@ -2256,10 +2256,19 @@ class YaesuCatRadio:
     async def set_power(self, watts: int, head: int = 2) -> None:
         """Set TX power.
 
+        A profile-declared ``[power].min_watts`` floor raises a request
+        below the radio's minimum up to that minimum before the wire
+        (MOR-2998: the FTX-1 manual floor is 5 W, so the bottom of the
+        normalized range sends ``PC2005;`` instead of the refused
+        ``PC2000;``). A profile without ``min_watts`` sends the request
+        unchanged.
+
         Args:
             watts: Power in watts.
             head: Head selector (default 2).
         """
+        if self._config.min_watts is not None:
+            watts = max(self._config.min_watts, watts)
         await self._write("set_power", head=str(head), watts=watts)
 
     async def set_rf_power(self, level: int) -> None:

@@ -403,6 +403,9 @@ class RadioProfile:
     filter_width_radio_default_code: int | None = None
     filter_config: dict[str, FilterWidthRule] | None = None
     max_watts: int | None = None
+    # Lower bound of the ``PC`` power range in watts (MOR-2998). ``None``
+    # keeps today's behaviour: a request below the range is sent as-is.
+    min_watts: int | None = None
     att_values: tuple[int, ...] | None = None
     att_labels: dict[str, str] | None = None
     pre_values: tuple[int, ...] | None = None

@@ -631,6 +631,7 @@ class RigConfig:
     filter_width_radio_default_code: int | None = None
     filter_config: dict[str, FilterWidthRule] | None = None
     max_watts: int | None = None
+    min_watts: int | None = None
     data_mode_count: int = 0
     data_mode_labels: dict[str, str] | None = None
     data_mode_inputs: tuple[tuple[int, str], ...] | None = None
@@ -832,6 +833,7 @@ class RigConfig:
             filter_width_radio_default_code=self.filter_width_radio_default_code,
             filter_config=self.filter_config,
             max_watts=self.max_watts,
+            min_watts=self.min_watts,
             att_values=self.att_values,
             att_labels=self.att_labels,
             pre_values=self.pre_values,
@@ -2847,6 +2849,7 @@ def load_rig(path: Path) -> RigConfig:
             rx_audio_channel = rx_channel_raw
 
     max_watts: int | None = None
+    min_watts: int | None = None
     power_section = data.get("power")
     if power_section is not None:
         if not isinstance(power_section, dict):
@@ -2858,6 +2861,21 @@ def load_rig(path: Path) -> RigConfig:
             if max_watts_raw <= 0:
                 raise RigLoadError(f"{filename}: [power].max_watts must be > 0")
             max_watts = max_watts_raw
+        if "min_watts" in power_section:
+            min_watts_raw = power_section["min_watts"]
+            if not isinstance(min_watts_raw, int) or isinstance(min_watts_raw, bool):
+                raise RigLoadError(f"{filename}: [power].min_watts must be an integer")
+            if min_watts_raw <= 0:
+                raise RigLoadError(f"{filename}: [power].min_watts must be > 0")
+            min_watts = min_watts_raw
+        if (
+            min_watts is not None
+            and max_watts is not None
+            and min_watts > max_watts
+        ):
+            raise RigLoadError(
+                f"{filename}: [power].min_watts must be <= max_watts"
+            )
 
     state_acquisition = _parse_state_acquisition(
         filename,
@@ -2902,6 +2920,7 @@ def load_rig(path: Path) -> RigConfig:
         filter_width_radio_default_code=filter_width_radio_default_code,
         filter_config=filter_config,
         max_watts=max_watts,
+        min_watts=min_watts,
         vfo_scheme=scheme,
         vfo_readback=vfo_readback,
         tx_receiver_rule=tx_receiver_rule,
