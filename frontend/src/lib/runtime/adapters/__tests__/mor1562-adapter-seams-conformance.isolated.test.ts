@@ -287,8 +287,11 @@ describe('panel-adapters.ts derive*Props over the live ic7300 fixture (MOR-1562)
 
   it('deriveAntennaProps: honest rx_antenna refusal — capability-not-declared', () => {
     expect(IC7300_CAPABILITIES.capabilities).not.toContain('rx_antenna');
+    // MOR-2978: this stand never observed txAntenna/rxAntenna1
+    // (`observed: false`, `availability: "missing"` in the fixture) — the
+    // old `?? 1` / `?? false` presented those defaults as confirmed.
     expect(deriveAntennaProps()).toEqual({
-      txAntenna: 1, rxAnt: false, antennaCount: 1, hasRxAntenna: false,
+      txAntenna: null, rxAnt: null, antennaCount: 1, hasRxAntenna: false,
     });
   });
 
