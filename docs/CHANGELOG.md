@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.0.0b10] — 2026-09-28
+## [3.0.0b10] — 2026-09-29
 
 ### Added
 
@@ -831,6 +831,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only when it does not already match the confirmed value, so
   tapping the selected option does nothing. The Off and On labels
   are localized in English, Russian and Japanese.
+
+- **The legacy on/off toggle keys expose the confirmed state and stay
+  disabled while their reading is unread (MOR-2979).** The RF
+  front-end panel's ATT, DIGI-SEL and IP+, the TX panel's ATU, TUNE,
+  VOX, COMP and MON, the RIT/XIT panel's RIT and XIT, the scan
+  panel's STOP, the essentials panel's SPLIT, NB, NR and NOTCH, and
+  the DSP panel's NB, NR, NOTCH and A-NOTCH with the NB settings
+  modal's ON/OFF ride the tri-state `pressed` seam the choice keys
+  took in MOR-2978: a known reading renders `aria-pressed` true or
+  false, an unread reading omits the attribute, and the key stays
+  disabled until its reading is observed, OR-ed with the key's
+  existing disabled conditions. The panel props carry the knownness —
+  splitKnown, ritKnown, xitKnown, scanningKnown, nbKnown, nrKnown,
+  manualNotchKnown and autoNotchKnown — beside the new hasVox and
+  hasComp capability gates. MOR-1536's armed markup and the DSP
+  panel's scalar feedback are unchanged.
+
+- **The FTX-1's RF power floor is 5 W, so the bottom of the range
+  sends `PC2005;` (MOR-2998).** The FTX-1 CAT manual's PC POWER
+  CONTROL table gives the SPA-1 head a 005–100 W span, and the radio
+  refuses anything lower: the bottom of the normalized range used to
+  go out as `PC2000;`, which the radio answered `?;` on the bench.
+  The profile declares `[power] min_watts = 5`, the loader parses it
+  and refuses a `min_watts` above `max_watts`, and on a watts-native
+  radio the power target clamps to the [min, max] span for a
+  normalized float and a bare watt count alike, so the stored
+  `power_level`, the reply's `admitted_level` and the wire target all
+  show the floor. Every path that passes `max_watts` — the intent
+  builder, both web control paths and the sync wrapper — passes
+  `min_watts` beside it, the Yaesu CAT backend clamps to the same
+  floor before the wire, and a profile without `min_watts` keeps
+  today's behaviour.
 
 ### Security
 
