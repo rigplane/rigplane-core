@@ -125,6 +125,7 @@ __all__ = [
     "RitXitCapable",
     "TransmitStateReadable",
     "UsbAudioCapable",
+    "ProviderOwnedStateCapable",
     "MemoryCapable",
 ]
 
@@ -1313,6 +1314,33 @@ class UsbAudioCapable(Protocol):
         :func:`runtime_checkable`, mirroring the
         :attr:`PowerControlCapable.native_power_unit` pattern.
         """
+        ...
+
+
+@runtime_checkable
+class ProviderOwnedStateCapable(Protocol):
+    """Marker for backends that own their capability and state contract.
+
+    A provider-owned backend (the external rigctld client) reports its
+    capabilities and every observed value itself, with no RigPlane
+    profile. The web layer may serve such a backend profile-less:
+    profile-derived fields become unavailable rather than a refusal
+    (MOR-2901, decision (b) of 2026-09-28).
+
+    Backends WITHOUT this marker stay on the resolve-or-refuse path
+    (MOR-2012): an unidentified radio on the Icom serial/LAN backends
+    refuses aloud instead of being served a profile-less projection.
+
+    Implementations declare ``has_provider_owned_state: bool = True`` as a
+    class attribute — the sentinel is required because a
+    :func:`runtime_checkable` Protocol with no members accepts any object
+    (see :class:`UsbAudioCapable`).
+    """
+
+    @property
+    def has_provider_owned_state(self) -> bool:
+        """``True`` when this backend serves its own state contract and the
+        web layer must not require a RigPlane profile for it."""
         ...
 
 

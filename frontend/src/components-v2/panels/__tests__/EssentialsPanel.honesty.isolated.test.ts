@@ -24,11 +24,33 @@
  *
  * Each test names the mutation it kills.
  */
-import { describe, it, expect, afterEach } from 'vitest';
-import { mount, unmount } from 'svelte';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
 import { readFileSync } from 'node:fs';
 import EssentialsPanel from '../EssentialsPanel.svelte';
+
+// MOR-2910: the AF level control reads the shared AF command-feedback lane
+// (`getAfLevelControlFeedback`), so this file mocks the accessor with a
+// hoisted mutable snapshot — the display tests drive the confirmed reading
+// through it, and the wiring tests advance the feedback lifecycle.
+const afFeedback = vi.hoisted(() => ({ value: null as Record<string, unknown> | null }));
+const afFeedbackOf = (confirmed: number, over: Record<string, unknown> = {}) => ({
+  confirmed, target: null, requestedTarget: null, phase: 'idle' as const,
+  busy: false, availability: 'available' as const, outcome: null,
+  lifecycleId: null, transitionId: null, providerGeneration: 1, sessionEpoch: 1,
+  scope: { control: 'af-level', receiver: 0 as const },
+  repeatPolicy: 'latest-target-wins' as const, ...over,
+});
+const afHandler = vi.hoisted(() => ({ onAfLevelChange: (_value: number) => {} }));
+vi.mock('$lib/runtime/frontend-runtime', () => ({ runtime: {
+  get state() { return null; },
+  get caps() { return null; },
+  get controlSession() { return { state: 'disconnected' as const, epoch: -1 }; },
+} }));
+vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
+  getAfLevelControlFeedback: () => afFeedback.value,
+}));
 
 const noop = () => {};
 
@@ -59,6 +81,10 @@ let host: HTMLElement | null = null;
 let instance: Record<string, unknown> | null = null;
 
 function render(afLevel: number): HTMLElement {
+  // The panel reads the confirmed reading through the mocked
+  // `getAfLevelControlFeedback`, so the display cases drive it there (the
+  // `rxAudio.afLevel` prop still travels for the pre-MOR-2910 contract).
+  afFeedback.value = afFeedbackOf(afLevel);
   host = document.createElement('div');
   document.body.appendChild(host);
   instance = mount(EssentialsPanel, { target: host, props: baseProps(afLevel) });
@@ -142,5 +168,78 @@ describe('EssentialsPanel AF-level display honesty (MOR-1409 A13a, MOR-2668)', (
     expect(minWidth).toBeGreaterThanOrEqual(widest);
     expect(rule![1]).toContain('tabular-nums');
     expect(source).toMatch(/\.vc-value:empty::before \{ content: '\\200b'; \}/);
+  });
+});
+
+// MOR-2910 — the AF level control consumes the shared command-feedback scalar
+// (`getAfLevelControlFeedback`): requested/confirmed/error through the
+// binding, aria-busy while a request is pending, dispatch through the shared
+// policy. The feedback accessor is the hoisted mock above; the request still
+// leaves through the panel's existing onAfLevelChange prop handler.
+describe('EssentialsPanel AF level command-feedback wiring (MOR-2910)', () => {
+  // The mocked accessor is a plain (non-reactive) snapshot, so each case
+  // stages its full feedback shape BEFORE mounting — a post-mount
+  // reassignment would never re-render. The panel under test reads the
+  // snapshot through its binding on mount.
+  function renderWiring(over: Record<string, unknown> = {}): HTMLElement {
+    afFeedback.value = afFeedbackOf(0.5, over);
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    instance = mount(EssentialsPanel, {
+      target: host,
+      props: {
+        ...baseProps(0.5),
+        onAfLevelChange: afHandler.onAfLevelChange,
+      },
+    });
+    flushSync();
+    return host;
+  }
+
+  function afSlider(): HTMLElement {
+    const slider = host?.querySelector<HTMLElement>('[aria-label="AF Level"]');
+    if (!slider) throw new Error('AF Level slider not found');
+    return slider;
+  }
+
+  it('projects the requested target with busy state over confirmed truth', () => {
+    const t = renderWiring({
+      phase: 'awaiting-confirmation', busy: true, target: 0.75, requestedTarget: 0.75,
+    });
+
+    const slider = afSlider();
+    expect(slider.dataset.commandPhase).toBe('awaiting-confirmation');
+    expect(slider.getAttribute('aria-busy')).toBe('true');
+    expect(slider.getAttribute('aria-valuenow')).toBe('0.5');
+    expect(vcValueFor(t, 'AF Level')).toBe('50%');
+    const descriptionId = slider.getAttribute('aria-describedby')!;
+    expect(t.querySelector(`#${descriptionId}`)?.textContent).toContain('75%');
+  });
+
+  it('exposes a terminal error without replacing the confirmed reading', () => {
+    // `transitionId` carries the terminal transition the status span
+    // announces; without it the renderer has nothing to say.
+    const t = renderWiring({
+      phase: 'failed', transitionId: 'mor-2910-af-failed',
+      outcome: { phase: 'failed', error: 'radio refused' },
+    });
+
+    const slider = afSlider();
+    expect(slider.dataset.commandPhase).toBe('failed');
+    expect(slider.getAttribute('aria-busy')).toBe('false');
+    expect(slider.getAttribute('aria-valuenow')).toBe('0.5');
+    expect(t.querySelector('[data-control-feedback-status]')?.textContent)
+      .toContain('radio refused');
+  });
+
+  it('dispatches through the shared policy into the prop handler', () => {
+    vi.useFakeTimers();
+    const calls: number[] = [];
+    afHandler.onAfLevelChange = (value: number) => calls.push(value);
+    renderWiring();
+    afSlider().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(50);
+    expect(calls).toEqual([0.51]);
+    vi.useRealTimers();
   });
 });

@@ -3936,7 +3936,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 return self._last_split
             return False
         if resp.data:
-            on = bool(resp.data[0])
+            # 11/12 are DUP−/DUP+, not split (MOR-2929; see the 0F branch of
+            # ``_civ_rx.py: CivRuntime._observations_from_frame``).
+            on = resp.data[0] == 0x01
             self._last_split = on
             return on
         if self._last_split is not None:

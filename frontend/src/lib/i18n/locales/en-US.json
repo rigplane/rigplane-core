@@ -204,6 +204,10 @@
   "core.mobile.receiverSelector.label": "Receiver selector",
   "core.mobile.setupButton": "Setup",
   "core.mobile.closeStepPicker": "Close step picker",
+  "core.mobile.tune.downFast": "Tune down fast",
+  "core.mobile.tune.downStep": "Tune down one step",
+  "core.mobile.tune.upStep": "Tune up one step",
+  "core.mobile.tune.upFast": "Tune up fast",
 
   "core.spectrum.autoStep.onTitle": "Auto step is on — the tuning step follows the operating mode. Click to lock the current step and stop following.",
   "core.spectrum.autoStep.offTitle": "Auto step is off — the tuning step stays at your manual setting. Click to turn it back on and snap to the mode's default step.",

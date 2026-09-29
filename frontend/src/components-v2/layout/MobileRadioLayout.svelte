@@ -63,7 +63,7 @@
     toBandSelectorProps, toRxAudioProps, toDspProps, toTxProps, toCwProps, toAntennaProps, toScanProps,
   } from '$lib/runtime/props/panel-props';
   import {
-    bindSemanticSurfaceHandlers, getPresetHandlers, getKeyboardHandlers,
+    bindSemanticSurfaceHandlers, getPresetHandlers, getKeyboardHandlers, getPendingFrequencyHz,
   } from '$lib/runtime/adapters/panel-adapters';
   import { getKeyboardConfig } from '$lib/stores/capabilities.svelte';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
@@ -146,6 +146,12 @@
   // readout names the other one. Pinned by MobileRadioLayout.component.svelte.test.ts,
   // describe "mobile header follows the active receiver (MOR-2511)".
   let activeVfo = $derived(activeReceiver === 'SUB' ? subVfo : mainVfo);
+  // MOR-2911 — the in-flight set_freq target for the ACTIVE receiver, read
+  // at this composition seam from the same accessor the desktop's
+  // SemanticRadioSurfaces seam reads (no second pending tracker). Passed to
+  // the header's passive readout as display-only pending truth; the
+  // confirmed frequency returns when the radio confirms or refuses.
+  let activePendingFrequencyHz = $derived(getPendingFrequencyHz(activeReceiver === 'SUB' ? 1 : 0));
   function selectReceiver(target: 'MAIN' | 'SUB') {
     if (target === 'MAIN') {
       vfoHandlers.onMainVfoClick?.();
@@ -585,7 +591,7 @@
   <div class="m-ls-overlay">
     <div class="m-ls-vfo">
       <span class="m-tx-indicator" data-rf={managedTxRf} style="background: {txIndicatorColor}"></span>
-      <FrequencyDisplay freq={activeVfo.freq} compact active />
+      <FrequencyDisplay freq={activeVfo.freq} pendingDisplayHz={activePendingFrequencyHz} compact active />
     </div>
     <div class="m-ls-quick-modes">
       {#each QUICK_MODES as m}
@@ -702,7 +708,7 @@
            their catalog titles. -->
       <span class="m-tx-indicator" data-rf={managedTxRf} style="background: {txIndicatorColor}" title={managedTxRf === 'unknown' ? undefined : txPermit === 'allowed' ? t('core.mobile.tx.allowed') : t('core.mobile.tx.notAllowedBand')}></span>
       <div class="m-vfo-freq" bind:this={vfoFreqElement}>
-        <FrequencyDisplay freq={activeVfo.freq} compact active />
+        <FrequencyDisplay freq={activeVfo.freq} pendingDisplayHz={activePendingFrequencyHz} compact active />
       </div>
       <button class="m-settings-btn" onclick={() => (setupOpen = true)} aria-label={t('core.mobile.setupButton')}>
         <Settings size={16} />
@@ -968,10 +974,10 @@
 
   <!-- ═══ TUNING STRIP ═══ -->
   <nav class="m-tuning-strip" data-bottom-bar>
-    <button class="m-tune-btn m-tune-fast" onclick={() => tuneBy(-10)}>
+    <button class="m-tune-btn m-tune-fast" onclick={() => tuneBy(-10)} aria-label={t('core.mobile.tune.downFast')}>
       <ChevronsLeft size={18} />
     </button>
-    <button class="m-tune-btn" onclick={() => tuneBy(-1)}>
+    <button class="m-tune-btn" onclick={() => tuneBy(-1)} aria-label={t('core.mobile.tune.downStep')}>
       <ChevronLeft size={22} />
     </button>
     <div class="m-tune-step-wrapper">
@@ -1000,10 +1006,10 @@
         </div>
       {/if}
     </div>
-    <button class="m-tune-btn" onclick={() => tuneBy(1)}>
+    <button class="m-tune-btn" onclick={() => tuneBy(1)} aria-label={t('core.mobile.tune.upStep')}>
       <ChevronRight size={22} />
     </button>
-    <button class="m-tune-btn m-tune-fast" onclick={() => tuneBy(10)}>
+    <button class="m-tune-btn m-tune-fast" onclick={() => tuneBy(10)} aria-label={t('core.mobile.tune.upFast')}>
       <ChevronsRight size={18} />
     </button>
 

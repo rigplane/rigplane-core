@@ -503,12 +503,11 @@ inputs = [
 
 [filters]
 list = ["FIL1", "FIL2", "FIL3"]
-# CI-V 0x1A 0x03: width is a 1-byte BCD index, not raw Hz.
-# wfview's funcFilterWidth handler (icomcommander.cpp:1131) decodes a single
-# BCD byte using the same segmented formula for all Icom rigs:
-#   non-AM: pass 0..10 → 50..550 Hz step 50; pass 11..40 → 700..3600 Hz step 100
-#   AM:     pass 0..49 → 200..10000 Hz step 200
-# Matches IC-7610 / IC-7300 (issue #1156).
+# CI-V 0x1A 0x03: width is a 1-byte BCD index, not raw Hz. IC-705 CI-V
+# Reference Guide (A7560-8EX-1, Jul.2020) p.19, "IF filter width settings":
+#   SSB/CW/RTTY 0..9 → 50..500 Hz step 50
+#   SSB/CW 10..40 → 600..3600 Hz step 100; RTTY 10..31 → 600..2700 Hz step 100
+#   AM 0..49 → 200..10000 Hz step 200
 encoding = "segmented_bcd_index"
 width_min_hz = 50
 width_max_hz = 10000

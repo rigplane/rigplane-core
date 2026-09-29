@@ -7,6 +7,7 @@
   import { txStatusColor } from './tx-utils';
   import {
     deriveTxProps,
+    getRfPowerControlFeedback,
     getTxAuxControlFeedback,
     getTxHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
@@ -39,7 +40,6 @@
   // MOR-618: opt-in auto LAN MOD-input toggle (shown in the settings modal).
   let autoLan = $derived(deriveAutoLanModInputProps());
 
-  let rfPower = $derived(p.rfPower);
   let atuActive = $derived(p.atuActive);
   let atuTuning = $derived(p.atuTuning);
   let voxActive = $derived(p.voxActive);
@@ -74,20 +74,25 @@
   let driveGainFeedback = $derived(getTxAuxControlFeedback('driveGain'));
   let compLevelFeedback = $derived(getTxAuxControlFeedback('compressorLevel'));
   let monLevelFeedback = $derived(getTxAuxControlFeedback('monitorGain'));
+  // MOR-2910: RF power rides the shared normalized lane like its four raw
+  // siblings — requested/confirmed/error through the binding below.
+  let rfPowerFeedback = $derived(getRfPowerControlFeedback());
   // MOR-2658: unread is an empty reserved slot — never the '—' placeholder,
   // and never a '%' without its number. The renderer (HBarRenderer) calls
   // this with Number.NaN for an unread value.
   const rawTxLevelDisplay = (value: number): string =>
     valueText(finiteValue(value), rawToPercentDisplay);
   // MOR-2658: a non-finite RF power renders EMPTY in its reserved slot —
-  // never the literal `NaN%`. `toTxProps` reports `Number.NaN` when the
-  // rig never reported `powerLevel` (missing/absent → `?? Number.NaN`,
-  // the deferred A12 rfPower fix); this guard renders that sentinel as
-  // the empty slot, and the raw binding claims no slider position for it.
+  // never the literal `NaN%`. The renderer calls this with Number.NaN for
+  // an unread value (MOR-2910 closed the deferred A12 rfPower fix by
+  // binding the lane: no confirmed reading claims a slider position).
   const rfPowerDisplay = (value: number): string =>
     valueText(finiteValue(value), normalizedPercentDisplay);
   const txLevelPolicy = () => createHBarContinuousScalarPolicy({
     preview: 'optimistic', debounceMs: 50, describeTarget: rawToPercentDisplay,
+  });
+  const rfPowerPolicy = () => createHBarContinuousScalarPolicy({
+    preview: 'optimistic', debounceMs: 50, describeTarget: normalizedPercentDisplay,
   });
   const micGainBinding = createContinuousScalar(
     () => ({
@@ -121,10 +126,18 @@
     }),
     txLevelPolicy(),
   );
+  const rfPowerBinding = createContinuousScalar(
+    () => ({
+      evidence: 'command-feedback', feedback: rfPowerFeedback, command: 'set_rf_power',
+      domain: { min: 0, max: 1, step: 0.01, defaultValue: null, fineStepDivisor: 10 },
+      enabled: rfPowerAvailable, request: onRfPowerChange,
+    }),
+    rfPowerPolicy(),
+  );
 
-  type TxLevelLane = 'micGain' | 'driveGain' | 'compressorLevel' | 'monitorGain';
+  type TxLevelLane = 'rfPower' | 'micGain' | 'driveGain' | 'compressorLevel' | 'monitorGain';
   let issuedStatusText = $state<Record<TxLevelLane, string | null>>({
-    micGain: null, driveGain: null, compressorLevel: null, monitorGain: null,
+    rfPower: null, micGain: null, driveGain: null, compressorLevel: null, monitorGain: null,
   });
   function formatIssuedStatus({ view, announcement }: Readonly<HBarIssuedStatusSnapshot>): string {
     return view.error === null
@@ -139,6 +152,7 @@
     };
   }
   const micGainStatus = issuedStatusPresentation('micGain');
+  const rfPowerStatus = issuedStatusPresentation('rfPower');
   const driveGainStatus = issuedStatusPresentation('driveGain');
   const compLevelStatus = issuedStatusPresentation('compressorLevel');
   const monLevelStatus = issuedStatusPresentation('monitorGain');
@@ -185,6 +199,7 @@
   onDestroy(() => {
     stopWatchingTx();
     ptt.destroy();
+    rfPowerBinding.destroy();
     micGainBinding.destroy();
     driveGainBinding.destroy();
     compLevelBinding.destroy();
@@ -213,6 +228,7 @@
 
   $effect(() => {
     if (!settingsOpen) {
+      consumeHiddenStatus(rfPowerBinding, rfPowerStatus);
       consumeHiddenStatus(micGainBinding, micGainStatus);
       consumeHiddenStatus(driveGainBinding, driveGainStatus);
       consumeHiddenStatus(compLevelBinding, compLevelStatus);
@@ -348,9 +364,9 @@
     </div>
     <div class="modal-body">
       <div class="tx-level-slot">
-        <ValueControl label="RF Power" value={rfPower} min={0} max={1} step={0.01}
+        <ValueControl {...feedbackIntegratedControl} label="RF Power" binding={rfPowerBinding}
           renderer="hbar" displayFn={rfPowerDisplay} accentColor="var(--v2-accent-red)"
-          onChange={onRfPowerChange} variant="hardware-illuminated" disabled={!rfPowerAvailable} />
+          issuedStatusPresentation={rfPowerStatus} variant="hardware-illuminated" />
       </div>
       <!-- MOR-2658: each level value keeps its own reserved slot (`4ch`
            covers `100%`) so a first reading cannot shift the row. -->
