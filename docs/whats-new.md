@@ -19,6 +19,10 @@ the IC-7610 profile. The FTX-1 on `--backend yaesu-cat` and an external rigctld
 on `--backend rigctld` run without it. See
 [The radio model is required](migrate.md#the-radio-model-is-required).
 
+With `--model` and no `--backend`, the backend comes from the radio's profile:
+`--model FTX-1 --serial-port …` starts the Yaesu CAT backend, and
+`--model IC-7300 --serial-port …` the Icom serial one.
+
 ## Readings Show Only What the Radio Reported
 
 - A reading the radio has not reported yet stays empty. The Web UI does not
