@@ -79,5 +79,10 @@ def test_loader_refuses_min_watts_above_max_watts(tmp_path):
     assert patched != text
     broken = tmp_path / "ftx1.toml"
     broken.write_text(patched, encoding="utf-8")
+    # load_rig resolves the CTCSS catalog next to the loaded file.
+    tmp_path.joinpath("_ctcss_tables_v1.toml").write_text(
+        (_RIGS_DIR / "_ctcss_tables_v1.toml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     with pytest.raises(RigLoadError, match=r"\[power\]\.min_watts"):
         load_rig(broken)
