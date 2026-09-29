@@ -1126,23 +1126,30 @@ def _resolve_ctcss_table(
         ) from exc
 
 
+# The reads whose reply code [tone_squelch_types] names: the Icom 16 5D
+# selector and the Yaesu CAT CT read (MOR-2969).
+_TONE_SQUELCH_TYPE_READS = ("get_tone_squelch_type", "get_sql_type")
+
+
 def _resolve_tone_squelch_types(
     path: Path, data: dict[str, Any], commands: dict[str, CommandSpec]
 ) -> dict[int, ToneSquelchType] | None:
     """Parse ``[tone_squelch_types]``: selector code -> neutral type (MOR-2131).
 
-    A profile that declares ``get_tone_squelch_type``, in ``[commands]`` or
-    its overrides and not as absent, must carry the table, because the
-    decoder reads the code's meaning from it and nowhere else.
+    A profile that declares a selector read in ``_TONE_SQUELCH_TYPE_READS``,
+    in ``[commands]`` or its overrides and not as absent, must carry the
+    table, because the decoder reads the code's meaning from it and nowhere
+    else.
     """
     filename = path.name
     section = data.get("tone_squelch_types")
     if section is None:
-        selector = commands.get("get_tone_squelch_type")
-        if selector is not None and not isinstance(selector, AbsentCommandSpec):
-            raise RigLoadError(
-                f"{filename}: get_tone_squelch_type needs a [tone_squelch_types] table"
-            )
+        for name in _TONE_SQUELCH_TYPE_READS:
+            selector = commands.get(name)
+            if selector is not None and not isinstance(selector, AbsentCommandSpec):
+                raise RigLoadError(
+                    f"{filename}: {name} needs a [tone_squelch_types] table"
+                )
         return None
     if not isinstance(section, dict) or not section:
         raise RigLoadError(
