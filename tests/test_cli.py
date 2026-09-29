@@ -2252,6 +2252,7 @@ class TestFirstSignalShutdownBound:
             await srv.serve_forever(
                 on_shutdown_signal=backstop.arm, on_tx_release=backstop.protect
             )
+            resume.set()  # serve_forever returns on the backstop's cancel
             await hang.wait()  # a later step that never finishes
 
         with patch(
@@ -2270,7 +2271,6 @@ class TestFirstSignalShutdownBound:
             srv._discovery = _StuckDiscovery()
             srv._radio_poller = _Poller()
             handlers[0]()  # the first SIGTERM
-            asyncio.get_running_loop().call_later(0.15, resume.set)  # after the cancel
             await asyncio.wait_for(backstop._clock, 2.0)  # noqa: SLF001
             for _ in range(100):  # the drain outlives a wrong exit; let it end
                 if "unkey" in events:
