@@ -61,6 +61,12 @@ The Web UI's radio logic is shared, and a skin only decides how things look.
 With a source checkout you can build your own skin without changing the radio
 logic.
 
+## Command Line
+
+`web`, `serve` and `station` take `--listen` for the address the server
+listens on. `--host` after these commands still works but prints a
+deprecation warning; if both are given, `--listen` wins.
+
 ## For Library Users
 
 On the `lan`, `serial` and `yaesu-cat` backends, each radio's commands and
