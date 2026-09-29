@@ -23,7 +23,7 @@ All commands accept these options:
 | `--json` | — | `false` | Emit JSON when supported by the selected command |
 | `--backend` | — | from the model | Backend type: `lan`, `serial`, `yaesu-cat`, or `rigctld`. When omitted it follows the model's profile: a CI-V radio uses `serial` with `--serial-port` and `lan` without it; the FTX-1 uses `yaesu-cat`; a profile with another protocol is refused. Without `--model`: `serial` with `--serial-port`, else `lan`. `rigctld` must be named. |
 | `--serial-port` | `ICOM_SERIAL_DEVICE` | auto-discover | Serial device path. If omitted with the `serial` or `yaesu-cat` backend, discovers via USB scan. |
-| `--serial-baud` | `ICOM_SERIAL_BAUDRATE` | env or backend default | Serial baud. When the env var is unset: `serial` uses the model profile's `default_baud` (`115200` without a model), `yaesu-cat` uses `38400` |
+| `--serial-baud` | `ICOM_SERIAL_BAUDRATE` | env or backend default | Serial baud. When the env var is unset, a port found by the USB scan keeps the rate the scan found; with `--serial-port`, `serial` uses the model profile's `default_baud` (`115200` without a model) and `yaesu-cat` uses `38400` |
 | `--serial-ptt-mode` | `ICOM_SERIAL_PTT_MODE` | `civ` | Serial PTT mode (`civ` currently supported) |
 | `--rx-device` | `ICOM_USB_RX_DEVICE` | auto | USB audio RX device name (serial/CAT profiles with audio support) |
 | `--tx-device` | `ICOM_USB_TX_DEVICE` | auto | USB audio TX device name (serial/CAT profiles with audio support) |
@@ -143,7 +143,8 @@ This provider-facing endpoint is separate from RigPlane's own client-facing
 
 ### Serial baud defaults by backend
 
-If `--serial-baud` and `ICOM_SERIAL_BAUDRATE` are both unset:
+If `--serial-baud` and `ICOM_SERIAL_BAUDRATE` are both unset, a port found by
+the USB scan keeps the rate the scan found. With `--serial-port`:
 
 - `serial` uses the model profile's `default_baud`, or `115200` without a model
 - `yaesu-cat` uses `38400`
