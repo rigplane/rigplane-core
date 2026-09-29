@@ -63,6 +63,42 @@ def power_off(
     )
 
 
+# Power source and the transmit power ceiling each allows (MOR-2973). Reads
+# only; what the reply bytes mean is the profile's [power.sources] and
+# [power.ceilings_w] data.
+@expose_command_key(lambda cmd_map: "get_power_source")
+@require_cmd_map
+def get_power_source(
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
+) -> bytes:
+    """Build CI-V frame to read the power source the radio runs on."""
+    return _build_from_map(
+        cmd_map, "get_power_source", to_addr=to_addr, from_addr=from_addr
+    )
+
+
+@expose_command_key(lambda cmd_map: "get_max_tx_power_battery")
+@require_cmd_map
+def get_max_tx_power_battery(
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
+) -> bytes:
+    """Build CI-V frame to read the battery-pack transmit power ceiling."""
+    return _build_from_map(
+        cmd_map, "get_max_tx_power_battery", to_addr=to_addr, from_addr=from_addr
+    )
+
+
+@expose_command_key(lambda cmd_map: "get_max_tx_power_external")
+@require_cmd_map
+def get_max_tx_power_external(
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
+) -> bytes:
+    """Build CI-V frame to read the external-supply transmit power ceiling."""
+    return _build_from_map(
+        cmd_map, "get_max_tx_power_external", to_addr=to_addr, from_addr=from_addr
+    )
+
+
 def parse_powerstat(frame: CivFrame) -> bool:
     """Parse power status response (0x18 GET).
 

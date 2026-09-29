@@ -525,6 +525,12 @@ class RadioProfile:
     # means, from the profile's ``[tone_squelch_types]`` table (MOR-2131).
     # None when the profile declares no table. Appended for the same reason.
     tone_squelch_types: dict[int, ToneSquelchType] | None = None
+    # The radio's power sources and the transmit power ceiling each allows
+    # (MOR-2973), from [power.sources] (source code -> name) and
+    # [power.ceilings_w] (name -> setting code -> watts). None when the
+    # profile declares neither. Appended for the same reason.
+    power_sources: dict[int, str] | None = None
+    power_ceilings_w: dict[str, dict[int, float]] | None = None
 
     @property
     def vfo_swap_code(self) -> int | None:

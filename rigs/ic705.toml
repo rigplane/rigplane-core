@@ -177,6 +177,11 @@ polling_only = [
     "scope_controls.global.display.center_type",
     "scope_controls.global.display.vbw_narrow",
     "scope_controls.global.display.fixed_edge",
+    # MOR-2973: the power source and the Max TX Power settings that set the
+    # watts of the Po meter's 100 % (see [power.sources]).
+    "global.tx_state.power_source",
+    "global.operator_controls.max_tx_power_battery_w",
+    "global.operator_controls.max_tx_power_external_w",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -489,6 +494,28 @@ width_max = 255
 
 [power]
 max_watts = 10
+
+# MOR-2973: the transmit power ceiling depends on the power source, 10 W on
+# an external 13.8 V supply and 5 W on the battery pack, lowered by that
+# source's Max TX Power setting (IC-705 Basic Manual A7560D-1EX-9 p.3-10,
+# p.8-4). 1A 0B names the source and 1A 05 0036/0037 the settings (IC-705
+# CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.14, p.5).
+[power.sources]
+0 = "external"
+1 = "battery"
+
+[power.ceilings_w.battery]
+0 = 0.5
+1 = 1.0
+2 = 2.5
+3 = 5.0
+
+[power.ceilings_w.external]
+0 = 0.5
+1 = 1.0
+2 = 2.5
+3 = 5.0
+4 = 10.0
 
 [ctcss]
 table = "standard_50"
@@ -1029,6 +1056,7 @@ get_agc_time_constant = [0x1A, 0x04]  # source: IC-705 CI-V Reference Guide (A75
 set_agc_time_constant = [0x1A, 0x04]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5 (table), p.19 (00-13 BCD format)
 get_data_mode = [0x1A, 0x06]
 set_data_mode = [0x1A, 0x06]
+get_power_source = [0x1A, 0x0B]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.14, read only (00=External power supply, 01=Battery pack; [power.sources])
 
 # ── Tone / DTCS / CSQL ──
 get_tone_freq = [0x1B, 0x00]
@@ -1141,6 +1169,8 @@ get_quick_split = [0x1A, 0x05, 0x00, 0x45]
 set_quick_split = [0x1A, 0x05, 0x00, 0x45]
 get_ref_adjust = [0x1A, 0x05, 0x00, 0x89]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.7, control 0089 "REF Adjust setting"
 set_ref_adjust = [0x1A, 0x05, 0x00, 0x89]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.7, control 0089 "REF Adjust setting"
+get_max_tx_power_battery = [0x1A, 0x05, 0x00, 0x36]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5, control 0036 "Max TX Power (Battery Pack)" ([power.ceilings_w.battery])
+get_max_tx_power_external = [0x1A, 0x05, 0x00, 0x37]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5, control 0037 "Max TX Power (DC 13.8V)" ([power.ceilings_w.external])
 get_quick_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5: no Main/Sub receiver on this radio; control 0032 on IC-705 is 'Home CH Beep', not quick dual-watch" }
 set_quick_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5: no Main/Sub receiver on this radio; control 0032 on IC-705 is 'Home CH Beep', not quick dual-watch" }
 # civ_transceive corrected (D2, MOR-2016): guide p.8 confirms control 0131 =
@@ -1187,8 +1217,8 @@ get_nb_depth = [0x1A, 0x05, 0x03, 0x57]  # source: IC-705 CI-V Reference Guide (
 set_nb_depth = [0x1A, 0x05, 0x03, 0x57]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.13, control 0357 (00-09); NOT the shared fallback's 0290, which was IC-7610's address -- that fallback and its `_CTL_MEM_NB_DEPTH` constant were deleted in MOR-2006 Steps 5..N module 2
 get_nb_width = [0x1A, 0x05, 0x03, 0x58]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.13, control 0358 (0000-0255); NOT the shared fallback's 0291, which was IC-7610's address -- that fallback and its `_CTL_MEM_NB_WIDTH` constant were deleted in MOR-2006 Steps 5..N module 2
 set_nb_width = [0x1A, 0x05, 0x03, 0x58]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.13, control 0358 (0000-0255); NOT the shared fallback's 0291, which was IC-7610's address -- that fallback and its `_CTL_MEM_NB_WIDTH` constant were deleted in MOR-2006 Steps 5..N module 2
-get_vox_delay = [0x1A, 0x05, 0x03, 0x59]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.14, control 0359 (00-20, 0.1s steps); NOT the shared fallback's 0292, which was IC-7610's address -- that builder-side fallback and its `_CTL_MEM_VOX_DELAY` constant were deleted in MOR-2006 Steps 5..N module 2; 0292 survives only as an RX-parser value in runtime/_civ_rx.py for decoding unsolicited frames, not as anything any builder can emit
-set_vox_delay = [0x1A, 0x05, 0x03, 0x59]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.14, control 0359 (00-20, 0.1s steps); NOT the shared fallback's 0292, which was IC-7610's address -- that builder-side fallback and its `_CTL_MEM_VOX_DELAY` constant were deleted in MOR-2006 Steps 5..N module 2; 0292 survives only as an RX-parser value in runtime/_civ_rx.py for decoding unsolicited frames, not as anything any builder can emit
+get_vox_delay = [0x1A, 0x05, 0x03, 0x59]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.14, control 0359 (00-20, 0.1s steps); NOT the shared fallback's 0292, which was IC-7610's address -- that builder-side fallback and its `_CTL_MEM_VOX_DELAY` constant were deleted in MOR-2006 Steps 5..N module 2
+set_vox_delay = [0x1A, 0x05, 0x03, 0x59]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.14, control 0359 (00-20, 0.1s steps); NOT the shared fallback's 0292, which was IC-7610's address -- that builder-side fallback and its `_CTL_MEM_VOX_DELAY` constant were deleted in MOR-2006 Steps 5..N module 2
 
 [protocol]
 type = "civ"
@@ -1346,6 +1376,9 @@ label = "S9+60"
 # 15 11 Po: 0000=0%, 0143=50%, 0213=100%. Stated in watts of the 10 W
 # rating ([power].max_watts): an inference from the percentages, not a
 # measurement. No row above 0213 is printed, so readings stop at 10 W.
+# The Po meter shows the maximum transmit power (Basic Manual p.3-10), so
+# RigPlane scales a reading by the current source's ceiling over the
+# rating (MOR-2973): 0213 reads 5 W on a 5 W battery ceiling.
 [[meters.power.calibration]]
 raw = 0
 actual = 0.0
