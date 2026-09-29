@@ -89,6 +89,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`web`, `serve` and `station` take `--listen` for the address the
   server binds (MOR-2954).** The defaults are unchanged.
 
+- **The phone SCOPE tab hosts the radio's scope-controls row
+  (MOR-2895).** The tab now renders the same semantic scope surface
+  the desktop panorama toolbar hosts — CTR/FIX, SPAN, REF, HOLD,
+  MAIN/SUB and the More panel with the full mode choice, EDGE for
+  the FIX modes, CENTRE, RBW, SPEED, DUAL, During TX and VBW
+  narrow — through the same handlers and facts, with no second
+  scope command and no new scope state; these controls had no home
+  on the phone before. The row wraps, and the surface's
+  narrow-width hide-bands are switched off, so REF and HOLD stay
+  directly visible; labels and stepper values get the 16 px floor
+  beside the keys' 16 px/44 px portrait floors. Lit keys inside the
+  tab light the layout's cyan accent instead of red, with the lamp
+  glow off, and nothing outside the SCOPE tab changes colour. The
+  More panel now clears the fixed bottom tuning bar: the bar
+  declares itself with `data-bottom-bar`, and a panel that does not
+  fit between its key and the bar's measured top opens upward,
+  pinned to the top margin and capped to the measured gap —
+  scrolling inside — when it fits neither way; without a declared
+  bar the placement keeps the previous downward clamp.
+
+- **`--backend` is inferred from the radio's model when omitted
+  (MOR-2926).** A `yaesu_cat` profile starts on `yaesu-cat`, so
+  `rigplane --model FTX-1 --serial-port <port> web` no longer picks
+  the Icom CI-V serial backend, and a `civ` profile still infers
+  `serial` with `--serial-port` and `lan` otherwise. Any other
+  protocol, or none, is refused before any radio discovery with
+  `Error: Model 'TX-500' uses protocol 'kenwood_cat', which no
+  backend supports` and exit code 1. `--host` given with a
+  `yaesu-cat` backend, explicit or inferred, is ignored with a
+  warning. An explicit `--backend` still wins, `rigctld` is never
+  inferred, and without `--model` the old inference — `serial` with
+  `--serial-port`, else `lan` — is unchanged. The `--backend` help
+  text now says the backend is inferred from the model.
+
 ### Changed
 
 - **The phone portrait layout drops the VFO / RX-TX deck and scrolls
@@ -638,6 +672,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   key: a screen reader announces "Tune down fast", "Tune down one
   step", "Tune up one step" and "Tune up fast". Nothing visual
   changes.
+
+- **The Yaesu and rigctld unkey reads the transmit state back
+  before it is accepted (MOR-2862).** A Yaesu set is answered with
+  silence and rigctld's `RPRT 0` speaks for the daemon, so neither
+  proved the transmitter unkeyed. For a FORCE_RECEIVE the Yaesu CAT
+  backend — the FTX-1's — and the external rigctld client now read
+  the transmit state once inside the same actuation, the Yaesu
+  `TX;` read and the rigctld `t` round trip after `T 0`, riding the
+  unkey's own exchange urgency and currency so the confirming read
+  is never queued behind ordinary polls. The unkey is ACCEPTED only
+  when that read says receive; a read that says TX, silence, a
+  malformed answer or a raised read returns UNCERTAIN, which keeps
+  the release debt for the existing RetryForceReceive pacing.
+  PTT_ON and TRANSMIT_ON still return right after the write.
+
+- **The Standard face shows an honest pressed state and its pending
+  targets (MOR-2907).** The compact NB/NR/NOTCH/A-NOTCH keys, the
+  APF key and the Standard mode keys take their pressed or selected
+  state from the shared confirmed getters, and an unread reading
+  renders no `aria-pressed` at all instead of "false"; the mode grid
+  is now a radiogroup of radio keys. While a mode, AGC,
+  attenuator, NB, NR or notch change is in flight, its target key
+  is marked through the same armed signal and vocabulary the
+  desktop-v2 panels consume, with the existing pending
+  announcements, and the confirmed reading stays the only selection
+  source — an armed target is marked, never lit. The attenuator's
+  quick keys and its overflow key arm the pending value, and a
+  pending notch target of `off` arms the key whose confirmed
+  reading the click asked to leave.
 
 ### Security
 
