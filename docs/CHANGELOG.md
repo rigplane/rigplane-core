@@ -755,7 +755,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stop() waits at most 2 s for the listener. Before, the managed-TX
   termination and the rigctld handback were awaited without a bound,
   so one hung await could keep the process alive indefinitely. A
-  shutdown that ends cancelled now exits with the signal's code 130
+  shutdown that ends cancelled now exits with code 130
   instead of a CancelledError traceback.
 
 ### Security
@@ -821,7 +821,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   section with the same facts. The backend-inference pass reaches the
   guides: the Quick Start's USB section, the FTX-1 USB setup guide and
   the CLI reference now start the FTX-1 with `--model FTX-1
-  --serial-port` and say `--backend yaesu-cat` does the same. The CLI
+  --serial-port`, and the last two say `--backend yaesu-cat` does the
+  same. The CLI
   reference's `--backend` and `--serial-port` rows and its backend
   section describe how the backend follows the model — `rigctld` is
   never inferred — and say the serial port is auto-discovered for
