@@ -253,6 +253,13 @@
     flex-direction: column;
     align-items: center;
     gap: 12px;
+    box-sizing: border-box;
+    max-width: 100%;
+    /* MOR-2997: the phone's usual overlay side inset, reused from
+       MobileRadioLayout's .m-mod-input-warning — a wrapped label line never
+       touches the screen edge. The desktop single line is unaffected. */
+    padding-left: max(12px, env(safe-area-inset-left, 0px));
+    padding-right: max(12px, env(safe-area-inset-right, 0px));
     color: var(--v2-text-dim, #888);
   }
 
@@ -261,6 +268,7 @@
     font-size: 16px;
     font-weight: 700;
     letter-spacing: 0.1em;
+    text-align: center;
     color: var(--v2-text-primary, #fff);
   }
 
