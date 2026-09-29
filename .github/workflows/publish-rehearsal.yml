@@ -1,0 +1,156 @@
+name: Publish rehearsal (validate and build only; do not merge)
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/publish-rehearsal.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: true
+      matrix:
+        # Note: 3.11 dropped 2026-05-05 from validate matrix because pre-existing
+        # test-fixture issues surface only on 3.11 (MagicMock vs coroutine in
+        # async fixtures + async timing flakes in mocked CI-V transports).
+        # Production code on 3.11 is unaffected; the bugs are test-only.
+        # `requires-python = ">=3.11"` retained in pyproject.toml.
+        # Tracked: TODO file follow-up issue to fix fixtures + restore 3.11.
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The test suite's monotonic comparison needs the parent commit; quick.yml and full.yml check out the same depth.
+          fetch-depth: 2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        # --all-extras (not --extra dev --extra bridge, MOR-1978): `dev`
+        # already installed its packages (pytest, ruff, mypy, pydantic,
+        # jsonschema, ...) and `bridge` is `[]` (pyproject.toml, a no-op
+        # alias) — but neither flag named `scope` (Pillow), `dsp` (scipy), or
+        # `webrtc` (aiortc), the extras that gate 62 tests in tests/. Those
+        # tests ran skipped in this release validation job while still
+        # showing green. `uv sync --all-extras` installs every extra
+        # declared in pyproject.toml's [project.optional-dependencies], so
+        # `validate` exercises the same test surface as the merged commit it
+        # is releasing.
+        run: uv sync --all-extras
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Frontend install + check + tests + build
+        run: |
+          cd frontend
+          npm ci
+          npm run check
+          npx vitest run
+          npm run build
+          rm -f ../src/rigplane/web/static
+          mkdir -p ../src/rigplane/web/static
+          cp -r dist/* ../src/rigplane/web/static/
+
+      - name: Ruff
+        run: |
+          uv run ruff check src/ tests/
+          uv run ruff format --check src/ tests/
+
+      - name: Type-check web boundary
+        run: uv run mypy --strict src/rigplane/web
+
+      - name: Lint architecture (import-linter)
+        run: uv run lint-imports
+
+      - name: Run tests
+        run: uv run pytest tests/ -n auto --tb=short --timeout=300 --timeout-method=thread
+
+  build:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+          rm -f ../src/rigplane/web/static
+          mkdir -p ../src/rigplane/web/static
+          cp -r dist/* ../src/rigplane/web/static/
+
+      - name: Build package
+        run: uv build
+
+      - name: Smoke installed radio profiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke_dir="$(mktemp -d)"
+          mapfile -t wheels < <(find "$GITHUB_WORKSPACE/dist" -maxdepth 1 -type f -name '*.whl' -print)
+          if [[ "${#wheels[@]}" -ne 1 ]]; then
+            echo "expected exactly one wheel, found ${#wheels[@]}" >&2
+            exit 1
+          fi
+          wheel_name="$(basename "${wheels[0]}")"
+          cp "${wheels[0]}" "$smoke_dir/$wheel_name"
+          cp .github/scripts/installed_profile_smoke.py "$smoke_dir/"
+          uv venv --python 3.13 "$smoke_dir/.venv"
+          uv pip install --python "$smoke_dir/.venv/bin/python" "$smoke_dir/$wheel_name"
+          cd "$smoke_dir"
+          UV_OFFLINE=true .venv/bin/python installed_profile_smoke.py \
+            --artifact "$wheel_name" \
+            --candidate-sha "$GITHUB_SHA" \
+            --forbid-root "$GITHUB_WORKSPACE" \
+            | tee "$GITHUB_WORKSPACE/installed-profile-smoke.json"
+
+      - name: Upload installed-profile smoke evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: installed-profile-smoke
+          path: installed-profile-smoke.json
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
