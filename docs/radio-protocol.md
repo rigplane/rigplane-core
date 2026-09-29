@@ -404,8 +404,8 @@ Port** to `Unlink from [REMOTE]` (the radio's default), not `Link to [REMOTE]`.
 
 | Context | Default Backend | Override |
 |---------|-----------------|----------|
-| CLI | LAN | `--backend serial` |
+| CLI | Follows the model's profile; see `--backend` in the [CLI reference](guide/cli.md) | `--backend` |
 | Python API (legacy) | LAN (`IcomRadio` adapter) | Use `create_radio(SerialBackendConfig(...))` |
-| Python API (new) | Explicit via config | `LanBackendConfig` or `SerialBackendConfig` |
-| Web UI | LAN | `--backend serial` flag |
-| rigctld | LAN | `--backend serial` flag |
+| Python API (new) | Explicit via config | `LanBackendConfig`, `SerialBackendConfig`, `YaesuCatBackendConfig` or `RigctldBackendConfig` |
+| Web UI (`web`) | Same as the CLI | `--backend` |
+| rigctld (`serve`) | Same as the CLI | `--backend` |

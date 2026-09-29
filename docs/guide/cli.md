@@ -85,7 +85,7 @@ User-provided flags override preset values: `--preset digimode --bridge "MyDevic
 
 ## Backend Selection
 
-rigplane supports four backends: **LAN** (default), **serial** (USB CI-V),
+rigplane supports four backends: **LAN**, **serial** (USB CI-V),
 **yaesu-cat** (text CAT over serial), and **rigctld** (external Hamlib
 `rigctld` over TCP).
 
@@ -93,7 +93,7 @@ Without `--backend`, the backend follows the model's profile, as the
 `--backend` option above describes; for a CI-V radio without `--serial-port`
 that is LAN.
 
-### LAN backend (default)
+### LAN backend
 
 ```bash
 # Auto-discover radio on LAN
