@@ -2100,6 +2100,7 @@ class _ShutdownBackstop:
             "shutdown still running %.1fs after it was cancelled; forced exit",
             _SHUTDOWN_FORCED_EXIT_GRACE_S,
         )
+        _flush_stdio_before_forced_exit()
         os._exit(130)
 
 
@@ -4464,6 +4465,21 @@ def _default_daemon_log_file(*, managed_runtime: bool) -> Path:
     return cast(Path, resolve_core_log_dir() / filename)
 
 
+def _flush_stdio_before_forced_exit() -> None:
+    """Flush stdout/stderr right before ``os._exit`` (MOR-3010).
+
+    ``os._exit`` skips interpreter shutdown, so a block-buffered piped
+    stdout would silently drop everything the command printed. A closed
+    stream raises ``ValueError``/``OSError``; at forced-exit time there is
+    nothing useful to do about it.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (ValueError, OSError):
+            pass
+
+
 def main() -> None:
     import logging
 
@@ -4631,8 +4647,10 @@ def main() -> None:
                     pass
             # Force exit — prevents hang on orphaned executor threads
             # (PortAudio stream.read/write blocked in thread pool)
+            _flush_stdio_before_forced_exit()
             os._exit(exit_code)
         except KeyboardInterrupt:
+            _flush_stdio_before_forced_exit()
             os._exit(130)
         finally:
             if pid_file is not None:
