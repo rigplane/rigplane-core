@@ -2868,14 +2868,8 @@ def load_rig(path: Path) -> RigConfig:
             if min_watts_raw <= 0:
                 raise RigLoadError(f"{filename}: [power].min_watts must be > 0")
             min_watts = min_watts_raw
-        if (
-            min_watts is not None
-            and max_watts is not None
-            and min_watts > max_watts
-        ):
-            raise RigLoadError(
-                f"{filename}: [power].min_watts must be <= max_watts"
-            )
+        if min_watts is not None and max_watts is not None and min_watts > max_watts:
+            raise RigLoadError(f"{filename}: [power].min_watts must be <= max_watts")
 
     state_acquisition = _parse_state_acquisition(
         filename,
