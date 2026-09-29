@@ -188,8 +188,7 @@ def test_an_absent_selector_needs_no_table(tmp_path) -> None:
 
 # The FTX-1's selector is its CAT CT read (rigs/ftx1.toml, MOR-2969).
 _CAT_SQL_TYPE_READ = (
-    'get_sql_type = { cat = { read = "CT{receiver};", '
-    'parse = "CT{receiver}{type};" } }'
+    'get_sql_type = { cat = { read = "CT{receiver};", parse = "CT{receiver}{type};" } }'
 )
 
 
