@@ -84,6 +84,15 @@ that class of defect is release-blocking by definition and is not on this list.
   advanced tooling, not part of the frequency/mode/PTT command flow a
   logging or digital-mode client uses for normal operation. (MOR-1882)
 
+## Hardware validation
+
+- **The radios validated on 3.0 hardware are the IC-7300 over USB, the
+  FTX-1 over USB and the IC-7610 over LAN.** The IC-7610 was validated on
+  3.0 builds up to 2026-09-27; later changes were not re-run on it. Not
+  validated on 3.0 hardware: the IC-705, the IC-9700, the X6200 and the
+  X6100. For the IC-9700, one reporter tested the POWER ON fix of #3862
+  over LAN.
+
 ## Dual-receiver topology
 
 **Dual-receiver hardware certification is not part of this beta.** The
@@ -95,3 +104,23 @@ width, S-meter, AF/RF/squelch, repeater shift, NB/NR, notch, IF shift,
 NARROW and AGC read from the SUB receiver, and AGC and NB writes
 measured landing on SUB with MAIN unchanged (MOR-2511, 2026-09-18). Do
 not treat any other dual-receiver path as hardware-certified.
+
+## Command acknowledgement
+
+- **A write the radio refuses can still answer `ok` to the caller.** The
+  refusal shows only in the server log. (MOR-3004)
+
+## Web UI
+
+- **On a phone, the panorama's frequency labels overlap at its two
+  edges.** (MOR-3011)
+- **The LCD skin's VFO control panel shows the A↔B and A=B keys without
+  checking whether the radio's VFO scheme supports them.** (MOR-2912)
+
+## Command-line output
+
+- **CLI output is lost when standard output is a pipe.** The CLI ends its
+  radio commands with `os._exit`, which skips the flush of block-buffered
+  stdout, so a command that prints — `status`, `freq`, `mode`, `meter` —
+  exits 0 with empty output when piped; on a terminal stdout is
+  line-buffered and nothing is lost. (MOR-3010)
