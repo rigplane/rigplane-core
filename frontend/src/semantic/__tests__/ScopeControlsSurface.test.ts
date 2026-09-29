@@ -1015,3 +1015,167 @@ describe('MOR-2704 T1: a read value stays visible while its control is unavailab
     unmount(component);
   });
 });
+
+/* ── MOR-2987: the phone ⋯ menu is a full-width BottomSheet — one setting
+   per row (label left, all options right on ONE line), pressable
+   HardwareButton keys (visible outline, selected lit cyan), labelled toggle
+   rows. The layout opts in with `moreAsSheet`; without it the desktop
+   popover is unchanged (last test). jsdom has no layout, so "one line" is
+   pinned as structure (a single options container per row) plus the nowrap
+   rules in the source; the real 360 px line boxes are proven by the e2e. ── */
+describe('phone More sheet (MOR-2987)', () => {
+  function renderSheet(view: RadioViewModel, handlers: Handlers = {}) {
+    const component = mount(ScopeControlsSurface, {
+      target,
+      props: { view, ...handlers, moreAsSheet: true } as Record<string, unknown>,
+    });
+    flushSync();
+    const q = (sel: string) => target.querySelector(sel) as HTMLElement | null;
+    const el = (id: string) => q(`[data-testid="${id}"]`);
+    return {
+      dispose: () => unmount(component),
+      el,
+      openMore: () => { el('scope-more')!.click(); flushSync(); },
+    };
+  }
+
+  it('opens a BottomSheet from the ⋯ key, not the popover', () => {
+    const r = renderSheet(withSc({ mode: known(0) }));
+    r.openMore();
+    expect(r.el('scope-more-panel')).toBeNull();
+    expect(r.el('scope-more-sheet')).not.toBeNull();
+    expect(target.querySelector('.m-sheet-backdrop')).not.toBeNull();
+    expect(target.querySelector('.m-sheet-title')!.textContent).toBe('SCOPE');
+    r.dispose();
+  });
+
+  it('one row per setting: label left, every option of the row in ONE nowrap container', () => {
+    const r = renderSheet(withSc({ mode: known(0) }));
+    r.openMore();
+    const sheet = r.el('scope-more-sheet')!;
+    const rows = [...sheet.children].filter((c) => c.classList.contains('scope-sheet-row'));
+    // MODE + CENTRE + RBW + SPEED + DUAL + During TX + VBW narrow (EDGE hides in CTR).
+    expect(rows.map((row) => row.getAttribute('data-testid'))).toEqual([
+      'scope-mode', 'scope-centerType', 'scope-rbw', 'scope-speed',
+      'scope-dual-row', 'scope-duringTx-row', 'scope-vbwNarrow-row',
+    ]);
+    for (const row of rows) {
+      expect(row.querySelectorAll(':scope > .scope-sheet-label')).toHaveLength(1);
+      const options = row.querySelectorAll(':scope > .scope-sheet-options');
+      expect(options).toHaveLength(1);
+      const outside = [...row.querySelectorAll('button, output')]
+        .filter((node) => !options[0]!.contains(node));
+      expect(outside, 'every key of the row lives in the one options container').toEqual([]);
+    }
+    // The containers never wrap: the row and its options box are nowrap.
+    expect(SOURCE).toMatch(/\.scope-sheet-row\s*\{[^}]*flex-wrap:\s*nowrap/);
+    expect(SOURCE).toMatch(/\.scope-sheet-options\s*\{[^}]*flex-wrap:\s*nowrap/);
+    r.dispose();
+  });
+
+  it('choice keys are outlined HardwareButtons; the selected one is lit cyan', () => {
+    const r = renderSheet(withSc({ mode: known(0), centerType: known(1) }));
+    r.openMore();
+    for (const [id, selected] of [['scope-mode-0', true], ['scope-mode-1', false], ['scope-centerType-1', true]] as const) {
+      const key = r.el(id)!;
+      expect(key.classList.contains('v2-control-button')).toBe(true);
+      expect(key.getAttribute('data-surface')).toBe('hardware');
+      expect(key.getAttribute('data-indicator-style')).toBe('edge-left');
+      expect(key.getAttribute('data-indicator-color')).toBe('cyan');
+      expect(key.getAttribute('data-active')).toBe(String(selected));
+      expect(key.getAttribute('role')).toBe('radio');
+      expect(key.getAttribute('aria-checked')).toBe(String(selected));
+    }
+    // Legibility floors live in the sheet's own rules (the phone button
+    // floors also reach them, but the sheet does not depend on the host).
+    expect(SOURCE).toMatch(/\.scope-sheet-options[^{]*\.v2-control-button[^}]*min-height:\s*44px/);
+    expect(SOURCE).toMatch(/\.scope-sheet-options[^{]*\.v2-control-button[^}]*font-size:\s*16px/);
+    expect(SOURCE).toMatch(/\.scope-sheet-value\s*\{[^}]*min-height:\s*44px/);
+    expect(SOURCE).toMatch(/\.scope-sheet-value\s*\{[^}]*font-size:\s*16px/);
+    r.dispose();
+  });
+
+  it('labels are visually distinct from options (smaller uppercase secondary, never button text)', () => {
+    const r = renderSheet(withSc({ mode: known(0) }));
+    r.openMore();
+    expect(r.el('scope-mode')!.querySelector('.scope-sheet-label')!.textContent).toBe('MODE');
+    expect(SOURCE).toMatch(/\.scope-sheet-label\s*\{[^}]*font-size:\s*12px/);
+    expect(SOURCE).toMatch(/\.scope-sheet-label\s*\{[^}]*text-transform:\s*uppercase/);
+    expect(SOURCE).toMatch(/\.scope-sheet-label\s*\{[^}]*color:\s*var\(--v2-text-secondary/);
+    r.dispose();
+  });
+
+  it('an unread value lights nothing, disables its keys, and omits aria-checked', () => {
+    const r = renderSheet(withSc({ centerType: unread(), duringTx: unread() }));
+    r.openMore();
+    for (const value of [0, 1, 2]) {
+      const key = r.el(`scope-centerType-${value}`)!;
+      expect(key.hasAttribute('disabled')).toBe(true);
+      expect(key.getAttribute('data-active')).toBe('false');
+      expect(key.getAttribute('aria-checked')).toBeNull();
+      expect(key.getAttribute('role')).toBe('radio');
+    }
+    const toggle = r.el('scope-duringTx')!;
+    expect(toggle.hasAttribute('disabled')).toBe(true);
+    expect(toggle.getAttribute('data-active')).toBe('false');
+    expect(toggle.getAttribute('aria-checked')).toBeNull();
+    r.dispose();
+  });
+
+  it('toggles get labelled rows with a visible on/off state', () => {
+    const r = renderSheet(withSc({ dual: known(true), duringTx: known(true), vbwNarrow: known(false) }));
+    r.openMore();
+    for (const [rowId, label, on] of [
+      ['scope-dual-row', 'DUAL', true], ['scope-duringTx-row', 'During TX', true],
+      ['scope-vbwNarrow-row', 'VBW narrow', false],
+    ] as const) {
+      const row = r.el(rowId)!;
+      expect(row.querySelector('.scope-sheet-label')!.textContent).toBe(label);
+      const key = row.querySelector('button')!;
+      expect(key.getAttribute('data-active')).toBe(String(on));
+      expect(key.getAttribute('role')).toBe('switch');
+      expect(key.getAttribute('aria-checked')).toBe(String(on));
+    }
+    r.dispose();
+  });
+
+  it('an unsupported setting has no row', () => {
+    const r = renderSheet(withSc({ mode: known(0), rbw: unread(OFF), dual: unread(OFF) }));
+    r.openMore();
+    const sheet = r.el('scope-more-sheet')!;
+    expect(sheet.querySelector('[data-testid="scope-rbw"]')).toBeNull();
+    expect(sheet.querySelector('[data-testid="scope-dual-row"]')).toBeNull();
+    expect(sheet.querySelector('[data-testid="scope-mode"]')).not.toBeNull();
+    r.dispose();
+  });
+
+  it('the sheet dispatches the same intents as the popover (no new command)', () => {
+    const onChoiceChange = vi.fn();
+    const onToggleChange = vi.fn();
+    const onSpeedChange = vi.fn();
+    const r = renderSheet(withSc({ mode: known(0) }), { onChoiceChange, onToggleChange, onSpeedChange });
+    r.openMore();
+    r.el('scope-mode-2')!.click(); flushSync();
+    expect(onChoiceChange).toHaveBeenCalledExactlyOnceWith('mode', 2);
+    r.el('scope-centerType-1')!.click(); flushSync();
+    expect(onChoiceChange).toHaveBeenCalledWith('centerType', 1);
+    r.el('scope-speed')!.querySelectorAll('button')[1]!.click(); flushSync();
+    expect(onSpeedChange).toHaveBeenCalledOnce();
+    r.el('scope-duringTx')!.click(); flushSync();
+    expect(onToggleChange).toHaveBeenCalledWith('duringTx', expect.any(Boolean));
+    r.dispose();
+  });
+
+  it('without the flag the desktop popover is unchanged (flat keys, panel, aria-checked=false unread)', () => {
+    const r = render(withSc({ centerType: unread() }));
+    r.openMore();
+    expect(r.el('scope-more-panel')).not.toBeNull();
+    expect(r.el('scope-more-sheet')).toBeNull();
+    expect(target.querySelector('.m-sheet-backdrop')).toBeNull();
+    const key = r.el('scope-centerType-0')!;
+    expect(key.classList.contains('scope-flat-key')).toBe(true);
+    expect(key.classList.contains('v2-control-button')).toBe(false);
+    expect(key.getAttribute('aria-checked')).toBe('false');
+    r.dispose();
+  });
+});

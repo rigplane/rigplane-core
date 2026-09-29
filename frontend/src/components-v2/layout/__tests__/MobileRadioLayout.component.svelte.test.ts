@@ -1187,6 +1187,69 @@ describe('MobileRadioLayout SCOPE tab desktop-toolbar controls (MOR-2895)', () =
       restore();
     }
   });
+
+  // MOR-2987: the phone ⋯ menu is a full-width BottomSheet — one labelled
+  // row per setting, pressable keys. Same intents as the desktop More panel
+  // (pinned per-control above); the sheet grammar itself (HardwareButton
+  // outline/active, honest unread, nowrap rules) is pinned at the surface
+  // level in ScopeControlsSurface.test.ts, where $lib/Button is real.
+  describe('phone ⋯ sheet (MOR-2987)', () => {
+    function openSheet(panel: HTMLElement): HTMLElement {
+      panel.querySelector<HTMLButtonElement>('[data-testid="scope-more"]')!.click();
+      flushSync();
+      return panel.querySelector('[data-testid="scope-more-sheet"]')!;
+    }
+
+    it('the ⋯ key opens a full-width sheet with a backdrop, not the popover', () => {
+      const restore = withHardwareScopeRadio();
+      try {
+        const t = mountMobileWithAppPlan();
+        const panel = openScopePanel(t);
+        const sheet = openSheet(panel);
+        expect(panel.querySelector('[data-testid="scope-more-panel"]')).toBeNull();
+        expect(sheet).not.toBeNull();
+        expect(panel.querySelector('.m-sheet-backdrop')).not.toBeNull();
+        expect(panel.querySelector('.m-sheet-title')!.textContent).toBe('SCOPE');
+      } finally {
+        restore();
+      }
+    });
+
+    it('one labelled row per setting; toggles get their own rows', () => {
+      const restore = withHardwareScopeRadio();
+      try {
+        const t = mountMobileWithAppPlan();
+        const sheet = openSheet(openScopePanel(t));
+        for (const rowId of [
+          'scope-mode', 'scope-centerType', 'scope-rbw', 'scope-speed',
+          'scope-dual-row', 'scope-duringTx-row', 'scope-vbwNarrow-row',
+        ]) {
+          const row = sheet.querySelector(`[data-testid="${rowId}"]`);
+          expect(row, rowId).not.toBeNull();
+          expect(row!.querySelector('.scope-sheet-label'), `${rowId} label`).not.toBeNull();
+          expect(row!.querySelectorAll(':scope > .scope-sheet-options').length, `${rowId} one options box`).toBe(1);
+        }
+        expect(sheet.querySelector('[data-testid="scope-duringTx-row"] .scope-sheet-label')!.textContent)
+          .toBe('During TX');
+        expect(sheet.querySelector('[data-testid="scope-vbwNarrow-row"] .scope-sheet-label')!.textContent)
+          .toBe('VBW narrow');
+      } finally {
+        restore();
+      }
+    });
+
+    it('an unsupported setting has no row in the sheet', () => {
+      const restore = withHardwareScopeRadio({ dual: false });
+      try {
+        const t = mountMobileWithAppPlan();
+        const sheet = openSheet(openScopePanel(t));
+        expect(sheet.querySelector('[data-testid="scope-mode"]')).not.toBeNull();
+        expect(sheet.querySelector('[data-testid="scope-dual-row"]')).toBeNull();
+      } finally {
+        restore();
+      }
+    });
+  });
 });
 
 describe('MobileRadioLayout unmount', () => {

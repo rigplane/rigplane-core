@@ -379,13 +379,13 @@ test('portrait buttons carry 16px labels and 44px touch targets (MOR-2816)', asy
   expect(writes).toEqual([]);
 });
 
-// MOR-2895 (owner, 2026-09-28 15:10 EDT, on the stand): the SCOPE tab's
-// second-level menu (the ⋯ key's More panel) opened straight down from the
-// key, and the fixed bottom tuning bar covered its tail — "During TX and
-// then nothing is visible". The panel must clear the bar: it opens UPWARD
-// once there is no room below the key. 15:11 EDT: lit keys use the existing
-// cyan on-state accent (the same --v2-accent-cyan the NB/NR chip bar lights
-// with), never the flat lamp red.
+// MOR-2987 (owner, 2026-09-28): the SCOPE tab's ⋯ menu was an anchored
+// popover with bare-text options ("unclear what to press"). It is now a
+// full-width BottomSheet: one labelled setting per row, pressable
+// HardwareButton keys (selected lit cyan), toggles with labelled rows.
+// The sheet is modal above the tuning strip (backdrop + higher z), inside
+// the viewport, with no wrapping at 360 px. MOR-2895's popover pose is
+// retired with the popover; the row controls it covered are pinned above.
 const SCOPE_LEAVES = [
   'mode', 'edge', 'span', 'speed', 'hold', 'refDb', 'dual', 'receiver',
   'duringTx', 'centerType', 'vbwNarrow', 'rbw',
@@ -400,7 +400,7 @@ function observedPath(path: string) {
 }
 
 // Every `scopeControls` leaf observed (During TX and VBW narrow ON) so the
-// More panel renders its full radio-held set with lit toggles to measure;
+// sheet renders its full radio-held set with lit toggles to measure;
 // `main.nb = true` lights the header's NB chip for the accent comparison.
 const scopeReadState = {
   ...state,
@@ -415,7 +415,7 @@ const scopeReadState = {
   },
 } satisfies Omit<ServerState, 'sub'>;
 
-test('SCOPE More menu clears the tuning bar; lit items share the NB chip cyan (MOR-2895)', async ({ page }, info) => {
+test('SCOPE ⋯ sheet: full-width modal with one setting per row and pressable keys (MOR-2987)', async ({ page }, info) => {
   const writes = await prepare(page, scopeReadState);
   for (const width of [375, 360]) {
     await page.setViewportSize({ width, height: 812 });
@@ -423,107 +423,115 @@ test('SCOPE More menu clears the tuning bar; lit items share the NB chip cyan (M
     await settled(page);
     await page.getByRole('tab', { name: 'SCOPE', exact: true }).click();
     await expect(page.locator('#m-chip-panel-scope')).toBeVisible();
-    // The stand position the owner reported from: the tab scrolled to the
-    // bottom, where the ⋯ key sits lowest, right above the tuning bar.
-    await page.evaluate(() => {
-      const scroller = document.querySelector('.m-content');
-      if (!(scroller instanceof HTMLElement)) throw new Error('phone scroller not found');
-      scroller.scrollTop = scroller.scrollHeight;
-    });
     await page.getByTestId('scope-more').click();
-    const panel = page.getByTestId('scope-more-panel');
-    await expect(panel).toBeVisible();
+    const sheet = page.getByTestId('scope-more-sheet');
+    await expect(sheet).toBeVisible();
+    await expect(page.getByTestId('scope-more-panel')).toHaveCount(0);
     const audit = await page.evaluate(() => {
-      const panelEl = document.querySelector('[data-testid="scope-more-panel"]');
-      const strip = document.querySelector('.m-tuning-strip');
-      if (!(panelEl instanceof HTMLElement) || !(strip instanceof HTMLElement)) {
-        throw new Error('More panel or tuning strip not found');
+      const sheetEl = document.querySelector<HTMLElement>('[data-testid="scope-more-sheet"]');
+      const modal = sheetEl?.closest<HTMLElement>('.m-sheet');
+      const backdrop = document.querySelector<HTMLElement>('.m-sheet-backdrop');
+      const strip = document.querySelector<HTMLElement>('.m-tuning-strip');
+      if (!sheetEl || !modal || !backdrop || !strip) {
+        throw new Error('sheet, modal, backdrop or tuning strip not found');
       }
-      // Every interactive item of the menu: buttons (keys, steppers).
-      const items = Array.from(panelEl.querySelectorAll<HTMLElement>('button'))
-        .filter((el) => getComputedStyle(el).display !== 'none' && el.getClientRects().length > 0)
-        .map((el) => {
+      const lum = (rgb: string): number => {
+        const m = rgb.match(/rgba?\(([^)]+)\)/)?.[1].split(',').map(Number) ?? [0, 0, 0];
+        const [r, g, b] = m.slice(0, 3).map((v) => {
+          const s = v / 255;
+          return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+        });
+        return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+      };
+      const contrast = (fg: string, bg: string): number => {
+        const [hi, lo] = [lum(fg), lum(bg)].sort((a, b) => b - a);
+        return (hi! + 0.05) / (lo! + 0.05);
+      };
+      const rows = [...sheetEl.querySelectorAll<HTMLElement>('.scope-sheet-row')].map((row) => {
+        const label = row.querySelector<HTMLElement>('.scope-sheet-label');
+        const keys = [...row.querySelectorAll<HTMLElement>('button')].map((el) => {
           const rect = el.getBoundingClientRect();
+          const style = getComputedStyle(el);
           return {
-            label: (el.textContent ?? '').trim().slice(0, 24),
-            testid: el.getAttribute('data-testid') ?? '',
-            font: parseFloat(getComputedStyle(el).fontSize),
-            height: rect.height,
-            left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom,
+            testid: el.getAttribute('data-testid') ?? el.getAttribute('aria-label') ?? '',
+            top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right,
+            font: parseFloat(style.fontSize), height: rect.height,
+            active: el.getAttribute('data-active'), surface: el.getAttribute('data-surface'),
+            indicator: el.getAttribute('data-indicator-style'),
+            color: el.getAttribute('data-indicator-color'),
+            border: parseFloat(style.borderTopWidth),
+            role: el.getAttribute('role'), checked: el.getAttribute('aria-checked'),
+            contrast: contrast(style.color, style.backgroundColor),
           };
         });
-      const nbChip = document.querySelector('.m-vfo-meta .fact[data-indicator-fact="nb"][data-state="on"]');
-      const duringTx = document.querySelector('[data-testid="scope-duringTx"]');
-      // MOR-2895 round 2: the tab's own container remaps the lamp tokens.
-      // Computed custom properties stay raw token streams (hex), not
-      // resolved colors, so each token is resolved through a probe element
-      // INSIDE the tab — the same resolution path any key in the tab takes.
-      const scopeTab = document.querySelector('#m-chip-panel-scope');
-      let tabTokens: Record<string, string | null> | null = null;
-      if (scopeTab instanceof HTMLElement) {
-        const probe = document.createElement('div');
-        scopeTab.appendChild(probe);
-        const resolveColor = (token: string): string => {
-          probe.style.color = `var(${token})`;
-          return getComputedStyle(probe).color;
+        return {
+          testid: row.getAttribute('data-testid') ?? '',
+          label: label?.textContent ?? '',
+          labelFont: label ? parseFloat(getComputedStyle(label).fontSize) : 0,
+          tops: [...new Set(keys.map((k) => Math.round(k.top)))],
+          keys,
         };
-        probe.style.textShadow = 'var(--dl-vfo-red-glow)';
-        tabTokens = {
-          lamp: resolveColor('--vfo-lamp-color'),
-          redText: resolveColor('--dl-vfo-red-text'),
-          red: resolveColor('--dl-vfo-red'),
-          glow: getComputedStyle(probe).textShadow,
-        };
-        probe.remove();
-      }
+      });
       return {
         viewport: { width: innerWidth, height: innerHeight },
-        panel: panelEl.getBoundingClientRect().toJSON(),
-        strip: strip.getBoundingClientRect().toJSON(),
-        items,
-        nbBar: nbChip ? getComputedStyle(nbChip, '::before').backgroundColor : null,
-        duringTxColor: duringTx ? getComputedStyle(duringTx).color : null,
-        tabTokens,
+        sheet: modal.getBoundingClientRect().toJSON(),
+        sheetZ: getComputedStyle(modal).zIndex,
+        stripZ: getComputedStyle(strip).zIndex,
+        backdrop: getComputedStyle(backdrop).backgroundColor,
+        title: document.querySelector('.m-sheet-title')?.textContent ?? '',
+        rows,
       };
     });
-    writeFileSync(info.outputPath(`mor-2895-more-${width}.json`), JSON.stringify(audit, null, 2));
-    await info.attach(`mor-2895-more-${width}`, { body: JSON.stringify(audit), contentType: 'application/json' });
+    writeFileSync(info.outputPath(`mor-2987-sheet-${width}.json`), JSON.stringify(audit, null, 2));
+    await info.attach(`mor-2987-sheet-${width}`, { body: JSON.stringify(audit), contentType: 'application/json' });
     const stage = `${width} px`;
-    expect(audit.items.length, `${stage}: More items found`).toBeGreaterThan(0);
-    // MOR-2895 round 3 (review item 2): the WHOLE panel box — not just its
-    // items — ends above the strip's live top edge (padding included).
-    expect(audit.panel.bottom, `${stage}: More panel bottom above the tuning bar`)
-      .toBeLessThanOrEqual(audit.strip.top);
-    expect(audit.panel.top, `${stage}: More panel top inside the viewport`)
-      .toBeGreaterThanOrEqual(0);
-    for (const item of audit.items) {
-      const name = `${stage} "${item.label}" (${item.testid})`;
-      expect.soft(item.top, `${name} top in viewport`).toBeGreaterThanOrEqual(0);
-      expect.soft(item.bottom, `${name} bottom in viewport`).toBeLessThanOrEqual(audit.viewport.height);
-      expect.soft(item.left, `${name} left in viewport`).toBeGreaterThanOrEqual(0);
-      expect.soft(item.right, `${name} right in viewport`).toBeLessThanOrEqual(audit.viewport.width);
-      // No item's box may cross into the fixed bottom tuning bar's box.
-      expect.soft(item.bottom, `${name} above the tuning bar`).toBeLessThanOrEqual(audit.strip.top);
-      // MOR-2816 floors reach the menu's items too.
-      expect.soft(item.height, `${name} height`).toBeGreaterThanOrEqual(44);
-      expect.soft(item.font, `${name} font-size`).toBeGreaterThanOrEqual(16);
+    // A full-width modal: edge to edge, inside the viewport, above the strip.
+    expect(audit.title, `${stage}: sheet title`).toBe('SCOPE');
+    expect(audit.sheet.left, `${stage}: sheet reaches the left edge`).toBeLessThanOrEqual(1);
+    expect(audit.sheet.right, `${stage}: sheet reaches the right edge`)
+      .toBeGreaterThanOrEqual(audit.viewport.width - 1);
+    expect(audit.sheet.top, `${stage}: sheet top in viewport`).toBeGreaterThanOrEqual(0);
+    expect(audit.sheet.bottom, `${stage}: sheet bottom in viewport`)
+      .toBeLessThanOrEqual(audit.viewport.height);
+    expect(Number(audit.sheetZ), `${stage}: sheet layers above the tuning strip`)
+      .toBeGreaterThan(Number(audit.stripZ));
+    expect(audit.backdrop, `${stage}: visible backdrop, not transparent`).not.toBe('rgba(0, 0, 0, 0)');
+    // One setting per row; the mock radio has no dual_rx, so DUAL is honestly absent.
+    expect(audit.rows.map((r) => r.testid), `${stage}: one row per setting`).toEqual([
+      'scope-mode', 'scope-centerType', 'scope-rbw', 'scope-speed',
+      'scope-duringTx-row', 'scope-vbwNarrow-row',
+    ]);
+    for (const row of audit.rows) {
+      const name = `${stage} ${row.testid}`;
+      expect(row.label.length, `${name} labelled`).toBeGreaterThan(0);
+      expect(row.labelFont, `${name} label distinct from 16px options`).toBeLessThan(16);
+      expect(row.tops, `${name} every option shares one line box`).toHaveLength(1);
+      expect(row.keys.length, `${name} has keys`).toBeGreaterThan(0);
+      for (const key of row.keys) {
+        const keyName = `${name} "${key.testid}"`;
+        expect.soft(key.top, `${keyName} top in viewport`).toBeGreaterThanOrEqual(0);
+        expect.soft(key.bottom, `${keyName} bottom in viewport`).toBeLessThanOrEqual(audit.viewport.height);
+        expect.soft(key.left, `${keyName} left in viewport`).toBeGreaterThanOrEqual(0);
+        expect.soft(key.right, `${keyName} right in viewport`).toBeLessThanOrEqual(audit.viewport.width);
+        expect.soft(key.height, `${keyName} height`).toBeGreaterThanOrEqual(44);
+        expect.soft(key.font, `${keyName} font-size`).toBeGreaterThanOrEqual(16);
+        expect.soft(key.surface, `${keyName} hardware outline`).toBe('hardware');
+        expect.soft(key.border, `${keyName} visible border`).toBeGreaterThan(0);
+        if (key.active !== 'true') {
+          expect.soft(key.contrast, `${keyName} unselected contrast`).toBeGreaterThanOrEqual(4.5);
+        }
+      }
     }
-    // 15:11 EDT: the enabled item's colour IS the NB chip bar's accent.
-    expect(audit.nbBar, `${stage}: lit NB chip bar present`).not.toBeNull();
-    expect(audit.duringTxColor, `${stage}: lit During TX key present`).not.toBeNull();
-    expect(audit.duringTxColor, `${stage}: During TX uses the cyan accent`).toBe(audit.nbBar);
-    // Round 2: the remap lives on the tab's own container, so every lamp
-    // token resolves to the same cyan INSIDE the tab and the glow is gone —
-    // no element in the tab can resolve the flat lamp red. (ScopeFlatKey
-    // keeps the lamp grammar outside the tab; that is pinned at the
-    // component level in MobileRadioLayout.component.svelte.test.ts.)
-    expect(audit.tabTokens, `${stage}: the SCOPE tab container resolved its tokens`).not.toBeNull();
-    expect(audit.tabTokens!.lamp, `${stage}: --vfo-lamp-color resolves to the cyan accent`).toBe(audit.nbBar);
-    expect(audit.tabTokens!.redText, `${stage}: --dl-vfo-red-text resolves to the cyan accent`).toBe(audit.nbBar);
-    expect(audit.tabTokens!.red, `${stage}: --dl-vfo-red resolves to the cyan accent`).toBe(audit.nbBar);
-    expect(audit.tabTokens!.glow, `${stage}: no lamp glow inside the tab`).toBe('none');
-    await page.keyboard.press('Escape');
-    await expect(panel).toHaveCount(0);
+    // The All-modes grammar: selected keys lit cyan; toggles show their state.
+    const byId = (id: string) => audit.rows.flatMap((r) => r.keys).find((k) => k.testid === id)!;
+    expect(byId('scope-mode-0').active, `${stage}: CTR lit`).toBe('true');
+    expect(byId('scope-mode-0').color, `${stage}: CTR cyan`).toBe('cyan');
+    expect(byId('scope-mode-1').active, `${stage}: FIX unlit`).toBe('false');
+    expect(byId('scope-duringTx').active, `${stage}: During TX on`).toBe('true');
+    expect(audit.rows.find((r) => r.testid === 'scope-duringTx-row')!.label).toBe('During TX');
+    // Dismiss through the backdrop; opening the menu writes nothing.
+    await page.locator('.m-sheet-backdrop').click({ position: { x: 10, y: 10 } });
+    await expect(sheet).toHaveCount(0);
   }
   expect(writes).toEqual([]);
 });
