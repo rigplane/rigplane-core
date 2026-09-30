@@ -11,6 +11,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Serial discovery marks each probe's open and close in the DEBUG log
+  (MOR-3040).** The CI-V, Xiegu model-ID and Yaesu CAT probes log
+  `opening <port> @ <baud>` before every serial open, and `closing
+  <port>` before and `closed <port>` after every close, the close
+  after a failed read included. Each probe keeps
+  its own prefix — `probe_serial_civ`, `probe_xiegu_model_id` and
+  `probe_serial_yaesu_cat` — and only the device name and the baud
+  rate are logged. Discovery itself is unchanged.
+
+### Changed
+
+- **The README front page and the bug-report form describe the 3.0 beta
+  (MOR-2934).** The stale "v2.0.0 — renamed from `icom-lan`" callout
+  is replaced by a beta callout that gives `pip install --pre rigplane`,
+  links What's New in 3.0 and the beta known limitations, and offers a
+  beta report form. The three "Full guides" links point at the `/3.0/`
+  pages, the intro paragraph drops the "Tested in production" sentence
+  and describes the library, the web UI and the rigctld server
+  instead, and the Supported radios table now says what was tested on
+  3.0 hardware: the IC-7610 over LAN, with its MAIN+SUB dual-receive
+  marked as not hardware-certified this beta, the IC-7300 and the
+  FTX-1 as tested, the IC-9700 as reported by a user, and the X6100
+  and TX-500 as profile only with no backend yet. The old "Radio
+  Compatibility Report" template is replaced by a 3.0 beta report form
+  that asks for the radio model, the connection, the OS, the Python
+  version and the install command, and asks for the ZIP that
+  `rigplane diagnose` writes.
+
+### Fixed
+
+- **A piped `rigplane` command keeps the output it printed
+  (MOR-3010).** Radio commands end in `os._exit`, which skips
+  interpreter shutdown, so a block-buffered piped stdout was dropped:
+  `rigplane ... status > out` exited 0 with an empty file. stdout and
+  stderr are now flushed immediately before that forced exit. The
+  shutdown backstop's forced exit still does not flush, because on the
+  event-loop thread a flush can block on a full pipe or a held
+  BufferedWriter lock and defeat the bounded shutdown.
+
+- **The panorama thins its frequency labels so they stop overlapping on
+  a phone (MOR-3011).** The renderer measures each label and draws
+  every k-th one — the smallest stride whose clamped label boxes clear
+  each other by 4 px — and always keeps the first and the last. At
+  1440 px the stride is 1, so all eleven labels draw exactly where they
+  did. The grid lines are unchanged, and a context without
+  `measureText` keeps the full draw.
+
+- **A clean IC-7300 start no longer logs undeclared-command warnings
+  (MOR-3012).** `get_data2_mod_input`, `get_data3_mod_input` and
+  `get_scope_rbw` are reads the IC-7300 Advanced Manual 11a does not
+  document, and the profile records all three as declared absent with
+  the manual page that shows it. Asking for one now refuses with
+  `declared absent by this profile` instead of logging the "not declared
+  by profile IC-7300 and not recorded as absent" warning. The matching
+  `set_*` commands are untouched.
+
+- **The installation guide and the README Quickstart install 3.0
+  (MOR-2897).** `pip install rigplane` still installs the latest 2.x
+  release while 3.0 is only a beta, so both texts now give
+  `pip install --pre rigplane`, and the README's one-line comment says
+  why. The guide's "No 3.0 build is on PyPI yet; to run 3.0, install
+  from source" paragraph is gone.
+
 ## [3.0.0b10] — 2026-09-29
 
 ### Added
