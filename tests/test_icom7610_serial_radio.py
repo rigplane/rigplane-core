@@ -2810,39 +2810,200 @@ async def test_dead_link_during_identity_hold_hands_over_to_recovery() -> None:
     await radio.disconnect()
 
 
+# ---------------------------------------------------------------------------
+# MOR-3071 round 4: one invariant — CONNECTED latches only when the identity
+# gate has an answer for the CURRENT link (the same CI-V generation). All of
+# these tests run with the watchdog RUNNING: the recovery they pin is the
+# watchdog's, not a hand-driven state.
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
 async def test_reread_read_error_is_logged_and_leaves_the_hold(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Round 2: an error raised by the re-read is logged, not swallowed."""
+    """Round 2: an error raised by the re-read is logged, not swallowed.
+
+    Round 4: the watchdog stays RUNNING — after the handover it takes
+    the ready session through ``soft_reconnect`` (which re-runs the
+    identity gate) instead of latching CONNECTED without an answer.
+    """
     import logging
 
     link = _GateSerialLink(answer_identity=False)
     radio = _gate_radio(link)
     await radio.connect()
-    await radio._stop_civ_data_watchdog()  # pin the handed-over state itself
 
     async def _exploding_read() -> bytes | None:
         raise RuntimeError("identity read exploded")
 
     radio._read_serial_identity_payload = _exploding_read  # type: ignore[assignment]
     with caplog.at_level(logging.WARNING, logger="rigplane.backends._icom_serial_base"):
-        await asyncio.sleep(0.15)  # one compressed re-read slot
-
+        assert await _wait_until(
+            lambda: any(
+                "identity re-read" in r.getMessage() and r.exc_info
+                for r in caplog.records
+            ),
+            timeout_s=2.0,
+        )
+    # The hold was abandoned: no re-read task owns the link anymore.
     assert radio._serial_identity_reread_task is None
-    assert radio.connection_identity is None
-    assert radio.conn_state is RadioConnectionState.RECONNECTING
-    assert any(
-        "identity re-read" in r.getMessage() and r.exc_info for r in caplog.records
-    )
+    # The RUNNING watchdog recovered by reopening — the gate inside each
+    # soft_reconnect raises the same error, so every backoff slot reopens.
+    assert await _wait_until(lambda: link.connect_calls >= 2, timeout_s=2.0)
+    identity = radio.connection_identity
+    assert identity is None or identity.status is RadioIdentityStatus.CHECKING
+    assert radio.conn_state is not RadioConnectionState.CONNECTED
     await radio.disconnect()
 
 
 @pytest.mark.asyncio
-async def test_reread_arm_error_is_logged_and_does_not_stick_in_connecting(
+async def test_reread_command_error_never_latches_and_gates_again() -> None:
+    """Round 4 (a): a CommandError from the identity read, session ready.
+
+    An unexpected exception type from ``_read_serial_identity_payload``
+    used to reach the abandon path with the session still ready, and the
+    watchdog's ready-branch latched CONNECTED with no answer at all.
+    The invariant: CONNECTED never latches without an answer, and the
+    recovery keeps re-running the identity gate.
+    """
+    link = _GateSerialLink(answer_identity=False)
+    radio = _gate_radio(link)
+    await radio.connect()  # held on silence; the re-read owns the link
+
+    async def _command_error_read() -> bytes | None:
+        raise CommandError("the radio rejected the identity read")
+
+    radio._read_serial_identity_payload = _command_error_read  # type: ignore[assignment]
+
+    # ~1.3 s: the abandon at the first re-read slot, then the watchdog's
+    # recovery attempts at the retry backoff (0.5 s, 1.0 s, ...). At no
+    # sample may CONNECTED have latched.
+    deadline = asyncio.get_running_loop().time() + 1.3
+    while asyncio.get_running_loop().time() < deadline:
+        assert radio.conn_state is not RadioConnectionState.CONNECTED
+        await asyncio.sleep(0.02)
+
+    # The gate ran again: each recovery attempt reopens and resets the
+    # identity to checking before the read raises.
+    assert await _wait_until(
+        lambda: (
+            radio.connection_identity is not None
+            and radio.connection_identity.status is RadioIdentityStatus.CHECKING
+        ),
+        timeout_s=1.0,
+    )
+    assert link.connect_calls >= 3  # the initial open plus re-gating reopens
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_ready_reconnecting_without_answer_runs_gate_not_latch() -> None:
+    """Round 4 (c): RECONNECTING, session reads ready, no answer for the
+    current link — the watchdog runs the gate, it does not latch."""
+    link = _GateSerialLink(answer_identity=False)
+    radio = _gate_radio(link)
+    await radio.connect()  # held on silence
+
+    real_read = radio._read_serial_identity_payload
+    read_calls = 0
+
+    async def _one_shot_error_read() -> bytes | None:
+        nonlocal read_calls
+        read_calls += 1
+        if read_calls == 2:  # the first re-read; the gate's read was call 1
+            raise RuntimeError("identity read exploded once")
+        return await real_read()
+
+    radio._read_serial_identity_payload = _one_shot_error_read  # type: ignore[assignment]
+
+    def _re_gated_hold() -> bool:
+        identity = radio.connection_identity
+        return (
+            link.connect_calls == 2
+            and identity is not None
+            and identity.status is RadioIdentityStatus.NO_RESPONSE
+            and radio._serial_identity_reread_task is not None
+        )
+
+    # The one-shot error abandons the hold; the watchdog must reopen once
+    # and re-gate into a fresh no_response hold with a new re-read task.
+    assert await _wait_until(_re_gated_hold, timeout_s=3.0)
+
+    # Steady state: the new re-read owns the reopened link — no latch
+    # and no further reopen.
+    deadline = asyncio.get_running_loop().time() + 0.8
+    while asyncio.get_running_loop().time() < deadline:
+        assert radio.conn_state is not RadioConnectionState.CONNECTED
+        assert link.connect_calls == 2
+        await asyncio.sleep(0.02)
+    identity = radio.connection_identity
+    assert identity is not None and identity.status is RadioIdentityStatus.NO_RESPONSE
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_connect_during_hold_with_dead_session_cancels_reread_before_reopen() -> None:
+    """Round 4 (d): connect() cancels a live re-read before the reopen.
+
+    No two readers may ever send ``19 00`` on the new transport. The
+    counting wrapper fails the test the moment two identity reads
+    overlap; the old re-read's backoff slot is aimed inside the new
+    gate's (deliberately long) answer window to catch a missing cancel.
+    """
+    link = _GateSerialLink(answer_identity=False)
+    radio = _gate_radio(link)
+    # A long answer window so the new gate's read is still awaiting when
+    # the old re-read's backoff fires.
+    radio._civ_get_timeout = 0.5
+    radio._SERIAL_IDENTITY_REREAD_BACKOFF_S = (0.1, 0.1, 0.1)
+
+    real_read = radio._read_serial_identity_payload
+    active_reads = 0
+    max_active_reads = 0
+
+    async def _counting_read() -> bytes | None:
+        nonlocal active_reads, max_active_reads
+        active_reads += 1
+        max_active_reads = max(max_active_reads, active_reads)
+        try:
+            return await real_read()
+        finally:
+            active_reads -= 1
+
+    radio._read_serial_identity_payload = _counting_read  # type: ignore[assignment]
+
+    await radio.connect()  # held on silence; the re-read sleeps 0.1 s
+    old_reread = radio._serial_identity_reread_task
+    assert old_reread is not None
+
+    # The session dies under the hold and the radio comes back
+    # answering from query 3 (the new gate's query 2 stays silent, so
+    # its window covers the old re-read's wake-up).
+    link.connected = False
+    link.ready = False
+    link.policy_answer = True
+    link.answer_after_queries = 2
+
+    await asyncio.wait_for(radio.connect(), timeout=3.0)
+
+    # Give the old backoff slot every chance to fire on the new link.
+    await asyncio.sleep(0.3)
+    assert max_active_reads == 1  # never two readers on the new transport
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_reread_arm_failure_keeps_connected_identity_and_logs(
     tmp_path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Round 2: an ``_arm_managed_tx`` error in the re-read is not fatal."""
+    """Round 4 (b): an arm failure after the answer keeps the latch.
+
+    ``connect()`` lets an ``_arm_managed_tx`` failure propagate to its
+    caller only AFTER the latch — the connection and the identity
+    survive it. The re-read has no caller to raise to: the same failure
+    is logged with the full traceback and the latch stands.
+    """
     import logging
 
     link = _GateSerialLink(answer_identity=True, answer_after_queries=1)
@@ -2856,13 +3017,22 @@ async def test_reread_arm_error_is_logged_and_does_not_stick_in_connecting(
     radio._arm_managed_tx = _exploding_arm  # type: ignore[assignment]
 
     await radio.connect()  # held on silence; the re-read gets the answer
-    with caplog.at_level(logging.WARNING, logger="rigplane.backends._icom_serial_base"):
+    with caplog.at_level(logging.ERROR, logger="rigplane.backends._icom_serial_base"):
         assert await _wait_until(
             lambda: radio.conn_state is RadioConnectionState.CONNECTED,
             timeout_s=3.0,
         )
+        await asyncio.sleep(0.1)  # the arm failure lands right after the latch
+
+    identity = radio.connection_identity
+    assert identity is not None
+    assert identity.status is RadioIdentityStatus.UNVERIFIED
+    assert identity.answered_id == "94"
+    assert radio.connected is True
+    assert radio._serial_identity_reread_task is None
     assert any(
-        "identity re-read" in r.getMessage() and r.exc_info for r in caplog.records
+        "managed TX arming failed" in r.getMessage() and r.exc_info
+        for r in caplog.records
     )
     await radio.disconnect()
     await composition.shutdown(asyncio.Event())
