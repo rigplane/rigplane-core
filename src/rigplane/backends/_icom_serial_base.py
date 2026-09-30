@@ -421,16 +421,11 @@ class _IcomSerialRadioBase(CoreRadio):
     async def connect(self) -> None:
         if self.connected:
             return
-        if (
-            self._identity_hold_status_active()
-            and self._serial_session.connected
-            and self._serial_identity_hold_has_owner()
-        ):
+        if self._identity_phase_owns_open_link():
             # MOR-3071: the identity read (or its re-read) already owns
-            # the open link; the web power-on path calls connect() here,
-            # and a reopen would toggle DTR/RTS for nothing. A hold with
-            # no owner (a gate that crashed mid-read) does not block a
-            # fresh attempt (round 4).
+            # the open link — the web power-on path would reopen it (and
+            # toggle DTR/RTS) for nothing. Round 5: ONE predicate, shared
+            # with the watchdog's guard.
             return
 
         # MOR-3071 round 4: a committed attempt opens a NEW link. The
@@ -487,6 +482,17 @@ class _IcomSerialRadioBase(CoreRadio):
         self._serial_identity_gate_running = True
         try:
             identity_answered = await self._gate_serial_identity()
+        except Exception as exc:
+            # MOR-3071 round 5: what the gate does not translate itself
+            # (a write OSError on an opened-but-wrong port, CI-V runtime
+            # errors) follows the session-open failure contract above.
+            self._conn_state = RadioConnectionState.DISCONNECTED
+            self._civ_stream_ready = False
+            self._civ_recovering = False
+            self.last_error = (
+                f"Failed to read the radio identity on {self._serial_device}: {exc}"
+            )
+            raise ConnectionError(self.last_error) from exc
         finally:
             self._serial_identity_gate_running = False
         if not identity_answered:
@@ -588,6 +594,16 @@ class _IcomSerialRadioBase(CoreRadio):
         self._serial_identity_gate_running = True
         try:
             identity_answered = await self._gate_serial_identity()
+        except Exception as exc:
+            # MOR-3071 round 5: same contract as the reconnect-open
+            # failure above — keep the state the watchdog retries from.
+            self._conn_state = RadioConnectionState.RECONNECTING
+            self._civ_stream_ready = False
+            self._civ_recovering = True
+            self.last_error = (
+                f"Failed to read the radio identity on {self._serial_device}: {exc}"
+            )
+            raise ConnectionError(self.last_error) from exc
         finally:
             self._serial_identity_gate_running = False
         if not identity_answered:
