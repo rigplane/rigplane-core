@@ -315,6 +315,47 @@ def _serial_port_unopened(server: WebServer) -> bool:
     )
 
 
+def _serial_identity_pending(server: WebServer) -> bool:
+    """Whether the serial identity gate holds the open link (MOR-3071).
+
+    The Icom serial backend's connect-time identity read is in flight
+    (``checking``) or has heard nothing (``no_response``); the radio is
+    neither connected nor ready while that holds.
+    """
+
+    radio = server._radio
+    identity = getattr(radio, "connection_identity", None)
+    status = getattr(identity, "status", None)
+    value = getattr(status, "value", status)
+    return value in ("checking", "no_response")
+
+
+def _serve_with_identity_pending(server: WebServer) -> None:
+    """Release the startup gate while the identity read owns the link (MOR-3071).
+
+    Third instance of the ``_serve_without_port`` / ``_serve_with_silent_link``
+    pattern: the link is open but no radio has answered the identity read,
+    so the gate has nothing to wait for — every state poll would be refused
+    until the connect completes. The re-read task keeps asking on the open
+    link and the connect completes when the radio answers, so acquisition
+    proceeds normally from there. Holds the same durable
+    ``_served_with_silent_link`` mark ``_serve_with_silent_link`` sets, so
+    the published ``radioHealth`` keeps its existing causes —
+    ``stalled`` / ``radio_powered_off_likely`` until the radio's first
+    observation — with no new ``Literal``.
+    """
+
+    if server._served_with_silent_link:
+        return
+    server._served_with_silent_link = True
+    logger.warning(
+        "startup gate: the radio has not answered its identity read; "
+        "serving in a radio-not-answering state — another radio may be on "
+        "this port, or it is switched off. Power ON from the UI stays "
+        "available; the identity read is retried on the open link."
+    )
+
+
 def _serve_without_port(server: WebServer) -> None:
     """Serve while the radio's serial port cannot be opened (MOR-2876)."""
 
@@ -450,6 +491,13 @@ async def _await_initial_state_acquisition(
     """
 
     if not server._config.await_initial_state or server._served_without_port:
+        return
+    if _serial_identity_pending(server):
+        # MOR-3071: release the startup gate at once while identity is
+        # checking/no_response — the connect has not completed, so no state
+        # read can answer and waiting would only run out the acquisition
+        # timeouts.
+        _serve_with_identity_pending(server)
         return
     scheduler = _acquisition_scheduler(server)
     if scheduler is None:
@@ -599,6 +647,12 @@ async def _start_web_server(
 
     if _serial_port_unopened(server):
         _serve_without_port(server)
+    elif _serial_identity_pending(server):
+        # MOR-3071: the link is open but the radio has not answered its
+        # identity read — not connected, not ready, and every state poll
+        # would be refused. Serve (the gate below also releases at once);
+        # the re-read task completes the connect when the radio answers.
+        _serve_with_identity_pending(server)
     else:
         assert_radio_startup_ready(server._radio, component="web startup")
 

@@ -4034,6 +4034,29 @@ async def _cmd_serve(radio: Radio, args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_serial_identity_no_response(radio: Radio) -> None:
+    """One plain line at web/station startup in identity ``no_response`` (MOR-3071).
+
+    The connect already returned by the time web/station starts, so a radio
+    that never answered the identity read is reported once, plainly, with
+    the port, the profile model and the baud; the background re-read is the
+    "Waiting for it to answer." part.
+    """
+    identity = getattr(radio, "connection_identity", None)
+    status = getattr(identity, "status", None)
+    if getattr(status, "value", status) != "no_response":
+        return
+    device = getattr(radio, "_serial_device", None) or "the configured port"
+    model = getattr(radio, "model", None) or "this"
+    baud = getattr(radio, "_serial_baudrate", None)
+    baud_text = f", {baud} baud" if isinstance(baud, int) else ""
+    print(
+        f"No answer from the radio on {device} ({model} profile{baud_text}): "
+        "another radio may be on this port, or it is switched off. "
+        "Waiting for it to answer."
+    )
+
+
 async def _cmd_web(
     radio: Radio,
     args: argparse.Namespace,
@@ -4119,6 +4142,7 @@ async def _cmd_web(
         config_kwargs["radio_model"] = _radio_model
     config_kwargs["await_initial_state"] = True
     config = WebConfig(**config_kwargs)
+    _print_serial_identity_no_response(radio)
     server = WebServer(radio, config)
     if managed_tx_composition is not None:
         from rigplane.web.web_startup import (

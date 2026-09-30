@@ -42,6 +42,7 @@ Standard capability tags:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from inspect import getattr_static
 from typing import (
     TYPE_CHECKING,
@@ -127,6 +128,8 @@ __all__ = [
     "UsbAudioCapable",
     "ProviderOwnedStateCapable",
     "MemoryCapable",
+    "RadioIdentity",
+    "RadioIdentityStatus",
 ]
 
 
@@ -1601,6 +1604,50 @@ class RelativeVfoState:
     mode: str
     filter_num: int | None = None
     data_mode: int = 0
+
+
+class RadioIdentityStatus(Enum):
+    """Outcome of the connect-time radio identity read (MOR-3071).
+
+    ``CHECKING``: the link is open and the identity read is in flight.
+    Every connect attempt resets the identity to ``CHECKING``, including
+    in-process reconnects, so a result never outlives its link.
+
+    ``UNVERIFIED``: the radio answered the read but no profile declares an
+    expected identity yet, so there is nothing to compare against. The
+    connect proceeds exactly as before this gate existed.
+
+    ``VERIFIED`` / ``IDENTITY_MISMATCH``: reserved for the profile-declared
+    expected-ID comparison (MOR-3064 parts 2-4, later PRs).
+
+    ``NO_RESPONSE``: nothing answered the read. Not terminal — the read is
+    retried on the open link and the connect completes when the right radio
+    answers.
+    """
+
+    CHECKING = "checking"
+    VERIFIED = "verified"
+    IDENTITY_MISMATCH = "identity_mismatch"
+    NO_RESPONSE = "no_response"
+    UNVERIFIED = "unverified"
+
+
+@dataclass(frozen=True, slots=True)
+class RadioIdentity:
+    """Typed identity of the radio that answered on the link (MOR-3071).
+
+    ``answered_id`` is the raw reply payload after the ``19 00`` echo, as
+    uppercase hex without separators (for example ``"94"``); it is opaque
+    and must not be compared against the CI-V address (user-settable).
+
+    ``answered_model`` names the answering model when a profile matches
+    (MOR-3064 part 4); ``None`` until then.
+    """
+
+    status: RadioIdentityStatus
+    expected_model: str | None = None
+    answered_model: str | None = None
+    answered_id: str | None = None
 
 
 @runtime_checkable
