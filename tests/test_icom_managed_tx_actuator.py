@@ -167,7 +167,13 @@ async def test_force_receive_settles_on_the_radio_answer(
         await radio.disconnect()
 
     assert result is expected
-    assert sent == [bytes(radio._commands.ptt_off(to_addr=radio._radio_addr))]
+    # MOR-3071: connect() gates CONNECTED on the identity read (19 00)
+    # first, so it is pinned here ahead of the unkey traffic; the
+    # force-receive itself is still exactly one 1C 00 00 frame.
+    assert sent == [
+        bytes(radio._commands.get_transceiver_id(to_addr=radio._radio_addr)),
+        bytes(radio._commands.ptt_off(to_addr=radio._radio_addr)),
+    ]
 
 
 async def _force_receive(radio: IcomRadio) -> ActuationResult:

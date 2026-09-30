@@ -135,6 +135,7 @@ from .websocket import (  # noqa: TID251
 from ..radio_protocol import (
     CivTransactionCapable,
     ProviderOwnedStateCapable,
+    RadioIdentity,
     StateStoreCapable,
 )
 
@@ -1241,13 +1242,17 @@ class WebServer:
         ``connection_identity`` (the typed record from
         ``core/radio_protocol.py``); camelCase like the rest of
         ``connection``.
+
+        Only a real ``RadioIdentity`` is serialised. Anything else the
+        attribute may hold (including the ``Mock`` a test double returns
+        for it) is served as ``null`` rather than raising on ``.status``.
         """
         identity = (
             getattr(self._radio, "connection_identity", None)
             if self._radio is not None
             else None
         )
-        if identity is None:
+        if not isinstance(identity, RadioIdentity):
             return None
         return {
             "status": identity.status.value,

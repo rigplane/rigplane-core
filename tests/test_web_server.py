@@ -720,6 +720,21 @@ class TestHttpEndpoints:
         assert data["proto"] == 1
         assert "radio" in data
 
+    async def test_info_endpoint_identity_null_for_mock_radio(
+        self, server: WebServer
+    ) -> None:
+        """MOR-3071: only a real ``RadioIdentity`` is serialised.
+
+        A ``MagicMock`` radio answers ``connection_identity`` with a Mock;
+        the info endpoint must serve ``identity: null`` instead of failing
+        to serialise it into a 500.
+        """
+        host, port = _addr(server)
+        status, _, body = await _http_get(host, port, "/api/v1/info")
+        assert status == 200
+        data = json.loads(body)
+        assert data["connection"]["identity"] is None
+
     async def test_capabilities_endpoint_status(self, server: WebServer) -> None:
         host, port = _addr(server)
         status, _, _ = await _http_get(host, port, "/api/v1/capabilities")
