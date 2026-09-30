@@ -3636,6 +3636,17 @@ def test_manual_parallel_serial_identity_diagnostic(
         "-n",
         "4",
         "--tb=short",
+        # Diagnostic evidence inside the child: per-test timeout with
+        # thread method (xdist workers ignore signal), duration table,
+        # faulthandler stacks at 20 s, and no silent worker respawns —
+        # a hang names itself in the tail instead of stalling silently
+        # until the outer 180 s kill.
+        "--timeout=45",
+        "--timeout-method=thread",
+        "--durations=100",
+        "--max-worker-restart=0",
+        "-o",
+        "faulthandler_timeout=20",
         "tests/test_startup_state_gate.py",
         "tests/test_icom7610_serial_radio.py",
         "tests/test_civ_rx_coverage.py",
@@ -3667,12 +3678,28 @@ def test_manual_parallel_serial_identity_diagnostic(
             pass
         try:
             out, _ = proc.communicate(timeout=10)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as expired:
+            out = (
+                (expired.output or b"").decode()
+                if isinstance(expired.output, bytes)
+                else (expired.output or "")
+            )
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            out, _ = proc.communicate()
+            try:
+                more, _ = proc.communicate(timeout=5)
+                out += more or ""
+            except subprocess.TimeoutExpired:
+                # Fail closed: the owned group was KILLed but a pipe or
+                # descendant still holds it open — orphan-freedom is NOT
+                # claimed; the partial tail keeps the evidence.
+                out += "\n[diag] pipes still open 5 s after KILL\n"
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
         pytest.fail(
             f"parallel diagnostic child timed out after 180 s "
             f"(rc={proc.returncode}); owned process group TERM/KILLed. "
