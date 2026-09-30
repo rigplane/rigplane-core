@@ -147,7 +147,11 @@ def _validate_managed_tx(server: WebServer) -> ManagedTxCompositionPort | None:
         raise RuntimeError("managed TX composition is not attached to Web")
     if attached is not installed:
         raise RuntimeError("managed TX composition identity mismatch")
-    if _serial_port_unopened(server):
+    if _serial_port_unopened(server) or _serial_identity_pending(server):
+        # MOR-2876 / MOR-3081: there is no transport for a provider to
+        # stand on yet — the port never opened, or the identity gate still
+        # holds the open link (MOR-3071). The store identity and the
+        # observation generation are still checked inside.
         attached.validate_state_store(
             server.command_state_store, transport_pending=True
         )

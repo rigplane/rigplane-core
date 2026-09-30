@@ -4057,6 +4057,20 @@ def _print_serial_identity_no_response(radio: Radio) -> None:
     )
 
 
+def _serial_identity_holds(radio: Radio) -> bool:
+    """Whether the serial identity gate holds the connect (MOR-3081).
+
+    The connect-time identity read is in flight (``checking``) or
+    unanswered (``no_response``, MOR-3071): the radio is not connected,
+    so a radio-RX start — the audio bridge's first demand — would be
+    refused.
+    """
+
+    identity = getattr(radio, "connection_identity", None)
+    status = getattr(identity, "status", None)
+    return getattr(status, "value", status) in ("checking", "no_response")
+
+
 async def _cmd_web(
     radio: Radio,
     args: argparse.Namespace,
@@ -4170,6 +4184,19 @@ async def _cmd_web(
     # previous fail-hard behaviour.
     bridge_device = getattr(args, "web_bridge", None)
     bridge_info: str | None = None
+    if bridge_device == "auto" and _serial_identity_holds(radio):
+        # MOR-3081: the identity gate holds the open link, so the bridge's
+        # radio-RX start would be refused with an ERROR traceback. Skip the
+        # auto-start quietly; the bridge can be started from the UI
+        # (POST /api/v1/bridge) once the radio answers. An explicit
+        # --bridge=<DEVICE> keeps its fail-hard behaviour below.
+        logger.warning(
+            "audio bridge auto-start deferred: the radio has not answered "
+            "its identity read — start the bridge from the UI once the "
+            "radio answers"
+        )
+        bridge_info = "deferred: radio not answering"
+        bridge_device = None
     if bridge_device is not None:
         is_auto = bridge_device == "auto"
         device_name = None if is_auto else bridge_device
