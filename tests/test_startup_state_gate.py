@@ -3606,13 +3606,9 @@ def test_manual_parallel_serial_identity_diagnostic(
 ) -> None:
     """Temporary MOR-3078 diagnostic launcher; removed before final candidate.
 
-    Private diagnostic intent, not a feature or test acceptance. When it
-    is the session's single explicitly selected item, it re-runs the
-    narrow three-file serial matrix under four xdist workers on the
-    current interpreter/runtime, reproducing the Linux quick runner's
-    parallel load shape on demand — a child failure surfaces the
-    ``_TracedCivLink`` trace. Every other collection shape skips, so
-    normal and full runs never launch the subset.
+    Explicit single-node selection runs the three-file serial matrix with
+    four workers. Failures include the bounded link trace; normal
+    collections skip this helper.
     """
 
     items = request.session.items
