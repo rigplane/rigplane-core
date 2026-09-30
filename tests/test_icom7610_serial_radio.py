@@ -2943,7 +2943,9 @@ async def test_ready_reconnecting_without_answer_runs_gate_not_latch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_connect_during_hold_with_dead_session_cancels_reread_before_reopen() -> None:
+async def test_connect_during_hold_with_dead_session_cancels_reread_before_reopen() -> (
+    None
+):
     """Round 4 (d): connect() cancels a live re-read before the reopen.
 
     No two readers may ever send ``19 00`` on the new transport. The
