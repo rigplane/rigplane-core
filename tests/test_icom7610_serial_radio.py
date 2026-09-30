@@ -2651,9 +2651,7 @@ async def test_radio_answering_later_completes_the_connect(tmp_path) -> None:
     """Ticket test 2: the same link starts answering after a while."""
     link = _GateSerialLink(answer_identity=True, answer_after_queries=2)
     radio = _gate_radio(link)
-    composition = ManagedTxComposition(
-        radio, config_path=tmp_path / "managed-tx.json"
-    )
+    composition = ManagedTxComposition(radio, config_path=tmp_path / "managed-tx.json")
     install_managed_tx_composition(radio, composition)
     arm_calls: list[int] = []
     real_arm = radio._arm_managed_tx
@@ -2884,9 +2882,7 @@ async def test_startup_gate_releases_at_once_while_identity_is_no_response(
             provider="test_provider",
             capabilities=(FieldCapability(path=path, polling=True),),
             field_policies={
-                path: AcquisitionPolicy(
-                    cadence_seconds=1.0, freshness_ttl_seconds=15.0
-                )
+                path: AcquisitionPolicy(cadence_seconds=1.0, freshness_ttl_seconds=15.0)
             },
         )
     )
