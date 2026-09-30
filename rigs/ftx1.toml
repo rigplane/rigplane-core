@@ -17,6 +17,10 @@ default_baud = 38400
 [protocol]
 type = "yaesu_cat"
 
+[identity]
+# FTX-1 CAT manual, ID command: fixed model ID, independent of port/baud.
+expected_ids = ["0840"]
+
 [audio]
 # The FTX-1 USB Audio CODEC is stereo-native but presents RX audio on the
 # LEFT channel only (right channel is the silent noise floor). The default

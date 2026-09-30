@@ -7,6 +7,7 @@ using :class:`YaesuCatTransport` for serial I/O and
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Mapping
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, cast
 from ...audio import AudioPacket
 from ...audio.lan_stream import SYNTHETIC_RX_IDENT
 from ...command_spec import CatCommandSpec
+from ...core.radio_protocol import RadioIdentity, RadioIdentityStatus
 from ...runtime.callable_support import supports_callable
 from ...runtime.local_tx_work import LocalTxWorkRunner
 from ...runtime.managed_tx_fence import TxAbortFence
@@ -146,6 +148,13 @@ class YaesuCatRadio:
     # See :class:`rigplane.core.radio_protocol.UsbAudioCapable`.
     has_usb_audio: bool = True
 
+    # MOR-3064: backoff for the background identity re-read on the held
+    # open port — 1, 2, 4 and 8 s, then every 15 s. Class attributes so
+    # tests can drive the cadence without timer sleeps (the same seam the
+    # Icom serial gate's ``_SERIAL_IDENTITY_REREAD_BACKOFF_S`` uses).
+    _IDENTITY_REREAD_BACKOFF_S: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0)
+    _IDENTITY_REREAD_STEADY_S: float = 15.0
+
     def __init__(
         self,
         device: str,
@@ -173,6 +182,7 @@ class YaesuCatRadio:
         self._config: RigConfig = _load_config(profile)
         self._profile_cache: RadioProfile | None = None
         self._tuner_provider_generation: Callable[[], int] | None = None
+        self._device = device
         self._transport = YaesuCatTransport(device=device, baudrate=baudrate)
         self._state = RadioState()
         self._audio_bus: AudioBus | None = None
@@ -256,18 +266,95 @@ class YaesuCatRadio:
                         "Skipping parser for %r (unsupported placeholder)", cmd_name
                     )
 
+        # MOR-3064: typed identity of the radio on the open port. None until
+        # a connect attempt opens the port; reset to ``checking`` by every
+        # connect attempt; cleared by ``disconnect``. The generation fences
+        # late completions: every committed (re)connect and every disconnect
+        # advances it, so an answer recorded for an old link can never
+        # initialize state on the current one.
+        self._connection_identity: RadioIdentity | None = None
+        self._identity_generation: int = 0
+        self._identity_reread_task: asyncio.Task[None] | None = None
+        self._identity_gate_running: bool = False
+
     # -- Lifecycle ----------------------------------------------------------
 
     async def connect(self) -> None:
-        """Open the serial port and seed state from IF bulk query."""
+        """Open the serial port and gate the connect on the model ID answer.
+
+        MOR-3064: the read-only ``ID;`` probe from the profile's ``get_id``
+        command runs before any IF seeding — ``connected`` does not latch on
+        a bare transport-open. A well-formed answer compared against the
+        profile's ``expected_identity_ids`` completes the connect
+        (``verified``/``unverified``); a wrong radio records
+        ``identity_mismatch``; silence, a malformed answer or a transport
+        error on the still-open port records ``no_response``, keeps the
+        port open under a bounded background re-read, and returns without
+        raising. A port that did not survive the probe fails the connect
+        with :class:`~rigplane.exceptions.ConnectionError`.
+        """
+        if (
+            self._connection_identity is not None
+            and self._transport.connected
+            and self._identity_permits_commands()
+        ):
+            return
+        if self._identity_hold_owns_open_link():
+            # The identity phase already owns the open port — a reopen
+            # would toggle DTR/RTS on a radio that may merely be off.
+            return
+        self._cancel_identity_reread()
+        self._identity_generation += 1
+        generation = self._identity_generation
         await self._transport.connect()
+        self._connection_identity = RadioIdentity(
+            status=RadioIdentityStatus.CHECKING,
+            expected_model=self.model,
+        )
+        self._identity_gate_running = True
         try:
-            await self.get_if_status()
-        except (CommandError, Exception):
-            logger.debug("IF bulk query at connect failed (non-fatal)")
+            answered = await self._read_identity_answer()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # The crashed gate owns no hold — the ``checking`` it recorded
+            # dies with it.
+            self._connection_identity = None
+            raise RadioConnectionError(
+                f"Failed to read the {self.model} identity on {self._device}: {exc}"
+            ) from exc
+        finally:
+            self._identity_gate_running = False
+        if generation != self._identity_generation:
+            return
+        if answered is None:
+            if not self._transport.connected:
+                # No live port exists to hold — the open did not survive
+                # the probe. This connect must not report success.
+                self._connection_identity = None
+                raise RadioConnectionError(
+                    f"The serial port on {self._device} did not stay open "
+                    f"for the {self.model} identity read"
+                )
+            self._connection_identity = RadioIdentity(
+                status=RadioIdentityStatus.NO_RESPONSE,
+                expected_model=self.model,
+            )
+            logger.warning(
+                "rigplane (%s): no answer to the ID read on %s; holding the "
+                "connect — the re-read task keeps asking on the open port",
+                self.model,
+                self._device,
+            )
+            self._start_identity_reread()
+            return
+        await self._resolve_identity_answer(answered)
 
     async def disconnect(self) -> None:
         """Close the serial port."""
+        self._cancel_identity_reread()
+        self._identity_generation += 1
+        self._connection_identity = None
         await self._audio_driver.stop_rx()
         await self._audio_driver.stop_tx()
         await self._transport.close()
@@ -281,13 +368,238 @@ class YaesuCatRadio:
 
     @property
     def connected(self) -> bool:
-        """Whether the serial transport is connected."""
-        return self._transport.connected
+        """Whether the transport is open AND the radio answered its ID (MOR-3064).
+
+        ``False`` while the identity gate holds the open port
+        (``checking``/``no_response``/``identity_mismatch``) — a transport
+        open alone is not a connection. ``True`` when no connect attempt has
+        run yet (no gate evidence exists) or the identity read completed with
+        ``verified``/``unverified``.
+        """
+        if not self._transport.connected:
+            return False
+        return self._identity_permits_commands()
 
     @property
     def radio_ready(self) -> bool:
         """Whether the backend is ready for commands."""
-        return self._transport.connected
+        return self.connected
+
+    @property
+    def connection_identity(self) -> RadioIdentity | None:
+        """Typed identity of the radio on the open port (MOR-3064).
+
+        ``None`` before the first connect attempt and after ``disconnect``;
+        ``status`` is ``checking``/``no_response``/``identity_mismatch``
+        while the identity phase holds the open port.
+        """
+        return self._connection_identity
+
+    # -- Connect-time identity gate (MOR-3064) ------------------------------
+
+    def _identity_permits_commands(self) -> bool:
+        """Whether the recorded identity lets the connect count as complete.
+
+        A transport supplied before any connect attempt has no gate evidence;
+        otherwise only ``verified``/``unverified`` permits commands. Clearing
+        identity during teardown does not release the gate. A hold status
+        (``checking``/``no_response``/``identity_mismatch``) does not.
+        """
+        identity = self._connection_identity
+        if identity is None:
+            return self._identity_generation == 0
+        return identity.status in (
+            RadioIdentityStatus.VERIFIED,
+            RadioIdentityStatus.UNVERIFIED,
+        )
+
+    def _identity_hold_status_held(self) -> bool:
+        identity = self._connection_identity
+        return identity is not None and identity.status in (
+            RadioIdentityStatus.CHECKING,
+            RadioIdentityStatus.NO_RESPONSE,
+            RadioIdentityStatus.IDENTITY_MISMATCH,
+        )
+
+    def _identity_hold_has_owner(self) -> bool:
+        """Whether the gate or the re-read task actively drives the hold.
+
+        A status left behind by a crashed gate or an abandoned hold owns
+        nothing and must not block a fresh connect attempt.
+        """
+        if self._identity_gate_running:
+            return True
+        task = self._identity_reread_task
+        return task is not None and not task.done()
+
+    def _identity_hold_owns_open_link(self) -> bool:
+        """Whether the identity phase owns the live open port."""
+        return (
+            self._identity_hold_status_held()
+            and self._transport.connected
+            and self._identity_hold_has_owner()
+        )
+
+    async def _read_identity_answer(self) -> str | None:
+        """Send the profile's ``get_id`` read; ``None`` means no usable answer.
+
+        Returns the canonical answered ID string when the radio answers the
+        ``ID;`` probe, ``""`` when the profile declares no identity read
+        (connects as today, MOR-3064), and ``None`` for silence, a malformed
+        answer (parse failure), a refusal (``?;``) or a transport error —
+        none of which carry identity evidence.
+        """
+        spec = self._config.commands.get("get_id")
+        if not (isinstance(spec, CatCommandSpec) and spec.read):
+            return ""
+        try:
+            raw = await self._transport.query(spec.read)
+        except (CatTimeoutError, CatTransportError, ValueError):
+            return None
+        parser = self._parsers.get("get_id")
+        if parser is None:
+            return ""
+        try:
+            result = parser.parse(raw + ";")
+        except ValueError:
+            return None
+        value = result.get("model")
+        if isinstance(value, str):
+            return (
+                value
+                if len(value) == 4 and value.isascii() and value.isdigit()
+                else None
+            )
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not 0 <= value <= 9999
+        ):
+            return None
+        # Typed custom templates may parse an integer; preserve the CAT
+        # identifier's canonical four-digit spelling.
+        return str(value).zfill(4)
+
+    def _classify_identity_answer(
+        self, answered: str
+    ) -> tuple[RadioIdentityStatus, str | None]:
+        """Map an answered ID to its status per the profile's expected IDs.
+
+        A raw answer with no ``expected_identity_ids`` metadata stays
+        ``UNVERIFIED`` — never ``VERIFIED`` (MOR-3064).
+        """
+        if not answered:
+            return RadioIdentityStatus.UNVERIFIED, None
+        expected = self.profile.expected_identity_ids
+        if not expected:
+            return RadioIdentityStatus.UNVERIFIED, answered
+        if answered in expected:
+            return RadioIdentityStatus.VERIFIED, answered
+        return RadioIdentityStatus.IDENTITY_MISMATCH, answered
+
+    async def _resolve_identity_answer(self, answered: str) -> bool:
+        """Record the classified answer; True when the connect may proceed.
+
+        A wrong radio keeps the hold: the re-read task keeps probing the
+        open port, so swapping in the expected radio completes the connect
+        without a port reopen. A valid answer runs the state initialization
+        (IF seeding) exactly here — the only completion path besides the
+        gate's own, and only one of them exists per generation.
+        """
+        status, answered_id = self._classify_identity_answer(answered)
+        answered_model: str | None = None
+        if status is RadioIdentityStatus.VERIFIED:
+            answered_model = self.model
+        self._connection_identity = RadioIdentity(
+            status=status,
+            expected_model=self.model,
+            answered_model=answered_model,
+            answered_id=answered_id,
+        )
+        if status is RadioIdentityStatus.IDENTITY_MISMATCH:
+            logger.warning(
+                "rigplane (%s): a different radio answered the ID read on %s "
+                "(answered %s, expected one of %s); holding the connect",
+                self.model,
+                self._device,
+                answered_id,
+                list(self.profile.expected_identity_ids),
+            )
+            self._start_identity_reread()
+            return False
+        await self._seed_state_from_if()
+        return True
+
+    async def _seed_state_from_if(self) -> None:
+        """Run the connect-time IF seeding (non-fatal, as before MOR-3064)."""
+        try:
+            await self.get_if_status()
+        except Exception:
+            logger.debug("IF bulk query at connect failed (non-fatal)")
+
+    def _start_identity_reread(self) -> None:
+        """Start the background identity re-read unless one already runs."""
+        task = self._identity_reread_task
+        if task is not None and not task.done():
+            return
+        self._identity_reread_task = asyncio.create_task(
+            self._identity_reread_loop(), name="yaesu-cat-identity-reread"
+        )
+
+    def _cancel_identity_reread(self) -> None:
+        task = self._identity_reread_task
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+        self._identity_reread_task = None
+
+    async def _identity_reread_loop(self) -> None:
+        """Re-read ``ID;`` on the held open port until a valid answer lands.
+
+        Backoff 1, 2, 4 and 8 s, then every 15 s. Never reopens the port —
+        every serial open toggles DTR/RTS, and the hold exists precisely to
+        spare a radio that may merely be switched off. The generation fence
+        discards any completion that outlives its link (disconnect/replug),
+        and state initialization runs exactly once, on the current
+        generation's own answer.
+        """
+        generation = self._identity_generation
+        attempts = 0
+        try:
+            while True:
+                backoff = self._IDENTITY_REREAD_BACKOFF_S
+                delay = (
+                    backoff[attempts]
+                    if attempts < len(backoff)
+                    else self._IDENTITY_REREAD_STEADY_S
+                )
+                attempts += 1
+                await asyncio.sleep(delay)
+                if generation != self._identity_generation:
+                    return
+                if not self._identity_hold_owns_open_link():
+                    return
+                answered = await self._read_identity_answer()
+                if generation != self._identity_generation:
+                    return
+                if answered is None:
+                    continue
+                completed = await self._resolve_identity_answer(answered)
+                if completed:
+                    return
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            # The hold loses its owner (the status it recorded describes
+            # a hold nobody drives); the next connect() re-opens and
+            # re-gates. Logged here so a dead task never surfaces only as
+            # an unretrieved-exception warning.
+            logger.error(
+                "rigplane (%s): identity re-read on %s stopped: %s",
+                self.model,
+                self._device,
+                exc,
+                exc_info=True,
+            )
 
     @property
     def backend_id(self) -> str:
@@ -828,7 +1140,7 @@ class YaesuCatRadio:
         return spec
 
     def _require_connected(self) -> None:
-        if not self._transport.connected:
+        if not self.connected:
             raise RadioConnectionError("Radio not connected — call connect() first")
 
     async def _query(
@@ -1108,11 +1420,36 @@ class YaesuCatRadio:
         return bool(result["state"] == "1")
 
     async def set_powerstat(self, on: bool) -> None:
-        """Set the power switch state.
+        """Set the power switch state, with the MOR-3064 identity-hold rule.
+
+        While the identity hold owns the live port, only POWER ON passes —
+        and only in ``no_response`` (a radio that answered with a wrong ID
+        must not be powered by us). POWER ON goes straight to the transport
+        so it stays available while the readiness surface
+        (``connected``/``radio_ready``) is false under the hold. Everything
+        else is refused until the radio has answered its model
+        identification.
 
         Args:
             on: ``True`` to power on, ``False`` to power off.
         """
+        identity = self._connection_identity
+        if (
+            identity is not None
+            and self._identity_hold_status_held()
+            and self._transport.connected
+            and self._identity_hold_has_owner()
+        ):
+            if on and identity.status is RadioIdentityStatus.NO_RESPONSE:
+                spec = self._get_spec("set_powerstat")
+                if spec.write is not None:
+                    await self._transport.write(format_command(spec.write, state="1"))
+                    return
+            raise RadioConnectionError(
+                f"{self.model} on {self._device} has not answered its model "
+                "ID; only POWER ON is available while the identity hold "
+                "owns the port"
+            )
         await self._write("set_powerstat", state="1" if on else "0")
 
     # -- PTT ----------------------------------------------------------------

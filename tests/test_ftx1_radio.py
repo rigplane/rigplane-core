@@ -133,6 +133,10 @@ async def test_context_manager_connects_and_disconnects(radio):
     """__aenter__ calls connect(), __aexit__ calls disconnect()."""
     radio._transport.connect = AsyncMock()
     radio._transport.close = AsyncMock()
+    # MOR-3064: connect() probes the identity first; give the mocked
+    # transport an ID answer so the gate completes (the IF seed that
+    # follows is non-fatal and needs no stub of its own).
+    radio._transport.query = AsyncMock(return_value="ID0840")
 
     async with radio as r:
         assert r is radio
@@ -3673,14 +3677,16 @@ class TestIFBulkQuery:
 
     @pytest.mark.asyncio
     async def test_connect_calls_if_status(self, radio):
-        """connect() should attempt IF bulk query to seed state."""
+        """connect() should seed state after the requested model answers."""
         radio._transport.connect = AsyncMock()
         radio._transport._connected = True
-        radio._transport.query = AsyncMock(return_value="IF00000014074000+000000200003")
+        radio._transport.query = AsyncMock(
+            side_effect=["ID0840", "IF00000014074000+000000200003"]
+        )
 
         await radio.connect()
 
-        radio._transport.query.assert_called_once_with("IF;")
+        assert radio._transport.query.call_args_list == [call("ID;"), call("IF;")]
         assert radio.radio_state.main.freq == 14_074_000
 
     @pytest.mark.asyncio
@@ -3688,7 +3694,7 @@ class TestIFBulkQuery:
         """connect() must not fail if IF; query times out or errors."""
         radio._transport.connect = AsyncMock()
         radio._transport._connected = True
-        radio._transport.query = AsyncMock(side_effect=Exception("timeout"))
+        radio._transport.query = AsyncMock(side_effect=["ID0840", Exception("timeout")])
 
         await radio.connect()  # should not raise
 
