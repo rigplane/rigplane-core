@@ -2094,6 +2094,14 @@ class CivRuntime:
     ) -> None:
         """Project supported CI-V ingress fields into the runtime StateStore."""
 
+        if frame.command == 0x19:
+            # MOR-3071: the transceiver-ID reply (19 00) answers the
+            # connect-time identity probe, not a state query. It must not
+            # become store evidence — publishing it would count as the
+            # liveness-derived power_on observation (MOR-2544) and break
+            # the startup gate's "the link answers nothing" predicate, so
+            # a present-but-silent radio would read as answering.
+            return
         try:
             observations = self._observations_from_frame(frame)
         except (ValueError, IndexError, KeyError, AttributeError, TypeError) as exc:
