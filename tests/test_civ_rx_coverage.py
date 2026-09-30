@@ -6688,3 +6688,35 @@ async def test_power_readback_overrides_liveness_and_clears_retained_command(
         is False
     )
     assert radio._last_commanded_powerstat is None  # noqa: SLF001
+def test_transceiver_id_reply_never_becomes_store_evidence(
+    radio: IcomRadio,
+) -> None:
+    """MOR-3078: ``19 00`` answers the identity probe, never the store.
+
+    A transceiver-ID reply (or our own ``19 00`` echo shape) must create
+    no store observation at all — on a profile that infers ``power_on``
+    from liveness (the fixture's IC-7610), it must not count as the
+    liveness evidence MOR-2544 stamps on decoded answers: a
+    present-but-silent radio has to keep reading as answering nothing,
+    or the startup gate's silence predicates break. The skip is scoped
+    to the probe's own ``19 00`` shape: a sibling frame under the same
+    command with a different sub still projects its liveness observation.
+    """
+
+    with pytest.raises(KeyError):
+        radio._state_store.snapshot().field(_POWER_ON_PATH)  # noqa: SLF001
+
+    radio._civ_runtime._apply_state_store_observations(  # noqa: SLF001
+        _make_frame(cmd=0x19, sub=0x00, data=b"\x94")
+    )
+
+    with pytest.raises(KeyError):
+        radio._state_store.snapshot().field(_POWER_ON_PATH)  # noqa: SLF001
+
+    radio._civ_runtime._apply_state_store_observations(  # noqa: SLF001
+        _make_frame(cmd=0x19, sub=0x01, data=b"\x94")
+    )
+
+    assert (
+        radio._state_store.snapshot().field(_POWER_ON_PATH).value is True  # noqa: SLF001
+    )

@@ -2536,7 +2536,10 @@ def _fast_retry_serial_radio(device: str, link: object) -> _IcomSerialRadioBase:
 
 @asynccontextmanager
 async def _served_through_cli(
-    radio: object, *, bridge: str | None = None
+    radio: object,
+    *,
+    bridge: str | None = None,
+    expect_rc: int = 0,
 ) -> AsyncIterator[WebServer]:
     """Run ``rigplane web`` through the real ``cli/__init__.py: _run``.
 
@@ -2544,7 +2547,9 @@ async def _served_through_cli(
     it and requires exit code 0. ``serve_forever`` is replaced by start /
     wait / stop so no signal handler is installed, and the listener bind is
     faked. ``bridge`` selects the ``--bridge`` value (None keeps the
-    harness default of no bridge at all).
+    harness default of no bridge at all). ``expect_rc`` requires that exit
+    code instead of a served server (MOR-3078: the explicit
+    ``--bridge=<DEVICE>`` fail-hard path exits 1 without serving).
     """
 
     from rigplane.cli import _build_parser, _run
@@ -2581,16 +2586,21 @@ async def _served_through_cli(
         run = asyncio.create_task(_run(args))
         try:
             await _wait_until(lambda: bool(served) or run.done(), timeout_s=10.0)
-            assert served, (
-                f"rigplane web exited with {run.result()} instead of serving"
-                if run.done()
-                else "rigplane web did not finish starting"
-            )
-            yield served[0]
+            if expect_rc == 0:
+                assert served, (
+                    f"rigplane web exited with {run.result()} instead of serving"
+                    if run.done()
+                    else "rigplane web did not finish starting"
+                )
+                yield served[0]
+            else:
+                assert not served, (
+                    "rigplane web served where a hard failure was required"
+                )
         finally:
             release.set()
             rc = await asyncio.wait_for(run, timeout=10.0)
-    assert rc == 0
+    assert rc == expect_rc
 
 
 def _startup_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
@@ -3180,3 +3190,141 @@ async def test_audio_auto_start_skips_quietly_while_identity_holds(
                 for record in caplog.records
             )
             assert _audio_scope_error_records(caplog) == []
+def test_identity_hold_predicate_requires_a_disconnected_radio() -> None:
+    """MOR-3078: one shared hold predicate; checking on a connected radio is no hold.
+
+    The CLI bridge deferral, the web startup gate and the no_response
+    print asked the same question three ways, and none required the radio
+    to be disconnected: a stale ``checking`` left on a connected radio
+    read as a hold. The shared predicate (``core.radio_protocol:
+    serial_identity_hold``) returns the hold status only for
+    checking/no_response on a radio that is NOT connected; anything else
+    the attribute may hold — including the ``Mock`` a test double
+    returns — is no hold, decided by ``isinstance``, never by truthiness.
+    """
+    from rigplane.core.radio_protocol import (
+        RadioIdentity,
+        RadioIdentityStatus,
+        serial_identity_hold,
+    )
+    from rigplane.web.web_startup import _serial_identity_pending
+
+    def _radio(status: RadioIdentityStatus, *, connected: bool) -> SimpleNamespace:
+        return SimpleNamespace(
+            connection_identity=RadioIdentity(
+                status=status, expected_model="IC-7300"
+            ),
+            connected=connected,
+        )
+
+    held = _radio(RadioIdentityStatus.NO_RESPONSE, connected=False)
+    assert serial_identity_hold(held) is RadioIdentityStatus.NO_RESPONSE
+    assert _serial_identity_pending(SimpleNamespace(_radio=held)) is True
+
+    # A stale checking on a connected radio describes nothing: not a hold.
+    checking_connected = _radio(RadioIdentityStatus.CHECKING, connected=True)
+    assert serial_identity_hold(checking_connected) is None
+    assert _serial_identity_pending(SimpleNamespace(_radio=checking_connected)) is (
+        False
+    )
+
+    answered = _radio(RadioIdentityStatus.UNVERIFIED, connected=True)
+    assert serial_identity_hold(answered) is None
+
+    mock_radio = MagicMock()
+    assert serial_identity_hold(mock_radio) is None
+
+
+@pytest.mark.asyncio
+async def test_audio_auto_start_defers_then_starts_exactly_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-3078: the deferred auto-start runs once the radio answers.
+
+    The MOR-3081 deferral was permanent — the auto bridge never started
+    unless the operator asked from the UI. The deferred start is armed at
+    deferral time and runs exactly one ``start_audio_bridge`` once the
+    identity hold has cleared AND the connect latched; a later duplicate
+    trigger must not start a second bridge, and nothing may fire once
+    the server has stopped.
+    """
+
+    from test_icom7610_serial_radio import _wait_until
+
+    link, radio = _identity_held_gate_radio()
+    bridge_start = AsyncMock()
+    with (
+        patch.object(WebServer, "start_audio_bridge", bridge_start),
+        caplog.at_level(logging.WARNING),
+    ):
+        async with _served_through_cli(radio, bridge="auto") as server:
+            assert server is not None
+            assert bridge_start.await_count == 0  # deferred, not attempted
+            assert any(
+                record.name == "rigplane.cli"
+                and "audio bridge auto-start deferred" in record.getMessage()
+                for record in caplog.records
+            )
+
+            link.policy_answer = True
+            assert await _wait_until(lambda: radio.connected, timeout_s=5.0)
+            assert await _wait_until(
+                lambda: bridge_start.await_count == 1, timeout_s=5.0
+            )
+            await asyncio.sleep(0.5)  # a duplicate trigger would land here
+            assert bridge_start.await_count == 1
+            assert bridge_start.await_args is not None
+            assert bridge_start.await_args.kwargs.get("device_name") is None
+
+    # The server is down: no start may fire after stop begins.
+    await asyncio.sleep(0.2)
+    assert bridge_start.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_deferred_auto_bridge_never_starts_after_stop_begins(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-3078: a deferral that never sees the radio answer dies with the server.
+
+    The deferred start belongs to the web application lifetime: the
+    shutdown that begins when ``serve_forever`` ends must cancel it
+    before it can start a bridge, and nothing may fire once the server
+    is down.
+    """
+
+    link, radio = _identity_held_gate_radio()
+    bridge_start = AsyncMock()
+    with (
+        patch.object(WebServer, "start_audio_bridge", bridge_start),
+        caplog.at_level(logging.WARNING),
+    ):
+        async with _served_through_cli(radio, bridge="auto"):
+            assert bridge_start.await_count == 0
+            # The radio never answers; the block exits straight to shutdown.
+        await asyncio.sleep(0.3)
+        assert bridge_start.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_explicit_bridge_device_fails_hard_while_identity_held(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """MOR-3078: an explicit ``--bridge=<DEVICE>`` keeps failing while held.
+
+    The MOR-3081 docstring claimed this fail-hard behaviour but no test
+    pinned it: only the AUTO start defers; a concrete device name still
+    attempts the bridge at startup, fails against the held connect, and
+    exits non-zero instead of serving.
+    """
+
+    link, radio = _identity_held_gate_radio()
+    refused = RuntimeError("radio-RX start refused: the connect is held")
+    bridge_start = AsyncMock(side_effect=refused)
+    with patch.object(WebServer, "start_audio_bridge", bridge_start):
+        async with _served_through_cli(
+            radio, bridge="RigPlane Virtual Cable Output", expect_rc=1
+        ):
+            pass  # the harness itself asserts the non-zero exit
+    captured = capsys.readouterr()
+    assert "audio bridge failed" in captured.err

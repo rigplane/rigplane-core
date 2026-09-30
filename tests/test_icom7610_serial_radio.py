@@ -3082,7 +3082,9 @@ async def test_gate_write_error_connect_recovers_serves_and_heals(tmp_path) -> N
     body = json.loads(writer.buffer.decode("ascii", "replace").split("\r\n\r\n", 1)[1])
     connection = body["connection"]
     assert connection["rigConnected"] is False
-    assert connection["identity"]["status"] == "checking"
+    # MOR-3078: the crashed gate must not publish a stale "checking"
+    # forever — the identity reads null until a gate runs again.
+    assert connection["identity"] is None
 
     link.fail_sends = False
     assert await _wait_until(lambda: radio.connected, timeout_s=3.0)
@@ -3108,6 +3110,9 @@ async def test_gate_write_error_in_soft_reconnect_keeps_recovering() -> None:
         await radio.soft_reconnect()
     assert isinstance(exc_info.value.__cause__, OSError)
     assert radio.conn_state is RadioConnectionState.RECONNECTING
+    # MOR-3078: the same crash contract on the reconnect path — no stale
+    # "checking" survives the failed gate.
+    assert radio.connection_identity is None
 
     radio.start_reconnect_recovery()
     link.fail_sends = False
@@ -3141,6 +3146,147 @@ async def test_connect_guard_agrees_with_watchdog_guard() -> None:
     assert identity is not None and identity.status is RadioIdentityStatus.UNVERIFIED
     assert link.connect_calls == 1  # the open link was reused, not reopened
     assert radio._serial_identity_reread_task is None
+    await radio.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# MOR-3078: a soft_reconnect-origin identity hold must finish like a
+# soft_reconnect, and the no_response POWER ON allowance must respect the
+# hold it leans on.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_soft_reconnect_hold_late_answer_runs_reconnect_tail_once(
+    tmp_path,
+) -> None:
+    """MOR-3078 (a): a late answer completes the soft_reconnect, not a bare connect.
+
+    ``soft_reconnect`` parked managed TX and owes its success tail — the
+    re-arm plus the reconnect callback — even when the identity answer
+    arrives late, through the background re-read, instead of through its
+    own gate. The tail must run exactly once; the watchdog-ready-branch
+    soft_reconnects that follow return early on the recorded answer and
+    must not run it a second time.
+    """
+    link = _GateSerialLink(answer_identity=True)
+    radio = _gate_radio(link)
+    composition = ManagedTxComposition(radio, config_path=tmp_path / "managed-tx.json")
+    install_managed_tx_composition(radio, composition)
+    reconnect_calls: list[int] = []
+    radio.set_reconnect_callback(lambda: reconnect_calls.append(1))
+    rearm_calls: list[int] = []
+    real_rearm = radio.rearm_managed_tx
+
+    async def _counting_rearm() -> None:
+        rearm_calls.append(1)
+        await real_rearm()
+
+    radio.rearm_managed_tx = _counting_rearm  # type: ignore[assignment]
+
+    await radio.connect()
+    assert radio.connected is True
+
+    # The replug: the watchdog soft_reconnects onto the identity-silent
+    # port once; its gate is held on silence and the re-read owns the link.
+    link.policy_answer = False
+    link.ready = False
+    link.healthy = False
+    assert await _wait_until(
+        lambda: (
+            radio.connection_identity is not None
+            and radio.connection_identity.status is RadioIdentityStatus.NO_RESPONSE
+            and radio._serial_identity_reread_task is not None
+        ),
+        timeout_s=3.0,
+    )
+    assert reconnect_calls == []
+
+    # The radio comes back: the re-read answer must run the parked re-arm
+    # and fire the callback exactly once.
+    link.policy_answer = True
+    assert await _wait_until(lambda: radio.connected, timeout_s=3.0)
+    await asyncio.sleep(0.3)  # let any duplicate tail land before judging
+    assert reconnect_calls == [1]
+    assert rearm_calls == [1]
+    identity = radio.connection_identity
+    assert identity is not None and identity.status is RadioIdentityStatus.UNVERIFIED
+    await radio.disconnect()
+    await composition.shutdown(asyncio.Event())
+
+
+@pytest.mark.asyncio
+async def test_initial_connect_hold_late_answer_fires_no_reconnect_callback() -> None:
+    """MOR-3078 (a), control: an ordinary connect never becomes a reconnect.
+
+    A late answer on an INITIAL connect hold completes the connect tail
+    (``_arm_managed_tx``, pinned by the MOR-3071 suite) and must not fire
+    the reconnect callback.
+    """
+    link = _GateSerialLink(answer_identity=True, answer_after_queries=1)
+    radio = _gate_radio(link)
+    reconnect_calls: list[int] = []
+    radio.set_reconnect_callback(lambda: reconnect_calls.append(1))
+
+    await radio.connect()  # held on silence; the re-read gets the answer
+    assert await _wait_until(lambda: radio.connected, timeout_s=3.0)
+    await asyncio.sleep(0.3)
+    assert reconnect_calls == []
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_power_on_in_no_response_requires_ready_owned_hold() -> None:
+    """MOR-3078 (b): POWER ON leans on the hold it interrupts.
+
+    The ``no_response`` allowance exists so POWER ON stays available while
+    the identity hold owns a READY open link (MOR-2841). Once the session
+    is no longer ready — the cable-trouble shape where ``connected``
+    lingers while ``healthy`` drops — the hold owns nothing and POWER ON
+    is refused like every other command while the connect is held.
+    """
+    link = _GateSerialLink(answer_identity=False)
+    radio = _gate_radio(link)
+    # Freeze the re-read so the not-ready flip below cannot race an
+    # abandon-and-recover cycle while the assertion reads the predicate.
+    radio._SERIAL_IDENTITY_REREAD_BACKOFF_S = (60.0,)  # noqa: SLF001
+    radio._SERIAL_IDENTITY_REREAD_STEADY_S = 60.0  # noqa: SLF001
+
+    await radio.connect()
+    assert radio.connection_identity is not None
+    assert radio.connection_identity.status is RadioIdentityStatus.NO_RESPONSE
+    assert radio._serial_identity_reread_task is not None  # the hold has an owner
+
+    await radio.set_powerstat(True)  # allowed: ready link owned by the hold
+    assert any(frame[4] == 0x18 for frame in link.sent_frames)
+
+    link.healthy = False  # ready drops; connected lingers
+    with pytest.raises(ConnectionError):
+        await radio.set_powerstat(True)
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_power_on_dead_writer_raises_rigplane_connection_error() -> None:
+    """MOR-3078 (b): a dead writer converts, it does not leak a raw OSError.
+
+    The POWER ON frame goes out through the direct request-tracker path;
+    when the writer is dead (the unplugged-cable shape: ``connected`` and
+    ``ready`` linger while writes fail), the caller gets rigplane's
+    ConnectionError with the OSError as its cause — the same contract the
+    gate itself follows (round 5).
+    """
+    link = _GateSerialLink(answer_identity=False)
+    radio = _gate_radio(link)
+    radio._SERIAL_IDENTITY_REREAD_BACKOFF_S = (60.0,)  # noqa: SLF001
+    radio._SERIAL_IDENTITY_REREAD_STEADY_S = 60.0  # noqa: SLF001
+
+    await radio.connect()  # held on silence; the link is open and ready
+    link.fail_sends = True
+
+    with pytest.raises(ConnectionError) as exc_info:
+        await radio.set_powerstat(True)
+    assert isinstance(exc_info.value.__cause__, OSError)
     await radio.disconnect()
 
 
