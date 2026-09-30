@@ -2730,8 +2730,10 @@ async def test_soft_reconnect_onto_silent_port_never_latches_or_reopens() -> Non
     link.healthy = False
 
     assert await _wait_until(
-        lambda: radio.connection_identity is not None
-        and radio.connection_identity.status is RadioIdentityStatus.NO_RESPONSE,
+        lambda: (
+            radio.connection_identity is not None
+            and radio.connection_identity.status is RadioIdentityStatus.NO_RESPONSE
+        ),
         timeout_s=3.0,
     )
     assert radio.connected is False
@@ -2824,9 +2826,7 @@ async def test_reread_read_error_is_logged_and_leaves_the_hold(
         raise RuntimeError("identity read exploded")
 
     radio._read_serial_identity_payload = _exploding_read  # type: ignore[assignment]
-    with caplog.at_level(
-        logging.WARNING, logger="rigplane.backends._icom_serial_base"
-    ):
+    with caplog.at_level(logging.WARNING, logger="rigplane.backends._icom_serial_base"):
         await asyncio.sleep(0.15)  # one compressed re-read slot
 
     assert radio._serial_identity_reread_task is None
@@ -2856,9 +2856,7 @@ async def test_reread_arm_error_is_logged_and_does_not_stick_in_connecting(
     radio._arm_managed_tx = _exploding_arm  # type: ignore[assignment]
 
     await radio.connect()  # held on silence; the re-read gets the answer
-    with caplog.at_level(
-        logging.WARNING, logger="rigplane.backends._icom_serial_base"
-    ):
+    with caplog.at_level(logging.WARNING, logger="rigplane.backends._icom_serial_base"):
         assert await _wait_until(
             lambda: radio.conn_state is RadioConnectionState.CONNECTED,
             timeout_s=3.0,

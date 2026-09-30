@@ -585,7 +585,8 @@ class _IcomSerialRadioBase(CoreRadio):
     def _identity_hold_status_active(self) -> bool:
         identity = self._connection_identity
         return identity is not None and identity.status in (
-            RadioIdentityStatus.CHECKING, RadioIdentityStatus.NO_RESPONSE
+            RadioIdentityStatus.CHECKING,
+            RadioIdentityStatus.NO_RESPONSE,
         )
 
     def _identity_phase_owns_open_link(self) -> bool:
