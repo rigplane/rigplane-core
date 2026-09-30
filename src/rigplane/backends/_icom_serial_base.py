@@ -430,6 +430,16 @@ class _IcomSerialRadioBase(CoreRadio):
         self.last_error = None
         self._has_connected_once = True
 
+        # A connect() over a runtime whose CI-V worker and RX pump still
+        # run (the web power-on route reconnects after a link-down
+        # declaration that deliberately leaves them alive) must not leave
+        # them bound to the retired generation: the stale pump would
+        # consume and drop every answer to the new epoch — the identity
+        # read first of all. The same discipline soft_reconnect applies
+        # before its reopen; no-ops on a first connect.
+        await self._stop_civ_worker()
+        await self._stop_civ_rx_pump()
+
         self._ctrl_transport = self._serial_session.control_transport  # type: ignore[assignment]
         self._civ_transport = self._serial_session.civ_transport  # type: ignore[assignment]
         self._advance_civ_generation("serial-connect")
