@@ -2535,13 +2535,16 @@ def _fast_retry_serial_radio(device: str, link: object) -> _IcomSerialRadioBase:
 
 
 @asynccontextmanager
-async def _served_through_cli(radio: object) -> AsyncIterator[WebServer]:
+async def _served_through_cli(
+    radio: object, *, bridge: str | None = None
+) -> AsyncIterator[WebServer]:
     """Run ``rigplane web`` through the real ``cli/__init__.py: _run``.
 
     Yields the ``WebServer`` once its ``start()`` has returned, then stops
     it and requires exit code 0. ``serve_forever`` is replaced by start /
     wait / stop so no signal handler is installed, and the listener bind is
-    faked.
+    faked. ``bridge`` selects the ``--bridge`` value (None keeps the
+    harness default of no bridge at all).
     """
 
     from rigplane.cli import _build_parser, _run
@@ -2568,7 +2571,7 @@ async def _served_through_cli(radio: object) -> AsyncIterator[WebServer]:
     args = _build_parser().parse_args(
         ["--host", "1.2.3.4", "web", "--no-rigctld", "--no-discovery"]
     )
-    args.web_bridge = None
+    args.web_bridge = bridge
     with (
         patch("rigplane.cli.create_radio", return_value=radio),
         patch("rigplane.cli.check_ports_available"),
@@ -3034,3 +3037,146 @@ def test_every_likely_cause_the_classifier_returns_is_in_the_public_schema() -> 
     } <= emitted
     annotation = RadioHealthPublic.model_fields["likelyCause"].annotation
     assert emitted <= set(typing.get_args(annotation))
+
+
+# ---------------------------------------------------------------------------
+# MOR-3081: the identity gate's hold (MOR-3071) must not end ``web`` — the
+# server serves in ``no_response``, the audio auto-start stays quiet, and
+# the connect completes when the radio answers. None of the #3954 tests ran
+# the real CLI web startup with a managed-TX composition; these do, through
+# the same ``_served_through_cli`` harness as the MOR-2876 suite above.
+# ---------------------------------------------------------------------------
+
+
+def _audio_scope_error_records(
+    caplog: pytest.LogCaptureFixture,
+) -> list[logging.LogRecord]:
+    return [
+        record
+        for record in caplog.records
+        if record.levelno >= logging.ERROR
+        and (
+            record.name.startswith("rigplane.audio")
+            or "audio" in record.getMessage().lower()
+            or "scope" in record.getMessage().lower()
+        )
+    ]
+
+
+def _identity_held_gate_radio() -> tuple[object, object]:
+    """IC-7300 whose identity read never answers, cadence compressed.
+
+    Same ``_gate_radio`` the MOR-3071 gate suite runs, plus the silence
+    detector held off (as ``_fast_retry_serial_radio`` does above): once
+    the radio answers, the poller's state reads still get no reply from
+    the fake, and an untamed watchdog would reopen the port under the
+    post-CONNECTED assertions for a reason this suite is not about.
+    """
+
+    from test_icom7610_serial_radio import _GateSerialLink, _gate_radio
+
+    link = _GateSerialLink(answer_identity=False)
+    radio = _gate_radio(link)
+    radio._serial_civ_timeout_evidence_crossed_threshold = lambda: False
+    return link, radio
+
+
+@pytest.mark.asyncio
+async def test_identity_hold_serves_then_latches_and_arms_when_the_radio_answers(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The bench regression: a silent port must serve, not exit.
+
+    ``rigplane web`` with the managed-TX composition on a link that never
+    answers ``19 00``: the server listens, ``/api/v1/info`` answers 200
+    with ``identity.status = "no_response"`` and ``rigConnected = false``,
+    and transmit is refused. When the link starts answering, CONNECTED
+    latches, managed TX arms, and no audio/scope ERROR traceback was
+    logged on the way.
+    """
+
+    from rigplane.core.radio_protocol import RadioIdentityStatus
+    from rigplane.runtime.managed_tx_state import ManagedTxOutcome
+    from test_icom7610_serial_radio import _wait_until
+    from test_web_server_coverage import _FakeWriter, _response_json
+
+    link, radio = _identity_held_gate_radio()
+
+    with caplog.at_level(logging.WARNING):
+        async with _served_through_cli(radio) as server:
+            identity = radio.connection_identity
+            assert identity is not None
+            assert identity.status is RadioIdentityStatus.NO_RESPONSE
+            assert radio.connected is False
+
+            # The startup gate released on the identity hold, named plainly.
+            assert any(
+                "not answered its identity read" in warning
+                for warning in _startup_warnings(caplog)
+            )
+
+            # The server answers while the connect is held.
+            writer = _FakeWriter()
+            await server._handle_http(writer, "GET", "/api/v1/info", headers={})  # noqa: SLF001
+            status, body = _response_json(writer)
+            assert status == 200
+            connection = body["connection"]
+            assert connection["rigConnected"] is False
+            assert connection["identity"]["status"] == "no_response"
+
+            # Transmit stays refused: no provider stands on a held connect.
+            composition = radio._managed_tx_composition
+            assert composition is not None
+            snapshot = await composition.authority.snapshot()
+            assert snapshot.provider_generation is None
+            assert await composition.authority.transmit_on() is (
+                ManagedTxOutcome.REJECTED
+            )
+
+            # The radio answers: CONNECTED latches and managed TX arms.
+            link.policy_answer = True
+            assert await _wait_until(lambda: radio.connected, timeout_s=5.0)
+            assert await _wait_until(
+                lambda: composition._active_provider is not None, timeout_s=5.0
+            )
+            identity = radio.connection_identity
+            assert identity is not None
+            assert identity.status is RadioIdentityStatus.UNVERIFIED
+
+            # Let any late failure land before judging the log.
+            await asyncio.sleep(0.2)
+            assert _audio_scope_error_records(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_audio_auto_start_skips_quietly_while_identity_holds(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The auto bridge does not attempt a radio-RX start on a held connect.
+
+    The bench log's ``ERROR audio-bus: failed to start RX`` traceback came
+    from the auto-start demanding RX while the identity gate owned the
+    link. While the connect is held the auto-start is skipped with one
+    WARNING naming the deferral; an explicit ``--bridge=<DEVICE>`` keeps
+    its fail-hard behaviour.
+    """
+
+    link, radio = _identity_held_gate_radio()
+
+    refused = AssertionError(
+        "audio bridge auto-start must not run while the connect is held"
+    )
+    bridge_start = AsyncMock(side_effect=refused)
+    with (
+        patch.object(WebServer, "start_audio_bridge", bridge_start),
+        caplog.at_level(logging.WARNING),
+    ):
+        async with _served_through_cli(radio, bridge="auto") as server:
+            assert server is not None
+            assert bridge_start.await_count == 0
+            assert any(
+                record.name == "rigplane.cli"
+                and "audio bridge auto-start deferred" in record.getMessage()
+                for record in caplog.records
+            )
+            assert _audio_scope_error_records(caplog) == []
