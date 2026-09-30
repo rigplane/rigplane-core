@@ -2597,6 +2597,7 @@ async def _served_through_cli(
                 assert not served, (
                     "rigplane web served where a hard failure was required"
                 )
+                yield None
         finally:
             release.set()
             rc = await asyncio.wait_for(run, timeout=10.0)
@@ -3324,7 +3325,7 @@ async def test_explicit_bridge_device_fails_hard_while_identity_held(
     with patch.object(WebServer, "start_audio_bridge", bridge_start):
         async with _served_through_cli(
             radio, bridge="RigPlane Virtual Cable Output", expect_rc=1
-        ):
-            pass  # the harness itself asserts the non-zero exit
+        ) as server:
+            assert server is None  # the harness asserts the non-zero exit
     captured = capsys.readouterr()
     assert "audio bridge failed" in captured.err
