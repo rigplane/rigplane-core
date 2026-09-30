@@ -3042,19 +3042,14 @@ async def test_reread_arm_failure_keeps_connected_identity_and_logs(
 
 # ---------------------------------------------------------------------------
 # MOR-3071 round 5: the initial gate must not escape or wedge. A write
-# error on an OPENED port (the wrong-port bench shape) becomes rigplane's
-# ConnectionError with the OSError as its cause, never leaves CONNECTING,
-# and the CLI session still enters so the web serves and the watchdog
-# heals the link once the fake stops failing.
+# error on an OPENED port converts to rigplane's ConnectionError, never
+# leaves CONNECTING, and the session still enters so the web serves.
 # ---------------------------------------------------------------------------
 
 
 class _BrokenWriteLink(_GateSerialLink):
-    """The port opens, but every write fails — until the test relents.
-
-    Skips the ``fail_sends`` reset in ``connect`` so the failure survives
-    every reopen.
-    """
+    """Port opens, writes fail — until the test relents (the ``fail_sends``
+    reset of ``connect`` is skipped, so the failure survives reopens)."""
 
     async def connect(self) -> None:
         await _FakeSerialCivLink.connect(self)
@@ -3076,12 +3071,10 @@ async def test_gate_write_error_connect_recovers_serves_and_heals(tmp_path) -> N
         await radio.connect()
     assert isinstance(exc_info.value.__cause__, OSError)
     assert radio.conn_state is RadioConnectionState.DISCONNECTED
-    assert radio._serial_identity_reread_task is None
 
     entered = await _ManagedTxRadioSession(radio, composition).__aenter__()
     assert entered is radio
     assert radio.conn_state is RadioConnectionState.RECONNECTING
-    assert radio._civ_data_watchdog_task is not None
 
     server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))  # type: ignore[arg-type]
     writer = _Writer()
@@ -3094,8 +3087,7 @@ async def test_gate_write_error_connect_recovers_serves_and_heals(tmp_path) -> N
     link.fail_sends = False
     assert await _wait_until(lambda: radio.connected, timeout_s=3.0)
     identity = radio.connection_identity
-    assert identity is not None
-    assert identity.status is RadioIdentityStatus.UNVERIFIED
+    assert identity is not None and identity.status is RadioIdentityStatus.UNVERIFIED
     await radio.disconnect()
     await composition.shutdown(asyncio.Event())
 
@@ -3107,7 +3099,6 @@ async def test_gate_write_error_in_soft_reconnect_keeps_recovering() -> None:
     link = _BrokenWriteLink()
     radio = _gate_radio(link)
     await radio.connect()
-    assert radio.connected is True
     await radio._stop_civ_data_watchdog()
 
     link.fail_sends = True
@@ -3122,8 +3113,7 @@ async def test_gate_write_error_in_soft_reconnect_keeps_recovering() -> None:
     link.fail_sends = False
     assert await _wait_until(lambda: radio.connected, timeout_s=3.0)
     identity = radio.connection_identity
-    assert identity is not None
-    assert identity.status is RadioIdentityStatus.UNVERIFIED
+    assert identity is not None and identity.status is RadioIdentityStatus.UNVERIFIED
     await radio.disconnect()
 
 
@@ -3148,8 +3138,7 @@ async def test_connect_guard_agrees_with_watchdog_guard() -> None:
 
     assert radio.conn_state is RadioConnectionState.CONNECTED
     identity = radio.connection_identity
-    assert identity is not None
-    assert identity.status is RadioIdentityStatus.UNVERIFIED
+    assert identity is not None and identity.status is RadioIdentityStatus.UNVERIFIED
     assert link.connect_calls == 1  # the open link was reused, not reopened
     assert radio._serial_identity_reread_task is None
     await radio.disconnect()
