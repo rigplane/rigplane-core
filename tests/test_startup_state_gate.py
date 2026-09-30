@@ -2944,21 +2944,12 @@ async def test_http_connect_and_power_on_leave_the_port_retry_running(
 async def test_a_missed_first_identity_read_still_connects_within_the_test_budget(
     tmp_path: Path,
 ) -> None:
-    """MOR-3078: one gate miss must not outrun the suite's test budget.
+    """Four silent reads finish before the fifth answer, on one owned link.
 
-    The Linux quick runner (``quick.yml`` runs the suite under ``-n auto
-    --maxprocesses 4``) failed the missing-port test after the port
-    appeared: the logs show the identity read answering nothing (the
-    NO_RESPONSE warning fired twice) and CONNECTED never latching inside
-    the test budget. The original failure is neither reproduced nor
-    explained here — the root cause is still unknown. What this test
-    pins is the clock regression the fixture can force deterministically:
-    the fake answers ``19 00`` for real, but only from the fifth query on
-    (the gate read and the first three re-reads miss), so the recovery
-    must ride the re-read ladder and still connect inside the same 5 s
-    budget the missing-port test uses. The answer window itself stays at
-    its production width; only the retry ladder runs on the fixture
-    clock.
+    Keep production answer windows and the fixture's compressed retry ladder.
+    Four 2 s answer windows plus 0.75 s of retry spacing cannot fit in 5 s;
+    derive this test's wait from those bounds. The separate missing-port
+    tests retain their 5 s first-answer budget.
     """
 
     from rigplane.core.radio_protocol import RadioIdentityStatus
@@ -2986,12 +2977,7 @@ async def test_a_missed_first_identity_read_still_connects_within_the_test_budge
 
     device = str(tmp_path / "cu.usbserial-1420")
     link = _AnswersFromQueryLink(
-        # The gate read and the first three re-reads are suppressed
-        # before the fourth re-read's answer must land inside the 5 s
-        # budget — only a compressed retry ladder meets it (production:
-        # 1+2+4 s of backoff alone exceeds the budget after the read
-        # windows). The suppression tests the clock, not any claim about
-        # why the original Linux run lost its replies.
+        # Gate + three re-reads are silent; the next re-read answers.
         answer_from_query=5,
         fail_connect=_port_missing_error(device),
     )
@@ -3014,7 +3000,166 @@ async def test_a_missed_first_identity_read_still_connects_within_the_test_budge
             timeout_s=5.0,
         )
 
+        missed_reads = link.answer_from_query - 1
+        answer_budget = missed_reads * radio._civ_get_timeout
+        retry_budget = sum(radio._SERIAL_IDENTITY_REREAD_BACKOFF_S[:missed_reads])
+        assert await _wait_until(
+            lambda: radio.connected, timeout_s=answer_budget + retry_budget + 2.0
+        )
+        assert link.identity_queries == link.answer_from_query
+
+
+@pytest.mark.asyncio
+async def test_duplicate_soft_reconnect_cannot_retire_the_inflight_identity_read() -> (
+    None
+):
+    """MOR-3064: one owner for the open link's in-flight identity read.
+
+    The Linux quick regression (MOR-3078 diagnosis): the recovery
+    soft_reconnect opened the reappeared port and its identity gate sent
+    ``19 00``; while that read awaited its answer, a second
+    soft_reconnect() — the shape of the CI-V recovery kick
+    (``runtime/_civ_rx.py: _wait_for_civ_transport_recovery`` calls
+    ``host.soft_reconnect()`` while the connect is held) — tore the same
+    open link down: it retired the gate's CI-V generation, so the
+    in-flight read died as silence, the epoch fence correctly discarded
+    the reply, and the retired gate's tail left the radio ``CONNECTING``
+    with no re-read owner — a state the watchdog never retries. The
+    duplicate must not reset or cancel the current generation/await,
+    exactly as ``connect()`` already honors through
+    ``_identity_phase_owns_open_link``.
+
+    The interleave is forced, not timed: the link answers nothing until
+    the duplicate has run, so the first owner is provably still awaiting
+    its read when the duplicate enters; and the ID payload is the fake's
+    real ``19 00`` answer (raw 0x94, UNVERIFIED under this profile's
+    empty expected-ids), asserted recorded at the end — so a failure can
+    only be the ownership break, not scheduler flakiness or a wrong-ID
+    fixture.
+    """
+
+    from rigplane.backends.icom7610 import Icom7610SerialRadio
+    from rigplane.core.radio_protocol import RadioIdentityStatus
+    from test_icom7610_serial_radio import _wait_until
+
+    link = _FakeSerialCivLink(answer_identity=False)
+    radio = Icom7610SerialRadio(
+        device="/dev/ttyUSB0",
+        civ_link=link,
+        # Bounded answer window for the gate read this test holds open.
+        timeout=0.25,
+        # Hermetic on any host: no OS enumeration, so no real port is probed.
+        _enumerate_serial_ports_fn=lambda: [],
+    )
+    # RAW/unverified identity on purpose: this regression pins ownership
+    # of the in-flight read, not profile comparison. The expected-ids
+    # stay empty here whatever the profile metadata ships (the same
+    # ``replace`` idiom ``_gate_radio`` uses), and the answer byte is
+    # pinned explicitly so the LAN batch's fake-link default cannot
+    # change what this link answers.
+    radio._profile = replace(radio._profile, expected_identity_ids=())
+    link.model_id = 0x94
+    # Two soft_reconnect tasks are the whole scenario; the compressed
+    # re-read ladder keeps the first owner's recovery inside the budget.
+    radio._SERIAL_IDENTITY_REREAD_BACKOFF_S = (0.05,)
+    radio._SERIAL_IDENTITY_REREAD_STEADY_S = 0.1
+
+    owner = asyncio.create_task(radio.soft_reconnect())
+    try:
+        # The first owner holds the open link: its gate sent ``19 00`` and
+        # is awaiting the answer the link will not give yet.
+        assert await _wait_until(
+            lambda: (
+                link.identity_queries >= 1
+                and radio._serial_session.ready
+                and radio.connection_identity is not None
+                and radio.connection_identity.status is RadioIdentityStatus.CHECKING
+            ),
+            timeout_s=5.0,
+        ), "the first soft_reconnect never reached its in-flight identity read"
+
+        epoch_when_owned = radio._civ_epoch
+        connects_before = link.connect_calls
+        disconnects_before = link.disconnect_calls
+
+        duplicate = asyncio.create_task(radio.soft_reconnect())
+        await asyncio.wait_for(duplicate, timeout=5.0)
+
+        # The duplicate retired nobody's generation and reopened no port:
+        # the identity phase that owns the open link keeps it.
+        assert radio._civ_epoch == epoch_when_owned
+        assert link.connect_calls == connects_before
+        assert link.disconnect_calls == disconnects_before
+
+        # Now the radio answers: the FIRST owner's own re-read completes
+        # the connect — one identity query was its gate's, one its
+        # re-read's, and the duplicate sent none.
+        link.answer_identity = True
+        await asyncio.wait_for(owner, timeout=5.0)
+        assert owner.exception() is None
         assert await _wait_until(lambda: radio.connected, timeout_s=5.0)
+        identity = radio.connection_identity
+        assert identity is not None
+        assert identity.status is RadioIdentityStatus.UNVERIFIED
+        assert link.identity_queries == 2
+    finally:
+        if not owner.done():
+            owner.cancel()
+            try:
+                await owner
+            except asyncio.CancelledError:
+                pass
+        await radio.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("initial_action", ["connect", "soft_reconnect"])
+async def test_retired_identity_exception_preserves_replacement_hold(
+    initial_action: str,
+) -> None:
+    from dataclasses import replace
+    from rigplane.backends.icom7610 import Icom7610SerialRadio
+    from rigplane.core.radio_protocol import RadioIdentityStatus
+    from rigplane.exceptions import ConnectionError as RigplaneConnectionError
+
+    radio = Icom7610SerialRadio(
+        device="/dev/ttyUSB0",
+        civ_link=_FakeSerialCivLink(),
+        _enumerate_serial_ports_fn=lambda: [],
+    )
+    radio._profile = replace(radio._profile, expected_identity_ids=("94",))
+    entered, release = asyncio.Event(), asyncio.Event()
+    reads = 0
+
+    async def read() -> bytes:
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            entered.set()
+            await release.wait()
+            raise RuntimeError("retired read fault")
+        return b"\x98"
+
+    radio._read_serial_identity_payload = read
+    retired = asyncio.create_task(getattr(radio, initial_action)())
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        await radio.disconnect()
+        await radio.connect()
+        replacement = radio.connection_identity
+        assert replacement.status is RadioIdentityStatus.IDENTITY_MISMATCH
+        replacement_epoch = radio._civ_epoch
+        release.set()
+        with pytest.raises(RigplaneConnectionError):
+            await retired
+        assert radio.connection_identity is replacement
+        assert radio._civ_epoch == replacement_epoch
+        assert radio.connected is False
+        assert radio._identity_phase_owns_open_link()
+    finally:
+        release.set()
+        await asyncio.gather(retired, return_exceptions=True)
+        await radio.disconnect()
 
 
 @pytest.mark.asyncio

@@ -450,16 +450,21 @@ class _IcomSerialRadioBase(CoreRadio):
         self._civ_recovering = False
         self._last_status_error = 0
         self._last_status_disconnected = False
+        attempt_epoch = self._civ_epoch
         try:
             await self._serial_session.connect()
         except Exception as exc:
-            self._conn_state = RadioConnectionState.DISCONNECTED
-            self._civ_stream_ready = False
-            self._civ_recovering = False
-            self.last_error = (
+            message = (
                 f"Failed to connect serial session on {self._serial_device}: {exc}"
             )
-            raise ConnectionError(self.last_error) from exc
+            if self._civ_epoch == attempt_epoch:
+                self._conn_state = RadioConnectionState.DISCONNECTED
+                self._civ_stream_ready = False
+                self._civ_recovering = False
+                self.last_error = message
+            raise ConnectionError(message) from exc
+        if self._civ_epoch != attempt_epoch:
+            return
         self.last_error = None
         self._has_connected_once = True
 
@@ -476,6 +481,7 @@ class _IcomSerialRadioBase(CoreRadio):
         self._ctrl_transport = self._serial_session.control_transport  # type: ignore[assignment]
         self._civ_transport = self._serial_session.civ_transport  # type: ignore[assignment]
         self._advance_civ_generation("serial-connect")
+        attempt_epoch = self._civ_epoch
         self._civ_last_waiter_gc_monotonic = time.monotonic()
         self._last_civ_data_received = time.monotonic()
         self._start_civ_rx_pump()
@@ -498,17 +504,20 @@ class _IcomSerialRadioBase(CoreRadio):
             # MOR-3078: the crashed gate owns no hold — the ``checking``
             # it recorded dies with it, or the web would publish a hold
             # nobody drives forever.
-            self._connection_identity = None
-            self._serial_identity_hold_reconnect_origin = False
-            self._conn_state = RadioConnectionState.DISCONNECTED
-            self._civ_stream_ready = False
-            self._civ_recovering = False
-            self.last_error = (
+            message = (
                 f"Failed to read the radio identity on {self._serial_device}: {exc}"
             )
-            raise ConnectionError(self.last_error) from exc
+            if self._civ_epoch == attempt_epoch:
+                self._connection_identity = None
+                self._serial_identity_hold_reconnect_origin = False
+                self._conn_state = RadioConnectionState.DISCONNECTED
+                self._civ_stream_ready = False
+                self._civ_recovering = False
+                self.last_error = message
+            raise ConnectionError(message) from exc
         finally:
-            self._serial_identity_gate_running = False
+            if self._civ_epoch == attempt_epoch:
+                self._serial_identity_gate_running = False
         if not identity_answered:
             return
         self._latch_serial_connected()
@@ -563,6 +572,21 @@ class _IcomSerialRadioBase(CoreRadio):
             # ready session without an answer (an abandoned hold, a
             # crashed gate) must fall through and re-gate.
             return
+        if self._identity_phase_owns_open_link():
+            # MOR-3064: single-flight ownership — the identity read (or
+            # its re-read) already owns this open, ready link; this is
+            # the same state ``connect()`` returns early from. A
+            # duplicate recovery here (the CI-V recovery kick in
+            # ``_civ_rx._wait_for_civ_transport_recovery``, the web
+            # ``radio_connect`` route) would retire the in-flight gate's
+            # CI-V generation and reopen the port: its pending read dies
+            # as silence, the epoch fence discards the reply, and the
+            # retired gate's tail leaves a hold nobody drives (the
+            # MOR-3078 Linux quick failure). The in-flight owner keeps
+            # the link; a real replacement — a link that stopped being
+            # ready, ``disconnect`` — does not own it and reopens as
+            # before.
+            return
 
         if self._managed_tx_composition is not None:
             await self._park_managed_tx()
@@ -576,6 +600,11 @@ class _IcomSerialRadioBase(CoreRadio):
         self._serial_identity_answer_epoch = None
         self._serial_identity_hold_reconnect_origin = True
         self._advance_civ_generation("serial-soft-reconnect")
+        # MOR-3064: the generation this attempt committed to. A gate or
+        # open that comes back retired (a ``disconnect`` or teardown ran
+        # underneath this attempt) owns no state to write — the tails
+        # below check against it.
+        attempt_epoch = self._civ_epoch
         await self._stop_civ_worker()
         await self._stop_civ_rx_pump()
         await self._serial_session.disconnect()
@@ -585,13 +614,20 @@ class _IcomSerialRadioBase(CoreRadio):
             await self._serial_session.connect()
         except Exception as exc:
             # Keep recovery state so watchdog can continue retries.
-            self._conn_state = RadioConnectionState.RECONNECTING
-            self._civ_stream_ready = False
-            self._civ_recovering = True
-            self.last_error = (
+            # MOR-3064: a retired attempt (its generation was replaced
+            # underneath it) writes no state — whoever replaced the link
+            # owns the connection state now.
+            message = (
                 f"Failed to reconnect serial session on {self._serial_device}: {exc}"
             )
-            raise ConnectionError(self.last_error) from exc
+            if self._civ_epoch == attempt_epoch:
+                self._conn_state = RadioConnectionState.RECONNECTING
+                self._civ_stream_ready = False
+                self._civ_recovering = True
+                self.last_error = message
+            raise ConnectionError(message) from exc
+        if self._civ_epoch != attempt_epoch:
+            return
         self.last_error = None
         self._has_connected_once = True
 
@@ -615,19 +651,30 @@ class _IcomSerialRadioBase(CoreRadio):
             # failure above — keep the state the watchdog retries from.
             # MOR-3078: same crash contract as connect() — the checking
             # the gate recorded dies with it.
-            self._connection_identity = None
-            self._serial_identity_hold_reconnect_origin = False
-            self._conn_state = RadioConnectionState.RECONNECTING
-            self._civ_stream_ready = False
-            self._civ_recovering = True
-            self.last_error = (
+            # MOR-3064: a retired gate writes no state — the attempt
+            # that still owns the current generation does.
+            message = (
                 f"Failed to read the radio identity on {self._serial_device}: {exc}"
             )
-            raise ConnectionError(self.last_error) from exc
+            if self._civ_epoch == attempt_epoch:
+                self._connection_identity = None
+                self._serial_identity_hold_reconnect_origin = False
+                self._conn_state = RadioConnectionState.RECONNECTING
+                self._civ_stream_ready = False
+                self._civ_recovering = True
+                self.last_error = message
+            raise ConnectionError(message) from exc
         finally:
-            self._serial_identity_gate_running = False
+            if self._civ_epoch == attempt_epoch:
+                self._serial_identity_gate_running = False
         if not identity_answered:
-            self._conn_state = RadioConnectionState.CONNECTING
+            if self._civ_epoch == attempt_epoch:
+                # MOR-3064: only the attempt that still owns the current
+                # generation may park the radio in the hold state — a
+                # retired gate must not overwrite whatever replaced it
+                # (``disconnect``'s DISCONNECTED, a successor's latched
+                # CONNECTED), which left a hold nobody drives.
+                self._conn_state = RadioConnectionState.CONNECTING
             return
         self._latch_serial_connected()
         # MOR-1440 review round 2 (B1 item 2): this is the RECONNECTING ->
