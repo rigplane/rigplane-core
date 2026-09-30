@@ -311,6 +311,14 @@ class _IcomSerialRadioBase(CoreRadio):
         # in which a task actively owns the open link for the identity
         # phase (the other is a live re-read task).
         self._serial_identity_gate_running = False
+        # MOR-3078: True while the identity hold in progress was entered
+        # by soft_reconnect (managed TX parked, reconnect tail owed). The
+        # background re-read consumes it when a late answer completes the
+        # connect: it must finish the soft_reconnect — the re-arm plus
+        # the ``_on_reconnect`` callback — rather than the plain connect
+        # tail. Cleared everywhere a new attempt, a teardown or an
+        # abandonment retires the hold it was recorded for.
+        self._serial_identity_hold_reconnect_origin = False
 
     # ------------------------------------------------------------------
     # Backend identity
@@ -436,6 +444,7 @@ class _IcomSerialRadioBase(CoreRadio):
         # ``19 00``.
         self._cancel_serial_identity_reread()
         self._serial_identity_answer_epoch = None
+        self._serial_identity_hold_reconnect_origin = False
         self._conn_state = RadioConnectionState.CONNECTING
         self._civ_stream_ready = False
         self._civ_recovering = False
@@ -486,6 +495,11 @@ class _IcomSerialRadioBase(CoreRadio):
             # MOR-3071 round 5: what the gate does not translate itself
             # (a write OSError on an opened-but-wrong port, CI-V runtime
             # errors) follows the session-open failure contract above.
+            # MOR-3078: the crashed gate owns no hold — the ``checking``
+            # it recorded dies with it, or the web would publish a hold
+            # nobody drives forever.
+            self._connection_identity = None
+            self._serial_identity_hold_reconnect_origin = False
             self._conn_state = RadioConnectionState.DISCONNECTED
             self._civ_stream_ready = False
             self._civ_recovering = False
@@ -513,6 +527,7 @@ class _IcomSerialRadioBase(CoreRadio):
         self._cancel_serial_identity_reread()
         self._connection_identity = None
         self._serial_identity_answer_epoch = None
+        self._serial_identity_hold_reconnect_origin = False
         await self._stop_civ_data_watchdog()
         await self._stop_serial_audio_driver()
         if (
@@ -559,6 +574,7 @@ class _IcomSerialRadioBase(CoreRadio):
         # could read on the new transport.
         self._cancel_serial_identity_reread()
         self._serial_identity_answer_epoch = None
+        self._serial_identity_hold_reconnect_origin = True
         self._advance_civ_generation("serial-soft-reconnect")
         await self._stop_civ_worker()
         await self._stop_civ_rx_pump()
@@ -597,6 +613,10 @@ class _IcomSerialRadioBase(CoreRadio):
         except Exception as exc:
             # MOR-3071 round 5: same contract as the reconnect-open
             # failure above — keep the state the watchdog retries from.
+            # MOR-3078: same crash contract as connect() — the checking
+            # the gate recorded dies with it.
+            self._connection_identity = None
+            self._serial_identity_hold_reconnect_origin = False
             self._conn_state = RadioConnectionState.RECONNECTING
             self._civ_stream_ready = False
             self._civ_recovering = True
@@ -711,15 +731,20 @@ class _IcomSerialRadioBase(CoreRadio):
         """Whether POWER ON may pass while the connect is held (MOR-3071).
 
         The narrowest allowance past ``_check_connected``: POWER ON only,
-        only while the identity is ``no_response`` and the link is open —
-        MOR-2841's promise that Power ON from the UI stays available for a
-        switched-off radio. Everything else stays refused.
+        only while the identity is ``no_response`` and the hold actually
+        owns a READY open link (MOR-3078: the same readiness the hold
+        predicate requires — a session whose ``connected`` lingers while
+        ``ready`` dropped owns nothing, and POWER ON must not go out on
+        it) — MOR-2841's promise that Power ON from the UI stays
+        available for a switched-off radio. Everything else stays
+        refused.
         """
         identity = self._connection_identity
         return (
             identity is not None
             and identity.status is RadioIdentityStatus.NO_RESPONSE
             and self._serial_session.connected
+            and self._identity_phase_owns_open_link()
         )
 
     async def set_powerstat(self, on: bool) -> None:
@@ -734,7 +759,17 @@ class _IcomSerialRadioBase(CoreRadio):
         """
         if on and self._power_on_allowed_in_no_response():
             civ = self._commands.power_on(to_addr=self._radio_addr)
-            await self._execute_civ_raw(civ, wait_response=False)
+            try:
+                await self._execute_civ_raw(civ, wait_response=False)
+            except OSError as exc:
+                # MOR-3078: a dead writer (the unplugged-cable shape,
+                # where ``connected``/``ready`` linger while writes fail)
+                # follows the gate's own contract — rigplane's
+                # ConnectionError with the OSError as its cause.
+                self.last_error = (
+                    f"POWER ON could not be sent on {self._serial_device}: {exc}"
+                )
+                raise ConnectionError(self.last_error) from exc
             return
         await super().set_powerstat(on)
 
@@ -883,6 +918,7 @@ class _IcomSerialRadioBase(CoreRadio):
         self._cancel_serial_identity_reread()
         self._connection_identity = None
         self._serial_identity_answer_epoch = None
+        self._serial_identity_hold_reconnect_origin = False
         self._conn_state = RadioConnectionState.RECONNECTING
         self._civ_stream_ready = False
         self._civ_recovering = True
@@ -936,8 +972,35 @@ class _IcomSerialRadioBase(CoreRadio):
                     answered_id=payload.hex().upper() if payload else None,
                 )
                 self.last_error = None
+                # MOR-3078: consume the origin once, before anything can
+                # observe it again — exactly one tail may run for this
+                # hold, whichever path completed it.
+                reconnect_origin = self._serial_identity_hold_reconnect_origin
+                self._serial_identity_hold_reconnect_origin = False
                 self._latch_serial_connected()
-                if (
+                if reconnect_origin:
+                    # MOR-3078: the hold was entered by soft_reconnect,
+                    # which parked managed TX and owes its success tail.
+                    # ``rearm_managed_tx`` never propagates failures, so
+                    # the latch cannot be undone by a re-arm problem; the
+                    # callback is isolated exactly as soft_reconnect's
+                    # own tail isolates it.
+                    if (
+                        self._managed_tx_composition is not None
+                        and self._serial_session.ready
+                        and self._civ_transport is not None
+                    ):
+                        await self.rearm_managed_tx()
+                    if self._on_reconnect is not None:
+                        try:
+                            self._on_reconnect()
+                        except Exception:
+                            logger.debug(
+                                "serial identity re-read: _on_reconnect "
+                                "callback failed",
+                                exc_info=True,
+                            )
+                elif (
                     self._managed_tx_composition is not None
                     and self._serial_session.ready
                     and self._civ_transport is not None

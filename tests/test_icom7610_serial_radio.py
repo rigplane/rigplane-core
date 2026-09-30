@@ -2884,16 +2884,12 @@ async def test_reread_command_error_never_latches_and_gates_again() -> None:
         assert radio.conn_state is not RadioConnectionState.CONNECTED
         await asyncio.sleep(0.02)
 
-    # The gate ran again: each recovery attempt reopens and resets the
-    # identity to checking before the read raises.
-    assert await _wait_until(
-        lambda: (
-            radio.connection_identity is not None
-            and radio.connection_identity.status is RadioIdentityStatus.CHECKING
-        ),
-        timeout_s=1.0,
-    )
-    assert link.connect_calls >= 3  # the initial open plus re-gating reopens
+    # The gate ran again: each recovery attempt reopens and re-gates.
+    # MOR-3078: a gate that crashes mid-read no longer leaves its
+    # "checking" behind (the stale-status fix) — the evidence that the
+    # gate keeps re-running is the reopen cadence itself, and CONNECTED
+    # never latches without an answer.
+    assert await _wait_until(lambda: link.connect_calls >= 3, timeout_s=3.0)
     await radio.disconnect()
 
 
@@ -3260,7 +3256,11 @@ async def test_power_on_in_no_response_requires_ready_owned_hold() -> None:
     await radio.set_powerstat(True)  # allowed: ready link owned by the hold
     assert any(frame[4] == 0x18 for frame in link.sent_frames)
 
-    link.healthy = False  # ready drops; connected lingers
+    # The fake keeps ready/healthy as independent attributes (the real
+    # link derives ready from them), so both flip explicitly: connected
+    # lingers while readiness is gone.
+    link.ready = False
+    link.healthy = False
     with pytest.raises(ConnectionError):
         await radio.set_powerstat(True)
     await radio.disconnect()

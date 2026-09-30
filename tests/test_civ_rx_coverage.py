@@ -6688,6 +6688,8 @@ async def test_power_readback_overrides_liveness_and_clears_retained_command(
         is False
     )
     assert radio._last_commanded_powerstat is None  # noqa: SLF001
+
+
 def test_transceiver_id_reply_never_becomes_store_evidence(
     radio: IcomRadio,
 ) -> None:

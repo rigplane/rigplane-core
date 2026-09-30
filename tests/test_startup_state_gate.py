@@ -3191,6 +3191,8 @@ async def test_audio_auto_start_skips_quietly_while_identity_holds(
                 for record in caplog.records
             )
             assert _audio_scope_error_records(caplog) == []
+
+
 def test_identity_hold_predicate_requires_a_disconnected_radio() -> None:
     """MOR-3078: one shared hold predicate; checking on a connected radio is no hold.
 
@@ -3212,9 +3214,7 @@ def test_identity_hold_predicate_requires_a_disconnected_radio() -> None:
 
     def _radio(status: RadioIdentityStatus, *, connected: bool) -> SimpleNamespace:
         return SimpleNamespace(
-            connection_identity=RadioIdentity(
-                status=status, expected_model="IC-7300"
-            ),
+            connection_identity=RadioIdentity(status=status, expected_model="IC-7300"),
             connected=connected,
         )
 

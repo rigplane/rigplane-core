@@ -21,7 +21,12 @@ from ..core.acquisition_scheduler import (
     DeclaredCommandDefect,
     resolve_available_when,
 )
-from ..core.radio_protocol import ObservationPollable, StatePollable, StateStoreCapable
+from ..core.radio_protocol import (
+    ObservationPollable,
+    StatePollable,
+    StateStoreCapable,
+    serial_identity_hold,
+)
 from ..core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -322,16 +327,14 @@ def _serial_port_unopened(server: WebServer) -> bool:
 def _serial_identity_pending(server: WebServer) -> bool:
     """Whether the serial identity gate holds the open link (MOR-3071).
 
-    The Icom serial backend's connect-time identity read is in flight
-    (``checking``) or has heard nothing (``no_response``); the radio is
-    neither connected nor ready while that holds.
+    MOR-3078: one shared predicate — ``core.radio_protocol:
+    serial_identity_hold``. The identity read is in flight
+    (``checking``) or has heard nothing (``no_response``) while the
+    radio is not connected; a ``checking`` status left on a connected
+    radio is not a hold.
     """
 
-    radio = server._radio
-    identity = getattr(radio, "connection_identity", None)
-    status = getattr(identity, "status", None)
-    value = getattr(status, "value", status)
-    return value in ("checking", "no_response")
+    return serial_identity_hold(server._radio) is not None
 
 
 def _serve_with_identity_pending(server: WebServer) -> None:

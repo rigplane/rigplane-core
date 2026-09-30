@@ -108,6 +108,8 @@ from rigplane.core.radio_protocol import (  # noqa: E402
     ManagedTxApi,
     PrivilegedTxApi,
     Radio,
+    RadioIdentityStatus,
+    serial_identity_hold,
 )
 from rigplane.core.tx_safety import TxOutcome, TxOwner, TxSource  # noqa: E402
 from rigplane.core.types import Mode, get_audio_capabilities  # noqa: E402
@@ -4042,9 +4044,7 @@ def _print_serial_identity_no_response(radio: Radio) -> None:
     the port, the profile model and the baud; the background re-read is the
     "Waiting for it to answer." part.
     """
-    identity = getattr(radio, "connection_identity", None)
-    status = getattr(identity, "status", None)
-    if getattr(status, "value", status) != "no_response":
+    if serial_identity_hold(radio) is not RadioIdentityStatus.NO_RESPONSE:
         return
     device = getattr(radio, "_serial_device", None) or "the configured port"
     model = getattr(radio, "model", None) or "this"
@@ -4060,15 +4060,14 @@ def _print_serial_identity_no_response(radio: Radio) -> None:
 def _serial_identity_holds(radio: Radio) -> bool:
     """Whether the serial identity gate holds the connect (MOR-3081).
 
-    The connect-time identity read is in flight (``checking``) or
-    unanswered (``no_response``, MOR-3071): the radio is not connected,
-    so a radio-RX start — the audio bridge's first demand — would be
-    refused.
+    MOR-3078: delegates to the one shared predicate
+    (``core.radio_protocol: serial_identity_hold``) — checking/
+    no_response on a radio that is NOT connected. The connect-time read
+    is in flight or unanswered, so a radio-RX start — the audio
+    bridge's first demand — would be refused.
     """
 
-    identity = getattr(radio, "connection_identity", None)
-    status = getattr(identity, "status", None)
-    return getattr(status, "value", status) in ("checking", "no_response")
+    return serial_identity_hold(radio) is not None
 
 
 async def _cmd_web(
@@ -4186,16 +4185,24 @@ async def _cmd_web(
     bridge_info: str | None = None
     if bridge_device == "auto" and _serial_identity_holds(radio):
         # MOR-3081: the identity gate holds the open link, so the bridge's
-        # radio-RX start would be refused with an ERROR traceback. Skip the
-        # auto-start quietly; the bridge can be started from the UI
-        # (POST /api/v1/bridge) once the radio answers. An explicit
+        # radio-RX start would be refused with an ERROR traceback. Skip
+        # the auto-start now; MOR-3078 arms ONE deferred attempt on the
+        # web application's lifetime that starts the bridge once the
+        # connect latches and the hold clears. An explicit
         # --bridge=<DEVICE> keeps its fail-hard behaviour below.
         logger.warning(
             "audio bridge auto-start deferred: the radio has not answered "
-            "its identity read — start the bridge from the UI once the "
-            "radio answers"
+            "its identity read — the bridge starts once the radio answers"
         )
         bridge_info = "deferred: radio not answering"
+        server.defer_audio_bridge_start(
+            device_name=None,
+            tx_device_name=getattr(args, "web_bridge_tx_device", None),
+            tx_enabled=not getattr(args, "web_bridge_rx_only", False),
+            label=getattr(args, "web_bridge_label", None),
+            max_retries=getattr(args, "web_bridge_max_retries", 5),
+            retry_base_delay=getattr(args, "web_bridge_retry_delay", 1.0),
+        )
         bridge_device = None
     if bridge_device is not None:
         is_auto = bridge_device == "auto"

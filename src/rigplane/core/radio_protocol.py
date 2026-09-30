@@ -1650,6 +1650,33 @@ class RadioIdentity:
     answered_id: str | None = None
 
 
+def serial_identity_hold(radio: object) -> RadioIdentityStatus | None:
+    """The active serial-identity hold status, or ``None`` (MOR-3078).
+
+    One shared predicate for every upper layer that asks whether the
+    connect-time identity read holds the radio: the CLI's bridge
+    deferral, the web startup gate and the no_response print. It returns
+    ``CHECKING``/``NO_RESPONSE`` only while a real :class:`RadioIdentity`
+    carries that status AND the radio reports itself not connected — a
+    stale ``checking`` left on a connected radio describes nothing and
+    must not act as a hold. Anything else the attribute may hold
+    (including the ``Mock`` a test double returns) is not a hold; the
+    decision is made by ``isinstance``, never by truthiness.
+    """
+
+    identity = getattr(radio, "connection_identity", None)
+    if not isinstance(identity, RadioIdentity):
+        return None
+    if identity.status not in (
+        RadioIdentityStatus.CHECKING,
+        RadioIdentityStatus.NO_RESPONSE,
+    ):
+        return None
+    if bool(getattr(radio, "connected", False)):
+        return None
+    return identity.status
+
+
 @runtime_checkable
 class RelativeVfoReadbackCapable(Protocol):
     """Radio can read Selected/Unselected VFOs without selecting or swapping."""

@@ -137,6 +137,7 @@ from ..radio_protocol import (
     ProviderOwnedStateCapable,
     RadioIdentity,
     StateStoreCapable,
+    serial_identity_hold,
 )
 
 if TYPE_CHECKING:
@@ -150,6 +151,11 @@ if TYPE_CHECKING:
 __all__ = ["WebConfig", "WebServer", "run_web_server"]
 
 logger = logging.getLogger(__name__)
+
+# MOR-3078: how often the deferred audio-bridge auto-start re-checks the
+# identity hold. A coarse poll — not a hot loop; the wait ends at the
+# radio's answer or the server's stop, whichever comes first.
+_BRIDGE_DEFER_POLL_S: float = 0.25
 
 # MOR-2880: minimum spacing between refusal WARNINGs, so a page
 # hammering the port cannot flood the log.
@@ -1004,6 +1010,10 @@ class WebServer:
         self._served_without_port: bool = False
         # Audio bridge (virtual device integration)
         self._audio_bridge: "AudioBridge | None" = None
+        # MOR-3078: bridge kwargs armed by ``defer_audio_bridge_start``
+        # while the identity gate held the connect; consumed once by
+        # ``start()`` so no task exists before the application does.
+        self._deferred_bridge_start: dict[str, Any] | None = None
         # AudioSession whose liveness events are forwarded to WS (MOR-581)
         self._watched_audio_session: AudioSession | None = None
         # Latest reconnect status forwarded from the radio (MOR-594)
@@ -3066,6 +3076,14 @@ class WebServer:
         self._attach_audio_session_listener()
         self._attach_reconnect_status_listener()
         await start_web_server(self)
+        deferred_bridge = self._deferred_bridge_start
+        if deferred_bridge is not None:
+            # MOR-3078: the CLI armed a deferred auto-start while the
+            # identity gate held the connect; the running application —
+            # not the CLI — now owns the one attempt. If startup never
+            # reaches this point, nothing was ever spawned.
+            self._deferred_bridge_start = None
+            self._spawn(self._run_deferred_audio_bridge_start(**deferred_bridge))
 
     # ------------------------------------------------------------------
     # Audio Bridge (virtual device integration)
@@ -3152,6 +3170,73 @@ class WebServer:
                 "bridge",
                 code="audioBridgeStopped",
             )
+
+    def defer_audio_bridge_start(
+        self,
+        device_name: str | None = None,
+        tx_device_name: str | None = None,
+        tx_enabled: bool = True,
+        label: str | None = None,
+        max_retries: int = 5,
+        retry_base_delay: float = 1.0,
+    ) -> None:
+        """Arm ONE deferred auto-start of the audio bridge (MOR-3078).
+
+        The CLI's default ``--bridge=auto`` defers while the serial
+        identity gate holds the connect (MOR-3081); this arms the
+        follow-up. The attempt is spawned by :meth:`start` — so a server
+        that never starts never spawns it — as a ``_spawn`` task that
+        ``stop`` cancels with every other background task. Re-arming
+        after the server has begun stopping is ignored.
+        """
+        if self._stopping:
+            return
+        self._deferred_bridge_start = {
+            "device_name": device_name,
+            "tx_device_name": tx_device_name,
+            "tx_enabled": tx_enabled,
+            "label": label,
+            "max_retries": max_retries,
+            "retry_base_delay": retry_base_delay,
+        }
+
+    async def _run_deferred_audio_bridge_start(
+        self,
+        *,
+        device_name: str | None,
+        tx_device_name: str | None,
+        tx_enabled: bool,
+        label: str | None,
+        max_retries: int,
+        retry_base_delay: float,
+    ) -> None:
+        """Wait out the identity hold, then start the bridge exactly once."""
+        while not self._stopping:
+            radio = self._radio
+            if (
+                radio is not None
+                and radio.connected
+                and serial_identity_hold(radio) is None
+            ):
+                break
+            await asyncio.sleep(_BRIDGE_DEFER_POLL_S)
+        if self._stopping:
+            return
+        try:
+            await self.start_audio_bridge(
+                device_name=device_name,
+                tx_device_name=tx_device_name,
+                tx_enabled=tx_enabled,
+                label=label,
+                max_retries=max_retries,
+                retry_base_delay=retry_base_delay,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Warning-only, like the eager auto-start's fallback: the web
+            # UI keeps serving without the bridge.
+            logger.warning("audio bridge deferred auto-start failed: %s", exc)
 
     @property
     def audio_bridge_stats(self) -> dict[str, Any] | None:
