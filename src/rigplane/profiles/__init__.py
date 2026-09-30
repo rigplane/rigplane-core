@@ -528,6 +528,14 @@ class RadioProfile:
     # means, from the profile's ``[tone_squelch_types]`` table (MOR-2131).
     # None when the profile declares no table. Appended for the same reason.
     tone_squelch_types: dict[int, ToneSquelchType] | None = None
+    # Protocol-native identity tokens this radio is expected to answer with
+    # (MOR-3064): opaque strings in the caller's backend-canonical spelling —
+    # e.g. CI-V uppercase payload hex after the 19 00 echo, or a Yaesu
+    # four-digit ID payload. NOT ``civ_addr``, ``hamlib_model_id``, or a
+    # firmware version. Empty (the default, and the explicit ``[]``) means
+    # unverified identity configuration; the loader validates shape only.
+    # Appended to preserve the positional constructor contract.
+    expected_identity_ids: tuple[str, ...] = ()
 
     @property
     def vfo_swap_code(self) -> int | None:

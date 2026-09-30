@@ -160,6 +160,37 @@ addition, `RadioProfile.supports_command` returns `False` for both states
 alike, and no shipped `rigs/*.toml` uses this spelling yet
 (`tests/test_rig_loader.py: TestNoShippedProfileUsesAbsentSpellingYet`).
 
+### Expected Identity (`[identity]`, MOR-3064)
+
+```toml
+[identity]
+expected_ids = ["94"]      # CI-V: uppercase payload hex after the 19 00 echo
+# expected_ids = ["0840"]  # Yaesu CAT: four-digit ID payload, no ID/semicolon
+```
+
+Optional top-level section parsed by `profiles/rig_loader.py:
+_parse_identity` into `RigConfig.expected_identity_ids` and carried by
+`RigConfig.to_profile` into `RadioProfile.expected_identity_ids` — an
+immutable tuple of opaque strings, spelling and case preserved exactly as
+the caller's backend canonically answers.
+
+These are protocol-native response tokens. They are **not** `civ_addr`
+(the CI-V bus address in `[radio]`), not `hamlib_model_id` (the Hamlib
+rig_model integer), and not firmware versions: `"94"` is the payload hex
+of the CI-V 19 00 identity echo, `"0840"` the four-digit ID payload a
+Yaesu radio returns — both happen to resemble numbers, and leading zeros
+must survive, which is one reason they stay strings.
+
+Validation is shape only: `expected_ids` must be an array of non-empty
+strings with no leading, trailing, or internal whitespace and no control
+characters, no duplicates, and no coercion from integers, booleans, or a
+bare string. An empty array is allowed and means explicitly unverified
+identity configuration. Absence of the section loads the same `()`
+tuple, so identity stays unverified and existing profiles keep loading
+unchanged; how future vendor identity gates act on these tokens is a
+later change. Callers supply their backend's canonical form; the profile
+type does not normalize it.
+
 ---
 
 ## Layer 1: Capabilities

@@ -1617,8 +1617,9 @@ class RadioIdentityStatus(Enum):
     expected identity yet, so there is nothing to compare against. The
     connect proceeds exactly as before this gate existed.
 
-    ``VERIFIED`` / ``IDENTITY_MISMATCH``: reserved for the profile-declared
-    expected-ID comparison (MOR-3064 parts 2-4, later PRs).
+    ``VERIFIED`` / ``IDENTITY_MISMATCH``: the native ID answer matches or
+    differs from the profile's expected IDs. A mismatch does not require
+    identifying the other model.
 
     ``NO_RESPONSE``: nothing answered the read. Not terminal — the read is
     retried on the open link and the connect completes when the right radio
@@ -1636,12 +1637,12 @@ class RadioIdentityStatus(Enum):
 class RadioIdentity:
     """Typed identity of the radio that answered on the link (MOR-3071).
 
-    ``answered_id`` is the raw reply payload after the ``19 00`` echo, as
-    uppercase hex without separators (for example ``"94"``); it is opaque
-    and must not be compared against the CI-V address (user-settable).
+    ``answered_id`` is the opaque native ID: CI-V payload after the
+    ``19 00`` echo as uppercase hex (for example ``"94"``), or Yaesu's
+    four-digit CAT ID (``"0840"``). It is not the user-settable address.
 
-    ``answered_model`` names the answering model when a profile matches
-    (MOR-3064 part 4); ``None`` until then.
+    ``answered_model`` names the requested model after an expected-ID
+    match; ``None`` when the answer's model is unknown.
     """
 
     status: RadioIdentityStatus
@@ -1651,12 +1652,12 @@ class RadioIdentity:
 
 
 def serial_identity_hold(radio: object) -> RadioIdentityStatus | None:
-    """The active serial-identity hold status, or ``None`` (MOR-3078).
+    """The active native-identity hold status, or ``None`` (MOR-3078).
 
     One shared predicate for every upper layer that asks whether the
     connect-time identity read holds the radio: the CLI's bridge
     deferral, the web startup gate and the no_response print. It returns
-    ``CHECKING``/``NO_RESPONSE`` only while a real :class:`RadioIdentity`
+    ``CHECKING``/``NO_RESPONSE``/``IDENTITY_MISMATCH`` while a real :class:`RadioIdentity`
     carries that status AND the radio reports itself not connected — a
     stale ``checking`` left on a connected radio describes nothing and
     must not act as a hold. Anything else the attribute may hold
@@ -1670,6 +1671,7 @@ def serial_identity_hold(radio: object) -> RadioIdentityStatus | None:
     if identity.status not in (
         RadioIdentityStatus.CHECKING,
         RadioIdentityStatus.NO_RESPONSE,
+        RadioIdentityStatus.IDENTITY_MISMATCH,
     ):
         return None
     if bool(getattr(radio, "connected", False)):

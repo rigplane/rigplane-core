@@ -676,6 +676,7 @@ class _IcomSerialRadioBase(CoreRadio):
         return identity is not None and identity.status in (
             RadioIdentityStatus.CHECKING,
             RadioIdentityStatus.NO_RESPONSE,
+            RadioIdentityStatus.IDENTITY_MISMATCH,
         )
 
     def _identity_phase_owns_open_link(self) -> bool:
@@ -813,14 +814,49 @@ class _IcomSerialRadioBase(CoreRadio):
             return None
         return resp.data
 
+    def _record_serial_identity_payload(self, payload: bytes | None) -> bool:
+        """Compare this link's native ID with the selected profile only."""
+        answered_id = payload.hex().upper() if payload else None
+        expected_ids = self._profile.expected_identity_ids
+        if payload is None or (expected_ids and not answered_id):
+            status = RadioIdentityStatus.NO_RESPONSE
+        elif not expected_ids:
+            status = RadioIdentityStatus.UNVERIFIED
+        elif answered_id in expected_ids:
+            status = RadioIdentityStatus.VERIFIED
+        else:
+            status = RadioIdentityStatus.IDENTITY_MISMATCH
+        self._connection_identity = RadioIdentity(
+            status=status,
+            expected_model=self.model,
+            answered_model=self.model
+            if status is RadioIdentityStatus.VERIFIED
+            else None,
+            answered_id=answered_id,
+        )
+        if status is RadioIdentityStatus.IDENTITY_MISMATCH:
+            self.last_error = (
+                f"The radio on {self._serial_device} does not match "
+                f"the selected {self.model} profile."
+            )
+        elif status is RadioIdentityStatus.NO_RESPONSE:
+            self.last_error = (
+                f"No answer from the radio on {self._serial_device} "
+                f"({self.model} profile, {self._serial_baudrate} baud): another "
+                "radio may be on this port, or it is switched off."
+            )
+        else:
+            self.last_error = None
+        return status in (RadioIdentityStatus.VERIFIED, RadioIdentityStatus.UNVERIFIED)
+
     async def _gate_serial_identity(self) -> bool:
         """Run the identity read gate; True when the connect may proceed.
 
         Resets the identity to ``checking``, sends the read once, and on a
-        well-formed answer records ``unverified`` with the raw
-        ``answered_id`` (no profile declares an expected ID yet, and the
-        CI-V address is deliberately not compared — it is user-settable).
-        On silence records ``no_response``, leaves the link open with a
+        well-formed answer compares the native ID with profile metadata;
+        profiles without expected IDs remain ``unverified``. The CI-V
+        address is not compared — it is user-settable.
+        On silence or mismatch leaves the link open with a
         plain ``last_error`` sentence, hands the link to the background
         re-read task, and returns False — CONNECTED must not latch.
         """
@@ -828,25 +864,17 @@ class _IcomSerialRadioBase(CoreRadio):
             status=RadioIdentityStatus.CHECKING,
             expected_model=self.model,
         )
+        probe_identity = self._connection_identity
+        epoch = self._civ_epoch
         payload = await self._read_serial_identity_payload()
-        if payload is not None:
-            self._connection_identity = RadioIdentity(
-                status=RadioIdentityStatus.UNVERIFIED,
-                expected_model=self.model,
-                answered_id=payload.hex().upper() if payload else None,
-            )
+        if epoch != self._civ_epoch:
+            if self._connection_identity is probe_identity:
+                self._connection_identity = None
+            return False
+        if self._record_serial_identity_payload(payload):
             return True
-        self._connection_identity = RadioIdentity(
-            status=RadioIdentityStatus.NO_RESPONSE,
-            expected_model=self.model,
-        )
-        self.last_error = (
-            f"No answer from the radio on {self._serial_device} "
-            f"({self.model} profile, {self._serial_baudrate} baud): another "
-            "radio may be on this port, or it is switched off."
-        )
         logger.warning(
-            "rigplane (%s): no answer to the identity read on %s "
+            "rigplane (%s): identity not accepted on %s "
             "(%d baud); holding the connect — the re-read task keeps "
             "asking on the open link",
             self.model,
@@ -963,14 +991,15 @@ class _IcomSerialRadioBase(CoreRadio):
                             "the serial link stopped being ready"
                         )
                     return
+                epoch = self._civ_epoch
                 payload = await self._read_serial_identity_payload()
-                if payload is None:
+                if (
+                    epoch != self._civ_epoch
+                    or not self._identity_phase_owns_open_link()
+                ):
+                    return
+                if not self._record_serial_identity_payload(payload):
                     continue
-                self._connection_identity = RadioIdentity(
-                    status=RadioIdentityStatus.UNVERIFIED,
-                    expected_model=self.model,
-                    answered_id=payload.hex().upper() if payload else None,
-                )
                 self.last_error = None
                 # MOR-3078: consume the origin once, before anything can
                 # observe it again — exactly one tail may run for this

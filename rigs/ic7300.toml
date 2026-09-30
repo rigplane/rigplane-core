@@ -8,6 +8,10 @@
 #         wfview IC-7300.rig
 #         Hardware testing
 
+[identity]
+# Native 19 00 answer observed on IC-7300; independent of the CI-V address.
+expected_ids = ["94"]
+
 [radio]
 id = "icom_ic7300"
 model = "IC-7300"

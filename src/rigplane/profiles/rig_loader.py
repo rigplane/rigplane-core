@@ -682,6 +682,10 @@ class RigConfig:
     tx_policy: TxPolicy = field(default_factory=TxPolicy)
     ctcss_tones_centihz: tuple[int, ...] | None = None
     tone_squelch_types: dict[int, ToneSquelchType] | None = None
+    # Protocol-native expected identity tokens (MOR-3064), from the optional
+    # top-level ``[identity].expected_ids``. Empty means no/unverified
+    # identity configuration.
+    expected_identity_ids: tuple[str, ...] = ()
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -901,6 +905,7 @@ class RigConfig:
             fixed_value_checks=dict(self.fixed_value_checks),
             state_acquisition=self.state_acquisition,
             tx_policy=self.tx_policy,
+            expected_identity_ids=self.expected_identity_ids,
         )
 
     def to_command_map(self) -> CommandMap:
@@ -2074,6 +2079,54 @@ def _parse_tx_policy(filename: str, raw: Any) -> TxPolicy:
     return TxPolicy(refused_during_tx=frozenset(refused), tx_state_map=tx_state_map)
 
 
+_IDENTITY_KEYS = frozenset({"expected_ids"})
+
+
+def _is_control_char(ch: str) -> bool:
+    """Unicode Cc: C0 controls U+0000–U+001F and C1 controls U+007F–U+009F."""
+    code = ord(ch)
+    return code <= 0x1F or 0x7F <= code <= 0x9F
+
+
+def _parse_identity(filename: str, raw: Any) -> tuple[str, ...]:
+    """Parse the optional top-level ``[identity]`` section (MOR-3064).
+
+    ``expected_ids`` entries are opaque protocol-native response tokens
+    (CI-V uppercase payload hex, Yaesu four-digit ID payload) — validated
+    for shape only: non-empty strings without whitespace or control
+    characters, no duplicates, no coercion from ints/bools, spelling and
+    case preserved exactly. ``None`` section or an empty array both load
+    as ``()`` (explicitly unverified identity configuration).
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict):
+        raise RigLoadError(f"{filename}: [identity] must be a table")
+    _reject_unknown_keys(filename, "[identity]", raw, _IDENTITY_KEYS)
+    ids_raw = raw.get("expected_ids", [])
+    if not isinstance(ids_raw, list):
+        raise RigLoadError(
+            f"{filename}: [identity].expected_ids must be an array of strings"
+        )
+    ids: list[str] = []
+    for index, entry in enumerate(ids_raw):
+        label = f"[identity].expected_ids[{index}]"
+        if isinstance(entry, bool) or not isinstance(entry, str):
+            raise RigLoadError(f"{filename}: {label} must be a string")
+        if not entry:
+            raise RigLoadError(f"{filename}: {label} must not be empty")
+        if any(ch.isspace() or _is_control_char(ch) for ch in entry):
+            raise RigLoadError(
+                f"{filename}: {label} must not contain whitespace or control characters"
+            )
+        ids.append(entry)
+    if len(ids) != len(set(ids)):
+        raise RigLoadError(
+            f"{filename}: [identity].expected_ids must not contain duplicates"
+        )
+    return tuple(ids)
+
+
 def load_rig(path: Path) -> RigConfig:
     """Load and validate a rig TOML file.
 
@@ -2876,6 +2929,7 @@ def load_rig(path: Path) -> RigConfig:
         data.get("state_acquisition"),
     )
     tx_policy = _parse_tx_policy(filename, data.get("tx_policy"))
+    expected_identity_ids = _parse_identity(filename, data.get("identity"))
 
     # The reset-to-radio-default capability is DERIVED from the parsed
     # ``[filters].radio_default_code`` field (MOR-2535), never hand-listed in
@@ -2982,6 +3036,7 @@ def load_rig(path: Path) -> RigConfig:
         fixed_value_checks=fixed_value_checks,
         state_acquisition=state_acquisition,
         tx_policy=tx_policy,
+        expected_identity_ids=expected_identity_ids,
     )
 
 

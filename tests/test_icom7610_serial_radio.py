@@ -6,7 +6,9 @@ import asyncio
 import json
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -2596,7 +2598,9 @@ class _GateSerialLink(_FakeSerialCivLink):
             )
 
 
-def _gate_radio(link: _GateSerialLink) -> Ic7300SerialRadio:
+def _gate_radio(
+    link: _GateSerialLink, *, expected_ids: tuple[str, ...] = ()
+) -> Ic7300SerialRadio:
     """IC-7300 on a fake link, with the identity cadence compressed."""
     radio = Ic7300SerialRadio(
         device="/dev/ttyUSB0",
@@ -2604,6 +2608,9 @@ def _gate_radio(link: _GateSerialLink) -> Ic7300SerialRadio:
         # Hermetic on any host (MOR-1453 seams): no OS port enumeration.
         _enumerate_serial_ports_fn=lambda: [],
     )
+    # The original raw-answer cases exercise a profile without expected IDs;
+    # model-comparison cases pass their expected token explicitly.
+    radio._profile = replace(radio._profile, expected_identity_ids=expected_ids)
     radio._civ_min_interval = 0.001
     radio._civ_get_timeout = 0.05
     # MOR-3071 re-read cadence compressed: 50/100/200/400 ms, then 500 ms
@@ -2653,6 +2660,38 @@ async def test_silent_port_holds_the_connect_and_rereads_without_reopen() -> Non
     # disconnect cancels the re-read and clears the identity.
     await radio.disconnect()
     assert radio.connection_identity is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "status", "connected"),
+    [
+        (b"\x94", RadioIdentityStatus.VERIFIED, True),
+        (b"\x98", RadioIdentityStatus.IDENTITY_MISMATCH, False),
+        (None, RadioIdentityStatus.NO_RESPONSE, False),
+    ],
+)
+async def test_serial_id_is_compared_only_with_the_selected_profile(
+    payload: bytes | None, status: RadioIdentityStatus, connected: bool
+) -> None:
+    link = _GateSerialLink(answer_identity=False)
+    radio = _gate_radio(link, expected_ids=("94",))
+    radio._read_serial_identity_payload = AsyncMock(return_value=payload)
+    try:
+        await radio.connect()
+        identity = radio.connection_identity
+        assert identity is not None and identity.status is status
+        assert radio.connected is connected
+        assert radio.radio_ready is connected
+        assert identity.answered_id == (payload.hex().upper() if payload else None)
+        assert identity.answered_model == ("IC-7300" if connected else None)
+        assert radio._read_serial_identity_payload.await_count == 1
+        if not connected:
+            with pytest.raises(ConnectionError):
+                await radio.set_freq(14_074_000)
+            assert link.sent_frames == []
+    finally:
+        await radio.disconnect()
 
 
 @pytest.mark.asyncio
