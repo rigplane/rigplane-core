@@ -183,6 +183,25 @@ class ScriptedCivLink:
             reply = civ_transmit_state_reply(self.answer, self.radio_addr)
             if reply is not None:
                 self._replies.put_nowait(reply)
+            return
+        # MOR-3071: connect gates CONNECTED on the profile's identity read
+        # (19 00); answer it from the frame's own addresses like a real
+        # radio (the model-ID payload byte is opaque).
+        if payload[4:-1] == b"\x19\x00":
+            self._replies.put_nowait(
+                bytes(
+                    (
+                        0xFE,
+                        0xFE,
+                        payload[3],
+                        payload[2],
+                        0x19,
+                        0x00,
+                        0x94,
+                        0xFD,
+                    )
+                )
+            )
 
     async def send_written(
         self, frame: bytes, *, is_current: Callable[[], bool] | None = None

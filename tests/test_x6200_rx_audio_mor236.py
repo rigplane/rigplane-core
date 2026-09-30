@@ -107,6 +107,7 @@ class _FakeSerialCivLink:
         self.connected = False
         self.ready = False
         self.healthy = False
+        self._responses: asyncio.Queue[bytes] = asyncio.Queue()
 
     async def connect(self) -> None:
         self.connected = True
@@ -119,7 +120,13 @@ class _FakeSerialCivLink:
         self.healthy = False
 
     async def send(self, frame: bytes) -> None:
-        _ = frame
+        payload = bytes(frame)
+        # MOR-3071: connect gates CONNECTED on the profile's identity read
+        # (19 00), so the minimal double must answer it like a real radio.
+        if payload[4:-1] == b"\x19\x00":
+            self._responses.put_nowait(
+                bytes((0xFE, 0xFE, payload[3], payload[2], 0x19, 0x00, 0x94, 0xFD))
+            )
 
     async def send_written(
         self, frame: bytes, *, is_current: Callable[[], bool] | None = None
@@ -129,8 +136,12 @@ class _FakeSerialCivLink:
         await self.send(frame)
 
     async def receive(self, timeout: float | None = None) -> bytes | None:
-        await asyncio.sleep(0.02 if timeout is None else min(timeout, 0.02))
-        return None
+        try:
+            return await asyncio.wait_for(
+                self._responses.get(), timeout=0.02 if timeout is None else timeout
+            )
+        except asyncio.TimeoutError:
+            return None
 
 
 def test_x6200_profile_resolves_mono_rx_codec() -> None:
