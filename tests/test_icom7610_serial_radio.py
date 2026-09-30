@@ -2742,7 +2742,8 @@ async def test_power_on_in_no_response_sends_one_frame_without_reopen() -> None:
     assert radio.connection_identity.status is RadioIdentityStatus.NO_RESPONSE
 
     def power_frames() -> list[bytes]:
-        return [frame for frame in link.sent_frames if frame[4:-1] == b"\x18"]
+        # POWER ON is cmd 0x18 with the 0x01 payload (build: ``18 01``).
+        return [frame for frame in link.sent_frames if frame[4] == 0x18]
 
     assert power_frames() == []
     await radio.set_powerstat(True)
@@ -2781,6 +2782,7 @@ def _identity_radio(
         connected=connected,
         control_connected=connected,
         radio_ready=ready,
+        capabilities=frozenset(),
         connection_identity=identity,
     )
 
@@ -2892,6 +2894,7 @@ async def test_startup_gate_releases_at_once_while_identity_is_no_response(
         connection_identity=RadioIdentity(
             status=RadioIdentityStatus.NO_RESPONSE, expected_model="IC-7300"
         ),
+        capabilities=frozenset(),
         _acquisition_scheduler=scheduler,
     )
     server = WebServer(  # type: ignore[arg-type]
