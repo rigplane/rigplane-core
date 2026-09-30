@@ -105,6 +105,13 @@ def fake_driver() -> FakeAudioDriver:
     return FakeAudioDriver()
 
 
+def _cat_reply(command: str) -> str:
+    return {
+        "ID;": "ID0840",
+        "IF;": "IF00000014228000+000000200003",
+    }[command]
+
+
 @pytest.fixture
 def radio(
     fake_driver: FakeAudioDriver, monkeypatch: pytest.MonkeyPatch
@@ -122,6 +129,10 @@ def radio(
     monkeypatch.setattr(
         "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.connected",
         True,
+    )
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.query",
+        AsyncMock(side_effect=_cat_reply),
     )
     r = YaesuCatRadio(
         device="/dev/fake0",
@@ -580,6 +591,10 @@ def _make_traced_radio(
     monkeypatch.setattr(
         "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.connected",
         True,
+    )
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.query",
+        AsyncMock(side_effect=_cat_reply),
     )
     driver = TracingAudioDriver()
     r = YaesuCatRadio(device="/dev/fake0", audio_driver=driver)  # type: ignore[arg-type]
