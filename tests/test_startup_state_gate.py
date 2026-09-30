@@ -3599,3 +3599,88 @@ async def test_explicit_bridge_device_fails_hard_while_identity_held(
             assert server is None  # the harness asserts the non-zero exit
     captured = capsys.readouterr()
     assert "audio bridge failed" in captured.err
+
+
+def test_manual_parallel_serial_identity_diagnostic(
+    request: pytest.FixtureRequest,
+) -> None:
+    """Temporary MOR-3078 diagnostic launcher; removed before final candidate.
+
+    Private diagnostic intent, not a feature or test acceptance. When it
+    is the session's single explicitly selected item, it re-runs the
+    narrow three-file serial matrix under four xdist workers on the
+    current interpreter/runtime, reproducing the Linux quick runner's
+    parallel load shape on demand — a child failure surfaces the
+    ``_TracedCivLink`` trace. Every other collection shape skips, so
+    normal and full runs never launch the subset.
+    """
+
+    items = request.session.items
+    if len(items) != 1 or items[0] is not request.node:
+        pytest.skip(
+            "manual parallel diagnostic: run only as the single explicitly "
+            "selected node (root trusted focused dispatch)"
+        )
+
+    import os
+    import signal
+    import subprocess
+    import sys
+
+    cwd = Path(__file__).resolve().parent.parent
+    argv = [
+        "uv",
+        "run",
+        "--no-sync",
+        "pytest",
+        "-n",
+        "4",
+        "--tb=short",
+        "tests/test_startup_state_gate.py",
+        "tests/test_icom7610_serial_radio.py",
+        "tests/test_civ_rx_coverage.py",
+        "-k",
+        "not test_manual_parallel_serial_identity_diagnostic",
+    ]
+    print(
+        f"diag: platform={sys.platform} python={sys.version.split()[0]} "
+        f"executable={sys.executable} cwd={cwd}"
+    )
+    proc = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        start_new_session=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    def _tail(out: str) -> str:
+        return out[-40000:]
+
+    try:
+        out, _ = proc.communicate(timeout=180)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            out, _ = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            out, _ = proc.communicate()
+        pytest.fail(
+            f"parallel diagnostic child timed out after 180 s "
+            f"(rc={proc.returncode}); owned process group TERM/KILLed. "
+            f"Tail:\n{_tail(out or '')}"
+        )
+    if proc.returncode != 0:
+        pytest.fail(
+            f"parallel diagnostic child failed rc={proc.returncode}. "
+            f"Tail:\n{_tail(out or '')}"
+        )
+    print("diag child summary:", " ".join((out or "").splitlines()[-1:]))
