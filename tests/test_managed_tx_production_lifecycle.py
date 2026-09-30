@@ -100,6 +100,17 @@ async def test_full_reconnect_retires_then_services_pending_off_debt(tmp_path) -
     radio._managed_tx_arm_lock = asyncio.Lock()
     radio._civ_transport = first_transport
     radio._session_lifecycle = SimpleNamespace(connect=AsyncMock())
+    radio._conn_state = RadioConnectionState.DISCONNECTED
+    # This fixture exercises TX composition; the LAN gate is tested separately.
+    radio._lan_identity_connect_lock = asyncio.Lock()
+    radio._ctrl_transport = None
+    radio._profile = SimpleNamespace(model="IC-7610")
+
+    async def identity_answer() -> bool:
+        radio._connection_identity = None
+        return True
+
+    radio._gate_lan_identity = AsyncMock(side_effect=identity_answer)
     radio._fetch_initial_state = AsyncMock()
     radio._reset_external_cat_session = lambda: None
     await radio.connect()

@@ -223,6 +223,9 @@ class MockIcomRadio:
         self._civ_seq: int = 1
 
         # Radio state (for CI-V responses)
+        # MOR-3064: test-data model-id answered to ``19 00`` (identity read).
+        # Not a production IC-7610 expected ID — suites override it per case.
+        self.model_id: bytes = b"\x98"
         self._frequency: int = 14_074_000
         self._mode: int = 0x01  # USB
         self._filter: int = 1
@@ -849,6 +852,10 @@ class MockIcomRadio:
                     data=_level_bcd_encode(self._alc),
                 )
             return self._civ_nak(to, frm)
+
+        # --- Transceiver ID (0x19 0x00) — the connect-time identity read ---
+        if cmd == 0x19 and payload == b"\x00":
+            return self._civ_frame(to, frm, 0x19, sub=0x00, data=self.model_id)
 
         # --- PTT / Transceiver status (0x1C) ---
         if cmd == _CMD_PTT:

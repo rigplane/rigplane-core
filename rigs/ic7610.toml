@@ -15,6 +15,10 @@ receiver_count = 2
 has_lan = true
 has_wifi = false
 
+[identity]
+# Native 19 00 model token used by wfview's transceiver-ID decoder/rig definition.
+expected_ids = ["98"]
+
 [audio]
 # Direct IC-7610 LAN is PCM-first. Opus is only allowed as a browser
 # consumer transport after the server receives radio-native PCM.

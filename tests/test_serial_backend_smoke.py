@@ -54,7 +54,7 @@ class _FakeSerialCivLink:
         # (19 00), so the minimal double must answer it like a real radio.
         if payload[4:-1] == b"\x19\x00":
             self._responses.put_nowait(
-                bytes((0xFE, 0xFE, payload[3], payload[2], 0x19, 0x00, 0x94, 0xFD))
+                bytes((0xFE, 0xFE, payload[3], payload[2], 0x19, 0x00, 0x98, 0xFD))
             )
         return None
 

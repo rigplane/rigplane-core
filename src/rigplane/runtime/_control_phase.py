@@ -115,6 +115,10 @@ class ControlPhaseRuntime:
 
     def __init__(self, host: ControlPhaseHost) -> None:
         self._host = host
+        # MOR-3064: success tail (audio/runtime snapshot) deferred by a held
+        # identity revalidation; discharged exactly once by
+        # :meth:`_run_deferred_retail` when the late answer lands.
+        self._deferred_retail: "tuple[object, object] | None" = None
 
     def _resolve_local_bind_host(self) -> str:
         """Resolve the routed local interface IP used to reach the radio."""
@@ -512,6 +516,8 @@ class ControlPhaseRuntime:
     async def disconnect(self) -> None:
         """Cleanly disconnect from the radio."""
         h = self._host
+        # MOR-3064: retire any deferred reconnect tail with the session.
+        self._deferred_retail = None
         if h._conn_state != RadioConnectionState.CONNECTED:
             return
         h._conn_state = RadioConnectionState.DISCONNECTING
@@ -645,8 +651,11 @@ class ControlPhaseRuntime:
         ``conn_state != CONNECTED`` — a partially-claimed session (post-auth,
         pre-CONNECTED) is still released, closing graceful-close Holes 1/5/8.
         Idempotent: safe to call when nothing is claimed.
+
+        MOR-3064: retires any deferred reconnect tail along with the session.
         """
         h = self._host
+        self._deferred_retail = None
         # Best-effort teardown of any data/audio transports first (mirrors
         # disconnect ordering), then the always-sent token-remove.
         self._stop_watchdog()
@@ -866,8 +875,46 @@ class ControlPhaseRuntime:
     ) -> None:
         """Tail shared by the CI-V rebuild and the full-connect fallback.
 
-        Fail-soft throughout: a CI-V reconnect that otherwise succeeded is never
-        failed by the managed-TX re-arm, the web callback, or the audio re-arm.
+        MOR-3064: an identity hook on the host revalidates before the parts
+        run; an unknown hook error propagates to the recovery owner; a hold
+        defers (never skips) and the late answer discharges once.
+        """
+        h = self._host
+        # A new recovery attempt always retires a prior held snapshot first.
+        self._deferred_retail = None
+        revalidate = getattr(h, "revalidate_connection_identity", None)
+        answered = True
+        if revalidate is not None:
+            # Unowned hook errors must reach the recovery owner — never
+            # paved into verified-by-accident (fail-closed, then the
+            # lifecycle retry/exhaustion ladder handles it).
+            answered = bool(await revalidate())
+        if not answered:
+            self._deferred_retail = (audio_runtime, audio_snapshot)
+            return
+        await self._after_reconnect_parts(audio_runtime, audio_snapshot)
+
+    async def _run_deferred_retail(self) -> None:
+        """Discharge the success tail deferred by a held identity, once.
+
+        Called by the radio's identity-completion path when a held
+        revalidation answers late on the same live control session. The
+        stored snapshot is consumed first so a duplicate call is a no-op.
+        """
+        tail = self._deferred_retail
+        if tail is None:
+            return
+        self._deferred_retail = None
+        await self._after_reconnect_parts(*tail)
+
+    async def _after_reconnect_parts(
+        self, audio_runtime: object, audio_snapshot: object
+    ) -> None:
+        """The reconnect success tail itself (rearm, callback, audio).
+
+        Runs immediately from :meth:`_after_reconnect` when no identity
+        revalidation is pending, or once from :meth:`_run_deferred_retail`
+        when the held answer arrives. Everything in here is fail-soft.
         """
         h = self._host
         # Managed TX is re-armed here, ahead of every reconnect consumer, so

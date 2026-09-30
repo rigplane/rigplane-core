@@ -177,6 +177,7 @@ class _FakeSerialCivLink:
         lifecycle_events: list[tuple[str, object | None]] | None = None,
         ptt_off_answer: int | None = 0xFB,
         answer_identity: bool = True,
+        model_id: int = 0x98,
     ) -> None:
         self._fail_connect = fail_connect
         self._fail_connect_calls = set(fail_connect_calls or set())
@@ -197,6 +198,7 @@ class _FakeSerialCivLink:
         # it like a real radio would; tests that need an identity-silent
         # link (the no_response gate suite) pass answer_identity=False.
         self.answer_identity = answer_identity
+        self.model_id = model_id
         self.identity_queries = 0
 
     def set_device(self, device: str) -> None:
@@ -234,7 +236,7 @@ class _FakeSerialCivLink:
             self._responses.put_nowait(response)
         # MOR-3071: the connect-time identity read. The reply is a real
         # 19 00 answer from the frame's own radio address, carrying the
-        # model-ID byte (0x94 — the payload is opaque and never compared
+        # IC-7610 model-ID byte (0x98 — opaque, never compared
         # against the CI-V address).
         if payload[4:-1] == b"\x19\x00":
             self.identity_queries += 1
@@ -248,7 +250,7 @@ class _FakeSerialCivLink:
                             payload[2],
                             0x19,
                             0x00,
-                            0x94,
+                            self.model_id,
                             0xFD,
                         )
                     )
@@ -2130,7 +2132,7 @@ async def test_serial_scope_enable_disable_full_lifecycle_commands() -> None:
         f"Expected at least 5 CI-V frames (identity read + 4 scope), got {len(signatures)}"
     )
     # MOR-3071: connect sends the identity read first (its answer carries
-    # the 0x94 payload, not the request).
+    # the 0x98 payload, not the request).
     assert signatures[0] == (0x19, 0x00, b"")
     assert signatures[1] == (0x27, 0x10, b"\x01")
     assert signatures[2] == (0x27, 0x11, b"\x01")

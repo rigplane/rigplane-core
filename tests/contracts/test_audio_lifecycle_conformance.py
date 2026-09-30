@@ -215,7 +215,9 @@ async def _make_harness(case: str, monkeypatch: pytest.MonkeyPatch) -> _Harness:
     harness = _usb_harness(
         lambda driver: cls(
             device="/dev/ttyUSB-fake",
-            civ_link=_FakeSerialCivLink(),
+            civ_link=_FakeSerialCivLink(
+                model_id=0x94 if case == "ic7300-serial" else 0x98
+            ),
             audio_driver=driver,
         )
     )
