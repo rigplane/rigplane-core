@@ -2527,6 +2527,16 @@ def _fast_retry_serial_radio(device: str, link: object) -> _IcomSerialRadioBase:
     radio._SERIAL_WATCHDOG_INTERVAL_S = 0.005
     radio._SERIAL_WATCHDOG_RETRY_S = 0.005
     radio._SERIAL_WATCHDOG_RETRY_MAX_S = 0.01
+    # MOR-3078: the identity re-read ladder runs on the same compressed
+    # clock (the MOR-3071 ``_gate_radio`` fixture compresses both). This
+    # fixture predates the identity gate: left at the production
+    # 1/2/4/8/15 s ladder, one gate miss under CI load (the Linux quick
+    # runner executes the suite under ``-n auto --maxprocesses 4``, and
+    # a racing poller fast-reconnect can invalidate a gate read
+    # outright) outran the suite's bounded 5 s budgets. The answer
+    # window (``_civ_get_timeout``) stays at its production width.
+    radio._SERIAL_IDENTITY_REREAD_BACKOFF_S = (0.05, 0.1, 0.2, 0.4)
+    radio._SERIAL_IDENTITY_REREAD_STEADY_S = 0.5
     # The fake link answers no poll: once the port opens, the watchdog would
     # declare link-down on that silence, parking transmit and reopening the
     # port under the assertions at a moment that depends on runner load.
@@ -2782,6 +2792,81 @@ async def test_http_connect_and_power_on_leave_the_port_retry_running(
         status, body = _response_json(writer)
         assert status == 409
         assert body["error"] == "backend_recovering"
+
+
+@pytest.mark.asyncio
+async def test_a_missed_first_identity_read_still_connects_within_the_test_budget(
+    tmp_path: Path,
+) -> None:
+    """MOR-3078: one gate miss must not outrun the suite's test budget.
+
+    The Linux quick runner (``quick.yml`` runs the suite under ``-n auto
+    --maxprocesses 4``) failed the missing-port test exactly this way:
+    the port appears, the gate's first ``19 00`` read misses under load,
+    and the connect then waits on the identity re-read ladder. The
+    fixture compresses the watchdog retry cadence to milliseconds but
+    left the re-read ladder at the production 1/2/4/8/15 s — it predates
+    the MOR-3071 gate, whose own fixture (``_gate_radio``) compresses
+    both. Here the miss is forced deterministically — the fake answers
+    for real, only never the first two reads — so the recovery must ride
+    the re-read ladder and still connect inside the same 5 s budget the
+    missing-port test uses. The answer window itself stays at its
+    production width; only the retry ladder runs on the fixture clock.
+    """
+
+    from rigplane.core.radio_protocol import RadioIdentityStatus
+    from test_icom7610_serial_radio import _FakeSerialCivLink, _wait_until
+
+    class _AnswersFromQueryLink(_FakeSerialCivLink):
+        """Answers ``19 00`` for real, but only from the Nth query on."""
+
+        def __init__(
+            self,
+            *,
+            answer_from_query: int,
+            fail_connect: BaseException | None,
+        ) -> None:
+            super().__init__(fail_connect=fail_connect)
+            self.answer_from_query = answer_from_query
+
+        @property
+        def answer_identity(self) -> bool:
+            return self.identity_queries >= self.answer_from_query
+
+        @answer_identity.setter
+        def answer_identity(self, value: bool) -> None:
+            _ = value  # the base __init__ writes the static flag; ignored
+
+    device = str(tmp_path / "cu.usbserial-1420")
+    link = _AnswersFromQueryLink(
+        # The gate read and the first re-reads miss (the measured shape:
+        # a racing poller fast-reconnect can invalidate a gate read
+        # outright, and the recovery then rides the re-read ladder). The
+        # fourth re-read's answer must still land inside the 5 s budget —
+        # only a compressed retry ladder meets it (production: 1+2+4 s
+        # of backoff alone exceeds the budget after the read windows).
+        answer_from_query=5,
+        fail_connect=_port_missing_error(device),
+    )
+    radio = _fast_retry_serial_radio(device, link)
+
+    async with _served_through_cli(radio) as server:
+        assert server._served_without_port is True
+        assert await _wait_until(lambda: link.connect_calls >= 2, timeout_s=5.0)
+        link._fail_connect = None  # the port appears
+
+        # The gate misses and the re-read owns the open link — the exact
+        # state the Linux quick run was found in.
+        assert await _wait_until(
+            lambda: (
+                radio.connection_identity is not None
+                and radio.connection_identity.status is RadioIdentityStatus.NO_RESPONSE
+                and radio._serial_identity_reread_task is not None
+            ),
+            timeout_s=5.0,
+        )
+
+        assert await _wait_until(lambda: radio.connected, timeout_s=5.0)
 
 
 @pytest.mark.asyncio
