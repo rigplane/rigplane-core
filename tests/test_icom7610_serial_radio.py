@@ -3041,6 +3041,121 @@ async def test_reread_arm_failure_keeps_connected_identity_and_logs(
 
 
 # ---------------------------------------------------------------------------
+# MOR-3071 round 5: the initial gate must not escape or wedge. A write
+# error on an OPENED port (the wrong-port bench shape) becomes rigplane's
+# ConnectionError with the OSError as its cause, never leaves CONNECTING,
+# and the CLI session still enters so the web serves and the watchdog
+# heals the link once the fake stops failing.
+# ---------------------------------------------------------------------------
+
+
+class _BrokenWriteLink(_GateSerialLink):
+    """The port opens, but every write fails — until the test relents.
+
+    Skips the ``fail_sends`` reset in ``connect`` so the failure survives
+    every reopen.
+    """
+
+    async def connect(self) -> None:
+        await _FakeSerialCivLink.connect(self)
+
+
+@pytest.mark.asyncio
+async def test_gate_write_error_connect_recovers_serves_and_heals(tmp_path) -> None:
+    """Round 5 (a): the gate's OSError converts, the CLI session enters,
+    the web serves, and the watchdog heals once the fake stops failing."""
+    from rigplane.cli import _ManagedTxRadioSession
+
+    link = _BrokenWriteLink()
+    link.fail_sends = True
+    radio = _gate_radio(link)
+    composition = ManagedTxComposition(radio, config_path=tmp_path / "managed-tx.json")
+    install_managed_tx_composition(radio, composition)
+
+    with pytest.raises(ConnectionError) as exc_info:
+        await radio.connect()
+    assert isinstance(exc_info.value.__cause__, OSError)
+    assert radio.conn_state is RadioConnectionState.DISCONNECTED
+    assert radio._serial_identity_reread_task is None
+
+    entered = await _ManagedTxRadioSession(radio, composition).__aenter__()
+    assert entered is radio
+    assert radio.conn_state is RadioConnectionState.RECONNECTING
+    assert radio._civ_data_watchdog_task is not None
+
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))  # type: ignore[arg-type]
+    writer = _Writer()
+    await server._handle_http(writer, "GET", "/api/v1/info", headers={})  # noqa: SLF001
+    body = json.loads(writer.buffer.decode("ascii", "replace").split("\r\n\r\n", 1)[1])
+    connection = body["connection"]
+    assert connection["rigConnected"] is False
+    assert connection["identity"]["status"] == "checking"
+
+    link.fail_sends = False
+    assert await _wait_until(lambda: radio.connected, timeout_s=3.0)
+    identity = radio.connection_identity
+    assert identity is not None
+    assert identity.status is RadioIdentityStatus.UNVERIFIED
+    await radio.disconnect()
+    await composition.shutdown(asyncio.Event())
+
+
+@pytest.mark.asyncio
+async def test_gate_write_error_in_soft_reconnect_keeps_recovering() -> None:
+    """Round 5 (b): soft_reconnect() converts the same error and keeps
+    RECONNECTING — the state the watchdog retries from."""
+    link = _BrokenWriteLink()
+    radio = _gate_radio(link)
+    await radio.connect()
+    assert radio.connected is True
+    await radio._stop_civ_data_watchdog()
+
+    link.fail_sends = True
+    link.ready = False
+    link.healthy = False
+    with pytest.raises(ConnectionError) as exc_info:
+        await radio.soft_reconnect()
+    assert isinstance(exc_info.value.__cause__, OSError)
+    assert radio.conn_state is RadioConnectionState.RECONNECTING
+
+    radio.start_reconnect_recovery()
+    link.fail_sends = False
+    assert await _wait_until(lambda: radio.connected, timeout_s=3.0)
+    identity = radio.connection_identity
+    assert identity is not None
+    assert identity.status is RadioIdentityStatus.UNVERIFIED
+    await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_connect_guard_agrees_with_watchdog_guard() -> None:
+    """Round 5, finding 2: connect() and the watchdog share ONE hold
+    predicate — a hold on a connected-but-not-ready link owns nothing,
+    so connect() re-gates instead of returning into it."""
+    link = _GateSerialLink(answer_identity=False)
+    radio = _gate_radio(link)
+    await radio.connect()  # held on silence; the re-read owns the open link
+    radio._SERIAL_IDENTITY_REREAD_BACKOFF_S = (10.0,)
+    radio._SERIAL_IDENTITY_REREAD_STEADY_S = 10.0
+    assert radio._serial_identity_reread_task is not None
+
+    # The replug shape: still connected, not ready, answering again.
+    link.policy_answer = True
+    link.ready = False
+    link.healthy = False
+
+    await radio.connect()
+
+    assert radio.conn_state is RadioConnectionState.CONNECTED
+    identity = radio.connection_identity
+    assert identity is not None
+    assert identity.status is RadioIdentityStatus.UNVERIFIED
+    assert link.connect_calls == 1  # the open link was reused, not reopened
+    assert radio._serial_identity_reread_task is None
+    await radio.disconnect()
+
+
+# ---------------------------------------------------------------------------
 # Ticket tests 6-7: /api/v1/info connection.identity
 # ---------------------------------------------------------------------------
 
