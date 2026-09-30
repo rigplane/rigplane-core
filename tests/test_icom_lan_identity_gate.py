@@ -504,6 +504,10 @@ async def test_epoch_ownership_fences_stale_answers() -> None:
 
     radio._civ_runtime.advance_generation("test-fence")
     assert radio._lan_identity_unanswered_for_current_epoch() is True
+    sent_before = len(transport.sent_packets)
+    with pytest.raises(ConnectionError):
+        await radio.set_freq(14_200_000)
+    assert len(transport.sent_packets) == sent_before
     await radio.disconnect()
 
 

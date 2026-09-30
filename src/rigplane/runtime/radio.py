@@ -1934,7 +1934,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
     def _check_connected(self) -> None:
         """Delegate to CI-V runtime; MOR-3064 hold statuses fail closed here."""
-        if self._lan_identity_hold_status_active():
+        if self._lan_identity_unanswered_for_current_epoch():
             raise ConnectionError(
                 "Radio identity hold active; commands are refused until the "
                 "radio answers its 19 00 model identification"
