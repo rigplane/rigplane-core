@@ -406,10 +406,10 @@ class _IcomSerialRadioBase(CoreRadio):
     async def connect(self) -> None:
         if self.connected:
             return
-        if self._identity_phase_owns_open_link():
-            # MOR-3071: the identity read (or its background re-read) already
-            # owns the open link. The web power-on path calls connect()
-            # here; reopening now would toggle DTR/RTS for nothing.
+        if self._identity_hold_status_active() and self._serial_session.connected:
+            # MOR-3071: the identity read (or its re-read) already owns
+            # the open link; the web power-on path calls connect() here,
+            # and a reopen would toggle DTR/RTS for nothing.
             return
 
         self._conn_state = RadioConnectionState.CONNECTING
@@ -582,21 +582,22 @@ class _IcomSerialRadioBase(CoreRadio):
     # Connect-time identity gate (MOR-3071)
     # ------------------------------------------------------------------
 
+    def _identity_hold_status_active(self) -> bool:
+        identity = self._connection_identity
+        return identity is not None and identity.status in (
+            RadioIdentityStatus.CHECKING, RadioIdentityStatus.NO_RESPONSE
+        )
+
     def _identity_phase_owns_open_link(self) -> bool:
         """Whether the identity read (or its re-read) owns the open link.
 
-        True while the identity status is ``checking`` or ``no_response``
-        and the serial session is still connected. ``connect`` no-ops,
-        ``_serial_civ_watchdog_loop`` stands down, and nothing may reopen
-        the port while this holds.
+        True while the identity status is ``checking``/``no_response`` and
+        the session is still *ready* — ``SerialCivLink`` keeps
+        ``connected`` after a recoverable error while ``healthy`` drops,
+        so ``connected`` alone cannot tell a live link from a dead one
+        (MOR-3071 round 2).
         """
-        identity = self._connection_identity
-        return (
-            identity is not None
-            and identity.status
-            in (RadioIdentityStatus.CHECKING, RadioIdentityStatus.NO_RESPONSE)
-            and self._serial_session.connected
-        )
+        return self._identity_hold_status_active() and self._serial_session.ready
 
     def _power_on_allowed_in_no_response(self) -> bool:
         """Whether POWER ON may pass while the connect is held (MOR-3071).
@@ -748,13 +749,41 @@ class _IcomSerialRadioBase(CoreRadio):
             task.cancel()
         self._serial_identity_reread_task = None
 
+    def _abandon_serial_identity_hold(
+        self, reason: str, *, exc: BaseException | None = None
+    ) -> None:
+        """Leave an identity hold whose link died (MOR-3071 round 2).
+
+        ``SerialCivLink`` keeps ``connected`` set on a dead link, so the
+        hold would never trigger MOR-1440 detection (CONNECTED-only) or
+        ``soft_reconnect``; drop it into the watchdog's recovery state.
+        """
+        self._cancel_serial_identity_reread()
+        self._connection_identity = None
+        self._conn_state = RadioConnectionState.RECONNECTING
+        self._civ_stream_ready = False
+        self._civ_recovering = True
+        self.last_error = (
+            f"The serial link on {self._serial_device} failed while waiting "
+            f"for the {self.model} identity answer; reconnecting."
+        )
+        logger.warning(
+            "rigplane (%s): abandoning the identity hold on %s: %s",
+            self.model,
+            self._serial_device,
+            reason,
+            exc_info=exc,
+        )
+
     async def _serial_identity_reread_loop(self) -> None:
         """Re-read ``19 00`` on the open link until the radio answers.
 
         Backoff 1, 2, 4 and 8 s, then every 15 s. Never reopens the port —
         every serial open toggles DTR/RTS (``core/serial_open.py``) — and
         leaves the loop to ``_latch_serial_connected`` as soon as the
-        identity phase stops owning the link (answer, disconnect).
+        identity phase stops owning the link (answer, disconnect, or a
+        link that died mid-hold — MOR-3071 round 2 hands the link to the
+        watchdog's recovery instead).
         """
         attempts = 0
         try:
@@ -768,6 +797,12 @@ class _IcomSerialRadioBase(CoreRadio):
                 attempts += 1
                 await asyncio.sleep(delay)
                 if not self._identity_phase_owns_open_link():
+                    if self._identity_hold_status_active():
+                        # Still in the hold, but the link died under it:
+                        # hand it to the watchdog's recovery (round 2).
+                        self._abandon_serial_identity_hold(
+                            "the serial link stopped being ready"
+                        )
                     return
                 payload = await self._read_serial_identity_payload()
                 if payload is None:
@@ -788,6 +823,14 @@ class _IcomSerialRadioBase(CoreRadio):
                 return
         except asyncio.CancelledError:
             pass
+        except Exception as exc:
+            # An OSError from a dead writer (or any other non-cancel
+            # error, ``_arm_managed_tx`` above included) must not kill
+            # the re-read with an unretrieved task exception — hand the
+            # link to the watchdog's recovery, which reopens and re-gates.
+            self._abandon_serial_identity_hold(
+                f"the identity re-read failed: {exc}", exc=exc
+            )
 
     # ------------------------------------------------------------------
     # Renumbered-node rediscovery (MOR-1453)

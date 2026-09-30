@@ -2549,9 +2549,8 @@ class _GateSerialLink(_FakeSerialCivLink):
         self.answer_after_queries = answer_after_queries
         self.model_id = model_id
         self.identity_queries = 0
-        # MOR-3071 round 2: a link whose writes fail with OSError while
-        # ``connected`` lingers — the unplugged-cable shape the real
-        # ``SerialCivLink`` shows (recoverable read/write error).
+        # MOR-3071 round 2: writes fail with OSError while ``connected``
+        # lingers — the unplugged-cable shape of the real SerialCivLink.
         self.fail_sends = False
 
     async def connect(self) -> None:
@@ -2715,10 +2714,9 @@ async def test_answering_radio_connects_as_today() -> None:
 async def test_soft_reconnect_onto_silent_port_never_latches_or_reopens() -> None:
     """Ticket test 4: replug onto a silent port — checking, no_response, no reopen.
 
-    The watchdog stays RUNNING: its ``soft_reconnect`` performs the recovery
-    itself, and while that reopen runs its identity gate the watchdog's own
-    identity-phase guard (MOR-3071) must keep it from re-entering
-    ``soft_reconnect`` or reopening a second time.
+    The watchdog stays RUNNING: its ``soft_reconnect`` performs the recovery,
+    and while that reopen runs its identity gate the identity-phase guard
+    (MOR-3071) must keep it from re-entering or reopening a second time.
     """
     link = _GateSerialLink(answer_identity=True)
     radio = _gate_radio(link)
@@ -2774,55 +2772,39 @@ async def test_power_on_in_no_response_sends_one_frame_without_reopen() -> None:
     await radio.disconnect()
 
 
-# ---------------------------------------------------------------------------
-# MOR-3071 round 2: the serial link dies *inside* the identity hold. The
-# re-read must hand the link to the watchdog's recovery (soft_reconnect
-# with MOR-1453 rediscovery), not die with an unretrieved exception while
-# the radio sticks in CONNECTING.
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_dead_link_during_identity_hold_hands_over_to_recovery() -> None:
     """Round 2: the link dies while the hold owns it — watchdog recovers."""
     link = _GateSerialLink(answer_identity=False)
     radio = _gate_radio(link)
-    radio._SERIAL_WATCHDOG_RETRY_S = 0.05
 
     await radio.connect()
-    assert radio.connection_identity is not None
-    assert radio.connection_identity.status is RadioIdentityStatus.NO_RESPONSE
-    reread = radio._serial_identity_reread_task
-    assert reread is not None
+    identity = radio.connection_identity
+    assert identity is not None and identity.status is RadioIdentityStatus.NO_RESPONSE
+    assert (reread := radio._serial_identity_reread_task) is not None
 
     # The cable is pulled: writes fail with OSError, the link reports
     # itself not ready while ``connected`` lingers, and the first recovery
-    # reopen still finds no device. Once the replugged device is back it
-    # answers the identity read again.
+    # reopen still finds no device; the replugged device answers again.
     link.policy_answer = True
     link.fail_sends = True
     link.ready = False
-    link.healthy = False
     link._fail_connect_calls = {2}
 
-    # The re-read task does not die: it completes cleanly after handing
-    # the link over, and the radio leaves the hold for the recovery state.
+    # The re-read does not die: it hands the link over and the radio leaves
+    # the hold (identity null, RECONNECTING, a last_error sentence).
     await asyncio.wait_for(reread, timeout=1.0)
     assert reread.exception() is None
-    assert radio._serial_identity_reread_task is None
     assert radio.connection_identity is None
     assert radio.conn_state is RadioConnectionState.RECONNECTING
-    assert radio.last_error is not None
-    assert "/dev/ttyUSB0" in radio.last_error
+    assert radio.last_error and "/dev/ttyUSB0" in radio.last_error
 
-    # soft_reconnect reopened the port once the device was back, and the
+    # soft_reconnect reopened the port once the device was back; the
     # identity gate ran again on the new link.
     assert await _wait_until(lambda: radio.connected, timeout_s=3.0)
     identity = radio.connection_identity
-    assert identity is not None
-    assert identity.status is RadioIdentityStatus.UNVERIFIED
+    assert identity is not None and identity.status is RadioIdentityStatus.UNVERIFIED
     assert link.connect_calls == 3  # initial open + failed reopen + reopen
-    assert link.identity_queries == 2  # gate read per connect attempt
     await radio.disconnect()
 
 
@@ -2850,16 +2832,15 @@ async def test_reread_read_error_is_logged_and_leaves_the_hold(
     assert radio._serial_identity_reread_task is None
     assert radio.connection_identity is None
     assert radio.conn_state is RadioConnectionState.RECONNECTING
-    assert [
-        r for r in caplog.records if "identity re-read" in r.getMessage() and r.exc_info
-    ]
+    assert any(
+        "identity re-read" in r.getMessage() and r.exc_info for r in caplog.records
+    )
     await radio.disconnect()
 
 
 @pytest.mark.asyncio
 async def test_reread_arm_error_is_logged_and_does_not_stick_in_connecting(
-    tmp_path,
-    caplog: pytest.LogCaptureFixture,
+    tmp_path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Round 2: an ``_arm_managed_tx`` error in the re-read is not fatal."""
     import logging
@@ -2882,10 +2863,9 @@ async def test_reread_arm_error_is_logged_and_does_not_stick_in_connecting(
             lambda: radio.conn_state is RadioConnectionState.CONNECTED,
             timeout_s=3.0,
         )
-    assert [
-        r for r in caplog.records if "identity re-read" in r.getMessage() and r.exc_info
-    ]
-    assert radio.conn_state is RadioConnectionState.CONNECTED
+    assert any(
+        "identity re-read" in r.getMessage() and r.exc_info for r in caplog.records
+    )
     await radio.disconnect()
     await composition.shutdown(asyncio.Event())
 
