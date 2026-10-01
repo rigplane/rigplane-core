@@ -1506,7 +1506,10 @@
     untrack(refreshScopePassband);
   }
   let managedScopeRegionValue: ManagedScopeRegion | undefined = $derived.by(() => {
-    if (!managedScope) return undefined;
+    // MOR-3094 — with the raw fallback active there is no managed region
+    // (and no managed lease): SpectrumPanel owns the hardware-scope demand
+    // through its own raw path instead.
+    if (!managedScope || rawScopeFallback) return undefined;
     const resolution = scopePresentation?.resolution;
     const frameMode = scopePresentation?.envelope?.frame.mode;
     const acceptedSequence = scopePresentation?.envelope?.acceptedSequence;
@@ -1538,6 +1541,31 @@
       : null;
   });
   let scopeLeaseGeneration = $derived(scopeAuthority?.providerGeneration ?? null);
+  // MOR-3094 — when the caps explicitly declare `vfoReadback: 'none'` and
+  // the active receiver is not observed, `scopeAuthority` stays null and
+  // the managed lease below is withheld forever, so the waterfall went dark
+  // on that radio shape. With the hardware scope source, matched current
+  // generations and a ready control connection, release the managed region
+  // so SpectrumPanel reuses its raw hardware-scope path
+  // (`acquireScopeDemand` + `subscribeHardware`). No MAIN/SUB authority is
+  // invented: every gesture gate still reads `toSpectrumAuthority`, which
+  // stays null while the active receiver is unobserved. Once the receiver
+  // is observed, `scopeAuthority` resolves and the managed region (and its
+  // lease) resumes. Single-receiver radios resolve the active receiver
+  // tautologically (MOR-1421), so this never triggers for them.
+  let rawScopeFallback = $derived.by(() => {
+    if (scopeFrameSource !== 'hardware' || scopeAuthority !== null) return false;
+    const caps = runtime.caps;
+    if (!caps || caps.vfoReadback !== 'none') return false;
+    const stateGeneration = runtime.state?.providerGeneration;
+    const capsGeneration = caps.providerGeneration;
+    if (typeof stateGeneration !== 'number' || !Number.isSafeInteger(stateGeneration) || stateGeneration < 0
+      || typeof capsGeneration !== 'number' || !Number.isSafeInteger(capsGeneration) || capsGeneration < 0
+      || stateGeneration !== capsGeneration) return false;
+    if (controlSession.state !== 'connected'
+      || !Number.isSafeInteger(controlSession.epoch) || controlSession.epoch < 0) return false;
+    return canonicalView?.activeReceiver.status !== 'known';
+  });
   $effect(() => {
     const source = scopeFrameSource;
     if (source === undefined) {
