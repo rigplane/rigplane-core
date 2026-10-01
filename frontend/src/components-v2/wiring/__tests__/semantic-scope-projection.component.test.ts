@@ -121,6 +121,16 @@ function renew(marker: number, stale = false) {
     { freshness: stale ? 'stale' : 'fresh', availability: stale ? 'stale' : 'available' });
   radio.current = next; publishAuthority(); flushSync();
 }
+// MOR-3094 / GitHub #3950 — an IC-9700-class radio declares `vfoReadback:
+// 'none'`, so its missing active-receiver identity is a declared structural
+// absence, not a transient loss: raw hardware scope/waterfall may display,
+// while every receiver-dependent projection and command stays unavailable.
+function noReadback() {
+  setCapabilities({ ...getCapabilities()!, receivers: 2, vfoScheme: 'main_sub',
+    capabilities: [...getCapabilities()!.capabilities, 'dual_rx'], vfoReadback: 'none' });
+  radio.current!.active = null;
+  publishAuthority();
+}
 let wire: ReturnType<typeof channel>, target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null, legacyComponent: ReturnType<typeof createClassComponent> | null;
 let tx: ManagedAppTxHarness;
@@ -129,11 +139,14 @@ const snippet = createRawSnippet<[Snippet | undefined, ManagedScopeRegion | unde
   region = managed;
   return { render: () => '<div data-projection-probe></div>', setup: (element) => { element.setAttribute('data-toolbar', String(typeof toolbar())); } };
 });
-async function render(layout = true, skinId: 'desktop-v2' | 'sdr-test' = 'desktop-v2') {
+async function mountHost(layout = true, skinId: 'desktop-v2' | 'sdr-test' = 'desktop-v2') {
   target = document.createElement('div'); document.body.append(target);
   component = layout ? mount(RadioLayout, { target, props: { skinId } })
     : mount(SemanticRadioSurfaces, { target, props: { regions: true, displayFrameSource: 'hardware', regionContent: snippet, scopeControlsInRegionContent: true } });
-  flushSync(); await Promise.resolve(); flushSync(); wire.connected(); wire.frame();
+  flushSync(); await Promise.resolve(); flushSync();
+}
+async function render(layout = true, skinId: 'desktop-v2' | 'sdr-test' = 'desktop-v2') {
+  await mountHost(layout, skinId); wire.connected(); wire.frame();
 }
 function toggle() {
   // MOR-2545 PR2: on a hosted toolbar (desktop-v2 / sdr-test with a hardware
@@ -380,4 +393,112 @@ describe('one managed scope owner through the real region and panel', () => {
     expect(h.resources.snapshot('hardware-scope').demand).toBe(1);
   });
 
+});
+
+describe('MOR-3094 declared no-readback raw hardware scope', () => {
+  it('paints raw canvas/waterfall with one socket and lease and no receiver-dependent command', async () => {
+    noReadback();
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    await render();
+    expect(target.querySelector('.spectrum-area canvas')).not.toBeNull();
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(wire.connect).toHaveBeenCalledTimes(1);
+    expect(wire.count()).toBe(1);
+    expect(h.resources.snapshot('hardware-scope').demand).toBe(1);
+    expect(overlay()).toBeNull();
+    expect(target.querySelector('.passband-resize-zone')).toBeNull();
+    // A pan gesture without receiver authority must emit no frequency or
+    // filter command (native raw subscription path stays unused too).
+    const surface = target.querySelector<HTMLElement>('.spectrum-area')!;
+    surface.getBoundingClientRect = () => ({ left: 0, width: 200 } as DOMRect);
+    for (const [type, x] of [['pointerdown', 100], ['pointermove', 120], ['pointerup', 120]] as const) {
+      surface.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 1, button: 0, clientX: x }));
+      flushSync();
+    }
+    surface.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); flushSync();
+    surface.dispatchEvent(new WheelEvent('wheel', { bubbles: true })); flushSync();
+    expect(h.frequency).not.toHaveBeenCalled();
+    expect(h.width).not.toHaveBeenCalled();
+    expect(h.raw).not.toHaveBeenCalled();
+    // The fallback ends the moment actual receiver authority arrives.
+    radio.current!.active = 'MAIN';
+    publishAuthority(); flushSync(); await Promise.resolve(); wire.connected(); wire.frame();
+    expect(overlay()).not.toBeNull();
+  });
+  it.each([undefined, 'absolute', 'selected_unselected'] as const)(
+    'keeps raw display closed when readback is %s (no explicit none declaration)', async readback => {
+      // The fallback must not apply to every unknown receiver — only the
+      // declared structural absence opens it. Base keeps this and the
+      // 'unknown receiver' boundary above fail-closed.
+      setCapabilities({ ...getCapabilities()!, receivers: 2, vfoScheme: 'main_sub',
+        capabilities: [...getCapabilities()!.capabilities, 'dual_rx'],
+        ...(readback === undefined ? {} : { vfoReadback: readback }) });
+      radio.current!.active = null;
+      publishAuthority();
+      const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+      await render();
+      expect(target.querySelector('.spectrum-area canvas')).toBeNull();
+      expect(push).not.toHaveBeenCalled();
+      const surface = target.querySelector<HTMLElement>('.spectrum-area')!;
+      if (surface) surface.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, button: 0, clientX: 100 }));
+      flushSync();
+      expect(h.frequency).not.toHaveBeenCalled();
+      expect(h.width).not.toHaveBeenCalled();
+      // `subscribeHardware` is the alternate raw-frame path; it must stay idle.
+      expect(h.raw).not.toHaveBeenCalled();
+    });
+  it('drops the lease and socket on unmount and never retains prior-session raw display', async () => {
+    noReadback();
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    await render();
+    expect(push).toHaveBeenCalledTimes(1);
+    const painted = push.mock.calls.length;
+    await unmount(component!); component = null; flushSync(); await Promise.resolve();
+    expect(wire.disconnect).toHaveBeenCalled();
+    expect(wire.count()).toBe(0);
+    expect(h.resources.snapshot('hardware-scope').demand).toBe(0);
+    renew(11, true);
+    // Remount without emitting a frame: a prior-session frame must not paint.
+    await mountHost();
+    expect(push.mock.calls.length).toBe(painted);
+    wire.connected(); wire.frame();
+    expect(push.mock.calls.length).toBe(painted + 1);
+    expect(h.resources.snapshot('hardware-scope').demand).toBe(1);
+  });
+  it('re-binds once per provider generation change with declared no-readback', async () => {
+    noReadback();
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    await render();
+    expect(push).toHaveBeenCalledTimes(1);
+    const acquired = vi.spyOn(h.resources, 'acquire'), released = vi.spyOn(h.resources, 'release');
+    radio.current!.providerGeneration = 2;
+    for (const status of Object.values(radio.current!.fieldStatus!)) status.lastObservedMonotonic = 1;
+    setCapabilities({ ...getCapabilities()!, providerGeneration: 2 });
+    publishAuthority(); flushSync(); await Promise.resolve(); await Promise.resolve(); wire.connected(); renew(1); wire.frame();
+    expect(push).toHaveBeenCalledTimes(2);
+    expect(acquired).toHaveBeenCalledOnce(); expect(released).toHaveBeenCalledOnce();
+    expect(h.resources.snapshot('hardware-scope').demand).toBe(1);
+  });
+  it('ignores frames from the old epoch across a real disconnect and reconnect', async () => {
+    noReadback();
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    await render();
+    expect(push).toHaveBeenCalledTimes(1);
+    wire.disconnect(); flushSync();
+    const painted = push.mock.calls.length;
+    wire.frame();
+    expect(push.mock.calls.length).toBe(painted);
+    wire.connected(); flushSync();
+    wire.frame();
+    expect(push.mock.calls.length).toBe(painted + 1);
+  });
+  it('clears the raw display and drops the lease when the hardware boundary ends', async () => {
+    noReadback();
+    await render();
+    expect(target.querySelector('.spectrum-area canvas')).not.toBeNull();
+    setCapabilities({ ...getCapabilities()!, scopeSource: null });
+    flushSync(); await Promise.resolve();
+    clear();
+    expect(h.resources.snapshot('hardware-scope').demand).toBe(0);
+  });
 });
