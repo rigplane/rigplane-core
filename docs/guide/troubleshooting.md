@@ -400,13 +400,8 @@ is the group active in regular SSB/AM/FM.
     noise and feedback are transmitted even though you never pressed the
     mic's PTT button.
 
-!!! note "This is a radio menu setting, not a rigplane problem"
-    rigplane delivers a byte-perfect PCM stream to the radio (verified
-    end-to-end). If network voice TX sounds wrong, check MOD Input first.
-    A planned rigplane update will surface the current MOD Input source in
-    the Web UI and warn before network voice TX when the active mode group is
-    not set to `LAN`, with a one-click **Set LAN** action (epic MOR-614) — so
-    the misconfiguration cannot bite silently.
+!!! note "This is a setting in the radio menu"
+    If network voice TX sounds wrong, check the radio's MOD Input setting first.
 
 Switching back to the hand mic later: set **DATA OFF MOD** back to `MIC`.
 

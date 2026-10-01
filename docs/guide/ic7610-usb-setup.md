@@ -4,7 +4,7 @@ description: Step-by-step guide to control the Icom IC-7610 from macOS over USB 
 
 # IC-7610 USB Serial Backend Setup (macOS)
 
-This guide shows how to control the IC-7610 via **USB serial CI-V + USB audio devices** instead of the default LAN backend.
+This guide shows how to control the IC-7610 via **USB serial CI-V + USB audio devices** instead of the default LAN backend. It documents RigPlane Core, the open-source Python library. RigPlane Pro is a separate commercial desktop app and is not covered here.
 
 ## Why Use the Serial Backend?
 
@@ -476,13 +476,13 @@ If you're currently using the LAN backend and want to switch to serial:
 
 ---
 
-**Hardware validated**: 2026-03-06, IC-7610 over USB on macOS (Darwin arm64), Python 3.11.14, pytest 9.0.2 (issue #146)
+**Hardware tested**: IC-7610 over USB on macOS (Apple Silicon), 6 March 2026. See issue #146 for details.
 
 ## Get the Packaged Desktop App
 
 !!! tip "Prefer a packaged desktop app?"
-    This guide covers the open-source `rigplane` Python library. If you want
-    a polished desktop application with a GUI for IC-7610 control on macOS
-    and Linux, check out RigPlane Pro.
+    This guide covers the open-source `rigplane` Python library. For the
+    RigPlane Pro desktop app, check the downloads page for currently
+    available builds.
 
-    [Download RigPlane Pro for Mac and Linux →](https://rigplane.com/downloads/?utm_source=docs.rigplane.dev&utm_medium=cta&utm_campaign=ic7610-usb-setup)
+    [Download RigPlane Pro →](https://rigplane.com/downloads/?utm_source=docs.rigplane.dev&utm_medium=cta&utm_campaign=ic7610-usb-setup)
