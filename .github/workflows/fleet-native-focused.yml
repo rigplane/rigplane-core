@@ -40,9 +40,7 @@ jobs:
       FLEET_HELPER_REVISION: ${{ inputs.helper_revision }}
       FLEET_HELPER_SHA256: 5e55a50546fa4a855519a65df75ea0fb8cf17597d33a86953db33467c3401683
       FLEET_RUNTIME_VERIFIER_SHA256: d1a57cc8107383098591a86e5d72d818ec1be407df316912b39f8c3149434d3b
-      FLEET_RUNNER_NAME: ${{ runner.name }}
       FLEET_HOST: ${{ matrix.host }}
-      FLEET_OUTPUT: ${{ runner.temp }}/fleet-native-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.host }}
     steps:
       - name: Check out exact public Core helper controls
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -182,6 +180,8 @@ jobs:
         shell: bash
         env:
           VERIFIED_NATIVE_PYTHON: ${{ steps.runtime.outputs.python }}
+          FLEET_RUNNER_NAME: ${{ runner.name }}
+          FLEET_OUTPUT: ${{ runner.temp }}/fleet-native-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.host }}
         run: |
           set -euo pipefail
           [[ "$FLEET_HELPER_REVISION" =~ ^[0-9a-f]{40}$ ]]
@@ -197,6 +197,8 @@ jobs:
         shell: powershell
         env:
           VERIFIED_NATIVE_PYTHON: ${{ steps.runtime.outputs.python }}
+          FLEET_RUNNER_NAME: ${{ runner.name }}
+          FLEET_OUTPUT: ${{ runner.temp }}/fleet-native-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.host }}
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:FLEET_HELPER_REVISION -cnotmatch '^[0-9a-f]{40}$') { throw 'Exact helper revision required' }
@@ -215,6 +217,8 @@ jobs:
       - name: Retain JUnit, statuses, receipts and native identity
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        env:
+          FLEET_OUTPUT: ${{ runner.temp }}/fleet-native-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.host }}
         with:
           name: fleet-native-${{ matrix.host }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
