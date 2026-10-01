@@ -493,6 +493,49 @@ class TestPasswordResolution:
         assert exc_info.value.code == 0
         assert "Hint:" not in mock_stderr.getvalue()
 
+    def test_global_pass_warning_still_suggests_pass_file(self, monkeypatch):
+        """Global --pass keeps the --pass-file guidance (MOR-3092)."""
+        monkeypatch.delenv("ICOM_PASS", raising=False)
+        p = _build_parser()
+        with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+            p.parse_args(["--pass", "global-secret", "status"])
+        err = mock_stderr.getvalue()
+        assert "DeprecationWarning" in err
+        assert "--pass-file PATH" in err
+        assert "--radio-pass-file" not in err
+        assert "global-secret" not in err
+
+    def _parse_web_password(self, flag: str):
+        p = _build_parser()
+        with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+            args = p.parse_args(["web", flag, "web-cli-secret"])
+        return args, mock_stderr.getvalue()
+
+    def test_web_radio_password_warns_radio_pass_file(self):
+        args, err = self._parse_web_password("--radio-password")
+        assert args.password_cli == "web-cli-secret"
+        assert "DeprecationWarning" in err
+        assert "--radio-pass-file" in err
+        assert "--pass-file PATH" not in err
+        assert "web-cli-secret" not in err
+
+    def test_web_password_alias_warns_radio_pass_file(self):
+        args, err = self._parse_web_password("--password")
+        assert args.password_cli == "web-cli-secret"
+        assert "--password" in err
+        assert "--radio-pass-file" in err
+        assert "web-cli-secret" not in err
+
+    def test_web_radio_pass_file_parses_without_warning(self, tmp_path):
+        pw_file = tmp_path / "pw.txt"
+        pw_file.write_text("file-secret\n", encoding="utf-8")
+        p = _build_parser()
+        with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+            args = p.parse_args(["web", "--radio-pass-file", str(pw_file)])
+        assert args.pass_file == str(pw_file)
+        assert _resolve_password(args) == "file-secret"
+        assert "DeprecationWarning" not in mock_stderr.getvalue()
+
     def test_no_command_prints_help(self):
         p = _build_parser()
         args = p.parse_args([])

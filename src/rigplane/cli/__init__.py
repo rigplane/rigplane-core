@@ -302,8 +302,18 @@ class _DeprecatedPortAction(argparse.Action):
 class _DeprecatedPassAction(argparse.Action):
     """Deprecated --pass flag — warns about leakage via `ps aux` / shell history.
 
-    Prefer $ICOM_PASS environment variable or --pass-file PATH instead.
+    Prefer $ICOM_PASS or the command's file-based replacement instead.
     """
+
+    def __init__(
+        self,
+        option_strings: list[str],
+        dest: str,
+        replacement: str = "--pass-file PATH",
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(option_strings, dest, **kwargs)
+        self.replacement = replacement
 
     def __call__(
         self,
@@ -316,7 +326,7 @@ class _DeprecatedPassAction(argparse.Action):
         print(
             f"DeprecationWarning: {flag} exposes the password on the process "
             "command line (visible in `ps aux` and shell history). "
-            "Use $ICOM_PASS or --pass-file PATH instead.",
+            f"Use $ICOM_PASS or {self.replacement} instead.",
             file=sys.stderr,
         )
         setattr(namespace, self.dest, values)
@@ -1326,6 +1336,7 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="password_cli",
         default=argparse.SUPPRESS,
         action=_DeprecatedPassAction,
+        replacement="--radio-pass-file PATH",
         metavar="PASSWORD",
         help=(
             "Radio password. Deprecated: exposes password in process list "
