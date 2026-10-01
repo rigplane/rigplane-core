@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0b11] — 2026-10-01
+
 ### Added
 
 - **Serial discovery marks each probe's open and close in the DEBUG log
@@ -21,6 +23,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its own prefix — `probe_serial_civ`, `probe_xiegu_model_id` and
   `probe_serial_yaesu_cat` — and only the device name and the baud
   rate are logged. Discovery itself is unchanged.
+
+- **The IC-7300MK2 gets its own manual-derived profile (MOR-3091).**
+  It declares the MK2's identity, single-receiver topology, LAN/serial
+  routing and documented modulation, menu and scope commands instead
+  of borrowing the IC-7610 profile. IC-7300 and IC-7610 profiles stay
+  unchanged. The MK2 profile has not been validated on hardware.
+
+- **`WebConfig.trusted_origins` and `web --trusted-origin ORIGIN` opt
+  in to an explicit public HTTP(S) origin behind a reverse proxy
+  (MOR-3108).** Invalid bare origins fail startup. Origin matching uses
+  scheme, host case and effective port; Host, read-only, TX and CSRF
+  checks still apply, and forwarded headers confer no trust. The proxy
+  owns authentication and access control. See the
+  [remote-operation guide](guide/remote-operation.md).
 
 ### Changed
 
@@ -75,6 +91,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pip install --pre rigplane`, and the README's one-line comment says
   why. The guide's "No 3.0 build is on PyPI yet; to run 3.0, install
   from source" paragraph is gone.
+
+- **The Icom serial connect waits for the radio's identity answer and
+  publishes `connection.identity` (MOR-3071, MOR-3064).** The connect
+  reads the addressed radio's model ID before marking it connected.
+  Silence reports `no_response` while retaining the open port for a
+  later answer; polling and TX stay gated. `/api/v1/info` exposes the
+  expected and answered identity, including an unverified result when
+  the profile has no expected-ID metadata.
+
+- **A known model mismatch is rejected instead of used (MOR-3064).**
+  Icom serial/LAN and Yaesu CAT compare the native identity answer
+  with the selected profile before readiness. Held sessions can finish
+  on a matching late answer; reconnect keeps one current serial reader,
+  and teardown retires held readers and CI-V tasks. An answer from a
+  replaced connection cannot initialize the new connection's state.
+
+- **`rigplane web` keeps serving while the serial identity read gets
+  no answer (MOR-3081, MOR-3078).** Startup no longer exits with
+  "managed TX provider is not current" during `checking` or
+  `no_response`. TX remains refused, automatic bridge startup waits for
+  readiness, and a late answer completes the reconnect tail once.
+
+- **The web password warning suggests the supported flag (MOR-3092).**
+  `web --radio-password` and its `--password` alias now recommend
+  `--radio-pass-file PATH` rather than unsupported `--pass-file`.
+
+- **A radio that declares `vfoReadback: none` keeps its raw hardware
+  waterfall (MOR-3094).** Matching connected control and provider
+  generations allow the raw hardware-scope display without inventing
+  MAIN/SUB authority. Receiver-dependent controls remain unavailable.
+
+- **A managed-TX lifecycle release no longer switches the antenna tuner
+  off (MOR-3072).** Release, shutdown, disconnect and transport switch
+  preserve the idle persistent ATU setting instead of sending implicit
+  STOP_TUNE. Receive/CW safety and explicit STOP_TUNE stay unchanged;
+  active-tune and RF paths were not re-validated.
+
+- **`ICOM_DEBUG` enables DEBUG for the diagnostic log at startup
+  (MOR-3107).** When no embedding application has configured the named
+  `rigplane` logger's level, `ICOM_DEBUG` — any value other than empty,
+  `0`, `false` or `no` — now sets DEBUG, and the default stays INFO. An
+  explicitly configured level is respected: only the records that pass
+  it reach the diagnostic file.
 
 ## [3.0.0b10] — 2026-09-29
 
@@ -4229,7 +4288,9 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b9...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b11...HEAD
+[3.0.0b11]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b10...v3.0.0b11
+[3.0.0b10]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b9...v3.0.0b10
 [3.0.0b9]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b8...v3.0.0b9
 [3.0.0b7]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b6...v3.0.0b7
 [3.0.0b6]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b5...v3.0.0b6
