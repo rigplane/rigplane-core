@@ -405,10 +405,14 @@ class TestVfoScopeMapFallbackParityAcrossProfiles:
             mapped = commands.get_main_sub_band(cmd_map=cmd_map)
             assert mapped.endswith(b"\x07\xd2\xfd"), model
 
-    def test_get_scope_center_type_declared_by_all_four_scope_profiles(self) -> None:
+    def test_get_scope_center_type_declared_by_all_five_scope_profiles(self) -> None:
+        # IC-7300MK2 declares the same 0x27 0x1C read the other four scope
+        # profiles declare (IC-7300MK2 CI-V Reference Guide 0x27 command table;
+        # single receiver, no cmd29 routing).
         assert set(self._maps_declaring("get_scope_center_type")) == {
             "IC-705",
             "IC-7300",
+            "IC-7300MK2",
             "IC-7610",
             "IC-9700",
         }

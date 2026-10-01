@@ -177,6 +177,18 @@ def test_all_profile_probe_census_returns_exact_viable_names() -> None:
 
 
 def test_all_strict_prefix_overlaps_preserve_shorter_candidates() -> None:
+    """Every strict-prefix pair must keep the shorter candidate viable.
+
+    The total is 22, not 20, since the IC-7300MK2 profile landed: MK2 declares
+    the same 0x1C 0x00 transceiver-status shape the IC-7300 carries
+    (``get_transceiver_status`` on the empty prefix; ``ptt_on``/``ptt_off``
+    on the one-byte prefixes 01/00), and the empty prefix is a strict prefix
+    of both PTT bytes -- 2 overlaps that profile adds to the previous
+    six-CI-V-profile total of 20. Every other MK2 (command, sub) group
+    declares equal-length prefixes only (the 0x1A 05 menu rows are all
+    two-byte, and no other MK2 tuple carries data), so the 0x1C 0x00 shape
+    is the only MK2 contribution.
+    """
     overlaps = 0
     for model, profile in _civ_profiles().items():
         command_map = profile.command_map
@@ -197,7 +209,7 @@ def test_all_strict_prefix_overlaps_preserve_shorter_candidates() -> None:
                         f"shorter={shorter!r} longer={longer!r}"
                     )
                     assert frozenset(prefix_groups[shorter]) <= expected
-    assert overlaps == 20
+    assert overlaps == 22
 
 
 class TestKnownCollisionShapes:

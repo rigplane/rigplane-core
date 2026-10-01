@@ -823,7 +823,15 @@ def test_field_policies_obey_their_cadence_class_not_their_rig() -> None:
                 )
 
     assert not failures, f"field_policies entries outside their class: {failures}"
-    assert checked == {"FTX-1", "IC-705", "IC-7300", "IC-7610", "IC-9700", "X6200"}
+    assert checked == {
+        "FTX-1",
+        "IC-705",
+        "IC-7300",
+        "IC-7300MK2",
+        "IC-7610",
+        "IC-9700",
+        "X6200",
+    }
 
 
 def test_all_profiles_decay_ceiling_never_exceeds_freshness_limit() -> None:
@@ -872,7 +880,15 @@ def test_all_profiles_decay_ceiling_never_exceeds_freshness_limit() -> None:
                 )
 
     assert not failures, f"decay exceeds freshness window: {failures}"
-    assert checked == {"IC-705", "IC-7300", "IC-7610", "IC-9700", "X6100", "X6200"}
+    assert checked == {
+        "IC-705",
+        "IC-7300",
+        "IC-7300MK2",
+        "IC-7610",
+        "IC-9700",
+        "X6100",
+        "X6200",
+    }
 
 
 # --- MOR-2574 step 1: shared acquisition classes ----------------------------
@@ -913,6 +929,7 @@ def test_every_capability_path_of_every_profile_has_a_registry_class() -> None:
         "FTX-1",
         "IC-705",
         "IC-7300",
+        "IC-7300MK2",
         "IC-7610",
         "IC-9700",
         "X6100",
@@ -1283,7 +1300,15 @@ def test_civ_observation_stamp_is_the_policy_ttl_on_every_pollable_path() -> Non
                 )
 
     assert not failures, f"CI-V observation stamps off-policy: {failures}"
-    assert checked == {"IC-705", "IC-7300", "IC-7610", "IC-9700", "X6100", "X6200"}
+    assert checked == {
+        "IC-705",
+        "IC-7300",
+        "IC-7300MK2",
+        "IC-7610",
+        "IC-9700",
+        "X6100",
+        "X6200",
+    }
 
 
 def test_ic7300_panel_knob_fields_are_polled_at_the_panel_class_cadence() -> None:
@@ -2112,6 +2137,14 @@ def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
         ("IC-7300", "global.meters.id"),
         ("IC-7300", "global.meters.power"),
         ("IC-7300", "global.meters.swr"),
+        # IC-7300MK2 carries the IC-7300 TX-meter gate on all five meters
+        # (Po/SWR/ALC/COMP/Id, tx_only PTT clause), carried as profile policy
+        # pending MK2 hardware validation.
+        ("IC-7300MK2", "global.meters.alc"),
+        ("IC-7300MK2", "global.meters.comp"),
+        ("IC-7300MK2", "global.meters.id"),
+        ("IC-7300MK2", "global.meters.power"),
+        ("IC-7300MK2", "global.meters.swr"),
         ("IC-7610", "global.meters.alc"),
         ("IC-7610", "global.meters.comp"),
         # MOR-2590: a coordinator decision, not a probe: id gets the gate

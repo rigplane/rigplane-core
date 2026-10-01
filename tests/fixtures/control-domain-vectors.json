@@ -65,6 +65,14 @@
       "quantize": [["nearest_ties_down","0.5","0"],["nearest_ties_down","0.25","0"],["nearest_ties_up","0.5","1"],["nearest_ties_up","0.25","0"],["floor","0.5","0"],["floor","0.25","0"],["ceil","0.5","1"],["ceil","0.25","1"],["reject","0.5",null],["reject","0.25",null],["reject","0","0"]]
     },
     {
+      "rig": "icom_ic7300mk2",
+      "control": "rit",
+      "domain": {"display_max":"9999","display_min":"-9999","display_origin":"0","display_step":"1","display_unit":"Hz","mapping":"identity","quantization":"reject","raw_max":9999,"raw_min":-9999,"raw_origin":0,"raw_step":1,"restoration":"exact"},
+      "decode": [[-9999,"-9999"],[-4999,"-4999"],[0,"0"],[4999,"4999"],[9999,"9999"]],
+      "encode": [["-9999",-9999],["-4999",-4999],["0",0],["4999",4999],["9999",9999],["0.5",null],["10000",null]],
+      "quantize": [["nearest_ties_down","0.5","0"],["nearest_ties_down","0.25","0"],["nearest_ties_up","0.5","1"],["nearest_ties_up","0.25","0"],["floor","0.5","0"],["floor","0.25","0"],["ceil","0.5","1"],["ceil","0.25","1"],["reject","0.5",null],["reject","0.25",null],["reject","0","0"]]
+    },
+    {
       "rig": "icom_ic7610",
       "control": "rit",
       "domain": {"display_max":"9999","display_min":"-9999","display_origin":"0","display_step":"1","display_unit":"Hz","mapping":"identity","quantization":"reject","raw_max":9999,"raw_min":-9999,"raw_origin":0,"raw_step":1,"restoration":"exact"},

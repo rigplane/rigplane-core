@@ -61,6 +61,13 @@ _EXPECTED_COUNTS = {
     "FTX-1": (14, 18),
     "IC-705": (25, 7),
     "IC-7300": (24, 8),
+    # MK2 = the IC-7300's 24 plus the four shared ANT1/RX-ANT relations:
+    # get/set_antenna [0x12] is declared, and get_antenna_1/set_antenna_1/
+    # get_rx_antenna_ant1/set_rx_antenna_ant1 all resolve through it.
+    # get_antenna_2/set_antenna_2 stay absent-declared (single SO-239, RX-ANT
+    # SMA only), and set_dual_watch/set_scope_receiver stay undeclared
+    # (single receiver, no set_scope_main_sub), for exactly 4 unsupported.
+    "IC-7300MK2": (28, 4),
     "IC-7610": (32, 0),
     "IC-9700": (32, 0),
     "TX-500": (11, 21),
@@ -214,9 +221,9 @@ class TestProfileDerivedSupport:
         for name in (*CALLABLE_RELATIONS, *EXCLUDED_OPERATIONS):
             assert hasattr(CoreRadio, name)
 
-    def test_core_instances_delegate_for_all_six_civ_profiles(self, profiles):
+    def test_core_instances_delegate_for_all_seven_civ_profiles(self, profiles):
         civ_profiles = [p for p in profiles.values() if p.protocol_type == "civ"]
-        assert len(civ_profiles) == 6
+        assert len(civ_profiles) == 7
         for profile in civ_profiles:
             radio = CoreRadio("127.0.0.1", profile=profile)
             assert all(

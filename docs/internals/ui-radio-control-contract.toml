@@ -41,6 +41,11 @@ provider = "icom_civ"
 required_proof = "MOR-1410 real IC-7300"
 
 [[profiles]]
+path = "rigs/ic7300mk2.toml"
+provider = "icom_civ"
+required_proof = "MOR-3091 documented profile conformance; real MK2 proof pending"
+
+[[profiles]]
 path = "rigs/ic7610.toml"
 provider = "icom_civ"
 required_proof = "generic fixture plus historical regression"
