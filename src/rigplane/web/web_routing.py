@@ -122,16 +122,22 @@ async def _dispatch_http_request(
     # state-changing request, before any handler. A missing Origin is
     # admitted (non-browser clients; Pro's proxy sends none on its HTTP
     # leg); a present one must be same-origin with the request and its
-    # host must pass the Host rule above. GET /clearcache is covered
-    # too: it changes client state (Clear-Site-Data wipes the browser's
-    # storage for this origin) though it is a GET.
+    # host must pass the Host rule above — or match the explicit trusted
+    # public-Origin allowlist (MOR-3108), which never bypasses the Host
+    # rule above. GET /clearcache is covered too: it changes client
+    # state (Clear-Site-Data wipes the browser's storage for this
+    # origin) though it is a GET.
     origin = (headers or {}).get("origin")
     if origin is not None and (
         method in ("POST", "PUT", "PATCH", "DELETE") or path == "/clearcache"
     ):
         scheme = "https" if server._config.tls else "http"
         if not same_origin_allowed(
-            origin, raw_host, scheme, server._config.allowed_hosts
+            origin,
+            raw_host,
+            scheme,
+            server._config.allowed_hosts,
+            server._config.trusted_origins,
         ):
             server._log_refused_request("http origin", path, headers or {})
             await _send_response(

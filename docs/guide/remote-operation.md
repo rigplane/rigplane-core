@@ -56,6 +56,56 @@ A private-network `http://` address is not a secure origin, so browser voice
 TX needs HTTPS with a certificate the browser trusts: see
 [Browser microphone requirement](web-ui.md#browser-microphone-requirement).
 
+## Behind Your Own HTTPS Reverse Proxy
+
+You can put your own HTTPS reverse proxy (or your own TLS-terminating tunnel)
+in front of `rigplane web`: the proxy speaks plain HTTP to RigPlane on the
+loopback upstream and HTTPS to your browser. Say the proxy serves
+`https://station.example` (a fictional name; use your own) and forwards to
+`http://127.0.0.1:8080` on the station machine.
+
+The browser then sends `Origin: https://station.example`, which is neither
+same-origin with RigPlane's own HTTP upstream nor a local name. Pass it
+explicitly:
+
+```bash
+rigplane web --listen 127.0.0.1 --trusted-origin https://station.example \
+    --trusted-origin https://ops.example
+```
+
+`--trusted-origin` is repeatable and takes a serialized origin only —
+scheme `http` or `https`, host, optional port; no user, path, query or
+fragment, not even a trailing slash. `https://station.example:443` and
+`https://station.example` are the same origin. An invalid value is refused
+at startup, before anything is served.
+
+Two different headers are involved, and only these two count:
+
+- the public **`Origin`** — where the browser's page came from — is what
+  `--trusted-origin` matches;
+- the raw **`Host`** header RigPlane receives on the upstream leg must
+  still pass the Host allowlist above. A proxy that rewrites `Host` to
+  `127.0.0.1:8080` needs nothing more. A proxy that preserves the public
+  name (`Host: station.example`) must also be given
+  `--allowed-host station.example`, or RigPlane answers
+  `421 Misdirected Request`.
+
+The trusted Origin only admits the browser's `Origin` past the
+same-origin rule. The Host allowlist, configured read-only mode and
+transmit safety checks still apply. RigPlane never trusts
+`Forwarded` or `X-Forwarded-*` headers: only the actual `Origin` and
+raw `Host` headers count.
+
+Exposure guidance: terminate TLS at the proxy, keep RigPlane's port on
+the loopback upstream (`--listen 127.0.0.1`), and let the proxy — not
+RigPlane — be the only internet-facing listener.
+
+Configure authentication and access restrictions at that proxy for access
+over an untrusted network. Core continues to admit non-browser requests
+without an `Origin` header; listing a trusted page origin grants no user
+identity or per-user permissions (`host_guard.py: same_origin_allowed`,
+`web_routing.py: _dispatch_http_request`).
+
 ## Keep RigPlane Next to the Radio
 
 Run RigPlane at the station, on the same network as a LAN radio, and use the
