@@ -407,8 +407,8 @@ describe('MOR-3094 declared no-readback raw hardware scope', () => {
     expect(h.resources.snapshot('hardware-scope').demand).toBe(1);
     expect(overlay()).toBeNull();
     expect(target.querySelector('.passband-resize-zone')).toBeNull();
-    // A pan gesture without receiver authority must emit no frequency or
-    // filter command (native raw subscription path stays unused too).
+    // Gestures without receiver authority must emit no frequency or filter
+    // command; the raw display uses one hardware-frame subscription.
     const surface = target.querySelector<HTMLElement>('.spectrum-area')!;
     surface.getBoundingClientRect = () => ({ left: 0, width: 200 } as DOMRect);
     for (const [type, x] of [['pointerdown', 100], ['pointermove', 120], ['pointerup', 120]] as const) {
@@ -419,7 +419,7 @@ describe('MOR-3094 declared no-readback raw hardware scope', () => {
     surface.dispatchEvent(new WheelEvent('wheel', { bubbles: true })); flushSync();
     expect(h.frequency).not.toHaveBeenCalled();
     expect(h.width).not.toHaveBeenCalled();
-    expect(h.raw).not.toHaveBeenCalled();
+    expect(h.raw).toHaveBeenCalledOnce();
     // The fallback ends the moment actual receiver authority arrives.
     radio.current!.active = 'MAIN';
     publishAuthority(); flushSync(); await Promise.resolve(); wire.connected(); wire.frame();
@@ -465,7 +465,7 @@ describe('MOR-3094 declared no-readback raw hardware scope', () => {
     expect(push.mock.calls.length).toBe(painted + 1);
     expect(h.resources.snapshot('hardware-scope').demand).toBe(1);
   });
-  it('re-binds once per provider generation change with declared no-readback', async () => {
+  it('keeps one lease across provider generation change with declared no-readback', async () => {
     noReadback();
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
     await render();
@@ -476,7 +476,7 @@ describe('MOR-3094 declared no-readback raw hardware scope', () => {
     setCapabilities({ ...getCapabilities()!, providerGeneration: 2 });
     publishAuthority(); flushSync(); await Promise.resolve(); await Promise.resolve(); wire.connected(); renew(1); wire.frame();
     expect(push).toHaveBeenCalledTimes(2);
-    expect(acquired).toHaveBeenCalledOnce(); expect(released).toHaveBeenCalledOnce();
+    expect(acquired).not.toHaveBeenCalled(); expect(released).not.toHaveBeenCalled();
     expect(h.resources.snapshot('hardware-scope').demand).toBe(1);
   });
   it('ignores frames from the old epoch across a real disconnect and reconnect', async () => {
@@ -496,7 +496,8 @@ describe('MOR-3094 declared no-readback raw hardware scope', () => {
     noReadback();
     await render();
     expect(target.querySelector('.spectrum-area canvas')).not.toBeNull();
-    setCapabilities({ ...getCapabilities()!, scopeSource: null });
+    setCapabilities({ ...getCapabilities()!, scope: false, scopeSource: null,
+      capabilities: getCapabilities()!.capabilities.filter(value => value !== 'scope') });
     flushSync(); await Promise.resolve();
     clear();
     expect(h.resources.snapshot('hardware-scope').demand).toBe(0);
