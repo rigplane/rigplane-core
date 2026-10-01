@@ -663,6 +663,23 @@ class ControlPhaseRuntime:
         self._stop_watchdog()
         self._stop_reconnect()
         self._stop_token_renewal()
+        # An identity-held partial session can have live CI-V tasks. Retire
+        # their generation before closing transports or accepting late replies.
+        civ_rt = getattr(h, "_civ_runtime", None)
+        if civ_rt is not None:
+            civ_rt.advance_generation("release")
+        else:
+            h._advance_civ_generation("release")
+        identity_reader = getattr(h, "_lan_identity_reread_task", None)
+        cancel_identity_reader = getattr(h, "_cancel_lan_identity_reread", None)
+        if cancel_identity_reader is not None:
+            cancel_identity_reader()
+        if (
+            identity_reader is not None
+            and identity_reader is not asyncio.current_task()
+        ):
+            with _suppress(asyncio.CancelledError, Exception):
+                await identity_reader
         self._close_pending_sockets()
         audio_t = getattr(h, "_audio_transport", None)
         if audio_t is not None:
@@ -675,6 +692,22 @@ class ControlPhaseRuntime:
         if civ_t is not None:
             with _suppress(Exception):
                 await self._send_open_close(open_stream=False)
+        # Stop tasks even if a failed attempt already cleared its transport.
+        if civ_rt is not None:
+            with _suppress(Exception):
+                await civ_rt.stop_data_watchdog()
+            with _suppress(Exception):
+                await civ_rt.stop_worker()
+            with _suppress(Exception):
+                await civ_rt.stop_pump()
+        else:
+            with _suppress(Exception):
+                await h._stop_civ_data_watchdog()
+            with _suppress(Exception):
+                await h._stop_civ_worker()
+            with _suppress(Exception):
+                await h._stop_civ_rx_pump()
+        if civ_t is not None:
             with _suppress(Exception):
                 await civ_t.disconnect()
             h._civ_transport = None
