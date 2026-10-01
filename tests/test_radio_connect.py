@@ -644,6 +644,7 @@ class TestConnectReadiness:
             "192.168.1.100", username="u", password="p", timeout=0.2, model="IC-7610"
         )
         mt = ConnectMockTransport()
+        mt._udp_transport = MagicMock()
         radio._ctrl_transport = mt
 
         fake_civ_transport = ConnectMockTransport()
@@ -676,6 +677,9 @@ class TestConnectReadiness:
             patch.object(radio._civ_runtime, "start_worker"),
             patch("rigplane.transport.IcomTransport", return_value=fake_civ_transport),
             patch("rigplane._control_phase.asyncio.sleep", new=AsyncMock()),
+            patch.object(
+                radio, "_read_lan_identity_payload", new=AsyncMock(return_value=b"\x98")
+            ),
         ):
             radio._civ_ready_idle_timeout = 0.0
             with pytest.raises(ConnectionError, match="radio connect aborted"):
@@ -806,6 +810,16 @@ class TestConnectSessionRejection:
             ),
             patch("rigplane._control_phase.asyncio.sleep", new=AsyncMock()),
             patch.object(radio, "_fetch_initial_state", new=AsyncMock()),
+            # The successful attempt's fake CI-V transport has no rx pump
+            # (start_pump is stubbed above), so the MOR-3064 ``19 00``
+            # identity read is answered directly with the IC-7610 token
+            # 0x98 (rigs/ic7610.toml ``[identity]``); the gate verdict
+            # stays real.
+            patch.object(
+                radio,
+                "_read_lan_identity_payload",
+                new=AsyncMock(return_value=b"\x98"),
+            ),
         ):
             # Routed through the unified lifecycle (A3): a data-port discovery
             # timeout surfaces as SESSION_NOT_READY → the resident runner
@@ -1363,6 +1377,13 @@ class TestWifiBindBehavior:
             patch.object(radio._civ_runtime, "start_worker"),
             patch("rigplane.transport.IcomTransport", return_value=fake_civ_transport),
             patch.object(radio, "_fetch_initial_state", new=AsyncMock()),
+            # Same MOR-3064 seam as the discovery-retry test: the fake CI-V
+            # transport runs no rx pump here either.
+            patch.object(
+                radio,
+                "_read_lan_identity_payload",
+                new=AsyncMock(return_value=b"\x98"),
+            ),
         ):
             await radio.connect()
 

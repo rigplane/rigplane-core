@@ -216,10 +216,19 @@ class TestExternalCatSessionResetOnConnect:
         # Drive connect() without hardware: stub the single-attempt handshake
         # (``_connect_once``; A3 routes connect() through the lifecycle which
         # drives the control-phase mechanism) and the initial-state fetch so
-        # only the reset behaviour under test runs.
+        # only the reset behaviour under test runs. The stubbed link has no
+        # CI-V endpoint, so the MOR-3064 ``19 00`` identity read is answered
+        # directly with the IC-7610 token 0x98 (rigs/ic7610.toml
+        # ``[identity]``); classification and the gate verdict stay real.
         with (
             patch.object(radio._control_phase, "_connect_once", new_callable=AsyncMock),
             patch.object(radio, "_fetch_initial_state", new_callable=AsyncMock),
+            patch.object(
+                radio,
+                "_read_lan_identity_payload",
+                new=AsyncMock(return_value=b"\x98"),
+            ),
+            patch.object(radio._civ_runtime, "start_data_watchdog"),
         ):
             await radio.connect()
 
@@ -235,6 +244,12 @@ class TestExternalCatSessionResetOnConnect:
         with (
             patch.object(radio._control_phase, "_connect_once", new_callable=AsyncMock),
             patch.object(radio, "_fetch_initial_state", new_callable=AsyncMock),
+            patch.object(
+                radio,
+                "_read_lan_identity_payload",
+                new=AsyncMock(return_value=b"\x98"),
+            ),
+            patch.object(radio._civ_runtime, "start_data_watchdog"),
         ):
             await radio.connect()
         assert radio.external_cat_session_active is False

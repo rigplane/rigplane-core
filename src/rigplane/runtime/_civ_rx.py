@@ -988,6 +988,11 @@ class CivRuntime:
 
     def start_data_watchdog(self) -> None:
         """Start CI-V data watchdog task."""
+        identity_pending = getattr(
+            self._host, "_lan_identity_unanswered_for_current_epoch", None
+        )
+        if identity_pending is not None and identity_pending():
+            return
         task = self._host._civ_data_watchdog_task
         if task is not None and not task.done():
             return
@@ -1568,11 +1573,8 @@ class CivRuntime:
         on exhaustion, routes through CLOSING + full release (after which the
         control session is gone and re-arming below correctly no-ops).
 
-        Always re-arms the data watchdog in ``finally`` (#1217 invariant 3:
-        unconditional re-arm) so a fresh stall is detected and handed off again
-        instead of freezing after one episode. ``_rearm_data_watchdog_after_
-        recovery`` skips only when the control session is gone — i.e. after a
-        successful lifecycle exhaustion → CLOSING, where there is nothing left
+        Re-arms in ``finally`` after recovery (#1217). An identity hold keeps
+        it paused until acceptance; a released control session has no stream
         to watch.
         """
         escalate = full_reconnect_reason is not None or (
@@ -1623,8 +1625,7 @@ class CivRuntime:
         no-op when a healthy watchdog was already re-armed by a successful
         ``soft_reconnect``/``connect``, so this is safe to call unconditionally.
 
-        Skipped only when the control session is gone (explicit disconnect) —
-        there is nothing left to watch and re-arming would fight teardown.
+        A released control session or an identity hold prevents re-arming.
         """
         current = asyncio.current_task()
         if self._reconnect_task is current:

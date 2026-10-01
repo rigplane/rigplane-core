@@ -143,6 +143,13 @@ class ToneMockRadio(MockIcomRadio):
 
     def __init__(self, **kwargs: object) -> None:
         super().__init__(**kwargs)
+        # MOR-3064: the connect-time ``19 00`` identity read must be answered
+        # with IC-7300's native model token. MockIcomRadio's default
+        # ``b"\x98"`` is the IC-7610 token (tests/mock_server.py), but every
+        # client here connects with model="IC-7300", whose profile expects
+        # "94" (rigs/ic7300.toml ``[identity]``) — a 98 answer is held as
+        # IDENTITY_MISMATCH and connect() never completes.
+        self.model_id = b"\x94"
         self._repeater_tone: int = 0  # 0 = off, 1 = on
         self._repeater_tsql: int = 0  # 0 = off, 1 = on
         self._tone_freq_centihz: int = _FREQ_DEFAULT

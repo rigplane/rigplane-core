@@ -3177,12 +3177,15 @@ async def test_traced_link_witness_is_transparent() -> None:
     link.bind_radio(_fast_retry_serial_radio("/dev/ttyUSB0", link))
     await link.connect()
 
-    query = bytes((0xFE, 0xFE, 0xE0, 0x94, 0x19, 0x00, 0xFD))
+    # The IC-7610's own identity read (controller to 0x98), answered with the
+    # fake's IC-7610 model-ID byte 0x98 — the token the profile expects,
+    # independent of the bus address it rides on.
+    query = bytes((0xFE, 0xFE, 0x98, 0xE0, 0x19, 0x00, 0xFD))
     await link.send(query)
     assert link.identity_queries == 1
     assert link._responses.qsize() == 1  # the answer is queued, unread
     reply = await link.receive(timeout=0.2)
-    assert reply is not None and b"\x19\x00\x94" in reply
+    assert reply is not None and b"\x19\x00\x98" in reply
     assert link._responses.qsize() == 0
 
     trace = link.trace_text()

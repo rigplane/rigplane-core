@@ -115,6 +115,8 @@ class ControlPhaseRuntime:
 
     def __init__(self, host: ControlPhaseHost) -> None:
         self._host = host
+        # A held identity defers this audio snapshot until its late answer.
+        self._deferred_retail: "tuple[object, object] | None" = None
 
     def _resolve_local_bind_host(self) -> str:
         """Resolve the routed local interface IP used to reach the radio."""
@@ -464,6 +466,13 @@ class ControlPhaseRuntime:
         if h._auto_reconnect:
             self._start_watchdog()
 
+        gate = getattr(h, "_gate_lan_identity", None)
+        if gate is not None and not await gate(
+            revalidate_origin=self._deferred_retail is not None
+        ):
+            h._has_connected_once = True
+            return
+
         try:
             await wait_for_radio_startup_ready(
                 h,  # type: ignore[arg-type]
@@ -512,6 +521,7 @@ class ControlPhaseRuntime:
     async def disconnect(self) -> None:
         """Cleanly disconnect from the radio."""
         h = self._host
+        self._deferred_retail = None
         if h._conn_state != RadioConnectionState.CONNECTED:
             return
         h._conn_state = RadioConnectionState.DISCONNECTING
@@ -647,11 +657,29 @@ class ControlPhaseRuntime:
         Idempotent: safe to call when nothing is claimed.
         """
         h = self._host
+        self._deferred_retail = None
         # Best-effort teardown of any data/audio transports first (mirrors
         # disconnect ordering), then the always-sent token-remove.
         self._stop_watchdog()
         self._stop_reconnect()
         self._stop_token_renewal()
+        # An identity-held partial session can have live CI-V tasks. Retire
+        # their generation before closing transports or accepting late replies.
+        civ_rt = getattr(h, "_civ_runtime", None)
+        if civ_rt is not None:
+            civ_rt.advance_generation("release")
+        else:
+            h._advance_civ_generation("release")
+        identity_reader = getattr(h, "_lan_identity_reread_task", None)
+        cancel_identity_reader = getattr(h, "_cancel_lan_identity_reread", None)
+        if cancel_identity_reader is not None:
+            cancel_identity_reader()
+        if (
+            identity_reader is not None
+            and identity_reader is not asyncio.current_task()
+        ):
+            with _suppress(asyncio.CancelledError, Exception):
+                await identity_reader
         self._close_pending_sockets()
         audio_t = getattr(h, "_audio_transport", None)
         if audio_t is not None:
@@ -664,6 +692,22 @@ class ControlPhaseRuntime:
         if civ_t is not None:
             with _suppress(Exception):
                 await self._send_open_close(open_stream=False)
+        # Stop tasks even if a failed attempt already cleared its transport.
+        if civ_rt is not None:
+            with _suppress(Exception):
+                await civ_rt.stop_data_watchdog()
+            with _suppress(Exception):
+                await civ_rt.stop_worker()
+            with _suppress(Exception):
+                await civ_rt.stop_pump()
+        else:
+            with _suppress(Exception):
+                await h._stop_civ_data_watchdog()
+            with _suppress(Exception):
+                await h._stop_civ_worker()
+            with _suppress(Exception):
+                await h._stop_civ_rx_pump()
+        if civ_t is not None:
             with _suppress(Exception):
                 await civ_t.disconnect()
             h._civ_transport = None
@@ -750,6 +794,7 @@ class ControlPhaseRuntime:
             audio_snapshot = (
                 audio_runtime.capture_snapshot() if audio_runtime is not None else None
             )
+            self._deferred_retail = (audio_runtime, audio_snapshot)
             teardown_audio = getattr(h, "_teardown_audio_transport", None)
             if teardown_audio is not None:
                 try:
@@ -757,7 +802,15 @@ class ControlPhaseRuntime:
                 except Exception:
                     logger.debug("soft_reconnect: audio teardown failed", exc_info=True)
             await self._connect_once()
-            await self._after_reconnect(audio_runtime, audio_snapshot)
+            identity_epoch = getattr(h, "_lan_identity_owned_epoch", None)
+            await self._after_reconnect(
+                audio_runtime,
+                audio_snapshot,
+                identity_checked=(
+                    identity_epoch is not None
+                    and identity_epoch == getattr(h, "_civ_epoch", None)
+                ),
+            )
             return
 
         h._conn_state = RadioConnectionState.CONNECTING
@@ -862,13 +915,36 @@ class ControlPhaseRuntime:
         await self._after_reconnect(audio_runtime, audio_snapshot)
 
     async def _after_reconnect(
+        self,
+        audio_runtime: object,
+        audio_snapshot: object,
+        *,
+        identity_checked: bool = False,
+    ) -> None:
+        """Revalidate the recovered link before re-arm, callback and audio."""
+        h = self._host
+        if identity_checked:
+            answered = not getattr(h, "_lan_identity_unanswered_for_current_epoch")()
+        else:
+            self._deferred_retail = (audio_runtime, audio_snapshot)
+            revalidate = getattr(h, "revalidate_connection_identity", None)
+            answered = revalidate is None or bool(await revalidate())
+        if not answered:
+            return
+        await self._run_deferred_retail()
+
+    async def _run_deferred_retail(self) -> None:
+        """Consume the deferred snapshot first, then complete it exactly once."""
+        tail = self._deferred_retail
+        if tail is None:
+            return
+        self._deferred_retail = None
+        await self._after_reconnect_parts(*tail)
+
+    async def _after_reconnect_parts(
         self, audio_runtime: object, audio_snapshot: object
     ) -> None:
-        """Tail shared by the CI-V rebuild and the full-connect fallback.
-
-        Fail-soft throughout: a CI-V reconnect that otherwise succeeded is never
-        failed by the managed-TX re-arm, the web callback, or the audio re-arm.
-        """
+        """Run fail-soft re-arm, callback and audio after acceptable identity."""
         h = self._host
         # Managed TX is re-armed here, ahead of every reconnect consumer, so
         # the durable OFF a drop armed reaches the wire before any recovered
@@ -1135,11 +1211,10 @@ class ControlPhaseRuntime:
             h._token_task = None
 
     async def _token_renewal_loop(self) -> None:
-        h = self._host
         try:
-            while h._conn_state == RadioConnectionState.CONNECTED:
+            while self._token_session_alive():
                 await asyncio.sleep(self.TOKEN_RENEWAL_INTERVAL)
-                if h._conn_state != RadioConnectionState.CONNECTED:
+                if not self._token_session_alive():
                     break
                 try:
                     await self._send_token(0x05)
@@ -1148,6 +1223,13 @@ class ControlPhaseRuntime:
                     logger.warning("Token renewal failed: %s", exc)
         except asyncio.CancelledError:
             pass
+
+    def _token_session_alive(self) -> bool:
+        h = self._host
+        owns_hold = getattr(h, "_lan_identity_phase_owns_open_link", None)
+        return h._conn_state == RadioConnectionState.CONNECTED or (
+            owns_hold is not None and bool(owns_hold())
+        )
 
     async def _send_token(self, magic: int) -> None:
         h = self._host

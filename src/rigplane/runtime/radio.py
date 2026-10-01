@@ -174,8 +174,12 @@ from rigplane.commands import get_main_sub_tracking as _get_main_sub_tracking_cm
 from rigplane.commands import get_repeater_tone as _get_repeater_tone_cmd
 from rigplane.commands import get_repeater_tsql as _get_repeater_tsql_cmd
 from rigplane.core.env_config import get_managed_tx_enabled
-from rigplane.core.exceptions import CommandError, TimeoutError
-from rigplane.core.radio_protocol import ManagedTxSupervisor
+from rigplane.core.exceptions import CommandError, ConnectionError, TimeoutError
+from rigplane.core.radio_protocol import (
+    ManagedTxSupervisor,
+    RadioIdentity,
+    RadioIdentityStatus,
+)
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_observation import (
@@ -335,6 +339,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     # Watchdog timing (used by _watchdog_loop)
     WATCHDOG_CHECK_INTERVAL = 0.5
     _WATCHDOG_HEALTH_LOG_INTERVAL = 30.0
+
+    # Retry identity on the same control session.
+    _LAN_IDENTITY_REREAD_BACKOFF_S: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0)
+    _LAN_IDENTITY_REREAD_STEADY_S: float = 15.0
 
     # CoreRadio publishes the exact CI-V transport identity at arm/rearm and
     # withdraws that same identity before the transport closes. Mounted session
@@ -714,6 +722,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # Serialises the arming steps, so two callers cannot both find the
         # binding dead and both replace the provider.
         self._managed_tx_arm_lock = asyncio.Lock()
+        # Typed identity and current-link ownership, cleared on disconnect.
+        self._connection_identity: RadioIdentity | None = None
+        self._lan_identity_reread_task: asyncio.Task[None] | None = None
+        self._lan_identity_answer_epoch: int | None = None
+        self._lan_identity_completed_epoch: int | None = None
+        self._lan_identity_owned_epoch: int | None = None
+        self._lan_identity_gate_running: bool = False
+        self._lan_identity_connect_lock = asyncio.Lock()
+        # Recovery completion runs the deferred tail instead of a fresh fetch.
+        self._lan_identity_revalidate_origin: bool = False
 
     # Host shims for ControlPhaseRuntime and Icom7610SerialRadio (delegate to civ_runtime)
     def _advance_civ_generation(self, reason: str) -> None:
@@ -774,7 +792,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
     @property
     def connected(self) -> bool:
-        """Whether the radio is currently connected and CI-V transport is healthy."""
+        """Healthy transport with an acceptable identity for its current epoch."""
+        if self._lan_identity_unanswered_for_current_epoch():
+            return False
         if self._conn_state != RadioConnectionState.CONNECTED:
             return False
         civ = self._civ_transport
@@ -797,6 +817,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if ctrl is None:
             return False
         return getattr(ctrl, "_udp_transport", None) is not None
+
+    @property
+    def connection_identity(self) -> RadioIdentity | None:
+        """Typed identity of the radio that answered on the link (MOR-3064)."""
+        return self._connection_identity
 
     @property
     def remote_control_unreachable(self) -> bool:
@@ -1000,6 +1025,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         worse answer than the honest ``None``. Only ``connect()`` brings a
         runtime back.
         """
+        # Re-arm must also enforce the recovery tail's identity fence.
+        if self._lan_identity_unanswered_for_current_epoch():
+            return
         composition = self._managed_tx_composition
         if composition is not None:
             async with self._managed_tx_arm_lock:
@@ -1443,8 +1471,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def connect(self) -> None:
         """Open connection to the radio and authenticate.
 
-        Delegates to the composed ControlPhaseRuntime, then fetches
-        initial radio state so RadioState is populated before consumers.
+        The composed control phase checks CI-V ``19 00`` before readiness;
+        initial state and managed TX wait for that same accepted answer.
 
         A fresh (re)connection means any prior external-CAT session is over —
         its transport is gone — so clear leaked ownership first (#1702). Without
@@ -1458,10 +1486,29 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         consumer waits on. It never raises — see :meth:`_arm_managed_tx` — so
         ``connect()`` returns with ``managed_tx`` published either way.
         """
-        self._reset_external_cat_session()
-        await self._session_lifecycle.connect()
-        await self._fetch_initial_state()
-        await self._arm_managed_tx()
+        async with self._lan_identity_connect_lock:
+            if self.connected or self._lan_identity_phase_owns_open_link():
+                return
+            self._reset_external_cat_session()
+            checking = RadioIdentity(
+                status=RadioIdentityStatus.CHECKING, expected_model=self.model
+            )
+            self._connection_identity = checking
+            try:
+                await self._session_lifecycle.connect()
+                if self._lan_identity_owned_epoch != self._civ_epoch or (
+                    self._lan_identity_unanswered_for_current_epoch()
+                    and not self._lan_identity_phase_owns_open_link()
+                ):
+                    if not await self._gate_lan_identity():
+                        return
+                if self._lan_identity_unanswered_for_current_epoch():
+                    return
+                await self._finish_lan_identity_completion()
+            except BaseException:
+                if self._connection_identity is checking:
+                    self._connection_identity = None
+                raise
 
     async def __aenter__(self) -> "CoreRadio":
         # Route through the lifecycle's guaranteed-release context manager so a
@@ -1489,10 +1536,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         open — see :meth:`_shutdown_managed_tx`, which is also where the radio
         stops being managed until the next ``connect()``.
         """
+        # Keep the identity hold until teardown finishes; stop its reader first.
+        self._cancel_lan_identity_reread()
         await self._shutdown_managed_tx()
         await self._session_lifecycle.disconnect()
         if self._conn_state == RadioConnectionState.CONNECTED:
             await self._control_phase.disconnect()
+        self._connection_identity = None
+        self._lan_identity_answer_epoch = None
+        self._lan_identity_owned_epoch = None
+        self._lan_identity_revalidate_origin = False
 
     async def soft_disconnect(self) -> None:
         """Disconnect CI-V and audio but keep control transport alive.
@@ -1505,7 +1558,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         that changes here is that it stops accepting keys — see
         :meth:`_park_managed_tx`.
         """
+        # Stop the reader first and retain the hold throughout teardown.
+        self._cancel_lan_identity_reread()
         if self._conn_state != RadioConnectionState.CONNECTED:
+            self._connection_identity = None
+            self._lan_identity_answer_epoch = None
+            self._lan_identity_owned_epoch = None
+            self._lan_identity_revalidate_origin = False
             return
         await self._park_managed_tx()
         self._conn_state = RadioConnectionState.DISCONNECTING
@@ -1539,6 +1598,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             await self._civ_runtime.stop_pump()
             await self._civ_transport.disconnect()
             self._civ_transport = None
+
+        # Teardown has finished; retire its identity.
+        self._connection_identity = None
+        self._lan_identity_answer_epoch = None
+        self._lan_identity_owned_epoch = None
+        self._lan_identity_revalidate_origin = False
 
         self._conn_state = RadioConnectionState.DISCONNECTED
         self._civ_stream_ready = False
@@ -1592,17 +1657,279 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         watches CI-V data flow, sends patient OpenClose nudges, and on patience
         exhaustion TRIGGERS this method in a detached task — but it no longer
         owns the retry/backoff/exhaustion ladder (that moved here). The
-        watchdog still unconditionally re-arms in ``finally`` so a later stall
-        is caught again (#1217).
+        watchdog re-arms after recovery once identity accepts the link, so a
+        later stall is caught again (#1217).
+
+        MOR-3064: the recovery tail (``ControlPhaseRuntime._after_reconnect``)
+        revalidates identity before its parts run.
         """
+        if self._lan_identity_phase_owns_open_link():
+            return
         await self._session_lifecycle.soft_reconnect()
+
+    # Connect-time identity gate (MOR-3064)
+    async def revalidate_connection_identity(self) -> bool:
+        """Re-run the identity gate on a recovered link (recovery-tail hook)."""
+        return await self._gate_lan_identity(revalidate_origin=True)
+
+    async def _gate_lan_identity(self, *, revalidate_origin: bool = False) -> bool:
+        """Read native identity, fence its epoch, then accept or hold the link."""
+        self._cancel_lan_identity_reread()
+        self._lan_identity_answer_epoch = None
+        self._lan_identity_completed_epoch = None
+        self._lan_identity_revalidate_origin = revalidate_origin
+        owned_epoch = self._civ_epoch
+        self._lan_identity_owned_epoch = owned_epoch
+        # Pause the data watchdog so an ID timeout cannot reopen this session.
+        self._lan_identity_gate_running = True
+        try:
+            self._connection_identity = RadioIdentity(
+                status=RadioIdentityStatus.CHECKING,
+                expected_model=self.model,
+            )
+            await self._stop_civ_data_watchdog()
+            payload = await self._read_lan_identity_payload()
+        finally:
+            if self._lan_identity_owned_epoch == owned_epoch:
+                self._lan_identity_gate_running = False
+        if (
+            self._civ_epoch != owned_epoch
+            or self._lan_identity_owned_epoch != owned_epoch
+            or not self.control_connected
+        ):
+            # Stale/aborted — this gate's read belongs to a replaced link.
+            return False
+        if payload is not None:
+            identity = self._classify_lan_identity_answer(payload)
+            self._connection_identity = identity
+            if identity.status in (
+                RadioIdentityStatus.VERIFIED,
+                RadioIdentityStatus.UNVERIFIED,
+            ):
+                self._lan_identity_answer_epoch = self._civ_epoch
+                self._start_civ_data_watchdog()
+                return True
+        else:
+            self._record_lan_identity_no_response()
+        # The re-read owns the held session; fetch and arm wait for its answer.
+        self._conn_state = RadioConnectionState.CONNECTING
+        self._civ_stream_ready = False
+        self._civ_recovering = False
+        self._start_lan_identity_reread()
+        return False
+
+    async def _read_lan_identity_payload(self) -> bytes | None:
+        """Read through the request tracker; None on silence/malformed reply.
+
+        Empty bytes preserve compatibility for profiles without an ID command.
+        """
+        builder = getattr(self._commands, "get_transceiver_id", None)
+        if not callable(builder):
+            return b""
+        try:
+            request = builder(to_addr=self._radio_addr)
+        except CommandError:
+            return b""
+        try:
+            resp = await self._execute_civ_raw(request, wait_response=True)
+        except (TimeoutError, asyncio.TimeoutError):
+            return None
+        except (ConnectionError, OSError):
+            return None
+        if resp is None:
+            return None
+        # Only a well-formed 19 00 reply from the addressed radio counts:
+        # never an ACK, an address or a session network id.
+        if (
+            resp.from_addr != self._radio_addr
+            or resp.command != 0x19
+            or resp.sub != 0x00
+            or not resp.data
+        ):
+            return None
+        return resp.data
+
+    def _classify_lan_identity_answer(self, payload: bytes) -> RadioIdentity:
+        """Classify a raw ``19 00`` payload: empty/no expected → UNVERIFIED;
+        canonical match → VERIFIED; definitive wrong → MISMATCH."""
+        answered_id = payload.hex().upper() if payload else None
+        if not payload or not self._profile.expected_identity_ids:
+            return RadioIdentity(
+                status=RadioIdentityStatus.UNVERIFIED,
+                expected_model=self.model,
+                answered_id=answered_id,
+            )
+        # Profile tokens are immutable and compared exactly, as in Icom serial.
+        if answered_id in self._profile.expected_identity_ids:
+            return RadioIdentity(
+                status=RadioIdentityStatus.VERIFIED,
+                expected_model=self.model,
+                answered_model=self.model,
+                answered_id=answered_id,
+            )
+        return RadioIdentity(
+            status=RadioIdentityStatus.IDENTITY_MISMATCH,
+            expected_model=self.model,
+            answered_model=None,
+            answered_id=answered_id,
+        )
+
+    def _record_lan_identity_no_response(self) -> None:
+        """Record ``no_response`` with the answer cleared (the hold semantics)."""
+        self._connection_identity = RadioIdentity(
+            status=RadioIdentityStatus.NO_RESPONSE,
+            expected_model=self.model,
+        )
+        logger.warning(
+            "rigplane (%s): no identity answer on %s:%d — hold; re-read owns it",
+            self.model,
+            self._host,
+            self._port,
+        )
+
+    def _lan_identity_hold_status_active(self) -> bool:
+        """Hold statuses that the link owns right now."""
+        identity = getattr(self, "_connection_identity", None)
+        return identity is not None and identity.status in (
+            RadioIdentityStatus.CHECKING,
+            RadioIdentityStatus.NO_RESPONSE,
+            RadioIdentityStatus.IDENTITY_MISMATCH,
+        )
+
+    def _lan_identity_hold_has_owner(self) -> bool:
+        """A gate or re-read task actively drives the hold."""
+        if getattr(self, "_lan_identity_gate_running", False):
+            return True
+        task = getattr(self, "_lan_identity_reread_task", None)
+        return task is not None and not task.done()
+
+    def _lan_identity_phase_owns_open_link(self) -> bool:
+        """The identity read (or its re-read) owns the open link."""
+        owned_epoch = getattr(self, "_lan_identity_owned_epoch", None)
+        return (
+            self._lan_identity_hold_status_active()
+            and self.control_connected
+            and owned_epoch is not None
+            and owned_epoch == getattr(self, "_civ_epoch", None)
+            and self._lan_identity_hold_has_owner()
+        )
+
+    def _lan_identity_unanswered_for_current_epoch(self) -> bool:
+        """Hold or stale LAN answer blocks re-arm; serial has no LAN epoch."""
+        if self._lan_identity_hold_status_active():
+            return True
+        answer_epoch = getattr(self, "_lan_identity_answer_epoch", None)
+        return answer_epoch is not None and answer_epoch != self._civ_epoch
+
+    def _power_on_allowed_in_no_response(self) -> bool:
+        """POWER ON only, and only in an owned ``no_response`` hold."""
+        identity = self._connection_identity
+        return (
+            identity is not None
+            and identity.status is RadioIdentityStatus.NO_RESPONSE
+            and self.control_connected
+            and self._lan_identity_phase_owns_open_link()
+        )
+
+    def _start_lan_identity_reread(self) -> None:
+        """Start the background identity re-read unless one already runs."""
+        task = self._lan_identity_reread_task
+        if task is not None and not task.done():
+            return
+        self._lan_identity_reread_task = asyncio.create_task(
+            self._lan_identity_reread_loop(),
+            name="lan-identity-reread",
+        )
+
+    def _cancel_lan_identity_reread(self) -> None:
+        task = getattr(self, "_lan_identity_reread_task", None)
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+        self._lan_identity_reread_task = None
+
+    async def _lan_identity_reread_loop(self) -> None:
+        """Re-read on the same link at 1/2/4/8/15 s, fencing replaced epochs."""
+        attempts = 0
+        try:
+            while True:
+                backoff = self._LAN_IDENTITY_REREAD_BACKOFF_S
+                delay = (
+                    backoff[attempts]
+                    if attempts < len(backoff)
+                    else self._LAN_IDENTITY_REREAD_STEADY_S
+                )
+                attempts += 1
+                await asyncio.sleep(delay)
+                if not self._lan_identity_phase_owns_open_link():
+                    return
+                owned_epoch = self._lan_identity_owned_epoch
+                payload = await self._read_lan_identity_payload()
+                if (
+                    owned_epoch is None
+                    or self._lan_identity_owned_epoch != owned_epoch
+                    or self._civ_epoch != owned_epoch
+                    or not self.control_connected
+                ):
+                    # Stale/aborted — an older read must not complete here.
+                    return
+                if payload is None:
+                    self._record_lan_identity_no_response()
+                    continue
+                identity = self._classify_lan_identity_answer(payload)
+                self._connection_identity = identity
+                if identity.status in (
+                    RadioIdentityStatus.VERIFIED,
+                    RadioIdentityStatus.UNVERIFIED,
+                ):
+                    self._lan_identity_answer_epoch = self._civ_epoch
+                    await self._finish_lan_identity_completion()
+                    return
+                # IDENTITY_MISMATCH keeps holding; the loop keeps asking.
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.error(
+                "rigplane (%s): identity re-read failed; abandoning the hold",
+                self.model,
+                exc_info=True,
+            )
+
+    async def _finish_lan_identity_completion(self) -> None:
+        """Complete a held connect from a recorded acceptable answer."""
+        epoch = self._lan_identity_answer_epoch
+        if epoch != self._civ_epoch or self._lan_identity_completed_epoch == epoch:
+            return
+        self._lan_identity_completed_epoch = epoch
+        self._cancel_lan_identity_reread()
+        revalidate_origin = self._lan_identity_revalidate_origin
+        self._lan_identity_revalidate_origin = False
+        # The acceptable answer restarts the data watchdog exactly once.
+        self._start_civ_data_watchdog()
+        if self._conn_state is RadioConnectionState.CONNECTING:
+            self._conn_state = RadioConnectionState.CONNECTED
+        if self._token_task is not None:
+            self._control_phase._start_token_renewal()
+        if self._auto_reconnect and self._watchdog_task is not None:
+            self._control_phase._start_watchdog()
+        if revalidate_origin:
+            await self._control_phase._run_deferred_retail()
+            return
+        await self._fetch_initial_state()
+        if self._civ_epoch != epoch:
+            return
+        await self._arm_managed_tx()
 
     async def _send_open_close(self, *, open_stream: bool) -> None:
         """Delegate to control-phase runtime (for soft_disconnect, _force_cleanup_civ, etc.)."""
         await self._control_phase._send_open_close(open_stream=open_stream)
 
     def _check_connected(self) -> None:
-        """Delegate to CI-V runtime (raises ConnectionError if not connected)."""
+        """Delegate to CI-V runtime; MOR-3064 hold statuses fail closed here."""
+        if self._lan_identity_unanswered_for_current_epoch():
+            raise ConnectionError(
+                "Radio identity hold active; commands are refused until the "
+                "radio answers its 19 00 model identification"
+            )
         self._civ_runtime._check_connected()
 
     async def _execute_civ_raw(
@@ -5240,6 +5567,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         so its acknowledgement cannot be relied on. POWER OFF still waits for
         an acknowledgement and raises CommandError on a NAK.
         """
+        # POWER ON alone may pass through an owned no-response hold.
+        if on and self._power_on_allowed_in_no_response():
+            civ = self._commands.power_on(to_addr=self._radio_addr)
+            try:
+                await self._execute_civ_raw(civ, wait_response=False)
+            except (ConnectionError, OSError) as exc:
+                raise ConnectionError(
+                    f"POWER ON could not be sent on {self._host}:{self._port}: {exc}"
+                ) from exc
+            return
         self._check_connected()
         civ = (
             self._commands.power_on(to_addr=self._radio_addr)

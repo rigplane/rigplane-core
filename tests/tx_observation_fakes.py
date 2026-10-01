@@ -163,6 +163,7 @@ class ScriptedCivLink:
         self.sent_frames: list[bytes] = []
         self.answer: str = "rx"
         self.radio_addr: int = 0x94
+        self.model_id: int = 0x94
         self._replies: asyncio.Queue[bytes] = asyncio.Queue()
 
     def set_device(self, device: str) -> None:
@@ -197,7 +198,7 @@ class ScriptedCivLink:
                         payload[2],
                         0x19,
                         0x00,
-                        0x94,
+                        self.model_id,
                         0xFD,
                     )
                 )
@@ -390,6 +391,7 @@ def _is_hex_civ_read(entry: str) -> bool:
 
 async def _build_icom_serial(name: str) -> TxObservationHarness:
     link = ScriptedCivLink()
+    link.model_id = 0x98 if name == "icom7610-serial" else 0x94
     radio = _ICOM_SERIAL_CLASSES[name](device="/dev/ttyUSB0", civ_link=link)
     await radio.connect()
     link.radio_addr = radio._radio_addr

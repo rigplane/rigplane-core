@@ -506,7 +506,9 @@ def _lan_radio() -> IcomRadio:
 
 
 def _serial_radio() -> Ic7300SerialRadio:
-    return Ic7300SerialRadio(device="/dev/ttyUSB0", civ_link=_FakeSerialCivLink())
+    return Ic7300SerialRadio(
+        device="/dev/ttyUSB0", civ_link=_FakeSerialCivLink(model_id=0x94)
+    )
 
 
 def test_the_budget_is_one_over_max_gap_and_round_trip(

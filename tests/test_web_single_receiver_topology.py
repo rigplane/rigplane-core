@@ -36,6 +36,8 @@ from test_icom7610_serial_radio import _FakeSerialCivLink
 
 
 def _serial_radio(cls: Any, link: _FakeSerialCivLink) -> Any:
+    link.model_id = 0x94 if cls is Ic7300SerialRadio else 0x98
+
     async def refuse_probe(port: str) -> int | None:
         raise AssertionError(f"unexpected CI-V identity probe on {port!r}")
 

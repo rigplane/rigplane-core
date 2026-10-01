@@ -59,7 +59,7 @@ def _serial_radio_factories():
         pytest.param(
             lambda drv: Ic7300SerialRadio(
                 device="/dev/ttyUSB0",
-                civ_link=_FakeSerialCivLink(),
+                civ_link=_FakeSerialCivLink(model_id=0x94),
                 audio_driver=drv,
             ),
             id="ic7300",

@@ -138,6 +138,20 @@ def radio(mock_transport: MockTransport):
     r._connected = False  # reset _conn_state so __del__ stays quiet
 
 
+def _verified_lan_identity(radio: IcomRadio) -> patch:
+    """Answer the MOR-3064 ``19 00`` identity read with IC-7610's native
+    token ``0x98`` — the token ``rigs/ic7610.toml`` ``[identity]`` expects.
+
+    The soft-reconnect tests that use this stub the CI-V rebuild itself, so
+    no rx pump runs on the fake transports and no queued reply could ever
+    route back. Only the payload read is answered: classification, the gate
+    verdict, ``connected`` and readiness stay real.
+    """
+    return patch.object(
+        radio, "_read_lan_identity_payload", new=AsyncMock(return_value=b"\x98")
+    )
+
+
 # ---------------------------------------------------------------------------
 # conn_state property (line 252)
 # ---------------------------------------------------------------------------
@@ -318,7 +332,10 @@ async def test_soft_reconnect_already_open_stalled_rebuilds_not_frozen(
         radio._civ_transport = None
         radio._ctrl_transport._udp_transport = None  # force full-connect branch
 
-    rebuilt = AsyncMock()
+    async def rebuild() -> None:
+        radio._ctrl_transport._udp_transport = object()
+
+    rebuilt = AsyncMock(side_effect=rebuild)
 
     with (
         caplog.at_level(logging.WARNING, logger="rigplane.runtime._control_phase"),
@@ -327,6 +344,7 @@ async def test_soft_reconnect_already_open_stalled_rebuilds_not_frozen(
         # ctrl-dead rebuild branch now does a single full-connect via
         # ``_connect_once`` (the lifecycle owns retry).
         patch.object(radio._control_phase, "_connect_once", new=rebuilt),
+        _verified_lan_identity(radio),
     ):
         await radio.soft_reconnect()
 
@@ -350,7 +368,13 @@ async def test_soft_reconnect_does_full_connect_when_ctrl_dead(
     radio._civ_transport = None
     radio._ctrl_transport._udp_transport = None  # type: ignore[attr-defined]
 
-    connect_mock = AsyncMock()
+    async def _connect_opens_control_session() -> None:
+        # A real full connect ends with a live control session; the stub
+        # must too, or the recovery tail's MOR-3064 identity revalidation
+        # sees control dead and defers the parts asserted below.
+        radio._ctrl_transport._udp_transport = object()  # type: ignore[attr-defined]
+
+    connect_mock = AsyncMock(side_effect=_connect_opens_control_session)
     rearm = AsyncMock()
     ensure_audio = AsyncMock()
     on_reconnect = MagicMock()
@@ -358,7 +382,11 @@ async def test_soft_reconnect_does_full_connect_when_ctrl_dead(
     radio._ensure_audio_transport = ensure_audio
     radio._on_reconnect = on_reconnect
 
-    with patch.object(radio._control_phase, "_connect_once", side_effect=connect_mock):
+    with (
+        patch.object(radio._control_phase, "_connect_once", side_effect=connect_mock),
+        patch.object(radio._civ_runtime, "start_data_watchdog"),
+        _verified_lan_identity(radio),
+    ):
         await radio.soft_reconnect()
 
     connect_mock.assert_awaited_once()
@@ -1538,6 +1566,7 @@ async def test_soft_reconnect_reconnects_civ_when_ctrl_alive(
         patch.object(radio._civ_runtime, "start_pump"),
         patch.object(radio._civ_runtime, "start_worker"),
         patch.object(radio._civ_runtime, "start_data_watchdog"),
+        _verified_lan_identity(radio),
     ):
         await radio.soft_reconnect()
 
@@ -1573,6 +1602,7 @@ async def test_soft_reconnect_calls_on_reconnect_callback(
         patch.object(radio._civ_runtime, "start_pump"),
         patch.object(radio._civ_runtime, "start_worker"),
         patch.object(radio._civ_runtime, "start_data_watchdog"),
+        _verified_lan_identity(radio),
     ):
         await radio.soft_reconnect()
 
@@ -1655,6 +1685,7 @@ async def test_soft_reconnect_retries_ephemeral_port_when_saved_local_port_busy(
         patch.object(radio._civ_runtime, "start_pump"),
         patch.object(radio._civ_runtime, "start_worker"),
         patch.object(radio._civ_runtime, "start_data_watchdog"),
+        _verified_lan_identity(radio),
     ):
         await radio.soft_reconnect()
 

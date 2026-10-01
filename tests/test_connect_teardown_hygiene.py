@@ -13,7 +13,7 @@ data-port discovery timeout) must fully unwind everything it started:
 import asyncio
 import gc
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -166,6 +166,7 @@ class TestFailedConnectRetryHygiene:
 
         async def _fake_ctrl_connect(*args: object, **kwargs: object) -> None:
             ctrl.state = ConnectionState.CONNECTING
+            ctrl._udp_transport = MagicMock()
 
         timeout_transports = [_TimeoutCivTransport() for _ in range(4)]
         success_transport = ConnectMockTransport()
@@ -215,6 +216,18 @@ class TestFailedConnectRetryHygiene:
                 patch.object(radio._control_phase, "_start_token_renewal"),
                 patch.object(radio._control_phase, "_start_watchdog"),
                 patch.object(radio, "_fetch_initial_state", new=AsyncMock()),
+                # MOR-3064: the successful retry must clear the identity
+                # gate or ``radio.connected`` stays False. The real rx pump
+                # this test runs would drain a pre-queued ``19 00`` reply
+                # into the orphan backlog before the gate's waiter
+                # registers, so the payload read is answered directly with
+                # the IC-7610 token 0x98 (rigs/ic7610.toml ``[identity]``);
+                # classification and the gate verdict stay real.
+                patch.object(
+                    radio,
+                    "_read_lan_identity_payload",
+                    new=AsyncMock(return_value=b"\x98"),
+                ),
                 patch(
                     "rigplane.transport.IcomTransport",
                     side_effect=[*timeout_transports, success_transport],

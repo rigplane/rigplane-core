@@ -859,7 +859,7 @@ class TestIcomSerialExclusiveDuplexTx:
         )
         radio = Ic7300SerialRadio(
             device="/dev/ttyUSB-fake",
-            civ_link=_FakeSerialCivLink(),
+            civ_link=_FakeSerialCivLink(model_id=0x94),
             audio_driver=driver,
             audio_codec=AudioCodec.PCM_1CH_16BIT,
         )
