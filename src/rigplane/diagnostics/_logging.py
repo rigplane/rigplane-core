@@ -24,6 +24,8 @@ _DIAGNOSTIC_FORMATTER = logging.Formatter(
 _LOG_FILE_NAME = "rigplane.log"
 _MAX_BYTES = 5 * 1024 * 1024  # 5 MiB
 _BACKUP_COUNT = 2  # keep 2 rotations → ~15 MiB total
+# Mirrors the CLI false-value set at cli/__init__.py:main (ICOM_DEBUG).
+_ICOM_DEBUG_FALSE_VALUES = ("", "0", "false", "no")
 
 
 class SafeRotatingFileHandler(RotatingFileHandler):
@@ -76,15 +78,12 @@ def configure_diagnostic_logging() -> None:
         handler.setFormatter(_DIAGNOSTIC_FORMATTER)
         # Attach to "rigplane" logger, NOT root — see spec §4.1.
         icom_logger.addHandler(handler)
-        # Only force DEBUG if the host application has not expressed an opinion
-        # (level == NOTSET). If the app has explicitly raised the level (e.g. to
-        # WARNING), respect it: only WARNING+ records reach the diagnostic file.
-        # The handler's own level is DEBUG, so any record the logger doesn't
-        # filter still hits the file — see spec §4.1.
+        # Respect an embedding application's explicitly configured level.
         if icom_logger.level == logging.NOTSET:
-            icom_logger.setLevel(
-                logging.INFO
-            )  # was DEBUG: avoids ~40-57 disk writes/s on the loop (see issue #1879)
+            debug_mode = (
+                os.environ.get("ICOM_DEBUG", "").strip() not in _ICOM_DEBUG_FALSE_VALUES
+            )
+            icom_logger.setLevel(logging.DEBUG if debug_mode else logging.INFO)
     except Exception as exc:  # noqa: BLE001 — best-effort init, swallow all
         sys.stderr.write(f"rigplane: diagnostic logging disabled: {exc}\n")
 
