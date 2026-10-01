@@ -993,6 +993,8 @@ class ManagedTxAuthority:
             events: list[ManagedTxEvent] = []
             for effect in effects:
                 if full_force:
+                    # Releasing managed TX must preserve the user's persistent
+                    # tuner setting; STOP_TUNE would switch the tuner OFF.
                     aborts = [
                         asyncio.create_task(
                             self._lane.settle_abort(
@@ -1004,7 +1006,7 @@ class ManagedTxAuthority:
                                 ),
                             )
                         )
-                        for operation in AbortOperation
+                        for operation in (AbortOperation.STOP_CW,)
                     ]
                 if settled := await self._lane.settle(
                     effect,
