@@ -1,0 +1,230 @@
+name: Owner-pinned native Core CLI checks
+
+on:
+  workflow_call:
+    inputs:
+      helper_revision:
+        description: CoreRoot-reviewed full commit containing this exact helper; pin the reusable workflow to the same commit
+        required: true
+        type: string
+      native_profiles:
+        description: Required four-row JSON object; each row supplies absolute bootstrap/controls/profile paths and independent SHA256 pins
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Core CLI / ${{ matrix.host }}
+    runs-on: ['${{ matrix.selector }}']
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - host: mac-home
+            selector: fleet-mac-home-arm64
+          - host: mac-server
+            selector: fleet-mac-server-arm64
+          - host: gtr7
+            selector: fleet-gtr7-x64
+          - host: nsu
+            selector: fleet-nsu-x64
+    env:
+      FLEET_NATIVE_PROFILES: ${{ inputs.native_profiles }}
+      FLEET_BOOTSTRAP_PYTHON: ${{ fromJSON(inputs.native_profiles)[matrix.host].bootstrap_python }}
+      FLEET_BOOTSTRAP_SHA256: ${{ fromJSON(inputs.native_profiles)[matrix.host].bootstrap_sha256 }}
+      FLEET_HELPER_REVISION: ${{ inputs.helper_revision }}
+      FLEET_HELPER_SHA256: 5e55a50546fa4a855519a65df75ea0fb8cf17597d33a86953db33467c3401683
+      FLEET_RUNTIME_VERIFIER_SHA256: d1a57cc8107383098591a86e5d72d818ec1be407df316912b39f8c3149434d3b
+      FLEET_RUNNER_NAME: ${{ runner.name }}
+      FLEET_HOST: ${{ matrix.host }}
+      FLEET_OUTPUT: ${{ runner.temp }}/fleet-native-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.host }}
+    steps:
+      - name: Check out exact public Core helper controls
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        env:
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: 'false'
+        with:
+          repository: rigplane/rigplane-core
+          ref: ${{ inputs.helper_revision }}
+          path: fleet-control
+          fetch-depth: 1
+          persist-credentials: false
+          set-safe-directory: false
+          submodules: false
+          lfs: false
+
+      - name: Check out byte-clean fixed public Core source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        env:
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: 'false'
+        with:
+          repository: rigplane/rigplane-core
+          ref: 37b814a8cf7df0d74cab7c88f8d2401df7867bba
+          path: fleet-target
+          fetch-depth: 1
+          persist-credentials: false
+          set-safe-directory: false
+          submodules: false
+          lfs: false
+
+      - name: Reject native Windows reparse attributes before Node or Python
+        id: windows_attributes
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function NoReparse([string]$value) {
+            if ($value -cnotmatch '^[A-Za-z]:[\\/]' -or ($value -split '[\\/]') -contains '..') { throw 'Drive-absolute namespace required' }
+            $current = [IO.Path]::GetFullPath($value)
+            while ($current) {
+              $item = Get-Item -Force -LiteralPath $current
+              if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Reparse namespace refused' }
+              $parent = [IO.Directory]::GetParent($current)
+              if ($null -eq $parent) { break }
+              $current = $parent.FullName
+            }
+          }
+          $rows = ConvertFrom-Json -InputObject $env:FLEET_NATIVE_PROFILES
+          $row = $rows.($env:FLEET_HOST)
+          NoReparse $row.controls_root
+          NoReparse (Join-Path $row.controls_root 'scripts/dev-environment-bootstrap.cjs')
+          if ($row.profile_sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'Independent profile pin required' }
+          NoReparse $row.profile_path
+          if ((Get-Item -LiteralPath $row.profile_path).Length -gt 65536) { throw 'Profile bound' }
+          if ((Get-FileHash -LiteralPath $row.profile_path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $row.profile_sha256) { throw 'Profile pin mismatch' }
+          $TaskProfile = Get-Content -Raw -LiteralPath $row.profile_path | ConvertFrom-Json
+          if ($TaskProfile.platform -cnotmatch '^windows-(aarch64|x86_64)$' -or $TaskProfile.runtime_receipt_sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'Windows identity required' }
+          NoReparse $TaskProfile.profile_root
+          $version = Join-Path $TaskProfile.profile_root ('versions/576602b37ca6947c40010db5abad7cf2c337264c092b4bc79c71bab6a330bcb8-' + $TaskProfile.platform)
+          NoReparse $version
+          $receiptPath = Join-Path $version 'receipt.json'
+          $inventoryPath = Join-Path $version 'inventory.json'
+          NoReparse $receiptPath
+          NoReparse $inventoryPath
+          if ((Get-Item -LiteralPath $receiptPath).Length -gt 65536) { throw 'Receipt bound' }
+          if ((Get-FileHash -LiteralPath $receiptPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $TaskProfile.runtime_receipt_sha256) { throw 'Receipt pin mismatch' }
+          $receipt = Get-Content -Raw -LiteralPath $receiptPath | ConvertFrom-Json
+          if ($receipt.kind -cne 'toolchain' -or $receipt.schema_version -ne 1 -or $receipt.platform -cne $TaskProfile.platform -or $receipt.manifest_sha256 -cne '576602b37ca6947c40010db5abad7cf2c337264c092b4bc79c71bab6a330bcb8' -or $receipt.inventory_sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'Receipt identity mismatch' }
+          if ((Get-Item -LiteralPath $inventoryPath).Length -gt 16777216) { throw 'Inventory bound' }
+          if ((Get-FileHash -LiteralPath $inventoryPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $receipt.inventory_sha256) { throw 'Inventory pin mismatch' }
+          $payload = Join-Path $version 'payload'
+          NoReparse $payload
+          $clock = [Diagnostics.Stopwatch]::StartNew()
+          $count = 0
+          $pending = [Collections.Generic.Stack[string]]::new()
+          $pending.Push($payload)
+          while ($pending.Count) {
+            if ($clock.Elapsed.TotalSeconds -ge 600) { throw 'Attribute deadline' }
+            foreach ($item in Get-ChildItem -Force -LiteralPath $pending.Pop()) {
+              $count++
+              if ($count -gt 30000 -or $clock.Elapsed.TotalSeconds -ge 600) { throw 'Attribute bound' }
+              if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Reparse payload refused' }
+              if ($item.PSIsContainer) { $pending.Push($item.FullName) }
+            }
+          }
+          if ((Get-FileHash -LiteralPath $row.profile_path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $row.profile_sha256 -or (Get-FileHash -LiteralPath $receiptPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $TaskProfile.runtime_receipt_sha256 -or (Get-FileHash -LiteralPath $inventoryPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $receipt.inventory_sha256) { throw 'Attribute input changed' }
+          $encoding = [Text.UTF8Encoding]::new($false)
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "profile_sha256=$($row.profile_sha256)`n", $encoding)
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "receipt_sha256=$($TaskProfile.runtime_receipt_sha256)`n", $encoding)
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "inventory_sha256=$($receipt.inventory_sha256)`n", $encoding)
+
+      - name: Verify entire private runtime under trusted Actions Node
+        id: runtime
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+          WINDOWS_PROFILE_SHA256: ${{ steps.windows_attributes.outputs.profile_sha256 }}
+          WINDOWS_RECEIPT_SHA256: ${{ steps.windows_attributes.outputs.receipt_sha256 }}
+          WINDOWS_INVENTORY_SHA256: ${{ steps.windows_attributes.outputs.inventory_sha256 }}
+        with:
+          script: |
+            const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
+            const requireValue = (value) => { if (!value) throw new Error('Pinned native bootstrap refused'); };
+            requireValue(/^[0-9a-f]{40}$/.test(process.env.FLEET_HELPER_REVISION));
+            const rows = JSON.parse(process.env.FLEET_NATIVE_PROFILES);
+            requireValue(rows && !Array.isArray(rows) && typeof rows === 'object' && Object.keys(rows).sort().join(',') === 'gtr7,mac-home,mac-server,nsu');
+            for (const row of Object.values(rows)) {
+              requireValue(row && Object.keys(row).sort().join(',') === 'bootstrap_python,bootstrap_sha256,controls_root,profile_path,profile_sha256');
+              for (const key of ['bootstrap_sha256', 'profile_sha256']) requireValue(typeof row[key] === 'string' && /^[0-9a-f]{64}$/.test(row[key]));
+              for (const key of ['bootstrap_python', 'controls_root', 'profile_path']) requireValue(typeof row[key] === 'string' && (path.posix.isAbsolute(row[key]) || path.win32.isAbsolute(row[key])));
+            }
+            const row = rows[process.env.FLEET_HOST];
+            const control = path.join(row.controls_root, 'scripts/dev-environment-bootstrap.cjs');
+            for (let current = path.resolve(control);; current = path.dirname(current)) {
+              const info = fs.lstatSync(current);
+              requireValue(!info.isSymbolicLink() && fs.realpathSync.native(current).toLowerCase() === current.toLowerCase());
+              if (path.dirname(current) === current) break;
+            }
+            const info = fs.lstatSync(control);
+            requireValue(info.isFile() && info.size <= 65536 && (info.mode & 0o222) === 0);
+            requireValue(crypto.createHash('sha256').update(fs.readFileSync(control)).digest('hex') === process.env.FLEET_RUNTIME_VERIFIER_SHA256);
+            const result = require(control).verifyProfile(row.profile_path, row.profile_sha256);
+            requireValue(result.status === 'verified-runtime-bootstrap' && result.python_path === path.resolve(row.bootstrap_python) && result.python_sha256 === row.bootstrap_sha256);
+            if (process.platform === 'win32') {
+              requireValue(process.env.WINDOWS_PROFILE_SHA256 === row.profile_sha256 && process.env.WINDOWS_RECEIPT_SHA256 === result.runtime_receipt_sha256 && process.env.WINDOWS_INVENTORY_SHA256 === result.inventory_sha256);
+            }
+            core.setOutput('python', result.python_path);
+            core.setOutput('receipt_sha256', result.runtime_receipt_sha256);
+            core.setOutput('inventory_sha256', result.inventory_sha256);
+
+      - name: Run fixed native checks on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          VERIFIED_NATIVE_PYTHON: ${{ steps.runtime.outputs.python }}
+        run: |
+          set -euo pipefail
+          [[ "$FLEET_HELPER_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$FLEET_BOOTSTRAP_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          helper="$GITHUB_WORKSPACE/fleet-control/.github/scripts/fleet-native-focused.py"
+          [[ "$(shasum -a 256 "$helper" | cut -d ' ' -f 1)" == "$FLEET_HELPER_SHA256" ]]
+          [[ "$(shasum -a 256 "$FLEET_BOOTSTRAP_PYTHON" | cut -d ' ' -f 1)" == "$FLEET_BOOTSTRAP_SHA256" ]]
+          "$VERIFIED_NATIVE_PYTHON" -I -S -B "$helper" \
+            --host "$FLEET_HOST" --checkout "$GITHUB_WORKSPACE/fleet-target" --report-dir "$FLEET_OUTPUT"
+
+      - name: Run fixed native checks on Windows
+        if: runner.os == 'Windows'
+        shell: powershell
+        env:
+          VERIFIED_NATIVE_PYTHON: ${{ steps.runtime.outputs.python }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:FLEET_HELPER_REVISION -cnotmatch '^[0-9a-f]{40}$') { throw 'Exact helper revision required' }
+          if ($env:FLEET_BOOTSTRAP_SHA256 -cnotmatch '^[0-9a-f]{64}$') { throw 'Exact bootstrap pin required' }
+          $helper = Join-Path $env:GITHUB_WORKSPACE 'fleet-control/.github/scripts/fleet-native-focused.py'
+          if ((Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:FLEET_HELPER_SHA256) { throw 'Helper pin mismatch' }
+          if ((Get-FileHash -LiteralPath $env:FLEET_BOOTSTRAP_PYTHON -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:FLEET_BOOTSTRAP_SHA256) { throw 'Bootstrap pin mismatch' }
+          & $env:VERIFIED_NATIVE_PYTHON '-I' '-S' '-B' $helper '--host' $env:FLEET_HOST '--checkout' (Join-Path $env:GITHUB_WORKSPACE 'fleet-target') '--report-dir' $env:FLEET_OUTPUT
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Refuse unexpected native OS
+        if: runner.os != 'macOS' && runner.os != 'Windows'
+        shell: bash
+        run: exit 2
+
+      - name: Retain JUnit, statuses, receipts and native identity
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fleet-native-${{ matrix.host }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.FLEET_OUTPUT }}/result.json
+            ${{ env.FLEET_OUTPUT }}/junit.xml
+            ${{ env.FLEET_OUTPUT }}/origins.json
+            ${{ env.FLEET_OUTPUT }}/pytest-version.txt
+            ${{ env.FLEET_OUTPUT }}/*.log
+            ${{ env.FLEET_OUTPUT }}/preflight/preflight.json
+            ${{ env.FLEET_OUTPUT }}/postflight/preflight.json
+            ${{ env.FLEET_OUTPUT }}/source-metadata/*/METADATA
+          if-no-files-found: error
+          retention-days: 14
