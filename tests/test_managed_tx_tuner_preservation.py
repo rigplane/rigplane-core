@@ -169,8 +169,7 @@ async def test_icom_lifecycle_exit_never_disables_the_persistent_tuner(
     )
     # No lifecycle route reads the tuner to decide anything.
     assert (
-        bytes(radio._commands.get_tuner_status(to_addr=radio._radio_addr))
-        not in frames
+        bytes(radio._commands.get_tuner_status(to_addr=radio._radio_addr)) not in frames
     )
     # FORCE_RECEIVE and STOP_CW still happen.
     assert bytes(radio._commands.ptt_off(to_addr=radio._radio_addr)) in frames
@@ -259,12 +258,9 @@ async def test_yaesu_lifecycle_exit_never_disables_the_persistent_tuner(
     # No lifecycle route reads the tuner to decide anything.
     assert _TUNER_READ not in queried
     # FORCE_RECEIVE and STOP_CW still happen.
+    assert format_command(_PROFILE_TEMPLATES["set_ptt"].write, state="0") in written
     assert (
-        format_command(_PROFILE_TEMPLATES["set_ptt"].write, state="0") in written
-    )
-    assert (
-        format_command(_PROFILE_TEMPLATES["send_cw"].write, type=" ", mem="")
-        in written
+        format_command(_PROFILE_TEMPLATES["send_cw"].write, type=" ", mem="") in written
     )
     if observed is not None:
         assert store.snapshot().field(_TUNER_PATH).value == observed
