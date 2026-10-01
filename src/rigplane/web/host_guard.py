@@ -274,9 +274,19 @@ def _parse_trusted_origin(value: object) -> tuple[str, str, int]:
         raise ValueError("host must not be empty")
     if _FORBIDDEN_HOST_CHARS.intersection(hostname) or "%" in hostname:
         raise ValueError("malformed host")
-    if ":" in hostname:
-        ipaddress.IPv6Address(hostname)
+    if parts.netloc.startswith("["):
+        closing = parts.netloc.find("]")
+        if closing < 0:
+            raise ValueError("malformed IPv6 authority")
+        ipaddress.IPv6Address(parts.netloc[1:closing])
+        suffix = parts.netloc[closing + 1 :]
+        if suffix and (
+            not suffix.startswith(":") or not _PORT_TAIL_RE.fullmatch(suffix[1:])
+        ):
+            raise ValueError("malformed IPv6 authority")
     else:
+        if "[" in parts.netloc or "]" in parts.netloc or parts.netloc.count(":") > 1:
+            raise ValueError("malformed authority")
         labels = hostname.removesuffix(".").split(".")
         if len(hostname) > 253 or any(
             len(label) > 63 or not _SINGLE_LABEL_RE.fullmatch(label) for label in labels

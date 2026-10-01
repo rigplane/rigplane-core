@@ -844,6 +844,10 @@ _INVALID_TRUSTED_ORIGINS = [
     "https://station..example",
     "https://-station.example",
     "https://999.999.999.999",
+    "https://[v1.station.example]",
+    "https://prefix[::1]",
+    "https://[::1]suffix",
+    "https://[::1]suffix:443",
     " https://station.example",  # leading whitespace
     "https://station.example ",  # trailing whitespace
     "https://station.example\t",
@@ -868,6 +872,69 @@ def test_webconfig_rejects_invalid_trusted_origins_before_serving(
 
 def test_webconfig_trusted_origins_default_empty_tuple() -> None:
     assert WebConfig().trusted_origins == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "origin",
+    (
+        "https://[v1.station.example]",
+        "https://prefix[::1]",
+        "https://[::1]suffix",
+        "https://[::1]suffix:443",
+    ),
+)
+async def test_malformed_bracket_authority_is_not_a_trusted_origin(
+    monkeypatch: pytest.MonkeyPatch, origin: str
+) -> None:
+    srv = _make_srv(trusted_origins=("https://v1.station.example", "https://[::1]"))
+    handlers = _patch_ws_handlers(monkeypatch)
+    writer = _MemoryWriter()
+    await srv._handle_websocket(
+        asyncio.StreamReader(),
+        writer,
+        "/api/v1/ws",
+        {"sec-websocket-key": GOOD_KEY, "origin": origin, "host": "127.0.0.1:8080"},
+    )
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 403 ")
+    assert sum(factory.call_count for factory in handlers.values()) == 0
+    http_writer = _MemoryWriter()
+    await srv._handle_http(
+        http_writer,
+        "POST",
+        "/api/v1/commands",
+        {"origin": origin, "host": "127.0.0.1:8080"},
+    )
+    assert bytes(http_writer.buffer).startswith(b"HTTP/1.1 403 ")
+
+
+@pytest.mark.asyncio
+async def test_valid_ipv6_trusted_origin_remains_admitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    srv = _make_srv(trusted_origins=("https://[::1]",))
+    handlers = _patch_ws_handlers(monkeypatch)
+    writer = _MemoryWriter()
+    await srv._handle_websocket(
+        asyncio.StreamReader(),
+        writer,
+        "/api/v1/ws",
+        {
+            "sec-websocket-key": GOOD_KEY,
+            "origin": "https://[::1]:443",
+            "host": "127.0.0.1:8080",
+        },
+    )
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 101 ")
+    assert sum(factory.call_count for factory in handlers.values()) == 1
+    http_writer = _MemoryWriter()
+    await srv._handle_http(
+        http_writer,
+        "GET",
+        "/clearcache",
+        {"origin": "https://[::1]:443", "host": "127.0.0.1:8080"},
+    )
+    assert bytes(http_writer.buffer).startswith(b"HTTP/1.1 200 ")
 
 
 def test_webconfig_accepts_valid_trusted_origins_verbatim() -> None:
