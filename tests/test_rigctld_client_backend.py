@@ -745,9 +745,9 @@ async def test_authority_canonical_rigctld_release_precedes_unrelated_cleanup(
             assert not finish_cleanup.is_set() and not state.release_required
             assert state.last_actuation.operation is ActuationOperation.FORCE_RECEIVE
             assert state.last_actuation.result is ActuationResult.ACCEPTED
-            assert {error.operation for error in state.abort_errors} == set(
-                AbortOperation
-            )
+            assert {error.operation for error in state.abort_errors} == {
+                AbortOperation.STOP_CW,
+            }
         finally:
             finish_cleanup.set()
             if managed is not None:

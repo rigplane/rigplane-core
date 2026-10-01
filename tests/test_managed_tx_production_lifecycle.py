@@ -334,7 +334,6 @@ async def test_shutdown_is_ordered_joinable_and_retires_once(tmp_path) -> None:
         "transmit_on",
         "force_receive",
         "stop_cw",
-        "stop_tune",
     ]
     assert retired == [1]
     assert store._provider_generation_subscribers == []

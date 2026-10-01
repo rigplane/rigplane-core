@@ -234,10 +234,7 @@ async def test_ptt_owner_idempotency_and_disconnect_force_off() -> None:
         ActuationOperation.FORCE_RECEIVE,
     ]
     force = lane.effects[-1]
-    assert lane.aborts == [
-        (force.token, AbortOperation.STOP_CW),
-        (force.token, AbortOperation.STOP_TUNE),
-    ]
+    assert lane.aborts == [(force.token, AbortOperation.STOP_CW)]
     await managed.close()
 
 
@@ -256,10 +253,7 @@ async def test_transmit_is_latched_and_force_off_runs_one_abort_family() -> None
     assert fence.calls == 1
     force = lane.effects[-1]
     assert force.operation is ActuationOperation.FORCE_RECEIVE
-    assert lane.aborts == [
-        (force.token, AbortOperation.STOP_CW),
-        (force.token, AbortOperation.STOP_TUNE),
-    ]
+    assert lane.aborts == [(force.token, AbortOperation.STOP_CW)]
     await managed.close()
 
 
@@ -392,7 +386,7 @@ async def test_uncertain_on_immediately_runs_one_force_off_family(
     ]
     force = lane.effects[-1]
     assert force.token.effect_epoch == lane.effects[0].token.effect_epoch + 1
-    assert lane.aborts == [(force.token, operation) for operation in AbortOperation]
+    assert lane.aborts == [(force.token, AbortOperation.STOP_CW)]
     assert (await managed.snapshot()).state.release_required is not cleared
     if not cleared:
         await managed.force_off()
@@ -1545,7 +1539,8 @@ async def test_abort_currency_ends_when_current_force_receive_settles() -> None:
     managed, _, _, _, _, lane = authority(seconds=None)
     try:
         await managed.force_off()
-        assert len(lane.abort_guards) == len(AbortOperation)
+        assert lane.aborts == [(lane.effects[-1].token, AbortOperation.STOP_CW)]
+        assert len(lane.abort_guards) == 1
         assert managed._state.current_abort_token is not None
         assert managed._state.pending_effect is None
         for guard in lane.abort_guards:
