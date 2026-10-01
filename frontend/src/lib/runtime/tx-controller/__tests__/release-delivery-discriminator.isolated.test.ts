@@ -81,7 +81,7 @@ type WsClientModule = typeof import('$lib/transport/ws-client');
 type ConnectionModule = typeof import('$lib/stores/connection.svelte');
 type BrowserDepsModule = typeof import('../browser-dependencies');
 type ControllerModule = typeof import('../managed-controller');
-type GestureModule = typeof import('$lib/components-v2/wiring/managed-tx-gesture');
+type GestureModule = typeof import('../../../../components-v2/wiring/managed-tx-gesture');
 type Factory = ReturnType<BrowserDepsModule['createManagedBrowserDependencies']>;
 type Controller = InstanceType<ControllerModule['ManagedTxController']>;
 type Gesture = ReturnType<GestureModule['createManagedTxGesture']>;
@@ -148,7 +148,7 @@ async function boot(): Promise<{
   const connection = (await import('$lib/stores/connection.svelte')) as ConnectionModule;
   const browserDeps = (await import('../browser-dependencies')) as BrowserDepsModule;
   const controllerModule = (await import('../managed-controller')) as ControllerModule;
-  const gestureModule = (await import('$lib/components-v2/wiring/managed-tx-gesture')) as GestureModule;
+  const gestureModule = (await import('../../../../components-v2/wiring/managed-tx-gesture')) as GestureModule;
   const factory = browserDeps.createManagedBrowserDependencies();
   const controller = new controllerModule.ManagedTxController(factory.dependencies);
   const gesture = gestureModule.createManagedTxGesture(
