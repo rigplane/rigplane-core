@@ -300,10 +300,11 @@ def validate_trusted_origins(trusted_origins: Collection[str]) -> None:
     for index, value in enumerate(trusted_origins):
         try:
             _parse_trusted_origin(value)
-        except ValueError as exc:
+        except ValueError:
             raise ValueError(
-                f"invalid trusted origin entry {index + 1}: {exc}"
-            ) from exc
+                f"invalid trusted origin entry {index + 1}: "
+                "expected a serialized http(s) origin with a valid host and port"
+            ) from None
 
 
 def origin_is_trusted(

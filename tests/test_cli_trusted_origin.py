@@ -50,6 +50,21 @@ _INVALID_ORIGINS = [
 _INVALID_CONFIG_ORIGINS = [None, *_INVALID_ORIGINS]
 
 
+def test_invalid_origin_error_does_not_echo_userinfo(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from rigplane.web.server import WebConfig
+
+    origin = "https://operator:origin-error-canary@station.example\uff0fpath"
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["web", "--trusted-origin", origin])
+    assert "origin-error-canary" not in capsys.readouterr().err
+    with pytest.raises(ValueError) as exc_info:
+        WebConfig(trusted_origins=(origin,))
+    assert "origin-error-canary" not in str(exc_info.value)
+    assert exc_info.value.__suppress_context__
+
+
 class TestParser:
     def test_repeated_flags_collect_in_order(self) -> None:
         p = _build_parser()
