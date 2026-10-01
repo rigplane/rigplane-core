@@ -17,6 +17,7 @@ from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
 from rigplane.exceptions import ConnectionError
 from rigplane.radio import IcomRadio
 from rigplane.runtime._connection_state import RadioConnectionState
+from rigplane.runtime.session_lifecycle import LifecycleState
 
 from _helpers import wrap_civ_in_udp
 from test_radio import MockTransport
@@ -508,14 +509,18 @@ class _ReconnectingCtrl(ConnectMockTransport):
 
 
 def _cold_radio(
-    *, expected_ids: tuple[str, ...], timeout: float = 0.5
+    *,
+    expected_ids: tuple[str, ...],
+    timeout: float = 0.5,
+    real_lifecycle: bool = False,
 ) -> tuple[IcomRadio, ConnectMockTransport, ConnectMockTransport]:
     """Real CoreRadio aimed at a real cold ``_connect_once`` over mock transports."""
     radio = IcomRadio(
         "192.168.1.100", username="u", password="p", model="IC-7610", timeout=timeout
     )
     radio._profile = replace(radio._profile, expected_identity_ids=expected_ids)
-    radio._session_lifecycle = _session_lifecycle_double(radio)
+    if not real_lifecycle:
+        radio._session_lifecycle = _session_lifecycle_double(radio)
     radio._fetch_initial_state = AsyncMock()
     radio._arm_managed_tx = AsyncMock()
     radio._ensure_audio_transport = AsyncMock()
@@ -659,6 +664,91 @@ async def test_cold_late_answer_before_lifecycle_returns_fetches_and_arms_once()
                 await asyncio.wait_for(task, 2)
             except BaseException:  # teardown must not mask the real failure
                 pass
+            await _cold_teardown(radio)
+
+
+@pytest.mark.parametrize(
+    ("answer", "status"),
+    [
+        (_identity_response(b"\x01\x06"), RadioIdentityStatus.IDENTITY_MISMATCH),
+        (None, RadioIdentityStatus.NO_RESPONSE),
+    ],
+    ids=["wrong-normal-addressed-reply", "no-reply"],
+)
+@pytest.mark.parametrize("teardown", ["disconnect", "shutdown"])
+async def test_public_teardown_releases_the_cold_identity_hold_runtime(
+    answer: bytes | None, status: RadioIdentityStatus, teardown: str
+) -> None:
+    """A public disconnect must retire the runtime a cold identity hold started.
+
+    The REAL lifecycle owns this path (no ``_session_lifecycle_double``):
+    ``radio.disconnect`` → lifecycle teardown → mechanism ``release`` → the
+    partial ``ControlPhaseRuntime.release``.  The hold leaves the host
+    CONNECTING with the real pump/commander running, so the partial release
+    must stop them, advance the generation, and release the transports —
+    without a fresh poll, normal command, or managed re-arm, and without a
+    late answer reviving readiness (MOR-3064).
+    """
+    radio, ctrl, civ = _cold_radio(expected_ids=("0B90",), real_lifecycle=True)
+    with _ColdConnectPatches(radio, civ):
+        if answer is not None:
+            civ.queue_response_on_send(2, answer)  # reply to the gate's own read
+        await radio.connect()  # real lifecycle; the native gate holds inside
+        try:
+            assert _status(radio) is status
+            assert radio.connected is False
+            assert radio._conn_state is RadioConnectionState.CONNECTING
+            # The hold really started the runtime: real tasks, real refs.
+            rx_task = radio._civ_rx_task
+            assert rx_task is not None and not rx_task.done()
+            commander = radio._commander
+            assert commander is not None and commander._worker is not None
+            worker_task = commander._worker
+            reread_task = radio._lan_identity_reread_task
+            assert reread_task is not None
+            epoch_before = radio._civ_epoch
+            identity_sends_before = _identity_sends(civ)
+
+            if teardown == "disconnect":
+                await radio.disconnect()
+            else:
+                await radio._session_lifecycle.request_shutdown()
+
+            # Tasks finished and their references retired.
+            assert radio._civ_rx_task is None
+            assert rx_task.done()
+            assert commander._worker is None
+            assert worker_task.done()
+            assert reread_task.done()
+            assert radio._token_task is None
+            watchdog = radio._civ_data_watchdog_task
+            assert watchdog is None or watchdog.done()
+            # The generation advanced: stale waiters are fenced.
+            assert radio._civ_epoch != epoch_before
+            # Transports released; the lifecycle ended DISCONNECTED.
+            assert radio._civ_transport is None
+            assert civ.disconnected is True
+            assert ctrl.disconnected is True
+            assert radio._session_lifecycle.state is LifecycleState.DISCONNECTED
+            # Nothing new went out and nothing was rearmed.
+            assert _identity_sends(civ) == identity_sends_before
+            radio._fetch_initial_state.assert_not_awaited()
+            radio._arm_managed_tx.assert_not_awaited()
+            radio.rearm_managed_tx.assert_not_awaited()
+            # A late/stale completion cannot revive readiness.
+            civ.queue_response(_identity_response(b"\x0b\x90"))
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert radio.connected is False
+            if teardown == "disconnect":
+                assert radio.connection_identity is None
+            assert radio._lan_identity_answer_epoch is None
+            # Idempotent: a second public disconnect changes nothing.
+            await radio.disconnect()
+            assert radio._civ_rx_task is None
+        finally:
+            # Residual cleanup only: every assertion above ran first, and a
+            # failed one must not leak the fake-radio tasks this way either.
             await _cold_teardown(radio)
 
 
