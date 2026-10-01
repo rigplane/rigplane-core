@@ -201,16 +201,29 @@ def test_unconnected_radio_publishes_no_tx_snapshot() -> None:
 class _CivPort:
     """A CI-V data transport stand-in; its identity is all the radio reads.
 
-    ``soft_disconnect`` is the one path that calls a method on it, so the close
+    ``soft_disconnect`` is the one path that calls methods on it, so the close
     is real (and idempotent) rather than an attribute error swallowed by the
     teardown's ``except``.
     """
 
     def __init__(self) -> None:
         self.closed = False
+        self.my_id = 0x00010001
+        self.remote_id = 0xDEADBEEF
+        self.sent: list[bytes] = []
 
     async def disconnect(self) -> None:
         self.closed = True
+
+    async def send_tracked(self, data: bytes) -> None:
+        self.sent.append(data)
+
+
+class _CtrlPort:
+    """Open control-session witness, retired with the fake session."""
+
+    def __init__(self) -> None:
+        self._udp_transport = object()
 
 
 class _Session:
@@ -237,6 +250,7 @@ class _Session:
         self.connects += 1
         self._radio._civ_port = 50002
         self._radio._civ_transport = _CivPort()  # type: ignore[assignment]
+        self._radio._ctrl_transport = _CtrlPort()  # type: ignore[assignment]
         self._radio._advance_civ_generation("test-connect")
         self._radio._connected = True
 
@@ -245,7 +259,9 @@ class _Session:
             return
         self.closes += 1
         self._radio.provider.log.append("session_close")  # type: ignore[attr-defined]
+        await self._radio._civ_runtime.stop_data_watchdog()
         self._radio._civ_transport = None
+        self._radio._ctrl_transport = None
         self._radio._connected = False
 
 
@@ -258,7 +274,7 @@ class _AssembledRadio(CoreRadio):
     re-pointed at the double, which is where the CI-V frames would go;
     ``tests/test_civ_rx_coverage.py`` owns that layer, and routing through it
     here would test the transport twice while proving nothing about the
-    assembly.
+    assembly. The identity read supplies the fake IC-7610's native ID.
     """
 
     def __init__(
@@ -284,6 +300,9 @@ class _AssembledRadio(CoreRadio):
         if not self.answers_probe:
             raise CommandError("No response for managed_tx_ptt_probe")
         return object()
+
+    async def _read_lan_identity_payload(self) -> bytes:
+        return b"\x98"
 
     def _unbind_authoritative_ptt_observer(self) -> None:
         self.provider._unbind_authoritative_ptt_observer()
@@ -541,6 +560,8 @@ async def test_a_fresh_epoch_re_arms_the_very_same_runtime() -> None:
     radio = await _connected()
     runtime = radio._managed_tx_runtime
 
+    # A fresh epoch needs a real drop; an already connected call is a no-op.
+    await radio.soft_disconnect()
     await radio.connect()
 
     assert radio._managed_tx_runtime is runtime
@@ -902,6 +923,7 @@ class _ControlPhase:
         radio = self._host
         radio._civ_port = 50002
         radio._civ_transport = _CivPort()  # type: ignore[assignment]
+        radio._ctrl_transport = _CtrlPort()  # type: ignore[assignment]
         radio._advance_civ_generation("test-connect")
         radio._connected = True
         return AttemptResult(outcome=AttemptOutcome.CONNECTED)
@@ -912,7 +934,9 @@ class _ControlPhase:
             return
         self.closes += 1
         radio.provider.log.append("session_close")
+        await radio._civ_runtime.stop_data_watchdog()
         radio._civ_transport = None
+        radio._ctrl_transport = None
         radio._connected = False
 
     async def release(self) -> None:
@@ -1084,6 +1108,8 @@ async def test_the_shared_supervisor_survives_a_reconnect() -> None:
     before = bind_managed_tx(radio, "websocket", _WEB_SESSION_ID)
     assert before is not None
 
+    # Park the runtime across a real reconnect.
+    await radio.soft_disconnect()
     await radio.connect()
 
     after = ManagedTxApi.bind(radio, _SDK_OWNER)
@@ -1281,6 +1307,8 @@ async def test_the_kill_switch_warns_on_every_connect_not_just_the_first(
     caplog.set_level(logging.WARNING, logger="rigplane.runtime.radio")
 
     radio = await _connected()
+    # A connected call is a no-op; exercise a new session.
+    await radio.disconnect()
     await radio.connect()
 
     disabled = [r for r in caplog.records if "RIGPLANE_MANAGED_TX" in r.getMessage()]
@@ -1299,6 +1327,8 @@ async def test_the_switch_is_read_when_arming_not_when_importing(
     assert radio.managed_tx is None
 
     monkeypatch.delenv("RIGPLANE_MANAGED_TX")
+    # A new session re-reads the switch.
+    await radio.disconnect()
     await radio.connect()
 
     assert radio.managed_tx is not None

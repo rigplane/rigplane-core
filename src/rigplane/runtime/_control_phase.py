@@ -115,9 +115,7 @@ class ControlPhaseRuntime:
 
     def __init__(self, host: ControlPhaseHost) -> None:
         self._host = host
-        # MOR-3064: success tail (audio/runtime snapshot) deferred by a held
-        # identity revalidation; discharged exactly once by
-        # :meth:`_run_deferred_retail` when the late answer lands.
+        # A held identity defers this audio snapshot until its late answer.
         self._deferred_retail: "tuple[object, object] | None" = None
 
     def _resolve_local_bind_host(self) -> str:
@@ -468,6 +466,13 @@ class ControlPhaseRuntime:
         if h._auto_reconnect:
             self._start_watchdog()
 
+        gate = getattr(h, "_gate_lan_identity", None)
+        if gate is not None and not await gate(
+            revalidate_origin=self._deferred_retail is not None
+        ):
+            h._has_connected_once = True
+            return
+
         try:
             await wait_for_radio_startup_ready(
                 h,  # type: ignore[arg-type]
@@ -516,7 +521,6 @@ class ControlPhaseRuntime:
     async def disconnect(self) -> None:
         """Cleanly disconnect from the radio."""
         h = self._host
-        # MOR-3064: retire any deferred reconnect tail with the session.
         self._deferred_retail = None
         if h._conn_state != RadioConnectionState.CONNECTED:
             return
@@ -651,8 +655,6 @@ class ControlPhaseRuntime:
         ``conn_state != CONNECTED`` — a partially-claimed session (post-auth,
         pre-CONNECTED) is still released, closing graceful-close Holes 1/5/8.
         Idempotent: safe to call when nothing is claimed.
-
-        MOR-3064: retires any deferred reconnect tail along with the session.
         """
         h = self._host
         self._deferred_retail = None
@@ -759,6 +761,7 @@ class ControlPhaseRuntime:
             audio_snapshot = (
                 audio_runtime.capture_snapshot() if audio_runtime is not None else None
             )
+            self._deferred_retail = (audio_runtime, audio_snapshot)
             teardown_audio = getattr(h, "_teardown_audio_transport", None)
             if teardown_audio is not None:
                 try:
@@ -766,7 +769,15 @@ class ControlPhaseRuntime:
                 except Exception:
                     logger.debug("soft_reconnect: audio teardown failed", exc_info=True)
             await self._connect_once()
-            await self._after_reconnect(audio_runtime, audio_snapshot)
+            identity_epoch = getattr(h, "_lan_identity_owned_epoch", None)
+            await self._after_reconnect(
+                audio_runtime,
+                audio_snapshot,
+                identity_checked=(
+                    identity_epoch is not None
+                    and identity_epoch == getattr(h, "_civ_epoch", None)
+                ),
+            )
             return
 
         h._conn_state = RadioConnectionState.CONNECTING
@@ -871,36 +882,26 @@ class ControlPhaseRuntime:
         await self._after_reconnect(audio_runtime, audio_snapshot)
 
     async def _after_reconnect(
-        self, audio_runtime: object, audio_snapshot: object
+        self,
+        audio_runtime: object,
+        audio_snapshot: object,
+        *,
+        identity_checked: bool = False,
     ) -> None:
-        """Tail shared by the CI-V rebuild and the full-connect fallback.
-
-        MOR-3064: an identity hook on the host revalidates before the parts
-        run; an unknown hook error propagates to the recovery owner; a hold
-        defers (never skips) and the late answer discharges once.
-        """
+        """Revalidate the recovered link before re-arm, callback and audio."""
         h = self._host
-        # A new recovery attempt always retires a prior held snapshot first.
-        self._deferred_retail = None
-        revalidate = getattr(h, "revalidate_connection_identity", None)
-        answered = True
-        if revalidate is not None:
-            # Unowned hook errors must reach the recovery owner — never
-            # paved into verified-by-accident (fail-closed, then the
-            # lifecycle retry/exhaustion ladder handles it).
-            answered = bool(await revalidate())
-        if not answered:
+        if identity_checked:
+            answered = not getattr(h, "_lan_identity_unanswered_for_current_epoch")()
+        else:
             self._deferred_retail = (audio_runtime, audio_snapshot)
+            revalidate = getattr(h, "revalidate_connection_identity", None)
+            answered = revalidate is None or bool(await revalidate())
+        if not answered:
             return
-        await self._after_reconnect_parts(audio_runtime, audio_snapshot)
+        await self._run_deferred_retail()
 
     async def _run_deferred_retail(self) -> None:
-        """Discharge the success tail deferred by a held identity, once.
-
-        Called by the radio's identity-completion path when a held
-        revalidation answers late on the same live control session. The
-        stored snapshot is consumed first so a duplicate call is a no-op.
-        """
+        """Consume the deferred snapshot first, then complete it exactly once."""
         tail = self._deferred_retail
         if tail is None:
             return
@@ -910,12 +911,7 @@ class ControlPhaseRuntime:
     async def _after_reconnect_parts(
         self, audio_runtime: object, audio_snapshot: object
     ) -> None:
-        """The reconnect success tail itself (rearm, callback, audio).
-
-        Runs immediately from :meth:`_after_reconnect` when no identity
-        revalidation is pending, or once from :meth:`_run_deferred_retail`
-        when the held answer arrives. Everything in here is fail-soft.
-        """
+        """Run fail-soft re-arm, callback and audio after acceptable identity."""
         h = self._host
         # Managed TX is re-armed here, ahead of every reconnect consumer, so
         # the durable OFF a drop armed reaches the wire before any recovered
@@ -1182,11 +1178,10 @@ class ControlPhaseRuntime:
             h._token_task = None
 
     async def _token_renewal_loop(self) -> None:
-        h = self._host
         try:
-            while h._conn_state == RadioConnectionState.CONNECTED:
+            while self._token_session_alive():
                 await asyncio.sleep(self.TOKEN_RENEWAL_INTERVAL)
-                if h._conn_state != RadioConnectionState.CONNECTED:
+                if not self._token_session_alive():
                     break
                 try:
                     await self._send_token(0x05)
@@ -1195,6 +1190,13 @@ class ControlPhaseRuntime:
                     logger.warning("Token renewal failed: %s", exc)
         except asyncio.CancelledError:
             pass
+
+    def _token_session_alive(self) -> bool:
+        h = self._host
+        owns_hold = getattr(h, "_lan_identity_phase_owns_open_link", None)
+        return h._conn_state == RadioConnectionState.CONNECTED or (
+            owns_hold is not None and bool(owns_hold())
+        )
 
     async def _send_token(self, magic: int) -> None:
         h = self._host

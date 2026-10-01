@@ -1389,6 +1389,7 @@ async def test_soft_reconnect_rebuilds_on_already_open_stalled(
     # "control transport gone" rebuild branch now does a single full-connect
     # attempt via ``_connect_once`` (the lifecycle owns retry).
     radio._control_phase._connect_once = fake_connect  # type: ignore[method-assign]
+    radio._read_lan_identity_payload = AsyncMock(return_value=b"\x98")
 
     await radio.soft_reconnect()
 
