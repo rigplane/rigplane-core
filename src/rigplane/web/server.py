@@ -101,6 +101,7 @@ from .host_guard import (  # noqa: TID251
     ORIGIN_FORBIDDEN_BODY,
     host_header_allowed,
     same_origin_allowed,
+    validate_trusted_origins,
 )
 from .managed_tx_view import build_managed_tx_view  # noqa: TID251
 from .transport.webrtc import webrtc_available  # noqa: TID251
@@ -748,12 +749,20 @@ class WebConfig:
     # e.g. the stands' *.msmsoft.net names (MOR-2868). Repeatable via
     # the CLI's --allowed-host flag.
     allowed_hosts: tuple[str, ...] = ()
+    # Explicitly trusted serialized http(s) origins (MOR-3108 b11): the
+    # operator's own public HTTPS origin in front of this HTTP/internal
+    # upstream (a reverse proxy). A matching Origin is admitted past the
+    # same-origin rule only when the raw Host still passes the allowlist
+    # above; it never bypasses any other guard. Repeatable via the CLI's
+    # --trusted-origin flag; invalid entries fail construction.
+    trusted_origins: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.auth_token:
             raise ValueError(
                 "Application authentication was removed; auth_token must be empty."
             )
+        validate_trusted_origins(self.trusted_origins)
 
 
 class ConnectionManager:
@@ -6557,7 +6566,11 @@ class WebServer:
         if origin is not None:
             scheme = "https" if self._config.tls else "http"
             if not same_origin_allowed(
-                origin, raw_host, scheme, self._config.allowed_hosts
+                origin,
+                raw_host,
+                scheme,
+                self._config.allowed_hosts,
+                self._config.trusted_origins,
             ):
                 self._log_refused_request("websocket origin", path, headers)
                 await _send_response(

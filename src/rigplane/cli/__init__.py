@@ -630,6 +630,22 @@ def _reject_retired_auth_option(_value: str) -> str:
     )
 
 
+def _trusted_origin_arg(value: str) -> str:
+    """argparse type for ``web --trusted-origin`` (MOR-3108 b11).
+
+    One serialized http(s) origin only, rejected at parse time so an
+    invalid configuration never reaches the server (the same rule
+    ``WebConfig.__post_init__`` enforces for embedders).
+    """
+    from rigplane.web.host_guard import validate_trusted_origins
+
+    try:
+        validate_trusted_origins((value,))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    return value
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = _RigplaneArgumentParser(
         prog="rigplane",
@@ -1543,6 +1559,19 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Admit this Host header name in addition to the local allowlist "
             "(repeatable, e.g. stand77.msmsoft.net)"
+        ),
+    )
+    web_p.add_argument(
+        "--trusted-origin",
+        dest="trusted_origins",
+        action="append",
+        type=_trusted_origin_arg,
+        default=None,
+        metavar="ORIGIN",
+        help=(
+            "Admit this public http(s) Origin behind your own HTTPS reverse "
+            "proxy (repeatable, serialized origin only, e.g. "
+            "https://station.example)"
         ),
     )
 
@@ -4157,6 +4186,11 @@ async def _cmd_web(
     allowed_hosts = getattr(args, "allowed_hosts", None)
     if allowed_hosts:
         config_kwargs["allowed_hosts"] = tuple(allowed_hosts)
+    # MOR-3108 b11: repeatable --trusted-origin; the parser already
+    # validated each entry (WebConfig.__post_init__ re-checks).
+    trusted_origins = getattr(args, "trusted_origins", None)
+    if trusted_origins:
+        config_kwargs["trusted_origins"] = tuple(trusted_origins)
     # R59/MOR-2425: a radio that cannot name itself is left unnamed. Omitting
     # the key keeps WebConfig's ``_RADIO_MODEL_UNSPECIFIED`` sentinel, which
     # the server already treats as "nothing identifies the radio"
