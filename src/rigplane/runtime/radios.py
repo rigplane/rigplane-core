@@ -51,6 +51,10 @@ RADIOS: dict[str, RadioModel] = {
         name="IC-7300",
         civ_addr=0x94,
     ),
+    "IC-7300MK2": RadioModel(
+        name="IC-7300MK2",
+        civ_addr=0xB6,
+    ),
     "IC-705": RadioModel(
         name="IC-705",
         civ_addr=0xA4,
@@ -106,6 +110,7 @@ CIV_PROFILE_MAP: dict[int, str] = {
     0x98: "icom_ic7610",
     0xA4: "icom_ic705",
     0x94: "icom_ic7300",
+    0xB6: "icom_ic7300mk2",
     0xA2: "icom_ic9700",
     0x8E: "",  # IC-7851 — no profile file yet
     0x96: "",  # IC-R8600 — no profile file yet

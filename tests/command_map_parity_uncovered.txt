@@ -33,7 +33,7 @@ census	frames_diverged	0
 census	frames_identical	0
 census	hardcode_only_builders	0
 census	profile_builder_map_gaps	0
-census	profiles	8
+census	profiles	9
 census	public_builders	243
 census	sites_compared	0
 cat-only	FTX-1	128

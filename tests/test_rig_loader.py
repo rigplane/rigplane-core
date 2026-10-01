@@ -1575,6 +1575,7 @@ choices = [
         },
         "ic705.toml": {"rit"},
         "ic7300.toml": {"rit"},
+        "ic7300mk2.toml": {"rit"},
         "ic7610.toml": {"rit"},
         "ic9700.toml": {"rit"},
         "x6100.toml": {"rit"},

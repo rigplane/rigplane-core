@@ -13,7 +13,7 @@ currently remains profile metadata. This test pins values, not consumers.
 
 The owner ruling, per radio:
 
-* The four Icom siblings that the factory routes onto the *same* Icom
+* The Icom siblings that the factory routes onto the *same* Icom
   transmit-state read primitive as the measured IC-7300 **inherit** its
   one-entry map. The justification is the shared CI-V decode, not a new
   bench measurement, and the profiles say so.
@@ -100,7 +100,7 @@ def test_every_shipped_profile_declares_a_tx_policy_section():
     contents are right is the business of the per-rig pins below.
     """
     rigs = discover_rigs(RIGS_DIR)
-    assert len(rigs) == 8, "shipped rig count changed; re-run the MOR-1947 ruling"
+    assert len(rigs) == 9, "shipped rig count changed; re-run the TX policy ruling"
 
     undeclared = [
         path.name
@@ -131,7 +131,7 @@ def test_icom_siblings_inherit_the_measured_civ_receiving_byte():
         model for model in rigs if _routes_onto_the_shared_icom_read(model)
     } - MEASURED
 
-    assert inheritors == {"IC-705", "IC-7610", "IC-9700", "X6200"}
+    assert inheritors == {"IC-705", "IC-7300MK2", "IC-7610", "IC-9700", "X6200"}
 
     for model in sorted(inheritors):
         assert rigs[model].to_profile().tx_policy == TxPolicy(

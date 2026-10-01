@@ -1,0 +1,1400 @@
+# Rig Configuration — IC-7300MK2 (PROTOTYPE, MOR3091)
+# See _schema.md for field documentation.
+#
+# Source: IC-7300MK2 CI-V Reference Guide (A7841-8EX, Oct. 2025)
+#         IC-7300MK2 Basic Manual (Nov. 2025 print run)
+#         IC-7300MK2 Advanced Manual
+# Structural baseline: rigs/ic7300.toml (frozen); shared LAN/audio and APF
+# capability patterns from rigs/ic7610.toml;
+# no IC-7300MK2 hardware validation is claimed anywhere in this file.
+
+[identity]
+# The MK2 guide lists 19 00 "Reads the transceiver ID" but never documents the
+# reply bytes -- unverified pending native reply. No model token is invented
+# (not B6, 94, or 98); the existing identity gate honestly yields UNVERIFIED
+# while expected_ids is empty.
+expected_ids = []
+
+[radio]
+id = "icom_ic7300mk2"
+model = "IC-7300MK2"
+civ_addr = 0xB6  # MK2 default CI-V address (Basic p.58); configurable state, not identity
+default_baud = 115200  # USB Type-C virtual COM is baud-agnostic (Basic p.77); house convention for scope data
+receiver_count = 1
+has_lan = true
+has_wifi = false
+
+[spectrum]
+# 27 00: waveform data range 00~A0 (0~160), data length 475, USB transfer in
+# 11 segments. LAN framing differs (1 division, 490 bytes) and is transport
+# detail, not loader fields (CI-V guide p.24).
+seq_max = 11
+amp_max = 160
+data_len_max = 475
+
+[audio]
+# No MK2 LAN codec is certified by the manuals. Mono-first is carried from the
+# IC-7300 profile as a tentative conservative policy, NOT a documented MK2
+# requirement; measured LAN codec behavior is UNKNOWN.
+codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
+
+[scope]
+span_presets_hz = [2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000]
+# 27 19: adjustable range -20.0 ~ +20.0 dB in 0.5 dB steps (CI-V guide p.25).
+ref_min_db = -20.0
+ref_max_db = 20.0
+ref_step_db = 0.5
+
+# ── Capabilities ─────────────────────────────────────────────────
+# Feature tags determine which UI panels and controls are rendered.
+# Baseline: IC-7300 single-receiver set. MK2 adds APF (CI-V p.6, Basic p.39),
+# RX-ANT switching (Basic p.28, CI-V 12 00), and mod input routing with LAN.
+# No digisel and no antenna-select on the MK2 (single [ANT] SO-239, spec p.70).
+
+[capabilities]
+features = [
+    # Receiver
+    "audio",
+    "af_level",
+    "rf_gain",
+    "squelch",
+    # RF front end
+    "attenuator",
+    "preamp",
+    "ip_plus",
+    # RX ANT IN/OUT toggle (12 00); no ANT1/ANT2 selection on this radio
+    "rx_antenna",
+    # DSP / Noise
+    "nb",
+    "nr",
+    "notch",
+    "apf",
+    "twin_peak",
+    # Filter
+    "pbt",
+    "filter_width",
+    "filter_shape",
+    # TX
+    "tx",
+    "split",
+    "vox",
+    "compressor",
+    "monitor",
+    "ssb_tx_bw",
+    # CW
+    "cw",
+    "break_in",
+    # RIT / XIT
+    "rit",
+    "xit",
+    # Tuner
+    "tuner",
+    # Metering
+    "meters",
+    # Scope
+    "scope",
+    # Tone
+    "repeater_tone",
+    "tsql",
+    # Data; MK2 DATA OFF/DATA MOD sources include LAN (1A 05 0084/0085)
+    "data_mode",
+    "mod_input_routing",
+    # System
+    "power_control",
+    "dial_lock",
+    "scan",
+    "speech",
+    "bsr",
+    # AGC
+    "agc",
+    "tuning_step",
+    "band_edge",
+    "xfc",
+    # System
+    "system_settings",
+]
+# MK2 front panel wires RF gain and squelch as one physical concentric control
+# (AF RF/SQL outer, Basic p.26); SET > Function > RF/SQL Control (1A 05 0026:
+# Auto/SQL/RF+SQL) confirms the combined control model.
+rf_sql_control_model = "combined"
+
+# 27 13 is documented "Single only" (one scope); the RMVR harness would flip a
+# value the radio can never report back. scope_receiver.set (27 12, "Main
+# only") stays derived from receiver_count, as on the IC-7300 profile.
+[validation.fixed_value]
+"scope_dual.set" = "IC-7300MK2 CI-V Reference Guide command table: 27 13 data column = 00 (Single only)"
+
+[state_acquisition]
+provider = "icom_civ"
+default_cadence_seconds = 1.5
+default_freshness_ttl_seconds = 3.0
+default_reconciliation_priority = "poll"
+adaptive_decay = false
+external_cat_pause = "pause_polling"
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.capabilities]
+unsolicited_push = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+]
+polling_only = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "receiver.main.unselected.freq_mode.freq_hz",
+    "receiver.main.unselected.freq_mode.mode",
+    "receiver.main.operator_controls.af_level",
+    "receiver.main.operator_controls.rf_gain",
+    "receiver.main.operator_controls.squelch",
+    "receiver.main.operator_controls.att",
+    "receiver.main.operator_controls.preamp",
+    "receiver.main.operator_controls.agc",
+    "receiver.main.operator_toggles.nb",
+    "receiver.main.operator_toggles.nr",
+    "receiver.main.operator_toggles.ipplus",
+    "global.operator_controls.power_level",
+    "global.tx_state.compressor_on",
+    "global.operator_controls.compressor_level",
+    "global.tx_state.ptt",
+    "global.operator_controls.tuner_status",
+    "global.tx_state.split",
+    "global.operator_controls.mic_gain",
+    "global.operator_controls.monitor_gain",
+    "global.operator_controls.vox_gain",
+    "global.operator_controls.anti_vox_gain",
+    "receiver.main.active.freq_mode.filter_width",
+    "receiver.main.operator_controls.pbt_inner",
+    "receiver.main.operator_controls.pbt_outer",
+    "receiver.main.operator_controls.nr_level",
+    "receiver.main.operator_controls.nb_level",
+    "receiver.main.operator_controls.notch_filter",
+    "receiver.main.operator_controls.manual_notch_width",
+    "receiver.main.operator_toggles.auto_notch",
+    "receiver.main.operator_toggles.manual_notch",
+    # APF peak frequency (14 05, CI-V guide p.5), same membership as on IC-7610
+    "receiver.main.operator_controls.apf_type_level",
+    "global.operator_controls.rit_freq",
+    "global.meters.power",
+    "global.meters.swr",
+    "global.meters.alc",
+    "global.meters.comp",
+    "global.meters.vd",
+    "global.meters.id",
+    "scope_controls.global.display.receiver",
+    "scope_controls.global.display.dual",
+    "scope_controls.global.display.mode",
+    "scope_controls.global.display.span",
+    "scope_controls.global.display.edge",
+    "scope_controls.global.display.hold",
+    "scope_controls.global.display.ref_db",
+    "scope_controls.global.display.speed",
+    "scope_controls.global.display.during_tx",
+    "scope_controls.global.display.center_type",
+    "scope_controls.global.display.vbw_narrow",
+    "scope_controls.global.display.fixed_edge",
+]
+stream_like_meters = [
+    "receiver.main.meters.s_meter",
+]
+command_response_observable = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "receiver.main.operator_controls.af_level",
+    "receiver.main.operator_controls.rf_gain",
+    "receiver.main.operator_controls.squelch",
+    "receiver.main.operator_controls.att",
+    "receiver.main.operator_controls.preamp",
+    "receiver.main.operator_controls.agc",
+    "receiver.main.operator_toggles.nb",
+    "receiver.main.operator_toggles.nr",
+    "global.operator_controls.power_level",
+    "global.tx_state.compressor_on",
+    "global.operator_controls.compressor_level",
+    "global.tx_state.ptt",
+    "global.operator_controls.tuner_status",
+    "global.tx_state.split",
+    "global.tx_state.vox_on",
+    "global.tx_state.monitor_on",
+    "global.operator_controls.vox_delay",
+    "receiver.main.active.freq_mode.filter_width",
+    "receiver.main.active.freq_mode.filter_num",
+    "receiver.main.active.freq_mode.data_mode",
+    "receiver.main.operator_controls.filter_shape",
+    "receiver.main.operator_controls.pbt_inner",
+    "receiver.main.operator_controls.pbt_outer",
+    "receiver.main.operator_controls.nr_level",
+    "receiver.main.operator_controls.nb_level",
+    "receiver.main.operator_toggles.auto_notch",
+    "receiver.main.operator_toggles.manual_notch",
+    "receiver.main.operator_controls.notch_filter",
+    "receiver.main.operator_controls.manual_notch_width",
+    "receiver.main.operator_controls.agc_time_constant",
+    "global.operator_controls.rit_freq",
+    "global.tx_state.rit_on",
+    "global.tx_state.rit_tx",
+    "global.operator_controls.break_in",
+    "global.operator_controls.break_in_delay",
+    "global.operator_controls.key_speed",
+    "global.operator_controls.cw_pitch",
+    "receiver.main.operator_toggles.twin_peak_filter",
+    "receiver.main.operator_controls.tone_freq",
+    "receiver.main.operator_controls.tsql_freq",
+]
+supported_controls = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "receiver.main.operator_controls.af_level",
+    "receiver.main.operator_controls.rf_gain",
+    "receiver.main.operator_controls.squelch",
+    "receiver.main.operator_controls.att",
+    "receiver.main.operator_controls.preamp",
+    "receiver.main.operator_controls.agc",
+    "receiver.main.operator_toggles.nb",
+    "receiver.main.operator_toggles.nr",
+    "global.operator_controls.power_level",
+    "global.tx_state.compressor_on",
+    "global.operator_controls.compressor_level",
+    "global.tx_state.ptt",
+    "global.operator_controls.tuner_status",
+    "global.tx_state.split",
+]
+
+# Field-policy shapes are carried from the IC-7300 profile; none are
+# hardware-validated on the MK2. `reason` states the policy, not a measurement.
+
+[state_acquisition.field_policies."receiver.main.meters.s_meter"]
+reason = "stream-like meter keeps the coalescing window; 0.4 s cadence per the IC-7300 profile policy (MOR-2425), carried pending MK2 hardware validation"
+cadence_seconds = 0.4
+freshness_ttl_seconds = 2.0
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
+# Po/SWR/ALC/COMP/Id are meaningful only while transmitting; the available_when
+# clause discards the last TX reading on dekey (policy shape from the IC-7300
+# profile, not an MK2 bench observation).
+[state_acquisition.field_policies."global.meters.power"]
+reason = "tx_only with available_when: absent while PTT reads false, so the last TX reading is discarded on dekey (IC-7300 profile policy carried)"
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+adaptive_decay = false
+tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
+
+[state_acquisition.field_policies."global.meters.swr"]
+reason = "tx_only with available_when: absent while PTT reads false, so the last TX reading is discarded on dekey (IC-7300 profile policy carried)"
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+adaptive_decay = false
+tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
+
+[state_acquisition.field_policies."global.meters.alc"]
+reason = "tx_only with available_when: absent while PTT reads false, so the last TX reading is discarded on dekey (IC-7300 profile policy carried)"
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+adaptive_decay = false
+tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
+
+[state_acquisition.field_policies."global.meters.comp"]
+reason = "tx_only with available_when: absent while PTT reads false, so the last TX reading is discarded on dekey (IC-7300 profile policy carried)"
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+adaptive_decay = false
+tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
+
+[state_acquisition.field_policies."global.meters.id"]
+reason = "tx_only with available_when: absent while PTT reads false, so the last TX reading is discarded on dekey (IC-7300 profile policy carried)"
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+adaptive_decay = false
+tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
+
+# On-demand (command_response) membership: prime_unobserved reads these once;
+# the never TTL keeps each value from expiring (IC-7300 profile mechanism).
+[state_acquisition.field_policies."global.tx_state.vox_on"]
+reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.monitor_on"]
+reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.vox_delay"]
+reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.active.freq_mode.filter_num"]
+reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.active.freq_mode.data_mode"]
+reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.filter_shape"]
+reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.agc_time_constant"]
+reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.rit_on"]
+reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.tx_state.rit_tx"]
+reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.break_in"]
+reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.break_in_delay"]
+reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.key_speed"]
+reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.cw_pitch"]
+reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.twin_peak_filter"]
+reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.tone_freq"]
+reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.tsql_freq"]
+reason = "on-demand, not polled: prime_unobserved reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+# ── Parameterized Capabilities ───────────────────────────────────
+
+[attenuator]
+# CI-V 0x11: binary toggle only (00=OFF, 20=20dB ON)
+values = [0, 20]
+
+[preamp]
+# CI-V 0x16 0x02: 0=OFF, 1=P.AMP1, 2=P.AMP2
+values = [0, 1, 2]
+
+[agc]
+# CI-V 0x16 0x12: 1=FAST, 2=MID, 3=SLOW
+modes = [1, 2, 3]
+labels = { "1" = "FAST", "2" = "MID", "3" = "SLOW" }
+
+[scan_types]
+# CI-V 0x0E family, MK2 guide p.4: 01/02/03 programmed & dF, 12/13 fine
+# variants, 22 memory scan, 23 select-memory scan.
+values = [0x01, 0x02, 0x03, 0x12, 0x13, 0x22, 0x23]
+
+[scan_resume]
+# MK2 guide p.4: D0 = Scan Resume OFF, D3 = Close&Delay ON -- only these two.
+values = [0xD0, 0xD3]
+
+[antenna]
+# Spec p.70: SO-239 x1 (HF/50/70 MHz TX) + SMA x2 (RX-ANT IN/OUT, RX only).
+tx_count = 1
+has_rx_ant = true
+
+[apf]
+# CI-V 0x16 0x32 (MK2 guide p.6): 00=OFF, 01=WIDE (320 Hz), 02=MID (160 Hz),
+# 03=NAR (80 Hz) -- widths apply when the APF type is SHARP. Single subcommand;
+# 16 33/16 34 do not exist on the MK2.
+values = [0, 1, 2, 3]
+labels = { "0" = "OFF", "1" = "WIDE", "2" = "MID", "3" = "NAR" }
+
+[notch]
+# CI-V 0x16 0x57: 0=WIDE, 1=MID, 2=NAR
+width_values = [0, 1, 2]
+width_labels = { "0" = "WIDE", "1" = "MID", "2" = "NAR" }
+
+[ssb_tx_bw]
+# CI-V 0x16 0x58: 0=WIDE, 1=MID, 2=NAR
+values = [0, 1, 2]
+labels = { "0" = "WIDE", "1" = "MID", "2" = "NAR" }
+
+[filter_shape]
+# CI-V 0x16 0x56: 0=SHARP, 1=SOFT (MK2 guide p.6)
+values = [0, 1]
+labels = { "0" = "SHARP", "1" = "SOFT" }
+
+[break_in]
+# CI-V 0x16 0x47: 0=OFF, 1=Semi, 2=Full
+values = [0, 1, 2]
+labels = { "0" = "OFF", "1" = "SEMI", "2" = "FULL" }
+
+[rit]
+# Spec p.71: RIT variable range +/-9.999 kHz. The operator-facing domain is
+# [controls.rit]; nothing in the codebase reads range_hz.
+range_hz = 9999
+
+[cw]
+# CI-V 0x14 0x09: CW pitch 300-900 Hz (5 Hz steps)
+# CI-V 0x14 0x0C: Key speed 6-48 WPM
+# CI-V 0x1A 0x05 0x02 0x21: Dot/Dash ratio 28-45 (0.1 steps), MK2 guide p.13
+pitch_min_hz = 300
+pitch_max_hz = 900
+speed_min_wpm = 6
+speed_max_wpm = 48
+dash_ratio_min = 28
+dash_ratio_max = 45
+
+[nb]
+# CI-V 0x1A 0x05 0x02 0x65: DEPTH 00-09 (display 1-10), MK2 guide p.14
+# CI-V 0x1A 0x05 0x02 0x66: WIDTH 00 00-02 55
+depth_min = 0
+depth_max = 9
+width_min = 0
+width_max = 255
+
+[power]
+max_watts = 100  # HF/50 MHz SSB/CW/RTTY/FM 0.6-100 W (spec p.70)
+
+[ctcss]
+table = "standard_50"
+
+[modes]
+list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "RTTY-R"]
+
+[data_mode]
+# CI-V 0x1A 0x06: DATA mode + filter (00=OFF/00 fixed, 01=ON/01-03 filter)
+count = 1
+labels = { "0" = "OFF", "1" = "DATA" }
+
+# Modulation input sources, MK2 value map (1A 05 0084 DATA OFF / 0085 DATA,
+# guide p.9): 00=MIC, 01=USB, 02=ACC, 03=MIC+USB, 04=MIC+ACC, 05=LAN.
+inputs = [
+    { value = 0, name = "MIC" },
+    { value = 1, name = "USB" },
+    { value = 2, name = "ACC" },
+    { value = 3, name = "MIC+USB" },
+    { value = 4, name = "MIC+ACC" },
+    { value = 5, name = "LAN" },
+]
+
+[filters]
+list = ["FIL1", "FIL2", "FIL3"]
+# CI-V 0x1A 0x03: width is a BCD-encoded index, not raw Hz (guide p.19).
+encoding = "segmented_bcd_index"
+width_min_hz = 50
+width_max_hz = 9999
+
+# Twin PBT step, per mode. MK2 Basic p.32: "The PBT is adjustable in 50 Hz
+# steps in the SSB, CW, and RTTY modes, and 200 Hz in the AM mode." FM is
+# absent from that list and declares no pbt_step_hz. The -D and -R variants
+# take the base-mode figure by inference.
+
+[filters.width.USB]
+pbt_step_hz = 50
+min_hz = 50
+max_hz = 3600
+defaults = [3000, 2400, 1800]
+segments = [
+    { hz_min = 50, hz_max = 500, step_hz = 50, index_min = 0 },
+    { hz_min = 600, hz_max = 3600, step_hz = 100, index_min = 10 },
+]
+
+[filters.width.LSB]
+pbt_step_hz = 50
+min_hz = 50
+max_hz = 3600
+defaults = [3000, 2400, 1800]
+segments = [
+    { hz_min = 50, hz_max = 500, step_hz = 50, index_min = 0 },
+    { hz_min = 600, hz_max = 3600, step_hz = 100, index_min = 10 },
+]
+
+[filters.width.CW]
+pbt_step_hz = 50
+min_hz = 50
+max_hz = 3600
+defaults = [1200, 500, 250]
+segments = [
+    { hz_min = 50, hz_max = 500, step_hz = 50, index_min = 0 },
+    { hz_min = 600, hz_max = 3600, step_hz = 100, index_min = 10 },
+]
+
+[filters.width.RTTY]
+pbt_step_hz = 50
+min_hz = 50
+max_hz = 2700
+defaults = [2400, 500, 250]
+segments = [
+    { hz_min = 50, hz_max = 500, step_hz = 50, index_min = 0 },
+    { hz_min = 600, hz_max = 2700, step_hz = 100, index_min = 10 },
+]
+
+[filters.width.AM]
+pbt_step_hz = 200
+min_hz = 200
+max_hz = 10000
+step_hz = 200
+defaults = [9000, 6000, 3000]
+segments = [
+    { hz_min = 200, hz_max = 10000, step_hz = 200, index_min = 0 },
+]
+
+[filters.width.FM]
+fixed = true
+defaults = [15000, 10000, 7000]
+
+[vfo]
+# MK2 keeps the single-receiver A/B scheme: 07 00 selects VFO A, 07 01 VFO B,
+# A0 equalizes, B0 exchanges (guide p.4); 25/26 address Selected/Unselected
+# VFO (guide p.23). No cmd29/main-sub routing exists on this radio.
+scheme = "ab"
+readback = "selected_unselected"
+main_select = [0x00]  # VFO A
+sub_select = [0x01]   # VFO B
+swap_ab = [0xB0]
+equal_ab = [0xA0]
+
+# ── Frequency Ranges ─────────────────────────────────────────────
+# Spec p.70: receiver 0.030-74.8 MHz; TX 1.8-54 (+70 MHz EU versions only).
+
+[[freq_ranges.ranges]]
+label = "HF"
+start_hz = 30_000
+end_hz = 60_000_000
+
+[[freq_ranges.ranges.bands]]
+name = "160m"
+start_hz = 1_800_000
+end_hz = 2_000_000
+default_hz = 1_825_000
+bsr_code = 0x01
+
+[[freq_ranges.ranges.bands]]
+name = "80m"
+start_hz = 3_500_000
+end_hz = 4_000_000
+default_hz = 3_700_000
+bsr_code = 0x02
+
+# MK2 spec prints 5.255000-5.405000 MHz (version-dependent coverage).
+[[freq_ranges.ranges.bands]]
+name = "60m"
+start_hz = 5_255_000
+end_hz = 5_405_000
+default_hz = 5_357_000
+
+[[freq_ranges.ranges.bands]]
+name = "40m"
+start_hz = 7_000_000
+end_hz = 7_300_000
+default_hz = 7_100_000
+bsr_code = 0x03
+
+[[freq_ranges.ranges.bands]]
+name = "30m"
+start_hz = 10_100_000
+end_hz = 10_150_000
+default_hz = 10_130_000
+bsr_code = 0x04
+
+[[freq_ranges.ranges.bands]]
+name = "20m"
+start_hz = 14_000_000
+end_hz = 14_350_000
+default_hz = 14_200_000
+bsr_code = 0x05
+
+[[freq_ranges.ranges.bands]]
+name = "17m"
+start_hz = 18_068_000
+end_hz = 18_168_000
+default_hz = 18_120_000
+bsr_code = 0x06
+
+[[freq_ranges.ranges.bands]]
+name = "15m"
+start_hz = 21_000_000
+end_hz = 21_450_000
+default_hz = 21_200_000
+bsr_code = 0x07
+
+[[freq_ranges.ranges.bands]]
+name = "12m"
+start_hz = 24_890_000
+end_hz = 24_990_000
+default_hz = 24_940_000
+bsr_code = 0x08
+
+[[freq_ranges.ranges.bands]]
+name = "10m"
+start_hz = 28_000_000
+end_hz = 29_700_000
+default_hz = 28_500_000
+bsr_code = 0x09
+
+[[freq_ranges.ranges]]
+label = "6m"
+start_hz = 50_000_000
+end_hz = 54_000_000
+
+[[freq_ranges.ranges.bands]]
+name = "6m"
+start_hz = 50_000_000
+end_hz = 54_000_000
+default_hz = 50_125_000
+bsr_code = 0x0A
+
+# ── CI-V Commands ────────────────────────────────────────────────
+# Grouped by capability area. Wire bytes as integer arrays.
+# Source: IC-7300MK2 CI-V Reference Guide (Oct. 2025).
+# Single receiver: no Command29 support.
+#
+# PROVENANCE OPEN (kept undeclared rather than guessed, house pattern):
+# - get_memory_mode [0x08]: the MK2 guide phrases 08 as "Switches to the
+#   Memory mode" (imperative); no probe has settled whether it answers a bare
+#   read.
+# - set_selected_mode [0x26, 0x00]: the GET direction is declared below, but
+#   no MK2 bench check has confirmed the SET payload convention; both frozen
+#   Icom profiles likewise leave it undeclared.
+
+[commands]
+
+# ── Frequency / Mode ──
+get_freq = [0x03]
+set_freq = [0x05]
+get_mode = [0x04]
+set_mode = [0x06]
+get_band_edge_freq = [0x02]
+get_selected_freq = [0x25, 0x00]          # Selected/Unselected VFO frequency, guide p.23
+set_selected_freq = [0x25, 0x00]
+set_unselected_freq = [0x25, 0x01]
+get_unselected_freq = [0x25, 0x01]
+get_selected_mode = [0x26, 0x00]          # guide p.23 (mode/data/filter)
+get_unselected_mode = [0x26, 0x01]
+# set_selected_mode -- PROVENANCE OPEN above, left undeclared
+
+# ── TX Band Edge ──
+get_tx_band_count = [0x1E, 0x00]
+get_tx_band_edge = [0x1E, 0x01]
+
+# ── VFO ──
+set_vfo = [0x07]
+get_split = [0x0F]
+set_split = [0x0F]
+
+# ── Tuning ──
+get_tuning_step = [0x10]
+set_tuning_step = [0x10]
+
+# ── RF Front End (Attenuator / Preamp / IP+) ──
+get_attenuator = [0x11]
+set_attenuator = [0x11]
+get_preamp = [0x16, 0x02]
+set_preamp = [0x16, 0x02]
+get_ip_plus = [0x16, 0x65]
+set_ip_plus = [0x16, 0x65]
+# RX ANT IN/OUT toggle: 12 00, data 00=OFF/01=ON (guide p.4)
+get_rx_antenna = [0x12, 0x00]
+set_rx_antenna = [0x12, 0x00]
+# Shared ANT1 builders append selector 00 and the RX-ANT boolean themselves.
+get_antenna = [0x12]
+set_antenna = [0x12]
+get_antenna_2 = { absent = "IC-7300MK2 CI-V Reference Guide p.4: only 12 00 RX-ANT boolean; no ANT2/12 01 selection" }
+set_antenna_2 = { absent = "IC-7300MK2 CI-V Reference Guide p.4: only 12 00 RX-ANT boolean; no ANT2/12 01 selection" }
+get_rx_antenna_ant2 = { absent = "IC-7300MK2 CI-V Reference Guide p.4: only 12 00 RX-ANT boolean; no ANT2/12 01 selection" }
+set_rx_antenna_ant2 = { absent = "IC-7300MK2 CI-V Reference Guide p.4: only 12 00 RX-ANT boolean; no ANT2/12 01 selection" }
+
+# ── Audio / AF ──
+get_af_level = [0x14, 0x01]
+set_af_level = [0x14, 0x01]
+get_rf_gain = [0x14, 0x02]
+set_rf_gain = [0x14, 0x02]
+get_squelch = [0x14, 0x03]
+set_squelch = [0x14, 0x03]
+
+# ── DSP / Noise (NB, NR, Notch, APF, Twin Peak) ──
+get_nb = [0x16, 0x22]
+set_nb = [0x16, 0x22]
+get_nb_level = [0x14, 0x12]
+set_nb_level = [0x14, 0x12]
+get_nr = [0x16, 0x40]
+set_nr = [0x16, 0x40]
+get_nr_level = [0x14, 0x06]
+set_nr_level = [0x14, 0x06]
+get_auto_notch = [0x16, 0x41]
+set_auto_notch = [0x16, 0x41]
+get_manual_notch = [0x16, 0x48]
+set_manual_notch = [0x16, 0x48]
+get_notch_filter = [0x14, 0x0D]           # Notch position
+set_notch_filter = [0x14, 0x0D]
+get_manual_notch_width = [0x16, 0x57]     # 0=WIDE, 1=MID, 2=NAR
+set_manual_notch_width = [0x16, 0x57]
+# APF: 16 32 is the OFF/WIDE/MID/NAR domain; 14 05 is the separately
+# documented APF peak frequency (10 Hz steps, guide p.5). No APF gain wire
+# field is declared -- the AF LEVEL setting (1A 05 02 70) has no profile key.
+get_audio_peak_filter = [0x16, 0x32]      # 0=OFF, 1=WIDE, 2=MID, 3=NAR
+set_audio_peak_filter = [0x16, 0x32]
+get_apf_type_level = [0x14, 0x05]         # APF peak frequency, raw 0-255
+set_apf_type_level = [0x14, 0x05]
+get_twin_peak_filter = [0x16, 0x4F]       # RTTY mark 2125/shift 170 only (guide note)
+set_twin_peak_filter = [0x16, 0x4F]
+
+# ── Filter (PBT, IF width, shape) ──
+get_pbt_inner = [0x14, 0x07]
+set_pbt_inner = [0x14, 0x07]
+get_pbt_outer = [0x14, 0x08]
+set_pbt_outer = [0x14, 0x08]
+get_filter_width = [0x1A, 0x03]
+set_filter_width = [0x1A, 0x03]
+get_filter_shape = [0x16, 0x56]
+set_filter_shape = [0x16, 0x56]
+get_agc = [0x16, 0x12]
+set_agc = [0x16, 0x12]
+get_agc_time_constant = [0x1A, 0x04]
+set_agc_time_constant = [0x1A, 0x04]
+
+# ── TX Controls (Power, Mic, Compressor, Monitor, VOX) ──
+ptt_on = [0x1C, 0x00, 0x01]
+ptt_off = [0x1C, 0x00, 0x00]
+get_transceiver_status = [0x1C, 0x00]     # 00=RX, 01=TX
+get_rf_power = [0x14, 0x0A]
+set_rf_power = [0x14, 0x0A]
+get_mic_gain = [0x14, 0x0B]
+set_mic_gain = [0x14, 0x0B]
+get_compressor = [0x16, 0x44]
+set_compressor = [0x16, 0x44]
+get_compressor_level = [0x14, 0x0E]
+set_compressor_level = [0x14, 0x0E]
+get_monitor = [0x16, 0x45]
+set_monitor = [0x16, 0x45]
+get_monitor_gain = [0x14, 0x15]
+set_monitor_gain = [0x14, 0x15]
+get_vox = [0x16, 0x46]
+set_vox = [0x16, 0x46]
+get_vox_gain = [0x14, 0x16]
+set_vox_gain = [0x14, 0x16]
+get_anti_vox_gain = [0x14, 0x17]
+set_anti_vox_gain = [0x14, 0x17]
+get_ssb_tx_bandwidth = [0x16, 0x58]
+set_ssb_tx_bandwidth = [0x16, 0x58]
+
+# ── Split ──
+get_xfc_status = [0x1C, 0x02]
+set_xfc_status = [0x1C, 0x02]
+
+# ── CW ──
+send_cw = [0x17]
+stop_cw = [0x17]
+get_cw_pitch = [0x14, 0x09]
+set_cw_pitch = [0x14, 0x09]
+get_key_speed = [0x14, 0x0C]
+set_key_speed = [0x14, 0x0C]
+get_break_in = [0x16, 0x47]
+set_break_in = [0x16, 0x47]
+get_break_in_delay = [0x14, 0x0F]
+set_break_in_delay = [0x14, 0x0F]
+
+# ── RIT / ∂TX (XIT) ──
+get_rit_frequency = [0x21, 0x00]
+set_rit_frequency = [0x21, 0x00]
+get_rit_status = [0x21, 0x01]
+set_rit_status = [0x21, 0x01]
+get_rit_tx_status = [0x21, 0x02]
+set_rit_tx_status = [0x21, 0x02]
+
+# ── Tuner / ATU ──
+# MK2 extends the domain: 00=OFF, 01=ON, 02=Tune (guide p.14)
+get_tuner_status = [0x1C, 0x01]
+set_tuner_status = [0x1C, 0x01]
+
+# ── Meters ──
+get_s_meter = [0x15, 0x02]
+get_s_meter_sql_status = [0x15, 0x01]
+get_various_squelch = [0x15, 0x05]
+get_overflow_status = [0x15, 0x07]
+get_power_meter = [0x15, 0x11]
+get_swr = [0x15, 0x12]
+get_alc = [0x15, 0x13]
+get_comp_meter = [0x15, 0x14]
+get_vd_meter = [0x15, 0x15]
+get_id_meter = [0x15, 0x16]
+
+# ── Tone / TSQL ──
+get_repeater_tone = [0x16, 0x42]
+set_repeater_tone = [0x16, 0x42]
+get_repeater_tsql = [0x16, 0x43]
+set_repeater_tsql = [0x16, 0x43]
+get_tone_freq = [0x1B, 0x00]
+set_tone_freq = [0x1B, 0x00]
+get_tsql_freq = [0x1B, 0x01]
+set_tsql_freq = [0x1B, 0x01]
+
+# ── Data Mode ──
+get_data_mode = [0x1A, 0x06]
+set_data_mode = { bytes = [0x1A, 0x06], value_variants = { "0" = [0x1A, 0x06, 0x00, 0x00], "1" = [0x1A, 0x06, 0x01, 0x01] } }
+
+# ── Scope ──
+get_scope_wave = [0x27, 0x00]
+scope_on = [0x27, 0x10]
+scope_off = [0x27, 0x10]
+scope_data_output = [0x27, 0x11]          # valid only via [USB]/[LAN] port (guide note)
+get_scope_main_sub = [0x27, 0x12]         # data column 00 = Main only (single receiver)
+get_scope_single_dual = [0x27, 0x13]      # data column 00 = Single only
+get_scope_mode = [0x27, 0x14]
+get_scope_span = [0x27, 0x15]
+get_scope_edge = [0x27, 0x16]
+get_scope_hold = [0x27, 0x17]
+get_scope_ref = [0x27, 0x19]
+get_scope_speed = [0x27, 0x1A]
+get_scope_during_tx = [0x27, 0x1B]
+get_scope_center_type = [0x27, 0x1C]
+get_scope_vbw = [0x27, 0x1D]
+get_scope_fixed_edge = [0x27, 0x1E]
+# The MK2 0x27 table documents no RBW sub-command anywhere (00, 10-13, 14-1E,
+# 20; 1C is center type, 1D is VBW, 20 is marker position).
+get_scope_rbw = { absent = "IC-7300MK2 CI-V Reference Guide 0x27 command table: runs 00, 10-13, 14-1E, 20 with no RBW sub-command (1C is center type, 1D is VBW)" }
+
+# ── Scan ──
+scan_start = [0x0E]
+scan_stop = [0x0E]
+scan_start_type = [0x0E]                  # 0x0E family incl. 13 fine-dF, guide p.4
+scan_set_df_span = [0x0E]                 # 0x0E Ax (x=0-7: +/-5 kHz .. +/-1 MHz), guide p.16
+scan_set_resume = [0x0E]                  # domain resolved in [scan_resume]
+
+# ── System / Power ──
+power_on = [0x18]
+power_off = [0x18]
+# Kept per contract; the native 19 00 reply bytes are not documented for the
+# MK2 -- unverified pending native reply (see [identity]).
+get_transceiver_id = [0x19, 0x00]
+set_speech = [0x13]                       # 13 00/01/02 announce requests
+get_dial_lock = [0x16, 0x50]
+set_dial_lock = [0x16, 0x50]
+
+# ── Band Stacking Register ──
+get_bsr = [0x1A, 0x01]                    # band codes 01-10 + 11 GENE, guide p.19
+set_bsr = [0x1A, 0x01]
+
+# ── Memory ──
+# get_memory_mode -- PROVENANCE OPEN above, left undeclared
+set_memory_mode = [0x08]
+memory_write = [0x09]
+memory_to_vfo = [0x0A]                    # payload per commands/memory.py builder
+memory_clear = [0x0B]                     # payload per commands/memory.py builder
+get_memory_contents = [0x1A, 0x00]
+set_memory_contents = [0x1A, 0x00]
+
+# Menu 0x1A 0x05 sub-addresses: see [commands.overrides].
+# MK2 menu numbering differs from the original IC-7300 throughout; every
+# entry below cites the MK2 guide page it was taken from.
+
+[commands.overrides]
+# RX/TX EQ: SSB 0001-0003, AM 0004-0006, FM 0007-0009, CW 0010 (guide p.7)
+get_ssb_rx_hpflpf = [0x1A, 0x05, 0x00, 0x01]
+set_ssb_rx_hpflpf = [0x1A, 0x05, 0x00, 0x01]
+get_ssb_rx_bass = [0x1A, 0x05, 0x00, 0x02]
+set_ssb_rx_bass = [0x1A, 0x05, 0x00, 0x02]
+get_ssb_rx_treble = [0x1A, 0x05, 0x00, 0x03]
+set_ssb_rx_treble = [0x1A, 0x05, 0x00, 0x03]
+get_am_rx_hpflpf = [0x1A, 0x05, 0x00, 0x04]
+set_am_rx_hpflpf = [0x1A, 0x05, 0x00, 0x04]
+get_am_rx_bass = [0x1A, 0x05, 0x00, 0x05]
+set_am_rx_bass = [0x1A, 0x05, 0x00, 0x05]
+get_am_rx_treble = [0x1A, 0x05, 0x00, 0x06]
+set_am_rx_treble = [0x1A, 0x05, 0x00, 0x06]
+get_fm_rx_hpflpf = [0x1A, 0x05, 0x00, 0x07]
+set_fm_rx_hpflpf = [0x1A, 0x05, 0x00, 0x07]
+get_fm_rx_bass = [0x1A, 0x05, 0x00, 0x08]
+set_fm_rx_bass = [0x1A, 0x05, 0x00, 0x08]
+get_fm_rx_treble = [0x1A, 0x05, 0x00, 0x09]
+set_fm_rx_treble = [0x1A, 0x05, 0x00, 0x09]
+get_cw_rx_hpflpf = [0x1A, 0x05, 0x00, 0x10]
+set_cw_rx_hpflpf = [0x1A, 0x05, 0x00, 0x10]
+# TX EQ: MK2 inserts SSB-D TBW at 0017, so AM/FM TX shift +1 vs IC-7300
+# (guide p.7): AM 0018/0019, FM 0020/0021.
+get_ssb_tx_bass = [0x1A, 0x05, 0x00, 0x12]
+set_ssb_tx_bass = [0x1A, 0x05, 0x00, 0x12]
+get_ssb_tx_treble = [0x1A, 0x05, 0x00, 0x13]
+set_ssb_tx_treble = [0x1A, 0x05, 0x00, 0x13]
+get_am_tx_bass = [0x1A, 0x05, 0x00, 0x18]
+set_am_tx_bass = [0x1A, 0x05, 0x00, 0x18]
+get_am_tx_treble = [0x1A, 0x05, 0x00, 0x19]
+set_am_tx_treble = [0x1A, 0x05, 0x00, 0x19]
+get_fm_tx_bass = [0x1A, 0x05, 0x00, 0x20]
+set_fm_tx_bass = [0x1A, 0x05, 0x00, 0x20]
+get_fm_tx_treble = [0x1A, 0x05, 0x00, 0x21]
+set_fm_tx_treble = [0x1A, 0x05, 0x00, 0x21]
+
+# Scope fixed edges: MK2 groups ALL FOUR edges of each frequency range in one
+# contiguous block, 0152-0203 (13 ranges x 4, guide pp.11-12; format p.26).
+# Original band keys are repurposed to the matching MK2 range -- no uniform
+# offset from the old 0112-0150/0204-0216 addresses (those slots are now
+# network/display settings on the MK2).
+get_scope_edge1_1p6mhz = [0x1A, 0x05, 0x01, 0x52]    # 0.03-1.60 MHz
+set_scope_edge1_1p6mhz = [0x1A, 0x05, 0x01, 0x52]
+get_scope_edge2_1p6mhz = [0x1A, 0x05, 0x01, 0x53]
+set_scope_edge2_1p6mhz = [0x1A, 0x05, 0x01, 0x53]
+get_scope_edge3_1p6mhz = [0x1A, 0x05, 0x01, 0x54]
+set_scope_edge3_1p6mhz = [0x1A, 0x05, 0x01, 0x54]
+get_scope_edge4_1p6mhz = [0x1A, 0x05, 0x01, 0x55]
+set_scope_edge4_1p6mhz = [0x1A, 0x05, 0x01, 0x55]
+get_scope_edge1_2mhz = [0x1A, 0x05, 0x01, 0x56]      # 1.60-2.00 MHz
+set_scope_edge1_2mhz = [0x1A, 0x05, 0x01, 0x56]
+get_scope_edge2_2mhz = [0x1A, 0x05, 0x01, 0x57]
+set_scope_edge2_2mhz = [0x1A, 0x05, 0x01, 0x57]
+get_scope_edge3_2mhz = [0x1A, 0x05, 0x01, 0x58]
+set_scope_edge3_2mhz = [0x1A, 0x05, 0x01, 0x58]
+get_scope_edge4_2mhz = [0x1A, 0x05, 0x01, 0x59]
+set_scope_edge4_2mhz = [0x1A, 0x05, 0x01, 0x59]
+get_scope_edge1_6mhz = [0x1A, 0x05, 0x01, 0x60]      # 2.00-6.00 MHz
+set_scope_edge1_6mhz = [0x1A, 0x05, 0x01, 0x60]
+get_scope_edge2_6mhz = [0x1A, 0x05, 0x01, 0x61]
+set_scope_edge2_6mhz = [0x1A, 0x05, 0x01, 0x61]
+get_scope_edge3_6mhz = [0x1A, 0x05, 0x01, 0x62]
+set_scope_edge3_6mhz = [0x1A, 0x05, 0x01, 0x62]
+get_scope_edge4_6mhz = [0x1A, 0x05, 0x01, 0x63]
+set_scope_edge4_6mhz = [0x1A, 0x05, 0x01, 0x63]
+get_scope_edge1_8mhz = [0x1A, 0x05, 0x01, 0x64]      # 6.00-8.00 MHz
+set_scope_edge1_8mhz = [0x1A, 0x05, 0x01, 0x64]
+get_scope_edge2_8mhz = [0x1A, 0x05, 0x01, 0x65]
+set_scope_edge2_8mhz = [0x1A, 0x05, 0x01, 0x65]
+get_scope_edge3_8mhz = [0x1A, 0x05, 0x01, 0x66]
+set_scope_edge3_8mhz = [0x1A, 0x05, 0x01, 0x66]
+get_scope_edge4_8mhz = [0x1A, 0x05, 0x01, 0x67]
+set_scope_edge4_8mhz = [0x1A, 0x05, 0x01, 0x67]
+get_scope_edge1_11mhz = [0x1A, 0x05, 0x01, 0x68]     # 8.00-11.00 MHz
+set_scope_edge1_11mhz = [0x1A, 0x05, 0x01, 0x68]
+get_scope_edge2_11mhz = [0x1A, 0x05, 0x01, 0x69]
+set_scope_edge2_11mhz = [0x1A, 0x05, 0x01, 0x69]
+get_scope_edge3_11mhz = [0x1A, 0x05, 0x01, 0x70]
+set_scope_edge3_11mhz = [0x1A, 0x05, 0x01, 0x70]
+get_scope_edge4_11mhz = [0x1A, 0x05, 0x01, 0x71]
+set_scope_edge4_11mhz = [0x1A, 0x05, 0x01, 0x71]
+get_scope_edge1_15mhz = [0x1A, 0x05, 0x01, 0x72]     # 11.00-15.00 MHz
+set_scope_edge1_15mhz = [0x1A, 0x05, 0x01, 0x72]
+get_scope_edge2_15mhz = [0x1A, 0x05, 0x01, 0x73]
+set_scope_edge2_15mhz = [0x1A, 0x05, 0x01, 0x73]
+get_scope_edge3_15mhz = [0x1A, 0x05, 0x01, 0x74]
+set_scope_edge3_15mhz = [0x1A, 0x05, 0x01, 0x74]
+get_scope_edge4_15mhz = [0x1A, 0x05, 0x01, 0x75]
+set_scope_edge4_15mhz = [0x1A, 0x05, 0x01, 0x75]
+get_scope_edge1_20mhz = [0x1A, 0x05, 0x01, 0x76]     # 15.00-20.00 MHz
+set_scope_edge1_20mhz = [0x1A, 0x05, 0x01, 0x76]
+get_scope_edge2_20mhz = [0x1A, 0x05, 0x01, 0x77]
+set_scope_edge2_20mhz = [0x1A, 0x05, 0x01, 0x77]
+get_scope_edge3_20mhz = [0x1A, 0x05, 0x01, 0x78]
+set_scope_edge3_20mhz = [0x1A, 0x05, 0x01, 0x78]
+get_scope_edge4_20mhz = [0x1A, 0x05, 0x01, 0x79]
+set_scope_edge4_20mhz = [0x1A, 0x05, 0x01, 0x79]
+get_scope_edge1_22mhz = [0x1A, 0x05, 0x01, 0x80]     # 20.00-22.00 MHz
+set_scope_edge1_22mhz = [0x1A, 0x05, 0x01, 0x80]
+get_scope_edge2_22mhz = [0x1A, 0x05, 0x01, 0x81]
+set_scope_edge2_22mhz = [0x1A, 0x05, 0x01, 0x81]
+get_scope_edge3_22mhz = [0x1A, 0x05, 0x01, 0x82]
+set_scope_edge3_22mhz = [0x1A, 0x05, 0x01, 0x82]
+get_scope_edge4_22mhz = [0x1A, 0x05, 0x01, 0x83]
+set_scope_edge4_22mhz = [0x1A, 0x05, 0x01, 0x83]
+get_scope_edge1_26mhz = [0x1A, 0x05, 0x01, 0x84]     # 22.00-26.00 MHz
+set_scope_edge1_26mhz = [0x1A, 0x05, 0x01, 0x84]
+get_scope_edge2_26mhz = [0x1A, 0x05, 0x01, 0x85]
+set_scope_edge2_26mhz = [0x1A, 0x05, 0x01, 0x85]
+get_scope_edge3_26mhz = [0x1A, 0x05, 0x01, 0x86]
+set_scope_edge3_26mhz = [0x1A, 0x05, 0x01, 0x86]
+get_scope_edge4_26mhz = [0x1A, 0x05, 0x01, 0x87]
+set_scope_edge4_26mhz = [0x1A, 0x05, 0x01, 0x87]
+get_scope_edge1_30mhz = [0x1A, 0x05, 0x01, 0x88]     # 26.00-30.00 MHz
+set_scope_edge1_30mhz = [0x1A, 0x05, 0x01, 0x88]
+get_scope_edge2_30mhz = [0x1A, 0x05, 0x01, 0x89]
+set_scope_edge2_30mhz = [0x1A, 0x05, 0x01, 0x89]
+get_scope_edge3_30mhz = [0x1A, 0x05, 0x01, 0x90]
+set_scope_edge3_30mhz = [0x1A, 0x05, 0x01, 0x90]
+get_scope_edge4_30mhz = [0x1A, 0x05, 0x01, 0x91]
+set_scope_edge4_30mhz = [0x1A, 0x05, 0x01, 0x91]
+get_scope_edge1_45mhz = [0x1A, 0x05, 0x01, 0x92]     # 30.00-45.00 MHz
+set_scope_edge1_45mhz = [0x1A, 0x05, 0x01, 0x92]
+get_scope_edge2_45mhz = [0x1A, 0x05, 0x01, 0x93]
+set_scope_edge2_45mhz = [0x1A, 0x05, 0x01, 0x93]
+get_scope_edge3_45mhz = [0x1A, 0x05, 0x01, 0x94]
+set_scope_edge3_45mhz = [0x1A, 0x05, 0x01, 0x94]
+get_scope_edge4_45mhz = [0x1A, 0x05, 0x01, 0x95]
+set_scope_edge4_45mhz = [0x1A, 0x05, 0x01, 0x95]
+get_scope_edge1_60mhz = [0x1A, 0x05, 0x01, 0x96]     # 45.00-60.00 MHz
+set_scope_edge1_60mhz = [0x1A, 0x05, 0x01, 0x96]
+get_scope_edge2_60mhz = [0x1A, 0x05, 0x01, 0x97]
+set_scope_edge2_60mhz = [0x1A, 0x05, 0x01, 0x97]
+get_scope_edge3_60mhz = [0x1A, 0x05, 0x01, 0x98]
+set_scope_edge3_60mhz = [0x1A, 0x05, 0x01, 0x98]
+get_scope_edge4_60mhz = [0x1A, 0x05, 0x01, 0x99]
+set_scope_edge4_60mhz = [0x1A, 0x05, 0x01, 0x99]
+get_scope_edge1_74mhz = [0x1A, 0x05, 0x02, 0x00]     # 60.00-74.80 MHz
+set_scope_edge1_74mhz = [0x1A, 0x05, 0x02, 0x00]
+get_scope_edge2_74mhz = [0x1A, 0x05, 0x02, 0x01]
+set_scope_edge2_74mhz = [0x1A, 0x05, 0x02, 0x01]
+get_scope_edge3_74mhz = [0x1A, 0x05, 0x02, 0x02]
+set_scope_edge3_74mhz = [0x1A, 0x05, 0x02, 0x02]
+get_scope_edge4_74mhz = [0x1A, 0x05, 0x02, 0x03]
+set_scope_edge4_74mhz = [0x1A, 0x05, 0x02, 0x03]
+
+# MOD Input levels (guide p.9): USB 0081, ACC 0082, LAN 0083 -- the old
+# IC-7300 slots 0064/0065 are screen-capture/keyboard settings on the MK2.
+get_usb_mod_level = [0x1A, 0x05, 0x00, 0x81]
+set_usb_mod_level = [0x1A, 0x05, 0x00, 0x81]
+get_acc1_mod_level = [0x1A, 0x05, 0x00, 0x82]
+set_acc1_mod_level = [0x1A, 0x05, 0x00, 0x82]
+get_lan_mod_level = [0x1A, 0x05, 0x00, 0x83]
+set_lan_mod_level = [0x1A, 0x05, 0x00, 0x83]
+# DATA OFF MOD 0084 / DATA MOD 0085, data 00-05 (00=MIC, 01=USB, 02=ACC,
+# 03=MIC+USB, 04=MIC+ACC, 05=LAN). One DATA mode only.
+get_data_off_mod_input = [0x1A, 0x05, 0x00, 0x84]
+set_data_off_mod_input = [0x1A, 0x05, 0x00, 0x84]
+get_data1_mod_input = [0x1A, 0x05, 0x00, 0x85]
+set_data1_mod_input = [0x1A, 0x05, 0x00, 0x85]
+get_data2_mod_input = { absent = "IC-7300MK2 CI-V Reference Guide p.9: MOD Input has only 0084 (DATA OFF MOD) and 0085 (DATA MOD); no DATA2 row (0093 there is CI-V USB (B) Echo Back)" }
+get_data3_mod_input = { absent = "IC-7300MK2 CI-V Reference Guide p.9: MOD Input has only 0084 (DATA OFF MOD) and 0085 (DATA MOD); no DATA3 row (0094 there is USB (B) Function)" }
+# CI-V block (guide p.9): Transceive 0089 (old 0071 is a USB AF setting on
+# MK2), CI-V Output (for ANT) 0091 (old 0073 is a LAN setting on MK2). The
+# direct 1C 04 route also exists but is left unused by this profile.
+get_civ_transceive = [0x1A, 0x05, 0x00, 0x89]
+set_civ_transceive = [0x1A, 0x05, 0x00, 0x89]
+get_civ_output_ant = [0x1A, 0x05, 0x00, 0x91]
+set_civ_output_ant = [0x1A, 0x05, 0x00, 0x91]
+# Quick SPLIT is 0033 on the MK2 (guide p.7); on the MK2, 0030/0031 are the
+# TX Delay settings and 0036 is SPLIT LOCK -- the IC-7300's 0030 slot moved.
+get_quick_split = [0x1A, 0x05, 0x00, 0x33]
+set_quick_split = [0x1A, 0x05, 0x00, 0x33]
+# Clock block (guide p.11): Date 0132, Time 0133, NTP 0134/0135, UTC offset
+# 0136 (format p.22: offset 00 00-14 00, direction 00=+/01=-). The old 7300
+# slots 0094-0096 are USB (B) Function / SEND relay / USB SEND on the MK2.
+get_system_date = [0x1A, 0x05, 0x01, 0x32]
+set_system_date = [0x1A, 0x05, 0x01, 0x32]
+get_system_time = [0x1A, 0x05, 0x01, 0x33]
+set_system_time = [0x1A, 0x05, 0x01, 0x33]
+get_utc_offset = [0x1A, 0x05, 0x01, 0x36]
+set_utc_offset = [0x1A, 0x05, 0x01, 0x36]
+# Dot/Dash ratio is 0221 on the MK2 (guide p.13); the IC-7300's 0161 slot is
+# a scope fixed edge on the MK2.
+get_dash_ratio = [0x1A, 0x05, 0x02, 0x21]
+set_dash_ratio = [0x1A, 0x05, 0x02, 0x21]
+# NB DEPTH 0265 / WIDTH 0266 and VOX Delay 0267 (guide p.14, FUNCTION > NB and
+# VOX touch-for-1-second blocks); the IC-7300's 0189/0190/0191 slots are scope
+# fixed edges on the MK2 -- do not send the old opcodes.
+get_nb_depth = [0x1A, 0x05, 0x02, 0x65]
+set_nb_depth = [0x1A, 0x05, 0x02, 0x65]
+get_nb_width = [0x1A, 0x05, 0x02, 0x66]
+set_nb_width = [0x1A, 0x05, 0x02, 0x66]
+get_vox_delay = [0x1A, 0x05, 0x02, 0x67]  # 0-20 (0.0-2.0 sec, 0.1 sec steps)
+set_vox_delay = [0x1A, 0x05, 0x02, 0x67]
+
+[protocol]
+type = "civ"
+
+[controls.attenuator]
+style = "toggle"
+
+[controls.nb]
+style = "toggle_and_level"
+
+[controls.nr]
+style = "toggle_and_level"
+
+# Level control ranges — raw CI-V values and display mapping
+# IC-7300MK2: single receiver, no cmd29, VFO A/B scheme
+
+[controls.pbt_inner]
+raw_min = 0
+raw_max = 255
+raw_center = 128
+display_min = -1200
+display_max = 1200
+display_unit = "Hz"
+
+[controls.pbt_outer]
+raw_min = 0
+raw_max = 255
+raw_center = 128
+display_min = -1200
+display_max = 1200
+display_unit = "Hz"
+
+[controls.af_level]
+raw_min = 0
+raw_max = 255
+
+[controls.rf_gain]
+raw_min = 0
+raw_max = 255
+
+[controls.squelch]
+raw_min = 0
+raw_max = 255
+
+[controls.nr_level]
+raw_min = 0
+raw_max = 255
+
+[controls.nb_level]
+raw_min = 0
+raw_max = 255
+
+# NB depth: MK2 wire 0-9 (1A 05 02 65), front panel 1-10.
+[controls.nb_depth]
+raw_min = 0
+raw_max = 9
+display_min = 1
+display_max = 10
+
+[controls.mic_gain]
+raw_min = 0
+raw_max = 255
+
+[controls.rf_power]
+raw_min = 0
+raw_max = 255
+
+[controls.monitor_gain]
+raw_min = 0
+raw_max = 255
+
+[controls.compressor_level]
+raw_min = 0
+raw_max = 255
+
+[controls.cw_pitch]
+raw_min = 0
+raw_max = 255
+display_min = 300
+display_max = 900
+display_unit = "Hz"
+decode_quantum = 5  # MK2 anchors 00 00=300 Hz / 01 28=600 Hz / 02 55=900 Hz match this decode
+encode_rounding = "ceil"
+
+[controls.key_speed]
+raw_min = 0
+raw_max = 255
+display_min = 6
+display_max = 48
+display_unit = "WPM"
+decode_quantum = 1
+encode_rounding = "nearest_half_down"
+
+[controls.rit]
+# MK2 spec p.71: "RIT variable range: ±9.999 kHz". Exact-form domain per the
+# shared CI-V builder (±9999 Hz, 1 Hz BCD steps); MK2 UI shows 10 Hz display
+# steps except in Fine Tuning, where 4 digits (1 Hz) are shown (Basic p.29).
+mapping = "identity"
+raw_min = -9999
+raw_max = 9999
+raw_step = 1
+raw_origin = 0
+display_min = -9999
+display_max = 9999
+display_step = 1
+display_origin = 0
+display_unit = "Hz"
+quantization = "reject"
+restoration = "exact"
+
+# Meter calibrations use ONLY the anchors printed in the MK2 CI-V guide's
+# 0x15 command table (pp.5-6); intermediate points interpolate linearly. No
+# hamlib/wfview cross-source and no bench measurement is claimed.
+
+[meters.swr]
+redline_raw = 120
+
+[[meters.swr.calibration]]
+raw = 0
+actual = 1.0
+label = "1.0"
+
+[[meters.swr.calibration]]
+raw = 48
+actual = 1.5
+label = "1.5"
+
+[[meters.swr.calibration]]
+raw = 80
+actual = 2.0
+label = "2.0"
+
+[[meters.swr.calibration]]
+raw = 120
+actual = 3.0
+label = "3.0"
+
+# 15 02: "00 00=S0 ~ 01 20=S9 ~ 02 41=S9+60 dB" — the documented Icom
+# convention, printed identically for the MK2.
+[meters.s_meter]
+redline_raw = 120
+
+[[meters.s_meter.calibration]]
+raw = 0
+actual = -54.0
+label = "S0"
+
+[[meters.s_meter.calibration]]
+raw = 120
+actual = 0.0
+label = "S9"
+
+[[meters.s_meter.calibration]]
+raw = 241
+actual = 60.0
+label = "S9+60"
+
+# 15 11: "00 00=0% ~ 01 43=50% ~ 02 13=100%". The MK2 Po meter reads percent
+# of rated output; at 100 W rated (spec p.70) the watt and percent figures
+# coincide.
+[[meters.power.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.power.calibration]]
+raw = 143
+actual = 50.0
+label = "50"
+
+[[meters.power.calibration]]
+raw = 213
+actual = 100.0
+label = "100"
+
+# 15 13: "00 00=Minimum ~ 01 20=Maximum"; stored in the repo's percent
+# convention (0-100), as on the other Icom profiles.
+[[meters.alc.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.alc.calibration]]
+raw = 120
+actual = 100.0
+label = "100"
+
+# 15 14: "00 00=0 dB ~ 01 30=15 dB ~ 02 10=30 dB" — note the MK2's 30 dB
+# anchor is raw 210, not the 241 the IC-7300 table carried.
+[[meters.comp.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.comp.calibration]]
+raw = 130
+actual = 15.0
+label = "15"
+
+[[meters.comp.calibration]]
+raw = 210
+actual = 30.0
+label = "30"
+
+# 15 15: "00 00=0 V, 00 13=10 V, 02 41=16 V"
+[[meters.vd.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.vd.calibration]]
+raw = 13
+actual = 10.0
+label = "10"
+
+[[meters.vd.calibration]]
+raw = 241
+actual = 16.0
+label = "16"
+
+# 15 16: "00 00=0, 00 97=10, 01 46=15, 02 41=25"
+[[meters.id.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.id.calibration]]
+raw = 97
+actual = 10.0
+label = "10"
+
+[[meters.id.calibration]]
+raw = 146
+actual = 15.0
+label = "15"
+
+[[meters.id.calibration]]
+raw = 241
+actual = 25.0
+label = "25"
+
+[tx_policy]
+# Not measured on the IC-7300MK2 — no write-during-transmit battery has been
+# run, so no radio-side refusal is claimed. Empty means "nothing measured",
+# not "nothing refuses".
+refused_during_tx = []
+# 1C 00 is a plain RX/TX byte with no keying-source attribution. Positive-RX
+# rule: only the receiving byte is listed; the transmitting byte (and anything
+# unrecognised) is correctly not-receiving without inventing an attribution.
+tx_state_map = { "0" = "rx" }

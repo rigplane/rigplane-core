@@ -100,7 +100,7 @@ def create_radio(config: BackendConfig) -> Radio:
             serial_class = XieguSerialRadio
         elif model == "IC-705":
             serial_class = Ic705SerialRadio
-        elif model == "IC-7300":
+        elif model in {"IC-7300", "IC-7300MK2"}:
             serial_class = Ic7300SerialRadio
         elif model == "IC-9700":
             serial_class = Ic9700SerialRadio
@@ -111,7 +111,7 @@ def create_radio(config: BackendConfig) -> Radio:
             # hardware with the wrong CI-V personality is a foot-gun.
             raise ValueError(
                 f"Unsupported serial model {model!r}; supported: "
-                "IC-705, IC-7300, IC-7610, IC-9700, X6200, "
+                "IC-705, IC-7300, IC-7300MK2, IC-7610, IC-9700, X6200, "
                 "and Yaesu FT-series (FTX-1, FT-710, ...)."
             )
 

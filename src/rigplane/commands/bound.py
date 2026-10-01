@@ -185,6 +185,9 @@ class BoundCommands:
             )
 
         def _bound_builder(*args: Any, **kwargs: Any) -> bytes:
+            # An absent alias may share a wire key with a supported operation.
+            if name in self._absent:
+                raise self._refusal_for(name)
             kwargs.setdefault("cmd_map", self._map)
             try:
                 return builder(*args, **kwargs)  # type: ignore[no-any-return]
@@ -210,11 +213,15 @@ class BoundCommands:
                 `docs/plans/2026-08-29-profile-driven-command-bytes.md`
                 (§4); until a builder's module migrates, `expect` refuses
                 rather than guess.
-            CommandError: *builder*'s key is not declared by this map --
+            CommandError: *builder* is explicitly absent, or its key is not
+                declared by this map --
                 D1 states 2/3 (module docstring, "Step 4"), classified the
                 same way `__getattr__`'s wrapper classifies a miss reached
                 by calling the builder.
         """
+        builder_name = getattr(builder, "__name__", None)
+        if isinstance(builder_name, str) and builder_name in self._absent:
+            raise self._refusal_for(builder_name)
         key_fn = getattr(builder, "cmd_map_key", None)
         if key_fn is None:
             name = getattr(builder, "__qualname__", repr(builder))
