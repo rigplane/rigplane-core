@@ -409,7 +409,13 @@ try {
       + (spec.language ? `&language=${spec.language}` : '')
       + (spec.languageMode ? `&mode=${spec.languageMode}` : '');
     await page.goto(url, { waitUntil: 'load' });
-    await page.waitForSelector('body[data-harness-ready="true"]', { timeout: 15_000 });
+    try {
+      await page.waitForSelector('body[data-harness-ready="true"]', { timeout: 15_000 });
+    } catch (captureError) {
+      console.error(`capture readiness failed: ${spec.name} (${url})`);
+      for (const e of consoleErrors) console.error(`console: ${e}`);
+      throw captureError;
+    }
 
     // ── keyboard focus, before assertions so the tab order is recorded too
     let focusPath = null;
