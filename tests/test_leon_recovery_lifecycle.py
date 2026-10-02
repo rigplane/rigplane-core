@@ -45,6 +45,72 @@ class _AncestorCancellationAttempt(BaseException):
 
 
 @pytest.mark.timeout(10)
+async def test_watchdog_joining_existing_recovery_finishes_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    violations: list[str] = []
+    radio = _radio(events)
+    lifecycle = radio._session_lifecycle
+    entered = asyncio.Event()
+    joined = asyncio.Event()
+    exhaust = asyncio.Event()
+    attempts: list[asyncio.Task[object] | None] = []
+
+    async def fail_after_join() -> None:
+        attempts.append(asyncio.current_task())
+        entered.set()
+        await exhaust.wait()
+        raise ConnectionError("injected coalesced recovery failure")
+
+    monkeypatch.setattr(lifecycle._mech, "soft_reconnect_once", fail_after_join)
+    monkeypatch.setattr(radio._civ_runtime, "start_data_watchdog", lambda: None)
+    direct = asyncio.create_task(radio.soft_reconnect())
+    await entered.wait()
+    shared_recovery = lifecycle._recover_task
+    assert shared_recovery is not None and attempts == [shared_recovery]
+    real_soft_reconnect = radio.soft_reconnect
+
+    async def observe_join() -> None:
+        assert lifecycle._recover_task is shared_recovery
+        joined.set()
+        await real_soft_reconnect()
+
+    monkeypatch.setattr(radio, "soft_reconnect", observe_join)
+
+    class WatchedRecoveryTask(asyncio.Task[None]):
+        def cancel(self, msg: object = None) -> bool:
+            if asyncio.current_task() is shared_recovery:
+                violations.append("pre-existing recovery cancelled its waiter")
+                raise _AncestorCancellationAttempt()
+            return super().cancel(msg)
+
+    watchdog = WatchedRecoveryTask(radio._civ_runtime._watchdog_recover())
+    radio._civ_runtime._reconnect_task = watchdog
+    try:
+        await joined.wait()
+        assert lifecycle._recover_task is shared_recovery
+        exhaust.set()
+        outcomes = await asyncio.gather(direct, watchdog, return_exceptions=True)
+        assert violations == []
+        assert isinstance(outcomes[0], ConnectionError)
+        assert outcomes[1] is None
+        assert attempts == [shared_recovery]
+        assert events == ["civ-close", "token-remove", "control-close"]
+        assert lifecycle.state is LifecycleState.DISCONNECTED
+        assert watchdog.done() and not watchdog.cancelled()
+        assert radio._civ_runtime._reconnect_task is None
+        assert lifecycle._recover_task is None
+    finally:
+        for task in (direct, watchdog):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(direct, watchdog, return_exceptions=True)
+        if radio._ctrl_transport._udp_transport is not None:
+            await radio._control_phase.release()
+
+
+@pytest.mark.timeout(10)
 @pytest.mark.parametrize("fails", [False, True], ids=["success", "exhausted"])
 async def test_inline_recovery_restores_caller_context(
     monkeypatch: pytest.MonkeyPatch, fails: bool
