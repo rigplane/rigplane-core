@@ -11,6 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0b12] — 2026-10-02
+
+### Fixed
+
+- **Complete the rigctld `get_lock_mode` reply for Hamlib clients
+  (MOR-3113, #3972).** A successful normal reply now sends the lock
+  value followed by `RPRT 0`, as expected by netrigctl, so its second
+  read can finish before the next CAT command. Ordinary GET replies
+  keep their existing framing, errors stay one status line, and
+  extended replies keep exactly one status footer.
+
 ## [3.0.0b11] — 2026-10-01
 
 ### Added
@@ -4288,7 +4299,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b11...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b12...HEAD
+[3.0.0b12]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b11...v3.0.0b12
 [3.0.0b11]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b10...v3.0.0b11
 [3.0.0b10]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b9...v3.0.0b10
 [3.0.0b9]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b8...v3.0.0b9
