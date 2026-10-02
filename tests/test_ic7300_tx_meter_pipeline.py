@@ -122,7 +122,11 @@ async def test_ic7300_tx_meters_recover_through_real_pipeline(
         public = payload()
         for name, key in meter_keys.items():
             field = store.snapshot().field(paths[name])
-            assert public[key] is not None, (clock.now(), key, public["fieldStatus"][key])
+            assert public[key] is not None, (
+                clock.now(),
+                key,
+                public["fieldStatus"][key],
+            )
             assert public[key] == field.value
             assert public["fieldStatus"][key]["storePath"] == str(paths[name])
             if fresh:
