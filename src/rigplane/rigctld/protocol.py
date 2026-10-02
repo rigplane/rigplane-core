@@ -13,6 +13,7 @@ Line format:
 Response format (normal):
     GET: <value1><LF>[<value2><LF>...]
     SET: RPRT <code><LF>
+    get_lock_mode success: <value><LF>RPRT 0<LF> (MOR-3113)
 
 Response format (extended):
     <cmd_echo>:<LF>
@@ -158,7 +159,15 @@ def _format_normal(cmd: RigctldCommand, resp: RigctldResponse) -> bytes:
         return b"RPRT 0\n"
     # GET success: one value per line.
     if resp.values:
-        return ("\n".join(resp.values) + "\n").encode("ascii")
+        out = ("\n".join(resp.values) + "\n").encode("ascii")
+        # MOR-3113: get_lock_mode is ARG_NOVFO without ARG_OUT in
+        # rigctl_parse.c, so the normal-mode parser appends the RPRT
+        # line after the value; netrigctl (WSJT-X 3.0.2 / Hamlib
+        # 4.7.1 d042479) reads it as a second line. Every other GET
+        # stays bare.
+        if cmd.long_cmd == "get_lock_mode":
+            out += b"RPRT 0\n"
+        return out
     return b""
 
 
