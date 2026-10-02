@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+from contextvars import copy_context
 
 import pytest
 
@@ -44,8 +45,31 @@ class _AncestorCancellationAttempt(BaseException):
 
 
 @pytest.mark.timeout(10)
+@pytest.mark.parametrize("fails", [False, True], ids=["success", "exhausted"])
+async def test_inline_recovery_restores_caller_context(
+    monkeypatch: pytest.MonkeyPatch, fails: bool
+) -> None:
+    radio = _radio([])
+
+    async def attempt() -> None:
+        if fails:
+            raise ConnectionError("injected CI-V connection failure")
+
+    monkeypatch.setattr(radio._session_lifecycle._mech, "soft_reconnect_once", attempt)
+    monkeypatch.setattr(radio._civ_runtime, "start_data_watchdog", lambda: None)
+    before = dict(copy_context().items())
+    try:
+        await radio._civ_runtime._watchdog_recover()
+        assert dict(copy_context().items()) == before
+    finally:
+        if radio._ctrl_transport._udp_transport is not None:
+            await radio._control_phase.release()
+
+
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize("instrument_cancel", [True, False], ids=["checked", "real"])
 async def test_registered_watchdog_exhaustion_finishes_release(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, instrument_cancel: bool
 ) -> None:
     events: list[str] = []
     violations: list[str] = []
@@ -66,7 +90,12 @@ async def test_registered_watchdog_exhaustion_finishes_release(
                 raise _AncestorCancellationAttempt()
             return super().cancel(msg)
 
-    task = WatchedRecoveryTask(radio._civ_runtime._watchdog_recover())
+    recovery = radio._civ_runtime._watchdog_recover()
+    task = (
+        WatchedRecoveryTask(recovery)
+        if instrument_cancel
+        else asyncio.create_task(recovery)
+    )
     radio._civ_runtime._reconnect_task = task
     try:
         with suppress(_AncestorCancellationAttempt):
@@ -80,6 +109,53 @@ async def test_registered_watchdog_exhaustion_finishes_release(
         assert lifecycle._recover_task is None
     finally:
         if radio._ctrl_transport._udp_transport is not None:
+            await radio._control_phase.release()
+
+
+@pytest.mark.timeout(10)
+async def test_one_radios_recovery_can_stop_another_radios_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _radio([])
+    second_events: list[str] = []
+    second = _radio(second_events)
+    entered = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def blocked_attempt() -> None:
+        entered.set()
+        await finish.wait()
+        second_events.append("late-reconnect")
+
+    async def stop_other_recovery() -> None:
+        await second._civ_runtime.stop_data_watchdog()
+
+    monkeypatch.setattr(
+        first._session_lifecycle._mech, "soft_reconnect_once", stop_other_recovery
+    )
+    monkeypatch.setattr(
+        second._session_lifecycle._mech, "soft_reconnect_once", blocked_attempt
+    )
+    for radio in (first, second):
+        monkeypatch.setattr(radio._civ_runtime, "start_data_watchdog", lambda: None)
+
+    second_task = asyncio.create_task(second._civ_runtime._watchdog_recover())
+    second._civ_runtime._reconnect_task = second_task
+    try:
+        await entered.wait()
+        first_task = asyncio.create_task(first._civ_runtime._watchdog_recover())
+        first._civ_runtime._reconnect_task = first_task
+        await first_task
+        assert second_task.done() and second_task.cancelled()
+        finish.set()
+        await asyncio.sleep(0)
+        assert "late-reconnect" not in second_events
+    finally:
+        if not second_task.done():
+            second_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await second_task
+        for radio in (first, second):
             await radio._control_phase.release()
 
 

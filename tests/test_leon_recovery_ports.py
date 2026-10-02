@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import errno
 import struct
 from unittest.mock import AsyncMock
@@ -119,3 +120,21 @@ async def test_persistent_collision_exhausts_and_releases_without_port_change(
     finally:
         if radio._ctrl_transport._udp_transport is not None:
             await radio._control_phase.release()
+
+
+@pytest.mark.timeout(10)
+async def test_registered_watchdog_port_collision_completes_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    peer = _PortPeer(collisions=2)
+    radio = await _prepare(monkeypatch, peer)
+    task = asyncio.create_task(radio._civ_runtime._watchdog_recover())
+    radio._civ_runtime._reconnect_task = task
+    await task
+    assert peer.binds == [peer.advertised_port, peer.advertised_port]
+    assert peer.events == ["token-remove", "control-close"]
+    assert radio._session_lifecycle.state is LifecycleState.DISCONNECTED
+    assert task.done() and not task.cancelled()
+    assert radio._civ_runtime._reconnect_task is None
+    assert radio._session_lifecycle._recover_task is None
+    radio._control_phase._after_reconnect.assert_not_awaited()
