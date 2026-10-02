@@ -6,7 +6,7 @@ Audited revisions, each against `040ab3d9f375671f7d80e3bc32454a7e54b2081a`:
 - Observation delivery: `370aebbd54cd4f3681391e58e4e2d7316be3c3a7` ([#3975](https://github.com/rigplane/rigplane-core/pull/3975)).
 - Recovery: `573206c5edd5a722b905c386eced8a05bef57b3b`.
 
-Method: `mechanism-audit`, ordered definition, prior-ruling, in-flight and consumer collection before steelman and verdict. This is a bounded helper-level audit of changed mechanisms and their direct consumers, not a whole-module or repository dead-code sweep. Collection and adjudication were read-only; implementation and CI evidence were consumed separately. No hardware acceptance is inferred.
+Method: `mechanism-audit`, SHA-256 `10be2f400ab1f3066e03ac4944717b69798b6ca0d82db85249445be7645ff6ad`, ordered definition, prior-ruling, in-flight and consumer collection before steelman and verdict. This is a bounded helper-level audit of changed mechanisms and their direct consumers, not a whole-module or repository dead-code sweep. Collection and adjudication were read-only; implementation and CI evidence were consumed separately. No hardware acceptance is inferred.
 
 ## Inventory and liveness
 
