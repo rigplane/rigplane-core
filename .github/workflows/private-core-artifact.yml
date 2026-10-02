@@ -1,0 +1,89 @@
+name: Private Core artifact
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-core-artifact-b13
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: [self-hosted, linux, build, X64]
+    timeout-minutes: 25
+    steps:
+      - name: Check out reviewed workflow controls
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+
+      - name: Check out frozen artifact source
+        uses: actions/checkout@v6
+        with:
+          ref: f66d2553bab70ffeeaa6190a77150cf93ba5e4a5
+          path: target
+          persist-credentials: false
+
+      - name: Prepare owned build directory
+        id: work
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_root=$(mktemp -d "$RUNNER_TEMP/core-b13-artifact.XXXXXXXX")
+          echo "root=$artifact_root" >> "$GITHUB_OUTPUT"
+          {
+            echo "UV_CACHE_DIR=$artifact_root/uv-cache"
+            echo "UV_PYTHON_INSTALL_DIR=$artifact_root/python"
+            echo "NPM_CONFIG_CACHE=$artifact_root/npm-cache"
+          } >> "$GITHUB_ENV"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Build and verify installed artifacts
+        timeout-minutes: 20
+        shell: bash
+        env:
+          CORE_ARTIFACT_ROOT: ${{ steps.work.outputs.root }}
+        run: |
+          set -euo pipefail
+          bash control/.github/scripts/build-private-core-artifact.sh \
+            2>&1 | tee "$CORE_ARTIFACT_ROOT/build.log"
+
+      - name: Finalize receipt after build log closes
+        timeout-minutes: 2
+        env:
+          CORE_ARTIFACT_ROOT: ${{ steps.work.outputs.root }}
+          PYTHONPATH: ''
+          PYTHONNOUSERSITE: '1'
+        run: >-
+          "$CORE_ARTIFACT_ROOT/installed/bin/python"
+          "$CORE_ARTIFACT_ROOT/inputs/artifact-receipt.py"
+          "$CORE_ARTIFACT_ROOT"
+
+      - name: Retain artifacts and acceptance evidence
+        timeout-minutes: 3
+        if: always() && steps.work.outputs.root != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: core-b13-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.work.outputs.root }}/dist/*
+            ${{ steps.work.outputs.root }}/*.json
+            ${{ steps.work.outputs.root }}/*.txt
+            ${{ steps.work.outputs.root }}/*.log
+            ${{ steps.work.outputs.root }}/inputs/*
+          if-no-files-found: warn
+          retention-days: 14
