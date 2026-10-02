@@ -3377,14 +3377,14 @@ def test_meter_coalescing_applies_latest_due_sample_and_records_diagnostics(
 
     # After the window elapses the coalesced latest sample lands (raw 222 -> 31).
     assert radio._state_store.snapshot().field("receiver.0.meters.s_meter").value == 31
-    # The MOR-2544 power_on liveness inference (IC-7610: power control, no
-    # power-status query) applies once per routed frame alongside the meter;
-    # its SECOND same-value re-stamp is an empty changeset (still FRESH, no
-    # semantic change) and therefore emits no event.
     assert events == [
         (
             "state_store_changed",
             {"coalesced": False, "paths": ["receiver.0.meters.s_meter"]},
+        ),
+        (
+            "state_store_changed",
+            {"coalesced": False, "paths": ["global.tx_state.power_on"]},
         ),
         (
             "state_store_changed",
@@ -3940,6 +3940,45 @@ def test_same_value_coalesced_meter_flush_completes_scheduler_request(
         and event.details["changed"] is False
         for event in radio._state_diagnostics.events()
     )
+
+
+def test_same_value_coalesced_meter_flush_notifies_state_store_changed(
+    radio: IcomRadio,
+) -> None:
+    path = FieldPath.receiver("main", "meters", "s_meter")
+    policy = AcquisitionPolicy(
+        cadence_seconds=1.0,
+        freshness_ttl_seconds=4.0,
+        meter_coalescing=MeterCoalescingPolicy(window_seconds=0.2),
+    )
+    radio._acquisition_scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(path, policy=policy)
+    )
+    radio._meter_observation_coalescer = MeterObservationCoalescer()
+    events: list[tuple[str, dict[str, object]]] = []
+    radio._on_state_change = lambda name, data: events.append((name, data))
+    frame = _make_frame(cmd=0x15, sub=0x02, data=_bcd2(111))
+    with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=100.0):
+        radio._civ_runtime._apply_state_store_observations(frame)
+    before = radio._state_store.snapshot()
+    events.clear()
+
+    with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=100.1):
+        radio._civ_runtime._apply_state_store_observations(frame)
+    assert not any(data["coalesced"] for _, data in events)
+    events.clear()
+    changeset = radio._civ_runtime.flush_due_meter_observations(now=100.3)
+
+    assert changeset is not None
+    assert changeset.changes == ()
+    assert changeset.observed_paths == (FieldPath.receiver("0", "meters", "s_meter"),)
+    assert radio._state_store.snapshot().state_revision == before.state_revision
+    assert events == [
+        (
+            "state_store_changed",
+            {"coalesced": True, "paths": ["receiver.0.meters.s_meter"]},
+        ),
+    ]
 
 
 def test_same_value_stale_refresh_notifies_state_store_changed(

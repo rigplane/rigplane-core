@@ -2372,6 +2372,7 @@ class CivRuntime:
     def _notify_state_store_changed(self, changeset: ChangeSet) -> None:
         paths = {change.path for change in changeset.changes}
         paths.update(changeset.freshness_paths)
+        paths.update(changeset.observed_paths)
         if not paths:
             return
         self._notify_change(
