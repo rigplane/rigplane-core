@@ -1,10 +1,12 @@
-# LAN audio, observation delivery and recovery: mechanism audit
+# LAN audio, observation delivery, recovery and acquisition: mechanism audit
 
 Audited revisions, each against `040ab3d9f375671f7d80e3bc32454a7e54b2081a`:
 
 - Audio routing: `5e5da1ba35eb82028549f6e5cd86d8de5e98e7cc` ([#3974](https://github.com/rigplane/rigplane-core/pull/3974)).
 - Observation delivery: `370aebbd54cd4f3681391e58e4e2d7316be3c3a7` ([#3975](https://github.com/rigplane/rigplane-core/pull/3975)).
 - Recovery: `573206c5edd5a722b905c386eced8a05bef57b3b`.
+
+Additional acquisition candidate, against integrated `b4c6862d7b06084abe1113a2cb71c3b090806063`: `7c5d520ce966e4a9b12bd71c59165a1a00b07511`.
 
 Method: `mechanism-audit`, SHA-256 `10be2f400ab1f3066e03ac4944717b69798b6ca0d82db85249445be7645ff6ad`, ordered definition, prior-ruling, in-flight and consumer collection before steelman and verdict. This is a bounded helper-level audit of changed mechanisms and their direct consumers, not a whole-module or repository dead-code sweep. Collection and adjudication were read-only; implementation and CI evidence were consumed separately. No hardware acceptance is inferred.
 
@@ -15,6 +17,8 @@ Audio introduces one enum member and changes three existing functions. It adds n
 Delivery adds no symbol or stored state. `core/state_pipeline_contracts.py:ChangeSet.observed_paths` is defined by the shared contract, populated by `core/state_store.py:StateStore.apply` and meter coalescing, and consumed by acquisition credit and the existing runtime notifier. Literal reads of the established field exist in production and tests; it is serialized metadata, not test-only state.
 
 Recovery introduces one instance map and one query method. `runtime/session_lifecycle.py:CoreRadioSessionLifecycle._recovery_waiters` has three production state writes (initialization, caller registration, matching-entry deletion) and two identity reads (`is_current_recovery_awaited_by` and cleanup). The query method has one production consumer, `runtime/_civ_rx.py:CivRuntime.stop_data_watchdog`, plus direct regression consumers. The added `CivRuntimeHost._session_lifecycle` annotation describes the existing owner; it creates no runtime service. Literal searches found no dynamic registry or serialization consumers for the map/query. No deletion inference depends on unseen downstream consumers.
+
+Acquisition adds no symbol, instance state, registry or execution wrapper. `core/acquisition_scheduler.py:AcquisitionScheduler.try_claim` reuses `_request_key` and the canonical `_requests_by_key` table already maintained by queueing, partial settlement and reissue. Its sole production caller is `core/acquisition_drain.py:AcquisitionDrain.run_once`. Shared claims and provider-generation checks retain their existing definitions and consumers. The additional guard reads canonical pending identity before a claim-table write; it creates no second pending-request index or cleanup loop.
 
 Collection used native `rg` for definitions and both read/write directions, and pinned `git diff`/`git show`. Behavior searches included route/policy/input, notify/observe/freshness, and recovery/cancel/drain/shield. Existing canonical targets and related documentation were inspected before adjudication.
 
@@ -62,12 +66,28 @@ Divergence: child recovery previously cancelled its own waiter, and cancellation
 
 Prior ruling: `docs/architecture/2026-06-22-radio-session-lifecycle.md`, #1217, requires exhaustion through full release and soft recovery reuse of control/token. In-flight: lifecycle task ownership and transport advertisement already exist. Required surface: one read-only waiter-topology query; no native equivalent preserving the present external-cancellation contract was identified. Depends on: matching-entry cleanup and cancellation without rearm. Confidence: high for covered task graphs. Falsifier: a different caller topology that leaves a waiter/watchdog alive or permits late reopen. Fix class: none beyond the reviewed repair. Actionable: retain the single lifecycle owner; no second recovery framework.
 
+### F4 — completed acquisition envelope identity
+
+Verdict: already shared. Rank: parallel-owner hypothesis cleared.
+
+Elements/definition: `core/acquisition_scheduler.py:AcquisitionScheduler.try_claim`, `_request_key`, `_requests_by_key`; consumer `core/acquisition_drain.py:AcquisitionDrain.run_once`.
+
+Consumers: Web and rigctld retain their existing drains and seat policies while the shared scheduler owns pending request and flight identity. A drain captures a tuple of requests and awaits execution; another seat can settle a later tuple entry before the first seat reaches it.
+
+Steelman: claim ownership alone cannot establish that a captured envelope remains pending. Looking up the canonical key and matching its current ID rejects completed or superseded requests without adding a second store, changing request priority, or duplicating seat cleanup. Same-ID partial envelopes remain claimable; generation and claimant identity checks still run for pending requests.
+
+Divergence: the former claim-table-only check could recreate a claim for a completed ID, resend its work, and leave that claim after the next pass pruned the seat-local ledger. Existing orphan IDs do not themselves become pending requests or represent queued wire frames. The guard prevents this race's future duplicates and orphan creation; it does not retrospectively purge an already running process.
+
+Prior ruling: the MOR-2292 contract in `tests/test_combined_acquisition_drain.py` assigns atomic cross-seat flight identity to the shared scheduler; no opposing scoped ruling was found. In-flight: that scheduler, key and both drain consumers already exist. Required surface: exists. Depends on: canonical key/ID membership before binding. Confidence: high for the deterministic completed-request race. Falsifier: a supported pending partial or reissued envelope rejected incorrectly, or another caller bypassing canonical claim ownership. Fix class: none beyond the bounded guard. Actionable: retain the single pending/claim owner. This does not establish the cause of intermittent IC-7300 missing telemetry.
+
 ## Validation evidence and weakest link
 
 The audio candidate has [four-case RED](https://github.com/rigplane/rigplane-core/actions/runs/37014823411) and [43-case focused GREEN](https://github.com/rigplane/rigplane-core/actions/runs/37015065492). Delivery has [ingress/coalescer RED and passing rejected-generation negatives](https://github.com/rigplane/rigplane-core/actions/runs/37014998647), [471 checks on the fixed-production revision](https://github.com/rigplane/rigplane-core/actions/runs/37015351525) and [passing final-head ingress/format checks](https://github.com/rigplane/rigplane-core/actions/runs/37015644637). Recovery has [coalesced-caller RED](https://github.com/rigplane/rigplane-core/actions/runs/37017065077), [cancellation-tail RED](https://github.com/rigplane/rigplane-core/actions/runs/37018742110) and [60 final-head focused checks](https://github.com/rigplane/rigplane-core/actions/runs/37018988483), including real rearm, coalesced/unjoined callers, external and cross-radio stop, successor cleanup and advertised-port collisions. Each workflow's recorded inputs and job output establish its scope and result; these are development checks, not required PR CI. Fresh independent code review passed the pinned [audio](https://github.com/rigplane/rigplane-core/pull/3974#issuecomment-5954769997), [delivery](https://github.com/rigplane/rigplane-core/pull/3975#issuecomment-5954771013) and [recovery](https://github.com/rigplane/rigplane-core/pull/3976#issuecomment-5954898350) candidates. Required PR CI and merge integration are separate acceptance gates.
 
-Weakest link: recovery waiter topology outside the covered callers; inspect that edge first if another cancellation/reopen symptom occurs. High-rate notification cost across all downstream clients and physical radio behavior are also outside this static audit. Nothing here closes a complete customer complaint or proves hardware behavior.
+The additional acquisition regression has [exact RED](https://github.com/rigplane/rigplane-core/actions/runs/37031385365) at `e69c87853e26d2303b7981a5f535d54f8127a8b3`: one completed envelope was resent and one orphan claim remained. [Focused GREEN](https://github.com/rigplane/rigplane-core/actions/runs/37032132967) at the pinned acquisition candidate passed 203 scheduler, drain, combined-drain and IC-7300 pipeline tests plus lint/format checks. These are development checks; final exact-head PR review and required CI remain separate gates.
+
+Weakest link: recovery waiter topology outside the covered callers; inspect that edge first if another cancellation/reopen symptom occurs. High-rate notification cost across all downstream clients and physical radio behavior are also outside this static audit. The acquisition race is proven, but its link to full missing-meter TX windows is not: actual request admission/send/ingress/discard chronology remains necessary. Nothing here closes a complete customer complaint or proves hardware behavior.
 
 ## Cleared
 
-Shared profile routing, canonical accepted-observation metadata, Web throttling, lifecycle task retirement, bounded reconnect attempts and advertised-port ownership were examined and retained. No extra Core execution framework, duplicated store or second recovery loop is required by these changes.
+Shared profile routing, canonical accepted-observation metadata, Web throttling, lifecycle task retirement, bounded reconnect attempts, advertised-port ownership and canonical pending-request identity were examined and retained. No extra Core execution framework, duplicated store or second recovery loop is required by these changes.
