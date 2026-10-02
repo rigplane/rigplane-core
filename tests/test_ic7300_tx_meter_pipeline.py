@@ -187,9 +187,7 @@ async def test_ic7300_tx_meters_recover_through_real_pipeline(
     assert not withheld.intersection(
         request.id for request in scheduler.dispatchable_requests()
     )
-    before = len(
-        [1 for _, command, sub in sends if command == 0x15 and sub in tx_subs]
-    )
+    before = len([1 for _, command, sub in sends if command == 0x15 and sub in tx_subs])
     await pump(10)
     assert before == len(
         [1 for _, command, sub in sends if command == 0x15 and sub in tx_subs]
