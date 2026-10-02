@@ -198,6 +198,7 @@ def browser_tx_audio_facts(radio: "Radio | None") -> BrowserTxAudioFacts:
         source, policy = route.tx_audio_source, route.data_mode_policy
         if (source, policy) not in {
             (audio_route.TxAudioSource.LAN, audio_route.DataModePolicy.DATA2_LAN),
+            (audio_route.TxAudioSource.LAN, audio_route.DataModePolicy.DATA1_LAN),
             (audio_route.TxAudioSource.LAN, audio_route.DataModePolicy.LEGACY),
             (audio_route.TxAudioSource.USB, audio_route.DataModePolicy.DATA1_USB),
             (audio_route.TxAudioSource.ACC, audio_route.DataModePolicy.LEGACY),

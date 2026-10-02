@@ -71,6 +71,7 @@ class DataModePolicy(StrEnum):
     """WSJT-X packet-mode DATA policy implied by an audio route."""
 
     DATA2_LAN = "data2_lan"
+    DATA1_LAN = "data1_lan"
     DATA1_USB = "data1_usb"
     LEGACY = "legacy"
 
@@ -259,11 +260,21 @@ def resolve_audio_route(radio: "Radio") -> AudioRoute:
 
     backend_id = getattr(radio, "backend_id", None)
     if backend_id == "rigplane":
+        profile = getattr(radio, "profile", None)
+        inputs = getattr(profile, "data_mode_inputs", None) or ()
+        supports_command = getattr(radio, "supports_command", None)
         data_policy = (
             DataModePolicy.DATA2_LAN
             if _profile_data_mode_count(radio) >= 2
             else DataModePolicy.LEGACY
         )
+        if (
+            data_policy == DataModePolicy.LEGACY
+            and (5, "LAN") in inputs
+            and callable(supports_command)
+            and supports_command("set_data1_mod_input") is True
+        ):
+            data_policy = DataModePolicy.DATA1_LAN
         return AudioRoute(
             radio_transport=RadioTransport.LAN,
             tx_audio_source=TxAudioSource.LAN,
@@ -298,4 +309,6 @@ def rigctld_wsjtx_policy(route: AudioRoute) -> tuple[int | None, int | None]:
 
     if route.data_mode_policy == DataModePolicy.DATA2_LAN:
         return 2, 5
+    if route.data_mode_policy == DataModePolicy.DATA1_LAN:
+        return 1, 5
     return None, None
