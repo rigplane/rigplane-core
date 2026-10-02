@@ -11,6 +11,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0b13] — 2026-10-02
+
+### Fixed
+
+- **Select the declared DATA1/LAN input for single-DATA radios such as
+  the IC-7300MK2 (MOR-3115, #3974).** When the direct backend declares
+  LAN input 5 and supports its DATA1 setter, the shared packet-audio
+  route selects DATA1 and that input instead of the legacy no-input
+  policy. A rejected input change still aborts packet-mode setup.
+
+- **Deliver freshness for accepted CI-V observations whose value stays
+  the same (MOR-3117, #3975).** The runtime now notifies Web delivery
+  about the state store's accepted observed paths, so an unchanged
+  observation can refresh `lastObserved` without inventing a semantic
+  value change. Generation rejection and existing Web throttling remain
+  in force.
+
+- **Complete LAN recovery cleanup and retain the advertised CI-V port
+  (MOR-3118, #3976).** Exhausted watchdog-owned recovery can release its
+  token and close its control transport without cancelling its own waiter.
+  Cancelled recovery does not rearm a watchdog. An occupied advertised
+  port uses the existing bounded retries instead of reporting success
+  on an unadvertised ephemeral port; external cancellation still works.
+
+### Known issues
+
+- IC-7300 Power, ALC and Id telemetry can intermittently be absent
+  while PTT is reported true (MOR-3116). Investigation remains open.
+  These source fixes do not establish physical-radio acceptance or
+  complete resolution of the reported audio and reconnect symptoms.
+
 ## [3.0.0b12] — 2026-10-02
 
 ### Fixed
@@ -4299,7 +4330,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b12...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b13...HEAD
+[3.0.0b13]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b12...v3.0.0b13
 [3.0.0b12]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b11...v3.0.0b12
 [3.0.0b11]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b10...v3.0.0b11
 [3.0.0b10]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b9...v3.0.0b10
