@@ -66,7 +66,11 @@ async def test_unchanged_ic9700_civ_observation_reaches_control_ws() -> None:
             ]
             assert updates, f"accepted unchanged CI-V read at +{second}s was not sent"
             envelope = updates[-1]
-            body = envelope["data"] if envelope["type"] == "full" else envelope["changed"]
+            body = (
+                envelope["data"]
+                if envelope["type"] == "full"
+                else envelope["changed"]
+            )
             status = body["fieldStatus"]["main.freqHz"]
             assert status["lastObservedMonotonic"] == now
             assert envelope["observationSeq"] > before.observation_seq
