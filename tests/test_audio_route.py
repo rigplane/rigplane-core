@@ -49,6 +49,34 @@ def test_direct_lan_single_data_falls_back_to_legacy_policy() -> None:
     assert rigctld_wsjtx_policy(route) == (None, None)
 
 
+def test_mk2_lan_route_selects_declared_data1_lan_input() -> None:
+    from rigplane.audio.route import resolve_audio_route, rigctld_wsjtx_policy
+    from rigplane.radio import IcomRadio
+
+    route = resolve_audio_route(IcomRadio("192.0.2.1", model="IC-7300MK2"))
+
+    assert route.data_mode_policy.value == "data1_lan"
+    assert rigctld_wsjtx_policy(route) == (1, 5)
+
+
+def test_single_data_lan_requires_declared_supported_lan_input() -> None:
+    from rigplane.audio.route import resolve_audio_route, rigctld_wsjtx_policy
+
+    for model in ("IC-705", "IC-9700", "IC-7300"):
+        radio = SimpleNamespace(
+            backend_id="rigplane",
+            profile=get_radio_profile(model),
+            supports_command=lambda _name: True,
+        )
+        assert rigctld_wsjtx_policy(resolve_audio_route(radio)) == (None, None)
+    radio = SimpleNamespace(
+        backend_id="rigplane",
+        profile=get_radio_profile("IC-7300MK2"),
+        supports_command=lambda _name: False,
+    )
+    assert rigctld_wsjtx_policy(resolve_audio_route(radio)) == (None, None)
+
+
 def test_serial_usb_route_never_selects_data2_lan() -> None:
     from rigplane.audio.route import (
         DataModePolicy,

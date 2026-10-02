@@ -908,6 +908,52 @@ async def test_set_mode_uses_core_contract_string_values() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reject_input", (False, True))
+async def test_mk2_packet_mode_applies_lan_input_before_data_mode(
+    reject_input: bool,
+) -> None:
+    from rigplane.audio.route import resolve_audio_route, rigctld_wsjtx_policy
+    from rigplane.profiles import get_radio_profile
+
+    class Mk2ModeRadio(_ContractModeRadio):
+        backend_id = "rigplane"
+        profile = get_radio_profile("IC-7300MK2")
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls: list[tuple[str, int | bool]] = []
+
+        def supports_command(self, name: str) -> bool:
+            return name == "set_data1_mod_input"
+
+        async def set_data1_mod_input(self, source: int) -> None:
+            self.calls.append(("mod_input", source))
+            if reject_input:
+                raise IcomCommandError("mod input rejected")
+
+        async def set_data_mode(self, on: int | bool) -> None:
+            self.calls.append(("data_mode", on))
+            await super().set_data_mode(on)
+
+    radio = Mk2ModeRadio()
+    mode, source = rigctld_wsjtx_policy(resolve_audio_route(radio))
+    h = RigctldHandler(
+        radio, RigctldConfig(wsjtx_data_mode=mode, wsjtx_data_mod_input=source)
+    )
+
+    resp = await h.execute(set_cmd("set_mode", "PKTUSB", "2400"))
+
+    if reject_input:
+        assert not resp.ok
+        assert radio.calls == [("mod_input", 5)]
+        assert radio.set_data_mode_calls == []
+    else:
+        assert resp.ok
+        assert radio.calls == [("mod_input", 5), ("data_mode", 1)]
+        assert type(radio.calls[1][1]) is int
+
+
+@pytest.mark.asyncio
 async def test_set_mode_packet_uses_configured_wsjtx_data_mode() -> None:
     radio = make_mock_radio()
     radio.set_mode = AsyncMock()
