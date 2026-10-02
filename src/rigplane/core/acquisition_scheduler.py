@@ -294,6 +294,7 @@ class _AcquisitionClaim:
 class _PendingCadenceUpdate:
     request_id: str
     semantic_changed: bool
+    completed_paths: frozenset[FieldPath]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1533,18 +1534,27 @@ class AcquisitionScheduler:
             change.path in requested_paths for change in change_set.changes
         )
         pending_cadence = self._pending_cadence_by_key.get(key)
+        completed_paths = requested_paths
+        if pending_cadence is not None and pending_cadence.request_id == request.id:
+            semantic_changed = semantic_changed or pending_cadence.semantic_changed
+            completed_paths |= pending_cadence.completed_paths
         if matched_pending_request and remaining_paths:
-            if pending_cadence is not None and pending_cadence.request_id == request.id:
-                semantic_changed = semantic_changed or pending_cadence.semantic_changed
             self._pending_cadence_by_key[key] = _PendingCadenceUpdate(
                 request_id=request.id,
                 semantic_changed=semantic_changed,
+                completed_paths=completed_paths,
             )
             return
 
         if pending_cadence is not None and pending_cadence.request_id == request.id:
-            semantic_changed = semantic_changed or pending_cadence.semantic_changed
             del self._pending_cadence_by_key[key]
+
+        # A client may acquire only one leaf of a shared poll group. That
+        # answer must not postpone unread siblings. Full-group replies settle
+        # individually, so include successful paths from earlier replies.
+        poll_paths = self._poll_cadence_groups().get(key, ())
+        if not completed_paths.issuperset(poll_paths):
+            return
 
         previous = self._cadence_state_for(
             key,

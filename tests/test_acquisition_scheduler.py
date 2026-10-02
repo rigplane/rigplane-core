@@ -2706,6 +2706,98 @@ def test_grouped_partial_semantic_change_resets_adaptive_cadence_after_all_paths
         )
 
 
+@pytest.mark.parametrize("explicit_policy", [False, True])
+def test_singleton_success_keeps_unread_group_siblings_due(
+    explicit_policy: bool,
+) -> None:
+    clock = FreshnessClock(start=300.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    policy = AcquisitionPolicy(cadence_seconds=1.0, freshness_ttl_seconds=5.0)
+    scheduler = AcquisitionScheduler(
+        profile=_profile(
+            [freq, mode],
+            field_policies={freq: policy, mode: policy} if explicit_policy else {},
+        ),
+        clock=clock,
+    )
+
+    singleton = scheduler.ensure_fresh(
+        freq, max_age=0.2, priority="user", reason="client-read"
+    )
+    assert singleton.request is not None
+    clock.advance(0.1)
+    scheduler.record_acquisition_result(singleton.request, _changeset(at=clock.now()))
+
+    assert scheduler.pending_requests() == ()
+    grouped = scheduler.due_requests()
+    assert len(grouped) == 1
+    assert set(grouped[0].paths) == {freq, mode}
+
+
+def test_on_demand_group_with_partial_replies_rearms_its_full_cadence() -> None:
+    clock = FreshnessClock(start=320.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    policy = AcquisitionPolicy(cadence_seconds=1.0, freshness_ttl_seconds=5.0)
+    scheduler = AcquisitionScheduler(
+        profile=_profile([freq, mode], field_policies={freq: policy, mode: policy}),
+        clock=clock,
+    )
+    grouped = scheduler.ensure_fresh(
+        (freq, mode), max_age=0.2, priority="user", reason="client-read"
+    )
+    assert grouped.request is not None
+    clock.advance(0.1)
+    scheduler.record_acquisition_result(
+        replace(grouped.request, paths=(mode,), capability_ids=(str(mode),)),
+        _changeset(at=clock.now()),
+    )
+    pending = scheduler.pending_requests()[0]
+    assert pending.paths == (freq,)
+    coalesced = scheduler.ensure_fresh(
+        freq, max_age=0.2, priority="user", reason="another-client-read"
+    )
+    assert coalesced.request is not None
+    assert coalesced.request.id == grouped.request.id
+    clock.advance(0.1)
+    scheduler.record_acquisition_result(coalesced.request, _changeset(at=clock.now()))
+
+    assert scheduler.pending_requests() == ()
+    clock.advance(0.9)
+    assert scheduler.due_requests() == ()
+    clock.advance(0.11)
+    assert set(scheduler.due_requests()[0].paths) == {freq, mode}
+
+
+def test_failed_sibling_is_not_credited_by_the_last_successful_reply() -> None:
+    clock = FreshnessClock(start=340.0)
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    policy = AcquisitionPolicy(cadence_seconds=1.0, freshness_ttl_seconds=5.0)
+    scheduler = AcquisitionScheduler(
+        profile=_profile([freq, mode], field_policies={freq: policy, mode: policy}),
+        clock=clock,
+    )
+    grouped = scheduler.due_requests()[0]
+    clock.advance(0.1)
+    scheduler.record_acquisition_failure(
+        grouped,
+        failed_paths=(mode,),
+        reason="acquisition_request_timeout",
+        now=clock.now(),
+        link_healthy=False,
+    )
+    remaining = scheduler.pending_requests()[0]
+    assert remaining.paths == (freq,)
+    clock.advance(0.1)
+    scheduler.record_acquisition_result(remaining, _changeset(at=clock.now()))
+
+    # Keep the first timeout's expedited retry instead of postponing the
+    # missing mode by counting the frequency answer as a full-group success.
+    assert set(scheduler.due_requests()[0].paths) == {freq, mode}
+
+
 def test_diagnostics_include_cadence_next_due_pending_pressure_and_counts() -> None:
     clock = FreshnessClock(start=230.0)
     freq = FieldPath.active("main", "freq_mode", "freq_hz")
