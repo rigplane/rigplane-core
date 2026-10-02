@@ -695,6 +695,17 @@ class AcquisitionScheduler:
     ) -> bool:
         """Atomically bind one pending request flight to its dispatch seat."""
 
+        # Another seat may complete this envelope while a drain awaits an
+        # earlier entry from the same per-pass snapshot.
+        key = _request_key(
+            request.paths[0],
+            acquisition_method=request.acquisition_method,
+            policy=request.policy,
+        )
+        pending = self._requests_by_key.get(key)
+        if pending is None or pending.id != request.id:
+            return False
+
         existing = self._claims_by_request_id.get(request.id)
         if existing is None or provider_generation > existing.provider_generation:
             self._claims_by_request_id[request.id] = _AcquisitionClaim(

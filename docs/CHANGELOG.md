@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   port uses the existing bounded retries instead of reporting success
   on an unadvertised ephemeral port; external cancellation still works.
 
+- **Reject already completed shared acquisition requests (MOR-3116).**
+  A drain now checks the scheduler's pending request identity before
+  claiming an envelope captured before another drain completed it.
+  This prevents duplicate sends and orphan claims from that race.
+
 ### Known issues
 
 - IC-7300 Power, ALC and Id telemetry can intermittently be absent
