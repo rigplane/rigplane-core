@@ -40,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   claiming an envelope captured before another drain completed it.
   This prevents duplicate sends and orphan claims from that race.
 
+- **Keep grouped meter polling due after a client reads only SWR
+  (MOR-3116).** A successful singleton read no longer postpones the
+  shared cadence for unread Power, ALC, Comp and Id meters. Successful
+  partial replies accumulate across a grouped request before its
+  cadence advances; failed siblings do not count as acquired.
+
 ### Known issues
 
 - IC-7300 Power, ALC and Id telemetry can intermittently be absent
