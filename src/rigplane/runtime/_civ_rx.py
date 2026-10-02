@@ -1026,14 +1026,23 @@ class CivRuntime:
         # runs, freezing recovery after a single attempt (#1217 invariant 2:
         # self-cancel guard).
         current = asyncio.current_task()
-        if rc_task is not None and rc_task is not current and not rc_task.done():
+        owned_recovery = (
+            rc_task is not None
+            and self._host._session_lifecycle.is_current_recovery_awaited_by(rc_task)
+        )
+        if (
+            rc_task is not None
+            and rc_task is not current
+            and not owned_recovery
+            and not rc_task.done()
+        ):
             rc_task.cancel()
             try:
                 await rc_task
             except asyncio.CancelledError:
                 pass
             self._reconnect_task = None
-        elif rc_task is not current:
+        elif rc_task is not current and not owned_recovery:
             self._reconnect_task = None
 
     def advance_generation(self, reason: str) -> None:
@@ -1573,15 +1582,16 @@ class CivRuntime:
         on exhaustion, routes through CLOSING + full release (after which the
         control session is gone and re-arming below correctly no-ops).
 
-        Re-arms in ``finally`` after recovery (#1217). An identity hold keeps
-        it paused until acceptance; a released control session has no stream
-        to watch.
+        Re-arms in ``finally`` after uncancelled recovery (#1217). An identity
+        hold keeps it paused until acceptance; a released control session has
+        no stream to watch.
         """
         escalate = full_reconnect_reason is not None or (
             self._soft_recovery_epoch is not None
             and self._soft_recovery_epoch == self._host._civ_epoch
         )
         self._soft_recovery_epoch = None
+        cancelled = False
         try:
             await self._host._force_cleanup_civ()
             if escalate:
@@ -1602,6 +1612,9 @@ class CivRuntime:
             await self._host.soft_reconnect()
             if not escalate:
                 self._soft_recovery_epoch = self._host._civ_epoch
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
         except (ConnectionError, TimeoutError, OSError):
             logger.error(
                 "civ-data-watchdog: lifecycle recovery failed (exhausted or "
@@ -1614,7 +1627,11 @@ class CivRuntime:
                 exc_info=True,
             )
         finally:
-            self._rearm_data_watchdog_after_recovery()
+            if cancelled:
+                if self._reconnect_task is asyncio.current_task():
+                    self._reconnect_task = None
+            else:
+                self._rearm_data_watchdog_after_recovery()
 
     def _rearm_data_watchdog_after_recovery(self) -> None:
         """Re-arm the CI-V data watchdog after a detached recovery attempt.

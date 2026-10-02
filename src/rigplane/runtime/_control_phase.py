@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import errno
 import logging
 import socket as _socket
 import struct
@@ -56,10 +55,6 @@ _STEREO_CODECS = (
 
 class _DataPortDiscoveryCooldown(Exception):
     """Recoverable startup failure after control auth advertised a CI-V port."""
-
-
-def _is_address_in_use(exc: OSError) -> bool:
-    return exc.errno == errno.EADDRINUSE or "Address already in use" in str(exc)
 
 
 def _session_reject_hint(error: int) -> str:
@@ -847,43 +842,16 @@ class ControlPhaseRuntime:
                 local_port=requested_local_port,
             )
         except OSError as exc:
-            if requested_local_port and _is_address_in_use(exc):
-                logger.warning(
-                    "soft_reconnect: local CI-V port %d still busy, retrying with an ephemeral port",
-                    requested_local_port,
-                )
-                h._civ_transport = IcomTransport()
-                try:
-                    await h._civ_transport.connect(
-                        h._host,
-                        h._civ_port,
-                        local_host=getattr(h, "_local_bind_host", None),
-                        local_port=0,
-                    )
-                except OSError as retry_exc:
-                    h._civ_transport = None
-                    ctrl_alive = getattr(h, "control_connected", False)
-                    h._conn_state = (
-                        RadioConnectionState.RECONNECTING
-                        if ctrl_alive
-                        else RadioConnectionState.DISCONNECTED
-                    )
-                    h._civ_stream_ready = False
-                    h._civ_recovering = ctrl_alive
-                    raise ConnectionError(
-                        f"Failed to reconnect CI-V: {retry_exc}"
-                    ) from retry_exc
-            else:
-                h._civ_transport = None
-                ctrl_alive = getattr(h, "control_connected", False)
-                h._conn_state = (
-                    RadioConnectionState.RECONNECTING
-                    if ctrl_alive
-                    else RadioConnectionState.DISCONNECTED
-                )
-                h._civ_stream_ready = False
-                h._civ_recovering = ctrl_alive
-                raise ConnectionError(f"Failed to reconnect CI-V: {exc}") from exc
+            h._civ_transport = None
+            ctrl_alive = getattr(h, "control_connected", False)
+            h._conn_state = (
+                RadioConnectionState.RECONNECTING
+                if ctrl_alive
+                else RadioConnectionState.DISCONNECTED
+            )
+            h._civ_stream_ready = False
+            h._civ_recovering = ctrl_alive
+            raise ConnectionError(f"Failed to reconnect CI-V: {exc}") from exc
 
         h._civ_transport.start_ping_loop()
         h._civ_transport.start_retransmit_loop()

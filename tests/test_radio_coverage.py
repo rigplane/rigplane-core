@@ -1653,10 +1653,9 @@ async def test_soft_reconnect_handles_connect_failure(radio: IcomRadio) -> None:
     assert radio._civ_transport is None
 
 
-async def test_soft_reconnect_retries_ephemeral_port_when_saved_local_port_busy(
+async def test_soft_reconnect_retries_saved_local_port_when_busy(
     radio: IcomRadio,
 ) -> None:
-    """A stale CI-V socket can briefly keep the previous local port busy."""
     from rigplane.runtime._connection_state import RadioConnectionState
 
     radio._civ_transport = None
@@ -1692,7 +1691,7 @@ async def test_soft_reconnect_retries_ephemeral_port_when_saved_local_port_busy(
     busy_transport.connect.assert_awaited_once()
     retry_transport.connect.assert_awaited_once()
     assert busy_transport.connect.await_args.kwargs["local_port"] == 52002
-    assert retry_transport.connect.await_args.kwargs["local_port"] == 0
+    assert retry_transport.connect.await_args.kwargs["local_port"] == 52002
     assert radio._conn_state == RadioConnectionState.CONNECTED
     assert radio._civ_transport is retry_transport
 

@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from rigplane.radio_state import RadioState
     from rigplane.profiles import RadioProfile
     from rigplane.core.state_store import StateStore
+    from rigplane.runtime.session_lifecycle import CoreRadioSessionLifecycle
     from rigplane.scope import ScopeAssembler, ScopeFrame
     from rigplane.transport import IcomTransport
     from rigplane.types import Mode
@@ -63,6 +64,7 @@ class CivRuntimeHost(Protocol):
     _civ_recovering: bool
     _civ_recovery_lock: asyncio.Lock
     _civ_recovery_wait_timeout: float
+    _session_lifecycle: CoreRadioSessionLifecycle
 
     # CI-V watchdog / last data timestamps
     _last_civ_data_received: "float | None"
