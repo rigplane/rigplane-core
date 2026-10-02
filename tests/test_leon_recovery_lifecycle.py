@@ -369,6 +369,7 @@ async def test_external_stop_cancels_registered_recovery(
         events.append("late-reconnect")
 
     async def parked_watchdog() -> None:
+        events.append("late-watchdog")
         await asyncio.Event().wait()
 
     monkeypatch.setattr(lifecycle._mech, "soft_reconnect_once", blocked_attempt)
@@ -403,6 +404,7 @@ async def test_external_stop_cancels_registered_recovery(
         assert len(attempts) == 1
         assert attempts[0] is not None and attempts[0].cancelled()
         assert "late-reconnect" not in events
+        assert "late-watchdog" not in events
         assert radio._civ_runtime._reconnect_task is None
         assert radio._civ_data_watchdog_task is None
         assert lifecycle._recovery_waiters == {}
