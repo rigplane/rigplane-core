@@ -268,7 +268,9 @@ class TestGetSetRoundtrip:
         await w.drain()
 
         data = await _read(r)
-        assert data == b"0\n"
+        # MOR-3113: value line, then the RPRT footer the normal-mode
+        # parser appends after the value.
+        assert data == b"0\nRPRT 0\n"
         await _close(w)
 
     async def test_set_mode_wire(self, wire_server: RigctldServer) -> None:

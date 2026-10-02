@@ -273,10 +273,10 @@
   },
   {
     "id": "get_lock_mode",
-    "description": "get_lock_mode — always returns 0 (unlocked)",
+    "description": "get_lock_mode — always returns 0 (unlocked); normal mode appends the RPRT footer after the value (MOR-3113)",
     "input": "\\get_lock_mode",
     "mock": {},
-    "expected_output": "0\n",
+    "expected_output": "0\nRPRT 0\n",
     "extended_output": "get_lock_mode:\n0\nRPRT 0\n"
   },
   {
