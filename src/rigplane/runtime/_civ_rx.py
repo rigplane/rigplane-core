@@ -6,7 +6,6 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
-from contextvars import ContextVar
 from dataclasses import dataclass
 from dataclasses import replace as _replace_dataclass
 from typing import TYPE_CHECKING, Any
@@ -671,9 +670,6 @@ _CIV_DATA_WATCHDOG_RETRY = 0.1  # retry interval (wfview: 100ms via startCivData
 # recovery. A port that has gone completely silent gives up much sooner.
 _OPENCLOSE_DEADLINE = 60.0
 _SILENT_OPENCLOSE_DEADLINE = 5.0
-_recovery_owner: ContextVar[asyncio.Task[None] | None] = ContextVar(
-    "civ_recovery_owner", default=None
-)
 
 
 class CivRuntime:
@@ -1030,7 +1026,10 @@ class CivRuntime:
         # runs, freezing recovery after a single attempt (#1217 invariant 2:
         # self-cancel guard).
         current = asyncio.current_task()
-        owned_recovery = rc_task is not None and _recovery_owner.get() is rc_task
+        owned_recovery = (
+            rc_task is not None
+            and self._host._session_lifecycle.is_current_recovery_awaited_by(rc_task)
+        )
         if (
             rc_task is not None
             and rc_task is not current
@@ -1587,7 +1586,6 @@ class CivRuntime:
         it paused until acceptance; a released control session has no stream
         to watch.
         """
-        owner_token = _recovery_owner.set(asyncio.current_task())
         escalate = full_reconnect_reason is not None or (
             self._soft_recovery_epoch is not None
             and self._soft_recovery_epoch == self._host._civ_epoch
@@ -1625,10 +1623,7 @@ class CivRuntime:
                 exc_info=True,
             )
         finally:
-            try:
-                self._rearm_data_watchdog_after_recovery()
-            finally:
-                _recovery_owner.reset(owner_token)
+            self._rearm_data_watchdog_after_recovery()
 
     def _rearm_data_watchdog_after_recovery(self) -> None:
         """Re-arm the CI-V data watchdog after a detached recovery attempt.

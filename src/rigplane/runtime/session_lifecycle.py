@@ -707,6 +707,7 @@ class CoreRadioSessionLifecycle:
         # Resident connect runner + coalescing.
         self._connect_task: asyncio.Task[None] | None = None
         self._recover_task: asyncio.Task[None] | None = None
+        self._recovery_waiters: dict[asyncio.Task[None], asyncio.Task[None]] = {}
         # True once a session has been claimed (auth succeeded) and not yet
         # released — drives idempotent disconnect.
         self._claimed = False
@@ -998,16 +999,29 @@ class CoreRadioSessionLifecycle:
     # soft_reconnect() — CONNECTED → RECOVERING → CONNECTED (#1217)
     # ------------------------------------------------------------------
 
+    def is_current_recovery_awaited_by(self, task: asyncio.Task[None]) -> bool:
+        recovery = self._recover_task
+        return (
+            recovery is not None
+            and asyncio.current_task() is recovery
+            and self._recovery_waiters.get(task) is recovery
+        )
+
     async def soft_reconnect(self) -> None:
         # Coalesce concurrent recovery onto the in-flight one.
-        if self._recover_task is not None and not self._recover_task.done():
-            await self._recover_task
-            return
-        self._recover_task = asyncio.ensure_future(self._run_recover())
+        recovery = self._recover_task
+        if recovery is None or recovery.done():
+            recovery = asyncio.ensure_future(self._run_recover())
+            self._recover_task = recovery
+        caller = asyncio.current_task()
+        if caller is not None:
+            self._recovery_waiters[caller] = recovery
         try:
-            await self._recover_task
+            await recovery
         finally:
-            if self._recover_task is not None and self._recover_task.done():
+            if caller is not None and self._recovery_waiters.get(caller) is recovery:
+                del self._recovery_waiters[caller]
+            if self._recover_task is recovery and recovery.done():
                 self._recover_task = None
 
     async def _run_recover(self) -> None:
