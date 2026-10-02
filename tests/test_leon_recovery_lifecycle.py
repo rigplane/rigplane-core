@@ -124,9 +124,12 @@ async def test_exhaustion_cancels_watchdog_that_has_not_joined_recovery(
         cleanup_paused.set()
         await resume_cleanup.wait()
 
+    async def parked_watchdog() -> None:
+        await asyncio.Event().wait()
+
     monkeypatch.setattr(lifecycle._mech, "soft_reconnect_once", fail_first_attempt)
     monkeypatch.setattr(radio, "_force_cleanup_civ", pause_before_join)
-    monkeypatch.setattr(radio._civ_runtime, "start_data_watchdog", lambda: None)
+    monkeypatch.setattr(radio._civ_runtime, "_civ_data_watchdog_loop", parked_watchdog)
     direct = asyncio.create_task(radio.soft_reconnect())
     await entered.wait()
     watchdog = asyncio.create_task(radio._civ_runtime._watchdog_recover())
@@ -143,12 +146,14 @@ async def test_exhaustion_cancels_watchdog_that_has_not_joined_recovery(
         assert len(attempts) == 1
         assert lifecycle.state is LifecycleState.DISCONNECTED
         assert radio._civ_runtime._reconnect_task is None
+        assert radio._civ_data_watchdog_task is None
         assert lifecycle._recovery_waiters == {}
     finally:
         for task in (direct, watchdog):
             if not task.done():
                 task.cancel()
         await asyncio.gather(direct, watchdog, return_exceptions=True)
+        await radio._civ_runtime.stop_data_watchdog()
         if radio._ctrl_transport._udp_transport is not None:
             await radio._control_phase.release()
 
@@ -363,8 +368,11 @@ async def test_external_stop_cancels_registered_recovery(
         await finish.wait()
         events.append("late-reconnect")
 
+    async def parked_watchdog() -> None:
+        await asyncio.Event().wait()
+
     monkeypatch.setattr(lifecycle._mech, "soft_reconnect_once", blocked_attempt)
-    monkeypatch.setattr(radio._civ_runtime, "start_data_watchdog", lambda: None)
+    monkeypatch.setattr(radio._civ_runtime, "_civ_data_watchdog_loop", parked_watchdog)
     direct = asyncio.create_task(radio.soft_reconnect()) if coalesced else None
     if direct is not None:
         await entered.wait()
@@ -396,6 +404,7 @@ async def test_external_stop_cancels_registered_recovery(
         assert attempts[0] is not None and attempts[0].cancelled()
         assert "late-reconnect" not in events
         assert radio._civ_runtime._reconnect_task is None
+        assert radio._civ_data_watchdog_task is None
         assert lifecycle._recovery_waiters == {}
         if shutdown:
             assert events == ["civ-close", "token-remove", "control-close"]
@@ -410,5 +419,6 @@ async def test_external_stop_cancels_registered_recovery(
                 direct.cancel()
             with suppress(asyncio.CancelledError):
                 await direct
+        await radio._civ_runtime.stop_data_watchdog()
         if radio._ctrl_transport._udp_transport is not None:
             await radio._control_phase.release()
