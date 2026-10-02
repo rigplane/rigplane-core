@@ -66,19 +66,15 @@ async def test_unchanged_ic9700_civ_observation_reaches_control_ws() -> None:
             ]
             assert updates, f"accepted unchanged CI-V read at +{second}s was not sent"
             envelope = updates[-1]
-            body = (
-                envelope["data"]
-                if envelope["type"] == "full"
-                else envelope["changed"]
-            )
+            payload_key = "data" if envelope["type"] == "full" else "changed"
+            body = envelope[payload_key]
             status = body["fieldStatus"]["main.freqHz"]
             assert status["lastObservedMonotonic"] == now
             assert envelope["observationSeq"] > before.observation_seq
             assert envelope["providerGeneration"] == generation
             after = radio.state_store.snapshot()
-            assert after.field("receiver.0.active.freq_mode.freq_hz").freshness is (
-                FreshnessState.FRESH
-            )
+            frequency = after.field("receiver.0.active.freq_mode.freq_hz")
+            assert frequency.freshness is FreshnessState.FRESH
             if second:
                 assert after.state_revision == before.state_revision
             assert not server.build_public_state()["fieldStatus"]["active"]["observed"]
