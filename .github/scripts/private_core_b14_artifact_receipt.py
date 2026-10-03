@@ -88,7 +88,7 @@ evidence_names = (
     'wheel-assets.json', 'module-bytes.json', 'tooling-profile.txt', 'source-identity.txt',
     'build.log', 'input-sha256-before.txt', 'input-sha256-after.txt',
     'frozen-input-sha256.txt', 'artifact-sha256.txt', 'artifact-bytes.txt',
-    'build-completed-utc.txt',
+    'build-completed-utc.txt', 'dependency-cache.txt',
 )
 manifest = {
     'source_sha': freeze['commit'], 'source_tree': freeze['tree'], 'version': version,

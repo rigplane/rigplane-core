@@ -37,20 +37,32 @@ jobs:
           artifact_root=$(mktemp -d "$RUNNER_TEMP/core-b14-artifact.XXXXXXXX")
           echo "root=$artifact_root" >> "$GITHUB_OUTPUT"
           {
-            echo "UV_CACHE_DIR=$artifact_root/uv-cache"
-            echo "UV_PYTHON_INSTALL_DIR=$artifact_root/python"
-            echo "NPM_CONFIG_CACHE=$artifact_root/npm-cache"
+            echo "UV_CACHE_DIR=$GITHUB_WORKSPACE/.core-b14-dependencies/uv"
+            echo "UV_PYTHON_INSTALL_DIR=$GITHUB_WORKSPACE/.core-b14-dependencies/python"
+            echo "NPM_CONFIG_CACHE=$GITHUB_WORKSPACE/.core-b14-dependencies/npm"
           } >> "$GITHUB_ENV"
 
       - name: Install uv
+        id: uv
         uses: astral-sh/setup-uv@v8.1.0
         with:
-          enable-cache: false
+          python-version: '3.13'
+          enable-cache: true
+          cache-python: true
+          cache-local-path: ${{ github.workspace }}/.core-b14-dependencies/uv
+          cache-suffix: core-b14-${{ runner.os }}-${{ runner.arch }}
+          cache-dependency-glob: |
+            target/pyproject.toml
+            target/uv.lock
+          prune-cache: false
 
       - name: Set up Node.js
+        id: node
         uses: actions/setup-node@v6
         with:
           node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: target/frontend/package-lock.json
 
       - name: Build and verify installed artifacts
         timeout-minutes: 20
@@ -61,6 +73,25 @@ jobs:
           set -euo pipefail
           bash control/.github/scripts/build-private-core-b14-artifact.sh \
             2>&1 | tee "$CORE_ARTIFACT_ROOT/build.log"
+
+      - name: Exclude product package and record dependency caches
+        env:
+          CORE_ARTIFACT_ROOT: ${{ steps.work.outputs.root }}
+          UV_CACHE_KEY: ${{ steps.uv.outputs.cache-key }}
+          UV_CACHE_HIT: ${{ steps.uv.outputs.cache-hit }}
+          PYTHON_CACHE_HIT: ${{ steps.uv.outputs.python-cache-hit }}
+          NPM_CACHE_HIT: ${{ steps.node.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          uv cache clean rigplane
+          {
+            printf 'uv_cache_key=%s\n' "$UV_CACHE_KEY"
+            printf 'uv_cache_hit=%s\n' "$UV_CACHE_HIT"
+            printf 'python_cache_hit=%s\n' "$PYTHON_CACHE_HIT"
+            printf 'npm_cache_hit=%s\n' "$NPM_CACHE_HIT"
+            printf 'python_install_dir=%s\n' "$(uv python dir)"
+            du -sk "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR" "$NPM_CONFIG_CACHE"
+          } > "$CORE_ARTIFACT_ROOT/dependency-cache.txt"
 
       - name: Finalize receipt after build log closes
         timeout-minutes: 2
