@@ -457,12 +457,14 @@ class _IcomSerialRadioBase(CoreRadio):
             await self._serial_session.connect()
         except Exception as exc:
             diagnostic = serial_open_diagnostic(exc)
-            message = f"Failed to connect serial session: {diagnostic}"
+            message = (
+                f"Failed to connect serial session on {self._serial_device}: {exc}"
+            )
             if self._civ_epoch == attempt_epoch:
                 self._conn_state = RadioConnectionState.DISCONNECTED
                 self._civ_stream_ready = False
                 self._civ_recovering = False
-                self.last_error = message
+                self.last_error = f"Failed to connect serial session: {diagnostic}"
                 self.serial_open_error = diagnostic
             raise ConnectionError(message) from exc
         if self._civ_epoch != attempt_epoch:
@@ -622,12 +624,14 @@ class _IcomSerialRadioBase(CoreRadio):
             # underneath it) writes no state — whoever replaced the link
             # owns the connection state now.
             diagnostic = serial_open_diagnostic(exc)
-            message = f"Failed to reconnect serial session: {diagnostic}"
+            message = (
+                f"Failed to reconnect serial session on {self._serial_device}: {exc}"
+            )
             if self._civ_epoch == attempt_epoch:
                 self._conn_state = RadioConnectionState.RECONNECTING
                 self._civ_stream_ready = False
                 self._civ_recovering = True
-                self.last_error = message
+                self.last_error = f"Failed to reconnect serial session: {diagnostic}"
                 self.serial_open_error = diagnostic
             raise ConnectionError(message) from exc
         if self._civ_epoch != attempt_epoch:

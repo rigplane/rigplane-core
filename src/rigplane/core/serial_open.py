@@ -40,7 +40,10 @@ def serial_open_diagnostic(error: BaseException) -> str:
             continue
         seen.add(id(current))
         number = current.errno if isinstance(current, OSError) else None
-        if isinstance(current, PermissionError) or number in {errno.EACCES, errno.EPERM}:
+        if isinstance(current, PermissionError) or number in {
+            errno.EACCES,
+            errno.EPERM,
+        }:
             code = "serial_permission_denied"
         elif number in {errno.EBUSY, errno.EAGAIN}:
             code = "serial_busy"

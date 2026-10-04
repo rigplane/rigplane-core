@@ -1524,7 +1524,9 @@ def _build_public_state_payload_from_dict(
     }
     public_health = dict(radio_health or classify_radio_health(radio))
     stored_health = state.get("radio_health")
-    if isinstance(stored_health, dict):
+    if isinstance(stored_health, dict) and not isinstance(
+        getattr(radio, "serial_open_error", None), str
+    ):
         for name in _HEALTH_PUBLIC_PATHS:
             if name in stored_health:
                 public_health[_to_camel(name)] = stored_health[name]

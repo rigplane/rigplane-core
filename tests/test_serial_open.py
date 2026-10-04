@@ -53,9 +53,19 @@ def test_serial_open_diagnostic_preserves_only_verified_cause(error, expected):
     assert serial_open_diagnostic(wrapper) == expected
     wrapper.__cause__ = None
     wrapper.__context__ = error
+    wrapper.__suppress_context__ = False
     assert serial_open_diagnostic(wrapper) == expected
     error.__context__ = wrapper
     assert serial_open_diagnostic(wrapper) == expected
+
+
+def test_serial_open_diagnostic_does_not_use_suppressed_context():
+    from rigplane.core.serial_open import serial_open_diagnostic
+
+    wrapper = RuntimeError("Permission denied")
+    wrapper.__context__ = OSError(errno.EACCES, "private detail")
+    wrapper.__suppress_context__ = True
+    assert serial_open_diagnostic(wrapper) == "serial_unknown"
 
 
 @pytest.mark.asyncio
@@ -65,6 +75,11 @@ async def test_serial_permission_error_reaches_health_without_private_details(me
     from rigplane.web.runtime_helpers import classify_radio_health
     from rigplane.web.state_schema import RadioHealthPublic
     from rigplane.web.server import WebConfig, WebServer
+    from rigplane.core.state_pipeline_contracts import (
+        FieldPath,
+        Observation,
+        SourceMetadata,
+    )
 
     radio = Icom7610SerialRadio(device="/private/secret-device")
     error = OSError(errno.EACCES, "token=secret", "/private/secret-device")
@@ -76,12 +91,33 @@ async def test_serial_permission_error_reaches_health_without_private_details(me
     with pytest.raises(Exception) as raised:
         await getattr(radio, method)()
     assert raised.value.__cause__ is wrapped
+    assert "/private/secret-device" in str(raised.value)
+    assert "wrapper secret" in str(raised.value)
+    assert "secret" not in radio.last_error
     health = classify_radio_health(radio)
     assert health["likelyCause"] == "radio_not_connected"
     assert health["lastError"] == "serial_permission_denied: EACCES"
     assert RadioHealthPublic.model_validate(health).lastError == health["lastError"]
     server = WebServer(radio, WebConfig())
     assert server._build_radio_health()["lastError"] == health["lastError"]
+    server.command_state_store.apply(
+        Observation(
+            path=FieldPath.parse("health.health.last_error"),
+            value="stale token=secret /private/secret-device",
+            source=SourceMetadata(
+                source="local_reconcile", provider="web_lifecycle", transport="web"
+            ),
+            timestamp_monotonic=0.0,
+            quality=("confirmed",),
+        )
+    )
+    public = server._build_public_state_from_snapshot(
+        server.command_state_store.snapshot()
+    )
+    assert public["radioHealth"]["lastError"] == health["lastError"]
+    assert "secret" not in str(public["radioHealth"])
+    station_health = server._station_readiness_payload()["health"]
+    assert station_health["lastError"] == health["lastError"]
     assert "secret" not in str(health)
     radio._serial_session.connect = AsyncMock()
     radio._gate_serial_identity = AsyncMock(return_value=False)
@@ -96,6 +132,11 @@ async def test_serial_permission_error_reaches_health_without_private_details(me
     assert silent_health["lastError"] is None
     await radio.disconnect()
     assert radio.serial_open_error is None
+    assert "secret" not in str(server._station_readiness_payload()["health"])
+    delivered = server._build_public_state_from_snapshot(
+        server._snapshot_for_delivery()
+    )
+    assert "secret" not in str(delivered["radioHealth"])
 
 
 @pytest.mark.asyncio
