@@ -15,9 +15,10 @@ kwarg is not accepted by pyserial — that is why this test exists.
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import serial
@@ -27,6 +28,86 @@ from rigplane.backends.discovery import probe_serial_civ, probe_xiegu_model_id
 from rigplane.backends.icom7610.drivers.serial_civ_link import SerialCivLink
 from rigplane.backends.yaesu_cat import YaesuCatTransport
 from rigplane.core.serial_open import open_serial_port
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (PermissionError("private detail"), "serial_permission_denied"),
+        (OSError(errno.EACCES, "private detail"), "serial_permission_denied: EACCES"),
+        (OSError(errno.EPERM, "private detail"), "serial_permission_denied: EPERM"),
+        (OSError(errno.EBUSY, "private detail"), "serial_busy: EBUSY"),
+        (OSError(errno.ENOENT, "private detail"), "serial_not_found: ENOENT"),
+        (OSError(errno.ENODEV, "private detail"), "serial_not_found: ENODEV"),
+        (OSError(errno.EAGAIN, "private detail"), "serial_busy: EAGAIN"),
+        (TimeoutError("private detail"), "serial_timeout"),
+        (OSError(errno.ETIMEDOUT, "private detail"), "serial_timeout: ETIMEDOUT"),
+        (RuntimeError("Permission denied /private/secret"), "serial_unknown"),
+    ],
+)
+def test_serial_open_diagnostic_preserves_only_verified_cause(error, expected):
+    from rigplane.core.serial_open import serial_open_diagnostic
+
+    wrapper = RuntimeError("wrapper secret")
+    wrapper.__cause__ = error
+    assert serial_open_diagnostic(wrapper) == expected
+    wrapper.__cause__ = None
+    wrapper.__context__ = error
+    assert serial_open_diagnostic(wrapper) == expected
+    error.__context__ = wrapper
+    assert serial_open_diagnostic(wrapper) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["connect", "soft_reconnect"])
+async def test_serial_permission_error_reaches_health_without_private_details(method):
+    from rigplane.backends.icom7610 import Icom7610SerialRadio
+    from rigplane.web.runtime_helpers import classify_radio_health
+    from rigplane.web.state_schema import RadioHealthPublic
+    from rigplane.web.server import WebConfig, WebServer
+
+    radio = Icom7610SerialRadio(device="/private/secret-device")
+    error = OSError(errno.EACCES, "token=secret", "/private/secret-device")
+    wrapped = RuntimeError("wrapper secret")
+    wrapped.__cause__ = error
+    radio._serial_session.connect = AsyncMock(side_effect=wrapped)
+    radio._serial_session.disconnect = AsyncMock()
+    radio._maybe_rediscover_serial_device = AsyncMock()
+    with pytest.raises(Exception) as raised:
+        await getattr(radio, method)()
+    assert raised.value.__cause__ is wrapped
+    health = classify_radio_health(radio)
+    assert health["likelyCause"] == "radio_not_connected"
+    assert health["lastError"] == "serial_permission_denied: EACCES"
+    assert RadioHealthPublic.model_validate(health).lastError == health["lastError"]
+    server = WebServer(radio, WebConfig())
+    assert server._build_radio_health()["lastError"] == health["lastError"]
+    assert "secret" not in str(health)
+    radio._serial_session.connect = AsyncMock()
+    radio._gate_serial_identity = AsyncMock(return_value=False)
+    radio._start_civ_rx_pump = Mock()
+    radio._start_civ_data_watchdog = Mock()
+    radio._start_civ_worker = Mock()
+    await getattr(radio, method)()
+    assert radio.serial_open_error is None
+    assert radio.last_error is None
+    silent_health = classify_radio_health(radio, served_with_silent_link=True)
+    assert silent_health["likelyCause"] == "radio_powered_off_likely"
+    assert silent_health["lastError"] is None
+    await radio.disconnect()
+    assert radio.serial_open_error is None
+
+
+@pytest.mark.asyncio
+async def test_serial_link_retains_original_os_error():
+    error = OSError(errno.EPERM, "private detail")
+    link = SerialCivLink(
+        device="/private/secret-device",
+        open_serial_connection=AsyncMock(side_effect=error),
+    )
+    with pytest.raises(OSError) as raised:
+        await link.connect()
+    assert raised.value is error
 
 
 class _RecordingSerial:

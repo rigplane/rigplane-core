@@ -951,6 +951,17 @@ def classify_radio_health(
     last_error = getattr(radio, "last_error", None)
     last_error_value = last_error if isinstance(last_error, str) else None
 
+    serial_error = getattr(radio, "serial_open_error", None)
+    if isinstance(serial_error, str):
+        return {
+            "serverReachable": True,
+            "radioLink": radio_link,
+            "readiness": "stalled",
+            "likelyCause": "radio_not_connected",
+            "sinceMs": 0,
+            "lastError": serial_error,
+        }
+
     if served_without_port and last_error_value is not None:
         return {
             "serverReachable": True,
