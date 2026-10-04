@@ -1954,9 +1954,12 @@ class TestCivProbeFraming:
                     raise
 
         reader, writer = Reader([data]), _FakeWriter()
-        assert await probe_serial_civ(
-            "fake", [115200], 0.01, _open_serial=_make_open(reader, writer)
-        ) is None
+        assert (
+            await probe_serial_civ(
+                "fake", [115200], 0.01, _open_serial=_make_open(reader, writer)
+            )
+            is None
+        )
         assert reader.calls == 2
         assert reader.cancelled
         assert writer.closed
@@ -1992,9 +1995,12 @@ class TestCivProbeFraming:
         unrelated = b"\xfe\xfe\xe0\x94\x03\x00\x00\xfd"
         reader, writer = Reader([unrelated, unrelated]), _FakeWriter()
         monkeypatch.setattr(asyncio, "wait_for", recording_wait_for)
-        assert await probe_serial_civ(
-            "fake", [115200], 0.03, _open_serial=_make_open(reader, writer)
-        ) is None
+        assert (
+            await probe_serial_civ(
+                "fake", [115200], 0.03, _open_serial=_make_open(reader, writer)
+            )
+            is None
+        )
         assert len(budgets) == 3
         assert max(deadlines) - min(deadlines) < 0.004
         assert budgets[-1] < budgets[0] - 0.005
