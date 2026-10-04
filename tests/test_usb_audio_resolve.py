@@ -1643,3 +1643,97 @@ class TestResolveLinuxDispatch:
         assert result is not None
         assert result.rx_device_index == 1
         mock_resolve.assert_called_once()
+
+
+class TestWindowsPnpProductionQuery:
+    def test_actual_tab_records_and_emitter_contract(self) -> None:
+        import subprocess
+
+        from rigplane.usb_audio_resolve import _query_windows_pnp_devices
+
+        stdout = (
+            "USB\\VID_0D8C&PID_0012\\SER\tPARENT\tPorts\tSerial (COM3)\r\n"
+            "SWD\\AUDIO\\ONE\tPARENT\tAudioEndpoint\tUSB Audio Device\r\n"
+        ).encode()
+        with (
+            patch("rigplane.usb_audio_resolve.platform.system", return_value="Windows"),
+            patch("rigplane.usb_audio_resolve.subprocess.run") as run,
+        ):
+            run.return_value = subprocess.CompletedProcess([], 0, stdout)
+            records = _query_windows_pnp_devices()
+        assert len(records) == 2
+        assert records[0].com_port == "COM3"
+        assert records[1].audio_endpoint_name == "USB Audio Device"
+        script = run.call_args.args[0][-1]
+        assert '"{0}`t{1}`t{2}`t{3}"' in script
+        assert "'{0}`t{1}`t{2}`t{3}'" not in script
+        assert script.index("Where-Object") < script.index("Get-PnpDeviceProperty")
+        assert "AudioEndpoint" in script and "MEDIA" in script
+        assert "COM\\d+" in script
+        assert 0 < run.call_args.kwargs["timeout"] < 8
+
+    def test_timeout_or_broken_separator_produces_no_records(self) -> None:
+        import subprocess
+
+        from rigplane.usb_audio_resolve import _query_windows_pnp_devices
+
+        with (
+            patch("rigplane.usb_audio_resolve.platform.system", return_value="Windows"),
+            patch("rigplane.usb_audio_resolve.subprocess.run") as run,
+        ):
+            run.side_effect = subprocess.TimeoutExpired("powershell", 2)
+            assert _query_windows_pnp_devices() == []
+            run.side_effect = None
+            run.return_value = subprocess.CompletedProcess(
+                [], 0, b"id`tparent`tPorts`tSerial (COM3)\r\n"
+            )
+            assert _query_windows_pnp_devices() == []
+
+
+class TestWindowsTopologySafety:
+    def test_known_different_parent_must_not_use_vidpid(self) -> None:
+        from dataclasses import replace
+
+        from rigplane.usb_audio_resolve import (
+            WindowsAudioTopologyError,
+            _resolve_windows,
+        )
+
+        records = _x6200_pnp_records()
+        records[1] = replace(records[1], parent_pnp_id="OTHER-RADIO")
+        with pytest.raises(WindowsAudioTopologyError):
+            _resolve_windows(
+                "COM3",
+                sounddevice_module=_make_mock_sd_xiegu(),
+                pnp_query=lambda: records,
+            )
+
+    def test_missing_parent_identical_radios_are_ambiguous(self) -> None:
+        from dataclasses import replace
+
+        from rigplane.usb_audio_resolve import (
+            WindowsAudioTopologyError,
+            _resolve_windows,
+        )
+
+        records = [replace(r, parent_pnp_id="") for r in _x6200_pnp_records()]
+        records.append(replace(records[1], pnp_device_id="SECOND-PHYSICAL-RADIO"))
+        with pytest.raises(WindowsAudioTopologyError):
+            _resolve_windows(
+                "COM3",
+                sounddevice_module=_make_mock_sd_xiegu(),
+                pnp_query=lambda: records,
+            )
+
+    def test_multiple_rows_on_valid_parent_preserve_unique_anchor(self) -> None:
+        from dataclasses import replace
+
+        from rigplane.usb_audio_resolve import _resolve_windows
+
+        records = _x6200_pnp_records()
+        records.append(replace(records[1], pnp_device_id="SECOND-ENDPOINT-ROW"))
+        assert _resolve_windows(
+            "COM3",
+            sounddevice_module=_make_mock_sd_xiegu(),
+            pnp_query=lambda: records,
+        ) is not None
