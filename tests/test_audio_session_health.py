@@ -331,3 +331,103 @@ async def test_watchdog_stops_cleanly_on_session_teardown() -> None:
     assert session.state is AudioSessionState.IDLE
     assert session._watchdog_task is None  # noqa: SLF001
     assert task.done()  # cancelled AND awaited — nothing leaked
+
+
+async def test_runtime_playback_exports_only_bounded_anonymous_client_reports() -> None:
+    srv = WebServer(None, WebConfig(host="127.0.0.1", port=0))
+    playback = {
+        "schemaVersion": 1,
+        "contextState": "suspended",
+        "sampleRate": 48000,
+        "receivedFrames": 3,
+        "validFrames": 2,
+        "decodedFrames": 1,
+        "pcmPeak": 0,
+        "scheduledFrames": 0,
+        "suspendedDrops": 1,
+        "resumeOutcome": "rejected",
+        "lastResumeError": "NotAllowedError",
+    }
+    broadcaster = srv._audio_broadcaster
+    queues = [asyncio.Queue() for _ in range(11)]
+    for queue in queues:
+        broadcaster._clients[id(queue)] = queue
+        broadcaster.record_client_stats(queue, {"playback": playback})
+        broadcaster._client_identity[id(queue)] = "private-device-session"
+        broadcaster._client_link_quality[id(queue)]["message"] = "private-error"
+    # A legacy client is active but must not acquire invented zero counters.
+    broadcaster.record_client_stats(queues[-1], {"underruns": 3})
+    writer = _FakeWriter()
+    await srv._handle_http(writer, "GET", "/api/v1/runtime")  # noqa: SLF001
+    status, data = _response_json(writer)
+    assert status == 200
+    assert data["authRequired"] is False
+    assert data["audioSession"] == {"enabled": False}
+    assert "audioBus" in data
+    assert data["audioPlayback"] == {
+        "schemaVersion": 1,
+        "state": "available",
+        "activeClients": 11,
+        "reportedClients": 10,
+        "omittedClients": 2,
+        "clients": [playback] * 8,
+    }
+    assert "private" not in json.dumps(data["audioPlayback"])
+    # Saved JSON is detached; a later report/disconnect cannot change it.
+    broadcaster._drop_client(id(queues[0]))
+    assert data["audioPlayback"]["activeClients"] == 11
+    writer = _FakeWriter()
+    await srv._handle_http(writer, "GET", "/api/v1/runtime")  # noqa: SLF001
+    assert _response_json(writer)[1]["audioPlayback"]["reportedClients"] == 9
+    # Poison a complete retained DTO after ingestion: public projection must
+    # reject the raw error rather than relying solely on ingress validation.
+    broadcaster._client_link_quality[id(queues[1])]["playback"]["lastResumeError"] = (
+        "private-error-message"
+    )
+    writer = _FakeWriter()
+    await srv._handle_http(writer, "GET", "/api/v1/runtime")  # noqa: SLF001
+    exported = _response_json(writer)[1]["audioPlayback"]
+    assert exported["reportedClients"] == 8
+    assert exported["omittedClients"] == 0
+    assert "private" not in json.dumps(exported)
+
+
+async def test_runtime_playback_distinguishes_missing_invalid_and_unavailable() -> None:
+    srv = WebServer(None, WebConfig(host="127.0.0.1", port=0))
+    writer = _FakeWriter()
+    await srv._handle_http(writer, "GET", "/api/v1/runtime")  # noqa: SLF001
+    assert _response_json(writer)[1]["audioPlayback"] == {
+        "schemaVersion": 1,
+        "state": "no_clients",
+        "activeClients": 0,
+        "reportedClients": 0,
+        "omittedClients": 0,
+        "clients": [],
+    }
+    queue = asyncio.Queue()
+    broadcaster = srv._audio_broadcaster
+    broadcaster._clients[id(queue)] = queue
+    for stats in ({"underruns": 3}, {"playback": {"rawError": "private-device"}}):
+        broadcaster._client_link_quality[id(queue)] = stats
+        writer = _FakeWriter()
+        await srv._handle_http(writer, "GET", "/api/v1/runtime")  # noqa: SLF001
+        assert _response_json(writer)[1]["audioPlayback"] == {
+            "schemaVersion": 1,
+            "state": "no_playback_reports",
+            "activeClients": 1,
+            "reportedClients": 0,
+            "omittedClients": 0,
+            "clients": [],
+        }
+    # Simulate absence of the source without starting any radio/audio work.
+    del srv._audio_broadcaster
+    writer = _FakeWriter()
+    await srv._handle_http(writer, "GET", "/api/v1/runtime")  # noqa: SLF001
+    assert _response_json(writer)[1]["audioPlayback"] == {
+        "schemaVersion": 1,
+        "state": "unavailable",
+        "activeClients": None,
+        "reportedClients": None,
+        "omittedClients": None,
+        "clients": [],
+    }
