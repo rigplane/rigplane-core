@@ -1732,8 +1732,37 @@ class TestWindowsTopologySafety:
 
         records = _x6200_pnp_records()
         records.append(replace(records[1], pnp_device_id="SECOND-ENDPOINT-ROW"))
-        assert _resolve_windows(
+        result = _resolve_windows(
             "COM3",
             sounddevice_module=_make_mock_sd_xiegu(),
             pnp_query=lambda: records,
-        ) is not None
+        )
+        assert result is not None
+
+
+def test_windows_actual_tab_metadata_preserves_full_physical_name_rank() -> None:
+    import subprocess
+
+    from rigplane.usb_audio_resolve import _query_windows_pnp_devices, _resolve_windows
+
+    stdout = (
+        "serial\tRADIO-B\tPorts\tSerial (COM3)\r\n"
+        "audio-a\tRADIO-A\tMEDIA\tUSB Audio CODEC\r\n"
+        "audio-b\tRADIO-B\tAudioEndpoint\tUSB Audio CODEC\r\n"
+        "audio-b-extra\tRADIO-B\tMEDIA\tUSB Audio CODEC\r\n"
+    ).encode()
+    with (
+        patch("rigplane.usb_audio_resolve.platform.system", return_value="Windows"),
+        patch("rigplane.usb_audio_resolve.subprocess.run") as run,
+    ):
+        run.return_value = subprocess.CompletedProcess([], 0, stdout)
+        records = _query_windows_pnp_devices()
+    assert len(records) == 4
+    assert {r.parent_pnp_id for r in records} == {"RADIO-A", "RADIO-B"}
+    result = _resolve_windows(
+        "COM3",
+        sounddevice_module=_make_mock_sd(),
+        pnp_query=lambda: records,
+    )
+    assert result is not None
+    assert (result.rx_device_index, result.tx_device_index) == (4, 3)
