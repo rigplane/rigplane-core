@@ -671,3 +671,104 @@ async def test_windows_valid_topology_and_wrong_parent_never_share_fallback(
         await driver.start_rx(lambda _frame: None)
     assert not backend.rx_streams
     assert driver.selected_rx_device is None
+
+
+@pytest.mark.timeout(10)
+async def test_actual_windows_resolver_mapping_shares_selection_deadline(
+    monkeypatch: pytest.MonkeyPatch, windows_selection: None
+) -> None:
+    from types import SimpleNamespace
+
+    from rigplane.audio.usb_driver import bounded_portaudio_pool
+    from rigplane.usb_audio_resolve import WindowsPnpDevice
+
+    total_budget = 0.25
+    tolerance = 0.01
+    driver, backend = _make_driver(capture_open_timeout=total_budget)
+    driver.set_serial_port("COM3")
+    devices = _fake_devices()
+    records = [
+        WindowsPnpDevice("serial", "radio", "1234", "5678", "COM3", None),
+        WindowsPnpDevice("audio", "radio", "1234", "5678", None, "USB Audio CODEC"),
+    ]
+    gate = threading.Event()
+    entered = threading.Event()
+    sdk_threads: list[int] = []
+    submissions: list[tuple[str, float, float]] = []
+    before = bounded_portaudio_pool.inflight
+    run_bounded = bounded_portaudio_pool.run_bounded
+
+    async def record_submission(
+        fn, *, what, direction, timeout, warn_on_timeout=True
+    ):
+        submissions.append((what, time.monotonic(), timeout))
+        return await run_bounded(
+            fn,
+            what=what,
+            direction=direction,
+            timeout=timeout,
+            warn_on_timeout=warn_on_timeout,
+        )
+
+    def delayed_list():
+        time.sleep(0.07)
+        return devices
+
+    def query_devices():
+        sdk_threads.append(threading.get_ident())
+        entered.set()
+        gate.wait()
+        return [
+            {"name": "Built-in", "max_input_channels": 0, "max_output_channels": 2},
+            {
+                "name": "USB Audio CODEC",
+                "max_input_channels": 1,
+                "max_output_channels": 1,
+            },
+        ]
+
+    monkeypatch.setattr(bounded_portaudio_pool, "run_bounded", record_submission)
+    monkeypatch.setattr(backend, "list_devices", delayed_list)
+    monkeypatch.setattr(
+        "rigplane.usb_audio_resolve._query_windows_pnp_devices", lambda: records
+    )
+    monkeypatch.setattr(
+        "rigplane.audio.usb_driver._extract_sounddevice_module",
+        lambda _backend: SimpleNamespace(query_devices=query_devices),
+    )
+    try:
+        with pytest.raises(AudioCaptureOpenTimeoutError):
+            await driver.start_rx(lambda _frame: None)
+        assert entered.is_set(), "actual resolver must reach the gated SDK call"
+        assert sdk_threads and all(t != threading.get_ident() for t in sdk_threads)
+        assert [what for what, _, _ in submissions] == [
+            "device enumeration",
+            "optional Windows topology",
+            "device enumeration",
+        ]
+        _, enum_entry, enum_timeout = submissions[0]
+        _, pnp_entry, pnp_timeout = submissions[1]
+        _, mapping_entry, mapping_timeout = submissions[2]
+        original_deadline = enum_entry + enum_timeout
+        assert 0 < enum_timeout <= total_budget
+        assert abs(mapping_entry + mapping_timeout - original_deadline) < tolerance
+        assert mapping_timeout < enum_timeout - 0.05
+        reserve = min(0.25, total_budget / 4)
+        assert 0 < pnp_timeout <= 0.02
+        assert pnp_entry + pnp_timeout <= original_deadline - reserve + tolerance
+        assert bounded_portaudio_pool.inflight == before + 1
+        assert not backend.rx_streams
+        assert driver.selected_rx_device is None
+        assert driver.selected_tx_device is None
+    finally:
+        gate.set()
+        drain_deadline = time.monotonic() + 2
+        while (
+            bounded_portaudio_pool.inflight != before
+            and time.monotonic() < drain_deadline
+        ):
+            await asyncio.sleep(0.005)
+        assert bounded_portaudio_pool.inflight == before
+    assert driver.selected_rx_device is None
+    assert driver.selected_tx_device is None
+    assert not backend.rx_streams
