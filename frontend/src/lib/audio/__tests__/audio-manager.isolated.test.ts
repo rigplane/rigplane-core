@@ -243,6 +243,10 @@ describe('AudioManager audio_stats uplink (MOR-585)', () => {
     playback.lastResumeError = 'NotAllowedError';
     vi.advanceTimersByTime(1500);
     expect(notify).toHaveBeenCalledTimes(1);
+    playback.contextState = 'running';
+    vi.advanceTimersByTime(1500);
+    expect(notify).toHaveBeenCalledTimes(1);
+    playback.contextState = 'suspended';
     audioManager.stopRx();
     vi.advanceTimersByTime(3000);
     expect(notify).toHaveBeenCalledTimes(1);

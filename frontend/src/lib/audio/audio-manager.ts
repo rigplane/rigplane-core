@@ -500,7 +500,8 @@ class AudioManager {
   private _sendAudioStats(): void {
     if (!this._rxEnabled || this.ws?.readyState !== WebSocket.OPEN) return;
     const stats = this.rxPlayer.stats();
-    const error = stats.playback?.resumeOutcome === 'rejected' ? stats.playback.lastResumeError : null;
+    const error = stats.playback?.contextState === 'suspended' && stats.playback.resumeOutcome === 'rejected'
+      ? stats.playback.lastResumeError : null;
     if (error !== null && error !== this._lastRxResumeError) {
       this._operatorNotifier?.('error', 'Local audio could not resume. Check application sound permissions and output settings.', 'rxAudioResumeFailed');
     }
