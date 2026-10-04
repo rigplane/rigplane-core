@@ -8,7 +8,7 @@ beforeEach(() => {
   const panners: any[] = [];
   const splitters: any[] = [];
   ctx = {
-    state: 'running', currentTime: 0, destination: {},
+    state: 'running', sampleRate: SAMPLE_RATE, currentTime: 0, destination: {},
     resume: vi.fn().mockResolvedValue(undefined), close: vi.fn().mockResolvedValue(undefined),
     createGain: vi.fn(() => {
       const g = { gain: { value: 1 }, connect: vi.fn() };
@@ -25,9 +25,11 @@ beforeEach(() => {
       splitters.push(s);
       return s;
     }),
-    createBuffer: vi.fn((ch: number, n: number, sr: number) => ({
-      duration: n / sr, getChannelData: () => new Float32Array(n),
-    })),
+    createBuffer: vi.fn((ch: number, n: number, sr: number) => {
+      const planes = Array.from({ length: ch }, () => new Float32Array(n));
+      return { duration: n / sr, length: n, numberOfChannels: ch,
+        getChannelData: (channel: number) => planes[channel] };
+    }),
     _lastSrc: null as any,
     createBufferSource: vi.fn(function (this: any) {
       const src = { buffer: null, connect: vi.fn(), start: vi.fn() };
@@ -51,6 +53,62 @@ function pcm16(n: number): ArrayBuffer {
   v.setUint16(4, SAMPLE_RATE / 100, true); v.setUint8(6, 1); v.setUint8(7, FRAME_DURATION_MS);
   return buf;
 }
+
+describe('local RX playback diagnostics', () => {
+  it('distinguishes no input, malformed input, silent PCM, and nonzero PCM', () => {
+    const p = new RxPlayer();
+    expect(p.stats().playback).toMatchObject({ contextState: 'unavailable', pcmPeak: null });
+    p.start();
+    expect(p.stats().playback).toMatchObject({
+      contextState: 'running', sampleRate: SAMPLE_RATE,
+      receivedFrames: 0, validFrames: 0, decodedFrames: 0, scheduledFrames: 0, pcmPeak: null,
+    });
+    p.feed(new ArrayBuffer(2));
+    expect(p.stats().playback).toMatchObject({ receivedFrames: 1, validFrames: 0 });
+    p.feed(pcm16(480));
+    expect(p.stats().playback).toMatchObject({
+      receivedFrames: 2, validFrames: 1, decodedFrames: 1, scheduledFrames: 1, pcmPeak: 0,
+    });
+    const signal = pcm16(480);
+    new DataView(signal).setInt16(AUDIO_HEADER_SIZE, 16384, true);
+    p.feed(signal);
+    expect(p.stats().playback).toMatchObject({ decodedFrames: 2, scheduledFrames: 2, pcmPeak: 50 });
+    p.stop();
+    expect(p.stats().playback).toMatchObject({ receivedFrames: 0, pcmPeak: null });
+  });
+
+  it('records actual suspended drops and only a safe resume error name, then clears success', async () => {
+    ctx.state = 'suspended';
+    ctx.resume.mockRejectedValue({ name: 'NotAllowedError', message: 'secret https://private' });
+    const p = new RxPlayer(); p.start(); p.feed(pcm16(480));
+    await Promise.resolve(); await Promise.resolve();
+    expect(p.stats().playback).toMatchObject({
+      validFrames: 1, decodedFrames: 0, scheduledFrames: 0, suspendedDrops: 1,
+      resumeOutcome: 'rejected', lastResumeError: 'NotAllowedError',
+    });
+    expect(JSON.stringify(p.stats())).not.toContain('secret');
+    ctx.resume.mockResolvedValue(undefined);
+    p.start();
+    await Promise.resolve(); await Promise.resolve();
+    expect(p.stats().playback).toMatchObject({ resumeOutcome: 'resolved', lastResumeError: null });
+    p.stop();
+  });
+
+  it('ignores resume completion from a replaced context and bounds arbitrary error names', async () => {
+    ctx.state = 'suspended';
+    let reject!: (reason: unknown) => void;
+    ctx.resume.mockReturnValue(new Promise((_, no) => { reject = no; }));
+    const p = new RxPlayer(); p.start(); p.stop();
+    ctx.resume.mockRejectedValue({ name: 'private-hostname-secret' });
+    p.start();
+    await Promise.resolve(); await Promise.resolve();
+    expect(p.stats().playback.lastResumeError).toBe('UnknownError');
+    reject({ name: 'NotAllowedError' });
+    await Promise.resolve(); await Promise.resolve();
+    expect(p.stats().playback.lastResumeError).toBe('UnknownError');
+    p.stop();
+  });
+});
 
 describe('RxPlayer', () => {
   it('creates AudioContext and routing graph on start', () => {
@@ -306,7 +364,7 @@ describe('RxPlayer link-quality stats (MOR-585)', () => {
   it('starts with zeroed stats', () => {
     const p = new RxPlayer();
     p.start();
-    expect(p.stats()).toEqual({ underruns: 0, bufferDepthMs: 0, droppedFrames: 0 });
+    expect(p.stats()).toMatchObject({ underruns: 0, bufferDepthMs: 0, droppedFrames: 0 });
     p.stop();
   });
 
@@ -382,6 +440,7 @@ describe('RxPlayer link-quality stats (MOR-585)', () => {
     p.feed(pcm16(480));           // 0.06 < 0.065 → scheduled → 0.07
     p.feed(pcm16(480));           // 0.07 > 0.065 → dropped
     expect(p.stats().droppedFrames).toBe(1);
+    expect(p.stats().playback).toMatchObject({ decodedFrames: 3, scheduledFrames: 2, suspendedDrops: 0 });
     p.stop();
   });
 
@@ -404,7 +463,7 @@ describe('RxPlayer link-quality stats (MOR-585)', () => {
     ctx.currentTime = 10;
     p.feed(pcm16(480));           // 1 underrun
     p.stop();
-    expect(p.stats()).toEqual({ underruns: 0, bufferDepthMs: 0, droppedFrames: 0 });
+    expect(p.stats()).toMatchObject({ underruns: 0, bufferDepthMs: 0, droppedFrames: 0 });
   });
 });
 
@@ -455,6 +514,7 @@ describe('RxPlayer mid-stream codec switch (MOR-588)', () => {
     expect(FakeAudioDecoder.instances.length).toBe(0);
     p.feed(opus());
     expect(FakeAudioDecoder.instances.length).toBe(1);
+    expect(p.stats().playback).toMatchObject({ validFrames: 2, decodedFrames: 2, scheduledFrames: 2 });
     expect(FakeAudioDecoder.instances[0].config?.codec).toBe('opus');
     p.stop();
   });

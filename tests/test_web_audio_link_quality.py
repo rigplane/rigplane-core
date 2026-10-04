@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -32,6 +33,20 @@ STATS_MSG: dict[str, Any] = {
     "underruns": 3,
     "buffer_depth_ms": 140,
     "dropped_frames": 2,
+}
+
+PLAYBACK = {
+    "schemaVersion": 1,
+    "contextState": "suspended",
+    "sampleRate": 48000,
+    "receivedFrames": 3,
+    "validFrames": 2,
+    "decodedFrames": 1,
+    "pcmPeak": 0,
+    "scheduledFrames": 0,
+    "suspendedDrops": 1,
+    "resumeOutcome": "rejected",
+    "lastResumeError": "NotAllowedError",
 }
 
 
@@ -62,6 +77,51 @@ async def _inject(bus: AudioBus, count: int = 1) -> None:
 
 
 class TestAudioStatsUplink:
+    async def test_bounded_playback_report_survives_existing_client_snapshot(self):
+        radio, _ = _make_radio()
+        broadcaster = AudioBroadcaster(radio)
+        handler = AudioHandler(_make_ws(), radio, broadcaster)
+        await handler._start_rx()
+        await handler._handle_control({**STATS_MSG, "playback": dict(PLAYBACK)})
+        snapshot = broadcaster.client_link_quality(handler._frame_queue)
+        assert snapshot["playback"] == PLAYBACK
+        snapshot["playback"]["lastResumeError"] = "secret"
+        retained = broadcaster.client_link_quality(handler._frame_queue)
+        assert retained["playback"] == PLAYBACK
+        await handler._handle_control(dict(STATS_MSG))
+        assert "playback" not in broadcaster.client_link_quality(handler._frame_queue)
+
+    async def test_invalid_or_unbounded_playback_is_not_retained(self):
+        radio, _ = _make_radio()
+        handler = AudioHandler(_make_ws(), radio, AudioBroadcaster(radio))
+        for key, value in [
+            ("contextState", "private text"),
+            ("sampleRate", math.inf),
+            ("receivedFrames", 2**53),
+            ("pcmPeak", -1),
+            ("lastResumeError", "token=secret"),
+            ("unexpected", "secret"),
+            ("validFrames", True),
+            ("resumeOutcome", {"message": "secret"}),
+        ]:
+            await handler._handle_control(
+                {**STATS_MSG, "playback": {**PLAYBACK, key: value}, "unknown_number": 7}
+            )
+            assert handler._link_quality == {
+                "underruns": 3,
+                "buffer_depth_ms": 140,
+                "dropped_frames": 2,
+            }
+
+    async def test_numeric_signals_are_finite_bounded_and_allowlisted(self):
+        radio, _ = _make_radio()
+        handler = AudioHandler(_make_ws(), radio, AudioBroadcaster(radio))
+        for value in (True, -1, math.nan, math.inf, 10**1000, 2**32):
+            await handler._handle_control(
+                {"type": "audio_stats", "underruns": value, "unknown": 7}
+            )
+            assert handler._link_quality == {}
+
     async def test_audio_stats_records_per_client_link_quality(self) -> None:
         """An inbound audio_stats message must update both the handler's
         snapshot and the broadcaster's per-client map (the structure the

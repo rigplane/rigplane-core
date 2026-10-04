@@ -22,6 +22,33 @@ import {
 
 export type RxAudioFocus = 'main' | 'sub' | 'both';
 
+export interface RxPlaybackDiagnostics {
+  schemaVersion: 1;
+  contextState: 'unavailable' | 'running' | 'suspended' | 'closed' | 'interrupted' | 'unknown';
+  sampleRate: number | null;
+  receivedFrames: number;
+  validFrames: number;
+  decodedFrames: number;
+  pcmPeak: number | null;
+  scheduledFrames: number;
+  suspendedDrops: number;
+  resumeOutcome: 'not_attempted' | 'pending' | 'resolved' | 'rejected';
+  lastResumeError: string | null;
+}
+
+function emptyPlayback(): RxPlaybackDiagnostics {
+  return {
+    schemaVersion: 1, contextState: 'unavailable', sampleRate: null,
+    receivedFrames: 0, validFrames: 0, decodedFrames: 0, pcmPeak: null,
+    scheduledFrames: 0, suspendedDrops: 0, resumeOutcome: 'not_attempted', lastResumeError: null,
+  };
+}
+
+const MAX_COUNTER = 0xffffffff;
+const RESUME_ERROR_NAMES = new Set([
+  'NotAllowedError', 'InvalidStateError', 'NotSupportedError', 'AbortError', 'SecurityError', 'UnknownError',
+]);
+
 function dbToLinear(db: number): number {
   if (!Number.isFinite(db) || db <= -80) return 0;
   return Math.pow(10, db / 20);
@@ -67,6 +94,8 @@ export class RxPlayer {
   // Cumulative since start(); reset on stop().
   private _underruns = 0;
   private _droppedFrames = 0;
+  private _playback = emptyPlayback();
+  private _resumeAttempt = 0;
 
   get volume(): number {
     return this._volume;
@@ -160,6 +189,8 @@ export class RxPlayer {
   }
 
   stop(): void {
+    this._resumeAttempt++;
+    this._playback = emptyPlayback();
     this.resetDecoder();
     this.lastCodec = null;
     this._detachResumeListeners();
@@ -183,7 +214,7 @@ export class RxPlayer {
   /** Link-quality snapshot for the periodic audio_stats uplink (MOR-585).
    *  bufferDepthMs is the audio currently scheduled ahead of playback —
    *  the live jitter-buffer depth; 0 when idle or stopped. */
-  stats(): { underruns: number; bufferDepthMs: number; droppedFrames: number } {
+  stats(): { underruns: number; bufferDepthMs: number; droppedFrames: number; playback: RxPlaybackDiagnostics } {
     let depthMs = 0;
     if (this.ctx) {
       const depth = (this.nextPlayTime - this.ctx.currentTime) * 1000;
@@ -193,13 +224,36 @@ export class RxPlayer {
       underruns: this._underruns,
       bufferDepthMs: depthMs,
       droppedFrames: this._droppedFrames,
+      playback: {
+        ...this._playback,
+        contextState: this.ctx === null ? 'unavailable'
+          : ['running', 'suspended', 'closed', 'interrupted'].includes(this.ctx.state)
+            ? this.ctx.state as RxPlaybackDiagnostics['contextState'] : 'unknown',
+        sampleRate: this.ctx && Number.isFinite(this.ctx.sampleRate)
+          && this.ctx.sampleRate > 0 && this.ctx.sampleRate <= 384000
+          ? this.ctx.sampleRate : null,
+      },
     };
   }
 
   /** Best-effort resume of a suspended context. Safe to call repeatedly. */
   private _resume(): void {
     if (this.ctx && this.ctx.state === 'suspended') {
-      this.ctx.resume().catch(() => {});
+      const context = this.ctx;
+      const attempt = ++this._resumeAttempt;
+      this._playback.resumeOutcome = 'pending';
+      this._playback.lastResumeError = null;
+      context.resume().then(() => {
+        if (this.ctx !== context || this._resumeAttempt !== attempt) return;
+        this._playback.resumeOutcome = 'resolved';
+        this._playback.lastResumeError = null;
+      }, (error: unknown) => {
+        if (this.ctx !== context || this._resumeAttempt !== attempt) return;
+        const name = error && typeof error === 'object' && 'name' in error ? error.name : null;
+        this._playback.resumeOutcome = 'rejected';
+        this._playback.lastResumeError = typeof name === 'string' && RESUME_ERROR_NAMES.has(name)
+          ? name : 'UnknownError';
+      });
     }
   }
 
@@ -246,6 +300,7 @@ export class RxPlayer {
       this._resume();
       this._droppedSuspendedFrames++;
       this._droppedFrames++;
+      this._playback.suspendedDrops = Math.min(MAX_COUNTER, this._playback.suspendedDrops + 1);
       if (this._droppedSuspendedFrames <= 3 || this._droppedSuspendedFrames % 200 === 0) {
         console.warn(
           `RxPlayer: AudioContext suspended — dropped ${this._droppedSuspendedFrames} ` +
@@ -258,8 +313,14 @@ export class RxPlayer {
 
   /** Feed a raw binary frame from WS */
   feed(buffer: ArrayBuffer): void {
+    this._playback.receivedFrames = Math.min(MAX_COUNTER, this._playback.receivedFrames + 1);
     const hdr = parseRxHeader(buffer);
     if (!hdr) return;
+    if ((hdr.codec === CODEC_PCM16 || hdr.codec === CODEC_OPUS)
+      && (hdr.channels === 1 || hdr.channels === 2) && hdr.sampleRate > 0 && hdr.payload.byteLength > 0
+      && (hdr.codec !== CODEC_PCM16 || hdr.payload.byteLength % (2 * hdr.channels) === 0)) {
+      this._playback.validFrames = Math.min(MAX_COUNTER, this._playback.validFrames + 1);
+    }
 
     if (this.lastCodec !== null && hdr.codec !== this.lastCodec) {
       // Mid-stream adaptive egress switch (MOR-588, ADR §3.6): the
@@ -312,6 +373,9 @@ export class RxPlayer {
         data[i] = int16[i * channels + c] / 32768.0;
       }
     }
+    if ((ch === 1 || ch === 2) && sr > 0 && payload.byteLength === frameCount * channels * 2) {
+      this._recordDecoded(buf);
+    }
     this.schedule(buf);
   }
 
@@ -334,6 +398,7 @@ export class RxPlayer {
             const data = buf.getChannelData(c);
             audioData.copyTo(data, { planeIndex: c, format: 'f32-planar' });
           }
+          if (this.ctx === ctx) this._recordDecoded(buf);
           this.schedule(buf);
           audioData.close();
         },
@@ -365,6 +430,19 @@ export class RxPlayer {
 
   // ── Scheduler ──
 
+  private _recordDecoded(buffer: AudioBuffer): void {
+    if (buffer.length <= 0 || (buffer.numberOfChannels !== 1 && buffer.numberOfChannels !== 2)) return;
+    let peak = 0;
+    for (let c = 0; c < buffer.numberOfChannels; c++) {
+      for (const sample of buffer.getChannelData(c)) {
+        if (!Number.isFinite(sample)) return;
+        peak = Math.max(peak, Math.abs(sample));
+      }
+    }
+    this._playback.decodedFrames = Math.min(MAX_COUNTER, this._playback.decodedFrames + 1);
+    this._playback.pcmPeak = Math.round(Math.min(1, peak) * 100);
+  }
+
   private schedule(buf: AudioBuffer): void {
     if (!this.ctx || !this.preGain) return;
     const src = this.ctx.createBufferSource();
@@ -386,6 +464,7 @@ export class RxPlayer {
     }
 
     src.start(this.nextPlayTime);
+    this._playback.scheduledFrames = Math.min(MAX_COUNTER, this._playback.scheduledFrames + 1);
     this.nextPlayTime += buf.duration;
   }
 

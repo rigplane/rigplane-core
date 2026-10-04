@@ -198,6 +198,7 @@
   "core.toast.txAudioCaptureUnsupported": "このブラウザーはマイクのキャプチャに対応していません",
   "core.toast.txAudioInsecureContext": "マイクには安全な接続が必要です。このページを https://（サーバーの --tls アドレス）または localhost で開いてください。",
   "core.toast.txAudioStartFailed": "TX オーディオを開始できませんでした",
+  "core.toast.rxAudioResumeFailed": "ローカル音声を再開できませんでした。アプリの音声アクセス権と出力設定を確認してください。",
   "core.toast.txAudioStopped": "TX オーディオが停止しました — 送信が途中で終了しました",
   "core.toast.unknown": "問題が発生しました。しばらくしてから再試行してください。",
 
