@@ -700,6 +700,7 @@ it('reserves the role plaque at the widest role text in every state', () => {
     .flatMap((catalog) => Object.entries(catalog)
       .filter(([key]) => key.startsWith('core.vfo.role.'))
       .map(([, text]) => text))
+    .filter((text): text is string => typeof text === 'string')
     .concat(['MAIN', 'SUB'].flatMap((receiver) => [receiver, `${receiver} A`, `${receiver} B`]));
   for (const text of roleTexts) expect(listed).toContain(text);
   const widest = roleTexts.reduce((best, text) => (text.length > best.length ? text : best), '');
