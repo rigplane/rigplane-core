@@ -698,9 +698,7 @@ async def test_actual_windows_resolver_mapping_shares_selection_deadline(
     before = bounded_portaudio_pool.inflight
     run_bounded = bounded_portaudio_pool.run_bounded
 
-    async def record_submission(
-        fn, *, what, direction, timeout, warn_on_timeout=True
-    ):
+    async def record_submission(fn, *, what, direction, timeout, warn_on_timeout=True):
         submissions.append((what, time.monotonic(), timeout))
         return await run_bounded(
             fn,
