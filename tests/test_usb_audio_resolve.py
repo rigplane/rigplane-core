@@ -1866,7 +1866,10 @@ class TestWindowsIc7300InternalHub:
     def test_conflicting_or_incomplete_family_identity_is_refused(self, change):
         from dataclasses import replace
 
-        from rigplane.usb_audio_resolve import WindowsAudioTopologyError, _resolve_windows
+        from rigplane.usb_audio_resolve import (
+            WindowsAudioTopologyError,
+            _resolve_windows,
+        )
 
         records = _ic7300_hub_records()
         if change == "other_model":
@@ -1931,20 +1934,35 @@ class TestWindowsIc7300InternalHub:
         from rigplane.usb_audio_resolve import _resolve_windows
 
         devices = [
-            {"name": "Remote Audio", "hostapi": i % 4,
-             "max_input_channels": 0, "max_output_channels": 2}
+            {
+                "name": "Remote Audio",
+                "hostapi": i % 4,
+                "max_input_channels": 0,
+                "max_output_channels": 2,
+            }
             for i in range(14)
         ]
-        devices.extend([
-            {"name": "Speakers (USB Audio CODEC)", "hostapi": 3,
-             "max_input_channels": 0, "max_output_channels": 2},
-            {"name": "Microphone (USB Audio CODEC)", "hostapi": 3,
-             "max_input_channels": 2, "max_output_channels": 0},
-        ])
+        devices.extend(
+            [
+                {
+                    "name": "Speakers (USB Audio CODEC)",
+                    "hostapi": 3,
+                    "max_input_channels": 0,
+                    "max_output_channels": 2,
+                },
+                {
+                    "name": "Microphone (USB Audio CODEC)",
+                    "hostapi": 3,
+                    "max_input_channels": 2,
+                    "max_output_channels": 0,
+                },
+            ]
+        )
         records = _ic7300_hub_records()
         records[3] = replace(records[3], audio_endpoint_name="USB Audio CODEC ")
         result = _resolve_windows(
-            "COM3", sounddevice_module=SimpleNamespace(query_devices=lambda: devices),
+            "COM3",
+            sounddevice_module=SimpleNamespace(query_devices=lambda: devices),
             pnp_query=lambda: records,
         )
         assert result is not None
@@ -1953,17 +1971,29 @@ class TestWindowsIc7300InternalHub:
     def test_alias_pair_cannot_cross_host_api_boundary(self):
         from types import SimpleNamespace
 
-        from rigplane.usb_audio_resolve import WindowsAudioTopologyError, _resolve_windows
+        from rigplane.usb_audio_resolve import (
+            WindowsAudioTopologyError,
+            _resolve_windows,
+        )
 
         devices = [
-            {"name": "Speakers (USB Audio CODEC)", "hostapi": 0,
-             "max_input_channels": 0, "max_output_channels": 2},
-            {"name": "Microphone (USB Audio CODEC)", "hostapi": 3,
-             "max_input_channels": 2, "max_output_channels": 0},
+            {
+                "name": "Speakers (USB Audio CODEC)",
+                "hostapi": 0,
+                "max_input_channels": 0,
+                "max_output_channels": 2,
+            },
+            {
+                "name": "Microphone (USB Audio CODEC)",
+                "hostapi": 3,
+                "max_input_channels": 2,
+                "max_output_channels": 0,
+            },
         ]
         with pytest.raises(WindowsAudioTopologyError):
             _resolve_windows(
-                "COM3", sounddevice_module=SimpleNamespace(query_devices=lambda: devices),
+                "COM3",
+                sounddevice_module=SimpleNamespace(query_devices=lambda: devices),
                 pnp_query=lambda: _ic7300_hub_records(),
             )
 
@@ -1971,7 +2001,10 @@ class TestWindowsIc7300InternalHub:
     def test_no_inferred_hub_or_conflicting_parent_link(self, change):
         from dataclasses import replace
 
-        from rigplane.usb_audio_resolve import WindowsAudioTopologyError, _resolve_windows
+        from rigplane.usb_audio_resolve import (
+            WindowsAudioTopologyError,
+            _resolve_windows,
+        )
 
         records = _ic7300_hub_records()
         if change == "missing_hub":
@@ -1987,10 +2020,14 @@ class TestWindowsIc7300InternalHub:
             )
 
     def test_same_hostapi_extra_pair_cannot_be_assumed_an_alias(self):
-        from rigplane.usb_audio_resolve import WindowsAudioTopologyError, _resolve_windows
+        from rigplane.usb_audio_resolve import (
+            WindowsAudioTopologyError,
+            _resolve_windows,
+        )
 
         with pytest.raises(WindowsAudioTopologyError):
             _resolve_windows(
-                "COM3", sounddevice_module=_ic7300_sd_pairs(2),
+                "COM3",
+                sounddevice_module=_ic7300_sd_pairs(2),
                 pnp_query=lambda: _ic7300_hub_records(),
             )

@@ -475,7 +475,9 @@ def _resolve_ic7300_hub(
             key in nodes
             and nodes[key].parent_pnp_id.upper() != record.parent_pnp_id.upper()
         ):
-            raise WindowsAudioTopologyError("Windows USB audio topology is conflicting.")
+            raise WindowsAudioTopologyError(
+                "Windows USB audio topology is conflicting."
+            )
         nodes[key] = record
     hub_id = serial.parent_pnp_id.upper()
     if (
@@ -539,7 +541,9 @@ def _resolve_ic7300_hub(
         and physical(r) is None
         for r in records
     ):
-        raise WindowsAudioTopologyError("Windows USB codec rank identity is incomplete.")
+        raise WindowsAudioTopologyError(
+            "Windows USB codec rank identity is incomplete."
+        )
     identities = sorted(
         {
             p.pnp_device_id.upper()
@@ -571,7 +575,8 @@ def _resolve_ic7300_hub(
             for d in devices
         ]
         clusters = [
-            c for c in _cluster_usb_audio_devices(normalized)
+            c
+            for c in _cluster_usb_audio_devices(normalized)
             if c[0] == "USB Audio CODEC"
         ]
         if len(clusters) != len(identities):
@@ -579,7 +584,9 @@ def _resolve_ic7300_hub(
         pair = _pair_audio_cluster_by_name_rank(normalized, "USB Audio CODEC", rank)
         if pair is not None:
             return AudioDeviceMapping(pair[0], pair[1], serial.com_port or "", None)
-    raise WindowsAudioTopologyError("IC-7300 USB audio has no complete same-host-API pair.")
+    raise WindowsAudioTopologyError(
+        "IC-7300 USB audio has no complete same-host-API pair."
+    )
 
 
 def _windows_audio_product(name: str) -> str:
