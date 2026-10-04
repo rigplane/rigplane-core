@@ -430,3 +430,24 @@ class TestCallSiteWiring:
         assert kwargs["baudrate"] == 19200
         assert ("dtr", False) in serial.writes
         assert ("rts", False) in serial.writes
+
+
+@pytest.mark.asyncio
+async def test_discovery_diagnostic_sink_keeps_idle_control_lines():
+    from rigplane.backends.discovery import CivProbeDiagnostic
+
+    serial = _RecordingSerial()
+    reader, writer = _Reader(), _Writer(serial)
+    opener, captured = _capturing_opener(reader, writer)
+    sink = CivProbeDiagnostic()
+    await probe_serial_civ(
+        "/dev/ttyTEST",
+        [19200],
+        0.01,
+        _open_serial=opener,
+        diagnostics=sink,
+    )
+    assert captured[0]["baudrate"] == 19200
+    assert ("dtr", False) in serial.writes
+    assert ("rts", False) in serial.writes
+    assert sink.open_failure_codes == ()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 from contextlib import ExitStack, contextmanager
 from functools import partial
@@ -1588,3 +1589,419 @@ class TestDiscoverLanRadios:
         assert result == []
         assert fake.send_count >= 2  # still retransmitted across the window
         assert fake.closed
+
+
+# MOR-3133: exercise the actual opener/read boundary on the old API as well.
+def _diagnostic_sink():
+    from rigplane.backends import discovery
+
+    sink_type = getattr(discovery, "CivProbeDiagnostic", None)
+    if sink_type is not None:
+        return sink_type()
+    return SimpleNamespace(
+        status="not_attempted", stage=None, code=None, open_failure_codes=()
+    )
+
+
+async def _probe_with_diagnostics(sink, opener, bauds=None):
+    import inspect
+
+    kwargs = {"baud_rates": bauds or [19200], "timeout": 0.01, "_open_serial": opener}
+    if "diagnostics" in inspect.signature(probe_serial_civ).parameters:
+        kwargs["diagnostics"] = sink
+    return await probe_serial_civ("/private/sentinel-port", **kwargs)
+
+
+class TestCivProbeDiagnostics:
+    def test_public_sink_and_keyword_only_api(self):
+        import inspect
+        from dataclasses import asdict
+
+        from rigplane.backends import discovery
+        import rigplane.discovery as legacy
+
+        assert legacy is discovery
+        assert "CivProbeDiagnostic" in discovery.__all__
+        parameter = inspect.signature(probe_serial_civ).parameters["diagnostics"]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameter.default is None
+        assert asdict(discovery.CivProbeDiagnostic()) == {
+            "status": "not_attempted",
+            "stage": None,
+            "code": None,
+            "open_failure_codes": (),
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("error", "code"),
+        [
+            (PermissionError("secret"), "serial_permission_denied"),
+            (OSError(errno.EACCES, "secret"), "serial_permission_denied"),
+            (OSError(errno.EPERM, "secret"), "serial_permission_denied"),
+            (OSError(errno.EBUSY, "secret"), "serial_busy"),
+            (OSError(errno.EAGAIN, "secret"), "serial_busy"),
+            (OSError(errno.ENOENT, "secret"), "serial_not_found"),
+            (OSError(errno.ENODEV, "secret"), "serial_not_found"),
+            (OSError(errno.ETIMEDOUT, "secret"), "serial_timeout"),
+            (TimeoutError("secret"), "serial_timeout"),
+            (OSError("Resource busy secret"), "serial_unknown"),
+            (ValueError("Permission denied secret"), "serial_unknown"),
+        ],
+    )
+    async def test_actual_open_failure_keeps_verified_code(self, error, code):
+        sink = _diagnostic_sink()
+        opened = []
+
+        async def opener(**kwargs):
+            opened.append(kwargs["baudrate"])
+            raise error
+
+        assert await _probe_with_diagnostics(sink, opener) is None
+        assert opened == [19200]
+        assert (sink.status, sink.stage, sink.code) == ("open_failed", "open", code)
+        assert sink.open_failure_codes == (code,)
+        assert "secret" not in repr(sink)
+        assert "sentinel-port" not in repr(sink)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("link", ["cause", "context", "suppressed"])
+    async def test_actual_wrapped_open_error_respects_context(self, link):
+        wrapper = RuntimeError("wrapper secret")
+        cause = OSError(errno.EACCES, "private secret")
+        if link == "cause":
+            wrapper.__cause__ = cause
+        else:
+            wrapper.__context__ = cause
+            wrapper.__suppress_context__ = link == "suppressed"
+        sink = _diagnostic_sink()
+
+        async def opener(**kwargs):
+            raise wrapper
+
+        assert await _probe_with_diagnostics(sink, opener) is None
+        expected = (
+            "serial_unknown" if link == "suppressed" else "serial_permission_denied"
+        )
+        assert sink.code == expected
+        assert sink.open_failure_codes == (expected,)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("chunks", "status", "stage"),
+        [
+            ([], "opened_no_response", "read"),
+            ([_PROBE_CMD], "opened_no_response", "read"),
+            ([_PROBE_CMD * 2], "opened_no_response", "read"),
+            ([b"garbage"], "malformed_reply", "parse"),
+            ([bytes([0xFE, 0xFE, 0xE0, 0x94])], "incomplete_reply", "parse"),
+            ([_IC7610_RESPONSE[:-1]], "incomplete_reply", "parse"),
+            (
+                [bytes([0xFE, 0xFE, 0xE0, 0x94, 0, 0, 1, 0xFD])],
+                "malformed_reply",
+                "parse",
+            ),
+        ],
+    )
+    async def test_actual_read_boundary_distinguishes_missing_and_invalid_reply(
+        self, chunks, status, stage
+    ):
+        reader, writer = _FakeReader(chunks), _FakeWriter()
+        sink = _diagnostic_sink()
+        assert await _probe_with_diagnostics(sink, _make_open(reader, writer)) is None
+        assert (sink.status, sink.stage, sink.code) == (status, stage, None)
+        assert sink.open_failure_codes == ()
+        assert writer.written == [_PROBE_CMD]
+        assert writer.closed
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("open_first", [True, False])
+    async def test_opened_evidence_outranks_other_baud_open_error(self, open_first):
+        sink = _diagnostic_sink()
+        writers = []
+
+        async def opener(**kwargs):
+            if (kwargs["baudrate"] == 19200) == open_first:
+                writer = _FakeWriter()
+                writers.append(writer)
+                return _FakeReader([]), writer
+            raise OSError(errno.EBUSY, "private secret")
+
+        assert await _probe_with_diagnostics(sink, opener, [19200, 9600]) is None
+        assert (sink.status, sink.stage, sink.code) == (
+            "opened_no_response",
+            "read",
+            None,
+        )
+        assert sink.open_failure_codes == ("serial_busy",)
+        assert all(writer.closed for writer in writers)
+
+    @pytest.mark.asyncio
+    async def test_mixed_open_failures_preserve_bounded_distinct_causes(self):
+        errors = [
+            OSError(errno.EACCES, "secret"),
+            OSError(errno.EBUSY, "secret"),
+            OSError(errno.ENOENT, "secret"),
+            TimeoutError("secret"),
+            OSError("secret"),
+        ] * 3
+        sink = _diagnostic_sink()
+
+        async def opener(**kwargs):
+            raise errors.pop(0)
+
+        assert await _probe_with_diagnostics(sink, opener, list(range(15))) is None
+        assert (sink.status, sink.stage, sink.code) == (
+            "open_failed",
+            "open",
+            "serial_unknown",
+        )
+        assert sink.open_failure_codes == (
+            "serial_permission_denied",
+            "serial_busy",
+            "serial_not_found",
+            "serial_timeout",
+            "serial_unknown",
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("data", "status"),
+        [(b"garbage", "malformed_reply"), (b"\xfe\xfe\xe0\x94", "incomplete_reply")],
+    )
+    async def test_parse_evidence_survives_later_silence(self, data, status):
+        sink = _diagnostic_sink()
+
+        async def opener(**kwargs):
+            chunks = [data] if kwargs["baudrate"] == 19200 else []
+            return _FakeReader(chunks), _FakeWriter()
+
+        assert await _probe_with_diagnostics(sink, opener, [19200, 9600]) is None
+        assert (sink.status, sink.stage, sink.code) == (status, "parse", None)
+
+    @pytest.mark.asyncio
+    async def test_success_overrides_misses_and_sink_reuse_resets(self):
+        sink = _diagnostic_sink()
+        writer = _FakeWriter()
+
+        async def opener(**kwargs):
+            if kwargs["baudrate"] == 19200:
+                raise PermissionError("secret")
+            return _FakeReader([_IC7610_RESPONSE]), writer
+
+        result = await _probe_with_diagnostics(sink, opener, [19200, 9600, 4800])
+        assert result is not None and result.baud == 9600
+        assert result.model_id == b"\x01\x06"
+        assert (sink.status, sink.stage, sink.code) == ("response", "parse", None)
+        assert sink.open_failure_codes == ("serial_permission_denied",)
+        assert writer.closed
+        from rigplane.backends import discovery
+
+        if "CivProbeDiagnostic" not in discovery.__all__:
+            pytest.fail("diagnostic API absent after actual probe boundary executed")
+        assert await probe_serial_civ("unused", [], diagnostics=sink) is None
+        assert (sink.status, sink.stage, sink.code) == ("not_attempted", None, None)
+        assert sink.open_failure_codes == ()
+
+    @pytest.mark.asyncio
+    async def test_legacy_mock_receives_no_new_keyword(self, monkeypatch):
+        from rigplane.backends import discovery
+
+        seen = []
+
+        async def legacy_try(port, baud, timeout, *, _open_serial=None):
+            seen.append((port, baud, timeout, _open_serial))
+            return None
+
+        monkeypatch.setattr(discovery, "_try_baud", legacy_try)
+        assert await probe_serial_civ("legacy", [19200, 9600], 0.02) is None
+        assert seen == [("legacy", 19200, 0.02, None), ("legacy", 9600, 0.02, None)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", [asyncio.CancelledError(), OSError("secret")])
+    async def test_post_open_exception_and_cancel_close_and_propagate(self, error):
+        class Reader:
+            async def read(self, size):
+                raise error
+
+        writer = _FakeWriter()
+        sink = _diagnostic_sink()
+        with pytest.raises(type(error)):
+            await _probe_with_diagnostics(sink, _make_open(Reader(), writer))
+        assert writer.closed
+        assert sink.open_failure_codes == ()
+        assert (sink.status, sink.stage, sink.code) == ("probe_error", "read", None)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("operation", ["write", "drain", "close", "wait_closed"])
+    async def test_failing_operation_stage_is_preserved(self, operation):
+        error = OSError("private operation error")
+
+        class Writer(_FakeWriter):
+            def write(self, data):
+                if operation == "write":
+                    raise error
+                super().write(data)
+
+            async def drain(self):
+                if operation == "drain":
+                    raise error
+
+            def close(self):
+                super().close()
+                if operation == "close":
+                    raise error
+
+            async def wait_closed(self):
+                if operation == "wait_closed":
+                    raise error
+
+        writer, sink = Writer(), _diagnostic_sink()
+        with pytest.raises(OSError) as raised:
+            await _probe_with_diagnostics(
+                sink, _make_open(_FakeReader([_IC7610_RESPONSE]), writer)
+            )
+        assert raised.value is error
+        expected = "write" if operation in {"write", "drain"} else "close"
+        assert (sink.status, sink.stage, sink.code) == ("probe_error", expected, None)
+        assert sink.open_failure_codes == ()
+        assert writer.closed
+
+    @pytest.mark.asyncio
+    async def test_close_error_is_final_stage_without_hiding_read_cause(self):
+        read_error, close_error = OSError("read secret"), OSError("close secret")
+
+        class Reader:
+            async def read(self, size):
+                raise read_error
+
+        class Writer(_FakeWriter):
+            async def wait_closed(self):
+                raise close_error
+
+        writer, sink = Writer(), _diagnostic_sink()
+        with pytest.raises(OSError) as raised:
+            await _probe_with_diagnostics(sink, _make_open(Reader(), writer))
+        assert raised.value is close_error
+        assert raised.value.__context__ is read_error
+        assert (sink.status, sink.stage, sink.code) == ("probe_error", "close", None)
+        assert writer.closed
+
+
+class TestCivProbeFraming:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("sizes", [(3, 5), (4, 4), (7, 1), (1, 2, 5)])
+    async def test_fragmented_id_is_read_to_completion(self, sizes):
+        response = bytes([0xFE, 0xFE, 0xE0, 0x94, 0x19, 0, 0x94, 0xFD])
+        chunks, offset = [], 0
+        for size in sizes:
+            chunks.append(response[offset : offset + size])
+            offset += size
+        reader, writer = _FakeReader(chunks), _FakeWriter()
+        result = await probe_serial_civ(
+            "fake", [115200], 0.02, _open_serial=_make_open(reader, writer)
+        )
+        assert result is not None
+        assert (result.address, result.model_id, result.baud) == (0x94, b"\x94", 115200)
+        assert reader._queue.empty()
+        assert writer.written == [_PROBE_CMD]
+        assert writer.closed
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("same_chunk", [True, False])
+    @pytest.mark.parametrize(
+        "leading",
+        [
+            bytes([0xFE, 0xFE, 0xE0, 0x94, 3, 0, 0, 0xFD]),
+            bytes([0xFE, 0xFE, 0xE0, 0x94, 0x19, 0, 0xFD]),
+            bytes([0xFE, 0xFE, 0xE0, 0x94, 0x19, 0, 0x94]),
+            bytes([0xFE, 0xFE, 0xE0, 0x94, 0x19, 0xFD]),
+            _PROBE_CMD,
+        ],
+    )
+    async def test_leading_non_id_frame_does_not_hide_valid_id(
+        self, leading, same_chunk
+    ):
+        response = bytes([0xFE, 0xFE, 0xE0, 0x94, 0x19, 0, 0x94, 0xFD])
+        chunks = [leading + response] if same_chunk else [leading, response]
+        reader, writer = _FakeReader(chunks), _FakeWriter()
+        result = await probe_serial_civ(
+            "fake", [115200], 0.02, _open_serial=_make_open(reader, writer)
+        )
+        assert result is not None
+        assert (result.address, result.model_id) == (0x94, b"\x94")
+        assert writer.closed
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "data",
+        [
+            b"\xfe\xfe\xe0\x94\x19\x00\x94",
+            b"\xfe\xfe\xe0\x94\x03\x00\x00\xfd",
+        ],
+    )
+    async def test_non_id_reply_keeps_waiting_until_deadline_and_closes(self, data):
+        class Reader(_FakeReader):
+            calls = 0
+            cancelled = False
+
+            async def read(self, size):
+                self.calls += 1
+                try:
+                    return await super().read(size)
+                except asyncio.CancelledError:
+                    self.cancelled = True
+                    raise
+
+        reader, writer = Reader([data]), _FakeWriter()
+        assert (
+            await probe_serial_civ(
+                "fake", [115200], 0.01, _open_serial=_make_open(reader, writer)
+            )
+            is None
+        )
+        assert reader.calls == 2
+        assert reader.cancelled
+        assert writer.closed
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            b"\xfe\xfe\xe0\x94\x19\x00\xfd",
+            b"\xfe\xfe\xe0\x94\x19\x00\xfd\x00\x00",
+            b"\xfe\xfe\xe0\x94\x19\x00\x94\xfe\xfe\x00\xe0\x03\xfd",
+            b"\xfe\xfe\xe0\x94\x19\x00\xfe\xfe\xe0\x94\x03\x00\xfd",
+        ],
+    )
+    def test_empty_or_crossed_frame_cannot_be_a_valid_id(self, data):
+        assert _parse_probe_response("fake", 115200, data) is None
+
+    @pytest.mark.asyncio
+    async def test_repeated_non_id_chunks_share_one_read_deadline(self, monkeypatch):
+        original_wait_for = asyncio.wait_for
+        deadlines, budgets = [], []
+
+        async def recording_wait_for(awaitable, timeout):
+            deadlines.append(asyncio.get_running_loop().time() + timeout)
+            budgets.append(timeout)
+            return await original_wait_for(awaitable, timeout=timeout)
+
+        class Reader(_FakeReader):
+            async def read(self, size):
+                if not self._queue.empty():
+                    await asyncio.sleep(0.005)
+                return await super().read(size)
+
+        unrelated = b"\xfe\xfe\xe0\x94\x03\x00\x00\xfd"
+        reader, writer = Reader([unrelated, unrelated]), _FakeWriter()
+        monkeypatch.setattr(asyncio, "wait_for", recording_wait_for)
+        assert (
+            await probe_serial_civ(
+                "fake", [115200], 0.03, _open_serial=_make_open(reader, writer)
+            )
+            is None
+        )
+        assert len(budgets) == 3
+        assert max(deadlines) - min(deadlines) < 0.004
+        assert budgets[-1] < budgets[0] - 0.005
+        assert writer.closed
