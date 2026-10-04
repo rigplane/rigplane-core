@@ -77,16 +77,16 @@
   // MOR-2876: the server started while the radio's serial port could not be
   // opened ('radio_not_connected'). The same overlay says so, without Power
   // ON: there is no port to send it through.
-  let radioNotConnected = $derived(
-    runtime.radioPowerOn !== true
-      && runtime.radioHealth?.likelyCause === 'radio_not_connected',
-  );
   let serialDiagnostic = $derived(
-    radioNotConnected
+    runtime.radioHealth?.likelyCause === 'radio_not_connected'
       ? /^serial_(permission_denied|busy|not_found|timeout|unknown)(?:: (EACCES|EPERM|EBUSY|EAGAIN|ENOENT|ENODEV|ETIMEDOUT))?$/.exec(
           runtime.radioHealth?.lastError ?? '',
         )
       : null,
+  );
+  let radioNotConnected = $derived(
+    runtime.radioHealth?.likelyCause === 'radio_not_connected'
+      && (runtime.radioPowerOn !== true || serialDiagnostic !== null),
   );
   let overlayVisible = $derived(
     runtime.radioPowerOn === false || radioNotAnswering || radioNotConnected,

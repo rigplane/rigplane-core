@@ -351,6 +351,11 @@ describe('AppGlobalHost — standalone, with no layout mounted', () => {
         .toContain(`core.overlay.serial.${code}`);
       expect(powerEl()?.querySelector('[role="alert"]')?.textContent).toContain('EACCES');
       expect(powerEl()?.querySelector('.power-on-btn')).toBeNull();
+      h.radioPowerOn = true;
+      h.notifyRuntime();
+      flushSync();
+      expect(powerEl()?.querySelector('[role="alert"]')?.textContent).toContain('EACCES');
+      h.radioPowerOn = null;
       h.radioHealth.lastError = 'Permission denied token=secret';
       h.notifyRuntime();
       flushSync();
