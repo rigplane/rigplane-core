@@ -4,7 +4,12 @@ const rxStart = vi.fn();
 const rxStop = vi.fn();
 const rxFlush = vi.fn();
 const rxSetJitterBounds = vi.fn();
-const rxStats = vi.fn(() => ({ underruns: 3, bufferDepthMs: 140, droppedFrames: 2 }));
+const playback = {
+  schemaVersion: 1, contextState: 'suspended', sampleRate: 48000,
+  receivedFrames: 2, validFrames: 2, decodedFrames: 0, pcmPeak: null,
+  scheduledFrames: 0, suspendedDrops: 2, resumeOutcome: 'rejected', lastResumeError: 'NotAllowedError',
+};
+const rxStats = vi.fn(() => ({ underruns: 3, bufferDepthMs: 140, droppedFrames: 2, playback }));
 const txStart = vi.fn().mockResolvedValue(null);
 const txStop = vi.fn();
 const txApplyServerCodec = vi.fn(() => ({ switched: false, error: null }));
@@ -213,11 +218,42 @@ describe('AudioManager audio_stats uplink (MOR-585)', () => {
       underruns: 3,
       buffer_depth_ms: 140,
       dropped_frames: 2,
+      playback,
     }]);
 
     vi.advanceTimersByTime(3000);
     expect(statsMessages(ws).length).toBe(3);  // low rate: one per 1.5 s
 
+    audioManager.stopRx();
+  });
+
+  it('notifies only an actual resume rejection, deduplicates it, and clears on a new session', async () => {
+    const { audioManager } = await import('../audio-manager');
+    const notify = vi.fn();
+    audioManager.setOperatorNotifier(notify);
+    audioManager.startRx();
+    FakeWebSocket.instances[0].open();
+    vi.advanceTimersByTime(4500);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith('error', expect.not.stringContaining('NotAllowedError'), 'rxAudioResumeFailed');
+    playback.resumeOutcome = 'pending';
+    playback.lastResumeError = null as any;
+    vi.advanceTimersByTime(1500);
+    playback.resumeOutcome = 'rejected';
+    playback.lastResumeError = 'NotAllowedError';
+    vi.advanceTimersByTime(1500);
+    expect(notify).toHaveBeenCalledTimes(1);
+    playback.contextState = 'running';
+    vi.advanceTimersByTime(1500);
+    expect(notify).toHaveBeenCalledTimes(1);
+    playback.contextState = 'suspended';
+    audioManager.stopRx();
+    vi.advanceTimersByTime(3000);
+    expect(notify).toHaveBeenCalledTimes(1);
+    audioManager.startRx();
+    FakeWebSocket.instances.at(-1)!.open();
+    vi.advanceTimersByTime(1500);
+    expect(notify).toHaveBeenCalledTimes(2);
     audioManager.stopRx();
   });
 

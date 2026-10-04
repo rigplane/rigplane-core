@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import math
 import time
 from collections.abc import AsyncIterator, Awaitable
 from dataclasses import dataclass, field
@@ -46,6 +47,92 @@ from ...capabilities import CAP_MOD_INPUT_ROUTING, CAP_TX
 __all__ = ["AudioBroadcaster", "AudioHandler", "RxPcmTapSource"]
 
 logger = logging.getLogger(__name__)
+
+_PLAYBACK_COUNTERS = {
+    "receivedFrames",
+    "validFrames",
+    "decodedFrames",
+    "scheduledFrames",
+    "suspendedDrops",
+}
+_PLAYBACK_KEYS = _PLAYBACK_COUNTERS | {
+    "schemaVersion",
+    "contextState",
+    "sampleRate",
+    "pcmPeak",
+    "resumeOutcome",
+    "lastResumeError",
+}
+_RESUME_ERROR_NAMES = {
+    "NotAllowedError",
+    "InvalidStateError",
+    "NotSupportedError",
+    "AbortError",
+    "SecurityError",
+    "UnknownError",
+}
+
+
+def _bounded_audio_stats(message: dict[str, Any]) -> dict[str, Any]:
+    stats: dict[str, Any] = {}
+    for key, maximum in (
+        ("underruns", 0xFFFFFFFF),
+        ("dropped_frames", 0xFFFFFFFF),
+        ("buffer_depth_ms", 60000),
+    ):
+        value = message.get(key)
+        if (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and 0 <= value <= maximum
+            and math.isfinite(value)
+        ):
+            stats[key] = value
+    playback = message.get("playback")
+    if not isinstance(playback, dict) or set(playback) != _PLAYBACK_KEYS:
+        return stats
+    if type(playback["schemaVersion"]) is not int or playback["schemaVersion"] != 1:
+        return stats
+    for key in _PLAYBACK_COUNTERS:
+        if type(playback[key]) is not int or not 0 <= playback[key] <= 0xFFFFFFFF:
+            return stats
+    if playback["contextState"] not in (
+        "unavailable",
+        "running",
+        "suspended",
+        "closed",
+        "interrupted",
+        "unknown",
+    ):
+        return stats
+    if playback["resumeOutcome"] not in (
+        "not_attempted",
+        "pending",
+        "resolved",
+        "rejected",
+    ):
+        return stats
+    rate = playback["sampleRate"]
+    if rate is not None and (
+        not isinstance(rate, (int, float))
+        or isinstance(rate, bool)
+        or not 0 < rate <= 384000
+        or not math.isfinite(rate)
+    ):
+        return stats
+    peak = playback["pcmPeak"]
+    if peak is not None and (type(peak) is not int or not 0 <= peak <= 100):
+        return stats
+    error = playback["lastResumeError"]
+    if error is not None and (
+        not isinstance(error, str) or error not in _RESUME_ERROR_NAMES
+    ):
+        return stats
+    if (playback["resumeOutcome"] == "rejected") != (error is not None):
+        return stats
+    stats["playback"] = dict(playback)
+    return stats
+
 
 _TX_CLEANUP_STOP_TIMEOUT_SECONDS = 2.0
 _PCM_TAP_CODECS = frozenset(
@@ -339,7 +426,7 @@ class AudioBroadcaster:
         # drop-oldest eviction counter for the bounded WS queue.  Stats
         # collection only — read by the step-19 adaptive egress codec
         # controller; nothing here changes codec selection or behavior.
-        self._client_link_quality: dict[int, dict[str, int | float]] = {}
+        self._client_link_quality: dict[int, dict[str, Any]] = {}
         self._client_queue_drops: dict[int, int] = {}
         # Adaptive egress codec controller (MOR-588, ADR §3.6): per-client
         # PCM16↔Opus switching driven by the MOR-585 link-quality signals.
@@ -785,7 +872,7 @@ class AudioBroadcaster:
     def record_client_stats(
         self,
         queue: asyncio.Queue[bytes],
-        stats: dict[str, int | float],
+        stats: dict[str, Any],
     ) -> None:
         """Record one client's latest self-reported link-quality (MOR-585).
 
@@ -797,12 +884,10 @@ class AudioBroadcaster:
         client_id = id(queue)
         if client_id not in self._clients:
             return
-        self._client_link_quality[client_id] = dict(stats)
+        self._client_link_quality[client_id] = _bounded_audio_stats(stats)
         self._adaptive_evaluate(client_id)
 
-    def client_link_quality(
-        self, queue: asyncio.Queue[bytes]
-    ) -> dict[str, int | float]:
+    def client_link_quality(self, queue: asyncio.Queue[bytes]) -> dict[str, Any]:
         """One client's link-quality snapshot (MOR-585, ADR §3.6).
 
         The latest client-reported ``audio_stats`` fields merged with the
@@ -812,9 +897,9 @@ class AudioBroadcaster:
         taps read; nothing in this step consumes it.
         """
         client_id = id(queue)
-        snapshot: dict[str, int | float] = dict(
-            self._client_link_quality.get(client_id, {})
-        )
+        snapshot: dict[str, Any] = dict(self._client_link_quality.get(client_id, {}))
+        if "playback" in snapshot:
+            snapshot["playback"] = dict(snapshot["playback"])
         snapshot["ws_queue_drops"] = self._client_queue_drops.get(client_id, 0)
         return snapshot
 
@@ -1332,7 +1417,7 @@ class AudioHandler:
         # Latest client-reported link-quality snapshot from the periodic
         # ``audio_stats`` uplink (MOR-585) — mirrored per client on the
         # broadcaster while RX is subscribed.
-        self._link_quality: dict[str, int | float] = {}
+        self._link_quality: dict[str, Any] = {}
         self._frame_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._done = asyncio.Event()
         # Opus decoder for TX when radio uses PCM codec.
@@ -1514,19 +1599,10 @@ class AudioHandler:
     def _handle_audio_stats(self, msg: dict[str, Any]) -> None:
         """Record the client's periodic link-quality report (MOR-585).
 
-        Stats collection only (ADR §3.6 step 18): the browser player
-        reports playback ``underruns``, ``buffer_depth_ms`` and
-        ``dropped_frames`` every ~1.5 s; only numeric fields are kept
-        (latest-wins), and unknown numeric fields pass through so future
-        carriers (WebRTC RTCP, step 19) can reuse the envelope.  Clients
-        that never send ``audio_stats`` are entirely unaffected.
+        Legacy link metrics and the additive playback object are filtered
+        by ``_bounded_audio_stats`` before retention.
         """
-        stats: dict[str, int | float] = {}
-        for key, value in msg.items():
-            if key == "type" or isinstance(value, bool):
-                continue
-            if isinstance(value, (int, float)):
-                stats[key] = value
+        stats = _bounded_audio_stats(msg)
         self._link_quality = stats
         if self._rx_active and self._broadcaster is not None:
             self._broadcaster.record_client_stats(self._frame_queue, stats)

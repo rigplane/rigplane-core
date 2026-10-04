@@ -178,6 +178,7 @@
   "core.toast.txAudioCaptureUnsupported": "Этот браузер не поддерживает захват микрофона",
   "core.toast.txAudioInsecureContext": "Микрофону нужно защищённое соединение. Откройте страницу по адресу https:// (сервер с --tls) или на localhost.",
   "core.toast.txAudioStartFailed": "Не удалось запустить TX-аудио",
+  "core.toast.rxAudioResumeFailed": "Не удалось возобновить локальный звук. Проверьте разрешения приложения на звук и настройки вывода.",
   "core.toast.txAudioStopped": "TX-аудио прервано — передача завершилась досрочно",
   "core.toast.unknown": "Что-то пошло не так. Попробуйте позже.",
 

@@ -98,6 +98,7 @@ class AudioManager {
   // Injected by frontend-runtime.ts, which owns the transport import;
   // lib/audio must not import it directly (radio-authority/structural-boundary).
   private _operatorNotifier: OperatorNotifier | null = null;
+  private _lastRxResumeError: string | null = null;
 
   // Reactive state (read externally)
   get rxEnabled(): boolean { return this._rxEnabled; }
@@ -132,7 +133,7 @@ class AudioManager {
     }, (reason) => this._failTxAudio(reason));
   }
 
-  /** Inject (or clear, with null) the sink for TX-audio-failure banners. */
+  /** Inject (or clear, with null) the sink for audio-failure banners. */
   setOperatorNotifier(notify: OperatorNotifier | null): void {
     this._operatorNotifier = notify;
   }
@@ -171,6 +172,7 @@ class AudioManager {
   }
 
   stopRx(): void {
+    this._lastRxResumeError = null;
     if (!this._rxEnabled) return;
     this._rxEnabled = false;
     setRxEnabled(false);
@@ -498,11 +500,21 @@ class AudioManager {
   private _sendAudioStats(): void {
     if (!this._rxEnabled || this.ws?.readyState !== WebSocket.OPEN) return;
     const stats = this.rxPlayer.stats();
+    const error = stats.playback?.contextState === 'suspended' && stats.playback.resumeOutcome === 'rejected'
+      ? stats.playback.lastResumeError : null;
+    if (error !== null && error !== this._lastRxResumeError) {
+      this._operatorNotifier?.('error', 'Local audio could not resume. Check application sound permissions and output settings.', 'rxAudioResumeFailed');
+    }
+    if (error !== null) this._lastRxResumeError = error;
+    else if (stats.playback?.resumeOutcome === 'resolved' || stats.playback?.contextState === 'unavailable') {
+      this._lastRxResumeError = null;
+    }
     this.ws.send(JSON.stringify({
       type: 'audio_stats',
       underruns: stats.underruns,
       buffer_depth_ms: stats.bufferDepthMs,
       dropped_frames: stats.droppedFrames,
+      playback: stats.playback,
     }));
   }
 
