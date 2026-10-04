@@ -887,9 +887,7 @@ class AudioBroadcaster:
         self._client_link_quality[client_id] = _bounded_audio_stats(stats)
         self._adaptive_evaluate(client_id)
 
-    def client_link_quality(
-        self, queue: asyncio.Queue[bytes]
-    ) -> dict[str, Any]:
+    def client_link_quality(self, queue: asyncio.Queue[bytes]) -> dict[str, Any]:
         """One client's link-quality snapshot (MOR-585, ADR §3.6).
 
         The latest client-reported ``audio_stats`` fields merged with the
@@ -899,9 +897,7 @@ class AudioBroadcaster:
         taps read; nothing in this step consumes it.
         """
         client_id = id(queue)
-        snapshot: dict[str, Any] = dict(
-            self._client_link_quality.get(client_id, {})
-        )
+        snapshot: dict[str, Any] = dict(self._client_link_quality.get(client_id, {}))
         if "playback" in snapshot:
             snapshot["playback"] = dict(snapshot["playback"])
         snapshot["ws_queue_drops"] = self._client_queue_drops.get(client_id, 0)
