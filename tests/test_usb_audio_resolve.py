@@ -1766,3 +1766,203 @@ def test_windows_actual_tab_metadata_preserves_full_physical_name_rank() -> None
     )
     assert result is not None
     assert (result.rx_device_index, result.tx_device_index) == (4, 3)
+
+
+def _ic7300_hub_records(tag="A", port="COM3"):
+    from rigplane.usb_audio_resolve import WindowsPnpDevice
+
+    hub = rf"USB\VID_0451&PID_2046\HUB_{tag}"
+    codec = rf"USB\VID_08BB&PID_2901\CODEC_{tag}"
+    media = rf"USB\VID_08BB&PID_2901&MI_00\MEDIA_{tag}"
+    return [
+        WindowsPnpDevice(
+            rf"USB\VID_10C4&PID_EA60\IC-7300_{tag}",
+            hub,
+            "10C4",
+            "EA60",
+            port,
+            None,
+        ),
+        WindowsPnpDevice(hub, r"USB\ROOT_HUB30\HOST", "0451", "2046", None, None),
+        WindowsPnpDevice(codec, hub, "08BB", "2901", None, None),
+        WindowsPnpDevice(media, codec, "08BB", "2901", None, "USB Audio CODEC"),
+        WindowsPnpDevice(
+            rf"SWD\MMDEVAPI\RX_{tag}",
+            media.lower(),
+            None,
+            None,
+            None,
+            "Microphone (USB Audio CODEC)",
+        ),
+        WindowsPnpDevice(
+            rf"SWD\MMDEVAPI\TX_{tag}",
+            media,
+            None,
+            None,
+            None,
+            "Speakers (USB Audio CODEC)",
+        ),
+    ]
+
+
+def _ic7300_sd_pairs(count=1):
+    from types import SimpleNamespace
+
+    devices = []
+    for _ in range(count):
+        devices.extend(
+            [
+                {
+                    "name": "USB Audio CODEC",
+                    "max_input_channels": 0,
+                    "max_output_channels": 2,
+                    "hostapi": 3,
+                },
+                {
+                    "name": "USB Audio CODEC",
+                    "max_input_channels": 2,
+                    "max_output_channels": 0,
+                    "hostapi": 3,
+                },
+            ]
+        )
+    return SimpleNamespace(query_devices=lambda: devices)
+
+
+class TestWindowsIc7300InternalHub:
+    def test_captured_asymmetric_composite_shape_resolves(self):
+        from rigplane.usb_audio_resolve import _resolve_windows
+
+        result = _resolve_windows(
+            "COM3",
+            sounddevice_module=_ic7300_sd_pairs(),
+            pnp_query=lambda: _ic7300_hub_records(),
+        )
+        assert result is not None
+        assert (result.rx_device_index, result.tx_device_index) == (1, 0)
+
+    def test_other_radio_and_swd_rows_preserve_full_physical_rank(self):
+        from rigplane.usb_audio_resolve import _resolve_windows
+
+        records = _ic7300_hub_records("A", "COM7") + _ic7300_hub_records("B", "COM3")
+        result = _resolve_windows(
+            "COM3",
+            sounddevice_module=_ic7300_sd_pairs(2),
+            pnp_query=lambda: records,
+        )
+        assert result is not None
+        assert (result.rx_device_index, result.tx_device_index) == (3, 2)
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            "other_model",
+            "wrong_hub",
+            "missing_codec_parent",
+            "extra_codec",
+            "extra_serial",
+        ],
+    )
+    def test_conflicting_or_incomplete_family_identity_is_refused(self, change):
+        from dataclasses import replace
+
+        from rigplane.usb_audio_resolve import WindowsAudioTopologyError, _resolve_windows
+
+        records = _ic7300_hub_records()
+        if change == "other_model":
+            records[0] = replace(
+                records[0], pnp_device_id=r"USB\VID_10C4&PID_EA60\OTHER"
+            )
+        elif change == "wrong_hub":
+            records[2] = replace(
+                records[2], parent_pnp_id=r"USB\VID_0451&PID_2046\OTHER"
+            )
+        elif change == "missing_codec_parent":
+            records = records[:2] + records[3:]
+        elif change == "extra_codec":
+            other = _ic7300_hub_records("B", "COM7")
+            records.extend(
+                [replace(other[2], parent_pnp_id=records[1].pnp_device_id), other[3]]
+            )
+        else:
+            records.append(
+                replace(
+                    records[0],
+                    pnp_device_id=r"USB\VID_10C4&PID_EA60\IC-7300_B",
+                    com_port="COM7",
+                )
+            )
+        with pytest.raises(WindowsAudioTopologyError):
+            _resolve_windows(
+                "COM3",
+                sounddevice_module=_ic7300_sd_pairs(2),
+                pnp_query=lambda: records,
+            )
+
+    def test_metadata_producer_retains_only_bounded_family_parent_nodes(self):
+        import subprocess
+
+        from rigplane.usb_audio_resolve import _query_windows_pnp_devices
+
+        rows = [
+            (
+                r.pnp_device_id,
+                r.parent_pnp_id,
+                "MEDIA" if r.audio_endpoint_name else "USB",
+                r.audio_endpoint_name or "USB Composite Device",
+            )
+            for r in _ic7300_hub_records()[1:4]
+        ]
+        stdout = "\r\n".join("\t".join(row) for row in rows).encode()
+        with (
+            patch("rigplane.usb_audio_resolve.platform.system", return_value="Windows"),
+            patch("rigplane.usb_audio_resolve.subprocess.run") as run,
+        ):
+            run.return_value = subprocess.CompletedProcess([], 0, stdout)
+            records = _query_windows_pnp_devices()
+        assert {r.pnp_device_id for r in records} == {row[0] for row in rows}
+        assert len(records) == 3
+        assert run.call_args.kwargs["timeout"] == 5
+
+    def test_actual_session2_wdmks_aliases_select_rx15_tx14(self):
+        from dataclasses import replace
+        from types import SimpleNamespace
+
+        from rigplane.usb_audio_resolve import _resolve_windows
+
+        devices = [
+            {"name": "Remote Audio", "hostapi": i % 4,
+             "max_input_channels": 0, "max_output_channels": 2}
+            for i in range(14)
+        ]
+        devices.extend([
+            {"name": "Speakers (USB Audio CODEC)", "hostapi": 3,
+             "max_input_channels": 0, "max_output_channels": 2},
+            {"name": "Microphone (USB Audio CODEC)", "hostapi": 3,
+             "max_input_channels": 2, "max_output_channels": 0},
+        ])
+        records = _ic7300_hub_records()
+        records[3] = replace(records[3], audio_endpoint_name="USB Audio CODEC ")
+        result = _resolve_windows(
+            "COM3", sounddevice_module=SimpleNamespace(query_devices=lambda: devices),
+            pnp_query=lambda: records,
+        )
+        assert result is not None
+        assert (result.rx_device_index, result.tx_device_index) == (15, 14)
+
+    def test_alias_pair_cannot_cross_host_api_boundary(self):
+        from types import SimpleNamespace
+
+        from rigplane.usb_audio_resolve import WindowsAudioTopologyError, _resolve_windows
+
+        devices = [
+            {"name": "Speakers (USB Audio CODEC)", "hostapi": 0,
+             "max_input_channels": 0, "max_output_channels": 2},
+            {"name": "Microphone (USB Audio CODEC)", "hostapi": 3,
+             "max_input_channels": 2, "max_output_channels": 0},
+        ]
+        with pytest.raises(WindowsAudioTopologyError):
+            _resolve_windows(
+                "COM3", sounddevice_module=SimpleNamespace(query_devices=lambda: devices),
+                pnp_query=lambda: _ic7300_hub_records(),
+            )
