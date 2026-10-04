@@ -696,12 +696,14 @@ it('reserves the role plaque at the widest role text in every state', () => {
   // The widest of ALL role texts across the three locales, built from the
   // catalog strings, must be in the list — any localized role string joins
   // the comparison and must be covered by the reservation.
-  const widest = [enUS, jaJP, ruRU]
-    .flatMap((catalog) => Object.values(catalog))
-    .concat(listed)
-    .filter((value): value is string => typeof value === 'string')
-    .filter((text) => /MAIN [AB]|SUB [AB]|ACTIVE|АКТИВЕН|使用中/.test(text))
-    .reduce((best, text) => (text.length > best.length ? text : best), '');
+  const roleTexts = [enUS, jaJP, ruRU]
+    .flatMap((catalog) => Object.entries(catalog)
+      .filter(([key]) => key.startsWith('core.vfo.role.'))
+      .map(([, text]) => text))
+    .filter((text): text is string => typeof text === 'string')
+    .concat(['MAIN', 'SUB'].flatMap((receiver) => [receiver, `${receiver} A`, `${receiver} B`]));
+  for (const text of roleTexts) expect(listed).toContain(text);
+  const widest = roleTexts.reduce((best, text) => (text.length > best.length ? text : best), '');
   expect(listed).toContain(widest);
   for (const catalog of [enUS, jaJP, ruRU]) {
     expect(Object.values(catalog).join('\n')).not.toMatch(/Selected VFO|Unselected VFO|MAIN [AB]|SUB [AB]/);

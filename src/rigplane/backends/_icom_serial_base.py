@@ -22,6 +22,7 @@ from ..audio import AudioPacket
 from ..audio.lan_stream import SYNTHETIC_RX_IDENT
 from ..commands import parse_ack_nak
 from ..core.radio_protocol import RadioIdentity, RadioIdentityStatus
+from ..core.serial_open import serial_open_diagnostic
 from ..exceptions import (
     AudioFormatError,
     CommandError,
@@ -285,6 +286,7 @@ class _IcomSerialRadioBase(CoreRadio):
         # MOR-2876: text of the latest failed port open; None once an open
         # succeeds.
         self.last_error: str | None = None
+        self.serial_open_error: str | None = None
         # MOR-2876: set once a port open succeeds; no sibling-port search
         # before that (``_maybe_rediscover_serial_device``).
         self._has_connected_once = False
@@ -454,6 +456,7 @@ class _IcomSerialRadioBase(CoreRadio):
         try:
             await self._serial_session.connect()
         except Exception as exc:
+            diagnostic = serial_open_diagnostic(exc)
             message = (
                 f"Failed to connect serial session on {self._serial_device}: {exc}"
             )
@@ -461,11 +464,13 @@ class _IcomSerialRadioBase(CoreRadio):
                 self._conn_state = RadioConnectionState.DISCONNECTED
                 self._civ_stream_ready = False
                 self._civ_recovering = False
-                self.last_error = message
+                self.last_error = f"Failed to connect serial session: {diagnostic}"
+                self.serial_open_error = diagnostic
             raise ConnectionError(message) from exc
         if self._civ_epoch != attempt_epoch:
             return
         self.last_error = None
+        self.serial_open_error = None
         self._has_connected_once = True
 
         # A connect() over a runtime whose CI-V worker and RX pump still
@@ -532,6 +537,7 @@ class _IcomSerialRadioBase(CoreRadio):
         await self.disconnect()
 
     async def disconnect(self) -> None:
+        self.serial_open_error = None
         # Always stop watchdog first to avoid orphan retry loops on failed reconnects.
         self._cancel_serial_identity_reread()
         self._connection_identity = None
@@ -617,6 +623,7 @@ class _IcomSerialRadioBase(CoreRadio):
             # MOR-3064: a retired attempt (its generation was replaced
             # underneath it) writes no state — whoever replaced the link
             # owns the connection state now.
+            diagnostic = serial_open_diagnostic(exc)
             message = (
                 f"Failed to reconnect serial session on {self._serial_device}: {exc}"
             )
@@ -624,11 +631,13 @@ class _IcomSerialRadioBase(CoreRadio):
                 self._conn_state = RadioConnectionState.RECONNECTING
                 self._civ_stream_ready = False
                 self._civ_recovering = True
-                self.last_error = message
+                self.last_error = f"Failed to reconnect serial session: {diagnostic}"
+                self.serial_open_error = diagnostic
             raise ConnectionError(message) from exc
         if self._civ_epoch != attempt_epoch:
             return
         self.last_error = None
+        self.serial_open_error = None
         self._has_connected_once = True
 
         self._ctrl_transport = self._serial_session.control_transport  # type: ignore[assignment]

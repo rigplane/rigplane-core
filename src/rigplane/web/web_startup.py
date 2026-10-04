@@ -368,10 +368,12 @@ def _serve_without_port(server: WebServer) -> None:
 
     server._served_without_port = True
     logger.warning(
-        "startup gate: the radio is not connected (%s); serving in a "
+        "startup gate: the radio is not connected — could not open port %s "
+        "(%s); serving in a "
         "radio-not-connected state — check the USB cable. The port is "
         "retried in the background; transmit is refused while no radio is "
         "connected.",
+        getattr(server._radio, "_serial_device", "selected serial device"),
         getattr(server._radio, "last_error", None),
     )
 

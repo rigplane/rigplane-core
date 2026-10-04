@@ -22,11 +22,49 @@ load-bearing is unestablished and is settled on the bench (MOR-2493).
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def serial_open_diagnostic(error: BaseException) -> str:
+    seen: set[int] = set()
+    pending = [error]
+    timeout: str | None = None
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        number = current.errno if isinstance(current, OSError) else None
+        if isinstance(current, PermissionError) or number in {
+            errno.EACCES,
+            errno.EPERM,
+        }:
+            code = "serial_permission_denied"
+        elif number in {errno.EBUSY, errno.EAGAIN}:
+            code = "serial_busy"
+        elif isinstance(current, FileNotFoundError) or number in {
+            errno.ENOENT,
+            errno.ENODEV,
+        }:
+            code = "serial_not_found"
+        else:
+            if number == errno.ETIMEDOUT:
+                timeout = "serial_timeout: ETIMEDOUT"
+            elif isinstance(current, TimeoutError) and timeout is None:
+                timeout = "serial_timeout"
+            if current.__context__ is not None and not current.__suppress_context__:
+                pending.append(current.__context__)
+            if current.__cause__ is not None:
+                pending.append(current.__cause__)
+            continue
+        name = errno.errorcode.get(number) if isinstance(number, int) else None
+        return f"{code}: {name}" if name else code
+    return timeout or "serial_unknown"
 
 
 async def open_serial_port(
