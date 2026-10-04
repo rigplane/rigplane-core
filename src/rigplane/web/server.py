@@ -3891,6 +3891,19 @@ class WebServer:
             "events": self._state_diagnostics.snapshot(),
         }
 
+    def _runtime_audio_playback_payload(self) -> dict[str, Any]:
+        broadcaster = getattr(self, "_audio_broadcaster", None)
+        if isinstance(broadcaster, AudioBroadcaster):
+            return broadcaster.playback_diagnostics()
+        return {
+            "schemaVersion": 1,
+            "state": "unavailable",
+            "activeClients": None,
+            "reportedClients": None,
+            "omittedClients": None,
+            "clients": [],
+        }
+
     async def _serve_runtime(
         self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
     ) -> None:
@@ -3915,6 +3928,7 @@ class WebServer:
                 "bridge": self._runtime_bridge_payload(),
                 "audioBus": self._runtime_audio_bus_payload(),
                 "audioSession": self._runtime_audio_session_payload(),
+                "audioPlayback": self._runtime_audio_playback_payload(),
                 "connection": self._runtime_connection_payload(),
                 "stateAcquisition": self._state_acquisition_diagnostics_payload(),
                 # Additive TX safety evidence (MOR-1015): owner, phase, lease,

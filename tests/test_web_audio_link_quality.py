@@ -258,3 +258,69 @@ class TestNoStatsClientUnchanged:
         assert broadcaster.client_link_quality(handler._frame_queue) == {
             "ws_queue_drops": 0
         }
+
+
+def test_playback_diagnostics_is_bounded_anonymous_and_detached() -> None:
+    broadcaster = AudioBroadcaster(None)
+    queues = [asyncio.Queue() for _ in range(10)]
+    for queue in queues:
+        broadcaster._clients[id(queue)] = queue
+        broadcaster.record_client_stats(queue, {**STATS_MSG, "playback": PLAYBACK})
+        broadcaster._client_identity[id(queue)] = "private-session-device"
+        broadcaster._client_link_quality[id(queue)]["raw_error"] = "private-message"
+    snapshot = broadcaster.playback_diagnostics()
+    assert snapshot == {
+        "schemaVersion": 1,
+        "state": "available",
+        "activeClients": 10,
+        "reportedClients": 10,
+        "omittedClients": 2,
+        "clients": [PLAYBACK] * 8,
+    }
+    assert "private" not in json.dumps(snapshot)
+    snapshot["clients"][0]["lastResumeError"] = "private-message"
+    assert broadcaster.playback_diagnostics()["clients"][0] == PLAYBACK
+    broadcaster.record_client_stats(queues[0], dict(STATS_MSG))
+    assert snapshot["reportedClients"] == 10
+    assert broadcaster.playback_diagnostics()["reportedClients"] == 9
+    broadcaster._drop_client(id(queues[1]))
+    assert broadcaster.playback_diagnostics()["activeClients"] == 9
+    assert broadcaster.playback_diagnostics()["reportedClients"] == 8
+
+
+def test_playback_diagnostics_missing_legacy_invalid_and_disconnected() -> None:
+    broadcaster = AudioBroadcaster(None)
+    assert broadcaster.playback_diagnostics() == {
+        "schemaVersion": 1,
+        "state": "no_clients",
+        "activeClients": 0,
+        "reportedClients": 0,
+        "omittedClients": 0,
+        "clients": [],
+    }
+    queue = asyncio.Queue()
+    broadcaster._clients[id(queue)] = queue
+    for stats in (
+        {},
+        dict(STATS_MSG),
+        {"playback": {**PLAYBACK, "deviceId": "private-device"}},
+        {"playback": {**PLAYBACK, "lastResumeError": "private-message"}},
+        {"playback": {**PLAYBACK, "decodedFrames": 2**32}},
+        {"playback": {**PLAYBACK, "sampleRate": math.inf}},
+        {"playback": {**PLAYBACK, "resumeOutcome": {"raw": "private"}}},
+    ):
+        # Bypass ingestion deliberately: export must revalidate retained state.
+        broadcaster._client_link_quality[id(queue)] = stats
+        assert broadcaster.playback_diagnostics() == {
+            "schemaVersion": 1,
+            "state": "no_playback_reports",
+            "activeClients": 1,
+            "reportedClients": 0,
+            "omittedClients": 0,
+            "clients": [],
+        }
+    broadcaster.record_client_stats(queue, {"playback": PLAYBACK})
+    broadcaster._drop_client(id(queue))
+    broadcaster.record_client_stats(queue, {"playback": PLAYBACK})
+    broadcaster._client_link_quality[id(queue)] = {"playback": PLAYBACK}
+    assert broadcaster.playback_diagnostics()["state"] == "no_clients"

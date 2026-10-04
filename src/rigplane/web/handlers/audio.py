@@ -903,6 +903,41 @@ class AudioBroadcaster:
         snapshot["ws_queue_drops"] = self._client_queue_drops.get(client_id, 0)
         return snapshot
 
+    def playback_diagnostics(self) -> dict[str, Any]:
+        """Anonymous, bounded latest self-reports from current subscriptions.
+
+        Read synchronously on the server event loop. Revalidate retained data
+        at this public boundary; legacy clients have no playback report. These
+        counters do not establish freshness or audible speaker output.
+        """
+        clients: list[dict[str, Any]] = []
+        reported = 0
+        for client_id in self._clients:
+            retained = self._client_link_quality.get(client_id)
+            if not isinstance(retained, dict):
+                continue
+            playback = _bounded_audio_stats(retained).get("playback")
+            if playback is None:
+                continue
+            reported += 1
+            if len(clients) < 8:
+                clients.append(playback)
+        active = len(self._clients)
+        return {
+            "schemaVersion": 1,
+            "state": (
+                "available"
+                if reported
+                else "no_playback_reports"
+                if active
+                else "no_clients"
+            ),
+            "activeClients": min(active, 0xFFFFFFFF),
+            "reportedClients": min(reported, 0xFFFFFFFF),
+            "omittedClients": min(max(reported - len(clients), 0), 0xFFFFFFFF),
+            "clients": clients,
+        }
+
     def _adaptive_evaluate(self, client_id: int) -> None:
         """Run one adaptive controller step for one client (MOR-588).
 
