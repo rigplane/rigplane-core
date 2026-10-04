@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
-from rigplane.core.serial_open import open_serial_port
+from rigplane.core.serial_open import open_serial_port, serial_open_diagnostic
 from rigplane.usb_audio_resolve import AudioDeviceMapping, resolve_audio_for_serial_port
 
 from .hamlib_probe import (
@@ -26,6 +26,7 @@ __all__ = [
     "build_hamlib_discovery_payload",
     "build_setup_discovery_payload",
     "CivProbeResult",
+    "CivProbeDiagnostic",
     "DiscoveryCandidate",
     "DiscoveryEvidence",
     "HamlibProbeTarget",
@@ -135,12 +136,40 @@ class CivProbeResult:
 _OpenSerial = Callable[..., Awaitable[tuple[Any, Any]]]
 
 
+_ProbeCode = Literal[
+    "serial_busy",
+    "serial_permission_denied",
+    "serial_not_found",
+    "serial_timeout",
+    "serial_unknown",
+]
+
+
+@dataclass
+class CivProbeDiagnostic:
+    """Caller-local CI-V probe status without device or exception contents."""
+
+    status: Literal[
+        "not_attempted",
+        "response",
+        "open_failed",
+        "opened_no_response",
+        "incomplete_reply",
+        "malformed_reply",
+        "probe_error",
+    ] = "not_attempted"
+    stage: Literal["open", "write", "read", "parse", "close"] | None = None
+    code: _ProbeCode | None = None
+    open_failure_codes: tuple[_ProbeCode, ...] = ()
+
+
 async def probe_serial_civ(
     port: str,
     baud_rates: list[int] | None = None,
     timeout: float = 1.0,
     *,
     _open_serial: _OpenSerial | None = None,
+    diagnostics: CivProbeDiagnostic | None = None,
 ) -> CivProbeResult | None:
     """Probe a serial port for a CI-V radio, trying multiple baud rates.
 
@@ -154,6 +183,7 @@ async def probe_serial_civ(
         timeout: Per-baud timeout in seconds.
         _open_serial: Overrides the open step of :func:`rigplane.core.serial_open.open_serial_port`;
             post-open control-line deassert still applies (used in tests).
+        diagnostics: Optional caller-local status, reset before the baud sweep.
 
     Returns:
         :class:`CivProbeResult` on success, or ``None`` if no radio responded.
@@ -161,8 +191,44 @@ async def probe_serial_civ(
     if baud_rates is None:
         baud_rates = [19200, 9600, 115200, 4800]
 
+    if diagnostics is not None:
+        diagnostics.status = "not_attempted"
+        diagnostics.stage = None
+        diagnostics.code = None
+        diagnostics.open_failure_codes = ()
+
     for baud in baud_rates:
-        result = await _try_baud(port, baud, timeout, _open_serial=_open_serial)
+        if diagnostics is None:
+            result = await _try_baud(port, baud, timeout, _open_serial=_open_serial)
+        else:
+            attempt = CivProbeDiagnostic()
+            try:
+                result = await _try_baud(
+                    port, baud, timeout, _open_serial=_open_serial, diagnostics=attempt
+                )
+            finally:
+                for code in attempt.open_failure_codes:
+                    if code not in diagnostics.open_failure_codes:
+                        diagnostics.open_failure_codes += (code,)
+                priority = {
+                    "not_attempted": 0,
+                    "open_failed": 1,
+                    "opened_no_response": 2,
+                    "incomplete_reply": 3,
+                    "malformed_reply": 3,
+                    "response": 4,
+                    "probe_error": 5,
+                }
+                if priority[attempt.status] >= priority[diagnostics.status]:
+                    diagnostics.status = attempt.status
+                    diagnostics.stage = attempt.stage
+                    diagnostics.code = attempt.code
+                if diagnostics.status == "open_failed":
+                    diagnostics.code = (
+                        diagnostics.open_failure_codes[0]
+                        if len(diagnostics.open_failure_codes) == 1
+                        else "serial_unknown"
+                    )
         if result is not None:
             return result
     return None
@@ -174,6 +240,7 @@ async def _try_baud(
     timeout: float,
     *,
     _open_serial: _OpenSerial | None = None,
+    diagnostics: CivProbeDiagnostic | None = None,
 ) -> CivProbeResult | None:
     """Open *port* at *baud*, send CI-V probe, return result or None.
 
@@ -192,10 +259,17 @@ async def _try_baud(
         reader, writer = await open_serial_port(
             url=port, baudrate=baud, opener=_open_serial
         )
-    except OSError:
+    except OSError as exc:
         # Expected during a scan: port busy, absent, or refusing the baud
         # rate. pyserial's SerialException subclasses OSError.
         logger.debug("probe_serial_civ: cannot open %s @ %d", port, baud)
+        if diagnostics is not None:
+            diagnostics.status = "open_failed"
+            diagnostics.stage = "open"
+            diagnostics.code = cast(
+                _ProbeCode, serial_open_diagnostic(exc).split(":")[0]
+            )
+            diagnostics.open_failure_codes = (diagnostics.code,)
         return None
     except Exception as exc:
         # Unexpected: programming error or broken environment. Not a
@@ -208,8 +282,16 @@ async def _try_baud(
             exc,
             exc_info=True,
         )
+        if diagnostics is not None:
+            diagnostics.status = "open_failed"
+            diagnostics.stage = "open"
+            diagnostics.code = cast(
+                _ProbeCode, serial_open_diagnostic(exc).split(":")[0]
+            )
+            diagnostics.open_failure_codes = (diagnostics.code,)
         return None
 
+    operation: Literal["write", "read", "parse"] = "write"
     try:
         writer.write(_CIV_PROBE_CMD)
         await writer.drain()
@@ -219,32 +301,70 @@ async def _try_baud(
         # command; the actual radio response arrives a few ms later.
         buf = bytearray()
         response_preamble = bytes([0xFE, 0xFE, 0xE0])
-        try:
-            deadline = asyncio.get_event_loop().time() + timeout
-            while asyncio.get_event_loop().time() < deadline:
-                remaining = deadline - asyncio.get_event_loop().time()
-                if remaining <= 0:
-                    break
-                try:
-                    chunk = await asyncio.wait_for(reader.read(64), timeout=remaining)
-                    buf.extend(chunk)
-                except asyncio.TimeoutError:
-                    break
-                # Check if we have the response (not just echo)
-                if buf.find(response_preamble) != -1:
-                    break
-        except asyncio.TimeoutError:
-            pass
+        operation = "read"
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                break
+            try:
+                chunk = await asyncio.wait_for(reader.read(64), timeout=remaining)
+                buf.extend(chunk)
+            except asyncio.TimeoutError:
+                break
+            operation = "parse"
+            result = _parse_probe_response(port, baud, bytes(buf))
+            if result is not None:
+                if diagnostics is not None:
+                    diagnostics.status = "response"
+                    diagnostics.stage = "parse"
+                return result
+            operation = "read"
 
         if not buf:
             logger.debug("probe_serial_civ: timeout at %s @ %d", port, baud)
+            if diagnostics is not None:
+                diagnostics.status = "opened_no_response"
+                diagnostics.stage = "read"
             return None
 
-        return _parse_probe_response(port, baud, bytes(buf))
+        operation = "parse"
+        result = _parse_probe_response(port, baud, bytes(buf))
+        if diagnostics is not None:
+            diagnostics.stage = "parse"
+            if result is not None:
+                diagnostics.status = "response"
+            elif not bytes(buf).replace(_CIV_PROBE_CMD, b""):
+                diagnostics.status = "opened_no_response"
+                diagnostics.stage = "read"
+            else:
+                start = buf.rfind(response_preamble)
+                frame = buf[start:] if start >= 0 else bytearray()
+                diagnostics.status = (
+                    "incomplete_reply"
+                    if frame
+                    and 0xFD not in frame[3:]
+                    and (len(frame) < 6 or frame[4:6] == b"\x19\x00")
+                    else "malformed_reply"
+                )
+        return result
+    except BaseException:
+        if diagnostics is not None:
+            diagnostics.status = "probe_error"
+            diagnostics.stage = operation
+            diagnostics.code = None
+        raise
     finally:
         logger.debug("probe_serial_civ: closing %s", port)
-        writer.close()
-        await writer.wait_closed()
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except BaseException:
+            if diagnostics is not None:
+                diagnostics.status = "probe_error"
+                diagnostics.stage = "close"
+                diagnostics.code = None
+            raise
         logger.debug("probe_serial_civ: closed %s", port)
 
 
@@ -261,42 +381,32 @@ def _parse_probe_response(port: str, baud: int, data: bytes) -> CivProbeResult |
     Returns:
         :class:`CivProbeResult` if a valid response is found, else ``None``.
     """
-    # Scan for response preamble FE FE E0 (to=controller, ignoring echo)
     search = bytes([0xFE, 0xFE, 0xE0])
-    idx = data.find(search)
-    if idx == -1:
-        logger.debug("probe_serial_civ: no valid preamble in response from %s", port)
-        return None
-
-    frame = data[idx:]
-    if len(frame) < _RESPONSE_MIN_LEN:
-        logger.debug("probe_serial_civ: response too short from %s", port)
-        return None
-
-    # Verify command echo: bytes 4-5 should be 0x19 0x00
-    if frame[4] != 0x19 or frame[5] != 0x00:
-        logger.debug(
-            "probe_serial_civ: unexpected command bytes in response from %s", port
+    cursor = 0
+    while True:
+        idx = data.find(search, cursor)
+        if idx == -1:
+            return None
+        cursor = idx + len(search)
+        end_idx = data.find(0xFD, idx + 3)
+        if end_idx == -1:
+            continue
+        next_preamble = data.find(b"\xfe\xfe", idx + 2)
+        if next_preamble != -1 and next_preamble < end_idx:
+            continue
+        frame = data[idx : end_idx + 1]
+        if len(frame) < _RESPONSE_MIN_LEN or frame[4:6] != b"\x19\x00":
+            continue
+        address = frame[3]
+        model_id = bytes(frame[6:-1])
+        logger.info(
+            "probe_serial_civ: found radio at %s @ %d — addr=0x%02X model=%s",
+            port,
+            baud,
+            address,
+            model_id.hex(),
         )
-        return None
-
-    address = frame[3]
-
-    # model_id is everything between byte 6 and the terminator FD
-    end_idx = frame.find(0xFD, 6)
-    if end_idx == -1:
-        logger.debug("probe_serial_civ: no terminator in response from %s", port)
-        return None
-
-    model_id = bytes(frame[6:end_idx])
-    logger.info(
-        "probe_serial_civ: found radio at %s @ %d — addr=0x%02X model=%s",
-        port,
-        baud,
-        address,
-        model_id.hex(),
-    )
-    return CivProbeResult(port=port, baud=baud, address=address, model_id=model_id)
+        return CivProbeResult(port=port, baud=baud, address=address, model_id=model_id)
 
 
 # ---------------------------------------------------------------------------

@@ -1919,7 +1919,9 @@ class TestCivProbeFraming:
             _PROBE_CMD,
         ],
     )
-    async def test_leading_non_id_frame_does_not_hide_valid_id(self, leading, same_chunk):
+    async def test_leading_non_id_frame_does_not_hide_valid_id(
+        self, leading, same_chunk
+    ):
         response = bytes([0xFE, 0xFE, 0xE0, 0x94, 0x19, 0, 0x94, 0xFD])
         chunks = [leading + response] if same_chunk else [leading, response]
         reader, writer = _FakeReader(chunks), _FakeWriter()
@@ -1970,3 +1972,30 @@ class TestCivProbeFraming:
     )
     def test_empty_or_crossed_frame_cannot_be_a_valid_id(self, data):
         assert _parse_probe_response("fake", 115200, data) is None
+
+    @pytest.mark.asyncio
+    async def test_repeated_non_id_chunks_share_one_read_deadline(self, monkeypatch):
+        original_wait_for = asyncio.wait_for
+        deadlines, budgets = [], []
+
+        async def recording_wait_for(awaitable, timeout):
+            deadlines.append(asyncio.get_running_loop().time() + timeout)
+            budgets.append(timeout)
+            return await original_wait_for(awaitable, timeout=timeout)
+
+        class Reader(_FakeReader):
+            async def read(self, size):
+                if not self._queue.empty():
+                    await asyncio.sleep(0.005)
+                return await super().read(size)
+
+        unrelated = b"\xfe\xfe\xe0\x94\x03\x00\x00\xfd"
+        reader, writer = Reader([unrelated, unrelated]), _FakeWriter()
+        monkeypatch.setattr(asyncio, "wait_for", recording_wait_for)
+        assert await probe_serial_civ(
+            "fake", [115200], 0.03, _open_serial=_make_open(reader, writer)
+        ) is None
+        assert len(budgets) == 3
+        assert max(deadlines) - min(deadlines) < 0.004
+        assert budgets[-1] < budgets[0] - 0.005
+        assert writer.closed
