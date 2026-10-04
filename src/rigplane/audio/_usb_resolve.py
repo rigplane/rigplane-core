@@ -97,6 +97,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "AudioDeviceMapping",
     "WindowsPnpDevice",
+    "WindowsAudioTopologyError",
     "resolve_audio_for_serial_port",
 ]
 
@@ -154,6 +155,10 @@ class WindowsPnpDevice:
     pid: str | None
     com_port: str | None
     audio_endpoint_name: str | None
+
+
+class WindowsAudioTopologyError(RuntimeError):
+    """Windows topology cannot identify a safe audio pair for this serial port."""
 
 
 def resolve_audio_for_serial_port(
@@ -365,7 +370,14 @@ def _resolve_windows(
             if r.audio_endpoint_name is not None
             and r.vid == serial_dev.vid
             and r.pid == serial_dev.pid
+            and (not serial_dev.parent_pnp_id or not r.parent_pnp_id)
         ]
+        identities = {r.parent_pnp_id or r.pnp_device_id for r in audio_devs}
+        if len(identities) > 1:
+            raise WindowsAudioTopologyError(
+                "Windows USB audio identity is ambiguous; "
+                "select explicit RX/TX devices."
+            )
         if audio_devs:
             logger.info(
                 "usb-audio-resolve: %s linked to audio by VID:PID %s:%s "
@@ -376,6 +388,13 @@ def _resolve_windows(
             )
 
     if not audio_devs:
+        if serial_dev.parent_pnp_id and any(
+            r.audio_endpoint_name is not None and r.parent_pnp_id for r in records
+        ):
+            raise WindowsAudioTopologyError(
+                "Windows USB audio parents do not match the serial radio; "
+                "select explicit RX/TX devices."
+            )
         logger.warning(
             "usb-audio-resolve: no audio endpoint shares parent/identity with %s",
             serial_port,
@@ -386,21 +405,15 @@ def _resolve_windows(
     audio_name = audio_dev.audio_endpoint_name
     assert audio_name is not None  # narrowed by the filters above
 
-    # Same-name rank: position of the matched endpoint among all same-named
-    # audio endpoints (ordered by PnP instance path), mirroring the macOS
-    # name + same-name-rank identity used by _pair_audio_device_for_location.
-    same_name = sorted(
-        (r for r in records if r.audio_endpoint_name == audio_name),
-        key=lambda r: r.pnp_device_id,
+    # Same-parent MEDIA/AudioEndpoint rows occupy one physical name rank.
+    same_name = list(
+        dict.fromkeys(
+            r.parent_pnp_id or r.pnp_device_id
+            for r in sorted(records, key=lambda r: r.pnp_device_id)
+            if r.audio_endpoint_name == audio_name
+        )
     )
-    same_name_rank = next(
-        (
-            i
-            for i, r in enumerate(same_name)
-            if r.pnp_device_id == audio_dev.pnp_device_id
-        ),
-        0,
-    )
+    same_name_rank = same_name.index(audio_dev.parent_pnp_id or audio_dev.pnp_device_id)
 
     # 3. Map to sounddevice indices by identity (reuses the MOR-230 cluster).
     sd: Any = sounddevice_module
@@ -454,30 +467,31 @@ def _query_windows_pnp_devices() -> list[WindowsPnpDevice]:
     name-based selection. This keeps the base install free of a hard PnP/WMI
     dependency; the heavy lifting is shelled out to PowerShell, which ships
     with Windows.
-
-    NOTE: This function is only ever executed on Windows. It is intentionally
-    NOT exercised by the unit tests (which inject a fake ``pnp_query``); its
-    exact field shape MUST be validated against a real Windows host + X6200
-    before relying on the topology path in production (see PR checklist).
     """
     if platform.system() != "Windows":
         return []
     # PowerShell one-liner: emit one CSV-ish line per USB PnP device with the
     # fields we need. We parse the parent and VID:PID from the InstanceId.
     script = (
+        "$OutputEncoding = [Console]::OutputEncoding = "
+        "[System.Text.UTF8Encoding]::new(); "
         "Get-PnpDevice -PresentOnly | "
+        "Where-Object { $_.FriendlyName -match '\\bCOM\\d+\\b' -or "
+        "$_.Class -in @('AudioEndpoint', 'MEDIA') -or "
+        "$_.FriendlyName -match "
+        "'USB Audio CODEC|USB Audio Device|yaesu|kenwood|c-media|cmedia' } | "
         "ForEach-Object { "
         "$id = $_.InstanceId; "
         "$parent = (Get-PnpDeviceProperty -InstanceId $id "
         "-KeyName 'DEVPKEY_Device_Parent' -ErrorAction SilentlyContinue).Data; "
         "$friendly = $_.FriendlyName; "
-        "'{0}`t{1}`t{2}`t{3}' -f $id, $parent, $_.Class, $friendly }"
+        '"{0}`t{1}`t{2}`t{3}" -f $id, $parent, $_.Class, $friendly }'
     )
     try:
         result = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True,
-            timeout=20,
+            timeout=5,
         )
         if result.returncode != 0:
             logger.debug(

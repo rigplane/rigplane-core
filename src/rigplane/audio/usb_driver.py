@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import platform
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Callable, Coroutine, Literal
 
 from .backend import (
@@ -117,6 +120,9 @@ _DEFAULT_SAMPLE_RATE_CANDIDATES: tuple[int, ...] = (48_000, 24_000, 16_000, 8_00
 _CAPTURE_OPEN_TIMEOUT_S = 8.0
 """Default bound (seconds) on an RX/TX stream open, see ``_open_stream``."""
 
+_WINDOWS_PNP_TIMEOUT_S = 5.0
+_WINDOWS_SELECTION_RESERVE_S = 0.25
+
 _CAPTURE_OPEN_MAX_WORKERS = 8
 """Size of the driver-owned open/close thread pool (MOR-1438, F3).
 
@@ -209,13 +215,12 @@ class _BoundedPortAudioPool:
         what: str,
         direction: str,
         timeout: float,
+        warn_on_timeout: bool = True,
     ) -> Any:
-        """Run a PortAudio-touching call off the loop, bounded.
+        """Run a blocking call off the loop, bounded.
 
-        Past the bound the request FAILS with one operator-readable
-        warning (it names the permission prompt to clear). The abandoned
-        item holds no consumer handle — nothing to late-close — and
-        still settles and uncounts itself on caller cancellation.
+        An abandoned item has no stream handle to late-close and remains
+        counted until its worker settles.
         """
         if self.inflight >= _CAPTURE_OPEN_MAX_WORKERS:
             logger.warning(
@@ -234,16 +239,17 @@ class _BoundedPortAudioPool:
         future = self.submit_tracked(fn)
         _done, pending = await asyncio.wait({future}, timeout=timeout)
         if future in pending:
-            logger.warning(
-                "usb-audio: %s %s did not finish within %.1fs — an OS audio "
-                "device call is stuck; a microphone permission prompt may "
-                "be pending on the computer running RigPlane (macOS: grant "
-                "Microphone access to the app that launched the server, "
-                "e.g. Terminal); failing this audio request",
-                direction.upper(),
-                what,
-                timeout,
-            )
+            if warn_on_timeout:
+                logger.warning(
+                    "usb-audio: %s %s did not finish within %.1fs — an OS audio "
+                    "device call is stuck; a microphone permission prompt may "
+                    "be pending on the computer running RigPlane (macOS: grant "
+                    "Microphone access to the app that launched the server, "
+                    "e.g. Terminal); failing this audio request",
+                    direction.upper(),
+                    what,
+                    timeout,
+                )
             raise AudioCaptureOpenTimeoutError(
                 f"{direction.upper()} {what} timed out after {timeout}s."
             )
@@ -893,6 +899,7 @@ class UsbAudioDriver:
         # executor exists any more.
 
         self._selected_rx: UsbAudioDevice | None = None
+        self._selection_generation = 0
         self._selected_tx: UsbAudioDevice | None = None
 
         self._rx_stream: RxStream | None = None
@@ -941,8 +948,7 @@ class UsbAudioDriver:
         Used after serial-node rediscovery (MOR-1453) so the next audio
         resolution re-resolves RX/TX device indices against the radio's
         new (renumbered) device node instead of the one captured at
-        construction. ``start_rx``/``start_tx`` call ``_ensure_selected_
-        devices`` unconditionally, so they always see the new port -- but
+        construction. ``start_rx``/``start_tx`` resolve devices afresh, but
         ``duplex_mode`` and ``selected_rx_device``/``selected_tx_device``
         read the ``_selected_rx``/``_selected_tx`` cache directly without
         forcing a fresh resolution, so it is cleared here to avoid
@@ -950,6 +956,7 @@ class UsbAudioDriver:
         and the next start call.
         """
         self._serial_port = serial_port
+        self._selection_generation += 1
         self._selected_rx = None
         self._selected_tx = None
 
@@ -1011,6 +1018,140 @@ class UsbAudioDriver:
         self._selected_rx = selected_rx
         self._selected_tx = selected_tx
         return selected_rx, selected_tx
+
+    async def _select_devices_bounded(
+        self, *, direction: str
+    ) -> tuple[UsbAudioDevice, UsbAudioDevice]:
+        serial_port = self._serial_port
+        if not (
+            platform.system() == "Windows"
+            and serial_port
+            and self._config.rx_device is None
+            and self._config.tx_device is None
+        ):
+            return await self._run_portaudio_bounded(
+                self._ensure_selected_devices,
+                what="device enumeration",
+                direction=direction,
+            )
+
+        config = self._config
+        generation = self._selection_generation
+        deadline = time.monotonic() + self._capture_open_timeout
+        self._selected_rx = None
+        self._selected_tx = None
+
+        def remaining() -> float:
+            timeout = deadline - time.monotonic()
+            if timeout <= 0:
+                raise AudioCaptureOpenTimeoutError(
+                    f"{direction.upper()} device enumeration exceeded "
+                    "selection deadline."
+                )
+            return timeout
+
+        devices = await bounded_portaudio_pool.run_bounded(
+            lambda: _devices_from_backend(self._backend),
+            what="device enumeration",
+            direction=direction,
+            timeout=remaining(),
+        )
+        from ._usb_resolve import _query_windows_pnp_devices
+
+        def query() -> list[Any]:
+            try:
+                return list(_query_windows_pnp_devices())
+            except Exception:  # noqa: BLE001 — optional metadata only
+                logger.debug("usb-audio: optional Windows topology unavailable")
+                return []
+
+        records: list[Any] = []
+        reserve = min(_WINDOWS_SELECTION_RESERVE_S, self._capture_open_timeout / 4)
+        topology_timeout = min(_WINDOWS_PNP_TIMEOUT_S, remaining() - reserve)
+        if topology_timeout > 0:
+            try:
+                records = await bounded_portaudio_pool.run_bounded(
+                    query,
+                    what="optional Windows topology",
+                    direction=direction,
+                    timeout=topology_timeout,
+                    warn_on_timeout=False,
+                )
+            except AudioCaptureOpenTimeoutError:
+                logger.info(
+                    "usb-audio: optional Windows topology did not settle; "
+                    "requiring an unambiguous audio pair"
+                )
+        selected = await bounded_portaudio_pool.run_bounded(
+            lambda: self._select_windows_devices(devices, records, serial_port),
+            what="device enumeration",
+            direction=direction,
+            timeout=remaining(),
+        )
+        remaining()
+        if (
+            generation != self._selection_generation
+            or serial_port != self._serial_port
+            or config is not self._config
+        ):
+            raise AudioDriverLifecycleError("USB audio selection context changed.")
+        self._selected_rx, self._selected_tx = selected
+        return selected
+
+    def _select_windows_devices(
+        self,
+        devices: list[UsbAudioDevice],
+        records: list[Any],
+        serial_port: str,
+    ) -> tuple[UsbAudioDevice, UsbAudioDevice]:
+        from ._usb_resolve import WindowsAudioTopologyError, _resolve_windows
+
+        sd_module = _extract_sounddevice_module(self._backend)
+        if records:
+            if any(r.com_port for r in records) and not any(
+                r.com_port and r.com_port.strip().upper() == serial_port.strip().upper()
+                for r in records
+            ):
+                raise AudioDeviceSelectionError(
+                    "Windows USB topology does not include the selected serial radio."
+                )
+            try:
+                mapping = _resolve_windows(
+                    serial_port,
+                    sounddevice_module=(
+                        sd_module
+                        if sd_module is not None
+                        else SimpleNamespace(query_devices=lambda: [])
+                    ),
+                    pnp_query=lambda: records,
+                )
+            except WindowsAudioTopologyError as exc:
+                raise AudioDeviceSelectionError(str(exc)) from exc
+            if mapping is not None:
+                rx = next(
+                    (d for d in devices if d.index == mapping.rx_device_index), None
+                )
+                tx = next(
+                    (d for d in devices if d.index == mapping.tx_device_index), None
+                )
+                if rx is None or tx is None or not rx.supports_rx or not tx.supports_tx:
+                    raise AudioDeviceSelectionError(
+                        "Windows USB topology does not match enumerated audio devices."
+                    )
+                return rx, tx
+        candidates = [d for d in devices if _name_score(d.name) < 99]
+        for direction in ("rx", "tx"):
+            identities = {
+                ("uid", d.platform_uid) if d.platform_uid else ("index", d.index)
+                for d in candidates
+                if (d.supports_rx if direction == "rx" else d.supports_tx)
+            }
+            if len(identities) != 1:
+                raise AudioDeviceSelectionError(
+                    "Windows USB audio selection is ambiguous or unavailable; "
+                    "select explicit RX/TX devices for the serial radio."
+                )
+        return select_usb_audio_devices(candidates)
 
     def _try_resolve_from_serial(
         self,
@@ -1420,11 +1561,7 @@ class UsbAudioDriver:
         stable :meth:`_deliver_rx` entry point so a later exclusive duplex
         handoff (MOR-546) keeps delivering to it.
         """
-        selected_rx, _ = await self._run_portaudio_bounded(
-            self._ensure_selected_devices,
-            what="device enumeration",
-            direction="rx",
-        )
+        selected_rx, _ = await self._select_devices_bounded(direction="rx")
         sr = self._config.sample_rate if sample_rate is None else sample_rate
         ch = self._config.channels if channels is None else channels
         fm = self._config.frame_ms if frame_ms is None else frame_ms
@@ -1563,11 +1700,7 @@ class UsbAudioDriver:
         and a cold cache cannot silently take the two-stream path on an
         exclusive device.
         """
-        selected_rx, selected_tx = await self._run_portaudio_bounded(
-            self._ensure_selected_devices,
-            what="device enumeration",
-            direction="tx",
-        )
+        selected_rx, selected_tx = await self._select_devices_bounded(direction="tx")
         if resolve_usb_duplex_mode(selected_rx, selected_tx) == "exclusive":
             await self._start_tx_exclusive(
                 sample_rate=sample_rate,
@@ -1736,11 +1869,7 @@ class UsbAudioDriver:
         before (e.g. :meth:`start_duplex`).
         """
         if selected is None:
-            selected = await self._run_portaudio_bounded(
-                self._ensure_selected_devices,
-                what="device enumeration",
-                direction="duplex",
-            )
+            selected = await self._select_devices_bounded(direction="duplex")
         selected_rx, selected_tx = selected
         if selected_rx.index != selected_tx.index:
             raise AudioDriverLifecycleError(
