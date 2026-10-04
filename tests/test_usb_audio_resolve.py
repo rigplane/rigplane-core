@@ -1966,3 +1966,31 @@ class TestWindowsIc7300InternalHub:
                 "COM3", sounddevice_module=SimpleNamespace(query_devices=lambda: devices),
                 pnp_query=lambda: _ic7300_hub_records(),
             )
+
+    @pytest.mark.parametrize("change", ["missing_hub", "conflicting_node", "root_only"])
+    def test_no_inferred_hub_or_conflicting_parent_link(self, change):
+        from dataclasses import replace
+
+        from rigplane.usb_audio_resolve import WindowsAudioTopologyError, _resolve_windows
+
+        records = _ic7300_hub_records()
+        if change == "missing_hub":
+            records.pop(1)
+        elif change == "conflicting_node":
+            records.append(replace(records[2], parent_pnp_id="OTHER-HUB"))
+        else:
+            records[0] = replace(records[0], parent_pnp_id=r"USB\ROOT_HUB30\HOST")
+            records[2] = replace(records[2], parent_pnp_id=r"USB\ROOT_HUB30\HOST")
+        with pytest.raises(WindowsAudioTopologyError):
+            _resolve_windows(
+                "COM3", sounddevice_module=_ic7300_sd_pairs(), pnp_query=lambda: records
+            )
+
+    def test_same_hostapi_extra_pair_cannot_be_assumed_an_alias(self):
+        from rigplane.usb_audio_resolve import WindowsAudioTopologyError, _resolve_windows
+
+        with pytest.raises(WindowsAudioTopologyError):
+            _resolve_windows(
+                "COM3", sounddevice_module=_ic7300_sd_pairs(2),
+                pnp_query=lambda: _ic7300_hub_records(),
+            )

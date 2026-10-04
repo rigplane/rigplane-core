@@ -361,6 +361,10 @@ def _resolve_windows(
             if r.audio_endpoint_name is not None
             and r.parent_pnp_id == serial_dev.parent_pnp_id
         ]
+    if not audio_devs:
+        family_mapping = _resolve_ic7300_hub(serial_dev, records, sounddevice_module)
+        if family_mapping is not None:
+            return family_mapping
     # 2. Robust-identity fallback: link by shared VID:PID when topology is
     #    ambiguous (no parent or no co-parented audio function).
     if not audio_devs and serial_dev.vid is not None and serial_dev.pid is not None:
@@ -456,6 +460,134 @@ def _resolve_windows(
     )
 
 
+def _resolve_ic7300_hub(
+    serial: WindowsPnpDevice,
+    records: list[WindowsPnpDevice],
+    sounddevice_module: object | None,
+) -> AudioDeviceMapping | None:
+    serial_id = serial.pnp_device_id.upper()
+    if not re.fullmatch(r"USB\\VID_10C4&PID_EA60\\IC-7300_[^\\]+", serial_id):
+        return None
+    nodes: dict[str, WindowsPnpDevice] = {}
+    for record in records:
+        key = record.pnp_device_id.upper()
+        if (
+            key in nodes
+            and nodes[key].parent_pnp_id.upper() != record.parent_pnp_id.upper()
+        ):
+            raise WindowsAudioTopologyError("Windows USB audio topology is conflicting.")
+        nodes[key] = record
+    hub_id = serial.parent_pnp_id.upper()
+    if (
+        not re.fullmatch(r"USB\\VID_0451&PID_2046\\[^\\]+", hub_id)
+        or hub_id not in nodes
+    ):
+        raise WindowsAudioTopologyError("IC-7300 USB hub identity is unavailable.")
+    siblings = {
+        r.pnp_device_id.upper()
+        for r in records
+        if r.com_port and r.parent_pnp_id.upper() == hub_id
+    }
+    if siblings != {serial_id}:
+        raise WindowsAudioTopologyError("IC-7300 USB serial identity is ambiguous.")
+
+    def physical(record: WindowsPnpDevice) -> WindowsPnpDevice | None:
+        if record.pnp_device_id.upper().startswith("SWD\\"):
+            parent = nodes.get(record.parent_pnp_id.upper())
+            if parent is None:
+                return None
+            record = parent
+        if "&MI_" in record.pnp_device_id.upper():
+            parent = nodes.get(record.parent_pnp_id.upper())
+            if parent is None:
+                return None
+            record = parent
+        return record if record.pnp_device_id.upper().startswith("USB\\VID_") else None
+
+    codecs = {
+        p.pnp_device_id.upper(): p
+        for r in records
+        if r.audio_endpoint_name is not None
+        and (p := physical(r)) is not None
+        and p.parent_pnp_id.upper() == hub_id
+    }
+    if len(codecs) != 1:
+        raise WindowsAudioTopologyError(
+            "IC-7300 USB codec identity is unavailable or ambiguous."
+        )
+    codec_id = next(iter(codecs))
+    if not re.fullmatch(r"USB\\VID_08BB&PID_2901\\[^\\]+", codec_id):
+        raise WindowsAudioTopologyError("IC-7300 USB codec identity does not match.")
+    media = [
+        r
+        for r in records
+        if re.fullmatch(
+            r"USB\\VID_08BB&PID_2901&MI_00\\[^\\]+", r.pnp_device_id.upper()
+        )
+        and r.parent_pnp_id.upper() == codec_id
+        and r.audio_endpoint_name is not None
+    ]
+    if not media or any(
+        r.audio_endpoint_name.strip() != "USB Audio CODEC" for r in media
+    ):
+        raise WindowsAudioTopologyError(
+            "IC-7300 USB audio interface identity is unavailable."
+        )
+    if any(
+        r.audio_endpoint_name is not None
+        and _windows_audio_product(r.audio_endpoint_name) == "USB Audio CODEC"
+        and physical(r) is None
+        for r in records
+    ):
+        raise WindowsAudioTopologyError("Windows USB codec rank identity is incomplete.")
+    identities = sorted(
+        {
+            p.pnp_device_id.upper()
+            for r in records
+            if r.audio_endpoint_name is not None
+            and _windows_audio_product(r.audio_endpoint_name) == "USB Audio CODEC"
+            and (p := physical(r)) is not None
+        }
+    )
+    rank = identities.index(codec_id)
+    sd: Any = sounddevice_module
+    if sd is None:
+        try:
+            import sounddevice as sd
+        except ImportError:
+            return None
+    devices = list(sd.query_devices())
+    hostapis = dict.fromkeys(
+        d.get("hostapi")
+        for d in devices
+        if _windows_audio_product(d.get("name", "")) == "USB Audio CODEC"
+        and isinstance(d.get("hostapi"), int)
+    )
+    for hostapi in hostapis:
+        normalized = [
+            dict(d, name=_windows_audio_product(d.get("name", "")))
+            if d.get("hostapi") == hostapi
+            else dict(d, name="")
+            for d in devices
+        ]
+        clusters = [
+            c for c in _cluster_usb_audio_devices(normalized)
+            if c[0] == "USB Audio CODEC"
+        ]
+        if len(clusters) != len(identities):
+            continue
+        pair = _pair_audio_cluster_by_name_rank(normalized, "USB Audio CODEC", rank)
+        if pair is not None:
+            return AudioDeviceMapping(pair[0], pair[1], serial.com_port or "", None)
+    raise WindowsAudioTopologyError("IC-7300 USB audio has no complete same-host-API pair.")
+
+
+def _windows_audio_product(name: str) -> str:
+    name = name.strip()
+    match = re.fullmatch(r"(?:Microphone|Speakers) \((.+)\)", name)
+    return match[1].strip() if match else name
+
+
 def _query_windows_pnp_devices() -> list[WindowsPnpDevice]:
     """Enumerate USB PnP functions on a real Windows host (best-effort).
 
@@ -475,17 +607,28 @@ def _query_windows_pnp_devices() -> list[WindowsPnpDevice]:
     script = (
         "$OutputEncoding = [Console]::OutputEncoding = "
         "[System.Text.UTF8Encoding]::new(); "
-        "Get-PnpDevice -PresentOnly | "
-        "Where-Object { $_.FriendlyName -match '\\bCOM\\d+\\b' -or "
+        "$present = @(Get-PnpDevice -PresentOnly); $nodes = @{}; "
+        "$present | ForEach-Object { $nodes[$_.InstanceId] = $_ }; "
+        "$eligible = @($present | Where-Object { "
+        "$_.FriendlyName -match '\\bCOM\\d+\\b' -or "
         "$_.Class -in @('AudioEndpoint', 'MEDIA') -or "
         "$_.FriendlyName -match "
-        "'USB Audio CODEC|USB Audio Device|yaesu|kenwood|c-media|cmedia' } | "
-        "ForEach-Object { "
-        "$id = $_.InstanceId; "
-        "$parent = (Get-PnpDeviceProperty -InstanceId $id "
-        "-KeyName 'DEVPKEY_Device_Parent' -ErrorAction SilentlyContinue).Data; "
-        "$friendly = $_.FriendlyName; "
-        '"{0}`t{1}`t{2}`t{3}" -f $id, $parent, $_.Class, $friendly }'
+        "'USB Audio CODEC|USB Audio Device|yaesu|kenwood|c-media|cmedia' }); "
+        "$parents = @{}; $emitted = @{}; "
+        "function ParentOf($id) { "
+        "if (!$parents.ContainsKey($id)) { "
+        "$parents[$id] = (Get-PnpDeviceProperty -InstanceId $id "
+        "-KeyName 'DEVPKEY_Device_Parent' -ErrorAction SilentlyContinue).Data }; "
+        "return $parents[$id] }; "
+        "function EmitNode($d) { "
+        "if ($d -and !$emitted.ContainsKey($d.InstanceId)) { "
+        "$emitted[$d.InstanceId] = $true; $parent = ParentOf $d.InstanceId; "
+        '"{0}`t{1}`t{2}`t{3}" -f $d.InstanceId, $parent, $d.Class, $d.FriendlyName } }; '
+        "$eligible | ForEach-Object { "
+        "$id = $_.InstanceId; EmitNode $_; $parent = ParentOf $id; "
+        "for ($depth = 0; $depth -lt 3; $depth++) { "
+        "if ($parent -notmatch '^USB\\\\VID_' -or !$nodes.ContainsKey($parent)) { break }; "
+        "$node = $nodes[$parent]; EmitNode $node; $parent = ParentOf $parent } }"
     )
     try:
         result = subprocess.run(
@@ -523,7 +666,11 @@ def _query_windows_pnp_devices() -> list[WindowsPnpDevice]:
             "MEDIA",
         } or _is_usb_audio_codec(friendly)
         audio_name = friendly if (is_audio and com_port is None) else None
-        if com_port is None and audio_name is None:
+        if (
+            com_port is None
+            and audio_name is None
+            and not instance_id.upper().startswith("USB\\VID_")
+        ):
             continue
         devices.append(
             WindowsPnpDevice(
