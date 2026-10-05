@@ -352,10 +352,10 @@ def _resolve_windows(
         logger.warning("usb-audio-resolve: no PnP serial function for %r", serial_port)
         return None
 
-    # A redirected guest hub is shared infrastructure, not a radio composite.
-    # Do not let an unrelated co-parented audio device bypass family checks.
+    # A known IC-7300 is a separate serial/codec family. Resolve its graph
+    # before a co-parented unrelated audio device can trigger generic fallback.
     if re.fullmatch(
-        r"USB\\VID_203A&PID_FFFE\\[^\\]+", serial_dev.parent_pnp_id.upper()
+        r"USB\\VID_10C4&PID_EA60\\IC-7300_[^\\]+", serial_dev.pnp_device_id.upper()
     ):
         return _resolve_ic7300_hub(serial_dev, records, sounddevice_module)
 
@@ -473,12 +473,7 @@ def _resolve_ic7300_hub(
     sounddevice_module: object | None,
 ) -> AudioDeviceMapping | None:
     serial_id = serial.pnp_device_id.upper()
-    guest_hub = bool(
-        re.fullmatch(r"USB\\VID_203A&PID_FFFE\\[^\\]+", serial.parent_pnp_id.upper())
-    )
     if not re.fullmatch(r"USB\\VID_10C4&PID_EA60\\IC-7300_[^\\]+", serial_id):
-        if guest_hub:
-            raise WindowsAudioTopologyError("Guest USB radio identity is unavailable.")
         return None
     nodes: dict[str, WindowsPnpDevice] = {}
     for record in records:
@@ -491,42 +486,24 @@ def _resolve_ic7300_hub(
                 "Windows USB audio topology is conflicting."
             )
         nodes[key] = record
-    hub_id = serial.parent_pnp_id.upper()
-    if (
-        not (guest_hub or re.fullmatch(r"USB\\VID_0451&PID_2046\\[^\\]+", hub_id))
-        or hub_id not in nodes
-    ):
-        raise WindowsAudioTopologyError("IC-7300 USB hub identity is unavailable.")
-    if guest_hub:
-        # Parallels may replace the physical hub. Admit only a uniquely paired
-        # IC-7300 serial / TI codec in the complete observed inventory. The
-        # virtual VID alone, labels, or matching container GUIDs are not proof.
-        family_serials = {
-            key
-            for key, node in nodes.items()
-            if node.com_port
-            and re.fullmatch(r"USB\\VID_10C4&PID_EA60\\IC-7300_[^\\]+", key)
-        }
-        family_codecs = {
-            key for key in nodes if re.fullmatch(r"USB\\VID_08BB&PID_2901\\[^\\]+", key)
-        }
-        if (
-            family_serials != {serial_id}
-            or len(family_codecs) != 1
-            or not re.fullmatch(
-                r"USB\\ROOT_HUB30\\[^\\]+", nodes[hub_id].parent_pnp_id.upper()
-            )
-        ):
-            raise WindowsAudioTopologyError(
-                "Guest USB radio topology is ambiguous or incomplete."
-            )
-    siblings = {
-        r.pnp_device_id.upper()
-        for r in records
-        if r.com_port and r.parent_pnp_id.upper() == hub_id
-    }
-    if siblings != {serial_id}:
-        raise WindowsAudioTopologyError("IC-7300 USB serial identity is ambiguous.")
+
+    def ancestors(record: WindowsPnpDevice) -> list[str]:
+        path: list[str] = []
+        parent = record.parent_pnp_id.upper()
+        seen = {record.pnp_device_id.upper()}
+        for _ in range(8):
+            if not parent or parent not in nodes:
+                return path
+            if parent in seen:
+                raise WindowsAudioTopologyError(
+                    "Windows USB audio topology is cyclic; select explicit RX/TX devices."
+                )
+            seen.add(parent)
+            path.append(parent)
+            parent = nodes[parent].parent_pnp_id.upper()
+        raise WindowsAudioTopologyError(
+            "Windows USB audio topology is too deep; select explicit RX/TX devices."
+        )
 
     def physical(record: WindowsPnpDevice) -> WindowsPnpDevice | None:
         if record.pnp_device_id.upper().startswith("SWD\\"):
@@ -544,18 +521,56 @@ def _resolve_ic7300_hub(
     codecs = {
         p.pnp_device_id.upper(): p
         for r in records
-        if r.audio_endpoint_name is not None
-        and (p := physical(r)) is not None
-        and p.parent_pnp_id.upper() == hub_id
-        and (not guest_hub or p.pnp_device_id.upper() in family_codecs)
+        if r.audio_endpoint_name is not None and (p := physical(r)) is not None
     }
-    if len(codecs) != 1:
+    # The nearest shared USB-device ancestor is structural evidence. Host/root
+    # hubs and PCI controllers cannot identify a radio. No hub VID is special.
+    for hub_id in ancestors(serial):
+        hub = nodes[hub_id]
+        if (
+            not re.fullmatch(r"USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}\\[^\\]+", hub_id)
+            or hub.com_port
+            or hub.audio_endpoint_name is not None
+        ):
+            continue
+        candidates = {
+            key: codec
+            for key, codec in codecs.items()
+            if re.fullmatch(r"USB\\VID_08BB&PID_2901\\[^\\]+", key)
+            and hub_id in ancestors(codec)
+        }
+        if not candidates:
+            continue
+        serials = {
+            r.pnp_device_id.upper()
+            for r in records
+            if r.com_port and hub_id in ancestors(r)
+        }
+        same_name_codecs = {
+            key
+            for key, codec in codecs.items()
+            if hub_id in ancestors(codec)
+            and any(
+                r.audio_endpoint_name is not None
+                and _windows_audio_product(r.audio_endpoint_name) == "USB Audio CODEC"
+                and physical(r) == codec
+                for r in records
+            )
+        }
+        if (
+            serials != {serial_id}
+            or len(candidates) != 1
+            or same_name_codecs != set(candidates)
+        ):
+            raise WindowsAudioTopologyError(
+                "IC-7300 USB association is ambiguous; select explicit RX/TX devices."
+            )
+        codec_id = next(iter(candidates))
+        break
+    else:
         raise WindowsAudioTopologyError(
-            "IC-7300 USB codec identity is unavailable or ambiguous."
+            "IC-7300 USB association is unavailable; select explicit RX/TX devices."
         )
-    codec_id = next(iter(codecs))
-    if not re.fullmatch(r"USB\\VID_08BB&PID_2901\\[^\\]+", codec_id):
-        raise WindowsAudioTopologyError("IC-7300 USB codec identity does not match.")
     media = [
         r
         for r in records

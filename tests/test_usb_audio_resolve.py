@@ -2067,13 +2067,29 @@ def _parallels_ic7300_records():
 
 
 class TestWindowsParallelsIc7300Topology:
-    def test_unique_radio_and_codec_under_captured_guest_hub_resolve(self):
+    @pytest.mark.parametrize(
+        "hub_vid_pid", ["203A&PID_FFFE", "0451&PID_2046", "1234&PID_5678"]
+    )
+    def test_unique_radio_and_codec_under_captured_guest_hub_resolve(self, hub_vid_pid):
         from rigplane.usb_audio_resolve import _resolve_windows
 
+        from dataclasses import replace
+
+        records = _parallels_ic7300_records()
+        old = records[1].pnp_device_id
+        new = "USB\\VID_" + hub_vid_pid + "\\REPLUGGED"
+        records = [
+            replace(
+                r,
+                pnp_device_id=new if r.pnp_device_id == old else r.pnp_device_id,
+                parent_pnp_id=new if r.parent_pnp_id == old else r.parent_pnp_id,
+            )
+            for r in records
+        ]
         result = _resolve_windows(
             "COM3",
             sounddevice_module=_ic7300_sd_pairs(),
-            pnp_query=_parallels_ic7300_records,
+            pnp_query=lambda: records,
         )
         assert result is not None
         assert (result.rx_device_index, result.tx_device_index) == (1, 0)
@@ -2081,14 +2097,13 @@ class TestWindowsParallelsIc7300Topology:
     @pytest.mark.parametrize(
         "change",
         [
-            "generic_hub",
+            "common_root",
             "missing_hub",
-            "unanchored_hub",
+            "broken_interface",
             "wrong_codec_parent",
             "second_codec",
-            "second_radio_elsewhere",
+            "second_radio_sharedhub",
             "extra_com",
-            "wrong_serial_model",
             "wrong_codec_product",
         ],
     )
@@ -2101,9 +2116,9 @@ class TestWindowsParallelsIc7300Topology:
         )
 
         records = _parallels_ic7300_records()
-        if change == "generic_hub":
+        if change == "common_root":
             old = records[1].pnp_device_id
-            new = r"USB\VID_1234&PID_5678\OTHER"
+            new = r"USB\ROOT_HUB30\COMMON"
             records = [
                 replace(
                     r,
@@ -2114,8 +2129,8 @@ class TestWindowsParallelsIc7300Topology:
             ]
         elif change == "missing_hub":
             del records[1]
-        elif change == "unanchored_hub":
-            records[1] = replace(records[1], parent_pnp_id="")
+        elif change == "broken_interface":
+            records[3] = replace(records[3], parent_pnp_id="MISSING")
         elif change == "wrong_codec_parent":
             records[2] = replace(
                 records[2], parent_pnp_id=r"USB\VID_203A&PID_FFFE\OTHER"
@@ -2125,8 +2140,10 @@ class TestWindowsParallelsIc7300Topology:
             records.extend(
                 [replace(other[2], parent_pnp_id=records[1].pnp_device_id), other[3]]
             )
-        elif change == "second_radio_elsewhere":
-            records.extend(_ic7300_hub_records("B", "COM7"))
+        elif change == "second_radio_sharedhub":
+            other = _ic7300_hub_records("B", "COM7")
+            other[0] = replace(other[0], parent_pnp_id=records[1].pnp_device_id)
+            records.extend(other)
         elif change == "extra_com":
             records.append(
                 replace(
