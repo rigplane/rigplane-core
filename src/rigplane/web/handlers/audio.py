@@ -1675,10 +1675,7 @@ class AudioHandler:
         if self._rx_active and self._broadcaster is not None:
             self._broadcaster.record_client_stats(self._frame_queue, stats)
             category = stats.get("microphoneCaptureError")
-            if (
-                category is not None
-                and category != self._last_logged_capture_category
-            ):
+            if category is not None and category != self._last_logged_capture_category:
                 # This existing diagnostic log is collected in Support bundles.
                 # Never log the inbound message, labels, identifiers or raw error.
                 logger.info(

@@ -24,7 +24,9 @@ from test_web_audio_link_quality import _make_radio, _make_ws
         "unknown",
     ],
 )
-async def test_capture_category_is_retained_and_logged_without_identity(category, caplog):
+async def test_capture_category_is_retained_and_logged_without_identity(
+    category, caplog
+):
     radio, _ = _make_radio()
     broadcaster = AudioBroadcaster(radio)
     handler = AudioHandler(_make_ws(), radio, broadcaster)
