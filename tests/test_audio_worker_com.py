@@ -40,21 +40,20 @@ async def test_worker_com_is_initialized_and_balanced_on_its_own_thread(
     monkeypatch.setattr(ctypes, "WinDLL", loader, raising=False)
     monkeypatch.setattr(usb_driver, "sys", SimpleNamespace(platform="win32"))
 
-    def operation() -> int:
+    async def operation() -> None:
         events.append(("operation", threading.get_ident()))
         if operation_fails:
             raise failure
-        return 42
 
     pool = usb_driver._BoundedPortAudioPool()
     try:
-        future = pool.submit_tracked(operation)
+        future = pool.submit_tracked(lambda: usb_driver._drive_stream_open(operation()))
         if operation_fails:
             with pytest.raises(RuntimeError) as caught:
                 await future
             assert caught.value is failure
         else:
-            assert await future == 42
+            assert await future is None
         await asyncio.sleep(0)
         assert pool.inflight == 0
     finally:
@@ -82,7 +81,11 @@ async def test_failed_com_initialization_refuses_operation_without_uninitializin
     pool = usb_driver._BoundedPortAudioPool()
     try:
         with pytest.raises(RuntimeError, match="0x8007000e"):
-            await pool.submit_tracked(operation)
+
+            async def attempt() -> None:
+                operation()
+
+            await pool.submit_tracked(lambda: usb_driver._drive_stream_open(attempt()))
         await asyncio.sleep(0)
         assert pool.inflight == 0
     finally:
@@ -100,7 +103,14 @@ async def test_other_platform_workers_do_not_load_windows_com(
     monkeypatch.setattr(usb_driver, "sys", SimpleNamespace(platform=platform))
     pool = usb_driver._BoundedPortAudioPool()
     try:
-        assert await pool.submit_tracked(lambda: 42) == 42
+
+        async def attempt() -> None:
+            return None
+
+        assert (
+            await pool.submit_tracked(lambda: usb_driver._drive_stream_open(attempt()))
+            is None
+        )
     finally:
         pool._executor.shutdown(wait=True)
     loader.assert_not_called()
