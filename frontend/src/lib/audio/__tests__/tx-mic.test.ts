@@ -86,6 +86,7 @@ describe('TxMic', () => {
     await expect(mic.start()).resolves.toBe(reason);
 
     expect(log).toHaveBeenCalledExactlyOnceWith(`[TxMic] getUserMedia rejected: ${name}`);
+    expect(mic.lastCaptureFailureCategory).toBe(name);
     expect(mic.active).toBe(false);
     expect(mockEncoder.configure).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
@@ -107,6 +108,7 @@ describe('TxMic', () => {
     await expect(mic.start()).resolves.toBe('TX MIC: capture failed (unknown)');
 
     expect(log).toHaveBeenCalledExactlyOnceWith('[TxMic] getUserMedia rejected: unknown');
+    expect(mic.lastCaptureFailureCategory).toBe('unknown');
     expect(mic.active).toBe(false);
     expect(mockEncoder.configure).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();

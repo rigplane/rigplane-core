@@ -423,6 +423,10 @@ async def test_runtime_playback_distinguishes_missing_invalid_and_unavailable() 
     del srv._audio_broadcaster
     writer = _FakeWriter()
     await srv._handle_http(writer, "GET", "/api/v1/runtime")  # noqa: SLF001
+    assert _response_json(writer)[1]["audioCapture"] == {
+        "schemaVersion": 1,
+        "lastFailureCategory": None,
+    }
     assert _response_json(writer)[1]["audioPlayback"] == {
         "schemaVersion": 1,
         "state": "unavailable",
@@ -431,3 +435,28 @@ async def test_runtime_playback_distinguishes_missing_invalid_and_unavailable() 
         "omittedClients": None,
         "clients": [],
     }
+
+
+async def test_runtime_retains_only_safe_microphone_failure_after_disconnect() -> None:
+    srv = WebServer(None, WebConfig(host="127.0.0.1", port=0))
+    broadcaster = srv._audio_broadcaster
+    queue = asyncio.Queue()
+    broadcaster._clients[id(queue)] = queue
+    broadcaster.record_client_stats(
+        queue,
+        {
+            "microphoneCaptureError": "NotFoundError",
+            "deviceId": "private-device",
+            "message": "private-exception",
+        },
+    )
+    broadcaster._drop_client(id(queue))
+    writer = _FakeWriter()
+    await srv._handle_http(writer, "GET", "/api/v1/runtime")  # noqa: SLF001
+    status, data = _response_json(writer)
+    assert status == 200
+    assert data["audioCapture"] == {
+        "schemaVersion": 1,
+        "lastFailureCategory": "NotFoundError",
+    }
+    assert "private" not in json.dumps(data["audioCapture"])
