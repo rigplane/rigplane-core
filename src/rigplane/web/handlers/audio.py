@@ -2153,8 +2153,6 @@ class AudioHandler:
                     try:
                         # Decode Opus → PCM16
                         pcm_data = self._transcoder.opus_to_pcm(audio_data)
-                        await self._push_tx(pcm_data, legacy_method="push_audio_tx_pcm")
-                        tx_data_desc = f"{len(pcm_data)} bytes pcm"
                     except Exception as e:
                         self._warn_tx_throttled(
                             "dropped_transcode_failed",
@@ -2166,6 +2164,10 @@ class AudioHandler:
                             e,
                         )
                         return
+                    # A native playback refusal belongs to the outer push
+                    # error boundary, not the successfully completed decoder.
+                    await self._push_tx(pcm_data, legacy_method="push_audio_tx_pcm")
+                    tx_data_desc = f"{len(pcm_data)} bytes pcm"
                 elif browser_codec == AUDIO_CODEC_OPUS:
                     # Radio uses Opus or PCM_1CH_8BIT/etc → send Opus as-is
                     await self._push_tx(audio_data, legacy_method="push_audio_tx_opus")

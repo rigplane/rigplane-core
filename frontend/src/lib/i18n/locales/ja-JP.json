@@ -204,6 +204,7 @@
   "core.toast.txAudioInsecureContext": "マイクには安全な接続が必要です。このページを https://（サーバーの --tls アドレス）または localhost で開いてください。",
   "core.toast.txAudioStartFailed": "TX オーディオを開始できませんでした",
   "core.toast.rxAudioResumeFailed": "ローカル音声を再開できませんでした。アプリの音声アクセス権と出力設定を確認してください。",
+  "core.toast.rxAudioStartFailed": "無線機の音声入力を開始できませんでした。再試行する前に音声診断を確認してください。",
   "core.toast.txAudioStopped": "TX オーディオが停止しました — 送信が途中で終了しました",
   "core.toast.unknown": "問題が発生しました。しばらくしてから再試行してください。",
 

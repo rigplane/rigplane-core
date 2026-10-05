@@ -384,6 +384,39 @@ describe('AudioManager TX failure notifications (MOR-1783)', () => {
     return audioManager;
   }
 
+  it.each([false, true])('reports a refused RX start once and preserves TX=%s', async (txActive) => {
+    const audioManager = await withNotifier();
+    audioManager.startRx();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+    if (txActive) await audioManager.startTx();
+    ws.sent = [];
+
+    const refusal = {
+      type: 'error',
+      message: 'audio_start: RX audio failed to start: native device private detail',
+    };
+    serverText(ws, refusal);
+    serverText(ws, refusal);
+
+    expect(notifyOperator).toHaveBeenCalledTimes(1);
+    expect(notifyOperator).toHaveBeenCalledWith(
+      'error', expect.not.stringContaining('private detail'), 'rxAudioStartFailed',
+    );
+    expect(audioManager.rxEnabled).toBe(false);
+    expect(audioManager.txEnabled).toBe(txActive);
+    expect(rxStop).toHaveBeenCalledTimes(1);
+    expect(ws.sent).toContain(JSON.stringify({ type: 'audio_stop', direction: 'rx' }));
+    expect(txStop).not.toHaveBeenCalled();
+
+    rxStart.mockClear();
+    audioManager.startRx();
+    expect(audioManager.rxEnabled).toBe(true);
+    expect(rxStart).toHaveBeenCalledTimes(1);
+    audioManager.stopRx();
+    if (txActive) audioManager.stopTx();
+  });
+
   it('server TX refusal raises one txAudioServerUnavailable banner and releases TX through the died path', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const audioManager = await withNotifier();

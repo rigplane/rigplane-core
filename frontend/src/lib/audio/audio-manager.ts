@@ -36,6 +36,7 @@ const AUDIO_STATS_INTERVAL_MS = 1500;
 // non-cancel start-failure reason falls back to txAudioStartFailed;
 // _failTxAudio (mid-TX death) falls back to txAudioStopped.
 const SERVER_TX_REFUSAL = 'audio_start: TX audio unavailable';
+const SERVER_RX_REFUSAL_PREFIX = 'audio_start: RX audio failed to start:';
 const TX_START_SILENT_REASONS = new Set([
   'TX MIC: capture start cancelled',
   'TX MIC: capture stopped before start completed',
@@ -405,10 +406,14 @@ class AudioManager {
       return;
     }
     if (msg?.type === 'error') {
-      // Only the TX start refusal is operator-facing here; the other error
-      // envelopes on this socket (audio_config ...) belong to other flows.
       if (msg.message === SERVER_TX_REFUSAL) {
         this._failTxAudio(SERVER_TX_REFUSAL);
+      } else if (typeof msg.message === 'string'
+        && msg.message.startsWith(SERVER_RX_REFUSAL_PREFIX) && this._rxEnabled) {
+        // End only failed RX demand; keep concurrent TX and allow an explicit
+        // retry. Do not expose backend/native details in operator banners.
+        this.stopRx();
+        this._operatorNotifier?.('error', 'Radio audio capture could not start.', 'rxAudioStartFailed');
       }
       return;
     }
