@@ -21,6 +21,7 @@ beforeEach(() => {
 });
 const originalNavigator = globalThis.navigator;
 afterEach(() => {
+  vi.restoreAllMocks();
   delete (globalThis as any).AudioEncoder;
   delete (globalThis as any).MediaStreamTrackProcessor;
   delete (globalThis as any).AudioContext;
@@ -60,8 +61,80 @@ describe('TxMic', () => {
     expect(m.active).toBe(true); m.stop();
   });
   it('handles permission denied', async () => {
-    (navigator.mediaDevices.getUserMedia as any).mockRejectedValueOnce(new Error('denied'));
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockRejectedValueOnce(
+      new DOMException('denied', 'NotAllowedError'),
+    );
     expect(await new TxMic(vi.fn()).start()).toContain('permission denied');
+  });
+  it.each([
+    ['NotAllowedError', 'TX MIC: permission denied'],
+    ['NotFoundError', 'TX MIC: capture failed (NotFoundError)'],
+    ['NotReadableError', 'TX MIC: capture failed (NotReadableError)'],
+    ['OverconstrainedError', 'TX MIC: capture failed (OverconstrainedError)'],
+    ['AbortError', 'TX MIC: capture failed (AbortError)'],
+    ['SecurityError', 'TX MIC: capture failed (SecurityError)'],
+    ['InvalidStateError', 'TX MIC: capture failed (InvalidStateError)'],
+    ['TypeError', 'TX MIC: capture failed (TypeError)'],
+  ])('preserves %s without opening capture or leaking the message', async (name, reason) => {
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockRejectedValueOnce(
+      new DOMException('private device label and driver details', name),
+    );
+    const send = vi.fn();
+    const mic = new TxMic(send);
+
+    await expect(mic.start()).resolves.toBe(reason);
+
+    expect(log).toHaveBeenCalledExactlyOnceWith(`[TxMic] getUserMedia rejected: ${name}`);
+    expect(mic.active).toBe(false);
+    expect(mockEncoder.configure).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    mic.stop();
+    expect(mockTrack.stop).not.toHaveBeenCalled();
+  });
+  it.each([
+    new Error('private device label'),
+    { name: 'private device label', message: 'private driver details' },
+    'private error text',
+    null,
+    undefined,
+  ])('keeps unknown rejected values generic and capture closed', async (error) => {
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockRejectedValueOnce(error);
+    const send = vi.fn();
+    const mic = new TxMic(send);
+
+    await expect(mic.start()).resolves.toBe('TX MIC: capture failed (unknown)');
+
+    expect(log).toHaveBeenCalledExactlyOnceWith('[TxMic] getUserMedia rejected: unknown');
+    expect(mic.active).toBe(false);
+    expect(mockEncoder.configure).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+  it('does not auto-retry failures and can start and clean up on a later user attempt', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const capture = vi.mocked(navigator.mediaDevices.getUserMedia);
+    capture.mockRejectedValueOnce(new DOMException('', 'NotFoundError'));
+    capture.mockRejectedValueOnce(new DOMException('', 'NotReadableError'));
+    const mic = new TxMic(vi.fn());
+
+    await expect(mic.start()).resolves.toBe('TX MIC: capture failed (NotFoundError)');
+    mic.stop();
+    await expect(mic.start()).resolves.toBe('TX MIC: capture failed (NotReadableError)');
+    mic.stop();
+    expect(capture).toHaveBeenCalledTimes(2);
+    expect(mockEncoder.configure).not.toHaveBeenCalled();
+    expect(mockTrack.stop).not.toHaveBeenCalled();
+
+    await expect(mic.start()).resolves.toBeNull();
+    expect(capture).toHaveBeenCalledTimes(3);
+    expect(mic.active).toBe(true);
+    expect(mockEncoder.configure).toHaveBeenCalledOnce();
+    mic.stop();
+    expect(mic.active).toBe(false);
+    expect(mockTrack.stop).toHaveBeenCalledOnce();
+    expect(mockReader.cancel).toHaveBeenCalledOnce();
+    expect(mockEncoder.close).toHaveBeenCalledOnce();
   });
   it('configures encoder correctly', async () => {
     const m = new TxMic(vi.fn()); await m.start();

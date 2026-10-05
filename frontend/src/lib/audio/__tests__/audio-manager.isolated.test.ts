@@ -402,6 +402,11 @@ describe('AudioManager TX failure notifications (MOR-1783)', () => {
     ['TX MIC: permission denied', 'txAudioMicPermissionDenied'],
     ['TX MIC: microphone capture not supported', 'txAudioCaptureUnsupported'],
     ['TX MIC: insecure context', 'txAudioInsecureContext'],
+    ['TX MIC: capture failed (NotFoundError)', 'txAudioStartFailed'],
+    ['TX MIC: capture failed (NotReadableError)', 'txAudioStartFailed'],
+    ['TX MIC: capture failed (OverconstrainedError)', 'txAudioStartFailed'],
+    ['TX MIC: capture failed (AbortError)', 'txAudioStartFailed'],
+    ['TX MIC: capture failed (unknown)', 'txAudioStartFailed'],
     ['TX MIC: PCM capture not supported', 'txAudioCaptureUnsupported'],
     ['TX MIC: unsupported mic sample rate 48000 Hz', 'txAudioStartFailed'],
   ])('local startTx failure %s raises the %s banner', async (reason, code) => {
@@ -413,6 +418,7 @@ describe('AudioManager TX failure notifications (MOR-1783)', () => {
     expect(notifyOperator).toHaveBeenCalledTimes(1);
     expect(notifyOperator).toHaveBeenCalledWith('error', expect.any(String), code);
     expect(audioManager.txEnabled).toBe(false);
+    expect(FakeWebSocket.instances).toHaveLength(0);
   });
 
   it.each([
