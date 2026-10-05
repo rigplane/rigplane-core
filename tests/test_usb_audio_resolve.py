@@ -2083,7 +2083,7 @@ class TestWindowsParallelsIc7300Topology:
         [
             "generic_hub",
             "missing_hub",
-            "missing_root",
+            "unanchored_hub",
             "wrong_codec_parent",
             "second_codec",
             "second_radio_elsewhere",
@@ -2114,10 +2114,8 @@ class TestWindowsParallelsIc7300Topology:
             ]
         elif change == "missing_hub":
             del records[1]
-        elif change == "missing_root":
-            records = [
-                r for r in records if not r.pnp_device_id.startswith("USB\\ROOT_HUB")
-            ]
+        elif change == "unanchored_hub":
+            records[1] = replace(records[1], parent_pnp_id="")
         elif change == "wrong_codec_parent":
             records[2] = replace(
                 records[2], parent_pnp_id=r"USB\VID_203A&PID_FFFE\OTHER"
