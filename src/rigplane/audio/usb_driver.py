@@ -17,9 +17,10 @@ import platform
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Callable, Coroutine, Literal
+from typing import Any, Callable, Coroutine, Iterator, Literal
 
 from .backend import (
     AudioBackend,
@@ -146,6 +147,39 @@ reason.
 """
 
 
+@contextmanager
+def _portaudio_worker_com() -> Iterator[None]:
+    """Scope COM to the Windows thread performing native stream operations.
+
+    PortAudio initialization on another thread does not initialize this
+    worker. WASAPI callback start marshals COM interfaces here. Never change
+    an existing apartment or uninitialize an initialization owned by someone
+    else; S_OK and S_FALSE both acquire one count that this scope releases.
+    """
+    if sys.platform != "win32":
+        yield
+        return
+
+    import ctypes
+
+    ole32 = ctypes.WinDLL("ole32")
+    ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    ole32.CoInitializeEx.restype = ctypes.c_int32
+    ole32.CoUninitialize.argtypes = []
+    ole32.CoUninitialize.restype = None
+    hresult = int(ole32.CoInitializeEx(None, 0)) & 0xFFFFFFFF
+    owned = hresult in (0, 1)
+    if not owned and hresult != 0x80010106:  # RPC_E_CHANGED_MODE: already initialized.
+        raise RuntimeError(
+            f"Windows audio worker COM initialization failed: 0x{hresult:08x}"
+        )
+    try:
+        yield
+    finally:
+        if owned:
+            ole32.CoUninitialize()
+
+
 def _drive_stream_open(coro: "Coroutine[Any, Any, None]") -> None:
     """Run a stream's ``start()``/``stop()`` coroutine to completion here.
 
@@ -160,7 +194,12 @@ def _drive_stream_open(coro: "Coroutine[Any, Any, None]") -> None:
     handle's close (:meth:`_BoundedPortAudioPool.close_late_stream`, F2): a
     wedged device can block its ``stop()`` exactly as it blocked its ``start()``.
     """
-    asyncio.run(coro)
+    try:
+        with _portaudio_worker_com():
+            asyncio.run(coro)
+    finally:
+        # COM refusal precedes asyncio.run: do not leak that unawaited start.
+        coro.close()
 
 
 class _BoundedPortAudioPool:

@@ -622,6 +622,48 @@ class _RxFramer:
         return result
 
 
+class _WindowsMtaLease:
+    """Keep the process MTA alive while a native stream owns COM interfaces.
+
+    Start and close may run on different bounded workers. A COM count scoped
+    only to start would let its apartment disappear while capture is running.
+    Windows explicitly permits this usage cookie to be released on another
+    thread. Worker-local CoInitializeEx counts remain separately balanced.
+    """
+
+    def __init__(self) -> None:
+        self._cookie: Any = None
+        self._ole32: Any = None
+
+    def acquire(self) -> None:
+        if sys.platform != "win32":
+            return
+        if self._cookie is not None:
+            raise RuntimeError("Windows audio stream still owns MTA resources.")
+        import ctypes
+
+        ole32 = ctypes.WinDLL("ole32")
+        ole32.CoIncrementMTAUsage.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+        ole32.CoIncrementMTAUsage.restype = ctypes.c_int32
+        ole32.CoDecrementMTAUsage.argtypes = [ctypes.c_void_p]
+        ole32.CoDecrementMTAUsage.restype = ctypes.c_int32
+        cookie = ctypes.c_void_p()
+        hresult = int(ole32.CoIncrementMTAUsage(ctypes.byref(cookie))) & 0xFFFFFFFF
+        if hresult != 0:
+            raise RuntimeError(f"Windows audio MTA retain failed: 0x{hresult:08x}")
+        if not cookie.value:
+            raise RuntimeError("Windows audio MTA retain returned no cookie.")
+        self._cookie, self._ole32 = cookie, ole32
+
+    def release(self) -> None:
+        if self._cookie is None:
+            return
+        hresult = int(self._ole32.CoDecrementMTAUsage(self._cookie)) & 0xFFFFFFFF
+        if hresult != 0:
+            raise RuntimeError(f"Windows audio MTA release failed: 0x{hresult:08x}")
+        self._cookie, self._ole32 = None, None
+
+
 class _PortAudioRxStream:
     """RxStream backed by a callback-driven sounddevice InputStream.
 
@@ -678,6 +720,7 @@ class _PortAudioRxStream:
             deliver_channels=self._deliver_channels,
         )
         self._stream: Any = None
+        self._mta = _WindowsMtaLease()
         self._running = False
         self._callback: Callable[[bytes], None] | None = None
         self._capture_health = _CaptureHealthTracker()
@@ -691,12 +734,13 @@ class _PortAudioRxStream:
         return self._capture_health.snapshot()
 
     async def start(self, callback: Callable[[bytes], None]) -> None:
-        if self.running:
+        if self.running or self._stream is not None:
             raise RuntimeError("RX stream already running.")
         self._callback = callback
         self._framer.reset()
         stage = "open"
         try:
+            self._mta.acquire()
             self._stream = self._sd.InputStream(
                 samplerate=self._sample_rate,
                 channels=self._channels,
@@ -722,13 +766,17 @@ class _PortAudioRxStream:
             # Construction may succeed before Pa_StartStream refuses. Close
             # that owned handle even though running was never set to True;
             # the driver's normal stop path skips non-running streams.
-            await self.stop()
+            try:
+                await self.stop()
+            except Exception:
+                logger.warning(
+                    "portaudio-rx: failed-start cleanup failed", exc_info=True
+                )
             raise
         self._running = True
 
     async def stop(self) -> None:
         stream = self._stream
-        self._stream = None
         self._running = False
         self._callback = None
         # Drop any sub-frame remainder: an incomplete trailing frame cannot
@@ -739,10 +787,10 @@ class _PortAudioRxStream:
                 stream.stop()
             except Exception:
                 logger.debug("portaudio-rx: stream stop failed", exc_info=True)
-            try:
-                stream.close()
-            except Exception:
-                logger.debug("portaudio-rx: stream close failed", exc_info=True)
+            stream.close()
+        # A refused close retains the handle and its MTA cookie for retry.
+        self._stream = None
+        self._mta.release()
 
     def _input_callback(
         self,
@@ -792,6 +840,7 @@ class _PortAudioTxStream:
         self._bytes_per_audio_frame = max(1, channels * 2)
         self._capacity_bytes = self._buffer_capacity_bytes()
         self._stream: Any = None
+        self._mta = _WindowsMtaLease()
         self._running = False
         self._lock = threading.Lock()
         self._buffer = bytearray(self._capacity_bytes)
@@ -854,26 +903,39 @@ class _PortAudioTxStream:
             )
 
     async def start(self) -> None:
-        if self.running:
+        if self.running or self._stream is not None:
             raise RuntimeError("TX stream already running.")
-        self._stream = self._sd.OutputStream(
-            samplerate=self._sample_rate,
-            channels=self._channels,
-            dtype="int16",
-            device=self._device_index,
-            blocksize=self._blocksize,
-            latency="low",
-            callback=self._output_callback,
-        )
-        self._stream.start()
+        try:
+            self._mta.acquire()
+            self._stream = self._sd.OutputStream(
+                samplerate=self._sample_rate,
+                channels=self._channels,
+                dtype="int16",
+                device=self._device_index,
+                blocksize=self._blocksize,
+                latency="low",
+                callback=self._output_callback,
+            )
+            self._stream.start()
+        except BaseException:
+            try:
+                await self.stop()
+            except Exception:
+                logger.warning(
+                    "portaudio-tx: failed-start cleanup failed", exc_info=True
+                )
+            raise
         self._running = True
 
     async def stop(self) -> None:
         stream = self._stream
-        self._stream = None
         self._running = False
-        self._close_stream(stream)
-        self._clear_buffer()
+        try:
+            self._close_stream(stream)
+        finally:
+            self._clear_buffer()
+        self._stream = None
+        self._mta.release()
 
     async def write(self, frame: bytes) -> None:
         if not self.running:
@@ -1123,10 +1185,7 @@ class _PortAudioTxStream:
             stream.stop()
         except Exception:
             logger.debug("portaudio-tx: stream stop failed", exc_info=True)
-        try:
-            stream.close()
-        except Exception:
-            logger.debug("portaudio-tx: stream close failed", exc_info=True)
+        stream.close()
 
 
 class _PortAudioDuplexStream:
@@ -1196,6 +1255,7 @@ class _PortAudioDuplexStream:
             blocksize=blocksize,
         )
         self._stream: Any = None
+        self._mta = _WindowsMtaLease()
         self._running = False
         self._callback: Callable[[bytes], None] | None = None
         self._capture_health = _CaptureHealthTracker()
@@ -1213,7 +1273,7 @@ class _PortAudioDuplexStream:
         return self._capture_health.snapshot()
 
     async def start(self, callback: Callable[[bytes], None]) -> None:
-        if self.running:
+        if self.running or self._stream is not None:
             raise RuntimeError("Duplex stream already running.")
         self._callback = callback
         self._framer.reset()
@@ -1223,21 +1283,30 @@ class _PortAudioDuplexStream:
         self._tx._running = True
         # ONE full-duplex stream: device=(idx, idx), channels=(open, open).
         # blocksize=0 (engine-native period) mirrors a clean sd.rec/playback.
-        self._stream = self._sd.Stream(
-            samplerate=self._sample_rate,
-            channels=(self._channels, self._tx_channels),
-            dtype="int16",
-            device=(self._device_index, self._device_index),
-            blocksize=self._blocksize,
-            latency="low",
-            callback=self._duplex_callback,
-        )
-        self._stream.start()
+        try:
+            self._mta.acquire()
+            self._stream = self._sd.Stream(
+                samplerate=self._sample_rate,
+                channels=(self._channels, self._tx_channels),
+                dtype="int16",
+                device=(self._device_index, self._device_index),
+                blocksize=self._blocksize,
+                latency="low",
+                callback=self._duplex_callback,
+            )
+            self._stream.start()
+        except BaseException:
+            try:
+                await self.stop()
+            except Exception:
+                logger.warning(
+                    "portaudio-duplex: failed-start cleanup failed", exc_info=True
+                )
+            raise
         self._running = True
 
     async def stop(self) -> None:
         stream = self._stream
-        self._stream = None
         self._running = False
         self._callback = None
         self._framer.reset()
@@ -1248,10 +1317,9 @@ class _PortAudioDuplexStream:
                 stream.stop()
             except Exception:
                 logger.debug("portaudio-duplex: stream stop failed", exc_info=True)
-            try:
-                stream.close()
-            except Exception:
-                logger.debug("portaudio-duplex: stream close failed", exc_info=True)
+            stream.close()
+        self._stream = None
+        self._mta.release()
 
     async def write(self, frame: bytes) -> None:
         """Queue one PCM s16le playback frame (TX leg, via the shared ring)."""
