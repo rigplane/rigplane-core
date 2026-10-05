@@ -317,6 +317,31 @@ async def test_capture_error_tears_down_and_returns_empty() -> None:
     assert radio.audio_session.rx_demand == 0
 
 
+@pytest.mark.parametrize("codec", [AudioCodec.PCM_1CH_8BIT, AudioCodec.PCM_2CH_8BIT])
+async def test_live_probe_does_not_measure_unmapped_pcm8_as_pcm16(codec) -> None:
+    # The production PCM ingress has no s16le mapping for these codecs (see
+    # test_pcm_ingress_decode). Raw carrier energy is not decoded PCM proof.
+    radio = _SessionProbeRadio(
+        [b"\x80" * 960] * _AUDIO_PROBE_TARGET_FRAMES, codec=codec
+    )
+    captured = await _capture_rx_audio_probe(radio)
+    result = await run_rx_rms_check_on_frames(captured)
+    assert result.status is CheckStatus.FAIL
+    assert radio.audio_session.rx_demand == 0
+
+
+async def test_live_probe_does_not_measure_unknown_codec_bytes_as_pcm16() -> None:
+    # Literal unrecognized wire format; apparent energy in its bytes must not
+    # count as decoded audio. No decoder, PortAudio, radio or device is opened.
+    radio = _SessionProbeRadio(
+        [b"\x10\x20" * 960] * _AUDIO_PROBE_TARGET_FRAMES, codec=0x7F
+    )
+    captured = await _capture_rx_audio_probe(radio)
+    result = await run_rx_rms_check_on_frames(captured)
+    assert result.status is CheckStatus.FAIL
+    assert radio.audio_session.rx_demand == 0
+
+
 async def test_capture_does_not_block_on_short_stream() -> None:
     """Fewer frames than the target must not hang — capture returns promptly."""
     radio = _SessionProbeRadio([_TONE, _TONE])

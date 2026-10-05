@@ -567,6 +567,52 @@ class TestPortAudioBackendDeps:
         stream = backend.open_rx(AudioDeviceId(0))
         assert isinstance(stream, RxStream)
 
+    @pytest.mark.parametrize("failure_stage", ["open", "start"])
+    async def test_rx_start_failure_releases_handle_and_allows_retry(
+        self, failure_stage
+    ) -> None:
+        """A native refusal must preserve its error and close any opened handle."""
+        failure = RuntimeError("literal native capture refusal")
+        handles = []
+        attempt = 0
+
+        class FakeSd:
+            class InputStream:
+                def __init__(self, **kwargs):
+                    nonlocal attempt
+                    attempt += 1
+                    if attempt == 1 and failure_stage == "open":
+                        raise failure
+                    self.closed = False
+                    self.first = attempt == 1
+                    handles.append(self)
+
+                def start(self):
+                    if self.first and failure_stage == "start":
+                        raise failure
+
+                def stop(self):
+                    pass
+
+                def close(self):
+                    self.closed = True
+
+        backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), object()))
+        stream = backend.open_rx(AudioDeviceId(19), channels=2, deliver_channels=1)
+        with pytest.raises(RuntimeError) as caught:
+            await stream.start(lambda _pcm: None)
+        assert caught.value is failure
+        assert not stream.running
+        assert all(handle.closed for handle in handles)
+        assert stream._stream is None
+        assert stream._callback is None
+        await stream.start(lambda _pcm: None)
+        try:
+            assert stream.running
+        finally:
+            await stream.stop()
+        assert all(handle.closed for handle in handles)
+
     @pytest.mark.asyncio()
     async def test_open_rx_opens_callback_driven_blocksize_zero_non_darwin(
         self, monkeypatch: pytest.MonkeyPatch
