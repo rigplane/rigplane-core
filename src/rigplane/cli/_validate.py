@@ -750,10 +750,9 @@ _AUDIO_PROBE_CAPTURE_TIMEOUT = 3.0
 def _decode_probe_frame(data: bytes, codec: Any) -> bytes:
     """Decode one on-wire RX payload to s16le PCM for the probe (MOR-668).
 
-    Mirrors the web relay loop's RX decode policy: PCM payloads pass through
-    untouched, uLaw is expanded to PCM16, and any other / unknown codec (incl.
-    Opus, which is never on the wire for the PCM-first direct-LAN path the probe
-    targets) is left as-is — the downstream RMS/FFT check then assesses it.
+    PCM16 payloads pass through untouched and uLaw is expanded to PCM16.
+    Formats this probe cannot decode yield an empty frame: compressed or
+    unknown carrier bytes must never be measured as decoded s16le PCM.
     """
     from rigplane.audio._codecs import decode_ulaw_to_pcm16
     from rigplane.core.types import AudioCodec
@@ -761,9 +760,11 @@ def _decode_probe_frame(data: bytes, codec: Any) -> bytes:
     if codec in (AudioCodec.ULAW_1CH, AudioCodec.ULAW_2CH):
         try:
             return decode_ulaw_to_pcm16(data)
-        except Exception:  # noqa: BLE001 — fall back to raw on decode failure.
-            return data
-    return data
+        except Exception:  # noqa: BLE001 — failed decode cannot establish signal.
+            return b""
+    if codec in (AudioCodec.PCM_1CH_16BIT, AudioCodec.PCM_2CH_16BIT):
+        return data
+    return b""
 
 
 async def _capture_rx_audio_probe(radio: Any) -> list[bytes | None] | None:

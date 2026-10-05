@@ -695,16 +695,35 @@ class _PortAudioRxStream:
             raise RuntimeError("RX stream already running.")
         self._callback = callback
         self._framer.reset()
-        self._stream = self._sd.InputStream(
-            samplerate=self._sample_rate,
-            channels=self._channels,
-            dtype="int16",
-            device=self._device_index,
-            blocksize=self._blocksize,
-            latency="low",
-            callback=self._input_callback,
-        )
-        self._stream.start()
+        stage = "open"
+        try:
+            self._stream = self._sd.InputStream(
+                samplerate=self._sample_rate,
+                channels=self._channels,
+                dtype="int16",
+                device=self._device_index,
+                blocksize=self._blocksize,
+                latency="low",
+                callback=self._input_callback,
+            )
+            stage = "start"
+            self._stream.start()
+        except BaseException:
+            logger.warning(
+                "portaudio-rx: %s failed (device=%d, sample_rate=%d, "
+                "open_channels=%d, deliver_channels=%d, blocksize=%d)",
+                stage,
+                self._device_index,
+                self._sample_rate,
+                self._channels,
+                self._deliver_channels,
+                self._blocksize,
+            )
+            # Construction may succeed before Pa_StartStream refuses. Close
+            # that owned handle even though running was never set to True;
+            # the driver's normal stop path skips non-running streams.
+            await self.stop()
+            raise
         self._running = True
 
     async def stop(self) -> None:
