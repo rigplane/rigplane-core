@@ -231,6 +231,13 @@ class _BoundedPortAudioPool:
             thread_name_prefix="rigplane-audio-open",
         )
         self.inflight = 0
+        # A timed-out close still owns its worker and must not be run twice
+        # concurrently. Failed abandoned cleanup retains the stream until an
+        # explicit later open can retry it on this same pool.
+        self._stops: dict[int, asyncio.Future[Any]] = {}
+        self._late_streams: dict[
+            int, tuple[RxStream | TxStream | DuplexStream, str]
+        ] = {}
 
     def submit_tracked(self, fn: Callable[[], Any]) -> "asyncio.Future[Any]":
         """Submit *fn* to the pool; ``inflight`` uncounts only on settle.
@@ -326,9 +333,33 @@ class _BoundedPortAudioPool:
                 f"by {self.inflight} stuck open(s)."
             )
 
+        deadline = asyncio.get_running_loop().time() + timeout
+        try:
+            for old_stream, old_direction in list(self._late_streams.values()):
+                await self.stop_stream_bounded(
+                    old_stream,
+                    direction=old_direction,
+                    timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+                )
+        except BaseException:
+            start_coro.close()
+            raise
+        if asyncio.get_running_loop().time() >= deadline:
+            start_coro.close()
+            raise AudioCaptureOpenTimeoutError(
+                f"{direction.upper()} cleanup exhausted the open timeout."
+            )
+        if self.inflight >= _CAPTURE_OPEN_MAX_WORKERS:
+            start_coro.close()
+            raise AudioCaptureOpenTimeoutError(
+                "PortAudio worker pool saturated after cleanup."
+            )
         future = self.submit_tracked(lambda: _drive_stream_open(start_coro))
         try:
-            _done, pending = await asyncio.wait({future}, timeout=timeout)
+            _done, pending = await asyncio.wait(
+                {future},
+                timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+            )
         except asyncio.CancelledError:
             self.abandon_open(future, stream, direction, what)
             raise
@@ -387,8 +418,8 @@ class _BoundedPortAudioPool:
         (MOR-1438, F2) — a wedged device blocks ``stop()`` exactly as
         it blocked ``start()`` — and is COUNTED via
         :meth:`submit_tracked` (MOR-2892). An unclosed late handle
-        would hold the OS device open forever. A late EXCEPTION (no
-        handle to close) logs as its own WARNING (MOR-1573).
+        would hold the OS device open forever. Even a late open exception can
+        retain a native handle when its own cleanup failed.
         """
         if future.cancelled():
             return
@@ -401,14 +432,19 @@ class _BoundedPortAudioPool:
                 exc,
                 exc_info=exc,
             )
+        else:
+            logger.warning(
+                "usb-audio: %s %s completed after it was abandoned "
+                "— closing the late handle instead of leaking it",
+                direction.upper(),
+                what,
+            )
+        self._late_streams[id(stream)] = stream, direction
+        try:
+            close_future = self._submit_stop(stream)
+        except AudioCaptureOpenTimeoutError:
+            logger.warning("usb-audio: retaining late %s handle for cleanup", direction)
             return
-        logger.warning(
-            "usb-audio: %s %s completed after it was abandoned "
-            "— closing the late handle instead of leaking it",
-            direction.upper(),
-            what,
-        )
-        close_future = self.submit_tracked(lambda: _drive_stream_open(stream.stop()))
 
         def _on_close_done(done_future: "asyncio.Future[None]") -> None:
             if done_future.cancelled():
@@ -422,6 +458,32 @@ class _BoundedPortAudioPool:
                 )
 
         close_future.add_done_callback(_on_close_done)
+
+    def _submit_stop(
+        self, stream: "RxStream | TxStream | DuplexStream"
+    ) -> "asyncio.Future[Any]":
+        key = id(stream)
+        pending = self._stops.get(key)
+        if pending is not None:
+            return pending
+        if self.inflight >= _CAPTURE_OPEN_MAX_WORKERS:
+            logger.warning(
+                "usb-audio: PortAudio worker pool saturated during stream stop"
+            )
+            raise AudioCaptureOpenTimeoutError(
+                "PortAudio worker pool saturated during cleanup."
+            )
+        future = self.submit_tracked(lambda: _drive_stream_open(stream.stop()))
+        self._stops[key] = future
+
+        def settled(done: "asyncio.Future[Any]") -> None:
+            if self._stops.get(key) is done:
+                del self._stops[key]
+            if not done.cancelled() and done.exception() is None:
+                self._late_streams.pop(key, None)
+
+        future.add_done_callback(settled)
+        return future
 
     async def stop_stream_bounded(
         self,
@@ -437,12 +499,19 @@ class _BoundedPortAudioPool:
         loop. ``close_late_stream`` already drives the ABANDONED-handle
         close; this covers every ordinary stop path.
         """
-        await self.run_bounded(
-            lambda: _drive_stream_open(stream.stop()),
-            what="stream stop",
-            direction=direction,
-            timeout=timeout,
-        )
+        future = self._submit_stop(stream)
+        _done, pending = await asyncio.wait({future}, timeout=timeout)
+        if future in pending:
+            logger.warning(
+                "usb-audio: %s stream stop did not finish within %.1fs — retaining "
+                "the handle until native cleanup succeeds",
+                direction.upper(),
+                timeout,
+            )
+            raise AudioCaptureOpenTimeoutError(
+                f"{direction.upper()} stream stop timed out after {timeout}s."
+            )
+        future.result()
 
 
 bounded_portaudio_pool = _BoundedPortAudioPool()
@@ -1511,6 +1580,18 @@ class UsbAudioDriver:
             timeout=self._capture_open_timeout,
         )
 
+    async def _close_owned_stream(self, slot: str, *, direction: str) -> None:
+        """Caller holds the direction lock; ownership ends only after close.
+
+        ``running`` can already be false after a refused native close. That
+        does not mean the native handle or its MTA lease was released.
+        """
+        stream = getattr(self, slot)
+        if stream is not None:
+            await self._stop_stream_bounded(stream, direction=direction)
+            if getattr(self, slot) is stream:
+                setattr(self, slot, None)
+
     def _store_stream_contract(self, contract: UsbAudioStreamContract) -> None:
         if contract.direction == "rx":
             self._usb_audio_contract = UsbAudioContract(
@@ -1561,9 +1642,7 @@ class UsbAudioDriver:
 
         async with self._rx_lock:
             if self._duplex_stream is not None and not self._duplex_stream.running:
-                # A stored-but-dead duplex stream (its open failed) carries
-                # no RX leg — drop it and open a fresh plain stream below.
-                self._duplex_stream = None
+                await self._close_owned_stream("_duplex_stream", direction="duplex")
             if self._duplex_stream is not None:
                 # Exclusive same-device: the duplex stream already carries
                 # the RX leg — joining re-points the driver-owned callback.
@@ -1600,6 +1679,9 @@ class UsbAudioDriver:
         stable :meth:`_deliver_rx` entry point so a later exclusive duplex
         handoff (MOR-546) keeps delivering to it.
         """
+        await self._close_owned_stream("_rx_stream", direction="rx")
+        if self._duplex_stream is not None and not self._duplex_stream.running:
+            await self._close_owned_stream("_duplex_stream", direction="duplex")
         selected_rx, _ = await self._select_devices_bounded(direction="rx")
         sr = self._config.sample_rate if sample_rate is None else sample_rate
         ch = self._config.channels if channels is None else channels
@@ -1709,13 +1791,8 @@ class UsbAudioDriver:
             self._rx_callback = None
             if self._duplex_stream is not None and self._duplex_stream.running:
                 return
-            # A stored-but-dead duplex stream (its open failed) owns nothing
-            # on the device — drop it and let the plain-RX path below run.
-            self._duplex_stream = None
-            stream = self._rx_stream
-            self._rx_stream = None
-            if stream is not None and stream.running:
-                await self._stop_stream_bounded(stream, direction="rx")
+            await self._close_owned_stream("_duplex_stream", direction="duplex")
+            await self._close_owned_stream("_rx_stream", direction="rx")
 
     async def start_tx(
         self,
@@ -1752,6 +1829,9 @@ class UsbAudioDriver:
         async with self._tx_lock:
             if self.tx_running:
                 raise AudioAlreadyStartedError("TX stream already started.")
+            await self._close_owned_stream("_tx_stream", direction="tx")
+            if self._duplex_stream is not None and not self._duplex_stream.running:
+                await self._close_owned_stream("_duplex_stream", direction="duplex")
 
             sr = self._config.sample_rate if sample_rate is None else sample_rate
             ch = self._config.channels if channels is None else channels
@@ -1821,6 +1901,8 @@ class UsbAudioDriver:
                 raise AudioDriverLifecycleError(
                     "Duplex stream requires both RX and TX idle."
                 )
+            await self._close_owned_stream("_rx_stream", direction="rx")
+            await self._close_owned_stream("_tx_stream", direction="tx")
             previous_callback = self._rx_callback
             self._rx_callback = callback
             try:
@@ -1866,10 +1948,8 @@ class UsbAudioDriver:
                 raise AudioAlreadyStartedError("TX stream already started.")
             # A live plain RX stream yields the device; its callback is
             # kept in ``_rx_callback`` and resumes on the duplex stream.
-            rx_stream = self._rx_stream
-            self._rx_stream = None
-            if rx_stream is not None and rx_stream.running:
-                await self._stop_stream_bounded(rx_stream, direction="rx")
+            await self._close_owned_stream("_rx_stream", direction="rx")
+            await self._close_owned_stream("_tx_stream", direction="tx")
             try:
                 await self._open_duplex_stream_locked(
                     sample_rate=sample_rate,
@@ -1907,6 +1987,7 @@ class UsbAudioDriver:
         :meth:`start_tx` arm, MOR-2892); ``None`` resolves here as
         before (e.g. :meth:`start_duplex`).
         """
+        await self._close_owned_stream("_duplex_stream", direction="duplex")
         if selected is None:
             selected = await self._select_devices_bounded(direction="duplex")
         selected_rx, selected_tx = selected
@@ -1974,12 +2055,9 @@ class UsbAudioDriver:
                 stream.start(self._silence_watchdog(self._deliver_rx, fm)),
                 direction="duplex",
             )
-        except BaseException:
-            # Never leave a failed open wired up as "the" duplex stream:
-            # a stuck-open timeout/cancel AND an ordinary open error
-            # (PortAudio/AUHAL, e.g. -50) must both drop the handle, or
-            # start_rx/stop_rx treat the dead stream as a live join
-            # target and RX silently strands (MOR-546).
+        except (AudioCaptureOpenTimeoutError, asyncio.CancelledError):
+            # The pool owns abandoned opens and their late cleanup. Ordinary
+            # failures retain this slot until successful native close.
             self._duplex_stream = None
             raise
         self._store_stream_contract(rx_contract)
@@ -1993,10 +2071,7 @@ class UsbAudioDriver:
     async def stop_duplex(self) -> None:
         """Stop and close the full-duplex stream."""
         async with self._rx_lock, self._tx_lock:
-            stream = self._duplex_stream
-            self._duplex_stream = None
-            if stream is not None and stream.running:
-                await self._stop_stream_bounded(stream, direction="duplex")
+            await self._close_owned_stream("_duplex_stream", direction="duplex")
 
     async def _push_tx_pcm(self, frame: bytes) -> None:
         """Queue one PCM frame for playback."""
@@ -2019,21 +2094,12 @@ class UsbAudioDriver:
         RX callback is still wired (:meth:`stop_rx` unwires it first).
         Separate-device (``full``) behaviour is unchanged.
         """
-        async with self._tx_lock:
+        async with self._rx_lock, self._tx_lock:
             duplex_stream = self._duplex_stream
-            self._duplex_stream = None
             if duplex_stream is None:
-                stream = self._tx_stream
-                self._tx_stream = None
-                if stream is not None and stream.running:
-                    await self._stop_stream_bounded(stream, direction="tx")
+                await self._close_owned_stream("_tx_stream", direction="tx")
                 return
-        # Exclusive handoff, outside ``_tx_lock`` (everywhere else the lock
-        # order is rx → tx): close the duplex stream, then hand the device
-        # back to a plain RX stream when RX demand is still wired.
-        if duplex_stream.running:
-            await self._stop_stream_bounded(duplex_stream, direction="duplex")
-        async with self._rx_lock:
+            await self._close_owned_stream("_duplex_stream", direction="duplex")
             await self._reopen_plain_rx_locked(reason="the duplex teardown")
 
 

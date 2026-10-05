@@ -113,7 +113,7 @@ async def test_driver_retains_failed_close_until_explicit_cleanup(
         await _start(driver, kind)
         assert len(handles) == 2
         # The old handle must close before the replacement is constructed.
-        assert events.index("closed") < len(events) - 2
+        assert events.index("closed") < events.index("open", events.index("open") + 1)
         await getattr(driver, f"stop_{kind}")()
     assert events.count("closed") == events.count("release") == len(handles)
     assert events.count("retain") == events.count("release")
