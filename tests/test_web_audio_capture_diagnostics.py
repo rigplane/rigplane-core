@@ -10,10 +10,20 @@ from rigplane.web.handlers.audio import AudioBroadcaster, AudioHandler
 from test_web_audio_link_quality import _make_radio, _make_ws
 
 
-@pytest.mark.parametrize("category", [
-    "NotAllowedError", "NotFoundError", "NotReadableError", "OverconstrainedError",
-    "AbortError", "SecurityError", "InvalidStateError", "TypeError", "unknown",
-])
+@pytest.mark.parametrize(
+    "category",
+    [
+        "NotAllowedError",
+        "NotFoundError",
+        "NotReadableError",
+        "OverconstrainedError",
+        "AbortError",
+        "SecurityError",
+        "InvalidStateError",
+        "TypeError",
+        "unknown",
+    ],
+)
 async def test_capture_category_is_retained_and_logged_without_identity(category, caplog):
     radio, _ = _make_radio()
     broadcaster = AudioBroadcaster(radio)
@@ -37,7 +47,9 @@ async def test_capture_category_is_retained_and_logged_without_identity(category
     assert broadcaster.capture_diagnostics()["lastFailureCategory"] == category
 
 
-@pytest.mark.parametrize("value", [None, "private-device", "NotFoundError\nprivate", {}, [], 1, True])
+@pytest.mark.parametrize(
+    "value", [None, "private-device", "NotFoundError\nprivate", {}, [], 1, True]
+)
 def test_invalid_or_legacy_reports_cannot_overwrite_retained_failure(value):
     broadcaster = AudioBroadcaster(None)
     queue = asyncio.Queue()
@@ -52,5 +64,9 @@ def test_invalid_or_legacy_reports_cannot_overwrite_retained_failure(value):
 
 def test_no_report_and_unsubscribed_report_do_not_invent_failure():
     broadcaster = AudioBroadcaster(None)
-    broadcaster.record_client_stats(asyncio.Queue(), {"microphoneCaptureError": "NotAllowedError"})
-    assert broadcaster.capture_diagnostics() == {"schemaVersion": 1, "lastFailureCategory": None}
+    broadcaster.record_client_stats(
+        asyncio.Queue(), {"microphoneCaptureError": "NotAllowedError"}
+    )
+    assert broadcaster.capture_diagnostics() == {
+        "schemaVersion": 1, "lastFailureCategory": None
+    }

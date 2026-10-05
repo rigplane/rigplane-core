@@ -75,9 +75,15 @@ _RESUME_ERROR_NAMES = {
 
 _CAPTURE_ERROR_NAMES = frozenset(
     {
-        "NotAllowedError", "NotFoundError", "NotReadableError",
-        "OverconstrainedError", "AbortError", "SecurityError",
-        "InvalidStateError", "TypeError", "unknown",
+        "NotAllowedError",
+        "NotFoundError",
+        "NotReadableError",
+        "OverconstrainedError",
+        "AbortError",
+        "SecurityError",
+        "InvalidStateError",
+        "TypeError",
+        "unknown",
     }
 )
 
