@@ -1012,6 +1012,7 @@ class UsbAudioDriver:
 
         self._rx_stream: RxStream | None = None
         self._tx_stream: TxStream | None = None
+        self._stream_cleanup: set[str] = set()
         # Single full-duplex stream for the same-device RX+TX case (MOR-531):
         # opening separate InputStream + OutputStream on one C-Media CODEC fails
         # with macOS CoreAudio AUHAL -50. When set, it drives BOTH directions.
@@ -1041,14 +1042,28 @@ class UsbAudioDriver:
     @property
     def rx_running(self) -> bool:
         if self._duplex_stream is not None:
-            return self._duplex_stream.running
-        return self._rx_stream is not None and self._rx_stream.running
+            return (
+                "_duplex_stream" not in self._stream_cleanup
+                and self._duplex_stream.running
+            )
+        return (
+            "_rx_stream" not in self._stream_cleanup
+            and self._rx_stream is not None
+            and self._rx_stream.running
+        )
 
     @property
     def tx_running(self) -> bool:
         if self._duplex_stream is not None:
-            return self._duplex_stream.running
-        return self._tx_stream is not None and self._tx_stream.running
+            return (
+                "_duplex_stream" not in self._stream_cleanup
+                and self._duplex_stream.running
+            )
+        return (
+            "_tx_stream" not in self._stream_cleanup
+            and self._tx_stream is not None
+            and self._tx_stream.running
+        )
 
     def set_serial_port(self, serial_port: str | None) -> None:
         """Rebind topology-based audio resolution to a new serial port.
@@ -1580,7 +1595,12 @@ class UsbAudioDriver:
             timeout=self._capture_open_timeout,
         )
 
-    async def _close_owned_stream(self, slot: str, *, direction: str) -> None:
+    async def _close_owned_stream(
+        self,
+        slot: Literal["_rx_stream", "_tx_stream", "_duplex_stream"],
+        *,
+        direction: str,
+    ) -> None:
         """Caller holds the direction lock; ownership ends only after close.
 
         ``running`` can already be false after a refused native close. That
@@ -1588,9 +1608,13 @@ class UsbAudioDriver:
         """
         stream = getattr(self, slot)
         if stream is not None:
+            # Keep ownership without advertising a close-pending handle as
+            # available, even while its native stop is still blocked.
+            self._stream_cleanup.add(slot)
             await self._stop_stream_bounded(stream, direction=direction)
             if getattr(self, slot) is stream:
                 setattr(self, slot, None)
+                self._stream_cleanup.discard(slot)
 
     def _store_stream_contract(self, contract: UsbAudioStreamContract) -> None:
         if contract.direction == "rx":
@@ -1641,7 +1665,7 @@ class UsbAudioDriver:
             raise TypeError("Audio RX callback must be callable.")
 
         async with self._rx_lock:
-            if self._duplex_stream is not None and not self._duplex_stream.running:
+            if self._duplex_stream is not None and not self.tx_running:
                 await self._close_owned_stream("_duplex_stream", direction="duplex")
             if self._duplex_stream is not None:
                 # Exclusive same-device: the duplex stream already carries
@@ -1680,7 +1704,7 @@ class UsbAudioDriver:
         handoff (MOR-546) keeps delivering to it.
         """
         await self._close_owned_stream("_rx_stream", direction="rx")
-        if self._duplex_stream is not None and not self._duplex_stream.running:
+        if self._duplex_stream is not None and not self.tx_running:
             await self._close_owned_stream("_duplex_stream", direction="duplex")
         selected_rx, _ = await self._select_devices_bounded(direction="rx")
         sr = self._config.sample_rate if sample_rate is None else sample_rate
@@ -1789,7 +1813,7 @@ class UsbAudioDriver:
         """
         async with self._rx_lock:
             self._rx_callback = None
-            if self._duplex_stream is not None and self._duplex_stream.running:
+            if self._duplex_stream is not None and self.tx_running:
                 return
             await self._close_owned_stream("_duplex_stream", direction="duplex")
             await self._close_owned_stream("_rx_stream", direction="rx")
@@ -1830,7 +1854,7 @@ class UsbAudioDriver:
             if self.tx_running:
                 raise AudioAlreadyStartedError("TX stream already started.")
             await self._close_owned_stream("_tx_stream", direction="tx")
-            if self._duplex_stream is not None and not self._duplex_stream.running:
+            if self._duplex_stream is not None and not self.tx_running:
                 await self._close_owned_stream("_duplex_stream", direction="duplex")
 
             sr = self._config.sample_rate if sample_rate is None else sample_rate
