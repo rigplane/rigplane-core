@@ -13,6 +13,7 @@ const rxStats = vi.fn(() => ({ underruns: 3, bufferDepthMs: 140, droppedFrames: 
 const txStart = vi.fn().mockResolvedValue(null);
 const txStop = vi.fn();
 const txApplyServerCodec = vi.fn(() => ({ switched: false, error: null }));
+let txCaptureFailureCategory: string | null = null;
 let txCaptureDied: ((reason: string) => void) | null = null;
 
 vi.mock('../rx-player', () => ({
@@ -39,6 +40,7 @@ vi.mock('../tx-mic', () => ({
     stop = txStop;
     applyServerCodec = txApplyServerCodec;
     get active() { return true; }
+    get lastCaptureFailureCategory() { return txCaptureFailureCategory; }
     static supported() { return true; }
     constructor(
       _send: (data: ArrayBuffer) => void,
@@ -204,6 +206,28 @@ describe('AudioManager audio_stats uplink (MOR-585)', () => {
       .filter((m) => m.type === 'audio_stats');
   }
 
+  it('reports safe capture failure immediately over the existing RX socket without TX admission', async () => {
+    const { audioManager } = await import('../audio-manager');
+    audioManager.startRx();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+    ws.sent = [];
+    txCaptureFailureCategory = 'NotFoundError';
+    txStart.mockResolvedValueOnce('TX MIC: capture failed (NotFoundError)');
+    try {
+      await expect(audioManager.startTx()).resolves.toBe('TX MIC: capture failed (NotFoundError)');
+      expect(statsMessages(ws)).toContainEqual(expect.objectContaining({
+        microphoneCaptureError: 'NotFoundError',
+      }));
+      expect(ws.sent.some(s => typeof s === 'string' && JSON.parse(s).direction === 'tx')).toBe(false);
+      expect(audioManager.txEnabled).toBe(false);
+      expect(FakeWebSocket.instances).toHaveLength(1);
+    } finally {
+      txCaptureFailureCategory = null;
+      audioManager.stopRx();
+    }
+  });
+
   it('sends periodic audio_stats with player counters while RX is active', async () => {
     const { audioManager } = await import('../audio-manager');
 
@@ -219,6 +243,7 @@ describe('AudioManager audio_stats uplink (MOR-585)', () => {
       buffer_depth_ms: 140,
       dropped_frames: 2,
       playback,
+      microphoneCaptureError: null,
     }]);
 
     vi.advanceTimersByTime(3000);
