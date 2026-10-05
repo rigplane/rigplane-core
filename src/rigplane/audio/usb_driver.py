@@ -232,10 +232,10 @@ class _BoundedPortAudioPool:
         )
         self.inflight = 0
         # A timed-out close still owns its worker and must not be run twice
-        # concurrently. Failed abandoned cleanup retains the stream until an
-        # explicit later open can retry it on this same pool.
+        # concurrently. Cleanup retains the stream until success, even when
+        # its caller (e.g. AudioBridge) drops the slot after logging an error.
         self._stops: dict[int, asyncio.Future[Any]] = {}
-        self._late_streams: dict[
+        self._cleanup_streams: dict[
             int, tuple[RxStream | TxStream | DuplexStream, str]
         ] = {}
 
@@ -335,7 +335,7 @@ class _BoundedPortAudioPool:
 
         deadline = asyncio.get_running_loop().time() + timeout
         try:
-            for old_stream, old_direction in list(self._late_streams.values()):
+            for old_stream, old_direction in list(self._cleanup_streams.values()):
                 await self.stop_stream_bounded(
                     old_stream,
                     direction=old_direction,
@@ -439,7 +439,7 @@ class _BoundedPortAudioPool:
                 direction.upper(),
                 what,
             )
-        self._late_streams[id(stream)] = stream, direction
+        self._cleanup_streams[id(stream)] = stream, direction
         try:
             close_future = self._submit_stop(stream)
         except AudioCaptureOpenTimeoutError:
@@ -480,7 +480,7 @@ class _BoundedPortAudioPool:
             if self._stops.get(key) is done:
                 del self._stops[key]
             if not done.cancelled() and done.exception() is None:
-                self._late_streams.pop(key, None)
+                self._cleanup_streams.pop(key, None)
 
         future.add_done_callback(settled)
         return future
@@ -499,6 +499,10 @@ class _BoundedPortAudioPool:
         loop. ``close_late_stream`` already drives the ABANDONED-handle
         close; this covers every ordinary stop path.
         """
+        # The pool is the cleanup owner if a caller logs/refuses this error
+        # and discards its slot. Explicit opens retry retained cleanup before
+        # constructing native streams; no automatic retry is scheduled.
+        self._cleanup_streams[id(stream)] = stream, direction
         future = self._submit_stop(stream)
         _done, pending = await asyncio.wait({future}, timeout=timeout)
         if future in pending:
