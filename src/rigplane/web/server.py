@@ -3929,6 +3929,7 @@ class WebServer:
                 "audioBus": self._runtime_audio_bus_payload(),
                 "audioSession": self._runtime_audio_session_payload(),
                 "audioPlayback": self._runtime_audio_playback_payload(),
+                "audioCapture": self._audio_broadcaster.capture_diagnostics(),
                 "connection": self._runtime_connection_payload(),
                 "stateAcquisition": self._state_acquisition_diagnostics_payload(),
                 # Additive TX safety evidence (MOR-1015): owner, phase, lease,

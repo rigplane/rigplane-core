@@ -73,8 +73,20 @@ _RESUME_ERROR_NAMES = {
 }
 
 
+_CAPTURE_ERROR_NAMES = frozenset(
+    {
+        "NotAllowedError", "NotFoundError", "NotReadableError",
+        "OverconstrainedError", "AbortError", "SecurityError",
+        "InvalidStateError", "TypeError", "unknown",
+    }
+)
+
+
 def _bounded_audio_stats(message: dict[str, Any]) -> dict[str, Any]:
     stats: dict[str, Any] = {}
+    category = message.get("microphoneCaptureError")
+    if isinstance(category, str) and category in _CAPTURE_ERROR_NAMES:
+        stats["microphoneCaptureError"] = category
     for key, maximum in (
         ("underruns", 0xFFFFFFFF),
         ("dropped_frames", 0xFFFFFFFF),
@@ -427,6 +439,9 @@ class AudioBroadcaster:
         # collection only — read by the step-19 adaptive egress codec
         # controller; nothing here changes codec selection or behavior.
         self._client_link_quality: dict[int, dict[str, Any]] = {}
+        # One anonymous, allowlisted failure retained for this process lifetime.
+        # A client report is not proof of an OS permission denial or freshness.
+        self._last_capture_failure_category: str | None = None
         self._client_queue_drops: dict[int, int] = {}
         # Adaptive egress codec controller (MOR-588, ADR §3.6): per-client
         # PCM16↔Opus switching driven by the MOR-585 link-quality signals.
@@ -884,7 +899,11 @@ class AudioBroadcaster:
         client_id = id(queue)
         if client_id not in self._clients:
             return
-        self._client_link_quality[client_id] = _bounded_audio_stats(stats)
+        bounded = _bounded_audio_stats(stats)
+        self._client_link_quality[client_id] = bounded
+        category = bounded.get("microphoneCaptureError")
+        if category is not None:
+            self._last_capture_failure_category = category
         self._adaptive_evaluate(client_id)
 
     def client_link_quality(self, queue: asyncio.Queue[bytes]) -> dict[str, Any]:
@@ -902,6 +921,13 @@ class AudioBroadcaster:
             snapshot["playback"] = dict(snapshot["playback"])
         snapshot["ws_queue_drops"] = self._client_queue_drops.get(client_id, 0)
         return snapshot
+
+    def capture_diagnostics(self) -> dict[str, Any]:
+        """Last safe browser-reported failure, not a hardware or permission verdict."""
+        return {
+            "schemaVersion": 1,
+            "lastFailureCategory": self._last_capture_failure_category,
+        }
 
     def playback_diagnostics(self) -> dict[str, Any]:
         """Anonymous, bounded latest self-reports from current subscriptions.
@@ -1453,6 +1479,7 @@ class AudioHandler:
         # ``audio_stats`` uplink (MOR-585) — mirrored per client on the
         # broadcaster while RX is subscribed.
         self._link_quality: dict[str, Any] = {}
+        self._last_logged_capture_category: str | None = None
         self._frame_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._done = asyncio.Event()
         # Opus decoder for TX when radio uses PCM codec.
@@ -1641,6 +1668,12 @@ class AudioHandler:
         self._link_quality = stats
         if self._rx_active and self._broadcaster is not None:
             self._broadcaster.record_client_stats(self._frame_queue, stats)
+            category = stats.get("microphoneCaptureError")
+            if category is not None and category != self._last_logged_capture_category:
+                # This existing diagnostic log is collected in Support bundles.
+                # Never log the inbound message, labels, identifiers or raw error.
+                logger.info("browser microphone capture rejected: category=%s", category)
+                self._last_logged_capture_category = category
 
     async def _abort_tx_start(
         self, previous_facts: BrowserTxAudioFacts | None, was_active: bool

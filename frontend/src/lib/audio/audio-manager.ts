@@ -260,6 +260,9 @@ class AudioManager {
     if (this._txEnabled) return null;
     const err = await this.txMic.start();
     if (err) {
+      // Reuse the existing RX stats socket; never open TX or a new connection
+      // merely to report a capture failure. Periodic stats retain the category.
+      this._sendAudioStats();
       this._notifyTxStartFailure(err);
       return err;
     }
@@ -515,6 +518,7 @@ class AudioManager {
       buffer_depth_ms: stats.bufferDepthMs,
       dropped_frames: stats.droppedFrames,
       playback: stats.playback,
+      microphoneCaptureError: this.txMic.lastCaptureFailureCategory,
     }));
   }
 
