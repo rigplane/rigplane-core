@@ -1585,7 +1585,7 @@ class AudioHandler:
         logger.log(
             logging.DEBUG if msg_type == "audio_stats" else logging.INFO,
             "audio: control msg: %s",
-            msg,
+            _bounded_audio_stats(msg) if msg_type == "audio_stats" else msg,
         )
         direction = msg.get("direction", "rx")
 

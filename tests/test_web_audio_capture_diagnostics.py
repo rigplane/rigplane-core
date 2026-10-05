@@ -31,7 +31,7 @@ async def test_capture_category_is_retained_and_logged_without_identity(
     broadcaster = AudioBroadcaster(radio)
     handler = AudioHandler(_make_ws(), radio, broadcaster)
     await handler._start_rx()
-    with caplog.at_level(logging.INFO, logger="rigplane.web.handlers.audio"):
+    with caplog.at_level(logging.DEBUG, logger="rigplane.web.handlers.audio"):
         for _ in range(2):
             await handler._handle_control(
                 {
