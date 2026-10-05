@@ -632,6 +632,14 @@ class TestPortAudioBackendDeps:
         boundary (MOR-2465); see test_open_rx_darwin_blocksize_matches_frame.
         """
         monkeypatch.setattr(sys, "platform", "win32")
+        # Isolate callback/blocksize selection with the fake device here.
+        # COM lifetime has its own Fake Ole32 regression suite.
+        monkeypatch.setattr(
+            "rigplane.audio.backend._WindowsMtaLease.acquire", lambda _self: None
+        )
+        monkeypatch.setattr(
+            "rigplane.audio.backend._WindowsMtaLease.release", lambda _self: None
+        )
         created: list[dict[str, object]] = []
 
         class FakeSd:
