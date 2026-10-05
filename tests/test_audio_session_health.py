@@ -423,6 +423,10 @@ async def test_runtime_playback_distinguishes_missing_invalid_and_unavailable() 
     del srv._audio_broadcaster
     writer = _FakeWriter()
     await srv._handle_http(writer, "GET", "/api/v1/runtime")  # noqa: SLF001
+    assert _response_json(writer)[1]["audioCapture"] == {
+        "schemaVersion": 1,
+        "lastFailureCategory": None,
+    }
     assert _response_json(writer)[1]["audioPlayback"] == {
         "schemaVersion": 1,
         "state": "unavailable",
