@@ -409,9 +409,10 @@ describe('AudioManager TX failure notifications (MOR-1783)', () => {
     expect(ws.sent).toContain(JSON.stringify({ type: 'audio_stop', direction: 'rx' }));
     expect(txStop).not.toHaveBeenCalled();
 
+    rxStart.mockClear();
     audioManager.startRx();
     expect(audioManager.rxEnabled).toBe(true);
-    expect(rxStart).toHaveBeenCalledTimes(2);
+    expect(rxStart).toHaveBeenCalledTimes(1);
     audioManager.stopRx();
     if (txActive) audioManager.stopTx();
   });
