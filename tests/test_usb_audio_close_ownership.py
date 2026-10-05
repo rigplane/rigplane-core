@@ -252,3 +252,38 @@ async def test_failed_late_cleanup_retained_until_next_explicit_open(
     finally:
         gate.set()
         pool._executor.shutdown(wait=True)
+
+
+async def test_pool_retains_failed_close_when_caller_drops_its_stream() -> None:
+    """AudioBridge discards its slot after logging a close error."""
+    pool = usb_driver._BoundedPortAudioPool()
+    events: list[str] = []
+
+    class Stream:
+        async def stop(self) -> None:
+            events.append("close")
+            if events.count("close") < 3:
+                raise RuntimeError("close refused")
+            events.append("closed")
+
+    class Replacement:
+        async def start(self) -> None:
+            events.append("new open")
+
+    stream = Stream()
+    replacement = Replacement()
+    try:
+        with pytest.raises(RuntimeError, match="close refused"):
+            await pool.stop_stream_bounded(stream, direction="bridge", timeout=1.0)
+        del stream  # The production caller no longer owns this handle.
+        with pytest.raises(RuntimeError, match="close refused"):
+            await pool.open_stream_bounded(
+                replacement, replacement.start(), direction="bridge", timeout=1.0
+            )
+        assert events == ["close", "close"]
+        await pool.open_stream_bounded(
+            replacement, replacement.start(), direction="bridge", timeout=1.0
+        )
+        assert events == ["close", "close", "close", "closed", "new open"]
+    finally:
+        pool._executor.shutdown(wait=True)
