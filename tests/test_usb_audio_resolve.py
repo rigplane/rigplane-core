@@ -2031,3 +2031,171 @@ class TestWindowsIc7300InternalHub:
                 sounddevice_module=_ic7300_sd_pairs(2),
                 pnp_query=lambda: _ic7300_hub_records(),
             )
+
+
+def _parallels_ic7300_records():
+    from dataclasses import replace
+
+    from rigplane.usb_audio_resolve import WindowsPnpDevice
+
+    records = _ic7300_hub_records()
+    hub = r"USB\VID_203A&PID_FFFE\MSFT20PW3.0"
+    records[0] = replace(records[0], parent_pnp_id=hub)
+    records[1] = replace(records[1], pnp_device_id=hub, vid="203A", pid="FFFE")
+    records[2] = replace(records[2], parent_pnp_id=hub)
+    records.extend(
+        [
+            WindowsPnpDevice(
+                r"USB\ROOT_HUB30\HOST",
+                r"PCI\GUEST_CONTROLLER\HOST",
+                None,
+                None,
+                None,
+                None,
+            ),
+            WindowsPnpDevice(
+                r"USB\VID_0D8C&PID_0016\OTHER",
+                hub,
+                "0D8C",
+                "0016",
+                None,
+                "USB Audio Device",
+            ),
+        ]
+    )
+    return records
+
+
+class TestWindowsParallelsIc7300Topology:
+    @pytest.mark.parametrize(
+        "hub_vid_pid", ["203A&PID_FFFE", "0451&PID_2046", "1234&PID_5678"]
+    )
+    def test_unique_radio_and_codec_under_captured_guest_hub_resolve(self, hub_vid_pid):
+        from rigplane.usb_audio_resolve import _resolve_windows
+
+        from dataclasses import replace
+
+        records = _parallels_ic7300_records()
+        old = records[1].pnp_device_id
+        new = "USB\\VID_" + hub_vid_pid + "\\REPLUGGED"
+        records = [
+            replace(
+                r,
+                pnp_device_id=new if r.pnp_device_id == old else r.pnp_device_id,
+                parent_pnp_id=new if r.parent_pnp_id == old else r.parent_pnp_id,
+            )
+            for r in records
+        ]
+        result = _resolve_windows(
+            "COM3",
+            sounddevice_module=_ic7300_sd_pairs(),
+            pnp_query=lambda: records,
+        )
+        assert result is not None
+        assert (result.rx_device_index, result.tx_device_index) == (1, 0)
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            "common_root",
+            "missing_hub",
+            "broken_interface",
+            "wrong_codec_parent",
+            "second_codec",
+            "second_radio_sharedhub",
+            "extra_com",
+            "wrong_codec_product",
+            "wrong_codec_vid",
+            "unrelated_codec_alias",
+            "cyclic_parent",
+        ],
+    )
+    def test_guest_hub_is_not_blanket_radio_identity(self, change):
+        from dataclasses import replace
+
+        from rigplane.usb_audio_resolve import (
+            WindowsAudioTopologyError,
+            _resolve_windows,
+        )
+
+        records = _parallels_ic7300_records()
+        if change == "common_root":
+            old = records[1].pnp_device_id
+            new = r"USB\ROOT_HUB30\COMMON"
+            records = [
+                replace(
+                    r,
+                    pnp_device_id=new if r.pnp_device_id == old else r.pnp_device_id,
+                    parent_pnp_id=new if r.parent_pnp_id == old else r.parent_pnp_id,
+                )
+                for r in records
+            ]
+        elif change == "missing_hub":
+            del records[1]
+        elif change == "broken_interface":
+            records[3] = replace(records[3], parent_pnp_id="MISSING")
+        elif change == "wrong_codec_parent":
+            records[2] = replace(
+                records[2], parent_pnp_id=r"USB\VID_203A&PID_FFFE\OTHER"
+            )
+        elif change == "second_codec":
+            other = _ic7300_hub_records("B", "COM7")
+            records.extend(
+                [replace(other[2], parent_pnp_id=records[1].pnp_device_id), other[3]]
+            )
+        elif change == "second_radio_sharedhub":
+            other = _ic7300_hub_records("B", "COM7")
+            other[0] = replace(other[0], parent_pnp_id=records[1].pnp_device_id)
+            records.extend(other)
+        elif change == "extra_com":
+            records.append(
+                replace(
+                    records[0],
+                    pnp_device_id=r"USB\VID_1234&PID_5678\SERIAL",
+                    com_port="COM7",
+                )
+            )
+        elif change == "wrong_serial_model":
+            records[0] = replace(
+                records[0], pnp_device_id=r"USB\VID_10C4&PID_EA60\IC-7610_OTHER"
+            )
+        elif change == "wrong_codec_vid":
+            old = records[2].pnp_device_id
+            new = r"USB\VID_9999&PID_0001\OTHER"
+            records[2] = replace(records[2], pnp_device_id=new)
+            records[3] = replace(records[3], parent_pnp_id=new)
+        elif change == "unrelated_codec_alias":
+            records[-1] = replace(records[-1], audio_endpoint_name="USB Audio CODEC")
+        elif change == "cyclic_parent":
+            records[1] = replace(records[1], parent_pnp_id=records[1].pnp_device_id)
+        else:
+            records[3] = replace(records[3], audio_endpoint_name="Other codec")
+        with pytest.raises(WindowsAudioTopologyError):
+            _resolve_windows(
+                "COM3",
+                sounddevice_module=_ic7300_sd_pairs(2),
+                pnp_query=lambda: records,
+            )
+
+    def test_nested_non_radio_specific_hubs_resolve_closest_shared_ancestor(self):
+        from dataclasses import replace
+
+        from rigplane.usb_audio_resolve import WindowsPnpDevice, _resolve_windows
+
+        records = _parallels_ic7300_records()
+        outer = records[1].pnp_device_id
+        serial_hub = r"USB\VID_1234&PID_0001\SERIAL_BRANCH"
+        codec_hub = r"USB\VID_5678&PID_0002\AUDIO_BRANCH"
+        records[0] = replace(records[0], parent_pnp_id=serial_hub)
+        records[2] = replace(records[2], parent_pnp_id=codec_hub)
+        records.extend(
+            [
+                WindowsPnpDevice(serial_hub, outer, "1234", "0001", None, None),
+                WindowsPnpDevice(codec_hub, outer, "5678", "0002", None, None),
+            ]
+        )
+        result = _resolve_windows(
+            "COM3", sounddevice_module=_ic7300_sd_pairs(), pnp_query=lambda: records
+        )
+        assert result is not None
+        assert (result.rx_device_index, result.tx_device_index) == (1, 0)
