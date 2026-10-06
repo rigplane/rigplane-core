@@ -34,8 +34,8 @@ def fake_ownership_driver(monkeypatch: pytest.MonkeyPatch):
     def make(device: int = 1):
         return usb_driver.UsbAudioDriver(
             backend=fake,
-            rx_device=device,
-            tx_device=device,
+            rx_device=f"USB Audio CODEC {device}",
+            tx_device=f"USB Audio CODEC {device}",
             capture_open_timeout=0.1,
         )
 
