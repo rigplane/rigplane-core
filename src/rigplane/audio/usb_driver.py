@@ -1710,13 +1710,28 @@ class UsbAudioDriver:
     def _stream_rx_callback(self, frame_ms: int) -> Callable[[bytes], None]:
         self._rx_generation += 1
         generation = self._rx_generation
+        loop = asyncio.get_running_loop()
         watchdog = self._silence_watchdog(self._deliver_rx, frame_ms)
 
         def deliver(frame: bytes) -> None:
             if generation == self._rx_generation:
                 watchdog(frame)
 
-        return deliver
+        def receive(frame: bytes) -> None:
+            try:
+                on_owner_loop = asyncio.get_running_loop() is loop
+            except RuntimeError:
+                on_owner_loop = False
+            if on_owner_loop:
+                deliver(frame)
+                return
+            try:
+                loop.call_soon_threadsafe(deliver, frame)
+            except RuntimeError:
+                if not loop.is_closed():
+                    raise
+
+        return receive
 
     async def start_rx(
         self,

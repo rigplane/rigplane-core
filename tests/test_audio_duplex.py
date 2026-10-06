@@ -924,6 +924,14 @@ def _assert_rx_alive(
     assert received[-1] == b"\xf0\x0f"
 
 
+async def _settle_native_audio() -> None:
+    from rigplane.audio.usb_driver import bounded_portaudio_pool
+
+    async with asyncio.timeout(5):
+        while bounded_portaudio_pool.inflight:
+            await asyncio.sleep(0.005)
+
+
 class TestExclusiveFailedDuplexOpen:
     """MOR-546 B1 regression: base recovered RX after a failed exclusive
     TX arm; the duplex rework left it silently dead (stored dead stream,
@@ -965,7 +973,7 @@ class TestExclusiveFailedDuplexOpen:
             _assert_rx_alive(driver, backend, received)
 
     @pytest.mark.asyncio()
-    async def test_open_timeout_restores_rx(
+    async def test_open_timeout_restores_rx_after_native_settlement(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         driver, backend = _exclusive_driver(monkeypatch, capture_open_timeout=0.05)
@@ -973,29 +981,61 @@ class TestExclusiveFailedDuplexOpen:
         await driver.start_rx(received.append)
         gate = threading.Event()
         backend.block_duplex_open = gate.wait  # stuck duplex open
-        with pytest.raises(AudioCaptureOpenTimeoutError):
-            await driver.start_tx()
-        _assert_rx_alive(driver, backend, received)
-        gate.set()  # release the abandoned background open
-        await asyncio.sleep(0.05)
+        try:
+            with pytest.raises(AudioCaptureOpenTimeoutError):
+                await driver.start_tx()
+            old = backend.duplex_streams[0]
+            assert not driver.rx_running
+            assert old.started_count == old.stopped_count == 0
+            assert not any(stream.running for stream in backend.rx_streams)
+            gate.set()
+            await _settle_native_audio()
+            assert old.stopped_count == 1
+            await driver.start_rx(received.append)
+            _assert_rx_alive(driver, backend, received)
+        finally:
+            gate.set()
+            await _settle_native_audio()
+            await driver.stop_rx()
 
     @pytest.mark.asyncio()
-    async def test_cancelled_open_restores_rx(
+    async def test_cancelled_open_restores_rx_after_native_settlement(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        driver, backend = _exclusive_driver(monkeypatch, capture_open_timeout=5.0)
+        driver, backend = _exclusive_driver(monkeypatch, capture_open_timeout=0.5)
         received: list[bytes] = []
         await driver.start_rx(received.append)
-        gate = threading.Event()
-        backend.block_duplex_open = gate.wait
+        entered, gate = threading.Event(), threading.Event()
+
+        def blocked_open() -> None:
+            entered.set()
+            gate.wait()
+
+        backend.block_duplex_open = blocked_open
         arm = asyncio.create_task(driver.start_tx())
-        await asyncio.sleep(0.1)  # reach the stuck duplex open
-        arm.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await arm
-        _assert_rx_alive(driver, backend, received)
-        gate.set()
-        await asyncio.sleep(0.05)
+        try:
+            async with asyncio.timeout(2):
+                while not entered.is_set():
+                    await asyncio.sleep(0.005)
+            arm.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await arm
+            old = backend.duplex_streams[0]
+            assert not driver.rx_running
+            assert old.started_count == old.stopped_count == 0
+            assert not any(stream.running for stream in backend.rx_streams)
+            gate.set()
+            await _settle_native_audio()
+            assert old.stopped_count == 1
+            await driver.start_rx(received.append)
+            _assert_rx_alive(driver, backend, received)
+        finally:
+            gate.set()
+            if not arm.done():
+                arm.cancel()
+            await asyncio.gather(arm, return_exceptions=True)
+            await _settle_native_audio()
+            await driver.stop_rx()
 
     @pytest.mark.asyncio()
     async def test_yaesu_acquire_tx_failure_keeps_session_rx(
