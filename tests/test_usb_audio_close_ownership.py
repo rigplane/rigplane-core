@@ -214,6 +214,59 @@ async def test_pending_endpoint_overlap_preserves_full_duplex_directions(
 
 
 @pytest.mark.timeout(10)
+async def test_inflight_retired_rx_callback_cannot_reach_new_subscriber_or_health(
+    fake_ownership_driver, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pool, fake, make = fake_ownership_driver
+    driver = make()
+    owner_thread = threading.get_ident()
+    submitted, release = threading.Event(), threading.Event()
+    watchdog_factory = driver._silence_watchdog
+    monkeypatch.setattr(usb_driver, "_SILENCE_WARN_SECONDS", 0)
+
+    def paused_watchdog(callback, frame_ms):
+        watchdog = watchdog_factory(callback, frame_ms)
+
+        def watch(frame):
+            if threading.get_ident() != owner_thread:
+                submitted.set()
+                assert release.wait(5)
+            watchdog(frame)
+
+        return watch
+
+    monkeypatch.setattr(driver, "_silence_watchdog", paused_watchdog)
+    first: list[bytes] = []
+    second: list[bytes] = []
+    await driver.start_rx(first.append)
+    stale = fake.rx_streams[-1]._callback
+    assert stale is not None
+
+    def native_frame() -> None:
+        stale(bytes(1920))
+        submitted.set()
+
+    worker = threading.Thread(target=native_frame)
+    worker.start()
+    try:
+        assert submitted.wait(2)
+        await driver.stop_rx()
+        await driver.start_rx(second.append)
+        release.set()
+        await asyncio.to_thread(worker.join, 2)
+        assert not worker.is_alive()
+        assert first == []
+        assert (second, driver.rx_silent) == ([], False)
+        fake.rx_streams[-1].inject_frame(b"\x01\x00" * 960)
+        assert len(second) == 1
+    finally:
+        release.set()
+        await asyncio.to_thread(worker.join, 2)
+        await driver.stop_rx()
+        await _drain(pool)
+
+
+@pytest.mark.timeout(10)
 async def test_pending_start_is_not_stopped_concurrently_and_refused_close_is_owned(
     fake_ownership_driver,
 ) -> None:
