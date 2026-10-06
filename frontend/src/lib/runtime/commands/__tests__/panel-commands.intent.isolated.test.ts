@@ -1629,6 +1629,8 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     vfo.onFreqChange(start + 500, 0, 'jump');
     let record = getCommandLifecycles().at(-1)!;
     acknowledgeCommand(record.id, record.originalEpoch, record.originalEpoch);
+    // The historical command predates this burst, unlike a live jump anchor.
+    resetSharedTuningAccumulatorForTests();
     vfo.onMainFreqChange(start + 1_000);
     setObservation(start + 500, 2);
     vfo.onMainFreqChange(start + 1_500);

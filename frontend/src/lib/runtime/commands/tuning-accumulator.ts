@@ -65,7 +65,7 @@ export interface TuningAccumulatorOptions {
 
 export interface TuningAccumulator {
   step(receiver: number, confirmedFreq: number, requestedFreq: number, observationMarker?: number | null): void;
-  jump(receiver: number, freq: number): void;
+  jump(receiver: number, freq: number, confirmedFreq?: number, observationMarker?: number | null): void;
   /** Retire queued relative intent before an explicit VFO identity command. */
   cancel(receiver?: number): void;
 }
@@ -265,7 +265,14 @@ export function createTuningAccumulator(options: TuningAccumulatorOptions): Tuni
       scheduleFlush(receiver);
       publishBurst(receiver, state.target, state.lastLifecycle, state.context);
     },
-    jump(receiver, freq) {
+    jump(receiver, freq, confirmedFreq, observationMarker = null) {
+      // A known pre-jump observation anchors subsequent relative intent;
+      // the jump target remains command intent, never confirmed state.
+      if (typeof confirmedFreq === 'number' && Number.isSafeInteger(confirmedFreq)
+        && confirmedFreq > 0 && validMarker(observationMarker)) {
+        beginFresh(receiver, now(), confirmedFreq, freq, observationMarker);
+        return;
+      }
       clear(receiver);
       const lifecycle = emit(receiver, freq) ?? null;
       publishBurst(receiver, freq, lifecycle, getContext(receiver));
