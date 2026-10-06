@@ -5,6 +5,7 @@ from dataclasses import replace
 import pytest
 
 from rigplane.core.state_pipeline_contracts import (
+    LOCAL_MONOTONIC_CLOCK_DOMAIN,
     FieldPath,
     Observation,
     SourceMetadata,
@@ -18,6 +19,7 @@ def sample(path: FieldPath, value: int | str, at: float) -> Observation:
         path=path,
         value=value,
         timestamp_monotonic=at,
+        clock_domain=LOCAL_MONOTONIC_CLOCK_DOMAIN,
         source=SourceMetadata(source="local_reconcile", provider="test"),
         quality=("reconciled",),
     )
