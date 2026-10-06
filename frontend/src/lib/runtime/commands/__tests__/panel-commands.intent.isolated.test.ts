@@ -1628,6 +1628,8 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     vfo.onFreqChange(start + 500, 0, 'jump');
     let record = getCommandLifecycles().at(-1)!;
     acknowledgeCommand(record.id, record.originalEpoch, record.originalEpoch);
+    // The historical command predates this burst, unlike a live jump anchor.
+    resetSharedTuningAccumulatorForTests();
     vfo.onMainFreqChange(start + 1_000);
     setObservation(start + 500, 2);
     vfo.onMainFreqChange(start + 1_500);
@@ -1639,6 +1641,24 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     setObservation(start + 1_500, 3);
     vfo.onMainFreqChange(start + 2_500);
     expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: start + 2_500, receiver: 0 }]);
+  });
+
+  it('spectrum jump followed by keyboard up before readback continues from the jump target', () => {
+    h.state = { ...h.state!, main: { ...h.state!.main!, freqHz: 7_047_500 }, fieldStatus: {
+      ...h.state!.fieldStatus, 'main.freqHz': {
+        ...freshStatus, storePath: 'receiver.0.active.freq_mode.freq_hz', lastObservedMonotonic: 1,
+      },
+    } };
+    makeVfoHandlers().onFreqChange(7_128_000, 0);
+    expect(observedFreq()).toBe(7_047_500); // No radio echo or confirmed-state patch.
+    expect(dispatchKeyboardRadioAction({ action: 'tune', params: { direction: 'up' } })).toBe(true);
+    vi.advanceTimersByTime(60);
+    expect(exactCalls()).toEqual([
+      ['set_freq', { freq: 7_128_000, receiver: 0 }],
+      ['set_freq', { freq: 7_129_000, receiver: 0 }],
+    ]);
+    expect(h.patchReceiver).not.toHaveBeenCalled();
+    expect(observedFreq()).toBe(7_047_500);
   });
 
   it("MOR-1425 review B1: onFreqChange(freq, receiver, 'step') opts a relative gesture into the accumulate path instead of the 'jump' default", () => {

@@ -1256,11 +1256,37 @@ def _project_scope_fixed_edge(value: Any) -> dict[str, int]:
 
 
 def _canonical_snapshot_fields(snapshot: StateSnapshot) -> tuple[FieldSnapshot, ...]:
+    # Receiver IDs and slotless/ACTIVE paths can name the same public leaf.
+    # Resolve that leaf once so its value and fieldStatus retain one sample.
+    aliases: dict[str, FieldSnapshot] = {}
+    alias_paths: dict[FieldPath, str] = {}
+    for field in snapshot.fields:
+        if (
+            field.path.scope is not FieldScope.RECEIVER
+            or field.path.family is not FieldFamily.FREQ_MODE
+            or field.path.slot not in (None, VfoSlot.ACTIVE)
+        ):
+            continue
+        public_paths = _snapshot_field_public_paths(field.path)
+        if len(public_paths) != 1:
+            continue
+        public_path = public_paths[0]
+        alias_paths[field.path] = public_path
+        previous = aliases.get(public_path)
+        if previous is None or (field.last_observed_monotonic, str(field.path)) >= (
+            previous.last_observed_monotonic,
+            str(previous.path),
+        ):
+            aliases[public_path] = field
+    fields = tuple(
+        field
+        for field in snapshot.fields
+        if field.path not in alias_paths or field is aliases[alias_paths[field.path]]
+    )
     path = FieldPath.global_("tx_state", "tx_target")
-    targets = tuple(field for field in snapshot.fields if field.path == path)
+    targets = tuple(field for field in fields if field.path == path)
     if len(targets) < 2:
-        canonical: tuple[FieldSnapshot, ...] = snapshot.fields
-        return canonical
+        return fields
     newest_at = max(field.last_observed_monotonic for field in targets)
     newest = tuple(f for f in targets if f.last_observed_monotonic == newest_at)
     rank = (FreshnessState.FRESH, FreshnessState.UNKNOWN, FreshnessState.STALE)
@@ -1269,7 +1295,7 @@ def _canonical_snapshot_fields(snapshot: StateSnapshot) -> tuple[FieldSnapshot, 
         field.value != winner.value for field in newest
     ):
         winner = replace(winner, value={"status": "unknown", "reason": "contradiction"})
-    return tuple(field for field in snapshot.fields if field.path != path) + (winner,)
+    return tuple(field for field in fields if field.path != path) + (winner,)
 
 
 def _apply_snapshot_field(
