@@ -367,12 +367,13 @@ class _BoundedPortAudioPool:
             raise AudioCaptureOpenTimeoutError(
                 "PortAudio worker pool saturated after cleanup."
             )
-        for key in self._opens:
+        for key, opening in self._opens.items():
             old_resources = self._stream_resources.get(key)
             if (
-                resources is None
-                or old_resources is None
-                or not resources.isdisjoint(old_resources)
+                not opening.done()
+                and resources is not None
+                and old_resources is not None
+                and not resources.isdisjoint(old_resources)
             ):
                 start_coro.close()
                 raise AudioCaptureOpenTimeoutError(
