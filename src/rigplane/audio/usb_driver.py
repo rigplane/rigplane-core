@@ -238,6 +238,8 @@ class _BoundedPortAudioPool:
         self._cleanup_streams: dict[
             int, tuple[RxStream | TxStream | DuplexStream, str]
         ] = {}
+        self._opens: dict[int, asyncio.Future[Any]] = {}
+        self._stream_resources: dict[int, frozenset[tuple[int, str]]] = {}
 
     def submit_tracked(self, fn: Callable[[], Any]) -> "asyncio.Future[Any]":
         """Submit *fn* to the pool; ``inflight`` uncounts only on settle.
@@ -309,6 +311,7 @@ class _BoundedPortAudioPool:
         direction: str,
         timeout: float,
         what: str = "capture open",
+        resources: frozenset[tuple[int, str]] | None = None,
     ) -> None:
         """Start a stream off the loop, bounded, with late-close cleanup.
 
@@ -336,6 +339,16 @@ class _BoundedPortAudioPool:
         deadline = asyncio.get_running_loop().time() + timeout
         try:
             for old_stream, old_direction in list(self._cleanup_streams.values()):
+                key = id(old_stream)
+                if key not in self._cleanup_streams:
+                    continue
+                old_resources = self._stream_resources.get(key)
+                if (
+                    resources is not None
+                    and old_resources is not None
+                    and resources.isdisjoint(old_resources)
+                ):
+                    continue
                 await self.stop_stream_bounded(
                     old_stream,
                     direction=old_direction,
@@ -354,7 +367,31 @@ class _BoundedPortAudioPool:
             raise AudioCaptureOpenTimeoutError(
                 "PortAudio worker pool saturated after cleanup."
             )
+        for key, opening in self._opens.items():
+            old_resources = self._stream_resources.get(key)
+            if (
+                not opening.done()
+                and resources is not None
+                and old_resources is not None
+                and not resources.isdisjoint(old_resources)
+            ):
+                start_coro.close()
+                raise AudioCaptureOpenTimeoutError(
+                    f"{direction.upper()} endpoint still has a pending open."
+                )
+        key = id(stream)
+        if resources is not None:
+            self._stream_resources[key] = resources
         future = self.submit_tracked(lambda: _drive_stream_open(start_coro))
+        self._opens[key] = future
+
+        def settled(done: asyncio.Future[Any]) -> None:
+            if self._opens.get(key) is done:
+                del self._opens[key]
+            if not done.cancelled() and done.exception() is not None:
+                self._cleanup_streams[key] = stream, direction
+
+        future.add_done_callback(settled)
         try:
             _done, pending = await asyncio.wait(
                 {future},
@@ -395,6 +432,7 @@ class _BoundedPortAudioPool:
         ``running`` True with no consumer). An already-settled future
         closes immediately.
         """
+        self._cleanup_streams[id(stream)] = stream, direction
         if future.done():
             self.close_late_stream(future, stream, direction, what)
             return
@@ -463,6 +501,9 @@ class _BoundedPortAudioPool:
         self, stream: "RxStream | TxStream | DuplexStream"
     ) -> "asyncio.Future[Any]":
         key = id(stream)
+        opening = self._opens.get(key)
+        if opening is not None and not opening.done():
+            raise AudioCaptureOpenTimeoutError("Stream start has not settled.")
         pending = self._stops.get(key)
         if pending is not None:
             return pending
@@ -481,6 +522,7 @@ class _BoundedPortAudioPool:
                 del self._stops[key]
             if not done.cancelled() and done.exception() is None:
                 self._cleanup_streams.pop(key, None)
+                self._stream_resources.pop(key, None)
 
         future.add_done_callback(settled)
         return future
@@ -502,9 +544,23 @@ class _BoundedPortAudioPool:
         # The pool is the cleanup owner if a caller logs/refuses this error
         # and discards its slot. Explicit opens retry retained cleanup before
         # constructing native streams; no automatic retry is scheduled.
-        self._cleanup_streams[id(stream)] = stream, direction
+        key = id(stream)
+        self._cleanup_streams[key] = stream, direction
+        deadline = asyncio.get_running_loop().time() + timeout
+        opening = self._opens.get(key)
+        if opening is not None:
+            _done, pending = await asyncio.wait({opening}, timeout=timeout)
+            if opening in pending:
+                raise AudioCaptureOpenTimeoutError(
+                    f"{direction.upper()} stream start has not settled."
+                )
+            if key not in self._cleanup_streams:
+                return
         future = self._submit_stop(stream)
-        _done, pending = await asyncio.wait({future}, timeout=timeout)
+        _done, pending = await asyncio.wait(
+            {future},
+            timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+        )
         if future in pending:
             logger.warning(
                 "usb-audio: %s stream stop did not finish within %.1fs — retaining "
@@ -1029,6 +1085,7 @@ class UsbAudioDriver:
         # copies before the session calls start_tx, so the callback must
         # live here for the handoff to keep frames flowing.
         self._rx_callback: Callable[[bytes], None] | None = None
+        self._rx_generation = 0
         # MOR-2792: readable silent-now flag owned by ``_silence_watchdog``.
         self._rx_silent = False
         self._usb_audio_contract = UsbAudioContract()
@@ -1529,6 +1586,7 @@ class UsbAudioDriver:
         start_coro: "Coroutine[Any, Any, None]",
         *,
         direction: str,
+        resources: frozenset[tuple[int, str]],
     ) -> None:
         """Open *stream* off the event loop, bounded by ``_capture_open_timeout``.
 
@@ -1549,6 +1607,7 @@ class UsbAudioDriver:
             start_coro,
             direction=direction,
             timeout=self._capture_open_timeout,
+            resources=resources,
         )
 
     async def _run_portaudio_bounded(
@@ -1612,6 +1671,8 @@ class UsbAudioDriver:
         """
         stream = getattr(self, slot)
         if stream is not None:
+            if slot in {"_rx_stream", "_duplex_stream"}:
+                self._rx_generation += 1
             # Keep ownership without advertising a close-pending handle as
             # available, even while its native stop is still blocked.
             self._stream_cleanup.add(slot)
@@ -1645,6 +1706,32 @@ class UsbAudioDriver:
         callback = self._rx_callback
         if callback is not None:
             callback(frame)
+
+    def _stream_rx_callback(self, frame_ms: int) -> Callable[[bytes], None]:
+        self._rx_generation += 1
+        generation = self._rx_generation
+        loop = asyncio.get_running_loop()
+        watchdog = self._silence_watchdog(self._deliver_rx, frame_ms)
+
+        def deliver(frame: bytes) -> None:
+            if generation == self._rx_generation:
+                watchdog(frame)
+
+        def receive(frame: bytes) -> None:
+            try:
+                on_owner_loop = asyncio.get_running_loop() is loop
+            except RuntimeError:
+                on_owner_loop = False
+            if on_owner_loop:
+                deliver(frame)
+                return
+            try:
+                loop.call_soon_threadsafe(deliver, frame)
+            except RuntimeError:
+                if not loop.is_closed():
+                    raise
+
+        return receive
 
     async def start_rx(
         self,
@@ -1760,8 +1847,9 @@ class UsbAudioDriver:
         try:
             await self._open_stream(
                 stream,
-                stream.start(self._silence_watchdog(self._deliver_rx, fm)),
+                stream.start(self._stream_rx_callback(fm)),
                 direction="rx",
+                resources=frozenset({(selected_rx.index, "rx")}),
             )
         except (AudioCaptureOpenTimeoutError, asyncio.CancelledError):
             # Never leave a stuck-open handle wired up as "the" RX
@@ -1771,6 +1859,10 @@ class UsbAudioDriver:
             # (F1) gets the same treatment as a timeout — both leave
             # the background open running unattended.
             self._rx_stream = None
+            self._rx_generation += 1
+            raise
+        except BaseException:
+            self._rx_generation += 1
             raise
         self._store_stream_contract(contract)
         logger.info(
@@ -1889,7 +1981,12 @@ class UsbAudioDriver:
                 # they get the same off-loop + bounded-timeout treatment
                 # (MOR-1438), even though the specific bench trigger — a
                 # macOS TCC microphone-consent prompt — is RX/input-only.
-                await self._open_stream(stream, stream.start(), direction="tx")
+                await self._open_stream(
+                    stream,
+                    stream.start(),
+                    direction="tx",
+                    resources=frozenset({(selected_tx.index, "tx")}),
+                )
             except (AudioCaptureOpenTimeoutError, asyncio.CancelledError):
                 self._tx_stream = None
                 raise
@@ -2080,13 +2177,20 @@ class UsbAudioDriver:
             # single-direction stream, just on the shared CODEC.
             await self._open_stream(
                 stream,
-                stream.start(self._silence_watchdog(self._deliver_rx, fm)),
+                stream.start(self._stream_rx_callback(fm)),
                 direction="duplex",
+                resources=frozenset(
+                    {(selected_rx.index, "rx"), (selected_tx.index, "tx")}
+                ),
             )
         except (AudioCaptureOpenTimeoutError, asyncio.CancelledError):
             # The pool owns abandoned opens and their late cleanup. Ordinary
             # failures retain this slot until successful native close.
             self._duplex_stream = None
+            self._rx_generation += 1
+            raise
+        except BaseException:
+            self._rx_generation += 1
             raise
         self._store_stream_contract(rx_contract)
         self._store_stream_contract(tx_contract)

@@ -14,6 +14,303 @@ from rigplane.audio import backend, usb_driver
 
 
 @pytest.fixture
+def fake_ownership_driver(monkeypatch: pytest.MonkeyPatch):
+    pool = usb_driver._BoundedPortAudioPool()
+    monkeypatch.setattr(usb_driver, "bounded_portaudio_pool", pool)
+    monkeypatch.setattr(usb_driver, "_get_uid_map", lambda: {})
+    monkeypatch.setattr(usb_driver, "resolve_usb_duplex_mode", lambda *_args: "full")
+    devices = [
+        backend.AudioDeviceInfo(
+            id=backend.AudioDeviceId(index),
+            name=f"USB Audio CODEC {index}",
+            input_channels=2,
+            output_channels=2,
+            default_samplerate=48_000,
+        )
+        for index in (1, 2)
+    ]
+    fake = backend.FakeAudioBackend(devices)
+
+    def make(device: int = 1):
+        return usb_driver.UsbAudioDriver(
+            backend=fake,
+            rx_device=f"USB Audio CODEC {device}",
+            tx_device=f"USB Audio CODEC {device}",
+            capture_open_timeout=0.1,
+        )
+
+    yield pool, fake, make
+    pool._executor.shutdown(wait=True)
+
+
+async def _drain(pool: usb_driver._BoundedPortAudioPool) -> None:
+    async with asyncio.timeout(5):
+        while pool.inflight:
+            await asyncio.sleep(0.01)
+
+
+@pytest.mark.parametrize("kind", ["rx", "tx", "duplex"])
+@pytest.mark.parametrize("cancel", [False, True])
+@pytest.mark.parametrize("late_failure", [False, True])
+@pytest.mark.timeout(10)
+async def test_pending_open_blocks_same_endpoint_until_settled_and_closed(
+    fake_ownership_driver, kind: str, cancel: bool, late_failure: bool
+) -> None:
+    pool, fake, make = fake_ownership_driver
+    owner, replacement, unrelated = make(), make(), make(2)
+    entered, release = threading.Event(), threading.Event()
+
+    def blocked_open() -> None:
+        entered.set()
+        assert release.wait(5)
+        if late_failure:
+            raise RuntimeError("late start refused")
+
+    hook = f"block_{kind}_open"
+    setattr(fake, hook, blocked_open)
+    attempt = asyncio.create_task(_start(owner, kind))
+    try:
+        async with asyncio.timeout(2):
+            while not entered.is_set():
+                await asyncio.sleep(0.005)
+        if cancel:
+            attempt.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await attempt
+        else:
+            with pytest.raises(usb_driver.AudioCaptureOpenTimeoutError):
+                await attempt
+        streams = getattr(fake, f"{kind}_streams")
+        old = streams[0]
+        setattr(fake, hook, None)
+        with pytest.raises(usb_driver.AudioCaptureOpenTimeoutError):
+            await _start(replacement, kind)
+        assert all(stream.started_count == 0 for stream in streams)
+        assert old.stopped_count == 0
+        await _start(unrelated, kind)
+        assert getattr(unrelated, f"{kind}_running", unrelated.tx_running)
+        await getattr(unrelated, f"stop_{kind}")()
+        release.set()
+        await _drain(pool)
+        assert old.stopped_count == 1
+        await _start(replacement, kind)
+        await getattr(replacement, f"stop_{kind}")()
+    finally:
+        release.set()
+        if not attempt.done():
+            attempt.cancel()
+        await asyncio.gather(attempt, return_exceptions=True)
+        await _drain(pool)
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+@pytest.mark.timeout(10)
+async def test_retired_rx_callback_cannot_update_health_or_replacement(
+    fake_ownership_driver, cancel: bool
+) -> None:
+    pool, fake, make = fake_ownership_driver
+    driver = make()
+    driver._capture_open_timeout = 0.1
+    entered, release, closing, closed = (threading.Event() for _ in range(4))
+
+    def blocked_open() -> None:
+        entered.set()
+        assert release.wait(5)
+
+    def blocked_close() -> None:
+        closing.set()
+        assert closed.wait(5)
+
+    fake.block_rx_open = blocked_open
+    first: list[bytes] = []
+    second: list[bytes] = []
+    attempt = asyncio.create_task(driver.start_rx(first.append))
+    try:
+        async with asyncio.timeout(2):
+            while not entered.is_set():
+                await asyncio.sleep(0.005)
+        old = fake.rx_streams[0]
+        old.block_stop = blocked_close
+        if cancel:
+            attempt.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await attempt
+        else:
+            with pytest.raises(usb_driver.AudioCaptureOpenTimeoutError):
+                await attempt
+        fake.block_rx_open = None
+        retry = asyncio.create_task(driver.start_rx(second.append))
+        await asyncio.sleep(0.01)
+        release.set()
+        async with asyncio.timeout(2):
+            while not closing.is_set():
+                await asyncio.sleep(0.005)
+        assert old._callback is not None
+        stale = old._callback
+        for _ in range(500):
+            stale(bytes(1920))
+        assert first == second == []
+        assert not driver.rx_silent
+        with pytest.raises(usb_driver.AudioCaptureOpenTimeoutError):
+            await retry
+        closed.set()
+        await _drain(pool)
+        await driver.start_rx(second.append)
+        stale(bytes(1920))
+        assert second == []
+        fake.rx_streams[-1].inject_frame(b"\x01\x00" * 960)
+        assert len(second) == 1
+        await driver.stop_rx()
+        stale(bytes(1920))
+        assert len(second) == 1
+    finally:
+        release.set()
+        closed.set()
+        if not attempt.done():
+            attempt.cancel()
+        await asyncio.gather(attempt, return_exceptions=True)
+        await _drain(pool)
+
+
+@pytest.mark.parametrize(
+    ("kind", "replacement_kind", "conflicts"),
+    [
+        ("rx", "duplex", True),
+        ("tx", "duplex", True),
+        ("duplex", "rx", True),
+        ("duplex", "tx", True),
+        ("rx", "tx", False),
+        ("tx", "rx", False),
+    ],
+)
+@pytest.mark.timeout(10)
+async def test_pending_endpoint_overlap_preserves_full_duplex_directions(
+    fake_ownership_driver, kind: str, replacement_kind: str, conflicts: bool
+) -> None:
+    pool, fake, make = fake_ownership_driver
+    owner, replacement = make(), make()
+    release = threading.Event()
+    setattr(fake, f"block_{kind}_open", lambda: release.wait(5))
+    try:
+        with pytest.raises(usb_driver.AudioCaptureOpenTimeoutError):
+            await _start(owner, kind)
+        old = getattr(fake, f"{kind}_streams")[0]
+        setattr(fake, f"block_{kind}_open", None)
+        if conflicts:
+            with pytest.raises(usb_driver.AudioCaptureOpenTimeoutError):
+                await _start(replacement, replacement_kind)
+        else:
+            await _start(replacement, replacement_kind)
+            await getattr(replacement, f"stop_{replacement_kind}")()
+        assert old.started_count == old.stopped_count == 0
+        release.set()
+        await _drain(pool)
+        assert old.stopped_count == 1
+        await _start(replacement, replacement_kind)
+        await getattr(replacement, f"stop_{replacement_kind}")()
+    finally:
+        release.set()
+        await _drain(pool)
+
+
+@pytest.mark.timeout(10)
+async def test_inflight_retired_rx_callback_cannot_reach_new_subscriber_or_health(
+    fake_ownership_driver, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pool, fake, make = fake_ownership_driver
+    driver = make()
+    owner_thread = threading.get_ident()
+    submitted, release = threading.Event(), threading.Event()
+    watchdog_factory = driver._silence_watchdog
+    monkeypatch.setattr(usb_driver, "_SILENCE_WARN_SECONDS", 0)
+
+    def paused_watchdog(callback, frame_ms):
+        watchdog = watchdog_factory(callback, frame_ms)
+
+        def watch(frame):
+            if threading.get_ident() != owner_thread:
+                submitted.set()
+                assert release.wait(5)
+            watchdog(frame)
+
+        return watch
+
+    monkeypatch.setattr(driver, "_silence_watchdog", paused_watchdog)
+    first: list[bytes] = []
+    second: list[bytes] = []
+    await driver.start_rx(first.append)
+    stale = fake.rx_streams[-1]._callback
+    assert stale is not None
+
+    def native_frame() -> None:
+        stale(bytes(1920))
+        submitted.set()
+
+    worker = threading.Thread(target=native_frame)
+    worker.start()
+    try:
+        assert submitted.wait(2)
+        await driver.stop_rx()
+        await driver.start_rx(second.append)
+        release.set()
+        await asyncio.to_thread(worker.join, 2)
+        assert not worker.is_alive()
+        assert first == []
+        assert (second, driver.rx_silent) == ([], False)
+        fake.rx_streams[-1].inject_frame(b"\x01\x00" * 960)
+        assert len(second) == 1
+    finally:
+        release.set()
+        await asyncio.to_thread(worker.join, 2)
+        await driver.stop_rx()
+        await _drain(pool)
+
+
+@pytest.mark.timeout(10)
+async def test_pending_start_is_not_stopped_concurrently_and_refused_close_is_owned(
+    fake_ownership_driver,
+) -> None:
+    pool, fake, make = fake_ownership_driver
+    driver, replacement = make(), make()
+    entered, release = threading.Event(), threading.Event()
+    closes = 0
+
+    def blocked_open() -> None:
+        entered.set()
+        assert release.wait(5)
+
+    def refuse_close() -> None:
+        nonlocal closes
+        closes += 1
+        if closes < 3:
+            raise RuntimeError("close refused")
+
+    fake.block_rx_open = blocked_open
+    try:
+        with pytest.raises(usb_driver.AudioCaptureOpenTimeoutError):
+            await driver.start_rx(lambda _frame: None)
+        old = fake.rx_streams[0]
+        assert entered.is_set()
+        old.block_stop = refuse_close
+        with pytest.raises(usb_driver.AudioCaptureOpenTimeoutError):
+            await pool.stop_stream_bounded(old, direction="rx", timeout=0.1)
+        assert closes == 0
+        release.set()
+        await _drain(pool)
+        assert closes == 1
+        fake.block_rx_open = None
+        with pytest.raises(RuntimeError, match="close refused"):
+            await replacement.start_rx(lambda _frame: None)
+        assert all(stream.started_count == 0 for stream in fake.rx_streams[1:])
+        await replacement.start_rx(lambda _frame: None)
+        assert closes == 3
+        await replacement.stop_rx()
+    finally:
+        release.set()
+        await _drain(pool)
+
+
+@pytest.fixture
 def native_driver(monkeypatch: pytest.MonkeyPatch):
     events: list[str] = []
     handles: list[object] = []
