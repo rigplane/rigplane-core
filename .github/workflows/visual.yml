@@ -135,25 +135,14 @@ jobs:
         if: github.event.inputs.regenerate != 'true'
         run: cd frontend && npm run test:e2e:visual
 
-      # Keep failure diagnostics available even though the pixel step is
-      # blocking; a bare step condition would otherwise be skipped after it.
-      - name: Upload diff report
-        if: always() && steps.visual.outcome == 'failure'
-        uses: actions/upload-artifact@v4
-        with:
-          name: visual-diff-report
-          path: frontend/test-results/
-          retention-days: 14
-
       - name: Annotate failure
         if: always() && steps.visual.outcome == 'failure'
-        run: echo "::error::Visual pixel-diff failed. See the visual-diff-report artifact."
+        run: echo "::error::Visual pixel-diff failed. See the Pixel-diff vs approved baselines step log."
 
       # MOR-2296 — manual re-pin route. A visual change small enough to stay
       # under the comparator floor (`COMPARATOR` in
-      # playwright.visual.config.ts) leaves the pixel-diff step green, so the
-      # `steps.visual.outcome == 'failure'` diff-report upload above never
-      # fires and there is no Linux-rendered PNG to pull. This runs INSTEAD
+      # playwright.visual.config.ts) leaves the pixel-diff step green. This
+      # explicit route produces Linux-rendered PNGs for re-pinning and runs INSTEAD
       # of the pixel-diff step (their conditions are mutually exclusive),
       # writing into frontend/fixtures/approved-baselines/ via that config's
       # `snapshotPathTemplate`.
