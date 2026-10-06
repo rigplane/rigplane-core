@@ -252,17 +252,6 @@ jobs:
         id: capture
         run: node frontend/fixtures/capture.mjs
 
-      # Always uploaded (not just on failure) — this is the MOR-1091
-      # "links to CI artifacts" deliverable: the manifest + PNGs need to be
-      # linkable from a passing run too, not only a failing one.
-      - name: Upload capture output
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fixture-harness-capture
-          path: frontend/fixtures-baselines/
-          retention-days: 14
-
       - name: Annotate result
         if: always()
-        run: '[ "${{ steps.capture.outcome }}" = "failure" ] && echo "::error::Fixture-harness capture FAILED — blocking since MOR-1386 gate promotion. See the fixture-harness-capture artifact." || true'
+        run: '[ "${{ steps.capture.outcome }}" = "failure" ] && echo "::error::Fixture-harness capture FAILED — blocking since MOR-1386 gate promotion. See the Run fixture-harness capture step log." || true'
