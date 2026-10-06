@@ -76,8 +76,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Known issues
 
-- IC-7300 Power, ALC and Id telemetry can intermittently be absent while
-  PTT is reported true (MOR-3116); that investigation remains open.
 - Linux hardware audio acceptance remains pending.
 
 ## [3.0.0b13] — 2026-10-02
