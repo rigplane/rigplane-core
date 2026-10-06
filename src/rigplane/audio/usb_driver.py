@@ -1193,6 +1193,11 @@ class UsbAudioDriver:
             if resolved is not None:
                 self._selected_rx, self._selected_tx = resolved
                 return resolved
+            if platform.system() == "Linux":
+                raise AudioDeviceSelectionError(
+                    "Linux serial USB audio pair could not be resolved; reconnect "
+                    "the radio's USB audio device or select explicit RX/TX devices."
+                )
 
         selected_rx, selected_tx = select_usb_audio_devices(
             devices,
