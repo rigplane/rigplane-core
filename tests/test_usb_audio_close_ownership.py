@@ -172,6 +172,47 @@ async def test_retired_rx_callback_cannot_update_health_or_replacement(
         await _drain(pool)
 
 
+@pytest.mark.parametrize(
+    ("kind", "replacement_kind", "conflicts"),
+    [
+        ("rx", "duplex", True),
+        ("tx", "duplex", True),
+        ("duplex", "rx", True),
+        ("duplex", "tx", True),
+        ("rx", "tx", False),
+        ("tx", "rx", False),
+    ],
+)
+@pytest.mark.timeout(10)
+async def test_pending_endpoint_overlap_preserves_full_duplex_directions(
+    fake_ownership_driver, kind: str, replacement_kind: str, conflicts: bool
+) -> None:
+    pool, fake, make = fake_ownership_driver
+    owner, replacement = make(), make()
+    release = threading.Event()
+    setattr(fake, f"block_{kind}_open", lambda: release.wait(5))
+    try:
+        with pytest.raises(usb_driver.AudioCaptureOpenTimeoutError):
+            await _start(owner, kind)
+        old = getattr(fake, f"{kind}_streams")[0]
+        setattr(fake, f"block_{kind}_open", None)
+        if conflicts:
+            with pytest.raises(usb_driver.AudioCaptureOpenTimeoutError):
+                await _start(replacement, replacement_kind)
+        else:
+            await _start(replacement, replacement_kind)
+            await getattr(replacement, f"stop_{replacement_kind}")()
+        assert old.started_count == old.stopped_count == 0
+        release.set()
+        await _drain(pool)
+        assert old.stopped_count == 1
+        await _start(replacement, replacement_kind)
+        await getattr(replacement, f"stop_{replacement_kind}")()
+    finally:
+        release.set()
+        await _drain(pool)
+
+
 @pytest.mark.timeout(10)
 async def test_pending_start_is_not_stopped_concurrently_and_refused_close_is_owned(
     fake_ownership_driver,
