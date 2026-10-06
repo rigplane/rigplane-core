@@ -11,6 +11,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0b14] — 2026-10-06
+
+### Fixed
+
+- **Resolve Windows radio USB audio within the selection deadline
+  (MOR-3132, MOR-3136, #3988, #3990, #3993).** Optional device discovery
+  no longer consumes the entire startup budget. IC-7300 serial and audio
+  functions can be associated through their USB topology, including the
+  supported Parallels guest layout and split RX/TX endpoint names.
+  Ambiguous or conflicting identities are rejected instead of selecting
+  an unrelated device.
+
+- **Keep Windows native audio resources alive until streams close
+  (#3994).** Audio workers balance COM initialization, and streams retain
+  the Windows MTA while native handles are open. Failed starts and refused
+  closes retain cleanup ownership so a later cleanup can finish.
+
+- **Prevent overlapping audio opens after a timeout or cancellation
+  (#3995).** A pending native start keeps its endpoint reserved until it
+  settles and cleanup succeeds. An immediate retry cannot replace that
+  unfinished stream. Callbacks from a retired RX session are discarded
+  before reaching current subscribers or changing capture health.
+
+- **Report RX startup refusals and distinguish audio failure stages
+  (#3994).** The Web UI reports a refused radio capture start and permits
+  an explicit retry. Native playback failures are recorded separately
+  from decoder failures.
+
+- **Keep frequency values and their evidence coherent (#3996).** Public
+  frequency aliases use the value, timestamp and provenance of the same
+  winning observation. Keyboard tuning immediately after an absolute
+  frequency jump follows the requested destination while its radio echo
+  is pending.
+
+- **Wait for a complete CI-V discovery reply (MOR-3133, #3989).** Serial
+  discovery handles fragmented model-ID replies and skips unrelated
+  frames while preserving the probe's open, read, parse and close failure
+  distinctions.
+
+- **Match native selector colors to the selected theme
+  (MOR-3123, #3981).** Native selects and their options now use the
+  application's light or dark color scheme.
+
+- **Refuse unrelated Linux audio devices when radio USB auto selection
+  cannot resolve both endpoints (#3999).** Serial-bound automatic
+  selection fails before opening a stream when the radio's USB capture
+  or playback endpoint is missing. Explicit device selection remains
+  available.
+
+### Added
+
+- **Show the actual serial port-open failure category (MOR-3128).**
+  Startup and reconnect diagnostics distinguish permission denied, busy,
+  missing device, timeout and unknown failures through runtime health
+  and translated Web UI messages.
+
+- **Retain bounded local audio diagnostics (MOR-3130, #3987, #3991,
+  #3992).** Runtime diagnostics expose client-reported playback context
+  state, frame/decode/scheduling counters, PCM peak and safe resume
+  outcomes. Microphone acquisition failures retain their actual safe
+  category instead of treating every rejection as permission denied.
+  These reports do not establish audible output.
+
+### Known issues
+
+- Linux hardware audio acceptance remains pending.
+
 ## [3.0.0b13] — 2026-10-02
 
 ### Fixed
@@ -4341,7 +4408,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b13...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b14...HEAD
+[3.0.0b14]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b13...v3.0.0b14
 [3.0.0b13]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b12...v3.0.0b13
 [3.0.0b12]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b11...v3.0.0b12
 [3.0.0b11]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b10...v3.0.0b11
