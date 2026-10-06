@@ -323,25 +323,20 @@ The `dual-main-sub--desktop--studioline--light` and `tx-phase-fault--desktop--fi
 
 MOR-1396 re-pinned this set on the Linux ARM64 Core runner. The provisioning run was `31180561550` at branch head `ad37689d`; its `visual-diff-report` artifact contains real Linux `*-actual.png` outputs for the 12 captures whose macOS baseline exceeded the comparator tolerance. The remaining two captures, `ptt-idle--mobile` and `ptt-held--mobile`, passed the same Linux comparison and therefore emitted no failure-only actual file. `manifest.json` records the exact Linux regeneration environment. `.github/workflows/visual.yml` is now blocking.
 
-**Regenerating from Linux (required for a future platform re-pin — do NOT do this on macOS):** the workflow produces Linux renders as a side effect of a failing run — `steps.visual.outcome == 'failure'` uploads `frontend/test-results/`, and every failing capture's `*-actual.png` inside it IS the Linux render (Playwright's own output naming for the actual-vs-expected-vs-diff trio). To re-pin from Linux:
+**Regenerating from Linux (required for a future platform re-pin — do NOT do this on macOS):** use the explicit `regenerate=true` route in `visual.yml`. It runs `--update-snapshots=all` on Linux and exports `frontend/fixtures/approved-baselines/` as `regenerated-baselines`; automatic failure-diff uploads are disabled. To re-pin from Linux:
 
 ```bash
-# 1. Trigger visual.yml on a PR (or push [full-ci]-style if a push trigger
-#    exists at that point) so it runs on the [self-hosted, linux, build]
-#    runner and — expectedly — fails against the macOS-captured baselines.
-# 2. Download the `visual-diff-report` artifact from that run.
-gh run download <run-id> -n visual-diff-report -D /tmp/visual-diff-report
+# 1. Explicitly dispatch regeneration at the intended source revision.
+gh workflow run visual.yml --ref <branch-or-tag> -f regenerate=true
+# 2. Download the baseline export from that exact run.
+gh run download <run-id> -n regenerated-baselines -D /tmp/regenerated-baselines
 
-# 3. Copy each *-actual.png over its corresponding approved baseline —
-#    NOT the *-expected.png (that is just a copy of the old baseline) and
-#    NOT the *-diff.png (that is the highlighted difference image).
-for actual in /tmp/visual-diff-report/**/*-actual.png; do
-  name=$(basename "$actual" | sed 's/-actual\.png$/.png/')
-  /bin/cp -f "$actual" "frontend/fixtures/approved-baselines/$name"
-done
+# 3. Copy the exported PNGs and their provenance manifest.
+cp /tmp/regenerated-baselines/*.png frontend/fixtures/approved-baselines/
+cp /tmp/regenerated-baselines/manifest.json frontend/fixtures/approved-baselines/
 
-# 4. Re-run the comparator on Linux (or trust the just-copied images) to
-#    confirm 0 diffs, open each changed PNG to eyeball it, then commit.
+# 4. Confirm the Linux comparator result and review every changed PNG
+#    against the intended visual change before committing.
 git status frontend/fixtures/approved-baselines/
 git add frontend/fixtures/approved-baselines/
 ```
