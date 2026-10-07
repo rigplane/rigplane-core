@@ -6,11 +6,68 @@ import type { ReceiverState, ServerState } from '../../types/state';
 import type { CommandDeliveryEvent, CommandLifecycleDeliveryEvent, CommandReconciliationDeliveryEvent, ControlSessionTransition } from '../ws-client';
 import { MockWebSocket, instances } from './support/fake-ws-backend';
 
+class ControllerSocket extends MockWebSocket {
+  protocol: string;
+  constructor(url: string, readonly protocols: string[] = []) {
+    super(url);
+    this.protocol = protocols[0] ?? '';
+  }
+}
+
 type ServerStateWithObservation = ServerState & {
   observationSeq?: number;
   publicStateSeq?: number;
   fieldStatus?: Record<string, unknown>;
 };
+
+describe('remote controller channel grouping', () => {
+  beforeEach(() => {
+    vi.resetModules(); vi.useFakeTimers(); instances.length = 0;
+    vi.stubGlobal('WebSocket', ControllerSocket);
+    vi.stubGlobal('fetch', vi.fn(async (_url, init?: RequestInit) => new Response(JSON.stringify(
+      init?.method === 'POST'
+        ? { controller_key: 'a'.repeat(64), generation: 1, ttl_ms: 6000, heartbeat_ms: 2000 }
+        : { protocol_version: 1, mode: 'remote', state: 'idle' },
+    ), { status: init?.method === 'POST' ? 201 : 200 })));
+  });
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+  it('attaches primary before scope, clears pending commands on loss and ignores old callbacks', async () => {
+    const { controllerClient } = await import('../controller-client');
+    const { WsChannel } = await import('../ws-client');
+    await controllerClient.prepare();
+    const control = new WsChannel();
+    const scope = new WsChannel(false);
+    control.connect('wss://station.test/api/v1/ws');
+    scope.connect('wss://station.test/api/v1/scope');
+    await vi.waitFor(() => expect(instances).toHaveLength(1));
+    const primary = instances[0] as ControllerSocket;
+    expect(new URL(primary.url).searchParams.get('controller_role')).toBe('primary');
+    expect(primary.protocols).toEqual([`rigplane-controller-v1.${'a'.repeat(64)}`]);
+    expect(primary.url).not.toContain('a'.repeat(64));
+    primary.simulateOpen();
+    await vi.waitFor(() => expect(instances).toHaveLength(2));
+    const child = instances[1] as ControllerSocket;
+    expect(child.protocols).toEqual(primary.protocols);
+    child.simulateOpen();
+    const received = vi.fn();
+    control.onMessage(received);
+    primary.simulateClose();
+    expect(child.readyState).toBe(ControllerSocket.CLOSED);
+    expect(control.send({ type: 'cmd', id: 'old', name: 'set_freq', params: { freq: 1 } })).toBe(false);
+    expect(control.send({ type: 'cmd', id: 'old-ptt', name: 'ptt', params: { state: true } })).toBe(false);
+    const count = received.mock.calls.length;
+    primary.simulateMessage(JSON.stringify({ type: 'notification', message: 'late' }));
+    expect(received).toHaveBeenCalledTimes(count);
+    await controllerClient.prepare();
+    control.connect('wss://station.test/api/v1/ws');
+    await vi.waitFor(() => expect(instances).toHaveLength(3));
+    instances[2].simulateOpen();
+    expect(instances[2].sent.some((raw) => JSON.parse(raw).id === 'old')).toBe(false);
+    expect(control.send({ type: 'cmd', id: 'fresh', name: 'ptt', params: { state: true } })).toBe(true);
+    control.disconnect();
+  });
+});
 
 function normalizedLevelWireVectors(): string[] {
   const catalog = readFileSync(resolve(process.cwd(), '../docs/api/command-catalog.md'), 'utf8');
