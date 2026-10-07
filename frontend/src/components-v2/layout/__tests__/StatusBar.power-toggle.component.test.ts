@@ -115,10 +115,10 @@ describe('StatusBar power toggle (MOR-1673, in-page confirm)', () => {
     target = null;
   });
 
-  function render(): HTMLElement {
+  function render(onSettings?: () => void): HTMLElement {
     target = document.createElement('div');
     document.body.appendChild(target);
-    instance = mount(StatusBar, { target }) as object;
+    instance = mount(StatusBar, { target, props: { onSettings } }) as object;
     flushSync();
     return target;
   }
@@ -152,13 +152,15 @@ describe('StatusBar power toggle (MOR-1673, in-page confirm)', () => {
     power.remote = true;
     power.powerControl = true;
     power.radioPowerOn = true;
-    const host = render();
+    const settings = vi.fn();
+    const host = render(settings);
     expect(host.querySelector('.power-toggle-btn')).toBeNull();
     expect(host.querySelector('.report-btn')).toBeNull();
     expect(host.querySelector('.settings-btn')).toBeNull();
     expect(host.querySelector('.status-controls')?.textContent).toContain('Disconnect');
     expect(sys.powerOn).not.toHaveBeenCalled();
     expect(sys.powerOff).not.toHaveBeenCalled();
+    expect(settings).not.toHaveBeenCalled();
   });
 
   it('capability + unknown state: disabled, neutral, plain POWER label, and no dialog or dispatch even with disabled bypassed', async () => {
