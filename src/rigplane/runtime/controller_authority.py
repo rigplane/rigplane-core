@@ -41,10 +41,12 @@ class ControllerAuthority:
         ready: Callable[[], bool],
         cleanup: Callable[[], Awaitable[None]],
         clock: Callable[[], float] = time.monotonic,
+        tx_ready: Callable[[], bool] = lambda: True,
     ) -> None:
         self._ready = ready
         self._cleanup = cleanup
         self._clock = clock
+        self._tx_ready = tx_ready
         self.mode: Literal["local", "remote"] = "local"
         self.generation = 0
         self._state = "idle"
@@ -55,6 +57,9 @@ class ControllerAuthority:
         self._revocation: asyncio.Task[None] | None = None
         self._watchdog: asyncio.Task[None] | None = None
         self._taking_back = False
+        self._controls: dict[str, ControllerTicket] = {}
+        self._audio: tuple[ControllerTicket, object, str | None] | None = None
+        self._audio_revoking = False
 
     def _expire(self) -> None:
         if self._key is not None and self._clock() >= self._deadline:
@@ -198,14 +203,90 @@ class ControllerAuthority:
         self._deadline = self._clock() + self.TTL_MS / 1000
         return {"type": "controller_heartbeat", "generation": self.generation}
 
+    def validate_positive(self, ticket: ControllerTicket) -> None:
+        self.validate(ticket)
+        if ticket.remote:
+            try:
+                ready = not self._audio_revoking and self._tx_ready() is True
+            except Exception:
+                ready = False
+            if not ready:
+                raise ControllerError("controller_not_ready", 503)
+
     def add_channel(self, ticket: ControllerTicket, close: Callable[[], None]) -> None:
         self.validate(ticket)
         self._channels[ticket] = close
 
+    def register_control(self, ticket: ControllerTicket) -> None:
+        self.validate(ticket)
+        if ticket.session_id is None:
+            raise ControllerError("controller_invalid")
+        self._controls[ticket.session_id] = ticket
+
+    def claim_audio(self, ticket: ControllerTicket, source: object) -> None:
+        self.validate(ticket)
+        if self._audio is not None and self._audio[1] is not source:
+            raise ControllerError("controller_audio_busy", 409)
+        if self._audio_revoking:
+            raise ControllerError("controller_audio_busy", 409)
+        self._audio = (ticket, source, None)
+
+    def audio_matches(
+        self, ticket: ControllerTicket, source: object, owner: str
+    ) -> bool:
+        self.validate(ticket)
+        control = self._controls.get(owner)
+        audio = self._audio
+        if (
+            self._audio_revoking
+            or control is None
+            or audio is None
+            or audio[:2] != (ticket, source)
+        ):
+            return False
+        self.validate(control)
+        if audio[2] is not None and audio[2] != owner:
+            return False
+        self._audio = (ticket, source, owner)
+        return True
+
+    def fence_audio(self, ticket: ControllerTicket, source: object) -> bool:
+        if (
+            self._audio_revoking
+            or self._audio is None
+            or self._audio[:2] != (ticket, source)
+        ):
+            return False
+        self._audio_revoking = True
+        try:
+            self.validate(ticket)
+        except ControllerError:
+            return False
+        return True
+
+    def release_audio(self, ticket: ControllerTicket, source: object) -> bool:
+        audio = self._audio
+        if audio is None or audio[:2] != (ticket, source):
+            return False
+        self._audio = None
+        self._audio_revoking = False
+        try:
+            self.validate(ticket)
+        except ControllerError:
+            return False
+        return True
+
     def detach(self, ticket: ControllerTicket) -> None:
         self._channels.pop(ticket, None)
+        if self._controls.get(ticket.session_id) is ticket:
+            self._controls.pop(ticket.session_id)
         if ticket is self._primary:
             self.revoke()
+
+    def disconnect_control(self, session_id: str) -> None:
+        ticket = self._controls.get(session_id)
+        if ticket is not None:
+            self.detach(ticket)
 
     async def release(self, key: object) -> None:
         self.credential(key)
@@ -214,13 +295,19 @@ class ControllerAuthority:
 
     def revoke(self) -> None:
         """Fence synchronously; socket and TX cleanup stay owned until settled."""
-        if self._state == "revoking" or self.mode != "remote":
+        if self.mode == "local":
+            self.generation += 1
+            return
+        if self._state == "revoking":
             return
         if self._state == "idle" and self._key is None:
             return
         self.generation += 1
         self._key = None
         self._primary = None
+        self._controls.clear()
+        self._audio = None
+        self._audio_revoking = False
         self._state = "revoking"
         channels, self._channels = self._channels, {}
         watchdog, self._watchdog = self._watchdog, None

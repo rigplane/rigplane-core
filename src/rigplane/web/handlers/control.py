@@ -29,6 +29,7 @@ from ...core.command_dispatch import (
 from ...core.exceptions import CommandError, CommandRejectedError
 from ...core.exceptions import TimeoutError as RigplaneTimeoutError
 from ...core.state_pipeline_contracts import CommandIntent, CommandSource, FieldPath
+from ...runtime.controller_authority import ControllerAuthority, ControllerError
 from ...core.state_store import FreshnessState, StateStore
 from ..monitor_mute import MonitorMuteState, apply_monitor_mute  # noqa: TID251
 from ...profiles import RadioProfile, resolve_radio_profile
@@ -841,6 +842,9 @@ class ControlHandler:
         except EOFError:
             pass
         finally:
+            controller = getattr(self._radio, "_controller_authority", None)
+            if isinstance(controller, ControllerAuthority):
+                controller.disconnect_control(self._session_id)
             # Ahead of every step that can raise out of this block: on a dead
             # socket ``await event_task`` re-raises the sender's error and
             # unregister broadcasts, so either would skip the unkey on exactly
@@ -1016,9 +1020,19 @@ class ControlHandler:
         elif msg_type == "cmd":
             await self._handle_command(msg)
         elif msg_type == "radio_connect":
+            if self._controller_remote():
+                raise ControllerError("controller_local_required")
             await self._handle_radio_connect(msg)
         elif msg_type == "radio_disconnect":
+            if self._controller_remote():
+                raise ControllerError("controller_local_required")
             await self._handle_radio_disconnect(msg)
+        elif msg_type == "controller_heartbeat":
+            controller = getattr(self._radio, "_controller_authority", None)
+            if isinstance(controller, ControllerAuthority):
+                await self._ws.send_text(
+                    encode_json(controller.heartbeat(controller.capture()))
+                )
         else:
             logger.debug("control: unknown message type: %r", msg_type)
 
@@ -1608,6 +1622,40 @@ class ControlHandler:
         """
         self._mod_input_restore = None
 
+    def _controller_remote(self) -> bool:
+        controller = getattr(self._radio, "_controller_authority", None)
+        return (
+            isinstance(controller, ControllerAuthority) and controller.mode == "remote"
+        )
+
+    def _validate_controller_command(self, name: str, params: dict[str, Any]) -> None:
+        controller = getattr(self._radio, "_controller_authority", None)
+        if not isinstance(controller, ControllerAuthority):
+            return
+        if (
+            name.startswith("get_")
+            or name == "ptt_off"
+            or (name == "ptt" and params.get("state") is False)
+        ):
+            return
+        ticket = controller.capture()
+        if ticket.remote and (
+            name
+            in {
+                "send_civ",
+                "send_cw_text",
+                "transmit_on",
+                "radio_connect",
+                "radio_disconnect",
+            }
+            or (
+                name == "set_vox" and params.get("on", params.get("value")) is not False
+            )
+            or (name == "set_tuner_status" and params.get("value") == 2)
+            or (name == "set_break_in" and params.get("mode") != 0)
+        ):
+            raise ControllerError("controller_tx_unsupported")
+
     async def _enqueue_command(
         self,
         name: str,
@@ -1616,6 +1664,7 @@ class ControlHandler:
         command_id: str | None = None,
         source: CommandSource = "websocket",
     ) -> dict[str, Any]:
+        self._validate_controller_command(name, params)
         if name in self._MANAGED_PTT_COMMANDS:
             return await self._enqueue_managed_ptt(name, params, source=source)
         intent_params = dict(params)
@@ -1733,6 +1782,7 @@ class ControlHandler:
     async def _execute_intent(
         self, intent: CommandIntent, *, wait_for_completion: bool = True
     ) -> CommandExecutionResult:
+        self._validate_controller_command(intent.name, dict(intent.params))
         if intent.name == "set_vfo_freq":
             if self._read_only:
                 raise PermissionError("read-only mode: set_vfo_freq rejected")

@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import gzip as _gzip
+import ipaddress
 import json
 import logging
 import math
@@ -70,12 +71,19 @@ from ..core.state_pipeline_contracts import (
 )
 from ..core.state_store import StateSnapshot, StateStore
 from ..core.tx_observation import ObservedPtt, project_observed_ptt
+from ..runtime.controller_authority import (
+    ControllerAuthority,
+    ControllerError,
+    ControllerTicket,
+)
+from ..runtime.managed_tx_authority import ManagedTxAuthority
 from ..runtime.managed_tx_state import ManagedTxIntentKind
 from ..radio_state import RadioState
 from ..capabilities import CAP_AUDIO
 from ..exceptions import TimeoutError as RigplaneTimeoutError
 from ..audio.bus import STAGE_RX_POST_DSP
 from ..audio.session import AudioSession, AudioSessionEvent
+from ..audio.usb_driver import bounded_portaudio_pool
 from ..audio_analyzer import AudioAnalyzer
 from ..audio_fft_scope import AudioFftScope
 from ..env_config import (
@@ -461,6 +469,11 @@ class _HttpCommandExecutor:
         radio = self.server._radio
         if radio is None:
             raise RuntimeError("No radio configured")
+        controller = getattr(self.server, "_controller", None)
+        if isinstance(controller, ControllerAuthority):
+            ticket = controller.capture()
+            if ticket.remote:
+                raise ControllerError("controller_tx_unsupported")
         params = intent.params
         if intent.name == "raw_civ_transaction":
             if not isinstance(radio, CivTransactionCapable):
@@ -972,6 +985,23 @@ class WebServer:
                 STAGE_RX_POST_DSP
             ).register("audio-analyzer", self._audio_analyzer.feed_audio)
         self._command_queue: CommandQueue = CommandQueue()
+        self._controller = ControllerAuthority(
+            ready=self._controller_ready,
+            cleanup=self._controller_cleanup,
+            tx_ready=self._controller_native_ready,
+        )
+        self._command_queue.bind_controller(self._controller)
+        self._controller_handler_tasks: dict[ControllerTicket, asyncio.Task[Any]] = {}
+        self._controller_audio_cleanup: set[asyncio.Future[Any]] = set()
+        # Remains closed until the full integration and its negative proof are complete.
+        self._controller_enforcement_ready = False
+        self._controller_installed = False
+        if radio is not None and getattr(radio, "_controller_authority", None) is None:
+            try:
+                setattr(radio, "_controller_authority", self._controller)
+                self._controller_installed = True
+            except (AttributeError, TypeError):
+                pass
         self._radio_poller: RadioPoller | None = None
         self._state_poller: Any | None = None  # StatePoller (lazy, optional)
         self._state_store_freshness_task: asyncio.Task[None] | None = None
@@ -2268,6 +2298,9 @@ class WebServer:
 
     def _on_provider_generation(self, _generation: int) -> None:
         """Fail active Web work at the canonical provider invalidation edge."""
+        controller = getattr(self, "_controller", None)
+        if isinstance(controller, ControllerAuthority):
+            controller.revoke()
         self.command_service.terminate_active_commands(
             "provider generation invalidated",
             source="websocket",
@@ -3106,6 +3139,9 @@ class WebServer:
         is exactly ON. Everything else closes the gate: unknown or stale
         observation, no authority, or a snapshot that cannot be read.
         """
+        controller = getattr(self, "_controller", None)
+        if isinstance(controller, ControllerAuthority) and controller.mode == "remote":
+            return False
         authority = self._managed_tx_authority()
         if authority is None:
             return False
@@ -3260,6 +3296,7 @@ class WebServer:
         from .web_startup import stop_web_server  # noqa: TID251
 
         self._stopping = True
+        self._controller.revoke()
         unsubscribe = self._managed_tx_change_unsubscribe
         self._managed_tx_change_unsubscribe = None
         self._managed_tx_hint_authority = None
@@ -3407,9 +3444,14 @@ class WebServer:
                 break
             if b":" in stripped:
                 key, _, value = stripped.partition(b":")
-                headers[key.decode("ascii", errors="replace").strip().lower()] = (
-                    value.decode("ascii", errors="replace").strip()
-                )
+                name = key.decode("ascii", errors="replace").strip().lower()
+                text = value.decode("ascii", errors="replace").strip()
+                if (
+                    name in ("x-rigplane-controller", "sec-websocket-protocol")
+                    and name in headers
+                ):
+                    text = headers[name] + "," + text
+                headers[name] = text
 
         return method, path, headers, query
 
@@ -4638,7 +4680,157 @@ class WebServer:
 
     def _managed_tx_authority(self) -> Any | None:
         port = self._production_managed_tx_port
-        return None if port is None else getattr(port, "authority", None)
+        authority = None if port is None else getattr(port, "authority", None)
+        controller = getattr(self, "_controller", None)
+        if isinstance(authority, ManagedTxAuthority) and isinstance(
+            controller, ControllerAuthority
+        ):
+            authority.bind_controller(controller)
+        return authority
+
+    def _controller_native_ready(self) -> bool:
+        return bool(
+            bounded_portaudio_pool.inflight == 0
+            and not bounded_portaudio_pool._opens
+            and not bounded_portaudio_pool._stops
+            and not bounded_portaudio_pool._cleanup_streams
+            and not self._controller_audio_cleanup
+        )
+
+    def _controller_ready(self) -> bool:
+        authority = self._managed_tx_authority()
+        return bool(
+            self._controller_enforcement_ready
+            and self._controller_installed
+            and not self._config.read_only
+            and not self._stopping
+            and self._webrtc_sessions is None
+            and self._audio_bridge is None
+            and self._controller_native_ready()
+            and isinstance(authority, ManagedTxAuthority)
+            and authority.controller_quiescent()
+            and project_observed_ptt(self.command_state_store.snapshot())
+            is ObservedPtt.OFF
+            and not any(
+                not task.done() for task in self._controller_handler_tasks.values()
+            )
+        )
+
+    async def _controller_cleanup(self) -> None:
+        if self._audio_bridge is not None:
+            self._audio_bridge._drop_queued_tx()
+        authority = self._managed_tx_authority()
+        if authority is None:
+            raise ControllerError("controller_not_ready", 503)
+        off = await authority.submit_force_off()
+        await off.wait_settlement()
+        tasks = tuple(self._controller_handler_tasks.values())
+        if tasks:
+            await asyncio.gather(
+                *(asyncio.shield(task) for task in tasks), return_exceptions=True
+            )
+
+    async def _controller_audio_gate(
+        self, ticket: ControllerTicket, source: object
+    ) -> bool:
+        try:
+            self._controller.validate(ticket)
+            if not ticket.remote:
+                return await self._bridge_tx_gate_open()
+            authority = self._managed_tx_authority()
+            if authority is None:
+                return False
+            intent = (await authority.snapshot()).state.intent
+            return bool(
+                intent.kind is ManagedTxIntentKind.PTT
+                and intent.owner_token
+                and self._controller.audio_matches(ticket, source, intent.owner_token)
+            )
+        except ControllerError:
+            return False
+
+    async def _controller_audio_loss(
+        self, ticket: ControllerTicket, source: object
+    ) -> None:
+        if ticket.remote and self._controller.fence_audio(ticket, source):
+            authority = self._managed_tx_authority()
+            if authority is not None:
+                off = await authority.submit_force_off()
+                await off.wait_settlement()
+
+    def _controller_track_audio_stop(self, stop: Any) -> asyncio.Future[Any]:
+        """Retain cleanup currency through timeout; a refused close stays blocked."""
+        task = asyncio.ensure_future(stop)
+        self._controller_audio_cleanup.add(task)
+
+        def settled(done: asyncio.Future[Any]) -> None:
+            if (
+                not done.cancelled()
+                and done.exception() is None
+                and (done.result() is None or done.result() is True)
+            ):
+                self._controller_audio_cleanup.discard(done)
+            else:
+                self._controller.revoke()
+
+        task.add_done_callback(settled)
+        return task
+
+    async def _handle_http_controller(
+        self,
+        method: str,
+        path: str,
+        writer: asyncio.StreamWriter,
+        headers: dict[str, str] | None,
+        reader: asyncio.StreamReader | None,
+    ) -> None:
+        allowed = ("POST",) if path.endswith("/mode") else ("GET", "POST", "DELETE")
+        if method not in allowed:
+            await self._send_json(
+                writer, 405, "Method Not Allowed", {"error": "method_not_allowed"}
+            )
+            return
+        try:
+            if path.endswith("/mode"):
+                peer = writer.get_extra_info("peername")
+                if not peer or not ipaddress.ip_address(peer[0]).is_loopback:
+                    raise ControllerError("controller_local_required")
+            if method == "GET":
+                result, status = self._controller.status(), 200
+            elif method == "DELETE":
+                await self._controller.release(
+                    (headers or {}).get("x-rigplane-controller")
+                )
+                result, status = self._controller.status(), 200
+            else:
+                payload = await self._read_json_object(writer, headers, reader)
+                if payload is None:
+                    return
+                field = "mode" if path.endswith("/mode") else "kind"
+                if set(payload) != {field} or type(payload[field]) is not str:
+                    raise ControllerError("invalid_request", 400)
+                if field == "mode":
+                    if self._audio_bridge is not None:
+                        self._audio_bridge._drop_queued_tx()
+                    await self._controller.set_mode(payload[field])
+                    result, status = self._controller.status(), 200
+                else:
+                    result, status = self._controller.acquire(payload[field]), 201
+            await self._send_json(
+                writer, status, "Created" if status == 201 else "OK", result
+            )
+        except (ControllerError, ValueError) as exc:
+            status = exc.status if isinstance(exc, ControllerError) else 403
+            await self._send_json(
+                writer,
+                status,
+                "Refused",
+                {
+                    "error": str(exc)
+                    if isinstance(exc, ControllerError)
+                    else "controller_local_required"
+                },
+            )
 
     async def _managed_tx_document(self) -> dict[str, object]:
         authority = self._managed_tx_authority()
@@ -4695,6 +4887,11 @@ class WebServer:
                         "error": "invalid_request",
                         "message": "operation must be transmit_on or force_off",
                     },
+                )
+                return
+            if operation == "transmit_on" and self._controller.mode == "remote":
+                await self._send_json(
+                    writer, 403, "Forbidden", {"error": "controller_tx_unsupported"}
                 )
                 return
             if operation == "transmit_on" and self._config.read_only:
@@ -6603,8 +6800,37 @@ class WebServer:
                 )
                 return
 
+        ticket = (
+            self._controller.capture() if self._controller.mode == "local" else None
+        )
+        selected_protocol = ""
+        if self._controller.mode == "remote":
+            try:
+                protocols = [
+                    part.strip()
+                    for part in headers.get("sec-websocket-protocol", "").split(",")
+                    if part.strip().startswith("rigplane-controller-v1.")
+                ]
+                if len(protocols) != 1:
+                    raise ControllerError("controller_invalid")
+                selected_protocol = protocols[0]
+                role = (query or {}).get("controller_role", ["primary"])
+                if path == "/api/v1/ws" and len(role) != 1:
+                    raise ControllerError("invalid_request", 400)
+                ticket = self._controller.attach(
+                    selected_protocol.split(".", 1)[1],
+                    role[0] if path == "/api/v1/ws" else "auxiliary",
+                    f"controller-{time.monotonic_ns()}",
+                )
+            except ControllerError as exc:
+                await self._send_json(
+                    writer, exc.status, "Forbidden", {"error": exc.code}
+                )
+                return
+        assert ticket is not None
         ws_key = headers.get("sec-websocket-key", "")
         if not ws_key:
+            self._controller.detach(ticket)
             await _send_response(writer, 400, "Bad Request", b"Missing key", {})
             return
 
@@ -6621,10 +6847,19 @@ class WebServer:
             "Connection: Upgrade\r\n"
             f"Sec-WebSocket-Accept: {accept}\r\n"
             f"{ext_line}"
-            "\r\n"
+            + (
+                f"Sec-WebSocket-Protocol: {selected_protocol}\r\n"
+                if selected_protocol
+                else ""
+            )
+            + "\r\n"
         )
-        writer.write(response.encode("ascii"))
-        await writer.drain()
+        try:
+            writer.write(response.encode("ascii"))
+            await writer.drain()
+        except BaseException:
+            self._controller.detach(ticket)
+            raise
 
         ws = WebSocketConnection(reader, writer, deflate=bool(deflate_resp))
         raw_model = (
@@ -6633,6 +6868,8 @@ class WebServer:
         model = raw_model if isinstance(raw_model, str) else self._config.radio_model
 
         if path == "/api/v1/ws":
+            if ticket.remote:
+                self._controller.register_control(ticket)
             handler: Any = ControlHandler(
                 ws,
                 self._radio,
@@ -6641,22 +6878,31 @@ class WebServer:
                 server=self,
                 read_only=self._config.read_only,
                 managed_tx_authority=self._managed_tx_authority(),
+                session_id=ticket.session_id if ticket.remote else None,
             )
         elif path == "/api/v1/scope":
             handler = ScopeHandler(ws, self._radio, server=self)
         elif path == "/api/v1/audio-scope":
             if self._audio_fft_scope is None:
+                self._controller.detach(ticket)
                 await ws.close(1008, "audio FFT scope not available")
                 return
             handler = ScopeHandler(ws, self._radio, server=self, audio_mode=True)
         elif path == "/api/v1/audio":
+            audio_source = object()
             handler = AudioHandler(
                 ws,
                 self._radio,
                 self._audio_broadcaster,
-                tx_gate=self._bridge_tx_gate_open,
+                tx_gate=lambda: self._controller_audio_gate(ticket, audio_source),
+                controller=self._controller,
+                controller_ticket=ticket,
+                controller_audio_source=audio_source,
+                controller_audio_loss=self._controller_audio_loss,
+                controller_track_stop=self._controller_track_audio_stop,
             )
         else:
+            self._controller.detach(ticket)
             await ws.close(1008, "unknown channel")
             return
 
@@ -6681,14 +6927,29 @@ class WebServer:
             peer[1],
             len(self._client_tasks),
         )
+        try:
+            self._controller.validate(ticket)
+        except ControllerError:
+            self._controller.detach(ticket)
+            self._conn_manager.unregister(ip, path, ws)
+            ws.abort()
+            return
         keepalive = asyncio.create_task(
             ws.keepalive_loop(self._config.keepalive_interval)
         )
+        if ticket.remote:
+            self._controller.add_channel(ticket, ws.abort)
+            task = asyncio.current_task()
+            assert task is not None
+            self._controller_handler_tasks[ticket] = task
         try:
-            await handler.run()
+            with self._controller.bind(ticket):
+                await handler.run()
         except Exception as exc:
             logger.debug("ws handler error on %s: %s", _redact_token_in_path(path), exc)
         finally:
+            self._controller.detach(ticket)
+            self._controller_handler_tasks.pop(ticket, None)
             keepalive.cancel()
             try:
                 await keepalive

@@ -232,7 +232,7 @@ async def test_remote_unsupported_tx_is_rejected_before_enqueue(station, name, p
     handler = ControlHandler(SimpleNamespace(), radio, "test", "IC-7610", server=server)
     with server._controller.bind(primary), pytest.raises(ControllerError):
         await handler._enqueue_command(name, params)
-    assert len(server.command_queue) == 0
+    assert server.command_queue.drain() == []
 
 
 async def test_remote_blocks_local_rigctld_but_preserves_safety_off(station):
@@ -318,7 +318,8 @@ async def test_audio_cleanup_timeout_retains_owner_and_late_success_releases_it(
     with pytest.raises(ControllerError, match="controller_audio_busy"):
         server._controller.claim_audio(ticket, object())
     with server._controller.bind(primary):
-        assert await managed.ptt_down("native") is ManagedTxOutcome.REJECTED
+        with pytest.raises(ControllerError, match="controller_not_ready"):
+            await managed.ptt_down("native")
     gate.set()
     await asyncio.gather(*server._controller_audio_cleanup)
     await asyncio.sleep(0)
