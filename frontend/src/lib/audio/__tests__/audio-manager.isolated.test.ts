@@ -15,6 +15,7 @@ const txStop = vi.fn();
 const txApplyServerCodec = vi.fn(() => ({ switched: false, error: null }));
 let txCaptureFailureCategory: string | null = null;
 let txCaptureDied: ((reason: string) => void) | null = null;
+let txSend: ((data: ArrayBuffer) => void) | null = null;
 
 vi.mock('../rx-player', () => ({
   RxPlayer: class {
@@ -43,10 +44,11 @@ vi.mock('../tx-mic', () => ({
     get lastCaptureFailureCategory() { return txCaptureFailureCategory; }
     static supported() { return true; }
     constructor(
-      _send: (data: ArrayBuffer) => void,
+      send: (data: ArrayBuffer) => void,
       onCaptureDied?: (reason: string) => void,
     ) {
       txCaptureDied = onCaptureDied ?? null;
+      txSend = send;
     }
   },
 }));
@@ -78,7 +80,9 @@ class FakeWebSocket {
   onerror: ((event: unknown) => void) | null = null;
   onclose: ((event: { code: number; reason: string }) => void) | null = null;
 
-  constructor(public url: string) {
+  protocol: string;
+  constructor(public url: string, public protocols: string[] = []) {
+    this.protocol = protocols[0] ?? '';
     FakeWebSocket.instances.push(this);
   }
 
@@ -102,6 +106,75 @@ class FakeWebSocket {
     this.onclose?.({ code, reason });
   }
 }
+
+describe('AudioManager controller currency', () => {
+  beforeEach(() => {
+    vi.resetModules(); vi.useFakeTimers(); vi.clearAllMocks();
+    FakeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    vi.stubGlobal('location', { protocol: 'https:', host: 'station.test' });
+  });
+  afterEach(async () => {
+    const { audioManager } = await import('../audio-manager');
+    audioManager.destroy(); vi.useRealTimers(); vi.unstubAllGlobals();
+  });
+
+  function binding(current: () => boolean) {
+    return {
+      remote: () => true, ready: current, epoch: () => 7,
+      current: (epoch: number) => epoch === 7 && current(),
+      protocols: () => [`rigplane-controller-v1.${'a'.repeat(64)}`],
+    };
+  }
+
+  it('attaches RX/audio to the lease and never re-arms TX after audio loss', async () => {
+    const { audioManager } = await import('../audio-manager');
+    let current = true;
+    audioManager.setControllerBinding(binding(() => current));
+    audioManager.startRx();
+    const socket = FakeWebSocket.instances[0];
+    expect(socket.protocols).toEqual([`rigplane-controller-v1.${'a'.repeat(64)}`]);
+    expect(socket.url).not.toContain('a'.repeat(64));
+    socket.open();
+    await audioManager.startTx();
+    current = false;
+    txSend?.(new ArrayBuffer(4));
+    expect(socket.sent.some((frame) => frame instanceof ArrayBuffer)).toBe(false);
+    socket.serverClose();
+    expect(audioManager.txEnabled).toBe(false);
+    expect(txStop).toHaveBeenCalled();
+    current = true;
+    await vi.advanceTimersByTimeAsync(500);
+    const reconnected = FakeWebSocket.instances[1];
+    reconnected.open();
+    expect(reconnected.sent.some((raw) => {
+      const msg = JSON.parse(raw as string); return msg.type === 'audio_start' && msg.direction === 'tx';
+    })).toBe(false);
+  });
+
+  it('rejects a late microphone start after authority loss without enabling TX', async () => {
+    const { audioManager } = await import('../audio-manager');
+    let current = true;
+    audioManager.setControllerBinding(binding(() => current));
+    let settle!: () => void;
+    txStart.mockImplementationOnce(() => new Promise((resolve) => { settle = () => resolve(null); }));
+    const pending = audioManager.startTx();
+    current = false;
+    audioManager.stopTx();
+    settle();
+    expect(await pending).not.toBeNull();
+    expect(audioManager.txEnabled).toBe(false);
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it('does not request capture or open audio without current control', async () => {
+    const { audioManager } = await import('../audio-manager');
+    audioManager.setControllerBinding(binding(() => false));
+    expect(await audioManager.startTx()).not.toBeNull();
+    expect(txStart).not.toHaveBeenCalled();
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+});
 
 function rxStartMessages(ws: FakeWebSocket): Array<Record<string, unknown>> {
   return ws.sent
