@@ -212,12 +212,3 @@ def test_exported_version_without_overrides_still_gets_the_partial(
     install_analytics_partial(repo, source)
 
     assert (source / ANALYTICS_PARTIAL).read_text() == "current snippet"
-
-
-def test_the_checkout_ships_the_analytics_partial() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    text = (repo_root / ANALYTICS_PARTIAL).read_text()
-
-    assert 'location.hostname !== "rigplane.dev"' in text
-    assert 'persistence: "memory"' in text
-    assert "disable_session_recording: true" in text

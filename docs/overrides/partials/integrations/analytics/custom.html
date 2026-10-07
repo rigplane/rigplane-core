@@ -8,8 +8,9 @@
   `mkdocs serve` never loads it, and it only starts on the rigplane.dev host.
 
   Cookieless by design (no consent banner on this site): in-memory
-  persistence, no person profiles, no session replay, no autocapture, and
-  query strings and fragments are dropped from URLs before sending.
+  persistence, no person profiles, no session replay, no autocapture, no
+  campaign/click-ID params, and query strings and fragments are dropped from
+  URLs before sending.
   The token is PostHog's public client-side project key.
 -#}
 <script>
@@ -31,6 +32,8 @@
       defaults: "2026-01-30",
       persistence: "memory",
       person_profiles: "identified_only",
+      // Campaign params include click IDs (fbclid, gclid, ...); never register them.
+      save_campaign_params: false,
       capture_pageview: "history_change",
       capture_pageleave: true,
       autocapture: false,
