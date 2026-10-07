@@ -6,7 +6,7 @@
 
 ## Layered package structure
 
-`src/rigplane/` is organised into 11 layered Python packages with
+`src/rigplane/` is organised into 12 layered Python packages with
 explicit `import-linter`-enforced boundaries. Higher layers depend on
 lower ones; siblings are independent. See
 [`docs/plans/2026-04-29-modularization-plan.md`](docs/plans/2026-04-29-modularization-plan.md)
@@ -23,7 +23,7 @@ charter, public API, and forbidden patterns.
 ├────────────────────────────────────────────────────────────────────┤
 │ runtime/                   — IcomRadio + state + mixins + pollers  │
 ├────────────────────────────────────────────────────────────────────┤
-│ profiles/   audio/         — Rig profiles · Audio subsystem        │
+│ profiles/  audio/  sdr/    — Rig profiles · Audio · SDR IQ sources │
 ├────────────────────────────────────────────────────────────────────┤
 │ commands/   scope/   dsp/  — CI-V builders · scope · DSP pipeline  │
 ├────────────────────────────────────────────────────────────────────┤
@@ -48,8 +48,8 @@ charter, public API, and forbidden patterns.
 
 `import-linter` (config at repo root `.importlinter`, run via
 `uv run lint-imports`) enforces one layered contract plus three
-sibling-independence contracts (`web`⊥`rigctld`,
-`profiles`⊥`audio`, `commands`⊥`scope`⊥`dsp`).
+sibling-independence contracts (`web`⊥`rigctld`, `profiles`⊥`audio`⊥`sdr`,
+`commands`⊥`scope`⊥`dsp`).
 
 ---
 
