@@ -1,0 +1,60 @@
+{#-
+  PostHog analytics for the published rigplane.dev site (same project as
+  rigplane.com, so docs-to-site journeys show up in one place).
+
+  scripts/build_versioned_docs.py enables Material's "custom" analytics
+  provider in its overlay config and copies this file into every exported
+  version, so all versions share this one snippet. A plain `mkdocs build` or
+  `mkdocs serve` never loads it, and it only starts on the rigplane.dev host.
+
+  Cookieless by design (no consent banner on this site): in-memory
+  persistence, no person profiles, no session replay, no autocapture, and
+  query strings and fragments are dropped from URLs before sending.
+  The token is PostHog's public client-side project key.
+-#}
+<script>
+  (function () {
+    if (location.hostname !== "rigplane.dev") return;
+    !function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.toString(1)+".people (stub)"},o="init capture register register_once register_for_session unregister unregister_for_session getFeatureFlag getFeatureFlagPayload isFeatureEnabled reloadFeatureFlags identify setPersonProperties group resetGroups reset get_distinct_id getGroups get_session_id alias set_config get_property getSessionProperty createPersonProfile opt_in_capturing opt_out_capturing has_opted_in_capturing has_opted_out_capturing clear_opt_in_out_capturing debug".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
+    function stripUrl(value) {
+      if (typeof value !== "string" || !value) return value;
+      try {
+        var url = new URL(value);
+        return url.origin + url.pathname;
+      } catch (error) {
+        return value.split(/[?#]/)[0];
+      }
+    }
+    var URL_PROPS = ["$current_url", "$referrer", "$initial_referrer", "$session_entry_url", "$session_entry_referrer", "$prev_pageview_pathname"];
+    window.posthog.init("phc_yTcX74uByJQwDsKDop2KGHACRE6GrRuYmjeSrEt9ff3R", {
+      api_host: "https://us.i.posthog.com",
+      defaults: "2026-01-30",
+      persistence: "memory",
+      person_profiles: "identified_only",
+      capture_pageview: "history_change",
+      capture_pageleave: true,
+      autocapture: false,
+      capture_dead_clicks: false,
+      rageclick: false,
+      disable_session_recording: true,
+      disable_surveys: true,
+      advanced_disable_flags: true,
+      before_send: function (event) {
+        if (!event || !event.properties) return event;
+        var props = event.properties;
+        URL_PROPS.forEach(function (key) {
+          if (key in props) props[key] = stripUrl(props[key]);
+        });
+        var segment = location.pathname.split("/")[1] || "";
+        props.site = "docs";
+        props.docs_version = /^\d+\.\d+$/.test(segment) ? segment : "unversioned";
+        return event;
+      }
+    });
+    document.addEventListener("click", function (event) {
+      var link = event.target && event.target.closest ? event.target.closest("a[href]") : null;
+      if (!link || link.host === location.host || !/^https?:$/.test(link.protocol)) return;
+      window.posthog.capture("docs.outbound_clicked", { link_host: link.host, link_path: link.pathname });
+    }, true);
+  })();
+</script>
