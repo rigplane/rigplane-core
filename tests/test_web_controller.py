@@ -354,17 +354,21 @@ async def test_refused_or_failed_close_never_claims_ready_rx(station, result):
 
 async def test_provider_and_primary_loss_fence_before_cleanup_and_no_old_replay(
     station,
+    monkeypatch,
 ):
-    server, _ = station
+    server, managed = station
     local = server._controller.capture()
     server._on_provider_generation(8)
     with pytest.raises(ControllerError):
         server._controller.validate(local)
     key, primary = await remote(server)
+    force_off = AsyncMock(wraps=managed.force_off)
+    monkeypatch.setattr(managed, "force_off", force_off)
     server._controller.disconnect_control("native")
     with pytest.raises(ControllerError):
         server._controller.validate(primary)
     await server._controller.settle()
+    force_off.assert_awaited_once_with()
     fresh, current = await remote(server)
     source = object()
     audio = server._controller.attach(fresh, "auxiliary", "fresh-audio")

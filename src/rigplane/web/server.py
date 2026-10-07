@@ -33,7 +33,7 @@ import signal as _signal
 import sys
 import time
 import urllib.parse
-from collections.abc import Callable, Collection, Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Collection, Coroutine, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from inspect import getattr_static
@@ -4722,8 +4722,7 @@ class WebServer:
         authority = self._managed_tx_authority()
         if authority is None:
             raise ControllerError("controller_not_ready", 503)
-        off = await authority.submit_force_off()
-        await off.wait_settlement()
+        await authority.force_off()
         tasks = tuple(self._controller_handler_tasks.values())
         if tasks:
             await asyncio.gather(
@@ -4755,10 +4754,9 @@ class WebServer:
         if ticket.remote and self._controller.fence_audio(ticket, source):
             authority = self._managed_tx_authority()
             if authority is not None:
-                off = await authority.submit_force_off()
-                await off.wait_settlement()
+                await authority.force_off()
 
-    def _controller_track_audio_stop(self, stop: Any) -> asyncio.Future[Any]:
+    def _controller_track_audio_stop(self, stop: Awaitable[Any]) -> asyncio.Future[Any]:
         """Retain cleanup currency through timeout; a refused close stays blocked."""
         task = asyncio.ensure_future(stop)
         self._controller_audio_cleanup.add(task)
