@@ -71,16 +71,21 @@
   );
   // Input ownership only; displayed TX state remains the server projection.
   let held = $state(false);
+  // Retain the matching release synchronously, independent of render batches.
+  let releaseHeld: (() => void) | null = null;
   let alive = true;
   function beginHold(): void {
-    if (!alive || !momentary || held || keyUnavailable) return;
+    if (!alive || !momentary || releaseHeld !== null || keyUnavailable) return;
+    releaseHeld = onPttUp;
     held = true;
     onPttDown();
   }
   function endHold(): void {
-    if (!held) return;
+    const release = releaseHeld;
+    if (release === null) return;
+    releaseHeld = null;
     held = false;
-    onPttUp();
+    release();
   }
   $effect(() => { if (!momentary || tx.fresh === false) endHold(); });
   onDestroy(() => { alive = false; endHold(); });

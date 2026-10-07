@@ -298,8 +298,10 @@ describe('key intent gating', () => {
     s.key().dispatchEvent(new KeyboardEvent('keydown', { key: ' ', repeat: true, bubbles: true }));
     expect(handlers.onPttDown).toHaveBeenCalledOnce();
     s.key().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(handlers.onPttDown).toHaveBeenCalledTimes(2);
     const retired = s.key();
     await s.dispose();
+    expect(handlers.onPttUp).toHaveBeenCalledTimes(2);
     retired.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     expect(handlers.onPttDown).toHaveBeenCalledTimes(2);
     expect(handlers.onPttUp).toHaveBeenCalledTimes(2);
