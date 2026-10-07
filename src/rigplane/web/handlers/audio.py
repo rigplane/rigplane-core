@@ -1,6 +1,11 @@
 """Audio WebSocket handlers — broadcaster + per-client handler."""
 
 from __future__ import annotations
+from ...runtime.controller_authority import (
+    ControllerAuthority,
+    ControllerError,
+    ControllerTicket,
+)
 
 import asyncio
 import inspect
@@ -1518,11 +1523,24 @@ class AudioHandler:
         radio: "Radio | None",
         broadcaster: "AudioBroadcaster | None" = None,
         tx_gate: Callable[[], Awaitable[bool]] | None = None,
+        controller: ControllerAuthority | None = None,
+        controller_ticket: ControllerTicket | None = None,
+        controller_audio_source: object | None = None,
+        controller_audio_loss: Callable[[ControllerTicket, object], Awaitable[None]]
+        | None = None,
+        controller_track_stop: Callable[[Awaitable[None]], Awaitable[None]]
+        | None = None,
     ) -> None:
         self._ws = ws
         self._radio = radio
         self._broadcaster = broadcaster
         self._tx_gate = tx_gate
+        self._controller = controller
+        self._controller_ticket = controller_ticket
+        self._controller_audio_source = controller_audio_source
+        self._controller_audio_loss = controller_audio_loss
+        self._controller_track_stop = controller_track_stop
+        self._controller_claimed = False
         self._rx_active = False
         self._tx_active = False
         # TX lease on the radio-owned AudioSession singleton (MOR-580,
@@ -1562,6 +1580,7 @@ class AudioHandler:
             done, pending = await asyncio.wait(
                 {reader, sender}, return_when=asyncio.FIRST_COMPLETED
             )
+            await self._fence_controller_audio()
             # Log which task exited first
             for task in done:
                 exc = task.exception() if not task.cancelled() else None
@@ -1600,6 +1619,7 @@ class AudioHandler:
             sender.cancel()
         finally:
             self._done.set()
+            await self._fence_controller_audio()
             for task in (reader, sender):
                 if not task.done():
                     task.cancel()
@@ -1650,6 +1670,17 @@ class AudioHandler:
                     identity=_parse_client_identity(msg),
                 )
             elif direction == "tx":
+                if self._controller is not None and self._controller_ticket is not None:
+                    try:
+                        self._controller.validate(self._controller_ticket)
+                        if self._controller_ticket.remote:
+                            self._controller.claim_audio(
+                                self._controller_ticket, self._controller_audio_source
+                            )
+                            self._controller_claimed = True
+                    except ControllerError as exc:
+                        await self._send_error(exc.code)
+                        return
                 was_active = self._tx_active or self._tx_lease is not None
                 previous_facts = self._tx_facts
                 try:
@@ -1743,6 +1774,30 @@ class AudioHandler:
         self._tx_facts = previous_facts if was_active else None
         if was_active:
             await self._stop_tx(reason="failed TX audio restart", force=True)
+        elif self._controller_claimed:
+            await self._fence_controller_audio()
+            self._release_controller_audio()
+
+    async def _fence_controller_audio(self) -> None:
+        if (
+            self._controller_claimed
+            and self._controller_audio_loss is not None
+            and self._controller_ticket is not None
+        ):
+            await self._controller_audio_loss(
+                self._controller_ticket, self._controller_audio_source
+            )
+
+    def _release_controller_audio(self) -> None:
+        if (
+            self._controller is not None
+            and self._controller_ticket is not None
+            and self._controller_claimed
+        ):
+            self._controller.release_audio(
+                self._controller_ticket, self._controller_audio_source
+            )
+            self._controller_claimed = False
 
     async def _stop_tx(
         self,
@@ -1754,8 +1809,10 @@ class AudioHandler:
     ) -> None:
         """Release this handler's active TX ownership, optionally bounded."""
         async with self._tx_stop_lock:
+            await self._fence_controller_audio()
             if not self._tx_active and self._tx_lease is None:
                 if not force or self._tx_facts is None:
+                    self._release_controller_audio()
                     return
             was_active = self._tx_active
             self._tx_active = False
@@ -1796,6 +1853,21 @@ class AudioHandler:
                         stop_tx = stop_tx_method()
                     else:
                         stop_tx = self._legacy_tx_lifecycle("stop")
+                if self._controller_track_stop is not None:
+                    owned_stop = asyncio.ensure_future(
+                        self._controller_track_stop(stop_tx)
+                    )
+
+                    def settled(done: asyncio.Future[None]) -> None:
+                        if (
+                            not done.cancelled()
+                            and done.exception() is None
+                            and (done.result() is None or done.result() is True)
+                        ):
+                            self._release_controller_audio()
+
+                    owned_stop.add_done_callback(settled)
+                    stop_tx = asyncio.shield(owned_stop)
                 if timeout is None:
                     await stop_tx
                 else:
@@ -1818,6 +1890,8 @@ class AudioHandler:
                 if not suppress_errors:
                     raise
             else:
+                if self._controller_track_stop is None:
+                    self._release_controller_audio()
                 logger.info("audio: TX stopped (%s)", reason)
 
     async def _await_bounded_tx_stop(
@@ -1881,6 +1955,12 @@ class AudioHandler:
         capability — e.g. IC-9700 (dual-RX but different menu layout)
         and FTX-1 (Yaesu CAT, no ``send_civ`` at all).  Issue #799.
         """
+        if self._controller is not None and self._controller_ticket is not None:
+            try:
+                self._controller.validate(self._controller_ticket)
+            except ControllerError as exc:
+                await self._send_error(exc.code)
+                return
         focus = msg.get("focus", "")
         split_stereo = bool(msg.get("split_stereo", False))
 
@@ -2048,6 +2128,12 @@ class AudioHandler:
         """Push TX bytes via the held session lease (MOR-580); without one,
         via neutral ``push_tx``, falling back to the named legacy per-codec
         push method (MOR-544)."""
+        if self._tx_gate is not None:
+            try:
+                if await self._tx_gate() is not True:
+                    return
+            except Exception:
+                return
         lease = self._tx_lease
         if lease is not None and not lease.released:
             await lease.push(data)

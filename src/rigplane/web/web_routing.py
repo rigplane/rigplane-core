@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 from typing import TYPE_CHECKING
+from rigplane.runtime.controller_authority import ControllerAuthority, ControllerError
 
 from .host_guard import (  # noqa: TID251
     MISDIRECTED_BODY,
@@ -149,6 +150,58 @@ async def _dispatch_http_request(
             )
             return
 
+    if path in ("/api/v1/controller", "/api/v1/controller/mode"):
+        await server._handle_http_controller(method, path, writer, headers, reader)
+        return
+    controller = getattr(server, "_controller", None)
+    if not isinstance(controller, ControllerAuthority):
+        await _dispatch_http_routes(
+            server, writer, method, path, headers, reader, query
+        )
+        return
+    if controller.mode == "remote" and method in ("POST", "PUT", "PATCH", "DELETE"):
+        if path == "/api/v1/managed-transmit/command":
+            await _dispatch_http_routes(
+                server, writer, method, path, headers, reader, query
+            )
+            return
+        try:
+            if path not in ("/api/v1/commands", "/api/v1/commands/batch"):
+                raise ControllerError("controller_local_required")
+            ticket = controller.credential((headers or {}).get("x-rigplane-controller"))
+            with controller.bind(ticket):
+                await _dispatch_http_routes(
+                    server, writer, method, path, headers, reader, query
+                )
+        except ControllerError as exc:
+            await server._send_json(
+                writer, exc.status, "Forbidden", {"error": exc.code}
+            )
+        return
+    if controller.mode == "remote":
+        await _dispatch_http_routes(
+            server, writer, method, path, headers, reader, query
+        )
+        return
+    # Capture local HTTP currency too: a handoff cannot revive its delayed work.
+    with controller.bind(controller.capture()):
+        await _dispatch_http_routes(
+            server, writer, method, path, headers, reader, query
+        )
+
+
+async def _dispatch_http_routes(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    from . import server as _server_mod  # noqa: TID251
+
+    _send_response = _server_mod._send_response
     if path == "/healthz":
         if method not in ("GET", "HEAD"):
             await _send_response(writer, 405, "Method Not Allowed", b"", {})
