@@ -92,6 +92,7 @@ const CLOSED_CONTROL_SESSION: ControlSessionSnapshot = Object.freeze({ state: 'd
 class FrontendRuntime {
   private _bootstrapCleanup: (() => void) | null = null;
   private _bootstrapInFlight: Promise<() => void> | null = null;
+  private _bootstrapTeardown: Promise<void> | null = null;
   private _capabilitiesUnsubscribe: (() => void) | null = null;
   private _rxAudioLease: ResourceLease | null = null;
   private _ended = false;
@@ -372,13 +373,22 @@ class FrontendRuntime {
    * can be set before this async function starts.
    */
   private async _doBootstrap(signal?: AbortSignal): Promise<() => void> {
+    const previous = this._bootstrapTeardown;
+    if (previous) {
+      try { await previous; } finally {
+        if (this._bootstrapTeardown === previous) this._bootstrapTeardown = null;
+      }
+    }
+    await presentationResources.rearm();
     await fetchInfo(signal);
     signal?.throwIfAborted();
 
     let stopController = () => {};
     const abort = () => controllerClient.lose();
     let cleanupInFlight: Promise<void> | undefined;
-    const cleanup = () => cleanupInFlight ??= (async () => {
+    const cleanup = () => {
+      if (cleanupInFlight) return cleanupInFlight;
+      cleanupInFlight = (async () => {
       stopController();
       signal?.removeEventListener('abort', abort);
       const disconnect = (controllerClient.remote ? systemController.disconnect() : Promise.resolve())
@@ -408,7 +418,10 @@ class FrontendRuntime {
           }
         }
       }
-    })();
+      })();
+      this._bootstrapTeardown = cleanupInFlight;
+      return cleanupInFlight;
+    };
     try {
       signal?.addEventListener('abort', abort, { once: true });
       await controllerClient.prepare(signal);
@@ -442,7 +455,14 @@ class FrontendRuntime {
       this._bootstrapCleanup = cleanup;
       return cleanup;
     } catch (error) {
-      await cleanup();
+      stopController();
+      signal?.removeEventListener('abort', abort);
+      this._capabilitiesUnsubscribe?.();
+      this._capabilitiesUnsubscribe = null;
+      if (controllerClient.remote) {
+        this._configurePresentationResources(null);
+        await systemController.disconnect();
+      }
       throw error;
     }
   }
