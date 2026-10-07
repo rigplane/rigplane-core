@@ -280,13 +280,14 @@ describe('key intent gating', () => {
       expect(handlers.onRequestKey).not.toHaveBeenCalled();
       s.key().dispatchEvent(new MouseEvent('pointerdown', { button: 0, bubbles: true }));
       expect(handlers.onPttDown).toHaveBeenCalledOnce();
-      s.key().dispatchEvent(new Event(release));
+      // Browser pointerup bubbles to Svelte's delegated handler.
+      s.key().dispatchEvent(new Event(release, { bubbles: true }));
       expect(handlers.onPttUp).toHaveBeenCalledOnce();
       expect(handlers.onRequestKey).not.toHaveBeenCalled();
     } finally { s.dispose(); }
   });
 
-  it('uses remote key hold/release and releases a remaining hold on unmount', () => {
+  it('uses remote key hold/release and releases a remaining hold on unmount', async () => {
     const handlers = { ...inertHandlers(), momentary: true, onPttDown: vi.fn(), onPttUp: vi.fn() };
     const s = render(topologyFixtures['1/single'], snap({ fresh: true }), handlers);
     s.key().dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
@@ -298,7 +299,7 @@ describe('key intent gating', () => {
     expect(handlers.onPttDown).toHaveBeenCalledOnce();
     s.key().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     const retired = s.key();
-    s.dispose();
+    await s.dispose();
     retired.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     expect(handlers.onPttDown).toHaveBeenCalledTimes(2);
     expect(handlers.onPttUp).toHaveBeenCalledTimes(2);
