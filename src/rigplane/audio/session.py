@@ -62,6 +62,7 @@ import asyncio
 import contextlib
 import logging
 import time
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Literal, cast
@@ -193,7 +194,12 @@ class TxLease:
     def released(self) -> bool:
         return self._released
 
-    async def push(self, audio_data: bytes) -> None:
+    async def push(
+        self,
+        audio_data: bytes,
+        *,
+        submission_guard: Callable[[], Awaitable[bool]] | None = None,
+    ) -> None:
         """Push TX audio (encoded per the radio's ``audio_tx_codec``)."""
         if self._released:
             raise RuntimeError(f"TX lease {self.owner!r} already released")
@@ -204,6 +210,14 @@ class TxLease:
         # rebuilt (so the LAN stream is RECEIVING and ``push_tx`` would be
         # rejected) is re-armed here instead of failing.
         await self._session._converge_for_push()
+        if submission_guard is not None:
+            try:
+                if await submission_guard() is not True:
+                    return
+            except Exception:
+                return
+            if self._released:
+                return
         await self._session._radio.push_tx(audio_data)
 
     async def release(self) -> None:
