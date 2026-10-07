@@ -20,6 +20,8 @@ if str(SCRIPTS_DIR) not in sys.path:
 from build_versioned_docs import (  # noqa: E402
     DocsVersion,
     assemble_root,
+    ANALYTICS_PARTIAL,
+    install_analytics_partial,
     overlay_config,
     page_dirs,
 )
@@ -175,4 +177,38 @@ def test_overlay_points_site_url_at_the_version_and_enables_the_selector() -> No
         "  version:",
         "    provider: mike",
         "    default: '2.11'",
+        "  analytics:",
+        "    provider: custom",
     ]
+
+
+def test_exported_version_gets_this_checkouts_analytics_partial(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    partial = repo / ANALYTICS_PARTIAL
+    partial.parent.mkdir(parents=True)
+    partial.write_text("current snippet")
+    source = tmp_path / "exported"
+    stale = source / ANALYTICS_PARTIAL
+    stale.parent.mkdir(parents=True)
+    stale.write_text("stale snippet")
+
+    install_analytics_partial(repo, source)
+
+    assert stale.read_text() == "current snippet"
+
+
+def test_exported_version_without_overrides_still_gets_the_partial(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    partial = repo / ANALYTICS_PARTIAL
+    partial.parent.mkdir(parents=True)
+    partial.write_text("current snippet")
+    source = tmp_path / "exported"
+    source.mkdir()
+
+    install_analytics_partial(repo, source)
+
+    assert (source / ANALYTICS_PARTIAL).read_text() == "current snippet"
