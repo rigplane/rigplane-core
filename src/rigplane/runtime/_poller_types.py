@@ -19,6 +19,7 @@ from rigplane.core.state_pipeline_contracts import (
     CommandSource,
     FieldPath,
 )
+from rigplane.runtime.controller_authority import ControllerAuthority, ControllerTicket
 
 __all__ = [
     "Command",
@@ -1138,6 +1139,7 @@ class CommandQueueEntry:
     connection_generation: object | None = None
     positive_tx_ready: asyncio.Future[None] | None = None
     positive_tx_submission: asyncio.Task[Any] | None = None
+    controller_ticket: ControllerTicket | None = None
 
 
 def validate_command_queue_entry_currency(
@@ -1150,6 +1152,8 @@ def validate_command_queue_entry_currency(
     require_connection_generation: bool = False,
 ) -> None:
     """Reject a captured dispatch envelope after any causal input moved."""
+    if entry.controller_ticket is not None:
+        entry.controller_ticket.authority.validate(entry.controller_ticket)
     if entry.expires_at_monotonic is not None and now >= entry.expires_at_monotonic:
         raise CommandError("queued command expired before dispatch")
     if entry.session_id is not None and not session_is_live(entry.session_id):
@@ -1291,6 +1295,18 @@ class CommandQueue:
         # even when empty — that is the every-session-gone case, not ignorance.
         self._live_sessions: set[str] | None = None
         self._capture_connection_generation: Callable[[], object | None] | None = None
+        self._controller: ControllerAuthority | None = None
+
+    def bind_controller(self, controller: ControllerAuthority) -> None:
+        if self._controller is not None and self._controller is not controller:
+            raise RuntimeError("command queue controller is already bound")
+        self._controller = controller
+
+    def _controller_ticket(self, cmd: Command | None) -> ControllerTicket | None:
+        # Negative safety work never grants a controlling seat.
+        if self._controller is None or isinstance(cmd, PttOff):
+            return None
+        return self._controller.capture()
 
     def bind_connection_generation(self, capture: Callable[[], object | None]) -> None:
         """Bind the sole consumer-owned connection identity source."""
@@ -1359,6 +1375,7 @@ class CommandQueue:
         provider_generation: int | None = None,
         connection_generation: object | None = None,
     ) -> None:
+        controller_ticket = self._controller_ticket(cmd)
         self._record_scope_demand(cmd)
         entry = CommandQueueEntry(
             cmd,
@@ -1369,6 +1386,7 @@ class CommandQueue:
             expires_at_monotonic=expires_at_monotonic,
             provider_generation=provider_generation,
             connection_generation=connection_generation,
+            controller_ticket=controller_ticket,
         )
         segment = self._coalesced_tail()
         if isinstance(cmd, (PttOn, PttOff)):
@@ -1395,6 +1413,7 @@ class CommandQueue:
         positive_tx_ready: asyncio.Future[None] | None = None,
         positive_tx_submission: asyncio.Task[Any] | None = None,
     ) -> CommandQueueEntry:
+        controller_ticket = self._controller_ticket(cmd)
         self._record_scope_demand(cmd)
         entry = CommandQueueEntry(
             cmd,
@@ -1408,6 +1427,7 @@ class CommandQueue:
             connection_generation=connection_generation,
             positive_tx_ready=positive_tx_ready,
             positive_tx_submission=positive_tx_submission,
+            controller_ticket=controller_ticket,
         )
         self._segments.append(_CommandQueueSegment.ordered_entry(entry))
         self._notify.set()

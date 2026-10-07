@@ -12,6 +12,11 @@ from typing import Any, Protocol
 
 from rigplane.core.command_dispatch import DescriptorTxPolicy, command_descriptor
 from rigplane.core.state_pipeline_contracts import CommandIntent
+from rigplane.runtime.controller_authority import (
+    ControllerAuthority,
+    ControllerError,
+    ControllerTicket,
+)
 from rigplane.runtime.managed_tx_config import (
     ManagedTxTotConfig,
     ManagedTxTotConfigStore,
@@ -181,7 +186,14 @@ class ManagedTxAuthority:
         self._provider_unavailable_task: asyncio.Task[None] | None = None
         self._closing = False
         self._closed = False
+        self._controller: ControllerAuthority | None = None
+        self._controller_effects: dict[EffectToken, ControllerTicket] = {}
         self._scheduler_task = asyncio.create_task(self._scheduler())
+
+    def bind_controller(self, controller: ControllerAuthority) -> None:
+        if self._controller is not None and self._controller is not controller:
+            raise RuntimeError("managed TX controller is already bound")
+        self._controller = controller
 
     async def ptt_down(self, owner: str) -> ManagedTxOutcome:
         """Compatibility helper which deliberately drains provider settlement."""
@@ -280,6 +292,13 @@ class ManagedTxAuthority:
         """Register one cancellable positive transition before it can admit."""
         if action not in ("ptt_down", "transmit_on"):
             raise ValueError("positive managed TX action is invalid")
+        controller_ticket = None
+        if self._controller is not None:
+            controller_ticket = self._controller.capture()
+            if controller_ticket.remote and (
+                action != "ptt_down" or controller_ticket.session_id != owner
+            ):
+                raise ControllerError("controller_tx_unsupported")
         if action == "ptt_down":
             if type(owner) is not str:
                 raise TypeError("PTT requires a builtin str owner")
@@ -302,6 +321,8 @@ class ManagedTxAuthority:
                     await asyncio.wait((ready,))
                 async with self._lock:
                     self._require_ingress_open_locked()
+                    if controller_ticket is not None:
+                        controller_ticket.authority.validate(controller_ticket)
                     if not (
                         self._provider_generation == generation
                         and self._abort_fence.is_current(token)
@@ -323,6 +344,15 @@ class ManagedTxAuthority:
                             self._state, ManagedTxOutcome.REJECTED
                         )
                     self._wakeup.wake()
+                    if controller_ticket is not None:
+                        controller_effects = {
+                            effect.token: controller_ticket
+                            for effect in transition.effects
+                            if isinstance(effect, ManagedTxEffect)
+                            and effect.operation is not ActuationOperation.FORCE_RECEIVE
+                        }
+                        if controller_effects:
+                            self._controller_effects = controller_effects
                     execution = asyncio.create_task(
                         self._execute(transition.effects, full_force=full_force)
                     )
@@ -568,6 +598,16 @@ class ManagedTxAuthority:
         pending = self._state.pending_effect
         if isinstance(operation, AbortOperation):
             operation = ActuationOperation.FORCE_RECEIVE
+        if operation is not ActuationOperation.FORCE_RECEIVE:
+            ticket = self._controller_effects.get(token)
+            if ticket is None and self._controller is not None:
+                if self._controller.mode == "remote":
+                    return False
+            if ticket is not None:
+                try:
+                    ticket.authority.validate(ticket)
+                except ControllerError:
+                    return False
         return bool(
             not (self._closing or self._closed or self._terminated)
             and not (
