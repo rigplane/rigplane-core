@@ -543,6 +543,28 @@ describe('FrontendRuntime.bootstrap()', () => {
     } finally { vi.unstubAllGlobals(); }
   });
 
+  it('stops capture on loss while retaining an unfinished release barrier through cleanup', async () => {
+    controller.remote = true;
+    const gate = deferred<void>();
+    const rt = await freshRuntime();
+    const unregister = rt.system.registerPreDisconnectBarrier(() => gate.promise);
+    const teardown = vi.spyOn(presentationResources, 'teardown').mockResolvedValue();
+    try {
+      const cleanup = await rt.bootstrap();
+      controller.onLoss.mock.calls.at(-1)![0]();
+      expect(audioManager.destroy).toHaveBeenCalled();
+      let completed = false;
+      const pending = cleanup().then(() => { completed = true; });
+      await settle();
+      expect(completed).toBe(false);
+      expect(controller.release).not.toHaveBeenCalled();
+      gate.resolve();
+      await pending;
+      expect(controller.release).toHaveBeenCalledOnce();
+      expect(teardown).toHaveBeenCalledOnce();
+    } finally { unregister(); teardown.mockRestore(); }
+  });
+
   it('waits for accepted capability-store generations before configuring resources', async () => {
     const teardown = vi.spyOn(presentationResources, 'teardown')
       .mockImplementation(async () => {});
