@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ManagedTxController } from '../../runtime/tx-controller/managed-controller';
 
 const rxStart = vi.fn();
 const rxStop = vi.fn();
@@ -136,7 +137,10 @@ describe('AudioManager controller currency', () => {
     expect(socket.protocols).toEqual([`rigplane-controller-v1.${'a'.repeat(64)}`]);
     expect(socket.url).not.toContain('a'.repeat(64));
     socket.open();
-    await audioManager.startTx();
+    const starting = audioManager.startTx();
+    await vi.advanceTimersByTimeAsync(0);
+    socket.onmessage?.({ data: JSON.stringify({ type: 'audio_tx_format', codec: 'opus' }) });
+    await starting;
     current = false;
     txSend?.(new ArrayBuffer(4));
     expect(socket.sent.some((frame) => frame instanceof ArrayBuffer)).toBe(false);
@@ -173,6 +177,150 @@ describe('AudioManager controller currency', () => {
     expect(await audioManager.startTx()).not.toBeNull();
     expect(txStart).not.toHaveBeenCalled();
     expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+});
+
+describe('remote TX audio admission before managed PTT', () => {
+  const controllers: ManagedTxController[] = [];
+  beforeEach(() => {
+    vi.resetModules(); vi.useFakeTimers(); vi.clearAllMocks();
+    FakeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    vi.stubGlobal('location', { protocol: 'https:', host: 'station.test' });
+  });
+  afterEach(async () => {
+    for (const controller of controllers.splice(0)) controller.dispose();
+    const { audioManager } = await import('../audio-manager');
+    audioManager.destroy(); vi.useRealTimers(); vi.unstubAllGlobals();
+  });
+
+  function serverText(socket: FakeWebSocket, message: Record<string, unknown>) {
+    socket.onmessage?.({ data: JSON.stringify(message) });
+  }
+  const ack = { type: 'audio_tx_format', codec: 'opus', sample_rate: 48000 };
+
+  async function rig() {
+    const { audioManager } = await import('../audio-manager');
+    let current = true;
+    audioManager.setControllerBinding({
+      remote: () => true, ready: () => current, epoch: () => 7,
+      current: (epoch) => epoch === 7 && current,
+      protocols: () => [`rigplane-controller-v1.${'a'.repeat(64)}`],
+    });
+    audioManager.startRx();
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    const sendPtt = vi.fn(async (_operation: 'ptt_on' | 'ptt_off') => 'accepted' as const);
+    const submit = vi.fn(async (_operation: 'transmit_on' | 'force_off') => 'accepted' as const);
+    const controller = new ManagedTxController({
+      snapshot: () => ({
+        phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
+        faultDetail: null, fresh: true, releaseRequired: false,
+        configuredSeconds: 180, remainingMs: null, lastOperation: null,
+      }),
+      refresh: async () => {}, invalidate: vi.fn(), setTot: async () => {},
+      sendPtt, submit, startAudio: () => audioManager.startTx(),
+      stopLocalAudio: () => audioManager.stopTx(),
+      onAudioDied: (handler) => audioManager.onTxAudioDied(handler),
+    });
+    controllers.push(controller);
+    return { audioManager, controller, socket, sendPtt, submit, retire: () => { current = false; } };
+  }
+
+  it('keeps positive PTT and PCM pending until the existing format acknowledgement', async () => {
+    const r = await rig();
+    r.controller.pttOn();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(r.socket.sent).toContain(JSON.stringify({ type: 'audio_start', direction: 'tx' }));
+    txSend?.(new ArrayBuffer(4));
+    expect(r.sendPtt).not.toHaveBeenCalled();
+    expect(r.socket.sent.some((frame) => frame instanceof ArrayBuffer)).toBe(false);
+    serverText(r.socket, { type: 'error', message: 'audio_config: CI-V send failed' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(r.sendPtt).not.toHaveBeenCalled();
+
+    serverText(r.socket, ack);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(r.sendPtt).toHaveBeenCalledExactlyOnceWith('ptt_on');
+    txSend?.(new ArrayBuffer(4));
+    expect(r.socket.sent.some((frame) => frame instanceof ArrayBuffer)).toBe(true);
+    expect(r.submit).not.toHaveBeenCalled();
+  });
+
+  it.each(['controller_audio_busy', 'controller_invalid', 'audio_start: TX audio unavailable'])(
+    'stops refused capture through managed force_off without keying or replay: %s', async (message) => {
+      const r = await rig();
+      r.controller.pttOn();
+      await vi.advanceTimersByTimeAsync(0);
+      serverText(r.socket, { type: 'error', message });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(r.audioManager.txEnabled).toBe(false);
+      expect(txStop).toHaveBeenCalled();
+      expect(r.sendPtt).not.toHaveBeenCalled();
+      expect(r.submit).toHaveBeenCalledExactlyOnceWith('force_off');
+      serverText(r.socket, { type: 'error', message });
+      serverText(r.socket, ack);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(r.sendPtt).not.toHaveBeenCalled();
+      expect(r.submit).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('retires cancelled admission and accepts only a fresh press and its socket acknowledgement', async () => {
+    const r = await rig();
+    r.controller.pttOn();
+    await vi.advanceTimersByTimeAsync(0);
+    await r.controller.pttOff();
+    r.controller.pttOn();
+    await vi.advanceTimersByTimeAsync(0);
+    const freshSocket = FakeWebSocket.instances.at(-1)!;
+    expect(freshSocket).not.toBe(r.socket);
+    freshSocket.open();
+    serverText(r.socket, ack);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(r.sendPtt).not.toHaveBeenCalled();
+    serverText(freshSocket, ack);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(r.sendPtt).toHaveBeenCalledExactlyOnceWith('ptt_on');
+    await r.controller.pttOff();
+    expect(r.sendPtt.mock.calls.map(([operation]) => operation)).toEqual(['ptt_on', 'ptt_off']);
+    expect(r.submit).not.toHaveBeenCalled();
+  });
+
+  it('settles a pending start as a failure when the audio socket closes', async () => {
+    const r = await rig();
+    const starting = r.audioManager.startTx();
+    await vi.advanceTimersByTimeAsync(0);
+    r.socket.serverClose();
+    await expect(starting).resolves.not.toBeNull();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(r.audioManager.txEnabled).toBe(false);
+    expect(r.submit).toHaveBeenCalledExactlyOnceWith('force_off');
+  });
+
+  it('does not release a pending positive after authority loss and a late acknowledgement', async () => {
+    const r = await rig();
+    r.controller.pttOn();
+    await vi.advanceTimersByTimeAsync(0);
+    r.retire();
+    serverText(r.socket, ack);
+    await r.controller.releaseSession();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(r.sendPtt).not.toHaveBeenCalled();
+    expect(r.audioManager.txEnabled).toBe(false);
+  });
+
+  it('uses managed force_off for a controller refusal after admission too', async () => {
+    const r = await rig();
+    r.controller.pttOn();
+    await vi.advanceTimersByTimeAsync(0);
+    serverText(r.socket, ack);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(r.sendPtt).toHaveBeenCalledExactlyOnceWith('ptt_on');
+    serverText(r.socket, { type: 'error', message: 'controller_audio_busy' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(r.audioManager.txEnabled).toBe(false);
+    expect(r.submit).toHaveBeenCalledExactlyOnceWith('force_off');
   });
 });
 
