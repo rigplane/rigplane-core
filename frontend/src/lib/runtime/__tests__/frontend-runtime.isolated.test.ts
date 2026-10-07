@@ -66,6 +66,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 vi.mock('$lib/stores/radio.svelte', () => ({
   radio: { current: null },
   subscribeRadioState: vi.fn(),
+  resetRadioState: vi.fn(),
   // `panel-commands.ts` (a frozen A09b seam) reads these directly.
   getRadioState: vi.fn(() => null),
   getActiveReceiver: vi.fn(() => null),
@@ -385,6 +386,33 @@ function makeScopeChannel() {
   };
 }
 describe('PresentationResourceHost', () => {
+  it('rearms only after abandoned start cleanup settles and rejects the old lease', async () => {
+    const first = deferred<object>(), disposed = deferred<void>();
+    const oldHandle = {}, freshHandle = {};
+    const driver = {
+      start: vi.fn().mockReturnValueOnce(first.promise).mockResolvedValue(freshHandle),
+      stop: vi.fn(async () => {}), dispose: vi.fn(() => disposed.promise),
+    };
+    const host = new PresentationResourceHost<object>('session');
+    host.configure('hardware-scope', { available: true, selected: true, driver });
+    const oldLease = host.acquire('hardware-scope', 'old');
+    await settle();
+    const ending = host.teardown();
+    let ready = false;
+    const next = host.rearm().then(() => { ready = true; });
+    first.resolve(oldHandle);
+    await vi.waitFor(() => expect(driver.dispose).toHaveBeenCalledWith(oldHandle));
+    expect(ready).toBe(false);
+    expect(() => host.acquire('hardware-scope', 'premature')).toThrow('torn down');
+    disposed.resolve();
+    await Promise.all([ending, next]);
+    host.acquire('hardware-scope', 'fresh');
+    await settle();
+    expect(host.release(oldLease)).toBe(false);
+    expect(host.snapshot('hardware-scope').activeHandle).toBe(freshHandle);
+    expect(driver.start).toHaveBeenCalledTimes(2);
+    await host.teardown();
+  });
   it('is inert until first demand, shares the handle, and stops on last release', async () => {
     const handle = {};
     const driver = { start: vi.fn(async () => handle), stop: vi.fn(async () => {}) };
