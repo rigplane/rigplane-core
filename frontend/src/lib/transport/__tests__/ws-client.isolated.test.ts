@@ -30,7 +30,7 @@ describe('remote controller channel grouping', () => {
         : { protocol_version: 1, mode: 'remote', state: 'idle' },
     ), { status: init?.method === 'POST' ? 201 : 200 })));
   });
-  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.resetModules(); });
 
   it('attaches primary before scope, clears pending commands on loss and ignores old callbacks', async () => {
     const { controllerClient } = await import('../controller-client');
