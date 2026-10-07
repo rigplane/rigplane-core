@@ -613,25 +613,37 @@ class TestPortAudioBackendDeps:
             await stream.stop()
         assert all(handle.closed for handle in handles)
 
+    @pytest.mark.parametrize(
+        ("platform", "device_info", "host_info", "expected_latency"),
+        [
+            pytest.param("linux", {"hostapi": 1}, {"name": "ALSA"}, 0.050, id="alsa"),
+            pytest.param("linux", {"hostapi": 1}, {"name": "JACK"}, "low", id="jack"),
+            pytest.param("linux", {"hostapi": 1}, {"name": "OSS"}, "low", id="oss"),
+            pytest.param("linux", {}, {"name": "ALSA"}, "low", id="missing-host-id"),
+            pytest.param("linux", {"hostapi": None}, {}, "low", id="null-host-id"),
+            pytest.param("linux", {"hostapi": -1}, {}, "low", id="negative-host-id"),
+            pytest.param("linux", {"hostapi": "1"}, {}, "low", id="string-host-id"),
+            pytest.param("linux", {"hostapi": True}, {}, "low", id="bool-host-id"),
+            pytest.param("linux", {"hostapi": 1}, {}, "low", id="missing-host-name"),
+            pytest.param("linux", "error", {}, "low", id="device-query-error"),
+            pytest.param(
+                "linux", {"hostapi": 1}, "error", "low", id="host-query-error"
+            ),
+            pytest.param(
+                "win32", {"hostapi": 1}, {"name": "ALSA"}, "low", id="windows"
+            ),
+        ],
+    )
     @pytest.mark.asyncio()
-    async def test_open_rx_opens_callback_driven_blocksize_zero_non_darwin(
-        self, monkeypatch: pytest.MonkeyPatch
+    async def test_input_latency_scope_and_native_callback_contract(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        platform,
+        device_info,
+        host_info,
+        expected_latency,
     ) -> None:
-        """Non-darwin capture must be callback-driven with blocksize=0.
-
-        Regression guard against the ~50 Hz TX "comb": the old implementation
-        read on a fixed-``blocksize=960`` blocking loop (``stream.read(960)`` in
-        ``asyncio.to_thread``), which straddled the WASAPI shared-mode engine
-        period and dropped/duplicated a sample run once per 20 ms block. The
-        stream must now register a ``callback=`` rather than reading, and open
-        with ``blocksize=0`` (engine-native period), mirroring a clean
-        ``sd.rec``. Companion device selection forces the WASAPI face on which
-        ``blocksize=0`` opens (the WDM-KS face that rejected ``blocksize=0`` with
-        PortAudioError -9999 is no longer chosen).
-        On darwin the backend instead opens RX at the configured frame
-        boundary (MOR-2465); see test_open_rx_darwin_blocksize_matches_frame.
-        """
-        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(sys, "platform", platform)
         # Isolate callback/blocksize selection with the fake device here.
         # COM lifetime has its own Fake Ole32 regression suite.
         monkeypatch.setattr(
@@ -641,8 +653,23 @@ class TestPortAudioBackendDeps:
             "rigplane.audio.backend._WindowsMtaLease.release", lambda _self: None
         )
         created: list[dict[str, object]] = []
+        queries: list[tuple[str, int]] = []
 
         class FakeSd:
+            @staticmethod
+            def query_devices(index):
+                queries.append(("device", index))
+                if device_info == "error":
+                    raise RuntimeError("device metadata unavailable")
+                return device_info
+
+            @staticmethod
+            def query_hostapis(index):
+                queries.append(("host", index))
+                if host_info == "error":
+                    raise RuntimeError("host metadata unavailable")
+                return host_info
+
             class InputStream:
                 def __init__(self, **kw: object) -> None:
                     created.append(kw)
@@ -662,10 +689,16 @@ class TestPortAudioBackendDeps:
                 def read(self, _frames: int) -> object:  # pragma: no cover
                     raise AssertionError("capture must not use blocking read()")
 
+            class OutputStream(InputStream):
+                pass
+
+            class Stream(InputStream):
+                pass
+
         backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), object()))
         # frame_ms is advisory only on non-darwin: the capture period is engine-native.
         stream = backend.open_rx(
-            AudioDeviceId(0), sample_rate=48_000, channels=1, frame_ms=20
+            AudioDeviceId(19), sample_rate=48_000, channels=1, frame_ms=20
         )
         assert isinstance(stream, RxStream)
 
@@ -679,11 +712,44 @@ class TestPortAudioBackendDeps:
         assert kwargs["samplerate"] == 48_000
         assert kwargs["channels"] == 1
         assert kwargs["dtype"] == "int16"
+        assert kwargs["latency"] == expected_latency
         # device is passed as the integer index, unchanged.
-        assert kwargs["device"] == 0
+        assert kwargs["device"] == 19
 
         await stream.stop()
         assert not stream.running
+
+        reopened = backend.open_rx(AudioDeviceId(19))
+        await reopened.start(lambda _pcm: None)
+        await reopened.stop()
+        assert created[1]["latency"] == expected_latency
+        assert created[1]["blocksize"] == 0
+        if platform == "win32":
+            assert queries == []
+        else:
+            assert [q for q in queries if q[0] == "device"] == [
+                ("device", 19),
+                ("device", 19),
+            ]
+            host_id = (
+                device_info.get("hostapi") if isinstance(device_info, dict) else None
+            )
+            expected_hosts = (
+                [("host", 1), ("host", 1)]
+                if type(host_id) is int and host_id >= 0
+                else []
+            )
+            assert [q for q in queries if q[0] == "host"] == expected_hosts
+        query_count = len(queries)
+        playback = backend.open_tx(AudioDeviceId(0))
+        await playback.start()
+        await playback.stop()
+        duplex = backend.open_duplex(AudioDeviceId(0))
+        await duplex.start(lambda _pcm: None)
+        await duplex.stop()
+        assert created[2]["latency"] == created[3]["latency"] == "low"
+        assert created[2]["blocksize"] == created[3]["blocksize"] == 960
+        assert len(queries) == query_count
 
     @pytest.mark.asyncio()
     async def test_open_rx_darwin_blocksize_matches_frame(
@@ -734,6 +800,7 @@ class TestPortAudioBackendDeps:
         assert kwargs["samplerate"] == 44_100
         assert kwargs["channels"] == 1
         assert kwargs["dtype"] == "int16"
+        assert kwargs["latency"] == "low"
         assert kwargs["device"] == 0
         assert callable(kwargs["callback"])
 

@@ -23,6 +23,7 @@ from typing import Any, Callable, NewType, Protocol, runtime_checkable
 logger = logging.getLogger(__name__)
 
 _TX_BUFFER_MS = 1_000
+_LINUX_ALSA_INPUT_LATENCY_S = 0.050
 
 # ---------------------------------------------------------------------------
 # Identifiers & descriptors
@@ -741,13 +742,25 @@ class _PortAudioRxStream:
         stage = "open"
         try:
             self._mta.acquire()
+            latency: str | float = "low"
+            if sys.platform == "linux":
+                try:
+                    host_api = self._sd.query_devices(self._device_index)["hostapi"]
+                    if type(host_api) is int and host_api >= 0:
+                        if self._sd.query_hostapis(host_api)["name"] == "ALSA":
+                            latency = _LINUX_ALSA_INPUT_LATENCY_S
+                except Exception:
+                    logger.debug(
+                        "portaudio-rx: host API metadata unavailable; using low latency",
+                        exc_info=True,
+                    )
             self._stream = self._sd.InputStream(
                 samplerate=self._sample_rate,
                 channels=self._channels,
                 dtype="int16",
                 device=self._device_index,
                 blocksize=self._blocksize,
-                latency="low",
+                latency=latency,
                 callback=self._input_callback,
             )
             stage = "start"
