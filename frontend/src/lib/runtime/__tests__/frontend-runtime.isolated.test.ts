@@ -502,6 +502,7 @@ describe('FrontendRuntime.bootstrap()', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     controller.remote = false;
+    controller.active = true;
     controller.prepare.mockResolvedValue(undefined);
     controller.waitForPrimary.mockResolvedValue(undefined);
     controller.assertHostAction.mockImplementation(() => {});
@@ -510,6 +511,7 @@ describe('FrontendRuntime.bootstrap()', () => {
 
   it('acquires before control and waits for primary before audio routing restore', async () => {
     controller.remote = true;
+    controller.active = false;
     const acquisition = deferred<void>(), primary = deferred<void>();
     controller.prepare.mockReturnValueOnce(acquisition.promise);
     controller.waitForPrimary.mockReturnValueOnce(primary.promise);
@@ -517,6 +519,9 @@ describe('FrontendRuntime.bootstrap()', () => {
     const pending = rt.bootstrap();
     await vi.waitFor(() => expect(controller.prepare).toHaveBeenCalledOnce());
     expect(connect).not.toHaveBeenCalled();
+    const binding = vi.mocked(audioManager.setControllerBinding).mock.calls.at(-1)![0]!;
+    expect(binding.remote()).toBe(true);
+    expect(binding.ready()).toBe(false);
     acquisition.resolve();
     await vi.waitFor(() => expect(connect).toHaveBeenCalledOnce());
     expect(audioManager.setControllerBinding).toHaveBeenCalledWith(expect.objectContaining({
@@ -526,6 +531,7 @@ describe('FrontendRuntime.bootstrap()', () => {
     void pending.then(() => { completed = true; });
     await settle();
     expect(completed).toBe(false);
+    controller.active = true;
     primary.resolve();
     const cleanup = await pending;
     expect(rt.remoteController).toBe(true);

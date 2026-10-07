@@ -373,6 +373,13 @@ class FrontendRuntime {
    * can be set before this async function starts.
    */
   private async _doBootstrap(signal?: AbortSignal): Promise<() => void> {
+    audioManager.setControllerBinding({
+      remote: () => !controllerClient.active || controllerClient.remote,
+      ready: () => controllerClient.active,
+      epoch: () => controllerClient.epoch,
+      current: (epoch) => controllerClient.current(epoch),
+      protocols: () => controllerClient.protocols(),
+    });
     const previous = this._bootstrapTeardown;
     if (previous) {
       try { await previous; } finally {
@@ -426,13 +433,6 @@ class FrontendRuntime {
       signal?.addEventListener('abort', abort, { once: true });
       await controllerClient.prepare(signal);
       signal?.throwIfAborted();
-      audioManager.setControllerBinding({
-        remote: () => controllerClient.remote,
-        ready: () => controllerClient.active,
-        epoch: () => controllerClient.epoch,
-        current: (epoch) => controllerClient.current(epoch),
-        protocols: () => controllerClient.protocols(),
-      });
       stopController = controllerClient.onLoss(() => {
         void systemController.disconnect().catch(() => {
           transport.emitLocalNotification('error', 'Удалённое управление потеряно. Подключитесь заново.', 'controller_lost');
