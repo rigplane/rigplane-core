@@ -85,6 +85,26 @@ describe('controller protocol v1 client', () => {
     });
   });
 
+  it('carries the current key on force-off and refuses remote latch or TOT before HTTP', async () => {
+    const fetcher = api({ ...grant, controller_role: 'auxiliary' });
+    vi.stubGlobal('fetch', fetcher);
+    const { controllerClient } = await import('../controller-client');
+    const { ManagedTransmitClient } = await import('../managed-transmit-client');
+    await controllerClient.prepare();
+    const managed = new ManagedTransmitClient();
+    await expect(managed.command('transmit_on')).rejects.toMatchObject({ code: 'controller_local_required' });
+    await expect(managed.setTot(30)).rejects.toMatchObject({ code: 'controller_local_required' });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    fetcher.mockImplementationOnce(async () => response({}, 202));
+    await expect(managed.command('force_off')).resolves.toBe('accepted');
+    expect(fetcher.mock.calls.at(-1)?.[1]).toMatchObject({
+      method: 'POST', redirect: 'error',
+      headers: { 'X-RigPlane-Controller': key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ operation: 'force_off' }),
+    });
+    await controllerClient.release();
+  });
+
   it('expires on missing primary acknowledgements and fences before notifying consumers', async () => {
     vi.stubGlobal('fetch', api());
     const { ControllerClient } = await import('../controller-client');
