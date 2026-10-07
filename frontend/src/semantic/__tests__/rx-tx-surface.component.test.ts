@@ -272,6 +272,34 @@ describe('fault display without a second authority', () => {
 // ── 2. TX action intents ────────────────────────────────────────────────────
 
 describe('key intent gating', () => {
+  it.each(['pointerup', 'pointercancel', 'blur'])('releases remote momentary PTT on %s without a click latch', (release) => {
+    const handlers = { ...inertHandlers(), momentary: true, onPttDown: vi.fn(), onPttUp: vi.fn() };
+    const s = render(topologyFixtures['1/single'], snap({ fresh: true }), handlers);
+    try {
+      s.key().click();
+      expect(handlers.onRequestKey).not.toHaveBeenCalled();
+      s.key().dispatchEvent(new MouseEvent('pointerdown', { button: 0, bubbles: true }));
+      expect(handlers.onPttDown).toHaveBeenCalledOnce();
+      s.key().dispatchEvent(new Event(release));
+      expect(handlers.onPttUp).toHaveBeenCalledOnce();
+      expect(handlers.onRequestKey).not.toHaveBeenCalled();
+    } finally { s.dispose(); }
+  });
+
+  it('uses remote key hold/release and releases a remaining hold on unmount', () => {
+    const handlers = { ...inertHandlers(), momentary: true, onPttDown: vi.fn(), onPttUp: vi.fn() };
+    const s = render(topologyFixtures['1/single'], snap({ fresh: true }), handlers);
+    s.key().dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    s.key().dispatchEvent(new KeyboardEvent('keydown', { key: ' ', repeat: true, bubbles: true }));
+    expect(handlers.onPttDown).toHaveBeenCalledOnce();
+    s.key().dispatchEvent(new KeyboardEvent('keyup', { key: ' ', bubbles: true }));
+    expect(handlers.onPttUp).toHaveBeenCalledOnce();
+    s.key().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    s.dispose();
+    expect(handlers.onPttDown).toHaveBeenCalledTimes(2);
+    expect(handlers.onPttUp).toHaveBeenCalledTimes(2);
+    expect(handlers.onRequestKey).not.toHaveBeenCalled();
+  });
   it('requires both action callbacks and binds them directly without a silent optional path', () => {
     expect(rxTxSurfaceSource).toContain('onRequestKey: () => void;');
     expect(rxTxSurfaceSource).toContain('onRequestUnkey: () => void;');
