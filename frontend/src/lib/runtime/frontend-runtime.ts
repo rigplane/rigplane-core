@@ -389,35 +389,35 @@ class FrontendRuntime {
     const cleanup = () => {
       if (cleanupInFlight) return cleanupInFlight;
       cleanupInFlight = (async () => {
-      stopController();
-      signal?.removeEventListener('abort', abort);
-      const disconnect = (controllerClient.remote ? systemController.disconnect() : Promise.resolve())
-        .then(() => ({ ok: true as const }), (error: unknown) => ({ ok: false as const, error }));
-      this._ended = true;
-      // Drop the cached registration so a later `bootstrap()` (a remounted
-      // App) re-runs the chain instead of being handed a cleanup that has
-      // already run. Safe to do unconditionally: `cleanupInFlight` latches
-      // this body to exactly one execution, which happens before any newer
-      // registration can exist.
-      this._bootstrapCleanup = null;
-      this._rxAudioLease = null;
-      this._dxSubscribers.clear();
-      const unsubscribeDx = this._dxControlUnsubscribe;
-      this._dxControlUnsubscribe = null;
-      const unsubscribeCapabilities = this._capabilitiesUnsubscribe;
-      this._capabilitiesUnsubscribe = null;
-      try { unsubscribeDx?.(); } finally {
-        try { unsubscribeCapabilities?.(); } finally {
-          const stopScopeStatus = this._defaultScopeStop;
-          this._defaultScopeStop = null;
-          try { stopScopeStatus?.(); } finally {
-            try { await presentationResources.teardown(); } finally {
-              const result = await disconnect;
-              if (!result.ok) throw result.error;
+        stopController();
+        signal?.removeEventListener('abort', abort);
+        const disconnect = (controllerClient.remote ? systemController.disconnect() : Promise.resolve())
+          .then(() => ({ ok: true as const }), (error: unknown) => ({ ok: false as const, error }));
+        this._ended = true;
+        // Drop the cached registration so a later `bootstrap()` (a remounted
+        // App) re-runs the chain instead of being handed a cleanup that has
+        // already run. Safe to do unconditionally: `cleanupInFlight` latches
+        // this body to exactly one execution, which happens before any newer
+        // registration can exist.
+        this._bootstrapCleanup = null;
+        this._rxAudioLease = null;
+        this._dxSubscribers.clear();
+        const unsubscribeDx = this._dxControlUnsubscribe;
+        this._dxControlUnsubscribe = null;
+        const unsubscribeCapabilities = this._capabilitiesUnsubscribe;
+        this._capabilitiesUnsubscribe = null;
+        try { unsubscribeDx?.(); } finally {
+          try { unsubscribeCapabilities?.(); } finally {
+            const stopScopeStatus = this._defaultScopeStop;
+            this._defaultScopeStop = null;
+            try { stopScopeStatus?.(); } finally {
+              try { await presentationResources.teardown(); } finally {
+                const result = await disconnect;
+                if (!result.ok) throw result.error;
+              }
             }
           }
         }
-      }
       })();
       this._bootstrapTeardown = cleanupInFlight;
       return cleanupInFlight;

@@ -599,17 +599,24 @@ describe('FrontendRuntime.bootstrap()', () => {
     const gate = deferred<void>();
     const unregister = rt.system.registerPreDisconnectBarrier(() => gate.promise);
     const first = await rt.bootstrap();
+    const prepares = controller.prepare.mock.calls.length;
     const ending = first();
     const next = rt.bootstrap();
-    await settle();
-    expect(controller.prepare).toHaveBeenCalledOnce();
-    expect(connect).toHaveBeenCalledOnce();
-    gate.resolve();
-    await ending;
-    const second = await next;
-    expect(connect).toHaveBeenCalledTimes(2);
-    unregister();
-    await second();
+    try {
+      await settle();
+      expect(controller.prepare).toHaveBeenCalledTimes(prepares);
+      expect(connect).toHaveBeenCalledOnce();
+      gate.resolve();
+      await ending;
+      await next;
+      expect(connect).toHaveBeenCalledTimes(2);
+    } finally {
+      gate.resolve();
+      unregister();
+      await ending;
+      const second = await next;
+      await second();
+    }
   });
 
   it('waits for accepted capability-store generations before configuring resources', async () => {
