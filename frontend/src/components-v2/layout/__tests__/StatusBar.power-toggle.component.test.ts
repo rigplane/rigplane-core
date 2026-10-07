@@ -30,6 +30,7 @@ import { mount, unmount, flushSync, tick } from 'svelte';
 const power = vi.hoisted(() => ({
   radioPowerOn: null as boolean | null,
   powerControl: false,
+  remote: false,
 }));
 
 const sys = vi.hoisted(() => ({
@@ -66,6 +67,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
 
 vi.mock('$lib/runtime', () => ({
   runtime: {
+    get remoteController() { return power.remote; },
     defaultScopeStatus: {
       source: null,
       available: false,
@@ -96,6 +98,7 @@ describe('StatusBar power toggle (MOR-1673, in-page confirm)', () => {
   beforeEach(() => {
     power.radioPowerOn = null;
     power.powerControl = false;
+    power.remote = false;
     sys.powerOn.mockClear();
     sys.powerOff.mockClear();
     confirmSpy = vi.fn(() => true);
@@ -143,6 +146,19 @@ describe('StatusBar power toggle (MOR-1673, in-page confirm)', () => {
 
     expect(host.querySelector('.power-toggle-btn')).toBeNull();
     expect(host.querySelector('.status-controls')?.textContent ?? '').not.toContain('UNKNOWN');
+  });
+
+  it('hides host power, settings and report actions remotely while retaining client disconnect', () => {
+    power.remote = true;
+    power.powerControl = true;
+    power.radioPowerOn = true;
+    const host = render();
+    expect(host.querySelector('.power-toggle-btn')).toBeNull();
+    expect(host.querySelector('.report-btn')).toBeNull();
+    expect(host.querySelector('.settings-btn')).toBeNull();
+    expect(host.querySelector('.status-controls')?.textContent).toContain('Disconnect');
+    expect(sys.powerOn).not.toHaveBeenCalled();
+    expect(sys.powerOff).not.toHaveBeenCalled();
   });
 
   it('capability + unknown state: disabled, neutral, plain POWER label, and no dialog or dispatch even with disabled bypassed', async () => {
