@@ -7,6 +7,7 @@ export interface ManagedTxGestureCommands {
 export interface ManagedTxGestureView {
   latched(): boolean;
   transmitAvailable(): boolean;
+  latchAllowed?(): boolean;
 }
 
 export interface ManagedTxGestureDeps {
@@ -55,7 +56,7 @@ export function createManagedTxGesture(
     if (pending !== null) {
       clearPending();
       pressed = false;
-      if (view.transmitAvailable()) commands.transmitOn();
+      if (view.latchAllowed?.() !== false && view.transmitAvailable()) commands.transmitOn();
       else commands.pttOff();
       return;
     }
@@ -70,6 +71,11 @@ export function createManagedTxGesture(
   const up = () => {
     if (destroyed || !pressed) return;
     pressed = false;
+    if (view.latchAllowed?.() === false) {
+      clearPending();
+      commands.pttOff();
+      return;
+    }
     const myToken = token;
     pending = deps.schedule(() => {
       if (destroyed || myToken !== token) return;

@@ -35,6 +35,7 @@ import {
 } from '$lib/stores/audio.svelte';
 import * as transport from '$lib/transport/ws-client';
 import { fetchInfo } from '$lib/transport/http-client';
+import { controllerClient } from '$lib/transport/controller-client';
 import { audioManager } from '$lib/audio/audio-manager';
 import { makeAudioRoutingHandlers } from './commands/panel-commands';
 import { clearLegacyPendingModInputRestore } from './adapters/mod-input-auto.svelte';
@@ -91,10 +92,12 @@ const CLOSED_CONTROL_SESSION: ControlSessionSnapshot = Object.freeze({ state: 'd
 class FrontendRuntime {
   private _bootstrapCleanup: (() => void) | null = null;
   private _bootstrapInFlight: Promise<() => void> | null = null;
+  private _bootstrapTeardown: Promise<void> | null = null;
   private _capabilitiesUnsubscribe: (() => void) | null = null;
   private _rxAudioLease: ResourceLease | null = null;
   private _ended = false;
   private _audioRoutingSubscribe = createSubscriber((update) => audioManager.onChange(update));
+  private _controllerSubscribe = createSubscriber((update) => controllerClient.onChange(update));
   private _dxSubscribers = new Map<number, (message: DxMessage) => void>();
   private _dxControlUnsubscribe: (() => void) | null = null;
   private _nextDxSubscriber = 0;
@@ -215,6 +218,10 @@ class FrontendRuntime {
   }
 
   get connectionWs(): boolean { return getWsConnected(); }
+  get remoteController(): boolean {
+    this._controllerSubscribe();
+    return controllerClient.remote;
+  }
   get connectionAudio(): boolean { return isAudioConnected(); }
   /** MOR-2792: server RX capture is digital silence. */
   get rxSilent(): boolean { return isRxSilent(); }
@@ -366,59 +373,98 @@ class FrontendRuntime {
    * can be set before this async function starts.
    */
   private async _doBootstrap(signal?: AbortSignal): Promise<() => void> {
+    audioManager.setControllerBinding({
+      remote: () => !controllerClient.active || controllerClient.remote,
+      ready: () => controllerClient.active,
+      epoch: () => controllerClient.epoch,
+      current: (epoch) => controllerClient.active && controllerClient.current(epoch),
+      protocols: () => controllerClient.protocols(),
+    });
+    const previous = this._bootstrapTeardown;
+    if (previous) {
+      try { await previous; } finally {
+        if (this._bootstrapTeardown === previous) this._bootstrapTeardown = null;
+      }
+    }
+    await presentationResources.rearm();
     await fetchInfo(signal);
     signal?.throwIfAborted();
 
-    // A new App instance re-arms the runtime: `_ended` is latched by the
-    // previous instance's cleanup and would otherwise fail every facade
-    // (`acquireHardwareScope`, `subscribeDx`, `setRxLive`) closed forever.
-    this._ended = false;
-
-    // Remove legacy pre-authority-gate restore records without consulting
-    // cached state or issuing any radio command.
-    clearLegacyPendingModInputRestore();
-
-    // 1. Follow only capabilities accepted by the B2 WS epoch gate.
-    this._capabilitiesUnsubscribe = subscribeCapabilities((caps) => {
-      this._configurePresentationResources(caps);
-    });
-
-    // 2. Open the control WebSocket channel — the sole state writer.
-    transport.connect('/api/v1/ws');
-
-    // 3. Subscribe to the events stream (re-sent automatically on reconnect by WsChannel).
-    transport.sendRaw({ type: 'subscribe', streams: ['events'] });
-
-    makeAudioRoutingHandlers().restoreFromStorage();
-
-    // Only latch as started after the entire chain succeeds.
+    let stopController = () => {};
+    const abort = () => controllerClient.lose();
     let cleanupInFlight: Promise<void> | undefined;
-    const cleanup = () => cleanupInFlight ??= (async () => {
-      this._ended = true;
-      // Drop the cached registration so a later `bootstrap()` (a remounted
-      // App) re-runs the chain instead of being handed a cleanup that has
-      // already run. Safe to do unconditionally: `cleanupInFlight` latches
-      // this body to exactly one execution, which happens before any newer
-      // registration can exist.
-      this._bootstrapCleanup = null;
-      this._rxAudioLease = null;
-      this._dxSubscribers.clear();
-      const unsubscribeDx = this._dxControlUnsubscribe;
-      this._dxControlUnsubscribe = null;
-      const unsubscribeCapabilities = this._capabilitiesUnsubscribe;
-      this._capabilitiesUnsubscribe = null;
-      try { unsubscribeDx?.(); } finally {
-        try { unsubscribeCapabilities?.(); } finally {
-          const stopScopeStatus = this._defaultScopeStop;
-          this._defaultScopeStop = null;
-          try { stopScopeStatus?.(); } finally {
-            await presentationResources.teardown();
+    const cleanup = () => {
+      if (cleanupInFlight) return cleanupInFlight;
+      cleanupInFlight = (async () => {
+        stopController();
+        signal?.removeEventListener('abort', abort);
+        const disconnect = (controllerClient.remote ? systemController.disconnect() : Promise.resolve())
+          .then(() => ({ ok: true as const }), (error: unknown) => ({ ok: false as const, error }));
+        this._ended = true;
+        // Drop the cached registration so a later `bootstrap()` (a remounted
+        // App) re-runs the chain instead of being handed a cleanup that has
+        // already run. Safe to do unconditionally: `cleanupInFlight` latches
+        // this body to exactly one execution, which happens before any newer
+        // registration can exist.
+        this._bootstrapCleanup = null;
+        this._rxAudioLease = null;
+        this._dxSubscribers.clear();
+        const unsubscribeDx = this._dxControlUnsubscribe;
+        this._dxControlUnsubscribe = null;
+        const unsubscribeCapabilities = this._capabilitiesUnsubscribe;
+        this._capabilitiesUnsubscribe = null;
+        try { unsubscribeDx?.(); } finally {
+          try { unsubscribeCapabilities?.(); } finally {
+            const stopScopeStatus = this._defaultScopeStop;
+            this._defaultScopeStop = null;
+            try { stopScopeStatus?.(); } finally {
+              try { await presentationResources.teardown(); } finally {
+                const result = await disconnect;
+                if (!result.ok) throw result.error;
+              }
+            }
           }
         }
+      })();
+      this._bootstrapTeardown = cleanupInFlight;
+      return cleanupInFlight;
+    };
+    try {
+      signal?.addEventListener('abort', abort, { once: true });
+      await controllerClient.prepare(signal);
+      signal?.throwIfAborted();
+      stopController = controllerClient.onLoss(() => {
+        void systemController.disconnect().catch(() => {
+          transport.emitLocalNotification('error', 'Удалённое управление потеряно. Подключитесь заново.', 'controller_lost');
+        });
+      });
+
+      // Re-arm a remounted App only after controller admission succeeds.
+      this._ended = false;
+      clearLegacyPendingModInputRestore();
+      this._capabilitiesUnsubscribe = subscribeCapabilities((caps) => {
+        this._configurePresentationResources(caps);
+      });
+      transport.connect('/api/v1/ws');
+      systemController.connect();
+      transport.sendRaw({ type: 'subscribe', streams: ['events'] });
+      await controllerClient.waitForPrimary();
+      signal?.throwIfAborted();
+      makeAudioRoutingHandlers().restoreFromStorage();
+
+      this._bootstrapCleanup = cleanup;
+      return cleanup;
+    } catch (error) {
+      stopController();
+      signal?.removeEventListener('abort', abort);
+      this._capabilitiesUnsubscribe?.();
+      this._capabilitiesUnsubscribe = null;
+      if (controllerClient.remote) {
+        this._configurePresentationResources(null);
+        await systemController.disconnect();
       }
-    })();
-    this._bootstrapCleanup = cleanup;
-    return cleanup;
+      throw error;
+    }
   }
 
   // ── Audio control ──

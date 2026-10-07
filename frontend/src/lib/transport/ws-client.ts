@@ -7,6 +7,7 @@ import { isValidServerState, matchesCurrentCapabilityTopology, resetRadioState, 
 import { capabilitiesMatchGeneration, clearCapabilities, setCapabilities } from '../stores/capabilities.svelte';
 import { fetchCapabilities } from './http-client';
 import { authenticatedWsUrl, withoutWsAuthToken } from './ws-url';
+import { controllerClient, ControllerClientError } from './controller-client';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 export interface ControlSessionTransition {
@@ -181,8 +182,18 @@ export class WsChannel {
   // against a connection that can't succeed yet. This flag remembers that a
   // reconnect is owed once the tab becomes visible again.
   private reconnectPendingVisibility = false;
+  private controllerEpoch = 0;
+  private opening = 0;
 
-  constructor() {
+  constructor(private readonly control = true) {
+    controllerClient.onLoss(() => {
+      this.sendQueue = [];
+      this.pendingPttRelease = null;
+      this.trackedPttCommands.clear();
+      this.cancelNonPtt('controller_lost');
+      this.disconnect();
+      if (this.control) this.emitLocalNotification('error', new ControllerClientError('controller_lost').message, 'controller_lost');
+    });
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', this._onVisibilityChange);
     }
@@ -250,13 +261,43 @@ export class WsChannel {
   }
 
   private _open() {
+    if (!controllerClient.remote) { this._openSocket(); return; }
+    const opening = ++this.opening;
+    const epoch = controllerClient.epoch;
     this.setState(this.attempt === 0 ? 'connecting' : 'reconnecting');
-    const ws = new WebSocket(authenticatedWsUrl(this.url));
+    const ready = this.control ? Promise.resolve() : controllerClient.waitForPrimary();
+    void ready.then(() => {
+      if (opening === this.opening && !this.intentionalClose && controllerClient.valid(epoch)) this._openSocket();
+    }).catch(() => {
+      if (opening === this.opening) this.setState('disconnected');
+    });
+  }
+
+  private _openSocket() {
+    this.setState(this.attempt === 0 ? 'connecting' : 'reconnecting');
+    const protocols = controllerClient.protocols();
+    if (controllerClient.remote) {
+      this.sendQueue = [];
+      this.pendingPttRelease = null;
+    }
+    const epoch = controllerClient.epoch;
+    this.controllerEpoch = epoch;
+    let target = authenticatedWsUrl(this.url);
+    if (controllerClient.remote && this.control) {
+      const url = new URL(target);
+      url.searchParams.set('controller_role', controllerClient.role);
+      target = url.toString();
+    }
+    const ws = protocols.length ? new WebSocket(target, protocols) : new WebSocket(target);
     let socketEpoch = 0;
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
 
     ws.onopen = () => {
+      if (controllerClient.remote) {
+        if (!controllerClient.valid(epoch) || ws.protocol !== protocols[0]) { ws.close(); return; }
+        if (this.control) controllerClient.controlOpened((message) => ws.send(JSON.stringify(message)));
+      }
       socketEpoch = ++this.transportEpoch;
       this.attempt = 0;
       this.setState('connected');
@@ -279,6 +320,7 @@ export class WsChannel {
     };
 
     ws.onmessage = (event: MessageEvent) => {
+      if (controllerClient.remote && (this.ws !== ws || !controllerClient.current(epoch))) return;
       if (this.ws === ws) this._resetHeartbeat();
       if (event.data instanceof ArrayBuffer) {
         if (this.ws !== ws) return;
@@ -286,6 +328,7 @@ export class WsChannel {
       } else {
         try {
           const raw = JSON.parse(event.data as string) as Record<string, unknown>;
+          if (this.control && controllerClient.acknowledge(raw)) return;
           if (raw['type'] === 'command_lifecycle') {
             this._emitCommandLifecycle(raw, socketEpoch);
             return;
@@ -334,6 +377,10 @@ export class WsChannel {
       this.trackedNonPttCommands.clear();
       this.trackedLifecycleCommands.clear();
       this.ws = null;
+      if (this.control && controllerClient.remote && controllerClient.valid(epoch)) {
+        controllerClient.lose();
+        return;
+      }
       this.setState('disconnected');
       if (!this.intentionalClose) {
         if (isTabHidden()) {
@@ -362,6 +409,7 @@ export class WsChannel {
   }
 
   disconnect() {
+    this.opening += 1;
     this.intentionalClose = true;
     this._clearTimers();
     const { ws } = this;
@@ -379,9 +427,11 @@ export class WsChannel {
     }
     this.setState('disconnected');
     this.attempt = 0;
+    if (this.control && controllerClient.remote && controllerClient.valid(this.controllerEpoch)) controllerClient.lose();
   }
 
   send(cmd: WsCommand): boolean {
+    if (controllerClient.remote && (!controllerClient.current(this.controllerEpoch) || this.ws?.readyState !== WebSocket.OPEN)) return false;
     if (this.ws?.readyState === WebSocket.OPEN) {
       const intent = pttIntent(cmd.name, cmd.params);
       if (intent) {
@@ -1193,7 +1243,7 @@ const _channels = new Map<string, WsChannel>();
 export function getChannel(name: string): WsChannel {
   let ch = _channels.get(name);
   if (!ch) {
-    ch = new WsChannel();
+    ch = new WsChannel(false);
     _channels.set(name, ch);
   }
   return ch;

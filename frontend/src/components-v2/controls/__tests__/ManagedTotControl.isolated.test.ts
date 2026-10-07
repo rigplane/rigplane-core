@@ -5,6 +5,10 @@ import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/suppor
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 
 const txHost = { current: undefined as unknown as ManagedAppTxController };
+const controllerMode = vi.hoisted(() => ({ remote: false }));
+vi.mock('$lib/runtime', () => ({ runtime: {
+  get remoteController() { return controllerMode.remote; },
+} }));
 
 vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
   getManagedAppTxController: () => txHost.current,
@@ -24,6 +28,7 @@ function mountControl(): HTMLElement {
 }
 
 beforeEach(() => {
+  controllerMode.remote = false;
   tx = new ManagedAppTxHarness({ configuredSeconds: 180, remainingMs: 42_100 });
   txHost.current = tx.controller;
   component = null;
@@ -36,6 +41,15 @@ afterEach(() => {
 });
 
 describe('managed TOT control', () => {
+  it('keeps truthful readout and countdown but removes remote host configuration', () => {
+    controllerMode.remote = true;
+    const target = mountControl();
+    expect(target.querySelector('[data-testid="managed-tot-current"]')?.textContent).toContain('180s');
+    expect(target.querySelector('[data-testid="managed-tot-countdown"]')?.textContent).toContain('43s');
+    expect(target.querySelector('[data-testid="managed-tot-draft"]')).toBeNull();
+    expect(target.querySelector('[data-testid="managed-tot-save"]')).toBeNull();
+    expect(tx.trace()).toEqual([]);
+  });
   it('separates canonical configuration, live countdown, and local draft', () => {
     const target = mountControl();
     expect(target.querySelector('[data-testid="managed-tot-current"]')?.textContent).toContain('180s');
