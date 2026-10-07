@@ -2301,6 +2301,9 @@ class WebServer:
         controller = getattr(self, "_controller", None)
         if isinstance(controller, ControllerAuthority):
             controller.revoke()
+        broadcaster = getattr(self, "_audio_broadcaster", None)
+        if isinstance(broadcaster, AudioBroadcaster):
+            broadcaster.invalidate_rx_start_status()
         self.command_service.terminate_active_commands(
             "provider generation invalidated",
             source="websocket",
@@ -3659,6 +3662,7 @@ class WebServer:
                 "radio": model,
                 # New structured fields
                 "model": model,
+                "audioReceive": self._audio_broadcaster.rx_start_status(),
                 "capabilities": capabilities,
                 "connection": {
                     "rigConnected": connected,

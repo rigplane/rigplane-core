@@ -427,6 +427,8 @@ class AudioBroadcaster:
         # same AudioPacket|None stream via ``async for``.
         self._subscription: _AudioSubscription | RxSubscription | None = None
         self._relay_task: asyncio.Task[None] | None = None
+        self._rx_start_attempt = 0
+        self._rx_start_failure: tuple[object, object] | None = None
         self._seq: int = 0
         self._web_codec: int = AUDIO_CODEC_PCM16
         self._radio_codec: AudioCodec | None = None
@@ -648,6 +650,41 @@ class AudioBroadcaster:
         if not callable(getattr(bus, "subscribe", None)):
             raise TypeError("audio_bus.subscribe must be callable")
         return ("bus", bus)
+
+    def invalidate_rx_start_status(self) -> None:
+        self._rx_start_attempt += 1
+        self._rx_start_failure = None
+
+    def rx_start_status(self) -> dict[str, Any]:
+        failure = self._rx_start_failure
+        if failure is not None:
+            try:
+                route = self._resolve_rx_route()
+            except Exception:
+                route = None
+            if (
+                self._radio is not failure[0]
+                or route is None
+                or route[1] is not failure[1]
+            ):
+                self._rx_start_failure = None
+        return {
+            "schemaVersion": 1,
+            "failure": (
+                {"stage": "rx_start", "code": "core_rx_start_failed"}
+                if self._rx_start_failure is not None
+                else None
+            ),
+        }
+
+    def _rx_start_current(self, attempt: int, radio: object, source: object) -> bool:
+        if attempt != self._rx_start_attempt or radio is not self._radio:
+            return False
+        try:
+            route = self._resolve_rx_route()
+        except Exception:
+            return False
+        return route is not None and route[1] is source
 
     @property
     def rx_pcm_tap_source(self) -> RxPcmTapSource | None:
@@ -1227,14 +1264,17 @@ class AudioBroadcaster:
     async def _start_relay(self) -> None:
         if self._radio is None:
             return
-
+        radio = self._radio
+        self._rx_start_attempt += 1
+        attempt = self._rx_start_attempt
+        source: object | None = None
         try:
             route = self._resolve_rx_route()
             if route is None:
                 return
+            route_kind, source = route
             await self._apply_phones_mix_off()
             self._refresh_codec_state(first=True)
-            route_kind, source = route
             if route_kind == "session":
                 # Session-routed RX demand (MOR-608, ADR §3.2 option a):
                 # subscribing through the radio-owned AudioSession registers
@@ -1242,17 +1282,30 @@ class AudioBroadcaster:
                 # the MOR-581 health watchdog covers browser-only listeners
                 # and reconnects go through ``AudioSession.reestablish()``.
                 # Mirrors the MOR-580 TX-lease pattern in AudioHandler.
-                self._subscription = await source.subscribe_rx("web-audio")
+                subscription = await route[1].subscribe_rx("web-audio")
             else:
                 # Legacy bus path for radios without a session (bare test
                 # doubles, not-yet-migrated backends).
                 subscription = cast(_AudioBus, source).subscribe(name="web-audio")
                 await subscription.start()
-                self._subscription = subscription
+            if not self._rx_start_current(attempt, radio, source):
+                if isinstance(subscription, RxSubscription):
+                    await subscription.release()
+                else:
+                    subscription.stop()
+                return
+            self._subscription = subscription
+            self._rx_start_failure = None
             self._relay_task = asyncio.create_task(self._relay_loop())
         except Exception as exc:
+            if source is not None and not self._rx_start_current(
+                attempt, radio, source
+            ):
+                return
             logger.exception("audio-broadcaster: failed to start relay")
             self._subscription = None
+            if source is not None:
+                self._rx_start_failure = (radio, source)
             await self._notify_relay_start_failure(exc)
 
     async def _notify_relay_start_failure(self, exc: Exception) -> None:
@@ -1429,6 +1482,7 @@ class AudioBroadcaster:
             subscription.stop()
 
     async def _stop_relay(self) -> None:
+        self._rx_start_attempt += 1
         if self._relay_task is not None:
             self._relay_task.cancel()
             try:
