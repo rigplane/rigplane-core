@@ -195,6 +195,19 @@ class ManagedTxAuthority:
             raise RuntimeError("managed TX controller is already bound")
         self._controller = controller
 
+    def controller_quiescent(self) -> bool:
+        """Positive safety proof for a controlling-seat handoff, without awaits."""
+        return bool(
+            self._provider_generation is not None
+            and not (
+                self._closing or self._closed or self._shutting_down or self._terminated
+            )
+            and self._state_is_clean_locked()
+            and not self._pending_settlements_locked()
+            and not self._pending_abort_cleanup
+            and not self._abort_cleanup
+        )
+
     async def ptt_down(self, owner: str) -> ManagedTxOutcome:
         """Compatibility helper which deliberately drains provider settlement."""
         submission = await self.submit_ptt(True, owner)
@@ -295,6 +308,7 @@ class ManagedTxAuthority:
         controller_ticket = None
         if self._controller is not None:
             controller_ticket = self._controller.capture()
+            self._controller.validate_positive(controller_ticket)
             if controller_ticket.remote and (
                 action != "ptt_down" or controller_ticket.session_id != owner
             ):
@@ -322,7 +336,7 @@ class ManagedTxAuthority:
                 async with self._lock:
                     self._require_ingress_open_locked()
                     if controller_ticket is not None:
-                        controller_ticket.authority.validate(controller_ticket)
+                        controller_ticket.authority.validate_positive(controller_ticket)
                     if not (
                         self._provider_generation == generation
                         and self._abort_fence.is_current(token)
@@ -605,7 +619,7 @@ class ManagedTxAuthority:
                     return False
             if ticket is not None:
                 try:
-                    ticket.authority.validate(ticket)
+                    ticket.authority.validate_positive(ticket)
                 except ControllerError:
                     return False
         return bool(

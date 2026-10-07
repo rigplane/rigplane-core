@@ -34,6 +34,7 @@ from ..core.command_service import (
 )
 from ..core.command_dispatch import prepare_command_intent
 from ..core.exceptions import CommandError
+from ..runtime.controller_authority import ControllerAuthority, ControllerError
 from ..core.radio_protocol import AttenuatorStepsCapable
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_pipeline_contracts import (
@@ -541,6 +542,13 @@ class _RigctldCommandExecutor:
         return CommandExecutionResult()
 
     async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
+        controller = getattr(self.handler._radio, "_controller_authority", None)
+        safety_off = intent.name == "set_ptt" and intent.params.get("ptt") is False
+        ticket = (
+            controller.capture()
+            if isinstance(controller, ControllerAuthority) and not safety_off
+            else None
+        )
         managed = self.handler._managed_tx_authority is not None
         if managed and intent.name == "set_ptt":
             return await self._execute_managed_ptt(intent)
@@ -561,6 +569,8 @@ class _RigctldCommandExecutor:
             ):
                 raise _RigctldCommandFailure(HamlibError.ERJCTED)
         await self._wait_predecessor()
+        if ticket is not None:
+            ticket.authority.validate(ticket)
         params = intent.params
         if intent.name == "set_freq":
             await self.handler._radio.set_freq(
@@ -1385,6 +1395,18 @@ class RigctldHandler:
         ready_token = _RIGCTLD_PTT_READY.set(ptt_ready)
         # Read-only gate
         try:
+            controller = getattr(self._radio, "_controller_authority", None)
+            if isinstance(controller, ControllerAuthority) and (
+                cmd.is_set or cmd.long_cmd == "send_raw"
+            ):
+                safety_off = (
+                    cmd.long_cmd == "set_ptt" and cmd.args and cmd.args[0] == "0"
+                )
+                if not safety_off:
+                    try:
+                        controller.capture()
+                    except ControllerError:
+                        return _err(HamlibError.EACCESS)
             if self._config.read_only and (cmd.is_set or cmd.long_cmd == "send_raw"):
                 logger.debug("read-only: rejecting command %s", cmd.long_cmd)
                 return _err(HamlibError.EACCESS)

@@ -1152,8 +1152,6 @@ def validate_command_queue_entry_currency(
     require_connection_generation: bool = False,
 ) -> None:
     """Reject a captured dispatch envelope after any causal input moved."""
-    if entry.controller_ticket is not None:
-        entry.controller_ticket.authority.validate(entry.controller_ticket)
     if entry.expires_at_monotonic is not None and now >= entry.expires_at_monotonic:
         raise CommandError("queued command expired before dispatch")
     if entry.session_id is not None and not session_is_live(entry.session_id):
@@ -1170,6 +1168,8 @@ def validate_command_queue_entry_currency(
         and entry.connection_generation != connection_generation
     ):
         raise CommandError("queued command connection generation changed")
+    if entry.controller_ticket is not None:
+        entry.controller_ticket.authority.validate(entry.controller_ticket)
 
 
 async def execute_positive_tx_queue_entry(entry: CommandQueueEntry) -> None:
