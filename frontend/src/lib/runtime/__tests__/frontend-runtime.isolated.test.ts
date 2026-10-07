@@ -522,6 +522,7 @@ describe('FrontendRuntime.bootstrap()', () => {
     const binding = vi.mocked(audioManager.setControllerBinding).mock.calls.at(-1)![0]!;
     expect(binding.remote()).toBe(true);
     expect(binding.ready()).toBe(false);
+    expect(binding.current(controller.epoch)).toBe(false);
     acquisition.resolve();
     await vi.waitFor(() => expect(connect).toHaveBeenCalledOnce());
     expect(audioManager.setControllerBinding).toHaveBeenCalledWith(expect.objectContaining({

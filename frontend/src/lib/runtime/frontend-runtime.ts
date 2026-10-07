@@ -377,7 +377,7 @@ class FrontendRuntime {
       remote: () => !controllerClient.active || controllerClient.remote,
       ready: () => controllerClient.active,
       epoch: () => controllerClient.epoch,
-      current: (epoch) => controllerClient.current(epoch),
+      current: (epoch) => controllerClient.active && controllerClient.current(epoch),
       protocols: () => controllerClient.protocols(),
     });
     const previous = this._bootstrapTeardown;
