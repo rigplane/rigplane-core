@@ -335,7 +335,7 @@
   function handlePowerToggle() {
     // Defence in depth: never confirm or dispatch when the power state is
     // unknown.
-    if (radioPowerOn === null) return;
+    if (runtime.remoteController || radioPowerOn === null) return;
     if (radioPowerOn === true) {
       requestConfirm({
         message: t('core.statusbar.power.confirmTurnOff'),
@@ -543,6 +543,7 @@
     {#if showManagedTotControl}
       <ManagedTotStatusControl />
     {/if}
+    {#if !runtime.remoteController}
     <button
       type="button"
       class="control-btn report-btn"
@@ -553,7 +554,8 @@
       <Bug size={14} strokeWidth={2} />
       <span class="btn-label">{t('core.statusbar.report.button')}</span>
     </button>
-    {#if onSettings}
+    {/if}
+    {#if onSettings && !runtime.remoteController}
       <button
         type="button"
         class="control-btn settings-btn"
@@ -592,7 +594,7 @@
       <Unplug size={14} strokeWidth={2} />
       <span class="btn-label">{controlState === 'connected' ? t('core.statusbar.connection.actionDisconnect') : t('core.statusbar.connection.actionConnect')}</span>
     </button>
-    {#if powerControlSupported}
+    {#if powerControlSupported && !runtime.remoteController}
       <button
         type="button"
         class="control-btn power-toggle-btn"
@@ -610,7 +612,7 @@
   </div>
 </div>
 
-<SendReportDialog open={reportOpen} onClose={() => (reportOpen = false)} />
+<SendReportDialog open={reportOpen && !runtime.remoteController} onClose={() => (reportOpen = false)} />
 
 <ConfirmDialog
   open={confirmOpen}
