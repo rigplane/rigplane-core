@@ -698,7 +698,7 @@ class TestPortAudioBackendDeps:
         backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), object()))
         # frame_ms is advisory only on non-darwin: the capture period is engine-native.
         stream = backend.open_rx(
-            AudioDeviceId(0), sample_rate=48_000, channels=1, frame_ms=20
+            AudioDeviceId(19), sample_rate=48_000, channels=1, frame_ms=20
         )
         assert isinstance(stream, RxStream)
 
@@ -714,12 +714,12 @@ class TestPortAudioBackendDeps:
         assert kwargs["dtype"] == "int16"
         assert kwargs["latency"] == expected_latency
         # device is passed as the integer index, unchanged.
-        assert kwargs["device"] == 0
+        assert kwargs["device"] == 19
 
         await stream.stop()
         assert not stream.running
 
-        reopened = backend.open_rx(AudioDeviceId(0))
+        reopened = backend.open_rx(AudioDeviceId(19))
         await reopened.start(lambda _pcm: None)
         await reopened.stop()
         assert created[1]["latency"] == expected_latency
@@ -728,8 +728,8 @@ class TestPortAudioBackendDeps:
             assert queries == []
         else:
             assert [q for q in queries if q[0] == "device"] == [
-                ("device", 0),
-                ("device", 0),
+                ("device", 19),
+                ("device", 19),
             ]
             host_id = (
                 device_info.get("hostapi") if isinstance(device_info, dict) else None
