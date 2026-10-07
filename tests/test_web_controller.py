@@ -377,3 +377,38 @@ async def test_provider_and_primary_loss_fence_before_cleanup_and_no_old_replay(
         server._controller.credential(key)
     with pytest.raises(ControllerError):
         server._controller.validate(current)
+
+
+async def test_revocation_during_session_convergence_drops_the_inflight_frame(
+    station, monkeypatch
+):
+    server, managed = station
+    key, primary = await remote(server)
+    ticket = server._controller.attach(key, "auxiliary", "audio")
+    radio = _SessionLanRadio()
+    handler = audio_handler(server, radio, ticket)
+    await _start_tx(handler)
+    with server._controller.bind(primary):
+        await managed.ptt_down("native")
+    entered, release = asyncio.Event(), asyncio.Event()
+    converge = radio.audio_session._converge_for_push
+
+    async def delayed_converge():
+        entered.set()
+        await release.wait()
+        await converge()
+
+    monkeypatch.setattr(radio.audio_session, "_converge_for_push", delayed_converge)
+    frame = asyncio.create_task(
+        handler._handle_tx_audio(_pcm_tx_frame(b"old-generation"))
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        server._controller.revoke()
+        release.set()
+        await frame
+        assert radio.pushed == []
+    finally:
+        release.set()
+        await asyncio.gather(frame, return_exceptions=True)
+        await handler._stop_tx(reason="proof cleanup")
