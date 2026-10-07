@@ -26,6 +26,15 @@
         return value.split(/[?#]/)[0];
       }
     }
+    // posthog-js also derives campaign and click-ID props ($session_entry_*,
+    // $initial_*) from the entry URL regardless of save_campaign_params.
+    var CAMPAIGN_KEY = /^(\$session_entry_|\$initial_)?(utm_[a-z_]+|gclid|gclsrc|dclid|gbraid|wbraid|gad_source|fbclid|msclkid|twclid|li_fat_id|igshid|ttclid|rdt_cid|epik|qclid|sccid|oppref|irclid|_kx|mc_cid|ph_keyword)$/;
+    function dropCampaignKeys(bag) {
+      if (!bag || typeof bag !== "object") return;
+      Object.keys(bag).forEach(function (key) {
+        if (CAMPAIGN_KEY.test(key)) delete bag[key];
+      });
+    }
     var URL_PROPS = ["$current_url", "$referrer", "$initial_referrer", "$session_entry_url", "$session_entry_referrer", "$prev_pageview_pathname"];
     window.posthog.init("phc_yTcX74uByJQwDsKDop2KGHACRE6GrRuYmjeSrEt9ff3R", {
       api_host: "https://us.i.posthog.com",
@@ -48,6 +57,7 @@
         URL_PROPS.forEach(function (key) {
           if (key in props) props[key] = stripUrl(props[key]);
         });
+        [props, props.$set, props.$set_once, event.$set, event.$set_once].forEach(dropCampaignKeys);
         var segment = location.pathname.split("/")[1] || "";
         props.site = "docs";
         props.docs_version = /^\d+\.\d+$/.test(segment) ? segment : "unversioned";
