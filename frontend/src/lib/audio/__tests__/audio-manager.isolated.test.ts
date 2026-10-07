@@ -210,11 +210,19 @@ describe('remote TX audio admission before managed PTT', () => {
     audioManager.startRx();
     const socket = FakeWebSocket.instances[0];
     socket.open();
-    const sendPtt = vi.fn(async (_operation: 'ptt_on' | 'ptt_off') => 'accepted' as const);
-    const submit = vi.fn(async (_operation: 'transmit_on' | 'force_off') => 'accepted' as const);
+    let keyed = false;
+    const sendPtt = vi.fn(async (operation: 'ptt_on' | 'ptt_off') => {
+      keyed = operation === 'ptt_on';
+      return 'accepted' as const;
+    });
+    const submit = vi.fn(async (operation: 'transmit_on' | 'force_off') => {
+      keyed = operation === 'transmit_on';
+      return 'accepted' as const;
+    });
     const controller = new ManagedTxController({
       snapshot: () => ({
-        phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
+        phase: keyed ? 'active' : 'idle', intent: keyed ? 'momentary' : null,
+        radioTx: keyed ? 'on' : 'off', txRisk: keyed ? 'confirmed-on' : 'none', fault: null,
         faultDetail: null, fresh: true, releaseRequired: false,
         configuredSeconds: 180, remainingMs: null, lastOperation: null,
       }),
