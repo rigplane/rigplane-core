@@ -276,6 +276,10 @@ export class WsChannel {
   private _openSocket() {
     this.setState(this.attempt === 0 ? 'connecting' : 'reconnecting');
     const protocols = controllerClient.protocols();
+    if (controllerClient.remote) {
+      this.sendQueue = [];
+      this.pendingPttRelease = null;
+    }
     const epoch = controllerClient.epoch;
     this.controllerEpoch = epoch;
     let target = authenticatedWsUrl(this.url);

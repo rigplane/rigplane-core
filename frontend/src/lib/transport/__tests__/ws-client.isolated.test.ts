@@ -35,9 +35,10 @@ describe('remote controller channel grouping', () => {
   it('attaches primary before scope, clears pending commands on loss and ignores old callbacks', async () => {
     const { controllerClient } = await import('../controller-client');
     const { WsChannel } = await import('../ws-client');
-    await controllerClient.prepare();
     const control = new WsChannel();
     const scope = new WsChannel(false);
+    control.send({ type: 'cmd', id: 'local-pending', name: 'set_freq', params: { freq: 2 } });
+    await controllerClient.prepare();
     control.connect('wss://station.test/api/v1/ws');
     scope.connect('wss://station.test/api/v1/scope');
     await vi.waitFor(() => expect(instances).toHaveLength(1));
@@ -46,6 +47,7 @@ describe('remote controller channel grouping', () => {
     expect(primary.protocols).toEqual([`rigplane-controller-v1.${'a'.repeat(64)}`]);
     expect(primary.url).not.toContain('a'.repeat(64));
     primary.simulateOpen();
+    expect(primary.sent.some((raw) => JSON.parse(raw).id === 'local-pending')).toBe(false);
     await vi.waitFor(() => expect(instances).toHaveLength(2));
     const child = instances[1] as ControllerSocket;
     expect(child.protocols).toEqual(primary.protocols);

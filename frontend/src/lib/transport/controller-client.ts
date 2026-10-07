@@ -79,7 +79,10 @@ export class ControllerClient {
     if (this.#grant) return Promise.resolve();
     if (this.pending) return this.pending;
     const epoch = this._epoch;
-    const operation = Promise.resolve().then(() => this.acquire(epoch, signal)).finally(() => {
+    const operation = Promise.resolve().then(() => this.acquire(epoch, signal)).catch((error: unknown) => {
+      if (error instanceof ControllerClientError || signal?.aborted) throw error;
+      throw new ControllerClientError('controller_not_ready');
+    }).finally(() => {
       if (this.pending === operation) this.pending = null;
     });
     this.pending = operation;
