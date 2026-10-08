@@ -381,3 +381,102 @@ async def test_provider_and_primary_loss_fence_before_cleanup_and_no_old_replay(
         server._controller.credential(key)
     with pytest.raises(ControllerError):
         server._controller.validate(current)
+
+
+async def test_revocation_during_session_convergence_drops_the_inflight_frame(
+    station, monkeypatch
+):
+    server, managed = station
+    key, primary = await remote(server)
+    ticket = server._controller.attach(key, "auxiliary", "audio")
+    radio = _SessionLanRadio()
+    handler = audio_handler(server, radio, ticket)
+    await _start_tx(handler)
+    with server._controller.bind(primary):
+        await managed.ptt_down("native")
+    entered, release = asyncio.Event(), asyncio.Event()
+    converge = radio.audio_session._converge_for_push
+
+    async def delayed_converge():
+        entered.set()
+        await release.wait()
+        await converge()
+
+    monkeypatch.setattr(radio.audio_session, "_converge_for_push", delayed_converge)
+    frame = asyncio.create_task(
+        handler._handle_tx_audio(_pcm_tx_frame(b"old-generation"))
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        server._controller.revoke()
+        release.set()
+        await frame
+        assert radio.pushed == []
+    finally:
+        release.set()
+        await asyncio.gather(frame, return_exceptions=True)
+        await handler._stop_tx(reason="proof cleanup")
+
+
+@pytest.mark.parametrize("change", ["owner", "off", "lease", "not_true", "guard_error"])
+async def test_inflight_frame_rechecks_owner_lease_and_guard_before_push(
+    station, monkeypatch, change
+):
+    server, managed = station
+    key, primary = await remote(server)
+    ticket = server._controller.attach(key, "auxiliary", "audio")
+    radio = _SessionLanRadio()
+    handler = audio_handler(server, radio, ticket)
+    await _start_tx(handler)
+    with server._controller.bind(primary):
+        await managed.ptt_down("native")
+    entered, release = asyncio.Event(), asyncio.Event()
+    converge = radio.audio_session._converge_for_push
+    gate = handler._tx_gate
+    fault = None
+
+    async def current():
+        if fault == "guard_error":
+            raise OSError("test guard failure")
+        if fault == "not_true":
+            return 1
+        return await gate()
+
+    async def delayed_converge():
+        entered.set()
+        await release.wait()
+        await converge()
+
+    handler._tx_gate = current
+    monkeypatch.setattr(radio.audio_session, "_converge_for_push", delayed_converge)
+    frame = asyncio.create_task(handler._handle_tx_audio(_pcm_tx_frame(b"old-intent")))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        if change in ("owner", "off"):
+            await managed.ptt_up("native")
+            if change == "owner":
+                auxiliary = server._controller.attach(key, "auxiliary", "frontend")
+                server._controller.register_control(auxiliary)
+                with server._controller.bind(auxiliary):
+                    await managed.ptt_down("frontend")
+        elif change == "lease":
+            await handler._tx_lease.release()
+        else:
+            fault = change
+        release.set()
+        await frame
+        assert radio.pushed == []
+        fault = None
+        if change == "owner":
+            await managed.ptt_up("frontend")
+        if change in ("owner", "off"):
+            with server._controller.bind(primary):
+                await managed.ptt_down("native")
+        if change == "lease":
+            await _start_tx(handler)
+        await handler._handle_tx_audio(_pcm_tx_frame(b"fresh-deliberate-frame"))
+        assert radio.pushed == [b"fresh-deliberate-frame"]
+    finally:
+        release.set()
+        await asyncio.gather(frame, return_exceptions=True)
+        await handler._stop_tx(reason="proof cleanup")

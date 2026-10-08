@@ -2082,7 +2082,10 @@ class AudioHandler:
                 return
         lease = self._tx_lease
         if lease is not None and not lease.released:
-            await lease.push(data)
+            if self._tx_gate is None:
+                await lease.push(data)
+            else:
+                await lease.push(data, submission_guard=self._tx_gate)
             return
         facts = self._tx_facts
         if facts is not None and facts.lifecycle is not None:
