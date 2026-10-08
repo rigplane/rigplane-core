@@ -242,9 +242,8 @@ _MAX_POST_BODY = 256 * 1024  # 256 KiB — hard ceiling for all POST body reads
 _MAX_COMMAND_BATCH_STEPS = 128
 _COMMAND_BATCH_STEP_TIMEOUT = 10.0
 _DELIVERY_EPOCH_ATTEMPTS = 2
-# SDR scope tick cadence (MOR-3157): feeds the SdrScopeController from the
-# StateStore snapshot and runs liveness/fallback checks. Within the issue's
-# 50-100 ms window; comfortably faster than the 150 ms retune debounce.
+# SDR scope tick cadence (MOR-3157): within the issue's 50-100 ms
+# window, faster than the 150 ms retune debounce.
 _SDR_TICK_INTERVAL_S = 0.075
 # Ceiling on the managed TX rebind that fronts recovery, derived from what the
 # rebind actually costs: one provider retirement (a transport disconnect) plus
@@ -779,10 +778,10 @@ class WebConfig:
     # above; it never bypasses any other guard. Repeatable via the CLI's
     # --trusted-origin flag; invalid entries fail construction.
     trusted_origins: tuple[str, ...] = ()
-    # Scope source for /api/v1/scope (MOR-3157): "auto" picks the SDR
-    # when sdr_config is present, else the hardware scope, else the
-    # audio FFT; an explicit value overrides. sdr_source_factory is the
-    # injectable test factory (default SoapyIqSource, lazily).
+    # Scope source (MOR-3157): "auto" picks the SDR when sdr_config is
+    # present, else hardware, else audio FFT; explicit overrides.
+    # sdr_source_factory is the injectable test factory (default
+    # SoapyIqSource, lazily).
     scope_source: str = "auto"
     sdr_config: SdrConfig | None = None
     sdr_source_factory: Callable[[SdrConfig], IqSource] | None = None
@@ -1003,10 +1002,9 @@ class WebServer:
                 True,
                 self._hardware_scope_available,
             )
-        # SDR panadapter scope (MOR-3157): selected when an SDR config is
-        # present (auto) or --scope-source sdr is explicit; feeds
-        # /api/v1/scope while its frames flow and falls back on failure.
-        # Starts lazily on the first scope client, stops on the last.
+        # SDR panadapter scope (MOR-3157): selected when an SDR config
+        # is present (auto) or --scope-source sdr is explicit; feeds
+        # /api/v1/scope while its frames flow, falls back on failure.
         self._sdr_runtime: SdrScopeRuntime | None = None
         self._sdr_tick_task: asyncio.Task[None] | None = None
         self._sdr_last_active: bool | None = None
@@ -1391,8 +1389,7 @@ class WebServer:
                     return  # the SDR feeds /api/v1/scope
                 if not self._hardware_scope_available:
                     return  # audio-FFT fallback gate reopens itself
-                # SDR stale on a hardware-scope radio: fall through and
-                # enable the hardware scope as the fallback.
+                # SDR stale on a hardware-scope radio: hardware fallback.
             if self._radio is not None:
                 if not self._hardware_scope_available:
                     logger.info(
@@ -1498,9 +1495,9 @@ class WebServer:
         ``on_frame`` is a single-slot setter). Always feeds the dedicated
         ``/api/v1/audio-scope`` channel. For radios WITHOUT a hardware scope
         the same frame also drives ``/api/v1/scope`` (the main panadapter),
-        since those         radios derive their spectrum from RX audio. Hardware-scope
-        radios (e.g. IC-7610) keep ``/api/v1/scope`` sourced exclusively
-        from the real scope, so the audio FFT never touches it (MOR-241).
+        since those radios derive their spectrum from RX audio. Hardware-scope
+        radios (e.g. IC-7610) keep ``/api/v1/scope`` sourced exclusively from
+        the real scope, so the audio FFT never touches it (MOR-241).
         While the SDR scope is selected and its frames flow, the SDR owns
         ``/api/v1/scope`` (MOR-3157).
         """
@@ -1619,8 +1616,7 @@ class WebServer:
         return runtime is not None and runtime.active
 
     def _ensure_sdr_scope_started(self) -> None:
-        """Start the pipeline once, seeded so the controller retunes the
-        source before it opens."""
+        """Start once, seeded so the controller retunes before open."""
         runtime = self._sdr_runtime
         if runtime is None or runtime.started:
             return

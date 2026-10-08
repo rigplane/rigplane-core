@@ -1609,6 +1609,33 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="HZ",
         help="SDR display span in Hz (default: rate/4; must be <= 0.6 x rate)",
     )
+    sdr_group.add_argument(
+        "--sdr-ppm",
+        type=float,
+        default=argparse.SUPPRESS,
+        metavar="PPM",
+        help="SDR frequency error correction in ppm",
+    )
+    sdr_group.add_argument(
+        "--sdr-offset-hz",
+        type=int,
+        default=argparse.SUPPRESS,
+        metavar="HZ",
+        help="SDR IF-tap centre offset in Hz (default 0 = antenna tap)",
+    )
+    sdr_group.add_argument(
+        "--sdr-invert",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Flip the SDR frequency axis (inverted IF tap)",
+    )
+    sdr_group.add_argument(
+        "--sdr-setting",
+        action="append",
+        default=argparse.SUPPRESS,
+        metavar="KEY=VAL",
+        help="SoapySDR driver setting, repeatable (e.g. direct_samp=2)",
+    )
 
     station_p = sub.add_parser(
         "station",
@@ -4235,6 +4262,10 @@ async def _cmd_web(
             sample_rate_hz=getattr(args, "sdr_sample_rate", None),
             gain=getattr(args, "sdr_gain", None),
             span_hz=getattr(args, "sdr_span_hz", None),
+            ppm=getattr(args, "sdr_ppm", None),
+            freq_offset_hz=getattr(args, "sdr_offset_hz", None),
+            invert_spectrum=getattr(args, "sdr_invert", None),
+            settings=getattr(args, "sdr_setting", None),
         )
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -4242,7 +4273,7 @@ async def _cmd_web(
     scope_source = getattr(args, "scope_source", "auto")
     if scope_source == "sdr" and sdr_config is None:
         print(
-            "Error: --scope-source sdr requires --sdr-device (or RIGPLANE_SDR_DEVICE).",
+            "Error: --scope-source sdr requires --sdr-device.",
             file=sys.stderr,
         )
         return 1

@@ -12,11 +12,11 @@ BSD-licensed ``remote`` client. Before this process first imports
 SoapySDR, :func:`default_source_factory` restricts the module search so
 only the ``remote`` module can load when ``driver=remote`` is used:
 ``SOAPY_SDR_ROOT`` points at an empty directory and
-``SOAPY_SDR_PLUGIN_PATH`` at the directory holding
-``libremoteSupport.so`` (standard Debian path
-``/usr/lib/<arch>/SoapySDR/modules0.8/``). An existing
-``SOAPY_SDR_PLUGIN_PATH`` is honoured untouched; when the module is not
-found there, a warning is logged and the restriction is not applied.
+``SOAPY_SDR_PLUGIN_PATH`` at the Debian ``modules0.8`` directory
+holding ``libremoteSupport.so`` (``/usr/lib/<arch>/SoapySDR/``). An
+existing ``SOAPY_SDR_PLUGIN_PATH`` is honoured untouched; when the
+module is not found there, a warning is logged and no restriction is
+applied.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ import logging
 import os
 import tempfile
 import time
-from collections.abc import Callable, Mapping, MutableMapping
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -49,12 +49,11 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-#: Max display span / sample rate: the controller's 10 %-per-edge guard
-#: band cannot cover a wider span.
+#: Max display span / sample rate: the controller's per-edge guard band
+#: cannot cover a wider span.
 SPAN_LIMIT_RATIO = 0.6
 
-#: Seconds without a frame after which the SDR counts as dropped (open
-#: failure and device loss both surface as silence).
+#: Seconds without a frame after which the SDR counts as dropped.
 FRAME_STALE_S = 2.0
 
 
@@ -67,11 +66,13 @@ def resolve_sdr_config(
     freq_offset_hz: int | None = None,
     span_hz: int | None = None,
     invert_spectrum: bool | None = None,
+    settings: Sequence[str] | None = None,
 ) -> SdrConfig | None:
     """Validate the ``--sdr-*`` CLI values into an :class:`SdrConfig`
-    (``None`` = flag not given; no device → ``None``). Raises
-    :class:`ValueError` naming the flag for a bad value or a span wider
-    than :data:`SPAN_LIMIT_RATIO` × the sample rate."""
+    (``None`` = flag not given; no device → ``None``; ``settings`` are
+    repeatable ``KEY=VAL`` → ``extra_settings``). Raises
+    :class:`ValueError` naming the flag for a bad value or an
+    over-wide span."""
     if not device_args:
         return None
 
@@ -93,6 +94,14 @@ def resolve_sdr_config(
             ) from None
     if invert_spectrum is not None:
         values["invert_spectrum"] = invert_spectrum
+    if settings:
+        extra: dict[str, str] = {}
+        for item in settings:
+            key, sep, value = item.partition("=")
+            if not sep or not key:
+                raise ValueError(f"--sdr-setting {item!r} must be KEY=VAL")
+            extra[key] = value
+        values["extra_settings"] = extra
     config = SdrConfig.from_mapping(values)
     if config.span_hz is not None and config.span_hz > SPAN_LIMIT_RATIO * (
         config.sample_rate_hz
@@ -130,9 +139,8 @@ def remote_only_env_updates(
     empty_root: str,
 ) -> dict[str, str]:
     """Pure GPL-boundary decision: the env updates restricting SoapySDR.
-    Empty (no restriction) unless the device uses ``driver=remote``, the
-    operator has not set ``SOAPY_SDR_PLUGIN_PATH``, and the module
-    directory was found."""
+    Empty (no restriction) unless ``driver=remote``, no operator-set
+    ``SOAPY_SDR_PLUGIN_PATH``, and the module directory was found."""
     if not uses_remote_driver(device_args):
         return {}
     if env.get("SOAPY_SDR_PLUGIN_PATH"):
@@ -155,9 +163,8 @@ def apply_remote_only_env(
     """Apply the remote-only restriction to ``env`` (default
     ``os.environ``). Returns whether the module search is restricted
     (already restricted counts); warns and leaves ``env`` untouched when
-    the module is missing. ``find_dir`` (locates the Debian
-    ``modules0.8`` dir holding ``libremoteSupport.so``) and
-    ``create_root`` are injectable for tests."""
+    the module is missing. ``find_dir``/``create_root`` are injectable
+    for tests."""
     if env is None:
         env = os.environ
     if not uses_remote_driver(device_args) or env.get("SOAPY_SDR_PLUGIN_PATH"):
@@ -193,8 +200,7 @@ def apply_remote_only_env(
 
 def default_source_factory(config: SdrConfig) -> IqSource:
     """Build the production :class:`SoapyIqSource`; the GPL module-search
-    restriction is applied first so it is in force before SoapySDR is
-    imported in this process."""
+    restriction is applied before SoapySDR is first imported here."""
     apply_remote_only_env(config.device_args)
     from .soapy_source import SoapyIqSource
 
@@ -209,7 +215,7 @@ class SdrScopeRuntime:
     to the event loop via :meth:`asyncio.loop.call_soon_threadsafe` only
     — the scope worker emits them while holding its lock. :attr:`active`
     flips ``False`` after ``frame_stale_s`` s without a frame and back
-    when frames return; the source reconnects on its own.
+    when frames return.
     """
 
     def __init__(
@@ -327,15 +333,14 @@ class SdrScopeRuntime:
 
     def _on_block(self, block: IqBlock) -> None:
         """Reader thread: enqueue one block; centre-0 blocks carry no
-        tuning (pre-first-centre-request) and are dropped."""
+        tuning and are dropped."""
         scope = self._scope
         if scope is None or not self._started or block.center_freq_hz == 0:
             return
         scope.feed(block)
 
     def _on_scope_frame(self, frame: ScopeFrame) -> None:
-        """Scope worker thread (lock held): ``call_soon_threadsafe`` only
-        — no I/O while the lock is held."""
+        """Scope worker thread (lock held): no I/O — hop to the loop."""
         loop = self._loop
         if loop is None:
             return

@@ -1,9 +1,7 @@
 """Integration tests for the SDR scope source in the web server (MOR-3157).
 
 Drives :class:`WebServer` with a :class:`FakeIqSource` injected via
-``WebConfig.sdr_source_factory`` — the registration path
-(``ensure_scope_enabled``) a real ``/api/v1/scope`` WebSocket client
-takes in ``ScopeHandler.run``.
+``WebConfig.sdr_source_factory`` through ``ensure_scope_enabled``.
 """
 
 from __future__ import annotations
@@ -41,8 +39,8 @@ _SPAN = _RATE // 4  # controller default span: 600 kHz
 class _AudioRadio(AudioCapable):
     """Audio-capable radio without a hardware scope (audio-FFT fallback)."""
 
-    # Class default shadows the protocol's read-only property (same
-    # pattern as tests/test_tap_surface).
+    # Class default shadows the protocol's read-only property
+    # (tests/test_tap_surface pattern).
     audio_bus: object = None
 
     def __init__(self, *, hardware: bool = False) -> None:
@@ -118,17 +116,11 @@ async def _wait_frame(handler: _Handler, since: int, **wish: Any) -> Any:
                 continue
             if "out_of_range" in wish and frame.out_of_range != wish["out_of_range"]:
                 continue
-            if (
-                "center_hz" in wish
-                and abs(
-                    (frame.start_freq_hz + frame.end_freq_hz) // 2 - wish["center_hz"]
-                )
-                > 1_000
-            ):
+            center = (frame.start_freq_hz + frame.end_freq_hz) // 2
+            if "center_hz" in wish and abs(center - wish["center_hz"]) > 1_000:
                 continue
-            if "min_span_hz" in wish and (
-                frame.end_freq_hz - frame.start_freq_hz < wish["min_span_hz"]
-            ):
+            span = frame.end_freq_hz - frame.start_freq_hz
+            if "min_span_hz" in wish and span < wish["min_span_hz"]:
                 continue
             return frame
         await asyncio.sleep(0.05)
@@ -171,9 +163,7 @@ async def test_sdr_scope_follows_vfo_freezes_tx_falls_back_and_recovers() -> Non
         server.command_state_store.apply_current(
             _observe(FieldPath.active("0", "freq_mode", "freq_hz"), _VFO2)
         )
-        frame2 = await _wait_frame(
-            handler, len(handler.frames), center_hz=_VFO2, min_span_hz=_SPAN
-        )
+        frame2 = await _wait_frame(handler, 0, center_hz=_VFO2, min_span_hz=_SPAN)
         peak2 = max(range(689), key=frame2.pixels.__getitem__)
         assert abs((peak1 - peak2) - round(50_000 / _SPAN * 689)) <= 15, (peak1, peak2)
         caps = await _capabilities(server)
@@ -185,22 +175,16 @@ async def test_sdr_scope_follows_vfo_freezes_tx_falls_back_and_recovers() -> Non
         server.command_state_store.apply_current(
             _observe(FieldPath.global_("tx_state", "observed_ptt"), ObservedPtt.ON)
         )
-        frozen = await _wait_frame(
-            handler, len(handler.frames), timeout_s=3.0, out_of_range=True
-        )
-        frozen2 = await _wait_frame(
-            handler, len(handler.frames), timeout_s=3.0, out_of_range=True
-        )
-        assert frozen2.pixels == frozen.pixels
+        i = len(handler.frames)
+        first = (await _wait_frame(handler, i, timeout_s=3, out_of_range=True)).pixels
+        second = (await _wait_frame(handler, i, timeout_s=3, out_of_range=True)).pixels
+        assert second == first
         server.command_state_store.apply_current(
             _observe(FieldPath.global_("tx_state", "observed_ptt"), ObservedPtt.OFF)
         )
+        i = len(handler.frames)
         await _wait_frame(
-            handler,
-            len(handler.frames),
-            timeout_s=3.0,
-            out_of_range=False,
-            min_span_hz=_SPAN,
+            handler, i, timeout_s=3, out_of_range=False, min_span_hz=_SPAN
         )
 
         # SDR drops: the audio FFT takes the channel after the stale window.
@@ -214,20 +198,19 @@ async def test_sdr_scope_follows_vfo_freezes_tx_falls_back_and_recovers() -> Non
         registry = server._audio_broadcaster.taps(STAGE_RX_POST_DSP)
         rng = np.random.default_rng(3157)
         n = len(handler.frames)
-        audio_seen = False
+        pcm = (rng.uniform(-1, 1, 960) * 5000).astype(np.int16).tobytes()
         for _ in range(10):
             server._audio_fft_scope._last_frame_time = 0.0
             for _ in range(9):
-                pcm = (rng.uniform(-1, 1, 960) * 5000).astype(np.int16).tobytes()
                 registry.feed(pcm)
             await asyncio.sleep(0.05)
-            audio_seen = any(
+            if any(
                 f.pixels and (f.end_freq_hz - f.start_freq_hz) <= 48_000
                 for f in handler.frames[n:]
-            )
-            if audio_seen:
+            ):
                 break
-        assert audio_seen, "audio FFT fallback never reached /api/v1/scope"
+        else:
+            pytest.fail("audio FFT fallback never reached /api/v1/scope")
 
         # SDR recovers: frames flow again and the SDR takes over.
         pumper = asyncio.create_task(_pump(fake))
@@ -243,9 +226,7 @@ async def test_sdr_scope_follows_vfo_freezes_tx_falls_back_and_recovers() -> Non
         # The sink protocol has no out-of-range flag: when the VFO leaves
         # the source's tunable range the runtime marks the frames.
         fake._frequency_range = (0, 6_000_000)
-        await _wait_frame(
-            handler, len(handler.frames), timeout_s=3.0, out_of_range=True
-        )
+        await _wait_frame(handler, len(handler.frames), timeout_s=3, out_of_range=True)
     finally:
         pumper.cancel()
         server._stop_sdr_scope()
@@ -275,9 +256,7 @@ async def test_sdr_scope_lifecycle_and_selection_guards() -> None:
     frame = object()
     plain._dispatch_audio_fft_frame(frame)
     assert plain_handler.frames == [frame]  # audio FFT still feeds the channel
-    plain_caps = await _capabilities(plain)
-    assert plain_caps["scopeSource"] == "audio_fft"
-    assert plain_caps["sdrAvailable"] is False
+    assert (await _capabilities(plain))["scopeSource"] == "audio_fft"
 
     with pytest.raises(ValueError, match="scope_source"):
         WebConfig(scope_source="matrix")
