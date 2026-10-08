@@ -173,6 +173,12 @@ describe('LCD audio-FFT demand ownership', () => {
   it('boots canonical authority and shares only the two mounted panel leases', async () => {
     vi.resetModules();
     vi.clearAllMocks();
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe('/api/v1/controller');
+      expect(init.method ?? 'GET').toBe('GET');
+      expect(init.redirect).toBe('error');
+      return { ok: true, status: 200, json: async () => ({ protocol_version: 1, mode: 'local' }) };
+    }));
     mocks.startPolling.mockReturnValue(mocks.stopPolling);
     vi.stubGlobal('ResizeObserver', class {
       observe() {}
@@ -345,6 +351,7 @@ describe('LCD audio-FFT demand ownership', () => {
       for (const target of targets) target.remove();
       vi.doUnmock('$lib/transport/http-client');
       vi.doUnmock('$lib/transport/ws-client');
+      vi.unstubAllGlobals();
       vi.resetModules();
     }
   });
