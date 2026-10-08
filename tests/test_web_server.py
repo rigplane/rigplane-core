@@ -870,9 +870,8 @@ class TestHttpEndpoints:
             data_mode_count=count,
             data_mode_inputs=((5, "LAN"),) if lan_input else (),
         )
-        radio.supports_command = (
-            lambda command, *, receiver=None: supports
-            and command == "set_data1_mod_input"
+        radio.supports_command = lambda command, *, receiver=None: (
+            supports and command == "set_data1_mod_input"
         )
         radio.connected = connected
         radio.control_connected = connected
