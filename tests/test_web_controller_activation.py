@@ -36,7 +36,7 @@ def observe_ptt(server: WebServer, value: ObservedPtt) -> None:
         Observation(
             path=OBSERVED_PTT_PATH,
             value=value,
-            source=SourceMetadata(source="poll_response", provider="fake-wire"),
+            source=SourceMetadata(source="poll_response", provider="fake_wire"),
             timestamp_monotonic=asyncio.get_running_loop().time(),
             max_age=60,
         )
