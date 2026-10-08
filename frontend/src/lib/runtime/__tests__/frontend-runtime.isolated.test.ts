@@ -14,6 +14,20 @@ import { effect_root, render_effect } from 'svelte/internal/client';
 
 // ── Mock transport and store modules before importing the runtime ──
 
+const controller = vi.hoisted(() => ({
+  remote: false, active: true, epoch: 7,
+  prepare: vi.fn(async (_signal?: AbortSignal) => {}),
+  waitForPrimary: vi.fn(async () => {}), release: vi.fn(async () => {}),
+  lose: vi.fn(), onLoss: vi.fn((_callback: () => void) => vi.fn()),
+  onChange: vi.fn((_callback: () => void) => vi.fn()),
+  current: vi.fn(() => true), protocols: vi.fn(() => ['rigplane-controller-v1.fake']),
+  assertHostAction: vi.fn(),
+}));
+vi.mock('$lib/transport/controller-client', async (original) => ({
+  ...await original<typeof import('$lib/transport/controller-client')>(),
+  controllerClient: controller,
+}));
+
 vi.mock('$lib/transport/http-client', async (importOriginal) => ({
   ...await importOriginal<typeof import('$lib/transport/http-client')>(),
   fetchCapabilities: vi.fn(),
@@ -52,6 +66,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 vi.mock('$lib/stores/radio.svelte', () => ({
   radio: { current: null },
   subscribeRadioState: vi.fn(),
+  resetRadioState: vi.fn(),
   // `panel-commands.ts` (a frozen A09b seam) reads these directly.
   getRadioState: vi.fn(() => null),
   getActiveReceiver: vi.fn(() => null),
@@ -95,6 +110,7 @@ vi.mock('$lib/audio/audio-manager', () => ({
     stopTx: vi.fn(),
     setRxVolume: vi.fn(),
     setOperatorNotifier: vi.fn(),
+    setControllerBinding: vi.fn(),
     destroy: vi.fn(),
   },
 }));
@@ -370,6 +386,33 @@ function makeScopeChannel() {
   };
 }
 describe('PresentationResourceHost', () => {
+  it('rearms only after abandoned start cleanup settles and rejects the old lease', async () => {
+    const first = deferred<object>(), disposed = deferred<void>();
+    const oldHandle = {}, freshHandle = {};
+    const driver = {
+      start: vi.fn().mockReturnValueOnce(first.promise).mockResolvedValue(freshHandle),
+      stop: vi.fn(async () => {}), dispose: vi.fn(() => disposed.promise),
+    };
+    const host = new PresentationResourceHost<object>('session');
+    host.configure('hardware-scope', { available: true, selected: true, driver });
+    const oldLease = host.acquire('hardware-scope', 'old');
+    await settle();
+    const ending = host.teardown();
+    let ready = false;
+    const next = host.rearm().then(() => { ready = true; });
+    first.resolve(oldHandle);
+    await vi.waitFor(() => expect(driver.dispose).toHaveBeenCalledWith(oldHandle));
+    expect(ready).toBe(false);
+    expect(() => host.acquire('hardware-scope', 'premature')).toThrow('torn down');
+    disposed.resolve();
+    await Promise.all([ending, next]);
+    host.acquire('hardware-scope', 'fresh');
+    await settle();
+    expect(host.release(oldLease)).toBe(false);
+    expect(host.snapshot('hardware-scope').activeHandle).toBe(freshHandle);
+    expect(driver.start).toHaveBeenCalledTimes(2);
+    await host.teardown();
+  });
   it('is inert until first demand, shares the handle, and stops on last release', async () => {
     const handle = {};
     const driver = { start: vi.fn(async () => handle), stop: vi.fn(async () => {}) };
@@ -458,7 +501,129 @@ describe('PresentationResourceHost', () => {
 describe('FrontendRuntime.bootstrap()', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    controller.remote = false;
+    controller.active = true;
+    controller.prepare.mockResolvedValue(undefined);
+    controller.waitForPrimary.mockResolvedValue(undefined);
+    controller.assertHostAction.mockImplementation(() => {});
     configureAcceptedCapabilities();
+  });
+
+  it('acquires before control and waits for primary before audio routing restore', async () => {
+    controller.remote = true;
+    controller.active = false;
+    const acquisition = deferred<void>(), primary = deferred<void>();
+    controller.prepare.mockReturnValueOnce(acquisition.promise);
+    controller.waitForPrimary.mockReturnValueOnce(primary.promise);
+    const rt = await freshRuntime();
+    const pending = rt.bootstrap();
+    await vi.waitFor(() => expect(controller.prepare).toHaveBeenCalledOnce());
+    expect(connect).not.toHaveBeenCalled();
+    const binding = vi.mocked(audioManager.setControllerBinding).mock.calls.at(-1)![0]!;
+    expect(binding.remote()).toBe(true);
+    expect(binding.ready()).toBe(false);
+    expect(binding.current(controller.epoch)).toBe(false);
+    acquisition.resolve();
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledOnce());
+    expect(audioManager.setControllerBinding).toHaveBeenCalledWith(expect.objectContaining({
+      protocols: expect.any(Function), current: expect.any(Function),
+    }));
+    let completed = false;
+    void pending.then(() => { completed = true; });
+    await settle();
+    expect(completed).toBe(false);
+    controller.active = true;
+    primary.resolve();
+    const cleanup = await pending;
+    expect(rt.remoteController).toBe(true);
+    await cleanup();
+  });
+
+  it('refuses busy acquisition before any control or microphone activity and permits deliberate retry', async () => {
+    controller.remote = true;
+    controller.prepare.mockRejectedValueOnce(new Error('controller busy'));
+    const rt = await freshRuntime();
+    await expect(rt.bootstrap()).rejects.toThrow('controller busy');
+    expect(connect).not.toHaveBeenCalled();
+    expect(audioManager.startTx).not.toHaveBeenCalled();
+    const cleanup = await rt.bootstrap();
+    expect(connect).toHaveBeenCalledOnce();
+    await cleanup();
+  });
+
+  it('tears down audio immediately on remote loss and detaches the loss listener on cleanup', async () => {
+    controller.remote = true;
+    const stop = vi.fn();
+    controller.onLoss.mockReturnValueOnce(stop);
+    const rt = await freshRuntime();
+    const cleanup = await rt.bootstrap();
+    const lost = controller.onLoss.mock.calls.at(-1)![0];
+    lost();
+    expect(audioManager.destroy).toHaveBeenCalled();
+    await cleanup();
+    await cleanup();
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it('rejects remote power actions before any host HTTP submission', async () => {
+    const failure = new Error('host action denied');
+    controller.assertHostAction.mockImplementation(() => { throw failure; });
+    const fetcher = vi.fn();
+    vi.stubGlobal('fetch', fetcher);
+    try {
+      const rt = await freshRuntime();
+      await expect(rt.system.powerOn()).rejects.toBe(failure);
+      await expect(rt.system.powerOff()).rejects.toBe(failure);
+      expect(fetcher).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('stops capture on loss while retaining an unfinished release barrier through cleanup', async () => {
+    controller.remote = true;
+    const gate = deferred<void>();
+    const rt = await freshRuntime();
+    const unregister = rt.system.registerPreDisconnectBarrier(() => gate.promise);
+    const teardown = vi.spyOn(presentationResources, 'teardown').mockResolvedValue();
+    try {
+      const cleanup = await rt.bootstrap();
+      controller.onLoss.mock.calls.at(-1)![0]();
+      expect(audioManager.destroy).toHaveBeenCalled();
+      let completed = false;
+      const pending = cleanup().then(() => { completed = true; });
+      await settle();
+      expect(completed).toBe(false);
+      expect(controller.release).not.toHaveBeenCalled();
+      gate.resolve();
+      await pending;
+      expect(controller.release).toHaveBeenCalledOnce();
+      expect(teardown).toHaveBeenCalledOnce();
+    } finally { unregister(); teardown.mockRestore(); }
+  });
+
+  it('defers a remount acquisition until the previous controller release settles', async () => {
+    controller.remote = true;
+    const rt = await freshRuntime();
+    const gate = deferred<void>();
+    const unregister = rt.system.registerPreDisconnectBarrier(() => gate.promise);
+    const first = await rt.bootstrap();
+    const prepares = controller.prepare.mock.calls.length;
+    const ending = first();
+    const next = rt.bootstrap();
+    try {
+      await settle();
+      expect(controller.prepare).toHaveBeenCalledTimes(prepares);
+      expect(connect).toHaveBeenCalledOnce();
+      gate.resolve();
+      await ending;
+      await next;
+      expect(connect).toHaveBeenCalledTimes(2);
+    } finally {
+      gate.resolve();
+      unregister();
+      await ending;
+      const second = await next;
+      await second();
+    }
   });
 
   it('waits for accepted capability-store generations before configuring resources', async () => {

@@ -9,6 +9,7 @@ vi.mock('$lib/transport/http-client', async (importOriginal) => ({
 }));
 vi.mock('$lib/transport/ws-client', () => ({
   connect: vi.fn(), sendRaw: vi.fn(), sendCommand: vi.fn(),
+  disconnectAll: vi.fn(), reconnectAll: vi.fn(), emitLocalNotification: vi.fn(),
   getControlSession: () => ({ state: 'connected', epoch: 1 }),
   onControlSessionTransition: () => () => undefined,
   onCommandDelivery: () => () => undefined,
@@ -56,6 +57,12 @@ let setConfig: ReturnType<typeof vi.spyOn>;
 
 beforeEach(async () => {
   vi.resetModules();
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+    expect(url).toBe('/api/v1/controller');
+    expect(init.method ?? 'GET').toBe('GET');
+    expect(init.redirect).toBe('error');
+    return { ok: true, status: 200, json: async () => ({ protocol_version: 1, mode: 'local' }) };
+  }));
   vi.stubGlobal('WebSocket', FakeWebSocket);
   vi.stubGlobal('AudioContext', vi.fn(() => { throw new Error('Unexpected audio startup'); }));
   FakeWebSocket.instances = [];

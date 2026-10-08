@@ -90,6 +90,7 @@ vi.mock('$lib/audio/audio-manager', () => ({
     setRxVolume: vi.fn(),
     destroy: vi.fn(),
     setOperatorNotifier: vi.fn(),
+    setControllerBinding: vi.fn(),
   },
 }));
 vi.mock('$lib/stores/radio.svelte', () => ({
@@ -409,6 +410,12 @@ async function mountApp(): Promise<void> {
 describe('MOR-1086 — resource identity across a presentation switch', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe('/api/v1/controller');
+      expect(init.method ?? 'GET').toBe('GET');
+      expect(init.redirect).toBe('error');
+      return { ok: true, status: 200, json: async () => ({ protocol_version: 1, mode: 'local' }) };
+    }));
     h.pending.length = 0;
     h.capabilityListeners.clear();
     h.acceptedCapabilities = caps;
@@ -433,6 +440,7 @@ describe('MOR-1086 — resource identity across a presentation switch', () => {
       mountedComponent = null;
     }
     await settle();
+    vi.unstubAllGlobals();
   });
 
   it('mirrors the production per-skin resource plan', () => {

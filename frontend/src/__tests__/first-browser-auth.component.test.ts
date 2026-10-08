@@ -20,7 +20,10 @@ vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
 }));
 vi.mock('../lib/media/media-session', () => ({ initMediaSession() {}, destroyMediaSession() {} }));
 vi.mock('$lib/audio/audio-manager', () => ({
-  audioManager: { onChange: () => () => {}, onTxAudioDied: () => () => {}, rxEnabled: false, setOperatorNotifier: vi.fn() },
+  audioManager: {
+    onChange: () => () => {}, onTxAudioDied: () => () => {}, rxEnabled: false,
+    setOperatorNotifier: vi.fn(), setControllerBinding: vi.fn(), destroy: vi.fn(),
+  },
 }));
 
 import App from '../App.svelte';
@@ -62,6 +65,10 @@ beforeEach(() => {
     expect(url).not.toContain(credential);
     expect(init.redirect).toBe('error');
     expect(new Headers(init.headers).has('Authorization')).toBe(false);
+    if (url === '/api/v1/controller') {
+      expect(init.method ?? 'GET').toBe('GET');
+      return response(200, { protocol_version: 1, mode: 'local' });
+    }
     return response(200, url.endsWith('/capabilities') ? caps : { version: 'test' });
   });
 });
@@ -82,7 +89,7 @@ describe('credential-free App and real runtime startup', () => {
     startApp();
     await settle();
     expect(promptMock).not.toHaveBeenCalled();
-    expect(requests).toEqual(['/api/v1/info']);
+    expect(requests).toEqual(['/api/v1/info', '/api/v1/controller']);
     expect(instances).toHaveLength(1);
     const socket = instances[0];
     expect(new URL(socket.url, 'http://localhost').searchParams.has('token')).toBe(false);

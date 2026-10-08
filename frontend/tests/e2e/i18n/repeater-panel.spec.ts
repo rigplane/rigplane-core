@@ -7,7 +7,7 @@
  */
 import { test, expect, type Page } from '@playwright/test';
 import { fixtureById } from '../../../fixtures/catalog';
-import { mockCapabilities, mockInfo, mockState } from './fixtures';
+import { mockCapabilities, mockInfo, mockLocalControllerStatus, mockState } from './fixtures';
 import type { Capabilities } from '../../../src/lib/types/capabilities';
 import type { ServerState } from '../../../src/lib/types/state';
 
@@ -85,7 +85,12 @@ async function boot(page: Page, state: ServerState, caps: Capabilities, width = 
     Object.assign(window, { WebSocket: Socket });
   }, { state });
   await page.route('**/api/**', (route) => {
-    const name = new URL(route.request().url()).pathname.split('/').pop();
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === '/api/v1/controller') {
+      if (route.request().method() !== 'GET') return route.fulfill({ status: 405, json: {} });
+      return route.fulfill({ json: mockLocalControllerStatus });
+    }
+    const name = pathname.split('/').pop();
     const body = name === 'state' ? state : name === 'capabilities' ? caps : name === 'info' ? mockInfo
       : name === 'managed-transmit' ? { managedTransmit: { status: 'available', intent: { kind: 'rx' }, releaseRequired: false, lastError: null, lastActuation: null, abortErrors: [], tot: { configuredSeconds: 180, active: false, remainingMs: null, expiresAt: null } }, txObservation: { observedPtt: 'off' } } : {};
     return route.fulfill({ json: body });
