@@ -2208,7 +2208,7 @@ requires-dist = [
     { name = "scipy", marker = "extra == 'dsp'", specifier = ">=1.11" },
     { name = "sounddevice" },
 ]
-provides-extras = ["audio", "bridge", "scope", "dsp", "webrtc", "tls", "codegen", "dev"]
+provides-extras = ["audio", "bridge", "scope", "dsp", "webrtc", "tls", "sdr", "codegen", "dev"]
 
 [package.metadata.requires-dev]
 dev = [

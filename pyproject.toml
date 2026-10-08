@@ -55,6 +55,11 @@ scope = [
 dsp = ["scipy>=1.11"]
 webrtc = ["aiortc>=1.9"]
 tls = ["cryptography>=41.0"]
+# SoapySDR Python bindings have no official PyPI wheel — they come from the
+# system (`python3-soapysdr` on Debian/Raspberry Pi OS) or a SoapySDR build.
+# The extra is a feature marker for the SDR IQ source; it adds no packages
+# and runtime dependencies are unchanged.
+sdr = []
 # Dev/build-only: pydantic drives the public-state JSON-Schema → TypeScript
 # codegen (MOR-881). It must NEVER enter the runtime `dependencies` above —
 # core stays zero-runtime-dep. Only the conformance test and the
