@@ -31,11 +31,13 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.tx_observation import ObservedPtt
-from rigplane.radio_protocol import AudioCapable
+from rigplane.profiles import resolve_radio_profile
+from rigplane.radio_protocol import AudioCapable, ScopeCapable
 from rigplane.radio_state import RadioState
 from rigplane.sdr.fake import FakeIqSource
 from rigplane.sdr.types import SdrConfig
 from rigplane.types import AudioCodec
+from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.server import WebConfig, WebServer
 
 _RATE = 2_400_000
@@ -74,6 +76,67 @@ class _Handler:
 
     def enqueue_frame(self, frame) -> None:
         self.frames.append(frame)
+
+
+class _HwScopeRadio(_AudioRadio, ScopeCapable):
+    """IC-7610-class radio with a recordable hardware CI-V scope.
+
+    ``enable_scope``/``restore_scope_session_state`` mirror the session
+    the real backend runs: enable turns the scope on, restore (what
+    ``DisableScope`` executes) turns it off. Scope-control getters are
+    ``AsyncMock`` attributes because ``_fetch_scope_controls`` only
+    awaits them after enable (values unused here).
+    """
+
+    radio_ready = True
+
+    _CONTROL_GETTERS = (
+        "get_scope_receiver",
+        "get_scope_dual",
+        "get_scope_during_tx",
+        "get_scope_center_type",
+        "get_scope_mode",
+        "get_scope_span",
+        "get_scope_edge",
+        "get_scope_hold",
+        "get_scope_ref",
+        "get_scope_speed",
+        "get_scope_vbw",
+        "get_scope_fixed_edge",
+        "get_scope_rbw",
+    )
+
+    def __init__(self) -> None:
+        super().__init__(hardware=True)
+        self.profile = resolve_radio_profile(model="IC-7610")
+        self.scope_callback: Any = None
+        self.enable_calls: list[dict[str, Any]] = []
+        self.disable_calls: list[bool] = []
+        self.restored_sessions: list[Any] = []
+        self.scope_enabled = False
+        for name in self._CONTROL_GETTERS:
+            setattr(self, name, AsyncMock(return_value=0))
+
+    def on_scope_data(self, callback: Any) -> None:
+        self.scope_callback = callback
+
+    async def enable_scope(self, **kwargs: Any) -> None:
+        self.enable_calls.append(kwargs)
+        self.scope_enabled = True
+
+    async def disable_scope(self) -> None:
+        self.disable_calls.append(True)
+        self.scope_enabled = False
+
+    async def get_scope_session_state(self) -> tuple[bool, bool]:
+        return (False, False)
+
+    async def restore_scope_session_state(self, state: Any) -> None:
+        self.restored_sessions.append(state)
+        self.scope_enabled = False
+
+    async def set_scope_during_tx(self, on: bool) -> None:  # noqa: ARG002
+        """ScopeCapable member; not exercised on this path."""
 
 
 def _observe(path: FieldPath, value: Any) -> Observation:
@@ -274,6 +337,158 @@ async def test_sdr_scope_lifecycle_and_selection_guards() -> None:
         WebConfig(scope_source="matrix")
     with pytest.raises(ValueError, match="--sdr-device"):
         WebConfig(scope_source="sdr")
+
+
+# ---------------------------------------------------------------------------
+# Runtime SDR↔hardware-scope fallback (MOR-3202)
+# ---------------------------------------------------------------------------
+
+
+class _HwFrame:
+    """Marker object standing in for one radio-delivered hardware frame."""
+
+    pixels = b"\x01"
+
+
+async def _drain_command_queue(server: WebServer) -> None:
+    """Service the ordered command queue like the RadioPoller consumer
+    does in production (the ``_drive_scope_pipeline`` pattern from
+    tests/test_web_server.py, as a background loop for tests that wait
+    on the server's own SDR tick task)."""
+    poller = RadioPoller(
+        server._radio,  # type: ignore[arg-type]
+        server._command_queue,
+        radio_state=server._radio_state,
+    )
+    server._radio_poller = poller
+    while True:
+        for entry in server._command_queue.drain_entries():
+            try:
+                await poller._execute(entry.command)
+            except Exception as exc:
+                if entry.future is not None and not entry.future.done():
+                    entry.future.set_exception(exc)
+            else:
+                if entry.future is not None and not entry.future.done():
+                    entry.future.set_result(None)
+        await asyncio.sleep(0.01)
+
+
+async def _wait_hardware_fallback(server: WebServer, radio: _HwScopeRadio) -> None:
+    """Wait until the stale SDR handed /api/v1/scope to the hardware
+    scope: CI-V enable executed, session confirmed, callback wired."""
+    deadline = time.monotonic() + 6.0
+    while not (radio.scope_enabled and server._scope_enabled):
+        if time.monotonic() >= deadline:
+            pytest.fail(
+                f"hardware scope never enabled after SDR went stale "
+                f"(scope_enabled={radio.scope_enabled}, "
+                f"server_enabled={server._scope_enabled}, "
+                f"enable_calls={radio.enable_calls})"
+            )
+        await asyncio.sleep(0.05)
+
+
+async def test_sdr_stale_on_hardware_scope_radio_falls_back_and_recovers() -> None:
+    """MOR-3202: with ``--sdr-device`` on a hardware-scope radio, the SDR
+    owns ``/api/v1/scope`` while its frames flow; a stale SDR hands the
+    channel to the hardware scope through the ordinary enable path (no
+    client reconnect needed); on recovery hardware frames are gated out
+    while the radio's scope stays enabled — no interleaving."""
+    fake = _make_fake()
+    radio = _HwScopeRadio()
+    server = WebServer(
+        radio,
+        WebConfig(
+            radio_model="IC-7610",
+            sdr_config=SdrConfig(device_args="fake"),
+            sdr_source_factory=lambda _config: fake,
+        ),
+    )
+    handler = _Handler()
+    server.command_state_store.apply_current(
+        _observe(FieldPath.active("0", "freq_mode", "freq_hz"), _VFO1)
+    )
+    await server.ensure_scope_enabled(handler)
+    drainer = asyncio.create_task(_drain_command_queue(server))
+    pumper = asyncio.create_task(_pump(fake))
+    try:
+        # SDR frames flow: the SDR alone owns /api/v1/scope; the
+        # hardware scope is never enabled nor wired.
+        await _wait_frame(handler, 0, center_hz=_VFO1, min_span_hz=_SPAN)
+        assert server._sdr_scope_active()
+        assert radio.scope_callback is None
+        assert radio.enable_calls == []
+
+        # SDR silent past the stale window: the tick loop enables the
+        # hardware scope; its frames reach /api/v1/scope.
+        pumper.cancel()
+        await _wait_hardware_fallback(server, radio)
+        assert len(radio.enable_calls) == 1
+        assert radio.scope_callback is not None
+        hw1 = _HwFrame()
+        radio.scope_callback(hw1)
+        assert handler.frames[-1] is hw1
+
+        # SDR recovers: SDR frames return, hardware frames are dropped
+        # at the gate, and the radio's scope is NOT disabled over CI-V.
+        pumper = asyncio.create_task(_pump(fake))
+        await _wait_frame(
+            handler, len(handler.frames), center_hz=_VFO1, min_span_hz=_SPAN
+        )
+        deadline = time.monotonic() + 3.0
+        while not server._sdr_scope_active() and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        assert server._sdr_scope_active()
+        hw2 = _HwFrame()
+        radio.scope_callback(hw2)
+        await asyncio.sleep(0.1)
+        assert hw2 not in handler.frames
+        assert radio.disable_calls == []
+        assert radio.restored_sessions == []
+        await _wait_frame(
+            handler, len(handler.frames), center_hz=_VFO1, min_span_hz=_SPAN
+        )
+    finally:
+        pumper.cancel()
+        drainer.cancel()
+        server._stop_sdr_scope()
+
+
+async def test_sdr_silent_from_start_falls_back_to_hardware_scope() -> None:
+    """MOR-3202: a started SDR that never delivers a frame goes stale on
+    the first tick transition — the hardware scope takes over without a
+    client reconnect."""
+    fake = _make_fake()
+    radio = _HwScopeRadio()
+    server = WebServer(
+        radio,
+        WebConfig(
+            radio_model="IC-7610",
+            sdr_config=SdrConfig(device_args="fake"),
+            sdr_source_factory=lambda _config: fake,
+        ),
+    )
+    handler = _Handler()
+    server.command_state_store.apply_current(
+        _observe(FieldPath.active("0", "freq_mode", "freq_hz"), _VFO1)
+    )
+    await server.ensure_scope_enabled(handler)
+    drainer = asyncio.create_task(_drain_command_queue(server))
+    try:
+        # No pump: the source is open but silent. Right after start the
+        # runtime still counts as active (seeded by started_at), so the
+        # connect path must not touch the hardware scope either.
+        assert server._sdr_scope_active()
+        assert radio.enable_calls == []
+        await _wait_hardware_fallback(server, radio)
+        assert len(radio.enable_calls) == 1
+        hw = _HwFrame()
+        radio.scope_callback(hw)
+        assert handler.frames[-1] is hw
+    finally:
+        drainer.cancel()
+        server._stop_sdr_scope()
 
 
 # ---------------------------------------------------------------------------
