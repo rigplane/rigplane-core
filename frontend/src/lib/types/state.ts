@@ -275,11 +275,8 @@ export interface MonitorMuteSavedAfPublic {
 }
 /**
  * Live SDR panadapter status (MOR-3201), injected by the web server
- * into every public state payload (``WebServer._sdr_status_payload``
- * reading ``SdrScopeRuntime`` status properties); absent on payloads
- * built without a server, so the field on :class:`ServerStatePublic`
- * is optional. ``device`` is ``""`` and the counters zero when no SDR
- * is configured.
+ * into every public state payload; absent on server-less payloads, so
+ * the field on :class:`ServerStatePublic` is optional.
  */
 export interface SdrStatusPublic {
   state: "disabled" | "starting" | "streaming" | "reconnecting" | "error";
