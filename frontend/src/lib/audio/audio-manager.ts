@@ -51,6 +51,14 @@ const TX_START_REASON_CODES: Readonly<Record<string, string>> = {
 /** Sink for an operator-facing error banner: (level, message, code). */
 type OperatorNotifier = (level: 'error', message: string, code: string) => void;
 
+export interface AudioControllerBinding {
+  remote(): boolean;
+  ready(): boolean;
+  epoch(): number;
+  current(epoch: number): boolean;
+  protocols(): string[];
+}
+
 /** Stable per-page-context token so the server can coalesce this audio
  *  manager's reconnects (MOR-924). A soft_reconnect / audio re-arm drops the
  *  audio WS; the browser reopens it and re-sends ``audio_start`` carrying the
@@ -100,6 +108,12 @@ class AudioManager {
   // lib/audio must not import it directly (radio-authority/structural-boundary).
   private _operatorNotifier: OperatorNotifier | null = null;
   private _lastRxResumeError: string | null = null;
+  private controller: AudioControllerBinding | null = null;
+  private txControllerEpoch = 0;
+  private txAdmission: {
+    promise: Promise<string | null>;
+    resolve: (error: string | null) => void;
+  } | null = null;
 
   // Reactive state (read externally)
   get rxEnabled(): boolean { return this._rxEnabled; }
@@ -114,7 +128,8 @@ class AudioManager {
       // Gate on local _txEnabled (set immediately on startTx), not
       // getRadioState()?.ptt which has a full round-trip delay.
       // IC-7610 LAN audio: RX stops during TX (not full-duplex).
-      if (!this._txEnabled) {
+      if (!this._txEnabled || this.txAdmission !== null
+        || (this.controller && !this.controller.current(this.txControllerEpoch))) {
         return;
       }
       
@@ -139,6 +154,8 @@ class AudioManager {
     this._operatorNotifier = notify;
   }
 
+  setControllerBinding(binding: AudioControllerBinding): void { this.controller = binding; }
+
   /** Register a change callback for reactive UI updates. Returns unsubscribe fn. */
   onChange(fn: () => void): () => void {
     this._listeners.add(fn);
@@ -152,6 +169,7 @@ class AudioManager {
   // ── RX ──
 
   startRx(): void {
+    if (this.controller?.remote() && !this.controller.ready()) return;
     if (this._rxEnabled) return;
     this._rxEnabled = true;
     setRxEnabled(true);
@@ -200,6 +218,7 @@ class AudioManager {
    * CI-V command never left the browser.
    */
   setAudioConfig(cfg: Partial<AudioRoutingConfig>): void {
+    this.audioConfigControllerEpoch = this.controller?.epoch() ?? 0;
     if (cfg.focus !== undefined) this.rxPlayer.setFocus(cfg.focus);
     if (cfg.split_stereo !== undefined) this.rxPlayer.setSplitStereo(cfg.split_stereo);
     if (cfg.main_gain_db !== undefined) this.rxPlayer.setChannelGainDb('main', cfg.main_gain_db);
@@ -226,8 +245,13 @@ class AudioManager {
   }
 
   private _audioConfigPending: boolean = false;
+  private audioConfigControllerEpoch = 0;
 
   private _flushPendingAudioConfig(): void {
+    if (this.controller?.remote() && !this.controller.current(this.audioConfigControllerEpoch)) {
+      this._audioConfigPending = false;
+      return;
+    }
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     this.ws.send(JSON.stringify({
       type: 'audio_config',
@@ -258,8 +282,14 @@ class AudioManager {
   // ── TX ──
 
   async startTx(): Promise<string | null> {
-    if (this._txEnabled) return null;
+    if (this.controller?.remote() && !this.controller.ready()) return 'Удалённое управление недоступно.';
+    const epoch = this.controller?.epoch() ?? 0;
+    if (this._txEnabled) return this.txAdmission?.promise ?? null;
     const err = await this.txMic.start();
+    if (this.controller && !this.controller.current(epoch)) {
+      this.txMic.stop();
+      return 'Удалённое управление потеряно. Подключитесь заново.';
+    }
     if (err) {
       // Reuse the existing RX stats socket; never open TX or a new connection
       // merely to report a capture failure. Periodic stats retain the category.
@@ -268,17 +298,27 @@ class AudioManager {
       return err;
     }
     if (!this.txMic.active) return 'TX MIC: capture stopped before start completed';
+    let admission: Promise<string | null> | null = null;
+    if (this.controller?.remote()) {
+      let resolve!: (error: string | null) => void;
+      admission = new Promise((settle) => { resolve = settle; });
+      this.txAdmission = { promise: admission, resolve };
+    }
     this._txEnabled = true;
+    this.txControllerEpoch = epoch;
     setTxEnabled(true);
     this.connect();
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: 'audio_start', direction: 'tx' }));
     }
     this.notify();
-    return null;
+    return admission;
   }
 
   stopTx(): void {
+    const admission = this.txAdmission;
+    this.txAdmission = null;
+    admission?.resolve('TX MIC: capture start cancelled');
     this.txMic.stop();
     if (!this._txEnabled) return;
     this._txEnabled = false;
@@ -286,13 +326,17 @@ class AudioManager {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: 'audio_stop', direction: 'tx' }));
     }
-    this.maybeDisconnect();
+    if (admission !== null) {
+      this.close();
+      if (this._rxEnabled) this.connect();
+    } else this.maybeDisconnect();
     this.notify();
   }
 
   // ── WS lifecycle ──
 
   private connect(): void {
+    if (this.controller?.remote() && !this.controller.ready()) return;
     if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) {
       return;
     }
@@ -300,11 +344,15 @@ class AudioManager {
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${proto}//${location.host}/api/v1/audio`;
-    const ws = new WebSocket(authenticatedWsUrl(url));
+    const protocols = this.controller?.protocols() ?? [];
+    const epoch = this.controller?.epoch() ?? 0;
+    const ws = protocols.length ? new WebSocket(authenticatedWsUrl(url), protocols) : new WebSocket(authenticatedWsUrl(url));
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
 
     ws.onopen = () => {
+      if (this.controller?.remote()
+        && (this.ws !== ws || !this.controller.current(epoch) || ws.protocol !== protocols[0])) { ws.close(); return; }
       this.backoff = BACKOFF_MIN;
       setAudioConnected(true);
       console.log('[audio-ws] connected');
@@ -336,6 +384,7 @@ class AudioManager {
     };
 
     ws.onmessage = (ev) => {
+      if (this.controller?.remote() && (this.ws !== ws || !this.controller.current(epoch))) return;
       if (ev.data instanceof ArrayBuffer) {
         this.rxPlayer.feed(ev.data);
         return;
@@ -355,6 +404,7 @@ class AudioManager {
       this._clearStatsTimer();
       this.ws = null;
       setAudioConnected(false);
+      if (this.controller?.remote() && this._txEnabled) this._failTxAudio('Удалённое TX-аудио потеряно.');
       // Decoder availability is a fact about the server we are talking to;
       // once the link is gone we no longer know it. Re-learned at the next
       // TX start (MOR-1791).
@@ -375,7 +425,7 @@ class AudioManager {
   // it, a server with no native opus codec drops every browser Opus frame
   // fail-closed: the radio keys and nothing reaches the air. Text frames on
   // this socket were previously discarded, so consuming them is additive on
-  // both sides — an older server simply never sends one and we keep Opus.
+  // both sides.
 
   /** True while browser TX is pinned to PCM16 because the server cannot
    *  decode Opus. Surfaced to the operator as a quiet status hint. */
@@ -388,8 +438,7 @@ class AudioManager {
 
   private txAudioDiedCallbacks = new Set<() => void>();
 
-  /** MOR-1796: notified when mid-transmission TX capture dies and the TX
-   *  audio leg is torn down. The TX controller turns this into a de-key. */
+  /** Notified when failed TX audio is torn down through _failTxAudio. */
   onTxAudioDied(callback: () => void): () => void {
     this.txAudioDiedCallbacks.add(callback);
     return () => this.txAudioDiedCallbacks.delete(callback);
@@ -406,8 +455,10 @@ class AudioManager {
       return;
     }
     if (msg?.type === 'error') {
-      if (msg.message === SERVER_TX_REFUSAL) {
-        this._failTxAudio(SERVER_TX_REFUSAL);
+      if (msg.message === SERVER_TX_REFUSAL
+        || (this.controller?.remote()
+          && (msg.message === 'controller_audio_busy' || msg.message === 'controller_invalid'))) {
+        this._failTxAudio(msg.message);
       } else if (typeof msg.message === 'string'
         && msg.message.startsWith(SERVER_RX_REFUSAL_PREFIX) && this._rxEnabled) {
         // End only failed RX demand; keep concurrent TX and allow an explicit
@@ -444,6 +495,9 @@ class AudioManager {
       console.warn('[audio-ws] server cannot decode Opus — TX switched to PCM16');
     }
     this._setTxCodecFallback(msg.opus_decode === false);
+    const admission = this.txAdmission;
+    this.txAdmission = null;
+    admission?.resolve(null);
   }
 
   /** Surface a startTx failure reason to the operator. Operator-initiated
@@ -461,6 +515,7 @@ class AudioManager {
   private _failTxAudio(reason: string): void {
     // A failure during preparation is returned by startTx, before TX admission.
     if (!this._txEnabled) return;
+    this.txAdmission?.resolve(reason);
     console.error(`[audio-ws] TX audio failed, stopping TX audio: ${reason}`);
     this._operatorNotifier?.(
       'error',
