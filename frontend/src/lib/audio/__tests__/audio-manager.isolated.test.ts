@@ -274,6 +274,47 @@ describe('remote TX audio admission before managed PTT', () => {
     },
   );
 
+  it('settles unknown-codec admission through managed force_off without keying or replay', async () => {
+    const r = await rig();
+    r.controller.pttOn();
+    await vi.advanceTimersByTimeAsync(0);
+    const settled = vi.fn();
+    const starting = r.audioManager.startTx().then((error) => {
+      settled(error);
+      return error;
+    });
+    try {
+      expect(r.socket.sent).toContain(JSON.stringify({ type: 'audio_start', direction: 'tx' }));
+      txSend?.(new ArrayBuffer(4));
+      expect(settled).not.toHaveBeenCalled();
+      expect(r.sendPtt).not.toHaveBeenCalled();
+      expect(r.socket.sent.some((frame) => frame instanceof ArrayBuffer)).toBe(false);
+
+      serverText(r.socket, { ...ack, codec: 'unsupported' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toHaveBeenCalledExactlyOnceWith(expect.any(String));
+      await expect(starting).resolves.not.toBeNull();
+      expect(r.audioManager.txEnabled).toBe(false);
+      expect(txStop).toHaveBeenCalled();
+      expect(txApplyServerCodec).not.toHaveBeenCalled();
+      expect(r.sendPtt).not.toHaveBeenCalled();
+      expect(r.submit).toHaveBeenCalledExactlyOnceWith('force_off');
+      txSend?.(new ArrayBuffer(4));
+      expect(r.socket.sent.some((frame) => frame instanceof ArrayBuffer)).toBe(false);
+
+      serverText(r.socket, { ...ack, codec: 'unsupported' });
+      serverText(r.socket, ack);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(r.sendPtt).not.toHaveBeenCalled();
+      expect(r.submit).toHaveBeenCalledTimes(1);
+      expect(settled).toHaveBeenCalledTimes(1);
+      expect(txApplyServerCodec).not.toHaveBeenCalled();
+    } finally {
+      r.audioManager.stopTx();
+      await starting;
+    }
+  });
+
   it('retires cancelled admission and accepts only a fresh press and its socket acknowledgement', async () => {
     const r = await rig();
     r.controller.pttOn();
