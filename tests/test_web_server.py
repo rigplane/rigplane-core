@@ -23,6 +23,7 @@ import logging
 import socket
 import struct
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -699,6 +700,209 @@ class TestProtocolEncoding:
 
 
 class TestHttpEndpoints:
+    @pytest.mark.parametrize(
+        "backend,usb,count,lan_input,supports,connected,expected",
+        [
+            (
+                "icom_serial",
+                False,
+                1,
+                False,
+                False,
+                True,
+                {
+                    "radio_transport": "serial",
+                    "tx_audio_source": "usb",
+                    "rx_audio_source": "usb",
+                    "data_mode_policy": "data1_usb",
+                    "bridge_required": True,
+                },
+            ),
+            (
+                "yaesu_cat",
+                False,
+                1,
+                False,
+                False,
+                True,
+                {
+                    "radio_transport": "serial",
+                    "tx_audio_source": "usb",
+                    "rx_audio_source": "usb",
+                    "data_mode_policy": "data1_usb",
+                    "bridge_required": True,
+                },
+            ),
+            (
+                None,
+                True,
+                1,
+                False,
+                False,
+                True,
+                {
+                    "radio_transport": "serial",
+                    "tx_audio_source": "usb",
+                    "rx_audio_source": "usb",
+                    "data_mode_policy": "data1_usb",
+                    "bridge_required": True,
+                },
+            ),
+            (
+                "rigplane",
+                True,
+                3,
+                False,
+                False,
+                True,
+                {
+                    "radio_transport": "lan",
+                    "tx_audio_source": "lan",
+                    "rx_audio_source": "lan",
+                    "data_mode_policy": "data2_lan",
+                    "bridge_required": False,
+                },
+            ),
+            (
+                "rigplane",
+                False,
+                1,
+                True,
+                True,
+                True,
+                {
+                    "radio_transport": "lan",
+                    "tx_audio_source": "lan",
+                    "rx_audio_source": "lan",
+                    "data_mode_policy": "data1_lan",
+                    "bridge_required": False,
+                },
+            ),
+            (
+                "rigplane",
+                False,
+                1,
+                True,
+                False,
+                True,
+                {
+                    "radio_transport": "lan",
+                    "tx_audio_source": "lan",
+                    "rx_audio_source": "lan",
+                    "data_mode_policy": "legacy",
+                    "bridge_required": False,
+                },
+            ),
+            (
+                "rigplane",
+                False,
+                1,
+                False,
+                True,
+                True,
+                {
+                    "radio_transport": "lan",
+                    "tx_audio_source": "lan",
+                    "rx_audio_source": "lan",
+                    "data_mode_policy": "legacy",
+                    "bridge_required": False,
+                },
+            ),
+            (
+                None,
+                False,
+                3,
+                True,
+                True,
+                True,
+                {
+                    "radio_transport": "unknown",
+                    "tx_audio_source": "unavailable",
+                    "rx_audio_source": "unavailable",
+                    "data_mode_policy": "legacy",
+                    "bridge_required": False,
+                },
+            ),
+            (
+                "icom_serial",
+                False,
+                1,
+                False,
+                False,
+                False,
+                {
+                    "radio_transport": "serial",
+                    "tx_audio_source": "usb",
+                    "rx_audio_source": "usb",
+                    "data_mode_policy": "data1_usb",
+                    "bridge_required": True,
+                },
+            ),
+        ],
+        ids=[
+            "icom",
+            "yaesu",
+            "usb",
+            "lan-multi",
+            "lan-single",
+            "lan-no-command",
+            "lan-no-input",
+            "unknown",
+            "disconnected",
+        ],
+    )
+    async def test_info_declares_audio_route(
+        self,
+        server: WebServer,
+        backend: str | None,
+        usb: bool,
+        count: int,
+        lan_input: bool,
+        supports: bool,
+        connected: bool,
+        expected: dict[str, object],
+    ) -> None:
+        radio = server._radio
+        radio.backend_id = backend
+        radio.has_usb_audio = usb
+        radio.profile = replace(
+            resolve_radio_profile(model="IC-7610"),
+            data_mode_count=count,
+            data_mode_inputs=((5, "LAN"),) if lan_input else (),
+        )
+        radio.supports_command = (
+            lambda command: supports and command == "set_data1_mod_input"
+        )
+        radio.connected = connected
+        radio.control_connected = connected
+        radio.radio_ready = connected
+        host, port = _addr(server)
+        status, _, body = await _http_get(host, port, "/api/v1/info")
+        data = json.loads(body)
+        assert status == 200
+        assert data["audioRoute"] == expected
+        assert data["server"] == "rigplane"
+        assert isinstance(data["version"], str)
+        assert data["proto"] == 1
+        assert data["radio"] == data["model"] == "IC-7610"
+        assert data["capabilities"]["dataModeCount"] == count
+        assert data["connection"]["rigConnected"] is connected
+        assert data["connection"]["controlConnected"] is connected
+        assert data["connection"]["radioReady"] is connected
+        assert "audioReceive" in data
+        assert "backend" not in data and "audio_route" not in data
+
+    async def test_info_audio_route_null_without_radio(self, server: WebServer) -> None:
+        server._radio = None
+        host, port = _addr(server)
+        status, _, body = await _http_get(host, port, "/api/v1/info")
+        data = json.loads(body)
+        assert status == 200
+        assert data["audioRoute"] is None
+        assert data["proto"] == 1
+        assert data["connection"]["rigConnected"] is False
+        assert data["connection"]["radioReady"] is False
+
     async def test_info_endpoint_status(self, server: WebServer) -> None:
         host, port = _addr(server)
         status, _, _ = await _http_get(host, port, "/api/v1/info")
