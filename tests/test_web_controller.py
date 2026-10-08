@@ -260,6 +260,7 @@ def audio_handler(server, radio, ticket, *, track=None):
         controller_audio_source=source,
         controller_audio_loss=server._controller_audio_loss,
         controller_track_stop=track or server._controller_track_audio_stop,
+        managed_tx_authority=server._managed_tx_authority(),
     )
 
 

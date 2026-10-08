@@ -6902,6 +6902,7 @@ class WebServer:
                 controller_audio_source=audio_source,
                 controller_audio_loss=self._controller_audio_loss,
                 controller_track_stop=self._controller_track_audio_stop,
+                managed_tx_authority=self._managed_tx_authority(),
             )
         else:
             self._controller.detach(ticket)
