@@ -47,6 +47,9 @@
   } from './spectrum-logic';
   import { PanoramaViewportCenter } from './panorama-motion';
   import { hasCommandModifier } from '../../components-v2/layout/keyboard-map';
+  import ScopeSourceBadge, { type ScopeSourceId } from '../../components-v2/spectrum/ScopeSourceBadge.svelte';
+  import ScopeSourceSelector from '../../components-v2/spectrum/ScopeSourceSelector.svelte';
+  import SdrTxFrozenIndicator from '../../components-v2/spectrum/SdrTxFrozenIndicator.svelte';
 
   // --- Props ---
   // `hideSourceControls` is forwarded to SpectrumToolbar so layouts that surface
@@ -112,6 +115,25 @@
   let filterWidthLifecycle = $derived(getFilterWidthCommandLifecycle());
   // --- Component state ---
   let audioFft = $derived(runtime.caps?.scopeSource === 'audio_fft');
+  // MOR-3158: the SDR source rides the same hardware rendering path —
+  // RF-center geometry, the existing set-frequency click-to-tune, the
+  // hardware scope stream and leases — because the backend feeds the
+  // IQ-derived ScopeFrames through that channel. The SDR-specific surface
+  // is additive: the toolbar badge/selector and the TX-frozen waterfall
+  // hold. The public `sdr` leaf is the generated `SdrStatusPublic`
+  // (MOR-3201); an absent leaf reads as null, never a fabricated default.
+  let sdrSource = $derived(runtime.caps?.scopeSource === 'sdr');
+  let sdrState = $derived(sdrSource ? runtime.state?.sdr ?? null : null);
+  let sdrTxFrozen = $derived(sdrState?.txFrozen === true);
+  // Every source the info payload advertises next to the selected SDR
+  // source; the selector renders itself only when more than one exists.
+  let sdrOtherSources = $derived.by(() => {
+    if (!sdrSource) return [] as const;
+    const others: ScopeSourceId[] = [];
+    if (runtime.caps?.scope === true) others.push('hardware');
+    if (runtime.caps?.audioFftAvailable === true) others.push('audio_fft');
+    return others;
+  });
   let scopeDemandOn = $state(true);
   let managed = $derived(scopeProjection !== undefined);
   let managedUnavailable = $derived(managed && (!scopeDemandOn || scopeProjection === null));
@@ -911,7 +933,9 @@
         sampledReceipt = projection.acceptedSequence;
         scopePixels = Uint8Array.from(projection.frame.normalizedBins, sample => Math.round(sample * 255));
         spectrumPush?.(scopePixels);
-        waterfallPush?.(scopePixels, waterfallOptions);
+        // MOR-3158: a TX-frozen SDR source adds no waterfall row — the
+        // panorama holds its last pre-transmit image under the TX marker.
+        if (!sdrTxFrozen) waterfallPush?.(scopePixels, waterfallOptions);
       }
       if (projection.passband.state !== 'current') {
         resizeCapture = null;
@@ -941,7 +965,8 @@
         endFreq = sourceIsAudio ? (frame.endFreq - frame.startFreq) / 2 : frame.endFreq;
         scopePixels = pixels;
         spectrumPush?.(pixels);
-        waterfallPush?.(pixels, waterfallOptions);
+        // MOR-3158: same TX-frozen hold as the managed path above.
+        if (!sdrTxFrozen) waterfallPush?.(pixels, waterfallOptions);
       };
       const unsubscribe = sourceIsManaged ? () => {} : sourceIsAudio
         ? runtime.scope.subscribe(receive)
@@ -1002,6 +1027,16 @@
   style:--scope-passband-fill={resolvedColorRoles.passbandFill}
   style:--scope-passband-edge={resolvedColorRoles.passbandEdge}
 >
+  <!-- MOR-3158: the SDR toolbar status wraps whatever indicator snippet the
+       layout supplied (unchanged for every other source) and adds the
+       source badge plus, when more than one source is advertised, the
+       display-only source selector — mounted only for `scopeSource ===
+       'sdr'` so hardware and audio-FFT sessions render unchanged. -->
+  {#snippet sdrToolbarStatus()}
+    {#if scopeStatusIndicator}{@render scopeStatusIndicator()}{/if}
+    <ScopeSourceBadge source="sdr" sdr={sdrState} />
+    <ScopeSourceSelector sources={[...sdrOtherSources, 'sdr']} active="sdr" />
+  {/snippet}
   {#if audioFft}
     <div class="audio-source-label">
       <span>Audio FFT · AF</span>
@@ -1014,7 +1049,7 @@
        tab instead. An audio-FFT source keeps its original no-toolbar
        branch. -->
   {:else if !hideToolbar}
-    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} {scopeStatusIndicator} />
+    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} scopeStatusIndicator={sdrSource ? sdrToolbarStatus : scopeStatusIndicator} />
   {/if}
   <div
     class="spectrum-split-region"
@@ -1086,7 +1121,12 @@
     <div class="waterfall-content" class:panning={dragging} class:draggable={canPan} bind:this={waterfallContent} onpointerdown={handleDragStart} role="presentation">
       {#key runtime.state?.providerGeneration}
       <div class="waterfall-history" style:visibility={managedUnavailable ? 'hidden' : 'visible'} aria-hidden={managedUnavailable}>
-        <WaterfallCanvas options={waterfallOptions} onFreqClick={audioFft || managedUnavailable ? undefined : handleTune} onRegisterPush={(fn) => { waterfallPush = fn; if (managed && scopePixels) fn(scopePixels, waterfallOptions); }} />
+        <WaterfallCanvas options={waterfallOptions} onFreqClick={audioFft || managedUnavailable ? undefined : handleTune} onRegisterPush={(fn) => { waterfallPush = fn; if (managed && scopePixels && !sdrTxFrozen) fn(scopePixels, waterfallOptions); }} />
+        <!-- MOR-3158: the TX-frozen veil rides inside the history wrapper so
+             it dims the painted rows without hiding the tune-line/passband
+             overlays stacked above the canvas; it hides together with the
+             history while the sample plane is unavailable. -->
+        {#if sdrSource}<SdrTxFrozenIndicator active={sdrTxFrozen} />{/if}
       </div>
       {/key}
       {#if !audioFft}<DxOverlay spots={dxSpots} startFreq={viewportStartFreq} endFreq={viewportEndFreq} onTune={handleTune} />{/if}
