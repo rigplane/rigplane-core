@@ -26,6 +26,7 @@ from ...dsp.tap_registry import TapHandle, TapRegistry
 from ...env_config import (
     get_audio_broadcaster_high_watermark,
 )
+from ...runtime.managed_tx_state import ManagedTxIntentKind
 from ...types import AudioCodec
 from ..protocol import (  # noqa: TID251
     AUDIO_CODEC_OPUS,
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
     from ...audio.session import TxLease
     from ...dsp.pipeline import DSPPipeline
     from ...radio_protocol import Radio
+    from ...runtime.managed_tx_authority import ManagedTxAuthority
 
 from ...capabilities import CAP_AUDIO, CAP_LAN_DUAL_RX_AUDIO_ROUTING
 from ...capabilities import CAP_MOD_INPUT_ROUTING, CAP_TX
@@ -1530,6 +1532,7 @@ class AudioHandler:
         | None = None,
         controller_track_stop: Callable[[Awaitable[None]], Awaitable[None]]
         | None = None,
+        managed_tx_authority: ManagedTxAuthority | None = None,
     ) -> None:
         self._ws = ws
         self._radio = radio
@@ -1540,6 +1543,7 @@ class AudioHandler:
         self._controller_audio_source = controller_audio_source
         self._controller_audio_loss = controller_audio_loss
         self._controller_track_stop = controller_track_stop
+        self._managed_tx_authority = managed_tx_authority
         self._controller_claimed = False
         self._rx_active = False
         self._tx_active = False
@@ -2124,22 +2128,69 @@ class AudioHandler:
         else:
             await self._radio.stop_audio_tx_opus()  # type: ignore[union-attr]
 
-    async def _push_tx(self, data: bytes, *, legacy_method: str) -> None:
+    def _remote_tx_currency(self) -> tuple[int, int, str] | None:
+        authority = self._managed_tx_authority
+        controller = self._controller
+        ticket = self._controller_ticket
+        source = self._controller_audio_source
+        if (
+            authority is None
+            or controller is None
+            or ticket is None
+            or not ticket.remote
+            or source is None
+        ):
+            return None
+        try:
+            controller.validate(ticket)
+            projection = authority.snapshot_nowait()
+            generation = projection.provider_generation
+            intent = projection.state.intent
+            if (
+                generation is None
+                or intent.kind is not ManagedTxIntentKind.PTT
+                or not intent.owner_token
+                or not controller.audio_matches(ticket, source, intent.owner_token)
+            ):
+                return None
+            return generation, projection.state.effect_epoch, intent.owner_token
+        except Exception:
+            return None
+
+    async def _push_tx(
+        self,
+        data: bytes,
+        *,
+        legacy_method: str,
+        tx_currency: tuple[int, int, str] | None = None,
+    ) -> None:
         """Push TX bytes via the held session lease (MOR-580); without one,
         via neutral ``push_tx``, falling back to the named legacy per-codec
         push method (MOR-544)."""
-        if self._tx_gate is not None:
+        ticket = self._controller_ticket
+        remote = ticket is not None and ticket.remote
+
+        async def submission_guard() -> bool:
+            if self._tx_gate is None:
+                return not remote
+            if await self._tx_gate() is not True:
+                return False
+            return not remote or (
+                tx_currency is not None and self._remote_tx_currency() == tx_currency
+            )
+
+        if self._tx_gate is not None or remote:
             try:
-                if await self._tx_gate() is not True:
+                if await submission_guard() is not True:
                     return
             except Exception:
                 return
         lease = self._tx_lease
         if lease is not None and not lease.released:
-            if self._tx_gate is None:
+            if self._tx_gate is None and not remote:
                 await lease.push(data)
             else:
-                await lease.push(data, submission_guard=self._tx_gate)
+                await lease.push(data, submission_guard=submission_guard)
             return
         facts = self._tx_facts
         if facts is not None and facts.lifecycle is not None:
@@ -2222,6 +2273,12 @@ class AudioHandler:
                 "audio: TX frame ignored (tx_active=False), size=%d", len(payload)
             )
             return
+        tx_currency = None
+        ticket = self._controller_ticket
+        if ticket is not None and ticket.remote:
+            tx_currency = self._remote_tx_currency()
+            if tx_currency is None:
+                return
         # MOR-2870: the web path gets the bridge's fail-closed rule — a
         # browser frame reaches the rig only while RigPlane holds the key
         # (managed intent keyed or a fresh ObservedPtt.ON). ``_tx_active``
@@ -2277,7 +2334,11 @@ class AudioHandler:
                     browser_codec == AUDIO_CODEC_PCM16
                     and tx_codec == AudioCodec.PCM_1CH_16BIT
                 ):
-                    await self._push_tx(audio_data, legacy_method="push_audio_tx_pcm")
+                    await self._push_tx(
+                        audio_data,
+                        legacy_method="push_audio_tx_pcm",
+                        tx_currency=tx_currency,
+                    )
                     tx_data_desc = f"{len(audio_data)} bytes pcm"
                 elif (
                     browser_codec == AUDIO_CODEC_OPUS
@@ -2309,11 +2370,19 @@ class AudioHandler:
                         return
                     # A native playback refusal belongs to the outer push
                     # error boundary, not the successfully completed decoder.
-                    await self._push_tx(pcm_data, legacy_method="push_audio_tx_pcm")
+                    await self._push_tx(
+                        pcm_data,
+                        legacy_method="push_audio_tx_pcm",
+                        tx_currency=tx_currency,
+                    )
                     tx_data_desc = f"{len(pcm_data)} bytes pcm"
                 elif browser_codec == AUDIO_CODEC_OPUS:
                     # Radio uses Opus or PCM_1CH_8BIT/etc → send Opus as-is
-                    await self._push_tx(audio_data, legacy_method="push_audio_tx_opus")
+                    await self._push_tx(
+                        audio_data,
+                        legacy_method="push_audio_tx_opus",
+                        tx_currency=tx_currency,
+                    )
                     tx_data_desc = f"{len(audio_data)} bytes opus"
                 else:
                     self._warn_tx_throttled(
