@@ -83,14 +83,26 @@ def _blackman_harris(size: int) -> Any:
     )
 
 
-# Zoom FFT (MOR-3200): engage only well inside the IQ bandwidth; above the
-# gate the crop path already shows more than one real bin per pixel.
-_ZOOM_GATE_FRAC = 0.25
+# Zoom FFT (MOR-3200): engage only for spans below 1/8 of the sample
+# rate. Wider spans keep the crop path — the small-D zoom chains those
+# spans select (D = 2..4) measured 1.5-1.8 ms/tick at 2.4 Msps (see the
+# MOR-3200 PR), over the Pi-4 CPU budget at the pessimistic 10x
+# extrapolation, while the crop path still shows ~0.75 real bins per
+# pixel at rate/8 (fft 4096, 689 pixels).
+_ZOOM_GATE_FRAC = 0.125
 
 # Target decimated rate as a multiple of the span ("~1.25x" per MOR-3200;
 # 1.5 keeps the anti-alias transition bands wide enough that the cascade
 # stays a small fraction of a Pi 4 core).
 _ZOOM_OVERSAMPLE = 1.5
+
+# Decimated-sample headroom processed ahead of each zoom window. The
+# first outputs after a skip (or reset) carry the filters' startup
+# transient — at most 34 outputs anywhere in the decimation table
+# (established by sweeping every tabulated D across its full span
+# range for the MOR-3200 PR) — so 256 outputs keep the window
+# transient-free with >7x margin.
+_ZOOM_SKIP_MARGIN_OUT = 256
 
 # Decimation factors: 2 plus 5-smooth composites, so every factor above 2
 # splits into two integer stages.
@@ -154,19 +166,25 @@ def _zoom_decimation(rate_hz: int, span_hz: int) -> int:
 def _split_stages(decimation: int, rate_hz: int, span_hz: int) -> tuple[int, int]:
     """Split ``decimation`` into two stage factors minimising modelled cost.
 
-    Cost is output-count * taps per input sample: stage 1 passes the final
-    decimated Nyquist and stops at its own output Nyquist; stage 2 passes
-    the view span and stops at the final decimated Nyquist.
+    Cost is output-count * taps per input sample. The single-stage
+    option ``(1, D)`` is priced too — near the zoom gate (small ``D``)
+    one wide-tap stage beats two cascaded ones. When both stages run
+    they both pass the view span (stage 1 only has to protect what
+    stage 2 keeps: anything above ends up in stage 2's
+    transition/stopband or cropped outside the view). Stage 1 stops at
+    its own output Nyquist; stage 2 stops at the final decimated
+    Nyquist.
     """
     if decimation == 2:
         return 1, 2
     rate_d = rate_hz / decimation
+    n_single = _kaiser_tap_count(rate_hz, 0.55 * span_hz, 0.49 * rate_d)
     best = (1, decimation)
-    best_cost = float("inf")
+    best_cost = n_single / decimation
     for d1 in range(2, decimation // 2 + 1):
         if decimation % d1:
             continue
-        n1 = _kaiser_tap_count(rate_hz, 0.5 * rate_d, 0.49 * rate_hz / d1)
+        n1 = _kaiser_tap_count(rate_hz, 0.55 * span_hz, 0.49 * rate_hz / d1)
         n2 = _kaiser_tap_count(rate_hz / d1, 0.55 * span_hz, 0.49 * rate_d)
         cost = n1 / d1 + n2 / decimation
         if cost < best_cost:
@@ -199,6 +217,22 @@ class _DecimStage:
         )
         self._in_count = 0
         self._next_out = 0
+
+    def skip(self, count: int) -> None:
+        """Advance the epoch past ``count`` samples without filtering them.
+
+        Filter history is dropped (the next outputs carry a startup
+        transient), but sample and output indices stay true to elapsed
+        time, so the decimation phase and the caller's per-output NCO
+        rotation stay continuous.
+        """
+        if count <= 0:
+            return
+        self._in_count += count
+        self._next_out = (self._in_count + self._factor - 1) // self._factor
+        self._tail = self._np.zeros(
+            max(self._rev.size - 1, 0), dtype=self._np.complex64
+        )
 
     def process(self, samples: Any) -> tuple[Any, int]:
         """Filter and decimate one contiguous block.
@@ -234,8 +268,9 @@ class _ZoomChain:
 
     Mathematically equivalent to mixing the block stream down by
     ``view_hz - center_hz`` with a phase-continuous complex NCO and then
-    low-pass filtering + decimating by an integer ``D`` (two cascaded
-    stages). The mix is folded into the FIR taps — each stage's taps are
+    low-pass filtering + decimating by an integer ``D`` (one or two
+    stages, whichever the modelled cost picks). The mix is folded into
+    the FIR taps — each stage's taps are
     pre-multiplied by the NCO phasor at the tap's sample offset — and the
     inverse phasor is applied at the decimated output rate, so no
     full-rate NCO multiplication is ever needed. Absolute (per-epoch)
@@ -262,12 +297,10 @@ class _ZoomChain:
         self.decimated_rate_hz = rate_hz / self.decimation
         offset_hz = float(view_hz - center_hz)
 
-        # Stage 1 (skipped for D == 2): passband = final decimated
-        # Nyquist, stopband = this stage's own output Nyquist.
+        # Stage 1 (skipped for D == 2): passband = the view span (all
+        # stage 2 keeps), stopband = this stage's own output Nyquist.
         if d1 > 1:
-            taps = _kaiser_lowpass(
-                np, rate_hz, 0.5 * self.decimated_rate_hz, 0.49 * rate_hz / d1
-            )
+            taps = _kaiser_lowpass(np, rate_hz, 0.55 * span_hz, 0.49 * rate_hz / d1)
             self._stage1: _DecimStage | None = _DecimStage(
                 np, _translate(np, taps, 2.0 * math.pi * offset_hz / rate_hz), d1
             )
@@ -285,6 +318,7 @@ class _ZoomChain:
         self._stage2 = _DecimStage(
             np, _translate(np, taps2, 2.0 * math.pi * offset_hz * d1 / rate_hz), d2
         )
+        self._d1 = d1
         self._rot_step = -2.0 * math.pi * offset_hz * self.decimation / rate_hz
 
     def process(self, samples: Any) -> Any:
@@ -299,6 +333,24 @@ class _ZoomChain:
             return outs
         rot = np.exp(1j * (self._rot_step * np.arange(first, first + outs.size)))
         return (outs * rot).astype(np.complex64)
+
+    def skip(self, count: int) -> None:
+        """Advance past ``count`` input samples without filtering them.
+
+        ``count`` must be a multiple of the decimation factor so both
+        stages' sample and output indices stay integer. Outputs are
+        indexed by elapsed decimated time, so the NCO de-rotation phase
+        stays bin-accurate across the gap; the first outputs after it
+        carry the filters' startup transient, which the caller's
+        processing margin must absorb.
+        """
+        if count <= 0:
+            return
+        if self._stage1 is not None:
+            self._stage1.skip(count)
+            self._stage2.skip(count // self._d1)
+        else:
+            self._stage2.skip(count)
 
     def reset(self) -> None:
         """Restart both stages' stream epochs (NCO phase, filter state)."""
@@ -317,7 +369,7 @@ class IqFftScope:
     :class:`~rigplane.scope.levels.AdaptiveLevelMapper` over the full
     displayed window.
 
-    When ``span_hz`` is below a quarter of the sample rate the same
+    When ``span_hz`` is below an eighth of the sample rate the same
     chain runs on a zoomed signal instead: the blocks are mixed down by
     ``view_center - block_center`` (phase-continuous across blocks),
     low-pass filtered and decimated by an integer factor so the
@@ -529,9 +581,11 @@ class IqFftScope:
     def _drain_and_process(self) -> None:
         """Process queued blocks and emit at most one frame (one worker tick).
 
-        The zoom path consumes every queued block per tick (it needs
-        contiguous samples); the crop path uses only the newest block,
-        as before. Caller holds the lock.
+        The zoom path dequeues every queued block per tick and filters
+        the newest samples the next window needs (older ones are
+        skipped phase-continuously — see :meth:`_ZoomChain.skip`); the
+        crop path uses only the newest block, as before. Caller holds
+        the lock.
         """
         callback = self._callback
         if callback is None:
@@ -679,9 +733,10 @@ class IqFftScope:
     def _zoom_chain_for(self, block: IqBlock) -> _ZoomChain | None:
         """Return the zoom chain for this block's geometry, or ``None`` for crop.
 
-        Falls back to the crop path when ``span >= sample_rate / 4`` (or
-        the span is unset). Any change of block centre, sample rate, span
-        or view centre rebuilds the chain and resets the zoom state (NCO
+        Falls back to the crop path when ``span >= sample_rate *
+        _ZOOM_GATE_FRAC`` (or the span is unset). Any change of block
+        centre, sample rate, span or view centre rebuilds the chain and
+        resets the zoom state (NCO
         phase reference, filter state, accumulation buffer) plus the
         averaging seed. Caller holds the lock.
         """
@@ -741,14 +796,26 @@ class IqFftScope:
         self._zoom_resume_reset = False
 
         n = self._fft_size
-        for block in blocks:
-            if block.overflow:
-                self._zoom_reset_stream()
-                self._avg_db = None
-            chunk = chain.process(block.samples)
-            if chunk.size:
-                self._zoom_buf.append(chunk)
-                self._zoom_len += chunk.size
+        if any(block.overflow for block in blocks):
+            # A sample discontinuity invalidates the stream epoch; the
+            # whole tick restarts from its first block.
+            self._zoom_reset_stream()
+            self._avg_db = None
+        samples = self._np.concatenate([block.samples for block in blocks])
+        # One chain call per tick on the newest samples the next window
+        # needs (plus transient margin); older queued samples are stale
+        # and are skipped with phase-continuous bookkeeping, which keeps
+        # the small-D chains near the zoom gate inside the CPU budget.
+        need = (n + _ZOOM_SKIP_MARGIN_OUT) * chain.decimation
+        skip = samples.size - need
+        if skip > 0:
+            skip = (skip // chain.decimation) * chain.decimation
+            chain.skip(skip)
+            samples = samples[skip:]
+        chunk = chain.process(samples)
+        if chunk.size:
+            self._zoom_buf.append(chunk)
+            self._zoom_len += chunk.size
         if self._zoom_len < n:
             return None
 

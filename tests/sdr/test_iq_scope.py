@@ -528,6 +528,28 @@ def test_decim_stage_matches_reference_across_chunk_boundaries() -> None:
     np.testing.assert_allclose(outs, expected, rtol=1e-5, atol=1e-5)
 
 
+def test_decim_stage_skip_restarts_values_and_advances_indices() -> None:
+    """skip() gives fresh-stage outputs but elapsed-time indices."""
+    rng = np.random.default_rng(23)
+    taps = rng.standard_normal(7) + 1j * rng.standard_normal(7)
+    x = rng.standard_normal(64) + 1j * rng.standard_normal(64)
+    factor = 4
+
+    skipped = _DecimStage(np, taps.astype(np.complex64), factor)
+    skipped.process(x[:16])
+    skipped.skip(20)  # multiple of factor
+    tail, first_index = skipped.process(x[36:])
+
+    fresh = _DecimStage(np, taps.astype(np.complex64), factor)
+    fresh_tail, fresh_first = fresh.process(x[36:])
+
+    np.testing.assert_allclose(tail, fresh_tail, rtol=1e-5, atol=1e-5)
+    assert fresh_first == 0
+    # 16 processed + 20 skipped samples = 36 elapsed; the next output
+    # window ends at index ceil(36 / 4) = 9.
+    assert first_index == 9
+
+
 def test_zoom_chain_places_tone_at_view_offset() -> None:
     """A tone at view+7.5 kHz lands in the matching decimated FFT bin."""
     rate = 480_000
@@ -632,24 +654,51 @@ def test_zoom_single_tone_narrow_at_10khz_span() -> None:
     assert near_peak <= 3
 
 
-def test_zoom_engages_below_quarter_rate_span() -> None:
-    """Span just under rate/4 uses the zoom path's exact view window."""
+def test_zoom_gate_crops_just_above_and_zooms_just_below_rate_eighth() -> None:
+    """Spans just above rate/8 take the crop path; just below, zoom.
+
+    Pins the gate at ``rate * _ZOOM_GATE_FRAC``: at 2.4 Msps that is
+    exactly 300 kHz. The two paths are told apart by the window: the
+    crop path quantises it to whole bins of the full-rate FFT (bin =
+    585.9375 Hz, so a 301 kHz span rounds to 257 bins = 150,585.9375 Hz
+    half-span), while the zoom path emits the exact requested window.
+    """
     frames: list[ScopeFrame] = []
     scope = _make_scope()
     scope.on_frame(frames.append)
-    scope.set_span(590_000)  # < 2_400_000 / 4
+    scope.set_span(301_000)  # just above 2_400_000 / 8
     source = _make_source(tones=[(100_000.0, -6.0)], noise_floor_dbfs=-95.0)
 
-    _zoom_ticks(scope, source, frames, 1)
+    _drive(scope, source, frames, 1)
     scope.close()
 
-    frame = frames[-1]
-    # The zoom path emits the exact requested window; the crop path
-    # quantises it to whole FFT bins of the full-rate spectrum.
-    assert frame.start_freq_hz == 10_000_000 - 295_000
-    assert frame.end_freq_hz == 10_000_000 + 295_000
+    assert frames[0].out_of_range is False
+    assert len(frames[0].pixels) == 689
+    assert frames[0].start_freq_hz == 10_000_000 - 150_586
+    assert frames[0].end_freq_hz == 10_000_000 + 150_586
+
+    zoom_frames: list[ScopeFrame] = []
+    zoom_scope = _make_scope()
+    zoom_scope.on_frame(zoom_frames.append)
+    zoom_scope.set_span(299_000)  # just below 2_400_000 / 8
+    zoom_source = _make_source(tones=[(100_000.0, -6.0)], noise_floor_dbfs=-95.0)
+
+    _zoom_ticks(zoom_scope, zoom_source, zoom_frames, 2)
+    zoom_scope.close()
+
+    frame = zoom_frames[-1]
     assert frame.out_of_range is False
     assert len(frame.pixels) == 689
+    assert frame.start_freq_hz == 10_000_000 - 149_500
+    assert frame.end_freq_hz == 10_000_000 + 149_500
+    # D = 4 there, so per-tick skipping is active: the tone must still
+    # land in its pixel (NCO phase stays bin-accurate across skips) and
+    # stay strong (no transient smearing inside the window).
+    pixels = np.frombuffer(frame.pixels, dtype=np.uint8)
+    expected = int((100_000 + 149_500) / 299_000 * 689)
+    peak = _peak_pixel(frame, expected, window=6)
+    assert abs(peak - expected) <= 2
+    assert int(pixels[peak]) - int(np.median(pixels)) >= 40
 
 
 def test_zoom_view_offset_from_block_center() -> None:
