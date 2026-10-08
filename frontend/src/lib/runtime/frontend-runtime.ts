@@ -90,8 +90,8 @@ const CLOSED_CONTROL_SESSION: ControlSessionSnapshot = Object.freeze({ state: 'd
 // ── Runtime class ──
 
 class FrontendRuntime {
-  private _bootstrapCleanup: (() => void) | null = null;
-  private _bootstrapInFlight: Promise<() => void> | null = null;
+  private _bootstrapCleanup: (() => Promise<void>) | null = null;
+  private _bootstrapInFlight: Promise<() => Promise<void>> | null = null;
   private _bootstrapTeardown: Promise<void> | null = null;
   private _capabilitiesUnsubscribe: (() => void) | null = null;
   private _rxAudioLease: ResourceLease | null = null;
@@ -346,7 +346,7 @@ class FrontendRuntime {
    *
    * @returns A cleanup function that tears down presentation resources when called.
    */
-  async bootstrap(signal?: AbortSignal): Promise<() => void> {
+  async bootstrap(signal?: AbortSignal): Promise<() => Promise<void>> {
     // If already completed, return cached cleanup.
     if (this._bootstrapCleanup !== null) {
       return this._bootstrapCleanup;
@@ -372,7 +372,7 @@ class FrontendRuntime {
    * Private implementation of bootstrap. Separated so the sentinel
    * can be set before this async function starts.
    */
-  private async _doBootstrap(signal?: AbortSignal): Promise<() => void> {
+  private async _doBootstrap(signal?: AbortSignal): Promise<() => Promise<void>> {
     audioManager.setControllerBinding({
       remote: () => !controllerClient.active || controllerClient.remote,
       ready: () => controllerClient.active,
