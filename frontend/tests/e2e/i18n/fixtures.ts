@@ -14,6 +14,8 @@
 import type { Capabilities } from '../../../src/lib/types/capabilities';
 import type { ServerState, ReceiverState } from '../../../src/lib/types/state';
 
+export const mockLocalControllerStatus = { protocol_version: 1, mode: 'local' } as const;
+
 const baseReceiver: ReceiverState = {
   freqHz: 14_205_000,
   mode: 'USB',

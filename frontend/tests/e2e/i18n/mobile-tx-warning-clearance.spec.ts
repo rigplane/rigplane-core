@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { writeFileSync } from 'node:fs';
-import { mockCapabilities, mockInfo, mockState } from './fixtures';
+import { mockCapabilities, mockInfo, mockLocalControllerStatus, mockState } from './fixtures';
 import type { Capabilities } from '../../../src/lib/types/capabilities';
 import type { ServerState } from '../../../src/lib/types/state';
 
@@ -133,6 +133,7 @@ async function prepare(page: Page) {
       '/api/v1/capabilities': capabilities,
       '/api/v1/managed-transmit': managedTransmitDocument(authorityIntent),
       '/api/v1/info': mockInfo,
+      '/api/v1/controller': mockLocalControllerStatus,
     };
     await route.fulfill({
       status: pathname.startsWith('/api/local/') ? 404 : 200,

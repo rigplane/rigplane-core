@@ -48,6 +48,7 @@ import {
   mockCapabilities,
   mockDisconnectedState,
   mockInfo,
+  mockLocalControllerStatus,
   mockState,
 } from './fixtures';
 
@@ -197,6 +198,10 @@ async function routeMockBackend(page: Page, state = mockState): Promise<void> {
   await page.route('**/api/v1/state', (route) => json(route, state));
   await page.route('**/api/v1/capabilities', (route) => json(route, mockCapabilities));
   await page.route('**/api/v1/info', (route) => json(route, mockInfo));
+  await page.route('**/api/v1/controller', (route) => {
+    if (route.request().method() !== 'GET') return route.fulfill({ status: 405, json: {} });
+    return json(route, mockLocalControllerStatus);
+  });
   // Anything else under /api/v1/ — return an empty 200 so the page does
   // not surface a network error overlay we did not plan for.
   await page.route('**/api/v1/**', (route) => {
@@ -204,7 +209,8 @@ async function routeMockBackend(page: Page, state = mockState): Promise<void> {
     if (
       url.endsWith('/state') ||
       url.endsWith('/capabilities') ||
-      url.endsWith('/info')
+      url.endsWith('/info') ||
+      new URL(url).pathname === '/api/v1/controller'
     ) {
       // Already handled above; double-routing safety net.
       return route.fallback();

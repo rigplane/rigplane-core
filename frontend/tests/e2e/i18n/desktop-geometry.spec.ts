@@ -1,7 +1,7 @@
 import { test, expect, type Locator, type Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { fixtureById } from '../../../fixtures/catalog';
-import { mockCapabilities, mockInfo, mockState } from './fixtures';
+import { mockCapabilities, mockInfo, mockLocalControllerStatus, mockState } from './fixtures';
 import type { Capabilities } from '../../../src/lib/types/capabilities';
 import type { FieldStatusPublic, ServerState } from '../../../src/lib/types/state';
 
@@ -194,7 +194,12 @@ async function boot(page: Page, layout: string, width: number, known: boolean, l
     Object.assign(window, { WebSocket: Socket });
   }, { state, layout, language, theme, locale });
   await page.route('**/api/**', route => {
-    const name = new URL(route.request().url()).pathname.split('/').pop();
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === '/api/v1/controller') {
+      if (route.request().method() !== 'GET') return route.fulfill({ status: 405, json: {} });
+      return route.fulfill({ json: mockLocalControllerStatus });
+    }
+    const name = pathname.split('/').pop();
     if (name === 'managed-transmit' && options.staleTot) {
       // MOR-2674: a failed refresh invalidates the TOT snapshot — the
       // trigger must stay unread (unlit), never a dash run.

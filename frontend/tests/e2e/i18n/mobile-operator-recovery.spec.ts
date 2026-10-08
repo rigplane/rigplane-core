@@ -1,6 +1,6 @@
 import { test, expect, type Page, type TestInfo } from '@playwright/test';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { mockCapabilities, mockInfo, mockState } from './fixtures';
+import { mockCapabilities, mockInfo, mockLocalControllerStatus, mockState } from './fixtures';
 import type { Capabilities } from '../../../src/lib/types/capabilities';
 import type { ServerState } from '../../../src/lib/types/state';
 
@@ -73,6 +73,7 @@ async function prepare(page: Page, stateOverride?: Omit<ServerState, 'sub'>) {
       '/api/v1/capabilities': capture?.capabilities.body ?? capabilities,
       '/api/v1/managed-transmit': capture?.['managed-transmit'].body ?? managedTransmit,
       '/api/v1/info': mockInfo,
+      '/api/v1/controller': mockLocalControllerStatus,
     };
     await route.fulfill({ status: pathname.startsWith('/api/local/') ? 404 : 200,
       contentType: 'application/json', body: JSON.stringify(responses[pathname] ?? {}) });
