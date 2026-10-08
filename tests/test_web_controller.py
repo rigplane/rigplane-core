@@ -23,7 +23,7 @@ from rigplane.core.tx_observation import OBSERVED_PTT_PATH, ObservedPtt
 from rigplane.rigctld.contract import HamlibError, RigctldConfig
 from rigplane.rigctld.handler import RigctldHandler
 from rigplane.runtime.controller_authority import ControllerError
-from rigplane.runtime.managed_tx_state import ManagedTxOutcome
+from rigplane.runtime.managed_tx_state import ManagedTxIntentKind, ManagedTxOutcome
 from rigplane.web import server as server_module
 from rigplane.web.handlers.audio import AudioHandler
 from rigplane.web.handlers.control import ControlHandler
@@ -480,3 +480,77 @@ async def test_inflight_frame_rechecks_owner_lease_and_guard_before_push(
         release.set()
         await asyncio.gather(frame, return_exceptions=True)
         await handler._stop_tx(reason="proof cleanup")
+
+
+async def test_same_owner_ptt_off_on_drops_old_pcm_without_replacing_audio_lease(
+    station, monkeypatch
+):
+    server, managed = station
+    key, primary = await remote(server)
+    ticket = server._controller.attach(key, "auxiliary", "audio")
+    radio = _SessionLanRadio()
+    handler = audio_handler(server, radio, ticket)
+    entered, release = asyncio.Event(), asyncio.Event()
+    converge = radio.audio_session._converge_for_push
+    frame = None
+
+    async def delayed_converge():
+        entered.set()
+        await asyncio.wait_for(release.wait(), 2)
+        await converge()
+
+    monkeypatch.setattr(radio.audio_session, "_converge_for_push", delayed_converge)
+    try:
+        await asyncio.wait_for(_start_tx(handler), 2)
+        lease = handler._tx_lease
+        assert lease is not None and not lease.released
+        with server._controller.bind(primary):
+            assert (
+                await asyncio.wait_for(managed.ptt_down("native"), 2)
+                is ManagedTxOutcome.ACCEPTED
+            )
+        before = await asyncio.wait_for(managed.snapshot(), 2)
+        assert before.state.intent.kind is ManagedTxIntentKind.PTT
+        assert before.state.intent.owner_token == "native"
+        frame = asyncio.create_task(
+            handler._handle_tx_audio(_pcm_tx_frame(b"old-ptt-interval"))
+        )
+        await asyncio.wait_for(entered.wait(), 2)
+        assert not frame.done()
+        assert radio.pushed == []
+
+        assert (
+            await asyncio.wait_for(managed.ptt_up("native"), 2)
+            is ManagedTxOutcome.ACCEPTED
+        )
+        off = await asyncio.wait_for(managed.snapshot(), 2)
+        assert off.state.intent.kind is ManagedTxIntentKind.RX
+        with server._controller.bind(primary):
+            assert (
+                await asyncio.wait_for(managed.ptt_down("native"), 2)
+                is ManagedTxOutcome.ACCEPTED
+            )
+        after = await asyncio.wait_for(managed.snapshot(), 2)
+        assert after.state.intent == before.state.intent
+        assert after.state.effect_epoch > before.state.effect_epoch
+        assert server._controller.credential(key).generation == primary.generation
+        server._controller.validate(primary)
+        server._controller.validate(ticket)
+        assert ticket.generation == primary.generation
+        assert handler._tx_lease is lease and not lease.released
+        assert not release.is_set() and not frame.done()
+
+        release.set()
+        await asyncio.wait_for(frame, 2)
+        assert b"old-ptt-interval" not in radio.pushed
+        await asyncio.wait_for(
+            handler._handle_tx_audio(_pcm_tx_frame(b"fresh-ptt-interval")), 2
+        )
+        assert radio.pushed == [b"fresh-ptt-interval"]
+    finally:
+        release.set()
+        try:
+            if frame is not None:
+                await asyncio.wait_for(asyncio.gather(frame, return_exceptions=True), 2)
+        finally:
+            await asyncio.wait_for(handler._stop_tx(reason="proof cleanup"), 2)
