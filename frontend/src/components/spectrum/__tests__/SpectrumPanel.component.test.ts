@@ -1689,6 +1689,165 @@ describe('opaque semantic scope snippet forwarding (MOR-2358)', () => {
   });
 });
 
+describe('SDR scope source routing (MOR-3158)', () => {
+  // The public `sdr` leaf mirrors the MOR-3157 payload contract; the panel
+  // reads it through the local mirror until the generated state type
+  // carries it. The leaf rides `currentState` like every other raw field.
+  function sdrLeaf(overrides: Record<string, unknown> = {}) {
+    return Object.freeze({
+      state: 'streaming', device: 'rtlsdr=0', sampleRateHz: 2_400_000,
+      spanHz: 2_000_000, txFrozen: false, overflowCount: 0, lastError: null,
+      ...overrides,
+    });
+  }
+  function selectSdrSource(sdr: unknown = sdrLeaf()): void {
+    runtimeHarness.state.currentCaps = Object.freeze({ scopeSource: 'sdr' });
+    runtimeHarness.state.currentState = Object.freeze({
+      source: 'test-state', providerGeneration: 17, active: 'MAIN', sdr,
+    });
+    refreshSpectrumAuthority();
+  }
+  function replaceSdrLeaf(sdr: unknown): void {
+    runtimeHarness.state.currentState = Object.freeze({
+      ...(runtimeHarness.state.currentState as Record<string, unknown>), sdr,
+    });
+    refreshSpectrumAuthority();
+  }
+
+  it('routes the SDR source over the hardware path and mounts only the badge', () => {
+    selectSdrSource();
+    const target = mountPanel();
+    // Hardware transport routing: the IQ-derived ScopeFrames arrive on the
+    // hardware channel with its leases (MOR-3158 contract assumption).
+    expect(mockRuntime.scope.subscribeHardware).toHaveBeenCalledOnce();
+    expect(mockRuntime.acquireHardwareScope).toHaveBeenCalledOnce();
+    expect(mockRuntime.scope.subscribe).not.toHaveBeenCalled();
+    expect(target.querySelector('.audio-source-label')).toBeNull();
+    expect(target.querySelector('.spectrum-toolbar')).not.toBeNull();
+    const badge = target.querySelector<HTMLElement>('[data-testid="scope-source-badge"]')!;
+    expect(badge).not.toBeNull();
+    expect(badge.closest('.spectrum-toolbar')).not.toBeNull();
+    expect(badge.dataset.source).toBe('sdr');
+    expect(badge.dataset.sdrState).toBe('streaming');
+    expect(badge.dataset.tone).toBe('green');
+    // A single advertised source renders no selector.
+    expect(target.querySelector('[data-testid="scope-source-selector"]')).toBeNull();
+    // RF geometry like the hardware path: an axis appears with the frame.
+    expect(target.querySelector('.freq-axis')).toBeNull();
+    emitFrame();
+    expect(target.querySelector('.freq-axis')).not.toBeNull();
+    expect(target.querySelector('.passband-overlay')).not.toBeNull();
+  });
+
+  it('keeps the layout status indicator and adds the selector beside the badge when another source is advertised', () => {
+    const statusProbe = createRawSnippet(() => ({ render: () => '<span data-testid="status-probe"></span>' }));
+    runtimeHarness.state.currentCaps = Object.freeze({
+      scopeSource: 'sdr', scope: true, audioFftAvailable: true,
+    });
+    runtimeHarness.state.currentState = Object.freeze({
+      source: 'test-state', providerGeneration: 17, active: 'MAIN', sdr: sdrLeaf(),
+    });
+    const target = mountPanel({ scopeStatusIndicator: statusProbe });
+    expect(target.querySelector('[data-testid="status-probe"]')?.closest('.spectrum-toolbar')).not.toBeNull();
+    const selector = target.querySelector<HTMLElement>('[data-testid="scope-source-selector"]')!;
+    expect(selector).not.toBeNull();
+    const keys = [...selector.querySelectorAll<HTMLElement>('.scope-source-key')];
+    expect(keys.map((key) => key.dataset.source)).toEqual(['hardware', 'audio_fft', 'sdr']);
+    expect(keys.map((key) => key.textContent)).toEqual(['RIG', 'AUDIO', 'SDR']);
+    expect(keys.at(-1)!.dataset.active).toBe('true');
+    expect(selector.contains(target.querySelector('[data-testid="scope-source-badge"]'))).toBe(false);
+  });
+
+  it('colours the badge by the SDR state and carries lastError in its tooltip', () => {
+    selectSdrSource(sdrLeaf({ state: 'error', lastError: 'SoapySDR: device busy' }));
+    const target = mountPanel();
+    const badge = target.querySelector<HTMLElement>('[data-testid="scope-source-badge"]')!;
+    expect(badge.dataset.tone).toBe('red');
+    expect(badge.dataset.sdrState).toBe('error');
+    expect(badge.title).toBe('Scope source: SDR error — SoapySDR: device busy');
+    replaceSdrLeaf(sdrLeaf({ state: 'reconnecting', lastError: null }));
+    flushSync();
+    expect(badge.dataset.tone).toBe('yellow');
+    expect(badge.dataset.sdrState).toBe('reconnecting');
+  });
+
+  it('tunes a below-threshold SDR-frame click to the clicked RF frequency through the existing VFO intent', () => {
+    selectSdrSource();
+    const target = mountPanel();
+    emitFrame();
+    const { spectrum } = prepareGeometry(target);
+    pointer(spectrum, 'pointerdown', 30, 100);
+    pointer(spectrum, 'pointerup', 30, 104);
+    // 104/200 of the 100 kHz SDR frame span → 14_052_000 snapped to the
+    // 1 kHz step — the same set_frequency seam the hardware path uses.
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_052_000, 0);
+  });
+
+  it('holds the waterfall under the TX marker while sdr.txFrozen and resumes on release', () => {
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    try {
+      selectSdrSource();
+      const target = mountPanel();
+      emitFrame();
+      expect(push).toHaveBeenCalledTimes(1);
+      expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).toBeNull();
+      replaceSdrLeaf(sdrLeaf({ txFrozen: true }));
+      flushSync();
+      const marker = target.querySelector<HTMLElement>('[data-testid="sdr-tx-frozen"]')!;
+      expect(marker).not.toBeNull();
+      expect(marker.closest('.waterfall-history')).not.toBeNull();
+      emitFrame();
+      emitFrame();
+      // Frozen: no new row scrolls — the last pre-TX panorama stays.
+      expect(push).toHaveBeenCalledTimes(1);
+      replaceSdrLeaf(sdrLeaf({ txFrozen: false }));
+      flushSync();
+      expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).toBeNull();
+      emitFrame();
+      expect(push).toHaveBeenCalledTimes(2);
+    } finally {
+      push.mockRestore();
+    }
+  });
+
+  it('holds managed waterfall pushes under the TX marker too', () => {
+    function sdrProjection(sequence: number): ScopeDisplayProjection {
+      return Object.freeze({
+        frame: Object.freeze({ source: 'hardware', receiver: 'MAIN', freshness: 'fresh',
+          startHz: 14_000_000, endHz: 14_100_000, normalizedBins: Object.freeze([0, 0.5, 1]) }),
+        frameMode: 0, acceptedSequence: sequence,
+        passband: Object.freeze({ state: 'current', tuple: Object.freeze({
+          frequencyHz: 14_050_250, mode: 'USB', widthHz: 2_400, shiftHz: 0,
+          frameMode: 0, startHz: 14_000_000, endHz: 14_100_000 }) }),
+      });
+    }
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    try {
+      selectSdrSource();
+      const props = new SvelteMap<string, unknown>([['projection', sdrProjection(1)]]);
+      const target = mountPanel({
+        get scopeProjection() { return props.get('projection'); },
+        scopeDemanded: true,
+      });
+      expect(push).toHaveBeenCalledTimes(1);
+      props.set('projection', sdrProjection(2)); flushSync();
+      expect(push).toHaveBeenCalledTimes(2);
+      replaceSdrLeaf(sdrLeaf({ txFrozen: true }));
+      flushSync();
+      expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).not.toBeNull();
+      props.set('projection', sdrProjection(3)); flushSync();
+      expect(push).toHaveBeenCalledTimes(2);
+      replaceSdrLeaf(sdrLeaf({ txFrozen: false }));
+      flushSync();
+      props.set('projection', sdrProjection(4)); flushSync();
+      expect(push).toHaveBeenCalledTimes(3);
+    } finally {
+      push.mockRestore();
+    }
+  });
+});
+
 describe('managed scope projection (MOR-2367)', () => {
   function projection(state: 'current' | 'stale' | 'unknown' | 'unsupported' = 'current', frameMode = 0): ScopeDisplayProjection {
     return Object.freeze({
