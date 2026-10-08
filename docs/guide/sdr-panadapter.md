@@ -5,11 +5,11 @@ description: Drive the RigPlane spectrum display from an SDR (RTL-SDR first) —
 # SDR Panadapter Scope
 
 RigPlane can drive the spectrum display (`/api/v1/scope`) from a
-software-defined radio instead of the radio's built-in scope: a wide-band
-panadapter that follows the VFO as you tune, freezes while you transmit, and
-falls back to the hardware scope (or the audio FFT) if the SDR stops producing
-frames. The SDR path is built on SoapySDR's `remote` driver — RigPlane never
-loads local SDR device drivers itself. An RTL-SDR works today; any
+software-defined radio instead of the radio's built-in scope: a panadapter
+that follows the VFO as you tune, freezes while you transmit, and falls back
+to the hardware scope (or the audio FFT) if the SDR stops producing frames.
+The SDR path is built on SoapySDR's `remote` driver — RigPlane never loads
+local SDR device drivers itself. An RTL-SDR works today; any
 SoapySDR-supported receiver reachable through a SoapySDR server should work.
 
 ## Quick start
@@ -26,8 +26,8 @@ rigplane web --host 192.168.1.50 \
 ```
 
 With `--sdr-device` given, the spectrum display prefers the SDR while its
-frames flow. `--scope-source` picks the source explicitly (`auto`, `hardware`,
-`sdr`, `audio_fft`); the default `auto` uses the SDR when configured, else the
+frames flow. `--scope-source` (`auto`/`hardware`/`sdr`/`audio_fft`) picks the
+source explicitly; the default `auto` uses the SDR when configured, else the
 radio's hardware scope, else the audio FFT.
 
 ## RTL-SDR notes
@@ -68,12 +68,9 @@ rate (`controller.py: DEFAULT_SPAN_DIVISOR`); at the default 2.4 Msps that is
 ## Status in the Web UI state
 
 The public state payload carries a live `sdr` object
-(`state_schema.py: SdrStatusPublic`) with `state` (`disabled`, `starting`,
-`streaming`, `reconnecting` — started, but no frames within the stale window
-while the source reconnects in the background — or `error`, where `lastError`
-carries the message), plus `device`, `sampleRateHz`, `spanHz`, `txFrozen` and
-`overflowCount`. `disabled` means no SDR configured or the pipeline not
-running.
+(`state_schema.py: SdrStatusPublic`): `state` (`disabled`, `starting`,
+`streaming`, `reconnecting`, or `error` with the message in `lastError`),
+plus `device`, `sampleRateHz`, `spanHz`, `txFrozen` and `overflowCount`.
 
 ## Environment variables
 
@@ -103,14 +100,3 @@ BSD-licensed `remote` protocol to it. Before SoapySDR is first imported, RigPlan
 restricts the module search path so only the `remote` module can load
 (`runtime.py: apply_remote_only_env`); when the remote module cannot be found, a
 warning is logged and no restriction is applied.
-
-## Troubleshooting
-
-- **`error` state at startup** — read `lastError` in the `sdr` state object. A
-  missing SoapySDR install or an unreachable server is the usual cause.
-- **Display stays on the hardware scope / audio FFT** — the `sdr` state shows
-  `starting` (server reachable, no frames yet) or `reconnecting` (frames
-  stopped; check the SoapySDR server logs). RigPlane falls back automatically
-  and returns to the SDR when frames resume.
-- **Signal at the wrong frequency** — set `--sdr-ppm`; for an IF tap check
-  `--sdr-offset-hz` and `--sdr-invert`.

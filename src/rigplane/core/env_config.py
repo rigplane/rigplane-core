@@ -10,7 +10,9 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 __all__ = [
     "SdrEnvOverrides",
@@ -258,9 +260,8 @@ _SCOPE_SOURCES = frozenset({"auto", "hardware", "sdr", "audio_fft"})
 @dataclass(frozen=True)
 class SdrEnvOverrides:
     """``RIGPLANE_SDR_*`` values set in the environment; ``None`` slot =
-    variable unset, so the CLI flag's own value (or default) applies.
-    The CLI merges these under its flags — a given flag wins — through
-    ``sdr.runtime.resolve_sdr_config``."""
+    variable unset. The CLI merges these under its flags (a given flag
+    wins) through ``sdr.runtime.resolve_sdr_config``."""
 
     scope_source: str | None = None
     device_args: str | None = None
@@ -286,35 +287,22 @@ def _read_optional_str(var: str) -> str | None:
     return stripped or None
 
 
-def _read_sdr_int(var: str) -> int | None:
+def _read_sdr_number(var: str, convert: Callable[[str], Any], expected: str) -> Any:
     raw = _read_optional_str(var)
     if raw is None:
         return None
     try:
-        return int(raw)
+        return convert(raw)
     except ValueError:
-        raise _sdr_error(var, raw, "is not a valid integer") from None
-
-
-def _read_sdr_float(var: str) -> float | None:
-    raw = _read_optional_str(var)
-    if raw is None:
-        return None
-    try:
-        return float(raw)
-    except ValueError:
-        raise _sdr_error(var, raw, "is not a valid number") from None
+        raise _sdr_error(var, raw, expected) from None
 
 
 def get_sdr_env_overrides() -> SdrEnvOverrides:
-    """Read the ``RIGPLANE_SDR_*`` / ``RIGPLANE_SCOPE_SOURCE`` overrides.
-
-    Unlike the warn-and-fallback audio knobs above, a set-but-invalid
-    value raises :class:`ValueError` naming the variable: an SDR is an
-    explicit opt-in whose settings must reach the device verbatim.
-    Cross-field rules (span ≤ 0.6 × sample rate) stay in
-    ``sdr.runtime.resolve_sdr_config``.
-    """
+    """Read the ``RIGPLANE_SDR_*`` / ``RIGPLANE_SCOPE_SOURCE`` overrides;
+    a set-but-invalid value raises :class:`ValueError` naming the
+    variable (an SDR is an explicit opt-in, unlike the warn-and-fallback
+    audio knobs above). Cross-field rules stay in
+    ``sdr.runtime.resolve_sdr_config``."""
     scope_source = _read_optional_str(_SCOPE_SOURCE_VAR)
     if scope_source is not None and scope_source not in _SCOPE_SOURCES:
         raise _sdr_error(
@@ -354,11 +342,13 @@ def get_sdr_env_overrides() -> SdrEnvOverrides:
     return SdrEnvOverrides(
         scope_source=scope_source,
         device_args=_read_optional_str(_SDR_DEVICE_VAR),
-        sample_rate_hz=_read_sdr_int(_SDR_SAMPLE_RATE_VAR),
+        sample_rate_hz=_read_sdr_number(
+            _SDR_SAMPLE_RATE_VAR, int, "is not a valid integer"
+        ),
         gain=gain,
-        ppm=_read_sdr_float(_SDR_PPM_VAR),
-        freq_offset_hz=_read_sdr_int(_SDR_OFFSET_VAR),
-        span_hz=_read_sdr_int(_SDR_SPAN_VAR),
+        ppm=_read_sdr_number(_SDR_PPM_VAR, float, "is not a valid number"),
+        freq_offset_hz=_read_sdr_number(_SDR_OFFSET_VAR, int, "is not a valid integer"),
+        span_hz=_read_sdr_number(_SDR_SPAN_VAR, int, "is not a valid integer"),
         invert_spectrum=invert,
         settings=settings,
     )

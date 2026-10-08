@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import os
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -18,6 +19,8 @@ from unittest.mock import AsyncMock, patch
 
 import numpy as np
 import pytest
+
+from rigplane.cli import _build_parser, _cmd_web
 
 from rigplane.audio.bus import STAGE_RX_POST_DSP
 from rigplane.capabilities import CAP_AUDIO, CAP_SCOPE
@@ -86,14 +89,14 @@ def _observe(path: FieldPath, value: Any) -> Observation:
     )
 
 
-def _make_server(fake: FakeIqSource, *, scope_source: str = "auto") -> WebServer:
+def _make_server(fake, *, scope_source: str = "auto", factory: Any = None) -> WebServer:
     return WebServer(
         _AudioRadio(),
         WebConfig(
             radio_model="IC-7300",
             scope_source=scope_source,
             sdr_config=SdrConfig(device_args="fake"),
-            sdr_source_factory=lambda _config: fake,
+            sdr_source_factory=factory or (lambda _config: fake),
         ),
     )
 
@@ -144,11 +147,31 @@ async def _capabilities(server: WebServer) -> dict:
     return json.loads(payload[payload.index("\r\n\r\n") + 4 :])
 
 
+async def _feed_audio_frames(server: WebServer, handler: _Handler) -> None:
+    """Feed PCM through the RX tap until an audio-FFT frame reaches
+    ``/api/v1/scope`` (rate-limited FFT: reset time, 9 chunks/attempt;
+    spans ≤ 48 kHz mark audio frames)."""
+    server._update_fft_scope_freq()  # production: state broadcasts sync
+    registry = server._audio_broadcaster.taps(STAGE_RX_POST_DSP)
+    rng = np.random.default_rng(3157)
+    pcm = (rng.uniform(-1, 1, 960) * 5000).astype(np.int16).tobytes()
+    for _ in range(10):
+        server._audio_fft_scope._last_frame_time = 0.0
+        for _ in range(9):
+            registry.feed(pcm)
+        await asyncio.sleep(0.05)
+        if any(
+            f.pixels and (f.end_freq_hz - f.start_freq_hz) <= 48_000
+            for f in handler.frames
+        ):
+            return
+    pytest.fail("audio FFT never reached /api/v1/scope")
+
+
 @pytest.mark.asyncio
 async def test_sdr_scope_follows_vfo_freezes_tx_falls_back_and_recovers() -> None:
     server = _make_server(_make_fake())
     handler = _Handler()
-    # Prime the VFO before connecting so the runtime seeds from it.
     server.command_state_store.apply_current(
         _observe(FieldPath.active("0", "freq_mode", "freq_hz"), _VFO1)
     )
@@ -199,23 +222,7 @@ async def test_sdr_scope_follows_vfo_freezes_tx_falls_back_and_recovers() -> Non
         caps = await _capabilities(server)
         assert caps["scopeSource"] == "audio_fft"
         assert caps["sdrAvailable"] is True  # still retrying in the background
-        server._update_fft_scope_freq()  # production: state broadcasts sync
-        registry = server._audio_broadcaster.taps(STAGE_RX_POST_DSP)
-        rng = np.random.default_rng(3157)
-        n = len(handler.frames)
-        pcm = (rng.uniform(-1, 1, 960) * 5000).astype(np.int16).tobytes()
-        for _ in range(10):
-            server._audio_fft_scope._last_frame_time = 0.0
-            for _ in range(9):
-                registry.feed(pcm)
-            await asyncio.sleep(0.05)
-            if any(
-                f.pixels and (f.end_freq_hz - f.start_freq_hz) <= 48_000
-                for f in handler.frames[n:]
-            ):
-                break
-        else:
-            pytest.fail("audio FFT fallback never reached /api/v1/scope")
+        await _feed_audio_frames(server, handler)
 
         # SDR recovers: frames flow again and the SDR takes over.
         pumper = asyncio.create_task(_pump(fake))
@@ -317,9 +324,8 @@ def _drained_sdr_states(queue: BoundedQueue[dict[str, Any]]) -> list[str]:
 async def test_sdr_status_object_disabled_without_sdr() -> None:
     """Without the SDR runtime the state carries ``sdr.state ==
     "disabled"`` and nothing else in the payload changes: dropping the
-    runtime from one server (same store, same clock) yields an otherwise
-    identical payload modulo the seq counter the delivery-key change
-    bumps and the wall-clock ``sinceMs``."""
+    runtime yields an otherwise identical payload modulo the seq bump
+    the delivery-key change causes and the wall-clock ``sinceMs``."""
     pytest.importorskip("pydantic")
     from rigplane.web.state_schema import ServerStatePublic
 
@@ -388,23 +394,31 @@ async def test_sdr_status_object_lifecycle_and_broadcast() -> None:
     ServerStatePublic.model_validate(server.build_public_state())
 
 
-async def test_sdr_status_object_error_on_start_failure() -> None:
-    def _boom_factory(_config: SdrConfig) -> Any:
+async def test_sdr_start_failure_falls_back_not_breaks_scope(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A failing source factory must not break ``/api/v1/scope``:
+    audio-FFT frames still flow, status reads ``error``/``lastError``,
+    and the next connect retries the start."""
+    calls: list[int] = []
+
+    def _boom(_config: SdrConfig) -> Any:
+        calls.append(1)
         raise RuntimeError("boom")
 
-    server = WebServer(
-        _AudioRadio(),
-        WebConfig(
-            radio_model="IC-7300",
-            sdr_config=SdrConfig("bad"),
-            sdr_source_factory=_boom_factory,
-        ),
+    server = _make_server(_make_fake(), factory=_boom)
+    handler = _Handler()
+    server.command_state_store.apply_current(
+        _observe(FieldPath.active("0", "freq_mode", "freq_hz"), _VFO1)
     )
-    with pytest.raises(RuntimeError, match="boom"):
-        await server.ensure_scope_enabled(_Handler())
+    await server.ensure_scope_enabled(handler)
+    await server.ensure_scope_enabled(handler)
+    assert len(calls) == 2
+    assert sum("start failed" in r.getMessage() for r in caplog.records) == 1
     sdr = server.build_public_state(updated_at="t")["sdr"]
-    assert sdr["state"] == "error"
-    assert sdr["lastError"] == "boom"
+    assert sdr["state"] == "error" and sdr["lastError"] == "boom"
+    assert server._sdr_tick_task is None  # no tick loop after a failure
+    await _feed_audio_frames(server, handler)
 
 
 # ---------------------------------------------------------------------------
@@ -425,12 +439,8 @@ class _CaptureWebServer:
 async def _run_cmd_web(
     monkeypatch: pytest.MonkeyPatch, env: dict[str, str], *cli_flags: str
 ) -> tuple[Any, dict[str, Any]]:
-    """Run ``rigplane web`` with *env* applied and the WebServer class
-    replaced by a config capturer; return ``(exit code, config)``."""
-    import os
-
-    from rigplane.cli import _build_parser, _cmd_web
-
+    """Run ``rigplane web`` with *env* and the WebServer class replaced
+    by a config capturer; return ``(exit code, config)``."""
     for var in list(os.environ):
         if var.startswith("RIGPLANE_"):
             monkeypatch.delenv(var)

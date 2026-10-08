@@ -217,7 +217,7 @@ class SdrScopeRuntime:
     flips ``False`` after ``frame_stale_s`` s without a frame and back
     when frames return. The read-only status surface for the public
     ``sdr`` state object (MOR-3201) is :attr:`state`, :attr:`last_error`,
-    :attr:`overflow_count`, :attr:`tx_frozen`, :attr:`span_hz`.
+    :attr:`overflow_count`, :attr:`tx_frozen` and :attr:`span_hz`.
     """
 
     def __init__(
@@ -262,15 +262,12 @@ class SdrScopeRuntime:
     def state(
         self,
     ) -> Literal["disabled", "starting", "streaming", "reconnecting", "error"]:
-        """Public status state for the web ``sdr`` object (MOR-3201).
-
-        ``error`` — the last :meth:`start` failed (source factory or
-        open); a device lost mid-stream reconnects in the background
-        and reads ``reconnecting``, not ``error``. ``disabled`` — not
-        started. ``starting`` — started, no frame delivered yet.
-        ``streaming`` — a frame delivered within the stale window.
-        ``reconnecting`` — started, no frame within ``frame_stale_s``.
-        """
+        """Public status state for the web ``sdr`` object (MOR-3201):
+        ``disabled`` = not started; ``starting`` = started, no frame
+        yet; ``streaming`` = a frame within the stale window;
+        ``reconnecting`` = started, no frame within ``frame_stale_s``;
+        ``error`` = the last :meth:`start` failed (a device lost
+        mid-stream reconnects in the background instead)."""
         if not self._started:
             return "error" if self._last_error is not None else "disabled"
         if not self._active:
@@ -289,10 +286,9 @@ class SdrScopeRuntime:
 
     @property
     def tx_frozen(self) -> bool:
-        """Whether the controller currently holds the display TX-freeze
-        (set on the TX rising edge, released ``TX_HOLD_S`` after it;
-        the flag lives in ``SdrScopeController._tx_sink_active``, which
-        has no public accessor)."""
+        """Whether the controller holds the display TX-freeze (set on
+        the TX rising edge, released ``TX_HOLD_S`` after it); read from
+        ``SdrScopeController._tx_sink_active`` (no public accessor)."""
         controller = self._controller
         return controller is not None and controller._tx_sink_active
 
@@ -317,9 +313,8 @@ class SdrScopeRuntime:
     ) -> None:
         """Build and open the pipeline (running event loop). The seed
         state retunes the source before it opens: already at the VFO.
-        A source-factory or open failure is recorded in :attr:`last_error`
-        (state ``"error"``) and re-raised after the half-built pipeline
-        is closed."""
+        A source-factory or open failure is recorded in
+        :attr:`last_error` (state ``"error"``) and re-raised."""
         if self._started:
             return
         self._loop = asyncio.get_running_loop()
@@ -356,8 +351,8 @@ class SdrScopeRuntime:
         )
 
     def stop(self) -> None:
-        """Close the pipeline; idempotent, safe from any thread. Clears
-        :attr:`last_error` — a deliberate stop is not an error."""
+        """Close the pipeline; idempotent, safe from any thread; clears
+        :attr:`last_error` (a deliberate stop is not an error)."""
         source, scope = self._source, self._scope
         self._source = self._scope = self._controller = None
         self._loop = self._frame_sink = None

@@ -1,10 +1,6 @@
-"""Tests for the SDR scope runtime config, status and GPL guard.
-
-MOR-3157 covered config resolution and the GPL guard; the runtime
-lifecycle is covered end-to-end by ``tests/web/test_sdr_scope_source.py``.
-MOR-3201 adds the read-only status surface (``state`` / ``last_error`` /
-``overflow_count`` / ``tx_frozen``) and the ``RIGPLANE_SDR_*`` env
-overrides.
+"""Tests for the SDR scope runtime: config, GPL guard and the MOR-3201
+read-only status surface + env overrides; the runtime lifecycle is
+covered end-to-end by ``tests/web/test_sdr_scope_source.py``.
 """
 
 from __future__ import annotations
@@ -42,13 +38,13 @@ from rigplane.sdr.types import SdrConfig
         ),
         # The remaining --sdr-* flags all reach SdrConfig.
         (
-            {
-                "device_args": "d",
-                "ppm": 1.5,
-                "freq_offset_hz": 8_000_000,
-                "invert_spectrum": True,
-                "settings": ["direct_samp=2", "biastee=true"],
-            },
+            dict(
+                device_args="d",
+                ppm=1.5,
+                freq_offset_hz=8_000_000,
+                invert_spectrum=True,
+                settings=["direct_samp=2", "biastee=true"],
+            ),
             SdrConfig(
                 "d",
                 ppm=1.5,
@@ -146,10 +142,6 @@ class _FailingOpenSource(FakeIqSource):
         raise RuntimeError("device busy")
 
 
-def _failing_factory(_config: SdrConfig) -> FakeIqSource:
-    raise RuntimeError("no dev")
-
-
 def _make_runtime(
     source: FakeIqSource, clock: _FakeClock, *, stale_s: float = 2.0
 ) -> SdrScopeRuntime:
@@ -218,29 +210,26 @@ async def test_status_reconnecting_when_frames_go_stale() -> None:
 
 
 async def test_status_error_on_factory_failure() -> None:
+    def _failing_factory(_config: SdrConfig) -> FakeIqSource:
+        raise RuntimeError("no dev")
+
     runtime = SdrScopeRuntime(
-        SdrConfig("fake"),
-        source_factory=_failing_factory,
-        clock=_FakeClock(),
+        SdrConfig("fake"), source_factory=_failing_factory, clock=_FakeClock()
     )
     with pytest.raises(RuntimeError, match="no dev"):
         runtime.start(lambda _frame: None)
-    assert runtime.started is False
-    assert runtime.state == "error"
+    assert runtime.started is False and runtime.state == "error"
     assert runtime.last_error == "no dev"
-    # A deliberate stop clears the error.
     runtime.stop()
-    assert runtime.state == "disabled"
+    assert runtime.state == "disabled"  # a deliberate stop clears the error
 
 
 async def test_status_error_on_open_failure_closes_pipeline() -> None:
-    fake = _FailingOpenSource()
-    runtime = _make_runtime(fake, _FakeClock())
+    runtime = _make_runtime(_FailingOpenSource(), _FakeClock())
     with pytest.raises(RuntimeError, match="device busy"):
         runtime.start(lambda _frame: None, freq_hz=_VFO)
-    assert runtime.started is False
-    assert runtime.state == "error"
-    assert runtime.last_error == "device busy"
+    assert runtime.started is False  # the half-built pipeline was closed
+    assert runtime.state == "error" and runtime.last_error == "device busy"
 
 
 async def test_status_tx_frozen_follows_controller_hold() -> None:
@@ -314,20 +303,11 @@ def test_env_overrides_map_to_sdrconfig_fields(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("RIGPLANE_SDR_SETTINGS", "direct_samp=2,biastee=true")
 
     # Each variable lands in the matching SdrConfig field through
-    # resolve_sdr_config (the CLI passes the overrides through verbatim);
-    # ``gain=auto`` stays AGC (the SdrConfig default).
+    # resolve_sdr_config; ``gain=auto`` stays AGC (the SdrConfig default).
     overrides = get_sdr_env_overrides()
-    assert overrides.scope_source == "sdr"
-    assert resolve_sdr_config(
-        device_args=overrides.device_args,
-        sample_rate_hz=overrides.sample_rate_hz,
-        gain=overrides.gain,
-        ppm=overrides.ppm,
-        freq_offset_hz=overrides.freq_offset_hz,
-        span_hz=overrides.span_hz,
-        invert_spectrum=overrides.invert_spectrum,
-        settings=overrides.settings,
-    ) == SdrConfig(
+    fields = dataclasses.asdict(overrides)
+    assert fields.pop("scope_source") == "sdr"
+    assert resolve_sdr_config(**fields) == SdrConfig(
         device_args="driver=rtlsdr",
         sample_rate_hz=2_400_000,
         ppm=1.5,
