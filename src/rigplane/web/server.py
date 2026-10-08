@@ -993,7 +993,6 @@ class WebServer:
         self._command_queue.bind_controller(self._controller)
         self._controller_handler_tasks: dict[ControllerTicket, asyncio.Task[Any]] = {}
         self._controller_audio_cleanup: set[asyncio.Future[Any]] = set()
-        # Remains closed until the full integration and its negative proof are complete.
         self._controller_enforcement_ready = False
         self._controller_installed = False
         if radio is not None and getattr(radio, "_controller_authority", None) is None:
@@ -4702,10 +4701,27 @@ class WebServer:
         )
 
     def _controller_ready(self) -> bool:
-        authority = self._managed_tx_authority()
+        enforcement_ready = self._controller_enforcement_ready
+        if self._radio is not None:
+            from .web_startup import _validate_managed_tx  # noqa: TID251
+
+            try:
+                port = _validate_managed_tx(self)
+            except (AttributeError, RuntimeError, TypeError):
+                return False
+            enforcement_ready = (
+                port is not None
+                and getattr(self._radio, "_controller_authority", None)
+                is self._controller
+            )
+        if not enforcement_ready:
+            return False
+        try:
+            authority = self._managed_tx_authority()
+        except RuntimeError:
+            return False
         return bool(
-            self._controller_enforcement_ready
-            and self._controller_installed
+            self._controller_installed
             and not self._config.read_only
             and not self._stopping
             and self._webrtc_sessions is None
