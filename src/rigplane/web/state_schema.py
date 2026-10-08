@@ -46,6 +46,7 @@ __all__ = [
     "RadioDetailPublic",
     "MonitorMuteSavedAfPublic",
     "MonitorMutePublic",
+    "SdrStatusPublic",
     "WsClientsPublic",
     "ServerStatePublic",
     "StateUpdateEnvelope",
@@ -297,6 +298,24 @@ class MonitorMutePublic(_Strict):
     savedAf: MonitorMuteSavedAfPublic = Field(default_factory=MonitorMuteSavedAfPublic)
 
 
+class SdrStatusPublic(_Strict):
+    """Live SDR panadapter status (MOR-3201), injected by the web server
+    into every public state payload (``WebServer._sdr_status_payload``
+    reading ``SdrScopeRuntime`` status properties); absent on payloads
+    built without a server, so the field on :class:`ServerStatePublic`
+    is optional. ``device`` is ``""`` and the counters zero when no SDR
+    is configured.
+    """
+
+    state: Literal["disabled", "starting", "streaming", "reconnecting", "error"]
+    device: str
+    sampleRateHz: int
+    spanHz: int
+    txFrozen: bool
+    overflowCount: int
+    lastError: str | None = None
+
+
 class WsClientsPublic(_Strict):
     """WebSocket client counts per channel."""
 
@@ -405,6 +424,9 @@ class ServerStatePublic(_Strict):
     # Server process state, injected by the web server after the radio
     # projection. Absent on a payload built without a server (MOR-2583).
     monitorMute: MonitorMutePublic | None = None
+    # Live SDR panadapter status, likewise injected by the web server
+    # only (MOR-3201); absent on server-less payloads.
+    sdr: SdrStatusPublic | None = None
 
     # Snapshot path only — absent on the dataclass path, never null when
     # present (generated TS: ``fieldStatus?: Record<string, FieldStatusPublic>``).

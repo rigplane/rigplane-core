@@ -2,21 +2,26 @@
 
 Drives :class:`WebServer` with a :class:`FakeIqSource` injected via
 ``WebConfig.sdr_source_factory`` through ``ensure_scope_enabled``.
+MOR-3201 adds the public ``sdr`` status object (schema conformance,
+lifecycle, broadcast) and the ``RIGPLANE_SDR_*`` CLI/env wiring.
 """
 
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import time
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import numpy as np
 import pytest
 
 from rigplane.audio.bus import STAGE_RX_POST_DSP
 from rigplane.capabilities import CAP_AUDIO, CAP_SCOPE
+from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -262,3 +267,226 @@ async def test_sdr_scope_lifecycle_and_selection_guards() -> None:
         WebConfig(scope_source="matrix")
     with pytest.raises(ValueError, match="--sdr-device"):
         WebConfig(scope_source="sdr")
+
+
+# ---------------------------------------------------------------------------
+# Public ``sdr`` status object (MOR-3201)
+# ---------------------------------------------------------------------------
+
+_DISABLED_SDR = {
+    "state": "disabled",
+    "device": "",
+    "sampleRateHz": 0,
+    "spanHz": 0,
+    "txFrozen": False,
+    "overflowCount": 0,
+    "lastError": None,
+}
+
+
+async def _wait_sdr(
+    server: WebServer, want: Any, description: str, timeout_s: float = 4.0
+) -> dict[str, Any]:
+    """Poll the public payload until its ``sdr`` object satisfies *want*."""
+    deadline = time.monotonic() + timeout_s
+    sdr: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        sdr = server.build_public_state(updated_at="t")["sdr"]
+        if want(sdr):
+            return sdr
+        await asyncio.sleep(0.05)
+    pytest.fail(f"sdr status never {description}: {sdr}")
+
+
+def _drained_sdr_states(queue: BoundedQueue[dict[str, Any]]) -> list[str]:
+    """``sdr.state`` values carried by queued state_update events."""
+    states: list[str] = []
+    while True:
+        try:
+            event = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return states
+        if event.get("type") != "state_update":
+            continue
+        data = event["data"].get("data") or event["data"].get("changed") or {}
+        sdr = data.get("sdr")
+        if isinstance(sdr, dict):
+            states.append(sdr["state"])
+
+
+async def test_sdr_status_object_disabled_without_sdr() -> None:
+    """Without the SDR runtime the state carries ``sdr.state ==
+    "disabled"`` and nothing else in the payload changes: dropping the
+    runtime from one server (same store, same clock) yields an otherwise
+    identical payload modulo the seq counter the delivery-key change
+    bumps and the wall-clock ``sinceMs``."""
+    pytest.importorskip("pydantic")
+    from rigplane.web.state_schema import ServerStatePublic
+
+    server = _make_server(_make_fake())
+    with_runtime = server.build_public_state(updated_at="t")
+    assert with_runtime["sdr"] == {
+        **_DISABLED_SDR,
+        "device": "fake",
+        "sampleRateHz": _RATE,
+    }
+    server._sdr_runtime = None
+    without_runtime = server.build_public_state(updated_at="t")
+    assert without_runtime["sdr"] == _DISABLED_SDR
+
+    assert sorted(with_runtime) == sorted(without_runtime)
+    for key in ("sdr", "publicStateSeq"):
+        with_runtime.pop(key)
+        without_runtime.pop(key)
+    with_runtime["radioHealth"].pop("sinceMs")
+    without_runtime["radioHealth"].pop("sinceMs")
+    assert with_runtime == without_runtime
+    # The intact (un-mangled) payload conforms to the canonical schema.
+    ServerStatePublic.model_validate(server.build_public_state())
+
+
+async def test_sdr_status_object_lifecycle_and_broadcast() -> None:
+    pytest.importorskip("pydantic")
+    from rigplane.web.state_schema import ServerStatePublic
+
+    fake = _make_fake()
+    server = _make_server(fake)
+    handler = _Handler()
+    server.command_state_store.apply_current(
+        _observe(FieldPath.active("0", "freq_mode", "freq_hz"), _VFO1)
+    )
+    queue: BoundedQueue[dict[str, Any]] = BoundedQueue(64)
+    server._control_event_queues.add(queue)
+
+    # Configured but not started: disabled with the configured device.
+    assert server.build_public_state(updated_at="t")["sdr"]["device"] == "fake"
+    await server.ensure_scope_enabled(handler)
+    assert (await _wait_sdr(server, lambda s: s["state"] == "starting", "starting"))[
+        "spanHz"
+    ] == _SPAN
+
+    pumper = asyncio.create_task(_pump(fake))
+    try:
+        await _wait_sdr(server, lambda s: s["state"] == "streaming", "streaming")
+        # The TX freeze surfaces in the status object via the controller.
+        server.command_state_store.apply_current(
+            _observe(FieldPath.global_("tx_state", "observed_ptt"), ObservedPtt.ON)
+        )
+        await _wait_sdr(server, lambda s: s["txFrozen"] is True, "TX-frozen")
+    finally:
+        pumper.cancel()
+        server._stop_sdr_scope()
+
+    # Last viewer left: back to disabled, counters zeroed.
+    stopped = await _wait_sdr(server, lambda s: s["state"] == "disabled", "disabled")
+    assert stopped["device"] == "fake"
+    assert stopped["overflowCount"] == 0
+
+    # The transitions were broadcast to the control channel.
+    states = _drained_sdr_states(queue)
+    assert {"starting", "streaming", "disabled"} <= set(states)
+    ServerStatePublic.model_validate(server.build_public_state())
+
+
+async def test_sdr_status_object_error_on_start_failure() -> None:
+    def _boom_factory(_config: SdrConfig) -> Any:
+        raise RuntimeError("boom")
+
+    server = WebServer(
+        _AudioRadio(),
+        WebConfig(
+            radio_model="IC-7300",
+            sdr_config=SdrConfig("bad"),
+            sdr_source_factory=_boom_factory,
+        ),
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        await server.ensure_scope_enabled(_Handler())
+    sdr = server.build_public_state(updated_at="t")["sdr"]
+    assert sdr["state"] == "error"
+    assert sdr["lastError"] == "boom"
+
+
+# ---------------------------------------------------------------------------
+# RIGPLANE_SDR_* env fallback through the CLI (MOR-3201)
+# ---------------------------------------------------------------------------
+
+
+class _CaptureWebServer:
+    def __init__(self, _radio: Any, cfg: Any) -> None:
+        self.captured_config = cfg
+        self._runtime_log_path = None
+
+    async def serve_forever(self, *, on_started: Any = None) -> None:
+        on_started()
+        raise asyncio.CancelledError
+
+
+async def _run_cmd_web(
+    monkeypatch: pytest.MonkeyPatch, env: dict[str, str], *cli_flags: str
+) -> tuple[Any, dict[str, Any]]:
+    """Run ``rigplane web`` with *env* applied and the WebServer class
+    replaced by a config capturer; return ``(exit code, config)``."""
+    import os
+
+    from rigplane.cli import _build_parser, _cmd_web
+
+    for var in list(os.environ):
+        if var.startswith("RIGPLANE_"):
+            monkeypatch.delenv(var)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("ICOM_LOG_FILE", "off")
+    with patch("sys.stderr", new_callable=io.StringIO):
+        args = _build_parser().parse_args(["web", *cli_flags])
+    args.web_rigctld = False
+    captured: dict[str, Any] = {}
+
+    def _capture(radio_arg: Any, cfg: Any) -> _CaptureWebServer:
+        server = _CaptureWebServer(radio_arg, cfg)
+        captured["config"] = cfg
+        return server
+
+    with patch("rigplane.web.server.WebServer", _capture):
+        code = await _cmd_web(AsyncMock(), args)
+    return code, captured.get("config")
+
+
+async def test_cli_env_falls_back_and_flags_win(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Env alone configures the SDR; a given CLI flag wins over env."""
+    code, cfg = await _run_cmd_web(
+        monkeypatch,
+        {
+            "RIGPLANE_SCOPE_SOURCE": "hardware",
+            "RIGPLANE_SDR_DEVICE": "driver=env",
+            "RIGPLANE_SDR_SAMPLE_RATE": "1000000",
+            "RIGPLANE_SDR_GAIN": "32.5",
+            "RIGPLANE_SDR_PPM": "1.5",
+            "RIGPLANE_SDR_SETTINGS": "direct_samp=2",
+        },
+        "--scope-source",
+        "sdr",
+        "--sdr-device",
+        "driver=cli",
+        "--sdr-sample-rate",
+        "2400000",
+    )
+    assert code == 0
+    assert cfg.sdr_config == SdrConfig(
+        device_args="driver=cli",  # CLI wins over RIGPLANE_SDR_DEVICE
+        sample_rate_hz=2_400_000,  # CLI wins over RIGPLANE_SDR_SAMPLE_RATE
+        gain_db=32.5,  # env fallback (no flag given)
+        ppm=1.5,
+        extra_settings={"direct_samp": "2"},
+    )
+    assert cfg.scope_source == "sdr"  # CLI wins over RIGPLANE_SCOPE_SOURCE
+
+
+async def test_cli_bad_env_value_fails_naming_the_variable(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, _cfg = await _run_cmd_web(monkeypatch, {"RIGPLANE_SDR_PPM": "lots"})
+    assert code == 1
+    assert "RIGPLANE_SDR_PPM" in capsys.readouterr().err
