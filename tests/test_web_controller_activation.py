@@ -284,7 +284,9 @@ class FakeManagedPoller:
 
 
 async def loopback_http(server: WebServer, method: str, path: str, body=None):
-    reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+    reader, writer = await asyncio.wait_for(
+        asyncio.open_connection("127.0.0.1", server.port), 3
+    )
     try:
         payload = b"" if body is None else json.dumps(body).encode()
         writer.write(
@@ -294,28 +296,30 @@ async def loopback_http(server: WebServer, method: str, path: str, body=None):
             ).encode()
             + payload
         )
-        await writer.drain()
+        await asyncio.wait_for(writer.drain(), 3)
         status, _, response = await asyncio.wait_for(_read_http_response(reader), 3)
         return status, json.loads(response)
     finally:
         writer.close()
-        await writer.wait_closed()
+        await asyncio.wait_for(writer.wait_closed(), 3)
 
 
 async def loopback_control(server: WebServer, key: str):
-    reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+    reader, writer = await asyncio.wait_for(
+        asyncio.open_connection("127.0.0.1", server.port), 3
+    )
     nonce = "dGhlIHNhbXBsZSBub25jZQ=="
     protocol = f"rigplane-controller-v1.{key}"
-    writer.write(
-        (
-            f"GET /api/v1/ws HTTP/1.1\r\nHost: 127.0.0.1:{server.port}\r\n"
-            "Upgrade: websocket\r\nConnection: Upgrade\r\n"
-            f"Sec-WebSocket-Key: {nonce}\r\nSec-WebSocket-Version: 13\r\n"
-            f"Sec-WebSocket-Protocol: {protocol}\r\n\r\n"
-        ).encode()
-    )
-    await writer.drain()
     try:
+        writer.write(
+            (
+                f"GET /api/v1/ws HTTP/1.1\r\nHost: 127.0.0.1:{server.port}\r\n"
+                "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {nonce}\r\nSec-WebSocket-Version: 13\r\n"
+                f"Sec-WebSocket-Protocol: {protocol}\r\n\r\n"
+            ).encode()
+        )
+        await asyncio.wait_for(writer.drain(), 3)
         response = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 3)
         assert response.startswith(b"HTTP/1.1 101 ")
         assert make_accept_key(nonce).encode() in response
@@ -323,7 +327,7 @@ async def loopback_control(server: WebServer, key: str):
         return reader, writer
     except BaseException:
         writer.close()
-        await writer.wait_closed()
+        await asyncio.wait_for(writer.wait_closed(), 3)
         raise
 
 
@@ -369,20 +373,27 @@ async def test_os_loopback_remote_controller_keys_fake_wire_and_releases_on_clos
         reader, writer = await loopback_control(server, grant["controller_key"])
         hello = await loopback_message(reader, kind="hello")
         assert hello["connected"] is True and hello["radio_ready"] is True
-        await _ws_send_text(writer, json.dumps({"type": "controller_heartbeat"}))
+        await asyncio.wait_for(
+            _ws_send_text(writer, json.dumps({"type": "controller_heartbeat"})), 3
+        )
         heartbeat = await loopback_message(reader, kind="controller_heartbeat")
         assert heartbeat["generation"] == grant["generation"]
         before = list(radio.wire)
         assert True not in before
-        await _ws_send_text(
-            writer,
-            json.dumps({"type": "cmd", "id": "key", "name": "ptt_on", "params": {}}),
+        await asyncio.wait_for(
+            _ws_send_text(
+                writer,
+                json.dumps(
+                    {"type": "cmd", "id": "key", "name": "ptt_on", "params": {}}
+                ),
+            ),
+            3,
         )
         keyed = await loopback_message(reader, kind="response", command_id="key")
         assert keyed["ok"] is True
         await radio.wait_for_wire([*before, True])
         writer.close()
-        await writer.wait_closed()
+        await asyncio.wait_for(writer.wait_closed(), 3)
         writer = None
         await radio.wait_for_wire([*before, True, False])
         await asyncio.wait_for(server._controller.settle(), 3)
@@ -398,9 +409,13 @@ async def test_os_loopback_remote_controller_keys_fake_wire_and_releases_on_clos
         assert radio.wire == [*before, True, False]
         assert radio.raw_ptt == []
     finally:
-        if writer is not None:
-            writer.close()
-            await writer.wait_closed()
-        await asyncio.wait_for(server.stop(), 10)
-        await asyncio.wait_for(server._controller.settle(), 3)
+        try:
+            if writer is not None:
+                writer.close()
+                await asyncio.wait_for(writer.wait_closed(), 3)
+        finally:
+            try:
+                await asyncio.wait_for(server.stop(), 10)
+            finally:
+                await asyncio.wait_for(server._controller.settle(), 3)
     assert server._server is None
