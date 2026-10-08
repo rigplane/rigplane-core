@@ -2,8 +2,7 @@
 
 :class:`IqSource` is the backend-neutral contract a SoapySDR adapter (and
 the test fake) implements; :class:`IqScopeSink` is the surface the
-panadapter controller drives and the future ``IqFftScope`` implements, so
-controller and FFT scope can be built in parallel against this module.
+controller drives and the future ``IqFftScope`` implements.
 """
 
 from __future__ import annotations

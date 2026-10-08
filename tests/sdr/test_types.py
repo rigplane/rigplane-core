@@ -1,8 +1,9 @@
-"""Tests for rigplane.sdr.types — IqBlock and SdrConfig.from_mapping (MOR-3151)."""
+"""Tests for rigplane.sdr.types — IqBlock and SdrConfig (MOR-3151)."""
 
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Mapping
 
 import numpy as np
 import pytest
@@ -60,81 +61,59 @@ def test_sdr_config_frozen() -> None:
         config.sample_rate_hz = 48000  # type: ignore[misc]
 
 
-def test_from_mapping_missing_device_args() -> None:
-    with pytest.raises(ValueError, match="device_args"):
-        SdrConfig.from_mapping({"sample_rate_hz": 48000})
+def test_sdr_config_extra_settings_read_only() -> None:
+    config = SdrConfig(device_args="driver=rtlsdr", extra_settings={"a": "1"})
+    default = SdrConfig(device_args="driver=rtlsdr")
+
+    with pytest.raises(TypeError):
+        config.extra_settings["a"] = "2"  # type: ignore[index]
+
+    with pytest.raises(TypeError):
+        default.extra_settings["a"] = "2"  # type: ignore[index]
 
 
-def test_from_mapping_device_args_not_a_string() -> None:
-    with pytest.raises(ValueError, match="device_args"):
-        SdrConfig.from_mapping({"device_args": 123})
+def test_sdr_config_hashable() -> None:
+    a = SdrConfig(device_args="d", extra_settings={"a": "1"})
+    b = SdrConfig.from_mapping({"device_args": "d", "extra_settings": {"a": "1"}})
+
+    assert a == b
+    assert hash(a) == hash(b)
+    assert len({a, b}) == 1
 
 
-def test_from_mapping_unknown_field() -> None:
-    with pytest.raises(ValueError, match="bogus_field"):
-        SdrConfig.from_mapping({"device_args": "driver=rtlsdr", "bogus_field": 1})
-
-
-def test_from_mapping_bad_sample_rate() -> None:
-    with pytest.raises(ValueError, match="sample_rate_hz"):
-        SdrConfig.from_mapping({"device_args": "d", "sample_rate_hz": 0})
-
-    with pytest.raises(ValueError, match="sample_rate_hz"):
-        SdrConfig.from_mapping({"device_args": "d", "sample_rate_hz": "fast"})
-
-    with pytest.raises(ValueError, match="sample_rate_hz"):
+@pytest.mark.parametrize(
+    ("mapping", "field"),
+    [
+        ({"sample_rate_hz": 48000}, "device_args"),
+        ({"device_args": 123}, "device_args"),
+        ({"device_args": "d", "bogus_field": 1}, "bogus_field"),
+        ({"device_args": "d", "sample_rate_hz": 0}, "sample_rate_hz"),
+        ({"device_args": "d", "sample_rate_hz": "fast"}, "sample_rate_hz"),
         # bool is an int subclass but is not a sample rate
-        SdrConfig.from_mapping({"device_args": "d", "sample_rate_hz": True})
-
-
-def test_from_mapping_bad_gain() -> None:
-    with pytest.raises(ValueError, match="gain_db"):
-        SdrConfig.from_mapping({"device_args": "d", "gain_db": "loud"})
-
-    with pytest.raises(ValueError, match="gain_db"):
-        SdrConfig.from_mapping({"device_args": "d", "gain_db": True})
+        ({"device_args": "d", "sample_rate_hz": True}, "sample_rate_hz"),
+        ({"device_args": "d", "gain_db": "loud"}, "gain_db"),
+        ({"device_args": "d", "gain_db": True}, "gain_db"),
+        ({"device_args": "d", "ppm": "high"}, "ppm"),
+        ({"device_args": "d", "freq_offset_hz": 2.5}, "freq_offset_hz"),
+        ({"device_args": "d", "freq_offset_hz": "8M"}, "freq_offset_hz"),
+        ({"device_args": "d", "invert_spectrum": 1}, "invert_spectrum"),
+        ({"device_args": "d", "span_hz": -1000}, "span_hz"),
+        ({"device_args": "d", "span_hz": "wide"}, "span_hz"),
+        ({"device_args": "d", "extra_settings": "direct_samp=2"}, "extra_settings"),
+        ({"device_args": "d", "extra_settings": {"direct_samp": 2}}, "extra_settings"),
+    ],
+)
+def test_from_mapping_rejects_bad_values(
+    mapping: Mapping[str, object], field: str
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        SdrConfig.from_mapping(mapping)
 
 
 def test_from_mapping_gain_none_allowed() -> None:
     config = SdrConfig.from_mapping({"device_args": "d", "gain_db": None})
 
     assert config.gain_db is None
-
-
-def test_from_mapping_bad_ppm() -> None:
-    with pytest.raises(ValueError, match="ppm"):
-        SdrConfig.from_mapping({"device_args": "d", "ppm": "high"})
-
-
-def test_from_mapping_bad_freq_offset() -> None:
-    with pytest.raises(ValueError, match="freq_offset_hz"):
-        SdrConfig.from_mapping({"device_args": "d", "freq_offset_hz": 2.5})
-
-    with pytest.raises(ValueError, match="freq_offset_hz"):
-        SdrConfig.from_mapping({"device_args": "d", "freq_offset_hz": "8M"})
-
-
-def test_from_mapping_bad_invert_spectrum() -> None:
-    with pytest.raises(ValueError, match="invert_spectrum"):
-        SdrConfig.from_mapping({"device_args": "d", "invert_spectrum": 1})
-
-
-def test_from_mapping_bad_span() -> None:
-    with pytest.raises(ValueError, match="span_hz"):
-        SdrConfig.from_mapping({"device_args": "d", "span_hz": -1000})
-
-    with pytest.raises(ValueError, match="span_hz"):
-        SdrConfig.from_mapping({"device_args": "d", "span_hz": "wide"})
-
-
-def test_from_mapping_bad_extra_settings() -> None:
-    with pytest.raises(ValueError, match="extra_settings"):
-        SdrConfig.from_mapping({"device_args": "d", "extra_settings": "direct_samp=2"})
-
-    with pytest.raises(ValueError, match="extra_settings"):
-        SdrConfig.from_mapping(
-            {"device_args": "d", "extra_settings": {"direct_samp": 2}}
-        )
 
 
 def test_iq_block_fields_and_default_overflow() -> None:

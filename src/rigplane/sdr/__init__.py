@@ -1,11 +1,6 @@
-"""SDR panadapter contracts: IQ source protocol, block/config types, fake.
+"""SDR panadapter contracts (MOR-3151): types, protocols, and the fake.
 
-Contract-first package (MOR-3151): every other core SDR issue codes
-against the types defined here — :class:`IqBlock`,
-:class:`SdrConfig`, the :class:`IqSource` backend contract, the
-:class:`IqScopeSink` surface the controller drives, and the
-:class:`FakeIqSource` test double. FFT scope, the SoapySDR adapter, and
-server wiring are separate issues and live outside this contract.
+FFT scope, the SoapySDR adapter, and server wiring are separate issues.
 """
 
 from __future__ import annotations

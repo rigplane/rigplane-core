@@ -1,9 +1,8 @@
 """Deterministic fake IQ source for tests (MOR-3151).
 
-The test-side counterpart of the future SoapySDR adapter: generates
-phase-continuous complex64 blocks (configured tones over a seeded noise
-floor) either synchronously via :meth:`FakeIqSource.pump` or from an
-optional background reader thread for integration tests.
+Phase-continuous complex64 blocks — configured tones over a seeded
+noise floor — via :meth:`FakeIqSource.pump` or an optional background
+reader thread.
 """
 
 from __future__ import annotations
@@ -31,11 +30,10 @@ def _import_numpy() -> Any:
 class FakeIqSource:
     """Deterministic in-process :class:`~rigplane.sdr.protocol.IqSource`.
 
-    Emits blocks of ``block_size`` complex64 samples: the sum of the
-    configured ``tones`` (each ``(offset_hz, dbfs)`` relative to the
-    center frequency) over a white-noise floor at ``noise_floor_dbfs``.
-    Sample generation is seeded and phase-continuous, so equal
-    configurations with equal seeds produce identical sample streams.
+    Emits ``block_size`` complex64 blocks: the configured ``tones``
+    (``(offset_hz, dbfs)`` relative to center) over a white-noise floor
+    at ``noise_floor_dbfs``; generation is seeded and phase-continuous,
+    so equal settings and seeds produce identical streams.
 
     Args:
         center_freq_hz: Initial center frequency in Hz.
@@ -45,8 +43,7 @@ class FakeIqSource:
         noise_floor_dbfs: White-noise floor level in dBFS.
         frequency_range: ``(low, high)`` reported by
             :meth:`frequency_range_hz`.
-        seed: Seed for the noise RNG; blocks are identical across
-            instances built with equal settings and equal seeds.
+        seed: Noise RNG seed.
         background_interval_s: When not ``None``, ``open()`` starts a
             daemon reader thread that emits one block per interval.
     """
@@ -91,8 +88,7 @@ class FakeIqSource:
     # -- IqSource lifecycle ---------------------------------------------------
 
     def open(self) -> None:
-        """Open the fake source; starts the background thread when
-        ``background_interval_s`` was set."""
+        """Open the source; starts the background thread when configured."""
         if self._is_open:
             return
         self._is_open = True
@@ -156,8 +152,7 @@ class FakeIqSource:
     def pump(self, n_blocks: int) -> None:
         """Generate and deliver ``n_blocks`` blocks synchronously.
 
-        Intended for tests; mirrors what the reader thread does, on the
-        caller's thread.
+        Mirrors the reader thread on the caller's thread (for tests).
 
         Args:
             n_blocks: Number of blocks to emit.
@@ -171,13 +166,10 @@ class FakeIqSource:
             self._emit_block()
 
     def set_overflow(self, active: bool) -> None:
-        """Mark all subsequently emitted blocks as overflowed.
-
-        Only sets the :attr:`IqBlock.overflow` flag — the fake never
-        drops samples itself.
+        """Flag all subsequently emitted blocks (never drops samples).
 
         Args:
-            active: ``True`` to flag subsequent blocks as overflowed.
+            active: ``True`` to mark subsequent blocks as overflowed.
         """
         self._overflow = bool(active)
 
