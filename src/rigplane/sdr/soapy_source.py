@@ -1,9 +1,6 @@
 """SoapySDR-backed :class:`IqSource` (MOR-3155).
 
-:class:`SoapyIqSource` adapts any SoapySDR device — primary target
-``driver=remote`` → SoapySDRServer with an RTL-SDR behind it — to the
-backend-neutral IQ contract from MOR-3151. This is the only module that
-imports ``SoapySDR``, and only lazily through
+The only module that imports ``SoapySDR``, lazily through
 :mod:`rigplane.core._optional_deps`.
 """
 
@@ -24,22 +21,13 @@ logger = logging.getLogger(__name__)
 
 _SLEEP_CHUNK_S = 0.25
 _CLOSE_JOIN_TIMEOUT_S = 5.0
-
-
-def _import_soapysdr() -> Any:
-    """Lazily import and return the ``SoapySDR`` bindings module."""
-    _require_soapysdr()
-    import SoapySDR  # type: ignore[import-not-found]
-
-    return SoapySDR
+# frequency_range_hz() result before the first successful connect:
+# permissive, so pre-connect callers never see an out-of-range answer.
+_PERMISSIVE_RANGE_HZ = (0, 6_000_000_000)
 
 
 class _SoapySession:
-    """One live device + RX stream owned by the reader thread.
-
-    Created, driven, and torn down exclusively on the reader thread;
-    never shared with caller threads.
-    """
+    """One live device + RX stream, used only on the reader thread."""
 
     def __init__(
         self,
@@ -59,11 +47,16 @@ class _SoapySession:
     def apply_config(
         self,
         generation: int,
-        center_freq_hz: int,
+        center_freq_hz: int | None,
         sample_rate_hz: int,
         gain_db: float | None,
     ) -> None:
-        """Push rate/gain/frequency to the device once per ``generation``."""
+        """Push rate/gain/frequency once per ``generation``.
+
+        ``center_freq_hz is None`` (no centre requested yet) skips
+        ``setFrequency`` — 0 Hz is out of RTL-SDR range — while rate
+        and gain still apply.
+        """
         if generation == self._applied_generation:
             return
         self._device.setSampleRate(self._rx, 0, sample_rate_hz)
@@ -72,20 +65,11 @@ class _SoapySession:
         else:
             self._device.setGainMode(self._rx, 0, False)
             self._device.setGain(self._rx, 0, gain_db)
-        self._device.setFrequency(self._rx, 0, self.tune_hz(center_freq_hz))
+        if center_freq_hz is not None:
+            if not self._hw_ppm and self._ppm != 0.0:
+                center_freq_hz = int(center_freq_hz / (1.0 + self._ppm * 1e-6))
+            self._device.setFrequency(self._rx, 0, center_freq_hz)
         self._applied_generation = generation
-
-    def tune_hz(self, center_freq_hz: int) -> int:
-        """Device command frequency for a requested center.
-
-        With hardware PPM correction (or ``ppm == 0``) the device lands
-        on the requested frequency itself; otherwise the tune is divided
-        by ``1 + ppm * 1e-6`` so a clock fast by ``ppm`` still centers
-        there.
-        """
-        if self._hw_ppm or self._ppm == 0.0:
-            return center_freq_hz
-        return int(center_freq_hz / (1.0 + self._ppm * 1e-6))
 
     def open_stream(self, cf32: int) -> None:
         """Set up and activate the CF32 RX stream."""
@@ -118,15 +102,11 @@ class SoapyIqSource:
     """SoapySDR device as an :class:`~rigplane.sdr.protocol.IqSource`.
 
     All device I/O — the initial open included — happens on a daemon
-    reader thread, so ``open()`` never blocks the caller's event loop.
-    On device loss (unplug, SoapySDRServer restart) the session is torn
-    down, one warning is logged per incident, and reopening is retried
-    with exponential backoff from ``min_retry_s`` up to ``max_retry_s``.
-
-    ``is_open`` tracks the requested lifecycle (``open()`` … ``close()``)
-    and stays ``True`` across transparent reconnects; the ``SdrConfig``
-    fields ``freq_offset_hz``, ``invert_spectrum``, and ``span_hz`` are
-    display-side concerns consumed downstream, not by this source.
+    reader thread; ``open()`` never blocks the caller's event loop. On
+    device loss the session is torn down, one warning is logged per
+    incident, and reopening is retried with exponential backoff.
+    ``is_open`` tracks the requested lifecycle (``open()`` …
+    ``close()``) and stays ``True`` across transparent reconnects.
 
     Args:
         config: Device/stream parameters. ``device_args``,
@@ -157,7 +137,9 @@ class SoapyIqSource:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        self._sdr = _import_soapysdr()
+        _require_soapysdr()
+        import SoapySDR  # type: ignore[import-not-found]
+
         _require_numpy()
         import numpy as np
 
@@ -171,6 +153,7 @@ class SoapyIqSource:
             )
 
         self._config = config
+        self._sdr = SoapySDR
         self._block_size = int(block_size)
         self._read_timeout_us = int(read_timeout_us)
         self._min_retry_s = float(min_retry_s)
@@ -182,6 +165,7 @@ class SoapyIqSource:
 
         self._lock = threading.Lock()
         self._center_freq = 0
+        self._center_requested = False
         self._sample_rate: int = int(config.sample_rate_hz)
         self._gain_db = config.gain_db
         self._config_generation = 1
@@ -196,11 +180,7 @@ class SoapyIqSource:
     # -- IqSource lifecycle ---------------------------------------------------
 
     def open(self) -> None:
-        """Start the reader thread; idempotent.
-
-        The device connection itself is made (and remade) on that
-        thread, so this returns immediately.
-        """
+        """Start the reader thread; idempotent — the device connects there."""
         if self._is_open:
             return
         self._is_open = True
@@ -213,11 +193,7 @@ class SoapyIqSource:
         self._thread.start()
 
     def close(self) -> None:
-        """Stop the reader thread and tear down any live stream; idempotent.
-
-        The reader thread always deactivates and closes the stream
-        before exiting.
-        """
+        """Stop the reader thread and tear down any live stream; idempotent."""
         self._is_open = False
         self._stop.set()
         thread = self._thread
@@ -241,6 +217,7 @@ class SoapyIqSource:
         """Request a new center frequency; applied on the reader thread."""
         with self._lock:
             self._center_freq = int(hz)
+            self._center_requested = True
             self._config_generation += 1
 
     @property
@@ -268,19 +245,16 @@ class SoapyIqSource:
             self._config_generation += 1
 
     def frequency_range_hz(self) -> tuple[int, int]:
-        """Return the ``(low, high)`` tunable range of the connected device.
+        """Tunable ``(low, high)`` range in Hz.
 
-        Cached from the last successful connect.
-
-        Raises:
-            RuntimeError: No device has connected yet.
+        Returns the permissive default ``(0, 6_000_000_000)`` until the
+        first successful connect; never raises, so callers may use it
+        before the reader thread has connected. Afterwards, the range
+        reported by the device (cached from its last connect).
         """
         with self._lock:
             if self._frequency_range is None:
-                raise RuntimeError(
-                    "frequency_range_hz() needs a connected device; "
-                    "open() connects on the reader thread"
-                )
+                return _PERMISSIVE_RANGE_HZ
             return self._frequency_range
 
     # -- IqSource streaming ---------------------------------------------------
@@ -344,12 +318,7 @@ class SoapyIqSource:
             ppm=self._config.ppm,
             hw_ppm=hw_ppm,
         )
-        with self._lock:
-            generation = self._config_generation
-            center = self._center_freq
-            rate = self._sample_rate
-            gain = self._gain_db
-        session.apply_config(generation, center, rate, gain)
+        session.apply_config(*self._config_snapshot())
         session.open_stream(sdr.SOAPY_SDR_CF32)
 
         ranges = device.getFrequencyRange(sdr.SOAPY_SDR_RX, 0)
@@ -360,17 +329,24 @@ class SoapyIqSource:
             )
         return session
 
+    def _config_snapshot(self) -> tuple[int, int | None, int, float | None]:
+        """Generation, centre (``None`` until first request), rate, gain."""
+        with self._lock:
+            center = self._center_freq if self._center_requested else None
+            return (
+                self._config_generation,
+                center,
+                self._sample_rate,
+                self._gain_db,
+            )
+
     def _stream_loop(self, session: _SoapySession) -> bool:
         """Read blocks until stopped or a device error; returns liveness."""
         sdr = self._sdr
         saw_live_read = False
         pending_overflow = False
         while not self._stop.is_set():
-            with self._lock:
-                generation = self._config_generation
-                center = self._center_freq
-                rate = self._sample_rate
-                gain = self._gain_db
+            generation, center, rate, gain = self._config_snapshot()
             session.apply_config(generation, center, rate, gain)
 
             result = session.read(self._buffer, self._block_size, self._read_timeout_us)
@@ -388,7 +364,7 @@ class SoapyIqSource:
 
             block = IqBlock(
                 samples=self._buffer[:ret].copy(),
-                center_freq_hz=center,
+                center_freq_hz=center or 0,
                 sample_rate_hz=rate,
                 timestamp_s=self._clock(),
                 overflow=pending_overflow,

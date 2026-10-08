@@ -1,8 +1,6 @@
 """Tests for rigplane.sdr.soapy_source — SoapyIqSource (MOR-3155).
 
-All device interaction runs against a fake ``SoapySDR`` module injected
-into ``sys.modules``; constant values mirror upstream ``Constants.h`` /
-``Errors.h``. No SoapySDR installation or hardware is needed.
+Fake ``SoapySDR`` module in ``sys.modules``; no install or hardware.
 """
 
 from __future__ import annotations
@@ -13,6 +11,8 @@ import sys
 import threading
 import time
 import types
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any, Callable
 
 import numpy as np
@@ -78,23 +78,11 @@ class _FakeDevice:
         if not self._harness.ppm_supported:
             raise RuntimeError("setFrequencyCorrection not supported")
 
-    def setFrequency(
-        self,
-        direction: int,
-        channel: int,
-        frequency: float,
-        kwargs: dict[str, str] | None = None,
-    ) -> None:
+    def setFrequency(self, direction: int, channel: int, frequency: float) -> None:
         self._record("setFrequency", direction, channel, frequency)
 
-    def setupStream(
-        self,
-        direction: int,
-        stream_format: int,
-        channels: list[int] | None = None,
-        kwargs: dict[str, str] | None = None,
-    ) -> Any:
-        self._record("setupStream", direction, stream_format, channels, kwargs)
+    def setupStream(self, direction: int, fmt: int, channels: Any, kwargs: Any) -> Any:
+        self._record("setupStream", direction, fmt, channels, kwargs)
         return self.stream
 
     def activateStream(self, stream: Any) -> None:
@@ -111,11 +99,7 @@ class _FakeDevice:
         return [_FakeRange(low, high) for low, high in self._harness.frequency_ranges]
 
     def readStream(
-        self,
-        stream: Any,
-        buffs: list[Any],
-        num_elems: int,
-        timeoutUs: int = 100_000,
+        self, stream: Any, buffs: list[Any], num_elems: int, timeoutUs: int
     ) -> _FakeStreamResult:
         with self._harness.lock:
             self._harness.reads.append((num_elems, timeoutUs))
@@ -202,18 +186,24 @@ class _FakeSoapyHarness:
         return module
 
 
-@pytest.fixture
-def soapy() -> _FakeSoapyHarness:
-    harness = _FakeSoapyHarness()
+@contextmanager
+def _soapy_module(module: types.ModuleType | None) -> Iterator[None]:
     saved = sys.modules.get("SoapySDR")
-    sys.modules["SoapySDR"] = harness.install()
+    sys.modules["SoapySDR"] = module
     try:
-        yield harness
+        yield
     finally:
         if saved is None:
             sys.modules.pop("SoapySDR", None)
         else:
             sys.modules["SoapySDR"] = saved
+
+
+@pytest.fixture
+def soapy() -> Iterator[_FakeSoapyHarness]:
+    harness = _FakeSoapyHarness()
+    with _soapy_module(harness.install()):
+        yield harness
 
 
 def _wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> None:
@@ -236,12 +226,8 @@ class _Collector:
             self.blocks.append(block)
             self.threads.append(threading.current_thread().name)
 
-    def count(self) -> int:
-        with self._lock:
-            return len(self.blocks)
-
     def wait_for(self, n_blocks: int) -> list[IqBlock]:
-        _wait_until(lambda: self.count() >= n_blocks)
+        _wait_until(lambda: len(self.blocks) >= n_blocks)
         with self._lock:
             return list(self.blocks)
 
@@ -263,23 +249,8 @@ def _make_source(
     )
 
 
-def _open_streaming(
-    harness: _FakeSoapyHarness,
-    collector: _Collector,
-    **config_kwargs: Any,
-) -> SoapyIqSource:
-    source = _make_source(harness, **config_kwargs)
-    source.set_center_freq(7_100_000)
-    source.on_block(collector)
-    source.open()
-    collector.wait_for(1)
-    return source
-
-
-def test_imports_succeed_without_soapysdr_and_construction_raises() -> None:
-    saved = sys.modules.get("SoapySDR")
-    sys.modules["SoapySDR"] = None
-    try:
+def test_imports_without_soapysdr_and_construction_raises() -> None:
+    with _soapy_module(None):
         assert importlib.import_module("rigplane")
         assert importlib.import_module("rigplane.sdr")
         module = importlib.import_module("rigplane.sdr.soapy_source")
@@ -288,102 +259,111 @@ def test_imports_succeed_without_soapysdr_and_construction_raises() -> None:
         message = str(excinfo.value)
         assert "rigplane[sdr]" in message
         assert "python3-soapysdr" in message
-    finally:
-        if saved is None:
-            sys.modules.pop("SoapySDR", None)
-        else:
-            sys.modules["SoapySDR"] = saved
 
 
-def test_satisfies_iq_source_protocol(soapy: _FakeSoapyHarness) -> None:
-    assert isinstance(_make_source(soapy), IqSource)
-
-
-def test_open_configure_call_sequence(soapy: _FakeSoapyHarness) -> None:
+@pytest.mark.parametrize(
+    ("gain_db", "agc"),
+    [(None, True), (19.5, False)],
+)
+def test_open_configure_call_sequence_and_blocks(
+    soapy: _FakeSoapyHarness, gain_db: float | None, agc: bool
+) -> None:
     collector = _Collector()
     source = _make_source(
         soapy,
-        gain_db=19.5,
+        gain_db=gain_db,
         sample_rate_hz=2_400_000,
         extra_settings={"direct_samp": "2"},
     )
+    assert isinstance(source, IqSource)
     source.set_center_freq(7_100_000)
     source.on_block(collector)
     source.open()
     try:
-        collector.wait_for(1)
+        blocks = collector.wait_for(2)
     finally:
         source.close()
 
-    names = soapy.names()
     expected = [
         "KwargsFromString",
         "Device",
         "writeSetting",
         "setSampleRate",
         "setGainMode",
-        "setGain",
+        *([] if agc else ["setGain"]),
         "setFrequency",
         "setupStream",
         "activateStream",
         "getFrequencyRange",
     ]
+    names = soapy.names()
     assert names[: len(expected)] == expected
     assert "setFrequencyCorrection" not in names
 
-    assert soapy.named("KwargsFromString") == [
-        ("KwargsFromString", "driver=remote,remote=127.0.0.1")
-    ]
     device = soapy.devices[0]
     assert device.args == {"driver": "remote", "remote": "127.0.0.1"}
     assert soapy.named("writeSetting") == [("writeSetting", "direct_samp", "2")]
     assert soapy.named("setSampleRate") == [("setSampleRate", 1, 0, 2_400_000)]
-    assert soapy.named("setGainMode") == [("setGainMode", 1, 0, False)]
-    assert soapy.named("setGain") == [("setGain", 1, 0, 19.5)]
+    assert soapy.named("setGainMode") == [("setGainMode", 1, 0, agc)]
+    assert soapy.named("setGain") == ([] if agc else [("setGain", 1, 0, 19.5)])
     assert soapy.named("setFrequency") == [("setFrequency", 1, 0, 7_100_000)]
     assert soapy.named("setupStream") == [("setupStream", 1, 0, [0], {})]
     assert soapy.named("activateStream") == [("activateStream", device.stream)]
     assert soapy.named("deactivateStream") == [("deactivateStream", device.stream)]
     assert soapy.named("closeStream") == [("closeStream", device.stream)]
 
+    first, second = blocks[0], blocks[1]
+    assert first.samples.shape == (1024,)
+    assert first.samples.dtype == np.complex64
+    assert first.center_freq_hz == 7_100_000
+    assert first.sample_rate_hz == 2_400_000
+    assert first.timestamp_s == _FIXED_CLOCK_S
+    assert np.all(first.samples == 0.0)
+    assert np.all(second.samples == 1.0)
+    assert set(collector.threads) == {"SoapyIqSource-reader"}
 
-def test_gain_none_enables_agc(soapy: _FakeSoapyHarness) -> None:
+
+def test_no_tune_before_center_requested(soapy: _FakeSoapyHarness) -> None:
     collector = _Collector()
-    source = _make_source(soapy, gain_db=None)
-    source.on_block(collector)
-    source.open()
-    try:
-        collector.wait_for(1)
-    finally:
-        source.close()
-
-    assert soapy.named("setGainMode") == [("setGainMode", 1, 0, True)]
-    assert soapy.named("setGain") == []
-
-
-def test_ppm_correction_paths(soapy: _FakeSoapyHarness) -> None:
-    collector = _Collector()
-    source = _make_source(soapy, ppm=1.5)
-    source.set_center_freq(7_100_000)
+    source = _make_source(soapy, gain_db=19.5, sample_rate_hz=2_400_000)
     source.on_block(collector)
     source.open()
     try:
         blocks = collector.wait_for(1)
+        source.set_center_freq(7_100_000)
+        _wait_until(lambda: bool(soapy.named("setFrequency")))
     finally:
         source.close()
 
-    assert soapy.named("setFrequencyCorrection") == [
-        ("setFrequencyCorrection", 1, 0, 1.5)
+    assert soapy.names()[: soapy.names().index("setupStream")] == [
+        "KwargsFromString",
+        "Device",
+        "setSampleRate",
+        "setGainMode",
+        "setGain",
     ]
     assert soapy.named("setFrequency") == [("setFrequency", 1, 0, 7_100_000)]
-    assert blocks[0].center_freq_hz == 7_100_000
-    assert source.center_freq_hz == 7_100_000
+    assert blocks[0].center_freq_hz == 0
 
-    soapy.ppm_supported = False
-    soapy.calls.clear()
+
+@pytest.mark.parametrize(
+    ("ppm", "ppm_supported", "center", "expected_tune"),
+    [
+        (1.5, True, 7_100_000, 7_100_000),
+        (2.0, False, 100_000_000, int(100_000_000 / (1.0 + 2.0e-6))),
+    ],
+)
+def test_ppm_correction_paths(
+    soapy: _FakeSoapyHarness,
+    ppm: float,
+    ppm_supported: bool,
+    center: int,
+    expected_tune: int,
+) -> None:
+    soapy.ppm_supported = ppm_supported
     collector = _Collector()
-    source = _make_source(soapy, ppm=2.0)
-    source.set_center_freq(100_000_000)
+    source = _make_source(soapy, ppm=ppm)
+    source.set_center_freq(center)
     source.on_block(collector)
     source.open()
     try:
@@ -391,17 +371,14 @@ def test_ppm_correction_paths(soapy: _FakeSoapyHarness) -> None:
     finally:
         source.close()
 
-    expected_tune = int(100_000_000 / (1.0 + 2.0e-6))
     assert soapy.named("setFrequencyCorrection") == [
-        ("setFrequencyCorrection", 1, 0, 2.0)
+        ("setFrequencyCorrection", 1, 0, ppm)
     ]
     assert soapy.named("setFrequency") == [("setFrequency", 1, 0, expected_tune)]
-    assert blocks[0].center_freq_hz == 100_000_000
+    assert blocks[0].center_freq_hz == center
 
 
-def test_timeout_and_overflow_handling(
-    soapy: _FakeSoapyHarness,
-) -> None:
+def test_timeout_and_overflow_handling(soapy: _FakeSoapyHarness) -> None:
     soapy.read_script = [-1, -4]
     collector = _Collector()
     source = _make_source(soapy, read_timeout_us=250_000)
@@ -415,18 +392,15 @@ def test_timeout_and_overflow_handling(
     assert blocks[0].overflow is True
     assert blocks[1].overflow is False
     assert soapy.device_count() == 1
-    assert soapy.reads, "no reads recorded"
-    assert all(timeout == 250_000 for _, timeout in soapy.reads)
-    assert all(num == 1024 for num, _ in soapy.reads)
+    assert all(num == 1024 and timeout == 250_000 for num, timeout in soapy.reads)
 
 
-def test_stream_error_return_code_triggers_reconnect(
+def test_stream_error_reconnects_without_leaking_threads(
     soapy: _FakeSoapyHarness, caplog: pytest.LogCaptureFixture
 ) -> None:
     soapy.read_script = [-2]
-    collector = _Collector()
+    threads_before = threading.active_count()
     source = _make_source(soapy)
-    source.on_block(collector)
     with caplog.at_level(logging.WARNING, logger="rigplane.sdr.soapy_source"):
         source.open()
         try:
@@ -434,13 +408,19 @@ def test_stream_error_return_code_triggers_reconnect(
         finally:
             source.close()
 
+    assert soapy.attempts() == 2
     warnings = [
         record
         for record in caplog.records
         if record.levelno == logging.WARNING and "reconnecting" in record.message
     ]
     assert len(warnings) == 1
-    assert soapy.attempts() == 2
+    assert threading.active_count() == threads_before
+    assert not [
+        thread
+        for thread in threading.enumerate()
+        if thread.name == "SoapyIqSource-reader"
+    ]
 
 
 def test_reconnect_backoff_after_device_error(
@@ -469,7 +449,6 @@ def test_reconnect_backoff_after_device_error(
         ("closeStream", first.stream),
         ("closeStream", second.stream),
     ]
-
     assert soapy.sleeps == [0.25] * 12
 
     blocks = collector.blocks
@@ -491,9 +470,7 @@ def test_reconnect_backoff_after_device_error(
     assert len(recovered) == 1
 
 
-def test_live_retune_and_gain_apply_to_device(
-    soapy: _FakeSoapyHarness,
-) -> None:
+def test_live_retune_and_gain_apply_to_device(soapy: _FakeSoapyHarness) -> None:
     collector = _Collector()
     source = _make_source(soapy, gain_db=None)
     source.on_block(collector)
@@ -502,11 +479,8 @@ def test_live_retune_and_gain_apply_to_device(
         collector.wait_for(1)
         source.set_gain(29.0)
         source.set_center_freq(14_074_000)
-        _wait_until(
-            lambda: (
-                soapy.named("setFrequency")[-1] == ("setFrequency", 1, 0, 14_074_000)
-            )
-        )
+        last = ("setFrequency", 1, 0, 14_074_000)
+        _wait_until(lambda: soapy.named("setFrequency")[-1:] == [last])
         blocks = collector.wait_for(2)
     finally:
         source.close()
@@ -542,31 +516,13 @@ def test_clean_close_is_idempotent_and_quiet(
     ] == []
 
 
-def test_no_leaked_threads(soapy: _FakeSoapyHarness) -> None:
-    threads_before = threading.active_count()
-    collector = _Collector()
-    source = _make_source(soapy)
-    source.on_block(collector)
-    source.open()
-    collector.wait_for(1)
-    source.close()
-
-    assert threading.active_count() == threads_before
-    assert not [
-        thread
-        for thread in threading.enumerate()
-        if thread.name == "SoapyIqSource-reader"
-    ]
-
-
-def test_frequency_range_cached_from_device(soapy: _FakeSoapyHarness) -> None:
+def test_frequency_range_default_then_device(soapy: _FakeSoapyHarness) -> None:
     soapy.frequency_ranges = [
         (24_000_000.0, 1_766_000_000.0),
         (60_000_000.0, 2_400_000_000.0),
     ]
     source = _make_source(soapy)
-    with pytest.raises(RuntimeError, match="connected"):
-        source.frequency_range_hz()
+    assert source.frequency_range_hz() == (0, 6_000_000_000)
 
     source.open()
     try:
@@ -575,68 +531,44 @@ def test_frequency_range_cached_from_device(soapy: _FakeSoapyHarness) -> None:
         source.close()
 
 
-def test_constructor_validates_arguments(soapy: _FakeSoapyHarness) -> None:
-    with pytest.raises(ValueError, match="block_size"):
-        _make_source(soapy, block_size=0)
-    with pytest.raises(ValueError, match="min_retry_s"):
+@pytest.mark.parametrize(
+    ("source_kwargs", "match"),
+    [
+        ({"block_size": 0}, "block_size"),
+        ({"min_retry_s": 0.0}, "min_retry_s"),
+        ({"min_retry_s": 1.0, "max_retry_s": 0.5}, "max_retry_s"),
+    ],
+)
+def test_constructor_validates_arguments(
+    soapy: _FakeSoapyHarness, source_kwargs: dict[str, Any], match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
         SoapyIqSource(
             SdrConfig(device_args="driver=remote"),
-            min_retry_s=0.0,
             sleep=soapy.fake_sleep,
+            **source_kwargs,
         )
-    with pytest.raises(ValueError, match="max_retry_s"):
-        SoapyIqSource(
-            SdrConfig(device_args="driver=remote"),
-            min_retry_s=1.0,
-            max_retry_s=0.5,
-            sleep=soapy.fake_sleep,
-        )
-
-
-def test_block_metadata_and_copy_out(soapy: _FakeSoapyHarness) -> None:
-    collector = _Collector()
-    source = _make_source(soapy, block_size=1024, sample_rate_hz=2_400_000)
-    source.set_center_freq(7_100_000)
-    source.on_block(collector)
-    source.open()
-    try:
-        blocks = collector.wait_for(2)
-    finally:
-        source.close()
-
-    first, second = blocks[0], blocks[1]
-    assert first.samples.shape == (1024,)
-    assert first.samples.dtype == np.complex64
-    assert first.center_freq_hz == 7_100_000
-    assert first.sample_rate_hz == 2_400_000
-    assert first.timestamp_s == _FIXED_CLOCK_S
-    assert np.all(first.samples == 0.0)
-    assert np.all(second.samples == 1.0)
-    assert np.all(first.samples == 0.0)
-    assert set(collector.threads) == {"SoapyIqSource-reader"}
 
 
 def test_callback_exception_does_not_kill_reader(
     soapy: _FakeSoapyHarness, caplog: pytest.LogCaptureFixture
 ) -> None:
-    class _FlakyCollector:
-        def __init__(self) -> None:
-            self.blocks: list[IqBlock] = []
-            self.raise_once = True
+    blocks: list[IqBlock] = []
+    raise_once = True
 
-        def __call__(self, block: IqBlock) -> None:
-            if self.raise_once:
-                self.raise_once = False
-                raise RuntimeError("consumer bug")
-            self.blocks.append(block)
+    def flaky(block: IqBlock) -> None:
+        nonlocal raise_once
+        if raise_once:
+            raise_once = False
+            raise RuntimeError("consumer bug")
+        blocks.append(block)
 
-    collector = _FlakyCollector()
     source = _make_source(soapy)
-    source.on_block(collector)
+    source.on_block(flaky)
     with caplog.at_level(logging.ERROR, logger="rigplane.sdr.soapy_source"):
         source.open()
         try:
-            _wait_until(lambda: len(collector.blocks) >= 2)
+            _wait_until(lambda: len(blocks) >= 2)
         finally:
             source.close()
 
