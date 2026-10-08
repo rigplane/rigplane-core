@@ -3385,11 +3385,12 @@ class WebServer:
         device_name: str | None = None,
         tx_device_name: str | None = None,
         tx_enabled: bool = True,
-        input_gain_db: float = 0.0,
-        output_gain_db: float = 0.0,
         label: str | None = None,
         max_retries: int = 5,
         retry_base_delay: float = 1.0,
+        *,
+        input_gain_db: float = 0.0,
+        output_gain_db: float = 0.0,
     ) -> None:
         """Start the audio bridge to a virtual audio device.
 
@@ -3453,11 +3454,12 @@ class WebServer:
         device_name: str | None = None,
         tx_device_name: str | None = None,
         tx_enabled: bool = True,
-        input_gain_db: float = 0.0,
-        output_gain_db: float = 0.0,
         label: str | None = None,
         max_retries: int = 5,
         retry_base_delay: float = 1.0,
+        *,
+        input_gain_db: float = 0.0,
+        output_gain_db: float = 0.0,
     ) -> None:
         """Arm ONE deferred auto-start of the audio bridge (MOR-3078).
 

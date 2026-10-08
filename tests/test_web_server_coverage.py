@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import io
 import json
 import pathlib
@@ -1939,6 +1940,47 @@ async def test_runtime_endpoint_reports_process_bind_radio_and_bridge_status() -
     assert data["bridge"]["stats"] == {"rx_frames": 3, "tx_frames": 4}
     assert data["lastError"] is None
     srv._server = None  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    "method_name", ["start_audio_bridge", "defer_audio_bridge_start"]
+)
+def test_bridge_methods_preserve_legacy_positional_arguments(method_name) -> None:
+    srv = WebServer(None)
+    bound = inspect.signature(getattr(srv, method_name)).bind(
+        "rx-device", "tx-device", False, "legacy-label", 3, 0.25
+    )
+    bound.apply_defaults()
+
+    assert bound.arguments == {
+        "device_name": "rx-device",
+        "tx_device_name": "tx-device",
+        "tx_enabled": False,
+        "label": "legacy-label",
+        "max_retries": 3,
+        "retry_base_delay": 0.25,
+        "input_gain_db": 0.0,
+        "output_gain_db": 0.0,
+    }
+
+
+def test_deferred_bridge_preserves_legacy_positional_configuration() -> None:
+    srv = WebServer(None)
+
+    srv.defer_audio_bridge_start(
+        "rx-device", "tx-device", False, "legacy-label", 3, 0.25
+    )
+
+    assert srv._deferred_bridge_start == {  # noqa: SLF001
+        "device_name": "rx-device",
+        "tx_device_name": "tx-device",
+        "tx_enabled": False,
+        "label": "legacy-label",
+        "max_retries": 3,
+        "retry_base_delay": 0.25,
+        "input_gain_db": 0.0,
+        "output_gain_db": 0.0,
+    }
 
 
 @pytest.mark.asyncio
