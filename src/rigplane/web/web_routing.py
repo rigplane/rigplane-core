@@ -234,10 +234,10 @@ async def _dispatch_http_routes(
         return
 
     if path == "/api/v1/bridge":
-        if method not in ("GET", "HEAD", "POST", "DELETE"):
+        if method not in ("GET", "HEAD", "POST", "PATCH", "DELETE"):
             await _send_response(writer, 405, "Method Not Allowed", b"", {})
             return
-        await server._handle_bridge(method, writer)
+        await server._handle_bridge(method, writer, headers, reader)
         return
     if path in (
         "/api/v1/radio/disconnect",

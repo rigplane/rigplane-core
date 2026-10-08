@@ -3385,6 +3385,8 @@ class WebServer:
         device_name: str | None = None,
         tx_device_name: str | None = None,
         tx_enabled: bool = True,
+        input_gain_db: float = 0.0,
+        output_gain_db: float = 0.0,
         label: str | None = None,
         max_retries: int = 5,
         retry_base_delay: float = 1.0,
@@ -3396,6 +3398,8 @@ class WebServer:
             tx_device_name: Separate device for TX (e.g. "RigPlane Virtual Cable Input").
                             Required for bidirectional audio to avoid feedback.
             tx_enabled: Whether to bridge TX (device → radio).
+            input_gain_db: Gain applied to device-to-radio PCM.
+            output_gain_db: Gain applied to radio-to-device PCM.
             label: Descriptive label for log messages. If ``None``, derived from radio model.
         """
         from rigplane.audio.bridge import AudioBridge, derive_bridge_label
@@ -3416,6 +3420,8 @@ class WebServer:
             self._radio,  # type: ignore[arg-type]
             device_name=device_name,
             tx_device_name=tx_device_name,
+            input_gain_db=input_gain_db,
+            output_gain_db=output_gain_db,
             tx_enabled=tx_enabled,
             label=label,
             max_retries=max_retries,
@@ -3447,6 +3453,8 @@ class WebServer:
         device_name: str | None = None,
         tx_device_name: str | None = None,
         tx_enabled: bool = True,
+        input_gain_db: float = 0.0,
+        output_gain_db: float = 0.0,
         label: str | None = None,
         max_retries: int = 5,
         retry_base_delay: float = 1.0,
@@ -3466,6 +3474,8 @@ class WebServer:
             "device_name": device_name,
             "tx_device_name": tx_device_name,
             "tx_enabled": tx_enabled,
+            "input_gain_db": input_gain_db,
+            "output_gain_db": output_gain_db,
             "label": label,
             "max_retries": max_retries,
             "retry_base_delay": retry_base_delay,
@@ -3477,6 +3487,8 @@ class WebServer:
         device_name: str | None,
         tx_device_name: str | None,
         tx_enabled: bool,
+        input_gain_db: float,
+        output_gain_db: float,
         label: str | None,
         max_retries: int,
         retry_base_delay: float,
@@ -3498,6 +3510,8 @@ class WebServer:
                 device_name=device_name,
                 tx_device_name=tx_device_name,
                 tx_enabled=tx_enabled,
+                input_gain_db=input_gain_db,
+                output_gain_db=output_gain_db,
                 label=label,
                 max_retries=max_retries,
                 retry_base_delay=retry_base_delay,
@@ -6912,13 +6926,20 @@ class WebServer:
         self,
         method: str,
         writer: asyncio.StreamWriter,
+        headers: dict[str, str] | None = None,
+        reader: asyncio.StreamReader | None = None,
     ) -> None:
-        """Handle /api/v1/bridge — GET status, POST start, DELETE stop."""
+        """Handle bridge status, lifecycle, and dynamic gain updates."""
         if method == "GET":
             stats = self.audio_bridge_stats
+            bridge = self._audio_bridge
             body = json.dumps(
                 {
                     "running": stats is not None and stats.get("running", False),
+                    "inputGainDb": bridge.input_gain_db if bridge is not None else 0.0,
+                    "outputGainDb": (
+                        bridge.output_gain_db if bridge is not None else 0.0
+                    ),
                     **(stats or {}),
                 },
                 separators=(",", ":"),
@@ -6953,6 +6974,65 @@ class WebServer:
                     body,
                     {"Content-Type": "application/json"},
                 )
+        elif method == "PATCH":
+            bridge = self._audio_bridge
+            if bridge is None or not bridge.running:
+                await _send_diag_error(
+                    writer,
+                    409,
+                    "bridge_not_running",
+                    "audio bridge must be running to adjust gain",
+                )
+                return
+            payload = await self._read_json_body(writer, headers, reader)
+            if payload is None:
+                return
+            allowed = {"inputGainDb", "outputGainDb"}
+            if not payload or set(payload) - allowed:
+                await _send_diag_error(
+                    writer,
+                    400,
+                    "invalid_bridge_gain",
+                    "inputGainDb or outputGainDb is required",
+                )
+                return
+
+            gains: dict[str, float] = {}
+            for key in allowed & set(payload):
+                value = payload[key]
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or abs(value) > sys.float_info.max
+                    or not math.isfinite(value)
+                ):
+                    await _send_diag_error(
+                        writer,
+                        400,
+                        "invalid_bridge_gain",
+                        f"{key} must be a finite number",
+                    )
+                    return
+                gains[key] = float(value)
+
+            bridge.set_gains(
+                input_gain_db=gains.get("inputGainDb"),
+                output_gain_db=gains.get("outputGainDb"),
+            )
+            body = json.dumps(
+                {
+                    "inputGainDb": bridge.input_gain_db,
+                    "outputGainDb": bridge.output_gain_db,
+                },
+                separators=(",", ":"),
+            ).encode()
+            await _send_response(
+                writer,
+                200,
+                "OK",
+                body,
+                {"Content-Type": "application/json"},
+            )
         elif method == "DELETE":
             await self.stop_audio_bridge()
             body = json.dumps({"status": "stopped"}, separators=(",", ":")).encode()

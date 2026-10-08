@@ -579,6 +579,16 @@ def _apply_managed_runtime_defaults(args: argparse.Namespace) -> None:
         args.web_rigctld = True
 
 
+def _bridge_gain_db(raw: str) -> float:
+    try:
+        gain = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{raw!r} is not a dB value") from None
+    if not isfinite(gain):
+        raise argparse.ArgumentTypeError(f"{raw!r} must be a finite dB value")
+    return gain
+
+
 def _ptt_hold_seconds(raw: str) -> float:
     """Parse ``--for``: a finite, positive number of seconds and nothing else.
 
@@ -1032,6 +1042,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="RX only (don't bridge TX from device to radio)",
     )
     audio_bridge_p.add_argument(
+        "--input-gain-db",
+        type=_bridge_gain_db,
+        default=0.0,
+        metavar="DB",
+        help="Gain for device-to-radio audio in dB (default: 0.0)",
+    )
+    audio_bridge_p.add_argument(
+        "--output-gain-db",
+        type=_bridge_gain_db,
+        default=0.0,
+        metavar="DB",
+        help="Gain for radio-to-device audio in dB (default: 0.0)",
+    )
+    audio_bridge_p.add_argument(
         "--list-devices",
         action="store_true",
         help="List available audio devices and exit",
@@ -1435,6 +1459,22 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="web_bridge_rx_only",
         action="store_true",
         help="Bridge RX only (no TX from virtual device to radio)",
+    )
+    web_p.add_argument(
+        "--bridge-input-gain-db",
+        dest="web_bridge_input_gain_db",
+        type=_bridge_gain_db,
+        default=0.0,
+        metavar="DB",
+        help="Bridge gain for device-to-radio audio in dB (default: 0.0)",
+    )
+    web_p.add_argument(
+        "--bridge-output-gain-db",
+        dest="web_bridge_output_gain_db",
+        type=_bridge_gain_db,
+        default=0.0,
+        metavar="DB",
+        help="Bridge gain for radio-to-device audio in dB (default: 0.0)",
     )
     web_p.add_argument(
         "--bridge-label",
@@ -3996,6 +4036,8 @@ async def _cmd_audio_bridge(radio: Radio, args: argparse.Namespace) -> int:
             radio,
             device_name=args.device,
             tx_device_name=getattr(args, "tx_device", None),
+            input_gain_db=getattr(args, "input_gain_db", 0.0),
+            output_gain_db=getattr(args, "output_gain_db", 0.0),
             tx_enabled=not args.rx_only,
             label=bridge_label,
             max_retries=getattr(args, "max_retries", 5),
@@ -4341,6 +4383,8 @@ async def _cmd_web(
             device_name=None,
             tx_device_name=getattr(args, "web_bridge_tx_device", None),
             tx_enabled=not getattr(args, "web_bridge_rx_only", False),
+            input_gain_db=getattr(args, "web_bridge_input_gain_db", 0.0),
+            output_gain_db=getattr(args, "web_bridge_output_gain_db", 0.0),
             label=getattr(args, "web_bridge_label", None),
             max_retries=getattr(args, "web_bridge_max_retries", 5),
             retry_base_delay=getattr(args, "web_bridge_retry_delay", 1.0),
@@ -4359,6 +4403,8 @@ async def _cmd_web(
                 device_name=device_name,
                 tx_device_name=tx_device_name,
                 tx_enabled=not rx_only,
+                input_gain_db=getattr(args, "web_bridge_input_gain_db", 0.0),
+                output_gain_db=getattr(args, "web_bridge_output_gain_db", 0.0),
                 label=bridge_label,
                 max_retries=getattr(args, "web_bridge_max_retries", 5),
                 retry_base_delay=getattr(args, "web_bridge_retry_delay", 1.0),
