@@ -25,7 +25,7 @@ __all__ = ["main", "check_ports_available"]
 import argparse
 import asyncio
 from contextlib import contextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 import errno
 import ipaddress
 import json
@@ -4253,29 +4253,37 @@ async def _cmd_web(
     trusted_origins = getattr(args, "trusted_origins", None)
     if trusted_origins:
         config_kwargs["trusted_origins"] = tuple(trusted_origins)
-    # SDR panadapter scope (MOR-3157).
+    # SDR panadapter scope (MOR-3157) with the RIGPLANE_SDR_* env
+    # fallback (MOR-3201): a given CLI flag wins over the environment.
+    from rigplane.core.env_config import get_sdr_env_overrides
     from rigplane.sdr.runtime import resolve_sdr_config
 
     try:
-        sdr_config = resolve_sdr_config(
-            device_args=getattr(args, "sdr_device", None),
-            sample_rate_hz=getattr(args, "sdr_sample_rate", None),
-            gain=getattr(args, "sdr_gain", None),
-            span_hz=getattr(args, "sdr_span_hz", None),
-            ppm=getattr(args, "sdr_ppm", None),
-            freq_offset_hz=getattr(args, "sdr_offset_hz", None),
-            invert_spectrum=getattr(args, "sdr_invert", None),
-            settings=getattr(args, "sdr_setting", None),
-        )
+        env_sdr = asdict(get_sdr_env_overrides())
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
-    scope_source = getattr(args, "scope_source", "auto")
+    env_scope_source = env_sdr.pop("scope_source")
+    scope_source = getattr(args, "scope_source", None) or env_scope_source or "auto"
+    cli_sdr = {
+        "device_args": getattr(args, "sdr_device", None),
+        "sample_rate_hz": getattr(args, "sdr_sample_rate", None),
+        "gain": getattr(args, "sdr_gain", None),
+        "span_hz": getattr(args, "sdr_span_hz", None),
+        "ppm": getattr(args, "sdr_ppm", None),
+        "freq_offset_hz": getattr(args, "sdr_offset_hz", None),
+        "invert_spectrum": getattr(args, "sdr_invert", None),
+        "settings": getattr(args, "sdr_setting", None),
+    }
+    merged = {**env_sdr, **{k: v for k, v in cli_sdr.items() if v is not None}}
+    try:
+        sdr_config = resolve_sdr_config(**merged)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     if scope_source == "sdr" and sdr_config is None:
-        print(
-            "Error: --scope-source sdr requires --sdr-device.",
-            file=sys.stderr,
-        )
+        msg = "--scope-source sdr requires --sdr-device (or RIGPLANE_SDR_DEVICE)."
+        print(f"Error: {msg}", file=sys.stderr)
         return 1
     config_kwargs["scope_source"] = scope_source
     if sdr_config is not None:

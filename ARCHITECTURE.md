@@ -354,6 +354,22 @@ WebSocket broadcast → /api/v1/scope clients
 Browser: WebAssembly decoder → canvas render
 ```
 
+**SDR-источник (MOR-3157/3201)** — при настроенном `--sdr-device`
+спектр идёт не от радио, а от SDR-панорамы (fallback — hardware scope,
+затем audio FFT):
+
+```
+SoapySDR server (remote-драйвер, GPL-модули остаются вне процесса)
+  ↓
+sdr/soapy_source.py: SoapyIqSource — IQ-блоки, реконнект с backoff
+  ↓
+sdr/runtime.py: SdrScopeRuntime → iq_scope.py: IqFftScope (FFT → ScopeFrame)
+  ↑ sdr/controller.py: SdrScopeController — держит окно на VFO радио,
+    TX-freeze; питается состояниями радио из StateStore
+  ↓
+Тот же /api/v1/scope (ScopeFrame) + публичный статус `sdr` в state payload
+```
+
 ### 🎛️ **TOML → Runtime**
 
 ```

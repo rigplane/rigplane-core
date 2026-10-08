@@ -1008,6 +1008,8 @@ class WebServer:
         self._sdr_runtime: SdrScopeRuntime | None = None
         self._sdr_tick_task: asyncio.Task[None] | None = None
         self._sdr_last_active: bool | None = None
+        self._sdr_last_status: tuple[object, ...] | None = None
+        self._sdr_start_failure_logged = False
         if self._config.sdr_config is not None and self._config.scope_source not in (
             "hardware",
             "audio_fft",
@@ -1615,14 +1617,77 @@ class WebServer:
         runtime = self._sdr_runtime
         return runtime is not None and runtime.active
 
+    def _sdr_status_payload(self) -> dict[str, Any]:
+        """The public ``sdr`` status object (MOR-3201), ``disabled`` with
+        zeroed fields when no SDR runtime exists."""
+        runtime = self._sdr_runtime
+        config = self._config.sdr_config
+        if runtime is None or config is None:
+            return {
+                "state": "disabled",
+                "device": "",
+                "sampleRateHz": 0,
+                "spanHz": 0,
+                "txFrozen": False,
+                "overflowCount": 0,
+                "lastError": None,
+            }
+        return {
+            "state": runtime.state,
+            "device": config.device_args,
+            "sampleRateHz": config.sample_rate_hz,
+            "spanHz": runtime.span_hz,
+            "txFrozen": runtime.tx_frozen,
+            "overflowCount": runtime.overflow_count,
+            "lastError": runtime.last_error,
+        }
+
+    def _sdr_status_key(self) -> tuple[object, ...]:
+        """Delivery-key component for the ``sdr`` object's live fields."""
+        runtime = self._sdr_runtime
+        if runtime is None:
+            return ("disabled",)
+        return (
+            runtime.state,
+            runtime.span_hz,
+            runtime.tx_frozen,
+            runtime.overflow_count,
+            runtime.last_error,
+        )
+
+    def _publish_sdr_status_change(self) -> None:
+        """Broadcast a state update when the ``sdr`` status object
+        changed — it lives outside the StateStore (same rule as
+        ``publish_monitor_mute``), and the delivery key keeps
+        ETag/publicStateSeq moves tied to real changes."""
+        if self._stopping:
+            return
+        key = self._sdr_status_key()
+        if key == self._sdr_last_status:
+            return
+        self._sdr_last_status = key
+        if self._control_event_queues:
+            self._broadcast_state_update(force=True)
+
     def _ensure_sdr_scope_started(self) -> None:
-        """Start once, seeded so the controller retunes before open."""
+        """Start once, seeded so the controller retunes before open. A
+        start failure publishes the ``error`` status once per streak and
+        keeps the fallback path; the next connect retries the start."""
         runtime = self._sdr_runtime
         if runtime is None or runtime.started:
             return
         freq_hz, tx_active = self._primary_vfo_freq_and_tx()
-        runtime.start(self._broadcast_scope, freq_hz=freq_hz, tx_active=tx_active)
-        self._sdr_last_active = None
+        try:
+            runtime.start(self._broadcast_scope, freq_hz=freq_hz, tx_active=tx_active)
+        except Exception as exc:
+            if not self._sdr_start_failure_logged:
+                logger.warning("sdr-scope: start failed, fallback stays: %s", exc)
+                self._sdr_start_failure_logged = True
+            return  # "error"/lastError stay; no tick loop
+        finally:
+            self._sdr_last_active = None
+            self._publish_sdr_status_change()
+        self._sdr_start_failure_logged = False
         self._sdr_tick_task = self._spawn(self._sdr_tick_loop())
 
     def _stop_sdr_scope(self) -> None:
@@ -1634,6 +1699,8 @@ class WebServer:
         if self._sdr_runtime is not None and self._sdr_runtime.started:
             self._sdr_runtime.stop()
         self._sdr_last_active = None
+        self._sdr_start_failure_logged = False  # a stop ends the streak
+        self._publish_sdr_status_change()
 
     def _primary_vfo_freq_and_tx(self) -> tuple[int | None, bool]:
         """Primary VFO frequency and TX flag from the store."""
@@ -1665,6 +1732,7 @@ class WebServer:
                     logger.warning(
                         "sdr-scope: no frames — falling back on /api/v1/scope"
                     )
+            self._publish_sdr_status_change()
 
     # ------------------------------------------------------------------
     # RadioPoller integration
@@ -2015,6 +2083,7 @@ class WebServer:
             len(self._scope_handlers),
             len(self._control_event_queues),
             len(self._audio_broadcaster._clients),
+            self._sdr_status_key(),
         )
 
     def _public_state_etag(
@@ -2100,6 +2169,8 @@ class WebServer:
         payload["publicStateSeq"] = public_state_seq
         payload["stateContractVersion"] = 1
         payload["providerGeneration"] = snapshot.provider_generation
+        # Live SDR status (MOR-3201); the delivery key carries it (cache hit = no-op).
+        payload["sdr"] = self._sdr_status_payload()
         if updated_at is None:
             self._cached_public_state_key = cache_key
             self._cached_public_state_payload = copy.deepcopy(payload)

@@ -92,6 +92,7 @@ export interface ServerStatePublic {
   radioHealth?: RadioHealthPublic;
   wsClients?: WsClientsPublic;
   monitorMute?: MonitorMutePublic | null;
+  sdr?: SdrStatusPublic | null;
   fieldStatus?: {
     [k: string]: FieldStatusPublic;
   };
@@ -271,6 +272,20 @@ export interface MonitorMutePublic {
 export interface MonitorMuteSavedAfPublic {
   main?: number | null;
   sub?: number | null;
+}
+/**
+ * Live SDR panadapter status (MOR-3201), injected by the web server
+ * into every public state payload; absent on server-less payloads, so
+ * the field on :class:`ServerStatePublic` is optional.
+ */
+export interface SdrStatusPublic {
+  state: "disabled" | "starting" | "streaming" | "reconnecting" | "error";
+  device: string;
+  sampleRateHz: number;
+  spanHz: number;
+  txFrozen: boolean;
+  overflowCount: number;
+  lastError: string | null;
 }
 /**
  * Per-field freshness / availability entry (snapshot path only).
