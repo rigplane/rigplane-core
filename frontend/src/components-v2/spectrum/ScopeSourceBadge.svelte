@@ -13,7 +13,15 @@
   and the tooltip text carry the same facts machine- and human-readably.
 -->
 <script module lang="ts">
-  import type { ScopeSourceId, SdrPublicState, SdrSourceState } from './sdr-contract';
+  import type { SdrStatusPublic } from '$lib/types/state';
+
+  /** Which source feeds the central spectrum: the label union this badge
+   *  renders. The wire `scopeSource` (`Capabilities`) is `string | null`;
+   *  this narrows it to the three sources the UI names. */
+  export type ScopeSourceId = 'hardware' | 'audio_fft' | 'sdr';
+
+  /** SDR lifecycle states of the generated `SdrStatusPublic` (MOR-3201). */
+  export type SdrSourceState = SdrStatusPublic['state'];
 
   export const SCOPE_SOURCE_LABELS: Readonly<Record<ScopeSourceId, string>> = {
     hardware: 'RIG',
@@ -44,7 +52,7 @@
    *  lifecycle state, and `lastError` when the payload reports one. */
   export function scopeSourceBadgeText(
     source: ScopeSourceId,
-    sdr: SdrPublicState | null,
+    sdr: SdrStatusPublic | null,
   ): string {
     const label = scopeSourceLabel(source);
     if (source !== 'sdr' || sdr === null) return `Scope source: ${label}`;
@@ -57,7 +65,7 @@
 <script lang="ts">
   interface Props {
     source: ScopeSourceId | null;
-    sdr?: SdrPublicState | null;
+    sdr?: SdrStatusPublic | null;
   }
   let { source, sdr = null }: Props = $props();
 

@@ -11,8 +11,7 @@
   (zero focusable elements by construction, like the badge beside it).
 -->
 <script lang="ts">
-  import { scopeSourceLabel } from './ScopeSourceBadge.svelte';
-  import type { ScopeSourceId } from './sdr-contract';
+  import { scopeSourceLabel, type ScopeSourceId } from './ScopeSourceBadge.svelte';
 
   interface Props {
     sources: readonly ScopeSourceId[];

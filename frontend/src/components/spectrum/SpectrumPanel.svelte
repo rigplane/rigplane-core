@@ -47,11 +47,9 @@
   } from './spectrum-logic';
   import { PanoramaViewportCenter } from './panorama-motion';
   import { hasCommandModifier } from '../../components-v2/layout/keyboard-map';
-  import ScopeSourceBadge from '../../components-v2/spectrum/ScopeSourceBadge.svelte';
+  import ScopeSourceBadge, { type ScopeSourceId } from '../../components-v2/spectrum/ScopeSourceBadge.svelte';
   import ScopeSourceSelector from '../../components-v2/spectrum/ScopeSourceSelector.svelte';
   import SdrTxFrozenIndicator from '../../components-v2/spectrum/SdrTxFrozenIndicator.svelte';
-  import { readSdrState } from '../../components-v2/spectrum/sdr-contract';
-  import type { ScopeSourceId } from '../../components-v2/spectrum/sdr-contract';
 
   // --- Props ---
   // `hideSourceControls` is forwarded to SpectrumToolbar so layouts that surface
@@ -122,10 +120,10 @@
   // hardware scope stream and leases — because the backend feeds the
   // IQ-derived ScopeFrames through that channel. The SDR-specific surface
   // is additive: the toolbar badge/selector and the TX-frozen waterfall
-  // hold. The public `sdr` leaf is read through the MOR-3157 mirror
-  // (`sdr-contract.ts`) until the generated state type carries it.
+  // hold. The public `sdr` leaf is the generated `SdrStatusPublic`
+  // (MOR-3201); an absent leaf reads as null, never a fabricated default.
   let sdrSource = $derived(runtime.caps?.scopeSource === 'sdr');
-  let sdrState = $derived(sdrSource ? readSdrState(runtime.state) : null);
+  let sdrState = $derived(sdrSource ? runtime.state?.sdr ?? null : null);
   let sdrTxFrozen = $derived(sdrState?.txFrozen === true);
   // Every source the info payload advertises next to the selected SDR
   // source; the selector renders itself only when more than one exists.

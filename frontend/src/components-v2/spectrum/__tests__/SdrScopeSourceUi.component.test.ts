@@ -23,10 +23,10 @@ import ScopeSourceBadge, {
 } from '../ScopeSourceBadge.svelte';
 import ScopeSourceSelector from '../ScopeSourceSelector.svelte';
 import SdrTxFrozenIndicator from '../SdrTxFrozenIndicator.svelte';
-import type { ScopeSourceId, SdrPublicState } from '../sdr-contract';
-import { readSdrAvailable, readSdrState } from '../sdr-contract';
+import type { ScopeSourceId } from '../ScopeSourceBadge.svelte';
+import type { SdrStatusPublic } from '$lib/types/state';
 
-function sdr(overrides: Partial<SdrPublicState> = {}): SdrPublicState {
+function sdr(overrides: Partial<SdrStatusPublic> = {}): SdrStatusPublic {
   return {
     state: 'streaming',
     device: 'rtlsdr=0',
@@ -47,7 +47,7 @@ function badgeProps() {
     state,
     props: {
       get source() { return state.get('source') as ScopeSourceId | null; },
-      get sdr() { return state.get('sdr') as SdrPublicState | null; },
+      get sdr() { return state.get('sdr') as SdrStatusPublic | null; },
     },
   };
 }
@@ -255,28 +255,5 @@ describe('SdrTxFrozenIndicator (MOR-3158)', () => {
     state.set('active', false);
     flushSync();
     expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).toBeNull();
-  });
-});
-
-describe('sdr-contract readers (MOR-3157 mirror)', () => {
-  it('reads a well-formed public sdr leaf', () => {
-    const leaf = sdr({ state: 'reconnecting' });
-    expect(readSdrState({ sdr: leaf })).toEqual(leaf);
-    expect(readSdrState({ sdr: null })).toBeNull();
-    expect(readSdrState({})).toBeNull();
-    expect(readSdrState(null)).toBeNull();
-  });
-
-  it('treats a malformed sdr state value as unknown, not fabricated', () => {
-    expect(readSdrState({ sdr: { state: 'megastream' } })).toBeNull();
-    expect(readSdrState({ sdr: { state: 7 } })).toBeNull();
-    expect(readSdrState({ sdr: 'streaming' })).toBeNull();
-  });
-
-  it('reads sdrAvailable only when explicitly advertised', () => {
-    expect(readSdrAvailable({ sdrAvailable: true })).toBe(true);
-    expect(readSdrAvailable({ sdrAvailable: false })).toBe(false);
-    expect(readSdrAvailable({})).toBe(false);
-    expect(readSdrAvailable(null)).toBe(false);
   });
 });

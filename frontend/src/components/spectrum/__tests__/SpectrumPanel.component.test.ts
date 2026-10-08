@@ -1690,9 +1690,8 @@ describe('opaque semantic scope snippet forwarding (MOR-2358)', () => {
 });
 
 describe('SDR scope source routing (MOR-3158)', () => {
-  // The public `sdr` leaf mirrors the MOR-3157 payload contract; the panel
-  // reads it through the local mirror until the generated state type
-  // carries it. The leaf rides `currentState` like every other raw field.
+  // The public `sdr` leaf is the generated `SdrStatusPublic` contract
+  // (MOR-3201); it rides `currentState` like every other raw field.
   function sdrLeaf(overrides: Record<string, unknown> = {}) {
     return Object.freeze({
       state: 'streaming', device: 'rtlsdr=0', sampleRateHz: 2_400_000,
@@ -1737,6 +1736,19 @@ describe('SDR scope source routing (MOR-3158)', () => {
     emitFrame();
     expect(target.querySelector('.freq-axis')).not.toBeNull();
     expect(target.querySelector('.passband-overlay')).not.toBeNull();
+  });
+
+  it('renders an uncoloured badge and no TX hold while the sdr leaf is absent', () => {
+    runtimeHarness.state.currentCaps = Object.freeze({ scopeSource: 'sdr' });
+    runtimeHarness.state.currentState = Object.freeze({
+      source: 'test-state', providerGeneration: 17, active: 'MAIN',
+    });
+    const target = mountPanel();
+    const badge = target.querySelector<HTMLElement>('[data-testid="scope-source-badge"]')!;
+    expect(badge.dataset.tone).toBe('neutral');
+    expect(badge.dataset.sdrState).toBeUndefined();
+    expect(badge.title).toBe('Scope source: SDR');
+    expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).toBeNull();
   });
 
   it('keeps the layout status indicator and adds the selector beside the badge when another source is advertised', () => {
