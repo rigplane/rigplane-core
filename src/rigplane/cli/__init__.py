@@ -1574,6 +1574,68 @@ def _build_parser() -> argparse.ArgumentParser:
             "https://station.example)"
         ),
     )
+    sdr_group = web_p.add_argument_group("SDR panadapter scope")
+    sdr_group.add_argument(
+        "--scope-source",
+        choices=["auto", "hardware", "sdr", "audio_fft"],
+        default=argparse.SUPPRESS,
+        metavar="SOURCE",
+        help="Scope source for /api/v1/scope (default: auto = SDR when "
+        "--sdr-device given, else hardware, else audio FFT)",
+    )
+    sdr_group.add_argument(
+        "--sdr-device",
+        default=argparse.SUPPRESS,
+        metavar="ARGS",
+        help="SoapySDR device args, e.g. driver=remote,remote=127.0.0.1",
+    )
+    sdr_group.add_argument(
+        "--sdr-sample-rate",
+        type=int,
+        default=argparse.SUPPRESS,
+        metavar="HZ",
+        help="SDR complex sample rate in Hz (default: 2.4 Msps)",
+    )
+    sdr_group.add_argument(
+        "--sdr-gain",
+        default=argparse.SUPPRESS,
+        metavar="DB|auto",
+        help="SDR hardware gain in dB or auto (default: auto)",
+    )
+    sdr_group.add_argument(
+        "--sdr-span-hz",
+        type=int,
+        default=argparse.SUPPRESS,
+        metavar="HZ",
+        help="SDR display span in Hz (default: rate/4; must be <= 0.6 x rate)",
+    )
+    sdr_group.add_argument(
+        "--sdr-ppm",
+        type=float,
+        default=argparse.SUPPRESS,
+        metavar="PPM",
+        help="SDR frequency error correction in ppm",
+    )
+    sdr_group.add_argument(
+        "--sdr-offset-hz",
+        type=int,
+        default=argparse.SUPPRESS,
+        metavar="HZ",
+        help="SDR IF-tap centre offset in Hz (default 0 = antenna tap)",
+    )
+    sdr_group.add_argument(
+        "--sdr-invert",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Flip the SDR frequency axis (inverted IF tap)",
+    )
+    sdr_group.add_argument(
+        "--sdr-setting",
+        action="append",
+        default=argparse.SUPPRESS,
+        metavar="KEY=VAL",
+        help="SoapySDR driver setting, repeatable (e.g. direct_samp=2)",
+    )
 
     station_p = sub.add_parser(
         "station",
@@ -4191,6 +4253,33 @@ async def _cmd_web(
     trusted_origins = getattr(args, "trusted_origins", None)
     if trusted_origins:
         config_kwargs["trusted_origins"] = tuple(trusted_origins)
+    # SDR panadapter scope (MOR-3157).
+    from rigplane.sdr.runtime import resolve_sdr_config
+
+    try:
+        sdr_config = resolve_sdr_config(
+            device_args=getattr(args, "sdr_device", None),
+            sample_rate_hz=getattr(args, "sdr_sample_rate", None),
+            gain=getattr(args, "sdr_gain", None),
+            span_hz=getattr(args, "sdr_span_hz", None),
+            ppm=getattr(args, "sdr_ppm", None),
+            freq_offset_hz=getattr(args, "sdr_offset_hz", None),
+            invert_spectrum=getattr(args, "sdr_invert", None),
+            settings=getattr(args, "sdr_setting", None),
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    scope_source = getattr(args, "scope_source", "auto")
+    if scope_source == "sdr" and sdr_config is None:
+        print(
+            "Error: --scope-source sdr requires --sdr-device.",
+            file=sys.stderr,
+        )
+        return 1
+    config_kwargs["scope_source"] = scope_source
+    if sdr_config is not None:
+        config_kwargs["sdr_config"] = sdr_config
     # R59/MOR-2425: a radio that cannot name itself is left unnamed. Omitting
     # the key keeps WebConfig's ``_RADIO_MODEL_UNSPECIFIED`` sentinel, which
     # the server already treats as "nothing identifies the radio"
