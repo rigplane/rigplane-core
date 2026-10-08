@@ -1398,28 +1398,35 @@ class WebServer:
                         "scope: active radio does not expose runtime scope support"
                     )
                     return
-                # Always ensure callback is wired for new handlers
-                self._set_scope_data_callback(self._broadcast_scope)
-                if self._scope_enabled:
-                    logger.debug(
-                        "scope: already enabled, skipping re-enable (%d handlers)",
-                        len(self._scope_handlers),
-                    )
-                    return
-                if self._scope_enable_failed:
-                    logger.debug("scope: enable previously rejected; not retrying")
-                    return
-                if self._radio_ready():
-                    if await self._execute_scope_command(
-                        EnableScope(generation=generation)
-                    ):
-                        self._scope_enabled = True
-                        logger.info("scope: enable confirmed")
-                else:
-                    self._schedule_scope_enable_when_ready(
-                        reason="handler_connect", generation=generation
-                    )
-                    logger.info("scope: defer enable until radio_ready")
+                await self._enable_hardware_scope(
+                    reason="handler_connect", generation=generation
+                )
+
+    async def _enable_hardware_scope(self, *, reason: str, generation: int) -> None:
+        """Wire the hardware scope data callback and enable the radio's
+        scope through the ordered command queue. Shared by the
+        client-register path (:meth:`ensure_scope_enabled`) and the
+        SDR-stale fallback in :meth:`_sdr_tick_loop` (MOR-3202); callers
+        serialize concurrent invocations with ``_scope_enable_lock``.
+        """
+        # Always ensure callback is wired for new handlers
+        self._set_scope_data_callback(self._on_hardware_scope_frame)
+        if self._scope_enabled:
+            logger.debug(
+                "scope: already enabled, skipping re-enable (%d handlers)",
+                len(self._scope_handlers),
+            )
+            return
+        if self._scope_enable_failed:
+            logger.debug("scope: enable previously rejected; not retrying")
+            return
+        if self._radio_ready():
+            if await self._execute_scope_command(EnableScope(generation=generation)):
+                self._scope_enabled = True
+                logger.info("scope: enable confirmed")
+        else:
+            self._schedule_scope_enable_when_ready(reason=reason, generation=generation)
+            logger.info("scope: defer enable until radio_ready")
 
     def unregister_scope_handler(self, handler: "ScopeHandler") -> None:
         """Unregister a scope handler."""
@@ -1468,7 +1475,7 @@ class WebServer:
             if self._scope_handlers:
                 logger.debug("scope: disable task aborted — handler reconnected")
                 if self._radio is not None:
-                    self._set_scope_data_callback(self._broadcast_scope)
+                    self._set_scope_data_callback(self._on_hardware_scope_frame)
                 return
             if generation != self._scope_demand_generation:
                 logger.debug("scope: disable task superseded by newer viewer demand")
@@ -1506,6 +1513,17 @@ class WebServer:
         self._broadcast_audio_scope(frame)
         if not self._hardware_scope_available and not self._sdr_scope_active():
             self._broadcast_scope(frame)
+
+    def _on_hardware_scope_frame(self, frame: Any) -> None:
+        """Hardware scope data sink for ``/api/v1/scope``: broadcast
+        unless the SDR scope owns the channel (MOR-3202). Wired instead
+        of ``_broadcast_scope`` at every hardware wire point, so a scope
+        left enabled after an SDR outage stops feeding the channel once
+        the SDR runtime is active again — no unwire/CI-V disable
+        round-trip."""
+        if self._sdr_scope_active():
+            return
+        self._broadcast_scope(frame)
 
     def _broadcast_scope(self, frame: Any) -> None:
         """Broadcast scope frame to all registered handlers.
@@ -1732,6 +1750,27 @@ class WebServer:
                     logger.warning(
                         "sdr-scope: no frames — falling back on /api/v1/scope"
                     )
+                # MOR-3202: a stale SDR hands /api/v1/scope to the
+                # hardware scope through the ordinary enable path when
+                # clients are connected. Recovery needs no action here:
+                # the hardware data callback is gated on SDR activity
+                # (_on_hardware_scope_frame), so hardware frames stop
+                # reaching the channel once the SDR runtime is active
+                # again.
+                if (
+                    not runtime.active
+                    and self._hardware_scope_available
+                    and self._radio is not None
+                    and self._scope_handlers
+                ):
+                    try:
+                        async with self._scope_enable_lock:
+                            await self._enable_hardware_scope(
+                                reason="sdr_stale",
+                                generation=self._scope_demand_generation,
+                            )
+                    except Exception:
+                        logger.exception("sdr-scope: hardware fallback failed")
             self._publish_sdr_status_change()
 
     # ------------------------------------------------------------------
@@ -3018,7 +3057,7 @@ class WebServer:
                 and self._hardware_scope_available
                 and not self._scope_enable_failed
             ):
-                self._set_scope_data_callback(self._broadcast_scope)
+                self._set_scope_data_callback(self._on_hardware_scope_frame)
                 if await self._execute_scope_command(
                     EnableScope(generation=self._scope_demand_generation)
                 ):
@@ -3071,7 +3110,7 @@ class WebServer:
                 if self._scope_enable_failed:
                     return
                 if self._radio_ready():
-                    self._set_scope_data_callback(self._broadcast_scope)
+                    self._set_scope_data_callback(self._on_hardware_scope_frame)
                     if await self._execute_scope_command(
                         EnableScope(generation=generation)
                     ):
