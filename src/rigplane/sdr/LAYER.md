@@ -5,9 +5,9 @@
 SDR panadapter contracts (MOR-3151): the backend-neutral `IqSource`
 protocol for SoapySDR receivers (RTL-SDR first), the `IqBlock` /
 `SdrConfig` carriers, the `IqScopeSink` surface the controller drives
-and `IqFftScope` implements, and the `FakeIqSource` test double. No
-FFT, no SoapySDR import, no server wiring; later issues
-(`fft_scope.py`, `soapy_source.py`) consume these types.
+and `IqFftScope` implements, and the `FakeIqSource` test double. SoapySDR
+is imported only inside `soapy_source.py`, lazily; the server-side
+runtime (`runtime.py`, MOR-3157) is consumed by `web/server.py`.
 
 ## Public API
 
@@ -27,6 +27,9 @@ FFT, no SoapySDR import, no server wiring; later issues
 - `FakeIqSource` — seeded, phase-continuous generator; tones
   `[(offset_hz, dbfs)]`, noise floor, block size; `pump(n_blocks)` or
   background reader thread.
+- `IqFftScope` — IQ blocks → `ScopeFrame` at `fps` (MOR-3154).
+- `SdrScopeController` — VFO view-shift/retune + TX freeze (MOR-3156).
+- `sdr.runtime` (not re-exported) — `SdrScopeRuntime` pipeline, `resolve_sdr_config`, remote-only GPL guard (MOR-3157).
 
 ## Allowed dependencies
 

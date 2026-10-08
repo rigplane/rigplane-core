@@ -70,7 +70,11 @@ from ..core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from ..core.state_store import StateSnapshot, StateStore
-from ..core.tx_observation import ObservedPtt, project_observed_ptt
+from ..core.tx_observation import (
+    ObservedPtt,
+    legacy_ptt_bool,
+    project_observed_ptt,
+)
 from ..runtime.controller_authority import (
     ControllerAuthority,
     ControllerError,
@@ -78,6 +82,8 @@ from ..runtime.controller_authority import (
 )
 from ..runtime.managed_tx_authority import ManagedTxAuthority
 from ..runtime.managed_tx_state import ManagedTxIntentKind
+from ..sdr import IqSource, SdrConfig
+from ..sdr.runtime import SdrScopeRuntime
 from ..radio_state import RadioState
 from ..capabilities import CAP_AUDIO
 from ..exceptions import TimeoutError as RigplaneTimeoutError
@@ -236,6 +242,10 @@ _MAX_POST_BODY = 256 * 1024  # 256 KiB — hard ceiling for all POST body reads
 _MAX_COMMAND_BATCH_STEPS = 128
 _COMMAND_BATCH_STEP_TIMEOUT = 10.0
 _DELIVERY_EPOCH_ATTEMPTS = 2
+# SDR scope tick cadence (MOR-3157): feeds the SdrScopeController from the
+# StateStore snapshot and runs liveness/fallback checks. Within the issue's
+# 50-100 ms window; comfortably faster than the 150 ms retune debounce.
+_SDR_TICK_INTERVAL_S = 0.075
 # Ceiling on the managed TX rebind that fronts recovery, derived from what the
 # rebind actually costs: one provider retirement (a transport disconnect) plus
 # one serviced effect chain — the durable OFF write and the authoritative PTT
@@ -769,6 +779,13 @@ class WebConfig:
     # above; it never bypasses any other guard. Repeatable via the CLI's
     # --trusted-origin flag; invalid entries fail construction.
     trusted_origins: tuple[str, ...] = ()
+    # Scope source for /api/v1/scope (MOR-3157): "auto" picks the SDR
+    # when sdr_config is present, else the hardware scope, else the
+    # audio FFT; an explicit value overrides. sdr_source_factory is the
+    # injectable test factory (default SoapyIqSource, lazily).
+    scope_source: str = "auto"
+    sdr_config: SdrConfig | None = None
+    sdr_source_factory: Callable[[SdrConfig], IqSource] | None = None
 
     def __post_init__(self) -> None:
         if self.auth_token:
@@ -776,6 +793,15 @@ class WebConfig:
                 "Application authentication was removed; auth_token must be empty."
             )
         validate_trusted_origins(self.trusted_origins)
+        if self.scope_source not in ("auto", "hardware", "sdr", "audio_fft"):
+            raise ValueError(
+                f"scope_source must be auto/hardware/sdr/audio_fft, "
+                f"got {self.scope_source!r}"
+            )
+        if self.scope_source == "sdr" and self.sdr_config is None:
+            raise ValueError(
+                "scope_source='sdr' requires an SDR device (pass --sdr-device)"
+            )
 
 
 class ConnectionManager:
@@ -976,6 +1002,26 @@ class WebServer:
                 "Audio FFT scope available (has_audio=%s, has_hw_scope=%s)",
                 True,
                 self._hardware_scope_available,
+            )
+        # SDR panadapter scope (MOR-3157): selected when an SDR config is
+        # present (auto) or --scope-source sdr is explicit; feeds
+        # /api/v1/scope while its frames flow and falls back on failure.
+        # Starts lazily on the first scope client, stops on the last.
+        self._sdr_runtime: SdrScopeRuntime | None = None
+        self._sdr_tick_task: asyncio.Task[None] | None = None
+        self._sdr_last_active: bool | None = None
+        if self._config.sdr_config is not None and self._config.scope_source not in (
+            "hardware",
+            "audio_fft",
+        ):
+            self._sdr_runtime = SdrScopeRuntime(
+                self._config.sdr_config,
+                source_factory=self._config.sdr_source_factory,
+            )
+            logger.info(
+                "SDR scope configured (device=%r, requested=%s)",
+                self._config.sdr_config.device_args,
+                self._config.scope_source,
             )
         # Audio analyzer: lightweight SNR estimator, tapped from PCM stream.
         self._audio_analyzer: AudioAnalyzer | None = None
@@ -1339,6 +1385,14 @@ class WebServer:
             generation = self._scope_demand_generation
             if not was_registered:
                 self._broadcast_ws_client_state_update()
+            if self._sdr_runtime is not None:
+                self._ensure_sdr_scope_started()
+                if self._sdr_scope_active():
+                    return  # the SDR feeds /api/v1/scope
+                if not self._hardware_scope_available:
+                    return  # audio-FFT fallback gate reopens itself
+                # SDR stale on a hardware-scope radio: fall through and
+                # enable the hardware scope as the fallback.
             if self._radio is not None:
                 if not self._hardware_scope_available:
                     logger.info(
@@ -1377,6 +1431,7 @@ class WebServer:
         if was_registered and not self._scope_handlers:
             self._scope_demand_generation += 1
             self._cancel_scope_reenable_task()
+            self._stop_sdr_scope()
         if (
             not self._scope_handlers
             and self._radio is not None
@@ -1443,12 +1498,14 @@ class WebServer:
         ``on_frame`` is a single-slot setter). Always feeds the dedicated
         ``/api/v1/audio-scope`` channel. For radios WITHOUT a hardware scope
         the same frame also drives ``/api/v1/scope`` (the main panadapter),
-        since those radios derive their spectrum from RX audio. Hardware-scope
-        radios (e.g. IC-7610) keep ``/api/v1/scope`` sourced exclusively from
-        the real scope, so the audio FFT never touches it (MOR-241).
+        since those         radios derive their spectrum from RX audio. Hardware-scope
+        radios (e.g. IC-7610) keep ``/api/v1/scope`` sourced exclusively
+        from the real scope, so the audio FFT never touches it (MOR-241).
+        While the SDR scope is selected and its frames flow, the SDR owns
+        ``/api/v1/scope`` (MOR-3157).
         """
         self._broadcast_audio_scope(frame)
-        if not self._hardware_scope_available:
+        if not self._hardware_scope_available and not self._sdr_scope_active():
             self._broadcast_scope(frame)
 
     def _broadcast_scope(self, frame: Any) -> None:
@@ -1551,6 +1608,67 @@ class WebServer:
             self._audio_fft_scope.set_mode_bandwidth(rule.max_hz)
         else:
             self._audio_fft_scope.set_mode_bandwidth(None)
+
+    # ------------------------------------------------------------------
+    # SDR scope source (MOR-3157)
+    # ------------------------------------------------------------------
+
+    def _sdr_scope_active(self) -> bool:
+        """Whether the SDR scope currently owns ``/api/v1/scope``."""
+        runtime = self._sdr_runtime
+        return runtime is not None and runtime.active
+
+    def _ensure_sdr_scope_started(self) -> None:
+        """Start the pipeline once, seeded so the controller retunes the
+        source before it opens."""
+        runtime = self._sdr_runtime
+        if runtime is None or runtime.started:
+            return
+        freq_hz, tx_active = self._primary_vfo_freq_and_tx()
+        runtime.start(self._broadcast_scope, freq_hz=freq_hz, tx_active=tx_active)
+        self._sdr_last_active = None
+        self._sdr_tick_task = self._spawn(self._sdr_tick_loop())
+
+    def _stop_sdr_scope(self) -> None:
+        """Stop the pipeline and its tick loop; idempotent."""
+        task = self._sdr_tick_task
+        self._sdr_tick_task = None
+        if task is not None and not task.done():
+            task.cancel()
+        if self._sdr_runtime is not None and self._sdr_runtime.started:
+            self._sdr_runtime.stop()
+        self._sdr_last_active = None
+
+    def _primary_vfo_freq_and_tx(self) -> tuple[int | None, bool]:
+        """Primary VFO frequency and TX flag from the store."""
+        snapshot = self.command_state_store.snapshot()
+        freq = self._active_primary_freq_mode_value(snapshot, "freq_hz")
+        freq_hz = freq if isinstance(freq, int) and freq > 0 else None
+        tx_active = legacy_ptt_bool(project_observed_ptt(snapshot))
+        return freq_hz, tx_active
+
+    async def _sdr_tick_loop(self) -> None:
+        """Feed the SDR controller and manage source fallback."""
+        while True:
+            await asyncio.sleep(_SDR_TICK_INTERVAL_S)
+            runtime = self._sdr_runtime
+            if runtime is None or not runtime.started:
+                return
+            try:
+                freq_hz, tx_active = self._primary_vfo_freq_and_tx()
+                runtime.on_radio_state(freq_hz, tx_active)
+                runtime.tick()
+            except Exception:  # noqa: BLE001 - the tick must survive
+                logger.exception("sdr-scope: tick error")
+                continue
+            if runtime.active != self._sdr_last_active:
+                self._sdr_last_active = runtime.active
+                if runtime.active:
+                    logger.info("sdr-scope: frames flowing — SDR owns /api/v1/scope")
+                else:
+                    logger.warning(
+                        "sdr-scope: no frames — falling back on /api/v1/scope"
+                    )
 
     # ------------------------------------------------------------------
     # RadioPoller integration
@@ -3307,6 +3425,7 @@ class WebServer:
         self._unsubscribe_provider_generation()
         self._detach_audio_session_listener()
         self._detach_reconnect_status_listener()
+        self._stop_sdr_scope()
         await stop_web_server(self)
 
     async def serve_forever(
@@ -4137,18 +4256,27 @@ class WebServer:
                 else (2 if "dual_rx" in caps else 1)
             ),
             "scopeSource": (
-                "hardware"
+                "sdr"
+                if self._sdr_scope_active()
+                else "hardware"
                 if self._hardware_scope_available
-                else ("audio_fft" if self._audio_fft_scope is not None else None)
+                else "audio_fft"
+                if self._audio_fft_scope is not None
+                else None
             ),
+            "sdrAvailable": self._sdr_runtime is not None,
             "audioFftAvailable": self._audio_fft_scope is not None,
             "scopeConfig": {
                 "centerMode": True,
                 "amplitudeMax": 160,
                 "defaultSpan": (
-                    (self._audio_fft_scope.bandwidth_hz or 48000)
-                    if self._audio_fft_scope is not None
-                    else 500000
+                    self._sdr_runtime.span_hz
+                    if self._sdr_scope_active() and self._sdr_runtime is not None
+                    else (
+                        (self._audio_fft_scope.bandwidth_hz or 48000)
+                        if self._audio_fft_scope is not None
+                        else 500000
+                    )
                 ),
             },
             "audioConfig": {
