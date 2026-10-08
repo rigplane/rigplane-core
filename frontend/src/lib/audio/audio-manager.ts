@@ -469,11 +469,13 @@ class AudioManager {
       return;
     }
     if (msg?.type !== 'audio_tx_format') return;
-    // Fail-safe on an unrecognized codec: ignore the whole ack rather than
-    // guessing. Defaulting to 'opus' would CLEAR a sticky PCM16 pin, i.e.
-    // fail open on exactly the condition this negotiation exists for.
     const codec = msg.codec === 'pcm16' ? 'pcm16' : msg.codec === 'opus' ? 'opus' : null;
-    if (codec === null) return;
+    if (codec === null) {
+      if (this.txAdmission !== null) {
+        this._failTxAudio('TX MIC: negotiated codec is not supported');
+      }
+      return;
+    }
     // The ack names the rate the radio will play PCM16 at (MOR-1794). An
     // older server omits it; that keeps the 48 kHz the PCM leg always used.
     // A present-but-unusable rate is refused through the same fault path as
