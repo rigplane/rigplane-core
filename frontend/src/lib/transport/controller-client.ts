@@ -45,7 +45,7 @@ export class ControllerClient {
   get active(): boolean { return this.prepared && (!this.remote || this.primaryReady); }
 
   valid(epoch: number): boolean {
-    return !this.remote || (this.#grant !== null && epoch === this._epoch);
+    return !this.reportedLoss && epoch === this._epoch && (!this.remote || this.#grant !== null);
   }
 
   current(epoch: number): boolean { return this.valid(epoch) && (!this.remote || this.active); }
@@ -119,6 +119,7 @@ export class ControllerClient {
     this.check(epoch, signal);
     if (status.mode === 'local') {
       this._remote = false;
+      this._epoch += 1;
       this.prepared = true;
       this.changed();
       return;
