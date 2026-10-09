@@ -29,6 +29,7 @@ export class ControllerClient {
   private _epoch = 0;
   private reportedLoss = false;
   private pending: Promise<void> | null = null;
+  private pendingSignal: AbortSignal | undefined;
   private sender: Sender | null = null;
   private lastAck = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -44,7 +45,7 @@ export class ControllerClient {
   get active(): boolean { return this.prepared && (!this.remote || this.primaryReady); }
 
   valid(epoch: number): boolean {
-    return !this.remote || (this.#grant !== null && epoch === this._epoch);
+    return !this.reportedLoss && epoch === this._epoch && (!this.remote || this.#grant !== null);
   }
 
   current(epoch: number): boolean { return this.valid(epoch) && (!this.remote || this.active); }
@@ -77,15 +78,23 @@ export class ControllerClient {
 
   prepare(signal?: AbortSignal): Promise<void> {
     if (this.#grant) return Promise.resolve();
-    if (this.pending) return this.pending;
+    if (this.pending && !this.pendingSignal?.aborted) return this.pending;
+    if (this.pending) {
+      this._epoch += 1;
+      this.pending = null;
+    }
     const epoch = this._epoch;
     const operation = Promise.resolve().then(() => this.acquire(epoch, signal)).catch((error: unknown) => {
       if (error instanceof ControllerClientError || signal?.aborted) throw error;
       throw new ControllerClientError('controller_not_ready');
     }).finally(() => {
-      if (this.pending === operation) this.pending = null;
+      if (this.pending === operation) {
+        this.pending = null;
+        this.pendingSignal = undefined;
+      }
     });
     this.pending = operation;
+    this.pendingSignal = signal;
     return operation;
   }
 
@@ -110,6 +119,7 @@ export class ControllerClient {
     this.check(epoch, signal);
     if (status.mode === 'local') {
       this._remote = false;
+      this._epoch += 1;
       this.prepared = true;
       this.changed();
       return;

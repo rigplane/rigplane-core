@@ -181,4 +181,24 @@ describe('controller protocol v1 client', () => {
     await client.prepare();
     expect(client.protocols()).toEqual([`rigplane-controller-v1.${key}`]);
   });
+
+  it('starts a fresh discovery after an aborted prepare and fences its late response', async () => {
+    let finish!: (value: Response) => void;
+    const delayed = new Promise<Response>((resolve) => { finish = resolve; });
+    const fetcher = vi.fn().mockImplementationOnce(() => delayed)
+      .mockImplementationOnce(async () => response({ ...status, mode: 'local' }));
+    vi.stubGlobal('fetch', fetcher);
+    const { ControllerClient } = await import('../controller-client');
+    const client = new ControllerClient();
+    const abort = new AbortController();
+    const old = client.prepare(abort.signal);
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+    abort.abort();
+    await client.prepare();
+    finish(response(status));
+    await expect(old).rejects.toBeDefined();
+    expect(client.remote).toBe(false);
+    expect(client.active).toBe(true);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
 });

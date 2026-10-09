@@ -261,6 +261,10 @@ export class WsChannel {
   }
 
   private _open() {
+    if (!controllerClient.valid(controllerClient.epoch)) {
+      this.setState('disconnected');
+      return;
+    }
     if (!controllerClient.remote) { this._openSocket(); return; }
     const opening = ++this.opening;
     const epoch = controllerClient.epoch;
@@ -294,8 +298,9 @@ export class WsChannel {
     this.ws = ws;
 
     ws.onopen = () => {
+      if (this.ws !== ws || !controllerClient.valid(epoch)) { ws.close(); return; }
       if (controllerClient.remote) {
-        if (!controllerClient.valid(epoch) || ws.protocol !== protocols[0]) { ws.close(); return; }
+        if (ws.protocol !== protocols[0]) { ws.close(); return; }
         if (this.control) controllerClient.controlOpened((message) => ws.send(JSON.stringify(message)));
       }
       socketEpoch = ++this.transportEpoch;
@@ -321,6 +326,7 @@ export class WsChannel {
 
     ws.onmessage = (event: MessageEvent) => {
       if (controllerClient.remote && (this.ws !== ws || !controllerClient.current(epoch))) return;
+      if (!controllerClient.remote && !controllerClient.valid(epoch)) return;
       if (this.ws === ws) this._resetHeartbeat();
       if (event.data instanceof ArrayBuffer) {
         if (this.ws !== ws) return;
@@ -333,7 +339,16 @@ export class WsChannel {
             this._emitCommandLifecycle(raw, socketEpoch);
             return;
           }
-          this._emitCommandResult(raw, socketEpoch);
+          const terminalControllerRefusal = this.control
+            && (raw.type === 'error' || (raw.type === 'response' && raw.ok === false) || raw.status === 'error')
+            && (raw.error === 'controller_invalid' || raw.error === 'controller_lost'
+              || (raw.error === 'command_failed' && (raw.message === 'controller_invalid' || raw.message === 'controller_lost')));
+          try {
+            this._emitCommandResult(raw, socketEpoch);
+          } finally {
+            if (terminalControllerRefusal && this.ws === ws && controllerClient.valid(epoch)) controllerClient.lose();
+          }
+          if (terminalControllerRefusal) return;
           // Handle status-based error responses ({"status":"error", ...})
           if (raw['status'] === 'error') {
             const errorMsg = (raw['message'] as string) || (raw['error'] as string) || 'Command failed';
@@ -431,7 +446,9 @@ export class WsChannel {
   }
 
   send(cmd: WsCommand): boolean {
-    if (controllerClient.remote && (!controllerClient.current(this.controllerEpoch) || this.ws?.readyState !== WebSocket.OPEN)) return false;
+    const authorityEpoch = this.url ? this.controllerEpoch : controllerClient.epoch;
+    if (!controllerClient.current(authorityEpoch)
+      || (controllerClient.remote && this.ws?.readyState !== WebSocket.OPEN)) return false;
     if (this.ws?.readyState === WebSocket.OPEN) {
       const intent = pttIntent(cmd.name, cmd.params);
       if (intent) {

@@ -31,6 +31,7 @@ export class SystemController {
   private _releaseBarrier: { run: () => Promise<void> } | null = null;
   private _disconnectInFlight: Promise<void> | null = null;
   private _connectInFlight: Promise<void> | null = null;
+  private _connectAbort: AbortController | null = null;
 
   constructor(
     private readonly _effects = {
@@ -85,6 +86,8 @@ export class SystemController {
     if (this._disconnectInFlight) return this._disconnectInFlight;
     if (!this._clientConnected) return Promise.resolve();
     this._clientConnected = false;
+    this._connectAbort?.abort();
+    this._connectAbort = null;
     this._connectInFlight = null;
     if (controllerClient.remote) this._effects.destroyAudio();
     const barrier = this._releaseBarrier?.run;
@@ -129,28 +132,24 @@ export class SystemController {
     if (this._disconnectInFlight || this._clientConnected) return;
     this._clientConnected = true;
 
-    if (controllerClient.remote) {
-      const pending = controllerClient.prepare().then(() => {
-        if (this._connectInFlight !== pending || !this._clientConnected) return;
-        this._effects.initMediaSession();
-        this._effects.reconnectWebSockets();
-      }).catch((error: unknown) => {
-        if (this._connectInFlight !== pending) return;
-        this._clientConnected = false;
-        const failure = error instanceof ControllerClientError ? error : new ControllerClientError('controller_not_ready');
-        emitLocalNotification('error', failure.message, failure.code);
-      }).finally(() => {
-        if (this._connectInFlight === pending) this._connectInFlight = null;
-      });
-      this._connectInFlight = pending;
-      return;
-    }
-
-    // 1. Restart MediaSession
-    this._effects.initMediaSession();
-
-    // 2. Reconnect all WebSocket channels (control + scope + any named)
-    this._effects.reconnectWebSockets();
+    const abort = new AbortController();
+    this._connectAbort = abort;
+    const pending = controllerClient.prepare(abort.signal).then(() => {
+      if (this._connectInFlight !== pending || !this._clientConnected || abort.signal.aborted) return;
+      this._effects.initMediaSession();
+      this._effects.reconnectWebSockets();
+    }).catch((error: unknown) => {
+      if (this._connectInFlight !== pending || abort.signal.aborted) return;
+      this._clientConnected = false;
+      const failure = error instanceof ControllerClientError ? error : new ControllerClientError('controller_not_ready');
+      emitLocalNotification('error', failure.message, failure.code);
+    }).finally(() => {
+      if (this._connectInFlight === pending) {
+        this._connectInFlight = null;
+        this._connectAbort = null;
+      }
+    });
+    this._connectInFlight = pending;
   }
 
   async identifyFrequency(freqHz: number): Promise<EibiResult | null> {

@@ -69,6 +69,127 @@ describe('remote controller channel grouping', () => {
     expect(control.send({ type: 'cmd', id: 'fresh', name: 'ptt', params: { state: true } })).toBe(true);
     control.disconnect();
   });
+
+  it('invalidates a current controller_invalid response but retains control for command_failed', async () => {
+    const { controllerClient } = await import('../controller-client');
+    const { WsChannel } = await import('../ws-client');
+    await controllerClient.prepare();
+    const control = new WsChannel();
+    const received = vi.fn();
+    control.onMessage(received);
+    control.connect('wss://station.test/api/v1/ws');
+    await vi.waitFor(() => expect(instances).toHaveLength(1));
+    const socket = instances[0] as ControllerSocket;
+    socket.simulateOpen();
+    const epoch = controllerClient.epoch;
+    socket.simulateMessage(JSON.stringify({ type: 'response', id: 'ordinary', ok: false, error: 'command_failed', message: 'controller_not_ready' }));
+    expect(controllerClient.current(epoch)).toBe(true);
+    expect(control.send({ type: 'cmd', id: 'denied', name: 'set_freq', params: { freq: 1 } })).toBe(true);
+    socket.simulateMessage(JSON.stringify({ type: 'response', id: 'denied', ok: false, error: 'command_failed', message: 'controller_invalid' }));
+    expect(controllerClient.current(epoch)).toBe(false);
+    expect(controllerClient.headers()).toEqual({});
+    expect(control.isConnected()).toBe(false);
+    expect(received.mock.calls.some(([note]) => note.code === 'controller_lost')).toBe(true);
+    expect(control.send({ type: 'cmd', id: 'denied-again', name: 'set_freq', params: { freq: 1 } })).toBe(false);
+    expect(instances).toHaveLength(1);
+    await controllerClient.prepare();
+    control.connect('wss://station.test/api/v1/ws');
+    await vi.waitFor(() => expect(instances).toHaveLength(2));
+    instances[1].simulateOpen();
+    expect(instances[1].sent.some((raw) => JSON.parse(raw).id === 'denied')).toBe(false);
+    control.disconnect();
+  });
+
+  it('ignores a denied response from an old controller epoch after a new explicit prepare', async () => {
+    const { controllerClient } = await import('../controller-client');
+    const { WsChannel } = await import('../ws-client');
+    await controllerClient.prepare();
+    const control = new WsChannel();
+    control.connect('wss://station.test/api/v1/ws');
+    await vi.waitFor(() => expect(instances).toHaveLength(1));
+    const old = instances[0] as ControllerSocket;
+    old.simulateOpen();
+    old.simulateClose();
+    await controllerClient.prepare();
+    control.connect('wss://station.test/api/v1/ws');
+    await vi.waitFor(() => expect(instances).toHaveLength(2));
+    instances[1].simulateOpen();
+    const freshEpoch = controllerClient.epoch;
+    old.simulateMessage(JSON.stringify({ type: 'response', id: 'late', ok: false, error: 'command_failed', message: 'controller_invalid' }));
+    expect(controllerClient.current(freshEpoch)).toBe(true);
+    expect(control.isConnected()).toBe(true);
+    control.disconnect();
+  });
+});
+
+describe('local controller refusal fences', () => {
+  beforeEach(() => {
+    vi.resetModules(); vi.useFakeTimers(); instances.length = 0;
+    vi.stubGlobal('WebSocket', MockWebSocket);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ protocol_version: 1, mode: 'local' }))));
+  });
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+  it('revokes a current stale-local ticket on the actual backend wrapper without acquiring or replaying', async () => {
+    const { controllerClient } = await import('../controller-client');
+    const { WsChannel } = await import('../ws-client');
+    await controllerClient.prepare();
+    const control = new WsChannel();
+    const received = vi.fn();
+    control.onMessage(received);
+    control.connect('wss://station.test/api/v1/ws');
+    instances[0].simulateOpen();
+    expect(control.send({ type: 'cmd', id: 'denied', name: 'set_vfo', params: { vfo: 'MAIN' } })).toBe(true);
+    instances[0].simulateMessage(JSON.stringify({ type: 'response', id: 'ordinary', ok: false, error: 'command_failed', message: 'controller_not_ready' }));
+    expect(controllerClient.active).toBe(true);
+    instances[0].simulateMessage(JSON.stringify({ type: 'response', id: 'denied', ok: false, error: 'command_failed', message: 'controller_invalid' }));
+    expect(controllerClient.active).toBe(false);
+    expect(control.isConnected()).toBe(false);
+    expect(received.mock.calls.some(([note]) => note.code === 'controller_lost')).toBe(true);
+    expect(control.send({ type: 'cmd', id: 'unsafe', name: 'ptt', params: { state: true } })).toBe(false);
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    await controllerClient.prepare();
+    control.connect('wss://station.test/api/v1/ws');
+    instances[1].simulateOpen();
+    expect(instances[1].sent.some((raw) => JSON.parse(raw).id === 'denied')).toBe(false);
+    control.disconnect();
+  });
+
+  it('ignores an old local socket refusal after a new local epoch opens', async () => {
+    const { controllerClient } = await import('../controller-client');
+    const { WsChannel } = await import('../ws-client');
+    await controllerClient.prepare();
+    const control = new WsChannel();
+    control.connect('wss://station.test/api/v1/ws');
+    const old = instances[0];
+    old.simulateOpen();
+    control.disconnect();
+    await controllerClient.release();
+    await controllerClient.prepare();
+    control.connect('wss://station.test/api/v1/ws');
+    instances[1].simulateOpen();
+    old.simulateMessage(JSON.stringify({ type: 'response', id: 'late', ok: false, error: 'command_failed', message: 'controller_invalid' }));
+    expect(controllerClient.active).toBe(true);
+    expect(control.isConnected()).toBe(true);
+    control.disconnect();
+  });
+
+  it('does not revoke the current local socket from a replaced socket callback in the same epoch', async () => {
+    const { controllerClient } = await import('../controller-client');
+    const { WsChannel } = await import('../ws-client');
+    await controllerClient.prepare();
+    const control = new WsChannel();
+    control.connect('wss://station.test/api/v1/ws');
+    const old = instances[0];
+    old.simulateOpen();
+    old.simulateClose();
+    await vi.advanceTimersByTimeAsync(1300);
+    instances[1].simulateOpen();
+    old.simulateMessage(JSON.stringify({ type: 'response', id: 'late', ok: false, error: 'command_failed', message: 'controller_invalid' }));
+    expect(controllerClient.active).toBe(true);
+    expect(control.isConnected()).toBe(true);
+    control.disconnect();
+  });
 });
 
 function normalizedLevelWireVectors(): string[] {
