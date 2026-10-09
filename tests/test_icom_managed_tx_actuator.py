@@ -231,6 +231,94 @@ async def test_an_unkey_after_a_dropped_write_sink_stays_uncertain() -> None:
 
 
 @pytest.mark.asyncio
+async def test_answered_d2_get_retires_its_sink_before_fake_force_receive() -> None:
+    link = _FakeSerialCivLink()
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._civ_get_timeout = 0.2
+    link.queue_response_on_send(
+        2,
+        build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, 0x07, data=b"\xd2\x01"),
+    )
+    await radio.connect()
+    try:
+        await radio._send_civ_raw(
+            build_civ_frame(radio._radio_addr, CONTROLLER_ADDR, 0x07, data=b"\xd2"),
+            priority=Priority.BACKGROUND,
+            wait_response=False,
+        )
+        for _ in range(20):
+            if radio._radio_state.active == "SUB":
+                break
+            await asyncio.sleep(0.01)
+        assert radio._radio_state.active == "SUB"
+        tracker = radio._civ_request_tracker
+        assert tracker.ack_sink_count == 0
+        assert tracker.ack_unclaimed_at is None
+        result = await _force_receive(radio)
+    finally:
+        await radio.disconnect()
+
+    assert result is ActuationResult.ACCEPTED
+    assert [parse_civ_frame(frame).command for frame in link.sent_frames] == [
+        0x19, 0x07, 0x1C,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_answered_d2_get_does_not_clear_an_unanswered_write_before_off() -> None:
+    link = _FakeSerialCivLink()
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._civ_get_timeout = 0.2
+    link.queue_response_on_send(
+        3,
+        build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, 0x07, data=b"\xd2\x01"),
+    )
+    await radio.connect()
+    try:
+        await radio._send_civ_raw(
+            build_civ_frame(radio._radio_addr, CONTROLLER_ADDR, 0x07, data=b"\xd0"),
+            wait_response=False,
+        )
+        await radio._send_civ_raw(
+            build_civ_frame(radio._radio_addr, CONTROLLER_ADDR, 0x07, data=b"\xd2"),
+            priority=Priority.BACKGROUND,
+            wait_response=False,
+        )
+        for _ in range(20):
+            if radio._radio_state.active == "SUB":
+                break
+            await asyncio.sleep(0.01)
+        assert radio._radio_state.active == "SUB"
+        tracker = radio._civ_request_tracker
+        assert tracker.ack_sink_count == 1
+        assert tracker.ack_unclaimed_at is None
+        radio._civ_ack_sink_grace = 0
+        result = await _force_receive(radio)
+        assert tracker.ack_unclaimed_at is not None
+    finally:
+        await radio.disconnect()
+
+    assert result is ActuationResult.UNCERTAIN
+    assert [parse_civ_frame(frame).command for frame in link.sent_frames] == [
+        0x19, 0x07, 0x07, 0x1C,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unclaimed_prior_write_ack_keeps_fake_force_receive_uncertain() -> None:
+    link = _FakeSerialCivLink()
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    await radio.connect()
+    try:
+        radio._civ_request_tracker.note_ack_unclaimed()
+        result = await _force_receive(radio)
+    finally:
+        await radio.disconnect()
+
+    assert result is ActuationResult.UNCERTAIN
+
+
+@pytest.mark.asyncio
 async def test_force_release_overtakes_queued_abort_without_preempting_active() -> None:
     entered = asyncio.Event()
     release = asyncio.Event()

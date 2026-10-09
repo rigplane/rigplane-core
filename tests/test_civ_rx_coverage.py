@@ -5656,6 +5656,27 @@ def test_civ_expects_response_scope_get(
     assert radio_with_state._civ_runtime._civ_expects_response(frame) is True
 
 
+@pytest.mark.parametrize(
+    ("data", "expects_response"),
+    [
+        (b"\xd2", True),
+        (b"\xc2", True),
+        (b"\xd0", False),
+        (b"\xd1", False),
+        (b"\xc2\x01", False),
+        (b"\xd2\x01", False),
+    ],
+    ids=["d2-get", "c2-get", "d0-write", "d1-write", "c2-write", "d2-write"],
+)
+def test_civ_expects_response_only_for_exact_07_receiver_gets(
+    radio_with_state: IcomRadio, data: bytes, expects_response: bool
+) -> None:
+    frame = parse_civ_frame(
+        build_civ_frame(radio_with_state._radio_addr, CONTROLLER_ADDR, 0x07, data=data)
+    )
+    assert radio_with_state._civ_runtime._civ_expects_response(frame) is expects_response
+
+
 def test_civ_expects_response_scope_set(
     radio_with_state: IcomRadio,
 ) -> None:
