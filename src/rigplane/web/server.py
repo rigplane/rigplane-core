@@ -34,13 +34,14 @@ import sys
 import time
 import urllib.parse
 from collections.abc import Awaitable, Callable, Collection, Coroutine, Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from inspect import getattr_static
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
 
 from .. import __version__
 from .._bounded_queue import BoundedQueue
+from ..audio.route import resolve_audio_route
 from ..core.acquisition_scheduler import (
     AcquisitionScheduler,
     MeterObservationCoalescer,
@@ -3887,6 +3888,11 @@ class WebServer:
                 # New structured fields
                 "model": model,
                 "audioReceive": self._audio_broadcaster.rx_start_status(),
+                "audioRoute": (
+                    asdict(resolve_audio_route(self._radio))
+                    if self._radio is not None
+                    else None
+                ),
                 "capabilities": capabilities,
                 "connection": {
                     "rigConnected": connected,
