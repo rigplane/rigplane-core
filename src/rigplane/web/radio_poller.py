@@ -600,6 +600,9 @@ class RadioPoller:
         self._scope_demand_generation = queue.latest_scope_demand_generation
         self._scope_session_state: tuple[bool, bool] | None = None
         self._scope_session_active = False
+        self._scope_receiver_restore: tuple[int, int, int] | None = None
+        self._scope_follow_connection: tuple[int, object] | None = None
+        self._scope_receiver_explicit = False
         self._vfo_command_lock = asyncio.Lock()
         self._vfo_binding_generation = 0
         self._vfo_connect_attempt: tuple[int, object] | None = None
@@ -1862,6 +1865,177 @@ class RadioPoller:
         self._scope_demand_generation = generation
         return False
 
+    def _observed_scope_active(self, *, since: float = 0.0) -> int | None:
+        snapshot = self._state_store.snapshot()
+        try:
+            field = snapshot.field(FieldPath.global_("slow_state", "active"))
+        except KeyError:
+            return None
+        now = snapshot.generated_at_monotonic
+        if (
+            field.freshness is not FreshnessState.FRESH
+            or field.provider_generation != self._provider_generation()
+            or field.value not in ("MAIN", "SUB")
+            or field.max_age is None
+            or not field.last_observed_monotonic
+            <= now
+            < field.last_observed_monotonic + field.max_age
+            or field.last_observed_monotonic < self._vfo_connection_started_at
+            or field.last_observed_monotonic < since
+        ):
+            return None
+        return 1 if field.value == "SUB" else 0
+
+    def _scope_selector_supported(self) -> bool:
+        return (
+            CAP_SCOPE in self._caps
+            and CAP_DUAL_RX in self._caps
+            and isinstance(self._radio, CivCommandCapable)
+            and self._cmd_map is not None
+            and self._cmd_map.has("get_scope_main_sub")
+            and self._cmd_map.has("set_scope_main_sub")
+            and callable(getattr(self._radio, "get_scope_receiver", None))
+        )
+
+    async def _follow_scope_receiver(
+        self,
+        cmd: Command,
+        *,
+        connection: tuple[int, object],
+        requested: int | None = None,
+        refresh_active: bool = False,
+        demand: int | None = None,
+        validate_currency: Callable[[], None] | None = None,
+    ) -> None:
+        if not self._scope_selector_supported():
+            return
+        passive = requested is None
+        if passive and (
+            self._scope_receiver_explicit or self._scope_follow_connection == connection
+        ):
+            return
+
+        def check() -> None:
+            if validate_currency is not None:
+                validate_currency()
+            if connection != self._vfo_connection_generation():
+                raise CommandError("scope follow connection changed")
+            if demand is not None and self._scope_demand_is_stale(demand):
+                raise CommandError("scope follow demand changed")
+            if getattr(self._radio, "external_cat_session_active", False) is True:
+                raise CommandError("scope follow wire is externally owned")
+            self._enforce_tx_interlock(cmd)
+
+        try:
+            check()
+            target = self._observed_scope_active()
+            active_read_started = self._state_store.snapshot().generated_at_monotonic
+            if refresh_active:
+                cmd_map = self._cmd_map
+                if cmd_map is None or not cmd_map.has("get_main_sub_band"):
+                    return
+                command, sub, prefix = decode_wire_tuple(
+                    cmd_map.get("get_main_sub_band")
+                )
+                response = await asyncio.wait_for(
+                    self._civ(command, sub=sub, data=prefix, wait_response=True),
+                    timeout=1.0,
+                )
+                check()
+                from ..core.types import CivFrame
+
+                if (
+                    not isinstance(response, CivFrame)
+                    or response.command != command
+                    or response.sub != sub
+                    or response.data not in (prefix + b"\x00", prefix + b"\x01")
+                ):
+                    return
+                target = response.data[-1]
+            if target is None or (requested is not None and requested != target):
+                return
+            original = await asyncio.wait_for(
+                self._radio.get_scope_receiver(), timeout=1.0
+            )  # type: ignore[attr-defined]
+            check()
+            if not refresh_active and self._observed_scope_active() != target:
+                return
+            if refresh_active and self._observed_scope_active(
+                since=active_read_started
+            ) not in (None, target):
+                return
+            if type(original) is not int or original not in (0, 1):
+                return
+            if passive:
+                self._scope_follow_connection = connection
+            if original == target:
+                return
+            if passive:
+                previous = self._scope_receiver_restore
+                inherited = (
+                    previous[1]
+                    if previous and previous[0] == connection[0]
+                    else original
+                )
+                self._scope_receiver_restore = (connection[0], inherited, target)
+            if not await self._send_cmd("set_scope_main_sub", bytes([target])):
+                return
+            check()
+            confirmed = await asyncio.wait_for(
+                self._radio.get_scope_receiver(), timeout=1.0
+            )  # type: ignore[attr-defined]
+            check()
+            if type(confirmed) is not int or confirmed != target:
+                raise CommandError("scope receiver readback did not match")
+            logger.info(
+                "radio-poller: scope receiver confirmed %s", "SUB" if target else "MAIN"
+            )
+        except Exception:
+            logger.debug("radio-poller: scope follow not confirmed", exc_info=True)
+
+    async def _restore_scope_receiver(
+        self, validate_currency: Callable[[], None] | None = None
+    ) -> None:
+        pending = self._scope_receiver_restore
+        if pending is None:
+            return
+        provider, original, installed = pending
+        if provider != self._provider_generation():
+            self._scope_receiver_restore = None
+            return
+        connection = self._vfo_connection_generation()
+        if validate_currency is not None:
+            validate_currency()
+        current = await asyncio.wait_for(self._radio.get_scope_receiver(), timeout=1.0)  # type: ignore[attr-defined]
+        if validate_currency is not None:
+            validate_currency()
+        if connection != self._vfo_connection_generation():
+            raise CommandError("scope restore connection changed")
+        if type(current) is not int or current not in (0, 1):
+            raise CommandError("scope restore selector unavailable")
+        if current == installed:
+            if getattr(self._radio, "external_cat_session_active", False) is True:
+                raise CommandError("scope restore wire is externally owned")
+            self._enforce_tx_interlock(SwitchScopeReceiver(original))
+            if not await self._send_cmd("set_scope_main_sub", bytes([original])):
+                raise CommandError("scope restore selector unsupported")
+            if validate_currency is not None:
+                validate_currency()
+            if connection != self._vfo_connection_generation():
+                raise CommandError("scope restore connection changed")
+            confirmed = await asyncio.wait_for(
+                self._radio.get_scope_receiver(), timeout=1.0
+            )  # type: ignore[attr-defined]
+            if validate_currency is not None:
+                validate_currency()
+            if (
+                connection != self._vfo_connection_generation()
+                or type(confirmed) is not int
+                or confirmed != original
+            ):
+                raise CommandError("scope restore selector unconfirmed")
+        self._scope_receiver_restore = None
+
     async def _enable_scope_session(self, *, policy: str) -> None:
         """Capture scope state once, then enable through the existing wire lane."""
         radio = self._radio
@@ -1891,7 +2065,9 @@ class RadioPoller:
             raise
         self._scope_session_active = True
 
-    async def restore_scope_session(self) -> None:
+    async def restore_scope_session(
+        self, *, validate_currency: Callable[[], None] | None = None
+    ) -> None:
         """Restore exactly what the first successful scope viewer inherited."""
         if not self._scope_session_active or self._scope_session_state is None:
             return
@@ -1904,9 +2080,12 @@ class RadioPoller:
             raise CommandError(
                 "scope backend cannot restore pre-session panel/output state"
             )
+        await self._restore_scope_receiver(validate_currency)
         await restore_state(self._scope_session_state)
         self._scope_session_active = False
         self._scope_session_state = None
+        self._scope_follow_connection = None
+        self._scope_receiver_explicit = False
 
     async def restore_scope_after_shutdown(self) -> None:
         """Restore scope through this stopped poller's sole command executor.
@@ -2657,6 +2836,7 @@ class RadioPoller:
                     else:
                         logger.warning("set_band: unknown bsr_code=%d", band)
             case SelectVfo(vfo=vfo):
+                scope_connection = self._vfo_connection_generation()
                 vfo_upper = vfo.upper()
                 slot: str | None = None
                 if vfo_upper in ("A", "B"):
@@ -2764,26 +2944,15 @@ class RadioPoller:
                     rs = getattr(self._radio, "_radio_state", None)
                     if rs is not None and hasattr(rs, "active"):
                         rs.active = target_name
-                    # Scope follows the selected receiver: emit 0x27 0x12 so
-                    # the spectrum/waterfall flips to the new band.  In
-                    # dual-scope mode this still updates the "selected"
-                    # receiver marker; in single-scope mode the displayed
-                    # band changes.  Capability-gated so single-RX profiles
-                    # (IC-7300/705) are unaffected.
-                    if CAP_SCOPE in self._caps and CAP_DUAL_RX in self._caps:
-                        scope_rx = 1 if is_sub else 0
-                        try:
-                            await self._civ(0x27, sub=0x12, data=bytes([scope_rx]))
-                            logger.info(
-                                "radio-poller: scope receiver → %s "
-                                "(follows select_vfo)",
-                                target,
-                            )
-                        except Exception:
-                            logger.debug(
-                                "radio-poller: scope follow failed",
-                                exc_info=True,
-                            )
+                self._scope_receiver_restore = None
+                self._scope_receiver_explicit = True
+                await self._follow_scope_receiver(
+                    cmd,
+                    connection=scope_connection,
+                    requested=1 if is_sub else 0,
+                    refresh_active=target_name != current,
+                    validate_currency=validate_currency,
+                )
                 if self._on_state_event:
                     self._on_state_event("vfo_changed", {"vfo": vfo})
             case VfoSwap():
@@ -2825,7 +2994,12 @@ class RadioPoller:
                     await radio.equalize_vfo_ab(0)
                 else:
                     await radio.equalize_main_sub()
-            case EnableScope(policy=policy, generation=generation):
+            case EnableScope(
+                policy=policy,
+                generation=generation,
+                allow_receiver_follow=allow_receiver_follow,
+            ):
+                scope_connection = self._vfo_connection_generation()
                 if CAP_SCOPE in self._caps:
                     # Defer scope enable during initial fetch to avoid
                     # CI-V packet queue overflow (scope data + fetch).
@@ -2838,19 +3012,37 @@ class RadioPoller:
                             )
                             self._scope_enable_deferred = True
                         self._queue.put(
-                            EnableScope(policy=policy, generation=generation)
+                            EnableScope(
+                                policy=policy,
+                                generation=generation,
+                                allow_receiver_follow=allow_receiver_follow,
+                            )
                         )
                     else:
                         if self._scope_demand_is_stale(generation):
                             return None
                         await self._enable_scope_session(policy=policy)
+                        if allow_receiver_follow:
+                            await self._follow_scope_receiver(
+                                cmd,
+                                connection=scope_connection,
+                                demand=generation,
+                                validate_currency=validate_currency,
+                            )
                         logger.info("radio-poller: scope enabled")
                         await self._fetch_scope_controls()
             case DisableScope(generation=generation):
                 if CAP_SCOPE in self._caps:
                     if self._scope_demand_is_stale(generation):
                         return None
-                    await self.restore_scope_session()
+
+                    def validate_restore() -> None:
+                        if validate_currency is not None:
+                            validate_currency()
+                        if self._scope_demand_is_stale(generation):
+                            raise CommandError("scope restore demand changed")
+
+                    await self.restore_scope_session(validate_currency=validate_restore)
                     logger.info("radio-poller: scope session state restored")
             case SwitchScopeReceiver(receiver=receiver):
                 # Fire-and-forget scope receiver select (0x27 0x12), routed
@@ -2884,6 +3076,11 @@ class RadioPoller:
                     receiver,
                     operation="switch_scope_receiver",
                 )
+                if self._cmd_map is not None and self._cmd_map.has(
+                    "set_scope_main_sub"
+                ):
+                    self._scope_receiver_restore = None
+                    self._scope_receiver_explicit = True
                 sent = await self._send_cmd("set_scope_main_sub", bytes([receiver]))
                 if sent:
                     if self._radio_state:

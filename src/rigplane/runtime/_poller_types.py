@@ -523,6 +523,7 @@ class VfoEqualize:
 class EnableScope:
     policy: str = "fast"
     generation: int = 0
+    allow_receiver_follow: bool = False
 
 
 @dataclass(frozen=True, slots=True)

@@ -34,7 +34,7 @@ import sys
 import time
 import urllib.parse
 from collections.abc import Awaitable, Callable, Collection, Coroutine, Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from inspect import getattr_static
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
@@ -1392,6 +1392,8 @@ class WebServer:
     async def _execute_scope_command(self, command: EnableScope | DisableScope) -> bool:
         """Execute a scope command through the existing ordered command pipeline."""
         future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        if isinstance(command, EnableScope):
+            command = replace(command, allow_receiver_follow=not self._config.read_only)
         self._command_queue.put_ordered(command, future=future)
         try:
             await future

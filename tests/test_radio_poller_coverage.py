@@ -122,6 +122,409 @@ from rigplane.web.web_startup import stop_web_server
 _TEARDOWN = ["stop_tx", "restart_rx"]
 
 
+class _ScopeSelector:
+    def __init__(self, radio: Any, store: StateStore, source: int) -> None:
+        self.radio = radio
+        self.store = store
+        self.source = source
+        self.writes: list[int] = []
+        self.reads = 0
+        self.on_read: Callable[[], None] = lambda: None
+        radio._civ_epoch = 1
+        radio.get_scope_receiver = AsyncMock(side_effect=self.read)
+        radio.send_civ = AsyncMock(side_effect=self.send)
+
+    def active(self, value: str, *, age: float = 0) -> None:
+        self.store.apply(
+            Observation(
+                path=FieldPath.global_("slow_state", "active"),
+                value=value,
+                source=SourceMetadata(source="test", provider="fake"),
+                timestamp_monotonic=time.monotonic() - age,
+                max_age=10,
+                provider_generation=self.store.provider_generation,
+            )
+        )
+
+    async def read(self) -> int:
+        self.reads += 1
+        self.on_read()
+        return self.source
+
+    async def send(
+        self, command: int, *, sub: int | None = None, data: bytes = b"", **kwargs: Any
+    ) -> Any:
+        if command == 0x27 and sub == 0x12 and data:
+            self.source = data[0]
+            self.writes.append(self.source)
+        if command == 0x07 and data == b"\xd2":
+            value = int(self.radio._radio_state.active == "SUB")
+            return CivFrame(
+                to_addr=0xE0, from_addr=0x98, command=0x07, data=bytes([0xD2, value])
+            )
+
+
+def _scope_follow_fixture(
+    active: str = "SUB", source: int = 0
+) -> tuple[Any, RadioPoller, _ScopeSelector]:
+    radio = _make_radio(active=active)
+    store = StateStore()
+    store.begin_provider_generation()
+    selector = _ScopeSelector(radio, store, source)
+    selector.active(active)
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    poller._fetch_scope_controls = AsyncMock()
+    return radio, poller, selector
+
+
+@pytest.mark.asyncio
+async def test_scope_follow_initial_sub_and_restore() -> None:
+    _, poller, selector = _scope_follow_fixture()
+    await poller._execute(
+        EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
+    )
+    assert selector.source == 1
+    await poller._execute(DisableScope(generation=2))
+    assert selector.writes == [1, 0]
+
+
+@pytest.mark.asyncio
+async def test_scope_follow_same_vfo_uses_actual_selector() -> None:
+    radio, poller, selector = _scope_follow_fixture()
+    await poller._execute(SelectVfo("SUB"))
+    radio.select_receiver.assert_not_awaited()
+    assert selector.writes == [1]
+
+
+@pytest.mark.asyncio
+async def test_scope_follow_main_sub_main() -> None:
+    _, poller, selector = _scope_follow_fixture("MAIN", 0)
+    await poller._execute(SelectVfo("SUB"))
+    await poller._execute(SelectVfo("MAIN"))
+    assert selector.writes == [1, 0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "active", [None, "stale", "expired", "wrong_generation", "VFOB"]
+)
+async def test_scope_follow_rejects_unproven_active(active: str | None) -> None:
+    _, poller, selector = _scope_follow_fixture()
+    if active is None or active == "wrong_generation":
+        selector.store.begin_provider_generation()
+    elif active in ("stale", "expired"):
+        selector.active("SUB", age=20)
+        if active == "stale":
+            selector.store.mark_stale_due()
+    else:
+        selector.active(active)
+    await poller._execute(
+        EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
+    )
+    assert selector.writes == []
+    selector.active("SUB")
+    await poller._execute(
+        EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
+    )
+    assert selector.writes == [1]
+
+
+@pytest.mark.asyncio
+async def test_scope_follow_reconnect_retained_sub() -> None:
+    radio, poller, selector = _scope_follow_fixture("SUB", 1)
+    await poller._execute(
+        EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
+    )
+    selector.source = 0
+    radio._civ_epoch += 1
+    poller.reset_vfo_session(connection_recovery=True)
+    selector.active("SUB")
+    await poller._execute(
+        EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
+    )
+    assert selector.writes == [1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("explicit", ["selector", "vfo", "physical"])
+async def test_scope_follow_preserves_explicit_source_and_teardown(
+    explicit: str,
+) -> None:
+    radio, poller, selector = _scope_follow_fixture("MAIN", 1)
+    await poller._execute(
+        EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
+    )
+    assert selector.writes == [0]
+    if explicit == "selector":
+        poller._reconfirm_scope_field = AsyncMock()
+        await poller._execute(SwitchScopeReceiver(1))
+        radio._civ_epoch += 1
+        selector.active("MAIN")
+        await poller._execute(
+            EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
+        )
+    elif explicit == "vfo":
+        await poller._execute(SelectVfo("MAIN"))
+    else:
+        selector.source = 1
+    before = list(selector.writes)
+    await poller._execute(DisableScope(generation=2))
+    assert selector.writes == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["get", "set", "readback", "mismatch"])
+async def test_scope_follow_errors_do_not_fail_selection(
+    fault: str, caplog: Any
+) -> None:
+    radio, poller, selector = _scope_follow_fixture("MAIN", 0)
+
+    async def read() -> int:
+        selector.reads += 1
+        if fault == "get" or (fault == "readback" and selector.reads == 2):
+            raise CommandError("selector read failed")
+        return 0 if fault == "mismatch" else selector.source
+
+    radio.get_scope_receiver.side_effect = read
+    send = selector.send
+
+    async def write(command: int, **kwargs: Any) -> Any:
+        if command == 0x27 and fault == "set":
+            raise CommandError("selector write failed")
+        return await send(command, **kwargs)
+
+    radio.send_civ.side_effect = write
+    with caplog.at_level(logging.INFO):
+        await poller._execute(SelectVfo("SUB"))
+    assert radio._radio_state.active == "SUB"
+    assert "scope receiver confirmed" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fence", ["provider", "connection", "demand", "currency", "owner", "active"]
+)
+async def test_scope_follow_rechecks_after_source_read(fence: str) -> None:
+    radio, poller, selector = _scope_follow_fixture()
+    current = True
+
+    def change() -> None:
+        nonlocal current
+        if fence == "provider":
+            selector.store.begin_provider_generation()
+        elif fence == "connection":
+            radio._civ_epoch += 1
+        elif fence == "demand":
+            poller._queue.put(DisableScope(generation=2))
+        elif fence == "owner":
+            radio.external_cat_session_active = True
+        elif fence == "active":
+            selector.active("MAIN")
+        else:
+            current = False
+
+    def currency() -> None:
+        if not current:
+            raise CommandError("controller lease expired")
+
+    selector.on_read = change
+    await poller._execute(
+        EnableScope(policy="fast", generation=1, allow_receiver_follow=True),
+        validate_currency=currency,
+    )
+    assert selector.writes == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["set", "readback"])
+@pytest.mark.parametrize("fence", ["provider", "connection"])
+async def test_scope_follow_rechecks_after_write(
+    stage: str, fence: str, caplog: Any
+) -> None:
+    radio, poller, selector = _scope_follow_fixture()
+
+    def change() -> None:
+        if fence == "provider":
+            selector.store.begin_provider_generation()
+        else:
+            radio._civ_epoch += 1
+
+    send = selector.send
+
+    async def write(command: int, **kwargs: Any) -> Any:
+        result = await send(command, **kwargs)
+        if command == 0x27 and stage == "set":
+            change()
+        return result
+
+    radio.send_civ.side_effect = write
+    selector.on_read = lambda: (
+        change() if stage == "readback" and selector.reads == 2 else None
+    )
+    with caplog.at_level(logging.INFO):
+        await poller._execute(
+            EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
+        )
+    assert selector.writes == [1]
+    assert "scope receiver confirmed" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_scope_follow_unsupported_map_is_inert() -> None:
+    _, poller, selector = _scope_follow_fixture()
+    poller._cmd_map = CommandMap({})
+    await poller._execute(
+        EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
+    )
+    assert selector.reads == 0
+    assert selector.writes == []
+
+
+@pytest.mark.asyncio
+async def test_scope_follow_uses_direct_getter_despite_hold_receiver_hint() -> None:
+    from rigplane.runtime._scope_runtime import ScopeRuntimeMixin
+
+    radio, poller, selector = _scope_follow_fixture()
+    state = RadioState()
+    state.scope_controls.receiver = 1
+    radio._scope_controls = lambda: state.scope_controls
+    radio._commands.get_scope_main_sub.return_value = b"query"
+    radio._expect_shape = lambda _: (0x27, 0x12, b"")
+
+    async def response(*args: Any, **kwargs: Any) -> CivFrame:
+        return CivFrame(0xE0, 0x98, 0x27, sub=0x12, data=bytes([selector.source]))
+
+    radio._send_civ_expect = response
+
+    async def read() -> int:
+        value = await ScopeRuntimeMixin.get_scope_receiver(radio)
+        ScopeRuntimeMixin._apply_scope_receiver_hint(radio, 1 - value)
+        return value
+
+    radio.get_scope_receiver = read
+    await poller._execute(
+        EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
+    )
+    assert selector.writes == [1]
+    assert state.scope_controls.receiver == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fence", ["currency", "demand", "provider", "connection"])
+async def test_scope_follow_restore_rechecks_after_read(fence: str) -> None:
+    radio, poller, selector = _scope_follow_fixture()
+    await poller._execute(
+        EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
+    )
+    current = True
+
+    def change() -> None:
+        nonlocal current
+        if fence == "provider":
+            selector.store.begin_provider_generation()
+        elif fence == "connection":
+            radio._civ_epoch += 1
+        elif fence == "demand":
+            poller._queue.put(EnableScope(generation=3))
+        else:
+            current = False
+
+    def currency() -> None:
+        if not current:
+            raise CommandError("lease expired")
+
+    selector.on_read = change
+    with pytest.raises(CommandError):
+        await poller._execute(DisableScope(generation=2), validate_currency=currency)
+    assert selector.writes == [1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", [None, b"\xd2\x02", b"\xd2", b"\xc2\x01"])
+async def test_scope_follow_changed_vfo_requires_direct_active_readback(
+    invalid: bytes | None,
+) -> None:
+    radio, poller, selector = _scope_follow_fixture("MAIN", 0)
+    send = selector.send
+
+    async def write(command: int, **kwargs: Any) -> Any:
+        if command == 0x07 and kwargs.get("data") == b"\xd2":
+            return None if invalid is None else CivFrame(0xE0, 0x98, 0x07, data=invalid)
+        return await send(command, **kwargs)
+
+    radio.send_civ.side_effect = write
+    await poller._execute(SelectVfo("SUB"))
+    assert radio._radio_state.active == "SUB"
+    assert selector.writes == []
+
+
+@pytest.mark.asyncio
+async def test_scope_follow_queue_rechecks_real_controller_ticket() -> None:
+    from test_controller_authority import Safety
+
+    _, poller, selector = _scope_follow_fixture()
+    authority = Safety().authority()
+    poller._queue.bind_controller(authority)
+    entry = poller._queue.put_ordered(
+        EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
+    )
+    selector.on_read = authority.revoke
+    await poller._execute_queued_entry_action(entry)
+    assert selector.writes == []
+    await authority.settle()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_only", [False, True])
+async def test_scope_follow_server_admits_only_writable_initial_and_reconnect(
+    read_only: bool,
+) -> None:
+    from rigplane.web.server import WebServer
+
+    radio, poller, selector = _scope_follow_fixture()
+    server = SimpleNamespace(
+        _command_queue=poller._queue,
+        _config=SimpleNamespace(read_only=read_only),
+        _scope_enabled=False,
+        _scope_enable_failed=False,
+    )
+    for generation in (1, 2):
+        selector.source = 0
+        radio._civ_epoch = generation
+        selector.active("SUB")
+        task = asyncio.create_task(
+            WebServer._execute_scope_command(server, EnableScope(generation=generation))
+        )
+        await asyncio.sleep(0)
+        entry = poller._queue.take_entry()
+        assert entry is not None
+        await poller._execute_queued_entry(entry)
+        assert await task is True
+        assert selector.source == (0 if read_only else 1)
+    assert selector.writes == ([] if read_only else [1, 1])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allowed", [False, True])
+async def test_scope_follow_allowance_survives_deferred_enable(allowed: bool) -> None:
+    _, poller, selector = _scope_follow_fixture()
+    poller._initial_fetch_done.clear()
+    await poller._execute(EnableScope(generation=1, allow_receiver_follow=allowed))
+    (deferred,) = poller._queue.drain()
+    assert deferred.allow_receiver_follow is allowed
+    poller._initial_fetch_done.set()
+    await poller._execute(deferred)
+    assert selector.writes == ([1] if allowed else [])
+
+
+@pytest.mark.asyncio
+async def test_scope_follow_changed_vfo_respects_newer_active_observation() -> None:
+    _, poller, selector = _scope_follow_fixture("MAIN", 0)
+    selector.on_read = lambda: selector.active("MAIN")
+    await poller._execute(SelectVfo("SUB"))
+    assert selector.writes == []
+
+
 class _Radio:
     """Duck-typed radio whose PTT-off audio teardown records an ordered call list."""
 
@@ -2462,11 +2865,15 @@ async def test_current_active_defaults_and_setfreq_setmode_branches() -> None:
 async def test_execute_event_emitting_commands_and_vfo_paths() -> None:
     events: list[tuple[str, dict]] = []
     radio = _make_radio(active="MAIN")
+    store = StateStore()
+    selector = _ScopeSelector(radio, store, 0)
+    selector.active("MAIN")
     poller = RadioPoller(
         radio,
         StateCache(),
         CommandQueue(),
         on_state_event=lambda name, data: events.append((name, data)),
+        state_store=store,
     )
 
     await poller._execute(SetNB(True, receiver=0))  # noqa: SLF001
@@ -2507,11 +2914,11 @@ async def test_execute_event_emitting_commands_and_vfo_paths() -> None:
         priority=Priority.NORMAL,
         wait_dispatch=True,
     )
-    # Re-clicking the active receiver is a no-op CI-V-wise but still emits
-    # the state event so UI listeners can refresh.
-    civ_calls_before = radio.send_civ.await_count
+    selector.source = 1
+    vfo_calls_before = radio.select_receiver.await_count
     await poller._execute(SelectVfo("MAIN"))  # noqa: SLF001
-    assert radio.send_civ.await_count == civ_calls_before
+    assert selector.writes == [1, 0, 0]
+    assert radio.select_receiver.await_count == vfo_calls_before
     assert any(name == "vfo_changed" for name, _ in events)
 
     await poller._execute(VfoSwap())  # noqa: SLF001
