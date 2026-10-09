@@ -40,6 +40,81 @@ class Safety:
         )
 
 
+async def test_conditional_remote_mode_admits_without_acquiring() -> None:
+    safety = Safety()
+    authority = safety.authority()
+    local = authority.capture()
+    await authority.set_mode("remote", expected_generation=0)
+    assert authority.status()["mode"] == "remote"
+    assert authority.status()["state"] == "idle"
+    assert authority.status()["generation"] == 1
+    assert authority._key is None
+    assert safety.cleanups == 0
+    with pytest.raises(ControllerError, match="controller_invalid"):
+        authority.validate(local)
+
+
+async def test_conditional_remote_mode_preserves_completed_local_takeover() -> None:
+    safety = Safety()
+    authority = safety.authority()
+    await authority.set_mode("remote")
+    await authority.set_mode("local")
+    before = authority.status()
+    local = authority.capture()
+    ready_calls = []
+    authority._ready = lambda: ready_calls.append(True) or True
+    with pytest.raises(ControllerError, match="controller_invalid") as refused:
+        await authority.set_mode("remote", expected_generation=0)
+    assert refused.value.status == 409
+    assert authority.status() == before
+    authority.validate(local)
+    assert ready_calls == [] and safety.cleanups == 0
+
+
+@pytest.mark.parametrize("generation", [True, False, 0.0, "0", -1])
+async def test_conditional_remote_mode_rejects_invalid_generation(generation) -> None:
+    safety = Safety()
+    authority = safety.authority()
+    before = authority.status()
+    with pytest.raises(ControllerError, match="invalid_request") as refused:
+        await authority.set_mode("remote", expected_generation=generation)
+    assert refused.value.status == 400
+    assert authority.status() == before and safety.cleanups == 0
+
+
+async def test_conditional_mode_does_not_admit_local_or_existing_remote_owner() -> None:
+    safety = Safety()
+    authority = safety.authority()
+    with pytest.raises(ControllerError, match="invalid_request"):
+        await authority.set_mode("local", expected_generation=0)
+    await authority.set_mode("remote")
+    grant = authority.acquire("pro")
+    primary = authority.attach(grant["controller_key"], "primary", "existing-owner")
+    before = authority.status()
+    with pytest.raises(ControllerError, match="controller_invalid"):
+        await authority.set_mode("remote", expected_generation=before["generation"])
+    assert authority.status() == before
+    authority.validate(primary)
+    assert safety.cleanups == 0
+    await authority.release(grant["controller_key"])
+
+
+async def test_conditional_mode_keeps_readiness_and_blocked_state_guards() -> None:
+    safety = Safety()
+    authority = safety.authority()
+    before = authority.status()
+    safety.safe = False
+    with pytest.raises(ControllerError, match="controller_not_ready"):
+        await authority.set_mode("remote", expected_generation=0)
+    assert authority.status() == before
+    authority._state = "blocked"
+    safety.safe = True
+    before = authority.status()
+    with pytest.raises(ControllerError, match="controller_invalid"):
+        await authority.set_mode("remote", expected_generation=0)
+    assert authority.status() == before and safety.cleanups == 0
+
+
 @pytest.mark.parametrize(
     "kinds", [("browser", "browser"), ("browser", "pro"), ("pro", "pro")]
 )

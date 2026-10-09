@@ -165,6 +165,75 @@ async def test_complete_production_composition_admits_host_remote_and_fences_old
     assert released.status == 200
 
 
+async def test_conditional_http_mode_preserves_takeover_and_queued_audio(
+    production_station, monkeypatch
+):
+    radio, _, server = production_station
+    for mode in ("remote", "local"):
+        transition = await request(
+            server, "POST", "/api/v1/controller/mode", {"mode": mode}
+        )
+        assert transition.status == 200
+    before = server._controller.status()
+    dropped = []
+    monkeypatch.setattr(
+        server,
+        "_audio_bridge",
+        SimpleNamespace(_drop_queued_tx=lambda: dropped.append(True)),
+    )
+    refused = await request(
+        server,
+        "POST",
+        "/api/v1/controller/mode",
+        {"mode": "remote", "expected_generation": 0},
+    )
+    assert refused.status == 409
+    assert refused.payload == {"error": "controller_invalid"}
+    assert server._controller.status() == before
+    assert dropped == [] and server._controller._key is None
+    assert True not in radio.wire and radio.raw_ptt == []
+
+
+async def test_conditional_http_mode_is_loopback_only_and_does_not_repeat(
+    production_station,
+):
+    radio, _, server = production_station
+    body = {"mode": "remote", "expected_generation": 0}
+    denied = await request(
+        server, "POST", "/api/v1/controller/mode", body, peer="192.0.2.1"
+    )
+    assert denied.status == 403
+    assert server._controller.status()["generation"] == 0
+    armed = await request(server, "POST", "/api/v1/controller/mode", body)
+    assert armed.status == 200 and armed.payload["generation"] == 1
+    assert armed.payload["mode"] == "remote" and armed.payload["state"] == "idle"
+    refused = await request(server, "POST", "/api/v1/controller/mode", body)
+    assert refused.status == 409
+    assert server._controller.status() == armed.payload
+    assert server._controller._key is None and True not in radio.wire
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"mode": "remote", "expected_generation": generation}
+        for generation in (True, False, None, 0.0, "0", -1)
+    ]
+    + [
+        {"mode": "local", "expected_generation": 0},
+        {"mode": "remote", "expected_generation": 0, "extra": 1},
+    ],
+)
+async def test_conditional_http_mode_rejects_invalid_body(production_station, body):
+    radio, _, server = production_station
+    before = server._controller.status()
+    refused = await request(server, "POST", "/api/v1/controller/mode", body)
+    assert refused.status == 400 and refused.payload == {"error": "invalid_request"}
+    assert server._controller.status() == before
+    assert server._controller._key is None and True not in radio.wire
+
+
+@pytest.mark.parametrize("conditional", [False, True])
 @pytest.mark.parametrize(
     "inhibitor",
     [
@@ -185,7 +254,7 @@ async def test_complete_production_composition_admits_host_remote_and_fences_old
     ],
 )
 async def test_production_remote_admission_refuses_readiness_inhibitor(
-    production_station, monkeypatch, inhibitor
+    production_station, monkeypatch, inhibitor, conditional
 ):
     radio, composition, server = production_station
     if inhibitor == "read_only":
@@ -231,9 +300,10 @@ async def test_production_remote_admission_refuses_readiness_inhibitor(
     else:
         pressed = await composition.authority.submit_ptt(True, "local-fixture")
         await pressed.wait_settlement()
-    refused = await request(
-        server, "POST", "/api/v1/controller/mode", {"mode": "remote"}
-    )
+    body = {"mode": "remote"}
+    if conditional:
+        body["expected_generation"] = 0
+    refused = await request(server, "POST", "/api/v1/controller/mode", body)
     assert refused.status == 503
     assert refused.payload == {"error": "controller_not_ready"}
     assert server._controller.status()["mode"] == "local"

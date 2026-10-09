@@ -85,9 +85,24 @@ class ControllerAuthority:
             else 0,
         }
 
-    async def set_mode(self, mode: str) -> None:
+    async def set_mode(
+        self, mode: str, *, expected_generation: int | None = None
+    ) -> None:
         if mode not in ("local", "remote"):
             raise ControllerError("invalid_request", 400)
+        if expected_generation is not None:
+            if (
+                mode != "remote"
+                or type(expected_generation) is not int
+                or expected_generation < 0
+            ):
+                raise ControllerError("invalid_request", 400)
+            if (
+                self.generation != expected_generation
+                or self.mode != "local"
+                or self._state != "idle"
+            ):
+                raise ControllerError("controller_invalid", 409)
         if self._taking_back:
             raise ControllerError("controller_busy", 409)
         if mode == self.mode and self._state != "blocked":

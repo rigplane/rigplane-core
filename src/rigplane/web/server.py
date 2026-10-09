@@ -4831,12 +4831,26 @@ class WebServer:
                 if payload is None:
                     return
                 field = "mode" if path.endswith("/mode") else "kind"
-                if set(payload) != {field} or type(payload[field]) is not str:
+                conditional = field == "mode" and set(payload) == {
+                    field,
+                    "expected_generation",
+                }
+                if (set(payload) != {field} and not conditional) or type(
+                    payload.get(field)
+                ) is not str:
                     raise ControllerError("invalid_request", 400)
                 if field == "mode":
-                    if self._audio_bridge is not None:
-                        self._audio_bridge._drop_queued_tx()
-                    await self._controller.set_mode(payload[field])
+                    if conditional:
+                        generation = payload["expected_generation"]
+                        if type(generation) is not int or generation < 0:
+                            raise ControllerError("invalid_request", 400)
+                        await self._controller.set_mode(
+                            payload[field], expected_generation=generation
+                        )
+                    else:
+                        if self._audio_bridge is not None:
+                            self._audio_bridge._drop_queued_tx()
+                        await self._controller.set_mode(payload[field])
                     result, status = self._controller.status(), 200
                 else:
                     result, status = self._controller.acquire(payload[field]), 201
