@@ -61,11 +61,11 @@ function makeMockChannel() {
 }
 
 /** Build a minimal valid scope frame ArrayBuffer (16-byte header + 4 pixels). */
-function makeScopeFrameBuffer(pixelCount = 4): ArrayBuffer {
+function makeScopeFrameBuffer(pixelCount = 4, receiver: 0 | 1 = 0): ArrayBuffer {
   const buf = new ArrayBuffer(16 + pixelCount);
   const view = new DataView(buf);
   view.setUint8(0, 0x01);          // magic
-  view.setUint8(1, 0);             // receiver 0
+  view.setUint8(1, receiver);
   view.setUint32(3, 14_100_000, true); // startFreq
   view.setUint32(7, 14_200_000, true); // endFreq
   view.setUint16(14, pixelCount, true);
@@ -676,6 +676,109 @@ describe('ScopeController', () => {
     expect(controller.snapshotHealth(source).frameSeen).toBe(false);
     expect(controller.snapshotFrameEvidence().envelope).toBe(receipt);
     await driver.stop(handle);
+  });
+
+  it.each([
+    ['hardware', 'hardwareScopeDriver', 0, 1],
+    ['hardware', 'hardwareScopeDriver', 1, 0],
+    ['audio_fft', 'audioFftDriver', 0, 1],
+    ['audio_fft', 'audioFftDriver', 1, 0],
+  ] as const)('%s via %s keeps receiver %i receipt and expiry through receiver %i frames',
+    async (source, driverName, selected, foreign) => {
+      const timed = makeTiming();
+      const local = makeMockChannel();
+      const controller = new ScopeController(() => local as any, timed.timing);
+      controller.setFrameAuthority({ source, receiver: selected, providerGeneration: 9 });
+      const raw = vi.fn();
+      if (source === 'hardware') controller.subscribeHardware(raw);
+      else controller.subscribe(raw);
+      const driver = controller[driverName];
+      const handle = await driver.start();
+      local._setState('connected');
+      local._fire(makeScopeFrameBuffer(4, selected));
+      const receipt = controller.snapshotFrameEvidence().envelope;
+      const selectedFrame = source === 'hardware' ? controller.scopeFrame : controller.audioScopeFrame;
+      expect(receipt).toMatchObject({ receiver: selected, receivedAt: 0, acceptedSequence: 1 });
+
+      for (const step of [200, 100, 199]) {
+        timed.advance(step);
+        local._fire(makeScopeFrameBuffer(4, foreign));
+        expect(controller.snapshotFrameEvidence().envelope).toBe(receipt);
+        expect(source === 'hardware' ? controller.scopeFrame : controller.audioScopeFrame).toBe(selectedFrame);
+        expect(controller.snapshotHealth(source).frameSeen).toBe(true);
+        expect(timed.activeCount()).toBe(1);
+      }
+      expect(raw).toHaveBeenCalledTimes(4);
+      expect(receipt?.acceptedSequence).toBe(1);
+      timed.advance(1);
+      expect(controller.snapshotHealth(source).frameSeen).toBe(false);
+      expect(controller.snapshotFrameEvidence().envelope).toBe(receipt);
+      expect(source === 'hardware' ? controller.scopeFrame : controller.audioScopeFrame).toBeNull();
+      local._fire(makeScopeFrameBuffer(4, foreign));
+      expect(raw).toHaveBeenCalledTimes(5);
+      expect(controller.snapshotHealth(source).frameSeen).toBe(false);
+      expect(controller.snapshotFrameEvidence().envelope).toBe(receipt);
+      expect(source === 'hardware' ? controller.scopeFrame : controller.audioScopeFrame).toBeNull();
+      expect(timed.activeCount()).toBe(0);
+
+      local._fire(makeScopeFrameBuffer(4, selected));
+      expect(controller.snapshotFrameEvidence().envelope).toMatchObject({
+        receiver: selected, receivedAt: 500, acceptedSequence: 2,
+      });
+      expect(controller.snapshotHealth(source).frameSeen).toBe(true);
+      await driver.stop(handle);
+    });
+
+  it.each([0, 1] as const)('requires a matching frame before selected receiver %i becomes live', async (selected) => {
+    const timed = makeTiming();
+    const local = makeMockChannel();
+    const controller = new ScopeController(() => local as any, timed.timing);
+    controller.setFrameAuthority({ source: 'hardware', receiver: selected, providerGeneration: 2 });
+    const handle = await controller.hardwareScopeDriver.start();
+    local._setState('connected');
+    local._fire(makeScopeFrameBuffer(4, selected === 0 ? 1 : 0));
+    expect(controller.snapshotFrameEvidence().envelope).toBeNull();
+    expect(controller.snapshotHealth('hardware').frameSeen).toBe(false);
+    expect(controller.scopeFrame).toBeNull();
+    expect(timed.activeCount()).toBe(0);
+    await controller.hardwareScopeDriver.stop(handle);
+  });
+
+  it.each([0, 1] as const)('requires a fresh receiver %i frame after an authority receiver change', async (initial) => {
+    const timed = makeTiming();
+    const local = makeMockChannel();
+    const controller = new ScopeController(() => local as any, timed.timing);
+    controller.setFrameAuthority({ source: 'hardware', receiver: initial, providerGeneration: 2 });
+    const handle = await controller.hardwareScopeDriver.start();
+    local._setState('connected');
+    local._fire(makeScopeFrameBuffer(4, initial));
+    const oldReceipt = controller.snapshotFrameEvidence().envelope;
+    const next = initial === 0 ? 1 : 0;
+    controller.setFrameAuthority({ source: 'hardware', receiver: next, providerGeneration: 2 });
+    expect(controller.snapshotFrameEvidence().envelope).toBeNull();
+    timed.advance(100);
+    local._fire(makeScopeFrameBuffer(4, initial));
+    expect(controller.snapshotFrameEvidence().envelope).toBeNull();
+    local._fire(makeScopeFrameBuffer(4, next));
+    expect(controller.snapshotFrameEvidence().envelope).toMatchObject({
+      receiver: next, receivedAt: 100, acceptedSequence: 2,
+    });
+    expect(controller.snapshotFrameEvidence().envelope).not.toBe(oldReceipt);
+    await controller.hardwareScopeDriver.stop(handle);
+  });
+
+  it.each([0, 1] as const)('delivers receiver %i raw frames without canonical authority', async (receiver) => {
+    const local = makeMockChannel();
+    const controller = new ScopeController(() => local as any);
+    const raw = vi.fn();
+    controller.subscribeHardware(raw);
+    const handle = await controller.hardwareScopeDriver.start();
+    local._setState('connected');
+    local._fire(makeScopeFrameBuffer(4, receiver));
+    expect(raw).toHaveBeenCalledOnce();
+    expect(raw.mock.calls[0][0].receiver).toBe(receiver);
+    expect(controller.snapshotHealth('hardware').frameSeen).toBe(true);
+    await controller.hardwareScopeDriver.stop(handle);
   });
 
   it('does not let a delayed older expiry callback clear a newer receipt', async () => {

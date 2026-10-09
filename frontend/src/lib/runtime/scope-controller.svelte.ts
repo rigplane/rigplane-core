@@ -413,6 +413,12 @@ export class ScopeController {
     frame: ScopeFrame,
     buffer: ArrayBuffer,
   ): boolean {
+    const authority = this._frameAuthority;
+    if (authorityRevision === this._authorityRevision
+      && authority?.source === source
+      && authority.receiver !== null
+      && frame.receiver !== authority.receiver) return true;
+
     const receivedAt = this._timing.now();
     const transportEpoch = channel.sessionEpoch;
     if (!Number.isFinite(receivedAt) || receivedAt < 0) {
@@ -428,7 +434,6 @@ export class ScopeController {
     this._setHealth(source, { ...this._readHealth(source), frameSeen: true });
     this._armExpiry(source, arrival);
 
-    const authority = this._frameAuthority;
     if (authorityRevision !== this._authorityRevision || authority?.source !== source) return true;
     if (!Number.isSafeInteger(transportEpoch) || transportEpoch <= 0) {
       this._frameEnvelope = null;
