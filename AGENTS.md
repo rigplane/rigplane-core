@@ -12,10 +12,12 @@ change or a concrete conflict requires it. Do not skip mandatory reads.
 
 The policy governs orchestration, routing, output, CI observation, and session
 lifecycle where older `CLAUDE.md`, role, or command wording conflicts. Platform
-requirements and current user instructions take precedence. Repository rules
-may delegate planning to Linear; preserve that delegation and current Linear
-acceptance criteria. Safety, independent exact-head review, required CI,
-guarded merge, and hardware acceptance remain binding.
+requirements and current user instructions take precedence. Linear is the
+planning authority for all Core development: preserve its scope, acceptance
+criteria, dependencies, priority, milestones, and status. GitHub Projects are
+not used for Core planning; project membership, fields, and GitHub Projects
+OAuth scopes are not prerequisites. Safety, independent exact-head review,
+required CI, guarded merge, and hardware acceptance remain binding.
 
 ## Repo identity
 
@@ -23,7 +25,6 @@ This repository is the public open-core `rigplane` implementation.
 
 - Repository: `rigplane/rigplane-core`
 - License: MIT, unless a file says otherwise
-- Project board: https://github.com/orgs/rigplane/projects/2
 
 ## Public/open-core boundary
 
@@ -63,24 +64,26 @@ validation matrices and decision records stay in Strategy. See
 
 ## Linear planning and GitHub execution
 
-For the `RigPlane Core UI Composition Architecture v3` project, the live,
-project-specific Linear control-plane contract takes precedence over the legacy
-GitHub-Project planning and control-plane language in `CLAUDE.md`. Linear is the
-authoritative control plane: it owns the backlog, scope, parent/child relations,
-dependencies, priority, milestones, acceptance criteria, and status. Resolve
-the Linear owner and its acceptance criteria before starting non-trivial work.
+Linear is the authoritative planning control plane for all Core development:
+it owns the backlog, scope, parent/child relations, dependencies, priority,
+milestones, acceptance criteria, and status. Resolve the Linear owner and its
+acceptance criteria before starting non-trivial work. GitHub Projects are not
+used for Core planning; project membership, fields, and GitHub Projects OAuth
+scopes are not prerequisites.
 
-This precedence is limited to control-plane ownership. All other `CLAUDE.md`
-commands, architecture, hygiene, protected-main, exact-head `Agent Review
-Gate`, and guarded merge rules remain binding. The delivery batching and CI
-cadence below supersede older draft-first CI and per-merge `main`-wait language
-in `CLAUDE.md`; safety, required checks, and independent review remain binding.
+This changes only control-plane ownership. All other `CLAUDE.md` commands,
+architecture, hygiene, protected-main, exact-head `Agent Review Gate`, and
+guarded merge rules remain binding. The delivery batching and CI cadence below
+supersede older draft-first CI and per-merge `main`-wait language in `CLAUDE.md`;
+safety, required checks, and independent review remain binding.
 
 GitHub is the execution plane: branch, commit, PR, diff, checks, independent
 review, and merge evidence. Do not create a GitHub planning issue before
-resolving the Linear owner. A GitHub issue is optional and allowed only for
-atomic, concrete PR-bound scope that links its existing Linear issue; it must
-not duplicate planning or dependency tracking.
+resolving the Linear owner. Ordinary GitHub issues remain available for
+customer intake and discussion without a prior Linear ticket. A GitHub
+execution issue is optional and allowed only for atomic, concrete PR-bound
+scope that links its existing Linear issue; it must not duplicate planning or
+dependency tracking.
 
 Planning-only GitHub issues must be retired: record the Linear issue that owns
 their scope and close them as superseded, without transferring planning status
