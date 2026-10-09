@@ -167,24 +167,126 @@ class _ScopeSelector:
 def _scope_follow_fixture(
     active: str = "SUB", source: int = 0
 ) -> tuple[Any, RadioPoller, _ScopeSelector]:
+    from test_controller_authority import Safety
+
     radio = _make_radio(active=active)
     store = StateStore()
     store.begin_provider_generation()
     selector = _ScopeSelector(radio, store, source)
+    selector.ticket = Safety().authority().capture()
     selector.active(active)
     poller = RadioPoller(radio, CommandQueue(), state_store=store)
     poller._fetch_scope_controls = AsyncMock()
     return radio, poller, selector
 
 
+async def _owned_scope_enable(poller: RadioPoller) -> Any:
+    from test_controller_authority import Safety
+
+    authority = Safety().authority()
+    poller._queue.bind_controller(authority)
+    entry = poller._queue.put_ordered(
+        EnableScope(generation=1, allow_receiver_follow=True)
+    )
+    await poller._execute_queued_entry_action(entry)
+    return authority
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fence", ["revoke", "connection", "demand", "valid"])
+async def test_scope_restore_failed_enable_keeps_admission(fence: str) -> None:
+    radio, poller, selector = _scope_follow_fixture()
+    authority = await _owned_scope_enable(poller)
+    saved = poller._scope_receiver_restore
+
+    async def fail(**kwargs: Any) -> None:
+        if fence == "revoke":
+            authority.revoke()
+        elif fence == "connection":
+            radio._civ_epoch += 1
+        elif fence == "demand":
+            poller._queue.put(EnableScope(generation=2))
+        raise CommandError("enable failed")
+
+    radio.enable_scope.side_effect = fail
+    entry = poller._queue.put_ordered(
+        EnableScope(generation=1, allow_receiver_follow=True)
+    )
+    with pytest.raises(CommandError, match="enable failed"):
+        await poller._execute_queued_entry_action(entry)
+    await authority.settle()
+    assert selector.writes == ([1, 0] if fence == "valid" else [1])
+    assert poller._scope_receiver_restore == (None if fence == "valid" else saved)
+    radio.restore_scope_session_state.assert_awaited_once_with((False, False))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entrypoint", ["public", "shutdown", "disable"])
+@pytest.mark.parametrize("proof", ["missing", "revoked", "valid", "new_owner"])
+async def test_scope_restore_requires_original_controller(
+    entrypoint: str, proof: str
+) -> None:
+    from rigplane.runtime.controller_authority import ControllerError
+
+    radio, poller, selector = _scope_follow_fixture()
+    authority = await _owned_scope_enable(poller)
+    if proof == "missing":
+        poller._scope_receiver_restore_ticket = None
+    else:
+        if proof != "valid":
+            authority.revoke()
+            await authority.settle()
+            if proof == "new_owner":
+                await authority.set_mode("local")
+    saved = poller._scope_receiver_restore
+
+    async def restore() -> None:
+        if entrypoint == "public":
+            await poller.restore_scope_session()
+        elif entrypoint == "shutdown":
+            await poller.restore_scope_after_shutdown()
+        else:
+            # Direct entry also must not turn its demand-only closure into proof.
+            if proof == "new_owner":
+                entry = poller._queue.put_ordered(DisableScope(generation=2))
+                await poller._execute_queued_entry_action(entry)
+            else:
+                await poller._execute(DisableScope(generation=2))
+
+    if proof == "valid":
+        await restore()
+    else:
+        with pytest.raises((CommandError, ControllerError)):
+            await restore()
+    assert selector.writes == ([1, 0] if proof == "valid" else [1])
+    assert poller._scope_receiver_restore == (None if proof == "valid" else saved)
+    radio.restore_scope_session_state.assert_awaited_once_with((False, False))
+
+
 @pytest.mark.asyncio
 async def test_scope_follow_initial_sub_and_restore() -> None:
     _, poller, selector = _scope_follow_fixture()
-    await poller._execute(
-        EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
-    )
+    await _owned_scope_enable(poller)
     assert selector.source == 1
     await poller._execute(DisableScope(generation=2))
+    assert selector.writes == [1, 0]
+
+
+@pytest.mark.asyncio
+async def test_scope_restore_same_controller_survives_reconnect() -> None:
+    radio, poller, selector = _scope_follow_fixture()
+    await _owned_scope_enable(poller)
+    ticket = poller._scope_receiver_restore_ticket
+    radio._civ_epoch += 1
+    poller.reset_vfo_session(connection_recovery=True)
+    selector.active("SUB")
+    entry = poller._queue.put_ordered(
+        EnableScope(generation=1, allow_receiver_follow=True)
+    )
+    await poller._execute_queued_entry_action(entry)
+    assert poller._scope_receiver_restore_ticket is ticket
+    entry = poller._queue.put_ordered(DisableScope(generation=2))
+    await poller._execute_queued_entry_action(entry)
     assert selector.writes == [1, 0]
 
 
@@ -219,12 +321,14 @@ async def test_scope_follow_rejects_unproven_active(active: str | None) -> None:
     else:
         selector.active(active)
     await poller._execute(
-        EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
+        EnableScope(policy="fast", generation=1, allow_receiver_follow=True),
+        scope_controller_ticket=selector.ticket,
     )
     assert selector.writes == []
     selector.active("SUB")
     await poller._execute(
-        EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
+        EnableScope(policy="fast", generation=1, allow_receiver_follow=True),
+        scope_controller_ticket=selector.ticket,
     )
     assert selector.writes == [1]
 
@@ -233,14 +337,16 @@ async def test_scope_follow_rejects_unproven_active(active: str | None) -> None:
 async def test_scope_follow_reconnect_retained_sub() -> None:
     radio, poller, selector = _scope_follow_fixture("SUB", 1)
     await poller._execute(
-        EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
+        EnableScope(policy="fast", generation=1, allow_receiver_follow=True),
+        scope_controller_ticket=selector.ticket,
     )
     selector.source = 0
     radio._civ_epoch += 1
     poller.reset_vfo_session(connection_recovery=True)
     selector.active("SUB")
     await poller._execute(
-        EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
+        EnableScope(policy="fast", generation=1, allow_receiver_follow=True),
+        scope_controller_ticket=selector.ticket,
     )
     assert selector.writes == [1]
 
@@ -251,9 +357,7 @@ async def test_scope_follow_preserves_explicit_source_and_teardown(
     explicit: str,
 ) -> None:
     radio, poller, selector = _scope_follow_fixture("MAIN", 1)
-    await poller._execute(
-        EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
-    )
+    await _owned_scope_enable(poller)
     assert selector.writes == [0]
     if explicit == "selector":
         poller._reconfirm_scope_field = AsyncMock()
@@ -261,7 +365,8 @@ async def test_scope_follow_preserves_explicit_source_and_teardown(
         radio._civ_epoch += 1
         selector.active("MAIN")
         await poller._execute(
-            EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
+            EnableScope(policy="fast", generation=1, allow_receiver_follow=True),
+            scope_controller_ticket=selector.ticket,
         )
     elif explicit == "vfo":
         await poller._execute(SelectVfo("MAIN"))
@@ -331,6 +436,7 @@ async def test_scope_follow_rechecks_after_source_read(fence: str) -> None:
     await poller._execute(
         EnableScope(policy="fast", generation=1, allow_receiver_follow=True),
         validate_currency=currency,
+        scope_controller_ticket=selector.ticket,
     )
     assert selector.writes == []
 
@@ -363,7 +469,8 @@ async def test_scope_follow_rechecks_after_write(
     )
     with caplog.at_level(logging.INFO):
         await poller._execute(
-            EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
+            EnableScope(policy="fast", generation=1, allow_receiver_follow=True),
+            scope_controller_ticket=selector.ticket,
         )
     assert selector.writes == [1]
     assert "scope receiver confirmed" not in caplog.text
@@ -374,7 +481,8 @@ async def test_scope_follow_unsupported_map_is_inert() -> None:
     _, poller, selector = _scope_follow_fixture()
     poller._cmd_map = CommandMap({})
     await poller._execute(
-        EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
+        EnableScope(policy="fast", generation=1, allow_receiver_follow=True),
+        scope_controller_ticket=selector.ticket,
     )
     assert selector.reads == 0
     assert selector.writes == []
@@ -403,7 +511,8 @@ async def test_scope_follow_uses_direct_getter_despite_hold_receiver_hint() -> N
 
     radio.get_scope_receiver = read
     await poller._execute(
-        EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
+        EnableScope(policy="fast", generation=1, allow_receiver_follow=True),
+        scope_controller_ticket=selector.ticket,
     )
     assert selector.writes == [1]
     assert state.scope_controls.receiver == 0
@@ -413,9 +522,7 @@ async def test_scope_follow_uses_direct_getter_despite_hold_receiver_hint() -> N
 @pytest.mark.parametrize("fence", ["currency", "demand", "provider", "connection"])
 async def test_scope_follow_restore_rechecks_after_read(fence: str) -> None:
     radio, poller, selector = _scope_follow_fixture()
-    await poller._execute(
-        EnableScope(policy="fast", generation=1, allow_receiver_follow=True)
-    )
+    await _owned_scope_enable(poller)
     current = True
 
     def change() -> None:
@@ -480,8 +587,10 @@ async def test_scope_follow_server_admits_only_writable_initial_and_reconnect(
     read_only: bool,
 ) -> None:
     from rigplane.web.server import WebServer
+    from test_controller_authority import Safety
 
     radio, poller, selector = _scope_follow_fixture()
+    poller._queue.bind_controller(Safety().authority())
     server = SimpleNamespace(
         _command_queue=poller._queue,
         _config=SimpleNamespace(read_only=read_only),
@@ -509,12 +618,25 @@ async def test_scope_follow_server_admits_only_writable_initial_and_reconnect(
 async def test_scope_follow_allowance_survives_deferred_enable(allowed: bool) -> None:
     _, poller, selector = _scope_follow_fixture()
     poller._initial_fetch_done.clear()
-    await poller._execute(EnableScope(generation=1, allow_receiver_follow=allowed))
+    await poller._execute(
+        EnableScope(generation=1, allow_receiver_follow=allowed),
+        scope_controller_ticket=selector.ticket,
+    )
     (deferred,) = poller._queue.drain()
     assert deferred.allow_receiver_follow is allowed
     poller._initial_fetch_done.set()
-    await poller._execute(deferred)
+    await poller._execute(deferred, scope_controller_ticket=selector.ticket)
     assert selector.writes == ([1] if allowed else [])
+
+
+@pytest.mark.asyncio
+async def test_scope_follow_without_original_admission_skips_selector() -> None:
+    radio, poller, selector = _scope_follow_fixture()
+    await poller._execute(EnableScope(generation=1, allow_receiver_follow=True))
+    assert selector.writes == []
+    assert poller._scope_receiver_restore is None
+    await poller.restore_scope_session()
+    radio.restore_scope_session_state.assert_awaited_once_with((False, False))
 
 
 @pytest.mark.asyncio

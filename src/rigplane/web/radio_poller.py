@@ -37,6 +37,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, Callable, cast
 
 from ..exceptions import CommandError
+from ..runtime.controller_authority import ControllerTicket
 from ..exceptions import ConnectionError as RadioConnectionError
 from ..core.exceptions import BackgroundSendDropped
 from ..core.exceptions import TimeoutError as RigplaneTimeoutError
@@ -601,6 +602,7 @@ class RadioPoller:
         self._scope_session_state: tuple[bool, bool] | None = None
         self._scope_session_active = False
         self._scope_receiver_restore: tuple[int, int, int] | None = None
+        self._scope_receiver_restore_ticket: ControllerTicket | None = None
         self._scope_follow_connection: tuple[int, object] | None = None
         self._scope_receiver_explicit = False
         self._vfo_command_lock = asyncio.Lock()
@@ -821,6 +823,7 @@ class RadioPoller:
             session_id=entry.session_id,
             command_service=entry.command_service,
             validate_currency=validate_currency,
+            scope_controller_ticket=entry.controller_ticket,
         )
 
     def _relative_vfo_retention_policy(self) -> tuple[float, float]:
@@ -1906,16 +1909,22 @@ class RadioPoller:
         refresh_active: bool = False,
         demand: int | None = None,
         validate_currency: Callable[[], None] | None = None,
+        scope_controller_ticket: ControllerTicket | None = None,
     ) -> None:
         if not self._scope_selector_supported():
             return
         passive = requested is None
+        if passive and scope_controller_ticket is None:
+            return
         if passive and (
             self._scope_receiver_explicit or self._scope_follow_connection == connection
         ):
             return
 
         def check() -> None:
+            if passive:
+                assert scope_controller_ticket is not None
+                scope_controller_ticket.authority.validate(scope_controller_ticket)
             if validate_currency is not None:
                 validate_currency()
             if connection != self._vfo_connection_generation():
@@ -1972,12 +1981,23 @@ class RadioPoller:
                 return
             if passive:
                 previous = self._scope_receiver_restore
+                if previous is not None:
+                    if previous[0] != connection[0]:
+                        raise CommandError("scope restore provider changed")
+                    ticket = self._scope_receiver_restore_ticket
+                    if ticket is None:
+                        raise CommandError(
+                            "scope restore has no original controller admission"
+                        )
+                    ticket.authority.validate(ticket)
                 inherited = (
                     previous[1]
                     if previous and previous[0] == connection[0]
                     else original
                 )
                 self._scope_receiver_restore = (connection[0], inherited, target)
+                if previous is None:
+                    self._scope_receiver_restore_ticket = scope_controller_ticket
             if not await self._send_cmd("set_scope_main_sub", bytes([target])):
                 return
             check()
@@ -2001,16 +2021,22 @@ class RadioPoller:
             return
         provider, original, installed = pending
         if provider != self._provider_generation():
-            self._scope_receiver_restore = None
-            return
+            raise CommandError("scope restore provider changed")
         connection = self._vfo_connection_generation()
-        if validate_currency is not None:
-            validate_currency()
+        ticket = self._scope_receiver_restore_ticket
+
+        def check() -> None:
+            if ticket is None:
+                raise CommandError("scope restore has no original controller admission")
+            ticket.authority.validate(ticket)
+            if validate_currency is not None:
+                validate_currency()
+            if connection != self._vfo_connection_generation():
+                raise CommandError("scope restore connection changed")
+
+        check()
         current = await asyncio.wait_for(self._radio.get_scope_receiver(), timeout=1.0)  # type: ignore[attr-defined]
-        if validate_currency is not None:
-            validate_currency()
-        if connection != self._vfo_connection_generation():
-            raise CommandError("scope restore connection changed")
+        check()
         if type(current) is not int or current not in (0, 1):
             raise CommandError("scope restore selector unavailable")
         if current == installed:
@@ -2019,15 +2045,11 @@ class RadioPoller:
             self._enforce_tx_interlock(SwitchScopeReceiver(original))
             if not await self._send_cmd("set_scope_main_sub", bytes([original])):
                 raise CommandError("scope restore selector unsupported")
-            if validate_currency is not None:
-                validate_currency()
-            if connection != self._vfo_connection_generation():
-                raise CommandError("scope restore connection changed")
+            check()
             confirmed = await asyncio.wait_for(
                 self._radio.get_scope_receiver(), timeout=1.0
             )  # type: ignore[attr-defined]
-            if validate_currency is not None:
-                validate_currency()
+            check()
             if (
                 connection != self._vfo_connection_generation()
                 or type(confirmed) is not int
@@ -2035,8 +2057,11 @@ class RadioPoller:
             ):
                 raise CommandError("scope restore selector unconfirmed")
         self._scope_receiver_restore = None
+        self._scope_receiver_restore_ticket = None
 
-    async def _enable_scope_session(self, *, policy: str) -> None:
+    async def _enable_scope_session(
+        self, *, policy: str, validate_currency: Callable[[], None] | None = None
+    ) -> None:
         """Capture scope state once, then enable through the existing wire lane."""
         radio = self._radio
         get_state = getattr(radio, "get_scope_session_state", None)
@@ -2057,7 +2082,7 @@ class RadioPoller:
             # later DisableScope teardown to retry deterministically.
             self._scope_session_active = True
             try:
-                await self.restore_scope_session()
+                await self.restore_scope_session(validate_currency=validate_currency)
             except BaseException:
                 logger.exception(
                     "radio-poller: scope enable failed and rollback is pending"
@@ -2080,8 +2105,10 @@ class RadioPoller:
             raise CommandError(
                 "scope backend cannot restore pre-session panel/output state"
             )
-        await self._restore_scope_receiver(validate_currency)
-        await restore_state(self._scope_session_state)
+        try:
+            await self._restore_scope_receiver(validate_currency)
+        finally:
+            await restore_state(self._scope_session_state)
         self._scope_session_active = False
         self._scope_session_state = None
         self._scope_follow_connection = None
@@ -2165,6 +2192,7 @@ class RadioPoller:
         session_id: str | None = None,
         command_service: CommandService | None = None,
         validate_currency: Callable[[], None] | None = None,
+        scope_controller_ticket: ControllerTicket | None = None,
     ) -> Observation | None:
         cmd = canonicalize_level_command(
             cmd,
@@ -2194,6 +2222,7 @@ class RadioPoller:
                     session_id=session_id,
                     command_service=command_service,
                     validate_currency=validate_currency,
+                    scope_controller_ticket=scope_controller_ticket,
                 )
         else:
             return await self._execute_unlocked(
@@ -2203,6 +2232,7 @@ class RadioPoller:
                 session_id=session_id,
                 command_service=command_service,
                 validate_currency=validate_currency,
+                scope_controller_ticket=scope_controller_ticket,
             )
 
     async def _execute_unlocked(
@@ -2214,6 +2244,7 @@ class RadioPoller:
         session_id: str | None = None,
         command_service: CommandService | None = None,
         validate_currency: Callable[[], None] | None = None,
+        scope_controller_ticket: ControllerTicket | None = None,
     ) -> Observation | None:
         # MOR-1884 (MOR-1626 criterion 7): the enforcement seat guards EVERY
         # write this poller issues — queued commands and uncommanded internal
@@ -2945,6 +2976,7 @@ class RadioPoller:
                     if rs is not None and hasattr(rs, "active"):
                         rs.active = target_name
                 self._scope_receiver_restore = None
+                self._scope_receiver_restore_ticket = None
                 self._scope_receiver_explicit = True
                 await self._follow_scope_receiver(
                     cmd,
@@ -3021,13 +3053,25 @@ class RadioPoller:
                     else:
                         if self._scope_demand_is_stale(generation):
                             return None
-                        await self._enable_scope_session(policy=policy)
+
+                        def validate_enable_restore() -> None:
+                            if validate_currency is not None:
+                                validate_currency()
+                            if scope_connection != self._vfo_connection_generation():
+                                raise CommandError("scope restore connection changed")
+                            if self._scope_demand_is_stale(generation):
+                                raise CommandError("scope restore demand changed")
+
+                        await self._enable_scope_session(
+                            policy=policy, validate_currency=validate_enable_restore
+                        )
                         if allow_receiver_follow:
                             await self._follow_scope_receiver(
                                 cmd,
                                 connection=scope_connection,
                                 demand=generation,
                                 validate_currency=validate_currency,
+                                scope_controller_ticket=scope_controller_ticket,
                             )
                         logger.info("radio-poller: scope enabled")
                         await self._fetch_scope_controls()
@@ -3080,6 +3124,7 @@ class RadioPoller:
                     "set_scope_main_sub"
                 ):
                     self._scope_receiver_restore = None
+                    self._scope_receiver_restore_ticket = None
                     self._scope_receiver_explicit = True
                 sent = await self._send_cmd("set_scope_main_sub", bytes([receiver]))
                 if sent:
