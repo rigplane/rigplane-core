@@ -191,3 +191,96 @@ describe('SystemController credential-free HTTP', () => {
     );
   });
 });
+
+describe('SystemController reconnect discovery', () => {
+  beforeEach(() => { vi.resetModules(); vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+  it.each([
+    { mode: 'local', grant: null, expectedRemote: false },
+    { mode: 'remote', grant: { controller_key: 'a'.repeat(64), generation: 7, ttl_ms: 6000, heartbeat_ms: 2000, controller_role: 'auxiliary' }, expectedRemote: true },
+  ])('rediscovers stale local mode as $mode before opening channels', async ({ mode, grant, expectedRemote }) => {
+    let discovered = 'local';
+    const fetcher = vi.fn(async (_url: string, init?: RequestInit) =>
+      new Response(JSON.stringify(init?.method === 'POST' ? grant : { protocol_version: 1, mode: discovered }),
+        { status: init?.method === 'POST' ? 201 : 200 }));
+    vi.stubGlobal('fetch', fetcher);
+    const { controllerClient } = await import('../../transport/controller-client');
+    const { SystemController } = await import('../system-controller');
+    await controllerClient.prepare();
+    const calls: string[] = [];
+    const controller = new SystemController({
+      destroyAudio: () => {}, disconnectWebSockets: () => {}, destroyMediaSession: () => {},
+      setRadioDisconnected: () => {}, resetRadioState: () => {},
+      initMediaSession: () => calls.push('media'), reconnectWebSockets: () => calls.push('ws'),
+    });
+    await controller.disconnect();
+    discovered = mode;
+    controller.connect();
+    await vi.waitFor(() => expect(calls).toEqual(['media', 'ws']));
+    expect(controllerClient.remote).toBe(expectedRemote);
+    expect(fetcher.mock.calls.filter(([, init]) => !init?.method)).toHaveLength(2);
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(expectedRemote ? 1 : 0);
+    if (expectedRemote) await controllerClient.release();
+  });
+
+  it.each([409, 503])('keeps channels closed on remote admission %i after stale local mode', async (statusCode) => {
+    let remote = false;
+    const fetcher = vi.fn(async (_url: string, init?: RequestInit) => new Response(JSON.stringify(
+      init?.method === 'POST' ? { error: statusCode === 409 ? 'controller_busy' : 'controller_not_ready' }
+        : { protocol_version: 1, mode: remote ? 'remote' : 'local' },
+    ), { status: init?.method === 'POST' ? statusCode : 200 }));
+    vi.stubGlobal('fetch', fetcher);
+    const { controllerClient } = await import('../../transport/controller-client');
+    const { SystemController } = await import('../system-controller');
+    const { onMessage } = await import('../../transport/ws-client');
+    const received = vi.fn();
+    const stop = onMessage(received);
+    await controllerClient.prepare();
+    const reconnectWebSockets = vi.fn();
+    const controller = new SystemController({
+      destroyAudio: () => {}, disconnectWebSockets: () => {}, destroyMediaSession: () => {},
+      setRadioDisconnected: () => {}, resetRadioState: () => {},
+      initMediaSession: () => {}, reconnectWebSockets,
+    });
+    await controller.disconnect();
+    remote = true;
+    controller.connect();
+    await vi.waitFor(() => expect(controller.clientConnected).toBe(false));
+    expect(reconnectWebSockets).not.toHaveBeenCalled();
+    expect(controllerClient.active).toBe(false);
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    expect(received.mock.calls.some(([note]) => note.code === (statusCode === 409 ? 'controller_busy' : 'controller_not_ready'))).toBe(true);
+    stop();
+  });
+
+  it('cancels an in-flight reconnect so its late mode cannot override a newer connect', async () => {
+    let finish!: (value: Response) => void;
+    const delayed = new Promise<Response>((resolve) => { finish = resolve; });
+    const local = () => new Response(JSON.stringify({ protocol_version: 1, mode: 'local' }));
+    const fetcher = vi.fn().mockImplementationOnce(async () => local())
+      .mockImplementationOnce(() => delayed).mockImplementationOnce(async () => local());
+    vi.stubGlobal('fetch', fetcher);
+    const { controllerClient } = await import('../../transport/controller-client');
+    const { SystemController } = await import('../system-controller');
+    await controllerClient.prepare();
+    const reconnectWebSockets = vi.fn();
+    const controller = new SystemController({
+      destroyAudio: () => {}, disconnectWebSockets: () => {}, destroyMediaSession: () => {},
+      setRadioDisconnected: () => {}, resetRadioState: () => {},
+      initMediaSession: () => {}, reconnectWebSockets,
+    });
+    await controller.disconnect();
+    controller.connect();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    await controller.disconnect();
+    controller.connect();
+    await vi.waitFor(() => expect(reconnectWebSockets).toHaveBeenCalledOnce());
+    finish(new Response(JSON.stringify({ protocol_version: 1, mode: 'remote' })));
+    await Promise.resolve();
+    expect(controllerClient.remote).toBe(false);
+    expect(controller.clientConnected).toBe(true);
+    expect(reconnectWebSockets).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+});

@@ -333,7 +333,16 @@ export class WsChannel {
             this._emitCommandLifecycle(raw, socketEpoch);
             return;
           }
-          this._emitCommandResult(raw, socketEpoch);
+          const terminalControllerRefusal = this.control && controllerClient.remote
+            && (raw.type === 'error' || (raw.type === 'response' && raw.ok === false) || raw.status === 'error')
+            && (raw.error === 'controller_invalid' || raw.error === 'controller_lost'
+              || (raw.error === 'command_failed' && (raw.message === 'controller_invalid' || raw.message === 'controller_lost')));
+          try {
+            this._emitCommandResult(raw, socketEpoch);
+          } finally {
+            if (terminalControllerRefusal && this.ws === ws && controllerClient.valid(epoch)) controllerClient.lose();
+          }
+          if (terminalControllerRefusal) return;
           // Handle status-based error responses ({"status":"error", ...})
           if (raw['status'] === 'error') {
             const errorMsg = (raw['message'] as string) || (raw['error'] as string) || 'Command failed';
