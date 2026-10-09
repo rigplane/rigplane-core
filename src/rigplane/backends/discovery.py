@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
@@ -851,15 +851,18 @@ def _resolve_xiegu_x6200_override(
 
 async def discover_serial_radios(
     *,
+    civ_baud_rates_by_port: Mapping[str, list[int]] | None = None,
     _open_serial: _OpenSerial | None = None,
     _yaesu_transport_factory: _YaesuTransportFactory | None = None,
 ) -> list[RadioDiscoveryResult]:
     """Discover radios connected via USB serial (CI-V, Yaesu CAT, Kenwood CAT).
 
-    Probes each candidate port in sequence: CI-V → Yaesu CAT → Kenwood CAT.
+    Probes unbound candidate ports in sequence: CI-V → Yaesu CAT → Kenwood CAT.
     Stops after the first successful match for each port.
 
     Args:
+        civ_baud_rates_by_port: Exact device paths restricted to CI-V at the
+            supplied baud rates, without fallback to other protocols.
         _open_serial: Overrides the open step of :func:`rigplane.core.serial_open.open_serial_port`,
             passed through to :func:`probe_serial_civ` (used in tests).
         _yaesu_transport_factory: Override for ``YaesuCatTransport`` constructor
@@ -874,7 +877,17 @@ async def discover_serial_radios(
     results: list[RadioDiscoveryResult] = []
     for port in candidates:
         # --- CI-V probe ---
-        civ = await probe_serial_civ(port.device, _open_serial=_open_serial)
+        bound_bauds = (
+            civ_baud_rates_by_port.get(port.device)
+            if civ_baud_rates_by_port is not None
+            else None
+        )
+        if bound_bauds is None:
+            civ = await probe_serial_civ(port.device, _open_serial=_open_serial)
+        else:
+            civ = await probe_serial_civ(
+                port.device, baud_rates=bound_bauds, _open_serial=_open_serial
+            )
         if civ:
             model = identify_radio(civ.address, civ.model_id)
             profile_id = CIV_PROFILE_MAP.get(civ.address, "")
@@ -910,6 +923,9 @@ async def discover_serial_radios(
                     usb_audio=_resolve_usb_audio_metadata(civ.port),
                 )
             )
+            continue
+
+        if bound_bauds is not None:
             continue
 
         # --- Yaesu CAT probe ---

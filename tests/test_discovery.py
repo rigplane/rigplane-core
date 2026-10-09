@@ -1102,6 +1102,41 @@ def test_radio_discovery_result_legacy_positional_usb_audio_binding() -> None:
 
 class TestDiscoverSerialRadios:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("responding", [False, True])
+    async def test_bound_civ_port_uses_only_requested_baud_without_protocol_fallback(
+        self, monkeypatch, responding
+    ):
+        import rigplane.backends.discovery as discovery
+
+        opened, writers = [], []
+
+        async def opener(*, url, baudrate, **kwargs):
+            opened.append((url, baudrate))
+            writer = _FakeWriter()
+            writers.append(writer)
+            return _FakeReader([_IC7610_RESPONSE] if responding else []), writer
+
+        def unexpected_yaesu(**kwargs):
+            pytest.fail("Bound CI-V port must not be opened by another protocol")
+
+        monkeypatch.setattr(discovery, "_resolve_usb_audio_metadata", lambda port: None)
+        monkeypatch.setattr(
+            discovery, "probe_serial_civ", partial(probe_serial_civ, timeout=0.01)
+        )
+        port = _make_port("/dev/ttyUSB0", "USB Serial", "USB VID:PID=10C4:EA60")
+        with patch("serial.tools.list_ports.comports", return_value=[port]):
+            results = await discover_serial_radios(
+                civ_baud_rates_by_port={"/dev/ttyUSB0": [115200]},
+                _open_serial=opener,
+                _yaesu_transport_factory=unexpected_yaesu,
+            )
+        assert opened == [("/dev/ttyUSB0", 115200)]
+        assert all(writer.closed for writer in writers)
+        assert [result.baudrate for result in results] == (
+            [115200] if responding else []
+        )
+
+    @pytest.mark.asyncio
     async def test_civ_radio_detected(self) -> None:
         reader = _FakeReader([_IC7610_RESPONSE])
         writer = _FakeWriter()
