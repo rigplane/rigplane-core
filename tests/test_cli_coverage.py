@@ -808,6 +808,8 @@ def _web_cmd_args(*, web_bridge: str | None) -> argparse.Namespace:
         web_bridge=web_bridge,
         web_bridge_tx_device=None,
         web_bridge_rx_only=False,
+        web_bridge_input_gain_db=0.0,
+        web_bridge_output_gain_db=0.0,
         web_bridge_label=None,
         web_bridge_max_retries=1,
         web_bridge_retry_delay=0.1,
@@ -1046,6 +1048,32 @@ async def test_cli_web_no_loopback_graceful(
     assert rc == 0
     out = capsys.readouterr().out
     assert "loopback not found, bridge disabled" in out
+
+
+@pytest.mark.asyncio
+async def test_cli_web_forwards_bridge_gain_values() -> None:
+    radio = AsyncMock()
+    captured: dict[str, object] = {}
+
+    class FakeWebServer:
+        def __init__(self, _radio, _cfg):
+            pass
+
+        async def start_audio_bridge(self, **kwargs):
+            captured.update(kwargs)
+
+        async def serve_forever(self, *, on_started=None):
+            on_started()
+            raise asyncio.CancelledError
+
+    args = _web_cmd_args(web_bridge="Loopback")
+    args.web_bridge_input_gain_db = 6.0
+    args.web_bridge_output_gain_db = -10.0
+    with patch("rigplane.web.server.WebServer", FakeWebServer):
+        assert await _cmd_web(radio, args) == 0
+
+    assert captured["input_gain_db"] == 6.0
+    assert captured["output_gain_db"] == -10.0
 
 
 @pytest.mark.asyncio
@@ -1588,6 +1616,7 @@ def _fake_bridge_cls(start_err: Exception | None = None) -> type:
     """Return a fake AudioBridge class for testing."""
     start_mock = AsyncMock(side_effect=start_err)
     stop_mock = AsyncMock()
+    init_kwargs: list[dict[str, object]] = []
     _stats = {
         "running": False,
         "rx_frames": 5,
@@ -1604,7 +1633,7 @@ def _fake_bridge_cls(start_err: Exception | None = None) -> type:
         stop = stop_mock
 
         def __init__(self, *_a: object, **_kw: object) -> None:
-            pass
+            init_kwargs.append(_kw)
 
         @property
         def stats(self) -> dict:
@@ -1612,6 +1641,7 @@ def _fake_bridge_cls(start_err: Exception | None = None) -> type:
 
     _FakeBridge._start_mock = start_mock  # type: ignore[attr-defined]
     _FakeBridge._stop_mock = stop_mock  # type: ignore[attr-defined]
+    _FakeBridge._init_kwargs = init_kwargs  # type: ignore[attr-defined]
     return _FakeBridge
 
 
@@ -1656,7 +1686,13 @@ async def test_cmd_audio_bridge_list_devices_import_error() -> None:
 async def test_cmd_audio_bridge_standalone_runs_until_cancelled() -> None:
     """Bridge starts, runs, and stops cleanly when cancelled (standalone mode)."""
     radio = _make_audio_capable_mock(MagicMock())
-    args = argparse.Namespace(list_devices=False, device="BlackHole 2ch", rx_only=False)
+    args = argparse.Namespace(
+        list_devices=False,
+        device="BlackHole 2ch",
+        rx_only=False,
+        input_gain_db=3.0,
+        output_gain_db=-10.0,
+    )
 
     fake_cls = _fake_bridge_cls()
     with patch.object(_ab_mod, "AudioBridge", fake_cls):
@@ -1666,6 +1702,8 @@ async def test_cmd_audio_bridge_standalone_runs_until_cancelled() -> None:
         rc = await asyncio.gather(task, return_exceptions=True)
 
     assert rc[0] == 0
+    assert fake_cls._init_kwargs[0]["input_gain_db"] == 3.0
+    assert fake_cls._init_kwargs[0]["output_gain_db"] == -10.0
     fake_cls._start_mock.assert_called_once()
     fake_cls._stop_mock.assert_called_once()
 

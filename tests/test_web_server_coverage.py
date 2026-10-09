@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import io
 import json
 import pathlib
@@ -128,6 +129,25 @@ def _response_json(writer: _FakeWriter) -> tuple[int, dict]:
     status = int(text.split(" ", 2)[1])
     body_start = text.index("\r\n\r\n") + 4
     return status, json.loads(text[body_start:] or "{}")
+
+
+class _AdjustableBridge:
+    def __init__(self, *, running: bool = True) -> None:
+        self.running = running
+        self.input_gain_db = 0.0
+        self.output_gain_db = 0.0
+        self.stats = {"running": running, "rx_frames": 3}
+
+    def set_gains(
+        self,
+        *,
+        input_gain_db: float | None = None,
+        output_gain_db: float | None = None,
+    ) -> None:
+        if input_gain_db is not None:
+            self.input_gain_db = input_gain_db
+        if output_gain_db is not None:
+            self.output_gain_db = output_gain_db
 
 
 def _drain_queue(queue: asyncio.Queue[object]) -> None:
@@ -1920,6 +1940,129 @@ async def test_runtime_endpoint_reports_process_bind_radio_and_bridge_status() -
     assert data["bridge"]["stats"] == {"rx_frames": 3, "tx_frames": 4}
     assert data["lastError"] is None
     srv._server = None  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    "method_name", ["start_audio_bridge", "defer_audio_bridge_start"]
+)
+def test_bridge_methods_preserve_legacy_positional_arguments(method_name) -> None:
+    srv = WebServer(None)
+    bound = inspect.signature(getattr(srv, method_name)).bind(
+        "rx-device", "tx-device", False, "legacy-label", 3, 0.25
+    )
+    bound.apply_defaults()
+
+    assert bound.arguments == {
+        "device_name": "rx-device",
+        "tx_device_name": "tx-device",
+        "tx_enabled": False,
+        "label": "legacy-label",
+        "max_retries": 3,
+        "retry_base_delay": 0.25,
+        "input_gain_db": 0.0,
+        "output_gain_db": 0.0,
+    }
+
+
+def test_deferred_bridge_preserves_legacy_positional_configuration() -> None:
+    srv = WebServer(None)
+
+    srv.defer_audio_bridge_start(
+        "rx-device", "tx-device", False, "legacy-label", 3, 0.25
+    )
+
+    assert srv._deferred_bridge_start == {  # noqa: SLF001
+        "device_name": "rx-device",
+        "tx_device_name": "tx-device",
+        "tx_enabled": False,
+        "label": "legacy-label",
+        "max_retries": 3,
+        "retry_base_delay": 0.25,
+        "input_gain_db": 0.0,
+        "output_gain_db": 0.0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_bridge_patch_updates_running_gain_and_get_reports_values() -> None:
+    srv = WebServer(None, WebConfig(host="127.0.0.1", port=0))
+    bridge = _AdjustableBridge()
+    srv._audio_bridge = bridge  # type: ignore[assignment]  # noqa: SLF001
+    payload = json.dumps({"outputGainDb": -10.0}).encode()
+    patch_writer = _FakeWriter()
+
+    await srv._handle_http(  # noqa: SLF001
+        patch_writer,
+        "PATCH",
+        "/api/v1/bridge",
+        headers={"content-length": str(len(payload))},
+        reader=_reader_with(payload),
+    )
+
+    status, data = _response_json(patch_writer)
+    assert status == 200
+    assert data == {"inputGainDb": 0.0, "outputGainDb": -10.0}
+    assert bridge.output_gain_db == -10.0
+
+    get_writer = _FakeWriter()
+    await srv._handle_http(  # noqa: SLF001
+        get_writer, "GET", "/api/v1/bridge", headers={}
+    )
+    get_status, get_data = _response_json(get_writer)
+    assert get_status == 200
+    assert get_data["inputGainDb"] == 0.0
+    assert get_data["outputGainDb"] == -10.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "expected_status"),
+    [
+        ({}, 400),
+        ({"inputGainDb": "loud"}, 400),
+        ({"outputGainDb": float("nan")}, 400),
+        ({"inputGainDb": True}, 400),
+        ({"outputGainDb": float("inf")}, 400),
+        ({"inputGainDb": 10**400}, 400),
+        ({"unknownGainDb": 1.0}, 400),
+    ],
+)
+async def test_bridge_patch_rejects_invalid_gain_payloads(
+    payload: dict[str, object], expected_status: int
+) -> None:
+    srv = WebServer(None, WebConfig(host="127.0.0.1", port=0))
+    srv._audio_bridge = _AdjustableBridge()  # type: ignore[assignment]  # noqa: SLF001
+    body = json.dumps(payload).encode()
+    writer = _FakeWriter()
+
+    await srv._handle_http(  # noqa: SLF001
+        writer,
+        "PATCH",
+        "/api/v1/bridge",
+        headers={"content-length": str(len(body))},
+        reader=_reader_with(body),
+    )
+
+    status, _data = _response_json(writer)
+    assert status == expected_status
+
+
+@pytest.mark.asyncio
+async def test_bridge_patch_requires_running_bridge() -> None:
+    srv = WebServer(None, WebConfig(host="127.0.0.1", port=0))
+    payload = json.dumps({"inputGainDb": 3.0}).encode()
+    writer = _FakeWriter()
+
+    await srv._handle_http(  # noqa: SLF001
+        writer,
+        "PATCH",
+        "/api/v1/bridge",
+        headers={"content-length": str(len(payload))},
+        reader=_reader_with(payload),
+    )
+
+    status, _data = _response_json(writer)
+    assert status == 409
 
 
 @pytest.mark.asyncio

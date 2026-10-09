@@ -1311,6 +1311,65 @@ class TestPresets:
             _apply_preset(args, "nonexistent")
 
 
+class TestBridgeGainArguments:
+    @pytest.mark.parametrize(
+        ("command", "option"),
+        [
+            (["audio", "bridge"], "--input-gain-db"),
+            (["audio", "bridge"], "--output-gain-db"),
+            (["web"], "--bridge-input-gain-db"),
+            (["web"], "--bridge-output-gain-db"),
+        ],
+    )
+    @pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+    def test_bridge_gain_rejects_non_finite_arguments(self, command, option, value):
+        with pytest.raises(SystemExit) as exc:
+            _build_parser().parse_args([*command, f"{option}={value}"])
+
+        assert exc.value.code == 2
+
+    def test_audio_bridge_gain_defaults_are_zero_db(self):
+        args = _build_parser().parse_args(["audio", "bridge"])
+
+        assert args.input_gain_db == 0.0
+        assert args.output_gain_db == 0.0
+
+    def test_audio_bridge_accepts_input_and_output_gain(self):
+        args = _build_parser().parse_args(
+            [
+                "audio",
+                "bridge",
+                "--input-gain-db",
+                "6.0",
+                "--output-gain-db",
+                "-10.0",
+            ]
+        )
+
+        assert args.input_gain_db == 6.0
+        assert args.output_gain_db == -10.0
+
+    def test_web_bridge_gain_defaults_are_zero_db(self):
+        args = _build_parser().parse_args(["web"])
+
+        assert args.web_bridge_input_gain_db == 0.0
+        assert args.web_bridge_output_gain_db == 0.0
+
+    def test_web_accepts_bridge_input_and_output_gain(self):
+        args = _build_parser().parse_args(
+            [
+                "web",
+                "--bridge-input-gain-db",
+                "3.0",
+                "--bridge-output-gain-db",
+                "-10.0",
+            ]
+        )
+
+        assert args.web_bridge_input_gain_db == 3.0
+        assert args.web_bridge_output_gain_db == -10.0
+
+
 class TestWebRigctldDefault:
     """Issue #1089: rigctld is on by default with --no-rigctld opt-out."""
 

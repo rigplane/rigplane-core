@@ -105,6 +105,12 @@ STABLE_HTTP_ENDPOINTS: Final[tuple[HttpEndpoint, ...]] = (
         "auth": "none",
     },
     {
+        "method": "PATCH",
+        "path": "/api/v1/bridge",
+        "purpose": "adjust running audio bridge gains",
+        "auth": "none",
+    },
+    {
         "method": "DELETE",
         "path": "/api/v1/bridge",
         "purpose": "stop audio bridge",
