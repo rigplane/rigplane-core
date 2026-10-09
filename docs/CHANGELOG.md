@@ -11,6 +11,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0b15] — 2026-10-09
+
+### Fixed
+
+- **Declare the resolved radio audio route in server info.** Server info
+  exposes the audio route resolved from backend facts and the current RX
+  startup refusal (`fe08ea50`, `1f50aaeb`, #4005).
+- **Keep remote input, audio and host actions within controller admission
+  (MOR-3144, #4002, #4003, #4012, #4013, #4017).** Browser transports and
+  audio requests follow the controller lease; stale admitted input is fenced
+  and momentary holds are released. Remote activation remains closed.
+- **Recheck TX audio currency after session convergence (#4004).** An
+  outdated session cannot authorize the current transmit-audio request.
+- **Request 50 ms input latency for Linux ALSA capture (MOR-3140).**
+
+### Added
+
+- **SDR IQ contracts and scope control (MOR-3151, MOR-3156, #4011,
+  #4015).** Add the `rigplane.sdr` contract package and scope controller
+  view shifting, retuning and TX freeze. Extract the adaptive level mapper
+  into `scope.levels` (#4010).
+
+### Known issues
+
+- Native artifact, owner and hardware acceptance remain separate from this
+  release-candidate source preparation. Linux hardware audio acceptance
+  remains pending.
+
 ## [3.0.0b14] — 2026-10-06
 
 ### Fixed
@@ -4408,7 +4436,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b14...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b15...HEAD
+[3.0.0b15]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b14...v3.0.0b15
 [3.0.0b14]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b13...v3.0.0b14
 [3.0.0b13]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b12...v3.0.0b13
 [3.0.0b12]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b11...v3.0.0b12
