@@ -178,6 +178,7 @@ describe('StatusBar connection toggle (in-page confirm)', () => {
 
     dialogButton(host, 'confirm-dialog-confirm').click();
     await vi.waitFor(() => expect(sys.connect).toHaveBeenCalledTimes(1));
+    expect(sys.connect).toHaveBeenCalledWith({ operatorInitiated: true });
     expect(sys.disconnect).not.toHaveBeenCalled();
     expect(confirmSpy).not.toHaveBeenCalled();
     expect(alertSpy).not.toHaveBeenCalled();

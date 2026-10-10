@@ -128,13 +128,38 @@ export class SystemController {
   }
 
   /** Reconnect all frontend channels. */
-  connect(): void {
+  connect(options: { operatorInitiated?: boolean } = {}): void {
     if (this._disconnectInFlight || this._clientConnected) return;
     this._clientConnected = true;
 
     const abort = new AbortController();
     this._connectAbort = abort;
-    const pending = controllerClient.prepare(abort.signal).then(() => {
+    const pending = Promise.resolve().then(async () => {
+      if (abort.signal.aborted) return false;
+      if (options.operatorInitiated && typeof window !== 'undefined') {
+        let handler: (() => Promise<boolean>) | undefined;
+        // A host may replace this explicit action with its own connection flow.
+        // Bootstrap and transport retries never dispatch this event.
+        window.dispatchEvent(new CustomEvent('rigplane:before-connect', {
+          detail: {
+            signal: abort.signal,
+            handle: (candidate: () => Promise<boolean>): boolean => {
+              if (handler) return false;
+              handler = candidate;
+              return true;
+            },
+          },
+        }));
+        if (handler && await handler() === false) {
+          if (this._connectInFlight === pending) this._clientConnected = false;
+          return false;
+        }
+      }
+      if (this._connectInFlight !== pending || abort.signal.aborted) return false;
+      await controllerClient.prepare(abort.signal);
+      return true;
+    }).then((prepared) => {
+      if (!prepared) return;
       if (this._connectInFlight !== pending || !this._clientConnected || abort.signal.aborted) return;
       this._effects.initMediaSession();
       this._effects.reconnectWebSockets();

@@ -328,7 +328,7 @@
       message: isConnected
         ? t('core.statusbar.connection.confirmDisconnect')
         : t('core.statusbar.connection.confirmConnect'),
-      action: () => (isConnected ? runtime.system.disconnect() : runtime.system.connect()),
+      action: () => (isConnected ? runtime.system.disconnect() : runtime.system.connect({ operatorInitiated: true })),
     });
   }
 
