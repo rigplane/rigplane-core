@@ -32,6 +32,35 @@ describe('remote controller channel grouping', () => {
   });
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.resetModules(); });
 
+  it.each([
+    ['http:', 'ws:', 'primary'],
+    ['https:', 'wss:', 'primary'],
+    ['http:', 'ws:', 'auxiliary'],
+    ['https:', 'wss:', 'auxiliary'],
+  ] as const)('opens the bootstrap relative URL from %s as %s with %s authority', async (pageProtocol, socketProtocol, role) => {
+    vi.stubGlobal('location', new URL(`${pageProtocol}//station.example.invalid/`));
+    vi.stubGlobal('fetch', vi.fn(async (_url, init?: RequestInit) => new Response(JSON.stringify(
+      init?.method === 'POST'
+        ? { controller_key: 'a'.repeat(64), generation: 4, ttl_ms: 6000, heartbeat_ms: 2000, controller_role: role }
+        : { protocol_version: 1, mode: 'remote', state: 'held' },
+    ), { status: init?.method === 'POST' ? 201 : 200 })));
+    const { controllerClient } = await import('../controller-client');
+    const { connect, disconnect, isConnected } = await import('../ws-client');
+    await controllerClient.prepare();
+
+    connect();
+
+    await vi.waitFor(() => expect(instances).toHaveLength(1));
+    const socket = instances[0] as ControllerSocket;
+    expect(socket.url).toBe(`${socketProtocol}//station.example.invalid/api/v1/ws?controller_role=${role}`);
+    expect(socket.protocols).toEqual([`rigplane-controller-v1.${'a'.repeat(64)}`]);
+    expect(socket.url).not.toContain('a'.repeat(64));
+    socket.simulateOpen();
+    expect(isConnected()).toBe(true);
+    expect(controllerClient.active).toBe(true);
+    disconnect();
+  });
+
   it('attaches primary before scope, clears pending commands on loss and ignores old callbacks', async () => {
     const { controllerClient } = await import('../controller-client');
     const { WsChannel } = await import('../ws-client');

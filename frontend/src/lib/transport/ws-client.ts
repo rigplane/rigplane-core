@@ -288,7 +288,7 @@ export class WsChannel {
     this.controllerEpoch = epoch;
     let target = authenticatedWsUrl(this.url);
     if (controllerClient.remote && this.control) {
-      const url = new URL(target);
+      const url = new URL(target, `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/`);
       url.searchParams.set('controller_role', controllerClient.role);
       target = url.toString();
     }
