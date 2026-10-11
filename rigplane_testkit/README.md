@@ -31,8 +31,9 @@ UDP code paths as production.
   from the write templates, and the `ID;` answer the connect identity gate
   probes comes from the profile's `[identity].expected_ids`. Scripted faults:
   a garbled reply, `?;` rejection, a silence window, a request echo, and an
-  auto-information burst — immediate, or ahead of the next request's reply
-  (plus AI mode pushing info lines on state change).
+  auto-information burst — immediate, or on the next request the fake
+  processes, ahead of its reply if it has one (plus AI mode pushing info
+  lines on state change).
   The implementation lives in `rigplane_testkit/yaesu/cat_fake.py`.
 - `rigplane_testkit.icom.recorder` — `IcomSessionRecorder`, an asyncio UDP
   proxy that sits between a client and a radio (real or simulated) and writes

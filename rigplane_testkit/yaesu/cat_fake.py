@@ -43,9 +43,10 @@ carries a byte outside 0x20-0x7E, the ``CatGarbledFrameError`` case),
 (nothing answers — or applies — for a window), ``echo_replies`` (each
 request echoed verbatim before the answer), ``auto_info_burst`` (an
 unsolicited info line pushed to every client now),
-``auto_info_burst_on_next_request`` (the same lines, pushed ahead of
-the next request's reply). Auto-information mode itself pushes the
-info line on each state change while on.
+``auto_info_burst_on_next_request`` (the same lines, pushed on the
+next request the fake processes outside a silence window, ahead of its
+reply if it has one). Auto-information mode itself pushes the info line
+on each state change while on.
 """
 
 from __future__ import annotations
@@ -269,12 +270,13 @@ class FakeCatRadio:
         self._broadcast(self._info_line(verb))
 
     def auto_info_burst_on_next_request(self, *verbs: str) -> None:
-        """Push the info lines for *verbs* ahead of the next request's reply.
+        """Push the info lines for *verbs* on the next request the fake processes.
 
-        The lines are sent while answering the next request the fake
-        does answer (a request inside a ``silence`` window produces
-        nothing), so unsolicited auto-information lines sit
-        deterministically between that request and its reply on the wire.
+        The lines are sent when the next request outside a ``silence``
+        window is processed, ahead of its reply if it has one (a SET,
+        which gets no reply, also releases the burst), so unsolicited
+        auto-information lines sit deterministically after that request
+        on the wire.
         """
         if not verbs:
             raise ValueError("no auto-information verbs given")
