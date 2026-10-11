@@ -1,8 +1,6 @@
 name: Platform subset
 
 on:
-  push:
-    branches: [codex/platform-subset]
   schedule:
     # Daily 01:30 UTC.
     - cron: "30 1 * * *"
@@ -52,10 +50,12 @@ jobs:
           uv --version
           uv run python -c "import platform; print(platform.platform()); print(platform.machine())"
 
+      # The repository is public, so the job log is public: print only a line
+      # count, not registry contents (which include the console user name).
       - name: Live probe (ioreg)
         run: |
           ioreg -l > "$RUNNER_TEMP/ioreg.txt"
-          head -n 20 "$RUNNER_TEMP/ioreg.txt"
+          echo "ioreg -l lines: $(wc -l < "$RUNNER_TEMP/ioreg.txt")"
 
       - name: Run platform tests
         env:

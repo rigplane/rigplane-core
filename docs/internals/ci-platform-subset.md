@@ -10,10 +10,13 @@ on Linux.
 |---|---|
 | macOS arm64 | `[self-hosted, macOS, ARM64, platform]` |
 
-There is no Windows or native Linux leg in this workflow.
+There is no Windows or native Linux leg in this workflow. The Windows runners
+are registered to the `rigplane-pro` repository only, so jobs from this
+repository cannot reach them; MOR-3231 reconciles runner labels and the matrix.
 
 Each leg runs `uv sync --all-extras`, prints the Python and `uv` versions and
-the platform, runs `ioreg -l` as a live probe, then runs the test files listed
+the platform, runs `ioreg -l` as a live probe (printing only its line count,
+because the job log of this public repository is public), then runs the test files listed
 in the workflow's `Run platform tests` step with `--timeout 300 -n 2`, and
 uploads `junit.xml` as an artifact.
 
