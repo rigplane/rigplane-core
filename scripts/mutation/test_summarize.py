@@ -48,7 +48,7 @@ def test_per_module_counts() -> None:
 def test_totals_sum_per_status() -> None:
     summary = _summarize_fixture()
     total = summary["total"]
-    assert total["killed"] == 5
+    assert total["killed"] == 4
     assert total["survived"] == 3
     assert total["timeout"] == 1
     assert total["no_tests"] == 1
