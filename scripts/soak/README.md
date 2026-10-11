@@ -86,8 +86,11 @@ exceptions; this directory's files are tracked (staged with
 
 `tests/test_soak_driver.py` runs a 20 s smoke (1 s cadences), criterion
 math on synthetic samples, sampler per-field merge unit tests, and the
-mutation pins: suppressed connect (5 s budget) must fail, a disconnect
-that never happened must not count as recovered, and a reconnect cycle
-outliving the run must not wedge it. `.github/workflows/soak-nightly.yml`
+mutation pins: suppressed connect (5 s budget, no injected blackout)
+must fail, a disconnect that never happened must not count as
+recovered, and a reconnect cycle outliving the run must not wedge it.
+A missing `ps` sample must leave the driver-side RSS field None rather
+than raise, and the report must be written even when a stack-teardown
+`stop()` raises. `.github/workflows/soak-nightly.yml`
 runs the 1-hour soak nightly on the self-hosted Linux runner and uploads
 the report; see `docs/internals/soak.md`.

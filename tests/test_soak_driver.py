@@ -13,11 +13,16 @@ radio disconnect/connect, and pins:
 * the sampler's per-field merge: runtime ``process`` fields (PR #4044
   names) first, driver-side measurement for each field the runtime did
   not report, and the live connection status from the state document;
-* the recovery criterion's teeth under the forced-fault run the ticket
-  names (``FaultPlan`` drop 100 % for 3 s): suppressing only the connect
-  POST with a budget below the stack's self-recovery time must report
-  an unrecovered disconnect and a FAIL verdict, and a disconnect that
+* the recovery criterion's teeth without an injected blackout
+  (``fault_drop=0.0``): suppressing only the connect POST with a
+  budget below the stack's self-recovery time must report an
+  unrecovered disconnect and a FAIL verdict, and a disconnect that
   never happened must not count as recovered;
+* a ``ps`` failure (OSError or its 10 s timeout) in the driver-side
+  RSS fallback leaves the field None instead of raising into the
+  reconnect cycle's stability probe;
+* the report file and its verdict line survive a stack-teardown
+  ``stop()`` that raises;
 * a reconnect cycle still running at the run deadline must not wedge
   the run (the periodic loops must always yield).
 """
@@ -25,6 +30,8 @@ radio disconnect/connect, and pins:
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -218,6 +225,32 @@ async def test_sampler_falls_back_fully_without_runtime_process(
     assert sample.connection is None
 
 
+async def test_driver_side_metrics_tolerate_a_missing_ps_sample(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A None ``ps`` result must leave the RSS field None, not raise.
+
+    ``_ps_output`` returns None on OSError or its 10 s timeout; the
+    old ``int(out.strip())`` then raised AttributeError, which the
+    best-effort suppression around the parse did not cover — in the
+    metrics loop the sample was silently dropped, and inside
+    ``_stability_probe`` the exception propagated, the cycle recorded
+    "cycle raised", and the recovery criterion falsely failed
+    (reproduced on macOS). ``_statm_rss_bytes`` is forced to None so
+    the ``ps`` fallback also runs on Linux, where ``/proc`` answers.
+    """
+
+    async def _no_ps(args: list[str]) -> str | None:
+        return None
+
+    monkeypatch.setattr(soak_driver, "_statm_rss_bytes", lambda pid: None)
+    monkeypatch.setattr(soak_driver, "_ps_output", _no_ps)
+
+    rss, _fds = await soak_driver._driver_side_process_metrics(999999)
+
+    assert rss is None
+
+
 async def test_soak_smoke_green_verdict_and_report_shape() -> None:
     report = await soak_driver.run_soak(_smoke_config())
 
@@ -300,16 +333,22 @@ async def test_soak_recovery_criterion_fails_when_connect_is_suppressed(
     """The recovery criterion has teeth against a dead connect endpoint.
 
     The mutation suppresses only ``POST /api/v1/radio/connect``; the
-    disconnect half is untouched. The criterion measures the whole stack
+    disconnect half is untouched, and no blackout is injected
+    (``fault_drop=0.0``). The criterion measures the whole stack
     returning to CONNECTED — the driver's connect POST or the stack's
     own recovery, whichever comes first: after an operator disconnect
     the radio's CI-V watchdog soft-reconnects on its own roughly 8 s
     later (measured 7.6 s on the test host; ``rigplane.runtime.radio``
     logs ``force_cleanup_civ`` followed by ``soft_reconnect: control
-    transport gone, doing full connect``), so with the 25-30 s budgets
-    the suppressed run still recovers and this mutation passes. A budget
-    below that self-recovery time (5 s here) makes the same suppression
-    report an unrecovered disconnect and a FAIL verdict.
+    transport gone, doing full connect``). The 5 s budget sits below
+    that self-recovery time but above the driver-POST recovery of the
+    unmutated stack (measured on the test host: suppressed run
+    unrecovered at 6.45 s with a FAIL verdict; unmutated run recovered
+    in 2.47 s, PASS), so removing the monkeypatch turns this test RED
+    while the mutation fails it. A ``fault_drop=1.0`` variant would
+    detect nothing: under the 3 s blackout even a working connect
+    recovers only after ~16 s, so the 5 s budget fails the unmutated
+    run too.
     """
     real = soak_driver.SoakDriver._post_radio_control
 
@@ -322,7 +361,7 @@ async def test_soak_recovery_criterion_fails_when_connect_is_suppressed(
 
     monkeypatch.setattr(soak_driver.SoakDriver, "_post_radio_control", _drop_connect)
     report = await soak_driver.run_soak(
-        _smoke_config(reconnect_budget_s=5.0, fault_drop=1.0)
+        _smoke_config(reconnect_budget_s=5.0, fault_drop=0.0)
     )
 
     assert report["criteria"]["recovery"]["unrecovered"] >= 1
@@ -358,3 +397,35 @@ async def test_soak_counts_a_disconnect_that_never_happened_as_unrecovered(
     assert first["recovered"] is False
     assert report["criteria"]["recovery"]["unrecovered"] >= 1
     assert report["verdict"] == "FAIL"
+
+
+async def test_soak_report_written_when_a_stop_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A teardown failure must not cost the report and its verdict.
+
+    ``run_soak`` used to write the report only after
+    ``stack.aclose()``; an exception from any ``stop()`` there
+    replaced the verdict line and the report file with a traceback.
+    The report is now written inside the same ``finally``, before the
+    teardown. Here the simulator's ``stop()`` performs its real
+    cleanup and then raises, and the report file must still exist
+    with a verdict.
+    """
+    report_path = tmp_path / "soak-report.json"
+    real_sim_stop = soak_driver.MockIcomRadio.stop
+
+    async def _stop_then_raise(self: soak_driver.MockIcomRadio) -> None:
+        await real_sim_stop(self)
+        raise RuntimeError("simulator stop reported a failure")
+
+    monkeypatch.setattr(soak_driver.MockIcomRadio, "stop", _stop_then_raise)
+
+    with pytest.raises(RuntimeError):
+        await soak_driver.run_soak(
+            _smoke_config(duration_s=6.0, report_path=str(report_path))
+        )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["verdict"] == "PASS"
+    assert report["durationConfiguredS"] == 6.0

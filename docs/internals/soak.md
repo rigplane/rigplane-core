@@ -17,5 +17,5 @@ duration input for smoke runs; the report artifact it uploads is the
 evidence to read first.
 
 `tests/test_soak_driver.py` pins the smoke, the criterion math, the
-sampler merge, and the mutation teeth (suppressed connect, unobserved
-disconnect, cycle outliving the run).
+sampler merge, the teardown-time report write, and the mutation teeth
+(suppressed connect, unobserved disconnect, cycle outliving the run).

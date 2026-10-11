@@ -161,8 +161,12 @@ async def _driver_side_process_metrics(pid: int) -> tuple[int | None, int | None
     rss = _statm_rss_bytes(pid)
     if rss is None:
         out = await _ps_output(["-o", "rss=", "-p", str(pid)])
-        with contextlib.suppress(ValueError, TypeError):
-            rss = int(out.strip()) * 1024  # ps rss is in KB
+        # None on OSError or the 10 s timeout: leave the field None —
+        # int(None.strip()) raises AttributeError, which the
+        # suppression below does not cover.
+        if out is not None:
+            with contextlib.suppress(ValueError, TypeError):
+                rss = int(out.strip()) * 1024  # ps rss is in KB
     return rss, _fd_count(pid)
 
 
@@ -1107,8 +1111,15 @@ class SoakDriver:
 
 
 async def run_soak(config: SoakConfig) -> dict[str, Any]:
-    """Run one soak and return its report; writes the file when asked."""
+    """Run one soak and return its report; writes the file when asked.
+
+    The report file is written inside the same ``finally``, before the
+    stack teardown: an exception from a ``stop()`` during
+    ``_SimulatorStack.aclose`` must not cost the verdict line and the
+    report (``test_soak_report_written_when_a_stop_raises`` pins it).
+    """
     stack = await _start_simulator_stack()
+    report: dict[str, Any] | None = None
     try:
         driver = SoakDriver(
             config,
@@ -1117,13 +1128,13 @@ async def run_soak(config: SoakConfig) -> dict[str, Any]:
             sim=stack.sim,
         )
         report = await driver.run()
+        return report
     finally:
+        if config.report_path and report is not None:
+            Path(config.report_path).write_text(
+                json.dumps(report, indent=2) + "\n", encoding="utf-8"
+            )
         await stack.aclose()
-    if config.report_path:
-        Path(config.report_path).write_text(
-            json.dumps(report, indent=2) + "\n", encoding="utf-8"
-        )
-    return report
 
 
 # ---------------------------------------------------------------------------
