@@ -1,6 +1,6 @@
 /**
- * Pure decision core of the two MOD-input TX gates — the MOR-617 warn-only
- * guard and the MOR-618 opt-in auto-set.
+ * Pure decision core of the two MOD-input TX gates — the warn-only
+ * guard and the opt-in auto-set.
  *
  * Every function here is a pure function of `(state, caps, …)`: no store
  * reads, no runes, no `localStorage`, no command dispatch. That purity is
@@ -61,7 +61,7 @@ export function autoLanModInputAvailable(
 }
 
 /**
- * The TX-start auto-set decision (MOR-618). Same quiet-gating as the guard:
+ * The TX-start auto-set decision. Same quiet-gating as the guard:
  * no state, no data_mode capability, group not read, source unknown, or
  * already LAN → null (no change, no pending). Otherwise the per-group SET
  * command to issue for LAN and the source to remember for the restore.
@@ -81,7 +81,7 @@ export function planAutoLanSet(
 }
 
 /**
- * The confirmed-off restore decision (MOR-618): send the remembered source
+ * The confirmed-off restore decision: send the remembered source
  * back only while the group is still on LAN (or its current source is
  * unknown) — a manual mid-TX change away from LAN wins and returns null.
  */

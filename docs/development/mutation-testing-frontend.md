@@ -23,12 +23,14 @@ mutant in `test.include`:
 - `frontend/src/lib/runtime/adapters/__tests__/mod-input-tx-guard.isolated.test.ts`
 
 The two mod-input test files import the `.svelte.ts` wrappers, not
-`mod-input-gates.ts` directly; every gate decision in the wrappers routes
-through the mutated module, so the mutants are covered all the same.
+`mod-input-gates.ts` directly; the wrappers call the mutated module for
+each gate decision except the opt-in check (`if (!enabled) return`) and
+the empty-pending check (`if (!p) return`), which stay in the wrappers.
 
-Other test files in the suite also import these modules. They are not in
-the Stryker test set, so a mutant reported as survived or without coverage
-may still be killed by the full suite.
+Other test files in the suite also import the two view-model modules; no
+test imports `mod-input-gates.ts` (only the wrappers do). Those files are
+not in the Stryker test set, so a mutant reported as survived or without
+coverage may still be killed by the full suite.
 
 ## Running it
 
@@ -74,7 +76,8 @@ and call into it, so what they return or do depends on module-level state,
 not only on their arguments. They are not mutated themselves. For the two
 `mod-input-*` adapters the split has happened: the gate logic lives in
 `mod-input-gates.ts` (mutated), and only the store reads, `localStorage`,
-the `$state` flags and the dispatch stay in the wrappers. Splitting the
+the `$state` flags, the memory-only `pending` latch and the dispatch stay
+in the wrappers. Splitting the
 pure parts out of the remaining files is follow-up work.
 
 | File | Imports |
@@ -83,7 +86,7 @@ pure parts out of the remaining files is follow-up work.
 | `panel-adapters.ts` | `runtime` from `../frontend-runtime`; `$lib/stores/capabilities.svelte`; `$lib/stores/commands.svelte` |
 | `tx-adapter.ts` | `runtime` from `../frontend-runtime` |
 | `vfo-adapter.ts` | `runtime` from `../frontend-runtime` |
-| `mod-input-auto.svelte.ts` | `getRadioState` from `$lib/stores/radio.svelte`; `getCapabilities` from `$lib/stores/capabilities.svelte` — gate logic lives in `mod-input-gates.ts` (mutated); only the store reads, `localStorage`, the `$state` opt-in flag and the dispatch stay in the wrapper |
+| `mod-input-auto.svelte.ts` | `getRadioState` from `$lib/stores/radio.svelte`; `getCapabilities` from `$lib/stores/capabilities.svelte` — gate logic lives in `mod-input-gates.ts` (mutated); only the store reads, `localStorage`, the `$state` opt-in flag, the memory-only `pending` latch (a plain `let`) with its consume-once logic in `restoreModInputAfterTx`, and the dispatch stay in the wrapper |
 | `mod-input-tx-guard.svelte.ts` | `getRadioState` from `$lib/stores/radio.svelte`; `getCapabilities` from `$lib/stores/capabilities.svelte` — gate logic lives in `mod-input-gates.ts` (mutated); only the store reads, the `$state` armed latch and the dispatch stay in the wrapper |
 | `qsy-history-adapter.ts` | `qsyHistory` from `$lib/stores/qsy-history.svelte` |
 | `capabilities-adapter.ts` | `getControlRange`, `getMeterCalibration`, `getMeterRedline` from `$lib/stores/capabilities.svelte` |

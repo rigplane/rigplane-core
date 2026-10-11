@@ -52,9 +52,15 @@ export function dismissModInputTxGuard(): void {
   armed = false;
 }
 
-/** Reactive props for the warning banner (call inside `$derived`). */
+/**
+ * Reactive props for the warning banner (call inside `$derived`). Reads
+ * the stores only while armed, so a disarmed banner does not depend on
+ * radio state and does not recompute on every state update.
+ */
 export function deriveModInputTxGuardProps(): ModInputTxGuardProps {
-  return toModInputTxGuardProps(armed, getRadioState(), getCapabilities());
+  return armed
+    ? toModInputTxGuardProps(true, getRadioState(), getCapabilities())
+    : toModInputTxGuardProps(false, null, null);
 }
 
 // Reuse the existing ModePanel command path (MOR-616): optimistic patch of
