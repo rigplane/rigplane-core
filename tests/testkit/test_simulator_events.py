@@ -17,6 +17,7 @@ import pytest
 
 from rigplane.radio import IcomRadio
 from rigplane.runtime._connection_state import RadioConnectionState
+from rigplane.types import AudioCodec
 
 from rigplane_testkit.icom import MockIcomRadio
 
@@ -33,8 +34,8 @@ async def sim() -> AsyncGenerator[MockIcomRadio]:
     await server.stop()
 
 
-def _client(sim: MockIcomRadio) -> IcomRadio:
-    return IcomRadio(
+def _client(sim: MockIcomRadio, **overrides) -> IcomRadio:
+    kwargs = dict(
         host="127.0.0.1",
         port=sim.control_port,
         username="testuser",
@@ -46,6 +47,8 @@ def _client(sim: MockIcomRadio) -> IcomRadio:
         reconnect_max_delay=0.5,
         watchdog_timeout=_WATCHDOG_TIMEOUT_S,
     )
+    kwargs.update(overrides)
+    return IcomRadio(**kwargs)
 
 
 async def _states_until(
@@ -183,3 +186,66 @@ async def test_keepalive_silence_longer_than_watchdog_fires_link_down() -> None:
                 await radio.disconnect()
     finally:
         await server.stop()
+
+
+async def test_reboot_busy_window_longer_than_reconnect_rounds_recovers(
+    sim: MockIcomRadio,
+) -> None:
+    """A busy window spanning several reconnect rounds still recovers.
+
+    A real IC-7610 busy-rejected new logins for ~90 s after the previous
+    client died without a release, so the reconnect loop must keep backing
+    off across a busy window longer than one connect() call instead of
+    treating the reject as permanent.
+
+    Two deliberate differences from the bench shape, both forced by this
+    simulator's model (verified with a probe against this stack):
+    ``down_for`` is 3.0 s, not 0.5 s — the simulator answers control pings
+    from any client outside the down window, so a 0.5 s outage (0.5 s of
+    ping silence) never trips the 1.5 s packet watchdog and no reconnect
+    happens at all; and the client passes an explicit rx codec — with the
+    profile-selected stereo codec a status-stage busy reject enters
+    ``_connect_once``'s busy-retry loop with the 30 s
+    ``_STATUS_REJECT_COOLDOWN`` pause, which parks the first connect()
+    for ~30 s (recovery at ~34 s, one busy reject) and cannot meet the
+    20 s deadline. The explicit codec makes each busy connect() fail
+    fast, so what is pinned here is the reconnect loop's own retry
+    policy: several rounds inside the busy window, then a clean recovery.
+    """
+    radio = _client(
+        sim,
+        audio_codec=AudioCodec.PCM_2CH_16BIT,
+        audio_codec_explicit=True,
+    )
+    statuses: list[dict] = []
+    radio.set_reconnect_status_callback(statuses.append)
+    with fast_connect():
+        await radio.connect()
+        try:
+            old_token = radio._token
+            assert old_token == sim.token
+
+            sim.reboot(at=0.1, down_for=3.0, busy_for=4.0)
+
+            def recovered(seen: list[RadioConnectionState]) -> bool:
+                return (
+                    seen[-1] is RadioConnectionState.CONNECTED
+                    and bool(statuses)
+                    and statuses[-1]["state"] == "connected"
+                )
+
+            seen = await _states_until(radio, 20.0, recovered)
+            assert recovered(seen), seen
+            assert sim.busy_rejects >= 2, sim.busy_rejects
+            assert sum(1 for s in statuses if s["state"] == "reconnecting") >= 2, (
+                statuses
+            )
+            assert statuses[-1]["state"] == "connected", statuses
+            await _wait_usable(radio, 5.0)
+            assert radio.connected
+            assert sim.reboot_count == 1
+            assert radio._token == sim.token
+            assert radio._token != old_token
+            assert await radio.get_freq() == 14_074_000
+        finally:
+            await radio.disconnect()
