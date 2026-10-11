@@ -1,0 +1,264 @@
+{
+  "commands": {
+    "cw_auto_tune": null,
+    "get_acc1_mod_level": null,
+    "get_af_mute": null,
+    "get_band_edge_freq": null,
+    "get_break_in_delay": null,
+    "get_civ_output_ant": null,
+    "get_civ_transceive": null,
+    "get_dash_ratio": null,
+    "get_data1_mod_input": null,
+    "get_data2_mod_input": null,
+    "get_data3_mod_input": null,
+    "get_data_off_mod_input": null,
+    "get_dual_watch": null,
+    "get_lan_mod_level": null,
+    "get_quick_dual_watch": null,
+    "get_quick_split": null,
+    "get_ref_adjust": null,
+    "get_system_date": null,
+    "get_system_time": null,
+    "get_tuner_status": null,
+    "get_tuning_step": null,
+    "get_usb_mod_level": null,
+    "get_utc_offset": null,
+    "get_xfc_status": null,
+    "memory_clear": null,
+    "memory_to_vfo": null,
+    "memory_write": null,
+    "ptt": null,
+    "ptt_off": null,
+    "ptt_on": null,
+    "quick_dualwatch": null,
+    "quick_split": null,
+    "reset_filter_width": null,
+    "scan_set_df_span": null,
+    "scan_set_resume": null,
+    "scan_start": null,
+    "scan_stop": null,
+    "select_vfo": null,
+    "send_civ": null,
+    "send_cw_text": null,
+    "set_acc1_mod_level": null,
+    "set_af_level": {
+      "descriptor": "set_af_level",
+      "result_keys": [
+        "level",
+        "receiver"
+      ]
+    },
+    "set_af_mute": null,
+    "set_agc": null,
+    "set_agc_time_constant": null,
+    "set_antenna_1": {
+      "descriptor": "set_antenna_1",
+      "result_keys": [
+        "on"
+      ]
+    },
+    "set_antenna_2": {
+      "descriptor": "set_antenna_2",
+      "result_keys": [
+        "on"
+      ]
+    },
+    "set_anti_vox_gain": null,
+    "set_apf": null,
+    "set_att": {
+      "descriptor": "set_att",
+      "result_keys": [
+        "db",
+        "receiver"
+      ]
+    },
+    "set_attenuator": {
+      "descriptor": "set_att",
+      "result_keys": [
+        "db",
+        "receiver"
+      ]
+    },
+    "set_audio_peak_filter": null,
+    "set_auto_notch": null,
+    "set_band": null,
+    "set_break_in": null,
+    "set_break_in_delay": null,
+    "set_bsr": null,
+    "set_civ_output_ant": {
+      "descriptor": "set_civ_output_ant",
+      "result_keys": [
+        "on"
+      ]
+    },
+    "set_civ_transceive": null,
+    "set_comp": null,
+    "set_compressor": null,
+    "set_compressor_level": null,
+    "set_cw_pitch": null,
+    "set_dash_ratio": null,
+    "set_data1_mod_input": null,
+    "set_data2_mod_input": null,
+    "set_data3_mod_input": null,
+    "set_data_mode": null,
+    "set_data_off_mod_input": null,
+    "set_dial_lock": null,
+    "set_digisel": null,
+    "set_digisel_shift": null,
+    "set_drive_gain": null,
+    "set_dual_watch": null,
+    "set_filter": null,
+    "set_filter_shape": null,
+    "set_filter_width": null,
+    "set_freq": null,
+    "set_if_shift": null,
+    "set_ip_plus": null,
+    "set_ipplus": null,
+    "set_key_speed": null,
+    "set_lan_mod_level": null,
+    "set_main_sub_tracking": null,
+    "set_manual_notch": null,
+    "set_manual_notch_width": null,
+    "set_memory_contents": null,
+    "set_memory_mode": null,
+    "set_mic_gain": null,
+    "set_mode": null,
+    "set_monitor": null,
+    "set_monitor_gain": null,
+    "set_monitor_mute": null,
+    "set_narrow": null,
+    "set_nb": null,
+    "set_nb_depth": null,
+    "set_nb_level": null,
+    "set_nb_width": null,
+    "set_notch_filter": null,
+    "set_nr": null,
+    "set_nr_level": null,
+    "set_pbt_inner": null,
+    "set_pbt_outer": null,
+    "set_power": null,
+    "set_powerstat": null,
+    "set_preamp": null,
+    "set_quick_dual_watch": null,
+    "set_quick_split": null,
+    "set_ref_adjust": null,
+    "set_repeater_shift": {
+      "descriptor": "set_repeater_shift",
+      "result_keys": [
+        "direction",
+        "receiver"
+      ]
+    },
+    "set_repeater_tone": {
+      "descriptor": "set_repeater_tone",
+      "result_keys": [
+        "on",
+        "receiver"
+      ]
+    },
+    "set_repeater_tsql": {
+      "descriptor": "set_repeater_tsql",
+      "result_keys": [
+        "on",
+        "receiver"
+      ]
+    },
+    "set_rf_gain": {
+      "descriptor": "set_rf_gain",
+      "result_keys": [
+        "level",
+        "receiver"
+      ]
+    },
+    "set_rf_power": null,
+    "set_rit_frequency": null,
+    "set_rit_status": null,
+    "set_rit_tx_status": null,
+    "set_rx_antenna": {
+      "descriptor": "set_rx_antenna",
+      "result_keys": [
+        "antenna",
+        "on"
+      ]
+    },
+    "set_rx_antenna_ant1": {
+      "descriptor": "set_rx_antenna_ant1",
+      "result_keys": [
+        "on"
+      ]
+    },
+    "set_rx_antenna_ant2": {
+      "descriptor": "set_rx_antenna_ant2",
+      "result_keys": [
+        "on"
+      ]
+    },
+    "set_scope_center_type": null,
+    "set_scope_dual": null,
+    "set_scope_during_tx": null,
+    "set_scope_edge": null,
+    "set_scope_fixed_edge": null,
+    "set_scope_hold": null,
+    "set_scope_mode": null,
+    "set_scope_rbw": null,
+    "set_scope_ref": null,
+    "set_scope_span": null,
+    "set_scope_speed": null,
+    "set_scope_vbw": null,
+    "set_split": null,
+    "set_sql": {
+      "descriptor": "set_squelch",
+      "result_keys": [
+        "level",
+        "receiver"
+      ]
+    },
+    "set_squelch": {
+      "descriptor": "set_squelch",
+      "result_keys": [
+        "level",
+        "receiver"
+      ]
+    },
+    "set_ssb_tx_bw": null,
+    "set_system_date": null,
+    "set_system_time": null,
+    "set_tone_freq": {
+      "descriptor": "set_tone_freq",
+      "result_keys": [
+        "freq",
+        "receiver"
+      ]
+    },
+    "set_tsql_freq": {
+      "descriptor": "set_tsql_freq",
+      "result_keys": [
+        "freq",
+        "receiver"
+      ]
+    },
+    "set_tuner_status": {
+      "descriptor": "set_tuner_status",
+      "result_keys": [
+        "value"
+      ]
+    },
+    "set_tuning_step": null,
+    "set_twin_peak": null,
+    "set_usb_mod_level": null,
+    "set_utc_offset": null,
+    "set_vfo": null,
+    "set_vfo_freq": null,
+    "set_vox": null,
+    "set_vox_delay": null,
+    "set_vox_gain": null,
+    "set_xfc_status": null,
+    "speak": null,
+    "stop_cw_text": null,
+    "switch_scope_receiver": null,
+    "vfo_equalize": null,
+    "vfo_swap": null
+  },
+  "generator": ".github/scripts/gen-command-vocabulary.py",
+  "source": "rigplane.web.handlers.control.ControlHandler._COMMANDS"
+}
