@@ -6,21 +6,26 @@ through `rigplane_testkit/icom/recorder.py: IcomSessionRecorder`; this
 driver connects the **production** client through that recorded link and
 asks the radio every read-only question the profile declares, once and
 paced, so the recording holds the radio's answer class per command —
-`data` / `nak` / `silence`, with latency. That table is what the
+`data` / `ack` / `nak` / `silence`, with latency. That table is what the
 simulator must reproduce (MOR-3297).
 
 ## Layout
 
 - `probe_list.py` — pure, importable, tested. `build_probe_list(profile)`
   derives every probe from `rigs/ic7610.toml` through the profile's
-  `CommandMap` and `[cmd29]` routes; `is_forbidden(frame_body)` is the
-  byte-level refusal line (power 0x18, PTT/tuner 0x1C, memory 0x09/0x0B/
-  0x1A 00, CW 0x17, scan 0x0E). Only `get_*` commands are taken, and the
-  deliberately unknown probes (`kind: "unknown"`) exist to classify
-  NAK-versus-silence.
-- `probe.py` — the driver. `run_probes(radio, probes, pace, timeout)` is
-  the tested coroutine; the CLI only parses arguments. Each frame is
-  re-checked with `is_forbidden` before it is sent.
+  `CommandMap` and `[cmd29]` routes, plus the cmd29-wrapped frequency
+  read for both receivers and four deliberately unknown probes (kind
+  `"unknown"`) that classify NAK-versus-silence. Sending is gated by an
+  allow-list: `build_allowed_bodies(profile)` collects the probe bodies
+  with the cmd29 wrapper removed, and `is_forbidden(frame_body, allowed)`
+  refuses anything whose unwrapped body is not byte-for-byte in that
+  set — every SET carries a value, so no SET body equals a declared GET
+  body — or whose command byte is a refused family outright (power
+  0x18, PTT/tuner 0x1C, memory write/clear 0x09/0x0B, CW 0x17, scan
+  0x0E, set freq/mode 0x05/0x06, send freq/mode 0x00/0x01, MEM select
+  0x08), so a mistake in the allow-list cannot key anything.
+- `probe.py` — the driver. `run_probes(radio, probes, allowed, pace,
+  timeout)` is the tested coroutine; the CLI only parses arguments.
 
 ## Usage
 
@@ -49,12 +54,18 @@ stdout.
 
 The probe loop drives `CivRuntime.execute_civ_transaction`
 (`src/rigplane/runtime/_civ_rx.py`) rather than `send_civ_raw`: the
-transaction registers a NAK waiter, so a CI-V refusal (command 0xFA)
-surfaces as a frame instead of running out the answer window as a
-timeout, which keeps `nak` and `silence` distinguishable.
+transaction registers a NAK-only waiter, so a CI-V refusal (command
+0xFA) settles as a frame (`nak`) instead of running out the answer
+window, which keeps `nak` and `silence` distinguishable. A bare ACK
+(0xFB) settles no waiter — `core/civ.py: CivRequestTracker.resolve`
+skips NAK-only waiters for ACK events — so it is detected through the
+radio's public `civ_stats()` counter `ack_orphans` rising across the
+answer window and classified `ack`, without reply bytes.
 
 ## Tests
 
-`tests/testkit/test_capture_probe.py` pins the profile coverage, the
-exclusion rules, and the driver's classification against
-`rigplane_testkit.icom.MockIcomRadio` over loopback UDP.
+`tests/testkit/test_capture_probe.py` pins the exact profile coverage
+(the eligible `get_*` set computed straight from the TOML), the
+allow-list refusal rows, and the driver's classification against
+`rigplane_testkit.icom.MockIcomRadio` over loopback UDP, including a GET
+answered with a bare ACK.

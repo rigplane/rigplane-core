@@ -92,7 +92,6 @@ scripts/*
 !scripts/gen_control_domain_vectors.py
 # And the IC-7610 capture probe driver is tracked (MOR-3307).
 !scripts/ic7610_capture/
-!scripts/ic7610_capture/**
 # And the versioned docs site builder is tracked (MOR-2914).
 !scripts/build_versioned_docs.py
 # But CI scripts under .github/ are tracked.

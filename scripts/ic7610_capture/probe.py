@@ -4,14 +4,21 @@ Connects the production radio client (``rigplane.backends.factory
 .create_radio``) and sends every probe from ``probe_list.build_probe_list``
 once, paced, so the recording around the link holds the radio's answer
 class per command: ``data`` / ``ack`` / ``nak`` / ``silence`` / ``error``,
-with latency. Read-only by construction: every frame passes
-``probe_list.is_forbidden`` before it is sent.
+with latency. Read-only by construction: ``run_probes`` sends a frame only
+when ``probe_list.is_forbidden`` accepts its body against the allow-list
+built once from the profile by ``probe_list.build_allowed_bodies``.
 
 The probe loop drives ``CivRuntime.execute_civ_transaction`` directly:
 unlike ``send_civ_raw``, whose GET path (``CivRuntime._execute_civ_raw``)
-registers only a response waiter, the transaction registers a NAK waiter
-too, so a CI-V refusal (command 0xFA) surfaces as a frame instead of
-running out the answer window as a timeout.
+registers only a response waiter, the transaction registers a NAK-only
+waiter too, so a CI-V refusal (command 0xFA) settles the transaction and
+is classified ``nak`` instead of running out the answer window. A bare
+ACK (0xFB) settles no waiter at all — the ACK waiter the transaction
+registers is NAK-only, and ``core/civ.py: CivRequestTracker.resolve``
+skips NAK-only waiters for ACK events — so ``run_probes`` detects it
+through the radio's public ``civ_stats()`` counter ``ack_orphans`` (where
+the tracker parks an unclaimed ACK/NAK) rising across the answer window,
+and classifies the probe ``ack`` without reply bytes.
 """
 
 from __future__ import annotations
@@ -41,7 +48,12 @@ from rigplane.core.types import CivFrame
 from rigplane.profiles import RadioProfile
 from rigplane.profiles.rig_loader import discover_rigs
 
-from probe_list import Probe, build_probe_list, is_forbidden
+from probe_list import (
+    Probe,
+    build_allowed_bodies,
+    build_probe_list,
+    is_forbidden,
+)
 
 __all__ = ["build_frame", "classify_reply", "main", "run_probes", "summarize"]
 
@@ -93,29 +105,41 @@ def summarize(results: list[dict]) -> dict[str, int]:
 async def run_probes(
     radio: "IcomRadio",
     probes: list[Probe],
+    allowed: frozenset[bytes] | set[bytes],
     pace: float,
     timeout: float,
 ) -> list[dict]:
     """Send each probe once and classify the radio's answer.
 
-    *radio* must be connected. Each frame is re-checked against
-    ``is_forbidden`` before anything is sent; a forbidden probe is
-    recorded as ``error`` and never leaves the wire.
+    *radio* must be connected. Each frame is gated by
+    ``probe_list.is_forbidden`` against *allowed*, built once per profile
+    by ``probe_list.build_allowed_bodies``; a refused probe is recorded
+    as ``error`` and never leaves the wire. A transaction that runs out
+    the answer window is ``ack`` when the radio's ``civ_stats()``
+    ``ack_orphans`` counter rose across the window — a bare ACK parked
+    by ``core/civ.py: CivRequestTracker.resolve``, which skips the
+    NAK-only waiter this transaction registered — and ``silence``
+    otherwise; an ``ack`` probe carries no ``reply_hex`` because the
+    counter carries no frame.
     """
     results: list[dict] = []
     civ_runtime = radio._civ_runtime
     for probe_ in probes:
-        if is_forbidden(probe_.frame_body):
+        if is_forbidden(probe_.frame_body, allowed):
             _record_and_log(results, probe_, None, "error", None, 0.0)
             continue
         frame = build_frame(probe_.frame_body, radio._radio_addr)
+        orphans_before = radio.civ_stats()["ack_orphans"]
         started = time.monotonic()
         try:
             transaction = await civ_runtime.execute_civ_transaction(
                 frame, expect="data", timeout=timeout
             )
         except asyncio.TimeoutError:
-            _record_and_log(results, probe_, frame, "silence", None, started)
+            acked = radio.civ_stats()["ack_orphans"] > orphans_before
+            _record_and_log(
+                results, probe_, frame, "ack" if acked else "silence", None, started
+            )
         except Exception:
             _record_and_log(results, probe_, frame, "error", None, started)
         else:
@@ -226,6 +250,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 async def _run(args: argparse.Namespace) -> int:
     profile = load_profile(args.model)
     probes = build_probe_list(profile)
+    allowed = build_allowed_bodies(profile)
     if args.limit is not None:
         probes = probes[: args.limit]
 
@@ -246,7 +271,7 @@ async def _run(args: argparse.Namespace) -> int:
         print(f"connect failed: {type(exc).__name__}", file=sys.stderr)
         return _EXIT_CONNECT_FAILED
     try:
-        results = await run_probes(radio, probes, args.pace, args.timeout)
+        results = await run_probes(radio, probes, allowed, args.pace, args.timeout)
     finally:
         await radio.disconnect()
 

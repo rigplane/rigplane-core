@@ -1,10 +1,10 @@
 """Tests for the IC-7610 capture probe list and probe driver.
 
 ``scripts/ic7610_capture/probe_list.py`` is pure: these tests pin its
-profile-derived GET coverage, its cmd29 wrapping, and the hard
-read-only exclusion rules. ``scripts/ic7610_capture/probe.py`` is driven
-through its ``run_probes`` coroutine against a real ``MockIcomRadio``
-over loopback UDP, the same fixture shape
+exact profile-derived GET coverage, its cmd29 wrapping, and the
+allow-list gate. ``scripts/ic7610_capture/probe.py`` is driven through
+its ``run_probes`` coroutine against a real ``MockIcomRadio`` over
+loopback UDP, the same fixture shape
 ``tests/testkit/test_simulator_faults.py`` uses.
 """
 
@@ -41,16 +41,24 @@ probe_list = _load_script("probe_list")
 probe = _load_script("probe")
 
 
-def _profile_get_count(profile_toml: dict) -> int:
+def _eligible_get_names(profile_toml: dict) -> set[str]:
+    """Eligible GET names computed straight from the raw profile TOML.
+
+    Eligible: wire-declared (a list of command bytes, not an ``absent``
+    marker), command byte not 0x1C, and not the 0x1A 0x00
+    memory-contents pair.
+    """
     commands = dict(profile_toml["commands"])
     overrides = commands.pop("overrides", {})
-    tables = (commands, overrides)
-    return sum(
-        1
-        for table in tables
-        for key, value in table.items()
-        if key.startswith("get_") and isinstance(value, list)
-    )
+    effective = {**commands, **overrides}
+    return {
+        key
+        for key, value in effective.items()
+        if key.startswith("get_")
+        and isinstance(value, list)
+        and value[0] != 0x1C
+        and not (value[0] == 0x1A and len(value) > 1 and value[1] == 0x00)
+    }
 
 
 def test_probe_list_covers_profile_gets_and_excludes_forbidden() -> None:
@@ -58,24 +66,36 @@ def test_probe_list_covers_profile_gets_and_excludes_forbidden() -> None:
     profile = load_rig(PROFILE_PATH).to_profile()
 
     probes = probe_list.build_probe_list(profile)
+    allowed = probe_list.build_allowed_bodies(profile)
 
-    assert len(probes) >= _profile_get_count(raw)
-    assert all(not probe_list.is_forbidden(p.frame_body) for p in probes)
+    # Exact coverage: every eligible declared GET is probed, no others.
+    assert {p.name for p in probes if p.kind == "get"} == _eligible_get_names(raw)
+    assert all(not probe_list.is_forbidden(p.frame_body, allowed) for p in probes)
 
-    forbidden = ("1c0001", "1801", "1a000001", "0e01", "1701")
-    for hex_body in forbidden:
-        assert probe_list.is_forbidden(bytes.fromhex(hex_body)), hex_body
-    allowed = ("03", "2500", "1a050092")
-    for hex_body in allowed:
-        assert not probe_list.is_forbidden(bytes.fromhex(hex_body)), hex_body
+    # cmd29-wrapped PTT and power, and a GET body with a trailing value
+    # byte (that would be a SET), are refused; declared GET bodies and
+    # the declared 0x1A 0x05 control reads pass.
+    refused = (
+        "29001c0001",
+        "29011800",
+        "14010050",
+        "1c0001",
+        "1801",
+        "1a000001",
+        "0e01",
+        "1701",
+    )
+    for hex_body in refused:
+        assert probe_list.is_forbidden(bytes.fromhex(hex_body), allowed), hex_body
+    for hex_body in ("03", "2500", "1a050092"):
+        assert not probe_list.is_forbidden(bytes.fromhex(hex_body), allowed), hex_body
 
     bodies = {p.frame_body for p in probes}
     for hex_body in ("2500", "2501", "2600", "2601", "1900"):
         assert bytes.fromhex(hex_body) in bodies, hex_body
     for hex_body in ("1a050999", "7f", "147e", "277f"):
         assert bytes.fromhex(hex_body) in bodies, hex_body
-    # The documented cmd29-freq refusal (CLAUDE.md: cmd29 does NOT work
-    # for freq/mode on IC-7610), for both receivers.
+    # cmd29-wrapped frequency read for both receivers.
     assert bytes.fromhex("290003") in bodies
     assert bytes.fromhex("290103") in bodies
 
@@ -93,8 +113,23 @@ def test_probe_list_covers_profile_gets_and_excludes_forbidden() -> None:
     assert "get_memory_contents" not in names
 
 
+class _AckOneGetMock(MockIcomRadio):
+    """Answers one GET (scope span, 0x27 0x15) with a bare ACK (0xFB)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ack_scope_span = False
+
+    def _dispatch_civ(self, cmd: int, payload: bytes, from_addr: int) -> bytes | None:
+        if self.ack_scope_span and cmd == 0x27 and payload == b"\x15":
+            return self._civ_ack(from_addr, self._radio_addr)
+        return super()._dispatch_civ(cmd, payload, from_addr)
+
+
 async def test_driver_classifies_against_simulator() -> None:
-    server = MockIcomRadio()
+    profile = load_rig(PROFILE_PATH).to_profile()
+    allowed = probe_list.build_allowed_bodies(profile)
+    server = _AckOneGetMock()
     await server.start()
     try:
         radio = create_radio(
@@ -117,7 +152,9 @@ async def test_driver_classifies_against_simulator() -> None:
                 probe.Probe("unknown:147e", bytes.fromhex("147e"), "unknown"),
                 probe.Probe("ptt_on", bytes.fromhex("1c0001"), "get"),
             ]
-            results = await probe.run_probes(radio, subset, pace=0.0, timeout=1.0)
+            results = await probe.run_probes(
+                radio, subset, allowed, pace=0.0, timeout=1.0
+            )
 
             # One probe with its reply dropped on the wire: silence.
             server.fault_plan = FaultPlan(
@@ -127,11 +164,26 @@ async def test_driver_classifies_against_simulator() -> None:
                 results += await probe.run_probes(
                     radio,
                     [probe.Probe("get_s_meter", bytes.fromhex("1502"), "get")],
+                    allowed,
                     pace=0.0,
                     timeout=0.5,
                 )
             finally:
                 server.fault_plan = None
+
+            # One GET answered with a bare ACK (FB): the data transaction
+            # owns no ACK waiter, so the tracker parks it as an orphan.
+            server.ack_scope_span = True
+            try:
+                results += await probe.run_probes(
+                    radio,
+                    [probe.Probe("get_scope_span", bytes.fromhex("2715"), "get")],
+                    allowed,
+                    pace=0.0,
+                    timeout=1.0,
+                )
+            finally:
+                server.ack_scope_span = False
         finally:
             await radio.disconnect()
 
@@ -152,10 +204,12 @@ async def test_driver_classifies_against_simulator() -> None:
     assert by_name["ptt_on"]["reply_hex"] is None
     assert by_name["get_s_meter"]["class"] == "silence"
     assert by_name["get_s_meter"]["reply_hex"] is None
+    assert by_name["get_scope_span"]["class"] == "ack"
+    assert by_name["get_scope_span"]["reply_hex"] is None
 
     assert probe.summarize(results) == {
         "data": 2,
-        "ack": 0,
+        "ack": 1,
         "nak": 2,
         "silence": 1,
         "error": 1,
