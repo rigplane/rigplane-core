@@ -6,9 +6,8 @@ managed_tx_authority.py``: a ``clock: Callable[[], float]`` constructor
 parameter defaulting to ``time.monotonic``). ``AudioBus`` uses the
 parameter name ``monotonic`` to match its sibling ``AudioSession``,
 whose liveness watchdog compares against the bus heartbeat. Each test
-advances a fake clock and observes the freshness/TTL/timeout decision
-flip; reverting any single converted call site back to a direct
-``time.monotonic()`` read makes its class's test fail.
+advances a fake clock and observes one freshness/TTL/timeout decision
+flip per class.
 """
 
 from __future__ import annotations

@@ -724,7 +724,7 @@ async def test_scheduler_due_request_timeout_is_terminal_not_resent_each_tick() 
     policy = AcquisitionPolicy(cadence_seconds=1.0, freshness_ttl_seconds=1.0)
     scheduler = AcquisitionScheduler(profile=_acquisition_profile(path, policy=policy))
     radio._acquisition_scheduler = scheduler
-    # The module-time patch below also drives the core-owned
+    # The module-time patch below drives only the core-owned
     # AcquisitionDrain.run_once clock (rigplane.core.acquisition_drain),
     # which the poller's injected clock cannot replace.
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
