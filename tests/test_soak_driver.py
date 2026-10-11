@@ -21,7 +21,7 @@ radio disconnect/connect, and pins:
 * a ``ps`` failure (OSError or its 10 s timeout) in the driver-side
   RSS fallback leaves the field None instead of raising into the
   reconnect cycle's stability probe;
-* the report file and its verdict line survive a stack-teardown
+* the report file and its ``verdict`` field survive a stack-teardown
   ``stop()`` that raises;
 * a reconnect cycle still running at the run deadline must not wedge
   the run (the periodic loops must always yield).

@@ -1115,8 +1115,10 @@ async def run_soak(config: SoakConfig) -> dict[str, Any]:
 
     The report file is written inside the same ``finally``, before the
     stack teardown: an exception from a ``stop()`` during
-    ``_SimulatorStack.aclose`` must not cost the verdict line and the
-    report (``test_soak_report_written_when_a_stop_raises`` pins it).
+    ``_SimulatorStack.aclose`` must not cost the report file and its
+    ``verdict`` field (``test_soak_report_written_when_a_stop_raises``
+    pins it); the stdout verdict line is printed by ``main`` only after
+    ``run_soak`` returns, so a raising teardown still loses that line.
     """
     stack = await _start_simulator_stack()
     report: dict[str, Any] | None = None
