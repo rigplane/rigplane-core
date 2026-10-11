@@ -42,8 +42,10 @@ carries a byte outside 0x20-0x7E, the ``CatGarbledFrameError`` case),
 ``reject`` (``?;`` for every command with a given verb), ``silence``
 (nothing answers — or applies — for a window), ``echo_replies`` (each
 request echoed verbatim before the answer), ``auto_info_burst`` (an
-unsolicited info line pushed to every client now). Auto-information mode
-itself pushes the info line on each state change while on.
+unsolicited info line pushed to every client now),
+``auto_info_burst_on_next_request`` (the same lines, pushed ahead of
+the next request's reply). Auto-information mode itself pushes the
+info line on each state change while on.
 """
 
 from __future__ import annotations
@@ -57,6 +59,13 @@ from rigplane.backends.yaesu_cat.parser import CatCommandParser, format_command
 from rigplane.commands.command_spec import CatCommandSpec
 from rigplane.profiles.rig_loader import RigConfig, load_rig
 
+# The repo-root rigs/ directory. ``rigplane.profiles`` exports no
+# helper that locates it (its ``__all__`` lists only profile types and
+# lookups), and ``rigplane.profiles.rig_loader.discover_available_rigs``
+# returns loaded configs — preferring package resources — while still
+# taking a fallback directory computed exactly this way; so the fake
+# mirrors the production backend's own local computation
+# (backends/yaesu_cat/radio.py: ``_RIGS_DIR``).
 _RIGS_DIR = Path(__file__).parents[2] / "rigs"
 
 # Commands the fake's personality is built from; every one must exist in
@@ -117,9 +126,7 @@ class FakeCatRadio:
             )
         self._mode_codes: frozenset[str] = frozenset(self._config.mode_codes)
         if mode_code not in self._mode_codes:
-            raise ValueError(
-                f"mode_code {mode_code!r} is not a {profile!r} mode code"
-            )
+            raise ValueError(f"mode_code {mode_code!r} is not a {profile!r} mode code")
         missing = [
             name
             for name in _REQUIRED_COMMANDS
@@ -152,6 +159,7 @@ class FakeCatRadio:
         self._garble_verb: str | None = None
         self._silent_until = 0.0
         self._echo = False
+        self._pending_burst_verbs: list[str] = []
 
         self._server: asyncio.Server | None = None
         self._clients: set[asyncio.StreamWriter] = set()
@@ -210,9 +218,7 @@ class FakeCatRadio:
         """Bind the TCP server on 127.0.0.1, ephemeral port."""
         if self._server is not None:
             return
-        self._server = await asyncio.start_server(
-            self._handle_client, "127.0.0.1", 0
-        )
+        self._server = await asyncio.start_server(self._handle_client, "127.0.0.1", 0)
 
     async def stop(self) -> None:
         """Close the server and every connected client."""
@@ -260,9 +266,21 @@ class FakeCatRadio:
         The unsolicited push AI mode makes a real Yaesu send on state
         change; here it is scriptable on its own.
         """
-        line = self._info_line(verb)
-        for writer in list(self._clients):
-            writer.write((line + ";").encode("ascii"))
+        self._broadcast(self._info_line(verb))
+
+    def auto_info_burst_on_next_request(self, *verbs: str) -> None:
+        """Push the info lines for *verbs* ahead of the next request's reply.
+
+        The lines are sent while answering the next request the fake
+        does answer (a request inside a ``silence`` window produces
+        nothing), so unsolicited auto-information lines sit
+        deterministically between that request and its reply on the wire.
+        """
+        if not verbs:
+            raise ValueError("no auto-information verbs given")
+        for verb in verbs:
+            self._info_line(verb)  # refuse an unknown verb at scheduling time
+        self._pending_burst_verbs = list(verbs)
 
     # ------------------------------------------------------------------
     # Server internals
@@ -291,12 +309,16 @@ class FakeCatRadio:
     async def _on_line(self, body: str, writer: asyncio.StreamWriter) -> None:
         if time.monotonic() < self._silent_until:
             return
+        if self._pending_burst_verbs:
+            verbs, self._pending_burst_verbs = self._pending_burst_verbs, []
+            for verb in verbs:
+                await self._send(writer, self._info_line(verb).encode("ascii"))
         if self._echo:
             await self._send(writer, (body + ";").encode("ascii"))
         if body[:2] in self._rejected_verbs:
             await self._send(writer, _REJECT.encode("ascii"))
             return
-        reply = self._reply_for(body, writer)
+        reply = self._reply_for(body)
         if reply is None:
             return
         data = reply.encode("ascii")
@@ -308,6 +330,12 @@ class FakeCatRadio:
     async def _send(self, writer: asyncio.StreamWriter, data: bytes) -> None:
         writer.write(data)
         await writer.drain()
+
+    def _broadcast(self, line: str) -> None:
+        """Queue *line* for writing to every connected client."""
+        data = line.encode("ascii")
+        for writer in list(self._clients):
+            writer.write(data)
 
     def _spec(self, name: str) -> CatCommandSpec:
         spec = self._config.commands.get(name)
@@ -334,30 +362,26 @@ class FakeCatRadio:
         except ValueError:
             return None
 
-    def _reply_for(self, body: str, writer: asyncio.StreamWriter) -> str | None:
+    def _reply_for(self, body: str) -> str | None:
         """The reply for *body* (None = silence), applying any SET it carries."""
         if body == self._read_cmd("get_id"):
             return format_command(
                 self._parse_tpl("get_id"), model=int(self._identity_id)
             )
         if body == self._read_cmd("get_freq"):
-            return format_command(
-                self._parse_tpl("get_freq"), freq=self._frequency_hz
-            )
+            return format_command(self._parse_tpl("get_freq"), freq=self._frequency_hz)
         if (fields := self._match_write("set_freq", body)) is not None:
             self._frequency_hz = int(fields["freq"])
-            self._push_auto_info(writer, "FA")
+            self._push_auto_info("FA")
             return None
         if body == self._read_cmd("get_mode"):
-            return format_command(
-                self._parse_tpl("get_mode"), mode=self._mode_code
-            )
+            return format_command(self._parse_tpl("get_mode"), mode=self._mode_code)
         if (fields := self._match_write("set_mode", body)) is not None:
             code = str(fields["mode"])
             if code not in self._mode_codes:
                 return _REJECT
             self._mode_code = code
-            self._push_auto_info(writer, "MD")
+            self._push_auto_info("MD")
             return None
         if body == self._read_cmd("get_ptt"):
             return format_command(
@@ -367,7 +391,7 @@ class FakeCatRadio:
             if str(fields["state"]) not in ("0", "1"):
                 return _REJECT  # the self-keyed token is not settable
             self._ptt = str(fields["state"]) == "1"
-            self._push_auto_info(writer, "TX")
+            self._push_auto_info("TX")
             return None
         if body == self._read_cmd("get_powerstat"):
             return format_command(
@@ -405,11 +429,9 @@ class FakeCatRadio:
         return _REJECT  # unrecognized command: the Yaesu refusal
 
     def _info_line(self, verb: str) -> str:
-        """The auto-information line *verb* pushes (without its ';')."""
+        """The auto-information line for *verb*, wire-exact with its ';'."""
         if verb == "FA":
-            return format_command(
-                self._parse_tpl("get_freq"), freq=self._frequency_hz
-            )
+            return format_command(self._parse_tpl("get_freq"), freq=self._frequency_hz)
         if verb == "MD":
             return format_command(self._parse_tpl("get_mode"), mode=self._mode_code)
         if verb == "TX":
@@ -418,11 +440,11 @@ class FakeCatRadio:
             )
         raise ValueError(f"no auto-information line for verb {verb!r}")
 
-    def _push_auto_info(self, writer: asyncio.StreamWriter, verb: str) -> None:
+    def _push_auto_info(self, verb: str) -> None:
         """Push the info line for a state change while AI mode is on."""
         if not self._auto_info:
             return
-        writer.write((self._info_line(verb) + ";").encode("ascii"))
+        self._broadcast(self._info_line(verb))
 
 
 __all__ = ["FakeCatRadio"]

@@ -19,8 +19,8 @@ UDP code paths as production.
   `open_serial_port` through the `opener` seam, and scripts the serial-side
   faults the link was fixed against: delayed identity, identity only after a
   reconnect, wrong model id, a silent link (MOR-2861), and USB vanish /
-  reappear (`ENODEV`, mapped to `serial_not_found`). The implementation lives in
-  `rigplane_testkit/serial/civ_serial.py`.
+  reappear (`ENODEV`, mapped to `serial_not_found`). The implementation lives
+  in `rigplane_testkit/serial/civ_serial.py`.
 - `rigplane_testkit.yaesu` — `FakeCatRadio`, a stateful FTX-1-style Yaesu CAT
   personality (frequency, mode, PTT, power, auto-information mode) on a real
   TCP server, reached through pyserial's `socket://` URL handler: the
@@ -31,7 +31,8 @@ UDP code paths as production.
   from the write templates, and the `ID;` answer the connect identity gate
   probes comes from the profile's `[identity].expected_ids`. Scripted faults:
   a garbled reply, `?;` rejection, a silence window, a request echo, and an
-  auto-information burst (plus AI mode pushing info lines on state change).
+  auto-information burst — immediate, or ahead of the next request's reply
+  (plus AI mode pushing info lines on state change).
   The implementation lives in `rigplane_testkit/yaesu/cat_fake.py`.
 - `rigplane_testkit.icom.recorder` — `IcomSessionRecorder`, an asyncio UDP
   proxy that sits between a client and a radio (real or simulated) and writes

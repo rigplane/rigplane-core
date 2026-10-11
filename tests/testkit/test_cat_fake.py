@@ -23,6 +23,7 @@ from rigplane.backends.yaesu_cat.transport import (
     CatGarbledFrameError,
     CatTimeoutError,
 )
+from rigplane.core.radio_protocol import RadioIdentityStatus
 from rigplane.exceptions import CommandRejectedError
 from rigplane.rig_loader import load_rig
 
@@ -47,9 +48,7 @@ class _CatClient:
         self.writer: asyncio.StreamWriter | None = None
 
     async def connect(self, fake: FakeCatRadio) -> None:
-        self.reader, self.writer = await asyncio.open_connection(
-            "127.0.0.1", fake.port
-        )
+        self.reader, self.writer = await asyncio.open_connection("127.0.0.1", fake.port)
 
     async def send(self, line: str) -> None:
         assert self.writer is not None
@@ -169,6 +168,7 @@ async def test_if_reply_parses_with_the_production_template(
     assert parsed["freq"] == 14_074_000
     assert parsed["mode"] == "2"
     assert parsed["sign"] == "+"
+    assert parsed["vfo"] == "0"
 
 
 @pytest.mark.asyncio
@@ -220,8 +220,9 @@ async def test_echo_fault_echoes_the_request_before_the_answer(
     client: _CatClient, fake: FakeCatRadio
 ) -> None:
     fake.echo_replies()
-    assert await client.ask("FA;") == "FA"  # the echo, first
-    assert await client.ask("FA;") == "FA014074000"  # then the answer
+    await client.send("FA;")
+    assert await client.read_raw() == b"FA;"  # the echo, first
+    assert await client.read_raw() == b"FA014074000;"  # then that request's answer
 
 
 @pytest.mark.asyncio
@@ -229,7 +230,8 @@ async def test_auto_info_burst_pushes_an_unsolicited_line(
     client: _CatClient, fake: FakeCatRadio
 ) -> None:
     fake.auto_info_burst("FA")
-    assert await client.read_line() == "FA014074000"
+    assert await client.read_raw() == b"FA014074000;"
+    await client.assert_silent()  # the line ends in one ';', nothing follows
 
 
 @pytest.mark.asyncio
@@ -239,7 +241,8 @@ async def test_auto_info_mode_pushes_state_changes(
     await client.send("AI1;")
     await client.assert_silent()
     await client.send("FA007135000;")
-    assert await client.read_line() == "FA007135000"  # the AI push
+    assert await client.read_raw() == b"FA007135000;"  # the AI push, wire-exact
+    await client.assert_silent()  # one push per state change, nothing follows
     assert fake.frequency_hz == 7_135_000
 
 
@@ -253,20 +256,65 @@ def _radio_for(fake: FakeCatRadio) -> YaesuCatRadio:
 
 
 @pytest.mark.asyncio
-async def test_real_backend_connects_and_round_trips_frequency(fake: FakeCatRadio) -> None:
+async def test_real_backend_connects_and_round_trips_frequency() -> None:
+    # Started at 3_570_000: backend RadioState ships freq 0, so a seeded
+    # reading right after connect() can only come from the IF; seed.
+    fake = FakeCatRadio(frequency_hz=3_570_000)
+    await fake.start()
+    try:
+        radio = _radio_for(fake)
+        await radio.connect()
+        try:
+            assert radio.connection_identity is not None
+            assert radio.connection_identity.status is RadioIdentityStatus.VERIFIED
+            assert radio.connected
+            assert fake.commands[0] == "ID;"  # the identity gate probes first
+            assert "IF;" in fake.commands  # then the connect-time IF seed
+            assert radio.radio_state.main.freq == 3_570_000  # the seed landed
+            assert await radio.get_freq() == 3_570_000
+            await radio.set_freq(7_135_000)
+            assert fake.frequency_hz == 7_135_000
+            assert await radio.get_freq() == 7_135_000
+        finally:
+            await radio.disconnect()
+        assert not radio.connected
+    finally:
+        await fake.stop()
+
+
+@pytest.mark.asyncio
+async def test_real_backend_skips_pushes_between_request_and_reply(
+    fake: FakeCatRadio,
+) -> None:
     radio = _radio_for(fake)
     await radio.connect()
     try:
-        assert radio.connected
-        assert fake.commands[0] == "ID;"  # the identity gate probes first
-        assert "IF;" in fake.commands  # then the connect-time IF seed
+        # MD02;TX0; land between the FA; request and its reply.
+        fake.auto_info_burst_on_next_request("MD", "TX")
         assert await radio.get_freq() == 14_074_000
-        await radio.set_freq(7_135_000)
-        assert fake.frequency_hz == 7_135_000
-        assert await radio.get_freq() == 7_135_000
+        # Frames pair: the connect probes plus exactly one FA; — no retry.
+        assert fake.commands == ("ID;", "IF;", "FA;")
     finally:
         await radio.disconnect()
-    assert not radio.connected
+
+
+@pytest.mark.asyncio
+async def test_real_backend_set_and_get_with_auto_info_on(
+    fake: FakeCatRadio,
+) -> None:
+    radio = _radio_for(fake)
+    await radio.connect()
+    panel = _CatClient()  # a second client playing the front panel
+    await panel.connect(fake)
+    try:
+        await panel.send("AI1;")  # auto-information on, as a panel would
+        await panel.assert_silent()
+        await radio.set_freq(7_135_000)  # the FA push lands post-write
+        assert await panel.read_line() == "FA007135000"  # the push went out
+        assert await radio.get_freq() == 7_135_000
+    finally:
+        panel.close()
+        await radio.disconnect()
 
 
 @pytest.mark.asyncio
