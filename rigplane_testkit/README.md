@@ -12,6 +12,19 @@ UDP code paths as production.
   fault injection (drop, reorder, stall, delay). The implementation lives in
   `rigplane_testkit/icom/simulator.py` and was moved unchanged from
   `tests/mock_server.py`.
+- `rigplane_testkit.icom.faults` — `FaultPlan` / `FaultRule`: a declarative,
+  seeded (deterministic) fault plan with one rule per port (`control`, `civ`)
+  and direction (`to_client`, `from_client`). Each rule can drop (probability
+  or every-Nth), duplicate (with inter-copy delay), delay (fixed + jitter),
+  reorder (window), corrupt (bit-flip N bytes) and truncate (to K bytes), and
+  can be bounded by packet count or duration (e.g. "lose the next 5 control
+  packets"). The plan sits beside the legacy knobs (`drop_rate`,
+  `reorder_window`, `response_delay`, `stall_for`), which are unchanged.
+  `MockIcomRadio` also offers scheduled events: `reboot(at, down_for,
+  busy_for)` — stop answering, forget the session, rotate the token, reset
+  sequence numbers, answer busy, then accept a fresh login — and
+  `keepalive_silence(at, for_seconds)` — pings are received but not answered.
+  Wire-level examples live in `tests/testkit/test_simulator_faults.py`.
 
 ## How tests import it
 
@@ -35,7 +48,6 @@ the legacy compatibility shim. It exists for development and testing only.
 ## Planned next
 
 - Audio (RTP) port simulation alongside control and CI-V ports.
-- A per-port `FaultPlan` so fault schedules are declarative and composable.
 - A recorder/replayer that captures real radio sessions and replays them
   through the same simulator surface.
 - Extraction of the CI-V dispatcher into `civ_model.py`, deferred from the
