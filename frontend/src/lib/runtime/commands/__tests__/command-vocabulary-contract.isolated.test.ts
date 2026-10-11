@@ -1,20 +1,18 @@
 /**
- * Command vocabulary contract: every `intentSpecs` entry in `radio-intents.ts`
- * against `contracts/command-vocabulary.json`, which
+ * Command vocabulary contract: the web UI's radio intents against
+ * `contracts/command-vocabulary.json`, which
  * `.github/scripts/gen-command-vocabulary.py` dumps from the server's
  * `ControlHandler._COMMANDS` (freshness: `tests/test_command_vocabulary_contract.py`).
  *
- * Compatible means: (1) the intent name is a key of the fixture's `commands`;
- * (2) when that entry is not `null` (a `CommandDescriptor` resolves the name),
- * the intent's parameter names, required and optional together, equal its
- * `result_keys`. `null` entries are checked by name only. Parameter kinds are
- * not compared.
- *
- * `intentSpecs` is not exported, so its array literal is read from source and
- * evaluated; the flattened names must equal the exported `RADIO_INTENT_NAMES`.
+ * 1. Name coverage: every `RADIO_INTENT_NAMES` entry is a key of the
+ *    fixture's `commands`.
+ * 2. Response-key characterization: for an intent whose fixture entry is not
+ *    `null`, its `RADIO_INTENT_PARAM_NAMES` set equals the entry's
+ *    `result_keys`, the keys `CommandDescriptor.result` puts in the server's
+ *    response. Those are response keys, not the parameters the server's
+ *    bind function accepts, so drift in accepted parameter names is not
+ *    covered here.
  */
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import vocabulary from '../../../../../../contracts/command-vocabulary.json';
 
@@ -27,55 +25,29 @@ vi.mock('$lib/transport/ws-client', () => ({
 }));
 
 type VocabularyEntry = { readonly descriptor: string; readonly result_keys: readonly string[] } | null;
-interface ParsedSpec {
-  readonly names: readonly string[];
-  readonly params: Readonly<Record<string, string>>;
-}
+const commands = (vocabulary as { commands: Record<string, VocabularyEntry> }).commands;
 
-const DECLARATION_START = 'const intentSpecs = [';
-const DECLARATION_END = '] as const satisfies readonly IntentSpec[];';
-
-function parseIntentSpecs(): ParsedSpec[] {
-  const source = readFileSync(resolve(process.cwd(), 'src/lib/runtime/commands/radio-intents.ts'), 'utf8');
-  const start = source.indexOf(DECLARATION_START);
-  const end = source.indexOf(DECLARATION_END, start);
-  expect(start, 'intentSpecs declaration not found').toBeGreaterThanOrEqual(0);
-  expect(end, 'intentSpecs terminator not found').toBeGreaterThan(start);
-  const literal = source.slice(start + DECLARATION_START.length - 1, end + 1);
-  return new Function(`return ${literal};`)() as ParsedSpec[];
-}
-
-function vocabularyMismatches(specs: readonly ParsedSpec[], commands: Readonly<Record<string, VocabularyEntry>>): string[] {
-  const problems: string[] = [];
-  for (const spec of specs) {
-    const intentKeys = Object.keys(spec.params).sort();
-    for (const name of spec.names) {
-      if (!Object.prototype.hasOwnProperty.call(commands, name)) {
-        problems.push(`${name}: not in ControlHandler._COMMANDS`);
-        continue;
-      }
-      const entry = commands[name];
-      if (entry === null) continue;
-      const serverKeys = [...entry.result_keys].sort();
-      if (intentKeys.join(',') !== serverKeys.join(',')) {
-        problems.push(`${name}: intent params [${intentKeys.join(', ')}] != server result_keys [${serverKeys.join(', ')}]`);
-      }
-    }
-  }
-  return problems;
-}
-
-describe('command vocabulary contract (intentSpecs vs ControlHandler._COMMANDS)', () => {
-  const specs = parseIntentSpecs();
-  const commands = (vocabulary as { commands: Record<string, VocabularyEntry> }).commands;
-
-  it('parses the same intent names the module exports', async () => {
+describe('command vocabulary contract (radio intents vs ControlHandler._COMMANDS)', () => {
+  it('every intent name is a server command', async () => {
     const { RADIO_INTENT_NAMES } = await import('../radio-intents');
-    expect(specs.flatMap((spec) => spec.names)).toEqual([...RADIO_INTENT_NAMES]);
+    expect(RADIO_INTENT_NAMES.length).toBeGreaterThan(0);
+    const missing = RADIO_INTENT_NAMES.filter((name) => !Object.prototype.hasOwnProperty.call(commands, name));
+    expect(missing).toEqual([]);
   });
 
-  it('names only server commands, with descriptor-declared params matching', () => {
-    expect(Object.keys(commands).length).toBeGreaterThan(0);
-    expect(vocabularyMismatches(specs, commands)).toEqual([]);
+  it('intent param names equal descriptor response keys (accepted-param drift not covered)', async () => {
+    const { RADIO_INTENT_NAMES, RADIO_INTENT_PARAM_NAMES } = await import('../radio-intents');
+    const mismatches: string[] = [];
+    let compared = 0;
+    for (const name of RADIO_INTENT_NAMES) {
+      const entry = commands[name];
+      if (entry === null || entry === undefined) continue;
+      compared += 1;
+      const intentKeys = [...RADIO_INTENT_PARAM_NAMES[name]].sort().join(',');
+      const responseKeys = [...entry.result_keys].sort().join(',');
+      if (intentKeys !== responseKeys) mismatches.push(`${name}: [${intentKeys}] != result_keys [${responseKeys}]`);
+    }
+    expect(compared).toBeGreaterThan(0);
+    expect(mismatches).toEqual([]);
   });
 });

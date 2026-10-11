@@ -116,9 +116,11 @@ uv run python .github/scripts/gen-command-vocabulary.py
 
 `tests/test_command_vocabulary_contract.py` fails while the file is stale.
 `frontend/src/lib/runtime/commands/__tests__/command-vocabulary-contract.isolated.test.ts`
-fails when an `intentSpecs` name in `radio-intents.ts` is absent from the file,
-or when a name with non-null `result_keys` declares a different set of
-parameter names.
+fails when a `RADIO_INTENT_NAMES` entry in `radio-intents.ts` is absent from
+the file, or when an intent whose entry is not `null` has parameter names that
+differ from its `result_keys`. `result_keys` are the keys of the server's
+response (`CommandDescriptor.result`), not the parameters the server accepts,
+so a change to the accepted parameter names is not caught.
 
 ## Code Style
 
