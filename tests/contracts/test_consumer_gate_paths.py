@@ -7,10 +7,9 @@ runner's ``web_surface`` artifact (added in PR #4046) exposes
 ``_build_web_surface``), and that set is the literal handler command list
 unioned with ``frozenset(command_descriptors())`` in
 ``src/rigplane/web/handlers/control.py`` (``ControlHandler._COMMANDS``).
-``control.py`` imports ``CommandUnsupportedError``,
-``_raw_int_level_from_param``, ``command_descriptor``,
-``command_descriptors``, ``enqueue_command_intent`` and
-``prepare_command_intent`` from ``rigplane.core.command_dispatch``, so a
+``control.py`` imports ``command_descriptors`` from
+``rigplane.core.command_dispatch`` and builds ``_COMMANDS`` as the literal
+handler command list unioned with ``frozenset(command_descriptors())``, so a
 command added or removed in ``src/rigplane/core/command_dispatch.py`` changes
 the artifact without touching any filtered path — only the in-suite
 ``tests/contracts/test_consumer_contracts.py`` would catch it. This test
@@ -33,14 +32,7 @@ CONTROL_HANDLER_PATH = (
 COMMAND_DISPATCH_PATH = "src/rigplane/core/command_dispatch.py"
 TRIGGERS = ("push", "pull_request")
 
-DISPATCH_SYMBOLS = (
-    "CommandUnsupportedError",
-    "_raw_int_level_from_param",
-    "command_descriptor",
-    "command_descriptors",
-    "enqueue_command_intent",
-    "prepare_command_intent",
-)
+DISPATCH_SYMBOLS = ("command_descriptors",)
 
 
 def _workflow_path_blocks(text: str) -> dict[str, set[str]]:
