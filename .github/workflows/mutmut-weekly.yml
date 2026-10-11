@@ -1,0 +1,99 @@
+# Weekly mutation-testing trend sweep over the small high-risk modules
+# (MOR-3285). Informational only: it uploads per-module killed/survived
+# counts as artifacts and posts nothing to any PR, and it is not a
+# required check anywhere. How to read the results:
+# docs/development/mutation-testing.md.
+name: Weekly mutation trend
+
+on:
+  schedule:
+    # Sunday 22:30 UTC (Sunday night), weekly.
+    - cron: "30 22 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never cancel a running sweep from a queued one, and keep this group
+# disjoint from quick/visual so PR CI is never displaced by the trend job.
+concurrency:
+  group: mutmut-weekly
+  cancel-in-progress: false
+
+jobs:
+  mutmut:
+    # Same build-tier runner as quick/visual; the sweep needs the
+    # pre-baked audio/Tauri system libraries for the codec tests.
+    runs-on: [self-hosted, linux, build]
+    # 2x the measured full-sweep wall time (~15 min with 4 children on
+    # this runner class, see docs/development/mutation-testing.md); the
+    # hard cap for this job family is 180.
+    timeout-minutes: 30
+    env:
+      # Same Python pin as quick.yml: `uv run` must not drift to the
+      # newest interpreter on the runner (MOR-590).
+      UV_PYTHON: "3.11"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        # Same flag and reasoning as quick.yml: --all-extras so the
+        # dsp/webrtc-gated codec tests run instead of skipping.
+        run: uv sync --all-extras
+
+      - name: Run mutmut sweep
+        # 4 mutation workers, the runner-concurrency cap (MOR-2834).
+        # continue-on-error: a timed-out or partial sweep still leaves
+        # per-mutant results in the mutants cache, and the trend
+        # artifacts below are worth uploading anyway.
+        continue-on-error: true
+        run: uv run mutmut run --max-children 4
+
+      - name: Collect results
+        if: always()
+        # mutmut 3.8 takes a value for --all, not a bare flag.
+        run: uv run mutmut results --all=true > mutmut-results.txt
+
+      - name: Summarize per module
+        if: always()
+        run: >-
+          uv run python scripts/mutation/summarize.py
+          --results mutmut-results.txt
+          --output mutmut-summary.json
+          rigplane.web._delta_encoder
+          rigplane.rigctld.protocol
+          rigplane.core.civ
+          rigplane.audio._codecs
+          rigplane.commands._frame
+          rigplane.core.types
+          rigplane.core.state_store
+          rigplane.core.acquisition_drain
+          rigplane.runtime.controller_authority
+          rigplane.core.tx_safety
+          rigplane.core.tx_target
+          rigplane.core.tx_observation
+          rigplane.runtime.managed_tx_fence
+          rigplane.backends.yaesu_cat.parser
+          rigplane.rigctld.routing
+
+      - name: Upload trend artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutmut-trend
+          path: |
+            mutmut-results.txt
+            mutmut-summary.json
+          retention-days: 90
