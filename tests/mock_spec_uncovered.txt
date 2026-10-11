@@ -1,0 +1,64 @@
+# tests/test_meta_mock_specs.py: test files that construct
+# MagicMock()/AsyncMock()/Mock() without spec=/spec_set= and use
+# it where a project object (radio, backend, transport) is
+# expected. One path per line, relative to tests/, sorted. The
+# test fails on an offender missing here, and on a line here that
+# offends -- delete that line, never keep it. Regenerate, do
+# not edit: uv run python tests/test_meta_mock_specs.py
+# --regenerate
+contracts/test_audio_lifecycle_conformance.py
+test_audio_recovery.py
+test_audio_recovery_session.py
+test_audio_route.py
+test_audio_transcoder.py
+test_audio_transport_lan.py
+test_bsr_band_switching.py
+test_civ_rx_coverage.py
+test_cli.py
+test_cli_async.py
+test_cli_coverage.py
+test_cli_e2e.py
+test_cli_trusted_origin.py
+test_connect_teardown_hygiene.py
+test_cw_auto_tune_wiring.py
+test_data_mode.py
+test_ftx1_audio.py
+test_handlers_coverage.py
+test_ic705.py
+test_icom_lan_identity_gate.py
+test_memory_commands.py
+test_mor1537_cmd29_gating.py
+test_mor2161_command_dispatch.py
+test_mor2234_polling_dispatch_census.py
+test_mor2803_narrow_width.py
+test_pcm_e2e.py
+test_pcm_ingress_decode.py
+test_poller_poll_priority.py
+test_post_write_readback_one_path.py
+test_profiles_routing.py
+test_profiles_runtime.py
+test_radio_connect.py
+test_radio_coverage.py
+test_radio_poller_coverage.py
+test_rigctld_handler.py
+test_rigctld_routable_extension.py
+test_rigctld_server.py
+test_rigctld_server_coverage.py
+test_rigctld_tx_interlock.py
+test_security_headers.py
+test_startup_state_gate.py
+test_sync_coverage.py
+test_tx_authority_characterisation.py
+test_vox_tone_state.py
+test_web_audio_streaming_profile.py
+test_web_command_batch_http.py
+test_web_cw_http_control.py
+test_web_managed_tx_ingress.py
+test_web_mod_input_restore.py
+test_web_ptt_readonly.py
+test_web_runtime_helpers.py
+test_web_server.py
+test_web_server_coverage.py
+test_yaesu_cat_observation_adapter.py
+test_yaesu_cat_poller.py
+test_yaesu_web_projection.py
