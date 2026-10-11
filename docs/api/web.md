@@ -292,9 +292,28 @@ Machine-readable runtime status for managed local supervisors and diagnostics.
     "enabled": false,
     "running": false
   },
+  "process": {
+    "rssBytes": 187654144,
+    "openFds": 41,
+    "threads": 6,
+    "asyncioTasks": 23,
+    "reconnectsTotal": 0
+  },
   "lastError": null
 }
 ```
+
+`process` carries process metrics, read when the request is served
+(`server.py: WebServer._runtime_process_payload`). A value the platform cannot
+report is `null`.
+
+| Field | Source |
+|---|---|
+| `rssBytes` | Current resident set size from `/proc/self/statm`; `null` where that file does not exist (macOS, Windows). |
+| `openFds` | Open file descriptors listed in `/proc/self/fd` or `/dev/fd`; `null` where neither can be listed (Windows). |
+| `threads` | Python threads, `threading.active_count()`. |
+| `asyncioTasks` | Unfinished tasks on the server's event loop, `asyncio.all_tasks()`. |
+| `reconnectsTotal` | `reconnecting` edges reported to `WebServer._on_reconnect_status` since the web server was created; `null` when the radio never emits reconnect status — only the LAN watchdog/reconnect loops emit it, so serial CI-V radios (whose own watchdog reconnects silently) and radios whose LAN watchdog has not been started report `null`. |
 
 ## `POST /api/v1/commands`
 
