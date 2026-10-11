@@ -1,7 +1,8 @@
 # Frontend mutation testing (Stryker)
 
-Stryker mutates two pure view-model modules and checks whether their own
-tests notice each change. The run is informational: it is not a required
+Stryker mutates three pure modules — two view-model modules and the
+MOD-input gate logic — and checks whether their own tests notice each
+change. The run is informational: it is not a required
 check, has no threshold that fails it, and runs only nightly or by hand
 (`.github/workflows/stryker-nightly.yml`).
 
@@ -11,12 +12,19 @@ check, has no threshold that fails it, and runs only nightly or by hand
 
 - `frontend/src/lib/runtime/adapters/radio-view-model-adapter.ts`
 - `frontend/src/semantic/radio-view-model.ts`
+- `frontend/src/lib/runtime/adapters/mod-input-gates.ts`
 
 `frontend/vitest.stryker.config.ts` names the tests that run against each
 mutant in `test.include`:
 
 - `frontend/src/lib/runtime/adapters/__tests__/radio-view-model-adapter.test.ts`
 - `frontend/src/semantic/__tests__/radio-view-model.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/mod-input-auto.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/mod-input-tx-guard.isolated.test.ts`
+
+The two mod-input test files import the `.svelte.ts` wrappers, not
+`mod-input-gates.ts` directly; every gate decision in the wrappers routes
+through the mutated module, so the mutants are covered all the same.
 
 Other test files in the suite also import these modules. They are not in
 the Stryker test set, so a mutant reported as survived or without coverage
@@ -63,8 +71,11 @@ Open `mutation.html` and select a file. Each mutant has a status:
 The following files in `frontend/src/lib/runtime/adapters/` import a store
 module (`$lib/stores/*`) or the runtime singleton (`../frontend-runtime`)
 and call into it, so what they return or do depends on module-level state,
-not only on their arguments. They are not mutated; splitting their pure parts out is follow-up
-work.
+not only on their arguments. They are not mutated themselves. For the two
+`mod-input-*` adapters the split has happened: the gate logic lives in
+`mod-input-gates.ts` (mutated), and only the store reads, `localStorage`,
+the `$state` flags and the dispatch stay in the wrappers. Splitting the
+pure parts out of the remaining files is follow-up work.
 
 | File | Imports |
 |---|---|
@@ -72,8 +83,8 @@ work.
 | `panel-adapters.ts` | `runtime` from `../frontend-runtime`; `$lib/stores/capabilities.svelte`; `$lib/stores/commands.svelte` |
 | `tx-adapter.ts` | `runtime` from `../frontend-runtime` |
 | `vfo-adapter.ts` | `runtime` from `../frontend-runtime` |
-| `mod-input-auto.svelte.ts` | `getRadioState` from `$lib/stores/radio.svelte`; `getCapabilities` from `$lib/stores/capabilities.svelte` |
-| `mod-input-tx-guard.svelte.ts` | `getRadioState` from `$lib/stores/radio.svelte`; `getCapabilities` from `$lib/stores/capabilities.svelte` |
+| `mod-input-auto.svelte.ts` | `getRadioState` from `$lib/stores/radio.svelte`; `getCapabilities` from `$lib/stores/capabilities.svelte` — gate logic lives in `mod-input-gates.ts` (mutated); only the store reads, `localStorage`, the `$state` opt-in flag and the dispatch stay in the wrapper |
+| `mod-input-tx-guard.svelte.ts` | `getRadioState` from `$lib/stores/radio.svelte`; `getCapabilities` from `$lib/stores/capabilities.svelte` — gate logic lives in `mod-input-gates.ts` (mutated); only the store reads, the `$state` armed latch and the dispatch stay in the wrapper |
 | `qsy-history-adapter.ts` | `qsyHistory` from `$lib/stores/qsy-history.svelte` |
 | `capabilities-adapter.ts` | `getControlRange`, `getMeterCalibration`, `getMeterRedline` from `$lib/stores/capabilities.svelte` |
 | `lcd-chrome-adapter.ts` | getters and setters from `$lib/stores/lcd-contrast.svelte` and `$lib/stores/lcd-display-mode.svelte` |
