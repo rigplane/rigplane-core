@@ -41,8 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retained cleanup completes. Admission is enforced across HTTP,
   WebSocket and rigctld ingress and browser TX-audio ownership, and a
   lost admission releases momentary holds. The remote controller lease
-  is experimental in this beta; production remote activation remains
-  off and default local operation is unchanged.
+  is experimental in this beta; its admission is enabled whenever the
+  managed TX composition is installed, which is the normal `rigplane web`
+  and `station` startup.
 
 - **Report a refused browser RX start through the existing info status
   (MOR-3148, #4005).** `GET /api/v1/info` now retains the actual
