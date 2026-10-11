@@ -5,8 +5,10 @@ radio (real or :class:`~rigplane_testkit.icom.MockIcomRadio`).  The client
 connects to the recorder's control listener; the radio-advertised CI-V and
 audio ports in the status packet are rewritten to the recorder's own
 listeners, and the client-declared CI-V/audio ports in its 0x90 conninfo
-packet are rewritten to the recorder's pre-bound upstream sockets, so every
-datagram on all three ports passes through in both directions.
+packet are rewritten to the recorder's pre-bound upstream sockets, so the
+CI-V/audio datagrams a radio sends to those declared ports, and its replies
+to the recorder's source ports, land on the upstream sockets and are
+relayed to the client.
 
 Every datagram is appended as one JSON line::
 
@@ -14,12 +16,14 @@ Every datagram is appended as one JSON line::
 
 ``t`` is seconds (``time.monotonic``) since :meth:`IcomSessionRecorder.start`.
 Credentials never reach disk: the login packet's username/password/computer
-fields, the conninfo username field and the session-token slot (0x1C) of
-every control packet sized 0x40/0x50/0x60/0x90 — in both directions — are
-zeroed before writing, and the conninfo GUID/MAC area (0x20..0x30) of every
-0x90 packet is replaced with a deterministic sha256 pseudonym (all-zero
-spans stay zero).  The record carries ``"redacted": ["login"]`` /
-``["token"]`` / ``["guid"]`` markers naming what was masked.  The bytes
+fields, the conninfo username field, the conninfo device-name field
+(0x40..0x60, user-configurable text on a real radio) and the session-token
+slot (0x1C) of every control packet sized 0x40/0x50/0x60/0x90 — in both
+directions — are zeroed before writing, and the conninfo GUID/MAC area
+(0x20..0x30) of every 0x90 packet is replaced with a deterministic sha256
+pseudonym (all-zero spans stay zero).  The record carries
+``"redacted": ["login"]`` / ``["token"]`` / ``["guid"]`` / ``["name"]``
+markers naming what was masked.  The bytes
 forwarded on the wire are never altered by redaction; the only transforms
 applied to forwarded traffic are the two port rewrites — the
 radio-advertised ports in a status packet and the client-declared ports in
@@ -72,6 +76,10 @@ _CONNINFO_USERNAME = slice(0x60, 0x70)
 # echo the radio's GUID there), pseudonymised before writing.
 _GUID_AREA = slice(0x20, 0x30)
 _GUID_SALT = b"rigplane-testkit-guid:"
+# Conninfo device name (protocol.md § Conninfo Packet; build_conninfo_packet
+# packs radio_name there as plain ASCII) — user-configurable text on a real
+# radio, zeroed before writing in both directions.
+_CONNINFO_DEVICE_NAME = slice(0x40, 0x60)
 # Conninfo client-declared local ports (protocol.md § Conninfo Packet;
 # build_conninfo_packet packs them big-endian u32).
 _CONNINFO_CIV_PORT_OFF = 0x7C
@@ -89,7 +97,8 @@ def redact_datagram(port: str, direction: str, data: bytes) -> tuple[bytes, list
     Pure function over one datagram; the caller writes ``safe_bytes`` to disk
     and forwards the original.  ``labels`` names what was masked:
     ``"login"`` for credential fields, ``"token"`` for session-token fields,
-    ``"guid"`` for the pseudonymised conninfo GUID/MAC area.
+    ``"guid"`` for the pseudonymised conninfo GUID/MAC area, ``"name"`` for
+    the zeroed conninfo device-name field.
     """
     pkt = bytearray(data)
     labels: list[str] = []
@@ -122,6 +131,10 @@ def redact_datagram(port: str, direction: str, data: bytes) -> tuple[bytes, list
         if span != bytes(16):
             pkt[_GUID_AREA] = _guid_pseudonym(span)
             labels.append("guid")
+        # The device-name field is user-configurable text on a real radio;
+        # zero it in both directions.
+        pkt[_CONNINFO_DEVICE_NAME] = bytes(0x20)
+        labels.append("name")
     return bytes(pkt), labels
 
 
@@ -139,6 +152,7 @@ class _Channel:
         self.upstream_addr: tuple[str, int] | None = None
         self.client_addr: tuple[str, int] | None = None
         self.dropped = 0  # packets arrived before the upstream was known
+        self.send_errors = 0  # upstream sends that raised (error_received)
 
     @property
     def port(self) -> int:
@@ -249,6 +263,12 @@ class _UpstreamProtocol(asyncio.DatagramProtocol):
         ):
             ch.listener.sendto(out, ch.client_addr)
 
+    def error_received(self, exc: Exception) -> None:
+        """Count and log a failed upstream send instead of staying silent."""
+        ch = self._channel
+        ch.send_errors += 1
+        logger.warning("%s: upstream send failed: %s", ch.name, exc)
+
 
 class IcomSessionRecorder:
     """UDP proxy that records an Icom LAN session to a JSONL file.
@@ -257,8 +277,7 @@ class IcomSessionRecorder:
         radio_host: Radio (or simulator) host.
         radio_port: Radio control port (50001 on real hardware).
         out_path: Destination JSONL file (truncated on :meth:`start`).
-        listen_host: Bind address for the client-facing listeners and the
-            upstream sockets.
+        listen_host: Bind address for the client-facing listeners.
         listen_port: Fixed client-facing control port (0 = ephemeral).  When
             nonzero, the CI-V and audio listeners bind ``listen_port + 1``
             and ``listen_port + 2``.
@@ -268,6 +287,11 @@ class IcomSessionRecorder:
             client-declared conninfo ports are rewritten to these bound
             ports, so radio datagrams aimed at them still pass through the
             recorder.
+        upstream_host: Bind address for the radio-facing upstream sockets
+            (default ``0.0.0.0``, the wildcard).  Never tie them to
+            ``listen_host``: a loopback listener bind cannot source packets
+            to a radio on another host, and every send would fail with
+            ``OSError``.
     """
 
     def __init__(
@@ -279,6 +303,7 @@ class IcomSessionRecorder:
         listen_host: str = "127.0.0.1",
         listen_port: int = 0,
         upstream_port: int = 0,
+        upstream_host: str = "0.0.0.0",
     ) -> None:
         self._radio_host = radio_host
         self._radio_port = radio_port
@@ -286,6 +311,7 @@ class IcomSessionRecorder:
         self._listen_host = listen_host
         self._listen_port = listen_port
         self._upstream_port = upstream_port
+        self._upstream_host = upstream_host
         self._channels = {
             name: _Channel(self, name) for name in ("control", "civ", "audio")
         }
@@ -309,7 +335,7 @@ class IcomSessionRecorder:
                 "audio": self._upstream_port + 1 if self._upstream_port else 0,
             }[name]
             await ch.open_listener(self._listen_host, listener_port)
-            await ch.open_upstream(self._listen_host, upstream_local)
+            await ch.open_upstream(self._upstream_host, upstream_local)
         # The control upstream target is the radio itself; CI-V and audio
         # upstreams learn their radio-side addresses from the status packet.
         self._channels["control"].set_upstream_addr(self._radio_host, self._radio_port)
@@ -396,8 +422,10 @@ class IcomSessionRecorder:
     def _rewrite_outbound(self, port: str, data: bytes) -> bytes:
         """Rewrite the radio-advertised ports in a status packet to ours.
 
-        All other packets are forwarded unchanged.  The radio's own CI-V/audio
-        ports learned here drive the (lazy) upstream channels.
+        All other packets are forwarded unchanged.  The radio's own
+        CI-V/audio ports learned here only set the upstream sockets' send
+        targets; the sockets themselves are bound once in
+        :meth:`IcomSessionRecorder.start`.
         """
         if port != "control" or len(data) != _STATUS_SIZE:
             return data

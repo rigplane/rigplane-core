@@ -121,7 +121,7 @@ class TestRedactDatagram:
             mac_address=bytes(6),
         )
         safe, labels = redact_datagram("control", "c2r", pkt)
-        assert set(labels) == {"token", "login", "guid"}
+        assert set(labels) == {"token", "login", "guid", "name"}
         assert safe[0x1C:0x20] == bytes(4)
         assert safe[0x60:0x70] == bytes(0x10)
 
@@ -147,7 +147,7 @@ class TestRedactDatagram:
             mac_address=bytes(6),
         )
         safe, labels = redact_datagram("control", "r2c", pkt)
-        assert labels == ["token", "guid"]
+        assert labels == ["token", "guid", "name"]
         assert struct.pack("<I", 0x12345678) not in safe
         assert safe[0x1C:0x20] == bytes(4)
 
@@ -177,6 +177,26 @@ class TestRedactDatagram:
         safe, labels = redact_datagram("control", "r2c", bytes(zero))
         assert "guid" not in labels
         assert safe[0x20:0x30] == bytes(16)
+
+    def test_redact_datagram_device_name_zeroed(self) -> None:
+        """The 0x90 device-name field (0x40..0x60, protocol.md § Conninfo
+        Packet; ``build_conninfo_packet`` packs ``radio_name`` there as
+        plain ASCII) is user-configurable text on a real radio and is
+        zeroed in both directions."""
+        pkt = build_conninfo_packet(
+            sender_id=2,
+            receiver_id=1,
+            username=_USER,
+            token=0x12345678,
+            tok_request=7,
+            radio_name="SHACK-IC7610",
+            mac_address=bytes(6),
+        )
+        for direction in ("r2c", "c2r"):
+            safe, labels = redact_datagram("control", direction, pkt)
+            assert "name" in labels
+            assert safe[0x40:0x60] == bytes(0x20)
+            assert b"SHACK-IC7610" not in safe
 
     def test_status_packet_token_slot_zeroed(self) -> None:
         """The 0x50 status packet shares the control header (§ Status Packet:
@@ -295,6 +315,50 @@ class TestRecordSession:
         finally:
             await recorder.stop()
             await mock.stop()
+
+    async def test_fixed_upstream_ports(self, tmp_path) -> None:
+        """upstream_port=N binds the CI-V upstream socket to N and the
+        audio upstream to N+1; the control upstream stays ephemeral."""
+        base = _free_port_run()
+        recorder = IcomSessionRecorder(
+            "127.0.0.1", 1, tmp_path / "upstream.jsonl", upstream_port=base
+        )
+        await recorder.start()
+        try:
+            assert recorder._channels["civ"].upstream_port == base
+            assert recorder._channels["audio"].upstream_port == base + 1
+            control = recorder._channels["control"].upstream_port
+            assert control != 0
+            assert control not in (base, base + 1)
+        finally:
+            await recorder.stop()
+
+    async def test_unroutable_radio_target_no_send_errors(self, tmp_path) -> None:
+        """Under default settings the radio-facing upstream sockets bind the
+        wildcard address, never ``listen_host``: a recorder targeting an
+        unroutable host (TEST-NET-1) forwards one client packet with no
+        OSError and ``send_errors == 0`` — binding the upstream to the
+        (loopback) listen host is the regression this pins."""
+        loop = asyncio.get_running_loop()
+        out = tmp_path / "unroutable.jsonl"
+        recorder = IcomSessionRecorder("192.0.2.1", 50001, out)
+        await recorder.start()
+        client_transport, _ = await loop.create_datagram_endpoint(
+            asyncio.DatagramProtocol, local_addr=("127.0.0.1", 0)
+        )
+        try:
+            client_transport.sendto(
+                b"\x00" * 0x40, ("127.0.0.1", recorder.control_port)
+            )
+            await asyncio.sleep(0.1)
+            rows = [json.loads(line) for line in out.read_text().splitlines()]
+            assert len(rows) == 1  # recorded and forwarded, not dropped
+            control = recorder._channels["control"]
+            assert control.dropped == 0
+            assert control.send_errors == 0
+        finally:
+            await recorder.stop()
+            client_transport.close()
 
     async def test_guid_pseudonymised_consistently(self, tmp_path) -> None:
         """Both 0x90 records — the radio's conninfo and the client's echo —

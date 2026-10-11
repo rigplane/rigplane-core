@@ -16,6 +16,7 @@ async def _record(args: argparse.Namespace) -> None:
         listen_host=args.listen_host,
         listen_port=args.listen_port,
         upstream_port=args.upstream_port,
+        upstream_host=args.upstream_host,
     )
     await rec.start()
     print(
@@ -40,8 +41,8 @@ def main() -> None:
     rec.add_argument(
         "--listen-host",
         default="127.0.0.1",
-        help="bind address for the client-facing listeners and upstream "
-        "sockets (default: 127.0.0.1)",
+        help="bind address for the client-facing listeners only "
+        "(default: 127.0.0.1)",
     )
     rec.add_argument(
         "--listen-port",
@@ -57,6 +58,13 @@ def main() -> None:
         help="fixed local port of the CI-V upstream socket, declared to the "
         "radio in the rewritten conninfo; the audio upstream binds +1 when "
         "nonzero (default: 0 = ephemeral, bound at start)",
+    )
+    rec.add_argument(
+        "--upstream-host",
+        default="0.0.0.0",
+        help="bind address for the radio-facing upstream sockets, separate "
+        "from --listen-host so a loopback listener bind never pins the "
+        "upstream source address (default: 0.0.0.0 wildcard)",
     )
     args = parser.parse_args()
     if args.command == "record":

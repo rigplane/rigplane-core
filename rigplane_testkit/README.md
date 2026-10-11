@@ -63,14 +63,18 @@ UDP code paths as production.
   port and monotonic time. The radio-advertised CI-V/audio ports in the
   status packet are rewritten to the proxy's listeners, and the
   client-declared ports in its conninfo packet are rewritten to the proxy's
-  pre-bound upstream sockets, so CI-V/audio datagrams a radio sends to the
-  declared ports still pass through the proxy; login credentials and the
-  session-token slot of every control packet (0x40/0x50/0x60/0x90, both
-  directions) are zeroed before anything hits disk and the conninfo GUID/MAC
-  area is replaced with a deterministic pseudonym. Listen ports can be pinned
-  for harnesses that need known targets (`listen_port` binds control=N,
-  CI-V=N+1, audio=N+2). CLI: `python -m rigplane_testkit.icom record --radio
-  HOST --out FILE [--listen-host H] [--listen-port P] [--upstream-port P]`.
+  pre-bound upstream sockets, which receive the CI-V/audio datagrams a radio
+  sends to those declared ports and relay them to the client; login
+  credentials, the conninfo device name and the session-token slot of every
+  control packet (0x40/0x50/0x60/0x90, both directions) are zeroed before
+  anything hits disk and the conninfo GUID/MAC area is replaced with a
+  deterministic pseudonym. Listen ports can be pinned for harnesses that
+  need known targets (`listen_port` binds control=N, CI-V=N+1, audio=N+2),
+  and the radio-facing upstream sockets bind `upstream_port` (+1 for audio)
+  on `upstream_host` (default the wildcard), never `listen_host`. CLI:
+  `python -m rigplane_testkit.icom record --radio HOST --out FILE
+  [--listen-host H] [--listen-port P] [--upstream-port P]
+  [--upstream-host H]`.
 - `rigplane_testkit.icom.replay` — `Recording.load` plus `ReplayResponder`,
   a pure (socket-free) replayer that answers CI-V requests with the recorded
   reply bytes (latest wins, misses land in `unanswered`) and yields the
