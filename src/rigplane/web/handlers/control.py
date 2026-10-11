@@ -1033,6 +1033,8 @@ class ControlHandler:
                 await self._ws.send_text(
                     encode_json(controller.heartbeat(controller.capture()))
                 )
+        elif msg_type == "ping":
+            await self._send_json({"type": "pong"})
         else:
             logger.debug("control: unknown message type: %r", msg_type)
 

@@ -764,8 +764,6 @@ export class WsChannel {
     this.keepaliveTimer = setInterval(() => {
       if (this.ws?.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify({ type: 'ping' }));
-        // Reset heartbeat — we know the connection is alive if send succeeds
-        this._resetHeartbeat();
       }
     }, KEEPALIVE_INTERVAL_MS);
   }
