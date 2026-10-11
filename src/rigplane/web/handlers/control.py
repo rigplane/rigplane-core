@@ -528,6 +528,8 @@ class ControlHandler:
         server_version: Version string for the hello message.
         radio_model: Radio model string for the hello message.
         server: WebServer instance for command_queue and event broadcast.
+        clock: Monotonic clock for command pacing and intent-expiry
+            decisions; defaults to ``time.monotonic``.
     """
 
     _COMMANDS = frozenset(
@@ -738,12 +740,14 @@ class ControlHandler:
         read_only: bool = False,
         session_id: str | None = None,
         managed_tx_authority: "ManagedTxAuthority | None" = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._ws = ws
         self._radio = radio
         self._version = server_version
         self._radio_model = radio_model
         self._server = server
+        self._clock = clock
         self._read_only = read_only
         self._session_id = (
             session_id if session_id is not None else f"websocket-{time.monotonic_ns()}"
@@ -982,8 +986,8 @@ class ControlHandler:
         """
         if self._radio is None or self._radio_ready():
             return
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        deadline = self._clock() + timeout
+        while self._clock() < deadline:
             await asyncio.sleep(0.1)
             if self._radio_ready():
                 return
@@ -1285,7 +1289,7 @@ class ControlHandler:
         # inside the pacing window is coalesced (last-value-wins) instead
         # of hard-dropped — see _coalesce_command / _flush_coalesced_command.
         if name.startswith("set_") and name != "set_vfo_freq":
-            now = time.monotonic()
+            now = self._clock()
             key = self._coalesce_key(name, params)
             last = self._cmd_last.get(key, 0.0)
             # MOR-1427 review B1: a pending frame for this key must always
@@ -1428,7 +1432,7 @@ class ControlHandler:
         if pending is None:
             return
         cmd_id, name, params = pending
-        self._cmd_last[key] = time.monotonic()
+        self._cmd_last[key] = self._clock()
         self._cmd_coalesced[key] = 0
         try:
             await self._dispatch_command(cmd_id, name, params)
@@ -1807,7 +1811,7 @@ class ControlHandler:
                     command_service=self._command_service,
                     provider_generation=params["provider_generation"],
                     connection_generation=vfo_generation,
-                    expires_at_monotonic=time.monotonic() + (intent.timeout or 2.0),
+                    expires_at_monotonic=self._clock() + (intent.timeout or 2.0),
                 ),
             )
             observation = await asyncio.wait_for(

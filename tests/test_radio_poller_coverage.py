@@ -724,6 +724,9 @@ async def test_scheduler_due_request_timeout_is_terminal_not_resent_each_tick() 
     policy = AcquisitionPolicy(cadence_seconds=1.0, freshness_ttl_seconds=1.0)
     scheduler = AcquisitionScheduler(profile=_acquisition_profile(path, policy=policy))
     radio._acquisition_scheduler = scheduler
+    # The module-time patch below also drives the core-owned
+    # AcquisitionDrain.run_once clock (rigplane.core.acquisition_drain),
+    # which the poller's injected clock cannot replace.
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
 
     # How many ``time.monotonic()`` readings one cycle takes is an
@@ -852,16 +855,17 @@ async def test_credited_in_flight_request_is_cleared_and_does_not_expire() -> No
     scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
     radio._acquisition_scheduler = scheduler
     executor = _InjectedAcquisitionExecutor()
+    clock_now = {"t": 500.0}
     poller = RadioPoller(
         radio,
         CommandQueue(),
         radio_state=RadioState(),
         acquisition_executor=executor,
+        clock=lambda: clock_now["t"],
     )
 
-    with patch("rigplane.web.radio_poller.time.monotonic", return_value=500.0):
-        _tick_cadence(poller)
-        await poller._send_scheduler_requests()  # noqa: SLF001
+    _tick_cadence(poller, now=clock_now["t"])
+    await poller._send_scheduler_requests()  # noqa: SLF001
     assert len(poller._acquisition_in_flight) == 1  # noqa: SLF001
     request = scheduler.pending_requests()[0]
 
@@ -881,9 +885,9 @@ async def test_credited_in_flight_request_is_cleared_and_does_not_expire() -> No
     )
 
     # Next cycle clears the in-flight entry; no timeout failure is recorded.
-    with patch("rigplane.web.radio_poller.time.monotonic", return_value=500.1):
-        _tick_cadence(poller)
-        await poller._send_scheduler_requests()  # noqa: SLF001
+    clock_now["t"] = 500.1
+    _tick_cadence(poller, now=clock_now["t"])
+    await poller._send_scheduler_requests()  # noqa: SLF001
     assert poller._acquisition_in_flight == {}  # noqa: SLF001
     assert scheduler.diagnostics()["failedRequestCount"] == 0
 
@@ -1455,20 +1459,20 @@ async def test_send_query_still_raises_any_executor_failure_out_of_the_drain(
         radio_state=RadioState(),
         acquisition_executor=executor,
         diagnostics=recorder,
+        clock=lambda: 300.0,
     )
 
-    with patch("rigplane.web.radio_poller.time.monotonic", return_value=300.0):
-        # Pass 1 leaves a real, partially-sent ledger entry -- written by the
-        # drain, not seeded here, so the state under test is one production
-        # can reach.
-        _tick_cadence(poller, now=300.0)
-        await poller._send_query()  # noqa: SLF001
-        ledger = dict(poller._acquisition_in_flight)  # noqa: SLF001
-        assert ledger, "pass 1 dispatched nothing, so pass 2 proves nothing"
+    # Pass 1 leaves a real, partially-sent ledger entry -- written by the
+    # drain, not seeded here, so the state under test is one production
+    # can reach.
+    _tick_cadence(poller, now=300.0)
+    await poller._send_query()  # noqa: SLF001
+    ledger = dict(poller._acquisition_in_flight)  # noqa: SLF001
+    assert ledger, "pass 1 dispatched nothing, so pass 2 proves nothing"
 
-        executor.error = error
-        with pytest.raises(expected):
-            await poller._send_query()  # noqa: SLF001
+    executor.error = error
+    with pytest.raises(expected):
+        await poller._send_query()  # noqa: SLF001
 
     # Recorded on the way out -- the migration's addition -- and the ledger
     # entry survives, because raising skips the drain's forget step exactly as
@@ -6375,42 +6379,40 @@ async def test_publish_tx_target_skips_noop_but_writes_on_change_or_ttl() -> Non
         active_freq=14_250_000,
         now=10.0,
     )
-    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    poller = RadioPoller(radio, CommandQueue(), state_store=store, clock=clock.now)
 
-    # _publish_tx_target stamps real time.monotonic() (matching production —
-    # StateFreshnessService.tick() also defaults to it); pin it to the same
-    # manual FreshnessClock domain as the store so mark_stale_due()'s own
-    # advance() lines up with what got written.
-    with patch("rigplane.web.radio_poller.time.monotonic", side_effect=clock.now):
-        poller._publish_tx_target()  # noqa: SLF001 — first write
-        seq_after_first = store.snapshot().observation_seq
+    # The poller's injected clock shares the store's manual FreshnessClock
+    # domain so mark_stale_due()'s own advance() lines up with what got
+    # written.
+    poller._publish_tx_target()  # noqa: SLF001 — first write
+    seq_after_first = store.snapshot().observation_seq
 
-        poller._publish_tx_target()  # noqa: SLF001 — unchanged, fresh: no-op
-        assert store.snapshot().observation_seq == seq_after_first
+    poller._publish_tx_target()  # noqa: SLF001 — unchanged, fresh: no-op
+    assert store.snapshot().observation_seq == seq_after_first
 
-        _apply_tx_target_input(
-            store, FieldPath.global_("tx_state", "split"), True, generation=generation
-        )
-        poller._publish_tx_target()  # noqa: SLF001 — value changed: writes
-        seq_after_change = store.snapshot().observation_seq
-        assert seq_after_change > seq_after_first
-        assert store.snapshot().field(
-            "global.tx_state.tx_target"
-        ).value == KnownTxTarget(receiver="MAIN", slot="B", frequency_hz=7_150_000)
+    _apply_tx_target_input(
+        store, FieldPath.global_("tx_state", "split"), True, generation=generation
+    )
+    poller._publish_tx_target()  # noqa: SLF001 — value changed: writes
+    seq_after_change = store.snapshot().observation_seq
+    assert seq_after_change > seq_after_first
+    assert store.snapshot().field("global.tx_state.tx_target").value == KnownTxTarget(
+        receiver="MAIN", slot="B", frequency_hz=7_150_000
+    )
 
-        poller._publish_tx_target()  # noqa: SLF001 — unchanged again: no-op
-        assert store.snapshot().observation_seq == seq_after_change
+    poller._publish_tx_target()  # noqa: SLF001 — unchanged again: no-op
+    assert store.snapshot().observation_seq == seq_after_change
 
-        clock.advance(3.5)  # past tx_target's 3.0s TTL; inputs' TTL is longer
-        store.mark_stale_due()
-        assert (
-            store.snapshot().field("global.tx_state.tx_target").freshness
-            is FreshnessState.STALE
-        )
-        poller._publish_tx_target()  # noqa: SLF001 — TTL expired: writes again
-        healed = store.snapshot().field("global.tx_state.tx_target")
-        assert healed.freshness is FreshnessState.FRESH
-        assert store.snapshot().observation_seq > seq_after_change
+    clock.advance(3.5)  # past tx_target's 3.0s TTL; inputs' TTL is longer
+    store.mark_stale_due()
+    assert (
+        store.snapshot().field("global.tx_state.tx_target").freshness
+        is FreshnessState.STALE
+    )
+    poller._publish_tx_target()  # noqa: SLF001 — TTL expired: writes again
+    healed = store.snapshot().field("global.tx_state.tx_target")
+    assert healed.freshness is FreshnessState.FRESH
+    assert store.snapshot().observation_seq > seq_after_change
 
 
 @pytest.mark.asyncio
@@ -6432,9 +6434,8 @@ async def test_tx_target_projection_degrades_to_stale_without_republish() -> Non
         active_freq=14_250_000,
         now=10.0,
     )
-    poller = RadioPoller(radio, CommandQueue(), state_store=store)
-    with patch("rigplane.web.radio_poller.time.monotonic", side_effect=clock.now):
-        poller._publish_tx_target()  # noqa: SLF001
+    poller = RadioPoller(radio, CommandQueue(), state_store=store, clock=clock.now)
+    poller._publish_tx_target()  # noqa: SLF001
 
     fresh_payload = build_public_state_payload_from_snapshot(
         store.snapshot(), radio=None, receiver_count=1
@@ -6493,42 +6494,41 @@ async def test_tx_target_stays_known_across_several_ttl_periods_on_healthy_radio
         active_freq=14_250_000,
         now=10.0,
     )
-    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    poller = RadioPoller(radio, CommandQueue(), state_store=store, clock=clock.now)
     max_age = poller._tx_target_max_age()  # noqa: SLF001 — 3.0s on IC-7300
     tick = 0.05  # StateFreshnessService's production tick interval
     publish_every_ticks = 13  # deliberately unaligned with max_age / tick
     total = max_age * 4  # several TTL periods
 
-    with patch("rigplane.web.radio_poller.time.monotonic", side_effect=clock.now):
-        poller._publish_tx_target()  # noqa: SLF001 — establish the first value
-        elapsed = 0.0
-        tick_count = 0
-        while elapsed < total:
-            clock.advance(tick)
-            elapsed += tick
-            tick_count += 1
-            # Re-observe every input periodically (well under the freq
-            # inputs' own 5.0s relative-VFO retention TTL and its coherence
-            # window) — models a healthy radio's continuous freq/split
-            # polling rather than relying on a TTL race between inputs.
-            if round(elapsed * 100) % 200 == 0:
-                _seed_tx_target_ready(
-                    store,
-                    generation=generation,
-                    slot="A",
-                    split=False,
-                    active_freq=14_250_000,
-                    now=clock.now(),
-                )
-            store.mark_stale_due()
-            if tick_count % publish_every_ticks == 0:
-                poller._publish_tx_target()  # noqa: SLF001
-            payload = build_public_state_payload_from_snapshot(
-                store.snapshot(), radio=None, receiver_count=1
+    poller._publish_tx_target()  # noqa: SLF001 — establish the first value
+    elapsed = 0.0
+    tick_count = 0
+    while elapsed < total:
+        clock.advance(tick)
+        elapsed += tick
+        tick_count += 1
+        # Re-observe every input periodically (well under the freq
+        # inputs' own 5.0s relative-VFO retention TTL and its coherence
+        # window) — models a healthy radio's continuous freq/split
+        # polling rather than relying on a TTL race between inputs.
+        if round(elapsed * 100) % 200 == 0:
+            _seed_tx_target_ready(
+                store,
+                generation=generation,
+                slot="A",
+                split=False,
+                active_freq=14_250_000,
+                now=clock.now(),
             )
-            assert payload["txTarget"]["status"] == "known", (
-                f"tx_target left known at t={elapsed:.2f}s: {payload['txTarget']}"
-            )
+        store.mark_stale_due()
+        if tick_count % publish_every_ticks == 0:
+            poller._publish_tx_target()  # noqa: SLF001
+        payload = build_public_state_payload_from_snapshot(
+            store.snapshot(), radio=None, receiver_count=1
+        )
+        assert payload["txTarget"]["status"] == "known", (
+            f"tx_target left known at t={elapsed:.2f}s: {payload['txTarget']}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -6873,13 +6873,16 @@ async def test_web_cadence_wire_frames_unchanged_when_due_requests_moves_to_the_
     scheduler = AcquisitionScheduler(profile=profile.state_acquisition)
     radio._acquisition_scheduler = scheduler
     poller = RadioPoller(
-        radio, CommandQueue(), radio_state=RadioState(), state_store=store
+        radio,
+        CommandQueue(),
+        radio_state=RadioState(),
+        state_store=store,
+        clock=lambda: 100.0,
     )
     service = StateFreshnessService(store=store, scheduler=scheduler)
 
-    with patch("rigplane.web.radio_poller.time.monotonic", return_value=100.0):
-        service.tick(now=100.0)
-        await poller._send_query()  # noqa: SLF001
+    service.tick(now=100.0)
+    await poller._send_query()  # noqa: SLF001
 
     assert _drain_cycle_wire_frames(radio) == _IC7300_DRAIN_CYCLE_FRAMES
     # The dispatch envelope is uniform across the cycle, so it is asserted
