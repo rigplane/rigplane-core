@@ -61,10 +61,16 @@ UDP code paths as production.
   proxy that sits between a client and a radio (real or simulated) and writes
   every datagram on the control/CI-V/audio ports to JSONL with direction,
   port and monotonic time. The radio-advertised CI-V/audio ports in the
-  status packet are rewritten to the proxy's listeners; login credentials and
-  the session-token slot of every control packet (0x40/0x50/0x60/0x90, both
-  directions) are zeroed before anything hits disk. CLI:
-  `python -m rigplane_testkit.icom record --radio HOST --out FILE`.
+  status packet are rewritten to the proxy's listeners, and the
+  client-declared ports in its conninfo packet are rewritten to the proxy's
+  pre-bound upstream sockets, so CI-V/audio datagrams a radio sends to the
+  declared ports still pass through the proxy; login credentials and the
+  session-token slot of every control packet (0x40/0x50/0x60/0x90, both
+  directions) are zeroed before anything hits disk and the conninfo GUID/MAC
+  area is replaced with a deterministic pseudonym. Listen ports can be pinned
+  for harnesses that need known targets (`listen_port` binds control=N,
+  CI-V=N+1, audio=N+2). CLI: `python -m rigplane_testkit.icom record --radio
+  HOST --out FILE [--listen-host H] [--listen-port P] [--upstream-port P]`.
 - `rigplane_testkit.icom.replay` — `Recording.load` plus `ReplayResponder`,
   a pure (socket-free) replayer that answers CI-V requests with the recorded
   reply bytes (latest wins, misses land in `unanswered`) and yields the
