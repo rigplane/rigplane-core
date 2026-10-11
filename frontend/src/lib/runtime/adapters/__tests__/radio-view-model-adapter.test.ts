@@ -1,4 +1,5 @@
-import { createHash } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fixtureById } from '../../../../../fixtures/catalog';
 /**
  * MOR-1065 — the live adapter behind the semantic VFO / RX-TX surfaces.
@@ -27,6 +28,7 @@ import {
 } from '../radio-view-model-adapter';
 import { PROFILES } from './conformance/profiles';
 import { FTX1_STATE_FULLY_UNOBSERVED } from './fixtures/ftx1-profile';
+import strictProjectionGolden from './fixtures/strict-projection.golden.json';
 
 const DUAL = ['scope', 'audio', 'tx', 'dual_rx'];
 const SINGLE = ['scope', 'audio', 'tx'];
@@ -1411,30 +1413,30 @@ describe('RF gain additive display observation', () => {
       delete indicator.sMeter.source;
       delete indicator.sMeter.domain;
     }
-    // MOR-2706: `bandwidthMaxHz` joins the structural extras the digest
-    // drops — it is a capability echo fixed when caps load, not a strict
-    // model member the digest guards (same class as `display`).
+    // `bandwidthMaxHz` joins the structural extras dropped below — it is
+    // a capability echo fixed when caps load, not a strict model member
+    // (same class as `display`).
     const strictJson = JSON.stringify(legacyView, (key, value) => [
       'display', 'activeFilterConfiguration', 'dataModeChoices', 'modInputSource', 'modInputChoices',
       'bandwidthMaxHz',
     ].includes(key) ? undefined : value);
-    const digest = createHash('sha256').update(strictJson).digest('hex');
-    // MOR-2425/R40+R41: ONE digest for both freshness values. Read off this
-    // test's own failure diff for stale=true, not computed by hand.
-    // MOR-2467: re-read after `main_sub` became two unslotted receiver-level
-    // records (the strict projection this digest hashes changed with them),
-    // including the mixed-version normalization of the legacy `slot: 'A'`
-    // default target to slot null.
-    // MOR-2509: re-read after the radio-wide group gained `dialLock`.
-    // MOR-2537: In "preserves legacy strict model members", the digest moved because the fixture now carries the `agcModes` catalog the server always emits; the readings it guards are asserted unchanged alongside.
-    // MOR-2538: re-read after `radioWideIndicators.actions` dropped the quickSplit/quickDualWatch/speak members (backend-only commands now).
-    // MOR-2588: re-read after the per-receiver AGC-time gate began deciding from the served `agc_time_constant` tag (INDICATOR_CAPS carries none, so the control is now structurally absent).
-    // MOR-2640: re-read after filterPassband gained narrow (structurally absent in this fixture); the payload diff from the base adds only that member.
-    // MOR-2726: re-read after the notch-width gate began deciding from the served `manual_notch_width` tag (INDICATOR_CAPS carries none, so the control is now structurally absent).
+    // Regenerate the golden by running this test file with UPDATE_GOLDENS=1
+    // (see "Projection goldens" in docs/development/source-text-pins.md).
+    if (process.env.UPDATE_GOLDENS) {
+      // `process.cwd()` (vitest's project root, `frontend/`), not
+      // `import.meta.url` — under this suite's jsdom transform it is not
+      // a `file://` origin (same as fixture-provenance.guard.test.ts).
+      writeFileSync(
+        resolve(process.cwd(),
+          'src/lib/runtime/adapters/__tests__/fixtures/strict-projection.golden.json'),
+        JSON.stringify(JSON.parse(strictJson), null, 2) + '\n');
+    }
+    // One golden serves both freshness values: everything that differs
+    // between stale=false and stale=true is dropped by the replacer.
     expect(view.dsp?.agcMode.reading).toEqual({ status: 'known', value: 0 });
     expect(view.receiverIndicators?.[0].agcMode.reading).toEqual({ status: 'known', value: 0 });
     expect(view.dsp?.manualNotchWidth.availability).toEqual({ structural: false, operational: false });
-    expect(digest).toBe('f6d3ff0d38a5e9d9389043d041f12d80854cbfdedf414eb563a87fe31cba485d');
+    expect(JSON.parse(strictJson)).toEqual(strictProjectionGolden);
   });
   it.each([false, true])('projects the explicit display and HOLDS RF gain, stale=%s', (stale) => {
     const view = model(displayState(stale), displayCaps, RECEIVING);
