@@ -730,6 +730,12 @@ class ControlHandler:
         "set_band": "band",
     }
 
+    # Monotonic clock for handler doubles built via __new__ without running
+    # __init__ (tests/test_web_direct_vfo_frequency.py,
+    # tests/test_web_capability_guards.py); __init__ overwrites it with the
+    # injected clock pinned by tests/test_clock_injection.py.
+    _clock: Callable[[], float] = staticmethod(time.monotonic)
+
     def __init__(
         self,
         ws: Connection,
