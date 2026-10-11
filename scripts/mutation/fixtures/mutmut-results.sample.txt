@@ -1,0 +1,18 @@
+# Sample `mutmut results --all` output (mutmut 3.8 print format:
+# four-space indent, "<mutant name>: <status>"). Covers every status the
+# summarize script buckets, a mangled method name (the "xǁClsǁname" form
+# mutmut generates for methods), and one line that matches no configured
+# module (counted under "unmatched").
+    rigplane.commands._frame.x_build_frame__mutmut_1: killed
+    rigplane.commands._frame.x_build_frame__mutmut_2: survived
+    rigplane.commands._frame.xǁFrameClsǁencode__mutmut_3: timeout
+    rigplane.core.civ.x_checksum__mutmut_1: killed
+    rigplane.core.civ.x_checksum__mutmut_2: killed
+    rigplane.core.civ.x_parse__mutmut_1: suspicious
+    rigplane.core.state_store.x_update__mutmut_4: no tests
+    rigplane.core.tx_safety.x_is_safe__mutmut_1: survived
+    rigplane.core.tx_safety.x_is_safe__mutmut_2: skipped
+    rigplane.core.tx_safety.x_is_safe__mutmut_3: segfault
+    rigplane.core.tx_target.x_known__mutmut_1: killed
+
+    rigplane.not.configured.x_orphan__mutmut_1: survived
