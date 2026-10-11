@@ -124,15 +124,21 @@ a regression check: any check that goes `pass`→`fail`, any new `fail`/`blocked
 check, any missing check, or any declaration drift exits `1`. Improvements
 never block.
 
-Committed goldens live in `tests/golden/validation/` — seven dry-run goldens:
-`ic7610`, `ic7300`, `ic7300mk2`, `ic705`, `ic9700`, `x6100`, `tx500`
-(`<slug>.dry-run.json`). `tests/test_validation_gating.py::
-test_committed_golden_matches_live_dry_run` compares each against the live
-dry-run matrix. Goldens pin which checks a profile declares, not the wire
-bytes behind them; `test_declaration_digest_matches_committed` (same module)
-pins a sha256 over the sorted (model, command name, frame bytes) tuples of
-the seven profiles, and has no regeneration flag — update it by hand only
-after reviewing the profile frame diff (`git diff rigs/`).
+Committed goldens live in `tests/golden/validation/` — nine dry-run goldens:
+`ic7610`, `ic7300`, `ic7300mk2`, `ic705`, `ic9700`, `x6100`, `tx500`,
+`x6200`, `ftx1` (`<slug>.dry-run.json`). `tests/test_validation_gating.py::
+test_committed_golden_matches_live_dry_run` compares each of the nine
+against the live dry-run matrix, so the pytest parametrization covers every
+committed golden; `quick.yml` additionally runs CLI `--gate`s for three of
+them by name (IC-7610, X6200, FTX-1). Goldens pin which checks a profile
+declares, not the wire bytes behind them;
+`test_declaration_digest_matches_committed` (same module) pins a sha256 over
+the sorted wire-declaration rows of the nine profiles — every `[commands]`
+entry (including overrides), the `[vfo]` select/swap/equalize codes, and the
+enumerated value tables (`att_values`, `pre_values`, `agc_modes`, …); see
+`tests/test_validation_gating.py: _DIGEST_PROFILE_FIELDS` for the exact
+field list. It has no regeneration flag — update it by hand only after
+reviewing the profile frame diff (`git diff rigs/`).
 
 ### Run the dry-run gate
 
@@ -162,10 +168,10 @@ defeats the purpose.
 
 ### CI
 
-`.github/workflows/quick.yml` runs the IC-7610 native dry-run gate on every
-push/PR that touches `src/**`, `tests/**`, etc. — so a registry or
-profile-declaration regression fails CI without any hardware. It is dry-run
-only and takes under a second.
+`.github/workflows/quick.yml` runs the IC-7610, X6200 and FTX-1 native
+dry-run gates on every push/PR that touches `src/**`, `tests/**`, etc. — so
+a registry or profile-declaration regression fails CI without any hardware.
+They are dry-run only and take under a second.
 
 ---
 

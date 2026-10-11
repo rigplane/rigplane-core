@@ -11,10 +11,11 @@ Covers the pure layer (``rigplane.validation.gating``) and its CLI wiring in
   missing check, declaration drift) vs non-blocking improvements/additions;
 * ``rigplane validate --gate`` exits 0 against a matching golden and 1 on a
   regression; ``--regen-golden`` writes the normalized artifact;
-* the seven committed dry-run goldens (``tests/golden/validation/``) match
+* the nine committed dry-run goldens (``tests/golden/validation/``) match
   the live generated matrices and gate clean;
-* the declaration digest pins the profile frame bytes behind those goldens
-  and is updated only by a human review
+* the declaration digest pins the declared ``[commands]`` frames plus the
+  ``[vfo]`` select/swap codes and the enumerated value tables of the nine
+  golden radios' profiles, and is updated only by a human review
   (``test_declaration_digest_matches_committed``).
 
 All tests are dry-run / no-hardware and use the REAL schema dataclasses
@@ -68,6 +69,8 @@ _GOLDEN_RADIOS = [
     ("IC-9700", "ic9700"),
     ("X6100", "x6100"),
     ("TX-500", "tx500"),
+    ("X6200", "x6200"),
+    ("FTX-1", "ftx1"),
 ]
 
 
@@ -392,7 +395,7 @@ def test_cli_regen_then_gate_round_trips(tmp_path: Path, capsys: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Committed dry-run golden fixtures (seven radios) + declaration digest
+# Committed dry-run golden fixtures (nine radios) + declaration digest
 # ---------------------------------------------------------------------------
 
 
@@ -453,9 +456,39 @@ def _frame_repr(spec: Any) -> str | None:
     return None
 
 
+# Wire data outside ``[commands]`` that the digest also pins: the ``[vfo]``
+# select/swap/equalize codes (``profiles/__init__.py: RadioProfile`` exposes
+# them as single-byte codes consumed by ``web/radio_poller.py`` and
+# ``web/handlers/control.py``) and the enumerated value tables of
+# ``rig_loader.py: RigConfig`` (validated by ``runtime/radio.py`` setters).
+# Display-only ``*_labels`` maps and every other profile field are NOT
+# pinned; ``test_declaration_digest_matches_committed`` states the same.
+_DIGEST_PROFILE_FIELDS = (
+    "vfo_main_select",
+    "vfo_sub_select",
+    "vfo_swap_ab",
+    "vfo_equal_ab",
+    "vfo_swap_main_sub",
+    "vfo_equal_main_sub",
+    "att_values",
+    "pre_values",
+    "agc_modes",
+    "agc_readback_modes",
+    "agc_auto_mode",
+    "break_in_modes",
+    "notch_width_values",
+    "ssb_tx_bw_values",
+    "filter_shape_values",
+    "scan_type_values",
+    "scan_resume_values",
+)
+
+
 def _declaration_digest() -> str:
-    """sha256 over the sorted (model, command name, frame) rows of every
-    command declared by the seven golden radios' profiles."""
+    """sha256 over the sorted wire-declaration rows of the nine golden
+    radios' profiles: one (model, command name, frame) row per declared
+    ``[commands]`` entry, plus one (model, field, value) row per non-``None``
+    ``_DIGEST_PROFILE_FIELDS`` member."""
     rows: list[str] = []
     for model, slug in _GOLDEN_RADIOS:
         config = load_rig(_RIGS_DIR / f"{slug}.toml")
@@ -463,21 +496,32 @@ def _declaration_digest() -> str:
             frame = _frame_repr(spec)
             if frame is not None:
                 rows.append(f"{model}\t{name}\t{frame}")
+        for field_name in _DIGEST_PROFILE_FIELDS:
+            value = getattr(config, field_name)
+            if value is not None:
+                rows.append(f"{model}\t{field_name}\t{value!r}")
     return sha256("\n".join(sorted(rows)).encode("utf-8")).hexdigest()
 
 
-_DECLARATION_DIGEST = "1b3029d736712e3579e5815476f3beb4fa14131bfd45e9c7af8553d694b17608"
+_DECLARATION_DIGEST = "a7c64678bd2efdcec88a4418d765b1876e774569b2dd434b801ea27ab7e227d3"
 
 
 def test_declaration_digest_matches_committed() -> None:
-    """The committed declaration digest pins the golden radios' frame bytes.
+    """The committed declaration digest pins the golden radios' wire data.
 
     The dry-run goldens pin WHICH checks each profile declares; they cannot
     see the CI-V/CAT wire bytes behind those declarations, so a profile edit
-    that changes the bytes a radio receives leaves every golden green. This
-    digest closes that gap: it is a sha256 over the sorted (model, command
-    name, frame bytes) tuples of the seven golden radios' profile commands,
-    so any one-byte change to any declared frame changes it.
+    that changes the bytes a radio receives can leave every golden green.
+    This digest narrows that gap. It is a sha256 over sorted rows covering
+    exactly: every declared ``[commands]`` entry (overrides merge into
+    ``RigConfig.commands``), as (model, command name, frame) rows, and the
+    ``_DIGEST_PROFILE_FIELDS`` members — the ``[vfo]`` select/swap/equalize
+    codes and the enumerated value tables (``att_values``, ``pre_values``,
+    ``agc_modes``, ...) — as (model, field, value) rows. Any one-byte change
+    inside that pinned set changes the digest. Profile data outside it —
+    display-only ``*_labels`` maps, ``[controls]`` domains, ``[filters]``
+    width rules, CTCSS/tone-squelch tables, meter calibrations — does NOT
+    change the digest.
 
     The digest is NOT to be regenerated by a script: there is no
     ``--regenerate`` path (the CLI's ``--regen-golden`` writes only golden
