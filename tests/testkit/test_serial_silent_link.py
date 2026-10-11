@@ -65,8 +65,7 @@ _SILENCE_EVIDENCE_LOG = "polls outstanding and no CI-V frame parsed"
 _SHUTDOWN_DRAIN_S = 0.5
 _SHUTDOWN_SETTLE_S = 2.0
 # Park budget: composition.transport_unavailable settles its force_off at the
-# authority attempt deadline (default ATTEMPT_TIMEOUT_S = 3.0 s) before the
-# provider generation clears.
+# authority attempt deadline before the provider generation clears.
 _PARK_SETTLE_S = 6.0
 _SHUTDOWN_TERMINATED_LOG = (
     "managed TX shutdown: terminated before an accepted force_receive "
@@ -86,9 +85,9 @@ async def _wait_until(predicate: Callable[[], bool], *, timeout_s: float = 3.0) 
 async def _poll_loop(radio: Ic7300SerialRadio, stop: asyncio.Event) -> None:
     """A live poller: fire-and-forget frequency reads, errors ignored.
 
-    Each read registers a keyed response sink and puts a real CI-V ``0x03``
-    on the wire, the call ``web/radio_poller.py: RadioPoller._civ`` makes
-    for background polls. After link-down a read waits in the CI-V recovery
+    Each read registers a keyed response sink and enqueues a real CI-V
+    ``0x03`` for the wire, the call ``web/radio_poller.py: RadioPoller._civ``
+    makes for background polls. After link-down a read waits in the CI-V recovery
     path, so teardown cancels this task rather than awaiting it.
     """
     while not stop.is_set():
