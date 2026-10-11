@@ -327,11 +327,8 @@ async def test_release_retry_cadence_bounded_across_silent_link_down(
         poller.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await poller
-        # Teardown order as production runs it (cli: _cmd_web drives the
-        # command inside ``async with session``; ``_ManagedTxRadioSession.
-        # __aexit__`` awaits ``_shutdown_managed_tx_composition`` before the
-        # radio's own ``__aexit__`` disconnects it): stop the poller, shut
-        # the composition down, then disconnect the radio.
+        # Stop the poller, shut the composition down, then disconnect the
+        # radio.
         termination = asyncio.Event()
         shutdown = asyncio.create_task(composition.shutdown(termination))
         try:
