@@ -2,8 +2,8 @@
 
 The MOR-3211 silent-link fixture with managed TX keyed: the real
 ``Ic7300SerialRadio`` behind ``CivSerialFake`` (production ``SerialCivLink``
-opener seam, managed-TX composition installed as ``cli: _cmd_web`` installs
-it, fast watchdog constants, a fire-and-forget poller — the shape of
+opener seam, a managed-TX composition, fast watchdog constants, a
+fire-and-forget poller — the shape of
 ``test_serial_silent_link.py``) takes managed TX ON through the authority,
 the fake then stays silent long enough for the silence path to declare
 link-down, and the test observes the authority for a fixed 10 s window of
@@ -16,9 +16,7 @@ attempt is logged while the provider is unavailable
 (``provider_generation is None``), and the window holds at most one attempt
 per provider generation that becomes available inside it, plus the single
 attempt the link-down park itself owes on the generation that was live when
-the window opened (``managed_tx_composition.py:
-ManagedTxComposition.transport_unavailable`` settles exactly that one
-before poisoning the provider).
+the window opened.
 
 The window also records, for the characterization handback: every attempt
 log line with a monotonic stamp, ``snapshot_nowait().provider_generation``
@@ -102,8 +100,7 @@ async def _poll_loop(radio: Ic7300SerialRadio, stop: asyncio.Event) -> None:
     ``0x03`` for the wire, the call ``web/radio_poller.py: RadioPoller._civ``
     makes for background polls; the outstanding sinks are what the silence
     evidence path (``_serial_civ_timeout_evidence_crossed_threshold``) needs
-    to declare link-down. After link-down a read waits in the CI-V recovery
-    path, so teardown cancels this task rather than awaiting it.
+    to declare link-down.
     """
     while not stop.is_set():
         try:
@@ -169,7 +166,7 @@ async def test_release_retry_cadence_bounded_across_silent_link_down(
     install_managed_tx_composition(radio, composition)
     store = StateStore()
     store.begin_provider_generation()
-    await composition.bind_state_store(store)  # as cli: _cmd_web does
+    await composition.bind_state_store(store)
 
     await radio.connect()
     assert radio.connected
@@ -217,7 +214,7 @@ async def test_release_retry_cadence_bounded_across_silent_link_down(
         with caplog.at_level(
             logging.ERROR, logger="rigplane.backends._icom_serial_base"
         ):
-            fake.silence(60.0)  # monotonic window; costs no real time
+            fake.silence(60.0)
             assert await _wait_until(
                 lambda: radio.conn_state is not RadioConnectionState.CONNECTED,
                 timeout_s=_LINK_DOWN_BUDGET_S + 0.5,
@@ -292,6 +289,10 @@ async def test_release_retry_cadence_bounded_across_silent_link_down(
         # Desired bound, part 2 (MOR-3300): at most the park's one attempt on
         # the generation live when the window opened, plus one per provider
         # generation that became available inside the window.
+        assert attempt_ids, (
+            "the link-down park logged no release attempt in the window; the "
+            f"scenario produced no pending release (timeline {timeline})"
+        )
         allowed = 1 + len(generations_available_in_window)
         assert len(attempt_ids) <= allowed, (
             f"{len(attempt_ids)} release attempts in the {_WINDOW_S:.0f}s "
