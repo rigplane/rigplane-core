@@ -85,6 +85,8 @@ dev = [
     # Dev/build-only — drives the MOR-883 consumer-driven contract runner.
     # NOT a runtime dependency (core stays zero-runtime-dep).
     "jsonschema>=4.0",
+    # Dev/test-only — imported only by the property tests under tests/property.
+    "hypothesis>=6.0",
     "pytest>=8.0",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.0.0",
@@ -123,6 +125,7 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "validation_hardware: real-radio validation runs; requires explicit env opt-in",
     "benchmark: wall-clock measurements, reported rather than gated on; deselected by default (run with -m benchmark)",
+    "property: Hypothesis property-based tests under tests/property",
 ]
 testpaths = ["tests"]
 # Repo root on sys.path so tests can import the top-level rigplane_testkit package.

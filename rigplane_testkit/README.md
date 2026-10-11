@@ -12,6 +12,21 @@ UDP code paths as production.
   fault injection (drop, reorder, stall, delay). The implementation lives in
   `rigplane_testkit/icom/simulator.py` and was moved unchanged from
   `tests/mock_server.py`.
+- `rigplane_testkit.icom.faults` — `FaultPlan` / `FaultRule`: a declarative,
+  seeded (deterministic) fault plan with one rule per port (`control`, `civ`)
+  and direction (`to_client`, `from_client`). Each rule can drop (probability
+  or every-Nth), duplicate (with inter-copy delay), delay (fixed + jitter),
+  reorder (window), corrupt (bit-flip N bytes) and truncate (to K bytes), and
+  can be bounded by packet count or duration (e.g. "lose the next 5 control
+  packets"). Reorder buffers always flush — on a full window, on a
+  `reorder_flush_s` deadline (driven by the simulator when the stream goes
+  idle), and when a bound deactivates the rule — so no packet is ever held
+  forever. Each stream draws from its own RNG derived from the plan seed
+  (`f"{seed}:{port}:{direction}"`), so one stream's traffic cannot change
+  another stream's decisions. The plan sits beside the legacy knobs
+  (`drop_rate`, `reorder_window`, `response_delay`, `stall_for`), which are
+  unchanged.
+  Wire-level examples live in `tests/testkit/test_simulator_faults.py`.
 - `rigplane_testkit.serial` — `CivSerialFake`, a stateful IC-7300 personality
   on an in-memory serial duplex (frequency, mode, filter, PTT, S-meter,
   profile-derived identity, USB CI-V echo). It mounts behind the production
@@ -21,6 +36,20 @@ UDP code paths as production.
   reconnect, wrong model id, a silent link (MOR-2861), and USB vanish /
   reappear (`ENODEV`, mapped to `serial_not_found`). The implementation lives
   in `rigplane_testkit/serial/civ_serial.py`.
+- `rigplane_testkit.yaesu` — `FakeCatRadio`, a stateful FTX-1-style Yaesu CAT
+  personality (frequency, mode, PTT, power, auto-information mode) on a real
+  TCP server, reached through pyserial's `socket://` URL handler: the
+  production `open_serial_port` open with `device="socket://127.0.0.1:<port>"`
+  connects the real `YaesuCatRadio` backend to it with no seam and no mock.
+  Replies are formed with the production `format_command` on the profile's
+  parse templates, inbound SETs are decoded by `CatCommandParser` compiled
+  from the write templates, and the `ID;` answer the connect identity gate
+  probes comes from the profile's `[identity].expected_ids`. Scripted faults:
+  a garbled reply, `?;` rejection, a silence window, a request echo, and an
+  auto-information burst — immediate, or on the next request the fake
+  processes, ahead of its reply if it has one (plus AI mode pushing info
+  lines on state change).
+  The implementation lives in `rigplane_testkit/yaesu/cat_fake.py`.
 - `rigplane_testkit.icom.recorder` — `IcomSessionRecorder`, an asyncio UDP
   proxy that sits between a client and a radio (real or simulated) and writes
   every datagram on the control/CI-V/audio ports to JSONL with direction,
@@ -56,7 +85,6 @@ the legacy compatibility shim. It exists for development and testing only.
 ## Planned next
 
 - Audio (RTP) port simulation alongside control and CI-V ports.
-- A per-port `FaultPlan` so fault schedules are declarative and composable.
 - Wiring the replayer into the simulator so recorded sessions answer through
   the same simulator surface (the recorder and the pure `ReplayResponder`
   are in place; the simulator mount is a separate task).

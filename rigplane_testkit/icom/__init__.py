@@ -2,9 +2,11 @@
 
 The implementation lives in :mod:`rigplane_testkit.icom.simulator`; this
 module re-exports its public surface so callers can write
-``from rigplane_testkit.icom import MockIcomRadio``.
+``from rigplane_testkit.icom import MockIcomRadio``. The declarative
+fault-injection plan lives in :mod:`rigplane_testkit.icom.faults`.
 """
 
+from rigplane_testkit.icom.faults import FaultPlan, FaultRule
 from rigplane_testkit.icom.recorder import IcomSessionRecorder, redact_datagram
 from rigplane_testkit.icom.replay import Recording, Record, ReplayResponder
 from rigplane_testkit.icom.simulator import (
@@ -60,6 +62,8 @@ from rigplane_testkit.icom.simulator import (
 
 __all__ = [
     "MockIcomRadio",
+    "FaultPlan",
+    "FaultRule",
     "IcomSessionRecorder",
     "redact_datagram",
     "Recording",

@@ -652,6 +652,7 @@ describe('ws-client → real radio store gate (integration)', () => {
       fetchCapabilities.mockReset();
       modules = await loadModules();
       modules.wsClient.connect('ws://test/api/v1/ws');
+      instances[0].answersPings = true;
       instances[0].simulateOpen();
     });
     afterEach(() => {
@@ -758,6 +759,7 @@ describe('ws-client → real radio store gate (integration)', () => {
       sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1 })));
       instances[0].simulateClose();
       await vi.advanceTimersByTimeAsync(1000);
+      instances[1].answersPings = true;
       instances[1].simulateOpen();
       sendStateUpdate(instances[1], fullEnvelope(makeState({ providerGeneration: 1, revision: 2 })));
       await vi.advanceTimersByTimeAsync(0);

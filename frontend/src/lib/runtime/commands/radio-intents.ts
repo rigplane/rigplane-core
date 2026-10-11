@@ -86,6 +86,10 @@ export type RadioIntentName = RadioIntent['name'];
 const specEntries = intentSpecs.flatMap(({ names, params }) => names.map((name) => [name, params] as const));
 export const RADIO_INTENT_NAMES = Object.freeze(specEntries.map(([name]) => name)) as readonly RadioIntentName[];
 const specsByName = new Map<string, Readonly<Record<string, FieldSpec>>>(specEntries);
+/** Read-only view of each intent's declared parameter names, required and optional together. */
+export const RADIO_INTENT_PARAM_NAMES: Readonly<Record<string, readonly string[]>> = Object.freeze(
+  Object.fromEntries(specEntries.map(([name, params]) => [name, Object.freeze(Object.keys(params))])),
+);
 
 export function isNormalizedLevel(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;

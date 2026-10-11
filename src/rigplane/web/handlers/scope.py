@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
-from ..protocol import decode_json, encode_scope_frame  # noqa: TID251
+from ..protocol import decode_json, encode_json, encode_scope_frame  # noqa: TID251
 from ..transport import Connection  # noqa: TID251
 from ..websocket import WS_OP_TEXT  # noqa: TID251
 
@@ -80,7 +80,7 @@ class ScopeHandler:
                 while True:
                     opcode, payload = await self._ws.recv()
                     if opcode == WS_OP_TEXT:
-                        self._handle_control(payload.decode("utf-8"))
+                        await self._handle_control(payload.decode("utf-8"))
             except EOFError:
                 pass
             finally:
@@ -97,13 +97,16 @@ class ScopeHandler:
                 else:
                     self._server.unregister_scope_handler(self)
 
-    def _handle_control(self, text: str) -> None:
+    async def _handle_control(self, text: str) -> None:
         """Handle optional JSON control messages on the scope channel."""
         try:
             msg = decode_json(text)
-            logger.debug("scope: control message: %r", msg.get("type"))
         except ValueError:
-            pass
+            return
+        if msg.get("type") == "ping":
+            await self._ws.send_text(encode_json({"type": "pong"}))
+            return
+        logger.debug("scope: control message: %r", msg.get("type"))
 
     async def _sender(self) -> None:
         """Continuously dequeues and sends scope frames."""

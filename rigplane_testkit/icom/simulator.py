@@ -21,6 +21,9 @@ import logging
 import random
 import struct
 import time
+from typing import Literal
+
+from rigplane_testkit.icom.faults import Direction, FaultPlan, Port
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +184,11 @@ class MockIcomRadio:
         username: Expected username (any value accepted when ``auth_fail`` is False).
         password: Expected password (unused; see ``auth_fail``).
         radio_addr: CI-V address the mock claims to be (default 0x98 = IC-7610).
+        fault_plan: optional :class:`~rigplane_testkit.icom.faults.FaultPlan`
+            applying per-port/per-direction drop/duplicate/delay/reorder/
+            corrupt/truncate rules on top of the legacy ``drop_rate`` /
+            ``reorder_window`` / ``response_delay`` / ``stall_for`` knobs,
+            which keep working unchanged.
     """
 
     def __init__(
@@ -198,6 +206,7 @@ class MockIcomRadio:
         reorder_window: int = 0,
         unsolicited_civ: bool = False,
         unsolicited_interval_s: float = 0.1,
+        fault_plan: FaultPlan | None = None,
     ) -> None:
         self._host = host
         self._ctrl_port_hint = port
@@ -209,6 +218,9 @@ class MockIcomRadio:
         # UDP transports (set after start())
         self._ctrl_udp: asyncio.DatagramTransport | None = None
         self._civ_udp: asyncio.DatagramTransport | None = None
+        # CI-V protocol object (set after start()) — used by the unsolicited
+        # loop so autonomous frames go through the same fault-plan funnel.
+        self._civ_proto: _MockProtocol | None = None
 
         # Actual bound ports
         self._actual_ctrl_port: int = 0
@@ -264,6 +276,10 @@ class MockIcomRadio:
         self.drop_rate: float = drop_rate  # probability [0,1] of dropping a reply
         self.reorder_window: int = reorder_window  # buffer N replies then flush
         self._stall_until: float = 0.0  # suppress unsolicited CI-V until this time
+        # Declarative per-port/per-direction fault plan (sits BESIDE the legacy
+        # knobs above: it has its own seeded RNG and never touches their state).
+        # None = no plan, every stream passes through untouched.
+        self.fault_plan: FaultPlan | None = fault_plan
         self._reorder_buf: dict[
             str, list[tuple[_MockProtocol, bytes, tuple[str, int]]]
         ] = {
@@ -306,6 +322,7 @@ class MockIcomRadio:
             local_addr=(self._host, self._civ_port_hint),
         )
         self._civ_udp = civ_transport
+        self._civ_proto = civ_proto
         sockname = civ_transport.get_extra_info("sockname")
         self._actual_civ_port = sockname[1]
 
@@ -338,6 +355,7 @@ class MockIcomRadio:
         if self._civ_udp is not None:
             self._civ_udp.close()
             self._civ_udp = None
+        self._civ_proto = None
         logger.debug("MockIcomRadio stopped")
 
     # ------------------------------------------------------------------
@@ -498,6 +516,99 @@ class MockIcomRadio:
     # Packet dispatch
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _port_of(label: str) -> "Literal['control', 'civ']":
+        return "control" if label == "ctrl" else "civ"
+
+    def _send(
+        self,
+        proto: _MockProtocol,
+        pkt: bytes,
+        addr: tuple[str, int],
+        label: str,
+    ) -> None:
+        """Single outbound funnel for every radio→client datagram.
+
+        All handler replies go through here. With no ``fault_plan`` (or a
+        no-op rule for this stream) this is a plain ``proto.send`` — the
+        pre-plan behaviour, byte-for-byte. With a plan, the rule for
+        (port, ``to_client``) decides drop/delay/duplicate/corrupt/truncate/
+        reorder per packet; delayed emissions are scheduled on the loop.
+        """
+        plan = self.fault_plan
+        port = self._port_of(label)
+        if plan is None or plan.is_noop(port, "to_client"):
+            proto.send(pkt, addr)
+            return
+        planned = plan.decide(port, "to_client", pkt)
+        if planned is None:
+            # Held in the plan's reorder buffer: arm the flush deadline so a
+            # short burst is emitted even if the window never fills.
+            self._arm_reorder_flush(plan, port, "to_client", proto, addr, label)
+            return
+        self._deliver_planned(planned, "to_client", proto, addr, label)
+
+    def _deliver_planned(
+        self,
+        planned: list[tuple[float, bytes]],
+        direction: Direction,
+        proto: _MockProtocol,
+        addr: tuple[str, int],
+        label: str,
+    ) -> None:
+        """Emit the plan's emissions for one packet.
+
+        Emissions with a delay are scheduled on the loop and re-enter this
+        method with ``delay=0.0`` when the timer fires.
+        """
+        loop = asyncio.get_running_loop()
+        for delay, payload in planned:
+            if delay > 0.0:
+                loop.call_later(
+                    delay,
+                    self._deliver_planned,
+                    [(0.0, payload)],
+                    direction,
+                    proto,
+                    addr,
+                    label,
+                )
+            else:
+                if direction == "to_client":
+                    proto.send(payload, addr)
+                else:
+                    self._receive(payload, addr, label, proto)
+
+    def _arm_reorder_flush(
+        self,
+        plan: FaultPlan,
+        port: Port,
+        direction: Direction,
+        proto: _MockProtocol,
+        addr: tuple[str, int],
+        label: str,
+    ) -> None:
+        """Schedule the reorder deadline for a stream with a held burst."""
+        due = plan.flush_due_in(port, direction)
+        if due is not None:
+            asyncio.get_running_loop().call_later(
+                due, self._flush_reorder, plan, port, direction, proto, addr, label
+            )
+
+    def _flush_reorder(
+        self,
+        plan: FaultPlan,
+        port: Port,
+        direction: Direction,
+        proto: _MockProtocol,
+        addr: tuple[str, int],
+        label: str,
+    ) -> None:
+        """Reorder deadline fired: release the held burst through the gates."""
+        self._deliver_planned(
+            plan.flush(port, direction), direction, proto, addr, label
+        )
+
     def _emit(
         self,
         proto: _MockProtocol,
@@ -534,7 +645,33 @@ class MockIcomRadio:
         label: str,
         proto: _MockProtocol,
     ) -> None:
-        """Entry point for all incoming packets."""
+        """Entry point for all incoming packets.
+
+        Inbound fault-plan hook: the rule for (port, ``from_client``) can
+        drop, delay, duplicate, corrupt, truncate or reorder the datagram
+        before the simulator parses it. With no plan (or a no-op rule) the
+        packet goes straight to ``_receive`` — the pre-plan behaviour.
+        """
+        plan = self.fault_plan
+        port = self._port_of(label)
+        if plan is not None and not plan.is_noop(port, "from_client"):
+            planned = plan.decide(port, "from_client", data)
+            if planned is None:
+                # Held in the reorder buffer: arm the flush deadline (idle).
+                self._arm_reorder_flush(plan, port, "from_client", proto, addr, label)
+                return
+            self._deliver_planned(planned, "from_client", proto, addr, label)
+            return
+        self._receive(data, addr, label, proto)
+
+    def _receive(
+        self,
+        data: bytes,
+        addr: tuple[str, int],
+        label: str,
+        proto: _MockProtocol,
+    ) -> None:
+        """Parse and dispatch one inbound datagram (post fault-plan)."""
         if len(data) < _HEADER_SIZE:
             return
         ptype = struct.unpack_from("<H", data, 4)[0]
@@ -583,29 +720,31 @@ class MockIcomRadio:
 
         # Are You There → I Am Here
         if n == _HEADER_SIZE and ptype == _PT_ARE_YOU_THERE:
-            proto.send(self._ctrl_pkt(_PT_I_AM_HERE, 0, sender_id), addr)
+            self._send(proto, self._ctrl_pkt(_PT_I_AM_HERE, 0, sender_id), addr, "ctrl")
             return
 
         # Are You Ready → echo Are You Ready
         if n == _HEADER_SIZE and ptype == _PT_ARE_YOU_READY:
-            proto.send(self._ctrl_pkt(_PT_ARE_YOU_READY, 0, sender_id), addr)
+            self._send(
+                proto, self._ctrl_pkt(_PT_ARE_YOU_READY, 0, sender_id), addr, "ctrl"
+            )
             return
 
         # Ping request → Ping reply (refreshes the keepalive for the owner)
         if n == _PING_SIZE and ptype == _PT_PING and data[0x10] == 0x00:
             self._refresh_keepalive((addr, sender_id))
-            proto.send(self._ping_reply(data, sender_id), addr)
+            self._send(proto, self._ping_reply(data, sender_id), addr, "ctrl")
             return
 
         # Login (0x80 bytes)
         if n == 0x80:
-            proto.send(self._login_response(data, sender_id), addr)
+            self._send(proto, self._login_response(data, sender_id), addr, "ctrl")
             return
 
         # Token ack (0x40 bytes, requesttype=0x02) → send GUID conninfo
         if n == 0x40 and data[0x15] == _TOKEN_ACK:
             self._refresh_keepalive((addr, sender_id))
-            proto.send(self._guid_conninfo(sender_id), addr)
+            self._send(proto, self._guid_conninfo(sender_id), addr, "ctrl")
             return
 
         # Token renewal (0x40 bytes, requesttype=0x05) → refresh keepalive
@@ -621,7 +760,7 @@ class MockIcomRadio:
 
         # Client conninfo (0x90 bytes, requesttype=0x03) → status with CI-V port
         if n == 0x90 and data[0x15] == 0x03:
-            proto.send(self._conninfo_status(addr, sender_id), addr)
+            self._send(proto, self._conninfo_status(addr, sender_id), addr, "ctrl")
             return
 
         # Disconnect → free a held session for this owner
@@ -647,17 +786,19 @@ class MockIcomRadio:
 
         # Are You There → I Am Here
         if n == _HEADER_SIZE and ptype == _PT_ARE_YOU_THERE:
-            proto.send(self._ctrl_pkt(_PT_I_AM_HERE, 0, sender_id), addr)
+            self._send(proto, self._ctrl_pkt(_PT_I_AM_HERE, 0, sender_id), addr, "civ")
             return
 
         # Are You Ready → echo
         if n == _HEADER_SIZE and ptype == _PT_ARE_YOU_READY:
-            proto.send(self._ctrl_pkt(_PT_ARE_YOU_READY, 0, sender_id), addr)
+            self._send(
+                proto, self._ctrl_pkt(_PT_ARE_YOU_READY, 0, sender_id), addr, "civ"
+            )
             return
 
         # Ping request → Ping reply
         if n == _PING_SIZE and ptype == _PT_PING and data[0x10] == 0x00:
-            proto.send(self._ping_reply(data, sender_id), addr)
+            self._send(proto, self._ping_reply(data, sender_id), addr, "civ")
             return
 
         # OpenClose (0x16 bytes)
@@ -671,7 +812,7 @@ class MockIcomRadio:
                 self._civ_owner_addr = addr
                 self._civ_owner_id = sender_id
                 civ = self._civ_frame(to=0x00, frm=self._radio_addr, cmd=0x00)
-                proto.send(self._wrap_civ(civ, sender_id), addr)
+                self._send(proto, self._wrap_civ(civ, sender_id), addr, "civ")
             elif data[0x15] == _OPENCLOSE_CLOSE:  # graceful data-port close
                 # OpenClose(close) frees the single held session immediately.
                 if self.single_owner and self._owner is not None:
@@ -718,7 +859,7 @@ class MockIcomRadio:
 
         response_civ = self._dispatch_civ(cmd, payload, from_addr)
         if response_civ is not None:
-            proto.send(self._wrap_civ(response_civ, sender_id), addr)
+            self._send(proto, self._wrap_civ(response_civ, sender_id), addr, "civ")
 
     # ------------------------------------------------------------------
     # Autonomous state + unsolicited CI-V streaming
@@ -752,8 +893,10 @@ class MockIcomRadio:
                 pkt = self._wrap_civ(civ, self._civ_owner_id)
                 if self.drop_rate > 0.0 and self._rng.random() < self.drop_rate:
                     continue
-                if self._civ_udp is not None and not self._civ_udp.is_closing():
-                    self._civ_udp.sendto(pkt, addr)
+                if self._civ_proto is not None:
+                    # Through the same funnel as replies: the fault plan's
+                    # civ/to_client rule also applies to autonomous frames.
+                    self._send(self._civ_proto, pkt, addr, "civ")
                     self.unsolicited_sent += 1
         except asyncio.CancelledError:
             raise
