@@ -6,9 +6,7 @@ internal attributes and helpers (``_check_connected``/``_connected``/
 ``_advance_civ_generation`` are call hubs that stay on ``IcomRadio`` per the
 spike — they are invoked here via the ``radio`` parameter).
 
-Behaviour is intentionally identical to the previous ``IcomRadio._watchdog_loop``
-and ``IcomRadio._reconnect_loop`` methods; the public ``IcomRadio`` methods now
-delegate here. Public API, reconnect timing and watchdog cadence are unchanged.
+Public API, reconnect timing and watchdog cadence are unchanged.
 """
 
 from __future__ import annotations
@@ -138,45 +136,11 @@ async def reconnect_loop(radio: IcomRadio) -> None:
                 radio._civ_runtime.advance_generation("reconnect-attempt")
                 # Capture audio state for auto-recovery.
                 audio_snapshot = radio._audio_runtime.capture_snapshot()
-                # Clean up old transports
-                radio._stop_token_renewal()
-                if radio._audio_stream is not None:
-                    try:
-                        await radio._audio_stream.stop_rx()
-                        await radio._audio_stream.stop_tx()
-                    except Exception:
-                        logger.debug(
-                            "reconnect: audio_stream stop failed", exc_info=True
-                        )
-                    radio._audio_stream = None
-                if radio._audio_transport is not None:
-                    try:
-                        await radio._audio_transport.disconnect()
-                    except Exception:
-                        logger.debug(
-                            "reconnect: audio_transport disconnect failed",
-                            exc_info=True,
-                        )
-                    radio._audio_transport = None
-                if radio._civ_transport is not None:
-                    try:
-                        await radio._civ_transport.disconnect()
-                    except Exception:
-                        logger.debug(
-                            "reconnect: civ_transport disconnect failed",
-                            exc_info=True,
-                        )
-                    radio._civ_transport = None
-                try:
-                    await radio._send_token(0x01)
-                except Exception:
-                    logger.debug("reconnect: token remove failed", exc_info=True)
-                try:
-                    await radio._ctrl_transport.disconnect()
-                except Exception:
-                    logger.debug(
-                        "reconnect: ctrl_transport disconnect failed", exc_info=True
-                    )
+                # Release through the session lifecycle so the connect below
+                # performs a real login: a teardown that bypasses the
+                # lifecycle leaves it in CONNECTED, and connect() then skips
+                # the login while the CI-V transport is already gone.
+                await radio._session_lifecycle.disconnect()
 
                 # Re-initialize transport
                 radio._ctrl_transport = IcomTransport()

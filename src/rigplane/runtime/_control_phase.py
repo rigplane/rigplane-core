@@ -1230,7 +1230,10 @@ class ControlPhaseRuntime:
     def _stop_reconnect(self) -> None:
         h = self._host
         if h._reconnect_task is not None and not h._reconnect_task.done():
-            h._reconnect_task.cancel()
+            # The reconnect loop reaches this through the lifecycle release
+            # it awaits; cancelling here would cancel the caller itself.
+            if h._reconnect_task is not asyncio.current_task():
+                h._reconnect_task.cancel()
             h._reconnect_task = None
 
 

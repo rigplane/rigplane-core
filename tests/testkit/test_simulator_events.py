@@ -79,10 +79,15 @@ async def test_reboot_mid_session_client_reconnects_with_new_token(
             sim.reboot(at=0.1, down_for=3.0, busy_for=0.5)
 
             def reconnected(seen: list[RadioConnectionState]) -> bool:
+                # A completed reconnect releases the session and logs in
+                # again within a few milliseconds, so the RECONNECTING
+                # sample can be shorter than the 20 ms polling step;
+                # CONNECTING is that same reconnect's next state and lasts
+                # the whole login handshake.
                 return (
                     RadioConnectionState.RECONNECTING in seen
-                    and seen[-1] is RadioConnectionState.CONNECTED
-                )
+                    or RadioConnectionState.CONNECTING in seen
+                ) and seen[-1] is RadioConnectionState.CONNECTED
 
             seen = await _states_until(radio, 20.0, reconnected)
             assert reconnected(seen), seen
@@ -109,52 +114,46 @@ async def test_keepalive_silence_shorter_than_watchdog_keeps_session(
             await radio.disconnect()
 
 
-async def test_keepalive_silence_longer_than_watchdog_fires_link_down(
-    sim: MockIcomRadio,
-) -> None:
-    radio = _client(sim)
-    with fast_connect():
-        await radio.connect()
-        try:
-            sim.keepalive_silence(at=0.1, for_seconds=_WATCHDOG_TIMEOUT_S + 1.5)
-            seen = await _states_until(
-                radio,
-                _WATCHDOG_TIMEOUT_S + 1.5,
-                lambda s: RadioConnectionState.RECONNECTING in s,
-            )
-            assert seen[0] is RadioConnectionState.CONNECTED
-            assert RadioConnectionState.RECONNECTING in seen, seen
-        finally:
-            await radio.disconnect()
+async def test_keepalive_silence_longer_than_watchdog_fires_link_down() -> None:
+    """Silence longer than the watchdog trips it and the client recovers.
 
+    The simulator here holds a session for ``keepalive_hold_s=2.0`` rather
+    than the shared fixture's 0.5 s: that equals the client's control ping
+    period (``transport.py: PING_PERIOD``), so during the silence window
+    the simulator's own keepalive timer races every ping and can release
+    the session on its own (reason ``keepalive_timeout``), overwriting the
+    ``token_remove`` record this test asserts.  With the longer hold the
+    client's release is the only release.
 
-async def test_keepalive_silence_watchdog_recovery_returns_connected(
-    sim: MockIcomRadio,
-) -> None:
-    """After the silence trips the watchdog the client recovers a live session.
-
-    The release the reconnect loop performs must reach the simulator as a
-    token remove, and the fresh login must be answered inside the silence
-    window (only ping replies are suppressed), so the client ends CONNECTED
-    with the session token the simulator currently holds and a working
-    CI-V read path.
+    A completed reconnect releases the session and logs in again within a
+    few milliseconds, so the RECONNECTING sample can be shorter than the
+    20 ms polling step; CONNECTING is that same reconnect's next state and
+    lasts the whole login handshake.
     """
-    radio = _client(sim)
-    with fast_connect():
-        await radio.connect()
-        try:
-            sim.keepalive_silence(at=0.1, for_seconds=_WATCHDOG_TIMEOUT_S + 1.5)
-
-            def recovered(seen: list[RadioConnectionState]) -> bool:
-                return (
-                    RadioConnectionState.RECONNECTING in seen
-                    and seen[-1] is RadioConnectionState.CONNECTED
+    server = MockIcomRadio(single_owner=True, keepalive_hold_s=2.0)
+    await server.start()
+    try:
+        radio = _client(server)
+        with fast_connect():
+            await radio.connect()
+            try:
+                server.keepalive_silence(
+                    at=0.1, for_seconds=_WATCHDOG_TIMEOUT_S + 1.5
                 )
 
-            seen = await _states_until(radio, 12.0, recovered)
-            assert recovered(seen), seen
-            assert sim.last_release_reason == "token_remove"
-            assert radio._token == sim.token
-            assert await radio.get_freq() == 14_074_000
-        finally:
-            await radio.disconnect()
+                def recovered(seen: list[RadioConnectionState]) -> bool:
+                    return (
+                        RadioConnectionState.RECONNECTING in seen
+                        or RadioConnectionState.CONNECTING in seen
+                    ) and seen[-1] is RadioConnectionState.CONNECTED
+
+                seen = await _states_until(radio, 12.0, recovered)
+                assert seen[0] is RadioConnectionState.CONNECTED
+                assert recovered(seen), seen
+                assert server.last_release_reason == "token_remove"
+                assert radio._token == server.token
+                assert await radio.get_freq() == 14_074_000
+            finally:
+                await radio.disconnect()
+    finally:
+        await server.stop()
