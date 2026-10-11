@@ -293,11 +293,11 @@ Machine-readable runtime status for managed local supervisors and diagnostics.
     "running": false
   },
   "process": {
-    "rss_bytes": 187654144,
-    "open_fds": 41,
+    "rssBytes": 187654144,
+    "openFds": 41,
     "threads": 6,
-    "asyncio_tasks": 23,
-    "reconnects_total": 0
+    "asyncioTasks": 23,
+    "reconnectsTotal": 0
   },
   "lastError": null
 }
@@ -309,11 +309,11 @@ report is `null`.
 
 | Field | Source |
 |---|---|
-| `rss_bytes` | Current resident set size from `/proc/self/statm`; `null` where that file does not exist (macOS, Windows). |
-| `open_fds` | Open file descriptors listed in `/proc/self/fd` or `/dev/fd`; `null` where neither can be listed (Windows). |
+| `rssBytes` | Current resident set size from `/proc/self/statm`; `null` where that file does not exist (macOS, Windows). |
+| `openFds` | Open file descriptors listed in `/proc/self/fd` or `/dev/fd`; `null` where neither can be listed (Windows). |
 | `threads` | Python threads, `threading.active_count()`. |
-| `asyncio_tasks` | Unfinished tasks on the server's event loop, `asyncio.all_tasks()`. |
-| `reconnects_total` | `reconnecting` edges reported to `WebServer._on_reconnect_status` since the web server was created; `null` when the radio has no `set_reconnect_status_callback`. |
+| `asyncioTasks` | Unfinished tasks on the server's event loop, `asyncio.all_tasks()`. |
+| `reconnectsTotal` | `reconnecting` edges reported to `WebServer._on_reconnect_status` since the web server was created; `null` when the radio has no `set_reconnect_status_callback`. |
 
 ## `POST /api/v1/commands`
 

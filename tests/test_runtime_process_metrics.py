@@ -16,11 +16,11 @@ from mock_server import MockIcomRadio
 from test_audio_session_health import _FakeWriter, _response_json
 
 _PROCESS_KEYS = {
-    "rss_bytes",
-    "open_fds",
+    "rssBytes",
+    "openFds",
     "threads",
-    "asyncio_tasks",
-    "reconnects_total",
+    "asyncioTasks",
+    "reconnectsTotal",
 }
 
 
@@ -47,23 +47,23 @@ def _stub_server() -> WebServer:
 async def test_process_block_has_expected_keys_and_types() -> None:
     process = (await _runtime(_stub_server()))["process"]
     assert set(process) == _PROCESS_KEYS
-    for key in ("rss_bytes", "open_fds"):
+    for key in ("rssBytes", "openFds"):
         assert process[key] is None or (
             type(process[key]) is int and process[key] > 0
         ), key
     assert type(process["threads"]) is int and process["threads"] >= 1
-    assert type(process["asyncio_tasks"]) is int and process["asyncio_tasks"] >= 1
+    assert type(process["asyncioTasks"]) is int and process["asyncioTasks"] >= 1
     # The stub radio has no reconnect-status callback, so no count is observable.
-    assert process["reconnects_total"] is None
+    assert process["reconnectsTotal"] is None
 
 
 async def test_asyncio_tasks_counts_a_task_created_by_the_test() -> None:
     srv = _stub_server()
-    before = (await _runtime(srv))["process"]["asyncio_tasks"]
+    before = (await _runtime(srv))["process"]["asyncioTasks"]
     gate = asyncio.Event()
     task = asyncio.create_task(gate.wait())
     try:
-        after = (await _runtime(srv))["process"]["asyncio_tasks"]
+        after = (await _runtime(srv))["process"]["asyncioTasks"]
     finally:
         gate.set()
         await task
@@ -72,12 +72,12 @@ async def test_asyncio_tasks_counts_a_task_created_by_the_test() -> None:
 
 async def test_open_fds_counts_a_descriptor_opened_by_the_test() -> None:
     srv = _stub_server()
-    before = (await _runtime(srv))["process"]["open_fds"]
+    before = (await _runtime(srv))["process"]["openFds"]
     if before is None:
         return  # platform without a descriptor listing; type test covers null
     fd = os.open(os.devnull, os.O_RDONLY)
     try:
-        after = (await _runtime(srv))["process"]["open_fds"]
+        after = (await _runtime(srv))["process"]["openFds"]
     finally:
         os.close(fd)
     assert after == before + 1
@@ -89,7 +89,7 @@ async def test_reconnects_total_counts_reconnecting_edges_only() -> None:
         **vars(srv._radio),  # noqa: SLF001
         set_reconnect_status_callback=lambda callback: None,
     )
-    assert (await _runtime(srv))["process"]["reconnects_total"] == 0
+    assert (await _runtime(srv))["process"]["reconnectsTotal"] == 0
     for status in (
         {"state": "reconnecting", "attempt": 1, "next_retry_seconds": 0.1},
         {"state": "reconnecting", "attempt": 1, "next_retry_seconds": 0.1},
@@ -98,7 +98,7 @@ async def test_reconnects_total_counts_reconnecting_edges_only() -> None:
         {"state": "reconnecting", "attempt": 1, "next_retry_seconds": 0.1},
     ):
         srv._on_reconnect_status(status)  # noqa: SLF001
-    assert (await _runtime(srv))["process"]["reconnects_total"] == 2
+    assert (await _runtime(srv))["process"]["reconnectsTotal"] == 2
 
 
 async def test_reconnects_total_increments_after_forced_reconnect(
@@ -120,7 +120,7 @@ async def test_reconnects_total_increments_after_forced_reconnect(
     srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     srv._attach_reconnect_status_listener()  # noqa: SLF001  # start() wiring
     try:
-        assert (await _runtime(srv))["process"]["reconnects_total"] == 0
+        assert (await _runtime(srv))["process"]["reconnectsTotal"] == 0
         mock_radio.fault_plan = FaultPlan(
             control_to_client=FaultRule(drop_probability=1.0),
             civ_to_client=FaultRule(drop_probability=1.0),
@@ -131,7 +131,7 @@ async def test_reconnects_total_increments_after_forced_reconnect(
                 break
         data = await _runtime(srv)
         assert data["connection"]["state"] == "reconnecting"
-        assert data["process"]["reconnects_total"] == 1
+        assert data["process"]["reconnectsTotal"] == 1
     finally:
         srv._detach_reconnect_status_listener()  # noqa: SLF001
         radio._intentional_disconnect = True  # noqa: SLF001

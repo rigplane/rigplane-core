@@ -4223,11 +4223,11 @@ class WebServer:
             getattr(radio, "set_reconnect_status_callback", None)
         )
         return {
-            "rss_bytes": rss_bytes,
-            "open_fds": open_fds,
+            "rssBytes": rss_bytes,
+            "openFds": open_fds,
             "threads": threading.active_count(),
-            "asyncio_tasks": len(asyncio.all_tasks()),
-            "reconnects_total": self._reconnects_total
+            "asyncioTasks": len(asyncio.all_tasks()),
+            "reconnectsTotal": self._reconnects_total
             if reconnects_observable
             else None,
         }
