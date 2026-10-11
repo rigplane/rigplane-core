@@ -85,6 +85,8 @@ async def test_reboot_mid_session_client_reconnects_with_new_token(
     sim: MockIcomRadio,
 ) -> None:
     radio = _client(sim)
+    statuses: list[dict] = []
+    radio.set_reconnect_status_callback(statuses.append)
     with fast_connect():
         await radio.connect()
         try:
@@ -94,18 +96,20 @@ async def test_reboot_mid_session_client_reconnects_with_new_token(
             sim.reboot(at=0.1, down_for=3.0, busy_for=0.5)
 
             def reconnected(seen: list[RadioConnectionState]) -> bool:
-                # A completed reconnect releases the session and logs in
-                # again within a few milliseconds, so the RECONNECTING
-                # sample can be shorter than the 20 ms polling step;
-                # CONNECTING is that same reconnect's next state and lasts
-                # the whole login handshake.
+                # The RECONNECTING window can be shorter than the 20 ms
+                # sampling step, so the reconnect evidence is the status
+                # callback (emitted synchronously by watchdog_loop, one per
+                # loop attempt), not the sampled states.
                 return (
-                    RadioConnectionState.RECONNECTING in seen
-                    or RadioConnectionState.CONNECTING in seen
-                ) and seen[-1] is RadioConnectionState.CONNECTED
+                    seen[-1] is RadioConnectionState.CONNECTED
+                    and bool(statuses)
+                    and statuses[-1]["state"] == "connected"
+                )
 
             seen = await _states_until(radio, 20.0, reconnected)
             assert reconnected(seen), seen
+            assert any(s["state"] == "reconnecting" for s in statuses), statuses
+            assert statuses[-1]["state"] == "connected", statuses
             await _wait_usable(radio, 5.0)
             assert radio.connected
             assert sim.reboot_count == 1
@@ -142,15 +146,17 @@ async def test_keepalive_silence_longer_than_watchdog_fires_link_down() -> None:
     ``token_remove`` record this test asserts.  With the longer hold the
     client's release is the only release.
 
-    A completed reconnect releases the session and logs in again within a
-    few milliseconds, so the RECONNECTING sample can be shorter than the
-    20 ms polling step; CONNECTING is that same reconnect's next state and
-    lasts the whole login handshake.
+    The RECONNECTING window can be shorter than the 20 ms sampling step,
+    so the reconnect evidence is the status callback (emitted
+    synchronously by watchdog_loop, one per loop attempt), not the sampled
+    states.
     """
     server = MockIcomRadio(single_owner=True, keepalive_hold_s=2.0)
     await server.start()
     try:
         radio = _client(server)
+        statuses: list[dict] = []
+        radio.set_reconnect_status_callback(statuses.append)
         with fast_connect():
             await radio.connect()
             try:
@@ -158,13 +164,16 @@ async def test_keepalive_silence_longer_than_watchdog_fires_link_down() -> None:
 
                 def recovered(seen: list[RadioConnectionState]) -> bool:
                     return (
-                        RadioConnectionState.RECONNECTING in seen
-                        or RadioConnectionState.CONNECTING in seen
-                    ) and seen[-1] is RadioConnectionState.CONNECTED
+                        seen[-1] is RadioConnectionState.CONNECTED
+                        and bool(statuses)
+                        and statuses[-1]["state"] == "connected"
+                    )
 
                 seen = await _states_until(radio, 12.0, recovered)
                 assert seen[0] is RadioConnectionState.CONNECTED
                 assert recovered(seen), seen
+                assert any(s["state"] == "reconnecting" for s in statuses), statuses
+                assert statuses[-1]["state"] == "connected", statuses
                 await _wait_usable(radio, 5.0)
                 assert radio.connected
                 assert server.last_release_reason == "token_remove"
