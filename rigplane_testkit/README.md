@@ -26,12 +26,6 @@ UDP code paths as production.
   another stream's decisions. The plan sits beside the legacy knobs
   (`drop_rate`, `reorder_window`, `response_delay`, `stall_for`), which are
   unchanged.
-  `MockIcomRadio` also offers scheduled events: `reboot(at, down_for,
-  busy_for)` — stop answering, forget the session, rotate the token, restart
-  CI-V sequence numbering, fence the stale client off the CI-V port until it
-  completes a fresh OpenClose(open), answer busy, then accept a fresh
-  login — and
-  `keepalive_silence(at, for_seconds)` — pings are received but not answered.
   Wire-level examples live in `tests/testkit/test_simulator_faults.py`.
 
 ## How tests import it
