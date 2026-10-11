@@ -66,10 +66,6 @@ async def _states_until(
     return seen
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="MOR-3296: reconnect_loop never completes after a reboot on the simulator",
-)
 async def test_reboot_mid_session_client_reconnects_with_new_token(
     sim: MockIcomRadio,
 ) -> None:
@@ -128,5 +124,37 @@ async def test_keepalive_silence_longer_than_watchdog_fires_link_down(
             )
             assert seen[0] is RadioConnectionState.CONNECTED
             assert RadioConnectionState.RECONNECTING in seen, seen
+        finally:
+            await radio.disconnect()
+
+
+async def test_keepalive_silence_watchdog_recovery_returns_connected(
+    sim: MockIcomRadio,
+) -> None:
+    """After the silence trips the watchdog the client recovers a live session.
+
+    The release the reconnect loop performs must reach the simulator as a
+    token remove, and the fresh login must be answered inside the silence
+    window (only ping replies are suppressed), so the client ends CONNECTED
+    with the session token the simulator currently holds and a working
+    CI-V read path.
+    """
+    radio = _client(sim)
+    with fast_connect():
+        await radio.connect()
+        try:
+            sim.keepalive_silence(at=0.1, for_seconds=_WATCHDOG_TIMEOUT_S + 1.5)
+
+            def recovered(seen: list[RadioConnectionState]) -> bool:
+                return (
+                    RadioConnectionState.RECONNECTING in seen
+                    and seen[-1] is RadioConnectionState.CONNECTED
+                )
+
+            seen = await _states_until(radio, 12.0, recovered)
+            assert recovered(seen), seen
+            assert sim.last_release_reason == "token_remove"
+            assert radio._token == sim.token
+            assert await radio.get_freq() == 14_074_000
         finally:
             await radio.disconnect()

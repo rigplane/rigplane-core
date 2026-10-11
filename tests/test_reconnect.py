@@ -110,6 +110,58 @@ class TestReconnect:
         await asyncio.sleep(0.05)
 
 
+class TestReconnectLifecycleRelease:
+    """The reconnect loop routes its release through the session lifecycle."""
+
+    @pytest.mark.asyncio
+    async def test_stop_reconnect_from_inside_task_does_not_cancel(
+        self, radio: IcomRadio
+    ) -> None:
+        """_stop_reconnect called from the task it would cancel clears the
+        handle without cancelling that task (the release the reconnect loop
+        awaits reaches _stop_reconnect from inside the loop itself)."""
+        radio._connected = False
+        radio._intentional_disconnect = False
+
+        async def _body() -> None:
+            radio._reconnect_task = asyncio.current_task()
+            radio._control_phase._stop_reconnect()
+            await asyncio.sleep(0.05)
+
+        task = asyncio.create_task(_body())
+        await asyncio.wait_for(task, timeout=5.0)
+        assert not task.cancelled()
+        assert radio._reconnect_task is None
+
+    @pytest.mark.asyncio
+    async def test_reconnect_loop_releases_through_lifecycle(
+        self, radio: IcomRadio
+    ) -> None:
+        """One reconnect iteration awaits the lifecycle disconnect before
+        connect(); the lifecycle reset is what makes the login real."""
+        calls: list[str] = []
+        radio._connected = False
+        radio._intentional_disconnect = False
+        with (
+            patch.object(
+                radio._session_lifecycle,
+                "disconnect",
+                new_callable=AsyncMock,
+                side_effect=lambda: calls.append("lifecycle"),
+            ) as lifecycle_disconnect,
+            patch.object(
+                radio,
+                "connect",
+                new_callable=AsyncMock,
+                side_effect=lambda: calls.append("connect"),
+            ),
+        ):
+            radio._reconnect_task = asyncio.create_task(radio._reconnect_loop())
+            await asyncio.wait_for(radio._reconnect_task, timeout=5.0)
+        assert lifecycle_disconnect.await_count == 1
+        assert calls == ["lifecycle", "connect"]
+
+
 class TestAutoReconnectConfig:
     def test_default_off(self) -> None:
         r = IcomRadio("192.168.1.100", model="IC-7610")
