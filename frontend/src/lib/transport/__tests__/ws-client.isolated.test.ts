@@ -1151,24 +1151,36 @@ describe('WsChannel', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('keeps the connection alive by sending periodic ping frames', async () => {
+  it('closes and reconnects when the server stays silent past the heartbeat timeout', async () => {
     const { WsChannel } = await import('../ws-client');
     const ch = new WsChannel();
+    const states: string[] = [];
+    ch.onStateChange((s) => states.push(s));
 
     ch.connect('ws://test');
     instances[0].simulateOpen();
     expect(ch.state).toBe('connected');
 
-    // advance past two keepalive intervals without incoming messages
-    vi.advanceTimersByTime(30001);
-
+    // The client's own ping at 15 s must not count as proof the server is alive.
+    vi.advanceTimersByTime(29_999);
     const pingFrames = instances[0].sent
       .map((data) => JSON.parse(data))
       .filter((msg) => msg.type === 'ping');
-
-    expect(pingFrames.length).toBeGreaterThanOrEqual(2);
+    expect(pingFrames).toHaveLength(1);
     expect(ch.state).toBe('connected');
-    expect(instances).toHaveLength(1);
+
+    vi.advanceTimersByTime(1);
+    expect(instances[0].readyState).toBe(MockWebSocket.CLOSED);
+    expect(ch.state).toBe('disconnected');
+
+    // First backoff is at most 1.2 s (calcBackoff jitter).
+    vi.advanceTimersByTime(1_300);
+    expect(instances).toHaveLength(2);
+    expect(ch.state).toBe('reconnecting');
+
+    instances[1].simulateOpen();
+    expect(ch.state).toBe('connected');
+    expect(states).toEqual(['connecting', 'connected', 'disconnected', 'reconnecting', 'connected']);
   });
 
   it('resets heartbeat timer on each incoming message', async () => {
