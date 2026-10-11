@@ -19,6 +19,8 @@ export default defineConfig({
       'src/lib/runtime/props/__tests__/panel-props.test.ts',
       'src/lib/runtime/props/__tests__/notch-freq-domain.isolated.test.ts',
       'src/lib/runtime/props/__tests__/nr-level-projection.isolated.test.ts',
+      'src/lib/runtime/adapters/__tests__/mod-input-auto.isolated.test.ts',
+      'src/lib/runtime/adapters/__tests__/mod-input-tx-guard.isolated.test.ts',
     ],
     pool: 'threads',
   },
