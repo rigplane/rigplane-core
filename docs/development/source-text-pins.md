@@ -22,3 +22,22 @@ When a ledgered test stops reading source, delete its row. To regenerate the
 ledger, run `node scripts/source-text-pin-inventory.mjs` from `frontend/` and
 write its output to the ledger file; a diff that adds rows is a new
 source-text test and needs a reason in review.
+
+## Projection goldens
+
+A projection golden pins the output of a pure projection on a fixed input:
+the test builds the projection from its fixture and compares it with
+`toEqual` against a committed JSON file, so a change shows as a readable
+diff instead of a re-signed digest.
+
+- Golden: `frontend/src/lib/runtime/adapters/__tests__/fixtures/strict-projection.golden.json`,
+  pinned by the `preserves legacy strict model members` test in
+  `frontend/src/lib/runtime/adapters/__tests__/radio-view-model-adapter.test.ts`.
+- A golden is loaded with an ES JSON import (as `fixtures/ic7300-profile.ts`
+  loads `ic7300-state.json`), so it is not a source-text pin and needs no
+  ledger row: none of `READ_PATTERN`'s forms matches it.
+- A golden is regenerated only by running that test file with
+  `UPDATE_GOLDENS=1` on the test host; the env-guarded `writeFileSync` inside
+  the test is the golden's only writer.
+- A golden diff that changes a value is a behaviour change: the PR body must
+  name the ticket that asked for it.
