@@ -113,6 +113,7 @@ jobs:
       frontend: ${{ steps.paths.outputs.frontend }}
       ci: ${{ steps.paths.outputs.ci }}
       docs: ${{ steps.paths.outputs.docs }}
+      web: ${{ steps.paths.outputs.web }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -162,7 +163,7 @@ jobs:
           fetch-depth: 2
 
       - name: Install uv
-        if: needs.classify.outputs.core == 'true'
+        if: needs.classify.outputs.core == 'true' || needs.classify.outputs.web == 'true'
         uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
@@ -171,11 +172,11 @@ jobs:
             uv.lock
 
       - name: Set up Python 3.11
-        if: needs.classify.outputs.core == 'true'
+        if: needs.classify.outputs.core == 'true' || needs.classify.outputs.web == 'true'
         run: uv python install 3.11
 
       - name: Install dependencies
-        if: needs.classify.outputs.core == 'true'
+        if: needs.classify.outputs.core == 'true' || needs.classify.outputs.web == 'true'
         # --all-extras (not --extra dev --extra bridge, MOR-1978): `dev`
         # already installed its packages (pytest, ruff, mypy, pydantic,
         # jsonschema, ...) and `bridge` is `[]` (pyproject.toml, a no-op
@@ -330,6 +331,13 @@ jobs:
       - name: Type-check web boundary
         if: needs.classify.outputs.core == 'true' && needs.classify.outputs.frontend == 'true'
         run: uv run mypy --strict src/rigplane/web
+
+      - name: Web Python subset (frontend-only changes)
+        # Core selection already runs all of tests/ below.
+        if: needs.classify.outputs.web == 'true' && needs.classify.outputs.core != 'true'
+        run: >-
+          uv run pytest tests/web tests/test_web_*.py -n auto --maxprocesses 4
+          --tb=short --timeout=300 --timeout-method=thread
 
       - name: Run tests
         id: tests

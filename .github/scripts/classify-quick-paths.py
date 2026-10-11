@@ -112,11 +112,31 @@ def is_ci_control(path: str) -> bool:
     )
 
 
+def _is_frontend_input(parts: tuple[str, ...]) -> bool:
+    """Non-web paths whose content the frontend parses or is generated from."""
+    if parts[:3] == ("src", "rigplane", "runtime") or parts[0] in {"contracts", "rigs"}:
+        return True
+    return (
+        parts[:3] == ("src", "rigplane", "core")
+        and len(parts) > 3
+        and "state" in parts[3]
+    )
+
+
 def is_frontend(path: str) -> bool:
     parts = _parts(path)
     if is_documentation(path):
         return False
-    return parts[0] == "frontend" or parts[:3] == ("src", "rigplane", "web")
+    return (
+        parts[0] == "frontend"
+        or parts[:3] == ("src", "rigplane", "web")
+        or _is_frontend_input(parts)
+    )
+
+
+def is_frontend_source(path: str) -> bool:
+    """Paths under frontend/ that are not documentation."""
+    return _parts(path)[0] == "frontend" and not is_documentation(path)
 
 
 def is_core(path: str) -> bool:
@@ -138,6 +158,11 @@ def classify(paths: Sequence[str]) -> dict[str, bool]:
         "ci": any(is_ci_control(path) for path in normalized),
         "docs": all(is_documentation(path) for path in normalized),
     }
+
+
+def selects_web_python_subset(paths: Sequence[str]) -> bool:
+    """True when the diff touches frontend sources, which talk to the web surface."""
+    return any(is_frontend_source(path) for path in dict.fromkeys(paths))
 
 
 def _ensure_commit(repo: Path, sha: str) -> None:
@@ -200,7 +225,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv or sys.argv[1:])
     try:
         paths = changed_paths(args.repo, base=args.base, head=args.head)
-        result = classify(paths)
+        result = {**classify(paths), "web": selects_web_python_subset(paths)}
     except ClassificationError as exc:
         print(f"quick path classification failed: {exc}", file=sys.stderr)
         return 2
