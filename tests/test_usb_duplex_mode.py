@@ -9,11 +9,9 @@ a real CODEC (not a virtual loopback).
 
 from __future__ import annotations
 
-import sys
-
 import pytest
 
-from rigplane.audio import bridge
+from rigplane.audio import bridge, usb_driver
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
 from rigplane.audio.usb_driver import (
     UsbAudioDevice,
@@ -32,7 +30,7 @@ def _codec(index: int = 1, name: str = "USB Audio CODEC") -> UsbAudioDevice:
 
 
 def _darwin(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(usb_driver.platform, "system", lambda: "Darwin")
 
 
 def test_same_codec_device_on_macos_is_exclusive(
@@ -61,7 +59,7 @@ def test_virtual_loopback_on_macos_is_full(
 def test_same_codec_device_on_non_darwin_is_full(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(usb_driver.platform, "system", lambda: "Linux")
     dev = _codec()
     assert resolve_usb_duplex_mode(dev, dev) == "full"
 
