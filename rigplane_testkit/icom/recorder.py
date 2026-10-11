@@ -12,8 +12,9 @@ Every datagram is appended as one JSON line::
 
 ``t`` is seconds (``time.monotonic``) since :meth:`IcomSessionRecorder.start`.
 Credentials never reach disk: the login packet's username/password/computer
-fields, the conninfo username field and every session-token field are zeroed
-before writing, and the record carries ``"redacted": ["login"]`` /
+fields, the conninfo username field and the session-token slot (0x1C) of
+every control packet sized 0x40/0x50/0x60/0x90 — in both directions — are
+zeroed before writing, and the record carries ``"redacted": ["login"]`` /
 ``["token"]`` markers naming what was masked.  The bytes forwarded on the
 wire are never altered by redaction (only the status port rewrite touches
 forwarded traffic, and the original radio packet is what gets recorded).
@@ -41,6 +42,14 @@ _LOGIN_RESPONSE_SIZE = 0x60  # radio → client login response (carries token)
 _TOKEN_SIZE = 0x40  # token ack / renew / remove
 _CONNINFO_SIZE = 0x90  # client → radio stream request (carries token + username)
 _STATUS_SIZE = 0x50  # radio → client status (carries advertised ports)
+# Control packets whose 0x1C slot is the session token, masked in both
+# directions (see redact_datagram).
+_TOKEN_PACKET_SIZES = (
+    _TOKEN_SIZE,
+    _STATUS_SIZE,
+    _LOGIN_RESPONSE_SIZE,
+    _CONNINFO_SIZE,
+)
 
 # Field offsets (see src/rigplane/core/auth.py).
 _STATUS_CIV_PORT_OFF = 0x42  # big-endian u16
@@ -52,8 +61,6 @@ _LOGIN_CREDENTIALS = slice(0x40, 0x70)
 # Conninfo carries the encoded username again at 0x60-0x70.
 _CONNINFO_USERNAME = slice(0x60, 0x70)
 
-_TOKEN_REQUEST_TYPES = (0x01, 0x02, 0x05)  # remove / ack / renew
-
 
 def redact_datagram(port: str, direction: str, data: bytes) -> tuple[bytes, list[str]]:
     """Return ``(safe_bytes, labels)`` with credential/token fields zeroed.
@@ -64,23 +71,26 @@ def redact_datagram(port: str, direction: str, data: bytes) -> tuple[bytes, list
     """
     pkt = bytearray(data)
     labels: list[str] = []
-    n = len(data)
-    # Credential-bearing packets are client-originated; the login *response*
-    # (r2c, 0x60) also carries the freshly issued session token.
-    if port == "control" and direction == "c2r" and n >= 0x20 and data[0x14] == 0x01:
-        if n == _LOGIN_SIZE and data[0x15] == 0x00:
-            pkt[_LOGIN_CREDENTIALS] = bytes(0x30)
-            labels.append("login")
-        elif n == _TOKEN_SIZE and data[0x15] in _TOKEN_REQUEST_TYPES:
-            pkt[_TOKEN_FIELD] = bytes(4)
-            labels.append("token")
-        elif n == _CONNINFO_SIZE and data[0x15] == 0x03:
-            pkt[_TOKEN_FIELD] = bytes(4)
-            pkt[_CONNINFO_USERNAME] = bytes(0x10)
-            labels.extend(("token", "login"))
-    if port == "control" and direction == "r2c" and n == _LOGIN_RESPONSE_SIZE:
+    if port != "control":
+        return bytes(pkt), labels
+    # The session token sits at 0x1C in the 0x40/0x60/0x90 control packets
+    # (protocol.md § Token Ack / § Auth Response / § Conninfo Packet — sent
+    # by radio and client; see build_conninfo_packet / parse_auth_response
+    # in src/rigplane/core/auth.py).  The 0x50 status packet shares the
+    # header layout and probe captures carried live token bytes there, so
+    # the slot is masked in both directions by size alone.
+    if len(data) in _TOKEN_PACKET_SIZES:
         pkt[_TOKEN_FIELD] = bytes(4)
         labels.append("token")
+    # Credentials ride only in client-originated request packets: the login
+    # username/password/computer span and the conninfo username copy.
+    if direction == "c2r" and len(data) >= 0x20 and data[0x14] == 0x01:
+        if len(data) == _LOGIN_SIZE and data[0x15] == 0x00:
+            pkt[_LOGIN_CREDENTIALS] = bytes(0x30)
+            labels.append("login")
+        elif len(data) == _CONNINFO_SIZE and data[0x15] == 0x03:
+            pkt[_CONNINFO_USERNAME] = bytes(0x10)
+            labels.append("login")
     return bytes(pkt), labels
 
 
@@ -92,6 +102,8 @@ class _Channel:
         self.name = name
         self.listener: asyncio.DatagramTransport | None = None
         self.upstream: asyncio.DatagramTransport | None = None
+        self._upstream_task: asyncio.Task[None] | None = None
+        self._upstream_port = 0  # radio-side port the upstream connects to
         self.client_addr: tuple[str, int] | None = None
         self.dropped = 0  # packets arrived before the upstream was known
 
@@ -111,9 +123,27 @@ class _Channel:
         self.listener = transport
 
     def open_upstream(self, host: str, port: int) -> None:
-        """Schedule the upstream endpoint; listener port is already known."""
-        loop = asyncio.get_running_loop()
-        loop.create_task(self._open_upstream(host, port))
+        """Open the upstream endpoint once; the first advertisement wins.
+
+        A second status packet while the connect is in flight cannot start
+        another one; once open, a different advertised port is ignored and
+        logged (the radio fixes its CI-V/audio ports for the session).
+        """
+        if self._upstream_task is not None and not self._upstream_task.done():
+            return
+        if self.upstream is not None:
+            if port != self._upstream_port:
+                logger.info(
+                    "%s: status advertised port %d; upstream already "
+                    "connected to %d, ignoring",
+                    self.name,
+                    port,
+                    self._upstream_port,
+                )
+            return
+        self._upstream_task = asyncio.get_running_loop().create_task(
+            self._open_upstream(host, port)
+        )
 
     async def _open_upstream(self, host: str, port: int) -> None:
         loop = asyncio.get_running_loop()
@@ -121,6 +151,7 @@ class _Channel:
             lambda: _UpstreamProtocol(self), remote_addr=(host, port)
         )
         self.upstream = transport
+        self._upstream_port = port
 
     def close(self) -> None:
         for transport in (self.listener, self.upstream):
@@ -268,12 +299,10 @@ class IcomSessionRecorder:
         pkt = bytearray(data)
         civ_ch = self._channels["civ"]
         if radio_civ > 0:
-            if civ_ch.upstream is None:
-                civ_ch.open_upstream(self._radio_host, radio_civ)
+            civ_ch.open_upstream(self._radio_host, radio_civ)
             struct.pack_into(">H", pkt, _STATUS_CIV_PORT_OFF, civ_ch.port)
         audio_ch = self._channels["audio"]
         if radio_audio > 0:
-            if audio_ch.upstream is None:
-                audio_ch.open_upstream(self._radio_host, radio_audio)
+            audio_ch.open_upstream(self._radio_host, radio_audio)
             struct.pack_into(">H", pkt, _STATUS_AUDIO_PORT_OFF, audio_ch.port)
         return bytes(pkt)

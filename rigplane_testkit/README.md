@@ -26,7 +26,8 @@ UDP code paths as production.
   every datagram on the control/CI-V/audio ports to JSONL with direction,
   port and monotonic time. The radio-advertised CI-V/audio ports in the
   status packet are rewritten to the proxy's listeners; login credentials and
-  session-token fields are zeroed before anything hits disk. CLI:
+  the session-token slot of every control packet (0x40/0x50/0x60/0x90, both
+  directions) are zeroed before anything hits disk. CLI:
   `python -m rigplane_testkit.icom record --radio HOST --out FILE`.
 - `rigplane_testkit.icom.replay` — `Recording.load` plus `ReplayResponder`,
   a pure (socket-free) replayer that answers CI-V requests with the recorded

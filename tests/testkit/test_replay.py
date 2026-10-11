@@ -113,6 +113,48 @@ class TestReplayResponder:
         assert responder.respond(unknown) is None
         assert responder.unanswered == [unknown]
 
+    def test_subcmd_reply_not_stolen_by_lost_reply(self, tmp_path) -> None:
+        """PR #4035 round 1: the ``14 01`` reply was lost on the wire, so the
+        recording holds ``14 01``, then ``14 0A`` and its ``14 0A 01 28``
+        answer; the answer must pair with ``14 0A`` by (cmd, subcmd), not
+        with the stale ``14 01`` by cmd alone."""
+        req_lost = _civ(0x14, b"\x01", to=_RADIO_ADDR, frm=_CONTROLLER)
+        req_next = _civ(0x14, b"\x0a", to=_RADIO_ADDR, frm=_CONTROLLER)
+        reply = _civ(0x14, b"\x0a\x01\x28", to=_CONTROLLER, frm=_RADIO_ADDR)
+        path = tmp_path / "lost.jsonl"
+        _write_jsonl(
+            path,
+            [
+                (0.10, "c2r", _civ_packet(req_lost)),
+                (0.20, "c2r", _civ_packet(req_next)),
+                (0.21, "r2c", _civ_packet(reply)),
+            ],
+        )
+        responder = ReplayResponder(Recording.load(path))
+        assert responder.respond(req_next) == reply
+        assert responder.unanswered == []
+        assert list(responder.unsolicited()) == []
+
+    def test_ack_paired_with_most_recent_request(self, tmp_path) -> None:
+        """With the ``14 01`` reply lost, a later bare ACK (0xFB stands in
+        the command slot and names no command) must pair with the request
+        just sent, not with the stale head of the queue."""
+        req_lost = _civ(0x14, b"\x01", to=_RADIO_ADDR, frm=_CONTROLLER)
+        req_set = _civ(0x05, _freq_bcd(14_074_000), to=_RADIO_ADDR, frm=_CONTROLLER)
+        ack = _civ(0xFB, to=_CONTROLLER, frm=_RADIO_ADDR)
+        path = tmp_path / "ack.jsonl"
+        _write_jsonl(
+            path,
+            [
+                (0.10, "c2r", _civ_packet(req_lost)),
+                (0.20, "c2r", _civ_packet(req_set)),
+                (0.21, "r2c", _civ_packet(ack)),
+            ],
+        )
+        responder = ReplayResponder(Recording.load(path))
+        assert responder.respond(req_set) == ack
+        assert responder.unanswered == []
+
     def test_unsolicited_in_order(self, tmp_path) -> None:
         responder = ReplayResponder(_synthetic_recording(tmp_path))
         timeline = list(responder.unsolicited())

@@ -45,7 +45,15 @@ def extract_civ_frame(packet: bytes) -> bytes | None:
 
 
 def request_key(frame: bytes) -> tuple[int, int | None, bytes]:
-    """Lookup key for a CI-V request: (cmd, subcmd, 2-byte data prefix)."""
+    """Lookup key for a CI-V request: (cmd, subcmd, 2-byte data prefix).
+
+    Commands without a subcommand (e.g. ``05`` set-frequency) fold their
+    first payload bytes into the data-prefix slot, so two requests of the
+    same command whose payloads share the first two bytes collapse onto one
+    key.  Acceptable for replies: such commands are answered by a bare
+    ACK/NAK whose bytes are identical for every request of that command, so
+    the latest recording wins and a collided entry still answers correctly.
+    """
     cmd = frame[4]
     payload = frame[5:-1]
     sub = payload[0] if payload else None
@@ -99,14 +107,23 @@ class ReplayResponder:
     """Answers CI-V requests with the bytes the radio actually answered.
 
     Built from a :class:`Recording`: walk the CI-V port in time order, match
-    each radio frame to the earliest pending request it plausibly answers
-    (same cmd, or ACK/NAK to the oldest outstanding request), and keep the
+    each radio frame to a pending request it plausibly answers, and keep the
     reply under the request's :func:`request_key` — latest recording wins.
     Radio frames that match no pending request are the unsolicited stream.
 
-    Heuristic limit: an unsolicited frame sharing a cmd with an in-flight
-    request is attributed as that request's reply (echo-free pairing is not
-    recoverable from the wire alone).
+    Matching: a data reply pairs with the earliest pending request that
+    shares its command, and its subcommand when the request has one; a bare
+    ACK/NAK (0xFB/0xFA stands in the command slot and names no command)
+    pairs with the most recent pending request — the client awaits each
+    reply before sending the next, which keeps a request whose reply was
+    lost from stealing later answers.
+
+    Heuristic limits: an unsolicited frame sharing a command (and
+    subcommand, when present) with an in-flight request is attributed as
+    that request's reply (echo-free pairing is not recoverable from the wire
+    alone), and with several requests outstanding at once an ACK's true
+    owner is not recoverable — attribution picks the most recent, harmless
+    while ACK frames are byte-identical.
     """
 
     recording: Recording
@@ -132,9 +149,12 @@ class ReplayResponder:
         if not pending:
             return None
         if reply[4] in (_CIV_ACK, _CIV_NAK):
-            return pending[0]
+            # ACK/NAK echoes no command; pair with the most recent request.
+            return pending[-1]
+        reply_sub = request_key(reply)[1]
         for req in pending:
-            if req[4] == reply[4]:
+            cmd, sub, _ = request_key(req)
+            if cmd == reply[4] and (sub is None or sub == reply_sub):
                 return req
         return None
 

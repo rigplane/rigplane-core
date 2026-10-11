@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import struct
 
 from rigplane.core.auth import (
     build_conninfo_packet,
     build_login_packet,
     encode_credentials,
+    parse_status_response,
 )
 from rigplane.radio import IcomRadio
 
@@ -104,6 +106,54 @@ class TestRedactDatagram:
         assert labels == ["token"]
         assert safe[0x1C:0x20] == bytes(4)
 
+    def test_radio_conninfo_token_zeroed(self) -> None:
+        """Radio→client conninfo keeps the token at 0x1C (protocol.md §
+        Conninfo Packet: conninfo is sent by both radio and client;
+        ``build_conninfo_packet`` in ``src/rigplane/core/auth.py`` packs it
+        little-endian at 0x1C..0x20)."""
+        pkt = build_conninfo_packet(
+            sender_id=2,
+            receiver_id=1,
+            username=_USER,
+            token=0x12345678,
+            tok_request=7,
+            radio_name="IC-7610",
+            mac_address=bytes(6),
+        )
+        safe, labels = redact_datagram("control", "r2c", pkt)
+        assert labels == ["token"]
+        assert struct.pack("<I", 0x12345678) not in safe
+        assert safe[0x1C:0x20] == bytes(4)
+
+    def test_status_packet_token_slot_zeroed(self) -> None:
+        """The 0x50 status packet shares the control header (§ Status Packet:
+        error 0x30, CI-V port 0x42, audio port 0x46, read by
+        ``parse_status_response``); the round-1 probe carried live token
+        bytes in its 0x1C slot, and masking must keep the ports parseable."""
+        pkt = bytearray(0x50)
+        struct.pack_into("<I", pkt, 0x00, 0x50)
+        struct.pack_into("<I", pkt, 0x1C, 0x12345678)
+        struct.pack_into(">H", pkt, 0x42, 50002)
+        struct.pack_into(">H", pkt, 0x46, 50003)
+        safe, labels = redact_datagram("control", "r2c", bytes(pkt))
+        assert labels == ["token"]
+        assert struct.pack("<I", 0x12345678) not in safe
+        status = parse_status_response(safe)
+        assert (status.civ_port, status.audio_port) == (50002, 50003)
+
+    def test_token_reply_zeroed(self) -> None:
+        """A 0x40 token reply is radio-originated with the reply marker
+        0x14 = 0x02 (requests use 0x01) and the token at 0x1C (§ Token Ack);
+        the request-only gate let it reach disk untouched."""
+        pkt = bytearray(0x40)
+        struct.pack_into("<I", pkt, 0x00, 0x40)
+        pkt[0x14] = 0x02  # reply marker, not the 0x01 request marker
+        pkt[0x15] = 0x02  # token ack
+        struct.pack_into("<I", pkt, 0x1C, 0x12345678)
+        safe, labels = redact_datagram("control", "r2c", bytes(pkt))
+        assert labels == ["token"]
+        assert struct.pack("<I", 0x12345678) not in safe
+
     def test_plain_civ_packet_untouched(self) -> None:
         pkt = b"\x15\x00\x00\x00" + bytes(0x11)
         safe, labels = redact_datagram("civ", "c2r", pkt)
@@ -161,3 +211,26 @@ class TestRecordSession:
         assert len(timeline) >= 2
         assert [t for t, _ in timeline] == sorted(t for t, _ in timeline)
         assert all(f[4] in (0x00, 0x03) for _, f in timeline)
+
+
+class TestUpstreamOpenGuard:
+    async def test_duplicate_status_opens_one_upstream(self, tmp_path, caplog) -> None:
+        """A second status packet before the upstream socket is ready must
+        not open a second upstream (first advertisement wins); a later
+        different port on the open channel is ignored and logged."""
+        rec = IcomSessionRecorder("127.0.0.1", 1, tmp_path / "guard.jsonl")
+        ch = rec._channels["civ"]
+        try:
+            with caplog.at_level(logging.INFO, logger="rigplane_testkit.icom.recorder"):
+                ch.open_upstream("127.0.0.1", 50002)
+                first = ch._upstream_task
+                ch.open_upstream("127.0.0.1", 50003)  # still connecting
+                assert ch._upstream_task is first
+                await first
+                ch.open_upstream("127.0.0.1", 50004)  # already open
+                await asyncio.sleep(0)
+            assert ch._upstream_task is first
+            assert ch._upstream_port == 50002
+            assert "50004" in caplog.text
+        finally:
+            ch.close()
