@@ -66,6 +66,21 @@ async def _states_until(
     return seen
 
 
+async def _wait_usable(radio: IcomRadio, deadline_s: float) -> None:
+    """Wait until ``radio.connected`` (transport healthy, identity accepted).
+
+    ``conn_state`` turns CONNECTED before the reconnect's identity gate has
+    answered, so a test that asserts right after the state flip races the
+    gate; ``connected`` is false until the radio has answered its ``19 00``
+    identification.
+    """
+    end = time.monotonic() + deadline_s
+    while time.monotonic() < end:
+        if radio.connected:
+            return
+        await asyncio.sleep(0.02)
+
+
 async def test_reboot_mid_session_client_reconnects_with_new_token(
     sim: MockIcomRadio,
 ) -> None:
@@ -91,6 +106,8 @@ async def test_reboot_mid_session_client_reconnects_with_new_token(
 
             seen = await _states_until(radio, 20.0, reconnected)
             assert reconnected(seen), seen
+            await _wait_usable(radio, 5.0)
+            assert radio.connected
             assert sim.reboot_count == 1
             assert radio._token == sim.token
             assert radio._token != old_token
@@ -137,9 +154,7 @@ async def test_keepalive_silence_longer_than_watchdog_fires_link_down() -> None:
         with fast_connect():
             await radio.connect()
             try:
-                server.keepalive_silence(
-                    at=0.1, for_seconds=_WATCHDOG_TIMEOUT_S + 1.5
-                )
+                server.keepalive_silence(at=0.1, for_seconds=_WATCHDOG_TIMEOUT_S + 1.5)
 
                 def recovered(seen: list[RadioConnectionState]) -> bool:
                     return (
@@ -150,6 +165,8 @@ async def test_keepalive_silence_longer_than_watchdog_fires_link_down() -> None:
                 seen = await _states_until(radio, 12.0, recovered)
                 assert seen[0] is RadioConnectionState.CONNECTED
                 assert recovered(seen), seen
+                await _wait_usable(radio, 5.0)
+                assert radio.connected
                 assert server.last_release_reason == "token_remove"
                 assert radio._token == server.token
                 assert await radio.get_freq() == 14_074_000
