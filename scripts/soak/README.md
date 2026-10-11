@@ -7,9 +7,7 @@ The driver starts the full in-process stack — simulator, `IcomRadio`,
 `WebServer`, `RigctldServer` — then operates it the way an operator would
 for a configurable duration: tune + readback, mode changes, a rigctld
 replay (`F`/`f`/`M`/`m`/`t`), forced radio disconnect/connect cycles, and
-a WebSocket client subscribed to state and audio the whole time. It can
-also operate an already-running server with `--url` (pass
-`--rigctld-url` to keep the replay running).
+a WebSocket client subscribed to state and audio the whole time.
 
 ## Running
 
@@ -17,56 +15,65 @@ From the repository root (the simulator stack imports the top-level
 `rigplane_testkit` package, which is only importable from the root):
 
 ```bash
-uv run python -m scripts.soak.soak_driver --simulator --duration 3600
-uv run python -m scripts.soak.soak_driver --url http://127.0.0.1:8080 \
-    --rigctld-url 127.0.0.1:4532 --duration 3600
+uv run python -m scripts.soak.soak_driver --duration 3600
 ```
 
 Exit status is 0 on a PASS verdict, 1 on FAIL. The JSON report goes to
 `--report` (default `soak-report.json`); one verdict line is printed to
-stdout. Stack logging is at WARNING; set `SOAK`'s logger via standard
-`logging` configuration if you need the INFO cycle milestones in a manual
-run (`logging.basicConfig(level=logging.INFO)` before importing).
+stdout. The driver logs through the logger named `soak` at WARNING; set
+`logging.basicConfig(level=logging.INFO)` in a manual run for the INFO
+cycle milestones.
 
-Cadences are flags: `--tune-interval` (2 s), `--mode-interval` (10 s),
-`--rigctld-interval` (15 s), `--reconnect-interval` (300 s),
-`--metrics-interval` (30 s), `--reconnect-budget` (30 s). Around each
-forced reconnect `--fault-drop` / `--fault-duration` install a
-`rigplane_testkit.icom.faults.FaultPlan` blackout (drop probability and
-window); by default no fault is injected.
+Cadences are constants in `scripts/soak/soak_driver.py`, not CLI flags:
+`TUNE_INTERVAL_S` (2 s), `MODE_INTERVAL_S` (10 s), `RIGCTLD_INTERVAL_S`
+(15 s), `RECONNECT_INTERVAL_S` (300 s), `METRICS_INTERVAL_S` (30 s),
+`RECONNECT_BUDGET_S` (30 s), `FAULT_DROP` (0), `FAULT_DURATION_S` (3 s),
+`RSS_WARMUP_S` (60 s). Around each forced reconnect `FAULT_DROP` /
+`FAULT_DURATION_S` install a `rigplane_testkit.icom.faults.FaultPlan`
+blackout (drop probability and window); by default no fault is injected.
 
 ## Pass criteria
 
-- **RSS growth** < 50 MB/h: least-squares slope over post-warmup metric
+- **RSS growth** < 50 MiB/h: least-squares slope over post-warmup metric
   samples, excluding each reconnect window (a reconnect's allocation
   burst is a bounded transient, not steady-state growth). Below a 600 s
-  fitted span the criterion reports `NOT_EVALUATED` — MB-scale RSS
+  fitted span the criterion reports `NOT_EVALUATED` — MiB-scale RSS
   wobble over seconds cannot bound an hourly rate.
 - **FDs and asyncio tasks** within ±5 of the pre-reconnect value after
   each forced reconnect (median of 3 quick probes before the disconnect
   and after recovery + settle, so a request in flight does not read as a
-  leak).
+  leak). Known gap: a leak of at most 4 per reconnect passes every
+  per-reconnect check while still accumulating — about 12 reconnects in
+  the 1-hour nightly can add up to ~48 FDs/tasks without failing this
+  criterion. Only the RSS slope bounds the total.
 - **Zero unrecovered disconnects**: every forced disconnect is back to
-  CONNECTED within `--reconnect-budget` seconds.
+  CONNECTED within `RECONNECT_BUDGET_S` seconds. This measures the whole
+  stack returning to CONNECTED — the driver's connect POST or the
+  stack's own recovery, whichever comes first: after an operator
+  disconnect the radio's CI-V watchdog soft-reconnects on its own about
+  8 s later (measured 7.6 s on the test host; `rigplane.runtime.radio`
+  logs `force_cleanup_civ` then `soft_reconnect: control transport gone,
+  doing full connect`), so a budget above that time passes even with a
+  dead connect endpoint. A disconnect that never became observable is
+  recorded (`disconnectObserved` false) and counts as unrecovered.
 
 `NOT_EVALUATED` never fails the verdict; only a measured `FAIL` does.
 
 ## Process metrics sampling
 
-Each sample first fetches `GET /api/v1/runtime` (also the connection
-state source). When that document carries a `process` object with any of
-`rssBytes` / `fds` / `threads`, the sampler uses it (sample source
-`runtime.process`). At the time this driver landed the runtime document
-had no `process` object, so the fallback is driver-side sampling of the
-server PID: `/proc/<pid>/statm` + `/proc/<pid>/fd` +
-`/proc/<pid>/status` on Linux, `ps -o rss=` and `ps -M` plus `/dev/fd`
-elsewhere (sample source `driver-side`). When the endpoint grows the
-`process` object, the sampler switches to it with no driver change —
-adjust the key names in `ProcessMetricsSampler.sample` if they differ.
-asyncio task counts are only observable with the stack in this process
-(simulator mode): every task the driver creates is named with the
-`soak-` prefix and the count is everything else on the loop. In `--url`
-mode the task criterion reports `NOT_EVALUATED`.
+Each field is filled independently per sample: a value from the runtime
+document's `process` object wins when present (`rssBytes`, `openFds`,
+`asyncioTasks` — the names of PR #4044; `rssBytes` is null where the
+platform has no `/proc/self/statm`, e.g. macOS), and any field the
+runtime did not report is measured driver-side for this process (the
+stack runs in-process): RSS via `/proc/<pid>/statm` or `ps -o rss=`,
+FDs via `/proc/<pid>/fd` or `/dev/fd`, asyncio tasks as every task on
+the loop not named with the `soak-` prefix. The connection column comes
+from the state document's live `connection.rigConnected`
+(`server.py: WebServer._snapshot_for_delivery` reconciles it per
+request), not from the runtime payload's `connection` block, which
+repeats the last reconnect-status callback payload until the next one
+arrives and can be stale in both directions.
 
 ## Repository note
 
@@ -77,8 +84,10 @@ exceptions; this directory's files are tracked (staged with
 
 ## Tests and nightly run
 
-`tests/test_soak_driver.py` runs a 20 s smoke (1 s cadences) plus
-criterion-math unit tests and the skip-reconnects mutation pin.
-`.github/workflows/soak-nightly.yml` runs the 1-hour soak nightly on the
-self-hosted Linux runner and uploads the report; see
-`docs/internals/soak.md`.
+`tests/test_soak_driver.py` runs a 20 s smoke (1 s cadences), criterion
+math on synthetic samples, sampler per-field merge unit tests, and the
+mutation pins: suppressed connect (5 s budget) must fail, a disconnect
+that never happened must not count as recovered, and a reconnect cycle
+outliving the run must not wedge it. `.github/workflows/soak-nightly.yml`
+runs the 1-hour soak nightly on the self-hosted Linux runner and uploads
+the report; see `docs/internals/soak.md`.

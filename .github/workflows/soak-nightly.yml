@@ -18,6 +18,13 @@ on:
         default: "3600"
         type: string
 
+concurrency:
+  # One queued run per ref: a queued duplicate displaces a waiting run
+  # in the group outright (the single self-hosted runner serializes
+  # anyway); a run already in progress is left alone.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -49,7 +56,7 @@ jobs:
 
       - name: Run soak driver on the simulator
         run: >-
-          uv run python -m scripts.soak.soak_driver --simulator
+          uv run python -m scripts.soak.soak_driver
           --duration ${{ inputs.duration || '3600' }}
           --report soak-report.json
 

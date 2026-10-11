@@ -6,32 +6,16 @@ operates it the way an operator would: tune + readback on one cadence,
 mode changes on another, a rigctld replay (``F``/``f``/``M``/``m``/``t``)
 on a third, a forced radio disconnect/connect on a fourth, with a
 WebSocket client subscribed to state and audio the whole time. Process
-metrics (RSS / FDs / threads / asyncio tasks) are sampled periodically
-and evaluated against the ticket's pass criteria:
+metrics (RSS / FDs / asyncio tasks) are sampled periodically and
+evaluated against the ticket's pass criteria (see ``scripts/soak/
+README.md`` for the criteria and their known limits).
 
-* RSS growth < 50 MB/h (least-squares slope over post-warmup samples);
-* FDs and asyncio tasks within ±5 of the pre-reconnect value after each
-  forced reconnect;
-* zero unrecovered disconnects: every forced disconnect is back to
-  CONNECTED within ``--reconnect-budget`` seconds.
+Cadences are constants in this module, not CLI flags; the CLI takes only
+``--duration`` and ``--report``. Exit status is 0 on a PASS verdict and
+1 on FAIL. Run from the repository root (the simulator stack imports the
+top-level ``rigplane_testkit`` package)::
 
-The driver can also operate an already-running server with ``--url``;
-pass ``--rigctld-url`` to keep the replay running against its rigctld.
-
-Exit status is 0 on a PASS verdict and 1 on FAIL. A JSON report is
-written to ``--report``. Run from the repository root (the simulator
-stack imports the top-level ``rigplane_testkit`` package)::
-
-    uv run python -m scripts.soak.soak_driver --simulator --duration 3600
-    uv run python -m scripts.soak.soak_driver --url http://127.0.0.1:8080
-
-Process metrics: the sampler prefers a ``process`` object (``rssBytes`` /
-``fds`` / ``threads``) from ``GET /api/v1/runtime`` when the server
-exposes one; until that endpoint field exists it falls back to
-driver-side sampling of the server PID (``/proc`` on Linux, ``ps`` and
-``/dev/fd`` elsewhere). asyncio task counts are only observable when the
-stack runs in this process (simulator mode); in ``--url`` mode the task
-criterion is reported as NOT_EVALUATED.
+    uv run python -m scripts.soak.soak_driver --duration 3600
 """
 
 from __future__ import annotations
@@ -62,14 +46,24 @@ from rigplane_testkit.icom.simulator import MockIcomRadio
 logger = logging.getLogger("soak")
 
 RSS_LIMIT_BYTES_PER_HOUR = 50 * 1024 * 1024
-# Below this fitted span the 50 MB/h bound is under the RSS noise floor
-# (MB-scale wobble over seconds), so the criterion reports
-# NOT_EVALUATED instead of guessing: 199 MB/h over 9 fitted seconds is
+# Below this fitted span the 50 MiB/h bound is under the RSS noise floor
+# (MiB-scale wobble over seconds), so the criterion reports
+# NOT_EVALUATED instead of guessing: 199 MiB/h over 9 fitted seconds is
 # noise, not a leak measurement.
 RSS_MIN_FIT_SPAN_S = 600.0
 STABILITY_TOLERANCE = 5
 _STABILITY_PROBE_COUNT = 3
 _DRIVER_TASK_PREFIX = "soak-"
+
+TUNE_INTERVAL_S = 2.0
+MODE_INTERVAL_S = 10.0
+RIGCTLD_INTERVAL_S = 15.0
+RECONNECT_INTERVAL_S = 300.0
+METRICS_INTERVAL_S = 30.0
+RECONNECT_BUDGET_S = 30.0
+FAULT_DROP = 0.0
+FAULT_DURATION_S = 3.0
+RSS_WARMUP_S = 60.0
 
 _TUNE_FREQS = (14_074_000, 14_074_500, 7_074_000, 7_074_500, 3_574_000)
 _MODES = ("USB", "LSB")
@@ -81,21 +75,19 @@ _READBACK_DRIFT_HZ = 10_000
 
 @dataclass
 class SoakConfig:
-    """Everything the driver needs; see ``--help`` for the flags."""
+    """Everything the driver needs; cadences default to the constants."""
 
     duration_s: float
-    url: str | None = None  # None → simulator mode (in-process stack)
-    rigctld_url: str | None = None
     report_path: str = ""
-    tune_interval_s: float = 2.0
-    mode_interval_s: float = 10.0
-    rigctld_interval_s: float = 15.0
-    reconnect_interval_s: float = 300.0
-    metrics_interval_s: float = 30.0
-    reconnect_budget_s: float = 30.0
-    fault_drop: float = 0.0  # 0 → no FaultPlan blackout at reconnects
-    fault_duration_s: float = 3.0
-    rss_warmup_s: float = 60.0
+    tune_interval_s: float = TUNE_INTERVAL_S
+    mode_interval_s: float = MODE_INTERVAL_S
+    rigctld_interval_s: float = RIGCTLD_INTERVAL_S
+    reconnect_interval_s: float = RECONNECT_INTERVAL_S
+    metrics_interval_s: float = METRICS_INTERVAL_S
+    reconnect_budget_s: float = RECONNECT_BUDGET_S
+    fault_drop: float = FAULT_DROP
+    fault_duration_s: float = FAULT_DURATION_S
+    rss_warmup_s: float = RSS_WARMUP_S
 
 
 @dataclass
@@ -103,25 +95,21 @@ class ProcessSample:
     t_s: float
     rss_bytes: int | None
     fds: int | None
-    threads: int | None
     asyncio_tasks: int | None
     connection: str | None
-    source: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "t": round(self.t_s, 3),
             "rssBytes": self.rss_bytes,
             "fds": self.fds,
-            "threads": self.threads,
             "asyncioTasks": self.asyncio_tasks,
             "connection": self.connection,
-            "source": self.source,
         }
 
 
 # ---------------------------------------------------------------------------
-# Driver-side process metrics (the fallback sampler path)
+# Driver-side process metrics (the per-field fallback sampler path)
 # ---------------------------------------------------------------------------
 
 
@@ -155,17 +143,6 @@ def _statm_rss_bytes(pid: int) -> int | None:
         return None
 
 
-def _proc_threads(pid: int) -> int | None:
-    """Thread count via /proc/<pid>/status; None without /proc."""
-    try:
-        for line in Path(f"/proc/{pid}/status").read_text().splitlines():
-            if line.startswith("Threads:"):
-                return int(line.split()[1])
-    except (OSError, ValueError, IndexError):
-        pass
-    return None
-
-
 def _fd_count(pid: int) -> int | None:
     """Open-FD count via /proc/<pid>/fd, or /dev/fd for this process."""
     try:
@@ -179,22 +156,14 @@ def _fd_count(pid: int) -> int | None:
         return None
 
 
-async def _driver_side_process_metrics(
-    pid: int,
-) -> tuple[int | None, int | None, int | None]:
-    """(rss_bytes, fds, threads) for one PID, best-effort per field."""
+async def _driver_side_process_metrics(pid: int) -> tuple[int | None, int | None]:
+    """(rss_bytes, fds) for one PID, best-effort per field."""
     rss = _statm_rss_bytes(pid)
     if rss is None:
         out = await _ps_output(["-o", "rss=", "-p", str(pid)])
         with contextlib.suppress(ValueError, TypeError):
             rss = int(out.strip()) * 1024  # ps rss is in KB
-    threads = _proc_threads(pid)
-    if threads is None:
-        out = await _ps_output(["-M", "-p", str(pid)])
-        if out is not None:
-            # ps -M prints a header, one process row, then one row per thread.
-            threads = max(0, len([ln for ln in out.splitlines() if ln.strip()]) - 2)
-    return rss, _fd_count(pid), threads
+    return rss, _fd_count(pid)
 
 
 def _server_asyncio_task_count() -> int:
@@ -216,81 +185,98 @@ def _proc_int(proc: dict[str, Any], name: str) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def _state_connection_status(body: dict[str, Any]) -> str | None:
+    """Connection status from one ``GET /api/v1/state`` document.
+
+    ``connection.rigConnected`` is reconciled from the radio's live
+    ``conn_state`` on every snapshot build (server.py:
+    ``WebServer._snapshot_for_delivery``), unlike the runtime payload's
+    ``connection`` block, which repeats the last reconnect-status
+    callback payload until the next one arrives and can therefore be
+    stale in both directions.
+    """
+    conn = body.get("connection")
+    if not isinstance(conn, dict):
+        return None
+    connected = conn.get("rigConnected")
+    if isinstance(connected, bool):
+        return "connected" if connected else "disconnected"
+    return None
+
+
 class ProcessMetricsSampler:
     """Samples the server process metrics for the soak report.
 
-    Each sample first fetches ``GET /api/v1/runtime`` (also the driver's
-    connection-state source). If that document carries a ``process``
-    object with any of ``rssBytes`` / ``fds`` / ``threads``, those values
-    are used and the sample's source is ``runtime.process``; otherwise the
-    sampler measures the server PID itself (``/proc`` on Linux, ``ps`` /
-    ``/dev/fd`` elsewhere) and the source is ``driver-side``. asyncio task
-    counts are added locally in simulator mode only.
+    Each field is filled independently: a value from the runtime
+    document's ``process`` object (``rssBytes`` / ``openFds`` /
+    ``asyncioTasks``, the names of PR #4044; ``rssBytes`` is null where
+    the platform has no ``/proc/self/statm``) wins when present, and any
+    field the runtime did not report is measured driver-side for this
+    process (the stack runs in-process): RSS via ``/proc`` or ``ps``,
+    FDs via ``/proc`` or ``/dev/fd``, tasks via
+    ``_server_asyncio_task_count``. The connection column comes from the
+    state document (``_state_connection_status``), not the runtime
+    payload.
     """
 
-    def __init__(
-        self, session: aiohttp.ClientSession, base_url: str, *, in_process: bool
-    ) -> None:
+    def __init__(self, session: aiohttp.ClientSession, base_url: str) -> None:
         self._session = session
         self._base_url = base_url
-        self._in_process = in_process
-        self.runtime_process_seen = False
-        self.server_pid: int | None = None
 
-    async def fetch_runtime(self, timeout_s: float = 5.0) -> dict[str, Any] | None:
-        url = f"{self._base_url}/api/v1/runtime"
+    async def _get_json(
+        self, path: str, timeout_s: float = 5.0
+    ) -> dict[str, Any] | None:
+        # Best-effort: a poll must never crash a cycle. Besides network
+        # errors this also swallows the connector's transient
+        # "File descriptor ... is used by transport" RuntimeError seen
+        # under connection churn against the simulator.
+        assert self._session is not None
         try:
             async with self._session.get(
-                url, timeout=aiohttp.ClientTimeout(total=timeout_s)
+                f"{self._base_url}{path}",
+                timeout=aiohttp.ClientTimeout(total=timeout_s),
             ) as resp:
                 if resp.status != 200:
                     return None
                 body = await resp.json()
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+        except Exception:
             return None
         return body if isinstance(body, dict) else None
 
+    async def fetch_runtime(self) -> dict[str, Any] | None:
+        return await self._get_json("/api/v1/runtime")
+
+    async def fetch_connection_status(self) -> str | None:
+        body = await self._get_json("/api/v1/state")
+        if body is None:
+            return None
+        return _state_connection_status(body)
+
     async def sample(self, t_s: float) -> ProcessSample:
         runtime = await self.fetch_runtime()
-        connection: str | None = None
         rss: int | None = None
         fds: int | None = None
-        threads: int | None = None
-        source = "driver-side"
+        tasks: int | None = None
         if runtime is not None:
-            conn = runtime.get("connection")
-            if isinstance(conn, dict) and isinstance(conn.get("state"), str):
-                connection = conn["state"]
-            pid = runtime.get("pid")
-            if isinstance(pid, int) and not isinstance(pid, bool):
-                self.server_pid = pid
             proc = runtime.get("process")
             if isinstance(proc, dict):
-                proc_rss = _proc_int(proc, "rssBytes")
-                proc_fds = _proc_int(proc, "fds")
-                proc_threads = _proc_int(proc, "threads")
-                if (
-                    proc_rss is not None
-                    or proc_fds is not None
-                    or (proc_threads is not None)
-                ):
-                    rss, fds, threads = proc_rss, proc_fds, proc_threads
-                    source = "runtime.process"
-                    self.runtime_process_seen = True
-        pid = self.server_pid
-        if source == "driver-side" and (pid is not None or self._in_process):
-            rss, fds, threads = await _driver_side_process_metrics(
-                pid if pid is not None else os.getpid()
-            )
-        tasks = _server_asyncio_task_count() if self._in_process else None
+                rss = _proc_int(proc, "rssBytes")
+                fds = _proc_int(proc, "openFds")
+                tasks = _proc_int(proc, "asyncioTasks")
+        if rss is None or fds is None:
+            d_rss, d_fds = await _driver_side_process_metrics(os.getpid())
+            if rss is None:
+                rss = d_rss
+            if fds is None:
+                fds = d_fds
+        if tasks is None:
+            tasks = _server_asyncio_task_count()
         return ProcessSample(
             t_s=t_s,
             rss_bytes=rss,
             fds=fds,
-            threads=threads,
             asyncio_tasks=tasks,
-            connection=connection,
-            source=source,
+            connection=await self.fetch_connection_status(),
         )
 
 
@@ -491,7 +477,7 @@ def summary_line(report: dict[str, Any]) -> str:
     criteria = report["criteria"]
     rss = criteria["rssGrowth"]
     rss_mb = (
-        f"{rss['slopeBytesPerHour'] / (1024 * 1024):+.1f}MB/h"
+        f"{rss['slopeBytesPerHour'] / (1024 * 1024):+.1f}MiB/h"
         if rss["slopeBytesPerHour"] is not None
         else "n/a"
     )
@@ -508,7 +494,7 @@ def summary_line(report: dict[str, Any]) -> str:
     recovery = criteria["recovery"]
     return (
         f"soak {report['verdict']} rss={rss_mb}"
-        f" limit={RSS_LIMIT_BYTES_PER_HOUR // (1024 * 1024)}MB/h"
+        f" limit={RSS_LIMIT_BYTES_PER_HOUR // (1024 * 1024)}MiB/h"
         f" fds_max_delta={max(fds_deltas, default=0)}"
         f" tasks_max_delta={max(tasks_deltas, default=0)}"
         f" unrecovered={recovery['unrecovered']}/{recovery['forced']}"
@@ -528,16 +514,13 @@ class SoakDriver:
         self,
         config: SoakConfig,
         base_url: str,
-        *,
-        rigctld_url: str | None = None,
-        sim: MockIcomRadio | None = None,
-        in_process: bool = False,
+        rigctld_url: str,
+        sim: MockIcomRadio,
     ) -> None:
         self._cfg = config
         self._base_url = base_url
         self._rigctld_url = rigctld_url
         self._sim = sim
-        self._in_process = in_process
         self._session: aiohttp.ClientSession | None = None
         self._ws_session: aiohttp.ClientSession | None = None
         self._sampler: ProcessMetricsSampler | None = None
@@ -573,7 +556,7 @@ class SoakDriver:
                 if resp.status != 200:
                     return None
                 body = await resp.json()
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+        except Exception:
             return None
         return body if isinstance(body, dict) else None
 
@@ -590,7 +573,7 @@ class SoakDriver:
                 if resp.status != 200:
                     return False
                 body = await resp.json()
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+        except Exception:
             return False
         return isinstance(body, dict) and body.get("ok") is True
 
@@ -603,19 +586,15 @@ class SoakDriver:
                 timeout=aiohttp.ClientTimeout(total=timeout_s),
             ) as resp:
                 return resp.status == 200
-        except (aiohttp.ClientError, asyncio.TimeoutError):
+        except Exception:
             return False
 
     async def _fetch_connection_state(self) -> str | None:
-        """One fresh GET of the runtime connection state."""
+        """One fresh poll of the live connection status (state document)."""
         assert self._sampler is not None
-        runtime = await self._sampler.fetch_runtime()
-        if runtime is None:
-            return None
-        conn = runtime.get("connection")
-        state = conn.get("state") if isinstance(conn, dict) else None
-        if isinstance(state, str):
-            self._connection_state = state
+        status = await self._sampler.fetch_connection_status()
+        if status is not None:
+            self._connection_state = status
         return self._connection_state
 
     async def _wait_connection(
@@ -623,10 +602,10 @@ class SoakDriver:
         predicate: Callable[[str | None], bool],
         timeout_s: float,
     ) -> bool:
-        """Poll the runtime endpoint until connection.state matches.
+        """Poll the state document until the connection status matches.
 
-        Only a state observed on a successful poll counts; a cached value
-        from before the disconnect never satisfies the predicate."""
+        Only a status observed on a successful poll counts; a cached
+        value from before the disconnect never satisfies the predicate."""
         deadline = self._elapsed() + timeout_s
         while True:
             state = await self._fetch_connection_state()
@@ -716,9 +695,6 @@ class SoakDriver:
         return lines
 
     async def _rigctld_replay_once(self) -> None:
-        if not self._rigctld_url:
-            self._counts["rigctldSkipped"] += 1
-            return
         if self._skip_operator_action():
             self._counts["rigctldSkipped"] += 1
             return
@@ -764,7 +740,6 @@ class SoakDriver:
 
     def _install_fault_plan(self) -> None:
         """Black out the simulated radio link for the configured window."""
-        assert self._sim is not None
         self._sim.fault_plan = FaultPlan(
             control_from_client=FaultRule(
                 drop_probability=self._cfg.fault_drop,
@@ -785,7 +760,13 @@ class SoakDriver:
         )
 
     async def _do_connect_until_recovered(self, deadline_s: float) -> bool:
-        """POST connect (retrying) until the runtime reports CONNECTED."""
+        """POST connect (retrying) until the stack reports CONNECTED.
+
+        The criterion is the stack being back to CONNECTED, however that
+        happens: the driver's connect POST, or the radio's own CI-V
+        watchdog soft reconnect (~8 s after a disconnect), whichever
+        comes first.
+        """
         while self._elapsed() < deadline_s:
             remaining = deadline_s - self._elapsed()
             await self._post_radio_control(
@@ -822,10 +803,26 @@ class SoakDriver:
             t_s=probes[len(probes) // 2].t_s,
             rss_bytes=median("rss_bytes"),
             fds=median("fds"),
-            threads=median("threads"),
             asyncio_tasks=median("asyncio_tasks"),
             connection=probes[-1].connection,
-            source=probes[-1].source,
+        )
+
+    def _record_unrecovered_cycle(self, reason: str) -> None:
+        self._reconnects.append(
+            {
+                "startedAtS": round(self._elapsed(), 3),
+                "recovered": False,
+                "disconnectObserved": None,
+                "recoveryS": None,
+                "budgetS": self._cfg.reconnect_budget_s,
+                "windowStartS": None,
+                "windowEndS": None,
+                "fdsPre": None,
+                "tasksPre": None,
+                "fdsPost": None,
+                "tasksPost": None,
+                "error": reason,
+            }
         )
 
     async def _reconnect_cycle(self) -> None:
@@ -834,6 +831,15 @@ class SoakDriver:
         self._cycle_active = True
         try:
             await self._reconnect_cycle_inner()
+        except asyncio.CancelledError:
+            # The cycle was cancelled without concluding (the run's wait
+            # for it timed out): a forced disconnect that never recovered
+            # must still fail the verdict, so record it as unrecovered.
+            self._record_unrecovered_cycle("cycle cancelled before concluding")
+            raise
+        except Exception:
+            logger.exception("soak: reconnect cycle failed")
+            self._record_unrecovered_cycle("cycle raised")
         finally:
             self._cycle_active = False
 
@@ -843,18 +849,25 @@ class SoakDriver:
         started_s = self._elapsed()
         logger.info("soak: forced reconnect starting at +%.1fs", started_s)
         await self._post_radio_control("disconnect")
-        await self._wait_connection(lambda state: state != "connected", timeout_s=10.0)
-        if self._sim is not None and self._cfg.fault_drop > 0.0:
+        disconnect_observed = await self._wait_connection(
+            lambda state: state != "connected", timeout_s=10.0
+        )
+        if not disconnect_observed:
+            logger.warning("soak: disconnect never became observable; failing cycle")
+        recovered = False
+        if self._cfg.fault_drop > 0.0:
             self._install_fault_plan()
             logger.info(
                 "soak: fault plan installed (drop=%.2f for %.1fs)",
                 self._cfg.fault_drop,
                 self._cfg.fault_duration_s,
             )
-        recovered = await self._do_connect_until_recovered(
-            self._elapsed() + self._cfg.reconnect_budget_s
-        )
-        if self._sim is not None:
+        try:
+            if disconnect_observed:
+                recovered = await self._do_connect_until_recovered(
+                    self._elapsed() + self._cfg.reconnect_budget_s
+                )
+        finally:
             self._sim.fault_plan = None
         logger.info(
             "soak: reconnect %s after %.1fs",
@@ -864,6 +877,7 @@ class SoakDriver:
         entry: dict[str, Any] = {
             "startedAtS": round(started_s, 3),
             "recovered": recovered,
+            "disconnectObserved": disconnect_observed,
             "recoveryS": round(self._elapsed() - started_s, 3),
             "budgetS": self._cfg.reconnect_budget_s,
             "windowStartS": round(window_start_s, 3),
@@ -893,25 +907,7 @@ class SoakDriver:
                 return
             if self._elapsed() + 1e-9 < next_due:
                 continue
-            try:
-                await self._reconnect_cycle()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("soak: reconnect cycle failed")
-                self._reconnects.append(
-                    {
-                        "startedAtS": round(self._elapsed(), 3),
-                        "recovered": False,
-                        "recoveryS": None,
-                        "budgetS": self._cfg.reconnect_budget_s,
-                        "fdsPre": None,
-                        "tasksPre": None,
-                        "fdsPost": None,
-                        "tasksPost": None,
-                        "error": "cycle raised",
-                    }
-                )
+            await self._reconnect_cycle()
             next_due = self._elapsed() + self._cfg.reconnect_interval_s
 
     # -- periodic loops -------------------------------------------------------
@@ -934,6 +930,13 @@ class SoakDriver:
             if not self._operating():
                 return
             if self._elapsed() + 1e-9 < next_due:
+                # Reachable only past the run deadline while an in-flight
+                # reconnect cycle keeps this loop alive: the capped wait
+                # above is negative, so nothing slept. Sleep to the due
+                # point — a bare ``continue`` here spins without ever
+                # yielding and starves the cycle's task on this shared
+                # event loop.
+                await asyncio.sleep(next_due - self._elapsed())
                 continue
             try:
                 await action()
@@ -997,9 +1000,7 @@ class SoakDriver:
         ):
             self._ws_session = ws_session
             self._session = session
-            self._sampler = ProcessMetricsSampler(
-                session, self._base_url, in_process=self._in_process
-            )
+            self._sampler = ProcessMetricsSampler(session, self._base_url)
             if not await self._wait_ready(
                 max(60.0, self._cfg.reconnect_budget_s * 2.0)
             ):
@@ -1053,7 +1054,9 @@ class SoakDriver:
                 # The reconnect loop starts no new cycles past the
                 # deadline; let an in-flight one conclude (its post probe
                 # needs the operator loops still running) before the
-                # operator and WS tasks are cancelled.
+                # operator and WS tasks are cancelled. On timeout the
+                # cycle is cancelled and records itself as unrecovered,
+                # so the report still comes out with a FAIL verdict.
                 try:
                     await asyncio.wait_for(
                         reconnect_task,
@@ -1072,9 +1075,6 @@ class SoakDriver:
         return {
             "schemaVersion": 1,
             "verdict": verdict,
-            "mode": "simulator" if self._cfg.url is None else "url",
-            "url": self._base_url,
-            "rigctldUrl": self._rigctld_url,
             "startedAt": datetime.now(timezone.utc).isoformat(),
             "durationConfiguredS": self._cfg.duration_s,
             "durationActualS": round(
@@ -1085,30 +1085,6 @@ class SoakDriver:
             "criteria": criteria,
             "reconnects": self._reconnects,
             "samples": [sample.to_dict() for sample in self._samples],
-            "sampler": {
-                "runtimeProcessObjectSeen": (
-                    self._sampler.runtime_process_seen
-                    if self._sampler is not None
-                    else False
-                ),
-                "description": (
-                    "process metrics from the runtime endpoint's process"
-                    " object when present, else driver-side /proc + ps"
-                    " sampling of the server pid; asyncio task counts from"
-                    " the local loop in simulator mode"
-                ),
-            },
-            "config": {
-                "tuneIntervalS": self._cfg.tune_interval_s,
-                "modeIntervalS": self._cfg.mode_interval_s,
-                "rigctldIntervalS": self._cfg.rigctld_interval_s,
-                "reconnectIntervalS": self._cfg.reconnect_interval_s,
-                "metricsIntervalS": self._cfg.metrics_interval_s,
-                "reconnectBudgetS": self._cfg.reconnect_budget_s,
-                "faultDrop": self._cfg.fault_drop,
-                "faultDurationS": self._cfg.fault_duration_s,
-                "rssWarmupS": self._cfg.rss_warmup_s,
-            },
         }
 
     async def run(self) -> dict[str, Any]:
@@ -1122,35 +1098,27 @@ class SoakDriver:
             self._error = f"{type(exc).__name__}: {exc}"
         finally:
             # The operated duration excludes the stack teardown that
-            # follows; capture it as soon as the phases are done.
+            # follows; capture it as soon as the phases are done. The
+            # report below is built from whatever concluded: a phases
+            # error, or an internal cycle timeout (recorded unrecovered),
+            # still yields a FAIL report rather than none.
             self._ended_s = self._elapsed()
         return self._build_report()
 
 
 async def run_soak(config: SoakConfig) -> dict[str, Any]:
     """Run one soak and return its report; writes the file when asked."""
-    if config.url is None:
-        stack = await _start_simulator_stack()
-        try:
-            driver = SoakDriver(
-                config,
-                f"http://127.0.0.1:{stack.web_port}",
-                rigctld_url=f"127.0.0.1:{stack.rigctld_port}",
-                sim=stack.sim,
-                in_process=True,
-            )
-            report = await driver.run()
-        finally:
-            await stack.aclose()
-    else:
+    stack = await _start_simulator_stack()
+    try:
         driver = SoakDriver(
             config,
-            config.url.rstrip("/"),
-            rigctld_url=config.rigctld_url,
-            sim=None,
-            in_process=False,
+            f"http://127.0.0.1:{stack.web_port}",
+            rigctld_url=f"127.0.0.1:{stack.rigctld_port}",
+            sim=stack.sim,
         )
         report = await driver.run()
+    finally:
+        await stack.aclose()
     if config.report_path:
         Path(config.report_path).write_text(
             json.dumps(report, indent=2) + "\n", encoding="utf-8"
@@ -1168,54 +1136,10 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="python -m scripts.soak.soak_driver",
         description="Operated soak driver for the rigplane web stack.",
     )
-    mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument(
-        "--simulator",
-        action="store_true",
-        help="run MockIcomRadio + WebServer + RigctldServer in-process",
-    )
-    mode.add_argument(
-        "--url",
-        help="operate an already-running server, e.g. http://127.0.0.1:8080",
-    )
-    parser.add_argument(
-        "--rigctld-url",
-        default=None,
-        help="host:port of a rigctld server (url mode; skipped when absent)",
-    )
     parser.add_argument(
         "--duration", type=float, default=3600.0, help="seconds (default 3600)"
     )
     parser.add_argument("--report", default="soak-report.json", help="JSON report path")
-    parser.add_argument("--tune-interval", type=float, default=2.0)
-    parser.add_argument("--mode-interval", type=float, default=10.0)
-    parser.add_argument("--rigctld-interval", type=float, default=15.0)
-    parser.add_argument("--reconnect-interval", type=float, default=300.0)
-    parser.add_argument("--metrics-interval", type=float, default=30.0)
-    parser.add_argument(
-        "--reconnect-budget",
-        type=float,
-        default=30.0,
-        help="seconds each forced disconnect may take to recover",
-    )
-    parser.add_argument(
-        "--fault-drop",
-        type=float,
-        default=0.0,
-        help="drop probability of the FaultPlan blackout at each reconnect",
-    )
-    parser.add_argument(
-        "--fault-duration",
-        type=float,
-        default=3.0,
-        help="seconds the FaultPlan blackout stays active at each reconnect",
-    )
-    parser.add_argument(
-        "--rss-warmup",
-        type=float,
-        default=60.0,
-        help="seconds excluded from the RSS linear fit (capped at 25%% of duration)",
-    )
     return parser
 
 
@@ -1225,21 +1149,7 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.WARNING,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    config = SoakConfig(
-        duration_s=args.duration,
-        url=args.url,
-        rigctld_url=args.rigctld_url,
-        report_path=args.report,
-        tune_interval_s=args.tune_interval,
-        mode_interval_s=args.mode_interval,
-        rigctld_interval_s=args.rigctld_interval,
-        reconnect_interval_s=args.reconnect_interval,
-        metrics_interval_s=args.metrics_interval,
-        reconnect_budget_s=args.reconnect_budget,
-        fault_drop=args.fault_drop,
-        fault_duration_s=args.fault_duration,
-        rss_warmup_s=args.rss_warmup,
-    )
+    config = SoakConfig(duration_s=args.duration, report_path=args.report)
     report = asyncio.run(run_soak(config))
     print(summary_line(report))
     print(f"soak report written to {args.report}")

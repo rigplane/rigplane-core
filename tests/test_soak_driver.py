@@ -10,14 +10,21 @@ radio disconnect/connect, and pins:
 * the pass-criterion math itself, on synthetic one-hour samples
   (``evaluate_report``): a small slope passes, a steep one fails, and a
   reconnect-window allocation burst is excluded from the fit;
+* the sampler's per-field merge: runtime ``process`` fields (PR #4044
+  names) first, driver-side measurement for each field the runtime did
+  not report, and the live connection status from the state document;
 * the recovery criterion's teeth under the forced-fault run the ticket
-  names (``FaultPlan`` drop 100 % for 3 s): a driver that skips the
-  reconnect half must report an unrecovered disconnect and a FAIL
-  verdict.
+  names (``FaultPlan`` drop 100 % for 3 s): suppressing only the connect
+  POST with a budget below the stack's self-recovery time must report
+  an unrecovered disconnect and a FAIL verdict, and a disconnect that
+  never happened must not count as recovered;
+* a reconnect cycle still running at the run deadline must not wedge
+  the run (the periodic loops must always yield).
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -32,8 +39,6 @@ RSS_LIMIT = 50 * 1024 * 1024
 def _smoke_config(**overrides: Any) -> soak_driver.SoakConfig:
     defaults: dict[str, Any] = dict(
         duration_s=20.0,
-        url=None,
-        rigctld_url=None,
         report_path="",
         tune_interval_s=1.0,
         mode_interval_s=2.0,
@@ -58,10 +63,8 @@ def _hour_of_samples(
             t_s=t,
             rss_bytes=int(base + slope_bytes_per_s * t),
             fds=20,
-            threads=4,
             asyncio_tasks=25,
             connection="connected",
-            source="driver-side",
         )
         for t in [i * step_s for i in range(int(3600 / step_s) + 1)]
     ]
@@ -71,6 +74,7 @@ def _one_reconnect(start_s: float, end_s: float) -> dict[str, Any]:
     return {
         "startedAtS": start_s,
         "recovered": True,
+        "disconnectObserved": True,
         "recoveryS": end_s - start_s,
         "budgetS": 30.0,
         "windowStartS": start_s,
@@ -87,7 +91,7 @@ def test_evaluate_report_passes_small_slope() -> None:
     criteria = soak_driver.evaluate_report(
         config, _hour_of_samples(slope_bytes_per_s=1000.0), []
     )
-    # 1000 B/s = 3.6 MB/h, well under the 50 MB/h limit.
+    # 1000 B/s = 3.4 MiB/h, well under the 50 MiB/h limit.
     assert criteria["rssGrowth"]["status"] == "PASS"
     assert criteria["recovery"]["status"] == "NOT_EVALUATED"
 
@@ -97,14 +101,14 @@ def test_evaluate_report_fails_steep_slope() -> None:
     criteria = soak_driver.evaluate_report(
         config, _hour_of_samples(slope_bytes_per_s=20_000.0), []
     )
-    # 20 kB/s = 72 MB/h, over the 50 MB/h limit.
+    # 20 kB/s ≈ 68.7 MiB/h, over the 50 MiB/h limit.
     assert criteria["rssGrowth"]["status"] == "FAIL"
 
 
 def test_evaluate_report_excludes_reconnect_window_from_rss_fit() -> None:
     config = _smoke_config(duration_s=3600.0)
     samples = _hour_of_samples(slope_bytes_per_s=1000.0)
-    # A 30 MB allocation burst inside the reconnect window must not move
+    # A 30 MiB allocation burst inside the reconnect window must not move
     # the fit: those samples are excluded.
     for sample in samples:
         if 1800.0 <= sample.t_s <= 1830.0:
@@ -142,11 +146,82 @@ def test_evaluate_report_short_run_rss_not_evaluated() -> None:
     assert criteria["rssGrowth"]["status"] == "NOT_EVALUATED"
 
 
+def test_state_connection_status_reads_live_rig_connected() -> None:
+    body: dict[str, Any] = {"connection": {"rigConnected": True}}
+    assert soak_driver._state_connection_status(body) == "connected"
+    disconnected = soak_driver._state_connection_status(
+        {"connection": {"rigConnected": False}}
+    )
+    assert disconnected == "disconnected"
+    assert soak_driver._state_connection_status({}) is None
+    assert soak_driver._state_connection_status({"connection": None}) is None
+    assert soak_driver._state_connection_status({"connection": {}}) is None
+
+
+async def test_sampler_merges_runtime_process_fields_per_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runtime ``process`` fields win per field; gaps fill driver-side.
+
+    PR #4044 names ``openFds`` (not ``fds``) and reports a null
+    ``rssBytes`` where the platform has no ``/proc/self/statm`` (macOS):
+    a whole-block switch would silently turn the FD and RSS criteria
+    into NOT_EVALUATED there.
+    """
+    sampler = soak_driver.ProcessMetricsSampler(object(), "http://127.0.0.1:1")
+
+    async def _runtime() -> dict[str, Any] | None:
+        return {"process": {"rssBytes": None, "openFds": 41, "asyncioTasks": 9}}
+
+    async def _status() -> str | None:
+        return "connected"
+
+    async def _driver_side(pid: int) -> tuple[int | None, int | None]:
+        assert pid > 0
+        return (111 * 1024 * 1024, 50)
+
+    monkeypatch.setattr(sampler, "fetch_runtime", _runtime)
+    monkeypatch.setattr(sampler, "fetch_connection_status", _status)
+    monkeypatch.setattr(soak_driver, "_driver_side_process_metrics", _driver_side)
+    monkeypatch.setattr(soak_driver, "_server_asyncio_task_count", lambda: 7)
+
+    sample = await sampler.sample(1.5)
+    assert sample.rss_bytes == 111 * 1024 * 1024  # runtime null → driver-side
+    assert sample.fds == 41  # runtime openFds
+    assert sample.asyncio_tasks == 9  # runtime asyncioTasks
+    assert sample.connection == "connected"
+
+
+async def test_sampler_falls_back_fully_without_runtime_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sampler = soak_driver.ProcessMetricsSampler(object(), "http://127.0.0.1:1")
+
+    async def _runtime() -> dict[str, Any] | None:
+        return {}  # this head's runtime document has no process object
+
+    async def _status() -> str | None:
+        return None
+
+    async def _driver_side(pid: int) -> tuple[int | None, int | None]:
+        return (222 * 1024 * 1024, 60)
+
+    monkeypatch.setattr(sampler, "fetch_runtime", _runtime)
+    monkeypatch.setattr(sampler, "fetch_connection_status", _status)
+    monkeypatch.setattr(soak_driver, "_driver_side_process_metrics", _driver_side)
+    monkeypatch.setattr(soak_driver, "_server_asyncio_task_count", lambda: 33)
+
+    sample = await sampler.sample(2.5)
+    assert sample.rss_bytes == 222 * 1024 * 1024
+    assert sample.fds == 60
+    assert sample.asyncio_tasks == 33
+    assert sample.connection is None
+
+
 async def test_soak_smoke_green_verdict_and_report_shape() -> None:
     report = await soak_driver.run_soak(_smoke_config())
 
     assert report["verdict"] == "PASS"
-    assert report["mode"] == "simulator"
     assert report["schemaVersion"] == 1
     assert report["durationConfiguredS"] == 20.0
     assert report["durationActualS"] >= 20.0
@@ -182,34 +257,104 @@ async def test_soak_smoke_green_verdict_and_report_shape() -> None:
     assert rss["limitBytesPerHour"] == RSS_LIMIT
     assert rss["samplesFitted"] >= 2
 
+    assert all(entry["disconnectObserved"] is True for entry in report["reconnects"])
+
     samples = report["samples"]
     assert len(samples) >= 10
-    assert all(sample["source"] == "driver-side" for sample in samples)
     assert all(sample["rssBytes"] is not None for sample in samples)
     assert all(sample["fds"] is not None for sample in samples)
     assert all(sample["asyncioTasks"] is not None for sample in samples)
 
 
-async def test_soak_recovery_criterion_fails_when_reconnect_is_skipped(
+async def test_soak_completes_when_reconnect_cycle_outlives_the_run() -> None:
+    """A cycle running past the deadline must not wedge the run.
+
+    Past the deadline the periodic loops' capped wait goes negative and
+    the not-due ``continue`` used to run without a single await — with
+    the radio disconnected the tune/mode/rigctld actions also returned
+    without awaiting — freezing the event loop so the in-flight cycle
+    could never finish and no report was produced (reproduced on the
+    test host: a 20 s run with ``fault_drop=1.0`` and a 25 s budget
+    never returned and was killed externally). Here a real connect runs
+    under ``fault_drop=1.0`` with the cycle starting before and ending
+    after the 8 s deadline; the run must complete inside the bound.
+    """
+    report = await asyncio.wait_for(
+        soak_driver.run_soak(
+            _smoke_config(
+                duration_s=8.0,
+                reconnect_interval_s=4.0,
+                fault_drop=1.0,
+            )
+        ),
+        timeout=90.0,
+    )
+
+    assert report["counts"]["forcedReconnects"] >= 1
+    assert report["verdict"] in ("PASS", "FAIL")
+
+
+async def test_soak_recovery_criterion_fails_when_connect_is_suppressed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The unrecovered-disconnect assertion has teeth under the fault.
+    """The recovery criterion has teeth against a dead connect endpoint.
 
-    The forced-fault run the ticket names (``FaultPlan`` drop 100 % for
-    3 s around the reconnect), with the driver's connect half replaced by
-    a no-op (the production mutation "skip reconnects"), must report an
-    unrecovered disconnect and a FAIL verdict.
+    The mutation suppresses only ``POST /api/v1/radio/connect``; the
+    disconnect half is untouched. The criterion measures the whole stack
+    returning to CONNECTED — the driver's connect POST or the stack's
+    own recovery, whichever comes first: after an operator disconnect
+    the radio's CI-V watchdog soft-reconnects on its own roughly 8 s
+    later (measured 7.6 s on the test host; ``rigplane.runtime.radio``
+    logs ``force_cleanup_civ`` followed by ``soft_reconnect: control
+    transport gone, doing full connect``), so with the 25-30 s budgets
+    the suppressed run still recovers and this mutation passes. A budget
+    below that self-recovery time (5 s here) makes the same suppression
+    report an unrecovered disconnect and a FAIL verdict.
     """
+    real = soak_driver.SoakDriver._post_radio_control
 
-    async def _never_connect(self: soak_driver.SoakDriver, deadline_s: float) -> bool:
-        return False
+    async def _drop_connect(
+        self: soak_driver.SoakDriver, action: str, timeout_s: float = 10.0
+    ) -> bool:
+        if action == "connect":
+            return False
+        return await real(self, action, timeout_s=timeout_s)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(
-        soak_driver.SoakDriver, "_do_connect_until_recovered", _never_connect
-    )
+    monkeypatch.setattr(soak_driver.SoakDriver, "_post_radio_control", _drop_connect)
     report = await soak_driver.run_soak(
-        _smoke_config(reconnect_budget_s=3.0, fault_drop=1.0)
+        _smoke_config(reconnect_budget_s=5.0, fault_drop=1.0)
     )
 
+    assert report["criteria"]["recovery"]["unrecovered"] >= 1
+    assert report["verdict"] == "FAIL"
+
+
+async def test_soak_counts_a_disconnect_that_never_happened_as_unrecovered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A disconnect that never happened must not count as recovered.
+
+    The mutation suppresses only ``POST /api/v1/radio/disconnect``: the
+    radio never leaves CONNECTED, so a cycle that only checks "connect
+    done + state connected" would report the recovery of a disconnect
+    that never occurred. The cycle must record ``disconnectObserved``
+    false and count the reconnect as unrecovered, failing the verdict.
+    """
+    real = soak_driver.SoakDriver._post_radio_control
+
+    async def _drop_disconnect(
+        self: soak_driver.SoakDriver, action: str, timeout_s: float = 10.0
+    ) -> bool:
+        if action == "disconnect":
+            return False
+        return await real(self, action, timeout_s=timeout_s)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(soak_driver.SoakDriver, "_post_radio_control", _drop_disconnect)
+    report = await soak_driver.run_soak(_smoke_config(duration_s=26.0))
+
+    assert report["reconnects"], "expected at least one forced reconnect cycle"
+    first = report["reconnects"][0]
+    assert first["disconnectObserved"] is False
+    assert first["recovered"] is False
     assert report["criteria"]["recovery"]["unrecovered"] >= 1
     assert report["verdict"] == "FAIL"
