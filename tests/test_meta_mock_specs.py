@@ -16,7 +16,11 @@ one of four uses, each of which names the mock as a project object:
 1. assigned to a variable whose name contains ``radio``, ``backend`` or
    ``transport`` (case-insensitive), via ``=`` or an annotated ``=``;
 2. assigned to an attribute whose own name contains one of those tokens
-   (``radio._civ_transport = MagicMock()``);
+   (``radio._civ_transport = MagicMock()``) -- unless the attribute name
+   marks a callable stub: an ``_ensure_`` or ``_handle_`` prefix, or an
+   ``_fn`` or ``_cls`` suffix. ``radio._ensure_audio_transport =
+   AsyncMock()`` replaces one method with a stub; the mock never stands
+   in for a transport object, so it is not counted;
 3. passed as a keyword argument whose parameter name contains one of
    those tokens (``make_handler(radio=AsyncMock())``);
 4. returned or yielded by a function whose own name contains one of
@@ -24,8 +28,7 @@ one of four uses, each of which names the mock as a project object:
 
 Deliberately out of scope: bare mocks under any other name, mocks passed
 positionally, ``patch()`` results, and ``create_autospec()`` (spec'd by
-construction). The rule trades coverage for near-zero false positives so
-the ledger only ever ratchets down.
+construction). The rule trades coverage for near-zero false positives.
 
 ``tests/mock_spec_uncovered.txt`` lists today's offenders, one path per
 line (relative to ``tests/``), sorted. ``test_no_unlisted_specless_project_mock`` fails on an
@@ -52,6 +55,8 @@ LEDGER_FILE = pathlib.Path(__file__).with_name("mock_spec_uncovered.txt")
 REGEN_ENV = "RIGPLANE_REGEN_MOCK_SPEC_UNCOVERED"
 MOCK_CONSTRUCTORS = frozenset({"MagicMock", "AsyncMock", "Mock"})
 PROJECT_NAME_TOKENS = ("radio", "backend", "transport")
+STUB_ATTRIBUTE_PREFIXES = ("_ensure_", "_handle_")
+STUB_ATTRIBUTE_SUFFIXES = ("_fn", "_cls")
 
 Offence = tuple[int, str]  # (source line, why this is an offence)
 
@@ -83,6 +88,19 @@ def _mentions_project_type(name: str) -> bool:
     return any(token in low for token in PROJECT_NAME_TOKENS)
 
 
+def _is_callable_stub_attribute(name: str) -> bool:
+    """True when an attribute name marks a callable stub, not an object.
+
+    ``_ensure_*``/``_handle_*`` prefixes and ``_fn``/``_cls`` suffixes name
+    methods being replaced by a stub (``radio._ensure_audio_transport =
+    AsyncMock()``); the mock never stands in for a radio, backend or
+    transport object, so rule 2 does not count it.
+    """
+    return name.startswith(STUB_ATTRIBUTE_PREFIXES) or name.endswith(
+        STUB_ATTRIBUTE_SUFFIXES
+    )
+
+
 def _mock_spec_offences(tree: ast.Module) -> list[Offence]:
     """Every bare mock construction the counting rule flags, with reasons."""
     found: list[Offence] = []
@@ -97,8 +115,10 @@ def _mock_spec_offences(tree: ast.Module) -> list[Offence]:
             for target in _targets(node):
                 if isinstance(target, ast.Name) and _mentions_project_type(target.id):
                     found.append((node.lineno, f"assigned to '{target.id}'"))
-                elif isinstance(target, ast.Attribute) and _mentions_project_type(
-                    target.attr
+                elif (
+                    isinstance(target, ast.Attribute)
+                    and _mentions_project_type(target.attr)
+                    and not _is_callable_stub_attribute(target.attr)
                 ):
                     found.append(
                         (node.lineno, f"assigned to attribute '{target.attr}'")
@@ -150,8 +170,10 @@ def _render_ledger(offending: Mapping[str, Sequence[Offence]]) -> str:
         "# tests/test_meta_mock_specs.py: test files that construct",
         "# MagicMock()/AsyncMock()/Mock() without spec=/spec_set= and use",
         "# it where a project object (radio, backend, transport) is",
-        "# expected. One path per line, relative to tests/, sorted. The",
-        "# test fails on an offender missing here, and on a line here that",
+        "# expected, not counting callable-stub attribute assignments",
+        "# (_ensure_*/_handle_* prefix, _fn/_cls suffix). One path per",
+        "# line, relative to tests/, sorted. The test fails on an",
+        "# offender missing here, and on a line here that no longer",
         "# offends -- delete that line, never keep it. Regenerate, do",
         "# not edit: uv run python tests/test_meta_mock_specs.py",
         "# --regenerate",
@@ -232,6 +254,11 @@ _CLEAN_SOURCE = textwrap.dedent(
             patched.stuff()
         other.attr = MagicMock()
         takes(value=MagicMock())
+
+        radio._ensure_audio_transport = AsyncMock()
+        handler._handle_radio_connect = AsyncMock()
+        radio._transport_fn = Mock()
+        radio._transport_cls = Mock()
         assert radio and backend and unrelated and logger and made
     """
 )
@@ -257,7 +284,8 @@ def test_offending_fixture_is_flagged(tmp_path: pathlib.Path) -> None:
 
 
 def test_clean_fixture_is_not_flagged(tmp_path: pathlib.Path) -> None:
-    """Spec'd mocks, unrelated bare mocks, patch() and autospec pass."""
+    """Spec'd mocks, unrelated bare mocks, patch(), autospec and
+    callable-stub attribute assignments pass."""
     (tmp_path / "test_clean.py").write_text(_CLEAN_SOURCE, encoding="utf-8")
     assert _scan_files(tmp_path) == {}
 

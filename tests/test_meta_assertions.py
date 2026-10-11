@@ -11,13 +11,18 @@ assertion-free when its body -- including anything defined inside it --
 contains none of:
 
 1. an ``assert`` statement;
-2. a call to ``raises`` or ``approx``, however imported
-   (``pytest.raises``/``pytest.approx`` or the bare names);
-3. a call whose target name starts with ``assert`` other than
-   ``assert_called*``/``assert_awaited*``: unittest-style
+2. a call to ``raises``, ``approx``, ``fail`` or ``warns``, however
+   imported (``pytest.raises``/``pytest.fail``/``pytest.warns`` or the
+   bare names);
+3. a call whose target name, after leading underscores, starts with
+   ``assert`` -- except exactly the two mock call-verification
+   prefixes, ``assert_called*`` and ``assert_awaited*``: unittest-style
    ``self.assertEqual``/``self.assertRaises`` and shared assertion
-   helpers such as ``assert_frame`` count, mock call-verification
-   alone never does.
+   helpers such as ``assert_frame``/``_assert_frame`` count. The
+   exclusion is those two prefixes only, so the mock-verification
+   names ``assert_not_called``, ``assert_has_calls``,
+   ``assert_any_call``, ``assert_not_awaited``, ``assert_has_awaits``
+   and ``assert_any_await`` do count.
 
 Every ``test_*`` function or method, sync or async, anywhere in the
 file counts; helper functions with other names do not. A file offends
@@ -50,7 +55,7 @@ TESTS_DIR = pathlib.Path(__file__).resolve().parents[1] / "tests"
 LEDGER_FILE = pathlib.Path(__file__).with_name("assertion_free_uncovered.txt")
 REGEN_ENV = "RIGPLANE_REGEN_ASSERTION_FREE_UNCOVERED"
 TEST_FUNCTION_PREFIX = "test_"
-REAL_CALL_NAMES = frozenset({"raises", "approx"})
+REAL_CALL_NAMES = frozenset({"raises", "approx", "fail", "warns"})
 MOCK_VERIFICATION_PREFIXES = ("assert_called", "assert_awaited")
 
 Offence = tuple[int, str]  # (source line, assertion-free test name)
@@ -69,7 +74,9 @@ def _called_name(func: ast.expr) -> str | None:
 
 
 def _is_real_assertion(node: ast.AST) -> bool:
-    """True for an ``assert`` stmt, ``raises``/``approx`` or ``assert_*`` call."""
+    """True for an ``assert`` stmt, a ``raises``/``approx``/``fail``/
+    ``warns`` call, or an ``assert_*`` call including underscore-prefixed
+    helpers, excluding exactly the two mock-verification prefixes."""
     if isinstance(node, ast.Assert):
         return True
     if not isinstance(node, ast.Call):
@@ -79,9 +86,10 @@ def _is_real_assertion(node: ast.AST) -> bool:
         return False
     if name in REAL_CALL_NAMES:
         return True
-    if not name.startswith("assert"):
+    stripped = name.lstrip("_")
+    if not stripped.startswith("assert"):
         return False
-    return not name.startswith(MOCK_VERIFICATION_PREFIXES)
+    return not stripped.startswith(MOCK_VERIFICATION_PREFIXES)
 
 
 def _assertion_free_tests(tree: ast.Module) -> list[Offence]:
@@ -121,12 +129,13 @@ def _render_ledger(offending: Mapping[str, Sequence[Offence]]) -> str:
     header = [
         "# tests/test_meta_assertions.py: test files containing at least",
         "# one test function that asserts nothing real -- no assert",
-        "# statement, no raises/approx call, no assert-prefixed call",
-        "# other than mock-verification (assert_called*/assert_awaited*).",
+        "# statement, no raises/approx/fail/warns call, no call whose",
+        "# name (after leading underscores) starts with assert except",
+        "# the two prefixes assert_called*/assert_awaited*.",
         "# One path per line, relative to tests/, sorted. The test fails",
-        "# offender missing here, and on a line here that no longer",
-        "# offends -- delete that line, never keep it. Regenerate, do",
-        "# not edit: uv run python tests/test_meta_assertions.py",
+        "# on an offender missing here, and on a line here that no",
+        "# longer offends -- delete that line, never keep it. Regenerate,",
+        "# do not edit: uv run python tests/test_meta_assertions.py",
         "# --regenerate",
     ]
     rows = sorted(offending)
@@ -214,6 +223,19 @@ _CLEAN_SOURCE = textwrap.dedent(
         radio.set_frequency(14074000)
         radio.set_frequency.assert_called_once()
         assert radio.connected
+
+
+    def test_underscore_prefixed_assertion_helper(frames):
+        _assert_frame(frames[0], b"frame-payload")
+
+
+    def test_pytest_fail(radio):
+        pytest.fail("always fails")
+
+
+    def test_pytest_warns(radio):
+        with pytest.warns(UserWarning):
+            radio.warm_up()
     """
 )
 
@@ -235,7 +257,8 @@ def test_offending_fixture_is_flagged(tmp_path: pathlib.Path) -> None:
 
 
 def test_clean_fixture_is_not_flagged(tmp_path: pathlib.Path) -> None:
-    """Assert statements, raises/approx and assert_* helpers all count."""
+    """Assert statements, raises/approx/fail/warns and assert_* helpers
+    (underscore-prefixed included) all count."""
     (tmp_path / "test_clean.py").write_text(_CLEAN_SOURCE, encoding="utf-8")
     assert _scan_files(tmp_path) == {}
 

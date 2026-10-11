@@ -1,8 +1,10 @@
 # tests/test_meta_mock_specs.py: test files that construct
 # MagicMock()/AsyncMock()/Mock() without spec=/spec_set= and use
 # it where a project object (radio, backend, transport) is
-# expected. One path per line, relative to tests/, sorted. The
-# test fails on an offender missing here, and on a line here that
+# expected, not counting callable-stub attribute assignments
+# (_ensure_*/_handle_* prefix, _fn/_cls suffix). One path per
+# line, relative to tests/, sorted. The test fails on an
+# offender missing here, and on a line here that no longer
 # offends -- delete that line, never keep it. Regenerate, do
 # not edit: uv run python tests/test_meta_mock_specs.py
 # --regenerate
@@ -23,9 +25,7 @@ test_connect_teardown_hygiene.py
 test_cw_auto_tune_wiring.py
 test_data_mode.py
 test_ftx1_audio.py
-test_handlers_coverage.py
 test_ic705.py
-test_icom_lan_identity_gate.py
 test_memory_commands.py
 test_mor1537_cmd29_gating.py
 test_mor2161_command_dispatch.py
