@@ -43,6 +43,18 @@ UDP code paths as production.
   reconnect, wrong model id, a silent link (MOR-2861), and USB vanish /
   reappear (`ENODEV`, mapped to `serial_not_found`). The implementation lives
   in `rigplane_testkit/serial/civ_serial.py`.
+- `rigplane_testkit.serial.recorder` — `SerialCivRecorder`, a TCP↔serial
+  bridge that opens the real USB CI-V device through the production
+  `open_serial_port` open (DTR/RTS deasserted) and serves it on
+  `socket://HOST:PORT`, so a client pointed at that URL records a session
+  with zero production change. Every chunk is appended to JSONL with
+  direction and monotonic time — the same keys the LAN recorder writes, no
+  redaction (CI-V serial carries no credentials) — flushed per line; one
+  TCP client is served at a time and later concurrent connections are
+  closed and counted. `civ_frames(path)` reassembles the JSONL back into
+  complete `FE FE ... FD` frames per direction. CLI:
+  `python -m rigplane_testkit.serial record --device DEV --out FILE
+  [--baud 115200] [--listen-host H] [--listen-port P]`.
 - `rigplane_testkit.yaesu` — `FakeCatRadio`, a stateful FTX-1-style Yaesu CAT
   personality (frequency, mode, PTT, power, auto-information mode) on a real
   TCP server, reached through pyserial's `socket://` URL handler: the
