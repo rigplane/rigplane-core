@@ -213,8 +213,7 @@ export function projectControlFeedbackToDisplay(
   return Object.freeze({ ...feedback, confirmed, target, requestedTarget });
 }
 
-/** MOR-2635: the confirmed slot is already display units (decoded by the
- *  echo projection in panel-adapters). Only the pending target and its requested echo are still the
+/** MOR-2635: the confirmed slot is already display units. Only the pending target and its requested echo are still the
  *  raw CAT code, so only those two are decoded. A null stays null; a raw the
  *  contract rejects fails the whole feedback closed. */
 export function projectPendingTargetToDisplay(
