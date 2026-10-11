@@ -102,6 +102,24 @@ uv run pytest tests/test_golden_protocol.py tests/test_server_wire.py -v
 When adding a new rigctld command, add corresponding fixtures to `protocol_golden.json`
 to lock down the wire format.
 
+#### Command Vocabulary Contract
+
+`contracts/command-vocabulary.json` lists every name in
+`web/handlers/control.py: ControlHandler._COMMANDS`, with the `result_keys` of
+the `core/command_dispatch.py: CommandDescriptor` that `command_descriptor`
+resolves for it, or `null` when none does. After changing the server command
+set or a descriptor, regenerate it:
+
+```bash
+uv run python .github/scripts/gen-command-vocabulary.py
+```
+
+`tests/test_command_vocabulary_contract.py` fails while the file is stale.
+`frontend/src/lib/runtime/commands/__tests__/command-vocabulary-contract.isolated.test.ts`
+fails when an `intentSpecs` name in `radio-intents.ts` is absent from the file,
+or when a name with non-null `result_keys` declares a different set of
+parameter names.
+
 ## Code Style
 
 - **Type annotations** on all public functions
