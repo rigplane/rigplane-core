@@ -418,6 +418,7 @@ describe('WsChannel', () => {
     ch.disconnect();
     ch.connect('ws://test');
     const replacement = instances[1];
+    replacement.answersPings = true;
     replacement.simulateOpen();
 
     first.simulateClose(1000, 'delayed close', true);
@@ -456,6 +457,7 @@ describe('WsChannel', () => {
     await Promise.resolve();
     await Promise.resolve();
     const replacement = instances[1];
+    replacement.answersPings = true;
     replacement.simulateOpen();
 
     first.simulateClose(1000, 'delayed close', true);
@@ -1181,6 +1183,20 @@ describe('WsChannel', () => {
     instances[1].simulateOpen();
     expect(ch.state).toBe('connected');
     expect(states).toEqual(['connecting', 'connected', 'disconnected', 'reconnecting', 'connected']);
+  });
+
+  it('stays connected through server silence while the server answers keepalive pings', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+
+    ch.connect('ws://test');
+    instances[0].answersPings = true;
+    instances[0].simulateOpen();
+
+    vi.advanceTimersByTime(120_000);
+
+    expect(ch.state).toBe('connected');
+    expect(instances).toHaveLength(1);
   });
 
   it('resets heartbeat timer on each incoming message', async () => {

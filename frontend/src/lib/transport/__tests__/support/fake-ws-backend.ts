@@ -21,6 +21,8 @@ export class MockWebSocket {
   binaryType = 'blob';
   url: string;
   sent: string[] = [];
+  // Opt-in: answer the client's JSON keepalive ping like a healthy server.
+  answersPings = false;
 
   onopen: (() => void) | null = null;
   onmessage: ((e: MessageEvent) => void) | null = null;
@@ -34,6 +36,9 @@ export class MockWebSocket {
 
   send(data: string) {
     this.sent.push(data);
+    if (this.answersPings && data === '{"type":"ping"}') {
+      this.simulateMessage('{"type":"pong"}');
+    }
   }
 
   // Mirrors the real WebSocket#close(code?, reason?) signature — a locally
