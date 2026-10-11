@@ -125,6 +125,8 @@ markers = [
     "benchmark: wall-clock measurements, reported rather than gated on; deselected by default (run with -m benchmark)",
 ]
 testpaths = ["tests"]
+# Repo root on sys.path so tests can import the top-level rigplane_testkit package.
+pythonpath = ["."]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
