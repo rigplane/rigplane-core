@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 from rigplane.commands import parse_civ_frame
 from rigplane.core.serial_open import open_serial_port
 
@@ -74,6 +76,45 @@ def test_civ_frames_reassembles_split_and_joined_chunks(tmp_path) -> None:
         (0.5, "r2c", bytes.fromhex("fefee094fbfd")),
         (0.5, "r2c", bytes.fromhex("fefee094fafd")),
     ]
+
+
+def test_civ_frames_reassembles_preamble_split_across_chunks(tmp_path) -> None:
+    out = tmp_path / "preamble-split.jsonl"
+    rows = [
+        # Split between the two FE bytes: the lone FE must survive until
+        # the next chunk completes the preamble.
+        {"t": 0.1, "dir": "c2r", "port": "serial", "hex": "fe"},
+        {"t": 0.2, "dir": "c2r", "port": "serial", "hex": "fe94e01900fd"},
+        # Split between FE FE and the address byte.
+        {"t": 0.3, "dir": "r2c", "port": "serial", "hex": "fefe"},
+        {"t": 0.4, "dir": "r2c", "port": "serial", "hex": "e09419005cfd"},
+    ]
+    out.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    assert list(civ_frames(out)) == [
+        (0.2, "c2r", bytes.fromhex("fefe94e01900fd")),
+        (0.4, "r2c", bytes.fromhex("fefee09419005cfd")),
+    ]
+
+
+async def test_failed_device_open_keeps_existing_recording(tmp_path) -> None:
+    fake = CivSerialFake(echo=False)
+    out = tmp_path / "session.jsonl"
+    out.write_text('{"t": 0.5, "dir": "c2r", "port": "serial", "hex": "fe9494"}\n')
+    fake.usb_vanish()
+    await asyncio.sleep(0.05)  # let the scheduled vanish fire before start
+    rec = SerialCivRecorder("fake-tty", out, opener=fake.opener)
+    with pytest.raises(OSError):
+        await rec.start()
+    assert "fe9494" in out.read_text()  # the old recording was not truncated
+
+
+async def test_serve_forever_returns_when_the_device_goes_away(tmp_path) -> None:
+    fake = CivSerialFake(echo=False)
+    rec = SerialCivRecorder("fake-tty", tmp_path / "session.jsonl", opener=fake.opener)
+    await rec.start()
+    fake.usb_vanish()
+    await asyncio.wait_for(rec.serve_forever(), timeout=2.0)
+    assert rec.listen_port == 0  # serve_forever stopped the bridge
 
 
 async def test_second_client_is_rejected(tmp_path) -> None:

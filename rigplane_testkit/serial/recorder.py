@@ -66,7 +66,12 @@ def civ_frames(path: str | Path) -> Iterator[tuple[float, str, bytes]]:
             while True:
                 start = buf.find(_PREAMBLE)
                 if start < 0:
-                    buf.clear()
+                    # No preamble: keep a trailing FE — the next chunk's
+                    # first byte may complete the preamble — drop the rest.
+                    if buf and buf[-1] == _PREAMBLE[0]:
+                        del buf[:-1]
+                    else:
+                        buf.clear()
                     break
                 end = buf.find(_TERMINATOR, start + 2)
                 if end < 0:
@@ -81,7 +86,8 @@ class SerialCivRecorder:
 
     Args:
         device: Serial device path (e.g. ``/dev/ttyUSB0``).
-        out_path: Destination JSONL file (truncated on :meth:`start`).
+        out_path: Destination JSONL file (truncated on :meth:`start`, after
+            the device open succeeds).
         baudrate: Device baud rate.
         listen_host: Bind address for the client-facing TCP listener.
         listen_port: Bind port (0 = ephemeral).
@@ -117,12 +123,16 @@ class SerialCivRecorder:
         self._client_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
-        """Open the device, start the TCP listener, open the log."""
+        """Open the device, then the log and the TCP listener.
+
+        The recording file truncates only after the device open succeeds,
+        so a failed open leaves any previous recording untouched.
+        """
         self._t0 = time.monotonic()
-        self._file = self._out_path.open("w", encoding="utf-8")
         self._serial_reader, self._serial_writer = await open_serial_port(
             self._device, baudrate=self._baudrate, opener=self._opener
         )
+        self._file = self._out_path.open("w", encoding="utf-8")
         self._server = await asyncio.start_server(
             self._handle_client, self._listen_host, self._listen_port
         )
@@ -166,8 +176,17 @@ class SerialCivRecorder:
             self._file = None
 
     async def serve_forever(self) -> None:
-        """Run until cancelled (CLI use)."""
-        await asyncio.Event().wait()
+        """Run until the serial pump ends or this is cancelled (CLI use).
+
+        When the serial→client pump ends — an ``OSError`` or end of stream
+        from the device — the bridge is stopped and this returns, so the
+        CLI exits instead of serving a dead device.
+        """
+        pump = self._serial_pump
+        if pump is None:
+            return
+        await asyncio.wait({pump})
+        await self.stop()
 
     @property
     def listen_port(self) -> int:
@@ -207,6 +226,10 @@ class SerialCivRecorder:
             while True:
                 data = await self._serial_reader.read(_CHUNK)
                 if not data:
+                    logger.warning(
+                        "serial→client pump ended: end of stream from %s",
+                        self._device,
+                    )
                     break
                 self._record("r2c", data)
                 client = self._client_writer
