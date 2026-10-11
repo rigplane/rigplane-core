@@ -1,0 +1,24 @@
+# Frontend tests that read source text
+
+A test that reads a `.svelte`, `.ts` or `.css` file and asserts on its text
+pins how the code is written, not what it does. The existing set is frozen in
+a ledger: a new source-reading test fails the meta-test until a ledger row is
+added for it.
+
+- Ledger: `frontend/scripts/source-text-pin-baseline.mjs`
+  (`SOURCE_TEXT_PIN_BASELINE`, one `path::describe > test` row per test).
+- Inventory: `frontend/scripts/source-text-pin-inventory.mjs`
+  (`scanSourceTextPins`). A test file is scanned when its text matches
+  `READ_PATTERN` and it is not listed in `DATA_READERS`; inside it, a test is
+  pinned when its body calls a file read, uses a `?raw` import, or references
+  a binding derived from either.
+- Enforcement: `frontend/src/__tests__/source-text-pins.meta.test.ts` fails
+  on a pinned test missing from the ledger, on a ledger row that no longer
+  matches a pinned test, and on any `createHash(...).update(x)` where `x`
+  derives from a file read (`auditDigests`; the only exemption is
+  `DIGEST_READ_EXEMPT_PREFIXES`).
+
+When a ledgered test stops reading source, delete its row. To regenerate the
+ledger, run `node scripts/source-text-pin-inventory.mjs` from `frontend/` and
+write its output to the ledger file; a diff that adds rows is a new
+source-text test and needs a reason in review.

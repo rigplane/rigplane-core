@@ -6,7 +6,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRawSnippet, mount, unmount, flushSync, tick } from 'svelte';
 import { readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 
 // ── Hoisted authority/intent harnesses ─────────────────────────────────────
@@ -884,34 +883,11 @@ describe('source and enforcement boundary', () => {
     expect(contract).not.toContain('  { path = "src/components/spectrum/EiBiBrowser.svelte", count = 1, owner = "MOR-1409" },');
   });
 
-  it('keeps the selector boundaries and pins the scoped toolbar CSS', () => {
+  it('keeps the selector boundaries', () => {
     const popover = readFileSync(popoverPath, 'utf8');
     expect(popover).toContain('toSpectrumAuthority(runtime.state, runtime.caps)');
     expect(popover).toContain('bindSemanticSurfaceHandlers().scopeControls');
     expect(popover).not.toMatch(/stores\/radio\.svelte|sendCommand|\?\? false/);
-    const source = readFileSync(sourcePath, 'utf8');
-    const cssHash = createHash('sha256').update(source.slice(source.indexOf('<style>'))).digest('hex');
-    // MOR-2358 adds host-scoped wrapping for the semantic scope surface.
-    // MOR-2522 repin: the `.toolbar-select:focus` border frame is gone.
-    // MOR-2545 repin: the host wraps the ONE nowrap `.scope-controls-row`;
-    // PR2 adds the hosted container query, the STEP overflow copy pair and
-    // the scope-status seat. PR2 review repin: the status slot stops
-    // shrinking, the host hides the surface's readout text span, and the
-    // STEP band moves to 424px (reviewer-measured on PR #3598). Round-3
-    // repin: the STEP-band comment is marked as measured on desktop-v2.
-    // MOR-2545 PR3 repin: the toolbar's own container query dies (the
-    // surface container owns every band); round 2: the strip's ONE ground
-    // is --v2-bg-card, the lamp-grammar glow/filter never reach the hosted
-    // row, and STEP's More copy shows at the measured-derived 360px band.
-    // PR3 round-3 repin: the `.step-cycler` comment now names the row
-    // sheet's `:not(.step-cycler)` guard (round-3 finding 1).
-    // MOR-2545 round-4 repin (owner style B): STEP's More copy follows the
-    // sheet's measured step band (320px, re-derived from the round-4 head),
-    // and the one-row/ground comments re-anchored.
-    // MOR-2658 repin: unread speed/REF/receiver render EMPTY in reserved
-    // slots — `.ref-value` gains `display: inline-block; min-width: 4ch`
-    // (replacing `28px`) and a new `.receiver-value` rule reserves `4ch`.
-    expect(cssHash).toBe('62b0ca339bfe3b974c797df850e69b28d7c9ff8e4152e1077070ed067c201327');
   });
 });
 

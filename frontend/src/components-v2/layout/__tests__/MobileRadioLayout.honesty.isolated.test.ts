@@ -22,7 +22,6 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { mount, unmount, flushSync } from 'svelte';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
@@ -141,8 +140,6 @@ import {
   type SmeterCalibrationPoint,
 } from '../../../primitives/meters/s-meter-scale';
 
-const LAYOUT_DIR = 'src/components-v2/layout/';
-
 // MOR-2705 part 4a: a calibrated ladder for the reserved-slot pins — the
 // readouts exist (and stay empty until read) only on a calibrated radio.
 const SMETER_LADDER: SmeterCalibrationPoint[] = [
@@ -228,19 +225,6 @@ describe('MobileRadioLayout canonical module surface (MOR-1409 A13a)', () => {
     expect(call).not.toMatch(/,\s*(true|false)\s*\)/);
   });
 
-  // Kills: absorbing the display guards into `mobile-layout-logic.ts`, which is
-  // a single-consumer helper module and therefore NOT an owner of this gate
-  // (correction 5246842617 §8, applying the 5246487510 single-consumer test).
-  // Hash refreshed for the MOR-1451 follow-up that re-pointed the S-meter
-  // formatting at the shared `smeter-scale.ts` helpers — the module still
-  // carries no non-finite display guard — and again for MOR-2705 part 4a's
-  // stale-fallback comment correction (comment-only change).
-  it('leaves mobile-layout-logic.ts byte-identical', () => {
-    const bytes = readFileSync(`${LAYOUT_DIR}mobile-layout-logic.ts`);
-    expect(createHash('sha256').update(bytes).digest('hex')).toBe(
-      'a199a82eac6f00a6acecfb00fb749be8356f0b5e442175f76a4ecf5be97ce901',
-    );
-  });
 });
 
 // ───────────────────────────────────────────────────────────────────────────
