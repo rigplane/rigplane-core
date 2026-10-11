@@ -17,3 +17,14 @@ attribute, passed as such a keyword parameter, or returned from a
 fixture factory with such a name. The full counting rule and the
 regeneration command are in the module docstring; today's offenders are
 listed in `tests/mock_spec_uncovered.txt`.
+
+## Assertion-free test functions (MOR-3239)
+
+`tests/test_meta_assertions.py: test_no_unlisted_assertion_free_test`
+fails when a test file contains a `test_*` function that asserts
+nothing real: no `assert` statement, no `raises`/`approx` call, and no
+assert-prefixed call other than mock-verification
+(`assert_called*`/`assert_awaited*`). The full counting rule and the
+regeneration command are in the module docstring; today's offenders are
+listed in `tests/assertion_free_uncovered.txt`.
+

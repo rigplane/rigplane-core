@@ -1,0 +1,88 @@
+# tests/test_meta_assertions.py: test files containing at least
+# one test function that asserts nothing real -- no assert
+# statement, no raises/approx call, no assert-prefixed call
+# other than mock-verification (assert_called*/assert_awaited*).
+# One path per line, relative to tests/, sorted. The test fails
+# offender missing here, and on a line here that no longer
+# offends -- delete that line, never keep it. Regenerate, do
+# not edit: uv run python tests/test_meta_assertions.py
+# --regenerate
+architecture/test_ui_radio_control_contract.py
+contracts/test_audio_lifecycle_conformance.py
+contracts/test_audio_transport_conformance.py
+integration/test_audio_integration.py
+integration/test_media_scope_integration.py
+integration/test_memory_set_only.py
+integration/test_radio_integration.py
+integration/test_rigctld_golden_replay.py
+integration/test_vfo_dual_watch_integration.py
+smoke/test_audio_path_smoke.py
+test_audio_bridge.py
+test_audio_bus.py
+test_audio_fft_scope.py
+test_audio_fullduplex.py
+test_audio_recovery.py
+test_audio_rx_tx_transition.py
+test_audio_transcoder.py
+test_audio_transcoder_coverage.py
+test_audio_watchdog.py
+test_audit.py
+test_bsr_band_switching.py
+test_civ_rx_coverage.py
+test_cli.py
+test_cli_async.py
+test_command_spec.py
+test_cw_auto_tune_wiring.py
+test_cw_auto_tuner.py
+test_data_mode.py
+test_discovery_responder.py
+test_docs_runtime_sync.py
+test_dsp_filter_family.py
+test_dsp_nodes.py
+test_dx_cluster.py
+test_ftx1_audio.py
+test_ftx1_power_floor.py
+test_ftx1_radio.py
+test_handlers_coverage.py
+test_ic705.py
+test_memory_commands.py
+test_mock_integration.py
+test_mor1544_digisel_shift_cap.py
+test_mor2161_command_dispatch.py
+test_mor2636_narrow.py
+test_pcm_e2e.py
+test_platformdirs_migration.py
+test_profiles_runtime.py
+test_radio.py
+test_radio_connect.py
+test_radio_coverage.py
+test_radio_extended.py
+test_radio_poller_coverage.py
+test_radio_poller_tx_interlock.py
+test_reconnect.py
+test_rig_loader.py
+test_rig_schema.py
+test_rigctld_client_backend.py
+test_rigctld_consistency.py
+test_rigctld_level_quantize.py
+test_rigctld_server.py
+test_rigctld_server_coverage.py
+test_scope_render_coverage.py
+test_sync.py
+test_sync_coverage.py
+test_tap_registry.py
+test_token_renewal.py
+test_transport.py
+test_tx_authority_characterisation.py
+test_vox_tone_state.py
+test_web_audio_streaming_profile.py
+test_web_auth_compare_digest.py
+test_web_capability_guards.py
+test_web_ptt_readonly.py
+test_web_server.py
+test_websocket_coverage.py
+test_yaesu_cat_observation_adapter.py
+test_yaesu_cat_poller.py
+validation/test_generator.py
+validation/test_generator_hamlib.py
+validation/test_registry.py
