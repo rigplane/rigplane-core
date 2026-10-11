@@ -15,6 +15,7 @@ integration/test_memory_set_only.py
 integration/test_radio_integration.py
 integration/test_rigctld_golden_replay.py
 integration/test_vfo_dual_watch_integration.py
+property/test_civ_properties.py
 smoke/test_audio_path_smoke.py
 test_audio_bridge.py
 test_audio_bus.py
