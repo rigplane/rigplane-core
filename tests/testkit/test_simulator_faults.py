@@ -111,6 +111,13 @@ def _freq_get(seq: int = 1) -> bytes:
     return bytes(pkt)
 
 
+def _openclose() -> bytes:
+    """OpenClose(open) on the CI-V port — starts the client's data stream."""
+    pkt = _header(0x16, _PT_DATA)
+    pkt[0x15] = 0x04  # open_stream
+    return bytes(pkt)
+
+
 def _is_freq_reply(pkt: bytes) -> bool:
     return len(pkt) > 0x1A and pkt[0x15:0x17] == b"\xfe\xfe" and pkt[0x19] == 0x03
 
@@ -203,7 +210,9 @@ async def test_reorder_permutes_replies(server, client):
     replies = [await client.recv() for _ in range(3)]
     seqs = [struct.unpack_from("<H", r, 0x06)[0] for r in replies]
     assert sorted(seqs) == [1, 2, 3]  # nothing lost
-    assert seqs != [1, 2, 3]  # and permuted (seed 0xC0FFEE shuffles [1,0,2])
+    # and permuted: the per-stream RNG (seed 0xC0FFEE, civ:to_client) shuffles
+    # [1, 2, 3] to [3, 2, 1]
+    assert seqs != [1, 2, 3]
 
 
 async def test_inbound_drop_silences_the_server(server, client):
@@ -234,24 +243,26 @@ async def test_reboot_drops_session_then_busy_then_recovers(server, client):
     status = await client.recv()
     assert struct.unpack_from(">H", status, 0x42)[0] == server.civ_port
 
-    # Reboot: down [+0.1, +0.7], busy [+0.7, +1.3].
-    server.reboot(at=0.1, down_for=0.6, busy_for=0.6)
+    # Reboot: down [+0.2, +1.6], busy [+1.6, +2.8] — every probe below keeps
+    # a ≥0.5 s margin from the window edge it exercises.
+    server.reboot(at=0.2, down_for=1.4, busy_for=1.2)
     t0 = time.monotonic()
 
-    # Phase 2 — powered off: discovery goes unanswered.
-    await asyncio.sleep(0.25)
+    # Phase 2 — powered off: discovery goes unanswered. Probe at +0.75; the
+    # 0.3 s silence observation ends at +1.05, still ≥0.5 s inside the window.
+    await asyncio.sleep(0.75)
     client.send(_ayt(), server.control_port)
     await client.expect_silence(0.3)
 
     # Phase 3 — busy window: conninfo rejected previous-session-active.
-    await asyncio.sleep(max(0.0, 0.9 - (time.monotonic() - t0)))
+    await asyncio.sleep(max(0.0, 2.2 - (time.monotonic() - t0)))
     client.send(_conninfo(), server.control_port)
     busy = await client.recv()
     assert struct.unpack_from("<I", busy, 0x30)[0] == _ERR_PREV_SESSION_ACTIVE
     assert struct.unpack_from(">H", busy, 0x42)[0] == 0
 
     # Phase 4 — recovered: fresh conninfo and a login with a rotated token.
-    await asyncio.sleep(max(0.0, 1.5 - (time.monotonic() - t0)))
+    await asyncio.sleep(max(0.0, 3.3 - (time.monotonic() - t0)))
     client.send(_conninfo(), server.control_port)
     status2 = await client.recv()
     assert struct.unpack_from("<I", status2, 0x30)[0] == 0
@@ -273,22 +284,72 @@ async def test_keepalive_silence_stops_ping_replies_but_keeps_receiving(
     assert struct.unpack_from("<H", reply, 4)[0] == _PT_PING
     assert reply[0x10] == 0x01
 
-    # Silence window [+0.1, +0.9]: pings received but never answered.
-    server.keepalive_silence(at=0.1, for_seconds=0.8)
+    # Silence window [+0.2, +1.8]: pings received but never answered. Probes
+    # below keep a ≥0.5 s margin from both window edges.
+    server.keepalive_silence(at=0.2, for_seconds=1.6)
     t0 = time.monotonic()
-    await asyncio.sleep(0.25)
+    await asyncio.sleep(0.7)
 
     # Still receiving: discovery is answered inside the silence window.
     client.send(_ayt(), server.control_port)
     assert struct.unpack_from("<H", await client.recv(), 4)[0] == _PT_I_AM_HERE
 
-    # But ping replies are suppressed.
+    # But ping replies are suppressed (observation ends ~+1.0, margin 0.8 s).
     client.send(_ping(), server.control_port)
     await client.expect_silence(0.3)
 
-    # After the window, pings are answered again.
-    await asyncio.sleep(max(0.0, 1.1 - (time.monotonic() - t0)))
+    # After the window, pings are answered again (+2.3, 0.5 s past the edge).
+    await asyncio.sleep(max(0.0, 2.3 - (time.monotonic() - t0)))
     client.send(_ping(), server.control_port)
     reply = await client.recv()
     assert struct.unpack_from("<H", reply, 4)[0] == _PT_PING
     assert reply[0x10] == 0x01
+
+
+async def test_reboot_fences_stale_client_until_fresh_open(server, client):
+    """After a reboot the radio shuts out the pre-reboot client: its CI-V data
+    and pings get silence until it completes a fresh OpenClose(open)."""
+    # Log in, open the data port, and confirm the client is served.
+    client.send(_login(), server.control_port)
+    await client.recv()
+    client.send(_conninfo(), server.control_port)
+    await client.recv()
+    client.send(_openclose(), server.civ_port)
+    await client.recv()  # unsolicited CI-V frame on open
+    client.send(_freq_get(), server.civ_port)
+    assert _is_freq_reply(await client.recv())
+
+    # Reboot: down [+0.2, +0.8], busy [+0.8, +1.6].
+    server.reboot(at=0.2, down_for=0.6, busy_for=0.8)
+    t0 = time.monotonic()
+
+    # The radio is back (probe at +1.3: 0.5 s past the down window), but the
+    # stale client is fenced — CI-V data and pings are ignored.
+    await asyncio.sleep(max(0.0, 1.3 - (time.monotonic() - t0)))
+    client.send(_ping(), server.civ_port)
+    client.send(_freq_get(), server.civ_port)
+    await client.expect_silence(0.3)
+
+    # A fresh login from a new client succeeds and is served (probe at +2.1:
+    # 0.5 s past the busy window ending at +1.6).
+    fresh = _UdpClient()
+    await asyncio.get_running_loop().create_datagram_endpoint(
+        lambda: fresh, local_addr=(_HOST, 0)
+    )
+    try:
+        await asyncio.sleep(max(0.0, 2.1 - (time.monotonic() - t0)))
+        fresh.send(_login(), server.control_port)
+        login = await fresh.recv()
+        assert struct.unpack_from("<I", login, 0x30)[0] == 0
+        fresh.send(_conninfo(), server.control_port)
+        status = await fresh.recv()
+        assert struct.unpack_from(">H", status, 0x42)[0] == server.civ_port
+        fresh.send(_openclose(), server.civ_port)
+        await fresh.recv()
+        fresh.send(_freq_get(), server.civ_port)
+        assert _is_freq_reply(await fresh.recv())
+        # ...while the stale client is still fenced.
+        client.send(_freq_get(), server.civ_port)
+        await client.expect_silence(0.3)
+    finally:
+        fresh.close()

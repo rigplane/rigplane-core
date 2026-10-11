@@ -8,9 +8,10 @@ A :class:`FaultPlan` attaches one :class:`FaultRule` to each
     (client requests, faulted before the simulator parses them).
 
 Each rule can drop, duplicate, delay, reorder, corrupt or truncate the
-packets on its stream. All randomness comes from a single
-``random.Random`` seeded by :attr:`FaultPlan.seed`, so a given
-(plan, packet sequence) pair always produces the same decisions.
+packets on its stream. Each stream draws from its own ``random.Random``,
+derived from :attr:`FaultPlan.seed` as ``f"{seed}:{port}:{direction}"``,
+so a stream's decisions never depend on how the other streams' packets
+interleave (including OS-dependent interleaves of the two UDP ports).
 
 A rule can be bounded with ``max_packets`` ("lose the next 5 control
 packets") and/or ``duration_s`` (measured from the first packet the rule
@@ -57,6 +58,9 @@ class FaultRule:
         delay_s: fixed delay added to every matched packet.
         jitter_s: uniform random extra delay in [0, jitter_s].
         reorder_window: buffer N emissions, shuffle, then flush (0/1 = off).
+        reorder_flush_s: a held emission is released after at most this long
+            even if the window never fills (the simulator drives this on
+            idle); the buffer also flushes when a bound deactivates the rule.
         corrupt_probability: probability of bit-flipping bytes.
         corrupt_bytes: how many distinct byte positions to flip.
         truncate_probability: probability of cutting the packet short.
@@ -73,6 +77,7 @@ class FaultRule:
     delay_s: float = 0.0
     jitter_s: float = 0.0
     reorder_window: int = 0
+    reorder_flush_s: float = 0.05
     corrupt_probability: float = 0.0
     corrupt_bytes: int = 1
     truncate_probability: float = 0.0
@@ -87,6 +92,7 @@ class FaultRule:
     _reorder_buf: list[Emission] = field(
         default_factory=list, init=False, compare=False
     )
+    _reorder_since: float | None = field(default=None, init=False, compare=False)
 
     def is_noop(self) -> bool:
         """True when no fault knob is set — the fast path for the simulator."""
@@ -137,7 +143,9 @@ class FaultRule:
         the reorder buffer and nothing is emitted yet.
         """
         if not self._active(now):
-            return [(0.0, packet)]
+            # A bound ran out: release anything the reorder window still
+            # holds, then pass the packet through untouched.
+            return self.flush(rng) + [(0.0, packet)]
         if self._started_at is None:
             self._started_at = now
         self._matched += 1
@@ -181,25 +189,55 @@ class FaultRule:
         ):
             emissions.append((delay + max(0.0, self.duplicate_delay_s), payload))
 
-        # reorder: buffer and flush shuffled once the window fills.
+        # reorder: buffer, then flush shuffled once the window fills or the
+        # flush deadline passes — a held packet is never held forever.
         if self.reorder_window > 1:
+            if self._reorder_since is None:
+                self._reorder_since = now
             self._reorder_buf.extend(emissions)
-            if len(self._reorder_buf) < self.reorder_window:
-                return None
-            batch = self._reorder_buf[:]
-            self._reorder_buf.clear()
-            rng.shuffle(batch)
-            return batch
+            if len(self._reorder_buf) >= self.reorder_window:
+                return self.flush(rng)
+            if now - self._reorder_since >= self.reorder_flush_s:
+                return self.flush(rng)
+            return None
 
         return emissions
+
+    def flush(self, rng: random.Random) -> list[Emission]:
+        """Release everything the reorder window holds (shuffled); [] if empty."""
+        if not self._reorder_buf:
+            return []
+        batch = self._reorder_buf[:]
+        self._reorder_buf.clear()
+        self._reorder_since = None
+        rng.shuffle(batch)
+        return batch
+
+    def flush_due_in(self, now: float) -> float | None:
+        """Seconds until the reorder deadline, or None when nothing is held."""
+        if self._reorder_since is None:
+            return None
+        return max(0.0, self._reorder_since + self.reorder_flush_s - now)
+
+
+# All four (port, direction) streams — each gets its own derived RNG.
+_STREAMS: tuple[tuple[Port, Direction], ...] = (
+    ("control", "to_client"),
+    ("control", "from_client"),
+    ("civ", "to_client"),
+    ("civ", "from_client"),
+)
 
 
 @dataclass
 class FaultPlan:
     """One :class:`FaultRule` per (port, direction) stream of the simulator.
 
-    ``seed`` feeds the single RNG shared by all four rules, so the whole
-    plan replays identically for a fixed packet sequence.
+    ``seed`` feeds one derived RNG per stream —
+    ``random.Random(f"{seed}:{port}:{direction}")`` — so a stream's
+    decisions never depend on how the other streams' packets interleave,
+    and the whole plan still replays identically for a fixed packet
+    sequence per stream.
     """
 
     control_to_client: FaultRule = field(default_factory=FaultRule)
@@ -208,10 +246,15 @@ class FaultPlan:
     civ_from_client: FaultRule = field(default_factory=FaultRule)
     seed: int = _DEFAULT_SEED
 
-    _rng: random.Random = field(init=False, compare=False)
+    _rngs: dict[tuple[Port, Direction], random.Random] = field(
+        init=False, compare=False
+    )
 
     def __post_init__(self) -> None:
-        self._rng = random.Random(self.seed)
+        self._rngs = {
+            (port, direction): random.Random(f"{self.seed}:{port}:{direction}")
+            for port, direction in _STREAMS
+        }
 
     def rule(self, port: Port, direction: Direction) -> FaultRule:
         """Return the rule for one (port, direction) stream."""
@@ -242,5 +285,23 @@ class FaultPlan:
         returns ``[(0.0, packet)]`` and consumes no randomness.
         """
         return self.rule(port, direction).decide(
-            packet, self._rng, time.monotonic() if now is None else now
+            packet,
+            self._rngs[(port, direction)],
+            time.monotonic() if now is None else now,
+        )
+
+    def flush(self, port: Port, direction: Direction) -> list[Emission]:
+        """Release whatever the stream's reorder buffer holds (shuffled).
+
+        The simulator calls this when the reorder deadline fires, so a burst
+        smaller than the window is still emitted on idle.
+        """
+        return self.rule(port, direction).flush(self._rngs[(port, direction)])
+
+    def flush_due_in(
+        self, port: Port, direction: Direction, *, now: float | None = None
+    ) -> float | None:
+        """Seconds until the stream's reorder deadline (None = nothing held)."""
+        return self.rule(port, direction).flush_due_in(
+            time.monotonic() if now is None else now
         )

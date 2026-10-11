@@ -18,11 +18,19 @@ UDP code paths as production.
   or every-Nth), duplicate (with inter-copy delay), delay (fixed + jitter),
   reorder (window), corrupt (bit-flip N bytes) and truncate (to K bytes), and
   can be bounded by packet count or duration (e.g. "lose the next 5 control
-  packets"). The plan sits beside the legacy knobs (`drop_rate`,
-  `reorder_window`, `response_delay`, `stall_for`), which are unchanged.
+  packets"). Reorder buffers always flush — on a full window, on a
+  `reorder_flush_s` deadline (driven by the simulator when the stream goes
+  idle), and when a bound deactivates the rule — so no packet is ever held
+  forever. Each stream draws from its own RNG derived from the plan seed
+  (`f"{seed}:{port}:{direction}"`), so one stream's traffic cannot change
+  another stream's decisions. The plan sits beside the legacy knobs
+  (`drop_rate`, `reorder_window`, `response_delay`, `stall_for`), which are
+  unchanged.
   `MockIcomRadio` also offers scheduled events: `reboot(at, down_for,
-  busy_for)` — stop answering, forget the session, rotate the token, reset
-  sequence numbers, answer busy, then accept a fresh login — and
+  busy_for)` — stop answering, forget the session, rotate the token, restart
+  CI-V sequence numbering, fence the stale client off the CI-V port until it
+  completes a fresh OpenClose(open), answer busy, then accept a fresh
+  login — and
   `keepalive_silence(at, for_seconds)` — pings are received but not answered.
   Wire-level examples live in `tests/testkit/test_simulator_faults.py`.
 

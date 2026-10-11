@@ -23,7 +23,7 @@ import struct
 import time
 from typing import Literal
 
-from rigplane_testkit.icom.faults import FaultPlan
+from rigplane_testkit.icom.faults import Direction, FaultPlan, Port
 
 logger = logging.getLogger(__name__)
 
@@ -301,6 +301,9 @@ class MockIcomRadio:
         # Last CI-V client (set on OpenClose(open)) — target for unsolicited frames.
         self._civ_owner_addr: tuple[str, int] | None = None
         self._civ_owner_id: int = 0
+        # Post-reboot fence: CI-V data and pings are ignored until the client
+        # completes a fresh OpenClose(open).
+        self._fence_civ_until_open: bool = False
         self.unsolicited_sent: int = 0  # count of autonomous frames emitted
         # Counters / observability for simulator-fidelity tests
         self.busy_rejects: int = 0  # number of 0xFFFFFFFF rejects sent
@@ -423,9 +426,11 @@ class MockIcomRadio:
         At ``at`` seconds from now the radio "powers off" for ``down_for``
         seconds: it answers nothing on either port, forgets the held session
         (``free_session`` path), drops the CI-V owner, rotates its token and
-        resets both sequence counters. It then answers conninfo requests with
-        a previous-session-active busy reject (``0xFFFFFFFF``) for
-        ``busy_for`` seconds — modelled on the single-owner reject in
+        restarts CI-V sequence numbering. Until a client completes a fresh
+        OpenClose(open) its CI-V data and pings are ignored — a rebooted
+        radio does not serve a stale client. It then answers conninfo
+        requests with a previous-session-active busy reject (``0xFFFFFFFF``)
+        for ``busy_for`` seconds — modelled on the single-owner reject in
         ``_conninfo_status`` — and finally accepts a fresh login.
 
         Must be called from inside the running event loop.
@@ -442,11 +447,11 @@ class MockIcomRadio:
         self._release_session("reboot")
         self._civ_owner_addr = None
         self._civ_owner_id = 0
-        # A real radio comes back with a fresh session token and restarts its
-        # sequence numbering; rotate both so stale-client packets are visible.
         self.token = (self.token + 0x9E3779B9) & 0xFFFFFFFF
-        self._ctrl_seq = 1
         self._civ_seq = 1
+        # Shut out the pre-reboot client until it completes a fresh
+        # OpenClose(open) — a rebooted radio does not serve stale clients.
+        self._fence_civ_until_open = True
         self.reboot_count += 1
         logger.debug("Mock: reboot — down %.2fs, then busy %.2fs", down_for, busy_for)
 
@@ -614,13 +619,73 @@ class MockIcomRadio:
             return
         planned = plan.decide(port, "to_client", pkt)
         if planned is None:
-            return  # held in the plan's reorder buffer
+            # Held in the plan's reorder buffer: arm the flush deadline so a
+            # short burst is emitted even if the window never fills.
+            self._arm_reorder_flush(plan, port, "to_client", proto, addr, label)
+            return
+        self._deliver_planned(planned, "to_client", proto, addr, label)
+
+    def _deliver_planned(
+        self,
+        planned: list[tuple[float, bytes]],
+        direction: Direction,
+        proto: _MockProtocol,
+        addr: tuple[str, int],
+        label: str,
+    ) -> None:
+        """Emit the plan's emissions for one packet.
+
+        Delayed emissions re-check the reboot down-window when they fire: a
+        packet the plan delayed into a reboot dies with the radio "off"
+        instead of being delivered by a powered-down radio.
+        """
         loop = asyncio.get_running_loop()
         for delay, payload in planned:
-            if delay <= 0.0:
-                proto.send(payload, addr)
-            else:
-                loop.call_later(delay, proto.send, payload, addr)
+            if delay > 0.0:
+                loop.call_later(
+                    delay,
+                    self._deliver_planned,
+                    [(0.0, payload)],
+                    direction,
+                    proto,
+                    addr,
+                    label,
+                )
+            elif time.monotonic() >= self._down_until:
+                if direction == "to_client":
+                    proto.send(payload, addr)
+                else:
+                    self._receive(payload, addr, label, proto)
+
+    def _arm_reorder_flush(
+        self,
+        plan: FaultPlan,
+        port: Port,
+        direction: Direction,
+        proto: _MockProtocol,
+        addr: tuple[str, int],
+        label: str,
+    ) -> None:
+        """Schedule the reorder deadline for a stream with a held burst."""
+        due = plan.flush_due_in(port, direction)
+        if due is not None:
+            asyncio.get_running_loop().call_later(
+                due, self._flush_reorder, plan, port, direction, proto, addr, label
+            )
+
+    def _flush_reorder(
+        self,
+        plan: FaultPlan,
+        port: Port,
+        direction: Direction,
+        proto: _MockProtocol,
+        addr: tuple[str, int],
+        label: str,
+    ) -> None:
+        """Reorder deadline fired: release the held burst through the gates."""
+        self._deliver_planned(
+            plan.flush(port, direction), direction, proto, addr, label
+        )
 
     def _emit(
         self,
@@ -672,13 +737,10 @@ class MockIcomRadio:
         if plan is not None and not plan.is_noop(port, "from_client"):
             planned = plan.decide(port, "from_client", data)
             if planned is None:
-                return  # held in the plan's reorder buffer
-            loop = asyncio.get_running_loop()
-            for delay, payload in planned:
-                if delay <= 0.0:
-                    self._receive(payload, addr, label, proto)
-                else:
-                    loop.call_later(delay, self._receive, payload, addr, label, proto)
+                # Held in the reorder buffer: arm the flush deadline (idle).
+                self._arm_reorder_flush(plan, port, "from_client", proto, addr, label)
+                return
+            self._deliver_planned(planned, "from_client", proto, addr, label)
             return
         self._receive(data, addr, label, proto)
 
@@ -793,6 +855,18 @@ class MockIcomRadio:
     # CI-V port
     # ------------------------------------------------------------------
 
+    def _civ_fenced(self, addr: tuple[str, int], sender_id: int) -> bool:
+        """True when the post-reboot fence shuts this client out of the CI-V port.
+
+        After a reboot only the client that completed a fresh OpenClose(open)
+        — tracked in ``_civ_owner_addr`` / ``_civ_owner_id`` — is served;
+        CI-V data and pings from anyone else are ignored.
+        """
+        return self._fence_civ_until_open and (addr, sender_id) != (
+            self._civ_owner_addr,
+            self._civ_owner_id,
+        )
+
     def _handle_civ(
         self,
         data: bytes,
@@ -818,6 +892,8 @@ class MockIcomRadio:
 
         # Ping request → Ping reply
         if n == _PING_SIZE and ptype == _PT_PING and data[0x10] == 0x00:
+            if self._civ_fenced(addr, sender_id):
+                return  # post-reboot: stale client until a fresh OpenClose(open)
             if time.monotonic() < self._keepalive_silent_until:
                 return  # keepalive_silence window: receive but never reply
             self._send(proto, self._ping_reply(data, sender_id), addr, "civ")
@@ -847,6 +923,8 @@ class MockIcomRadio:
 
         # CI-V data (DATA type, larger than header)
         if ptype == _PT_DATA and n > _CIV_HEADER_SIZE:
+            if self._civ_fenced(addr, sender_id):
+                return  # post-reboot: stale client until a fresh OpenClose(open)
             self._handle_civ_data(data, addr, sender_id, proto)
 
     def _handle_civ_data(
