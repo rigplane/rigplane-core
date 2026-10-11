@@ -1,9 +1,9 @@
 # Frontend mutation testing (Stryker)
 
-Stryker mutates two pure view-model modules and checks whether their own
-tests notice each change. The run is informational: it is not a required
-check, has no threshold that fails it, and runs only nightly or by hand
-(`.github/workflows/stryker-nightly.yml`).
+Stryker mutates two pure view-model modules and the pure PTT restore gate,
+and checks whether their own tests notice each change. The run is
+informational: it is not a required check, has no threshold that fails it,
+and runs only nightly or by hand (`.github/workflows/stryker-nightly.yml`).
 
 ## What is mutated, and by which tests
 
@@ -11,12 +11,15 @@ check, has no threshold that fails it, and runs only nightly or by hand
 
 - `frontend/src/lib/runtime/adapters/radio-view-model-adapter.ts`
 - `frontend/src/semantic/radio-view-model.ts`
+- `frontend/src/lib/runtime/adapters/ptt-restore-gate.ts`
 
 `frontend/vitest.stryker.config.ts` names the tests that run against each
 mutant in `test.include`:
 
 - `frontend/src/lib/runtime/adapters/__tests__/radio-view-model-adapter.test.ts`
 - `frontend/src/semantic/__tests__/radio-view-model.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/mod-input-auto.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/mod-input-tx-guard.isolated.test.ts`
 
 Other test files in the suite also import these modules. They are not in
 the Stryker test set, so a mutant reported as survived or without coverage
@@ -70,7 +73,7 @@ work.
 |---|---|
 | `audio-adapter.ts` | `runtime` from `../frontend-runtime` |
 | `panel-adapters.ts` | `runtime` from `../frontend-runtime`; `$lib/stores/capabilities.svelte`; `$lib/stores/commands.svelte` |
-| `tx-adapter.ts` | `runtime` from `../frontend-runtime` |
+| `tx-adapter.ts` | `runtime` from `../frontend-runtime`; its restore-gate helpers (`markerIsStrictlyNewer`, `canRestoreModAfterConfirmedOff`) now live in the pure `ptt-restore-gate.ts` and are mutated, while the local-audio attempt lifecycle over module state stays here, unmutated |
 | `vfo-adapter.ts` | `runtime` from `../frontend-runtime` |
 | `mod-input-auto.svelte.ts` | `getRadioState` from `$lib/stores/radio.svelte`; `getCapabilities` from `$lib/stores/capabilities.svelte` |
 | `mod-input-tx-guard.svelte.ts` | `getRadioState` from `$lib/stores/radio.svelte`; `getCapabilities` from `$lib/stores/capabilities.svelte` |
