@@ -150,9 +150,7 @@ export function projectControlFeedback<T>(
 /**
  * R29(1): a `'stale'` `DisplayObservation` still carries a real last-observed
  * value (`display-observation.ts: qualifyEvidence`) — only `'unknown'`/
- * `'unsupported'` mean the field was never resolved. Used by every accessor
- * below that qualifies a `DisplayObservation` before trusting
- * `projectControlFeedback`'s result. A type predicate (not a plain boolean
+ * `'unsupported'` mean the field was never resolved. A type predicate (not a plain boolean
  * over `.state`) so callers keep type-narrowed access to `.value`.
  */
 export function hasUsableObservation<T extends number | string | boolean>(
@@ -215,8 +213,8 @@ export function projectControlFeedbackToDisplay(
   return Object.freeze({ ...feedback, confirmed, target, requestedTarget });
 }
 
-/** MOR-2635: the confirmed slot is already display units (the echo above
- *  decoded it). Only the pending target and its requested echo are still the
+/** MOR-2635: the confirmed slot is already display units (decoded by the
+ *  echo projection in panel-adapters). Only the pending target and its requested echo are still the
  *  raw CAT code, so only those two are decoded. A null stays null; a raw the
  *  contract rejects fails the whole feedback closed. */
 export function projectPendingTargetToDisplay(
