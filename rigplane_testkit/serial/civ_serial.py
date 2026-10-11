@@ -30,9 +30,7 @@ The USB CI-V port echoes every inbound frame by default: production serial
 code observes that echo on a real IC-7300 (``backends/discovery.py`` —
 "first read often returns only the echo of our" probe frame — and
 ``backends/_icom_serial_base.py: _read_serial_identity_payload`` — "the raw
-payload bytes after the 19 00 echo"). The setting is documented as CI-V USB
-Echo Back, IC-7300 Full Manual §19, item 0075 (wire-inverted: 00=ON). Pass
-``echo=False`` to turn it off.
+payload bytes after the 19 00 echo"). Pass ``echo=False`` to turn it off.
 
 Faults are scriptable and deterministic: ``delay_identity_answer``,
 ``answer_identity_after_reconnect_only``, ``wrong_model_id``, ``silence``
