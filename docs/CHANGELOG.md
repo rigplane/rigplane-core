@@ -11,6 +11,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0b15] — 2026-10-11
+
+### Added
+
+- **Add an experimental SDR IQ panadapter as a scope source (MOR-3151,
+  MOR-3154, MOR-3155, MOR-3156, #4011, #4015, #4016, #4018).** A new
+  `rigplane.sdr` package defines the IQ source contract, and
+  `SoapyIqSource` implements it over SoapySDR through an optional `sdr`
+  extra, including a remote driver and reconnect. `IqFftScope` converts
+  IQ into scope frames, and a controller follows the radio VFO with
+  view shift or retune and freezes the scope during TX. The SDR scope
+  source is experimental in this beta and off by default unless
+  configured.
+
+- **Wire the SDR scope source into the server, CLI and Web UI
+  (MOR-3157, MOR-3158, MOR-3200, MOR-3201, MOR-3202, #4014, #4019,
+  #4020, #4021, #4022).** The Web UI renders the SDR scope source with
+  a status badge, a TX-frozen hold and a source selector, and a public
+  `sdr` status object exposes its state; environment configuration
+  controls the source. Zoom FFT gives real resolution for narrow spans,
+  and radios that have their own scope fall back between SDR and
+  hardware scopes at runtime.
+
+- **Add an experimental remote controller lease with admission and
+  transmit fences (MOR-3143, MOR-3144, #4002, #4003, #4012, #4013,
+  #4017).** One ephemeral controller capability with heartbeat and
+  expiry gates queued commands, and revocation fences new work before
+  retained cleanup completes. Admission is enforced across HTTP,
+  WebSocket and rigctld ingress and browser TX-audio ownership, and a
+  lost admission releases momentary holds. The remote controller lease
+  is experimental in this beta; production remote activation remains
+  off and default local operation is unchanged.
+
+- **Report a refused browser RX start through the existing info status
+  (MOR-3148, #4005).** `GET /api/v1/info` now retains the actual
+  RX-start refusal, including when no client WebSocket received the
+  error, and a confirmed successful start clears it.
+
+### Fixed
+
+- **Drop TX frames that lost admission during audio-session convergence
+  (MOR-3149, #4004).** A TX frame could pass admission, await audio
+  session convergence and reach the radio after revocation. The
+  submission guard is now rechecked immediately before the radio push,
+  and non-confirming results drop the frame.
+
+- **Declare the resolved audio route in server info (#4025).**
+  `/api/v1/info` omitted the active audio route, leaving remote
+  consumers unable to select one. The response now carries the
+  canonical route from the existing resolver, or null without an
+  attached radio; existing fields and protocol version 1 are unchanged.
+
+- **Request 50 ms input latency for Linux ALSA capture (MOR-3140,
+  #4001).** The Linux ALSA capture path now requests a 50 ms input
+  latency.
+
+### Known issues
+
+- Linux hardware audio acceptance remains pending.
+
 ## [3.0.0b14] — 2026-10-06
 
 ### Fixed
@@ -4408,7 +4468,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b14...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b15...HEAD
+[3.0.0b15]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b14...v3.0.0b15
 [3.0.0b14]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b13...v3.0.0b14
 [3.0.0b13]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b12...v3.0.0b13
 [3.0.0b12]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b11...v3.0.0b12
